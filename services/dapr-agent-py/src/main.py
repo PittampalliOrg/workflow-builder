@@ -188,6 +188,18 @@ DEFAULT_LLM_COMPONENT = os.environ.get(
 )
 
 
+def _coerce_agent_config(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _resolve_llm_component(message: dict, metadata: dict | None = None) -> str:
     """Extract modelSpec from agentConfig, metadata, or message and map to a Dapr component.
 
@@ -197,7 +209,7 @@ def _resolve_llm_component(message: dict, metadata: dict | None = None) -> str:
     model_spec = ""
 
     # Priority 1: agentConfig.modelSpec
-    agent_config = message.get("agentConfig")
+    agent_config = _coerce_agent_config(message.get("agentConfig"))
     if isinstance(agent_config, dict):
         model_spec = agent_config.get("modelSpec", "")
 
@@ -428,14 +440,9 @@ def _runtime_reachable_mcp_url(server: dict[str, Any], url: str) -> str:
 def _extract_mcp_server_configs(
     message: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
-    agent_config = message.get("agentConfig")
-    if isinstance(agent_config, str) and agent_config.strip():
-        try:
-            parsed_config = json.loads(agent_config)
-        except json.JSONDecodeError:
-            logger.warning("[mcp] Skipping invalid JSON agentConfig")
-            return {}, {}
-        agent_config = parsed_config if isinstance(parsed_config, dict) else None
+    agent_config = _coerce_agent_config(message.get("agentConfig"))
+    if message.get("agentConfig") and not isinstance(agent_config, dict):
+        logger.warning("[mcp] Skipping invalid JSON agentConfig")
     if not isinstance(agent_config, dict):
         return {}, {}
     raw_servers = agent_config.get("mcpServers")
@@ -1012,6 +1019,11 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_anthropic(self.llm)
         except Exception:
             pass
+        try:
+            from src.gemini_adapter import patch_for_gemini
+            patch_for_gemini(self.llm)
+        except Exception:
+            pass
 
         exec_id = self._exec_id or ""
         inst_id = self._inst_id or payload.get("instance_id", "")
@@ -1570,6 +1582,12 @@ try:
 except Exception as exc:
     logger.warning("OpenAI adapter patch failed: %s", exc)
 
+try:
+    from src.gemini_adapter import patch_for_gemini
+    patch_for_gemini(agent.llm)
+except Exception as exc:
+    logger.warning("Gemini adapter patch failed: %s", exc)
+
 runner = AgentRunner()
 
 
@@ -1588,6 +1606,12 @@ async def lifespan(app: FastAPI):
         openai_oauth_manager.start_refresh_task()
     except Exception as exc:
         logger.warning("OpenAI OAuth refresh task start failed: %s", exc)
+    try:
+        from src.gemini_oauth.manager import gemini_oauth_manager
+
+        gemini_oauth_manager.start_refresh_task()
+    except Exception as exc:
+        logger.warning("Gemini OAuth refresh task start failed: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
@@ -1618,6 +1642,13 @@ try:
     app.include_router(openai_oauth_router)
 except Exception as exc:
     logger.warning("OpenAI OAuth routes not loaded: %s", exc)
+
+try:
+    from src.gemini_oauth.routes import router as gemini_oauth_router
+
+    app.include_router(gemini_oauth_router)
+except Exception as exc:
+    logger.warning("Gemini OAuth routes not loaded: %s", exc)
 
 # Instrument FastAPI with OTEL
 if _otel_ready:

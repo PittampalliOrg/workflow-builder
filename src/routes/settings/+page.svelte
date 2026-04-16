@@ -158,6 +158,26 @@
 	let openaiOAuthError = $state<string | null>(null);
 	let openaiPendingLogin = $state<OpenAIPendingLogin | null>(null);
 
+	type GeminiOAuthStatus = {
+		authenticated: boolean;
+		email?: string | null;
+		name?: string | null;
+		expires_at?: number | null;
+		expired?: boolean;
+		scopes?: string[];
+		vertex_configured?: boolean;
+		project?: string | null;
+		location?: string | null;
+		pending_login?: { redirect_uri: string; scopes: string[]; created_at: number } | null;
+	};
+
+	let geminiOAuthStatus = $state<GeminiOAuthStatus | null>(null);
+	let geminiOAuthLoading = $state(false);
+	let geminiOAuthBusy = $state(false);
+	let geminiOAuthError = $state<string | null>(null);
+	let geminiOAuthCode = $state('');
+	let geminiOAuthRedirectUri = $state<string | null>(null);
+
 	function formatOAuthExpiry(value: number | null | undefined): string {
 		if (!value) return 'Unknown';
 		return new Date(value).toLocaleString();
@@ -355,6 +375,98 @@
 			toast.error(error instanceof Error ? error.message : 'Failed to disconnect OpenAI OAuth');
 		} finally {
 			openaiOAuthBusy = false;
+		}
+	}
+
+	async function loadGeminiOAuthStatus({ quiet = false }: { quiet?: boolean } = {}) {
+		if (!quiet) geminiOAuthLoading = true;
+		geminiOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/gemini-oauth/status');
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to load Gemini OAuth status'));
+			geminiOAuthStatus = await res.json();
+			geminiOAuthRedirectUri = geminiOAuthStatus?.pending_login?.redirect_uri ?? geminiOAuthRedirectUri;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to load Gemini OAuth status';
+			geminiOAuthError = message;
+			if (!quiet) toast.error(message);
+		} finally {
+			if (!quiet) geminiOAuthLoading = false;
+		}
+	}
+
+	async function connectGeminiOAuth() {
+		geminiOAuthBusy = true;
+		geminiOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/gemini-oauth/login', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to start Gemini OAuth'));
+			const body = await res.json() as { authorize_url?: string; redirect_uri?: string };
+			if (!body.authorize_url) throw new Error('Gemini OAuth did not return an authorization URL');
+			geminiOAuthRedirectUri = body.redirect_uri ?? null;
+			window.open(body.authorize_url, 'gemini-oauth', 'popup,width=960,height=720');
+			toast.info('Authorize Google, then return here when the callback completes.');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to start Gemini OAuth';
+			geminiOAuthError = message;
+			toast.error(message);
+		} finally {
+			geminiOAuthBusy = false;
+		}
+	}
+
+	async function completeGeminiOAuth() {
+		const code = geminiOAuthCode.trim();
+		if (!code) {
+			toast.error('Paste the Gemini callback URL or authorization code first.');
+			return;
+		}
+		geminiOAuthBusy = true;
+		geminiOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/gemini-oauth/complete', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ code })
+			});
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to complete Gemini OAuth'));
+			geminiOAuthStatus = await res.json();
+			geminiOAuthCode = '';
+			toast.success('Gemini OAuth connected');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to complete Gemini OAuth';
+			geminiOAuthError = message;
+			toast.error(message);
+		} finally {
+			geminiOAuthBusy = false;
+		}
+	}
+
+	async function refreshGeminiOAuth() {
+		geminiOAuthBusy = true;
+		try {
+			const res = await fetch('/api/dapr-agent-py/gemini-oauth/refresh', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to refresh Gemini OAuth token'));
+			await loadGeminiOAuthStatus({ quiet: true });
+			toast.success('Gemini OAuth token refreshed');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to refresh Gemini OAuth token');
+		} finally {
+			geminiOAuthBusy = false;
+		}
+	}
+
+	async function disconnectGeminiOAuth() {
+		geminiOAuthBusy = true;
+		try {
+			const res = await fetch('/api/dapr-agent-py/gemini-oauth/logout', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to disconnect Gemini OAuth'));
+			await loadGeminiOAuthStatus({ quiet: true });
+			toast.success('Gemini OAuth disconnected');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to disconnect Gemini OAuth');
+		} finally {
+			geminiOAuthBusy = false;
 		}
 	}
 
@@ -590,6 +702,9 @@
 		if (activeTab === 'openai-oauth' && !openaiOAuthStatus && !openaiOAuthLoading) {
 			void loadOpenAIOAuthStatus();
 		}
+		if (activeTab === 'gemini-oauth' && !geminiOAuthStatus && !geminiOAuthLoading) {
+			void loadGeminiOAuthStatus();
+		}
 	});
 </script>
 
@@ -605,6 +720,7 @@
 					<TabsTrigger value="profile" class="text-xs px-3">Profile</TabsTrigger>
 					<TabsTrigger value="claude-oauth" class="text-xs px-3">Claude OAuth</TabsTrigger>
 					<TabsTrigger value="openai-oauth" class="text-xs px-3">OpenAI OAuth</TabsTrigger>
+					<TabsTrigger value="gemini-oauth" class="text-xs px-3">Gemini OAuth</TabsTrigger>
 					<TabsTrigger value="oauth-apps" class="text-xs px-3">OAuth Apps</TabsTrigger>
 					<TabsTrigger value="mcp-connections" class="text-xs px-3">MCP Connections</TabsTrigger>
 				</TabsList>
@@ -1033,6 +1149,145 @@
 
 								<p class="text-xs text-muted-foreground">
 									The browser authorizes at auth.openai.com using the same device-code pattern as Codex. dapr-agent-py stores the resulting tokens in its Dapr state store and uses them for OpenAI Responses API calls, with OPENAI_API_KEY as fallback.
+								</p>
+							</CardContent>
+						</Card>
+					</div>
+				</TabsContent>
+
+				<!-- Gemini OAuth Tab -->
+				<TabsContent value="gemini-oauth">
+					<div class="space-y-6">
+						<div>
+							<h2 class="text-base font-semibold">Gemini OAuth</h2>
+							<p class="text-sm text-muted-foreground">
+								Connect Google OAuth for dapr-agent-py Gemini calls through Vertex AI.
+							</p>
+						</div>
+
+						{#if geminiOAuthError}
+							<Alert variant="destructive">
+								<CircleAlert class="size-4" />
+								<AlertDescription>{geminiOAuthError}</AlertDescription>
+							</Alert>
+						{/if}
+
+						{#if geminiOAuthStatus && !geminiOAuthStatus.vertex_configured}
+							<Alert>
+								<CircleAlert class="size-4" />
+								<AlertDescription>
+									Set GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION on dapr-agent-py before OAuth tokens can be used for Vertex AI Gemini calls.
+								</AlertDescription>
+							</Alert>
+						{/if}
+
+						<Card>
+							<CardHeader>
+								<CardTitle class="flex items-center gap-2 text-sm">
+									<Globe size={16} />
+									dapr-agent-py
+								</CardTitle>
+							</CardHeader>
+							<CardContent class="space-y-4">
+								{#if geminiOAuthLoading}
+									<div class="flex items-center gap-2 text-sm text-muted-foreground">
+										<Loader2 size={14} class="animate-spin" />
+										Loading Gemini OAuth status...
+									</div>
+								{:else}
+									<div class="flex flex-wrap items-center gap-2">
+										{#if geminiOAuthStatus?.authenticated}
+											<Badge variant="default" class="gap-1">
+												<Lock size={11} />
+												Connected
+											</Badge>
+											{#if geminiOAuthStatus.expired}
+												<Badge variant="destructive">Expired</Badge>
+											{/if}
+										{:else}
+											<Badge variant="secondary" class="gap-1">
+												<LockOpen size={11} />
+												Not connected
+											</Badge>
+										{/if}
+										{#if geminiOAuthStatus?.vertex_configured}
+											<Badge variant="outline">Vertex AI configured</Badge>
+										{:else}
+											<Badge variant="secondary">Vertex AI not configured</Badge>
+										{/if}
+									</div>
+
+									<div class="grid gap-3 rounded-md border border-border p-3 text-sm sm:grid-cols-2">
+										<div>
+											<p class="text-xs text-muted-foreground">Account</p>
+											<p class="truncate font-medium">{geminiOAuthStatus?.email || 'Not connected'}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Name</p>
+											<p class="truncate font-medium">{geminiOAuthStatus?.name || 'Unknown'}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Token Expires</p>
+											<p class="font-medium">{formatOAuthExpiry(geminiOAuthStatus?.expires_at)}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Vertex AI</p>
+											<p class="truncate font-mono text-xs">
+												{geminiOAuthStatus?.project && geminiOAuthStatus?.location
+													? `${geminiOAuthStatus.project}/${geminiOAuthStatus.location}`
+													: 'Not configured'}
+											</p>
+										</div>
+										<div class="sm:col-span-2">
+											<p class="text-xs text-muted-foreground">Scopes</p>
+											<p class="truncate font-mono text-xs">{geminiOAuthStatus?.scopes?.join(' ') || 'None'}</p>
+										</div>
+									</div>
+								{/if}
+
+								<div class="flex flex-wrap gap-2">
+									<Button onclick={connectGeminiOAuth} disabled={geminiOAuthBusy}>
+										{#if geminiOAuthBusy}<Loader2 size={12} class="animate-spin" />{/if}
+										{geminiOAuthStatus?.authenticated ? 'Reconnect Gemini' : 'Connect Gemini'}
+									</Button>
+									<Button variant="outline" onclick={() => loadGeminiOAuthStatus()} disabled={geminiOAuthLoading || geminiOAuthBusy}>
+										<RefreshCw size={12} />
+										Refresh Status
+									</Button>
+									{#if geminiOAuthStatus?.authenticated}
+										<Button variant="outline" onclick={refreshGeminiOAuth} disabled={geminiOAuthBusy}>
+											Refresh Token
+										</Button>
+										<Button variant="ghost" onclick={disconnectGeminiOAuth} disabled={geminiOAuthBusy}>
+											Disconnect
+										</Button>
+									{/if}
+								</div>
+
+								{#if !geminiOAuthStatus?.authenticated}
+									<div class="space-y-2">
+										<Label for="gemini-oauth-code">Callback URL or authorization code</Label>
+										<textarea
+											id="gemini-oauth-code"
+											class="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+											placeholder="Paste the Google callback URL or code if the callback page cannot reach dapr-agent-py."
+											bind:value={geminiOAuthCode}
+										></textarea>
+										<div class="flex flex-wrap items-center gap-2">
+											<Button variant="outline" onclick={completeGeminiOAuth} disabled={geminiOAuthBusy || !geminiOAuthCode.trim()}>
+												Complete Connection
+											</Button>
+											{#if geminiOAuthRedirectUri}
+												<span class="text-xs text-muted-foreground">
+													Google redirects to {geminiOAuthRedirectUri}
+												</span>
+											{/if}
+										</div>
+									</div>
+								{/if}
+
+								<p class="text-xs text-muted-foreground">
+									The browser authorizes with Google using PKCE and cloud-platform scope. dapr-agent-py stores tokens in its Dapr state store and uses them for Vertex AI Gemini calls when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are set.
 								</p>
 							</CardContent>
 						</Card>
