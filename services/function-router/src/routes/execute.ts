@@ -353,15 +353,34 @@ async function waitForDurableRunResult(input: {
 }> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < input.timeoutMs) {
-    const response = await fetch(
-      `${input.functionUrl}/api/run/${encodeURIComponent(input.workflowId)}`,
-      {
-        method: "GET",
-        headers: { Accept: "application/json" },
-      },
-    );
+    // See waitForDaprAgentPyResult — same transient-error retry policy:
+    // pod restarts (rollouts, OOM, evictions) produce 5xx or connection
+    // errors briefly; polling through those windows is correct.
+    let response: Awaited<ReturnType<typeof fetch>> | null = null;
+    try {
+      response = await fetch(
+        `${input.functionUrl}/api/run/${encodeURIComponent(input.workflowId)}`,
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+        },
+      );
+    } catch (fetchErr) {
+      console.warn(
+        "[Execute Route] durable run status fetch error; retrying:",
+        fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
     if (!response.ok) {
       const body = await response.text().catch(() => "");
+      if (response.status === 404 || response.status >= 500) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, response!.status >= 500 ? 2000 : 1500),
+        );
+        continue;
+      }
       return {
         success: false,
         status: "failed",
@@ -528,22 +547,42 @@ async function waitForDaprAgentPyResult(input: {
   const richStatusUrl = `${input.functionUrl}/agent/instances/${encodeURIComponent(input.instanceId)}/rich`;
   const statusUrl = `${input.functionUrl}/agent/instances/${encodeURIComponent(input.instanceId)}`;
   while (Date.now() - startedAt < input.timeoutMs) {
-    let response = await undiciFetch(richStatusUrl, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      dispatcher: longRunningAgent,
-    });
-    if (response.status === 404) {
-      response = await undiciFetch(statusUrl, {
+    // Transient-error retry: pod restarts (rollouts, OOM, evictions)
+    // briefly return 5xx or drop the connection entirely. We want to
+    // keep polling through those windows instead of erroring the
+    // parent workflow. Only 4xx non-404 responses are treated as
+    // unrecoverable client errors.
+    let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
+    try {
+      response = await undiciFetch(richStatusUrl, {
         method: "GET",
         headers: { Accept: "application/json" },
         dispatcher: longRunningAgent,
       });
+      if (response.status === 404) {
+        response = await undiciFetch(statusUrl, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          dispatcher: longRunningAgent,
+        });
+      }
+    } catch (fetchErr) {
+      // Network error (e.g. pod restarting, DNS blip). Back off and retry.
+      console.warn(
+        "[Execute Route] dapr-agent-py status fetch error; retrying:",
+        fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
     }
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      if (response.status === 404) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (response.status === 404 || response.status >= 500) {
+        // 404 = workflow not yet registered; 5xx = transient (pod
+        // restart, sidecar churn, gateway timeout). Back off and retry.
+        await new Promise((resolve) =>
+          setTimeout(resolve, response!.status >= 500 ? 2000 : 1500),
+        );
         continue;
       }
       return {
