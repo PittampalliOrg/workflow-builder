@@ -13,6 +13,7 @@ if root not in sys.path:
 
 manager_mod = importlib.import_module("src.gemini_oauth.manager")
 types_mod = importlib.import_module("src.gemini_oauth.types")
+adapter_mod = importlib.import_module("src.gemini_adapter")
 
 
 def _make_manager(monkeypatch: pytest.MonkeyPatch):
@@ -45,6 +46,17 @@ def test_start_login_defaults_to_gemini_cli_manual_redirect(monkeypatch: pytest.
     assert result["oauth_mode"] == "gemini_cli_manual"
     assert result["redirect_uri"] == manager_mod.GEMINI_CLI_MANUAL_REDIRECT_URI
     assert state.redirect_uri == manager_mod.GEMINI_CLI_MANUAL_REDIRECT_URI
+
+
+def test_vertex_generate_content_url_uses_global_host() -> None:
+    assert adapter_mod._vertex_generate_content_url("project-123", "global", "gemini-model") == (
+        "https://aiplatform.googleapis.com/v1/projects/project-123"
+        "/locations/global/publishers/google/models/gemini-model:generateContent"
+    )
+    assert adapter_mod._vertex_generate_content_url("project-123", "us-central1", "gemini-model") == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-123"
+        "/locations/us-central1/publishers/google/models/gemini-model:generateContent"
+    )
 
 
 def test_start_login_persists_pkce_state(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -38,6 +38,17 @@ def _vertex_location() -> str | None:
     return os.environ.get("GOOGLE_CLOUD_LOCATION") or os.environ.get("GOOGLE_VERTEX_LOCATION")
 
 
+def _vertex_generate_content_url(project: str, location: str, model: str) -> str:
+    normalized_location = location.strip()
+    host = "aiplatform.googleapis.com"
+    if normalized_location.lower() != "global":
+        host = f"{normalized_location}-aiplatform.googleapis.com"
+    return (
+        f"https://{host}/v1/projects/{project}"
+        f"/locations/{normalized_location}/publishers/google/models/{model}:generateContent"
+    )
+
+
 def _message_attr(message: Any, name: str, default: Any = None) -> Any:
     if isinstance(message, dict):
         return message.get(name, default)
@@ -213,10 +224,7 @@ def _call_vertex_gemini(
     if generation_config:
         body["generationConfig"] = generation_config
 
-    url = (
-        f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}"
-        f"/locations/{location}/publishers/google/models/{model}:generateContent"
-    )
+    url = _vertex_generate_content_url(project, location, model)
     timeout = int(os.environ.get("GEMINI_VERTEX_TIMEOUT_SECONDS", "180"))
     req = urllib.request.Request(
         url,
