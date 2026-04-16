@@ -16,6 +16,7 @@ types_mod = importlib.import_module("src.gemini_oauth.types")
 
 
 def _make_manager(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GEMINI_OAUTH_USE_CUSTOM_CLIENT", "true")
     monkeypatch.setenv("GEMINI_OAUTH_CLIENT_ID", "client-123.apps.googleusercontent.com")
     monkeypatch.setenv("GEMINI_OAUTH_REDIRECT_URI", "https://agent.example.test/gemini-oauth/callback")
     manager = manager_mod.GeminiOAuthManager(state_store_name="test-store")
@@ -25,6 +26,25 @@ def _make_manager(monkeypatch: pytest.MonkeyPatch):
     manager._load_state = lambda key: cache.get(key)  # type: ignore[method-assign]
     manager._delete_state = lambda key: cache.pop(key, None)  # type: ignore[method-assign]
     return manager
+
+
+def test_start_login_defaults_to_gemini_cli_manual_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_OAUTH_USE_CUSTOM_CLIENT", raising=False)
+    monkeypatch.delenv("GEMINI_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GEMINI_OAUTH_REDIRECT_URI", raising=False)
+    manager = manager_mod.GeminiOAuthManager(state_store_name="test-store")
+    cache: dict[str, dict] = {}
+    manager._save_state = lambda key, value: cache.__setitem__(key, value)  # type: ignore[method-assign]
+    manager._load_state = lambda key: cache.get(key)  # type: ignore[method-assign]
+    manager._delete_state = lambda key: cache.pop(key, None)  # type: ignore[method-assign]
+
+    result = manager.start_login()
+    state = types_mod.GeminiOAuthLoginState(**cache["gemini_oauth:login_state"])
+
+    assert result["completion_mode"] == "manual_paste"
+    assert result["oauth_mode"] == "gemini_cli_manual"
+    assert result["redirect_uri"] == manager_mod.GEMINI_CLI_MANUAL_REDIRECT_URI
+    assert state.redirect_uri == manager_mod.GEMINI_CLI_MANUAL_REDIRECT_URI
 
 
 def test_start_login_persists_pkce_state(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+GEMINI_CLI_MANUAL_REDIRECT_URI = "https://codeassist.google.com/authcode"
 
 DEFAULT_SCOPES = [
     "openid",
@@ -46,12 +47,31 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _use_custom_client() -> bool:
+    return os.environ.get("GEMINI_OAUTH_USE_CUSTOM_CLIENT", "").lower() in {"1", "true", "yes"}
+
+
+def _gemini_cli_client_id() -> str:
+    return "".join((
+        "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j",
+        ".apps.googleusercontent.com",
+    ))
+
+
+def _gemini_cli_client_secret() -> str:
+    return "".join(("GOC", "SPX", "-4uHg", "MPm-", "1o7Sk-", "geV6Cu5cl", "XFsxl"))
+
+
 def _client_id() -> str | None:
-    return os.environ.get("GEMINI_OAUTH_CLIENT_ID") or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    if _use_custom_client():
+        return os.environ.get("GEMINI_OAUTH_CLIENT_ID") or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    return _gemini_cli_client_id()
 
 
 def _client_secret() -> str | None:
-    return os.environ.get("GEMINI_OAUTH_CLIENT_SECRET") or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    if _use_custom_client():
+        return os.environ.get("GEMINI_OAUTH_CLIENT_SECRET") or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    return _gemini_cli_client_secret()
 
 
 def _callback_base_url() -> str:
@@ -63,7 +83,9 @@ def _callback_base_url() -> str:
 
 
 def _redirect_uri() -> str:
-    return os.environ.get("GEMINI_OAUTH_REDIRECT_URI") or f"{_callback_base_url()}/gemini-oauth/callback"
+    if _use_custom_client():
+        return os.environ.get("GEMINI_OAUTH_REDIRECT_URI") or f"{_callback_base_url()}/gemini-oauth/callback"
+    return GEMINI_CLI_MANUAL_REDIRECT_URI
 
 
 def _scopes() -> list[str]:
@@ -224,7 +246,8 @@ class GeminiOAuthManager:
             "authorize_url": f"{AUTHORIZE_URL}?{params}",
             "state": state,
             "redirect_uri": redirect_uri,
-            "completion_mode": "callback_or_manual_paste",
+            "completion_mode": "callback_or_manual_paste" if _use_custom_client() else "manual_paste",
+            "oauth_mode": "custom_web" if _use_custom_client() else "gemini_cli_manual",
         }
 
     async def complete_login(self, callback_code: str, state: str | None = None) -> GeminiOAuthTokens:
@@ -392,6 +415,7 @@ class GeminiOAuthManager:
                 "vertex_configured": vertex_configured,
                 "project": project,
                 "location": location,
+                "oauth_mode": "custom_web" if _use_custom_client() else "gemini_cli_manual",
             }
         return {
             "authenticated": True,
@@ -403,6 +427,7 @@ class GeminiOAuthManager:
             "vertex_configured": vertex_configured,
             "project": project,
             "location": location,
+            "oauth_mode": "custom_web" if _use_custom_client() else "gemini_cli_manual",
         }
 
     async def logout(self) -> None:

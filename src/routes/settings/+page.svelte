@@ -168,6 +168,7 @@
 		vertex_configured?: boolean;
 		project?: string | null;
 		location?: string | null;
+		oauth_mode?: string | null;
 		pending_login?: { redirect_uri: string; scopes: string[]; created_at: number } | null;
 	};
 
@@ -405,7 +406,7 @@
 			if (!body.authorize_url) throw new Error('Gemini OAuth did not return an authorization URL');
 			geminiOAuthRedirectUri = body.redirect_uri ?? null;
 			window.open(body.authorize_url, 'gemini-oauth', 'popup,width=960,height=720');
-			toast.info('Authorize Google, then return here when the callback completes.');
+			toast.info('Authorize Google, then paste the returned code here.');
 		} catch (error) {
 			const message = error instanceof Error ? error.message : 'Failed to start Gemini OAuth';
 			geminiOAuthError = message;
@@ -1266,11 +1267,11 @@
 
 								{#if !geminiOAuthStatus?.authenticated}
 									<div class="space-y-2">
-										<Label for="gemini-oauth-code">Callback URL or authorization code</Label>
+										<Label for="gemini-oauth-code">Authorization code or callback URL</Label>
 										<textarea
 											id="gemini-oauth-code"
 											class="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-											placeholder="Paste the Google callback URL or code if the callback page cannot reach dapr-agent-py."
+											placeholder="Paste the code shown by Google's Gemini Code Assist page, or a callback URL when custom web OAuth is enabled."
 											bind:value={geminiOAuthCode}
 										></textarea>
 										<div class="flex flex-wrap items-center gap-2">
@@ -1279,7 +1280,7 @@
 											</Button>
 											{#if geminiOAuthRedirectUri}
 												<span class="text-xs text-muted-foreground">
-													Google redirects to {geminiOAuthRedirectUri}
+													Google sends the code to {geminiOAuthRedirectUri}
 												</span>
 											{/if}
 										</div>
@@ -1287,7 +1288,7 @@
 								{/if}
 
 								<p class="text-xs text-muted-foreground">
-									The browser authorizes with Google using PKCE and cloud-platform scope. dapr-agent-py stores tokens in its Dapr state store and uses them for Vertex AI Gemini calls when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are set.
+									The browser authorizes with Google using the Gemini CLI manual-code flow, PKCE, and cloud-platform scope. dapr-agent-py stores tokens in its Dapr state store and uses them for Vertex AI Gemini calls when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are set.
 								</p>
 							</CardContent>
 						</Card>
