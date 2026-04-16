@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import time
+from urllib.error import HTTPError
 import urllib.request
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
-from .crypto import generate_code_challenge, generate_code_verifier
+from .crypto import generate_code_challenge, generate_code_verifier, generate_state
 from .types import OAuthLoginState, OAuthTokens
 
 logger = logging.getLogger(__name__)
@@ -22,19 +23,23 @@ CLIENT_ID = os.environ.get(
 AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 DEFAULT_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
-PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
+PROFILE_URL = "https://api.anthropic.com/api/claude_cli_profile"
 SUCCESS_URL = "https://platform.claude.com/oauth/code/success?app=claude-code"
 
 SCOPES = [
-    "org:create_api_key",
     "user:profile",
     "user:inference",
+    "user:sessions:claude_code",
 ]
 
 TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000
 TOKEN_EXCHANGE_TIMEOUT = 15
 PROFILE_FETCH_TIMEOUT = 10
-OAUTH_BETA_HEADER = "oauth-2025-04-20"
+OAUTH_REQUEST_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "User-Agent": "axios/1.12.2",
+}
 
 STATE_KEY = "oauth:tokens"
 LOGIN_STATE_KEY = "oauth:login_state"
@@ -125,9 +130,7 @@ class OAuthManager:
     def start_login(self) -> dict:
         verifier = generate_code_verifier()
         challenge = generate_code_challenge(verifier)
-        # Claude Code's public client returns CODE#STATE and expects STATE to be
-        # the PKCE verifier during token exchange.
-        state = verifier
+        state = generate_state()
         redirect_uri = os.environ.get("CLAUDE_CODE_OAUTH_REDIRECT_URI", DEFAULT_REDIRECT_URI)
 
         login_state = OAuthLoginState(
@@ -244,10 +247,7 @@ class OAuthManager:
             req = urllib.request.Request(
                 TOKEN_URL,
                 data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "anthropic-beta": OAUTH_BETA_HEADER,
-                },
+                headers=OAUTH_REQUEST_HEADERS,
                 method="POST",
             )
             try:
@@ -349,23 +349,29 @@ class OAuthManager:
         req = urllib.request.Request(
             TOKEN_URL,
             data=body,
-            headers={
-                "Content-Type": "application/json",
-                "anthropic-beta": OAUTH_BETA_HEADER,
-            },
+            headers=OAUTH_REQUEST_HEADERS,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=TOKEN_EXCHANGE_TIMEOUT) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"Token exchange failed ({resp.status}): {resp.reason}")
-            return json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=TOKEN_EXCHANGE_TIMEOUT) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Token exchange failed ({resp.status}): {resp.reason}")
+                return json.loads(resp.read())
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(detail)
+                detail = parsed.get("error") or parsed.get("message") or detail
+            except Exception:
+                pass
+            raise RuntimeError(f"Token exchange failed ({exc.code}): {detail}") from exc
 
     async def _fetch_profile(self, access_token: str) -> dict | None:
         req = urllib.request.Request(
             PROFILE_URL,
             headers={
+                **OAUTH_REQUEST_HEADERS,
                 "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
             },
             method="GET",
         )

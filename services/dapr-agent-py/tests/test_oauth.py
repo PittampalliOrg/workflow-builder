@@ -63,7 +63,8 @@ def test_start_login_persists_state() -> None:
     assert raw is not None
     login_state = types_mod.OAuthLoginState(**raw)
     assert login_state.redirect_uri == manager_mod.DEFAULT_REDIRECT_URI
-    assert login_state.state == login_state.code_verifier
+    assert len(login_state.state) == 43
+    assert login_state.state != login_state.code_verifier
 
 
 def test_parse_callback_code_from_url() -> None:
