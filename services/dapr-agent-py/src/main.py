@@ -1075,22 +1075,9 @@ class OpenShellDurableAgent(DurableAgent):
             from src.compaction import maybe_compact
 
             cfg = self._compaction_cfg_by_instance.get(inst_id)
-            logger.info(
-                "[compaction] call_llm entry inst_id=%s cfg_present=%s enabled=%s counter_keys=%s counter_val=%s",
-                inst_id,
-                cfg is not None,
-                bool(cfg and cfg.enabled),
-                list(self._compaction_call_count_by_instance.keys()),
-                self._compaction_call_count_by_instance.get(inst_id, "KEY_MISSING"),
-            )
             if cfg is not None and cfg.enabled:
                 turn_index = self._compaction_call_count_by_instance.get(inst_id, 0)
                 self._compaction_call_count_by_instance[inst_id] = turn_index + 1
-                logger.info(
-                    "[compaction] post-increment counter_val=%s agent_id=%s",
-                    self._compaction_call_count_by_instance.get(inst_id),
-                    id(self),
-                )
                 model_id = (
                     _get_anthropic_model(component)
                     if component and "anthropic" in component
@@ -1107,13 +1094,6 @@ class OpenShellDurableAgent(DurableAgent):
                     caller=_call_anthropic_sdk,
                     turn_index=turn_index,
                     runtime=runtime_for_compact,
-                )
-                logger.info(
-                    "[compaction] result turn=%d compacted=%s pre=%d reason=%s",
-                    turn_index,
-                    result.compacted,
-                    result.pre_count,
-                    result.reason,
                 )
                 if result.compacted:
                     self._compaction_runs_by_instance[inst_id] = (

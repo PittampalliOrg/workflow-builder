@@ -341,13 +341,16 @@ def maybe_compact(
     entry = agent._infra.get_state(instance_id)
     messages = list(getattr(entry, "messages", []) or [])
 
-    # 2. Retry-idempotency guard: did we already compact this turn?
+    # 2. Retry-idempotency guard: has a boundary already been written for
+    # the current len(messages)? We embed message_count in the marker so
+    # replay safety is tied to durable state (not a fragile in-memory
+    # counter that gets reset on orchestrator replay-finally).
     existing = _find_latest_boundary_metadata(messages)
-    if existing and int(existing.get("turn_index", -1)) == turn_index:
+    if existing and int(existing.get("message_count_at_save", -1)) == len(messages):
         logger.info(
-            "[compaction] idempotency hit for instance=%s turn=%d — returning cached result",
+            "[compaction] idempotency hit for instance=%s len(messages)=%d — returning cached result",
             instance_id,
-            turn_index,
+            len(messages),
         )
         return CompactionResult(
             compacted=True,
@@ -551,6 +554,14 @@ def maybe_compact(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "messages_dropped": max(0, len(messages) - len(tail)),
         "messages_preserved": len(tail),
+        # Used for retry-idempotency: len(entry.messages) AFTER we
+        # finish rewriting. See step 2's guard above.
+        "message_count_at_save": (
+            1  # boundary itself
+            + 1  # summary user message
+            + len(tail)
+            # attachments added below; we update this value post-construction
+        ),
     }
     boundary = _build_boundary_marker(agent, metadata=boundary_metadata)
     new_messages = [boundary, summary_msg, *tail, *attachments]
@@ -584,6 +595,22 @@ def maybe_compact(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[compaction] PostCompact hook error: %s", exc)
 
+    # Finalize message_count_at_save NOW that all messages (including
+    # PostCompact-hook additions) are known, and rewrite the boundary
+    # marker content with the accurate count for idempotency checks.
+    final_count = len(new_messages)
+    boundary_metadata["message_count_at_save"] = final_count
+    new_boundary_content = _BOUNDARY_SENTINEL + json.dumps(
+        boundary_metadata, separators=(",", ":")
+    )
+    if isinstance(new_messages[0], dict):
+        new_messages[0]["content"] = new_boundary_content
+    else:
+        try:
+            new_messages[0].content = new_boundary_content
+        except Exception:
+            pass
+
     # 13. Persist via same ETag path. Small retry loop for rare races.
     for etag_attempt in range(3):
         try:
@@ -607,7 +634,9 @@ def maybe_compact(
                 existing_after = _find_latest_boundary_metadata(
                     list(getattr(entry, "messages", []) or [])
                 )
-                if existing_after and int(existing_after.get("turn_index", -1)) == turn_index:
+                if existing_after and int(
+                    existing_after.get("message_count_at_save", -1)
+                ) == len(list(getattr(entry, "messages", []) or [])):
                     return CompactionResult(
                         compacted=True,
                         pre_count=int(existing_after.get("pre_count") or pre_count),

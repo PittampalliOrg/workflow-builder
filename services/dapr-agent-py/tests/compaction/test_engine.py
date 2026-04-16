@@ -30,10 +30,11 @@ class _FakeAgent:
         self._cwd_by_instance: dict = {}
         self._save_calls = 0
 
-    def save_state(self, instance_id, *, entry):  # noqa: ARG002
+    def save_state(self, instance_id):  # noqa: ARG002
         self._save_calls += 1
-        # Persist the final shape.
-        self._infra.entry = entry
+        # In production save_state picks up the mutated entry via _infra.state;
+        # our FakeInfra keeps the entry attribute up-to-date since we mutate
+        # entry.messages in place.
 
 
 def _big_user(n_chars: int = 1000):
