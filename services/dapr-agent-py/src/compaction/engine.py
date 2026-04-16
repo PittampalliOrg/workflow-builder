@@ -588,7 +588,7 @@ def maybe_compact(
     for etag_attempt in range(3):
         try:
             entry.messages = new_messages
-            agent.save_state(instance_id, entry=entry)
+            agent._infra.save_state(instance_id, entry=entry)
             break
         except Exception as exc:  # noqa: BLE001
             logger.warning(
