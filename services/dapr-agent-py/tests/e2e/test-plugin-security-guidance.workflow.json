@@ -1,0 +1,56 @@
+{
+  "id": "test-plugin-security-guidance",
+  "name": "Test — Anthropic security-guidance plugin",
+  "description": "Exercises the official anthropics/security-guidance plugin. The agent writes a GitHub Actions workflow file, which triggers the plugin's PreToolUse hook (matcher: Edit|Write|MultiEdit) and injects a security reminder about command injection in run: steps.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "test-plugin-security-guidance",
+      "version": "1.0.0",
+      "title": "Test plugin: security-guidance",
+      "summary": "Write a GitHub Actions workflow file to trigger the security-guidance plugin's PreToolUse hook.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Prompt",
+          "promptPlaceholder": "Ask the agent to create a GitHub Actions workflow file."
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "test-plugin-security-guidance",
+            "rootPath": "/sandbox/plugin-test-security",
+            "commandTimeoutMs": 180000,
+            "timeoutMs": 300000,
+            "enabledTools": ["write_file", "mkdir", "list_files"]
+          }
+        }
+      },
+      {
+        "security_write": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "cwd": "/sandbox/plugin-test-security",
+            "agentRuntime": "dapr-agent-py",
+            "maxTurns": 6,
+            "timeoutMinutes": 5,
+            "stopCondition": "Stop after /sandbox/plugin-test-security/.github/workflows/ci.yml exists and you confirm the write.",
+            "prompt": "Create a GitHub Actions workflow file at .github/workflows/ci.yml in the current workspace. The file should define a single `ci` job on push that: runs on ubuntu-latest, checks out code via actions/checkout@v4, and runs `npm test`. Use the Write tool to create the file. After writing, list the file and stop.\n\nUser prompt (ignored unless it changes scope):\n{{trigger.prompt}}",
+            "agentConfig": {
+              "modelSpec": "claude-sonnet-4-6",
+              "plugins": ["security-guidance"]
+            }
+          }
+        }
+      }
+    ]
+  }
+}

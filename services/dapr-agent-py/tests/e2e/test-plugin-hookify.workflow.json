@@ -1,0 +1,56 @@
+{
+  "id": "test-plugin-hookify",
+  "name": "Test — Anthropic hookify plugin",
+  "description": "Exercises all four lifecycle hooks registered by the official anthropics/hookify plugin: UserPromptSubmit, PreToolUse, PostToolUse, Stop. The agent reads a file, writes a summary, and stops — hooks fire at every phase and progress events are visible in run telemetry.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "test-plugin-hookify",
+      "version": "1.0.0",
+      "title": "Test plugin: hookify",
+      "summary": "Run a short read/write task so hookify's four hooks fire end-to-end.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Prompt",
+          "promptPlaceholder": "Ask the agent to describe or summarize something — any task that uses tools."
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "test-plugin-hookify",
+            "rootPath": "/sandbox/plugin-test-hookify",
+            "commandTimeoutMs": 120000,
+            "timeoutMs": 240000,
+            "enabledTools": ["read_file", "write_file", "list_files", "execute_command", "mkdir"]
+          }
+        }
+      },
+      {
+        "hookify_exercise": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "cwd": "/sandbox/plugin-test-hookify",
+            "agentRuntime": "dapr-agent-py",
+            "maxTurns": 6,
+            "timeoutMinutes": 4,
+            "stopCondition": "Stop after you have run `echo hi > note.txt`, read the file back, and summarized it in the final response.",
+            "prompt": "Two-step task: (1) run `echo hi > note.txt` using bash, (2) read note.txt back, (3) answer with a single sentence summary of its contents. The goal is to exercise multiple tool calls so PreToolUse/PostToolUse fire at least twice each. Keep each tool call under 1 KB.\n\nUser prompt (ignored if it changes scope):\n{{trigger.prompt}}",
+            "agentConfig": {
+              "modelSpec": "claude-sonnet-4-6",
+              "plugins": ["hookify"]
+            }
+          }
+        }
+      }
+    ]
+  }
+}

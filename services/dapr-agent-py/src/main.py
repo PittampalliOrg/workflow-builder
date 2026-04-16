@@ -100,6 +100,26 @@ from src.event_publisher import (
     publish_llm_start,
     publish_llm_complete,
 )
+from src.hooks import (
+    HooksSnapshot,
+    execute_notification_hooks,
+    execute_post_tool_hooks,
+    execute_post_tool_use_failure_hooks,
+    execute_pre_tool_hooks,
+    execute_session_end_hooks,
+    execute_session_start_hooks,
+    execute_stop_hooks,
+    execute_user_prompt_submit_hooks,
+    hooks_enabled,
+)
+from src.hooks.registry import empty_snapshot
+from src.plugins import (
+    apply_per_run as _apply_per_run_hooks,
+    bootstrap as _bootstrap_hooks_and_plugins,
+    clear_instance_snapshot as _clear_hook_snapshot,
+    current_snapshot as _current_hook_snapshot,
+    install_instance_snapshot as _install_hook_snapshot,
+)
 
 from dapr_agents.agents.configs import (
     AgentExecutionConfig,
@@ -883,6 +903,14 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_allowed_tools_by_instance: dict[str, dict[str, set[str]]] = {}
         self._skills_by_instance: dict[str, list[SkillDefinition]] = {}
         self._workspace_ref_by_instance: dict[str, str] = {}
+        # Hooks/plugins: populated by plugins.integration.bootstrap(agent) at
+        # service boot. Defaults keep the attributes safe to touch even when
+        # DAPR_AGENT_PY_HOOKS_ENABLED=false.
+        self._hook_registry = None
+        self._plugin_registry = None
+        self._base_hooks_snapshot: HooksSnapshot = empty_snapshot()
+        self._hooks_snapshot_by_instance: dict[str, HooksSnapshot] = {}
+        self._cwd_by_instance: dict[str, str] = {}
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -1104,6 +1132,54 @@ class OpenShellDurableAgent(DurableAgent):
             tool_args = tool_args["kwargs"]
         if not isinstance(tool_args, dict):
             tool_args = {}
+
+        hook_snapshot = _current_hook_snapshot(self, inst_id)
+        cwd_for_hooks = self._cwd_by_instance.get(inst_id, "") or ""
+        project_dir_for_hooks = cwd_for_hooks or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+        if hooks_enabled():
+            try:
+                pre_agg = execute_pre_tool_hooks(
+                    hook_snapshot,
+                    tool_name=tool_name,
+                    tool_use_id=tool_call_id,
+                    tool_input=tool_args,
+                    session_id=inst_id,
+                    cwd=cwd_for_hooks,
+                    project_dir=project_dir_for_hooks,
+                )
+            except Exception as hook_exc:
+                logger.warning("[hooks] PreToolUse error: %s", hook_exc)
+                pre_agg = None
+            if pre_agg is not None:
+                if pre_agg.updated_input is not None:
+                    tool_args = dict(pre_agg.updated_input)
+                    logger.info("[hooks] PreToolUse updated input for %s", tool_name)
+                if pre_agg.any_block():
+                    reason = pre_agg.blocking_reason or pre_agg.decision_reason or "blocked by hook"
+                    logger.info("[hooks] PreToolUse blocked %s: %s", tool_name, reason)
+                    try:
+                        publish_tool_complete(
+                            exec_id,
+                            inst_id,
+                            tool_name,
+                            success=False,
+                            error=f"blocked by hook: {reason}"[:200],
+                            source_event_id=f"{tool_call_id}:blocked" if tool_call_id else None,
+                        )
+                    except Exception:
+                        pass
+                    blocked_msg = ToolMessage(
+                        content=f"Tool {tool_name} blocked by hook: {reason}",
+                        role="tool",
+                        name=tool_name,
+                        tool_call_id=tool_call["id"],
+                    )
+                    try:
+                        self.text_formatter.print_message(blocked_msg)
+                    except Exception:
+                        pass
+                    return blocked_msg.model_dump()
+
         try:
             publish_tool_start(
                 exec_id,
@@ -1166,6 +1242,20 @@ class OpenShellDurableAgent(DurableAgent):
             else:
                 result = super().run_tool(ctx, payload)
         except Exception as exc:
+            if hooks_enabled():
+                try:
+                    execute_post_tool_use_failure_hooks(
+                        hook_snapshot,
+                        tool_name=tool_name,
+                        tool_use_id=tool_call_id,
+                        tool_input=tool_args,
+                        error=str(exc),
+                        session_id=inst_id,
+                        cwd=cwd_for_hooks,
+                        project_dir=project_dir_for_hooks,
+                    )
+                except Exception as hook_exc:
+                    logger.warning("[hooks] PostToolUseFailure error: %s", hook_exc)
             try:
                 publish_tool_complete(
                     exec_id,
@@ -1184,6 +1274,33 @@ class OpenShellDurableAgent(DurableAgent):
             raw = result.get("content", "")
             if isinstance(raw, str):
                 output = raw[:500]
+        if hooks_enabled() and isinstance(result, dict):
+            try:
+                post_agg = execute_post_tool_hooks(
+                    hook_snapshot,
+                    tool_name=tool_name,
+                    tool_use_id=tool_call_id,
+                    tool_input=tool_args,
+                    tool_response=result.get("content"),
+                    session_id=inst_id,
+                    cwd=cwd_for_hooks,
+                    project_dir=project_dir_for_hooks,
+                )
+            except Exception as hook_exc:
+                logger.warning("[hooks] PostToolUse error: %s", hook_exc)
+                post_agg = None
+            if post_agg is not None:
+                if post_agg.updated_tool_output is not None:
+                    result = dict(result)
+                    result["content"] = post_agg.updated_tool_output
+                    output = post_agg.updated_tool_output[:500] if isinstance(post_agg.updated_tool_output, str) else output
+                elif post_agg.additional_contexts:
+                    merged = dict(result)
+                    suffix = "\n\n[hook context]\n" + "\n".join(post_agg.additional_contexts)
+                    if isinstance(merged.get("content"), str):
+                        merged["content"] = merged["content"] + suffix
+                        result = merged
+                        output = merged["content"][:500]
         checkpoint = None
         if should_checkpoint_tool(tool_name):
             try:
@@ -1455,6 +1572,81 @@ class OpenShellDurableAgent(DurableAgent):
             except Exception:
                 pass
 
+        # Capture per-instance hooks snapshot (overlay per-run hooks/plugins
+        # from agentConfig). Pure, deterministic — safe inside the workflow fn.
+        if hooks_enabled():
+            effective_cwd = runtime.cwd or cwd or ""
+            self._cwd_by_instance[instance_id] = effective_cwd
+            try:
+                base_snap = getattr(self, "_base_hooks_snapshot", None) or empty_snapshot()
+                per_run_snap = _apply_per_run_hooks(
+                    base_snap,
+                    message,
+                    plugin_registry=getattr(self, "_plugin_registry", None),
+                )
+                _install_hook_snapshot(self, instance_id, per_run_snap)
+            except Exception as exc:
+                logger.warning("[hooks] failed to build per-instance snapshot: %s", exc)
+
+            # SessionStart + UserPromptSubmit hooks — fire on first execution only.
+            # Follows the same non-durable pattern as PLAN.md injection above.
+            if not ctx.is_replaying:
+                snap = _current_hook_snapshot(self, instance_id)
+                project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+                try:
+                    start_agg = execute_session_start_hooks(
+                        snap,
+                        source="startup",
+                        session_id=instance_id,
+                        cwd=runtime.cwd or cwd or "",
+                        project_dir=project_dir_hook,
+                    )
+                    if start_agg.additional_contexts:
+                        self.profile.system_prompt += "\n\n" + "\n\n".join(
+                            start_agg.additional_contexts
+                        )
+                    if start_agg.initial_user_message and isinstance(message.get("task"), str):
+                        message = {
+                            **message,
+                            "task": start_agg.initial_user_message + "\n\n" + str(message.get("task") or ""),
+                        }
+                    if start_agg.any_block():
+                        raise RuntimeError(
+                            f"SessionStart hook blocked workflow: "
+                            f"{start_agg.blocking_reason or start_agg.decision_reason or 'blocked'}"
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    logger.warning("[hooks] SessionStart error: %s", exc)
+
+                prompt_text = str(message.get("task") or message.get("prompt") or "")
+                if prompt_text:
+                    try:
+                        submit_agg = execute_user_prompt_submit_hooks(
+                            snap,
+                            prompt=prompt_text,
+                            session_id=instance_id,
+                            cwd=runtime.cwd or cwd or "",
+                            project_dir=project_dir_hook,
+                        )
+                        if submit_agg.additional_contexts:
+                            message = {
+                                **message,
+                                "task": (message.get("task") or "")
+                                + "\n\n"
+                                + "\n\n".join(submit_agg.additional_contexts),
+                            }
+                        if submit_agg.any_block():
+                            raise RuntimeError(
+                                f"UserPromptSubmit hook blocked workflow: "
+                                f"{submit_agg.blocking_reason or submit_agg.decision_reason or 'blocked'}"
+                            )
+                    except RuntimeError:
+                        raise
+                    except Exception as exc:
+                        logger.warning("[hooks] UserPromptSubmit error: %s", exc)
+
         try:
             yield from super().agent_workflow(ctx, message)
 
@@ -1486,6 +1678,23 @@ class OpenShellDurableAgent(DurableAgent):
             except Exception as exc:
                 logger.warning("[plan] Failed to read/persist PLAN.md: %s", exc)
 
+            if hooks_enabled() and not ctx.is_replaying:
+                try:
+                    snap = _current_hook_snapshot(self, instance_id)
+                    project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+                    stop_agg = execute_stop_hooks(
+                        snap,
+                        session_id=instance_id,
+                        cwd=runtime.cwd or cwd or "",
+                        project_dir=project_dir_hook,
+                    )
+                    if stop_agg.any_block():
+                        logger.info(
+                            "[hooks] Stop hook returned block (advisory in v1): %s",
+                            stop_agg.blocking_reason or stop_agg.decision_reason or "",
+                        )
+                except Exception as exc:
+                    logger.warning("[hooks] Stop error: %s", exc)
             try:
                 publish_workflow_completed(
                     execution_id=execution_id,
@@ -1494,6 +1703,19 @@ class OpenShellDurableAgent(DurableAgent):
                 )
             except Exception:
                 pass
+            if hooks_enabled() and not ctx.is_replaying:
+                try:
+                    snap = _current_hook_snapshot(self, instance_id)
+                    project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+                    execute_session_end_hooks(
+                        snap,
+                        reason="other",
+                        session_id=instance_id,
+                        cwd=runtime.cwd or cwd or "",
+                        project_dir=project_dir_hook,
+                    )
+                except Exception as exc:
+                    logger.warning("[hooks] SessionEnd (success) error: %s", exc)
             self._close_mcp_client(instance_id)
         except Exception as exc:
             try:
@@ -1505,6 +1727,19 @@ class OpenShellDurableAgent(DurableAgent):
                 )
             except Exception:
                 pass
+            if hooks_enabled() and not ctx.is_replaying:
+                try:
+                    snap = _current_hook_snapshot(self, instance_id)
+                    project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+                    execute_session_end_hooks(
+                        snap,
+                        reason="errored",
+                        session_id=instance_id,
+                        cwd=runtime.cwd or cwd or "",
+                        project_dir=project_dir_hook,
+                    )
+                except Exception as hook_exc:
+                    logger.warning("[hooks] SessionEnd (error) error: %s", hook_exc)
             self._close_mcp_client(instance_id)
             raise
         finally:
@@ -1512,6 +1747,8 @@ class OpenShellDurableAgent(DurableAgent):
             self.llm._llm_component = previous_component
             self.profile.system_prompt = previous_system_prompt
             skill_registry.clear_instance_skills()
+            _clear_hook_snapshot(self, instance_id)
+            self._cwd_by_instance.pop(instance_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1561,6 +1798,54 @@ agent = OpenShellDurableAgent(
         "broadcastTopic": AGENT_BROADCAST_TOPIC,
     },
 )
+
+# Wire hooks + plugins. Safe to call even when feature flags are off —
+# the attributes are attached with empty registries so downstream code
+# can touch them unconditionally.
+try:
+    _bootstrap_hooks_and_plugins(agent)
+except Exception as exc:
+    logger.warning("Hooks/plugins bootstrap failed: %s", exc)
+
+
+def _notification_hook_dispatcher(
+    event_type: str,
+    data: dict[str, Any],
+    execution_id: str | None,
+    instance_id: str | None,
+) -> None:
+    """Fire Notification hooks for eligible publisher events.
+
+    Runs on a daemon thread (see event_publisher). Not part of the
+    durable workflow contract — Notification hooks are advisory.
+    """
+    if not hooks_enabled():
+        return
+    instance_key = instance_id or ""
+    try:
+        snapshot = _current_hook_snapshot(agent, instance_key)
+    except Exception:
+        snapshot = getattr(agent, "_base_hooks_snapshot", None) or empty_snapshot()
+    if snapshot is None or not snapshot.by_event:
+        return
+    message = str(data.get("error") or data.get("output") or data.get("message") or event_type)
+    execute_notification_hooks(
+        snapshot,
+        message=message,
+        session_id=instance_key,
+        cwd=agent._cwd_by_instance.get(instance_key, "") if hasattr(agent, "_cwd_by_instance") else "",
+        project_dir=os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
+        title=event_type,
+        notification_type=event_type,
+    )
+
+
+try:
+    from src.event_publisher import set_notification_dispatcher
+
+    set_notification_dispatcher(_notification_hook_dispatcher)
+except Exception as exc:
+    logger.warning("Notification dispatcher wiring failed: %s", exc)
 
 # ---------------------------------------------------------------------------
 # FastAPI application

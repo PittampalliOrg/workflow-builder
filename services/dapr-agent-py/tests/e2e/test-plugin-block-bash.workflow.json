@@ -1,0 +1,70 @@
+{
+  "id": "test-plugin-block-bash",
+  "name": "Test — inline PreToolUse block on rm",
+  "description": "Demonstrates the per-run hook overlay (agentConfig.hooks) without loading any plugin files. A PreToolUse hook matching Bash with if=Bash(rm *) returns exit 2 so any `rm`-style command is blocked; the agent sees a blocked-tool message and must respond without executing the command.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "test-plugin-block-bash",
+      "version": "1.0.0",
+      "title": "Test hook overlay: block rm",
+      "summary": "Inline PreToolUse hook blocks any `rm *` bash command; agent must respond without running it.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Prompt",
+          "promptPlaceholder": "Ask the agent to delete a file — it should be blocked."
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "test-plugin-block-bash",
+            "rootPath": "/sandbox/plugin-test-block",
+            "commandTimeoutMs": 60000,
+            "timeoutMs": 180000,
+            "enabledTools": ["execute_command", "write_file", "read_file", "list_files", "mkdir"]
+          }
+        }
+      },
+      {
+        "block_rm": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "cwd": "/sandbox/plugin-test-block",
+            "agentRuntime": "dapr-agent-py",
+            "maxTurns": 4,
+            "timeoutMinutes": 3,
+            "stopCondition": "Stop after you have attempted to delete a file and reported that the rm command was blocked by the hook.",
+            "prompt": "Create a file `throwaway.txt`, then attempt to delete it with `rm throwaway.txt`. The PreToolUse hook will block `rm`-style commands — report that to the user in your final answer. Do not try to work around the block.\n\nUser prompt:\n{{trigger.prompt}}",
+            "agentConfig": {
+              "modelSpec": "claude-sonnet-4-6",
+              "hooks": {
+                "PreToolUse": [
+                  {
+                    "matcher": "Bash",
+                    "hooks": [
+                      {
+                        "type": "command",
+                        "command": "echo 'rm-style commands are blocked by policy for this workflow' >&2; exit 2",
+                        "if": "Bash(rm *)",
+                        "timeout": 5
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

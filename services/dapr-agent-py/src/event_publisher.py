@@ -33,6 +33,30 @@ PUBLISH_ENABLED = os.environ.get("ENABLE_WORKFLOW_EVENTS", "true").strip().lower
     "on",
 )
 
+# Event types that should also fire a Notification hook. Kept small on purpose
+# — Notification hooks are user-visible, so we only fire them for events that
+# represent something a user would want to be alerted about.
+_NOTIFICATION_EVENT_TYPES: set[str] = {
+    "tool_call_error",
+    "run_error",
+    "ask_user_prompt",
+}
+
+# Callback installed by main.py after the agent is constructed. Signature:
+#     (event_type: str, data: dict, execution_id: str | None, instance_id: str | None) -> None
+# The callback is responsible for its own error handling. Always invoked on
+# a daemon thread so it can use asyncio freely.
+_notification_dispatcher = None
+
+
+def set_notification_dispatcher(fn) -> None:
+    """Register a callable that receives eligible events as Notification hooks.
+
+    Safe to call multiple times — later calls override earlier ones.
+    """
+    global _notification_dispatcher
+    _notification_dispatcher = fn
+
 _publish_url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/publish/{PUBSUB_NAME}/{PUBSUB_TOPIC}"
 
 # Transient error tracking — exponential backoff, not permanent disable
@@ -120,6 +144,18 @@ def publish_event(
 
     # Fire-and-forget in daemon thread — never blocks the agent workflow
     threading.Thread(target=_do_publish, args=(payload,), daemon=True).start()
+
+    # Fire Notification hooks for eligible event types. Isolated daemon
+    # thread so hook subprocess spawning never impacts the event publish.
+    dispatcher = _notification_dispatcher
+    if dispatcher is not None and event_type in _NOTIFICATION_EVENT_TYPES:
+        def _fire_notification():
+            try:
+                dispatcher(event_type, data or {}, execution_id, instance_id)
+            except Exception as exc:
+                logger.debug("[notification-hook] dispatch failed: %s", exc)
+
+        threading.Thread(target=_fire_notification, daemon=True).start()
 
 
 def publish_workflow_started(
