@@ -175,10 +175,16 @@ def _call_anthropic_sdk(
                 "No Anthropic authentication configured. Set ANTHROPIC_API_KEY or connect Claude OAuth."
             )
 
+    # max_retries enables SDK-internal retry for 5xx, 429, and transient
+    # connection errors (via httpx). Short sidecar-churn blips get absorbed
+    # inside the activity body so Dapr's activity-level retry never has to
+    # fire. See also the WorkflowRetryPolicy tuning in main.py that covers
+    # the longer pod-death window.
     client = anthropic.Anthropic(
         api_key=api_key,
         auth_token=auth_token,
         default_headers=extra_headers or None,
+        max_retries=4,
     )
     model = _get_anthropic_model(component)
     anthropic_tools = _convert_tools_for_anthropic(tools)

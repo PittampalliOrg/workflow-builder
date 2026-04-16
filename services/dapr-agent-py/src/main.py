@@ -128,6 +128,7 @@ from dapr_agents.agents.configs import (
     AgentStateConfig,
     RuntimeConfigKey,
     RuntimeSubscriptionConfig,
+    WorkflowRetryPolicy,
 )
 from dapr_agents.agents.schemas import TriggerAction
 from dapr_agents.agents.durable import DurableAgent
@@ -1854,6 +1855,17 @@ agent = OpenShellDurableAgent(
     state=state_config,
     pubsub=pubsub_config,
     registry=registry_config,
+    # Retry window widened from the dapr-agents default (~24s across 3
+    # attempts) to ~140s across 8 attempts. Covers pod restart + image
+    # pull + Dapr sidecar handshake when a worker dies mid-activity.
+    # Layer A (anthropic max_retries=4) absorbs sub-5s blips SDK-internally;
+    # this policy covers the longer pod-death window.
+    retry_policy=WorkflowRetryPolicy(
+        max_attempts=8,
+        initial_backoff_seconds=4,
+        max_backoff_seconds=45,
+        backoff_multiplier=1.5,
+    ),
     agent_metadata={
         "service": AGENT_SERVICE_NAME,
         "stateStore": AGENT_STATE_STORE,
