@@ -48,6 +48,8 @@ def _matcher_matches(matcher: str, query: str) -> bool:
 
     - empty or `*` -> always matches
     - starts and ends with `/` -> treat body as regex (TS parity)
+    - contains `|` -> treat as pipe-separated alternation of patterns
+      (TS convention for matcher values like "Edit|Write|MultiEdit")
     - else -> fnmatch glob (case-sensitive)
     """
     if not matcher or matcher == "*":
@@ -57,6 +59,14 @@ def _matcher_matches(matcher: str, query: str) -> bool:
             return re.search(matcher[1:-1], query) is not None
         except re.error:
             return False
+    if "|" in matcher:
+        for alt in matcher.split("|"):
+            alt = alt.strip()
+            if not alt:
+                continue
+            if alt == query or fnmatch.fnmatchcase(query, alt):
+                return True
+        return False
     return fnmatch.fnmatchcase(query, matcher)
 
 

@@ -49,6 +49,17 @@ class TestMatcher:
         assert len(snap.get_matching_hooks(HookEvent.PreToolUse, "Read")) == 1
         assert len(snap.get_matching_hooks(HookEvent.PreToolUse, "Write")) == 0
 
+    def test_pipe_alternation_matcher(self):
+        reg = HookRegistry()
+        reg.register_from_settings(
+            _settings("PreToolUse", "Edit|Write|MultiEdit", "echo"), source="user"
+        )
+        snap = reg.snapshot()
+        assert len(snap.get_matching_hooks(HookEvent.PreToolUse, "Write")) == 1
+        assert len(snap.get_matching_hooks(HookEvent.PreToolUse, "Edit")) == 1
+        assert len(snap.get_matching_hooks(HookEvent.PreToolUse, "MultiEdit")) == 1
+        assert len(snap.get_matching_hooks(HookEvent.PreToolUse, "Bash")) == 0
+
 
 class TestSnapshotOverlay:
     def test_snapshot_immutable_to_later_registry_changes(self):
