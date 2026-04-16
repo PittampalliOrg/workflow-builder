@@ -172,12 +172,70 @@ def _auth_headers() -> tuple[dict[str, str], str]:
     except Exception:
         pass
 
+    api_key_headers = _api_key_auth_headers()
+    if api_key_headers:
+        return api_key_headers
+
+    raise RuntimeError(
+        "No OpenAI authentication configured. Set OPENAI_API_KEY or connect OpenAI OAuth."
+    )
+
+
+def _api_key_auth_headers() -> tuple[dict[str, str], str] | None:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "No OpenAI authentication configured. Set OPENAI_API_KEY or connect OpenAI OAuth."
-        )
+        return None
     return {"Authorization": f"Bearer {api_key}"}, "openai-api-key"
+
+
+def _make_openai_request(
+    url: str,
+    body: dict[str, Any],
+    auth_headers: dict[str, str],
+) -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            **auth_headers,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+
+def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    strict_schema = json.loads(json.dumps(schema))
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["additionalProperties"] = False
+                existing_required = node.get("required")
+                required = existing_required if isinstance(existing_required, list) else []
+                node["required"] = list(dict.fromkeys([*required, *properties.keys()]))
+                for value in properties.values():
+                    visit(value)
+            for key in ("$defs", "definitions"):
+                defs = node.get(key)
+                if isinstance(defs, dict):
+                    for value in defs.values():
+                        visit(value)
+            for key in ("items", "anyOf", "oneOf", "allOf"):
+                value = node.get(key)
+                if isinstance(value, list):
+                    for item in value:
+                        visit(item)
+                else:
+                    visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(strict_schema)
+    return strict_schema
 
 
 def _call_openai_responses(
@@ -213,12 +271,13 @@ def _call_openai_responses(
         request_body["reasoning"] = {"effort": effort}
     if response_format is not None:
         try:
-            schema = response_format.model_json_schema()
+            schema = _strict_json_schema(response_format.model_json_schema())
             request_body["text"] = {
                 "format": {
                     "type": "json_schema",
                     "name": response_format.__name__,
                     "schema": schema,
+                    "strict": True,
                 }
             }
         except Exception:
@@ -226,12 +285,7 @@ def _call_openai_responses(
 
     url = os.environ.get("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
     timeout = int(os.environ.get("OPENAI_RESPONSES_TIMEOUT_SECONDS", "180"))
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(request_body).encode(),
-        headers=request_headers,
-        method="POST",
-    )
+    req = _make_openai_request(url, request_body, request_headers)
     logger.info(
         "[openai-responses] Calling %s with %d messages, %d tools, auth=%s",
         model,
@@ -244,7 +298,24 @@ def _call_openai_responses(
             data = json.loads(resp.read() or b"{}")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
+        api_key_headers = _api_key_auth_headers()
+        if auth_mode == "openai-oauth" and exc.code in {401, 403} and api_key_headers:
+            auth_headers, auth_mode = api_key_headers
+            retry_req = _make_openai_request(url, request_body, auth_headers)
+            logger.warning(
+                "[openai-responses] OAuth auth failed with HTTP %s; retrying with OPENAI_API_KEY",
+                exc.code,
+            )
+            try:
+                with urllib.request.urlopen(retry_req, timeout=timeout) as resp:
+                    data = json.loads(resp.read() or b"{}")
+            except HTTPError as retry_exc:
+                detail = retry_exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"OpenAI Responses API failed ({retry_exc.code}): {detail}"
+                ) from retry_exc
+        else:
+            raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
 
     content, tool_calls = _extract_openai_response(data)
     result: dict[str, Any] = {
