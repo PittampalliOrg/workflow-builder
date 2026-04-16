@@ -1564,6 +1564,12 @@ try:
 except Exception as exc:
     logger.warning("Anthropic adapter patch failed: %s", exc)
 
+try:
+    from src.openai_adapter import patch_for_openai
+    patch_for_openai(agent.llm)
+except Exception as exc:
+    logger.warning("OpenAI adapter patch failed: %s", exc)
+
 runner = AgentRunner()
 
 
@@ -1576,6 +1582,12 @@ async def lifespan(app: FastAPI):
         oauth_manager.start_refresh_task()
     except Exception as exc:
         logger.warning("OAuth refresh task start failed: %s", exc)
+    try:
+        from src.openai_oauth.manager import openai_oauth_manager
+
+        openai_oauth_manager.start_refresh_task()
+    except Exception as exc:
+        logger.warning("OpenAI OAuth refresh task start failed: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
@@ -1599,6 +1611,13 @@ try:
     app.include_router(oauth_router)
 except Exception as exc:
     logger.warning("OAuth routes not loaded: %s", exc)
+
+try:
+    from src.openai_oauth.routes import router as openai_oauth_router
+
+    app.include_router(openai_oauth_router)
+except Exception as exc:
+    logger.warning("OpenAI OAuth routes not loaded: %s", exc)
 
 # Instrument FastAPI with OTEL
 if _otel_ready:

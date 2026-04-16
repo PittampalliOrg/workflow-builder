@@ -134,6 +134,30 @@
 	let claudeOAuthCode = $state('');
 	let claudeOAuthRedirectUri = $state<string | null>(null);
 
+	type OpenAIPendingLogin = {
+		verification_url: string;
+		user_code: string;
+		interval: number;
+		expires_at: number;
+	};
+
+	type OpenAIOAuthStatus = {
+		authenticated: boolean;
+		email?: string | null;
+		chatgpt_plan_type?: string | null;
+		chatgpt_user_id?: string | null;
+		chatgpt_account_id?: string | null;
+		expires_at?: number | null;
+		expired?: boolean;
+		pending_login?: OpenAIPendingLogin | null;
+	};
+
+	let openaiOAuthStatus = $state<OpenAIOAuthStatus | null>(null);
+	let openaiOAuthLoading = $state(false);
+	let openaiOAuthBusy = $state(false);
+	let openaiOAuthError = $state<string | null>(null);
+	let openaiPendingLogin = $state<OpenAIPendingLogin | null>(null);
+
 	function formatOAuthExpiry(value: number | null | undefined): string {
 		if (!value) return 'Unknown';
 		return new Date(value).toLocaleString();
@@ -234,6 +258,103 @@
 			toast.error(error instanceof Error ? error.message : 'Failed to disconnect Claude OAuth');
 		} finally {
 			claudeOAuthBusy = false;
+		}
+	}
+
+	async function loadOpenAIOAuthStatus({ quiet = false }: { quiet?: boolean } = {}) {
+		if (!quiet) openaiOAuthLoading = true;
+		openaiOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/openai-oauth/status');
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to load OpenAI OAuth status'));
+			openaiOAuthStatus = await res.json();
+			openaiPendingLogin = openaiOAuthStatus?.pending_login ?? openaiPendingLogin;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to load OpenAI OAuth status';
+			openaiOAuthError = message;
+			if (!quiet) toast.error(message);
+		} finally {
+			if (!quiet) openaiOAuthLoading = false;
+		}
+	}
+
+	async function connectOpenAIOAuth() {
+		openaiOAuthBusy = true;
+		openaiOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/openai-oauth/login', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to start OpenAI OAuth'));
+			const body = await res.json() as OpenAIPendingLogin & { completion_mode?: string };
+			if (!body.verification_url || !body.user_code) {
+				throw new Error('OpenAI OAuth did not return a device code');
+			}
+			openaiPendingLogin = body;
+			window.open(body.verification_url, 'openai-oauth', 'popup,width=960,height=720');
+			toast.info('Enter the OpenAI device code, then check authorization here.');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to start OpenAI OAuth';
+			openaiOAuthError = message;
+			toast.error(message);
+		} finally {
+			openaiOAuthBusy = false;
+		}
+	}
+
+	async function pollOpenAIOAuth({ quiet = false }: { quiet?: boolean } = {}) {
+		openaiOAuthBusy = true;
+		openaiOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/openai-oauth/poll', { method: 'POST' });
+			if (res.status === 202) {
+				const body = await res.json();
+				openaiPendingLogin = {
+					verification_url: openaiPendingLogin?.verification_url ?? 'https://auth.openai.com/codex/device',
+					user_code: openaiPendingLogin?.user_code ?? '',
+					interval: body.interval ?? openaiPendingLogin?.interval ?? 5,
+					expires_at: body.expires_at ?? openaiPendingLogin?.expires_at ?? 0
+				};
+				if (!quiet) toast.info('OpenAI authorization is still pending.');
+				return;
+			}
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to complete OpenAI OAuth'));
+			openaiOAuthStatus = await res.json();
+			openaiPendingLogin = null;
+			toast.success('OpenAI OAuth connected');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to complete OpenAI OAuth';
+			openaiOAuthError = message;
+			toast.error(message);
+		} finally {
+			openaiOAuthBusy = false;
+		}
+	}
+
+	async function refreshOpenAIOAuth() {
+		openaiOAuthBusy = true;
+		try {
+			const res = await fetch('/api/dapr-agent-py/openai-oauth/refresh', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to refresh OpenAI OAuth token'));
+			await loadOpenAIOAuthStatus({ quiet: true });
+			toast.success('OpenAI OAuth token refreshed');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to refresh OpenAI OAuth token');
+		} finally {
+			openaiOAuthBusy = false;
+		}
+	}
+
+	async function disconnectOpenAIOAuth() {
+		openaiOAuthBusy = true;
+		try {
+			const res = await fetch('/api/dapr-agent-py/openai-oauth/logout', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to disconnect OpenAI OAuth'));
+			openaiPendingLogin = null;
+			await loadOpenAIOAuthStatus({ quiet: true });
+			toast.success('OpenAI OAuth disconnected');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to disconnect OpenAI OAuth');
+		} finally {
+			openaiOAuthBusy = false;
 		}
 	}
 
@@ -466,6 +587,9 @@
 		if (activeTab === 'claude-oauth' && !claudeOAuthStatus && !claudeOAuthLoading) {
 			void loadClaudeOAuthStatus();
 		}
+		if (activeTab === 'openai-oauth' && !openaiOAuthStatus && !openaiOAuthLoading) {
+			void loadOpenAIOAuthStatus();
+		}
 	});
 </script>
 
@@ -480,6 +604,7 @@
 					<TabsTrigger value="api-keys" class="text-xs px-3">API Keys</TabsTrigger>
 					<TabsTrigger value="profile" class="text-xs px-3">Profile</TabsTrigger>
 					<TabsTrigger value="claude-oauth" class="text-xs px-3">Claude OAuth</TabsTrigger>
+					<TabsTrigger value="openai-oauth" class="text-xs px-3">OpenAI OAuth</TabsTrigger>
 					<TabsTrigger value="oauth-apps" class="text-xs px-3">OAuth Apps</TabsTrigger>
 					<TabsTrigger value="mcp-connections" class="text-xs px-3">MCP Connections</TabsTrigger>
 				</TabsList>
@@ -766,6 +891,148 @@
 
 								<p class="text-xs text-muted-foreground">
 									The browser authorizes at claude.ai, then Claude returns a code on its registered callback page. Paste that URL or code here so dapr-agent-py can store tokens in its Dapr state store.
+								</p>
+							</CardContent>
+						</Card>
+					</div>
+				</TabsContent>
+
+				<!-- OpenAI OAuth Tab -->
+				<TabsContent value="openai-oauth">
+					<div class="space-y-6">
+						<div>
+							<h2 class="text-base font-semibold">OpenAI OAuth</h2>
+							<p class="text-sm text-muted-foreground">
+								Connect ChatGPT subscription authentication for dapr-agent-py OpenAI model calls.
+							</p>
+						</div>
+
+						{#if openaiOAuthError}
+							<Alert variant="destructive">
+								<CircleAlert class="size-4" />
+								<AlertDescription>{openaiOAuthError}</AlertDescription>
+							</Alert>
+						{/if}
+
+						<Card>
+							<CardHeader>
+								<CardTitle class="flex items-center gap-2 text-sm">
+									<Globe size={16} />
+									dapr-agent-py
+								</CardTitle>
+							</CardHeader>
+							<CardContent class="space-y-4">
+								{#if openaiOAuthLoading}
+									<div class="flex items-center gap-2 text-sm text-muted-foreground">
+										<Loader2 size={14} class="animate-spin" />
+										Loading OpenAI OAuth status...
+									</div>
+								{:else}
+									<div class="flex flex-wrap items-center gap-2">
+										{#if openaiOAuthStatus?.authenticated}
+											<Badge variant="default" class="gap-1">
+												<Lock size={11} />
+												Connected
+											</Badge>
+											{#if openaiOAuthStatus.expired}
+												<Badge variant="destructive">Expired</Badge>
+											{/if}
+										{:else}
+											<Badge variant="secondary" class="gap-1">
+												<LockOpen size={11} />
+												Not connected
+											</Badge>
+										{/if}
+									</div>
+
+									<div class="grid gap-3 rounded-md border border-border p-3 text-sm sm:grid-cols-2">
+										<div>
+											<p class="text-xs text-muted-foreground">Account</p>
+											<p class="truncate font-medium">{openaiOAuthStatus?.email || 'Not connected'}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Plan</p>
+											<p class="font-medium">{openaiOAuthStatus?.chatgpt_plan_type || 'Unknown'}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Token Expires</p>
+											<p class="font-medium">{formatOAuthExpiry(openaiOAuthStatus?.expires_at)}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Account ID</p>
+											<p class="truncate font-mono text-xs">{openaiOAuthStatus?.chatgpt_account_id || 'None'}</p>
+										</div>
+									</div>
+								{/if}
+
+								<div class="flex flex-wrap gap-2">
+									<Button onclick={connectOpenAIOAuth} disabled={openaiOAuthBusy}>
+										{#if openaiOAuthBusy}<Loader2 size={12} class="animate-spin" />{/if}
+										{openaiOAuthStatus?.authenticated ? 'Reconnect OpenAI' : 'Connect OpenAI'}
+									</Button>
+									<Button variant="outline" onclick={() => loadOpenAIOAuthStatus()} disabled={openaiOAuthLoading || openaiOAuthBusy}>
+										<RefreshCw size={12} />
+										Refresh Status
+									</Button>
+									{#if openaiOAuthStatus?.authenticated}
+										<Button variant="outline" onclick={refreshOpenAIOAuth} disabled={openaiOAuthBusy}>
+											Refresh Token
+										</Button>
+										<Button variant="ghost" onclick={disconnectOpenAIOAuth} disabled={openaiOAuthBusy}>
+											Disconnect
+										</Button>
+									{/if}
+								</div>
+
+								{#if !openaiOAuthStatus?.authenticated && openaiPendingLogin}
+									<div class="space-y-3 rounded-md border border-border p-3">
+										<div class="space-y-1">
+											<Label>Device Code</Label>
+											<div class="flex items-center gap-2">
+												<code class="rounded bg-muted px-3 py-1.5 font-mono text-lg font-semibold tracking-wider">
+													{openaiPendingLogin.user_code}
+												</code>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => copyToClipboard(openaiPendingLogin?.user_code ?? '', 'openai-code')}
+												>
+													{#if copiedField === 'openai-code'}
+														<Check size={12} class="text-green-500" />
+													{:else}
+														<Copy size={12} />
+													{/if}
+												</Button>
+											</div>
+										</div>
+										<div class="space-y-1">
+											<Label>Authorization Page</Label>
+											<div class="flex min-w-0 items-center gap-2">
+												<code class="min-w-0 flex-1 truncate rounded bg-muted px-3 py-1.5 font-mono text-xs">
+													{openaiPendingLogin.verification_url}
+												</code>
+												<Button
+													variant="outline"
+													size="sm"
+													onclick={() => window.open(openaiPendingLogin?.verification_url, 'openai-oauth', 'popup,width=960,height=720')}
+												>
+													Open
+												</Button>
+											</div>
+										</div>
+										<div class="flex flex-wrap items-center gap-2">
+											<Button variant="outline" onclick={() => pollOpenAIOAuth()} disabled={openaiOAuthBusy}>
+												Check Authorization
+											</Button>
+											<span class="text-xs text-muted-foreground">
+												Code expires {formatOAuthExpiry(openaiPendingLogin.expires_at)}
+											</span>
+										</div>
+									</div>
+								{/if}
+
+								<p class="text-xs text-muted-foreground">
+									The browser authorizes at auth.openai.com using the same device-code pattern as Codex. dapr-agent-py stores the resulting tokens in its Dapr state store and uses them for OpenAI Responses API calls, with OPENAI_API_KEY as fallback.
 								</p>
 							</CardContent>
 						</Card>
