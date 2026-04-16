@@ -18,6 +18,7 @@ export interface SandboxPolicy {
 export const WORKFLOW_BUILDER_SANDBOX_POLICY_KEY = 'x-workflow-builder';
 export const MANAGED_WORKSPACE_MARKER = 'workflow-builder:sandbox-policy';
 export const DEFAULT_SANDBOX_TEMPLATE = 'dapr-agent';
+export const XLSX_SANDBOX_TEMPLATE = 'dapr-agent-xlsx';
 export const DEFAULT_SANDBOX_TTL_SECONDS = 7200;
 export const DEFAULT_WORKSPACE_ROOT = '/sandbox';
 export const DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS = 900000;
@@ -272,13 +273,59 @@ function updateDurableTaskForPolicy(
 function policyForTask(task: TaskDef, documentPolicy: SandboxPolicy | undefined): SandboxPolicy | undefined {
 	const withBlock = isRecord(task.with) ? task.with : {};
 	const body = isRecord(withBlock.body) ? withBlock.body : {};
+	const skillAwarePolicy = (policy: SandboxPolicy | undefined): SandboxPolicy | undefined => {
+		if (!policy || policy.template !== DEFAULT_SANDBOX_TEMPLATE || !taskUsesXlsxSkill(task)) {
+			return policy;
+		}
+		return { ...policy, template: XLSX_SANDBOX_TEMPLATE };
+	};
 	if (hasExplicitSandboxPolicy(withBlock.sandboxPolicy)) {
-		return normalizeSandboxPolicy(withBlock.sandboxPolicy, DEFAULT_NEW_AGENT_SANDBOX_POLICY);
+		return skillAwarePolicy(
+			normalizeSandboxPolicy(withBlock.sandboxPolicy, DEFAULT_NEW_AGENT_SANDBOX_POLICY)
+		);
 	}
 	if (hasExplicitSandboxPolicy(body.sandboxPolicy)) {
-		return normalizeSandboxPolicy(body.sandboxPolicy, DEFAULT_NEW_AGENT_SANDBOX_POLICY);
+		return skillAwarePolicy(
+			normalizeSandboxPolicy(body.sandboxPolicy, DEFAULT_NEW_AGENT_SANDBOX_POLICY)
+		);
 	}
-	return documentPolicy;
+	return skillAwarePolicy(documentPolicy);
+}
+
+function taskUsesXlsxSkill(task: TaskDef): boolean {
+	const withBlock = isRecord(task.with) ? task.with : {};
+	const body = isRecord(withBlock.body) ? withBlock.body : {};
+	const agentConfig = isRecord(body.agentConfig)
+		? body.agentConfig
+		: isRecord(withBlock.agentConfig)
+			? withBlock.agentConfig
+			: {};
+	const skills = Array.isArray(agentConfig.skills)
+		? agentConfig.skills
+		: Array.isArray(body.skills)
+			? body.skills
+			: Array.isArray(withBlock.skills)
+				? withBlock.skills
+				: [];
+	return skills.some((skill) => {
+		const values = (
+			typeof skill === 'string'
+				? [skill]
+				: isRecord(skill)
+					? [
+							skill.name,
+							skill.slug,
+							skill.skillName,
+							skill.installSource,
+							skill.sourceRepo,
+							skill.registryUrl
+						]
+					: []
+		)
+			.map((value) => (typeof value === 'string' ? value.toLowerCase() : ''))
+			.filter(Boolean);
+		return values.some((value) => value === 'xlsx' || value.endsWith('/xlsx') || value.includes('@xlsx'));
+	});
 }
 
 export function compileSandboxPolicies(spec: Spec): Spec {

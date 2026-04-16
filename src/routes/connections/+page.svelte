@@ -35,6 +35,15 @@
 		authType: string;
 	}
 
+	interface McpConnection {
+		id: string;
+		sourceType: string;
+		pieceName: string | null;
+		connectionExternalId: string | null;
+		displayName: string;
+		status: string;
+	}
+
 	type OAuthStartResponse = {
 		authorizationUrl: string;
 		state: string;
@@ -57,11 +66,13 @@
 	};
 
 	let connections: Connection[] = $state([]);
+	let mcpConnections: McpConnection[] = $state([]);
 	let pieces: Piece[] = $state([]);
 	let loading = $state(true);
 	let showNewDialog = $state(false);
 	let deleteConfirmId: string | null = $state(null);
 	let saving = $state(false);
+	let exposingMcpConnectionId: string | null = $state(null);
 
 	// Rename state
 	let renameDialogOpen = $state(false);
@@ -95,11 +106,22 @@
 	async function loadConnections() {
 		loading = true;
 		try {
-			const res = await fetch('/api/app-connections');
-			if (res.ok) connections = await res.json();
+			const [connectionsRes, mcpRes] = await Promise.all([
+				fetch('/api/app-connections'),
+				fetch('/api/mcp-connections')
+			]);
+			if (connectionsRes.ok) connections = await connectionsRes.json();
+			if (mcpRes.ok) mcpConnections = await mcpRes.json();
 		} catch { /* */ } finally {
 			loading = false;
 		}
+	}
+
+	async function loadMcpConnections() {
+		try {
+			const res = await fetch('/api/mcp-connections');
+			if (res.ok) mcpConnections = await res.json();
+		} catch { /* */ }
 	}
 
 	async function loadPieces() {
@@ -356,6 +378,58 @@
 		return type === 'OAUTH2' || type === 'PLATFORM_OAUTH2';
 	}
 
+	function normalizePieceName(value: string | null | undefined): string {
+		return (value || '')
+			.trim()
+			.toLowerCase()
+			.replace(/^@activepieces\/piece-/, '')
+			.replace(/[_\s]+/g, '-')
+			.replace(/-+/g, '-')
+			.replace(/^-|-$/g, '');
+	}
+
+	function mcpConnectionForPiece(conn: Connection): McpConnection | null {
+		const pieceName = normalizePieceName(conn.pieceName);
+		return (
+			mcpConnections.find(
+				(mcp) =>
+					mcp.sourceType === 'nimble_piece' &&
+					normalizePieceName(mcp.pieceName) === pieceName
+			) || null
+		);
+	}
+
+	function canExposeViaMcp(conn: Connection): boolean {
+		return conn.status === 'ACTIVE' && Boolean(normalizePieceName(conn.pieceName));
+	}
+
+	async function exposeViaMcp(conn: Connection) {
+		if (!canExposeViaMcp(conn)) return;
+		exposingMcpConnectionId = conn.id;
+		try {
+			const res = await fetch('/api/mcp-connections', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					sourceType: 'nimble_piece',
+					pieceName: conn.pieceName,
+					displayName: conn.displayName,
+					connectionExternalId: conn.externalId
+				})
+			});
+			if (!res.ok) {
+				const payload = await res.json().catch(() => null) as { message?: string } | null;
+				throw new Error(payload?.message || `HTTP ${res.status}`);
+			}
+			await loadMcpConnections();
+		} catch (error) {
+			console.error('Failed to expose connection via MCP:', error);
+			alert(error instanceof Error ? error.message : 'Failed to expose connection via MCP');
+		} finally {
+			exposingMcpConnectionId = null;
+		}
+	}
+
 	function clearOAuthQueryParams() {
 		if (typeof window === 'undefined') return;
 		const next = `${window.location.pathname}`;
@@ -499,6 +573,7 @@
 				</TableHeader>
 				<TableBody>
 					{#each connections as conn (conn.id)}
+						{@const mcpConnection = mcpConnectionForPiece(conn)}
 						<TableRow>
 							<TableCell class="font-medium text-xs">{conn.displayName}</TableCell>
 							<TableCell>
@@ -539,6 +614,37 @@
 													</Button>
 												</Tooltip.Trigger>
 												<Tooltip.Content>Reconnect OAuth2</Tooltip.Content>
+											</Tooltip.Root>
+										{/if}
+
+										{#if mcpConnection}
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<Button variant="ghost" size="sm" class="h-7 px-2 text-[10px]" disabled>
+														MCP
+													</Button>
+												</Tooltip.Trigger>
+												<Tooltip.Content>
+													Exposed as {mcpConnection.displayName}
+												</Tooltip.Content>
+											</Tooltip.Root>
+										{:else if canExposeViaMcp(conn)}
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<Button
+														variant="ghost"
+														size="sm"
+														class="h-7 px-2 text-[10px]"
+														disabled={exposingMcpConnectionId === conn.id}
+														onclick={() => exposeViaMcp(conn)}
+													>
+														{#if exposingMcpConnectionId === conn.id}
+															<Loader2 size={12} class="animate-spin" />
+														{/if}
+														MCP
+													</Button>
+												</Tooltip.Trigger>
+												<Tooltip.Content>Expose via MCP</Tooltip.Content>
 											</Tooltip.Root>
 										{/if}
 

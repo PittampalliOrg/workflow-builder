@@ -1,7 +1,13 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import Plug from 'lucide-svelte/icons/plug';
-	import { parseMcpToolName, renderArgsSummary, firstLine } from './tool-utils';
+	import {
+		parseMcpToolName,
+		renderArgsSummary,
+		firstLine,
+		formatOutputForDisplay,
+		summarizeCollapsedOutput
+	} from './tool-utils';
 
 	interface Props {
 		phase: 'start' | 'end';
@@ -31,6 +37,9 @@
 	let argsSummary = $derived(args ? renderArgsSummary(args) : '');
 
 	let state = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
+	let formattedOutput = $derived(formatOutputForDisplay(output));
+	let preview = $derived(summarizeCollapsedOutput(output));
+	let isTruncated = $derived(preview.remainingLines > 0);
 
 	/**
 	 * Label: start shows arg summary, end shows first line of output or "(No content)"
@@ -41,11 +50,11 @@
 			return argsSummary || displayName;
 		}
 		if (!output) return '(No content)';
-		return firstLine(output) || '(No content)';
+		return firstLine(formattedOutput) || '(No content)';
 	});
 </script>
 
-<ToolCall>
+<ToolCall open={phase === 'end' && !!output && !isTruncated}>
 	<ToolCallHeader toolName={displayName} {label} {state} icon={Plug} iconClass="text-purple-400" />
 	<ToolCallContent>
 		{#if phase === 'start' && args && Object.keys(args).length > 0}
@@ -72,9 +81,15 @@
 				</ToolCallResult>
 			{:else if output}
 				<ToolCallResult>
-					<pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all bg-[#0d1117] p-3 font-mono text-zinc-300 leading-relaxed">{output}</pre>
+					<pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all bg-[#0d1117] p-3 font-mono text-zinc-300 leading-relaxed">{formattedOutput}</pre>
 				</ToolCallResult>
 			{/if}
 		{/if}
 	</ToolCallContent>
+	{#if phase === 'end' && output && isTruncated}
+		<div class="border-t px-3 py-2">
+			<pre class="whitespace-pre-wrap break-all text-[12px] font-mono text-muted-foreground leading-relaxed">{preview.text}</pre>
+			<p class="mt-1 text-[11px] text-muted-foreground/60">… +{preview.remainingLines} lines</p>
+		</div>
+	{/if}
 </ToolCall>

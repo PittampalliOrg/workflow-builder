@@ -16,6 +16,11 @@ import {
 	type EncryptedObject,
 } from '$lib/server/security/encryption';
 import { AppConnectionStatus, AppConnectionType } from '$lib/server/types/app-connection';
+import {
+	connectionBelongsToProject,
+	mergeConnectionProjectId
+} from '$lib/server/app-connection-scope';
+import { requireSessionProjectId } from '$lib/server/mcp-connections';
 
 const AP_PREFIX = '@activepieces/piece-';
 
@@ -56,9 +61,7 @@ function resolveClientSecret(value: unknown): string {
 }
 
 export const POST: RequestHandler = async ({ request, locals, url }) => {
-	if (!locals.session?.userId) {
-		return error(401, 'Unauthorized');
-	}
+	const projectId = requireSessionProjectId(locals);
 	if (!db) {
 		return error(503, 'Database not configured');
 	}
@@ -82,6 +85,9 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 		.limit(1);
 
 	if (!connection) {
+		return error(404, 'Connection not found');
+	}
+	if (!connectionBelongsToProject(connection.projectIds, projectId)) {
 		return error(404, 'Connection not found');
 	}
 
@@ -161,6 +167,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 			value: encryptObject(tokenValue as unknown as Record<string, unknown>),
 			pieceName: body.pieceName,
 			pieceVersion: piece.version,
+			projectIds: mergeConnectionProjectId(connection.projectIds, projectId),
 			updatedAt: new Date(),
 		})
 		.where(eq(appConnections.id, body.connectionId))

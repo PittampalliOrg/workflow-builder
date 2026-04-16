@@ -62,28 +62,26 @@
 
 <ToolCall>
 	<ToolCallHeader {toolName} {label} {state} icon={Globe} iconClass="text-sky-400" />
-	<ToolCallContent>
-		{#if phase === 'start' && query}
-			<div class="space-y-2 p-3">
-				<h4 class="text-muted-foreground text-[10px] font-medium tracking-wider uppercase">Query</h4>
-				<p class="text-[13px] text-foreground">{query}</p>
-				{#if args?.allowed_domains && Array.isArray(args.allowed_domains)}
-					<p class="text-[11px] text-muted-foreground">Allowed: {(args.allowed_domains as string[]).join(', ')}</p>
+	{#if (phase === 'start' && query) || (phase === 'end' && error)}
+		<ToolCallContent>
+			{#if phase === 'start' && query}
+				<div class="space-y-2 p-3">
+					<h4 class="text-muted-foreground text-[10px] font-medium tracking-wider uppercase">Query</h4>
+					<p class="text-[13px] text-foreground">{query}</p>
+					{#if args?.allowed_domains && Array.isArray(args.allowed_domains)}
+						<p class="text-[11px] text-muted-foreground">Allowed: {(args.allowed_domains as string[]).join(', ')}</p>
+					{/if}
+					{#if args?.blocked_domains && Array.isArray(args.blocked_domains)}
+						<p class="text-[11px] text-muted-foreground">Blocked: {(args.blocked_domains as string[]).join(', ')}</p>
+					{/if}
+				</div>
+			{:else if phase === 'end'}
+				{#if error}
+					<ToolCallResult error>
+						<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all p-3 font-mono">{error}</pre>
+					</ToolCallResult>
 				{/if}
-				{#if args?.blocked_domains && Array.isArray(args.blocked_domains)}
-					<p class="text-[11px] text-muted-foreground">Blocked: {(args.blocked_domains as string[]).join(', ')}</p>
-				{/if}
-			</div>
-		{:else if phase === 'end'}
-			{#if error}
-				<ToolCallResult error>
-					<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all p-3 font-mono">{error}</pre>
-				</ToolCallResult>
-			{:else if output}
-				<ToolCallResult>
-					<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all bg-[#0d1117] p-3 font-mono text-zinc-300 leading-relaxed">{output}</pre>
-				</ToolCallResult>
 			{/if}
-		{/if}
-	</ToolCallContent>
+		</ToolCallContent>
+	{/if}
 </ToolCall>

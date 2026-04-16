@@ -71,6 +71,33 @@ The expected live coding path is:
 4. `dapr-swe/*` actions route only when a workflow explicitly targets that separate runtime
 5. the UI reads persisted artifacts back through the BFF
 
+For `durable/run`, the deployed `dapr-agent-py` image is expected to include the
+OpenAI adapter. A workflow can select GPT-5.4 by setting:
+
+```json
+{
+  "agentConfig": {
+    "runtime": "dapr-agent-py",
+    "modelSpec": "openai/gpt-5.4"
+  }
+}
+```
+
+The deployed pod must have OpenAI auth available through connected OAuth or
+`OPENAI_API_KEY`. `OPENAI_REASONING_EFFORT=low` is the recommended deployment
+setting for tool-heavy GPT-5.4 workflows such as spreadsheet generation because
+it keeps tool-call latency bounded.
+
+For XLSX workflows, `openshell-agent-runtime` must use a runtime script or
+configuration that maps:
+
+```text
+dapr-agent-xlsx -> gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox-xlsx:latest
+```
+
+That sandbox image should contain spreadsheet dependencies in the image. Do not
+rely on runtime package installation inside the agent workflow.
+
 ## Validation Checklist
 
 After a real rollout, verify:
@@ -81,6 +108,16 @@ After a real rollout, verify:
 4. a fresh OpenShell-backed workflow run progresses through workspace creation and clone
 5. coding runs persist patch, change-set, and snapshot artifacts
 6. published workflows appear in runtime introspection and can execute by name/version
+
+Additional checks for GPT-5.4 and XLSX workflows:
+
+1. `dapr-agent-py` logs `Patched DaprChatClient class for OpenAI direct calls`
+2. a GPT-5.4 test run emits `run_started.model = llm-openai-gpt5`
+3. `dapr-agent-py` logs `[openai-responses] Calling gpt-5.4 ... auth=...`
+4. an XLSX sandbox created with `sandboxTemplate: "dapr-agent-xlsx"` reports the `openshell-sandbox-xlsx` image in workspace profile output
+5. the child agent package check reports `xlsxwriter: true` and `openpyxl: true`
+6. the workflow writes `/sandbox/validation-output/workbook-output.xlsx` and `/sandbox/validation-output/xlsx-local-result.json`
+7. parent steps complete metadata validation, OneDrive upload/download, and Excel workbook/worksheet/range readback
 
 ## Operational Notes
 
@@ -115,9 +152,27 @@ Important runtime dependencies include:
 - `WORKFLOW_ORCHESTRATOR_URL`
 - `DAPR_HOST`
 - `DAPR_HTTP_PORT`
+- `OPENAI_API_KEY` or connected OpenAI OAuth state for GPT-5.4 runs
+- `OPENAI_REASONING_EFFORT` for OpenAI Responses API reasoning control
 - OpenShell runtime availability
 - local Gitea registry reachability from cluster nodes
 - healthy `dapr-system`
+
+## Current Validated Workflow
+
+The XLSX workflow validated with GPT-5.4 follows this shape:
+
+1. `workspace/profile` creates a `dapr-agent-xlsx` OpenShell sandbox.
+2. `durable/run` runs `dapr-agent-py` with the `xlsx` skill and `modelSpec: "openai/gpt-5.4"`.
+3. The agent creates a workbook and JSON metadata under `/sandbox/validation-output`.
+4. Parent shell steps validate the workbook zip and metadata.
+5. OneDrive upload and download steps verify cloud file access.
+6. Microsoft Excel steps list workbooks, list worksheets, and read `Summary!A1:C40`.
+
+The stored workflow may keep an Anthropic default model while individual tests
+or executions override `agentConfig.modelSpec` to GPT-5.4. Treat the workflow
+definition and live `stacks/main` image/env pins as the source of truth for
+whether GPT-5.4 is the default or only an override.
 
 ## Related Docs
 

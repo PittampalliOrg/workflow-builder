@@ -1,123 +1,288 @@
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
 import {
-	DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-	compileSandboxPolicies,
-	withDocumentSandboxPolicy
-} from './sandbox-policy';
+  DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+  compileSandboxPolicies,
+  withDocumentSandboxPolicy,
+} from "./sandbox-policy";
 
 function agentTask(name: string, withBlock: Record<string, unknown> = {}) {
-	return {
-		[name]: {
-			call: 'durable/run',
-			with: {
-				prompt: `Run ${name}`,
-				mode: 'execute_direct',
-				agentRuntime: 'dapr-agent-py',
-				...withBlock
-			}
-		}
-	};
+  return {
+    [name]: {
+      call: "durable/run",
+      with: {
+        prompt: `Run ${name}`,
+        mode: "execute_direct",
+        agentRuntime: "dapr-agent-py",
+        ...withBlock,
+      },
+    },
+  };
 }
 
 function taskDef(entry: Record<string, Record<string, unknown>>) {
-	const name = Object.keys(entry)[0];
-	return entry[name];
+  const name = Object.keys(entry)[0];
+  return entry[name];
 }
 
-describe('compileSandboxPolicies', () => {
-	it('keeps legacy shared-runtime workflows unchanged when no policy is present', () => {
-		const spec = {
-			document: { dsl: '1.0.0', namespace: 'workflow-builder', name: 'legacy', version: '1.0.0' },
-			do: [agentTask('run_agent')]
-		};
+function loadWorkflowFixture(path: string) {
+  return JSON.parse(
+    readFileSync(new URL(path, import.meta.url), "utf8"),
+  ) as Record<string, unknown>;
+}
 
-		expect(compileSandboxPolicies(spec)).toEqual(spec);
-	});
+describe("compileSandboxPolicies", () => {
+  it("keeps legacy shared-runtime workflows unchanged when no policy is present", () => {
+    const spec = {
+      document: {
+        dsl: "1.0.0",
+        namespace: "workflow-builder",
+        name: "legacy",
+        version: "1.0.0",
+      },
+      do: [agentTask("run_agent")],
+    };
 
-	it('adds one workspace/profile for per-run workflows and wires all durable runs to it', () => {
-		const spec = withDocumentSandboxPolicy(
-			{
-				document: { dsl: '1.0.0', namespace: 'workflow-builder', name: 'per-run', version: '1.0.0' },
-				do: [agentTask('plan'), agentTask('execute')]
-			},
-			DEFAULT_NEW_AGENT_SANDBOX_POLICY
-		);
+    expect(compileSandboxPolicies(spec)).toEqual(spec);
+  });
 
-		const compiled = compileSandboxPolicies(spec);
-		const doArray = compiled.do as Array<Record<string, Record<string, unknown>>>;
+  it("adds one workspace/profile for per-run workflows and wires all durable runs to it", () => {
+    const spec = withDocumentSandboxPolicy(
+      {
+        document: {
+          dsl: "1.0.0",
+          namespace: "workflow-builder",
+          name: "per-run",
+          version: "1.0.0",
+        },
+        do: [agentTask("plan"), agentTask("execute")],
+      },
+      DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+    );
 
-		expect(Object.keys(doArray[0])[0]).toBe('workspace_profile');
-		expect(taskDef(doArray[0]).call).toBe('workspace/profile');
-		expect((taskDef(doArray[1]).with as Record<string, unknown>).workspaceRef).toBe(
-			'${ .workspace_profile.workspaceRef }'
-		);
-		expect((taskDef(doArray[2]).with as Record<string, unknown>).workspaceRef).toBe(
-			'${ .workspace_profile.workspaceRef }'
-		);
-	});
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
 
-	it('creates separate workspaces for per-node agent tasks', () => {
-		const policy = { ...DEFAULT_NEW_AGENT_SANDBOX_POLICY, mode: 'per-node' as const };
-		const spec = {
-			document: { dsl: '1.0.0', namespace: 'workflow-builder', name: 'per-node', version: '1.0.0' },
-			do: [
-				agentTask('first', { sandboxPolicy: policy }),
-				agentTask('second', { sandboxPolicy: policy })
-			]
-		};
+    expect(Object.keys(doArray[0])[0]).toBe("workspace_profile");
+    expect(taskDef(doArray[0]).call).toBe("workspace/profile");
+    expect(
+      (taskDef(doArray[1]).with as Record<string, unknown>).workspaceRef,
+    ).toBe("${ .workspace_profile.workspaceRef }");
+    expect(
+      (taskDef(doArray[2]).with as Record<string, unknown>).workspaceRef,
+    ).toBe("${ .workspace_profile.workspaceRef }");
+  });
 
-		const compiled = compileSandboxPolicies(spec);
-		const doArray = compiled.do as Array<Record<string, Record<string, unknown>>>;
+  it("creates separate workspaces for per-node agent tasks", () => {
+    const policy = {
+      ...DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+      mode: "per-node" as const,
+    };
+    const spec = {
+      document: {
+        dsl: "1.0.0",
+        namespace: "workflow-builder",
+        name: "per-node",
+        version: "1.0.0",
+      },
+      do: [
+        agentTask("first", { sandboxPolicy: policy }),
+        agentTask("second", { sandboxPolicy: policy }),
+      ],
+    };
 
-		expect(doArray).toHaveLength(4);
-		expect(Object.keys(doArray[0])[0]).toBe('first_workspace');
-		expect(Object.keys(doArray[2])[0]).toBe('second_workspace');
-		expect((taskDef(doArray[1]).with as Record<string, unknown>).workspaceRef).toBe(
-			'${ .first_workspace.workspaceRef }'
-		);
-		expect((taskDef(doArray[3]).with as Record<string, unknown>).workspaceRef).toBe(
-			'${ .second_workspace.workspaceRef }'
-		);
-	});
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
 
-	it('uses provided workspaceRef without inserting a workspace/profile task', () => {
-		const policy = {
-			mode: 'provided' as const,
-			template: 'dapr-agent',
-			keepAfterRun: false,
-			workspaceRef: 'ws_existing'
-		};
-		const spec = {
-			document: { dsl: '1.0.0', namespace: 'workflow-builder', name: 'provided', version: '1.0.0' },
-			do: [agentTask('run_agent', { sandboxPolicy: policy })]
-		};
+    expect(doArray).toHaveLength(4);
+    expect(Object.keys(doArray[0])[0]).toBe("first_workspace");
+    expect(Object.keys(doArray[2])[0]).toBe("second_workspace");
+    expect(
+      (taskDef(doArray[1]).with as Record<string, unknown>).workspaceRef,
+    ).toBe("${ .first_workspace.workspaceRef }");
+    expect(
+      (taskDef(doArray[3]).with as Record<string, unknown>).workspaceRef,
+    ).toBe("${ .second_workspace.workspaceRef }");
+  });
 
-		const compiled = compileSandboxPolicies(spec);
-		const doArray = compiled.do as Array<Record<string, Record<string, unknown>>>;
+  it("uses provided workspaceRef without inserting a workspace/profile task", () => {
+    const policy = {
+      mode: "provided" as const,
+      template: "dapr-agent",
+      keepAfterRun: false,
+      workspaceRef: "ws_existing",
+    };
+    const spec = {
+      document: {
+        dsl: "1.0.0",
+        namespace: "workflow-builder",
+        name: "provided",
+        version: "1.0.0",
+      },
+      do: [agentTask("run_agent", { sandboxPolicy: policy })],
+    };
 
-		expect(doArray).toHaveLength(1);
-		expect((taskDef(doArray[0]).with as Record<string, unknown>).workspaceRef).toBe('ws_existing');
-	});
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
 
-	it('preserves keep-after-run and ttl on managed workspace profiles', () => {
-		const policy = {
-			...DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-			keepAfterRun: true,
-			ttlSeconds: 3600
-		};
-		const spec = withDocumentSandboxPolicy(
-			{
-				document: { dsl: '1.0.0', namespace: 'workflow-builder', name: 'keep', version: '1.0.0' },
-				do: [agentTask('run_agent')]
-			},
-			policy
-		);
+    expect(doArray).toHaveLength(1);
+    expect(
+      (taskDef(doArray[0]).with as Record<string, unknown>).workspaceRef,
+    ).toBe("ws_existing");
+  });
 
-		const compiled = compileSandboxPolicies(spec);
-		const doArray = compiled.do as Array<Record<string, Record<string, unknown>>>;
-		const workspaceWith = taskDef(doArray[0]).with as Record<string, unknown>;
+  it("preserves keep-after-run and ttl on managed workspace profiles", () => {
+    const policy = {
+      ...DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+      keepAfterRun: true,
+      ttlSeconds: 3600,
+    };
+    const spec = withDocumentSandboxPolicy(
+      {
+        document: {
+          dsl: "1.0.0",
+          namespace: "workflow-builder",
+          name: "keep",
+          version: "1.0.0",
+        },
+        do: [agentTask("run_agent")],
+      },
+      policy,
+    );
 
-		expect(workspaceWith.keepAfterRun).toBe(true);
-		expect(workspaceWith.ttlSeconds).toBe(3600);
-	});
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
+    const workspaceWith = taskDef(doArray[0]).with as Record<string, unknown>;
+
+    expect(workspaceWith.keepAfterRun).toBe(true);
+    expect(workspaceWith.ttlSeconds).toBe(3600);
+  });
+
+  it("routes xlsx skill runs to the xlsx sandbox template", () => {
+    const spec = withDocumentSandboxPolicy(
+      {
+        document: {
+          dsl: "1.0.0",
+          namespace: "workflow-builder",
+          name: "xlsx",
+          version: "1.0.0",
+        },
+        do: [
+          agentTask("run_agent", {
+            body: {
+              agentConfig: {
+                skills: [
+                  {
+                    name: "xlsx",
+                    installSource: "anthropics/skills",
+                    skillName: "xlsx",
+                  },
+                ],
+              },
+            },
+          }),
+        ],
+      },
+      DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+    );
+
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
+    const workspaceWith = taskDef(doArray[0]).with as Record<string, unknown>;
+
+    expect(workspaceWith.sandboxTemplate).toBe("dapr-agent-xlsx");
+    expect(
+      (workspaceWith.sandboxPolicy as Record<string, unknown>).template,
+    ).toBe("dapr-agent-xlsx");
+  });
+
+  it("routes xlsx shorthand skill references to the xlsx sandbox template", () => {
+    const spec = withDocumentSandboxPolicy(
+      {
+        document: {
+          dsl: "1.0.0",
+          namespace: "workflow-builder",
+          name: "xlsx-shorthand",
+          version: "1.0.0",
+        },
+        do: [
+          agentTask("run_agent", {
+            body: {
+              agentConfig: {
+                skills: ["anthropics/skills@xlsx"],
+              },
+            },
+          }),
+        ],
+      },
+      DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+    );
+
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
+    const workspaceWith = taskDef(doArray[0]).with as Record<string, unknown>;
+
+    expect(workspaceWith.sandboxTemplate).toBe("dapr-agent-xlsx");
+    expect(
+      (workspaceWith.sandboxPolicy as Record<string, unknown>).template,
+    ).toBe("dapr-agent-xlsx");
+  });
+
+  it("keeps the xlsx sandbox validation workflow on the xlsx sandbox template", () => {
+    const fixture = loadWorkflowFixture(
+      "../../../services/durable-agent/durable-agent-xlsx-sandbox-validation.workflow.json",
+    );
+    const spec = fixture.spec as Record<string, unknown>;
+
+    const compiled = compileSandboxPolicies(spec);
+    const doArray = compiled.do as Array<
+      Record<string, Record<string, unknown>>
+    >;
+    const workspaceWith = taskDef(doArray[0]).with as Record<string, unknown>;
+    const runWith = taskDef(doArray[1]).with as Record<string, unknown>;
+    const metadataTask = taskDef(doArray[2]);
+    const encodeTask = taskDef(doArray[3]);
+    const uploadTask = taskDef(doArray[4]);
+    const downloadTask = taskDef(doArray[5]);
+    const workbooksTask = taskDef(doArray[7]);
+    const worksheetsTask = taskDef(doArray[8]);
+    const rangeTask = taskDef(doArray[9]);
+    const agentConfig = runWith.agentConfig as Record<string, unknown>;
+    const skills = agentConfig.skills as Array<Record<string, unknown>>;
+
+    expect(doArray).toHaveLength(10);
+    expect(workspaceWith.sandboxTemplate).toBe("dapr-agent-xlsx");
+    expect(
+      (workspaceWith.sandboxPolicy as Record<string, unknown>).template,
+    ).toBe("dapr-agent-xlsx");
+    expect(runWith.workspaceRef).toBe("${ .workspace_profile.workspaceRef }");
+    expect((agentConfig.memory as Record<string, unknown>).sessionId).toBe(
+      "${ .runtime.dbExecutionId }",
+    );
+    expect(agentConfig.mcpServers).toEqual([]);
+    expect(metadataTask.call).toBe("workspace/command");
+    expect(encodeTask.call).toBe("workspace/command");
+    expect(uploadTask.call).toBe("microsoft-onedrive/upload_onedrive_file");
+    expect(downloadTask.call).toBe("microsoft-onedrive/download_file");
+    expect(workbooksTask.call).toBe("microsoft-excel-365/get_workbooks");
+    expect(worksheetsTask.call).toBe("microsoft-excel-365/get_worksheets");
+    expect(rangeTask.call).toBe("microsoft-excel-365/get_range");
+    expect(skills[0]).toMatchObject({
+      installSource: "anthropics/skills",
+      skillName: "xlsx",
+      registryUrl: "https://skills.sh/anthropics/skills/xlsx",
+    });
+  });
 });

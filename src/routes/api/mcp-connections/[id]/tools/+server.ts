@@ -2,7 +2,8 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { mcpConnections } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { requireSessionProjectId } from '$lib/server/mcp-connections';
 
 function toolNameFromUnknown(value: unknown): string | null {
 	if (typeof value === 'string') {
@@ -48,13 +49,13 @@ function healthUrl(serverUrl: string): string {
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!locals.session?.userId) return error(401, 'Unauthorized');
+	const projectId = requireSessionProjectId(locals);
 	if (!db) return error(500, 'Database not available');
 
 	const [connection] = await db
 		.select()
 		.from(mcpConnections)
-		.where(eq(mcpConnections.id, params.id))
+		.where(and(eq(mcpConnections.id, params.id), eq(mcpConnections.projectId, projectId)))
 		.limit(1);
 
 	if (!connection) return error(404, 'MCP connection not found');

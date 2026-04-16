@@ -35,6 +35,15 @@ export function truncateText(text: string, max: number): string {
 const MAX_COMMAND_DISPLAY_LINES = 2;
 const MAX_COMMAND_DISPLAY_CHARS = 160;
 
+/** Max lines for collapsed shell/MCP/text result display — from utils/terminal.ts */
+export const MAX_OUTPUT_COLLAPSED_LINES = 3;
+
+/** Max file-write lines rendered inline — from FileWriteTool/UI.tsx */
+export const MAX_FILE_WRITE_RENDER_LINES = 10;
+
+/** Max JSON string length to attempt pretty-formatting — from OutputLine.tsx */
+const MAX_JSON_FORMAT_LENGTH = 10_000;
+
 export function truncateCommand(command: string): string {
 	const lines = command.split('\n');
 	let truncated = lines.slice(0, MAX_COMMAND_DISPLAY_LINES).join('\n');
@@ -145,6 +154,32 @@ export function countListEntries(output: string): number {
 export function firstLine(text: string): string {
 	const line = text.split('\n').find((l) => l.trim());
 	return line?.trim() ?? '';
+}
+
+/**
+ * Format short JSON payloads the same way Claude Code's OutputLine does:
+ * parse and pretty-print only when the round trip preserves the value.
+ */
+export function tryFormatJsonLine(line: string): string {
+	try {
+		const parsed = JSON.parse(line);
+		const stringified = JSON.stringify(parsed);
+		const normalizedOriginal = line.replace(/\\\//g, '/').replace(/\s+/g, '');
+		const normalizedStringified = stringified.replace(/\s+/g, '');
+		if (normalizedOriginal !== normalizedStringified) return line;
+		return JSON.stringify(parsed, null, 2);
+	} catch {
+		return line;
+	}
+}
+
+export function formatOutputForDisplay(content: string): string {
+	if (content.length > MAX_JSON_FORMAT_LENGTH) return content;
+	return content.split('\n').map(tryFormatJsonLine).join('\n');
+}
+
+export function summarizeCollapsedOutput(content: string): { text: string; remainingLines: number } {
+	return truncateLines(formatOutputForDisplay(content).trimEnd(), MAX_OUTPUT_COLLAPSED_LINES);
 }
 
 // ---------------------------------------------------------------------------

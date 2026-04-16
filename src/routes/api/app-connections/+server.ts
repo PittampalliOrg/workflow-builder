@@ -6,6 +6,8 @@ import { desc } from 'drizzle-orm';
 import { encryptObject } from '$lib/server/security/encryption';
 import { AppConnectionStatus } from '$lib/server/types/app-connection';
 import { generateId } from '$lib/server/utils/id';
+import { connectionBelongsToProject } from '$lib/server/app-connection-scope';
+import { requireSessionProjectId } from '$lib/server/mcp-connections';
 
 type PieceInfo = {
 	name: string;
@@ -74,7 +76,8 @@ function matchesPieceFilter(connectionPieceName: string, filter: string, piece?:
  *
  * List all app connections (without encrypted values).
  */
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, locals }) => {
+	const projectId = requireSessionProjectId(locals);
 	if (!db) return json([]);
 
 	const pieceNameFilter = url.searchParams.get('pieceName')?.trim() || '';
@@ -92,6 +95,7 @@ export const GET: RequestHandler = async ({ url }) => {
 				displayName: appConnections.displayName,
 				type: appConnections.type,
 				status: appConnections.status,
+				projectIds: appConnections.projectIds,
 				createdAt: appConnections.createdAt
 			})
 			.from(appConnections)
@@ -124,6 +128,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	}
 
 	const result = connections
+		.filter((connection) => connectionBelongsToProject(connection.projectIds, projectId))
 		.map((connection) => {
 			const normalizedPieceName = normalizePieceName(connection.pieceName);
 			const piece =
@@ -131,7 +136,13 @@ export const GET: RequestHandler = async ({ url }) => {
 				pieceMap.get(normalizedPieceName) ??
 				pieceMap.get(expandPieceNameCandidates(connection.pieceName)[0]?.toLowerCase() || '');
 			return {
-				...connection,
+				id: connection.id,
+				externalId: connection.externalId,
+				pieceName: connection.pieceName,
+				displayName: connection.displayName,
+				type: connection.type,
+				status: connection.status,
+				createdAt: connection.createdAt,
 				providerId: piece?.name ? normalizePieceName(piece.name) : normalizedPieceName,
 				providerLabel: piece?.displayName || humanizePieceName(connection.pieceName),
 				providerIconUrl: piece?.logoUrl || null,
@@ -152,7 +163,8 @@ export const GET: RequestHandler = async ({ url }) => {
  * Create a new app connection. Currently supports SECRET_TEXT type.
  * Encrypts the value before storing.
  */
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
+	const projectId = requireSessionProjectId(locals);
 	if (!db) return error(503, 'Database not configured');
 
 	const body = await request.json();
@@ -185,7 +197,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			status: AppConnectionStatus.ACTIVE,
 			value: encryptedValue,
 			pieceVersion: '0.0.0',
-			projectIds: []
+			projectIds: [projectId]
 		})
 		.returning({
 			id: appConnections.id,

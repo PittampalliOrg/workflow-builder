@@ -19,6 +19,31 @@ The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 
 The active runtime model is OpenShell-only for sandboxed agent work.
 
+Model selection for `durable/run` is data-driven. `dapr-agent-py` reads
+`agentConfig.modelSpec` from the workflow call, maps that value to a Dapr LLM
+component, and patches the underlying Dapr chat client when a provider needs a
+direct SDK/API adapter. The default live model can remain Anthropic while a
+single workflow or execution opts into OpenAI by setting:
+
+```json
+{
+  "agentConfig": {
+    "runtime": "dapr-agent-py",
+    "modelSpec": "openai/gpt-5.4"
+  }
+}
+```
+
+For OpenAI GPT-5.4, the mapping is:
+
+```text
+openai/gpt-5.4 -> llm-openai-gpt5 -> OpenAI Responses API model gpt-5.4
+```
+
+`dapr-agent-py` uses OpenAI OAuth headers when available and falls back to
+`OPENAI_API_KEY`. Reasoning effort is controlled by `OPENAI_REASONING_EFFORT`;
+tool-heavy workbook runs have been validated with `low`.
+
 ## Design Principles
 
 ### One durable parent workflow
@@ -77,6 +102,13 @@ Supported workspace/browser actions:
 
 Those all route to OpenShell-backed runtimes.
 
+Specialized work uses OpenShell sandbox templates rather than package
+installation at runtime. The `dapr-agent-xlsx` template resolves to the
+`openshell-sandbox-xlsx` image and is expected to include spreadsheet
+dependencies such as `xlsxwriter`, `openpyxl`, and `pandas` in the image. Agent
+prompts for XLSX workflows should verify package availability, but should not
+run `pip`, `apt`, `npm`, or other package managers during the workflow.
+
 ### Durable review artifacts
 
 For successful coding runs, the review surface is persisted independently of the live sandbox:
@@ -131,11 +163,13 @@ openshell-agent-runtime / dapr-agent-py / dapr-swe
 
 1. A workflow node uses `durable/run`.
 2. `workflow-orchestrator` schedules the durable child workflow from the parent workflow.
-3. `dapr-agent-py` runs the agent loop.
-4. `dapr-agent-py` binds to the OpenShell workspace created or resolved earlier in the workflow.
-5. Built-in workspace tools run against that OpenShell workspace.
-6. MCP tools are added from `agentConfig.mcpServers` or, when the deployed orchestrator image includes the resolver, from enabled project `mcp_connection` rows.
-7. Review artifacts are persisted to Postgres.
+3. `function-router` serializes `agentConfig` and passes the exact `workspaceRef` and `sandboxName` to `dapr-agent-py`.
+4. `dapr-agent-py` resolves the model component from `agentConfig.modelSpec`, metadata, or top-level `model`.
+5. `dapr-agent-py` runs the agent loop.
+6. `dapr-agent-py` binds to the OpenShell workspace created or resolved earlier in the workflow.
+7. Built-in workspace tools run against that OpenShell workspace.
+8. MCP tools are added from `agentConfig.mcpServers` or, when the deployed orchestrator image includes the resolver, from enabled project `mcp_connection` rows.
+9. Review artifacts are persisted to Postgres.
 
 See `docs/mcp-agent-workflows.md` for the current UI-runnable MCP configuration method.
 
@@ -192,12 +226,19 @@ Provides:
 - routing for `dapr-swe/*`
 - fallback routing to `fn-activepieces`
 
+For `durable/run`, `function-router` forwards `agentConfig` as JSON and derives
+an OpenShell sandbox name from `workspaceRef` when one is not explicitly passed.
+The derivation strips leading and trailing hyphens so refs such as
+`ws_abc123_` resolve to `ws-abc123`, not `ws-abc123-`.
+
 ### dapr-agent-py
 
 Provides:
 
 - native Dapr child workflow execution for `durable/run`
 - the agent loop for OpenShell-backed coding runs
+- per-run model selection from `agentConfig.modelSpec`, workflow metadata, or top-level `model`
+- direct OpenAI Responses API adapter for `openai/gpt-5.4` and `openai/o3`
 - runtime MCP client setup from `agentConfig.mcpServers`
 - MCP tool dispatch alongside built-in workspace tools
 
@@ -207,6 +248,7 @@ Provides:
 
 - OpenShell-backed workspace profile, clone, command, and cleanup
 - browser materialization and validation
+- sandbox template mapping, including `dapr-agent-xlsx` for Excel workbook workflows
 
 It is a runtime backend, not the orchestration owner.
 

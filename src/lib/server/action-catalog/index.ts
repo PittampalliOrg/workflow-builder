@@ -264,7 +264,11 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
               enum: ["shared-runtime", "per-run", "per-node", "provided"],
               default: "per-run",
             },
-            template: { type: "string", default: "dapr-agent" },
+            template: {
+              type: "string",
+              enum: ["dapr-agent", "dapr-agent-xlsx", "openshell-browser", "dapr-agent-py-testing"],
+              default: "dapr-agent",
+            },
             keepAfterRun: { type: "boolean", default: false },
             ttlSeconds: { type: "integer", default: 7200 },
             workspaceRef: { type: "string" },

@@ -12,6 +12,8 @@ type JsonSchemaProperty = {
 	enum?: unknown[];
 	items?: JsonSchemaProperty;
 	default?: unknown;
+	properties?: Record<string, JsonSchemaProperty>;
+	additionalProperties?: boolean;
 };
 
 export type JsonSchema = {
@@ -50,8 +52,35 @@ export function apPropToJsonSchema(
 		case "SHORT_TEXT":
 		case "LONG_TEXT":
 		case "DATE_TIME":
-		case "FILE":
 			return { ...base, type: "string" };
+
+		case "FILE":
+			return {
+				...base,
+				type: "object",
+				description: [
+					base.description,
+					"Pass an object with base64 file content, a data field containing the same base64 string, and an extension such as xlsx. JSON strings and data URIs are normalized for compatibility.",
+				]
+					.filter(Boolean)
+					.join(" "),
+				properties: {
+					base64: {
+						type: "string",
+						description: "Base64-encoded file content.",
+					},
+					data: {
+						type: "string",
+						description:
+							"Base64-encoded file content. Use the same value as base64 for small uploads.",
+					},
+					extension: {
+						type: "string",
+						description: "File extension without a leading dot, for example xlsx.",
+					},
+				},
+				additionalProperties: true,
+			};
 
 		case "NUMBER":
 			return { ...base, type: "number" };

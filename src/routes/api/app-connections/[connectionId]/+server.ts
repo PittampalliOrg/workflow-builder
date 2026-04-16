@@ -3,13 +3,16 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { appConnections } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { connectionBelongsToProject } from '$lib/server/app-connection-scope';
+import { requireSessionProjectId } from '$lib/server/mcp-connections';
 
 /**
  * PUT /api/app-connections/[connectionId]
  *
  * Update a connection (currently supports renaming via displayName).
  */
-export const PUT: RequestHandler = async ({ params, request }) => {
+export const PUT: RequestHandler = async ({ params, request, locals }) => {
+	const projectId = requireSessionProjectId(locals);
 	if (!db) return error(503, 'Database not configured');
 
 	const { connectionId } = params;
@@ -18,6 +21,16 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 
 	if (!displayName || typeof displayName !== 'string' || displayName.trim().length === 0) {
 		return error(400, { message: 'displayName is required' });
+	}
+
+	const [existing] = await db
+		.select({ id: appConnections.id, projectIds: appConnections.projectIds })
+		.from(appConnections)
+		.where(eq(appConnections.id, connectionId))
+		.limit(1);
+
+	if (!existing || !connectionBelongsToProject(existing.projectIds, projectId)) {
+		return error(404, { message: 'Connection not found' });
 	}
 
 	const updated = await db
@@ -46,10 +59,21 @@ export const PUT: RequestHandler = async ({ params, request }) => {
  *
  * Delete a connection by ID.
  */
-export const DELETE: RequestHandler = async ({ params }) => {
+export const DELETE: RequestHandler = async ({ params, locals }) => {
+	const projectId = requireSessionProjectId(locals);
 	if (!db) return error(503, 'Database not configured');
 
 	const { connectionId } = params;
+
+	const [existing] = await db
+		.select({ id: appConnections.id, projectIds: appConnections.projectIds })
+		.from(appConnections)
+		.where(eq(appConnections.id, connectionId))
+		.limit(1);
+
+	if (!existing || !connectionBelongsToProject(existing.projectIds, projectId)) {
+		return error(404, { message: 'Connection not found' });
+	}
 
 	const deleted = await db
 		.delete(appConnections)

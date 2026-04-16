@@ -2,7 +2,7 @@
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import SandboxCodeViewer from '$lib/components/sandbox/sandbox-code-viewer.svelte';
 	import Pencil from 'lucide-svelte/icons/pencil';
-	import { getDisplayPath, countLines, truncateLines, detectLang } from './tool-utils';
+	import { getDisplayPath, countLines, truncateLines, detectLang, MAX_FILE_WRITE_RENDER_LINES } from './tool-utils';
 
 	interface Props {
 		phase: 'start' | 'end';
@@ -16,14 +16,11 @@
 
 	let { phase, toolName, args, output = '', success = true, error = '', state: stateOverride }: Props = $props();
 
-	/** Claude Code: MAX_LINES_TO_RENDER = 10 — shows first 10 lines by default */
-	const MAX_LINES_TO_RENDER = 10;
-
 	let filePath = $derived((args?.path as string) ?? (args?.file_path as string) ?? '');
 	let content = $derived((args?.content as string) ?? '');
 	let displayPath = $derived(getDisplayPath(filePath));
 	let lineCount = $derived(content ? countLines(content) : 0);
-	let preview = $derived(truncateLines(content, MAX_LINES_TO_RENDER));
+	let preview = $derived(truncateLines(content, MAX_FILE_WRITE_RENDER_LINES));
 	let isTruncated = $derived(preview.remainingLines > 0);
 	let lang = $derived(detectLang(filePath));
 

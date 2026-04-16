@@ -70,24 +70,22 @@
 
 <ToolCall>
 	<ToolCallHeader {toolName} {label} {state} icon={Download} iconClass="text-teal-400" />
-	<ToolCallContent>
-		{#if phase === 'start'}
-			<div class="space-y-2 p-3">
-				<p class="text-[13px] font-mono text-foreground break-all">{url}</p>
-				{#if prompt}
-					<p class="text-[11px] text-muted-foreground">{prompt}</p>
+	{#if phase === 'start' || (phase === 'end' && error)}
+		<ToolCallContent>
+			{#if phase === 'start'}
+				<div class="space-y-2 p-3">
+					<p class="text-[13px] font-mono text-foreground break-all">{url}</p>
+					{#if prompt}
+						<p class="text-[11px] text-muted-foreground">{prompt}</p>
+					{/if}
+				</div>
+			{:else if phase === 'end'}
+				{#if error}
+					<ToolCallResult error>
+						<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all p-3 font-mono">{error}</pre>
+					</ToolCallResult>
 				{/if}
-			</div>
-		{:else if phase === 'end'}
-			{#if error}
-				<ToolCallResult error>
-					<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all p-3 font-mono">{error}</pre>
-				</ToolCallResult>
-			{:else if output}
-				<ToolCallResult>
-					<pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all bg-[#0d1117] p-3 font-mono text-zinc-300 leading-relaxed">{output}</pre>
-				</ToolCallResult>
 			{/if}
-		{/if}
-	</ToolCallContent>
+		</ToolCallContent>
+	{/if}
 </ToolCall>

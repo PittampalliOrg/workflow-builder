@@ -444,7 +444,12 @@ function deriveSandboxNameFromWorkspaceRef(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const workspaceRef = value.trim();
   if (!workspaceRef.startsWith("ws_")) return undefined;
-  return `ws-${workspaceRef.slice(3).replace(/_/g, "-").toLowerCase()}`;
+  const slug = workspaceRef
+    .slice(3)
+    .replace(/_/g, "-")
+    .toLowerCase()
+    .replace(/^-+|-+$/g, "");
+  return slug ? `ws-${slug}` : undefined;
 }
 
 function resolveSandboxName(payload: unknown): string | undefined {

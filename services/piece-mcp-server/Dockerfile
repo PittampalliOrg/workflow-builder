@@ -6,34 +6,31 @@ FROM node:22-alpine AS deps
 RUN apk add --no-cache libc6-compat python3 make g++
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
-
 # Copy package files
 COPY services/piece-mcp-server/package.json ./
 
 # Install dependencies (production only to keep image smaller)
-RUN pnpm install --prod
+RUN npm install --omit=dev
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
-
 # Copy all deps (including dev for build)
 COPY services/piece-mcp-server/package.json ./
-RUN pnpm install --prod=false
+RUN npm install
 
-# Copy source code
-COPY services/piece-mcp-server/ ./
+# Copy source code without host node_modules.
+COPY services/piece-mcp-server/build.mjs ./
+COPY services/piece-mcp-server/tsconfig.json ./
+COPY services/piece-mcp-server/src ./src
+COPY services/piece-mcp-server/ui ./ui
 
 # Set build-time environment variables
 ENV NODE_ENV=production
 
-# Build UI bundles (Vite single-file HTML) then server (esbuild)
-RUN pnpm build:all
+# Build server bundle. UI resources are optional and copied only when present.
+RUN npm run build
 
 # Stage 3: Runner
 FROM node:22-alpine AS runner

@@ -65,6 +65,7 @@ TypeScript action router.
   - route built-in system and workspace actions
   - route OpenShell-backed workspace and browser actions
   - route native durable agent actions
+  - forward `agentConfig`, `workspaceRef`, and normalized OpenShell `sandboxName` values for `durable/run`
   - route unclaimed plugin slugs to `fn-activepieces`
 
 Current route contract:
@@ -78,6 +79,12 @@ Current route contract:
 
 The function-router image can also receive a mounted registry override from the cluster. Check the live ConfigMap when runtime routing and local code disagree.
 
+For `durable/run`, `function-router` derives `sandboxName` from `workspaceRef`
+when a workflow does not pass the name explicitly. The derivation normalizes
+`ws_...` refs to OpenShell pod/sandbox names and strips accidental leading or
+trailing hyphens. This prevents refs such as `ws_abc_` from being sent to
+`dapr-agent-py` as a nonexistent sandbox named `ws-abc-`.
+
 ## dapr-agent-py
 
 Native Python Dapr agent runtime for `durable/run`.
@@ -87,8 +94,29 @@ Native Python Dapr agent runtime for `durable/run`.
   - run the native durable agent child workflow
   - bind to the OpenShell workspace identified by `workspaceRef`
   - execute the agent loop with built-in workspace tools
+  - select the LLM component per run from `agentConfig.modelSpec`, workflow metadata, or top-level `model`
+  - call OpenAI through the Responses API for OpenAI model specs
   - connect MCP servers from `agentConfig.mcpServers`
   - dispatch MCP tools and close MCP client sessions at run completion
+
+Model selection:
+
+- Default model selection still comes from `DAPR_LLM_COMPONENT_DEFAULT`.
+- `agentConfig.modelSpec` has highest priority for workflow calls.
+- `openai/gpt-5.4` and `gpt-5.4` resolve to `llm-openai-gpt5`.
+- `llm-openai-gpt5` calls OpenAI Responses API model `gpt-5.4`.
+- `openai/o3` and `o3` resolve to `llm-openai-o3`.
+- OpenAI auth uses connected OpenAI OAuth headers when present, then falls back to `OPENAI_API_KEY`.
+- `OPENAI_REASONING_EFFORT` controls Responses API reasoning effort for GPT-5 and `o` models. Use `low` for tool-heavy workflows that need frequent short tool calls; use a higher value only when slower, deeper reasoning is worth the latency.
+
+Operational evidence for model routing should come from both execution events
+and pod logs:
+
+```text
+run_started.model = llm-openai-gpt5
+llm_start.model = llm-openai-gpt5
+[openai-responses] Calling gpt-5.4 ... auth=openai-api-key
+```
 
 ## openshell-agent-runtime
 
@@ -107,8 +135,23 @@ Important behavior:
 
 - uses OpenShell sandboxes as the active sandbox substrate
 - owns workspace profile, clone, command, cleanup, and browser materialization
+- maps sandbox templates to images for specialized runtimes
 - supports retained Claude session handoff
 - runs browser validation against materialized workspace state
+
+The XLSX workflow path depends on the `dapr-agent-xlsx` sandbox template. That
+template must resolve to the custom `openshell-sandbox-xlsx` image, not the base
+OpenShell sandbox image. The image should already contain spreadsheet tooling
+such as `xlsxwriter`, `openpyxl`, and `pandas`; workflows should verify those
+packages but should not install them at runtime.
+
+Validated XLSX flow:
+
+1. `workspace/profile` creates an OpenShell workspace using `sandboxTemplate: "dapr-agent-xlsx"`.
+2. `durable/run` runs `dapr-agent-py` in that workspace and loads the `xlsx` skill.
+3. The child agent writes `/sandbox/validation-output/workbook-output.xlsx` and `/sandbox/validation-output/xlsx-local-result.json`.
+4. Deterministic parent steps validate workbook metadata and zip structure.
+5. The workbook is uploaded to OneDrive, downloaded back, and verified through Microsoft Excel workbook, worksheet, and range reads.
 
 ## dapr-swe
 

@@ -3,7 +3,7 @@
 	import SandboxCodeViewer from '$lib/components/sandbox/sandbox-code-viewer.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import Terminal from 'lucide-svelte/icons/terminal';
-	import { truncateCommand, extractExitCode, truncateLines } from './tool-utils';
+	import { truncateCommand, extractExitCode, truncateLines, MAX_OUTPUT_COLLAPSED_LINES } from './tool-utils';
 
 	interface Props {
 		phase: 'start' | 'end';
@@ -23,9 +23,7 @@
 	let exitCode = $derived(parsed.exitCode);
 	let cleanOutput = $derived(parsed.cleanOutput);
 
-	/** Claude Code shows 3 lines collapsed (MAX_LINES_TO_SHOW in BashToolResultMessage) */
-	const MAX_COLLAPSED_LINES = 3;
-	let preview = $derived(truncateLines(cleanOutput, MAX_COLLAPSED_LINES));
+	let preview = $derived(truncateLines(cleanOutput, MAX_OUTPUT_COLLAPSED_LINES));
 	let isTruncated = $derived(preview.remainingLines > 0);
 
 	let state = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));

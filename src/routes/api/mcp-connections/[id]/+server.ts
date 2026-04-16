@@ -1,55 +1,21 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { appConnections, mcpConnections } from '$lib/server/db/schema';
-import { AppConnectionStatus } from '$lib/server/types/app-connection';
-import { and, eq, inArray } from 'drizzle-orm';
-
-function normalizePieceName(value: string | null | undefined): string {
-	return (value || '')
-		.trim()
-		.toLowerCase()
-		.replace(/^@activepieces\/piece-/, '')
-		.replace(/[_\s]+/g, '-')
-		.replace(/-+/g, '-');
-}
-
-function pieceCandidates(value: string | null | undefined): string[] {
-	const normalized = normalizePieceName(value);
-	if (!normalized) return [];
-	return [normalized, `@activepieces/piece-${normalized}`];
-}
-
-async function validateConnectionBinding(pieceName: string | null, externalId: unknown) {
-	const value = typeof externalId === 'string' ? externalId.trim() : '';
-	if (!value) return null;
-	const candidates = pieceCandidates(pieceName);
-	if (candidates.length === 0) {
-		throw error(400, 'connectionExternalId can only be set for a piece MCP connection');
-	}
-	const [connection] = await db
-		.select({ externalId: appConnections.externalId })
-		.from(appConnections)
-		.where(
-			and(
-				eq(appConnections.externalId, value),
-				eq(appConnections.status, AppConnectionStatus.ACTIVE),
-				inArray(appConnections.pieceName, candidates)
-			)
-		)
-		.limit(1);
-	if (!connection) {
-		throw error(400, 'connectionExternalId must reference an active app connection for the same piece');
-	}
-	return value;
-}
+import { mcpConnections } from '$lib/server/db/schema';
+import { and, eq } from 'drizzle-orm';
+import {
+	requireSessionProjectId,
+	validateMcpCredentialBinding
+} from '$lib/server/mcp-connections';
 
 /**
  * POST /api/mcp-connections/[id] (status update)
  * Toggle enable/disable status.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.session?.userId) return error(401, 'Unauthorized');
+	const projectId = requireSessionProjectId(locals);
+	const userId = locals.session?.userId;
+	if (!userId) return error(401, 'Unauthorized');
 	if (!db) return error(500, 'Database not available');
 
 	const { id } = params;
@@ -60,11 +26,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		return error(400, 'status must be ENABLED or DISABLED');
 	}
 
-	const [existing] = await db.select().from(mcpConnections).where(eq(mcpConnections.id, id)).limit(1);
+	const [existing] = await db
+		.select()
+		.from(mcpConnections)
+		.where(and(eq(mcpConnections.id, id), eq(mcpConnections.projectId, projectId)))
+		.limit(1);
 	if (!existing) return error(404, 'Connection not found');
 
 	const updates: Partial<typeof mcpConnections.$inferInsert> = {
-		updatedBy: locals.session.userId,
+		updatedBy: userId,
 		updatedAt: new Date()
 	};
 
@@ -73,7 +43,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		if (existing.sourceType !== 'nimble_piece') {
 			return error(400, 'connectionExternalId can only be set for piece MCP connections');
 		}
-		updates.connectionExternalId = await validateConnectionBinding(
+		updates.connectionExternalId = await validateMcpCredentialBinding(
+			db,
+			projectId,
 			existing.pieceName,
 			body.connectionExternalId
 		);
@@ -82,7 +54,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const [conn] = await db
 		.update(mcpConnections)
 		.set(updates)
-		.where(eq(mcpConnections.id, id))
+		.where(and(eq(mcpConnections.id, id), eq(mcpConnections.projectId, projectId)))
 		.returning();
 
 	return json(conn);
@@ -93,17 +65,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
  * Remove an MCP connection.
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.session?.userId) return error(401, 'Unauthorized');
+	const projectId = requireSessionProjectId(locals);
 	if (!db) return error(500, 'Database not available');
 
 	const { id } = params;
 
 	// Don't allow deleting hosted_workflow connections
-	const [existing] = await db.select().from(mcpConnections).where(eq(mcpConnections.id, id)).limit(1);
+	const [existing] = await db
+		.select()
+		.from(mcpConnections)
+		.where(and(eq(mcpConnections.id, id), eq(mcpConnections.projectId, projectId)))
+		.limit(1);
+	if (!existing) return error(404, 'Connection not found');
 	if (existing?.sourceType === 'hosted_workflow') {
 		return error(400, 'Cannot delete hosted workflow connections');
 	}
 
-	await db.delete(mcpConnections).where(eq(mcpConnections.id, id));
+	await db
+		.delete(mcpConnections)
+		.where(and(eq(mcpConnections.id, id), eq(mcpConnections.projectId, projectId)));
 	return json({ success: true });
 };

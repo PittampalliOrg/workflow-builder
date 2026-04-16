@@ -53,6 +53,7 @@
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
+	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import PlanReview from '$lib/components/workflow/execution/plan-review.svelte';
@@ -648,7 +649,7 @@
 		labeled: LabeledEdge
 	} satisfies EdgeTypes;
 
-	// Auto-scroll is now handled by ChatContainerRoot (prompt-kit)
+	// Timeline auto-scroll is handled inside the ChatContainerRoot context.
 
 	$effect(() => {
 		if (!selectedAgentRunId && selectedAgentRun) {
@@ -1424,6 +1425,11 @@
 
 				<div class="relative flex-1 overflow-hidden">
 					<ChatContainerRoot class="h-full overflow-y-auto p-4">
+						<TimelineAutoScroll
+							active={activeTab === 'timeline'}
+							itemCount={timelineItems.length}
+							{executionId}
+						/>
 					{#if timelineItems.length > 0}
 						<ChatContainerContent class="space-y-3">
 							{#each timelineItems as item, i (item.key)}

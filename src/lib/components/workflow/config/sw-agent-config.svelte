@@ -973,6 +973,7 @@
 					onchange={(event) => updateSandboxPolicy({ template: event.currentTarget.value })}
 				>
 					<option value="dapr-agent">dapr-agent</option>
+					<option value="dapr-agent-xlsx">dapr-agent-xlsx (xlsx)</option>
 					<option value="openshell-browser">openshell-browser</option>
 					<option value="dapr-agent-py-testing">dapr-agent-py-testing</option>
 				</NativeSelect>

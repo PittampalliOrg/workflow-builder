@@ -15,7 +15,8 @@
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
 		"db:push": "drizzle-kit push",
-		"db:studio": "drizzle-kit studio"
+		"db:studio": "drizzle-kit studio",
+		"sync-oauth-apps": "tsx scripts/sync-oauth-apps.ts"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.12.0",
@@ -43,6 +44,7 @@
 		"svelte-check": "^4.4.2",
 		"svelte-sonner": "^1.1.0",
 		"tailwindcss": "^4.0.0",
+		"tsx": "^4.21.0",
 		"typescript": "^5.9.3",
 		"vite": "^7.3.1",
 		"vitest": "^4.0.0"
