@@ -88,8 +88,22 @@ def _resolve_hooks_field(
             errors.append(f"hooks path escapes plugin root: {raw!r}")
             return HooksSettings()
         data = _read_json(target)
+        if isinstance(data, dict) and "hooks" in data and isinstance(data["hooks"], dict):
+            data = data["hooks"]
         return HooksSettings.from_raw(data)
     if isinstance(raw, dict):
+        # hooks/hooks.json may wrap the event map under a "hooks" key alongside
+        # metadata like "description". Unwrap if the outer dict isn't already an
+        # event-keyed map.
+        if "hooks" in raw and isinstance(raw["hooks"], dict) and not any(
+            k in raw
+            for k in (
+                "PreToolUse", "PostToolUse", "PostToolUseFailure",
+                "UserPromptSubmit", "SessionStart", "SessionEnd",
+                "Stop", "Notification",
+            )
+        ):
+            return HooksSettings.from_raw(raw["hooks"])
         return HooksSettings.from_raw(raw)
     errors.append(f"unsupported hooks field shape: {type(raw).__name__}")
     return HooksSettings()
@@ -156,9 +170,13 @@ def _load_one(plugin_dir: Path) -> Optional[LoadedPlugin]:
     errors: list[str] = []
     hooks_settings = _resolve_hooks_field(manifest.hooks, plugin_dir, errors)
     # Conventional hooks/hooks.json — merged if present.
+    # TS format wraps HooksSettings under a top-level "hooks" key alongside
+    # "description" and other metadata. Unwrap if present.
     conv = plugin_dir / "hooks" / "hooks.json"
     if conv.exists():
         conv_raw = _read_json(conv)
+        if isinstance(conv_raw, dict) and "hooks" in conv_raw and isinstance(conv_raw["hooks"], dict):
+            conv_raw = conv_raw["hooks"]
         conv_hooks = HooksSettings.from_raw(conv_raw)
         for event, matchers in conv_hooks.root.items():
             hooks_settings.root.setdefault(event, []).extend(matchers)
