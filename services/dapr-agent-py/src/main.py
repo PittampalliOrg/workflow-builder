@@ -1814,15 +1814,17 @@ class OpenShellDurableAgent(DurableAgent):
             self._close_mcp_client(instance_id)
             raise
         finally:
+            # NOTE: finally fires on every Dapr orchestrator replay yield-point,
+            # not just on true workflow completion. We used to pop per-instance
+            # caches here, but that erased per-run hook snapshots + compaction
+            # config BEFORE the next activity could read them. Leave the caches
+            # intact; each replay's install/resolve block rewrites the entries
+            # idempotently, so the memory footprint is bounded by the number of
+            # concurrently-live workflow instances.
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
             self.profile.system_prompt = previous_system_prompt
             skill_registry.clear_instance_skills()
-            _clear_hook_snapshot(self, instance_id)
-            self._cwd_by_instance.pop(instance_id, None)
-            self._compaction_cfg_by_instance.pop(instance_id, None)
-            self._compaction_call_count_by_instance.pop(instance_id, None)
-            self._compaction_runs_by_instance.pop(instance_id, None)
 
 
 # ---------------------------------------------------------------------------
