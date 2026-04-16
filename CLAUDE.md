@@ -6,6 +6,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > - `docs/activepieces-auth.md` — AP auth/connection system details
 > - `docs/activepieces-integration-implementation.md` — AP integration implementation
 > - `docs/mcp-agent-workflows.md` - MCP-enabled `dapr-agent-py` workflow method
+> - `docs/hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins subsystem (Claude Code port)
 > - `docs/CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
 > - `docs/openshell-capabilities.md` — OpenShell sandbox capabilities
 
@@ -211,6 +212,17 @@ For UI-runnable agent workflows, use SW 1.0 `durable/run` with `agentConfig.mcpS
 
 MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in `components/mcp-chat/tool-widget.tsx`).
 
+## Hooks + Plugins (dapr-agent-py)
+
+Port of Claude Code's hooks + plugins extension surface into the Python Dapr agent. Feature-flagged on both deployments via `DAPR_AGENT_PY_HOOKS_ENABLED=true` + `DAPR_AGENT_PY_PLUGINS_ENABLED=true`; plugin files ship via a `fetch-claude-plugins` init container that clones `anthropics/claude-plugins-official` into `/etc/dapr-agent-py/plugins`.
+
+- **Events fired v1**: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd, Stop, Notification (other 18 TS events declared for manifest round-trip but not emitted)
+- **Hook types v1**: `command` (subprocess JSON stdin/stdout, exit-code 2 = blocking) + `callback` (in-process Python); http/prompt/agent parsed but not executed
+- **Per-run overlay**: workflow `durable/run.with.agentConfig.hooks` (inline HooksSettings) + `agentConfig.plugins` (plugin IDs) layered on the startup registry — mirrors how `mcpServers` already works
+- **Durability**: PreToolUse/PostToolUse/PostToolUseFailure fire inside the durable `run_tool` activity. Session-level events fire in the workflow function gated by `not ctx.is_replaying` (same pattern as existing PLAN.md injection)
+
+> See `docs/hooks-and-plugins.md` for events, matcher syntax, settings cascade, plugin manifest shape, and Dapr durability trade-offs.
+
 ## Activepieces Integration
 
 - Credentials: AES-256-CBC encrypted at rest in `app_connections` table
@@ -252,5 +264,5 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 
 ---
 
-**Last Updated**: 2026-04-13
-**Status**: Production-ready SvelteKit app with OpenTelemetry observability, OpenShell sandbox execution, `dapr-agent-py` durable agent runs, and MCP-enabled agent workflows
+**Last Updated**: 2026-04-16
+**Status**: Production-ready SvelteKit app with OpenTelemetry observability, OpenShell sandbox execution, `dapr-agent-py` durable agent runs with Claude Code-compatible hooks + plugins subsystem, and MCP-enabled agent workflows

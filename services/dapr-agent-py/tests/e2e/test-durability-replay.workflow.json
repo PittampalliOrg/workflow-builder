@@ -1,0 +1,55 @@
+{
+  "id": "test-durability-replay",
+  "name": "Test — dapr durability replay",
+  "description": "Paced multi-tool workflow used to validate child agent workflow durability. Agent runs three separate bash commands with sleep between them so there's a reliable 30-60s window to kill a pod mid-run. Each bash call creates + appends a marker file. After replay the final file must contain every marker exactly once (activities cached by Dapr; not re-executed on replay).",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "test-durability-replay",
+      "version": "1.0.0",
+      "title": "Durability replay probe",
+      "summary": "Three sequential bash steps with sleep padding; used for pod-kill replay testing.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Prompt",
+          "promptPlaceholder": "(optional) any input — the workflow is fully instructed"
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "test-durability-replay",
+            "rootPath": "/sandbox/durability-test",
+            "commandTimeoutMs": 120000,
+            "timeoutMs": 300000,
+            "enabledTools": ["execute_command", "read_file", "write_file", "list_files", "mkdir"]
+          }
+        }
+      },
+      {
+        "durable_run_paced": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "cwd": "/sandbox/durability-test",
+            "agentRuntime": "dapr-agent-py",
+            "maxTurns": 10,
+            "timeoutMinutes": 10,
+            "stopCondition": "Stop only after trace.txt exists and contains exactly three lines matching marker-1, marker-2, marker-3 in order.",
+            "prompt": "Four-step paced task. Run each command separately and wait for its output before issuing the next:\n\n1. Run `sleep 30 && echo marker-1 > trace.txt && cat trace.txt`\n2. Run `sleep 30 && echo marker-2 >> trace.txt && cat trace.txt`\n3. Run `sleep 30 && echo marker-3 >> trace.txt && cat trace.txt`\n4. Run `sleep 30 && echo marker-4 >> trace.txt && cat trace.txt`\n\nAfter step 4, respond with the final contents of trace.txt. Do not batch the commands into one tool call — they must be four separate Bash invocations so each commits an activity result to Dapr state.",
+            "agentConfig": {
+              "modelSpec": "claude-sonnet-4-6"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

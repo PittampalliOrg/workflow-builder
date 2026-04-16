@@ -98,6 +98,13 @@ Native Python Dapr agent runtime for `durable/run`.
   - call OpenAI through the Responses API for OpenAI model specs
   - connect MCP servers from `agentConfig.mcpServers`
   - dispatch MCP tools and close MCP client sessions at run completion
+  - load hooks + plugins from the settings cascade + `DAPR_AGENT_PY_PLUGIN_PATHS` at boot (feature-flagged, off by default)
+  - fire PreToolUse / PostToolUse / PostToolUseFailure inside the durable `run_tool` activity and SessionStart / UserPromptSubmit / Stop / SessionEnd in the workflow function
+  - accept per-run `agentConfig.hooks` and `agentConfig.plugins` overlays from the trigger message (parallel to `mcpServers` and `skills`)
+
+See `docs/hooks-and-plugins.md` for the full hook/plugin reference —
+events fired, matcher syntax, settings cascade, plugin manifest shape,
+per-run overlay, and Dapr durability semantics for hook execution.
 
 Model selection:
 

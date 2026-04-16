@@ -98,6 +98,26 @@ dapr-agent-xlsx -> gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox-xl
 That sandbox image should contain spreadsheet dependencies in the image. Do not
 rely on runtime package installation inside the agent workflow.
 
+For hooks + plugins support, the `dapr-agent-py` and
+`dapr-agent-py-testing` Deployments set:
+
+```yaml
+env:
+  - name: DAPR_AGENT_PY_HOOKS_ENABLED
+    value: "true"
+  - name: DAPR_AGENT_PY_PLUGINS_ENABLED
+    value: "true"
+  - name: DAPR_AGENT_PY_PLUGIN_PATHS
+    value: "/etc/dapr-agent-py/plugins"
+```
+
+plus a `fetch-claude-plugins` init container that sparse-clones
+`anthropics/claude-plugins-official` into an `emptyDir` volume and
+installs the `security-guidance` + `hookify` plugins into
+`/etc/dapr-agent-py/plugins`, mounted read-only in the main container.
+Rolling the Deployment fetches any upstream plugin updates. Full
+reference in `docs/hooks-and-plugins.md`.
+
 ## Validation Checklist
 
 After a real rollout, verify:
@@ -118,6 +138,13 @@ Additional checks for GPT-5.4 and XLSX workflows:
 5. the child agent package check reports `xlsxwriter: true` and `openpyxl: true`
 6. the workflow writes `/sandbox/validation-output/workbook-output.xlsx` and `/sandbox/validation-output/xlsx-local-result.json`
 7. parent steps complete metadata validation, OneDrive upload/download, and Excel workbook/worksheet/range readback
+
+Additional checks for hooks + plugins rollout:
+
+1. `dapr-agent-py` pod init container `fetch-claude-plugins` logs `[plugins] installed security-guidance` and `[plugins] installed hookify`
+2. main container logs `[plugins] loaded hookify v0.1.0 (4 hook events, 0 mcp servers)` and `[plugins] loaded security-guidance v0.1.0 (1 hook events, 0 mcp servers)`
+3. main container logs `[hooks] registered: {'PreToolUse': 2, 'PostToolUse': 1, 'Stop': 1, 'UserPromptSubmit': 1}`
+4. the three plugin test workflows (`test-plugin-security-guidance`, `test-plugin-hookify`, `test-plugin-block-bash`) complete with expected hook behavior — see `services/dapr-agent-py/tests/e2e/README.md`
 
 ## Operational Notes
 
