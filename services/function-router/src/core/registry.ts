@@ -43,6 +43,11 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
   "workspace/*": { appId: "workspace-runtime", type: "knative" },
+  // AP piece routing is cross-cutting: if the mounted ConfigMap is missing
+  // _default (or not mounted at all), every AP action would fall through to
+  // the throw-on-unknown branch. Defense-in-depth — belt and suspenders with
+  // the ConfigMap's _default entry.
+  _default: { appId: "fn-activepieces", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;
