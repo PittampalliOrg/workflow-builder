@@ -232,6 +232,13 @@
 			"when": 1776902400000,
 			"tag": "0033_drop_workspace_change_artifacts",
 			"breakpoints": true
+		},
+		{
+			"idx": 33,
+			"version": "7",
+			"when": 1776906000000,
+			"tag": "0034_migrate_durable_agent_runtime",
+			"breakpoints": true
 		}
 	]
 }
