@@ -68,10 +68,18 @@ export async function appendEvent(
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence — someone else won the race. Retry.
-			if (
-				err instanceof Error &&
-				err.message.includes("uq_session_event_sequence")
-			) {
+			// Drizzle wraps the pg error, so check both the wrapper message and
+			// the underlying pg error code (23505 = unique_violation).
+			const maybePgErr = err as { code?: string; cause?: unknown; message?: string };
+			const causeErr = maybePgErr?.cause as { code?: string; message?: string } | undefined;
+			const isUniqueViolation =
+				maybePgErr?.code === "23505" ||
+				causeErr?.code === "23505" ||
+				(typeof maybePgErr?.message === "string" &&
+					maybePgErr.message.includes("uq_session_event_sequence")) ||
+				(typeof causeErr?.message === "string" &&
+					causeErr.message.includes("uq_session_event_sequence"));
+			if (isUniqueViolation) {
 				continue;
 			}
 			throw err;
