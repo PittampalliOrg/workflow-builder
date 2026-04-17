@@ -52,7 +52,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
     Returns a dict matching ``/api/internal/sessions/ensure-for-workflow``:
         { sessionId, agentId, agentVersion, childInput, reused }
     """
-    with start_activity_span("spawn_session_for_workflow"):
+    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else None
+    with start_activity_span("activity.spawn_session_for_workflow", otel):
         workflow_builder_url = os.environ.get(
             "WORKFLOW_BUILDER_URL",
             "http://workflow-builder.workflow-builder.svc.cluster.local:3000",

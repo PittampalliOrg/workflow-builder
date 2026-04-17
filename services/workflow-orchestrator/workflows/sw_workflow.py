@@ -1183,6 +1183,7 @@ def _run_native_durable_agent_child_workflow(
             "vaultIds": child_input.get("vaultIds") or [],
             "initialMessage": run_prompt or prompt,
             "title": f"Workflow {tc.workflow_id} · {task_name}",
+            "_otel": tc.otel_ctx,
         }
         bridge_result = yield ctx.call_activity(
             spawn_session_for_workflow, input=_freeze(bridge_payload)
