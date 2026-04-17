@@ -226,6 +226,21 @@ CHECKPOINT_SCRIPT = dedent(
     repo.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("GIT_SSL_NO_VERIFY", "true")
 
+    CHANGED_FILES_CAP = 200
+
+    def cap_files(files):
+        total = len(files)
+        if total <= CHANGED_FILES_CAP:
+            return files, total
+        truncated = files[:CHANGED_FILES_CAP]
+        truncated.append({
+            "status": "truncated",
+            "count": total - CHANGED_FILES_CAP,
+            "path": None,
+            "previousPath": None,
+        })
+        return truncated, total
+
     def add_no_proxy_hosts():
         hosts = [
             "gitea-http",
@@ -493,6 +508,97 @@ CHECKPOINT_SCRIPT = dedent(
             run_git_with_lock_retry(["git", "commit", "--allow-empty", "-m", "checkpoint: initial empty workspace"], check=True, timeout=20)
 
         before = run(["git", "rev-parse", "HEAD"], check=True, timeout=10).stdout.strip()
+
+        # Idempotency on activity retry: if the durable ref for this
+        # (executionId, toolCallId) already exists locally, a prior attempt
+        # of this same Dapr activity already committed. The tool's effect on
+        # the working tree has already been folded into that commit, so
+        # `git status` would now report no_changes and we would lose the
+        # original changedFiles list. Reconstruct the metadata from the
+        # existing commit and skip straight to the (idempotent) push.
+        existing_ref_name = None
+        existing_after = None
+        if payload.get("executionId") and payload.get("toolCallId"):
+            existing_ref_name = f"refs/workflow-builder/checkpoints/{payload['executionId']}/{payload['toolCallId']}"
+            ref_check = run(["git", "rev-parse", "--verify", existing_ref_name], timeout=10)
+            if ref_check.returncode == 0 and ref_check.stdout.strip():
+                existing_after = ref_check.stdout.strip()
+
+        if existing_after:
+            parent = run(["git", "rev-parse", f"{existing_after}^"], timeout=10)
+            before_existing = parent.stdout.strip() if parent.returncode == 0 else existing_after
+            files = []
+            name_status = run(["git", "diff", "--name-status", "--find-renames", before_existing, existing_after], timeout=30).stdout
+            numstat = run(["git", "diff", "--numstat", before_existing, existing_after], timeout=30).stdout
+            stats_by_path = {}
+            for line in numstat.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    path = parts[-1]
+                    additions = None if parts[0] == "-" else int(parts[0])
+                    deletions = None if parts[1] == "-" else int(parts[1])
+                    stats_by_path[path] = {
+                        "additions": additions,
+                        "deletions": deletions,
+                        "binary": parts[0] == "-" or parts[1] == "-",
+                    }
+            for line in name_status.splitlines():
+                parts = line.split("\t")
+                if not parts:
+                    continue
+                status_code = parts[0]
+                if status_code.startswith("R") and len(parts) >= 3:
+                    previous_path = parts[1]
+                    path = parts[2]
+                else:
+                    previous_path = None
+                    path = parts[-1] if len(parts) >= 2 else ""
+                if not path:
+                    continue
+                item = {
+                    "path": path,
+                    "status": status_code,
+                    "previousPath": previous_path,
+                }
+                item.update(stats_by_path.get(path, {}))
+                files.append(item)
+
+            remote_result = {
+                "remoteStatus": "skipped",
+                "remoteError": "remote ref unavailable",
+                "remoteUrl": None,
+                "remoteRef": existing_ref_name,
+                "remotePushedAt": None,
+            }
+            try:
+                remote_result = push_checkpoint_ref(payload.get("remote") or {}, existing_ref_name, existing_after)
+            except Exception as remote_exc:
+                remote = payload.get("remote") or {}
+                remote_result = {
+                    "remoteStatus": "error",
+                    "remoteError": str(remote_exc)[:1000],
+                    "remoteUrl": remote.get("remoteUrl") or None,
+                    "remoteRef": existing_ref_name,
+                    "remotePushedAt": None,
+                }
+
+            capped_files, total_files = cap_files(files)
+            emit({
+                "status": "created",
+                "beforeSha": before_existing,
+                "afterSha": existing_after,
+                **remote_result,
+                "changedFiles": capped_files,
+                "fileCount": total_files,
+                "metadata": {
+                    "createdBy": "dapr-agent-py",
+                    "gitRef": existing_ref_name,
+                    "retried": True,
+                    "truncated": total_files > CHANGED_FILES_CAP,
+                },
+            })
+            raise SystemExit(0)
+
         status = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], timeout=20)
         if not status.stdout:
             emit({
@@ -598,13 +704,19 @@ CHECKPOINT_SCRIPT = dedent(
                     "remotePushedAt": None,
                 }
 
+        capped_files, total_files = cap_files(files)
         emit({
             "status": "created",
             "beforeSha": before,
             "afterSha": after,
             **remote_result,
-            "changedFiles": files,
-            "fileCount": len(files),
+            "changedFiles": capped_files,
+            "fileCount": total_files,
+            "metadata": {
+                "createdBy": "dapr-agent-py",
+                "gitRef": ref_name,
+                "truncated": total_files > CHANGED_FILES_CAP,
+            },
         })
     except Exception as exc:
         emit({
