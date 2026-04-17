@@ -105,14 +105,6 @@ export function getFunctionRouterUrl(): string {
   return raw;
 }
 
-/** Get the durable agent base URL */
-export function getDurableAgentUrl(): string {
-  return (
-    env.DURABLE_AGENT_URL ||
-    "http://durable-agent.workflow-builder.svc.cluster.local:8001"
-  );
-}
-
 /** Get the workspace runtime base URL */
 export function getWorkspaceRuntimeUrl(): string {
   return (
@@ -172,11 +164,6 @@ export function getWorkflowCapableServices(): WorkflowServiceDescriptor[] {
       id: "workflow-orchestrator",
       getBaseUrl: getOrchestratorUrl,
       introspectPath: "/api/v2/runtime/introspect",
-    },
-    {
-      id: "durable-agent",
-      getBaseUrl: getDurableAgentUrl,
-      introspectPath: "/api/runtime/introspect",
     },
     {
       id: "workspace-runtime",

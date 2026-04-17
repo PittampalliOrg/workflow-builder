@@ -13,7 +13,7 @@ Usage:
     from core.config import config
 
     # Access values
-    durable_id = config.DURABLE_AGENT_APP_ID
+    agent_id = config.DAPR_AGENT_PY_APP_ID
     dapr_host = config.DAPR_HOST
 """
 
@@ -51,7 +51,6 @@ class OrchestratorConfig:
 
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
-    DURABLE_AGENT_APP_ID: str = "durable-agent"
     WORKSPACE_RUNTIME_APP_ID: str = "workspace-runtime"
     DAPR_AGENT_PY_APP_ID: str = "dapr-agent-py"
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
@@ -85,8 +84,8 @@ class OrchestratorConfig:
         logger.info(
             f"[Config] Loaded (dapr={self._loaded_from_dapr}): "
             f"FUNCTION_ROUTER_APP_ID={self.FUNCTION_ROUTER_APP_ID}, "
-            f"DURABLE_AGENT_APP_ID={self.DURABLE_AGENT_APP_ID}, "
             f"WORKSPACE_RUNTIME_APP_ID={self.WORKSPACE_RUNTIME_APP_ID}, "
+            f"DAPR_AGENT_PY_APP_ID={self.DAPR_AGENT_PY_APP_ID}, "
             f"PUBSUB_NAME={self.PUBSUB_NAME}"
         )
 
@@ -97,7 +96,6 @@ class OrchestratorConfig:
 
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
-                "DURABLE_AGENT_APP_ID",
                 "WORKSPACE_RUNTIME_APP_ID",
                 "DAPR_AGENT_PY_APP_ID",
                 "DAPR_AGENT_PY_TESTING_APP_ID",
@@ -155,7 +153,6 @@ class OrchestratorConfig:
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
-            "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
             "WORKSPACE_RUNTIME_APP_ID": (
                 "WORKSPACE_RUNTIME_APP_ID",
                 "workspace-runtime",

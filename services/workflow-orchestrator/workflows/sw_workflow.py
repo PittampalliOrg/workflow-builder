@@ -538,16 +538,6 @@ _NATIVE_DURABLE_AGENT_TARGETS = {
         "app_id": config.DAPR_AGENT_PY_APP_ID,
         "instance_prefix": "durable",
     },
-    "durable-agent": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.DURABLE_AGENT_APP_ID,
-        "instance_prefix": "durable",
-    },
-    "openshell-durable-agent": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.DURABLE_AGENT_APP_ID,
-        "instance_prefix": "durable",
-    },
     "dapr-agent-py-testing": {
         "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
         "app_id": config.DAPR_AGENT_PY_TESTING_APP_ID,

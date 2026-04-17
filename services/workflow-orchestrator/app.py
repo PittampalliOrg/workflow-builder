@@ -2779,7 +2779,7 @@ def get_runtime_introspection():
                 "swWorkflowVersion": "1.0.0",
                 "stateStoreName": config.STATE_STORE_NAME,
                 "pubsubName": config.PUBSUB_NAME,
-                "durableAgentAppId": config.DURABLE_AGENT_APP_ID,
+                "daprAgentPyAppId": config.DAPR_AGENT_PY_APP_ID,
                 "workspaceRuntimeAppId": config.WORKSPACE_RUNTIME_APP_ID,
             },
         },

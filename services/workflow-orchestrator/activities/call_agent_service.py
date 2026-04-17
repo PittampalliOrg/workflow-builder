@@ -1,8 +1,16 @@
 """
 Call Agent Service Activities
 
-Activities that call durable-agent to run agent actions
-as durable Dapr workflows and report completion via pub/sub external events.
+Activities that call agent services (dapr-agent-py, claude-code-agent) to run
+agent actions as durable Dapr workflows and report completion via pub/sub.
+Also hosts workspace-runtime cleanup + sandbox profile helpers.
+
+Historical note: the file name refers to the now-decommissioned TS
+durable-agent service. The live agent runtime is dapr-agent-py, dispatched
+as a Dapr child workflow from sw_workflow.py rather than via this module.
+The remaining functions that reference durable-agent are retained as dead
+code for one release so external callers (if any) fail loudly rather than
+silently; they will be removed after the follow-up cleanup commit.
 """
 
 from __future__ import annotations
@@ -23,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
-DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
 WORKSPACE_RUNTIME_APP_ID = config.WORKSPACE_RUNTIME_APP_ID
 DAPR_AGENT_PY_APP_ID = config.DAPR_AGENT_PY_APP_ID
 DAPR_AGENT_PY_TESTING_APP_ID = config.DAPR_AGENT_PY_TESTING_APP_ID
@@ -151,11 +158,9 @@ def _agent_runtime_from_payload(input_data: dict) -> str:
 
 def _durable_agent_app_id(input_data: dict) -> str:
     runtime = _agent_runtime_from_payload(input_data)
-    if runtime == "dapr-agent-py":
-        return DAPR_AGENT_PY_APP_ID
     if runtime == "dapr-agent-py-testing":
         return DAPR_AGENT_PY_TESTING_APP_ID
-    return DURABLE_AGENT_APP_ID
+    return DAPR_AGENT_PY_APP_ID
 
 
 def _load_sandbox_profile_catalog() -> dict[str, dict[str, object]]:
@@ -333,9 +338,10 @@ def terminate_durable_runs_by_parent_execution(
     """
     Terminate active durable agent runs belonging to a parent workflow execution.
 
-    SW 1.0 durable/run can target either the Python durable-agent or the custom
-    claude-code-agent harness. Parent cancellation must clean up both runtimes so
-    retry and timeout paths do not leave orphaned child workflows.
+    SW 1.0 durable/run targets dapr-agent-py (via child workflow) or the custom
+    claude-code-agent harness. Parent cancellation fans out to claude-code-agent
+    here; dapr-agent-py child workflows are terminated natively via
+    ctx.call_child_workflow's parent-child bond.
     """
     parent_execution_id = str(parent_execution_id or "").strip()
     if not parent_execution_id:
@@ -347,7 +353,6 @@ def terminate_durable_runs_by_parent_execution(
         "cleanupWorkspace": cleanup_workspace,
     }
     agents = {
-        "durable-agent": DURABLE_AGENT_APP_ID,
         "claude-code-agent": CLAUDE_CODE_AGENT_APP_ID,
     }
     results: dict[str, dict] = {}
@@ -444,208 +449,6 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
-def call_durable_plan(ctx, input_data: dict) -> dict:
-    """
-    Generate a structured plan on durable-agent service.
-    """
-    otel = input_data.get("_otel") or {}
-    planning_backend = str(input_data.get("planningBackend") or "").strip().lower()
-    action_type = "durable/claude-plan" if planning_backend == "claude_code_v1" else "durable/plan"
-    attrs = {
-        "action.type": action_type,
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-        "workflow.id": input_data.get("workflowId") or "",
-        "node.id": input_data.get("nodeId") or "",
-        "node.name": input_data.get("nodeName") or "",
-    }
-
-    with start_activity_span("activity.call_durable_plan", otel, attrs):
-        try:
-            timeout_minutes_raw = input_data.get("timeoutMinutes", 10)
-            try:
-                timeout_minutes = int(timeout_minutes_raw or 10)
-            except (TypeError, ValueError):
-                timeout_minutes = 10
-            if timeout_minutes <= 0:
-                timeout_minutes = 10
-            # Planning is synchronous and can run multiple turns; keep the activity
-            # timeout aligned with configured planning budget plus a small buffer.
-            planning_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 3600)
-
-            payload = {
-                "prompt": input_data.get("prompt", ""),
-                "cwd": input_data.get("cwd", ""),
-                "workspaceRef": input_data.get("workspaceRef", ""),
-                "model": input_data.get("model"),
-                "maxTurns": input_data.get("maxTurns"),
-                "timeoutMinutes": timeout_minutes,
-                "planningBackend": input_data.get("planningBackend"),
-                "instructions": input_data.get("instructions"),
-                "tools": input_data.get("tools"),
-                "loopPolicy": input_data.get("loopPolicy"),
-                "contextPolicyPreset": input_data.get("contextPolicyPreset"),
-                "agentConfig": input_data.get("agentConfig"),
-                "parentExecutionId": input_data.get("parentExecutionId", ""),
-                "executionId": input_data.get("executionId", "")
-                or input_data.get("dbExecutionId", ""),
-                "dbExecutionId": input_data.get("dbExecutionId", ""),
-                "workflowId": input_data.get("workflowId", ""),
-                "nodeId": input_data.get("nodeId", ""),
-                "nodeName": input_data.get("nodeName", ""),
-            }
-            return _dapr_invoke_or_raise(
-                DURABLE_AGENT_APP_ID,
-                "api/plan",
-                payload,
-                timeout=planning_timeout_seconds,
-                service_label="Durable plan",
-            )
-        except Exception as e:
-            logger.error(f"[Call Durable Plan] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
-def call_durable_execute_plan(ctx, input_data: dict) -> dict:
-    """
-    Start a plan execution on durable-agent service.
-
-    Expected input_data:
-      - prompt: str
-      - planJson: dict | str (the plan object with steps)
-      - cwd: str (working directory)
-      - parentExecutionId: str (Dapr parent workflow instance id)
-      - workflowId: str (workflow definition id)
-      - nodeId: str (agent node id)
-      - nodeName: str (agent node label)
-    """
-    otel = input_data.get("_otel") or {}
-    attrs = {
-        "action.type": "durable/execute-plan",
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-        "workflow.id": input_data.get("workflowId") or "",
-        "node.id": input_data.get("nodeId") or "",
-        "node.name": input_data.get("nodeName") or "",
-    }
-
-    plan = input_data.get("planJson") or input_data.get("plan")
-    if isinstance(plan, str):
-        import json as _json
-        try:
-            plan = _json.loads(plan)
-        except Exception:
-            pass
-
-    with start_activity_span("activity.call_durable_execute_plan", otel, attrs):
-        try:
-            payload = {
-                "prompt": input_data.get("prompt", ""),
-                "plan": plan,
-                "artifactRef": input_data.get("artifactRef", ""),
-                "cwd": input_data.get("cwd", ""),
-                "model": input_data.get("model"),
-                "instructions": input_data.get("instructions"),
-                "tools": input_data.get("tools"),
-                "agentConfig": input_data.get("agentConfig"),
-                "cleanupWorkspace": input_data.get("cleanupWorkspace"),
-                "requireFileChanges": input_data.get("requireFileChanges"),
-                "loopPolicy": input_data.get("loopPolicy"),
-                "contextPolicyPreset": input_data.get("contextPolicyPreset"),
-                "approval": input_data.get("approval"),
-                "parentExecutionId": input_data.get("parentExecutionId", ""),
-                "executionId": input_data.get("executionId", "")
-                or input_data.get("dbExecutionId", ""),
-                "dbExecutionId": input_data.get("dbExecutionId", ""),
-                "workflowId": input_data.get("workflowId", ""),
-                "nodeId": input_data.get("nodeId", ""),
-                "nodeName": input_data.get("nodeName", ""),
-                "workspaceRef": input_data.get("workspaceRef", ""),
-                "timeoutMinutes": input_data.get("timeoutMinutes"),
-            }
-            if input_data.get("maxTurns"):
-                payload["maxTurns"] = input_data["maxTurns"]
-            return _dapr_invoke_or_raise(
-                DURABLE_AGENT_APP_ID,
-                "api/execute-plan",
-                payload,
-                timeout=30,
-                service_label="Durable execute plan",
-            )
-        except Exception as e:
-            logger.error(f"[Call Durable Execute Plan] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
-def call_durable_execute_plan_dag(ctx, input_data: dict) -> dict:
-    """
-    Start a DAG plan execution on durable-agent service.
-
-    Executes a claude_task_graph_v1 plan as a Dapr workflow where each task
-    is a separate Claude Code CLI activity with dependency scheduling.
-
-    Expected input_data:
-      - artifactRef: str (plan artifact reference)
-      - workspaceRef: str (workspace session reference)
-      - cwd: str (working directory)
-      - model: str | None
-      - maxTaskRetries: int | None (default: 1)
-      - taskTimeoutMinutes: int | None (default: 15)
-      - overallTimeoutMinutes: int | None (default: 120)
-      - cleanupWorkspace: bool | None (default: True)
-      - parentExecutionId: str
-      - executionId: str
-      - workflowId: str
-      - nodeId: str
-      - nodeName: str
-    """
-    otel = input_data.get("_otel") or {}
-    attrs = {
-        "action.type": "durable/execute-plan-dag",
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-        "workflow.id": input_data.get("workflowId") or "",
-        "node.id": input_data.get("nodeId") or "",
-        "node.name": input_data.get("nodeName") or "",
-    }
-
-    plan = input_data.get("planJson") or input_data.get("plan")
-    if isinstance(plan, str):
-        import json as _json
-        try:
-            plan = _json.loads(plan)
-        except Exception:
-            pass
-
-    with start_activity_span("activity.call_durable_execute_plan_dag", otel, attrs):
-        try:
-            payload = {
-                "plan": plan,
-                "artifactRef": input_data.get("artifactRef", ""),
-                "cwd": input_data.get("cwd", ""),
-                "model": input_data.get("model"),
-                "maxTaskRetries": input_data.get("maxTaskRetries"),
-                "taskTimeoutMinutes": input_data.get("taskTimeoutMinutes"),
-                "overallTimeoutMinutes": input_data.get("overallTimeoutMinutes"),
-                "cleanupWorkspace": input_data.get("cleanupWorkspace"),
-                "parentExecutionId": input_data.get("parentExecutionId", ""),
-                "executionId": input_data.get("executionId", "")
-                or input_data.get("dbExecutionId", ""),
-                "dbExecutionId": input_data.get("dbExecutionId", ""),
-                "workflowId": input_data.get("workflowId", ""),
-                "nodeId": input_data.get("nodeId", ""),
-                "nodeName": input_data.get("nodeName", ""),
-                "workspaceRef": input_data.get("workspaceRef", ""),
-            }
-            return _dapr_invoke_or_raise(
-                DURABLE_AGENT_APP_ID,
-                "api/execute-plan-dag",
-                payload,
-                timeout=30,
-                service_label="Durable execute plan DAG",
-            )
-        except Exception as e:
-            logger.error(f"[Call Durable Execute Plan DAG] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

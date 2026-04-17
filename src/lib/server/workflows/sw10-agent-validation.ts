@@ -59,12 +59,7 @@ function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
     }
     if (
       runtime &&
-      ![
-        "dapr-agent-py",
-        "dapr-agent-py-testing",
-        "durable-agent",
-        "openshell-durable-agent",
-      ].includes(runtime)
+      !["dapr-agent-py", "dapr-agent-py-testing"].includes(runtime)
     ) {
       issues.push({
         code: "invalid_agent_runtime",
