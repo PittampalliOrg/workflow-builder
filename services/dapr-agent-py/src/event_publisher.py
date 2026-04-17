@@ -131,6 +131,11 @@ def _post_ingest(session_id: str, envelope: dict[str, Any]) -> None:
     the DB write is durability + replay.
     """
     if not _INTERNAL_API_TOKEN:
+        logger.info(
+            "[session-ingest] skipping %s %s — INTERNAL_API_TOKEN unset",
+            session_id,
+            envelope.get("type"),
+        )
         return
     try:
         import urllib.request
@@ -145,9 +150,20 @@ def _post_ingest(session_id: str, envelope: dict[str, Any]) -> None:
             },
             method="POST",
         )
-        urllib.request.urlopen(req, timeout=5).close()
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            logger.info(
+                "[session-ingest] %s %s -> HTTP %d",
+                session_id,
+                envelope.get("type"),
+                resp.status,
+            )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("[session-ingest] POST failed: %s", exc)
+        logger.warning(
+            "[session-ingest] POST failed %s %s: %s",
+            session_id,
+            envelope.get("type"),
+            exc,
+        )
 
 
 def publish_session_event(
