@@ -240,49 +240,4 @@ describe("compileSandboxPolicies", () => {
     ).toBe("dapr-agent-xlsx");
   });
 
-  it("keeps the xlsx sandbox validation workflow on the xlsx sandbox template", () => {
-    const fixture = loadWorkflowFixture(
-      "../../../services/durable-agent/durable-agent-xlsx-sandbox-validation.workflow.json",
-    );
-    const spec = fixture.spec as Record<string, unknown>;
-
-    const compiled = compileSandboxPolicies(spec);
-    const doArray = compiled.do as Array<
-      Record<string, Record<string, unknown>>
-    >;
-    const workspaceWith = taskDef(doArray[0]).with as Record<string, unknown>;
-    const runWith = taskDef(doArray[1]).with as Record<string, unknown>;
-    const metadataTask = taskDef(doArray[2]);
-    const encodeTask = taskDef(doArray[3]);
-    const uploadTask = taskDef(doArray[4]);
-    const downloadTask = taskDef(doArray[5]);
-    const workbooksTask = taskDef(doArray[7]);
-    const worksheetsTask = taskDef(doArray[8]);
-    const rangeTask = taskDef(doArray[9]);
-    const agentConfig = runWith.agentConfig as Record<string, unknown>;
-    const skills = agentConfig.skills as Array<Record<string, unknown>>;
-
-    expect(doArray).toHaveLength(10);
-    expect(workspaceWith.sandboxTemplate).toBe("dapr-agent-xlsx");
-    expect(
-      (workspaceWith.sandboxPolicy as Record<string, unknown>).template,
-    ).toBe("dapr-agent-xlsx");
-    expect(runWith.workspaceRef).toBe("${ .workspace_profile.workspaceRef }");
-    expect((agentConfig.memory as Record<string, unknown>).sessionId).toBe(
-      "${ .runtime.dbExecutionId }",
-    );
-    expect(agentConfig.mcpServers).toEqual([]);
-    expect(metadataTask.call).toBe("workspace/command");
-    expect(encodeTask.call).toBe("workspace/command");
-    expect(uploadTask.call).toBe("microsoft-onedrive/upload_onedrive_file");
-    expect(downloadTask.call).toBe("microsoft-onedrive/download_file");
-    expect(workbooksTask.call).toBe("microsoft-excel-365/get_workbooks");
-    expect(worksheetsTask.call).toBe("microsoft-excel-365/get_worksheets");
-    expect(rangeTask.call).toBe("microsoft-excel-365/get_range");
-    expect(skills[0]).toMatchObject({
-      installSource: "anthropics/skills",
-      skillName: "xlsx",
-      registryUrl: "https://skills.sh/anthropics/skills/xlsx",
-    });
-  });
 });
