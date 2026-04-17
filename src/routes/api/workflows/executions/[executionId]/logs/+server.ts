@@ -1,7 +1,12 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { workflowExecutions, workflowExecutionLogs, workflowAgentEvents } from '$lib/server/db/schema';
+import {
+	sessionEvents,
+	sessions,
+	workflowExecutions,
+	workflowExecutionLogs
+} from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { extractExecutionTraceIds } from '$lib/server/otel/clickhouse';
 
@@ -105,36 +110,48 @@ export const GET: RequestHandler = async ({ params }) => {
 	const traceId = (execOutput?.traceId as string) ?? null;
 	const allTraceIds = extractExecutionTraceIds(execution.output);
 
-	// Fetch agent events for this execution
+	// Phase 4 Step 2: agent events come from session_events via the
+	// sessions.workflow_execution_id join. `durable/run` nodes now spawn a
+	// session per node and that session's event stream is the authoritative
+	// agent log.
 	const agentEvents = await db
 		.select({
-			id: workflowAgentEvents.eventId,
-			type: workflowAgentEvents.eventType,
-			sourceEventId: workflowAgentEvents.sourceEventId,
-			workflowAgentRunId: workflowAgentEvents.workflowAgentRunId,
-			daprInstanceId: workflowAgentEvents.daprInstanceId,
-			toolName: workflowAgentEvents.toolName,
-			phase: workflowAgentEvents.phase,
-			data: workflowAgentEvents.payload,
-			timestamp: workflowAgentEvents.ts,
+			id: sessionEvents.sequence,
+			sessionId: sessionEvents.sessionId,
+			type: sessionEvents.type,
+			sourceEventId: sessionEvents.sourceEventId,
+			data: sessionEvents.data,
+			createdAt: sessionEvents.createdAt
 		})
-		.from(workflowAgentEvents)
-		.where(eq(workflowAgentEvents.workflowExecutionId, executionId))
-		.orderBy(asc(workflowAgentEvents.eventId));
+		.from(sessionEvents)
+		.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
+		.where(eq(sessions.workflowExecutionId, executionId))
+		.orderBy(asc(sessionEvents.sequence));
+
+	function pickString(source: Record<string, unknown>, ...keys: string[]): string | null {
+		for (const k of keys) {
+			const v = source[k];
+			if (typeof v === 'string' && v.trim()) return v;
+		}
+		return null;
+	}
 
 	return json({
 		logs,
-		agentEvents: agentEvents.map(e => ({
-			id: e.id,
-			type: e.type,
-			sourceEventId: e.sourceEventId,
-			workflowAgentRunId: e.workflowAgentRunId,
-			daprInstanceId: e.daprInstanceId,
-			toolName: e.toolName,
-			phase: e.phase,
-			data: e.data ?? {},
-			timestamp: e.timestamp?.toISOString() ?? '',
-		})),
+		agentEvents: agentEvents.map((e) => {
+			const data = (e.data && typeof e.data === 'object' ? (e.data as Record<string, unknown>) : {});
+			return {
+				id: e.id,
+				type: e.type,
+				sourceEventId: e.sourceEventId,
+				workflowAgentRunId: null,
+				daprInstanceId: null,
+				toolName: pickString(data, 'tool_name', 'toolName', 'name'),
+				phase: pickString(data, 'phase'),
+				data,
+				timestamp: e.createdAt?.toISOString() ?? ''
+			};
+		}),
 		traceId,
 		traceIds: allTraceIds,
 		executionStatus: execution.status,

@@ -2,6 +2,8 @@ import { and, asc, desc, eq, gt, sql } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
+	sessionEvents,
+	sessions,
 	workflowAgentEvents,
 	workflowAgentRuns,
 	workflowExecutionLogs,
@@ -112,6 +114,13 @@ function buildNodeStatuses(
 	return nodeStatuses;
 }
 
+/**
+ * Phase 4 Step 2: read the execution timeline from `session_events` via the
+ * `sessions.workflow_execution_id` join. Every `durable/run` node now spawns
+ * a session (via the workflow↔session bridge), and that session's events are
+ * the authoritative agent activity log. `workflow_agent_events` is still
+ * written in parallel during the transition period but no longer read here.
+ */
 async function fetchRecentAgentEvents(
 	executionId: string,
 	limit = 200
@@ -119,31 +128,73 @@ async function fetchRecentAgentEvents(
 	if (!db) return [];
 
 	const rows = await db
-		.select()
-		.from(workflowAgentEvents)
-		.where(eq(workflowAgentEvents.workflowExecutionId, executionId))
-		.orderBy(desc(workflowAgentEvents.eventId))
+		.select({
+			id: sessionEvents.id,
+			sequence: sessionEvents.sequence,
+			sessionId: sessionEvents.sessionId,
+			type: sessionEvents.type,
+			data: sessionEvents.data,
+			sourceEventId: sessionEvents.sourceEventId,
+			createdAt: sessionEvents.createdAt
+		})
+		.from(sessionEvents)
+		.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
+		.where(eq(sessions.workflowExecutionId, executionId))
+		.orderBy(desc(sessionEvents.sequence))
 		.limit(limit);
 
-	return rows
-		.reverse()
-		.map((row) => mapAgentEvent(row));
+	return rows.reverse().map((row) => mapSessionAgentEvent(row));
 }
 
+type SessionEventRow = {
+	id: string;
+	sequence: number;
+	sessionId: string;
+	type: string;
+	data: unknown;
+	sourceEventId: string | null;
+	createdAt: Date;
+};
+
+function mapSessionAgentEvent(row: SessionEventRow): ExecutionTimelineEvent {
+	const data = isRecord(row.data) ? { ...row.data } : {};
+	const toolName =
+		typeof data.tool_name === 'string'
+			? data.tool_name
+			: typeof data.toolName === 'string'
+				? data.toolName
+				: typeof data.name === 'string'
+					? data.name
+					: null;
+	const phase = typeof data.phase === 'string' ? data.phase : null;
+	return {
+		id: row.sequence,
+		type: row.type,
+		data,
+		timestamp: row.createdAt.toISOString(),
+		workflowAgentRunId: null,
+		daprInstanceId: null,
+		sourceEventId: row.sourceEventId,
+		phase,
+		toolName
+	};
+}
+
+// Legacy mapper — used ONLY by listSandboxAgentEvents until sandbox debug
+// queries migrate to session_events. Readable path through `workflow_agent_events`
+// stays alive until that migration (Step 2b).
 function mapAgentEvent(row: typeof workflowAgentEvents.$inferSelect): ExecutionTimelineEvent {
 	const payload = isRecord(row.payload) ? row.payload : {};
 	const data = isRecord(payload.data) ? payload.data : payload;
 	if (row.phase && data.phase == null) data.phase = row.phase;
 	if (row.toolName && data.toolName == null) data.toolName = row.toolName;
 	if (row.traceId && data.traceId == null) data.traceId = row.traceId;
-
 	const timestamp =
 		typeof payload.ts === 'string'
 			? payload.ts
 			: typeof payload.timestamp === 'string'
 				? payload.timestamp
 				: row.ts.toISOString();
-
 	return {
 		id: row.eventId,
 		type: normalizeEventType(row.eventType),
@@ -222,18 +273,30 @@ export async function listExecutionAgentEvents(
 ): Promise<ExecutionTimelineEvent[]> {
 	if (!db) return [];
 
+	// Phase 4 Step 2: query session_events via sessions.workflow_execution_id.
+	// afterEventId is the session_events.sequence column (monotonic per session;
+	// stable for pagination).
 	const rows = await db
-		.select()
-		.from(workflowAgentEvents)
+		.select({
+			id: sessionEvents.id,
+			sequence: sessionEvents.sequence,
+			sessionId: sessionEvents.sessionId,
+			type: sessionEvents.type,
+			data: sessionEvents.data,
+			sourceEventId: sessionEvents.sourceEventId,
+			createdAt: sessionEvents.createdAt
+		})
+		.from(sessionEvents)
+		.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
 		.where(
 			and(
-				eq(workflowAgentEvents.workflowExecutionId, executionId),
-				gt(workflowAgentEvents.eventId, afterEventId)
+				eq(sessions.workflowExecutionId, executionId),
+				gt(sessionEvents.sequence, afterEventId)
 			)
 		)
-		.orderBy(asc(workflowAgentEvents.eventId));
+		.orderBy(asc(sessionEvents.sequence));
 
-	return rows.map((row) => mapAgentEvent(row));
+	return rows.map((row) => mapSessionAgentEvent(row));
 }
 
 /**
