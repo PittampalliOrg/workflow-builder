@@ -55,9 +55,6 @@ vars:
   FUNCTION_ROUTER_APP_NAME: function-router
   FUNCTION_ROUTER_LOCAL_PORT: "3014"
   FUNCTION_ROUTER_CONTAINER_PORT: "8080"
-  DURABLE_AGENT_APP_NAME: durable-agent
-  DURABLE_AGENT_LOCAL_PORT: "3015"
-  DURABLE_AGENT_CONTAINER_PORT: "8001"
   FN_ACTIVEPIECES_APP_NAME: fn-activepieces
   FN_ACTIVEPIECES_LOCAL_PORT: "3016"
   FN_ACTIVEPIECES_CONTAINER_PORT: "8080"
@@ -163,29 +160,6 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}"
   FUNCTION_ROUTER_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
-  CURRENT_DURABLE_AGENT_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${DURABLE_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${DURABLE_AGENT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
-    default: "${GITEA_HOST}/${GITEA_USER}/${DURABLE_AGENT_APP_NAME}"
-  TEKTON_DURABLE_AGENT_DEV_IMAGE:
-    command: |
-      kubectl get taskrun -A -o json 2>/dev/null | jq -r '
-        [
-          .items[]
-          | select(any(.status.conditions[]?; .type == "Succeeded" and .status == "True"))
-          | {
-              created: .metadata.creationTimestamp,
-              image: (.status.results[]? | select(.name == "image_ref") | .value)
-            }
-          | select(.image != null and (.image | test("/opencode-durable-agent:git-")))
-        ]
-        | sort_by(.created)
-        | last.image // empty
-      ' | sed 's#gitea.cnoe.localtest.me#gitea-ryzen.tail286401.ts.net#'
-    default: "gitea-ryzen.tail286401.ts.net/giteaadmin/opencode-durable-agent:git-235b13be1a4924333d7183094d6219bed7fe13d4"
-  DURABLE_AGENT_DEV_IMAGE_REPOSITORY:
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_FN_ACTIVEPIECES_IMAGE_REPOSITORY:
     command: |
@@ -1009,12 +983,6 @@ pipelines:
           ui-orchestrator)
             printf '%s\n' "workflow-builder workflow-orchestrator"
             ;;
-          durable-agent-ui|durable-agent-only)
-            printf '%s\n' "workflow-builder durable-agent"
-            ;;
-          durable-agent-e2e)
-            printf '%s\n' "workflow-builder workflow-orchestrator durable-agent"
-            ;;
           ai-chatbot-dev)
             printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router"
             ;;
@@ -1025,7 +993,7 @@ pipelines:
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
           full-agent-stack)
-            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent"
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py"
             ;;
           *)
             printf '%s\n' "${ARGO_APPS}"
@@ -1041,12 +1009,6 @@ pipelines:
           ui-orchestrator)
             printf '%s\n' "workflow-builder workflow-orchestrator"
             ;;
-          durable-agent-ui|durable-agent-only)
-            printf '%s\n' "workflow-builder durable-agent"
-            ;;
-          durable-agent-e2e)
-            printf '%s\n' "workflow-builder workflow-orchestrator durable-agent"
-            ;;
           ai-chatbot-dev)
             printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router"
             ;;
@@ -1057,7 +1019,7 @@ pipelines:
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
           full-agent-stack)
-            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent"
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py"
             ;;
           *)
             printf '%s\n' "${PRODUCTION_DEPLOYMENTS}"
@@ -1220,12 +1182,10 @@ hooks:
         case "${DEVSPACE_PROFILE:-}" in
           workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
           ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
-          durable-agent-ui|durable-agent-only) ACTIVE_APPS="workflow-builder durable-agent" ;;
-          durable-agent-e2e) ACTIVE_APPS="workflow-builder workflow-orchestrator durable-agent" ;;
           ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
           function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
           sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-          full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent" ;;
+          full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py" ;;
           *) ACTIVE_APPS="${ARGO_APPS}" ;;
         esac
         for app in ${ACTIVE_APPS}; do
@@ -1265,12 +1225,10 @@ commands:
     case "${DEVSPACE_PROFILE:-}" in
       workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
       ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
-      durable-agent-ui|durable-agent-only) ACTIVE_APPS="workflow-builder durable-agent" ;;
-      durable-agent-e2e) ACTIVE_APPS="workflow-builder workflow-orchestrator durable-agent" ;;
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent" ;;
+      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
     for app in ${ACTIVE_APPS}; do
@@ -1281,12 +1239,10 @@ commands:
     case "${DEVSPACE_PROFILE:-}" in
       workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
       ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
-      durable-agent-ui|durable-agent-only) ACTIVE_APPS="workflow-builder durable-agent" ;;
-      durable-agent-e2e) ACTIVE_APPS="workflow-builder workflow-orchestrator durable-agent" ;;
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent" ;;
+      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
     for app in ${ACTIVE_APPS}; do
@@ -1337,7 +1293,7 @@ commands:
       "argocd.argoproj.io/refresh=hard" --overwrite 2>/dev/null || true
     echo "==> Done."
   build-dev-base-images: |-
-    echo "==> Triggering Tekton base-image builds for workflow-builder and durable-agent"
+    echo "==> Triggering Tekton base-image builds for workflow-builder and dapr-agent-py"
     GIT_SHA="${GIT_SHA:-$(git ls-remote https://gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder.git HEAD | awk '{print $1}')}"
     if [ -z "${GIT_SHA}" ]; then
       echo "Could not resolve git SHA from Gitea mirror" >&2
