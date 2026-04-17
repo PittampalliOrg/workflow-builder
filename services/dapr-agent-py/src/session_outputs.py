@@ -18,7 +18,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-OUTPUTS_DIR = "/mnt/session/outputs"
+# Directories the scanner checks for agent-written artifacts, first-match
+# wins (both CMA-style and our OpenShell default are supported so agents
+# don't need to know which runtime they're on).
+OUTPUTS_DIRS = ("/mnt/session/outputs", "/sandbox/outputs")
 # Runtime cap — files larger than this skip upload. Kept below the BFF's
 # per-request cap so we never build a base64 payload the ingest endpoint
 # will reject. Large files use the chunked read path inside
@@ -88,21 +91,32 @@ def scan_and_upload(session_id: str, runtime: Any) -> dict[str, Any]:
     if not session_id:
         return {"status": "skipped", "reason": "no session id"}
 
-    glob_res = runtime.glob_files("**/*", OUTPUTS_DIR, MAX_FILES_PER_SESSION)
-    if not glob_res.get("ok"):
-        # `directory_not_found` is the common case when the agent wrote
-        # nothing — treat as a no-op rather than an error.
-        reason = glob_res.get("error") or "unknown"
-        if reason == "directory_not_found":
-            return {"status": "empty", "reason": "no outputs directory"}
-        logger.warning(
-            "[session-outputs] glob failed for %s: %s", session_id, reason
-        )
-        return {"status": "error", "reason": reason}
-
-    matches = glob_res.get("matches") or []
+    # Walk each candidate outputs dir; first one that yields files wins.
+    # Agents writing to `/sandbox/outputs/*` (our OpenShell default) and
+    # `/mnt/session/outputs/*` (CMA-native) are both supported without the
+    # agent needing to know which mount the runtime exposes.
+    matches: list[str] = []
+    outputs_dir: str | None = None
+    last_error: str | None = None
+    for candidate in OUTPUTS_DIRS:
+        glob_res = runtime.glob_files("**/*", candidate, MAX_FILES_PER_SESSION)
+        if glob_res.get("ok"):
+            candidate_matches = glob_res.get("matches") or []
+            if candidate_matches:
+                matches = candidate_matches
+                outputs_dir = candidate
+                break
+        else:
+            reason = glob_res.get("error") or "unknown"
+            if reason != "directory_not_found":
+                last_error = reason
     if not matches:
-        return {"status": "empty", "reason": "no files"}
+        if last_error:
+            logger.warning(
+                "[session-outputs] glob failed for %s: %s", session_id, last_error
+            )
+            return {"status": "error", "reason": last_error}
+        return {"status": "empty", "reason": "no files in any outputs dir"}
 
     files_payload: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -112,11 +126,12 @@ def scan_and_upload(session_id: str, runtime: Any) -> dict[str, Any]:
             skipped.append({"path": path, "reason": str(read_res.get("error") or "")})
             continue
         rel = path
-        for prefix in (f"{OUTPUTS_DIR}/", OUTPUTS_DIR):
-            if rel.startswith(prefix):
-                rel = rel[len(prefix) :].lstrip("/")
-                break
-        if not rel:
+        if outputs_dir:
+            for prefix in (f"{outputs_dir}/", outputs_dir):
+                if rel.startswith(prefix):
+                    rel = rel[len(prefix) :].lstrip("/")
+                    break
+        if not rel or rel == path:
             rel = path.rsplit("/", 1)[-1]
         content_type, _ = mimetypes.guess_type(rel)
         files_payload.append(
