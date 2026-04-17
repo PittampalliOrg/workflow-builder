@@ -11,7 +11,6 @@ import {
   toCodeFunctionDefinitionFromDetail,
   type CodeFunctionDetail,
 } from "$lib/server/code-functions";
-import { DEFAULT_NEW_AGENT_SANDBOX_POLICY } from "$lib/workflows/sandbox-policy";
 import type {
   ActionAuthMetadata,
   ActionCatalogDetail,
@@ -140,88 +139,23 @@ function buildActionId(prefix: string, slug: string): string {
 }
 
 function buildDaprAgentPyDetail(): ActionCatalogDetail {
+  // Post-cutover: durable/run nodes reference an agent by id. Sandbox config
+  // comes from the agent's environment; MCP/skills from the agent's config.
+  // The template below is a ref-shaped placeholder — users pick the agent in
+  // the workflow side panel after dropping the node.
   const taskConfig = {
     call: "durable/run",
     with: {
       prompt: "",
       mode: "execute_direct",
       agentRuntime: "dapr-agent-py",
-      sandboxPolicy: DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-      workspaceRef: "",
-      sandboxName: "",
       cwd: "/sandbox",
-      maxTurns: 120,
-      timeoutMinutes: 120,
-      agentConfig: {
-        runtime: "dapr-agent-py",
-        profileRef: {
-          templateId: "builtin:default-sandbox-agent",
-          templateVersion: 1,
-          slug: "default-sandbox-agent",
-          source: "builtin",
-        },
-        runtimeOverridePolicy: {
-          allowToolNarrowing: true,
-          allowServerAdditions: false,
-          allowCredentialBinding: true,
-          allowSkillAdditions: false,
-          allowSkillNarrowing: true,
-        },
-        profileSnapshot: {
-          mcpServers: [],
-          skills: [],
-          runtimeOverridePolicy: {
-            allowToolNarrowing: true,
-            allowServerAdditions: false,
-            allowCredentialBinding: true,
-            allowSkillAdditions: false,
-            allowSkillNarrowing: true,
-          },
-        },
-        mcpConnectionMode: "explicit",
-        mcpServers: [],
-        skills: [],
-      },
       body: {
         prompt: "",
         mode: "execute_direct",
         agentRuntime: "dapr-agent-py",
-        sandboxPolicy: DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-        workspaceRef: "",
-        sandboxName: "",
         cwd: "/sandbox",
-        maxTurns: 120,
-        timeoutMinutes: 120,
-        agentConfig: {
-          runtime: "dapr-agent-py",
-          profileRef: {
-            templateId: "builtin:default-sandbox-agent",
-            templateVersion: 1,
-            slug: "default-sandbox-agent",
-            source: "builtin",
-          },
-          runtimeOverridePolicy: {
-            allowToolNarrowing: true,
-            allowServerAdditions: false,
-            allowCredentialBinding: true,
-            allowSkillAdditions: false,
-            allowSkillNarrowing: true,
-          },
-          profileSnapshot: {
-            mcpServers: [],
-            skills: [],
-            runtimeOverridePolicy: {
-              allowToolNarrowing: true,
-              allowServerAdditions: false,
-              allowCredentialBinding: true,
-              allowSkillAdditions: false,
-              allowSkillNarrowing: true,
-            },
-          },
-          mcpConnectionMode: "explicit",
-          mcpServers: [],
-          skills: [],
-        },
+        // agentRef left unset — side-panel AgentPicker sets it
       },
     },
   };
@@ -252,52 +186,34 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
     doc: "Runs dapr-agent-py with a per-run OpenShell sandbox by default. Existing workflows can choose shared-runtime or provide an external workspaceRef.",
     inputSchema: {
       type: "object",
-      required: ["prompt"],
+      required: ["prompt", "agentRef"],
       properties: {
         prompt: { type: "string" },
-        workspaceRef: { type: "string" },
-        sandboxPolicy: {
+        agentRef: {
           type: "object",
+          required: ["id"],
           properties: {
-            mode: {
-              type: "string",
-              enum: ["shared-runtime", "per-run", "per-node", "provided"],
-              default: "per-run",
-            },
-            template: {
-              type: "string",
-              enum: ["dapr-agent", "dapr-agent-xlsx", "openshell-browser", "dapr-agent-py-testing"],
-              default: "dapr-agent",
-            },
-            keepAfterRun: { type: "boolean", default: false },
-            ttlSeconds: { type: "integer", default: 7200 },
-            workspaceRef: { type: "string" },
+            id: { type: "string" },
+            version: { type: "integer" },
           },
         },
-        sandboxName: { type: "string" },
-        cwd: { type: "string", default: "/sandbox" },
-        agentConfig: {
+        environmentRef: {
           type: "object",
           properties: {
-            runtime: {
-              type: "string",
-              enum: ["dapr-agent-py", "dapr-agent-py-testing"],
-              default: "dapr-agent-py",
-            },
-            mcpConnectionMode: {
-              type: "string",
-              enum: ["project", "explicit", "auto"],
-              default: "explicit",
-            },
-            profileRef: { type: "object" },
-            profileSnapshot: { type: "object" },
-            runtimeOverridePolicy: { type: "object" },
-            mcpServers: { type: "array" },
-            skills: { type: "array" },
+            id: { type: "string" },
+            version: { type: "integer" },
           },
         },
-        maxTurns: { type: "integer", default: 120 },
-        timeoutMinutes: { type: "integer", default: 120 },
+        overrides: {
+          type: "object",
+          properties: {
+            maxTurns: { type: "integer" },
+            timeoutMinutes: { type: "integer" },
+            cwd: { type: "string" },
+            tools: { type: "array", items: { type: "string" } },
+            sandboxPolicy: { type: "object" },
+          },
+        },
       },
     },
     outputSchema: null,

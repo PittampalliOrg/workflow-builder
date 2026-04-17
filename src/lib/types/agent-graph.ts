@@ -1,10 +1,12 @@
 import type { Edge, Node } from "@xyflow/svelte";
-import {
-  DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-  hasExplicitSandboxPolicy,
-  normalizeSandboxPolicy,
-  type SandboxPolicy,
-} from "$lib/workflows/sandbox-policy";
+import type { EnvironmentRef } from "$lib/types/environments";
+
+/**
+ * Loose sandbox-policy shape used for per-node overrides. The authoritative
+ * sandbox config lives on an Environment; these overrides only tweak that
+ * config for a single node in a single workflow.
+ */
+export type SandboxPolicyOverride = Record<string, unknown>;
 
 export const AGENT_GRAPH_VERSION = "v1" as const;
 
@@ -47,11 +49,23 @@ export interface AgentGraphDefinition {
   edges: AgentGraphEdge[];
 }
 
+export interface AgentOverrides extends Record<string, unknown> {
+  sandboxPolicy?: SandboxPolicyOverride;
+  tools?: string[];
+  maxTurns?: number;
+  timeoutMinutes?: number;
+  cwd?: string;
+}
+
+export interface AgentRef {
+  id: string;
+  version?: number;
+}
+
 export interface AgentTaskBody extends Record<string, unknown> {
   prompt: string;
   mode: "execute_direct";
   agentRuntime: string;
-  sandboxPolicy?: SandboxPolicy;
   workspaceRef?: string;
   sandboxName?: string;
   cwd?: string;
@@ -60,7 +74,9 @@ export interface AgentTaskBody extends Record<string, unknown> {
   stopCondition?: string;
   requireFileChanges?: boolean;
   agentGraph: AgentGraphDefinition;
-  agentConfig?: Record<string, unknown>;
+  agentRef?: AgentRef;
+  environmentRef?: EnvironmentRef;
+  overrides?: AgentOverrides;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -265,6 +281,12 @@ export function summarizeAgentGraph(input: unknown): string {
   return parts.join(" • ");
 }
 
+function isAgentRef(value: unknown): value is AgentRef {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "string" || !value.id.trim()) return false;
+  return true;
+}
+
 export function getAgentTaskBody(
   taskConfig: Record<string, unknown> | null | undefined,
 ): AgentTaskBody {
@@ -273,16 +295,23 @@ export function getAgentTaskBody(
   }
   const withBlock = isRecord(taskConfig.with) ? taskConfig.with : {};
   const body = isRecord(withBlock.body) ? withBlock.body : {};
-  const agentConfig = isRecord(body.agentConfig)
-    ? body.agentConfig
-    : isRecord(withBlock.agentConfig)
-      ? withBlock.agentConfig
-      : {};
-  const rawSandboxPolicy = hasExplicitSandboxPolicy(body.sandboxPolicy)
-    ? body.sandboxPolicy
-    : hasExplicitSandboxPolicy(withBlock.sandboxPolicy)
-      ? withBlock.sandboxPolicy
+  const agentRefCandidate = body.agentRef ?? withBlock.agentRef;
+  const agentRef = isAgentRef(agentRefCandidate)
+    ? ({ id: agentRefCandidate.id, version: agentRefCandidate.version } as AgentRef)
+    : undefined;
+  const overrides = isRecord(body.overrides)
+    ? (body.overrides as AgentOverrides)
+    : isRecord(withBlock.overrides)
+      ? (withBlock.overrides as AgentOverrides)
       : undefined;
+  const environmentRefCandidate =
+    body.environmentRef ?? withBlock.environmentRef;
+  const environmentRef = isEnvironmentRef(environmentRefCandidate)
+    ? {
+        id: environmentRefCandidate.id,
+        version: environmentRefCandidate.version,
+      }
+    : undefined;
 
   return {
     prompt:
@@ -299,14 +328,6 @@ export function getAgentTaskBody(
             withBlock.agentRuntime.trim()
           ? withBlock.agentRuntime.trim()
           : "dapr-agent-py",
-    ...(rawSandboxPolicy
-      ? {
-          sandboxPolicy: normalizeSandboxPolicy(
-            rawSandboxPolicy,
-            DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-          ),
-        }
-      : {}),
     workspaceRef:
       typeof body.workspaceRef === "string"
         ? body.workspaceRef
@@ -328,23 +349,15 @@ export function getAgentTaskBody(
     maxTurns:
       typeof body.maxTurns === "number"
         ? body.maxTurns
-        : typeof body.maxTurns === "string"
-          ? Number.parseInt(body.maxTurns, 10) || undefined
-          : typeof withBlock.maxTurns === "number"
-            ? withBlock.maxTurns
-            : typeof withBlock.maxTurns === "string"
-              ? Number.parseInt(withBlock.maxTurns, 10) || undefined
-              : undefined,
+        : typeof withBlock.maxTurns === "number"
+          ? withBlock.maxTurns
+          : undefined,
     timeoutMinutes:
       typeof body.timeoutMinutes === "number"
         ? body.timeoutMinutes
-        : typeof body.timeoutMinutes === "string"
-          ? Number.parseInt(body.timeoutMinutes, 10) || undefined
-          : typeof withBlock.timeoutMinutes === "number"
-            ? withBlock.timeoutMinutes
-            : typeof withBlock.timeoutMinutes === "string"
-              ? Number.parseInt(withBlock.timeoutMinutes, 10) || undefined
-              : undefined,
+        : typeof withBlock.timeoutMinutes === "number"
+          ? withBlock.timeoutMinutes
+          : undefined,
     stopCondition:
       typeof body.stopCondition === "string"
         ? body.stopCondition
@@ -358,69 +371,21 @@ export function getAgentTaskBody(
           ? withBlock.requireFileChanges
           : undefined,
     agentGraph: normalizeAgentGraph(body.agentGraph ?? withBlock.agentGraph),
-    agentConfig,
+    ...(agentRef ? { agentRef } : {}),
+    ...(environmentRef ? { environmentRef } : {}),
+    ...(overrides ? { overrides } : {}),
   };
 }
 
-export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
-  const agentName = sanitizeAgentName(label);
+export function createDefaultAgentTaskBody(_label = "Agent"): AgentTaskBody {
   return {
     prompt: "",
     mode: "execute_direct",
     agentRuntime: "dapr-agent-py",
-    sandboxPolicy: { ...DEFAULT_NEW_AGENT_SANDBOX_POLICY },
     workspaceRef: "",
     sandboxName: "",
     cwd: "/sandbox",
-    maxTurns: 120,
-    timeoutMinutes: 120,
     agentGraph: createDefaultAgentGraph(),
-    agentConfig: {
-      name: agentName,
-      instructions: "",
-      modelSpec: "",
-      tools: [],
-      runtime: "dapr-agent-py",
-      profileRef: {
-        templateId: "builtin:default-sandbox-agent",
-        templateVersion: 1,
-        slug: "default-sandbox-agent",
-        source: "builtin",
-      },
-      runtimeOverridePolicy: {
-        allowToolNarrowing: true,
-        allowServerAdditions: false,
-        allowCredentialBinding: true,
-        allowSkillAdditions: false,
-        allowSkillNarrowing: true,
-      },
-      profileSnapshot: {
-        mcpServers: [],
-        skills: [],
-        runtimeOverridePolicy: {
-          allowToolNarrowing: true,
-          allowServerAdditions: false,
-          allowCredentialBinding: true,
-          allowSkillAdditions: false,
-          allowSkillNarrowing: true,
-        },
-      },
-      mcpConnectionMode: "explicit",
-      mcpServers: [],
-      skills: [],
-      loop: {
-        strategy: "graph_v1",
-      },
-      memory: {
-        backend: "dapr_state",
-        sessionId: "",
-      },
-      configuration: {
-        storeName: "",
-        configName: agentName,
-        keys: [],
-      },
-    },
   };
 }
 
@@ -446,26 +411,12 @@ export function normalizeAgentTaskConfig(
   label = "Agent",
 ): Record<string, unknown> {
   const existing = isRecord(taskConfig) ? taskConfig : {};
-  const isNewTaskConfig = Object.keys(existing).length === 0;
   const withBlock = isRecord(existing.with) ? existing.with : {};
   const body = getAgentTaskBody(existing);
-  const sandboxPolicy = body.sandboxPolicy
-    ? normalizeSandboxPolicy(body.sandboxPolicy, DEFAULT_NEW_AGENT_SANDBOX_POLICY)
-    : isNewTaskConfig
-      ? { ...DEFAULT_NEW_AGENT_SANDBOX_POLICY }
-      : undefined;
-  const normalizedBody = {
+  const normalizedBody: AgentTaskBody = {
     ...createDefaultAgentTaskBody(label),
     ...body,
-    sandboxPolicy,
     agentGraph: normalizeAgentGraph(body.agentGraph),
-    agentConfig: {
-      ...((createDefaultAgentTaskBody(label).agentConfig as Record<
-        string,
-        unknown
-      >) || {}),
-      ...(isRecord(body.agentConfig) ? body.agentConfig : {}),
-    },
   };
 
   return {
@@ -476,12 +427,9 @@ export function normalizeAgentTaskConfig(
       prompt: normalizedBody.prompt,
       mode: normalizedBody.mode,
       agentRuntime: normalizedBody.agentRuntime,
-      ...(normalizedBody.sandboxPolicy
-        ? { sandboxPolicy: normalizedBody.sandboxPolicy }
-        : {}),
-      workspaceRef: normalizedBody.workspaceRef || "",
-      sandboxName: normalizedBody.sandboxName || "",
-      cwd: normalizedBody.cwd || "/sandbox",
+      workspaceRef: normalizedBody.workspaceRef ?? "",
+      sandboxName: normalizedBody.sandboxName ?? "",
+      cwd: normalizedBody.cwd ?? "/sandbox",
       ...(normalizedBody.maxTurns !== undefined
         ? { maxTurns: normalizedBody.maxTurns }
         : {}),
@@ -495,13 +443,17 @@ export function normalizeAgentTaskConfig(
         ? { requireFileChanges: normalizedBody.requireFileChanges }
         : {}),
       agentGraph: normalizedBody.agentGraph,
-      agentConfig: normalizedBody.agentConfig,
-      body: {
-        ...normalizedBody,
-        ...(normalizedBody.sandboxPolicy
-          ? { sandboxPolicy: normalizedBody.sandboxPolicy }
-          : {}),
-      },
+      ...(normalizedBody.agentRef ? { agentRef: normalizedBody.agentRef } : {}),
+      ...(normalizedBody.environmentRef
+        ? { environmentRef: normalizedBody.environmentRef }
+        : {}),
+      body: normalizedBody,
     },
   };
+}
+
+function isEnvironmentRef(value: unknown): value is EnvironmentRef {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "string" || !value.id.trim()) return false;
+  return true;
 }

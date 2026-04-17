@@ -1381,33 +1381,24 @@
 				<!-- MCP Connections Tab -->
 				<TabsContent value="mcp-connections">
 					<div class="space-y-6">
-						<!-- Add Custom MCP Server -->
 						<Card>
 							<CardHeader>
-								<CardTitle class="text-sm flex items-center gap-2">
-									<Globe size={14} />
-									Add Custom MCP Server
-								</CardTitle>
+								<CardTitle class="text-sm">MCP Connections have moved to Vaults</CardTitle>
 							</CardHeader>
-							<CardContent>
-								<form class="flex items-end gap-3" onsubmit={(e) => { e.preventDefault(); createMcpCustom(); }}>
-									<div class="flex-1 space-y-1">
-										<Label class="text-[11px]">Display Name</Label>
-										<Input bind:value={mcpCustomName} placeholder="My MCP Server" class="text-xs" />
-									</div>
-									<div class="flex-[2] space-y-1">
-										<Label class="text-[11px]">Server URL</Label>
-										<Input bind:value={mcpCustomUrl} placeholder="http://localhost:3100/mcp" class="text-xs font-mono" />
-									</div>
-									<Button size="sm" class="h-8" type="submit" disabled={mcpCreating || !mcpCustomName.trim() || !mcpCustomUrl.trim()}>
-										{#if mcpCreating}<Loader2 size={12} class="animate-spin" />{/if}
-										<Plus size={12} />
-										Add
-									</Button>
-								</form>
+							<CardContent class="space-y-3 text-xs text-muted-foreground">
+								<p>
+									MCP credentials now live in <strong>Vaults</strong>. Vaults group encrypted
+									credentials that agents and sessions attach by id; the proxy injects them
+									into MCP tool calls at call time so the sandbox never sees the secret.
+								</p>
+								<p>
+									Open the new <a href="/workspaces/default/vaults" class="text-primary hover:underline">Vaults library</a>
+									to create a vault, add credentials, and attach it to an agent.
+								</p>
 							</CardContent>
 						</Card>
-
+						{#if false}
+						<!-- Legacy MCP section retained below for compile — dead code -->
 						<!-- MCP Connections Table -->
 						<div>
 							<h3 class="text-sm font-semibold mb-3">Managed Connections</h3>
@@ -1518,6 +1509,7 @@
 								</Table>
 							{/if}
 						</div>
+						{/if}
 					</div>
 				</TabsContent>
 			</Tabs>

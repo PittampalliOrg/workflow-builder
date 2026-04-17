@@ -220,11 +220,71 @@ async def execute_hooks(
         default_timeout_ms=default_timeout_ms,
     )
 
-    results = await asyncio.gather(
-        *(_dispatch(m, hook_input, ctx) for m in filtered),
-        return_exceptions=False,
-    )
-    return _aggregate(event_value, list(results))
+    # claude_code.hook span (beta tracing only — matches TS isBetaTracingEnabled gate).
+    # Records event, number of hooks, and an outcome breakdown on end.
+    hook_span = None
+    try:
+        import json as _json
+
+        from src.telemetry import end_hook_span, start_hook_span
+
+        hook_definitions = _json.dumps(
+            [
+                {
+                    "matcher": getattr(m.hook, "matcher", None),
+                    "type": getattr(m.hook, "type", None),
+                    "source": getattr(m, "source", None),
+                }
+                for m in filtered
+            ]
+        )
+        hook_span = start_hook_span(
+            hook_event=event_value,
+            hook_name=f"{event_value}:{match_query}" if match_query else event_value,
+            num_hooks=len(filtered),
+            hook_definitions=hook_definitions,
+        )
+    except Exception:  # noqa: BLE001
+        hook_span = None
+
+    try:
+        results = await asyncio.gather(
+            *(_dispatch(m, hook_input, ctx) for m in filtered),
+            return_exceptions=False,
+        )
+    except Exception:
+        if hook_span is not None:
+            try:
+                end_hook_span(
+                    hook_span,
+                    num_success=0,
+                    num_non_blocking_error=len(filtered),
+                )
+            except Exception:
+                pass
+        raise
+    agg = _aggregate(event_value, list(results))
+    if hook_span is not None:
+        try:
+            end_hook_span(
+                hook_span,
+                num_success=sum(1 for r in results if getattr(r, "ok", False)),
+                num_blocking=sum(
+                    1 for r in results if getattr(r, "blocking", False)
+                ),
+                num_non_blocking_error=sum(
+                    1
+                    for r in results
+                    if not getattr(r, "ok", False)
+                    and not getattr(r, "blocking", False)
+                ),
+                num_cancelled=sum(
+                    1 for r in results if getattr(r, "cancelled", False)
+                ),
+            )
+        except Exception:
+            pass
+    return agg
 
 
 __all__ = ["execute_hooks", "hooks_enabled", "event_allowed"]

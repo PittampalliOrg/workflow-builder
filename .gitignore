@@ -49,3 +49,6 @@ __pycache__/
 
 # codex
 .codex-tmp/
+
+# local claude-code settings
+.claude/

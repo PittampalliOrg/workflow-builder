@@ -200,6 +200,34 @@ def _call_anthropic_sdk(
         else:
             patched_messages.append(m)
 
+    # claude_code.llm_request span — wraps the whole call including
+    # SDK-internal retries, escalation, and multi-turn recovery. Token
+    # counts are summed across retries at end_llm_request_span. Matches
+    # TS behavior where endLLMRequestSpan reports aggregate usage.
+    llm_span = None
+    agg_input_tokens = 0
+    agg_output_tokens = 0
+    agg_cache_read = 0
+    agg_cache_create = 0
+    llm_start_monotonic = 0.0
+    ttft_ms_recorded: float | None = None
+    try:
+        import time as _time
+
+        from src.telemetry import start_llm_request_span
+
+        llm_span = start_llm_request_span(
+            model,
+            fast_mode=False,
+            query_source="dapr_agent_py.anthropic_adapter",
+            system_prompt=kwargs.get("system") if isinstance(kwargs.get("system"), str) else None,
+            tools_json=json.dumps(anthropic_tools) if anthropic_tools else None,
+            messages_for_api=list(patched_messages),
+        )
+        llm_start_monotonic = _time.monotonic()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[telemetry] llm_request start failed: %s", exc)
+
     # -- Attempt 1: initial request at current max_tokens -----------------
 
     request_kwargs: dict[str, Any] = {
@@ -215,8 +243,36 @@ def _call_anthropic_sdk(
         model, len(patched_messages), len(anthropic_tools or []), max_tokens,
     )
 
-    response = client.messages.create(**request_kwargs)
-    content, tool_calls = _extract_response(response)
+    try:
+        response = client.messages.create(**request_kwargs)
+        content, tool_calls = _extract_response(response)
+        if ttft_ms_recorded is None and llm_span is not None:
+            import time as _time
+
+            ttft_ms_recorded = (_time.monotonic() - llm_start_monotonic) * 1000.0
+        _u = getattr(response, "usage", None)
+        if _u is not None:
+            agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)
+            agg_output_tokens += int(getattr(_u, "output_tokens", 0) or 0)
+            agg_cache_read += int(getattr(_u, "cache_read_input_tokens", 0) or 0)
+            agg_cache_create += int(getattr(_u, "cache_creation_input_tokens", 0) or 0)
+    except Exception as exc:
+        if llm_span is not None:
+            try:
+                from src.telemetry import end_llm_request_span
+
+                end_llm_request_span(
+                    llm_span,
+                    input_tokens=agg_input_tokens or None,
+                    output_tokens=agg_output_tokens or None,
+                    cache_read_tokens=agg_cache_read or None,
+                    cache_creation_tokens=agg_cache_create or None,
+                    success=False,
+                    error=str(exc)[:500],
+                )
+            except Exception:
+                pass
+        raise
 
     # -- Layer 1: Escalation retry (mirrors query.ts lines 1193-1221) -----
     # If we hit max_tokens at the capped default, retry the SAME request
@@ -234,6 +290,12 @@ def _call_anthropic_sdk(
         request_kwargs["max_tokens"] = ESCALATED_MAX_TOKENS
         response = client.messages.create(**request_kwargs)
         content, tool_calls = _extract_response(response)
+        _u = getattr(response, "usage", None)
+        if _u is not None:
+            agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)
+            agg_output_tokens += int(getattr(_u, "output_tokens", 0) or 0)
+            agg_cache_read += int(getattr(_u, "cache_read_input_tokens", 0) or 0)
+            agg_cache_create += int(getattr(_u, "cache_creation_input_tokens", 0) or 0)
         max_tokens = ESCALATED_MAX_TOKENS
 
     # -- Layer 2: Multi-turn recovery (mirrors query.ts lines 1223-1252) --
@@ -272,6 +334,12 @@ def _call_anthropic_sdk(
 
         response = client.messages.create(**request_kwargs)
         content, tool_calls = _extract_response(response)
+        _u = getattr(response, "usage", None)
+        if _u is not None:
+            agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)
+            agg_output_tokens += int(getattr(_u, "output_tokens", 0) or 0)
+            agg_cache_read += int(getattr(_u, "cache_read_input_tokens", 0) or 0)
+            agg_cache_create += int(getattr(_u, "cache_creation_input_tokens", 0) or 0)
 
         # Accumulate: append new content and tool_calls
         if content:
@@ -298,6 +366,35 @@ def _call_anthropic_sdk(
     if tool_calls:
         result["tool_calls"] = tool_calls
         result["content"] = content or ""
+
+    # End claude_code.llm_request span + record token/cost metrics.
+    if llm_span is not None:
+        try:
+            from src.telemetry import (
+                end_llm_request_span,
+                record_cost,
+                record_tokens,
+            )
+
+            end_llm_request_span(
+                llm_span,
+                input_tokens=agg_input_tokens or None,
+                output_tokens=agg_output_tokens or None,
+                cache_read_tokens=agg_cache_read or None,
+                cache_creation_tokens=agg_cache_create or None,
+                success=True,
+                has_tool_call=bool(tool_calls),
+                ttft_ms=ttft_ms_recorded,
+                model_output=content or None,
+            )
+            record_tokens(type_="input", count=agg_input_tokens, model=model)
+            record_tokens(type_="output", count=agg_output_tokens, model=model)
+            record_tokens(type_="cacheRead", count=agg_cache_read, model=model)
+            record_tokens(type_="cacheCreation", count=agg_cache_create, model=model)
+            # Cost estimate left to caller — adapter doesn't own pricing.
+            _ = record_cost  # suppress unused until pricing lands
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[telemetry] llm_request end failed: %s", exc)
 
     return result
 

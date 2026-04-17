@@ -1,6 +1,23 @@
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import { getSession } from '$lib/server/auth';
+import { ensureStartupReady } from '$lib/server/startup';
+
+// Kick the boot sequence at module load (runs once per server process). We
+// don't await at module level so request handling isn't blocked if the DB is
+// slow to answer — the startupHandle below gates every request on it.
+ensureStartupReady().catch(() => {
+	/* already logged */
+});
+
+const startupHandle: Handle = async ({ event, resolve }) => {
+	try {
+		await ensureStartupReady();
+	} catch {
+		/* logged in startup.ts; let the request proceed so the error surfaces naturally */
+	}
+	return resolve(event);
+};
 
 const authHandle: Handle = async ({ event, resolve }) => {
 	const session = await getSession(event.request, event.cookies);
@@ -37,4 +54,4 @@ const corsHandle: Handle = async ({ event, resolve }) => {
 	return response;
 };
 
-export const handle = sequence(authHandle, corsHandle);
+export const handle = sequence(startupHandle, authHandle, corsHandle);

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import timedelta
 from typing import Any
 
@@ -1152,20 +1153,76 @@ def _run_native_durable_agent_child_workflow(
                 track_err,
             )
 
-    child_result = yield ctx.call_child_workflow(
-        target["workflow_name"],
-        input=_freeze(child_input),
-        instance_id=child_instance_id,
-        app_id=target["app_id"],
+    # Workflow↔Session bridge: when WORKFLOW_USE_SESSIONS=true and the node
+    # targets dapr-agent-py, route through session_workflow so the run
+    # appears in /sessions/{id} with full event history and reuses the
+    # same runtime path as UI-initiated sessions. Falls back to the
+    # historical agent_workflow child workflow when the flag is off.
+    use_sessions = (
+        os.environ.get("WORKFLOW_USE_SESSIONS", "").strip().lower() == "true"
     )
+    session_bridge_eligible = (
+        use_sessions
+        and target.get("app_id") == "dapr-agent-py"
+        and target.get("workflow_name") == "agent_workflow"
+    )
+
+    if session_bridge_eligible:
+        from activities.spawn_session import spawn_session_for_workflow
+
+        # userId + projectId are resolved server-side from workflow_executions
+        # by the internal endpoint, so we don't need them in TaskContext.
+        bridge_payload = {
+            "sessionId": child_instance_id,
+            "workflowId": tc.workflow_id,
+            "nodeId": task_name,
+            "workflowExecutionId": tc.db_execution_id or tc.execution_id,
+            "parentExecutionId": ctx.instance_id,
+            "agentConfig": agent_config,
+            "environmentConfig": child_input.get("environmentConfig"),
+            "vaultIds": child_input.get("vaultIds") or [],
+            "initialMessage": run_prompt or prompt,
+            "title": f"Workflow {tc.workflow_id} · {task_name}",
+        }
+        bridge_result = yield ctx.call_activity(
+            spawn_session_for_workflow, input=_freeze(bridge_payload)
+        )
+        bridge_child_input = bridge_result.get("childInput") if isinstance(
+            bridge_result, dict
+        ) else None
+        if not isinstance(bridge_child_input, dict):
+            raise RuntimeError(
+                f"workflow↔session bridge: invalid bridge_result for {child_instance_id}"
+            )
+
+        child_result = yield ctx.call_child_workflow(
+            "session_workflow",
+            input=_freeze(bridge_child_input),
+            instance_id=child_instance_id,
+            app_id="dapr-agent-py",
+        )
+    else:
+        child_result = yield ctx.call_child_workflow(
+            target["workflow_name"],
+            input=_freeze(child_input),
+            instance_id=child_instance_id,
+            app_id=target["app_id"],
+        )
 
     child_result = (
         child_result if isinstance(child_result, dict) else {"content": str(child_result)}
     )
     child_result.setdefault("agentWorkflowId", child_instance_id)
     child_result.setdefault("daprInstanceId", child_instance_id)
-    child_result.setdefault("childWorkflowName", target["workflow_name"])
-    child_result.setdefault("childAppId", target["app_id"])
+    if session_bridge_eligible:
+        # Bridge path: session_workflow wrapped agent_workflow. Report the
+        # accurate outer child workflow name + the session id.
+        child_result.setdefault("childWorkflowName", "session_workflow")
+        child_result.setdefault("childAppId", "dapr-agent-py")
+        child_result.setdefault("sessionId", child_instance_id)
+    else:
+        child_result.setdefault("childWorkflowName", target["workflow_name"])
+        child_result.setdefault("childAppId", target["app_id"])
     child_result.setdefault("agentRuntime", agent_runtime)
     if "success" not in child_result:
         child_result["success"] = not bool(child_result.get("error"))

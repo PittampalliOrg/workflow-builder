@@ -24,63 +24,17 @@ from pydantic import BaseModel, Field
 # OpenTelemetry initialization (must happen before FastAPI app creation)
 # ---------------------------------------------------------------------------
 
-_otel_ready = False
+from src.telemetry import init_telemetry, is_telemetry_ready
+from src.telemetry.metrics import init_metrics as _init_claude_code_metrics
 
-
-def _init_otel() -> None:
-    global _otel_ready
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if not endpoint:
-        logging.getLogger(__name__).info(
-            "OTEL_EXPORTER_OTLP_ENDPOINT not set, skipping tracing"
-        )
-        return
-    try:
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-        resource = Resource.create(
-            {
-                "service.name": os.environ.get("OTEL_SERVICE_NAME", "dapr-agent-py"),
-                "service.namespace": "workflow-builder",
-                "openinference.project.name": "workflow-builder",
-            }
-        )
-        provider = TracerProvider(resource=resource)
-        provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
-        )
-        trace.set_tracer_provider(provider)
-
-        try:
-            from dapr_agents.observability import DaprAgentsInstrumentor
-
-            DaprAgentsInstrumentor().instrument(tracer_provider=provider)
-            logging.getLogger(__name__).info("DaprAgentsInstrumentor enabled")
-        except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "DaprAgentsInstrumentor failed: %s", exc
-            )
-
-        _otel_ready = True
-        logging.getLogger(__name__).info(
-            "OpenTelemetry tracing initialized -> %s", endpoint
-        )
-    except Exception as exc:
-        logging.getLogger(__name__).warning("OpenTelemetry init failed: %s", exc)
-
-
-_init_otel()
+_otel_ready = init_telemetry()
+if _otel_ready:
+    _init_claude_code_metrics()
 
 
 def _start_checkpoint_span(tool_name: str, tool_call_id: str):
     """Return a context manager for a git-checkpoint span; no-op when OTEL is unavailable."""
-    if not _otel_ready:
+    if not is_telemetry_ready():
         from contextlib import nullcontext
 
         return nullcontext()
@@ -117,6 +71,7 @@ from src.code_checkpoint import (
 )
 from src.event_publisher import (
     publish_event,
+    publish_session_event,
     publish_workflow_started,
     publish_workflow_completed,
     publish_tool_start,
@@ -945,6 +900,11 @@ class OpenShellDurableAgent(DurableAgent):
         self._compaction_cfg_by_instance: dict[str, CompactionConfig] = {}
         self._compaction_call_count_by_instance: dict[str, int] = {}
         self._compaction_runs_by_instance: dict[str, int] = {}
+        # Per-instance claude_code.interaction span handles (telemetry).
+        # Populated on the first non-replay tick; ended in the workflow's
+        # try/finally on non-replay ticks only.
+        self._interaction_span_by_instance: dict[str, Any] = {}
+        self._interaction_ctx_token_by_instance: dict[str, Any] = {}
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -1209,10 +1169,56 @@ class OpenShellDurableAgent(DurableAgent):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        hook_snapshot = _current_hook_snapshot(self, inst_id)
-        cwd_for_hooks = self._cwd_by_instance.get(inst_id, "") or ""
-        project_dir_for_hooks = cwd_for_hooks or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-        if hooks_enabled():
+        # Telemetry: start claude_code.tool span for this activity.
+        # run_tool runs as its own Dapr activity (different call from the
+        # workflow body) so we re-seed session context and start a fresh
+        # tool span here. tool_input is only serialized when beta tracing
+        # is enabled (add_tool_input_attributes gates internally).
+        _tel_session_token = None
+        _tel_tool_span = None
+        try:
+            from src.telemetry import (
+                end_tool_span,
+                set_session_context,
+                start_tool_span,
+            )
+
+            _tel_session_token = set_session_context(
+                instance_id=inst_id,
+                execution_id=exec_id,
+            )
+            _tool_input_json = ""
+            try:
+                _tool_input_json = json.dumps(tool_args)[:8192]
+            except Exception:
+                _tool_input_json = ""
+            _tel_tool_span = start_tool_span(
+                tool_name,
+                tool_attributes={"tool.call_id": tool_call_id},
+                tool_input=_tool_input_json,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[telemetry] tool span start failed: %s", exc)
+
+        try:
+          hook_snapshot = _current_hook_snapshot(self, inst_id)
+          cwd_for_hooks = self._cwd_by_instance.get(inst_id, "") or ""
+          project_dir_for_hooks = cwd_for_hooks or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+          if hooks_enabled():
+            # claude_code.tool.blocked_on_user wraps PreToolUse gating — it
+            # represents "tool waiting on a permission/approval decision". Ends
+            # with decision=allow|deny|updated_input (mirrors TS).
+            _blocked_span = None
+            try:
+                from src.telemetry import (
+                    end_tool_blocked_on_user_span,
+                    start_tool_blocked_on_user_span,
+                )
+
+                _blocked_span = start_tool_blocked_on_user_span()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[telemetry] blocked_on_user start failed: %s", exc)
+            _block_decision = "allow"
             try:
                 pre_agg = execute_pre_tool_hooks(
                     hook_snapshot,
@@ -1230,9 +1236,11 @@ class OpenShellDurableAgent(DurableAgent):
                 if pre_agg.updated_input is not None:
                     tool_args = dict(pre_agg.updated_input)
                     logger.info("[hooks] PreToolUse updated input for %s", tool_name)
+                    _block_decision = "updated_input"
                 if pre_agg.any_block():
                     reason = pre_agg.blocking_reason or pre_agg.decision_reason or "blocked by hook"
                     logger.info("[hooks] PreToolUse blocked %s: %s", tool_name, reason)
+                    _block_decision = "deny"
                     try:
                         publish_tool_complete(
                             exec_id,
@@ -1254,168 +1262,249 @@ class OpenShellDurableAgent(DurableAgent):
                         self.text_formatter.print_message(blocked_msg)
                     except Exception:
                         pass
-                    return blocked_msg.model_dump()
-
-        try:
-            publish_tool_start(
-                exec_id,
-                inst_id,
-                tool_name,
-                tool_args=tool_args,
-                source_event_id=f"{tool_call_id}:start" if tool_call_id else None,
-            )
-        except Exception:
-            pass
-        try:
-            self._activate_instance_skills(inst_id)
-            if inst_id and not (self._mcp_tools_by_instance.get(inst_id) or {}):
-                self._ensure_mcp_client(inst_id)
-            mcp_tool = (self._mcp_tools_by_instance.get(inst_id) or {}).get(
-                _normalize_tool_lookup_name(tool_name)
-            )
-            if mcp_tool is not None:
-                async def _execute_mcp_tool():
-                    return await mcp_tool.arun(**tool_args)
-
-                try:
-                    mcp_result = self._run_asyncio_task(_execute_mcp_tool())
-                    serialized_result = serialize_tool_result(mcp_result)
-                except Exception as exc:
-                    error = str(exc)
-                    try:
-                        publish_tool_complete(
-                            exec_id,
-                            inst_id,
-                            tool_name,
-                            success=False,
-                            error=error[:200],
-                            source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
-                        )
-                    except Exception:
-                        pass
-                    tool_result = ToolMessage(
-                        content=f"Tool {tool_name} failed: {error}",
-                        role="tool",
-                        name=tool_name,
-                        tool_call_id=tool_call["id"],
-                    )
-                    try:
-                        self.text_formatter.print_message(tool_result)
-                    except Exception:
-                        pass
-                    return tool_result.model_dump()
-                tool_result = ToolMessage(
-                    content=serialized_result,
-                    role="tool",
-                    name=tool_name,
-                    tool_call_id=tool_call["id"],
-                )
-                try:
-                    self.text_formatter.print_message(tool_result)
-                except Exception:
-                    pass
-                result = tool_result.model_dump()
-            else:
-                result = super().run_tool(ctx, payload)
-        except Exception as exc:
-            if hooks_enabled():
-                try:
-                    execute_post_tool_use_failure_hooks(
-                        hook_snapshot,
-                        tool_name=tool_name,
-                        tool_use_id=tool_call_id,
-                        tool_input=tool_args,
-                        error=str(exc),
-                        session_id=inst_id,
-                        cwd=cwd_for_hooks,
-                        project_dir=project_dir_for_hooks,
-                    )
-                except Exception as hook_exc:
-                    logger.warning("[hooks] PostToolUseFailure error: %s", hook_exc)
-            try:
-                publish_tool_complete(
-                    exec_id,
-                    inst_id,
-                    tool_name,
-                    success=False,
-                    error=str(exc)[:200],
-                    source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
-                )
-            except Exception:
-                pass
-            raise
-        # Extract tool output summary
-        output = ""
-        if isinstance(result, dict):
-            raw = result.get("content", "")
-            if isinstance(raw, str):
-                output = raw[:500]
-        if hooks_enabled() and isinstance(result, dict):
-            try:
-                post_agg = execute_post_tool_hooks(
-                    hook_snapshot,
-                    tool_name=tool_name,
-                    tool_use_id=tool_call_id,
-                    tool_input=tool_args,
-                    tool_response=result.get("content"),
-                    session_id=inst_id,
-                    cwd=cwd_for_hooks,
-                    project_dir=project_dir_for_hooks,
-                )
-            except Exception as hook_exc:
-                logger.warning("[hooks] PostToolUse error: %s", hook_exc)
-                post_agg = None
-            if post_agg is not None:
-                if post_agg.updated_tool_output is not None:
-                    result = dict(result)
-                    result["content"] = post_agg.updated_tool_output
-                    output = post_agg.updated_tool_output[:500] if isinstance(post_agg.updated_tool_output, str) else output
-                elif post_agg.additional_contexts:
-                    merged = dict(result)
-                    suffix = "\n\n[hook context]\n" + "\n".join(post_agg.additional_contexts)
-                    if isinstance(merged.get("content"), str):
-                        merged["content"] = merged["content"] + suffix
-                        result = merged
-                        output = merged["content"][:500]
-        checkpoint = None
-        if should_checkpoint_tool(tool_name):
-            try:
-                with _start_checkpoint_span(tool_name, tool_call_id) as _span:
-                    checkpoint = capture_code_checkpoint(
-                        get_runtime(),
-                        execution_id=exec_id,
-                        instance_id=inst_id,
-                        workspace_ref=self._workspace_ref_by_instance.get(inst_id),
-                        tool_call_id=tool_call_id,
-                        tool_name=tool_name,
-                    )
-                    if _span is not None and isinstance(checkpoint, dict):
+                    # Record code_edit_tool.decision counter for Edit/Write/NotebookEdit.
+                    if tool_name in ("Edit", "Write", "NotebookEdit"):
                         try:
-                            _span.set_attribute("checkpoint.status", str(checkpoint.get("status") or ""))
-                            _span.set_attribute("checkpoint.beforeSha", str(checkpoint.get("beforeSha") or ""))
-                            _span.set_attribute("checkpoint.afterSha", str(checkpoint.get("afterSha") or ""))
-                            _span.set_attribute("checkpoint.remoteStatus", str(checkpoint.get("remoteStatus") or ""))
-                            _span.set_attribute("checkpoint.fileCount", int(checkpoint.get("fileCount") or 0))
-                            remote_err = checkpoint.get("remoteError")
-                            if remote_err:
-                                _span.set_attribute("checkpoint.remoteError", str(remote_err)[:500])
+                            from src.telemetry import record_code_edit_decision
+
+                            record_code_edit_decision(decision="reject", tool=tool_name)
                         except Exception:
                             pass
-            except Exception as exc:
-                logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
-        try:
-            publish_tool_complete(
-                exec_id,
-                inst_id,
-                tool_name,
-                success=True,
-                output=output,
-                checkpoint=checkpoint,
-                source_event_id=f"{tool_call_id}:end" if tool_call_id else None,
-            )
-        except Exception:
-            pass
-        return result
+                    try:
+                        if _blocked_span is not None:
+                            end_tool_blocked_on_user_span(
+                                _blocked_span,
+                                decision="deny",
+                                source="PreToolUse",
+                            )
+                    except Exception:
+                        pass
+                    return blocked_msg.model_dump()
+            if _blocked_span is not None:
+                try:
+                    end_tool_blocked_on_user_span(
+                        _blocked_span,
+                        decision=_block_decision,
+                        source="PreToolUse",
+                    )
+                except Exception:
+                    pass
+            if tool_name in ("Edit", "Write", "NotebookEdit") and _block_decision in ("allow", "updated_input"):
+                try:
+                    from src.telemetry import record_code_edit_decision
+
+                    record_code_edit_decision(decision="accept", tool=tool_name)
+                except Exception:
+                    pass
+
+          try:
+              publish_tool_start(
+                  exec_id,
+                  inst_id,
+                  tool_name,
+                  tool_args=tool_args,
+                  source_event_id=f"{tool_call_id}:start" if tool_call_id else None,
+              )
+          except Exception:
+              pass
+          # claude_code.tool.execution wraps the actual dispatch — the MCP
+          # arun() call or super().run_tool(...) — so we capture how long the
+          # real work takes separately from hook/approval overhead.
+          _exec_span = None
+          _exec_success = False
+          _exec_error: str | None = None
+          try:
+              from src.telemetry import (
+                  end_tool_execution_span,
+                  start_tool_execution_span,
+              )
+
+              _exec_span = start_tool_execution_span()
+          except Exception as exc:  # noqa: BLE001
+              logger.warning("[telemetry] tool.execution start failed: %s", exc)
+          try:
+              self._activate_instance_skills(inst_id)
+              if inst_id and not (self._mcp_tools_by_instance.get(inst_id) or {}):
+                  self._ensure_mcp_client(inst_id)
+              mcp_tool = (self._mcp_tools_by_instance.get(inst_id) or {}).get(
+                  _normalize_tool_lookup_name(tool_name)
+              )
+              if mcp_tool is not None:
+                  async def _execute_mcp_tool():
+                      return await mcp_tool.arun(**tool_args)
+
+                  try:
+                      mcp_result = self._run_asyncio_task(_execute_mcp_tool())
+                      serialized_result = serialize_tool_result(mcp_result)
+                  except Exception as exc:
+                      error = str(exc)
+                      _exec_error = error
+                      try:
+                          publish_tool_complete(
+                              exec_id,
+                              inst_id,
+                              tool_name,
+                              success=False,
+                              error=error[:200],
+                              source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
+                          )
+                      except Exception:
+                          pass
+                      tool_result = ToolMessage(
+                          content=f"Tool {tool_name} failed: {error}",
+                          role="tool",
+                          name=tool_name,
+                          tool_call_id=tool_call["id"],
+                      )
+                      try:
+                          self.text_formatter.print_message(tool_result)
+                      except Exception:
+                          pass
+                      if _exec_span is not None:
+                          try:
+                              end_tool_execution_span(
+                                  _exec_span, success=False, error=error[:200]
+                              )
+                              _exec_span = None
+                          except Exception:
+                              pass
+                      return tool_result.model_dump()
+                  tool_result = ToolMessage(
+                      content=serialized_result,
+                      role="tool",
+                      name=tool_name,
+                      tool_call_id=tool_call["id"],
+                  )
+                  try:
+                      self.text_formatter.print_message(tool_result)
+                  except Exception:
+                      pass
+                  result = tool_result.model_dump()
+              else:
+                  result = super().run_tool(ctx, payload)
+              _exec_success = True
+          except Exception as exc:
+              _exec_error = str(exc)
+              if hooks_enabled():
+                  try:
+                      execute_post_tool_use_failure_hooks(
+                          hook_snapshot,
+                          tool_name=tool_name,
+                          tool_use_id=tool_call_id,
+                          tool_input=tool_args,
+                          error=str(exc),
+                          session_id=inst_id,
+                          cwd=cwd_for_hooks,
+                          project_dir=project_dir_for_hooks,
+                      )
+                  except Exception as hook_exc:
+                      logger.warning("[hooks] PostToolUseFailure error: %s", hook_exc)
+              try:
+                  publish_tool_complete(
+                      exec_id,
+                      inst_id,
+                      tool_name,
+                      success=False,
+                      error=str(exc)[:200],
+                      source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
+                  )
+              except Exception:
+                  pass
+              raise
+          finally:
+              if _exec_span is not None:
+                  try:
+                      end_tool_execution_span(
+                          _exec_span,
+                          success=_exec_success,
+                          error=_exec_error[:200] if _exec_error else None,
+                      )
+                  except Exception:
+                      pass
+          # Extract tool output summary
+          output = ""
+          if isinstance(result, dict):
+              raw = result.get("content", "")
+              if isinstance(raw, str):
+                  output = raw[:500]
+          if hooks_enabled() and isinstance(result, dict):
+              try:
+                  post_agg = execute_post_tool_hooks(
+                      hook_snapshot,
+                      tool_name=tool_name,
+                      tool_use_id=tool_call_id,
+                      tool_input=tool_args,
+                      tool_response=result.get("content"),
+                      session_id=inst_id,
+                      cwd=cwd_for_hooks,
+                      project_dir=project_dir_for_hooks,
+                  )
+              except Exception as hook_exc:
+                  logger.warning("[hooks] PostToolUse error: %s", hook_exc)
+                  post_agg = None
+              if post_agg is not None:
+                  if post_agg.updated_tool_output is not None:
+                      result = dict(result)
+                      result["content"] = post_agg.updated_tool_output
+                      output = post_agg.updated_tool_output[:500] if isinstance(post_agg.updated_tool_output, str) else output
+                  elif post_agg.additional_contexts:
+                      merged = dict(result)
+                      suffix = "\n\n[hook context]\n" + "\n".join(post_agg.additional_contexts)
+                      if isinstance(merged.get("content"), str):
+                          merged["content"] = merged["content"] + suffix
+                          result = merged
+                          output = merged["content"][:500]
+          checkpoint = None
+          if should_checkpoint_tool(tool_name):
+              try:
+                  with _start_checkpoint_span(tool_name, tool_call_id) as _span:
+                      checkpoint = capture_code_checkpoint(
+                          get_runtime(),
+                          execution_id=exec_id,
+                          instance_id=inst_id,
+                          workspace_ref=self._workspace_ref_by_instance.get(inst_id),
+                          tool_call_id=tool_call_id,
+                          tool_name=tool_name,
+                      )
+                      if _span is not None and isinstance(checkpoint, dict):
+                          try:
+                              _span.set_attribute("checkpoint.status", str(checkpoint.get("status") or ""))
+                              _span.set_attribute("checkpoint.beforeSha", str(checkpoint.get("beforeSha") or ""))
+                              _span.set_attribute("checkpoint.afterSha", str(checkpoint.get("afterSha") or ""))
+                              _span.set_attribute("checkpoint.remoteStatus", str(checkpoint.get("remoteStatus") or ""))
+                              _span.set_attribute("checkpoint.fileCount", int(checkpoint.get("fileCount") or 0))
+                              remote_err = checkpoint.get("remoteError")
+                              if remote_err:
+                                  _span.set_attribute("checkpoint.remoteError", str(remote_err)[:500])
+                          except Exception:
+                              pass
+              except Exception as exc:
+                  logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
+          try:
+              publish_tool_complete(
+                  exec_id,
+                  inst_id,
+                  tool_name,
+                  success=True,
+                  output=output,
+                  checkpoint=checkpoint,
+                  source_event_id=f"{tool_call_id}:end" if tool_call_id else None,
+              )
+          except Exception:
+              pass
+          return result
+        finally:
+            # End claude_code.tool span + reset session context. Fires on every
+            # exit path (successful return, exception, blocked-by-hook return).
+            try:
+                if _tel_tool_span is not None:
+                    end_tool_span()
+                from src.telemetry.attributes import reset_session_context
+
+                if _tel_session_token is not None:
+                    reset_session_context(_tel_session_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[telemetry] tool span end failed: %s", exc)
 
     @workflow_entry
     @message_router(message_model=TriggerAction)
@@ -1470,6 +1559,32 @@ class OpenShellDurableAgent(DurableAgent):
             restored_repo_path = str(code_checkpoint_restore.get("repoPath") or "").strip()
             if restored_repo_path:
                 runtime.set_cwd(restored_repo_path)
+
+        # Per-run persona override from agentConfig. Named agents carry the
+        # persona inside agentConfig; apply before building the system prompt
+        # so the <env> block layers on top of the right role/goal. Mirrors the
+        # existing per-run override pattern for system_prompt/model/max_turns.
+        agent_config = _coerce_agent_config(message.get("agentConfig")) or {}
+        previous_role = self.profile.role
+        previous_goal = self.profile.goal
+        previous_instructions = list(self.profile.instructions or [])
+        previous_style_guidelines = list(
+            getattr(self.profile, "style_guidelines", None) or []
+        )
+        if isinstance(agent_config.get("role"), str) and agent_config["role"].strip():
+            self.profile.role = agent_config["role"].strip()
+        if isinstance(agent_config.get("goal"), str) and agent_config["goal"].strip():
+            self.profile.goal = agent_config["goal"].strip()
+        if isinstance(agent_config.get("instructions"), list):
+            self.profile.instructions = [
+                str(i) for i in agent_config["instructions"] if str(i).strip()
+            ]
+        if isinstance(agent_config.get("styleGuidelines"), list):
+            style_list = [
+                str(s) for s in agent_config["styleGuidelines"] if str(s).strip()
+            ]
+            if hasattr(self.profile, "style_guidelines"):
+                self.profile.style_guidelines = style_list
 
         # Set system prompt dynamically with <env> block (mirrors prompts.ts)
         previous_system_prompt = self.profile.system_prompt
@@ -1570,6 +1685,42 @@ class OpenShellDurableAgent(DurableAgent):
         # Stash for activity overrides (call_llm, run_tool)
         self._exec_id = execution_id
         self._inst_id = instance_id
+
+        # Set telemetry session context and start interaction span (first
+        # non-replay tick only). Span end + context reset happen in the
+        # workflow body's `try/finally` below, also gated on non-replay.
+        if not ctx.is_replaying:
+            try:
+                from src.telemetry import (
+                    log_otel_event,
+                    record_session_start,
+                    set_session_context,
+                    start_interaction_span,
+                )
+
+                tok = set_session_context(
+                    instance_id=instance_id,
+                    execution_id=execution_id,
+                )
+                self._interaction_ctx_token_by_instance[instance_id] = tok
+                task_text = str(message.get("task") or message.get("prompt") or "")
+                span = start_interaction_span(task_text)
+                if span is not None:
+                    self._interaction_span_by_instance[instance_id] = span
+                record_session_start()
+                # user_prompt event (mirrors TS processTextPrompt.ts call site).
+                # Content is only included when OTEL_LOG_USER_PROMPTS=1.
+                from src.telemetry.events import is_user_prompt_logging_enabled
+
+                log_otel_event(
+                    "user_prompt",
+                    {
+                        "prompt_length": len(task_text),
+                        "prompt": task_text if is_user_prompt_logging_enabled() else "<REDACTED>",
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[telemetry] interaction start failed: %s", exc)
         workspace_ref = str(
             message.get("workspaceRef")
             or metadata.get("workspaceRef")
@@ -1856,7 +2007,276 @@ class OpenShellDurableAgent(DurableAgent):
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
             self.profile.system_prompt = previous_system_prompt
+            self.profile.role = previous_role
+            self.profile.goal = previous_goal
+            self.profile.instructions = previous_instructions
+            if hasattr(self.profile, "style_guidelines"):
+                self.profile.style_guidelines = previous_style_guidelines
             skill_registry.clear_instance_skills()
+            # End the claude_code.interaction span + reset session context.
+            # Gated on non-replay to avoid prematurely closing the span every
+            # orchestrator replay tick (see comment above on finally semantics).
+            if not ctx.is_replaying and instance_id in self._interaction_span_by_instance:
+                try:
+                    from src.telemetry import end_interaction_span
+                    from src.telemetry.attributes import reset_session_context
+
+                    end_interaction_span()
+                    self._interaction_span_by_instance.pop(instance_id, None)
+                    tok = self._interaction_ctx_token_by_instance.pop(
+                        instance_id, None
+                    )
+                    if tok is not None:
+                        try:
+                            reset_session_context(tok)
+                        except Exception:
+                            pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[telemetry] interaction end failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Session workflow (CMA-shape multi-turn loop)
+    # ------------------------------------------------------------------
+
+    @workflow_entry
+    def session_workflow(self, ctx, message: dict):
+        """Multi-turn session loop wrapping ``agent_workflow`` as a child
+        workflow per turn. Mirrors the Claude Managed Agents session
+        primitive — stays alive across many user events via Dapr's
+        ``wait_for_external_event`` pattern.
+
+        Input shape::
+
+            {
+                "sessionId": "sesn_abc",
+                "agentConfig": { ... },       # resolved by SvelteKit BFF
+                "environmentConfig": { ... }, # resolved by SvelteKit BFF
+                "vaultIds": [...],
+                "initialEvents": [            # optional kickoff batch
+                    {"type": "user.message", "content": [{"type":"text","text":"..."}]}
+                ],
+                "dbExecutionId": "...",       # optional workflow-execution correlation
+            }
+
+        The workflow does NOT handle permission policies or custom tools in
+        v1 — those surface as normal tool calls inside ``agent_workflow``.
+        The session-level loop adds: kickoff, multi-turn conversation,
+        interrupt (via external event), graceful terminate.
+        """
+        session_id = str(message.get("sessionId") or "")
+        if not session_id:
+            raise RuntimeError("session_workflow requires sessionId")
+
+        agent_cfg = _coerce_agent_config(message.get("agentConfig")) or {}
+        env_cfg = message.get("environmentConfig") or {}
+        vault_ids = message.get("vaultIds") or []
+        db_execution_id = str(message.get("dbExecutionId") or "")
+        pending = list(message.get("initialEvents") or [])
+        # Workflow-bridge mode: when an orchestrator calls session_workflow as
+        # a child workflow for a `durable/run` node, it wants a single-turn
+        # request/response shape — spawn, run the initial turn, return the
+        # result, and self-terminate. UI-initiated sessions leave this unset
+        # so the multi-turn loop continues across user events.
+        auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
+
+        if not ctx.is_replaying:
+            publish_session_event(
+                session_id,
+                "session.status_rescheduled",
+                {"vaultIds": vault_ids},
+            )
+
+        turn_counter = 0
+        while True:
+            if not pending:
+                if not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.status_idle",
+                        {"stop_reason": {"type": "end_turn"}},
+                    )
+                try:
+                    batch = yield ctx.wait_for_external_event("session.user_events")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[session] %s wait_for_external_event failed: %s",
+                        session_id,
+                        exc,
+                    )
+                    break
+                pending = list((batch or {}).get("events") or [])
+                if not pending:
+                    continue
+
+            if any(ev.get("type") == "session.terminate" for ev in pending):
+                if not ctx.is_replaying:
+                    publish_session_event(session_id, "session.status_terminated", {})
+                return
+
+            # Extract the user.message text(s) + tool_confirmations / custom_tool_results.
+            # For v1 we join all text content into a single "task" string; the
+            # other event types pass through as context strings so agent_workflow
+            # can see them in its prompt.
+            task_text = _compose_turn_task(pending)
+            pending = []
+            turn_counter += 1
+
+            if not ctx.is_replaying:
+                publish_session_event(
+                    session_id,
+                    "session.status_running",
+                    {"turn": turn_counter},
+                )
+
+            # Build the child workflow input — same shape agent_workflow accepts.
+            child_input = _freeze_session_child_input(
+                session_id=session_id,
+                agent_cfg=agent_cfg,
+                env_cfg=env_cfg,
+                vault_ids=vault_ids,
+                db_execution_id=db_execution_id,
+                turn=turn_counter,
+                task=task_text,
+                raw_message=message,
+            )
+
+            try:
+                turn_result = yield ctx.call_child_workflow(
+                    "agent_workflow",
+                    input=child_input,
+                    instance_id=f"{session_id}:turn-{turn_counter}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[session] %s turn %d failed: %s",
+                    session_id,
+                    turn_counter,
+                    exc,
+                )
+                if not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.error",
+                        {"turn": turn_counter, "error": str(exc)[:500]},
+                    )
+                    publish_session_event(
+                        session_id,
+                        "session.status_terminated",
+                        {},
+                    )
+                if auto_terminate:
+                    return {
+                        "success": False,
+                        "content": str(exc)[:500],
+                        "error": str(exc)[:500],
+                        "sessionId": session_id,
+                        "turn": turn_counter,
+                    }
+                return
+
+            # Workflow-bridge path: return the child's result to the parent
+            # orchestrator and self-terminate. UI sessions skip this branch
+            # and loop back to await the next user event.
+            if auto_terminate:
+                if not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.status_idle",
+                        {"stop_reason": {"type": "end_turn"}},
+                    )
+                    publish_session_event(
+                        session_id,
+                        "session.status_terminated",
+                        {"reason": "auto_terminate_after_end_turn"},
+                    )
+                result_dict = (
+                    turn_result
+                    if isinstance(turn_result, dict)
+                    else {"content": str(turn_result or "")}
+                )
+                result_dict.setdefault("success", not bool(result_dict.get("error")))
+                result_dict.setdefault("sessionId", session_id)
+                result_dict.setdefault("turn", turn_counter)
+                return result_dict
+
+
+def _compose_turn_task(events: list[dict]) -> str:
+    """Collapse a batch of user events into a single task string that
+    agent_workflow can consume. ``user.message`` text blocks concatenate;
+    tool confirmations and custom-tool results append as bracketed notes.
+    """
+    parts: list[str] = []
+    for ev in events:
+        et = ev.get("type") or ""
+        if et == "user.message":
+            content = ev.get("content") or ev.get("data", {}).get("content") or []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = str(block.get("text") or "")
+                    if text:
+                        parts.append(text)
+        elif et == "user.tool_confirmation":
+            result = ev.get("result") or ev.get("data", {}).get("result")
+            tool_use_id = ev.get("tool_use_id") or ev.get("data", {}).get("tool_use_id")
+            parts.append(
+                f"[tool_confirmation tool_use_id={tool_use_id} result={result}]"
+            )
+        elif et == "user.custom_tool_result":
+            tool_use_id = ev.get("tool_use_id") or ev.get("data", {}).get("tool_use_id")
+            content = ev.get("content") or ev.get("data", {}).get("content") or []
+            text = "".join(
+                str(b.get("text") or "") for b in content if isinstance(b, dict)
+            )
+            parts.append(
+                f"[custom_tool_result tool_use_id={tool_use_id}] {text}"
+            )
+    return "\n\n".join(parts)
+
+
+def _freeze_session_child_input(
+    *,
+    session_id: str,
+    agent_cfg: dict,
+    env_cfg: dict,
+    vault_ids: list,
+    db_execution_id: str,
+    turn: int,
+    task: str,
+    raw_message: dict,
+) -> dict:
+    """Build the frozen input payload for a per-turn agent_workflow child
+    call. Reuses the message shape that sw_workflow already passes through,
+    so the existing agent_workflow code path is untouched.
+    """
+    # Sandbox plumbing — copy through whatever the BFF baked into the
+    # session-start message; environmentConfig overrides for future turns.
+    sandbox_policy = (env_cfg or {}).get("sandboxPolicy") or raw_message.get(
+        "sandboxPolicy"
+    )
+    sandbox_name = raw_message.get("sandboxName") or ""
+    workspace_ref = raw_message.get("workspaceRef") or ""
+    cwd = raw_message.get("cwd") or "/sandbox"
+
+    return {
+        "task": task,
+        "prompt": task,
+        "sessionId": session_id,
+        "executionId": db_execution_id,
+        "dbExecutionId": db_execution_id,
+        "workflowExecutionId": db_execution_id,
+        "agentConfig": agent_cfg,
+        "vaultIds": vault_ids,
+        "sandboxPolicy": sandbox_policy,
+        "sandboxName": sandbox_name,
+        "workspaceRef": workspace_ref,
+        "cwd": cwd,
+        "_session_turn": turn,
+        "_message_metadata": {
+            "executionId": db_execution_id,
+            "sessionId": session_id,
+            "turn": turn,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2018,6 +2438,12 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
+    try:
+        from src.telemetry import shutdown_telemetry
+
+        shutdown_telemetry()
+    except Exception as exc:
+        logger.warning("Telemetry shutdown failed: %s", exc)
 
 
 app = FastAPI(

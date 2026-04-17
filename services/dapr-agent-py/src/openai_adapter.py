@@ -247,6 +247,27 @@ def _call_openai_responses(
     response_format: Any = None,
 ) -> dict[str, Any]:
     model = _get_openai_model(component)
+    # claude_code.llm_request span — wraps the whole OpenAI Responses call
+    # including the OAuth→API-key fallback retry path.
+    import time as _time
+
+    llm_span = None
+    llm_start = _time.monotonic()
+    try:
+        from src.telemetry import start_llm_request_span
+
+        llm_span = start_llm_request_span(
+            model,
+            fast_mode=False,
+            query_source="dapr_agent_py.openai_adapter",
+            system_prompt=instructions,
+            tools_json=json.dumps(_convert_tools_for_openai(tools))
+            if tools
+            else None,
+            messages_for_api=list(messages),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[telemetry] llm_request (openai) start failed: %s", exc)
     headers, auth_mode = _auth_headers()
     request_headers = {
         **headers,
@@ -332,6 +353,39 @@ def _call_openai_responses(
     if tool_calls:
         result["tool_calls"] = tool_calls
         result["content"] = content or ""
+
+    # End claude_code.llm_request span + record token metrics.
+    if llm_span is not None:
+        try:
+            from src.telemetry import end_llm_request_span, record_tokens
+
+            usage = data.get("usage") or {}
+            input_tokens = int(
+                usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+            )
+            output_tokens = int(
+                usage.get("output_tokens") or usage.get("completion_tokens") or 0
+            )
+            cache_read = int(
+                (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
+            )
+            duration_ms = (_time.monotonic() - llm_start) * 1000.0
+            end_llm_request_span(
+                llm_span,
+                input_tokens=input_tokens or None,
+                output_tokens=output_tokens or None,
+                cache_read_tokens=cache_read or None,
+                success=True,
+                has_tool_call=bool(tool_calls),
+                ttft_ms=duration_ms,
+                model_output=content or None,
+            )
+            record_tokens(type_="input", count=input_tokens, model=model)
+            record_tokens(type_="output", count=output_tokens, model=model)
+            if cache_read:
+                record_tokens(type_="cacheRead", count=cache_read, model=model)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[telemetry] llm_request (openai) end failed: %s", exc)
     return result
 
 

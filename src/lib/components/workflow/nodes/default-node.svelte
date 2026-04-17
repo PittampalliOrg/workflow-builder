@@ -2,7 +2,6 @@
 	import { Handle, Position } from '@xyflow/svelte';
 	import { Circle, Boxes, Sparkles } from 'lucide-svelte';
 	import type { WorkflowNodeData } from '$lib/stores/workflow.svelte';
-	import { LEGACY_SHARED_SANDBOX_POLICY, normalizeSandboxPolicy } from '$lib/workflows/sandbox-policy';
 
 	interface Props {
 		data: WorkflowNodeData;
@@ -44,11 +43,18 @@
 		if (!taskConfig || typeof taskConfig !== 'object' || Array.isArray(taskConfig)) return null;
 		const withBlock = (taskConfig as Record<string, unknown>).with;
 		if (!withBlock || typeof withBlock !== 'object' || Array.isArray(withBlock)) return null;
-		const policy = normalizeSandboxPolicy(
-			(withBlock as Record<string, unknown>).sandboxPolicy,
-			LEGACY_SHARED_SANDBOX_POLICY
-		);
-		return policy.mode === 'shared-runtime' ? null : policy.mode;
+		const body = (withBlock as Record<string, unknown>).body as
+			| Record<string, unknown>
+			| undefined;
+		const envRef = body?.environmentRef ?? (withBlock as Record<string, unknown>).environmentRef;
+		if (envRef && typeof envRef === 'object') {
+			return 'env';
+		}
+		const agentRef = body?.agentRef ?? (withBlock as Record<string, unknown>).agentRef;
+		if (agentRef && typeof agentRef === 'object') {
+			return 'agent';
+		}
+		return null;
 	});
 </script>
 

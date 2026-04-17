@@ -2133,37 +2133,84 @@ export type WorkflowResourceRef = typeof workflowResourceRefs.$inferSelect;
 export type NewWorkflowResourceRef = typeof workflowResourceRefs.$inferInsert;
 
 // ============================================================================
-// Agents (Persistent Agent Configurations)
+// Environments (Sandbox + networking templates)
 // ============================================================================
 
-export type AgentType =
-	| "general"
-	| "code-assistant"
-	| "research"
-	| "planning"
-	| "custom";
-
 /**
- * Model specification stored as JSONB.
- * Supports both simple string format ("openai/gpt-4o") and structured format.
+ * Environments are reusable sandbox/networking templates that agents reference
+ * by id. Modeled on Claude Managed Agents' environment primitive. Promoted from
+ * the previous inline SandboxPolicy shape (now deleted) into a first-class,
+ * versioned resource.
  */
-export type AgentModelSpec = {
-	provider: string;
-	name: string;
-};
+export const environments = pgTable(
+	"environments",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull(),
+		name: text("name").notNull(),
+		description: text("description"),
+		avatar: text("avatar"),
+		tags: jsonb("tags").$type<string[]>().notNull().default([]),
+		runtime: text("runtime").notNull().default("cloud"),
+		currentVersionId: text("current_version_id"),
+		createdBy: text("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		isArchived: boolean("is_archived").notNull().default(false),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		slugUnique: unique("uq_environments_slug").on(table.slug),
+		archivedIdx: index("idx_environments_archived").on(table.isArchived),
+	}),
+);
+
+export const environmentVersions = pgTable(
+	"environment_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		environmentId: text("environment_id")
+			.notNull()
+			.references(() => environments.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		configHash: text("config_hash").notNull(),
+		changelog: text("changelog"),
+		publishedAt: timestamp("published_at"),
+		publishedBy: text("published_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		versionUnique: unique("uq_environment_version").on(
+			table.environmentId,
+			table.version,
+		),
+		hashIdx: index("idx_environment_versions_hash").on(table.configHash),
+		environmentIdx: index("idx_environment_versions_environment").on(
+			table.environmentId,
+		),
+	}),
+);
+
+// ============================================================================
+// Agents (Named Agent Definitions)
+// ============================================================================
 
 /**
- * Tool reference stored in the tools JSONB array.
- */
-export type AgentToolRef = {
-	type: "workspace" | "mcp" | "action";
-	ref: string;
-};
-
-/**
- * Agents table — persistent agent configurations modeled on Mastra's StorageAgentType.
- * Users create agent configs in the UI; these are resolved at execution time and
- * passed to durable-agent via HTTP request body.
+ * Named agents library. Workflow nodes reference these by id; the spec-builder
+ * resolves the reference at execute time and inlines the canonical config into
+ * the durable/run task payload. Replaces the prior inline-per-node agentConfig
+ * and the unfinished Mastra-style agents/agent_profile_applied_history tables.
+ *
+ * `environmentId` is the required pointer to the sandbox template; `defaultVaultIds`
+ * is reserved for the Phase 2 Vaults work.
  */
 export const agents = pgTable(
 	"agents",
@@ -2171,50 +2218,39 @@ export const agents = pgTable(
 		id: text("id")
 			.primaryKey()
 			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull(),
 		name: text("name").notNull(),
 		description: text("description"),
-		agentType: text("agent_type")
-			.notNull()
-			.default("general")
-			.$type<AgentType>(),
-		instructions: text("instructions").notNull(),
-		model: jsonb("model").notNull().$type<AgentModelSpec>(),
-		tools: jsonb("tools").notNull().$type<AgentToolRef[]>().default([]),
-		maxTurns: integer("max_turns").notNull().default(50),
-		timeoutMinutes: integer("timeout_minutes").notNull().default(30),
-		defaultOptions: jsonb("default_options").$type<Record<string, unknown>>(),
-		memoryConfig: jsonb("memory_config").$type<Record<string, unknown>>(),
-		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
-		isDefault: boolean("is_default").notNull().default(false),
-		isEnabled: boolean("is_enabled").notNull().default(true),
-		userId: text("user_id")
-			.notNull()
-			.references(() => users.id),
-		projectId: text("project_id").references(() => projects.id, {
-			onDelete: "cascade",
+		avatar: text("avatar"),
+		tags: jsonb("tags").$type<string[]>().notNull().default([]),
+		runtime: text("runtime").notNull().default("dapr-agent-py"),
+		currentVersionId: text("current_version_id"),
+		environmentId: text("environment_id").references(() => environments.id, {
+			onDelete: "restrict",
 		}),
-		instructionsPresetId: text("instructions_preset_id"),
-		instructionsPresetVersion: integer("instructions_preset_version"),
-		schemaPresetId: text("schema_preset_id"),
-		schemaPresetVersion: integer("schema_preset_version"),
-		modelProfileId: text("model_profile_id"),
-		modelProfileVersion: integer("model_profile_version"),
-		agentProfileTemplateId: text("agent_profile_template_id").references(
-			() => agentProfileTemplates.id,
-		),
-		agentProfileTemplateVersion: integer("agent_profile_template_version"),
+		environmentVersion: integer("environment_version"),
+		defaultVaultIds: jsonb("default_vault_ids")
+			.$type<string[]>()
+			.notNull()
+			.default([]),
+		sourceTemplateSlug: text("source_template_slug"),
+		sourceTemplateVersion: integer("source_template_version"),
+		createdBy: text("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		isArchived: boolean("is_archived").notNull().default(false),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
 	(table) => ({
-		userIdx: index("idx_agents_user_id").on(table.userId),
-		projectIdx: index("idx_agents_project_id").on(table.projectId),
-		typeIdx: index("idx_agents_agent_type").on(table.agentType),
+		slugUnique: unique("uq_agents_slug").on(table.slug),
+		archivedIdx: index("idx_agents_archived").on(table.isArchived),
+		environmentIdx: index("idx_agents_environment").on(table.environmentId),
 	}),
 );
 
-export const agentProfileAppliedHistory = pgTable(
-	"agent_profile_applied_history",
+export const agentVersions = pgTable(
+	"agent_versions",
 	{
 		id: text("id")
 			.primaryKey()
@@ -2222,27 +2258,242 @@ export const agentProfileAppliedHistory = pgTable(
 		agentId: text("agent_id")
 			.notNull()
 			.references(() => agents.id, { onDelete: "cascade" }),
-		templateId: text("template_id")
-			.notNull()
-			.references(() => agentProfileTemplates.id),
-		templateVersion: integer("template_version").notNull(),
-		appliedByUserId: text("applied_by_user_id")
-			.notNull()
-			.references(() => users.id),
-		source: text("source").notNull().default("ui"),
-		snapshot: jsonb("snapshot").$type<Record<string, unknown>>(),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		configHash: text("config_hash").notNull(),
+		changelog: text("changelog"),
+		publishedAt: timestamp("published_at"),
+		publishedBy: text("published_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 	(table) => ({
-		agentIdx: index("idx_agent_profile_applied_history_agent").on(
-			table.agentId,
+		versionUnique: unique("uq_agent_version").on(table.agentId, table.version),
+		hashIdx: index("idx_agent_versions_hash").on(table.configHash),
+		agentIdx: index("idx_agent_versions_agent").on(table.agentId),
+	}),
+);
+
+// ============================================================================
+// Vaults (MCP credentials with auto-refresh; never enter the sandbox)
+// ============================================================================
+
+/**
+ * Vaults group credentials that agents/sessions attach by id. Anthropic's
+ * Managed Agents vault model — credentials never leave the host and are
+ * injected at tool-call time by function-router (the proxy). Replaces the
+ * per-piece `mcp_connection` table for MCP-bound auth.
+ */
+export const vaults = pgTable(
+	"vaults",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		name: text("name").notNull(),
+		description: text("description"),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		createdBy: text("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		isArchived: boolean("is_archived").notNull().default(false),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		nameProjectUnique: unique("uq_vaults_project_name").on(
+			table.projectId,
+			table.name,
 		),
-		templateIdx: index("idx_agent_profile_applied_history_template").on(
-			table.templateId,
+		projectIdx: index("idx_vaults_project").on(table.projectId),
+		archivedIdx: index("idx_vaults_archived").on(table.isArchived),
+	}),
+);
+
+/**
+ * Individual credentials inside a vault. `value` is AES-256-CBC encrypted
+ * (reuses the `EncryptedObject` shape from security/encryption.ts) and
+ * never returned from the API. `mcpServerUrl` is used by function-router
+ * to match credentials to MCP server declarations on the agent.
+ *
+ * `refreshMetadata.refreshTokenEncrypted` is also an `EncryptedObject` — we
+ * keep it separate from `value` so a rotation of the access token doesn't
+ * touch the refresh token and vice versa.
+ */
+export const vaultCredentials = pgTable(
+	"vault_credentials",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		vaultId: text("vault_id")
+			.notNull()
+			.references(() => vaults.id, { onDelete: "cascade" }),
+		displayName: text("display_name").notNull(),
+		authType: text("auth_type").notNull(),
+		value: jsonb("value")
+			.notNull()
+			.$type<{ iv: string; data: string }>(),
+		mcpServerUrl: text("mcp_server_url"),
+		refreshMetadata: jsonb("refresh_metadata").$type<Record<string, unknown>>(),
+		expiresAt: timestamp("expires_at"),
+		lastRefreshedAt: timestamp("last_refreshed_at"),
+		lastUsedAt: timestamp("last_used_at"),
+		isArchived: boolean("is_archived").notNull().default(false),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		vaultIdx: index("idx_vault_credentials_vault").on(table.vaultId),
+		mcpUrlIdx: index("idx_vault_credentials_mcp_url").on(table.mcpServerUrl),
+		expiresIdx: index("idx_vault_credentials_expires").on(table.expiresAt),
+	}),
+);
+
+/**
+ * Audit log for vault credential refresh attempts. One row per refresh
+ * attempt (success or failure). Useful for diagnosing OAuth refresh failures.
+ */
+export const vaultCredentialRefreshLog = pgTable(
+	"vault_credential_refresh_log",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		credentialId: text("credential_id")
+			.notNull()
+			.references(() => vaultCredentials.id, { onDelete: "cascade" }),
+		status: text("status").notNull(), // "success" | "failure"
+		errorMessage: text("error_message"),
+		responseStatus: integer("response_status"),
+		attemptedAt: timestamp("attempted_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		credentialIdx: index("idx_vault_refresh_log_credential").on(table.credentialId),
+		attemptedIdx: index("idx_vault_refresh_log_attempted").on(table.attemptedAt),
+	}),
+);
+
+// ============================================================================
+// Sessions (one agent run, multi-turn, streamed events)
+// ============================================================================
+
+/**
+ * Sessions are the runtime atom in the CMA-mirror model. A session pins to
+ * an agent version and an environment version at creation and accumulates
+ * events until it terminates. Long-lived — the Dapr workflow instance
+ * backing the session stays alive across many user events (via
+ * `ctx.wait_for_external_event`).
+ */
+export const sessions = pgTable(
+	"sessions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		title: text("title"),
+		status: text("status").notNull().default("rescheduling"),
+		stopReason: jsonb("stop_reason").$type<Record<string, unknown>>(),
+		agentId: text("agent_id")
+			.notNull()
+			.references(() => agents.id, { onDelete: "restrict" }),
+		agentVersion: integer("agent_version"),
+		environmentId: text("environment_id").references(() => environments.id, {
+			onDelete: "restrict",
+		}),
+		environmentVersion: integer("environment_version"),
+		vaultIds: jsonb("vault_ids").$type<string[]>().notNull().default([]),
+		daprInstanceId: text("dapr_instance_id"),
+		natsSubject: text("nats_subject"),
+		workflowExecutionId: text("workflow_execution_id"),
+		parentExecutionId: text("parent_execution_id"),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		usage: jsonb("usage").$type<Record<string, unknown>>().notNull().default({}),
+		errorMessage: text("error_message"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+		completedAt: timestamp("completed_at"),
+		archivedAt: timestamp("archived_at"),
+	},
+	(table) => ({
+		agentIdx: index("idx_sessions_agent").on(table.agentId),
+		userIdx: index("idx_sessions_user").on(table.userId),
+		statusIdx: index("idx_sessions_status").on(table.status),
+		createdIdx: index("idx_sessions_created").on(table.createdAt),
+		workflowIdx: index("idx_sessions_workflow_execution").on(
+			table.workflowExecutionId,
 		),
-		createdIdx: index("idx_agent_profile_applied_history_created").on(
-			table.createdAt,
+	}),
+);
+
+/**
+ * Append-only event log for a session. `sequence` is monotonic within a
+ * session — the ID prefix `sevt_` matches CMA's wire convention. The SSE
+ * endpoint reads this alongside NATS for replay on reconnect.
+ */
+export const sessionEvents = pgTable(
+	"session_events",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		sessionId: text("session_id")
+			.notNull()
+			.references(() => sessions.id, { onDelete: "cascade" }),
+		sequence: integer("sequence").notNull(),
+		type: text("type").notNull(),
+		data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
+		processedAt: timestamp("processed_at"),
+		sourceEventId: text("source_event_id"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		sessionSequence: unique("uq_session_event_sequence").on(
+			table.sessionId,
+			table.sequence,
 		),
+		sessionIdx: index("idx_session_events_session").on(table.sessionId),
+		typeIdx: index("idx_session_events_type").on(table.type),
+		createdIdx: index("idx_session_events_created").on(table.createdAt),
+	}),
+);
+
+/**
+ * Resources mounted into a session's sandbox at startup — files, GitHub
+ * repos. GitHub repos carry a reference to a vault credential (the clone
+ * token) rather than the token itself.
+ */
+export const sessionResources = pgTable(
+	"session_resources",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		sessionId: text("session_id")
+			.notNull()
+			.references(() => sessions.id, { onDelete: "cascade" }),
+		type: text("type").notNull(),
+		fileId: text("file_id"),
+		mountPath: text("mount_path"),
+		repoUrl: text("repo_url"),
+		checkoutRef: text("checkout_ref"),
+		authTokenCredentialId: text("auth_token_credential_id").references(
+			() => vaultCredentials.id,
+			{ onDelete: "set null" },
+		),
+		mountedAt: timestamp("mounted_at"),
+		removedAt: timestamp("removed_at"),
+	},
+	(table) => ({
+		sessionIdx: index("idx_session_resources_session").on(table.sessionId),
 	}),
 );
 
@@ -2529,7 +2780,23 @@ export type NewWorkflowExternalEvent =
 	typeof workflowExternalEvents.$inferInsert;
 export type Agent = typeof agents.$inferSelect;
 export type NewAgent = typeof agents.$inferInsert;
-export type AgentProfileAppliedHistory =
-	typeof agentProfileAppliedHistory.$inferSelect;
-export type NewAgentProfileAppliedHistory =
-	typeof agentProfileAppliedHistory.$inferInsert;
+export type AgentVersion = typeof agentVersions.$inferSelect;
+export type NewAgentVersion = typeof agentVersions.$inferInsert;
+export type Environment = typeof environments.$inferSelect;
+export type NewEnvironment = typeof environments.$inferInsert;
+export type EnvironmentVersion = typeof environmentVersions.$inferSelect;
+export type NewEnvironmentVersion = typeof environmentVersions.$inferInsert;
+export type Vault = typeof vaults.$inferSelect;
+export type NewVault = typeof vaults.$inferInsert;
+export type VaultCredential = typeof vaultCredentials.$inferSelect;
+export type NewVaultCredential = typeof vaultCredentials.$inferInsert;
+export type VaultCredentialRefreshLog =
+	typeof vaultCredentialRefreshLog.$inferSelect;
+export type NewVaultCredentialRefreshLog =
+	typeof vaultCredentialRefreshLog.$inferInsert;
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
+export type SessionEvent = typeof sessionEvents.$inferSelect;
+export type NewSessionEvent = typeof sessionEvents.$inferInsert;
+export type SessionResource = typeof sessionResources.$inferSelect;
+export type NewSessionResource = typeof sessionResources.$inferInsert;

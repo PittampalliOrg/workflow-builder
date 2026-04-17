@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import {
 		GitBranch,
@@ -20,7 +20,22 @@
 		Container,
 		Network,
 		Puzzle,
-		RotateCcw
+		RotateCcw,
+		Layers,
+		KeyRound,
+		MessagesSquare,
+		ChevronDown,
+		Home,
+		BarChart3,
+		DollarSign,
+		FileText,
+		Files,
+		Rocket,
+		Shield,
+		Users,
+		Key,
+		Gauge,
+		Wrench
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -39,21 +54,95 @@
 	let { collapsed, onToggle, user = null }: Props = $props();
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 
-	const navItems = [
-		{ href: '/workflows', label: 'Workflows', icon: GitBranch },
-		{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
-		{ href: '/connections', label: 'Connections', icon: Plug },
-		{ href: '/agents', label: 'Agents', icon: Bot },
-		{ href: '/skills', label: 'Skills', icon: Puzzle },
-		{ href: '/mcp-chat', label: 'MCP Chat', icon: MessageSquare },
-		{ href: '/monitor', label: 'Monitor', icon: Activity },
-		{ href: '/sandboxes', label: 'Sandboxes', icon: Container },
-		{ href: '/activities', label: 'Activities', icon: Server },
-		{ href: '/code-functions', label: 'Code Functions', icon: Code },
-		{ href: '/observability', label: 'Observability', icon: Eye },
-		{ href: '/dapr-system', label: 'Dapr System', icon: Network },
-		{ href: '/settings', label: 'Settings', icon: Settings }
+	type NavItem = { href: string; label: string; icon: typeof GitBranch };
+	type NavGroup = { label: string; icon: typeof GitBranch; badge?: string; items: NavItem[] };
+
+	// CMA-mirrored nav IA. Groups + labels match platform.claude.com/dashboard exactly.
+	const navGroups: NavGroup[] = [
+		{
+			label: 'Build',
+			icon: Wrench,
+			items: [
+				{ href: '/mcp-chat', label: 'Workbench', icon: MessageSquare },
+				{ href: '/workflows', label: 'Workflows', icon: GitBranch },
+				{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
+				{ href: '/skills', label: 'Skills', icon: Puzzle },
+				{ href: '/code-functions', label: 'Code Functions', icon: Code }
+			]
+		},
+		{
+			label: 'Managed Agents',
+			icon: Bot,
+			badge: 'New',
+			items: [
+				{ href: '/workspaces/default/agents/quickstart', label: 'Quickstart', icon: Rocket },
+				{ href: '/workspaces/default/agents', label: 'Agents', icon: Bot },
+				{ href: '/workspaces/default/sessions', label: 'Sessions', icon: MessagesSquare },
+				{ href: '/workspaces/default/environments', label: 'Environments', icon: Layers },
+				{ href: '/workspaces/default/vaults', label: 'Credential vaults', icon: KeyRound },
+				{ href: '/connections', label: 'Connections', icon: Plug }
+			]
+		},
+		{
+			label: 'Analytics',
+			icon: BarChart3,
+			items: [
+				{ href: '/usage', label: 'Usage', icon: BarChart3 },
+				{ href: '/workspaces/default/cost', label: 'Cost', icon: DollarSign },
+				{ href: '/observability', label: 'Logs', icon: FileText }
+			]
+		},
+		{
+			label: 'Operate',
+			icon: Activity,
+			items: [
+				{ href: '/monitor', label: 'Monitor', icon: Activity },
+				{ href: '/sandboxes', label: 'Sandboxes', icon: Container },
+				{ href: '/activities', label: 'Activities', icon: Server },
+				{ href: '/dapr-system', label: 'Dapr System', icon: Network }
+			]
+		},
+		{
+			label: 'Manage',
+			icon: Settings,
+			items: [
+				{ href: '/settings/api-keys', label: 'API keys', icon: Key },
+				{ href: '/settings/limits', label: 'Limits', icon: Gauge },
+				{ href: '/settings/members', label: 'Members', icon: Users },
+				{ href: '/settings/security', label: 'Security & compliance', icon: Shield }
+			]
+		}
 	];
+
+	// Each group can be expanded/collapsed. Default: active group open, others closed.
+	let openGroups = $state<Record<string, boolean>>({
+		Build: true,
+		'Managed Agents': true,
+		Analytics: false,
+		Operate: false,
+		Manage: false
+	});
+
+	// Auto-open the group containing the active route. Read `openGroups`
+	// via untrack() so the spread doesn't create a self-dependency loop
+	// (write → re-run → write → ...).
+	$effect(() => {
+		const pathname = page.url.pathname;
+		const next = untrack(() => ({ ...openGroups }));
+		let changed = false;
+		for (const group of navGroups) {
+			if (group.items.some((item) => isActive(item.href)) && !next[group.label]) {
+				next[group.label] = true;
+				changed = true;
+			}
+		}
+		if (changed) openGroups = next;
+		void pathname; // keep pathname as the effect's tracked dependency
+	});
+
+	function toggleGroup(label: string) {
+		openGroups = { ...openGroups, [label]: !openGroups[label] };
+	}
 
 	function isActive(href: string): boolean {
 		if (href === '/workflow-ops/names') return page.url.pathname.startsWith('/workflow-ops');
@@ -84,6 +173,31 @@
 	});
 
 	let displayName = $derived(user?.name || user?.email?.split('@')[0] || 'User');
+
+	type Workspace = {
+		id: string;
+		slug: string;
+		displayName: string;
+		externalId: string;
+		role: string;
+		isCurrent: boolean;
+	};
+	let workspaces = $state<Workspace[]>([]);
+	let activeWorkspace = $derived(
+		workspaces.find((w) => w.isCurrent) ?? workspaces[0] ?? null
+	);
+
+	onMount(async () => {
+		try {
+			const res = await fetch('/api/v1/workspaces');
+			if (res.ok) {
+				const data = await res.json();
+				workspaces = data.workspaces ?? [];
+			}
+		} catch {
+			/* best effort */
+		}
+	});
 </script>
 
 <aside
@@ -110,39 +224,161 @@
 		</Button>
 	</div>
 
+	<!-- Workspace switcher (CMA parity) -->
+	{#if !collapsed && activeWorkspace}
+		<div class="px-3 py-2 border-b border-border">
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<button
+							{...props}
+							class="flex w-full items-center gap-2 rounded-md border bg-background px-2 py-1.5 text-xs hover:bg-accent/50"
+						>
+							<div class="size-5 rounded bg-primary/10 flex items-center justify-center text-[10px] font-semibold">
+								{activeWorkspace.displayName[0]?.toUpperCase() ?? 'W'}
+							</div>
+							<span class="flex-1 text-left truncate font-medium">
+								{activeWorkspace.displayName}
+							</span>
+							<ChevronsUpDown size={12} class="shrink-0 text-muted-foreground" />
+						</button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="start" class="w-[calc(14rem-1.5rem)]">
+					<DropdownMenu.Label class="text-[10px] uppercase tracking-wide text-muted-foreground">
+						Workspaces
+					</DropdownMenu.Label>
+					{#each workspaces as w (w.id)}
+						<DropdownMenu.Item
+							onSelect={() => {
+								// Route to workspace-scoped agents as the default landing page
+								window.location.href = `/workspaces/${w.slug}/agents`;
+							}}
+							class="gap-2"
+						>
+							<div class="size-5 rounded bg-primary/10 flex items-center justify-center text-[10px] font-semibold">
+								{w.displayName[0]?.toUpperCase() ?? 'W'}
+							</div>
+							<span class="flex-1 truncate">{w.displayName}</span>
+							{#if w.isCurrent}
+								<span class="text-[10px] text-primary">active</span>
+							{/if}
+						</DropdownMenu.Item>
+					{/each}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
+		</div>
+	{/if}
+
 	<!-- Navigation -->
 	<nav class="flex-1 overflow-y-auto p-2">
+		<!-- Dashboard: top-level link (matches CMA's dashboard shortcut above all groups) -->
+		{#if collapsed}
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					{#snippet child({ props })}
+						<a
+							{...props}
+							href="/dashboard"
+							class="mb-1 flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(
+								'/dashboard'
+							)
+								? 'bg-accent text-accent-foreground'
+								: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+						>
+							<Home size={15} />
+						</a>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content side="right">Dashboard</Tooltip.Content>
+			</Tooltip.Root>
+		{:else}
+			<a
+				href="/dashboard"
+				class="mb-1 flex h-8 items-center gap-2.5 rounded-md px-2.5 text-xs transition-colors {isActive(
+					'/dashboard'
+				)
+					? 'bg-accent font-medium text-accent-foreground'
+					: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+			>
+				<Home size={15} class="shrink-0" />
+				<span>Dashboard</span>
+			</a>
+		{/if}
+
+		<!-- Grouped nav -->
 		<div class="flex flex-col gap-0.5">
-			{#each navItems as item}
+			{#each navGroups as group (group.label)}
 				{#if collapsed}
-					<Tooltip.Root>
-						<Tooltip.Trigger>
-							{#snippet child({ props })}
-								<a
-									{...props}
-									{...reloadAttrs(item.href)}
-									href={item.href}
-									class="flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(item.href)
-										? 'bg-accent text-accent-foreground'
-										: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
-								>
-									<item.icon size={15} />
-								</a>
-							{/snippet}
-						</Tooltip.Trigger>
-						<Tooltip.Content side="right">{item.label}</Tooltip.Content>
-					</Tooltip.Root>
+					<!-- Collapsed: show group-level icon, flatten items into tooltips -->
+					{#each group.items as item (item.href)}
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								{#snippet child({ props })}
+									<a
+										{...props}
+										{...reloadAttrs(item.href)}
+										href={item.href}
+										class="flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(
+											item.href
+										)
+											? 'bg-accent text-accent-foreground'
+											: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+									>
+										<item.icon size={15} />
+									</a>
+								{/snippet}
+							</Tooltip.Trigger>
+							<Tooltip.Content side="right">
+								{group.label} → {item.label}
+							</Tooltip.Content>
+						</Tooltip.Root>
+					{/each}
+					{#if group !== navGroups[navGroups.length - 1]}
+						<div class="my-1 border-t border-border/50"></div>
+					{/if}
 				{:else}
-					<a
-						href={item.href}
-						{...reloadAttrs(item.href)}
-						class="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-xs transition-colors {isActive(item.href)
-							? 'bg-accent font-medium text-accent-foreground'
-							: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
-					>
-						<item.icon size={15} class="shrink-0" />
-						<span>{item.label}</span>
-					</a>
+					<!-- Expanded: collapsible group with header + item list -->
+					<div class="flex flex-col">
+						<button
+							type="button"
+							onclick={() => toggleGroup(group.label)}
+							class="flex h-7 items-center justify-between gap-2 rounded-md px-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/80 transition-colors hover:bg-accent/30 hover:text-foreground"
+						>
+							<span class="flex items-center gap-1">
+								{group.label}
+								{#if group.badge}
+									<span
+										class="rounded-full bg-primary/15 px-1.5 py-px text-[9px] font-medium uppercase tracking-normal text-primary"
+									>
+										{group.badge}
+									</span>
+								{/if}
+							</span>
+							<ChevronDown
+								size={11}
+								class="transition-transform {openGroups[group.label] ? '' : '-rotate-90'}"
+							/>
+						</button>
+						{#if openGroups[group.label]}
+							<div class="mb-1 ml-0 flex flex-col gap-0.5">
+								{#each group.items as item (item.href)}
+									<a
+										href={item.href}
+										{...reloadAttrs(item.href)}
+										class="flex h-7 items-center gap-2.5 rounded-md px-2.5 pl-5 text-xs transition-colors {isActive(
+											item.href
+										)
+											? 'bg-accent font-medium text-accent-foreground'
+											: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+									>
+										<item.icon size={13} class="shrink-0" />
+										<span>{item.label}</span>
+									</a>
+								{/each}
+							</div>
+						{/if}
+					</div>
 				{/if}
 			{/each}
 		</div>

@@ -205,6 +205,23 @@ def _call_vertex_gemini(
         raise RuntimeError("Gemini OAuth or Vertex AI project/location is not configured")
 
     model = _get_gemini_model(component)
+    # claude_code.llm_request span for the Vertex Gemini call.
+    import time as _time
+
+    llm_span = None
+    llm_start = _time.monotonic()
+    try:
+        from src.telemetry import start_llm_request_span
+
+        llm_span = start_llm_request_span(
+            model,
+            fast_mode=False,
+            query_source="dapr_agent_py.gemini_adapter",
+            system_prompt=system_instruction,
+            messages_for_api=list(contents),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[telemetry] llm_request (gemini) start failed: %s", exc)
     request_headers = {
         **headers,
         "Accept": "application/json",
@@ -259,6 +276,28 @@ def _call_vertex_gemini(
     if tool_calls:
         result["tool_calls"] = tool_calls
         result["content"] = content or ""
+
+    if llm_span is not None:
+        try:
+            from src.telemetry import end_llm_request_span, record_tokens
+
+            usage = (data.get("usageMetadata") or {}) if isinstance(data, dict) else {}
+            input_tokens = int(usage.get("promptTokenCount") or 0)
+            output_tokens = int(usage.get("candidatesTokenCount") or 0)
+            duration_ms = (_time.monotonic() - llm_start) * 1000.0
+            end_llm_request_span(
+                llm_span,
+                input_tokens=input_tokens or None,
+                output_tokens=output_tokens or None,
+                success=True,
+                has_tool_call=bool(tool_calls),
+                ttft_ms=duration_ms,
+                model_output=content or None,
+            )
+            record_tokens(type_="input", count=input_tokens, model=model)
+            record_tokens(type_="output", count=output_tokens, model=model)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[telemetry] llm_request (gemini) end failed: %s", exc)
     return result
 
 

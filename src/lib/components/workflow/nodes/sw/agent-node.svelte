@@ -19,16 +19,13 @@
 	let subtitle = $derived.by(() => {
 		const taskConfig = (data.taskConfig as Record<string, unknown>) || {};
 		const body = getAgentTaskBody(taskConfig);
-		const modelSpec =
-			typeof body.agentConfig?.modelSpec === 'string' && body.agentConfig.modelSpec.trim().length > 0
-				? body.agentConfig.modelSpec.trim()
-				: '';
+		const agentRefLabel = body.agentRef ? `agent:${body.agentRef.id.slice(0, 8)}` : 'unbound';
 		const turnBudget =
 			typeof body.maxTurns === 'number' && Number.isFinite(body.maxTurns) && body.maxTurns > 0
 				? `max ${body.maxTurns} turns`
 				: '';
 		const graphSummary = summarizeAgentGraph(body.agentGraph);
-		return [graphSummary, turnBudget, modelSpec].filter(Boolean).join(' • ');
+		return [agentRefLabel, graphSummary, turnBudget].filter(Boolean).join(' • ');
 	});
 
 	let nodeData = $derived(subtitle ? { ...data, description: subtitle } : data);

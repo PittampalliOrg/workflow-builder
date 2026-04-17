@@ -13,7 +13,6 @@
 	import WorkflowSwitcher from './workflow-switcher.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
-	import { compileSandboxPolicies } from '$lib/workflows/sandbox-policy';
 
 	let isPublishing = $state(false);
 	let showExecuteDialog = $state(false);
@@ -33,7 +32,7 @@
 					name: store.workflowName,
 					nodes: store.nodes,
 					edges: store.edges,
-					spec: store.spec ? compileSandboxPolicies(store.spec) : store.spec
+					spec: store.spec
 				})
 			});
 			store.isDirty = false;

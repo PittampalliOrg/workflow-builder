@@ -118,6 +118,79 @@ def _do_publish(payload: bytes) -> None:
             _consecutive_failures = 0  # Reset after cooldown set
 
 
+_WORKFLOW_BUILDER_URL = os.environ.get(
+    "WORKFLOW_BUILDER_URL", "http://workflow-builder.nextjs.svc.cluster.local:3000"
+)
+_INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
+
+
+def _post_ingest(session_id: str, envelope: dict[str, Any]) -> None:
+    """Non-blocking POST of a session event to the SvelteKit BFF's internal
+    ingest endpoint. The BFF assigns the sequence number and writes to
+    `session_events`. Swallows all errors — NATS remains the primary transport;
+    the DB write is durability + replay.
+    """
+    if not _INTERNAL_API_TOKEN:
+        return
+    try:
+        import urllib.request
+
+        url = f"{_WORKFLOW_BUILDER_URL}/api/internal/sessions/{session_id}/events/ingest"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(envelope).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {_INTERNAL_API_TOKEN}",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5).close()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-ingest] POST failed: %s", exc)
+
+
+def publish_session_event(
+    session_id: str,
+    event_type: str,
+    data: dict[str, Any] | None = None,
+    *,
+    source_event_id: str | None = None,
+) -> None:
+    """Emit a CMA-shape session event. Dual-write:
+    1. NATS pub/sub (fire-and-forget, drives the SSE live stream).
+    2. Internal ingest endpoint (durable + replay; assigns sequence numbers).
+
+    Both are best-effort and non-blocking. See
+    `shared/managed-agents-events.md` for the event-type taxonomy.
+    """
+    if not PUBLISH_ENABLED:
+        return
+
+    envelope_inner = {
+        "type": event_type,
+        "data": data or {},
+        "sourceEventId": source_event_id,
+    }
+
+    # 1. NATS via workflow.stream (existing infrastructure picks up the
+    #    `sessionId` field and routes to session.events.<sessionId>).
+    publish_event(
+        event_type,
+        {**(data or {}), "_sessionId": session_id},
+        execution_id=session_id,  # reuse for correlation
+        instance_id=session_id,
+        source_event_id=source_event_id,
+    )
+
+    # 2. Postgres ingest on a daemon thread (non-blocking).
+    threading.Thread(
+        target=_post_ingest,
+        args=(session_id, envelope_inner),
+        daemon=True,
+    ).start()
+
+
 def publish_event(
     event_type: str,
     data: dict[str, Any] | None = None,

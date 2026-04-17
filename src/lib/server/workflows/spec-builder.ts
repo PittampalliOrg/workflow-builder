@@ -1,9 +1,4 @@
 import { normalizeAgentTaskConfig } from "$lib/types/agent-graph";
-import {
-  compileSandboxPolicies,
-  withDocumentSandboxPolicy,
-  DEFAULT_NEW_AGENT_SANDBOX_POLICY,
-} from "$lib/workflows/sandbox-policy";
 
 /**
  * Builds a CNCF Serverless Workflow 1.0 spec from visual graph nodes and edges.
@@ -84,7 +79,7 @@ export function buildSpecFromGraph(
     }
   }
 
-  const spec = withDocumentSandboxPolicy({
+  return {
     document: {
       dsl: "1.0.0",
       namespace: "workflow-builder",
@@ -93,8 +88,7 @@ export function buildSpecFromGraph(
       title: workflowName,
     },
     do: doArray,
-  }, DEFAULT_NEW_AGENT_SANDBOX_POLICY);
-  return compileSandboxPolicies(spec);
+  };
 }
 
 /**

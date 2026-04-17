@@ -50,6 +50,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 
 **Key dispatch invariants**
 - `durable/run` is a **Dapr child workflow**, not an HTTP call. The orchestrator calls `ctx.call_child_workflow("agent_workflow", app_id="dapr-agent-py", ...)`; retry resilience comes from `WorkflowRetryPolicy(max_attempts=8)` on the callee side.
+- **Workflow↔Session bridge** (`WORKFLOW_USE_SESSIONS=true`): when the flag is set, `durable/run` routes through `session_workflow` instead of `agent_workflow`. The orchestrator calls the `spawn_session_for_workflow` activity (POSTs to `/api/internal/sessions/ensure-for-workflow` — find-or-create ephemeral agent + session row keyed by `{workflowId, nodeId}`), then calls `ctx.call_child_workflow("session_workflow", ..., instance_id=<deterministic session_id>)`. `session_workflow` runs with `autoTerminateAfterEndTurn: true` — one turn, emit `status_idle{end_turn}` + `status_terminated`, return the child's result. Full Dapr durability preserved (nested child workflows), workflow-driven agent runs show up in `/sessions/[id]` with live event history. Default off; flip once the BFF ingest endpoint is deployed.
 - Every other action goes `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | workspace-runtime | openshell-agent-runtime | code-runtime}`. The orchestrator uses `activities/dapr_invoke.py` (no raw HTTP).
 - function-router owns credential decryption (AES-256-CBC from `app_connection`) + `credential_access_logs` audit. Orchestrator never holds plaintext secrets.
 

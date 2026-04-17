@@ -8,12 +8,16 @@ import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
+import { validateTriggerModel } from '$lib/server/workflows/model-validation';
 import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 import {
 	buildWorkflowSessionId,
 	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
-import { compileSandboxPolicies } from '$lib/workflows/sandbox-policy';
+import {
+	resolveSpecAgentRefs,
+	AgentRefResolutionError
+} from '$lib/server/agents/resolver';
 
 /**
  * POST /api/workflows/[workflowId]/execute
@@ -66,10 +70,26 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!storedSpec || !isSWWorkflow(storedSpec)) {
 		return error(400, 'Workflow does not have a valid SW 1.0 spec. Save the workflow first to generate the spec from the canvas.');
 	}
-	const spec = compileSandboxPolicies(storedSpec);
+	let spec = storedSpec as Record<string, unknown>;
 	const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
 	if (removedAgentCallsError) {
 		return error(400, removedAgentCallsError);
+	}
+
+	// Resolve named-agent references. Fail-closed: any durable/run node without
+	// an agentRef means the workflow predates the cutover and never got its
+	// inline config backfilled. Run the admin backfill endpoint to migrate.
+	try {
+		spec = (await resolveSpecAgentRefs(spec)) as typeof spec;
+	} catch (resolveErr) {
+		if (resolveErr instanceof AgentRefResolutionError) {
+			return error(400, resolveErr.message);
+		}
+		console.error('[Execute] agent ref resolution failed:', resolveErr);
+		return error(
+			500,
+			resolveErr instanceof Error ? resolveErr.message : 'Agent ref resolution failed'
+		);
 	}
 
 	try {
@@ -91,6 +111,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			400,
 			`Missing required workflow input fields: ${missingTriggerFields.join(', ')}`
 		);
+	}
+
+	const modelError = await validateTriggerModel(spec, triggerData);
+	if (modelError) {
+		return error(400, modelError);
 	}
 
 	// Create execution record
