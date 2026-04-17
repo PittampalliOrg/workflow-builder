@@ -299,6 +299,15 @@ def publish_event(
         }
     ).encode()
 
+    # TODO(step-2b): remove this diagnostic — verifying Phase 4 event plumbing
+    if event_type not in ("sandbox_heartbeat",):
+        logger.info(
+            "[events-publish] type=%s session_id=%s instance_id=%s",
+            event_type,
+            session_id or "-",
+            (instance_id or "")[:60],
+        )
+
     # Fire-and-forget in daemon thread — never blocks the agent workflow
     threading.Thread(target=_do_publish, args=(payload,), daemon=True).start()
 
