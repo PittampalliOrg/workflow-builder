@@ -70,6 +70,7 @@ from src.code_checkpoint import (
     should_checkpoint_tool,
 )
 from src.event_publisher import publish_session_event, scope_session, unscope_session
+from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.hooks import (
     HooksSnapshot,
     execute_notification_hooks,
@@ -1954,6 +1955,28 @@ class OpenShellDurableAgent(DurableAgent):
                                 plan_result.get("error", "unknown"))
             except Exception as exc:
                 logger.warning("[plan] Failed to read/persist PLAN.md: %s", exc)
+
+            # Scan /mnt/session/outputs/* and ship each file to the Files API
+            # with purpose=output, scopeId=<session_id>. Gated on session_id
+            # presence (no-op for standalone agent_workflow runs without a
+            # session) and on `not ctx.is_replaying` so Dapr replay doesn't
+            # produce duplicate file rows. Failures are logged and don't
+            # affect the workflow result.
+            session_id_for_outputs = self._session_id_by_instance.get(instance_id)
+            if session_id_for_outputs and not ctx.is_replaying:
+                try:
+                    summary = _scan_session_outputs(session_id_for_outputs, runtime)
+                    logger.info(
+                        "[session-outputs] %s scan summary: %s",
+                        session_id_for_outputs,
+                        summary,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[session-outputs] scan failed for %s: %s",
+                        session_id_for_outputs,
+                        exc,
+                    )
 
             if hooks_enabled() and not ctx.is_replaying:
                 try:

@@ -248,6 +248,49 @@ class OpenShellRuntime:
         ).strip()
         return self._json_result(script, {"path": path, "content": content})
 
+    def read_bytes_base64(
+        self, path: str, max_bytes: int = 5 * 1024 * 1024
+    ) -> dict[str, Any]:
+        """Read any file in the sandbox and return base64-encoded contents.
+        Fails cleanly with `error: "too_large"` when the file exceeds
+        ``max_bytes`` — saves callers from streaming multi-MB blobs through
+        the gateway stdout path, which has practical throughput limits.
+        """
+        script = dedent(
+            """
+            import base64, json, pathlib, sys
+            payload = json.loads(sys.stdin.read())
+            p = pathlib.Path(payload["path"])
+            max_bytes = int(payload["max_bytes"])
+            try:
+                if not p.is_file():
+                    print(json.dumps({"ok": False, "error": "not_a_file", "path": str(p)}))
+                    raise SystemExit(0)
+                size = p.stat().st_size
+                if size > max_bytes:
+                    print(json.dumps({
+                        "ok": False,
+                        "error": "too_large",
+                        "size": size,
+                        "max_bytes": max_bytes,
+                    }))
+                    raise SystemExit(0)
+                with p.open("rb") as handle:
+                    data = handle.read()
+                print(json.dumps({
+                    "ok": True,
+                    "path": str(p),
+                    "size": size,
+                    "base64": base64.b64encode(data).decode("ascii"),
+                }))
+            except SystemExit:
+                raise
+            except Exception as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}))
+            """
+        ).strip()
+        return self._json_result(script, {"path": path, "max_bytes": max_bytes})
+
     def glob_files(self, pattern: str, search_dir: str, max_results: int) -> dict[str, Any]:
         script = dedent(
             """
