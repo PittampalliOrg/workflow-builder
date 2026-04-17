@@ -14,11 +14,8 @@
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the SvelteKit app only
 #   devspace dev --profile workflow-ui-only  # Raw fastest loop: workflow-builder only
-#   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-ui  # Iterate on workflow-builder Svelte app + durable-agent
-#   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-e2e  # workflow-builder + workflow-orchestrator + durable-agent
-#   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Backward-compatible alias for durable-agent-ui
 #   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every active in-repo workflow service
-#   devspace run build-dev-base-images  # Refresh the Tekton-built base images used by durable-agent-ui
+#   devspace run build-dev-base-images  # Refresh Tekton-built base images
 #   devspace dev       # Raw DevSpace entrypoint (pauses ArgoCD via pipeline)
 #   devspace run deploy-ui      # Build + deploy SvelteKit image (no dev loop)
 #   devspace run restart-ui     # Restart deployment with current image (no build)
@@ -28,7 +25,7 @@
 #
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
-#     durable-agent, fn-activepieces, and mcp-gateway.
+#     dapr-agent-py, fn-activepieces, and mcp-gateway.
 #   - openshell-agent-runtime is consumed as a deployed cluster service and is not
 #     replaced by this DevSpace config because its source does not live in this repo.
 #   - Use one profile at a time. If a session is already active, use `devspace enter`,
@@ -814,119 +811,6 @@ dev:
       - name: OPENSHELL_AGENT_RUNTIME_URL
         value: ${OPENSHELL_AGENT_RUNTIME_API_BASE_URL}
 
-  durable-agent:
-    namespace: ${APP_NAME}
-    labelSelector:
-      app: durable-agent
-    container: ${DURABLE_AGENT_APP_NAME}
-    devImage: ${TEKTON_DURABLE_AGENT_DEV_IMAGE}
-    workingDir: /app
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: "2"
-        memory: 2Gi
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        echo "=== DevSpace Development Container (Durable Agent) ==="
-        cd /app
-        HASH_FILE="package.json"
-        if [ -f "pnpm-lock.yaml" ]; then
-          HASH_FILE="pnpm-lock.yaml"
-        fi
-        CURRENT_HASH="$(md5sum "$HASH_FILE" | cut -d' ' -f1)"
-
-        corepack enable
-        corepack prepare pnpm@${PNPM_VERSION} --activate
-
-        echo "Checking dependencies..."
-        if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
-           [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "${CURRENT_HASH}" ]; then
-          echo "Installing dependencies..."
-          CI=1 pnpm install --no-frozen-lockfile --force
-          printf '%s' "${CURRENT_HASH}" > node_modules/.pnpm-lock-hash
-        else
-          echo "Dependencies up to date (cached)"
-        fi
-
-        export PATH="/app/node_modules/.bin:$PATH"
-
-        echo "Starting durable-agent dev server..."
-        pnpm exec tsc --watch --preserveWatchOutput &
-        TSC_PID=$!
-        cleanup() {
-          kill "$TSC_PID" >/dev/null 2>&1 || true
-        }
-        trap cleanup EXIT INT TERM
-        until [ -f dist/service/main.js ]; do
-          sleep 1
-        done
-        exec node --watch dist/service/main.js
-    sync:
-      - path: ./services/durable-agent/:/app
-        initialSync: mirrorLocal
-        disableDownload: true
-        polling: true
-        startContainer: true
-        waitInitialSync: true
-        onUpload:
-          restartContainer: false
-          exec:
-            - name: install-durable-agent-deps
-              command: sh
-              args:
-                - -lc
-                - cd /app && corepack enable && corepack prepare pnpm@9.12.3 --activate && CI=1 pnpm install --no-frozen-lockfile --force
-              failOnError: true
-              onChange:
-                - package.json
-                - pnpm-lock.yaml
-        excludePaths:
-          - node_modules/
-          - dist/
-          - coverage/
-          - .turbo/
-    patches:
-      - op: replace
-        path: spec.serviceAccountName
-        value: durable-agent
-      - op: remove
-        path: spec.containers.name=${DURABLE_AGENT_APP_NAME}.livenessProbe
-      - op: remove
-        path: spec.containers.name=${DURABLE_AGENT_APP_NAME}.readinessProbe
-      - op: replace
-        path: spec.containers.name=${DURABLE_AGENT_APP_NAME}.securityContext
-        value:
-          runAsUser: 0
-          runAsGroup: 0
-          runAsNonRoot: false
-          allowPrivilegeEscalation: false
-      - op: replace
-        path: spec.securityContext
-        value:
-          fsGroup: 1001
-          runAsNonRoot: false
-    ports:
-      - port: "${DURABLE_AGENT_LOCAL_PORT}:${DURABLE_AGENT_CONTAINER_PORT}"
-    persistPaths:
-      - path: /tmp
-        skipPopulate: true
-      - path: /app/node_modules
-      - path: /app/.pnpm-store
-    # All env vars (PORT, HOST, AI_MODEL, Dapr ports, state store, pubsub,
-    # sandbox config, OTEL) are already set via ConfigMap durable-agent-config
-    # and Deployment env in stacks/. Only override what differs for dev.
-    env:
-      - name: NODE_ENV
-        value: development
-      - name: npm_config_store_dir
-        value: /app/.pnpm-store
-
   fn-activepieces:
     # Plain Deployment in cluster (label: app=fn-activepieces)
     namespace: ${APP_NAME}
@@ -1511,53 +1395,6 @@ commands:
     apiVersion: tekton.dev/v1
     kind: PipelineRun
     metadata:
-      generateName: devspace-durable-agent-dev-image-
-      namespace: workflow-builder-builds
-    spec:
-      timeouts:
-        pipeline: 2h0m0s
-      taskRunTemplate:
-        serviceAccountName: workflow-builder-build-trigger
-      pipelineSpec:
-        params:
-          - name: git_url
-            type: string
-          - name: git_sha
-            type: string
-        workspaces:
-          - name: buildah-cache
-        tasks:
-          - name: build-and-push
-            retries: 1
-            taskRef:
-              name: workflow-builder-image-build-push
-            workspaces:
-              - name: buildah-cache
-                workspace: buildah-cache
-            params:
-              - name: git_url
-                value: \$(params.git_url)
-              - name: git_revision
-                value: \$(params.git_sha)
-              - name: context_dir
-                value: services/durable-agent
-              - name: dockerfile
-                value: services/durable-agent/Dockerfile
-              - name: image
-                value: gitea-ryzen.tail286401.ts.net/giteaadmin/opencode-durable-agent:git-\$(params.git_sha)
-      params:
-        - name: git_url
-          value: https://gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder.git
-        - name: git_sha
-          value: ${GIT_SHA}
-      workspaces:
-        - name: buildah-cache
-          persistentVolumeClaim:
-            claimName: buildah-cache-workflow-builder
-    ---
-    apiVersion: tekton.dev/v1
-    kind: PipelineRun
-    metadata:
       generateName: devspace-claude-code-agent-dev-image-
       namespace: workflow-builder-builds
     spec:
@@ -1621,8 +1458,6 @@ profiles:
         path: vars.PRODUCTION_DEPLOYMENTS.default
         value: "workflow-builder ai-chatbot workflow-orchestrator function-router"
       - op: remove
-        path: dev.durable-agent
-      - op: remove
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
@@ -1640,8 +1475,6 @@ profiles:
         value: "workflow-builder workflow-orchestrator function-router"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.durable-agent
       - op: remove
         path: dev.fn-activepieces
       - op: remove
@@ -1662,8 +1495,6 @@ profiles:
         path: dev.ai-chatbot
       - op: remove
         path: dev.function-router
-      - op: remove
-        path: dev.durable-agent
       - op: remove
         path: dev.fn-activepieces
       - op: remove
@@ -1687,74 +1518,6 @@ profiles:
       - op: remove
         path: dev.function-router
       - op: remove
-        path: dev.durable-agent
-      - op: remove
-        path: dev.fn-activepieces
-      - op: remove
-        path: dev.mcp-gateway
-
-  - name: durable-agent-ui
-    description: >
-      Fast inner loop for the workflow-builder Svelte app and the TypeScript durable-agent service.
-      Starts: workflow-builder, durable-agent.
-      Requires durable-agent Deployment in the cluster.
-    patches:
-      - op: replace
-        path: vars.ARGO_APPS.default
-        value: "workflow-builder durable-agent"
-      - op: replace
-        path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder durable-agent"
-      - op: remove
-        path: dev.ai-chatbot
-      - op: remove
-        path: dev.workflow-orchestrator
-      - op: remove
-        path: dev.function-router
-      - op: remove
-        path: dev.fn-activepieces
-      - op: remove
-        path: dev.mcp-gateway
-
-  - name: durable-agent-e2e
-    description: >
-      End-to-end durable agent loop.
-      Starts: workflow-builder, workflow-orchestrator, durable-agent.
-      Use this when validating the SW 1.0 single-agent execution path in-cluster.
-    patches:
-      - op: replace
-        path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator durable-agent"
-      - op: replace
-        path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator durable-agent"
-      - op: remove
-        path: dev.ai-chatbot
-      - op: remove
-        path: dev.function-router
-      - op: remove
-        path: dev.fn-activepieces
-      - op: remove
-        path: dev.mcp-gateway
-
-  - name: durable-agent-only
-    description: >
-      Backward-compatible alias for durable-agent-ui.
-      Starts: workflow-builder, durable-agent.
-    patches:
-      - op: replace
-        path: vars.ARGO_APPS.default
-        value: "workflow-builder durable-agent"
-      - op: replace
-        path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder durable-agent"
-      - op: remove
-        path: dev.ai-chatbot
-      - op: remove
-        path: dev.workflow-orchestrator
-      - op: remove
-        path: dev.function-router
-      - op: remove
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
@@ -1770,8 +1533,6 @@ profiles:
         value: "workflow-builder workflow-orchestrator function-router fn-activepieces"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.durable-agent
       - op: remove
         path: dev.mcp-gateway
 
@@ -1793,8 +1554,6 @@ profiles:
       - op: remove
         path: dev.ai-chatbot
       - op: remove
-        path: dev.durable-agent
-      - op: remove
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
@@ -1802,11 +1561,10 @@ profiles:
   - name: full-agent-stack
     description: >
       Every active in-repo workflow service.
-      Includes the internal durable-agent support service.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway durable-agent"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway dapr-agent-py"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py"
