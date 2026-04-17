@@ -32,7 +32,7 @@ from tracing import start_activity_span
 logger = logging.getLogger(__name__)
 
 
-def spawn_session_for_workflow(input: dict[str, Any]) -> dict[str, Any]:
+def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Create (or look up) a session row for a ``durable/run`` node.
 
     Input keys (all required unless noted):
@@ -63,23 +63,23 @@ def spawn_session_for_workflow(input: dict[str, Any]) -> dict[str, Any]:
                 "INTERNAL_API_TOKEN is not configured — workflow↔session bridge requires it"
             )
 
-        session_id = str(input.get("sessionId") or "").strip()
+        session_id = str(input_data.get("sessionId") or "").strip()
         if not session_id:
             raise RuntimeError("spawn_session_for_workflow: sessionId is required")
 
         payload: dict[str, Any] = {
             "sessionId": session_id,
-            "workflowId": input.get("workflowId") or "",
-            "nodeId": input.get("nodeId") or "",
-            "workflowExecutionId": input.get("workflowExecutionId"),
-            "parentExecutionId": input.get("parentExecutionId"),
-            "userId": input.get("userId") or "",
-            "projectId": input.get("projectId"),
-            "agentConfig": input.get("agentConfig") or {},
-            "environmentConfig": input.get("environmentConfig"),
-            "vaultIds": input.get("vaultIds") or [],
-            "initialMessage": input.get("initialMessage"),
-            "title": input.get("title"),
+            "workflowId": input_data.get("workflowId") or "",
+            "nodeId": input_data.get("nodeId") or "",
+            "workflowExecutionId": input_data.get("workflowExecutionId"),
+            "parentExecutionId": input_data.get("parentExecutionId"),
+            "userId": input_data.get("userId") or "",
+            "projectId": input_data.get("projectId"),
+            "agentConfig": input_data.get("agentConfig") or {},
+            "environmentConfig": input_data.get("environmentConfig"),
+            "vaultIds": input_data.get("vaultIds") or [],
+            "initialMessage": input_data.get("initialMessage"),
+            "title": input_data.get("title"),
         }
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"
