@@ -68,18 +68,37 @@ export async function appendEvent(
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence — someone else won the race. Retry.
-			// Drizzle wraps the pg error, so check both the wrapper message and
-			// the underlying pg error code (23505 = unique_violation).
+			// Also: unique violation on (session_id, source_event_id) — same
+			// event delivered twice (e.g. Dapr replay fires publish_event again,
+			// or the direct-ingest + NATS-subscription paths both land). Swallow
+			// the duplicate silently and return the existing row.
 			const maybePgErr = err as { code?: string; cause?: unknown; message?: string };
 			const causeErr = maybePgErr?.cause as { code?: string; message?: string } | undefined;
+			const errMsg = `${maybePgErr?.message ?? ""} ${causeErr?.message ?? ""}`;
 			const isUniqueViolation =
 				maybePgErr?.code === "23505" ||
 				causeErr?.code === "23505" ||
-				(typeof maybePgErr?.message === "string" &&
-					maybePgErr.message.includes("uq_session_event_sequence")) ||
-				(typeof causeErr?.message === "string" &&
-					causeErr.message.includes("uq_session_event_sequence"));
+				errMsg.includes("uq_session_event_sequence") ||
+				errMsg.includes("uq_session_events_source");
 			if (isUniqueViolation) {
+				// Source-event dup: return the existing row rather than retry.
+				if (
+					event.sourceEventId &&
+					(errMsg.includes("uq_session_events_source") ||
+						maybePgErr?.code === "23505")
+				) {
+					const [existing] = await database
+						.select()
+						.from(sessionEvents)
+						.where(
+							and(
+								eq(sessionEvents.sessionId, sessionId),
+								eq(sessionEvents.sourceEventId, event.sourceEventId),
+							),
+						)
+						.limit(1);
+					if (existing) return rowToEnvelope(existing);
+				}
 				continue;
 			}
 			throw err;

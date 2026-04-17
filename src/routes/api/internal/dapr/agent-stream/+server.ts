@@ -11,6 +11,7 @@ import { and, eq, max } from 'drizzle-orm';
 import { getNatsConnection, executionSubject } from '$lib/server/nats-client';
 import { daprEventStream } from '$lib/server/dapr-event-stream';
 import { persistCodeCheckpointFromAgentEvent } from '$lib/server/workflows/code-checkpoints';
+import { appendEvent as appendSessionEvent } from '$lib/server/sessions/events';
 
 const ALLOWED_EVENT_TYPES = new Set<WorkflowAgentEventType>([
 	'run_started',
@@ -70,6 +71,15 @@ export const POST: RequestHandler = async ({ request }) => {
 		const eventType = eventData.type ?? '';
 		const instanceId = eventData.instanceId ?? '';
 		const executionId = eventData.executionId ?? '';
+		const sessionId: string =
+			typeof eventData.sessionId === 'string' && eventData.sessionId.trim()
+				? eventData.sessionId.trim()
+				: '';
+		const sessionType: string | null =
+			typeof eventData.sessionType === 'string' ? eventData.sessionType : null;
+		const sessionData: Record<string, unknown> | null = isRecord(eventData.sessionData)
+			? (eventData.sessionData as Record<string, unknown>)
+			: null;
 		const timestamp = eventData.timestamp ?? new Date().toISOString();
 		const sourceEventId = String(
 			eventData.sourceEventId ??
@@ -167,6 +177,23 @@ export const POST: RequestHandler = async ({ request }) => {
 		const sandboxName =
 			stringValue(eventPayload.sandboxName) ??
 			(source.startsWith('dapr-agent-py') ? source : null);
+
+		// Phase 4 unified event stream: when the event carries a sessionId and
+		// the producer hasn't suppressed the session mapping (sessionType != null),
+		// dual-write the CMA-shaped payload to session_events so /sessions/[id]
+		// shows the full agent stream. Skip `session.*` types — those arrive via
+		// the direct ingest path from publish_session_event and would duplicate.
+		if (db && sessionId && sessionType && !sessionType.startsWith('session.')) {
+			try {
+				await appendSessionEvent(sessionId, {
+					type: sessionType,
+					data: sessionData ?? {},
+					sourceEventId,
+				});
+			} catch (err) {
+				console.warn('[agent-stream] session_events dual-write failed:', err);
+			}
+		}
 
 		// Bridge to per-execution NATS subject for SSE consumers (non-blocking)
 		const targetExecutionId = parentExecutionId || executionId || instanceId;

@@ -42,6 +42,58 @@ _NOTIFICATION_EVENT_TYPES: set[str] = {
     "ask_user_prompt",
 }
 
+
+# Phase 4 unified event stream: when a session_id is in scope, translate
+# internal agent event types to the CMA shape the /sessions/[id] UI expects.
+# Types not in this map pass through unchanged so legacy workflow_agent_events
+# consumers still work until Step 2 deletes them. The original type is stashed
+# in data._internalType for debugging and Step-2 cleanup tracing.
+_CMA_EVENT_TYPE_MAP: dict[str, str] = {
+    "llm_complete": "agent.message",
+    "tool_call_start": "agent.tool_use",
+    "tool_call_end": "agent.tool_result",
+    "tool_call_error": "agent.tool_result",
+}
+
+# Types we suppress entirely from the session stream — they duplicate events
+# that session_workflow emits via publish_session_event (session.status_*).
+_SESSION_SUPPRESSED_TYPES: set[str] = {"run_started"}
+
+
+def _cma_shape(
+    event_type: str, data: dict[str, Any] | None
+) -> tuple[str | None, dict[str, Any]]:
+    """Translate (type, data) to CMA shape for the session event stream.
+    Returns (new_type, new_data). new_type is None if the event should be
+    suppressed from the session stream.
+    """
+    payload = dict(data or {})
+    if event_type in _SESSION_SUPPRESSED_TYPES:
+        return None, payload
+
+    cma_type = _CMA_EVENT_TYPE_MAP.get(event_type, event_type)
+    payload["_internalType"] = event_type
+
+    # Data-shape translations for types the UI renders specially.
+    if event_type == "llm_complete":
+        content = payload.pop("content", "") or ""
+        if isinstance(content, str):
+            payload["content"] = [{"type": "text", "text": content}]
+        # toolCalls stays as-is for debugging; not rendered by UI today.
+    elif event_type == "tool_call_start":
+        payload["name"] = payload.pop("toolName", None) or payload.get("name")
+        payload["input"] = payload.pop("args", None) or payload.get("input") or {}
+    elif event_type in ("tool_call_end", "tool_call_error"):
+        payload["tool_name"] = payload.pop("toolName", None) or payload.get("tool_name")
+        output = payload.pop("output", None)
+        if output is not None:
+            payload["output"] = output
+        error = payload.pop("error", None)
+        if error:
+            payload["error"] = error
+            payload.setdefault("is_error", True)
+    return cma_type, payload
+
 # Callback installed by main.py after the agent is constructed. Signature:
 #     (event_type: str, data: dict, execution_id: str | None, instance_id: str | None) -> None
 # The callback is responsible for its own error handling. Always invoked on
@@ -189,14 +241,16 @@ def publish_session_event(
         "sourceEventId": source_event_id,
     }
 
-    # 1. NATS via workflow.stream (existing infrastructure picks up the
-    #    `sessionId` field and routes to session.events.<sessionId>).
+    # 1. NATS via workflow.stream. `session_id` on the envelope lets the
+    #    subscription handler route/dedup. `session.*` types pass through
+    #    _cma_shape unchanged (not in the map) so they keep their CMA names.
     publish_event(
         event_type,
-        {**(data or {}), "_sessionId": session_id},
+        data or {},
         execution_id=session_id,  # reuse for correlation
         instance_id=session_id,
         source_event_id=source_event_id,
+        session_id=session_id,
     )
 
     # 2. Postgres ingest on a daemon thread (non-blocking).
@@ -214,10 +268,21 @@ def publish_event(
     execution_id: str | None = None,
     instance_id: str | None = None,
     source_event_id: str | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """Publish an agent event to Dapr pub/sub (fire-and-forget, non-blocking)."""
+    """Publish an agent event to Dapr pub/sub (fire-and-forget, non-blocking).
+
+    When `session_id` is set, the `sessionId` field is included in the NATS
+    envelope so the subscription handler can dual-write to `session_events`.
+    """
     if not PUBLISH_ENABLED or _permanently_disabled:
         return
+
+    # Translate to CMA shape for the session stream consumer. The NATS envelope
+    # carries BOTH the CMA-shaped event (for sessionEvents) and the original
+    # envelope fields (for workflowAgentEvents). The subscription handler picks
+    # based on sessionId presence.
+    cma_type, cma_data = _cma_shape(event_type, data)
 
     payload = json.dumps(
         {
@@ -226,6 +291,9 @@ def publish_event(
             "executionId": execution_id or None,
             "instanceId": instance_id or None,
             "sourceEventId": source_event_id or None,
+            "sessionId": session_id or None,
+            "sessionType": cma_type,  # None → subscription handler suppresses session dual-write
+            "sessionData": cma_data,
             "data": data or {},
             "timestamp": _now_iso(),
         }
@@ -252,6 +320,7 @@ def publish_workflow_started(
     instance_id: str,
     task: str | None = None,
     model: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "run_started",
@@ -261,6 +330,7 @@ def publish_workflow_started(
         },
         execution_id=execution_id,
         instance_id=instance_id,
+        session_id=session_id,
     )
 
 
@@ -270,6 +340,7 @@ def publish_tool_start(
     tool_name: str,
     tool_args: dict[str, Any] | None = None,
     source_event_id: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "tool_call_start",
@@ -280,6 +351,7 @@ def publish_tool_start(
         execution_id=execution_id,
         instance_id=instance_id,
         source_event_id=source_event_id,
+        session_id=session_id,
     )
 
 
@@ -292,6 +364,7 @@ def publish_tool_complete(
     output: str | None = None,
     checkpoint: dict[str, Any] | None = None,
     source_event_id: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     payload = {
         "toolName": tool_name,
@@ -307,6 +380,7 @@ def publish_tool_complete(
         execution_id=execution_id,
         instance_id=instance_id,
         source_event_id=source_event_id,
+        session_id=session_id,
     )
 
 
@@ -314,12 +388,14 @@ def publish_llm_start(
     execution_id: str,
     instance_id: str,
     model: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "llm_start",
         {"model": model},
         execution_id=execution_id,
         instance_id=instance_id,
+        session_id=session_id,
     )
 
 
@@ -328,6 +404,7 @@ def publish_llm_complete(
     instance_id: str,
     content: str | None = None,
     tool_calls: list[str] | None = None,
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "llm_complete",
@@ -337,6 +414,7 @@ def publish_llm_complete(
         },
         execution_id=execution_id,
         instance_id=instance_id,
+        session_id=session_id,
     )
 
 
@@ -346,6 +424,7 @@ def publish_compaction_start(
     pre_count: int,
     threshold: int,
     trigger: str = "auto",
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "compaction_start",
@@ -356,6 +435,7 @@ def publish_compaction_start(
         },
         execution_id=execution_id,
         instance_id=instance_id,
+        session_id=session_id,
     )
 
 
@@ -372,6 +452,7 @@ def publish_compaction_complete(
     reason: str = "",
     success: bool = True,
     error: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "compaction_complete" if success else "compaction_error",
@@ -388,6 +469,7 @@ def publish_compaction_complete(
         },
         execution_id=execution_id,
         instance_id=instance_id,
+        session_id=session_id,
     )
 
 
@@ -397,6 +479,7 @@ def publish_workflow_completed(
     success: bool = True,
     error: str | None = None,
     output: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     publish_event(
         "run_complete" if success else "run_error",
@@ -407,4 +490,5 @@ def publish_workflow_completed(
         },
         execution_id=execution_id,
         instance_id=instance_id,
+        session_id=session_id,
     )
