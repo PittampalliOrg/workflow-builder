@@ -65,9 +65,23 @@ async function runMigrations(): Promise<{ applied: string[]; skipped: string[] }
 	);
 	const trackedSet = new Set(tracked.map((r) => r.migration_id));
 
-	const files = readdirSync(MIGRATIONS_DIR)
-		.filter((f) => f.endsWith(".sql") && f !== ATLAS_SUM)
-		.sort();
+	// Production image doesn't ship atlas/migrations — migrations are applied
+	// out-of-band via the atlas-migrate container / init job, and the tracking
+	// table reflects that. Skip gracefully if the dir isn't present.
+	let files: string[];
+	try {
+		files = readdirSync(MIGRATIONS_DIR)
+			.filter((f) => f.endsWith(".sql") && f !== ATLAS_SUM)
+			.sort();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+			console.warn(
+				`[startup] migrations directory not found at ${MIGRATIONS_DIR} — skipping in-app migration pass`,
+			);
+			return { applied: [], skipped: [] };
+		}
+		throw err;
+	}
 
 	// First-boot catch-up: if tracking table is empty and `agents` exists,
 	// seed pre-CMA migrations as applied.

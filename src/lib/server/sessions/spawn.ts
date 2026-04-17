@@ -59,19 +59,21 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		initialEvents,
 	};
 
-	// Dapr workflow start endpoint: POST /v1.0-beta1/workflows/dapr/{name}/start?instanceID=<id>
-	// Body is the workflow input JSON. The SvelteKit process's Dapr sidecar
-	// proxies to the dapr-agent-py app's workflow runtime.
+	// The workflow HTTP API does NOT honour the `dapr-app-id` header — the
+	// runtime on the local sidecar tries to host the workflow itself. Route
+	// through Dapr service-invoke to dapr-agent-py's sidecar instead, which
+	// owns the `session_workflow` runtime registration.
+	//
+	//   POST /v1.0/invoke/dapr-agent-py/method/v1.0-beta1/workflows/dapr/session_workflow/start?instanceID=<id>
 	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0-beta1/workflows/dapr/session_workflow/start?instanceID=${encodeURIComponent(
+	const url = `${daprEndpoint}/v1.0/invoke/dapr-agent-py/method/v1.0-beta1/workflows/dapr/session_workflow/start?instanceID=${encodeURIComponent(
 		instanceId,
 	)}`;
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			"dapr-app-id": "dapr-agent-py",
 		},
 		body: JSON.stringify(payload),
 	});
@@ -108,14 +110,13 @@ export async function raiseSessionUserEvents(
 	const session = await getSession(sessionId);
 	if (!session?.daprInstanceId) return; // not yet spawned — events will be picked up at spawn time via listEvents
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0-beta1/workflows/dapr/${encodeURIComponent(
+	const url = `${daprEndpoint}/v1.0/invoke/dapr-agent-py/method/v1.0-beta1/workflows/dapr/${encodeURIComponent(
 		session.daprInstanceId,
 	)}/raiseEvent/session.user_events`;
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			"dapr-app-id": "dapr-agent-py",
 		},
 		body: JSON.stringify({ events }),
 	});
