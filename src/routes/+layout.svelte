@@ -2,6 +2,7 @@
 	import '../app.css';
 	import '@xyflow/svelte/dist/style.css';
 	import { setContext, onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { page } from '$app/state';
 	import { createUiStore } from '$lib/stores/ui.svelte';
 	import { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
@@ -69,7 +70,9 @@
 			{/key}
 		</main>
 	</div>
-	<GlobalPalette />
+	{#if browser}
+		<GlobalPalette />
+	{/if}
 {/if}
 
 <Toaster richColors closeButton />
