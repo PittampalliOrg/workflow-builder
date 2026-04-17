@@ -26,6 +26,7 @@
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
+	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import {
 		Reasoning,
@@ -779,28 +780,43 @@
 					</Card>
 				{/if}
 
-				{#if session.sandboxName}
+				{#if session.workspaceSandboxName || session.sandboxName}
 					<Card>
 						<CardHeader class="pb-2">
 							<CardTitle class="text-sm flex items-center gap-2">
-								<Container class="size-4" /> Sandbox runtime
+								<Container class="size-4" />
+								{session.workspaceSandboxName ? 'Session sandbox' : 'Sandbox runtime'}
 							</CardTitle>
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
-							<a
-								href="/sandboxes/{session.sandboxName}"
-								class="text-primary hover:underline font-mono"
-							>
-								{session.sandboxName}
-							</a>
-							<div class="text-muted-foreground text-[10px]">
-								Terminal, file browser, and live logs for the runtime pod.
-							</div>
+							{#if session.workspaceSandboxName}
+								<a
+									href="/sandboxes/{session.workspaceSandboxName}"
+									class="text-primary hover:underline font-mono"
+								>
+									{session.workspaceSandboxName}
+								</a>
+								<div class="text-muted-foreground text-[10px]">
+									Per-session OpenShell sandbox — open the terminal, browse files,
+									and inspect live logs.
+								</div>
+							{:else if session.sandboxName}
+								<a
+									href="/sandboxes/{session.sandboxName}"
+									class="text-primary hover:underline font-mono"
+								>
+									{session.sandboxName}
+								</a>
+								<div class="text-muted-foreground text-[10px]">
+									Runtime pod — this session ran on the shared {session.sandboxName} agent deployment.
+								</div>
+							{/if}
 						</CardContent>
 					</Card>
 				{/if}
 
 				<SessionResourcesPanel {sessionId} />
+				<SessionOutputsPanel {sessionId} />
 
 				<Card>
 					<CardHeader class="pb-2">
