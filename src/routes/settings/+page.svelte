@@ -1392,7 +1392,7 @@
 									into MCP tool calls at call time so the sandbox never sees the secret.
 								</p>
 								<p>
-									Open the new <a href="/workspaces/default/vaults" class="text-primary hover:underline">Vaults library</a>
+									Open the new <a href="/vaults" class="text-primary hover:underline">Vaults library</a>
 									to create a vault, add credentials, and attach it to an agent.
 								</p>
 							</CardContent>

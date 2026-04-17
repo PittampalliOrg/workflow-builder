@@ -9,8 +9,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		unknown
 	>;
 	const name = typeof body.name === "string" ? body.name : undefined;
+	const description =
+		typeof body.description === "string" ? body.description : undefined;
 	const agent = await duplicateAgent(params.id, {
 		name,
+		description,
 		createdBy: locals.session.userId,
 	});
 	if (!agent) return error(404, "Agent not found");

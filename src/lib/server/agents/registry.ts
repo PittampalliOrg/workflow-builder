@@ -374,14 +374,20 @@ export async function archiveAgent(id: string): Promise<boolean> {
 
 export async function duplicateAgent(
 	id: string,
-	opts: { name?: string; createdBy?: string | null } = {},
+	opts: {
+		name?: string;
+		description?: string | null;
+		createdBy?: string | null;
+	} = {},
 ): Promise<AgentDetail | null> {
 	const existing = await getAgent(id);
 	if (!existing) return null;
 	const name = opts.name?.trim() || `${existing.name} (copy)`;
+	const description =
+		opts.description !== undefined ? opts.description : existing.description;
 	return createAgent({
 		name,
-		description: existing.description,
+		description,
 		avatar: existing.avatar,
 		tags: existing.tags,
 		runtime: existing.runtime,

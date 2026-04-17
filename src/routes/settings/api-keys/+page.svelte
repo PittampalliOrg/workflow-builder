@@ -181,7 +181,7 @@
 								<button
 									type="button"
 									class="text-xs text-primary hover:underline inline-flex items-center gap-1"
-									onclick={() => goto(`/workspaces/default/cost?api_key=${key.id}`)}
+									onclick={() => goto(`/cost?api_key=${key.id}`)}
 								>
 									<DollarSign class="size-3" /> View cost
 								</button>

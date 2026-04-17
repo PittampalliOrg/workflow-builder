@@ -66,7 +66,6 @@
 				{ href: '/mcp-chat', label: 'Workbench', icon: MessageSquare },
 				{ href: '/workflows', label: 'Workflows', icon: GitBranch },
 				{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
-				{ href: '/skills', label: 'Skills', icon: Puzzle },
 				{ href: '/code-functions', label: 'Code Functions', icon: Code }
 			]
 		},
@@ -75,11 +74,13 @@
 			icon: Bot,
 			badge: 'New',
 			items: [
-				{ href: '/workspaces/default/agents/quickstart', label: 'Quickstart', icon: Rocket },
-				{ href: '/workspaces/default/agents', label: 'Agents', icon: Bot },
-				{ href: '/workspaces/default/sessions', label: 'Sessions', icon: MessagesSquare },
-				{ href: '/workspaces/default/environments', label: 'Environments', icon: Layers },
-				{ href: '/workspaces/default/vaults', label: 'Credential vaults', icon: KeyRound },
+				{ href: '/agents/quickstart', label: 'Quickstart', icon: Rocket },
+				{ href: '/agents', label: 'Agents', icon: Bot },
+				{ href: '/sessions', label: 'Sessions', icon: MessagesSquare },
+				{ href: '/environments', label: 'Environments', icon: Layers },
+				{ href: '/vaults', label: 'Credential vaults', icon: KeyRound },
+				{ href: '/skills', label: 'Skills', icon: Puzzle },
+				{ href: '/files', label: 'Files', icon: Files },
 				{ href: '/connections', label: 'Connections', icon: Plug }
 			]
 		},
@@ -88,7 +89,7 @@
 			icon: BarChart3,
 			items: [
 				{ href: '/usage', label: 'Usage', icon: BarChart3 },
-				{ href: '/workspaces/default/cost', label: 'Cost', icon: DollarSign },
+				{ href: '/cost', label: 'Cost', icon: DollarSign },
 				{ href: '/observability', label: 'Logs', icon: FileText }
 			]
 		},
@@ -251,8 +252,8 @@
 					{#each workspaces as w (w.id)}
 						<DropdownMenu.Item
 							onSelect={() => {
-								// Route to workspace-scoped agents as the default landing page
-								window.location.href = `/workspaces/${w.slug}/agents`;
+								// Flat CMA routes — workspace scope is resolved from JWT
+								window.location.href = `/agents`;
 							}}
 							class="gap-2"
 						>

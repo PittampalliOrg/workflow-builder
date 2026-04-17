@@ -69,7 +69,7 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
-from src.event_publisher import publish_session_event
+from src.event_publisher import publish_session_event, scope_session, unscope_session
 from src.hooks import (
     HooksSnapshot,
     execute_notification_hooks,
@@ -1107,6 +1107,9 @@ class OpenShellDurableAgent(DurableAgent):
             )
         except Exception:
             pass
+        # Scope session for the inner call chain — the Anthropic adapter
+        # reads this contextvar to emit agent.thinking events.
+        scope_token = scope_session(sess_id, inst_id)
         try:
             self._active_llm_instance_id = inst_id
             result = super().call_llm(ctx, payload)
@@ -1121,6 +1124,7 @@ class OpenShellDurableAgent(DurableAgent):
             raise
         finally:
             self._active_llm_instance_id = None
+            unscope_session(scope_token)
             # Restore tool_choice if it was suppressed for Anthropic
             if saved_tool_choice is not None:
                 self.execution.tool_choice = saved_tool_choice

@@ -267,7 +267,7 @@
 								<tr class="border-b last:border-0">
 									<td class="py-2">
 										<a
-											href="/workspaces/default/agents/{row.agentId}"
+											href="/agents/{row.agentId}"
 											class="hover:underline text-primary truncate block max-w-[400px]"
 										>
 											{row.agentId}

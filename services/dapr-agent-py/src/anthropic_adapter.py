@@ -95,13 +95,19 @@ def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
     return anthropic_tools if anthropic_tools else None
 
 
-def _extract_response(response: Any) -> tuple[str, list[dict]]:
-    """Extract text content and tool_calls from an Anthropic response."""
+def _extract_response(response: Any) -> tuple[str, list[dict], list[str]]:
+    """Extract text content, tool_calls, and thinking blocks from a response."""
     content = ""
     tool_calls = []
+    thinking_blocks: list[str] = []
     for block in response.content:
         if block.type == "text":
             content += block.text
+        elif block.type == "thinking":
+            # block.thinking is the thinking text; empty when display="omitted"
+            t = getattr(block, "thinking", "") or ""
+            if t:
+                thinking_blocks.append(t)
         elif block.type == "tool_use":
             tool_calls.append({
                 "id": block.id,
@@ -111,7 +117,36 @@ def _extract_response(response: Any) -> tuple[str, list[dict]]:
                     "arguments": json.dumps(block.input),
                 },
             })
-    return content, tool_calls
+    return content, tool_calls, thinking_blocks
+
+
+def _emit_thinking(thinking_blocks: list[str]) -> None:
+    """Emit agent.thinking session events for each non-empty thinking block.
+    Session id/instance id come from the contextvar set by main.py:call_llm.
+    """
+    if not thinking_blocks:
+        return
+    try:
+        from src.event_publisher import get_scoped_session, publish_session_event
+
+        sid, iid = get_scoped_session()
+        if not sid:
+            return
+        for text in thinking_blocks:
+            publish_session_event(
+                sid,
+                "agent.thinking",
+                {"content": [{"type": "text", "text": text}]},
+                instance_id=iid,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[anthropic-sdk] thinking emit failed: %s", exc)
+
+
+def _model_supports_adaptive_thinking(model: str) -> bool:
+    """Adaptive thinking is Opus 4.6+ only; Sonnet 4.6 supports it too but
+    behavior differs slightly. Keep the whitelist narrow — opus-4-6 + opus-4-7."""
+    return model.startswith("claude-opus-4-6") or model.startswith("claude-opus-4-7")
 
 
 def _response_to_assistant_message(
@@ -237,6 +272,13 @@ def _call_anthropic_sdk(
     }
     if anthropic_tools:
         request_kwargs["tools"] = anthropic_tools
+    # Enable adaptive thinking on Opus 4.6/4.7. `display: "summarized"` opts
+    # into receiving thinking text (Opus 4.7 omits by default) so we can
+    # stream it into session_events as agent.thinking. Note: sampling params
+    # (temperature, top_p, top_k) must NOT be set on Opus 4.7 when thinking
+    # is enabled — this adapter doesn't set them, so we're safe.
+    if _model_supports_adaptive_thinking(model):
+        request_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
 
     logger.info(
         "[anthropic-sdk] Calling %s with %d messages, %d tools, max_tokens=%d",
@@ -245,7 +287,8 @@ def _call_anthropic_sdk(
 
     try:
         response = client.messages.create(**request_kwargs)
-        content, tool_calls = _extract_response(response)
+        content, tool_calls, thinking_blocks = _extract_response(response)
+        _emit_thinking(thinking_blocks)
         if ttft_ms_recorded is None and llm_span is not None:
             import time as _time
 
@@ -289,7 +332,8 @@ def _call_anthropic_sdk(
         )
         request_kwargs["max_tokens"] = ESCALATED_MAX_TOKENS
         response = client.messages.create(**request_kwargs)
-        content, tool_calls = _extract_response(response)
+        content, tool_calls, thinking_blocks = _extract_response(response)
+        _emit_thinking(thinking_blocks)
         _u = getattr(response, "usage", None)
         if _u is not None:
             agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)
@@ -333,7 +377,8 @@ def _call_anthropic_sdk(
         request_kwargs["max_tokens"] = max_tokens
 
         response = client.messages.create(**request_kwargs)
-        content, tool_calls = _extract_response(response)
+        content, tool_calls, thinking_blocks = _extract_response(response)
+        _emit_thinking(thinking_blocks)
         _u = getattr(response, "usage", None)
         if _u is not None:
             agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)

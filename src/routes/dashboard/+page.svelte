@@ -114,7 +114,7 @@
 			</p>
 		</div>
 		<div class="flex items-center gap-2">
-			<Button onclick={() => goto('/workspaces/default/agents/quickstart')}>
+			<Button onclick={() => goto('/agents/quickstart')}>
 				<Sparkles class="size-4" /> Get started with agents
 			</Button>
 			<Button variant="outline" onclick={() => goto('/settings/api-keys')}>
@@ -203,7 +203,7 @@
 					</CardDescription>
 				</CardHeader>
 				<CardContent>
-					<Button size="lg" onclick={() => goto('/workspaces/default/agents/quickstart')}>
+					<Button size="lg" onclick={() => goto('/agents/quickstart')}>
 						<Sparkles class="size-4" /> Go to Quickstart
 					</Button>
 				</CardContent>
@@ -222,7 +222,7 @@
 							Running + idle; click to open the live stream.
 						</CardDescription>
 					</div>
-					<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/sessions')}>
+					<Button variant="ghost" size="sm" onclick={() => goto('/sessions')}>
 						View all <ExternalLink class="size-3" />
 					</Button>
 				</CardHeader>
@@ -233,7 +233,7 @@
 							<button
 								type="button"
 								class="text-primary hover:underline"
-								onclick={() => goto('/workspaces/default/sessions/new')}
+								onclick={() => goto('/sessions/new')}
 							>
 								Start one
 							</button>
@@ -244,7 +244,7 @@
 							{#each data.activeSessions as s}
 								<li class="py-2">
 									<a
-										href="/workspaces/default/sessions/{s.id}"
+										href="/sessions/{s.id}"
 										class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
 									>
 										<div class="flex items-center gap-2 min-w-0 flex-1">
@@ -322,7 +322,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/workspaces/default/agents/new')}
+				onclick={() => goto('/agents/new')}
 			>
 				<Bot class="size-4 mb-1" />
 				<div class="text-sm font-medium">Create agent</div>
@@ -331,7 +331,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/workspaces/default/sessions/new')}
+				onclick={() => goto('/sessions/new')}
 			>
 				<MessagesSquare class="size-4 mb-1" />
 				<div class="text-sm font-medium">New session</div>
@@ -340,7 +340,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/workspaces/default/environments/new')}
+				onclick={() => goto('/environments/new')}
 			>
 				<Layers class="size-4 mb-1" />
 				<div class="text-sm font-medium">Define environment</div>
@@ -351,7 +351,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/workspaces/default/vaults')}
+				onclick={() => goto('/vaults')}
 			>
 				<KeyRound class="size-4 mb-1" />
 				<div class="text-sm font-medium">Add vault</div>

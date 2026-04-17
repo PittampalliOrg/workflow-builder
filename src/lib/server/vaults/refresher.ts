@@ -30,6 +30,49 @@ export type RefreshReport = {
  * The scheduler calls this on a periodic cron (5 min default). Safe to run
  * concurrently — each credential's refresh is independent.
  */
+/**
+ * Run the OAuth refresh_token grant for a single credential, on demand.
+ * Used by the "Rotate now" UI in the vault detail page. Returns the new
+ * access-token expiry (or a failure reason) so the client can update the
+ * row without a full page reload.
+ */
+export async function refreshSingleCredential(
+	vaultId: string,
+	credentialId: string,
+): Promise<RefreshOutcome & { skipped?: boolean }> {
+	const database = requireDb();
+	const material = await getRefreshMaterial(credentialId);
+	if (!material) {
+		return {
+			ok: false,
+			error: "no refresh material — credential is not mcp_oauth or has no refresh token",
+			httpStatus: null,
+			skipped: true,
+		};
+	}
+	const result = await runRefresh(material);
+	if (result.ok) {
+		await rotateCredential(vaultId, credentialId, {
+			accessToken: result.accessToken,
+			refreshToken: result.refreshToken ?? undefined,
+			expiresAt: result.expiresAt ?? undefined,
+		});
+		await database.insert(vaultCredentialRefreshLog).values({
+			credentialId,
+			status: "success",
+			responseStatus: result.httpStatus,
+		});
+	} else {
+		await database.insert(vaultCredentialRefreshLog).values({
+			credentialId,
+			status: "failure",
+			errorMessage: result.error,
+			responseStatus: result.httpStatus,
+		});
+	}
+	return result;
+}
+
 export async function refreshExpiringCredentials(
 	options: { leadTimeSeconds?: number } = {},
 ): Promise<RefreshReport> {

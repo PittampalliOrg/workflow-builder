@@ -91,7 +91,7 @@
 						</div>
 						<div class="flex gap-1">
 							<a
-								href="/workspaces/default/vaults/{vault.id}"
+								href="/vaults/{vault.id}"
 								target="_blank"
 								class="text-xs text-primary hover:underline"
 							>
@@ -127,7 +127,7 @@
 	{/if}
 
 	<div class="pt-2 border-t">
-		<a href="/workspaces/default/vaults" target="_blank" class="text-xs text-primary hover:underline">
+		<a href="/vaults" target="_blank" class="text-xs text-primary hover:underline">
 			Manage vaults in the library →
 		</a>
 	</div>

@@ -1,15 +1,12 @@
 /**
- * Prepend the current workspace slug to a resource path. Mirrors the CMA
- * console's `/workspaces/{slug}/{resource}` URL shape.
- *
- * Until per-user workspaces ship, `DEFAULT_WORKSPACE_SLUG = "default"`
- * resolves to the user's primary project server-side. Call sites pass the
- * slug explicitly so we can swap in a reactive value once we have one.
+ * CMA-style flat routes. Workspace scope is now resolved server-side from
+ * the JWT `projectId` claim; URLs no longer carry the slug. This helper is
+ * retained as a thin identity wrapper so older call sites compile unchanged
+ * — all new code should link to `/sessions`, `/agents`, etc. directly.
  */
 
 export const DEFAULT_WORKSPACE_SLUG = "default";
 
-export function wsPath(slug: string, suffix: string): string {
-	const clean = suffix.startsWith("/") ? suffix : `/${suffix}`;
-	return `/workspaces/${slug}${clean}`;
+export function wsPath(_slug: string, suffix: string): string {
+	return suffix.startsWith("/") ? suffix : `/${suffix}`;
 }

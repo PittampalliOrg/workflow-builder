@@ -49,6 +49,7 @@ function rowToDetail(row: Session): SessionDetail {
 		daprInstanceId: row.daprInstanceId ?? null,
 		natsSubject: row.natsSubject ?? null,
 		parentExecutionId: row.parentExecutionId ?? null,
+		sandboxName: row.sandboxName ?? null,
 	};
 }
 

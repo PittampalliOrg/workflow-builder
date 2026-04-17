@@ -44,6 +44,7 @@ export type SessionDetail = SessionSummary & {
 	daprInstanceId: string | null;
 	natsSubject: string | null;
 	parentExecutionId: string | null;
+	sandboxName: string | null;
 };
 
 export type SessionResourceType = "file" | "github_repository";

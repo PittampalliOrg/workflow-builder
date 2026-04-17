@@ -7,6 +7,7 @@
 	import { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
 	import { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
 	import Sidebar from '$lib/components/sidebar.svelte';
+	import GlobalPalette from '$lib/components/cmdk/global-palette.svelte';
 	import { Toaster } from '$lib/components/ui/sonner';
 
 	let { children, data } = $props();
@@ -68,6 +69,7 @@
 			{/key}
 		</main>
 	</div>
+	<GlobalPalette />
 {/if}
 
 <Toaster richColors closeButton />

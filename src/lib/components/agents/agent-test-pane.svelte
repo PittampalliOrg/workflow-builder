@@ -188,7 +188,7 @@
 				<Badge variant="outline">{sessionStatus}</Badge>
 			{/if}
 			<a
-				href="/workspaces/default/sessions/{sessionId}"
+				href="/sessions/{sessionId}"
 				target="_blank"
 				class="ml-auto hover:underline flex items-center gap-1"
 			>

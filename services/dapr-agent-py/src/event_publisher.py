@@ -14,6 +14,7 @@ endpoint receives the CMA shape the /sessions/[id] UI expects.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -21,6 +22,34 @@ import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Per-call session scope. main.py's call_llm sets this before delegating into
+# the Dapr chat client (which is monkey-patched by anthropic_adapter). The
+# adapter reads it to emit agent.thinking events without needing to plumb
+# session_id through the DaprChatClient.generate signature.
+_session_scope = contextvars.ContextVar[tuple[str | None, str | None]](
+    "session_scope", default=(None, None)
+)
+
+
+def scope_session(session_id: str | None, instance_id: str | None):
+    """Push a session_id/instance_id scope for the current task. Returns a
+    Token that must be passed back to `unscope_session` in a finally block.
+    """
+    return _session_scope.set((session_id, instance_id))
+
+
+def unscope_session(token) -> None:
+    try:
+        _session_scope.reset(token)
+    except Exception:
+        pass
+
+
+def get_scoped_session() -> tuple[str | None, str | None]:
+    """Returns (session_id, instance_id) for the active call, or (None, None)."""
+    return _session_scope.get()
 
 PUBLISH_ENABLED = os.environ.get("ENABLE_WORKFLOW_EVENTS", "true").strip().lower() in (
     "1",

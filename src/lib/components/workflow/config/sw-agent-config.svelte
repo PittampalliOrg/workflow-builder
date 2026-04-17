@@ -145,7 +145,7 @@
 			<Alert class="mt-2">
 				<AlertDescription class="flex items-center justify-between gap-2">
 					<span>No agents defined yet.</span>
-					<a href="/workspaces/default/agents/new" target="_blank" class="text-primary hover:underline text-xs">
+					<a href="/agents/new" target="_blank" class="text-primary hover:underline text-xs">
 						Create one <ExternalLink class="inline size-3" />
 					</a>
 				</AlertDescription>
@@ -166,7 +166,7 @@
 				</select>
 				{#if agentRef?.id}
 					<a
-						href="/workspaces/default/agents/{agentRef.id}"
+						href="/agents/{agentRef.id}"
 						target="_blank"
 						class="text-xs text-primary hover:underline flex items-center gap-1"
 					>
@@ -282,7 +282,7 @@
 	{/if}
 
 	<div class="border-t pt-3">
-		<a href="/workspaces/default/agents" target="_blank" class="text-xs text-primary hover:underline">
+		<a href="/agents" target="_blank" class="text-xs text-primary hover:underline">
 			<Plus class="inline size-3" /> Manage agents in the library
 		</a>
 	</div>
