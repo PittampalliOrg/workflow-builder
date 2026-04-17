@@ -645,9 +645,11 @@ export const workflowWorkspaceSessions = pgTable(
 	"workflow_workspace_sessions",
 	{
 		workspaceRef: text("workspace_ref").primaryKey(),
-		workflowExecutionId: text("workflow_execution_id")
-			.notNull()
-			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		// UI sessions have no workflow execution — column is nullable.
+		workflowExecutionId: text("workflow_execution_id").references(
+			() => workflowExecutions.id,
+			{ onDelete: "cascade" },
+		),
 		durableInstanceId: text("durable_instance_id"),
 		name: text("name").notNull(),
 		rootPath: text("root_path").notNull(),

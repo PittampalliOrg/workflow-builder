@@ -69,21 +69,70 @@ export async function provisionSessionSandbox(
 			`openshell-agent-runtime workspace/profile failed (${res.status}): ${detail}`,
 		);
 	}
-	const data = (await res.json()) as {
-		sandboxName?: string;
-		workspaceRef?: string;
-		rootPath?: string;
-	};
-	if (!data.sandboxName) {
+	const raw = (await res.json()) as Record<string, unknown>;
+	const sandboxName = resolveSandboxName(raw);
+	if (!sandboxName) {
 		throw new Error(
-			"workspace/profile response missing sandboxName",
+			`workspace/profile response missing sandboxName: ${JSON.stringify(raw).slice(0, 300)}`,
 		);
 	}
+	const workspaceRef = firstString(raw, [
+		"workspaceRef",
+		"workspace_ref",
+	]);
+	const rootPath = firstString(raw, ["rootPath", "root_path"]);
 	return {
-		sandboxName: data.sandboxName,
-		workspaceRef: data.workspaceRef ?? null,
-		rootPath: data.rootPath ?? input.rootPath ?? "/sandbox",
+		sandboxName,
+		workspaceRef,
+		rootPath: rootPath ?? input.rootPath ?? "/sandbox",
 	};
+}
+
+function firstString(
+	obj: Record<string, unknown> | null | undefined,
+	keys: string[],
+): string | null {
+	if (!obj) return null;
+	for (const k of keys) {
+		const v = obj[k];
+		if (typeof v === "string" && v.trim()) return v.trim();
+	}
+	return null;
+}
+
+/** Walk the common response shapes openshell-agent-runtime / function-router
+ * emit — sandboxName can land at the root, nested under `sandbox`, nested
+ * under `sandbox.details`, or nested under `result`. Mirrors
+ * resolveSandboxName in function-router's execute.ts. */
+function resolveSandboxName(
+	payload: Record<string, unknown> | null | undefined,
+): string | null {
+	if (!payload) return null;
+	const top = firstString(payload, [
+		"sandboxName",
+		"sandbox_name",
+		"workspaceSandboxName",
+	]);
+	if (top) return top;
+	const sandbox = payload.sandbox;
+	if (sandbox && typeof sandbox === "object" && !Array.isArray(sandbox)) {
+		const sb = sandbox as Record<string, unknown>;
+		const fromSandbox = firstString(sb, ["sandboxName", "sandbox_name"]);
+		if (fromSandbox) return fromSandbox;
+		const details = sb.details;
+		if (details && typeof details === "object" && !Array.isArray(details)) {
+			const fromDetails = firstString(
+				details as Record<string, unknown>,
+				["sandboxName", "sandbox_name"],
+			);
+			if (fromDetails) return fromDetails;
+		}
+	}
+	const result = payload.result;
+	if (result && typeof result === "object" && !Array.isArray(result)) {
+		return resolveSandboxName(result as Record<string, unknown>);
+	}
+	return null;
 }
 
 /**

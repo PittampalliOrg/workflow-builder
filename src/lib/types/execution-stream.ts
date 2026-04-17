@@ -35,7 +35,8 @@ export interface ExecutionAgentRun {
 
 export interface ExecutionWorkspaceSession {
 	workspaceRef: string;
-	workflowExecutionId: string;
+	// UI-provisioned sandboxes have no workflow execution; null for those.
+	workflowExecutionId: string | null;
 	durableInstanceId: string | null;
 	name: string;
 	rootPath: string;
