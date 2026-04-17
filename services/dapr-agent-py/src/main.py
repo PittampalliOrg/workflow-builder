@@ -77,6 +77,30 @@ def _init_otel() -> None:
 
 _init_otel()
 
+
+def _start_checkpoint_span(tool_name: str, tool_call_id: str):
+    """Return a context manager for a git-checkpoint span; no-op when OTEL is unavailable."""
+    if not _otel_ready:
+        from contextlib import nullcontext
+
+        return nullcontext()
+    try:
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer("dapr-agent-py.checkpoint")
+        return tracer.start_as_current_span(
+            "capture_code_checkpoint",
+            attributes={
+                "tool.name": tool_name or "",
+                "tool.call_id": tool_call_id or "",
+            },
+        )
+    except Exception:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
 # ---------------------------------------------------------------------------
 # Agent setup (imported after OTEL so spans are captured)
 # ---------------------------------------------------------------------------
@@ -1354,14 +1378,27 @@ class OpenShellDurableAgent(DurableAgent):
         checkpoint = None
         if should_checkpoint_tool(tool_name):
             try:
-                checkpoint = capture_code_checkpoint(
-                    get_runtime(),
-                    execution_id=exec_id,
-                    instance_id=inst_id,
-                    workspace_ref=self._workspace_ref_by_instance.get(inst_id),
-                    tool_call_id=tool_call_id,
-                    tool_name=tool_name,
-                )
+                with _start_checkpoint_span(tool_name, tool_call_id) as _span:
+                    checkpoint = capture_code_checkpoint(
+                        get_runtime(),
+                        execution_id=exec_id,
+                        instance_id=inst_id,
+                        workspace_ref=self._workspace_ref_by_instance.get(inst_id),
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                    )
+                    if _span is not None and isinstance(checkpoint, dict):
+                        try:
+                            _span.set_attribute("checkpoint.status", str(checkpoint.get("status") or ""))
+                            _span.set_attribute("checkpoint.beforeSha", str(checkpoint.get("beforeSha") or ""))
+                            _span.set_attribute("checkpoint.afterSha", str(checkpoint.get("afterSha") or ""))
+                            _span.set_attribute("checkpoint.remoteStatus", str(checkpoint.get("remoteStatus") or ""))
+                            _span.set_attribute("checkpoint.fileCount", int(checkpoint.get("fileCount") or 0))
+                            remote_err = checkpoint.get("remoteError")
+                            if remote_err:
+                                _span.set_attribute("checkpoint.remoteError", str(remote_err)[:500])
+                        except Exception:
+                            pass
             except Exception as exc:
                 logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
         try:
