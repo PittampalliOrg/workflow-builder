@@ -2038,6 +2038,16 @@ class OpenShellDurableAgent(DurableAgent):
     # Session workflow (CMA-shape multi-turn loop)
     # ------------------------------------------------------------------
 
+    def register_workflows(self, runtime) -> None:
+        """Extend the base registration so `session_workflow` is visible to
+        the Dapr workflow runtime alongside `agent_workflow` and
+        `broadcast_listener`. Without this override, the base hard-codes
+        only its two workflows and session_workflow instances fail
+        immediately (worker has no entry in the registry).
+        """
+        super().register_workflows(runtime)
+        runtime.register_workflow(self.session_workflow)
+
     @workflow_entry
     def session_workflow(self, ctx, message: dict):
         """Multi-turn session loop wrapping ``agent_workflow`` as a child
