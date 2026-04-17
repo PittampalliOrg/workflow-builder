@@ -55,7 +55,7 @@ _RECOVERY_MESSAGE = (
 # Model mapping: Dapr component name → Anthropic model ID
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-anthropic-sonnet": "claude-sonnet-4-6",
-    "llm-anthropic-opus": "claude-opus-4-6",
+    "llm-anthropic-opus": "claude-opus-4-7",
     "llm-anthropic-haiku": "claude-haiku-4-5-20251001",
 }
 
