@@ -5,6 +5,7 @@ import {
 } from "drizzle-orm";
 import {
 	boolean,
+	customType,
 	foreignKey,
 	index,
 	integer,
@@ -15,6 +16,12 @@ import {
 	timestamp,
 	unique,
 } from "drizzle-orm/pg-core";
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+	dataType() {
+		return "bytea";
+	},
+});
 import type { EncryptedObject } from "$lib/server/security/encryption";
 import {
 	AppConnectionScope,
@@ -576,6 +583,51 @@ export const workflowBrowserArtifactBlobPayloads = pgTable(
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 );
+
+/**
+ * CMA Files API: metadata for uploaded files and agent-written outputs.
+ * Bytes live in `filePayloads` so `SELECT *` on the metadata table stays
+ * light — TOASTed bytea columns otherwise force the query planner to drag
+ * the full blob into memory on every list.
+ */
+export type FilePurpose = "agent" | "output";
+
+export const files = pgTable(
+	"files",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		name: text("name").notNull(),
+		purpose: text("purpose").notNull().$type<FilePurpose>(),
+		scopeId: text("scope_id"),
+		contentType: text("content_type"),
+		sizeBytes: integer("size_bytes").notNull().default(0),
+		storageRef: text("storage_ref").notNull(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		archivedAt: timestamp("archived_at"),
+	},
+	(table) => ({
+		userIdx: index("idx_files_user").on(table.userId),
+		scopeIdx: index("idx_files_scope").on(table.scopeId),
+		purposeIdx: index("idx_files_purpose").on(table.purpose),
+		createdIdx: index("idx_files_created").on(table.createdAt),
+	}),
+);
+
+export const filePayloads = pgTable("file_payloads", {
+	storageRef: text("storage_ref").primaryKey(),
+	payloadBytes: bytea("payload_bytes").notNull(),
+	createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type FileRow = InferSelectModel<typeof files>;
 
 export type WorkflowWorkspaceSessionStatus = "active" | "cleaned" | "error";
 
