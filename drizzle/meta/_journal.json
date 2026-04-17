@@ -225,6 +225,13 @@
 			"when": 1776456000000,
 			"tag": "0031_deprecate_dapr_agent_py_slug",
 			"breakpoints": true
+		},
+		{
+			"idx": 32,
+			"version": "7",
+			"when": 1776902400000,
+			"tag": "0033_drop_workspace_change_artifacts",
+			"breakpoints": true
 		}
 	]
 }
