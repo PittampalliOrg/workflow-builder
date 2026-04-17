@@ -317,6 +317,7 @@ def maybe_compact(
     turn_index: int = 0,
     runtime: Any = None,
     anthropic_client: Any = None,
+    session_id: str | None = None,
 ) -> CompactionResult:
     """Decide and (if needed) run compaction. Idempotent on retry.
 
@@ -332,10 +333,7 @@ def maybe_compact(
         return CompactionResult(compacted=False, reason="disabled")
 
     # Lazy import so tests that don't install event_publisher can still run.
-    from ..event_publisher import (
-        publish_compaction_complete,
-        publish_compaction_start,
-    )
+    from ..event_publisher import publish_session_event
 
     # 1. Load state (the activity is the durability unit — load is fine here)
     entry = agent._infra.get_state(instance_id)
@@ -387,12 +385,11 @@ def maybe_compact(
 
     # 4. Emit start event
     try:
-        publish_compaction_start(
-            execution_id=execution_id,
+        publish_session_event(
+            session_id,
+            "compaction_start",
+            {"preCount": pre_count, "threshold": threshold, "trigger": "auto"},
             instance_id=instance_id,
-            pre_count=pre_count,
-            threshold=threshold,
-            trigger="auto",
         )
     except Exception:
         pass
@@ -429,16 +426,19 @@ def maybe_compact(
             if pre_agg.any_block():
                 reason = pre_agg.blocking_reason or pre_agg.decision_reason or "blocked"
                 try:
-                    publish_compaction_complete(
-                        execution_id=execution_id,
+                    publish_session_event(
+                        session_id,
+                        "compaction_error",
+                        {
+                            "preCount": pre_count,
+                            "postCount": pre_count,
+                            "messagesDropped": 0,
+                            "messagesPreserved": len(messages),
+                            "trigger": "auto",
+                            "reason": f"pre_compact_blocked:{reason}",
+                            "success": False,
+                        },
                         instance_id=instance_id,
-                        pre_count=pre_count,
-                        post_count=pre_count,
-                        messages_dropped=0,
-                        messages_preserved=len(messages),
-                        trigger="auto",
-                        reason=f"pre_compact_blocked:{reason}",
-                        success=False,
                     )
                 except Exception:
                     pass
@@ -509,18 +509,21 @@ def maybe_compact(
     if last_exc is not None:
         # PTL retries exhausted. Surface failure cleanly.
         try:
-            publish_compaction_complete(
-                execution_id=execution_id,
+            publish_session_event(
+                session_id,
+                "compaction_error",
+                {
+                    "preCount": pre_count,
+                    "postCount": pre_count,
+                    "messagesDropped": 0,
+                    "messagesPreserved": len(messages),
+                    "ptlRetries": ptl_retries,
+                    "trigger": "auto",
+                    "reason": "ptl_retries_exhausted",
+                    "success": False,
+                    "error": str(last_exc)[:500],
+                },
                 instance_id=instance_id,
-                pre_count=pre_count,
-                post_count=pre_count,
-                messages_dropped=0,
-                messages_preserved=len(messages),
-                ptl_retries=ptl_retries,
-                trigger="auto",
-                reason="ptl_retries_exhausted",
-                success=False,
-                error=str(last_exc)[:500],
             )
         except Exception:
             pass
@@ -661,17 +664,20 @@ def maybe_compact(
                 pass
     else:
         try:
-            publish_compaction_complete(
-                execution_id=execution_id,
+            publish_session_event(
+                session_id,
+                "compaction_error",
+                {
+                    "preCount": pre_count,
+                    "postCount": post_count_estimate,
+                    "messagesDropped": len(messages) - len(tail),
+                    "messagesPreserved": len(tail),
+                    "ptlRetries": ptl_retries,
+                    "trigger": "auto",
+                    "reason": "etag_conflict",
+                    "success": False,
+                },
                 instance_id=instance_id,
-                pre_count=pre_count,
-                post_count=post_count_estimate,
-                messages_dropped=len(messages) - len(tail),
-                messages_preserved=len(tail),
-                ptl_retries=ptl_retries,
-                trigger="auto",
-                reason="etag_conflict",
-                success=False,
             )
         except Exception:
             pass
@@ -684,17 +690,20 @@ def maybe_compact(
 
     # 14. Emit completion event
     try:
-        publish_compaction_complete(
-            execution_id=execution_id,
+        publish_session_event(
+            session_id,
+            "compaction_complete",
+            {
+                "preCount": pre_count,
+                "postCount": post_count_estimate,
+                "messagesDropped": len(messages) - len(tail),
+                "messagesPreserved": len(tail),
+                "ptlRetries": ptl_retries,
+                "trigger": "auto",
+                "reason": "ok",
+                "success": True,
+            },
             instance_id=instance_id,
-            pre_count=pre_count,
-            post_count=post_count_estimate,
-            messages_dropped=len(messages) - len(tail),
-            messages_preserved=len(tail),
-            ptl_retries=ptl_retries,
-            trigger="auto",
-            reason="ok",
-            success=True,
         )
     except Exception:
         pass

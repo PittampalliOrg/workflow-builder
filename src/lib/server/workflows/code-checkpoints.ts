@@ -232,7 +232,6 @@ function rowToDto(row: WorkflowCodeCheckpoint) {
 		id: row.id,
 		workflowExecutionId: row.workflowExecutionId,
 		workflowAgentRunId: row.workflowAgentRunId,
-		workflowAgentEventId: row.workflowAgentEventId,
 		parentExecutionId: row.parentExecutionId,
 		daprInstanceId: row.daprInstanceId,
 		workspaceRef: row.workspaceRef,
@@ -262,7 +261,6 @@ function rowToDto(row: WorkflowCodeCheckpoint) {
 export type PersistCodeCheckpointInput = {
 	workflowExecutionId: string;
 	workflowAgentRunId?: string | null;
-	workflowAgentEventId?: number | null;
 	parentExecutionId?: string | null;
 	daprInstanceId: string;
 	sourceEventId: string;
@@ -291,7 +289,6 @@ export async function persistCodeCheckpointFromAgentEvent(
 		.values({
 			workflowExecutionId: input.workflowExecutionId,
 			workflowAgentRunId: input.workflowAgentRunId ?? null,
-			workflowAgentEventId: input.workflowAgentEventId ?? null,
 			parentExecutionId:
 				input.parentExecutionId ?? stringValue(input.payload.parentExecutionId),
 			daprInstanceId: input.daprInstanceId,

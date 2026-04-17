@@ -1,13 +1,15 @@
 """
-Non-blocking event publisher for agent activity streaming.
+Session event publisher.
 
-Publishes agent execution events to workflow.stream via Dapr pub/sub.
-The workflow-builder's agent-stream handler bridges events to per-execution
-NATS subjects for SSE consumers.
+Phase 4 Step 2b: session_events is the single authoritative event stream
+for agent activity. The legacy `workflow.stream` Dapr pub/sub topic and the
+`workflow_agent_events` dual-write path are gone; callers POST directly to
+the SvelteKit BFF's internal ingest endpoint. Publishing is fire-and-forget
+via daemon threads — never blocks the agent workflow.
 
-Publishing is fire-and-forget via daemon threads — never blocks the agent workflow.
-Transient errors (5xx, timeouts) trigger exponential backoff; permanent errors (4xx)
-disable publishing.
+CMA-shape translation happens here so call sites can keep passing internal
+names like `llm_complete` / `tool_call_start` / `tool_call_end`; the ingest
+endpoint receives the CMA shape the /sessions/[id] UI expects.
 """
 
 from __future__ import annotations
@@ -16,16 +18,10 @@ import json
 import logging
 import os
 import threading
-import time
-from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DAPR_HOST = os.environ.get("DAPR_HOST", "127.0.0.1")
-DAPR_HTTP_PORT = os.environ.get("DAPR_HTTP_PORT", "3500")
-PUBSUB_NAME = os.environ.get("PUBSUB_NAME", "pubsub")
-PUBSUB_TOPIC = os.environ.get("WORKFLOW_EVENT_TOPIC", "workflow.stream")
 PUBLISH_ENABLED = os.environ.get("ENABLE_WORKFLOW_EVENTS", "true").strip().lower() in (
     "1",
     "true",
@@ -42,22 +38,24 @@ _NOTIFICATION_EVENT_TYPES: set[str] = {
     "ask_user_prompt",
 }
 
+# Types session_workflow already emits as session.status_* events — suppress
+# the redundant agent-side variant to keep the session stream clean.
+_SESSION_SUPPRESSED_TYPES: set[str] = {
+    "run_started",
+    "run_complete",
+    "run_error",
+}
 
-# Phase 4 unified event stream: when a session_id is in scope, translate
-# internal agent event types to the CMA shape the /sessions/[id] UI expects.
-# Types not in this map pass through unchanged so legacy workflow_agent_events
-# consumers still work until Step 2 deletes them. The original type is stashed
-# in data._internalType for debugging and Step-2 cleanup tracing.
+# Translate internal agent event types to the CMA shape the /sessions/[id] UI
+# expects. Types not in this map pass through unchanged (llm_start,
+# state_snapshot, plan_artifact, compaction_*). The original type is stashed
+# in data._internalType for debugging.
 _CMA_EVENT_TYPE_MAP: dict[str, str] = {
     "llm_complete": "agent.message",
     "tool_call_start": "agent.tool_use",
     "tool_call_end": "agent.tool_result",
     "tool_call_error": "agent.tool_result",
 }
-
-# Types we suppress entirely from the session stream — they duplicate events
-# that session_workflow emits via publish_session_event (session.status_*).
-_SESSION_SUPPRESSED_TYPES: set[str] = {"run_started"}
 
 
 def _cma_shape(
@@ -74,12 +72,10 @@ def _cma_shape(
     cma_type = _CMA_EVENT_TYPE_MAP.get(event_type, event_type)
     payload["_internalType"] = event_type
 
-    # Data-shape translations for types the UI renders specially.
     if event_type == "llm_complete":
         content = payload.pop("content", "") or ""
         if isinstance(content, str):
             payload["content"] = [{"type": "text", "text": content}]
-        # toolCalls stays as-is for debugging; not rendered by UI today.
     elif event_type == "tool_call_start":
         payload["name"] = payload.pop("toolName", None) or payload.get("name")
         payload["input"] = payload.pop("args", None) or payload.get("input") or {}
@@ -94,10 +90,10 @@ def _cma_shape(
             payload.setdefault("is_error", True)
     return cma_type, payload
 
+
 # Callback installed by main.py after the agent is constructed. Signature:
-#     (event_type: str, data: dict, execution_id: str | None, instance_id: str | None) -> None
-# The callback is responsible for its own error handling. Always invoked on
-# a daemon thread so it can use asyncio freely.
+#     (event_type: str, data: dict, session_id: str | None, instance_id: str | None) -> None
+# Always invoked on a daemon thread so it can use asyncio freely.
 _notification_dispatcher = None
 
 
@@ -109,66 +105,6 @@ def set_notification_dispatcher(fn) -> None:
     global _notification_dispatcher
     _notification_dispatcher = fn
 
-_publish_url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/publish/{PUBSUB_NAME}/{PUBSUB_TOPIC}"
-
-# Transient error tracking — exponential backoff, not permanent disable
-_consecutive_failures = 0
-_cooldown_until = 0.0  # epoch timestamp
-_permanently_disabled = False
-_MAX_CONSECUTIVE_FAILURES = 5
-_COOLDOWN_SECONDS = 30
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _do_publish(payload: bytes) -> None:
-    """Synchronous HTTP publish — runs in a daemon thread."""
-    global _consecutive_failures, _cooldown_until, _permanently_disabled
-
-    if _permanently_disabled:
-        return
-
-    # Check cooldown
-    if time.monotonic() < _cooldown_until:
-        return
-
-    try:
-        import urllib.request
-
-        req = urllib.request.Request(
-            _publish_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            status = resp.status
-            if status >= 400 and status < 500:
-                # Permanent error (4xx) — topic doesn't exist, auth failure, etc.
-                _permanently_disabled = True
-                logger.warning("[events] Permanently disabled: HTTP %d", status)
-                return
-            if status >= 500:
-                # Transient server error
-                raise Exception(f"HTTP {status}")
-
-        # Success — reset failure counter
-        _consecutive_failures = 0
-
-    except Exception as exc:
-        _consecutive_failures += 1
-        if _consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-            _cooldown_until = time.monotonic() + _COOLDOWN_SECONDS
-            logger.info(
-                "[events] %d consecutive failures, cooling down %ds: %s",
-                _consecutive_failures,
-                _COOLDOWN_SECONDS,
-                exc,
-            )
-            _consecutive_failures = 0  # Reset after cooldown set
-
 
 _WORKFLOW_BUILDER_URL = os.environ.get(
     "WORKFLOW_BUILDER_URL", "http://workflow-builder.nextjs.svc.cluster.local:3000"
@@ -179,8 +115,7 @@ _INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 def _post_ingest(session_id: str, envelope: dict[str, Any]) -> None:
     """Non-blocking POST of a session event to the SvelteKit BFF's internal
     ingest endpoint. The BFF assigns the sequence number and writes to
-    `session_events`. Swallows all errors — NATS remains the primary transport;
-    the DB write is durability + replay.
+    `session_events`.
     """
     if not _INTERNAL_API_TOKEN:
         logger.info(
@@ -219,276 +154,49 @@ def _post_ingest(session_id: str, envelope: dict[str, Any]) -> None:
 
 
 def publish_session_event(
-    session_id: str,
+    session_id: str | None,
     event_type: str,
     data: dict[str, Any] | None = None,
     *,
     source_event_id: str | None = None,
+    instance_id: str | None = None,
 ) -> None:
-    """Emit a CMA-shape session event. Dual-write:
-    1. NATS pub/sub (fire-and-forget, drives the SSE live stream).
-    2. Internal ingest endpoint (durable + replay; assigns sequence numbers).
+    """Emit a session event. CMA-shape translation is applied for legacy
+    internal types; notification hooks fire for a small set of user-visible
+    types on a daemon thread. Callers pass internal type names
+    (`llm_complete`, `tool_call_start`, ...) — this function maps them to
+    CMA (`agent.message`, `agent.tool_use`, ...) before posting.
 
-    Both are best-effort and non-blocking. See
-    `shared/managed-agents-events.md` for the event-type taxonomy.
+    `instance_id` is only used to thread context to Notification hooks and
+    does not affect routing; when omitted, `session_id` is passed instead.
     """
     if not PUBLISH_ENABLED:
         return
-
-    envelope_inner = {
-        "type": event_type,
-        "data": data or {},
-        "sourceEventId": source_event_id,
-    }
-
-    # 1. NATS via workflow.stream. `session_id` on the envelope lets the
-    #    subscription handler route/dedup. `session.*` types pass through
-    #    _cma_shape unchanged (not in the map) so they keep their CMA names.
-    publish_event(
-        event_type,
-        data or {},
-        execution_id=session_id,  # reuse for correlation
-        instance_id=session_id,
-        source_event_id=source_event_id,
-        session_id=session_id,
-    )
-
-    # 2. Postgres ingest on a daemon thread (non-blocking).
-    threading.Thread(
-        target=_post_ingest,
-        args=(session_id, envelope_inner),
-        daemon=True,
-    ).start()
-
-
-def publish_event(
-    event_type: str,
-    data: dict[str, Any] | None = None,
-    *,
-    execution_id: str | None = None,
-    instance_id: str | None = None,
-    source_event_id: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    """Publish an agent event to Dapr pub/sub (fire-and-forget, non-blocking).
-
-    When `session_id` is set, the `sessionId` field is included in the NATS
-    envelope so the subscription handler can dual-write to `session_events`.
-    """
-    if not PUBLISH_ENABLED or _permanently_disabled:
+    if not session_id:
+        logger.debug("[session-ingest] skipping %s — no session_id in scope", event_type)
         return
 
-    # Translate to CMA shape for the session stream consumer. The NATS envelope
-    # carries BOTH the CMA-shaped event (for sessionEvents) and the original
-    # envelope fields (for workflowAgentEvents). The subscription handler picks
-    # based on sessionId presence.
-    cma_type, cma_data = _cma_shape(event_type, data)
-
-    payload = json.dumps(
-        {
-            "source": "dapr-agent-py",
-            "type": event_type,
-            "executionId": execution_id or None,
-            "instanceId": instance_id or None,
-            "sourceEventId": source_event_id or None,
-            "sessionId": session_id or None,
-            "sessionType": cma_type,  # None → subscription handler suppresses session dual-write
-            "sessionData": cma_data,
-            "data": data or {},
-            "timestamp": _now_iso(),
-        }
-    ).encode()
-
-    # Fire-and-forget in daemon thread — never blocks the agent workflow
-    threading.Thread(target=_do_publish, args=(payload,), daemon=True).start()
-
-    # Fire Notification hooks for eligible event types. Isolated daemon
-    # thread so hook subprocess spawning never impacts the event publish.
+    # Fire Notification hooks for eligible event types on the pre-translation
+    # name, matching Claude Code's hook matcher vocabulary.
     dispatcher = _notification_dispatcher
     if dispatcher is not None and event_type in _NOTIFICATION_EVENT_TYPES:
         def _fire_notification():
             try:
-                dispatcher(event_type, data or {}, execution_id, instance_id)
-            except Exception as exc:
+                dispatcher(event_type, data or {}, session_id, instance_id or session_id)
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("[notification-hook] dispatch failed: %s", exc)
 
         threading.Thread(target=_fire_notification, daemon=True).start()
 
+    cma_type, cma_data = _cma_shape(event_type, data)
+    if cma_type is None:
+        return  # suppressed — session_workflow emits the canonical equivalent
 
-def publish_workflow_started(
-    execution_id: str,
-    instance_id: str,
-    task: str | None = None,
-    model: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "run_started",
-        {
-            "task": (task or "")[:500],
-            "model": model,
-        },
-        execution_id=execution_id,
-        instance_id=instance_id,
-        session_id=session_id,
-    )
-
-
-def publish_tool_start(
-    execution_id: str,
-    instance_id: str,
-    tool_name: str,
-    tool_args: dict[str, Any] | None = None,
-    source_event_id: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "tool_call_start",
-        {
-            "toolName": tool_name,
-            "args": {k: str(v)[:200] for k, v in (tool_args or {}).items()},
-        },
-        execution_id=execution_id,
-        instance_id=instance_id,
-        source_event_id=source_event_id,
-        session_id=session_id,
-    )
-
-
-def publish_tool_complete(
-    execution_id: str,
-    instance_id: str,
-    tool_name: str,
-    success: bool = True,
-    error: str | None = None,
-    output: str | None = None,
-    checkpoint: dict[str, Any] | None = None,
-    source_event_id: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    payload = {
-        "toolName": tool_name,
-        "success": success,
-        "error": error,
-        "output": (output or "")[:500],
+    envelope = {
+        "type": cma_type,
+        "data": cma_data,
+        "sourceEventId": source_event_id,
     }
-    if checkpoint is not None:
-        payload["codeCheckpoint"] = checkpoint
-    publish_event(
-        "tool_call_end" if success else "tool_call_error",
-        payload,
-        execution_id=execution_id,
-        instance_id=instance_id,
-        source_event_id=source_event_id,
-        session_id=session_id,
-    )
-
-
-def publish_llm_start(
-    execution_id: str,
-    instance_id: str,
-    model: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "llm_start",
-        {"model": model},
-        execution_id=execution_id,
-        instance_id=instance_id,
-        session_id=session_id,
-    )
-
-
-def publish_llm_complete(
-    execution_id: str,
-    instance_id: str,
-    content: str | None = None,
-    tool_calls: list[str] | None = None,
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "llm_complete",
-        {
-            "content": (content or "")[:500],
-            "toolCalls": tool_calls or [],
-        },
-        execution_id=execution_id,
-        instance_id=instance_id,
-        session_id=session_id,
-    )
-
-
-def publish_compaction_start(
-    execution_id: str,
-    instance_id: str,
-    pre_count: int,
-    threshold: int,
-    trigger: str = "auto",
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "compaction_start",
-        {
-            "preCount": pre_count,
-            "threshold": threshold,
-            "trigger": trigger,
-        },
-        execution_id=execution_id,
-        instance_id=instance_id,
-        session_id=session_id,
-    )
-
-
-def publish_compaction_complete(
-    execution_id: str,
-    instance_id: str,
-    *,
-    pre_count: int,
-    post_count: int,
-    messages_dropped: int,
-    messages_preserved: int,
-    ptl_retries: int = 0,
-    trigger: str = "auto",
-    reason: str = "",
-    success: bool = True,
-    error: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "compaction_complete" if success else "compaction_error",
-        {
-            "preCount": pre_count,
-            "postCount": post_count,
-            "messagesDropped": messages_dropped,
-            "messagesPreserved": messages_preserved,
-            "ptlRetries": ptl_retries,
-            "trigger": trigger,
-            "reason": reason,
-            "success": success,
-            "error": error,
-        },
-        execution_id=execution_id,
-        instance_id=instance_id,
-        session_id=session_id,
-    )
-
-
-def publish_workflow_completed(
-    execution_id: str,
-    instance_id: str,
-    success: bool = True,
-    error: str | None = None,
-    output: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    publish_event(
-        "run_complete" if success else "run_error",
-        {
-            "success": success,
-            "error": error,
-            "output": (output or "")[:500],
-        },
-        execution_id=execution_id,
-        instance_id=instance_id,
-        session_id=session_id,
-    )
+    threading.Thread(
+        target=_post_ingest, args=(session_id, envelope), daemon=True
+    ).start()

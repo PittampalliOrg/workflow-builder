@@ -69,16 +69,7 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
-from src.event_publisher import (
-    publish_event,
-    publish_session_event,
-    publish_workflow_started,
-    publish_workflow_completed,
-    publish_tool_start,
-    publish_tool_complete,
-    publish_llm_start,
-    publish_llm_complete,
-)
+from src.event_publisher import publish_session_event
 from src.hooks import (
     HooksSnapshot,
     execute_notification_hooks,
@@ -886,10 +877,8 @@ class OpenShellDurableAgent(DurableAgent):
         self._skills_by_instance: dict[str, list[SkillDefinition]] = {}
         self._workspace_ref_by_instance: dict[str, str] = {}
         # Per-instance session id: populated when session_workflow spawns
-        # agent_workflow as a child. Phase 4+: agent events include this in
-        # their envelope so the /api/internal/dapr/agent-stream subscription
-        # handler can dual-write to session_events (alongside the legacy
-        # workflow_agent_events write).
+        # agent_workflow as a child. Activities thread it into
+        # publish_session_event so every agent event lands in session_events.
         self._session_id_by_instance: dict[str, str] = {}
         # Hooks/plugins: populated by plugins.integration.bootstrap(agent) at
         # service boot. Defaults keep the attributes safe to touch even when
@@ -1087,6 +1076,7 @@ class OpenShellDurableAgent(DurableAgent):
                     caller=_call_anthropic_sdk,
                     turn_index=turn_index,
                     runtime=runtime_for_compact,
+                    session_id=self._session_id_by_instance.get(inst_id),
                 )
                 if result.compacted:
                     self._compaction_runs_by_instance[inst_id] = (
@@ -1112,7 +1102,9 @@ class OpenShellDurableAgent(DurableAgent):
 
         sess_id = self._session_id_by_instance.get(inst_id)
         try:
-            publish_llm_start(exec_id, inst_id, model=component, session_id=sess_id)
+            publish_session_event(
+                sess_id, "llm_start", {"model": component}, instance_id=inst_id
+            )
         except Exception:
             pass
         try:
@@ -1120,7 +1112,10 @@ class OpenShellDurableAgent(DurableAgent):
             result = super().call_llm(ctx, payload)
         except Exception as exc:
             try:
-                publish_llm_complete(exec_id, inst_id, session_id=sess_id)
+                publish_session_event(
+                    sess_id, "llm_complete", {"content": "", "toolCalls": []},
+                    instance_id=inst_id,
+                )
             except Exception:
                 pass
             raise
@@ -1146,8 +1141,11 @@ class OpenShellDurableAgent(DurableAgent):
                     t.get("function", {}).get("name", "") for t in tc if isinstance(t, dict)
                 ]
         try:
-            publish_llm_complete(
-                exec_id, inst_id, content=content, tool_calls=tool_calls, session_id=sess_id
+            publish_session_event(
+                sess_id,
+                "llm_complete",
+                {"content": content, "toolCalls": tool_calls},
+                instance_id=inst_id,
             )
         except Exception:
             pass
@@ -1252,14 +1250,16 @@ class OpenShellDurableAgent(DurableAgent):
                     logger.info("[hooks] PreToolUse blocked %s: %s", tool_name, reason)
                     _block_decision = "deny"
                     try:
-                        publish_tool_complete(
-                            exec_id,
-                            inst_id,
-                            tool_name,
-                            success=False,
-                            error=f"blocked by hook: {reason}"[:200],
+                        publish_session_event(
+                            sess_id,
+                            "tool_call_error",
+                            {
+                                "toolName": tool_name,
+                                "success": False,
+                                "error": f"blocked by hook: {reason}"[:200],
+                            },
                             source_event_id=f"{tool_call_id}:blocked" if tool_call_id else None,
-                            session_id=sess_id,
+                            instance_id=inst_id,
                         )
                     except Exception:
                         pass
@@ -1309,13 +1309,15 @@ class OpenShellDurableAgent(DurableAgent):
                     pass
 
           try:
-              publish_tool_start(
-                  exec_id,
-                  inst_id,
-                  tool_name,
-                  tool_args=tool_args,
+              publish_session_event(
+                  sess_id,
+                  "tool_call_start",
+                  {
+                      "toolName": tool_name,
+                      "args": {k: str(v)[:200] for k, v in (tool_args or {}).items()},
+                  },
                   source_event_id=f"{tool_call_id}:start" if tool_call_id else None,
-                  session_id=sess_id,
+                  instance_id=inst_id,
               )
           except Exception:
               pass
@@ -1352,14 +1354,16 @@ class OpenShellDurableAgent(DurableAgent):
                       error = str(exc)
                       _exec_error = error
                       try:
-                          publish_tool_complete(
-                              exec_id,
-                              inst_id,
-                              tool_name,
-                              success=False,
-                              error=error[:200],
+                          publish_session_event(
+                              sess_id,
+                              "tool_call_error",
+                              {
+                                  "toolName": tool_name,
+                                  "success": False,
+                                  "error": error[:200],
+                              },
                               source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
-                              session_id=sess_id,
+                              instance_id=inst_id,
                           )
                       except Exception:
                           pass
@@ -1413,14 +1417,16 @@ class OpenShellDurableAgent(DurableAgent):
                   except Exception as hook_exc:
                       logger.warning("[hooks] PostToolUseFailure error: %s", hook_exc)
               try:
-                  publish_tool_complete(
-                      exec_id,
-                      inst_id,
-                      tool_name,
-                      success=False,
-                      error=str(exc)[:200],
+                  publish_session_event(
+                      sess_id,
+                      "tool_call_error",
+                      {
+                          "toolName": tool_name,
+                          "success": False,
+                          "error": str(exc)[:200],
+                      },
                       source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
-                      session_id=sess_id,
+                      instance_id=inst_id,
                   )
               except Exception:
                   pass
@@ -1495,15 +1501,19 @@ class OpenShellDurableAgent(DurableAgent):
               except Exception as exc:
                   logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
           try:
-              publish_tool_complete(
-                  exec_id,
-                  inst_id,
-                  tool_name,
-                  success=True,
-                  output=output,
-                  checkpoint=checkpoint,
+              payload: dict[str, Any] = {
+                  "toolName": tool_name,
+                  "success": True,
+                  "output": (output or "")[:500],
+              }
+              if checkpoint is not None:
+                  payload["codeCheckpoint"] = checkpoint
+              publish_session_event(
+                  sess_id,
+                  "tool_call_end",
+                  payload,
                   source_event_id=f"{tool_call_id}:end" if tool_call_id else None,
-                  session_id=sess_id,
+                  instance_id=inst_id,
               )
           except Exception:
               pass
@@ -1543,7 +1553,9 @@ class OpenShellDurableAgent(DurableAgent):
         if code_checkpoint_restore and not ctx.is_replaying:
             restore_result = restore_code_checkpoint(runtime, code_checkpoint_restore)
             try:
-                publish_event(
+                _ctx_inst = getattr(ctx, "instance_id", None) or ""
+                publish_session_event(
+                    self._session_id_by_instance.get(_ctx_inst),
                     "state_snapshot",
                     {
                         "phase": "code_checkpoint_restore",
@@ -1556,17 +1568,8 @@ class OpenShellDurableAgent(DurableAgent):
                         },
                         "result": restore_result,
                     },
-                    execution_id=str(
-                        message.get("dbExecutionId")
-                        or message.get("workflowExecutionId")
-                        or message.get("executionId")
-                        or ""
-                    ),
-                    instance_id=getattr(ctx, "instance_id", None) or "",
                     source_event_id=f"restore:{code_checkpoint_restore.get('checkpointId') or code_checkpoint_restore.get('afterSha') or 'checkpoint'}",
-                    session_id=self._session_id_by_instance.get(
-                        getattr(ctx, "instance_id", None) or ""
-                    ),
+                    instance_id=_ctx_inst,
                 )
             except Exception:
                 pass
@@ -1706,8 +1709,7 @@ class OpenShellDurableAgent(DurableAgent):
 
         # Phase 4 bridge: when session_workflow spawns agent_workflow, it
         # inlines sessionId into the child's message dict. Stash per-instance
-        # so activities can include it in publish_event envelopes for the
-        # session_events dual-write.
+        # so activities can pass it to publish_session_event.
         session_id_raw = str(message.get("sessionId") or "").strip()
         if session_id_raw:
             self._session_id_by_instance[instance_id] = session_id_raw
@@ -1826,18 +1828,8 @@ class OpenShellDurableAgent(DurableAgent):
         if not ctx.is_replaying:
             logger.info("[exec-id] execution_id=%s instance_id=%s", execution_id, instance_id)
 
-        # Publish workflow started event (only on first execution, not replays)
-        if not ctx.is_replaying:
-            try:
-                publish_workflow_started(
-                    execution_id=execution_id,
-                    instance_id=instance_id,
-                    task=str(message.get("task") or message.get("prompt") or "")[:500],
-                    model=llm_component,
-                    session_id=self._session_id_by_instance.get(instance_id),
-                )
-            except Exception:
-                pass
+        # run_started is suppressed in the session stream — session_workflow's
+        # session.status_running event is the canonical equivalent. No emit here.
 
         # Resolve per-run compaction config from agentConfig.compaction and
         # stash it on the agent so call_llm can pass it to maybe_compact.
@@ -1942,12 +1934,11 @@ class OpenShellDurableAgent(DurableAgent):
                 if plan_result.get("ok") and plan_result.get("content"):
                     plan_content = str(plan_result["content"])
                     _save_plan_to_state(execution_id, plan_content)
-                    publish_event(
+                    publish_session_event(
+                        self._session_id_by_instance.get(instance_id),
                         "plan_artifact",
                         {"content": plan_content, "file": "PLAN.md"},
-                        execution_id=execution_id,
                         instance_id=instance_id,
-                        session_id=self._session_id_by_instance.get(instance_id),
                     )
                     logger.info(
                         "[plan] Persisted PLAN.md (%d chars) to state store for %s",
@@ -1977,15 +1968,8 @@ class OpenShellDurableAgent(DurableAgent):
                         )
                 except Exception as exc:
                     logger.warning("[hooks] Stop error: %s", exc)
-            try:
-                publish_workflow_completed(
-                    execution_id=execution_id,
-                    instance_id=instance_id,
-                    success=True,
-                    session_id=self._session_id_by_instance.get(instance_id),
-                )
-            except Exception:
-                pass
+            # run_complete is suppressed — session_workflow emits
+            # session.status_idle when the agent finishes cleanly.
             if hooks_enabled() and not ctx.is_replaying:
                 try:
                     snap = _current_hook_snapshot(self, instance_id)
@@ -2001,16 +1985,9 @@ class OpenShellDurableAgent(DurableAgent):
                     logger.warning("[hooks] SessionEnd (success) error: %s", exc)
             self._close_mcp_client(instance_id)
         except Exception as exc:
-            try:
-                publish_workflow_completed(
-                    execution_id=execution_id,
-                    instance_id=instance_id,
-                    success=False,
-                    error=str(exc)[:500],
-                    session_id=self._session_id_by_instance.get(instance_id),
-                )
-            except Exception:
-                pass
+            # run_error is suppressed — session_workflow emits session.status_errored
+            # with stop_reason carrying the full error context.
+            _ = exc  # retained for re-raise below
             if hooks_enabled() and not ctx.is_replaying:
                 try:
                     snap = _current_hook_snapshot(self, instance_id)

@@ -425,7 +425,6 @@ export const workflowExecutions = pgTable(
 		primaryTraceId: text("primary_trace_id"),
 		workflowSessionId: text("workflow_session_id"),
 		summaryOutput: jsonb("summary_output").$type<Record<string, unknown> | null>(),
-		lastAgentEventId: integer("last_agent_event_id"),
 		errorStackTrace: text("error_stack_trace"),
 		rerunOfExecutionId: text("rerun_of_execution_id"),
 		rerunSourceInstanceId: text("rerun_source_instance_id"),
@@ -687,77 +686,6 @@ export const workflowAgentRuns = pgTable(
 	}),
 );
 
-export type WorkflowAgentEventType =
-	| "run_started"
-	| "turn_started"
-	| "llm_start"
-	| "llm_token"
-	| "llm_complete"
-	| "tool_call_start"
-	| "tool_call_end"
-	| "tool_call_error"
-	| "sandbox_output"
-	| "sandbox_output_partial"
-	| "sandbox_heartbeat"
-	| "state_snapshot"
-	| "run_complete"
-	| "run_error"
-	| "tool_start"
-	| "tool_complete"
-	| "tool_error"
-	| "model_start"
-	| "model_complete";
-
-export const workflowAgentEvents = pgTable(
-	"workflow_agent_events",
-	{
-		eventId: serial("event_id").primaryKey(),
-		workflowExecutionId: text("workflow_execution_id")
-			.notNull()
-			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
-		workflowAgentRunId: text("workflow_agent_run_id").references(
-			() => workflowAgentRuns.id,
-			{ onDelete: "set null" },
-		),
-		parentExecutionId: text("parent_execution_id"),
-		daprInstanceId: text("dapr_instance_id").notNull(),
-		sourceEventId: text("source_event_id").notNull(),
-		seq: integer("seq"),
-		eventType: text("event_type").notNull().$type<WorkflowAgentEventType>(),
-		phase: text("phase"),
-		toolName: text("tool_name"),
-		sandboxName: text("sandbox_name"),
-		traceId: text("trace_id"),
-		payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
-		ts: timestamp("ts").notNull().defaultNow(),
-		createdAt: timestamp("created_at").notNull().defaultNow(),
-	},
-	(table) => ({
-		executionSourceUnique: unique("uq_workflow_agent_events_source").on(
-			table.workflowExecutionId,
-			table.daprInstanceId,
-			table.sourceEventId,
-		),
-		executionSeqIdx: index("idx_workflow_agent_events_execution_seq").on(
-			table.workflowExecutionId,
-			table.eventId,
-		),
-		instanceSeqIdx: index("idx_workflow_agent_events_instance_seq").on(
-			table.daprInstanceId,
-			table.eventId,
-		),
-		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
-			table.workflowAgentRunId,
-			table.eventId,
-		),
-	}),
-);
-
-export type WorkflowAgentEvent = InferSelectModel<typeof workflowAgentEvents>;
-export type NewWorkflowAgentEvent = InferInsertModel<
-	typeof workflowAgentEvents
->;
-
 export type WorkflowCodeCheckpointStatus =
 	| "created"
 	| "no_changes"
@@ -776,10 +704,6 @@ export const workflowCodeCheckpoints = pgTable(
 			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
 		workflowAgentRunId: text("workflow_agent_run_id").references(
 			() => workflowAgentRuns.id,
-			{ onDelete: "set null" },
-		),
-		workflowAgentEventId: integer("workflow_agent_event_id").references(
-			() => workflowAgentEvents.eventId,
 			{ onDelete: "set null" },
 		),
 		parentExecutionId: text("parent_execution_id"),
@@ -1933,22 +1857,7 @@ export const workflowExecutionsRelations = relations(
 		}),
 		planArtifacts: many(workflowPlanArtifacts),
 		browserArtifacts: many(workflowBrowserArtifacts),
-		agentEvents: many(workflowAgentEvents),
 		codeCheckpoints: many(workflowCodeCheckpoints),
-	}),
-);
-
-export const workflowAgentEventsRelations = relations(
-	workflowAgentEvents,
-	({ one }) => ({
-		workflowExecution: one(workflowExecutions, {
-			fields: [workflowAgentEvents.workflowExecutionId],
-			references: [workflowExecutions.id],
-		}),
-		agentRun: one(workflowAgentRuns, {
-			fields: [workflowAgentEvents.workflowAgentRunId],
-			references: [workflowAgentRuns.id],
-		}),
 	}),
 );
 
@@ -1962,10 +1871,6 @@ export const workflowCodeCheckpointsRelations = relations(
 		agentRun: one(workflowAgentRuns, {
 			fields: [workflowCodeCheckpoints.workflowAgentRunId],
 			references: [workflowAgentRuns.id],
-		}),
-		agentEvent: one(workflowAgentEvents, {
-			fields: [workflowCodeCheckpoints.workflowAgentEventId],
-			references: [workflowAgentEvents.eventId],
 		}),
 	}),
 );
@@ -2408,6 +2313,7 @@ export const sessions = pgTable(
 		vaultIds: jsonb("vault_ids").$type<string[]>().notNull().default([]),
 		daprInstanceId: text("dapr_instance_id"),
 		natsSubject: text("nats_subject"),
+		sandboxName: text("sandbox_name"),
 		workflowExecutionId: text("workflow_execution_id"),
 		parentExecutionId: text("parent_execution_id"),
 		userId: text("user_id")
@@ -2431,6 +2337,7 @@ export const sessions = pgTable(
 		workflowIdx: index("idx_sessions_workflow_execution").on(
 			table.workflowExecutionId,
 		),
+		sandboxIdx: index("idx_sessions_sandbox_name").on(table.sandboxName),
 	}),
 );
 

@@ -5,8 +5,7 @@ const EXECUTION_READ_MODEL_COLUMNS = [
 	'current_node_name',
 	'primary_trace_id',
 	'workflow_session_id',
-	'summary_output',
-	'last_agent_event_id'
+	'summary_output'
 ] as const;
 
 const EXECUTION_READ_MODEL_MIGRATIONS = [

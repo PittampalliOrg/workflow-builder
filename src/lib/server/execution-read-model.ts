@@ -1,10 +1,9 @@
-import { and, asc, desc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
 	sessionEvents,
 	sessions,
-	workflowAgentEvents,
 	workflowAgentRuns,
 	workflowExecutionLogs,
 	workflowExecutions,
@@ -58,27 +57,6 @@ function mapRuntimeStatus(
 			return 'running';
 		default:
 			return fallback;
-	}
-}
-
-function normalizeEventType(type: string): string {
-	switch (type) {
-		case 'tool_start':
-			return 'tool_call_start';
-		case 'tool_complete':
-			return 'tool_call_end';
-		case 'tool_error':
-			return 'tool_call_error';
-		case 'model_start':
-			return 'llm_start';
-		case 'model_complete':
-			return 'llm_complete';
-		case 'sandbox_output_partial':
-			return 'sandbox_output';
-		case 'sandbox_heartbeat':
-			return 'heartbeat';
-		default:
-			return type;
 	}
 }
 
@@ -180,34 +158,6 @@ function mapSessionAgentEvent(row: SessionEventRow): ExecutionTimelineEvent {
 	};
 }
 
-// Legacy mapper — used ONLY by listSandboxAgentEvents until sandbox debug
-// queries migrate to session_events. Readable path through `workflow_agent_events`
-// stays alive until that migration (Step 2b).
-function mapAgentEvent(row: typeof workflowAgentEvents.$inferSelect): ExecutionTimelineEvent {
-	const payload = isRecord(row.payload) ? row.payload : {};
-	const data = isRecord(payload.data) ? payload.data : payload;
-	if (row.phase && data.phase == null) data.phase = row.phase;
-	if (row.toolName && data.toolName == null) data.toolName = row.toolName;
-	if (row.traceId && data.traceId == null) data.traceId = row.traceId;
-	const timestamp =
-		typeof payload.ts === 'string'
-			? payload.ts
-			: typeof payload.timestamp === 'string'
-				? payload.timestamp
-				: row.ts.toISOString();
-	return {
-		id: row.eventId,
-		type: normalizeEventType(row.eventType),
-		data,
-		timestamp,
-		workflowAgentRunId: row.workflowAgentRunId,
-		daprInstanceId: row.daprInstanceId,
-		sourceEventId: row.sourceEventId,
-		phase: row.phase,
-		toolName: row.toolName
-	};
-}
-
 async function readExecutionAgentRuns(executionId: string): Promise<ExecutionReadModel['agentRuns']> {
 	if (!db) return [];
 	const rows = await db
@@ -300,12 +250,11 @@ export async function listExecutionAgentEvents(
 }
 
 /**
- * List agent events for a specific sandbox name, across all executions.
- * Used by the sandbox detail page to show what happened in a sandbox.
- *
- * Strategy: first looks for events with sandbox_name set directly, then
- * falls back to finding the execution via its output JSONB (which contains
- * the sandbox name as a workspace reference), then returns that execution's events.
+ * List agent events for a specific sandbox name, across all sessions.
+ * Used by the sandbox detail page + stream to show what happened in a
+ * sandbox/runtime. Phase 4 Step 2b: reads from `session_events` joined on
+ * `sessions.sandbox_name`, replacing the deleted `workflow_agent_events`
+ * table. Pagination cursor is the session event's `sequence` column.
  */
 export async function listSandboxAgentEvents(
 	sandboxName: string,
@@ -314,74 +263,28 @@ export async function listSandboxAgentEvents(
 ): Promise<ExecutionTimelineEvent[]> {
 	if (!db) return [];
 
-	// Try direct sandbox_name match first
-	const directRows = await db
-		.select()
-		.from(workflowAgentEvents)
-		.where(
-			and(
-				eq(workflowAgentEvents.sandboxName, sandboxName),
-				gt(workflowAgentEvents.eventId, afterEventId)
-			)
-		)
-		.orderBy(asc(workflowAgentEvents.eventId))
-		.limit(limit);
-
-	if (directRows.length > 0) {
-		return directRows.map((row) => mapAgentEvent(row));
-	}
-
-	// Agent-runtime sandboxes are long-lived runtime profiles, so events may
-	// carry the runtime name in payload source/provider fields rather than an
-	// OpenShell sandbox_name.
-	if (sandboxName === 'dapr-agent-py' || sandboxName === 'dapr-agent-py-testing') {
-		const runtimeRows = await db
-			.select()
-			.from(workflowAgentEvents)
-			.where(
-				and(
-					sql`(
-						${workflowAgentEvents.payload}->>'source' = ${sandboxName}
-						OR ${workflowAgentEvents.payload}->>'sandboxName' = ${sandboxName}
-						OR ${workflowAgentEvents.payload}->>'agentRuntime' = ${sandboxName}
-						OR ${workflowAgentEvents.payload}->>'runtime' = ${sandboxName}
-					)`,
-					gt(workflowAgentEvents.eventId, afterEventId)
-				)
-			)
-			.orderBy(asc(workflowAgentEvents.eventId))
-			.limit(limit);
-
-		if (runtimeRows.length > 0) {
-			return runtimeRows.map((row) => mapAgentEvent(row));
-		}
-	}
-
-	// Fallback: find execution(s) whose output JSON mentions this sandbox name,
-	// then return that execution's agent events
-	const executions = await db
-		.select({ id: workflowExecutions.id })
-		.from(workflowExecutions)
-		.where(sql`${workflowExecutions.output}::text LIKE ${'%' + sandboxName + '%'}`)
-		.orderBy(desc(workflowExecutions.startedAt))
-		.limit(1);
-
-	if (executions.length === 0) return [];
-
-	const executionId = executions[0].id;
 	const rows = await db
-		.select()
-		.from(workflowAgentEvents)
+		.select({
+			id: sessionEvents.id,
+			sequence: sessionEvents.sequence,
+			sessionId: sessionEvents.sessionId,
+			type: sessionEvents.type,
+			data: sessionEvents.data,
+			sourceEventId: sessionEvents.sourceEventId,
+			createdAt: sessionEvents.createdAt
+		})
+		.from(sessionEvents)
+		.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
 		.where(
 			and(
-				eq(workflowAgentEvents.workflowExecutionId, executionId),
-				gt(workflowAgentEvents.eventId, afterEventId)
+				eq(sessions.sandboxName, sandboxName),
+				gt(sessionEvents.sequence, afterEventId)
 			)
 		)
-		.orderBy(asc(workflowAgentEvents.eventId))
+		.orderBy(asc(sessionEvents.sequence))
 		.limit(limit);
 
-	return rows.map((row) => mapAgentEvent(row));
+	return rows.map((row) => mapSessionAgentEvent(row));
 }
 
 async function refreshExecutionRuntime(execution: ExecutionRow): Promise<LiveRuntimeStatus | null> {
@@ -569,18 +472,23 @@ async function readTraceIds(execution: ExecutionRow) {
 		traceIds.add(traceId);
 	}
 
+	// Phase 4 Step 2b: the legacy `workflow_agent_events.trace_id` sidecar is
+	// gone. Session events carry traceId inside `data` when the agent runtime
+	// stamps it — pull the last N and harvest any we find.
 	if (db) {
 		const rows = await db
-			.select({ traceId: workflowAgentEvents.traceId })
-			.from(workflowAgentEvents)
-			.where(eq(workflowAgentEvents.workflowExecutionId, execution.id))
-			.orderBy(desc(workflowAgentEvents.eventId))
+			.select({ data: sessionEvents.data })
+			.from(sessionEvents)
+			.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
+			.where(eq(sessions.workflowExecutionId, execution.id))
+			.orderBy(desc(sessionEvents.sequence))
 			.limit(200);
 
 		for (const row of rows) {
-			if (typeof row.traceId === 'string' && row.traceId.trim()) {
-				traceIds.add(row.traceId.trim());
-			}
+			const data = isRecord(row.data) ? row.data : null;
+			const traceId =
+				data && typeof data.traceId === 'string' ? data.traceId.trim() : '';
+			if (traceId) traceIds.add(traceId);
 		}
 	}
 
@@ -611,8 +519,9 @@ export async function loadExecutionReadModel(
 		readTraceIds(execution)
 	]);
 
-	const lastAgentEventId =
-		agentEvents.at(-1)?.id ?? execution.lastAgentEventId ?? 0;
+	// Step 2b: `last_agent_event_id` column dropped — the cursor comes from
+	// the last session_events.sequence we returned (agentEvents[-1].id).
+	const lastAgentEventId = agentEvents.at(-1)?.id ?? 0;
 	const runtimeStatus = runtime?.runtimeStatus ?? null;
 	const traceId = runtime?.traceId ?? execution.primaryTraceId ?? traceIds[0] ?? null;
 	const output = execution.output ?? runtime?.outputs ?? null;

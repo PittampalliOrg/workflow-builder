@@ -1,8 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { workflowAgentEvents, workflowExecutions, workflows } from '$lib/server/db/schema';
-import { desc, sql, eq, inArray } from 'drizzle-orm';
+import { sessions, workflowExecutions, workflows } from '$lib/server/db/schema';
+import { desc, eq, inArray, sql } from 'drizzle-orm';
 
 export const GET: RequestHandler = async ({ params }) => {
 	if (!db) return json([]);
@@ -10,22 +10,26 @@ export const GET: RequestHandler = async ({ params }) => {
 	const sandboxName = params.name;
 	let executionIds: string[] | null = null;
 
+	// Phase 4 Step 2b: sessions carry the runtime label on `sandbox_name`, so
+	// every `durable/run` execution that spawned a session for this runtime is
+	// reachable via the sessions join. `workflow_agent_events` was the old
+	// source for this lookup and is gone.
 	if (sandboxName === 'dapr-agent-py' || sandboxName === 'dapr-agent-py-testing') {
-		const eventRows = await db
-			.select({ workflowExecutionId: workflowAgentEvents.workflowExecutionId })
-			.from(workflowAgentEvents)
+		const sessionRows = await db
+			.select({ workflowExecutionId: sessions.workflowExecutionId })
+			.from(sessions)
 			.where(
-				sql`(
-					${workflowAgentEvents.sandboxName} = ${sandboxName}
-					OR ${workflowAgentEvents.payload}->>'source' = ${sandboxName}
-					OR ${workflowAgentEvents.payload}->>'sandboxName' = ${sandboxName}
-					OR ${workflowAgentEvents.payload}->>'agentRuntime' = ${sandboxName}
-					OR ${workflowAgentEvents.payload}->>'runtime' = ${sandboxName}
-				)`
+				sql`${sessions.sandboxName} = ${sandboxName} AND ${sessions.workflowExecutionId} IS NOT NULL`
 			)
-			.orderBy(desc(workflowAgentEvents.eventId))
+			.orderBy(desc(sessions.createdAt))
 			.limit(50);
-		executionIds = [...new Set(eventRows.map((row) => row.workflowExecutionId))].slice(0, 10);
+		executionIds = [
+			...new Set(
+				sessionRows
+					.map((row) => row.workflowExecutionId)
+					.filter((id): id is string => typeof id === 'string' && id.length > 0)
+			)
+		].slice(0, 10);
 		if (executionIds.length === 0) return json([]);
 	}
 

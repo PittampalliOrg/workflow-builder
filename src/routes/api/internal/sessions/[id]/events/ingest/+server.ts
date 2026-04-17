@@ -1,8 +1,20 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { eq } from "drizzle-orm";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { appendEvent } from "$lib/server/sessions/events";
 import { updateSessionStatus } from "$lib/server/sessions/registry";
+import { db } from "$lib/server/db";
+import { sessions } from "$lib/server/db/schema";
+import { persistCodeCheckpointFromAgentEvent } from "$lib/server/workflows/code-checkpoints";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringOrNull(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 
 /**
  * Internal endpoint called by `dapr-agent-py`'s session_workflow to persist a
@@ -68,6 +80,38 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		});
 	} else if (type === "session.status_rescheduled") {
 		await updateSessionStatus(params.id, "rescheduling");
+	}
+
+	// Phase 4 Step 2b: tool_result events may carry a `codeCheckpoint` payload
+	// (from dapr-agent-py's run_tool activity). Persist it so the workflow run
+	// UI's "checkpoints" tab keeps working. Previously this lived in the
+	// deleted agent-stream handler; now it rides on the ingest path.
+	if (db && isRecord(data) && isRecord(data.codeCheckpoint)) {
+		try {
+			const [sessionRow] = await db
+				.select({
+					workflowExecutionId: sessions.workflowExecutionId,
+					parentExecutionId: sessions.parentExecutionId,
+					daprInstanceId: sessions.daprInstanceId,
+				})
+				.from(sessions)
+				.where(eq(sessions.id, params.id))
+				.limit(1);
+			if (sessionRow?.workflowExecutionId) {
+				await persistCodeCheckpointFromAgentEvent({
+					workflowExecutionId: sessionRow.workflowExecutionId,
+					workflowAgentRunId: null,
+					parentExecutionId: sessionRow.parentExecutionId ?? null,
+					daprInstanceId: sessionRow.daprInstanceId ?? params.id,
+					sourceEventId: sourceEventId ?? envelope.id,
+					toolName: stringOrNull(data.tool_name) ?? stringOrNull(data.toolName) ?? type,
+					nodeId: null,
+					payload: data.codeCheckpoint,
+				});
+			}
+		} catch (err) {
+			console.warn("[session-ingest] code checkpoint persist failed:", err);
+		}
 	}
 
 	return json({ event: envelope });

@@ -119,7 +119,16 @@ export type CreateSessionInput = {
 	projectId?: string | null;
 	workflowExecutionId?: string | null;
 	parentExecutionId?: string | null;
+	sandboxName?: string | null;
 };
+
+/**
+ * Default Dapr app that executes `durable/run` sessions. The sandbox detail
+ * UI filters on `sessions.sandbox_name`; since every UI-initiated session
+ * currently routes to `dapr-agent-py`, we tag new sessions with that name
+ * unless the caller overrides (e.g., the testing deployment).
+ */
+const DEFAULT_SANDBOX_NAME = "dapr-agent-py";
 
 /**
  * Create a session and pin it to the agent's current (or explicitly-chosen)
@@ -162,6 +171,7 @@ export async function createSession(
 			vaultIds,
 			userId: input.userId,
 			projectId: input.projectId ?? null,
+			sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
 			workflowExecutionId: input.workflowExecutionId ?? null,
 			parentExecutionId: input.parentExecutionId ?? null,
 		})

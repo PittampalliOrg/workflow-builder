@@ -1115,7 +1115,6 @@ def _assert_execution_read_model_columns() -> None:
         "primary_trace_id",
         "workflow_session_id",
         "summary_output",
-        "last_agent_event_id",
     }
 
     db_url = _get_database_url()

@@ -131,6 +131,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	// auto-id generation by inserting directly, then reuse createSession's
 	// defaults via a follow-up lookup. To keep a single code path, we do a
 	// direct insert here since createSession doesn't accept a pre-computed id.
+	const incomingSandboxName =
+		typeof body.sandboxName === "string" && body.sandboxName.trim()
+			? body.sandboxName.trim()
+			: "dapr-agent-py";
 	await db.insert(sessions).values({
 		id: sessionId,
 		title,
@@ -142,6 +146,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		vaultIds,
 		userId,
 		projectId: projectId ?? null,
+		sandboxName: incomingSandboxName,
 		workflowExecutionId,
 		parentExecutionId,
 	});
