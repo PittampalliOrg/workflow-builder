@@ -59,21 +59,19 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		initialEvents,
 	};
 
-	// Dapr workflow API is cross-app via placement — any sidecar can start
-	// a workflow registered by another app. We call our own sidecar; Dapr
-	// routes via placement to whichever app hosts `session_workflow` (in
-	// this cluster: `dapr-agent-py`).
+	// The Dapr workflow HTTP API does not route cross-app via placement —
+	// the runtime must be registered on the sidecar that receives the
+	// call. workflow-builder hosts no workflows. Instead, invoke the
+	// /internal/sessions/spawn endpoint on dapr-agent-py via Dapr
+	// service-invoke; that endpoint calls StartInstance on its own
+	// sidecar which owns the session_workflow runtime.
 	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0-beta1/workflows/dapr/session_workflow/start?instanceID=${encodeURIComponent(
-		instanceId,
-	)}`;
+	const url = `${daprEndpoint}/v1.0/invoke/dapr-agent-py/method/internal/sessions/spawn`;
 	const res = await daprFetch(url, {
 		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify(payload),
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ instanceId, payload }),
 	});
 	if (!res.ok && res.status !== 409) {
 		const text = await res.text().catch(() => "");
@@ -108,15 +106,15 @@ export async function raiseSessionUserEvents(
 	const session = await getSession(sessionId);
 	if (!session?.daprInstanceId) return; // not yet spawned — events will be picked up at spawn time via listEvents
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0-beta1/workflows/dapr/${encodeURIComponent(
-		session.daprInstanceId,
-	)}/raiseEvent/session.user_events`;
+	const url = `${daprEndpoint}/v1.0/invoke/dapr-agent-py/method/internal/sessions/raise-event`;
 	const res = await daprFetch(url, {
 		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({ events }),
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			instanceId: session.daprInstanceId,
+			eventName: "session.user_events",
+			payload: { events },
+		}),
 	});
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");

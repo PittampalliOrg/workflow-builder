@@ -3010,6 +3010,71 @@ async def get_plan(execution_id: str) -> dict:
     return {"plan": None}
 
 
+@app.post("/internal/sessions/spawn")
+def spawn_session_endpoint(request: dict) -> dict:
+    """Start a session_workflow instance on this sidecar (Phase 4 bridge).
+
+    The BFF can't invoke the Dapr workflow HTTP API cross-app via
+    placement — actor routing requires the workflow runtime to be
+    registered on the initiating sidecar, and workflow-builder has
+    none. Instead the BFF service-invokes this endpoint, and the call
+    runs on dapr-agent-py's own sidecar which owns session_workflow.
+
+    Body: { instanceId: str, payload: dict }
+    """
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    instance_id = str(request.get("instanceId") or "").strip()
+    if not instance_id:
+        raise HTTPException(status_code=400, detail="instanceId is required")
+    payload = request.get("payload") or {}
+
+    create_request = pb.CreateInstanceRequest(
+        instanceId=instance_id,
+        name="session_workflow",
+        input=wrappers_pb2.StringValue(value=json.dumps(payload)),
+    )
+    try:
+        _taskhub_call("StartInstance", create_request)
+    except Exception as exc:  # noqa: BLE001
+        # StartInstance errors on duplicate instanceId — treat as idempotent.
+        msg = str(exc)
+        if "already exists" in msg.lower() or "ALREADY_EXISTS" in msg:
+            logger.info("[spawn] instance %s already exists — reusing", instance_id)
+        else:
+            logger.exception("[spawn] StartInstance failed for %s", instance_id)
+            raise HTTPException(status_code=500, detail=f"StartInstance failed: {msg}")
+
+    return {"instanceId": instance_id, "ok": True}
+
+
+@app.post("/internal/sessions/raise-event")
+def raise_session_event_endpoint(request: dict) -> dict:
+    """Raise an external event into a running session_workflow instance.
+
+    Body: { instanceId: str, eventName: str, payload: dict }
+    """
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    instance_id = str(request.get("instanceId") or "").strip()
+    event_name = str(request.get("eventName") or "").strip()
+    payload = request.get("payload") or {}
+    if not instance_id or not event_name:
+        raise HTTPException(status_code=400, detail="instanceId + eventName required")
+
+    raise_request = pb.RaiseEventRequest(
+        instanceId=instance_id,
+        name=event_name,
+        input=wrappers_pb2.StringValue(value=json.dumps(payload)),
+    )
+    try:
+        _taskhub_call("RaiseEvent", raise_request)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"RaiseEvent failed: {exc}")
+
+    return {"ok": True}
+
+
 @app.get("/healthz")
 async def health_check() -> dict:
     return {"status": "healthy", "service": AGENT_SERVICE_NAME}
