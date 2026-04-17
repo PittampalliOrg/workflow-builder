@@ -1,4 +1,5 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { db } from "$lib/server/db";
 import { files, filePayloads, type FileRow } from "$lib/server/db/schema";
 import { generateId } from "$lib/server/utils/id";
@@ -15,6 +16,7 @@ export type FileSummary = {
 	scopeId: string | null;
 	contentType: string | null;
 	sizeBytes: number;
+	sha1: string | null;
 	createdAt: string;
 	archivedAt: string | null;
 };
@@ -27,6 +29,7 @@ function rowToSummary(row: FileRow): FileSummary {
 		scopeId: row.scopeId ?? null,
 		contentType: row.contentType ?? null,
 		sizeBytes: row.sizeBytes,
+		sha1: row.sha1 ?? null,
 		createdAt: row.createdAt.toISOString(),
 		archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
 	};
@@ -34,9 +37,12 @@ function rowToSummary(row: FileRow): FileSummary {
 
 /**
  * Hard cap on uploaded bytes, enforced in the handler. Agent-written outputs
- * usually fit well below this. Raising it needs a migration + TOAST review.
+ * usually fit well below this. The runtime's chunked-read path can produce
+ * up to 100 MB base64 payloads, but the BFF's per-request body stays capped
+ * here to keep POSTs bounded. Raise in future work if needed alongside a
+ * multipart streaming endpoint.
  */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 export type CreateFileInput = {
 	userId: string;
@@ -48,13 +54,43 @@ export type CreateFileInput = {
 	bytes: Buffer;
 };
 
-export async function createFile(input: CreateFileInput): Promise<FileSummary> {
+export async function createFile(
+	input: CreateFileInput,
+): Promise<{ file: FileSummary; deduplicated: boolean }> {
 	if (input.bytes.byteLength > MAX_UPLOAD_BYTES) {
 		throw new Error(
 			`file exceeds ${MAX_UPLOAD_BYTES} byte limit (${input.bytes.byteLength})`,
 		);
 	}
 	const database = requireDb();
+	const sha1 = createHash("sha1").update(input.bytes).digest("hex");
+
+	// Cross-turn dedup for output artifacts: if a non-archived row already
+	// exists under the same (scope, name, sha1), don't create another. The
+	// agent rewriting the same file on a later turn is a common no-op, and
+	// the Files UI doesn't want to show duplicates that are byte-identical.
+	// Uploads without a scope (user-initiated) skip dedup — uploading the
+	// same bytes by hand under a deliberate name should always create a
+	// fresh row (e.g., for renaming purposes).
+	if (input.scopeId) {
+		const [existing] = await database
+			.select()
+			.from(files)
+			.where(
+				and(
+					eq(files.userId, input.userId),
+					eq(files.scopeId, input.scopeId),
+					eq(files.name, input.name),
+					eq(files.sha1, sha1),
+					isNull(files.archivedAt) as unknown as ReturnType<typeof eq>,
+				),
+			)
+			.limit(1);
+		if (existing) {
+			return { file: rowToSummary(existing), deduplicated: true };
+		}
+	}
+
 	const storageRef = `file_${generateId()}`;
 
 	// Write bytes first so the metadata row is never orphaned without payload.
@@ -77,9 +113,10 @@ export async function createFile(input: CreateFileInput): Promise<FileSummary> {
 			contentType: input.contentType ?? null,
 			sizeBytes: input.bytes.byteLength,
 			storageRef,
+			sha1,
 		})
 		.returning();
-	return rowToSummary(row);
+	return { file: rowToSummary(row), deduplicated: false };
 }
 
 export type ListFilesFilter = {

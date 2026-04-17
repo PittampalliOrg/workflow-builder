@@ -50,6 +50,7 @@ function rowToDetail(row: Session): SessionDetail {
 		natsSubject: row.natsSubject ?? null,
 		parentExecutionId: row.parentExecutionId ?? null,
 		sandboxName: row.sandboxName ?? null,
+		workspaceSandboxName: row.workspaceSandboxName ?? null,
 	};
 }
 
@@ -192,6 +193,18 @@ export async function attachRuntime(
 			natsSubject: params.natsSubject,
 			updatedAt: new Date(),
 		})
+		.where(eq(sessions.id, id));
+}
+
+/** Record the per-session OpenShell sandbox name after provisioning. */
+export async function attachWorkspaceSandbox(
+	id: string,
+	workspaceSandboxName: string,
+): Promise<void> {
+	const database = requireDb();
+	await database
+		.update(sessions)
+		.set({ workspaceSandboxName, updatedAt: new Date() })
 		.where(eq(sessions.id, id));
 }
 

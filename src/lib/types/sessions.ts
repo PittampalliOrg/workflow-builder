@@ -45,6 +45,7 @@ export type SessionDetail = SessionSummary & {
 	natsSubject: string | null;
 	parentExecutionId: string | null;
 	sandboxName: string | null;
+	workspaceSandboxName: string | null;
 };
 
 export type SessionResourceType = "file" | "github_repository";

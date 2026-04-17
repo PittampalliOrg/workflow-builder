@@ -1,12 +1,14 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
+	attachWorkspaceSandbox,
 	createSession,
 	listSessions,
 	type CreateSessionInput,
 } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
+import { provisionSessionSandbox } from "$lib/server/sandboxes/provision";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -77,6 +79,33 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				content: [{ type: "text", text: body.initialMessage }],
 			});
 		}
+
+		// Provision a per-session OpenShell sandbox so bash/file tools work on
+		// UI-initiated sessions (workflow-driven sessions get theirs from the
+		// preceding workspace_profile node). Best-effort: if provisioning
+		// fails, the session still runs but tool calls will error — same
+		// degraded mode pre-this-change.
+		try {
+			const sandbox = await provisionSessionSandbox({
+				executionId: session.id,
+				name: session.title ?? `session-${session.id.slice(0, 8)}`,
+				sandboxTemplate:
+					typeof body.sandboxTemplate === "string"
+						? (body.sandboxTemplate as string)
+						: "base",
+				keepAfterRun: true,
+			});
+			await attachWorkspaceSandbox(session.id, sandbox.sandboxName);
+			session.workspaceSandboxName = sandbox.sandboxName;
+		} catch (sandboxErr) {
+			console.error("[sessions] sandbox provisioning failed:", sandboxErr);
+			// Surface on the session row but don't fail the whole create.
+			session.errorMessage =
+				sandboxErr instanceof Error
+					? sandboxErr.message
+					: "Sandbox provisioning failed";
+		}
+
 		// Spawn the Dapr workflow instance. Failures here don't roll back the
 		// session row — the UI can retry via POST /api/v1/sessions/[id]/spawn,
 		// and a future idle sweep could garbage-collect orphaned sessions.

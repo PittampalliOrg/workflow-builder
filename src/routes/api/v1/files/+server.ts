@@ -60,7 +60,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const nameOverride = form.get("name")?.toString();
 	const bytes = Buffer.from(await file.arrayBuffer());
 
-	const created = await createFile({
+	const { file: created, deduplicated } = await createFile({
 		userId: locals.session.userId,
 		name: nameOverride || file.name || `upload-${Date.now()}`,
 		purpose,
@@ -69,5 +69,5 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		bytes,
 	});
 
-	return json({ file: created }, { status: 201 });
+	return json({ file: created, deduplicated }, { status: 201 });
 };

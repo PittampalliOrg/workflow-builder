@@ -249,19 +249,35 @@ class OpenShellRuntime:
         return self._json_result(script, {"path": path, "content": content})
 
     def read_bytes_base64(
-        self, path: str, max_bytes: int = 5 * 1024 * 1024
+        self, path: str, max_bytes: int = 100 * 1024 * 1024
     ) -> dict[str, Any]:
         """Read any file in the sandbox and return base64-encoded contents.
-        Fails cleanly with `error: "too_large"` when the file exceeds
-        ``max_bytes`` — saves callers from streaming multi-MB blobs through
-        the gateway stdout path, which has practical throughput limits.
+        Handles arbitrarily-large files up to ``max_bytes`` via chunked
+        reads — writes base64 to a sandbox-side temp file, then pulls it
+        back in 512 KB stdout chunks so we don't hit OpenShell's practical
+        throughput cap on a single exec call.
+
+        For small files (<256 KB raw, ~350 KB base64) the fast path returns
+        in one shot. Larger files switch to the chunked path; callers don't
+        need to know which mode fired.
         """
+        # Fast path: single-shot read for small files
+        fast = self._read_bytes_single_shot(path, max_bytes, fast_threshold=256 * 1024)
+        if fast.get("ok") or fast.get("error") != "use_chunked":
+            return fast
+        # Chunked path: stage base64 to /tmp/<ref>, pull in 512 KB stdout chunks
+        return self._read_bytes_chunked(path, max_bytes)
+
+    def _read_bytes_single_shot(
+        self, path: str, max_bytes: int, fast_threshold: int
+    ) -> dict[str, Any]:
         script = dedent(
             """
             import base64, json, pathlib, sys
             payload = json.loads(sys.stdin.read())
             p = pathlib.Path(payload["path"])
             max_bytes = int(payload["max_bytes"])
+            fast_threshold = int(payload["fast_threshold"])
             try:
                 if not p.is_file():
                     print(json.dumps({"ok": False, "error": "not_a_file", "path": str(p)}))
@@ -273,6 +289,14 @@ class OpenShellRuntime:
                         "error": "too_large",
                         "size": size,
                         "max_bytes": max_bytes,
+                    }))
+                    raise SystemExit(0)
+                if size > fast_threshold:
+                    # Let the caller switch to chunked mode.
+                    print(json.dumps({
+                        "ok": False,
+                        "error": "use_chunked",
+                        "size": size,
                     }))
                     raise SystemExit(0)
                 with p.open("rb") as handle:
@@ -289,7 +313,106 @@ class OpenShellRuntime:
                 print(json.dumps({"ok": False, "error": str(exc)}))
             """
         ).strip()
-        return self._json_result(script, {"path": path, "max_bytes": max_bytes})
+        return self._json_result(
+            script,
+            {"path": path, "max_bytes": max_bytes, "fast_threshold": fast_threshold},
+        )
+
+    def _read_bytes_chunked(
+        self, path: str, max_bytes: int
+    ) -> dict[str, Any]:
+        """Stage base64(bytes) to a sandbox temp file, then pull fixed-size
+        stdout chunks back. Chunk size matches a safe stdout payload window.
+        Total time is O(size / chunk_size) round-trips — small for files
+        under a few MB, acceptable for artifacts up to 100 MB.
+        """
+        import uuid
+
+        chunk_size = 512 * 1024  # base64 chars per chunk; ~384 KB raw
+        staging_ref = f"/tmp/wb-upload-{uuid.uuid4().hex}.b64"
+        stage_script = dedent(
+            """
+            import base64, json, pathlib, sys
+            payload = json.loads(sys.stdin.read())
+            src = pathlib.Path(payload["src"])
+            dst = pathlib.Path(payload["dst"])
+            max_bytes = int(payload["max_bytes"])
+            try:
+                if not src.is_file():
+                    print(json.dumps({"ok": False, "error": "not_a_file"}))
+                    raise SystemExit(0)
+                size = src.stat().st_size
+                if size > max_bytes:
+                    print(json.dumps({
+                        "ok": False,
+                        "error": "too_large",
+                        "size": size,
+                        "max_bytes": max_bytes,
+                    }))
+                    raise SystemExit(0)
+                with src.open("rb") as handle:
+                    encoded = base64.b64encode(handle.read())
+                dst.write_bytes(encoded)
+                print(json.dumps({
+                    "ok": True,
+                    "size": size,
+                    "b64_size": len(encoded),
+                    "staging_ref": str(dst),
+                }))
+            except SystemExit:
+                raise
+            except Exception as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}))
+            """
+        ).strip()
+        stage = self._json_result(
+            stage_script,
+            {"src": path, "dst": staging_ref, "max_bytes": max_bytes},
+        )
+        if not stage.get("ok"):
+            return stage
+
+        b64_size = int(stage["b64_size"])
+        chunks: list[str] = []
+        offset = 0
+        while offset < b64_size:
+            chunk_end = min(offset + chunk_size, b64_size)
+            read_script = dedent(
+                """
+                import json, pathlib, sys
+                payload = json.loads(sys.stdin.read())
+                p = pathlib.Path(payload["path"])
+                start = int(payload["start"])
+                end = int(payload["end"])
+                with p.open("rb") as handle:
+                    handle.seek(start)
+                    data = handle.read(end - start)
+                print(json.dumps({"ok": True, "chunk": data.decode("ascii")}))
+                """
+            ).strip()
+            chunk_res = self._json_result(
+                read_script,
+                {"path": staging_ref, "start": offset, "end": chunk_end},
+            )
+            if not chunk_res.get("ok"):
+                # Clean up the staging file before returning the error.
+                self._exec(
+                    ["rm", "-f", staging_ref],
+                    timeout_seconds=10,
+                )
+                return chunk_res
+            chunks.append(chunk_res["chunk"])
+            offset = chunk_end
+
+        # Remove staging file; fire-and-forget, chunks are already in memory.
+        self._exec(["rm", "-f", staging_ref], timeout_seconds=10)
+
+        return {
+            "ok": True,
+            "path": path,
+            "size": int(stage["size"]),
+            "base64": "".join(chunks),
+        }
 
     def glob_files(self, pattern: str, search_dir: str, max_results: int) -> dict[str, Any]:
         script = dedent(

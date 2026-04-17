@@ -56,6 +56,13 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		environmentConfig: environment ? environment.config : null,
 		vaultIds: session.vaultIds,
 		dbExecutionId: session.workflowExecutionId ?? null,
+		// UI sessions get a per-session OpenShell sandbox provisioned on
+		// create (see src/lib/server/sandboxes/provision.ts). session_workflow
+		// inlines this into every child agent_workflow turn so
+		// OpenShellRuntime.set_sandbox_name(...) fires before tool execution.
+		// Workflow-driven sessions leave this null — the preceding
+		// workspace_profile node provides its own sandboxName.
+		sandboxName: session.workspaceSandboxName ?? null,
 		initialEvents,
 	};
 

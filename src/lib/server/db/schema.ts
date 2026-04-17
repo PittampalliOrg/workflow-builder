@@ -610,6 +610,7 @@ export const files = pgTable(
 		contentType: text("content_type"),
 		sizeBytes: integer("size_bytes").notNull().default(0),
 		storageRef: text("storage_ref").notNull(),
+		sha1: text("sha1"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		archivedAt: timestamp("archived_at"),
 	},
@@ -618,6 +619,11 @@ export const files = pgTable(
 		scopeIdx: index("idx_files_scope").on(table.scopeId),
 		purposeIdx: index("idx_files_purpose").on(table.purpose),
 		createdIdx: index("idx_files_created").on(table.createdAt),
+		scopeNameSha1Idx: index("idx_files_scope_name_sha1").on(
+			table.scopeId,
+			table.name,
+			table.sha1,
+		),
 	}),
 );
 
@@ -2366,6 +2372,7 @@ export const sessions = pgTable(
 		daprInstanceId: text("dapr_instance_id"),
 		natsSubject: text("nats_subject"),
 		sandboxName: text("sandbox_name"),
+		workspaceSandboxName: text("workspace_sandbox_name"),
 		workflowExecutionId: text("workflow_execution_id"),
 		parentExecutionId: text("parent_execution_id"),
 		userId: text("user_id")
@@ -2390,6 +2397,9 @@ export const sessions = pgTable(
 			table.workflowExecutionId,
 		),
 		sandboxIdx: index("idx_sessions_sandbox_name").on(table.sandboxName),
+		workspaceSandboxIdx: index("idx_sessions_workspace_sandbox").on(
+			table.workspaceSandboxName,
+		),
 	}),
 );
 

@@ -7,6 +7,7 @@ import { updateSessionStatus } from "$lib/server/sessions/registry";
 import { db } from "$lib/server/db";
 import { sessions } from "$lib/server/db/schema";
 import { persistCodeCheckpointFromAgentEvent } from "$lib/server/workflows/code-checkpoints";
+import { cleanupSessionSandbox } from "$lib/server/sandboxes/provision";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -78,6 +79,11 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		await updateSessionStatus(params.id, "terminated", {
 			markCompleted: true,
 		});
+		// Release the per-session OpenShell sandbox. Fire-and-forget — the
+		// workspace runtime's TTL pass will reap leaks if this doesn't land.
+		// Fires for both UI-provisioned and workflow-provisioned sessions;
+		// the cleanup endpoint is idempotent on already-removed sandboxes.
+		void cleanupSessionSandbox(params.id);
 	} else if (type === "session.status_rescheduled") {
 		await updateSessionStatus(params.id, "rescheduling");
 	}

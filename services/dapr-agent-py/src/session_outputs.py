@@ -19,7 +19,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 OUTPUTS_DIR = "/mnt/session/outputs"
-MAX_PER_FILE_BYTES = 5 * 1024 * 1024
+# Runtime cap — files larger than this skip upload. Kept below the BFF's
+# per-request cap so we never build a base64 payload the ingest endpoint
+# will reject. Large files use the chunked read path inside
+# runtime.read_bytes_base64 so this limit is a policy knob, not a hard
+# OpenShell-gateway-imposed cap.
+MAX_PER_FILE_BYTES = 25 * 1024 * 1024
 MAX_FILES_PER_SESSION = 50
 
 

@@ -1,4 +1,4 @@
-h1:X6EnGxHjdGDALo3t0DRCyXBPPnPj22GAwFvttAADQe4=
+h1:SRUKM6KG+1FCgCTuhbd26RauWAVkBucI0dV9r7wcIzQ=
 20260210204758_baseline.sql h1:i0a3DxoyU0gEdXV1ecWYZSJ3pr9ZPS7PdMchjQiQNTA=
 20260212120000_add_workflow_ai_messages.sql h1:MKA9YzLVEh8qXhjuZesrAndI3UvekoOSzTUKLLY07Ms=
 20260217110505_add_resource_library_resources.sql h1:nDoJ/rUulmB6koBi6xI9zEwo3x0Q3JZ56na21UhMFDM=
@@ -25,3 +25,5 @@ h1:X6EnGxHjdGDALo3t0DRCyXBPPnPj22GAwFvttAADQe4=
 20260419000000_sessions_sandbox_name.sql h1:JgPVl1Jx04Ut33tLvZ/Pyb74vnXzE9rU3N10rektE/w=
 20260419010000_drop_workflow_agent_events.sql h1:peksbe2NA0wZTzTHpkWOY+zrbGMMsDbo3sPdq3Bydbs=
 20260420000000_add_files.sql h1:RL0Guuzl5H+skt6kQj5bPLvTgfCHrYXHRo2aR8K62MY=
+20260421000000_sessions_workspace_sandbox.sql h1:eLmlNyFUBmDmmDpKn+Rz/yj/75MmkT0NcnUMTYjaWMQ=
+20260421010000_files_sha1.sql h1:gpa2eZj4mBhEL6RlekmKhmrwJEQMN3c36bDIlimFTP4=

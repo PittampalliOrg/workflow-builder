@@ -45,6 +45,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!sessionRow) return error(404, "Session not found");
 
 	const created: string[] = [];
+	const deduplicated: string[] = [];
 	const errors: Array<{ name: string; error: string }> = [];
 
 	for (const entry of rawFiles) {
@@ -77,7 +78,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			continue;
 		}
 		try {
-			const fileRow = await createFile({
+			const { file: fileRow, deduplicated: isDup } = await createFile({
 				userId: sessionRow.userId,
 				projectId: sessionRow.projectId ?? null,
 				name,
@@ -86,11 +87,15 @@ export const POST: RequestHandler = async ({ params, request }) => {
 				contentType,
 				bytes,
 			});
-			created.push(fileRow.id);
+			if (isDup) {
+				deduplicated.push(fileRow.id);
+			} else {
+				created.push(fileRow.id);
+			}
 		} catch (err) {
 			errors.push({ name, error: err instanceof Error ? err.message : String(err) });
 		}
 	}
 
-	return json({ created, errors });
+	return json({ created, deduplicated, errors });
 };
