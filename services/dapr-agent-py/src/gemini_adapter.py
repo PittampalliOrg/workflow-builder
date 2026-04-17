@@ -157,15 +157,31 @@ def _normalize_messages(
     return "\n\n".join(system_parts) if system_parts else None, contents
 
 
-def _extract_gemini_response(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+def _extract_gemini_response(
+    response: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Returns (content, tool_calls, thinking_blocks).
+
+    With `thinkingConfig.includeThoughts = true`, the Vertex API tags
+    thought-summary parts with `thought: true`. We keep those separate from
+    the final content so the session UI can render them as collapsible
+    reasoning blocks rather than prepending them to the assistant message.
+    """
     content_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    thinking_blocks: list[str] = []
     candidates = response.get("candidates") or []
     if not candidates:
-        return "", []
+        return "", [], []
     for index, part in enumerate(candidates[0].get("content", {}).get("parts") or []):
+        is_thought = bool(part.get("thought"))
         if "text" in part:
-            content_parts.append(str(part.get("text") or ""))
+            text = str(part.get("text") or "")
+            if is_thought:
+                if text.strip():
+                    thinking_blocks.append(text)
+            else:
+                content_parts.append(text)
         fn = part.get("functionCall")
         if isinstance(fn, dict):
             name = str(fn.get("name") or "")
@@ -178,7 +194,42 @@ def _extract_gemini_response(response: dict[str, Any]) -> tuple[str, list[dict[s
                     "arguments": json.dumps(args, ensure_ascii=False),
                 },
             })
-    return "".join(content_parts), tool_calls
+    return "".join(content_parts), tool_calls, thinking_blocks
+
+
+def _emit_thinking(thinking_blocks: list[str]) -> None:
+    """Emit agent.thinking events for each thought-summary part. Session id
+    comes from the contextvar set by main.py:call_llm, mirroring the
+    Anthropic adapter.
+    """
+    if not thinking_blocks:
+        return
+    try:
+        from src.event_publisher import get_scoped_session, publish_session_event
+
+        sid, iid = get_scoped_session()
+        if not sid:
+            return
+        for text in thinking_blocks:
+            publish_session_event(
+                sid,
+                "agent.thinking",
+                {"content": [{"type": "text", "text": text}]},
+                instance_id=iid,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[gemini-vertex] thinking emit failed: %s", exc)
+
+
+def _model_supports_thinking(model: str) -> bool:
+    """Gemini 2.5+/3.x expose thought summaries. 1.5/2.0 don't. Whitelist
+    narrowly — unknown models get no thinking config (safe default)."""
+    lowered = model.lower()
+    return (
+        "gemini-2.5" in lowered
+        or "gemini-3" in lowered
+        or "gemini-exp" in lowered
+    )
 
 
 def _auth_headers() -> dict[str, str] | None:
@@ -238,6 +289,13 @@ def _call_vertex_gemini(
         generation_config["maxOutputTokens"] = max_tokens
     if response_format is not None:
         generation_config["responseMimeType"] = "application/json"
+    # Opt into thought summaries on 2.5+/3.x. thinkingBudget=-1 means
+    # "dynamic"; Gemini picks the budget like Anthropic's adaptive mode.
+    if _model_supports_thinking(model):
+        generation_config["thinkingConfig"] = {
+            "thinkingBudget": -1,
+            "includeThoughts": True,
+        }
     if generation_config:
         body["generationConfig"] = generation_config
 
@@ -262,7 +320,8 @@ def _call_vertex_gemini(
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Vertex AI Gemini API failed ({exc.code}): {detail}") from exc
 
-    content, tool_calls = _extract_gemini_response(data)
+    content, tool_calls, thinking_blocks = _extract_gemini_response(data)
+    _emit_thinking(thinking_blocks)
     result: dict[str, Any] = {
         "role": "assistant",
         "content": content or None,
