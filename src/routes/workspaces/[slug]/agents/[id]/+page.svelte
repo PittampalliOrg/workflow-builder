@@ -49,6 +49,7 @@
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
+	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
 	import {
 		ArrowLeft,
 		ChevronDown,
@@ -800,6 +801,22 @@
 										agent = { ...agent, defaultVaultIds: next };
 										markDirty();
 									}}
+								/>
+							</CollapsibleContent>
+						</Collapsible>
+
+						<Collapsible>
+							<CollapsibleTrigger
+								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
+							>
+								<ChevronRight class="size-4" /> Callable agents ({(config.callableAgents ?? []).length})
+							</CollapsibleTrigger>
+							<CollapsibleContent class="pl-6">
+								<CallableAgentsPicker
+									value={config.callableAgents ?? []}
+									selfSlug={agent.slug}
+									projectId={registryView?.team}
+									onChange={(next) => updateConfig('callableAgents', next)}
 								/>
 							</CollapsibleContent>
 						</Collapsible>
