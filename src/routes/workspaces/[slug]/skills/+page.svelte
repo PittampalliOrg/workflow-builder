@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
@@ -290,8 +291,16 @@
 												{skill.description || 'No description'}
 											</CardDescription>
 										</button>
-		{#if skill.sourceType === 'custom'}
-			<div class="flex items-center gap-1">
+		<div class="flex items-center gap-1">
+			<Button
+				variant="ghost"
+				size="sm"
+				class="h-7 text-[11px]"
+				onclick={() => goto(`/workspaces/${slug}/skills/${encodeURIComponent(skillId(skill))}`)}
+			>
+				View →
+			</Button>
+			{#if skill.sourceType === 'custom'}
 				<Button
 					variant="outline"
 					size="sm"
@@ -306,17 +315,17 @@
 				>
 					<Trash2 class="size-3" />
 				</Button>
-			</div>
-		{:else}
-			<Button
-				variant="outline"
-				size="sm"
-				disabled={!canManage}
-				onclick={() => setStatus(skill, skill.status === 'DISABLED')}
-			>
-				{skill.status === 'DISABLED' ? 'Enable' : 'Disable'}
-			</Button>
-		{/if}
+			{:else}
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={!canManage}
+					onclick={() => setStatus(skill, skill.status === 'DISABLED')}
+				>
+					{skill.status === 'DISABLED' ? 'Enable' : 'Disable'}
+				</Button>
+			{/if}
+		</div>
 									</div>
 								</CardHeader>
 								{#if expanded === skillId(skill)}

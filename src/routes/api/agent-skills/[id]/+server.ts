@@ -1,6 +1,31 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { deleteCustomSkill, updateCustomSkill } from '$lib/server/agent-skills';
+import {
+	deleteCustomSkill,
+	listAgentSkills,
+	updateCustomSkill
+} from '$lib/server/agent-skills';
+
+/**
+ * GET /api/agent-skills/[id]
+ *
+ * Returns one skill visible to the caller — either a global curated row
+ * (project_id IS NULL) or a custom row in the caller's active workspace.
+ * Match by registryId / id / slug so the detail page can be linked via
+ * any of those identifiers.
+ */
+export const GET: RequestHandler = async ({ params, locals }) => {
+	if (!locals.session?.userId) return error(401, 'Unauthorized');
+	const skills = await listAgentSkills({
+		includeDisabled: true,
+		projectId: locals.session.projectId
+	});
+	const match = skills.find(
+		(s) => s.id === params.id || s.registryId === params.id || s.slug === params.id
+	);
+	if (!match) return error(404, 'Skill not found');
+	return json({ skill: match });
+};
 
 export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
