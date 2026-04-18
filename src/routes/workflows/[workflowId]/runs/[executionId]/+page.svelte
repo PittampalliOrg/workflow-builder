@@ -132,6 +132,19 @@
 	let investigationError = $state<string | null>(null);
 	let investigationFetched = $state(false);
 
+	// Sessions spawned by this run's durable/run nodes. Fetched once per
+	// execution; re-fetched when an agent run completes so new sessions appear.
+	type SpawnedSessionRow = {
+		id: string;
+		title: string | null;
+		status: string;
+		agentId: string;
+		createdAt: string | null;
+		completedAt: string | null;
+	};
+	let spawnedSessions = $state<SpawnedSessionRow[]>([]);
+	let spawnedSessionsFetched = $state(false);
+
 	// Browser artifacts
 	type BrowserArtifactStep = {
 		id: string;
@@ -633,6 +646,38 @@
 	$effect(() => {
 		if (activeTab === 'trace' && investigationSessionId && !investigationFetched) {
 			fetchInvestigation();
+		}
+	});
+
+	async function fetchSpawnedSessions() {
+		try {
+			const res = await fetch(
+				`/api/workflows/executions/${encodeURIComponent(executionId)}/sessions`
+			);
+			if (!res.ok) return;
+			const data = (await res.json()) as { sessions?: SpawnedSessionRow[] };
+			spawnedSessions = data.sessions ?? [];
+		} catch {
+			// Non-fatal — the card just won't render.
+		} finally {
+			spawnedSessionsFetched = true;
+		}
+	}
+
+	// Refresh spawned sessions once on load and again whenever an agent run
+	// transitions (new durable/run → new session row).
+	$effect(() => {
+		if (!executionId) return;
+		if (!spawnedSessionsFetched) {
+			void fetchSpawnedSessions();
+			return;
+		}
+		const running = agentRuns.some((r) => r.status === 'running');
+		if (running) {
+			const handle = setTimeout(() => {
+				void fetchSpawnedSessions();
+			}, 5000);
+			return () => clearTimeout(handle);
 		}
 	});
 
@@ -1308,6 +1353,37 @@
 									</p>
 								{/if}
 							</div>
+						</CardContent>
+					</Card>
+				{/if}
+
+				{#if spawnedSessions.length > 0}
+					<Card>
+						<CardContent class="space-y-3 p-4">
+							<div class="flex items-center gap-2">
+								<MessageSquare class="size-4 text-muted-foreground" />
+								<div>
+									<p class="text-sm font-medium">Spawned sessions</p>
+									<p class="text-xs text-muted-foreground">
+										<code>durable/run</code> nodes in this execution produced {spawnedSessions.length}
+										session{spawnedSessions.length === 1 ? '' : 's'}. Click through for the full event trace.
+									</p>
+								</div>
+							</div>
+							<ul class="divide-y divide-border rounded-md border border-border">
+								{#each spawnedSessions as s (s.id)}
+									<li class="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+										<a
+											href="/sessions/{s.id}"
+											class="min-w-0 flex-1 truncate text-primary hover:underline"
+											title={s.title ?? s.id}
+										>
+											{s.title ?? s.id.slice(0, 12)}
+										</a>
+										<Badge variant="outline" class="text-[10px] uppercase">{s.status}</Badge>
+									</li>
+								{/each}
+							</ul>
 						</CardContent>
 					</Card>
 				{/if}
