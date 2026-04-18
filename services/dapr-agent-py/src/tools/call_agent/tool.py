@@ -72,19 +72,26 @@ def call_agent(name: str, prompt: str) -> str:
     truncated_slug = slug[:20] if slug else "peer"
     child_instance_id = f"ca-{uuid.uuid4().hex[:16]}-{truncated_slug}"
 
-    # Workflow name follows Dapr Agents' convention:
-    #   dapr.agents.{sanitized_name}.workflow
-    # Our runtime registers `agent_workflow` by that transformed name via the
-    # SDK, so we invoke it directly by app-id + workflow name.
-    workflow_name = "agent_workflow"
+    # We spawn `session_workflow` (our CMA session-loop workflow) rather
+    # than `agent_workflow` directly. session_workflow gives the peer a
+    # full CMA-shape session (status events, transcript, auto-terminate),
+    # which shows up in the sessions list and is navigable via the UI.
+    # The peer's runtime resolves its agentConfig from `sessionId` when
+    # autoTerminateAfterEndTurn is set — a single-turn dispatch.
+    workflow_name = "session_workflow"
 
     payload: dict[str, Any] = {
-        "task": prompt.strip(),
-        # The peer's dapr-agent-py will resolve its own agentConfig from the
-        # Dapr registry using its registered name. We pass the minimum needed
-        # to identify the peer + carry the task. Full agentConfig injection
-        # happens in a future iteration where the resolver stuffs the peer
-        # config into callable_agents entries directly.
+        "sessionId": child_instance_id,
+        "initialEvents": [
+            {
+                "type": "user.message",
+                "content": [{"type": "text", "text": prompt.strip()}],
+            }
+        ],
+        # Fire-and-forget: child runs one turn, emits status_idle, terminates.
+        "autoTerminateAfterEndTurn": True,
+        # Provenance — the peer session's event log captures this so the
+        # UI can render the parent → child link.
         "source": {
             "kind": "call_agent",
             "parent_app_id": os.environ.get("DAPR_APP_ID", "dapr-agent-py"),
