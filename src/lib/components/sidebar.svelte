@@ -149,13 +149,33 @@
 		}
 	]);
 
-	// Each group can be expanded/collapsed. Default: active group open, others closed.
-	let openGroups = $state<Record<string, boolean>>({
+	// Each group can be expanded/collapsed. Default: Build + Managed Agents
+	// open, others closed. Persisted to localStorage so the user's preference
+	// survives reloads — matches CMA's chevron-per-section behaviour.
+	const SIDEBAR_STORAGE_KEY = 'sidebar:open-groups:v1';
+	const DEFAULT_OPEN_GROUPS: Record<string, boolean> = {
 		Build: true,
 		'Managed Agents': true,
 		Analytics: false,
 		Operate: false,
 		Manage: false
+	};
+	let openGroups = $state<Record<string, boolean>>({ ...DEFAULT_OPEN_GROUPS });
+
+	onMount(() => {
+		if (typeof localStorage === 'undefined') return;
+		try {
+			const raw = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+			if (!raw) return;
+			const parsed = JSON.parse(raw) as Record<string, unknown>;
+			const merged: Record<string, boolean> = { ...DEFAULT_OPEN_GROUPS };
+			for (const key of Object.keys(DEFAULT_OPEN_GROUPS)) {
+				if (typeof parsed[key] === 'boolean') merged[key] = parsed[key] as boolean;
+			}
+			openGroups = merged;
+		} catch {
+			/* corrupt storage — fall back to defaults */
+		}
 	});
 
 	// Auto-open the group containing the active route. Read `openGroups`
@@ -177,6 +197,13 @@
 
 	function toggleGroup(label: string) {
 		openGroups = { ...openGroups, [label]: !openGroups[label] };
+		if (typeof localStorage !== 'undefined') {
+			try {
+				localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify(openGroups));
+			} catch {
+				/* quota or private mode */
+			}
+		}
 	}
 
 	function isActive(href: string): boolean {

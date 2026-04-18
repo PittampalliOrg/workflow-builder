@@ -9,6 +9,7 @@
 	import { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
 	import Sidebar from '$lib/components/sidebar.svelte';
 	import GlobalPalette from '$lib/components/cmdk/global-palette.svelte';
+	import FeedbackWidget from '$lib/components/chrome/feedback-widget.svelte';
 	import { Toaster } from '$lib/components/ui/sonner';
 
 	let { children, data } = $props();
@@ -104,6 +105,7 @@
 	</div>
 	{#if browser}
 		<GlobalPalette />
+		<FeedbackWidget />
 	{/if}
 {/if}
 
