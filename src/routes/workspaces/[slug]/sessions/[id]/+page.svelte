@@ -25,6 +25,7 @@
 	} from '$lib/components/ui/popover';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
 	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
@@ -87,6 +88,33 @@
 
 	let session = $state<SessionDetail | null>(null);
 	let events = $state<SessionEventEnvelope[]>([]);
+	let agentRegistry = $state<{
+		status: 'unregistered' | 'registered' | 'failed' | 'archiving' | 'archived';
+		syncedAt: string | null;
+		error: string | null;
+	} | null>(null);
+
+	$effect(() => {
+		const id = session?.agentId;
+		if (!id) {
+			agentRegistry = null;
+			return;
+		}
+		fetch(`/api/agents/${id}/registry`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((data) => {
+				agentRegistry = data
+					? {
+							status: data.status,
+							syncedAt: data.syncedAt,
+							error: data.error
+						}
+					: null;
+			})
+			.catch(() => {
+				agentRegistry = null;
+			});
+	});
 	// Transcript: user-facing messages + tool-use (compacted); hides thinking
 	// and raw status events. Debug: show every event verbatim.
 	let viewMode = $state<'transcript' | 'debug'>('transcript');
@@ -808,6 +836,14 @@
 						<Bot class="size-3 text-muted-foreground" />
 						<span class="truncate max-w-[160px]">{session.agentId}</span>
 					</a>
+					{#if agentRegistry}
+						<RegistryStatusBadge
+							mini
+							status={agentRegistry.status}
+							error={agentRegistry.error}
+							syncedAt={agentRegistry.syncedAt}
+						/>
+					{/if}
 				{/if}
 				{#if session.environmentId}
 					<a

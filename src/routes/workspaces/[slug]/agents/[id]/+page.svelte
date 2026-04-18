@@ -48,15 +48,18 @@
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
+	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import {
 		ArrowLeft,
 		ChevronDown,
 		ChevronRight,
 		Clock,
 		Code2,
+		Database,
 		ExternalLink,
 		History,
 		Play,
+		RefreshCw,
 		Save,
 		Download,
 		GitFork,
@@ -91,6 +94,46 @@
 		'overview'
 	);
 	let usages = $state<Array<{ workflowId: string; workflowName: string; nodeIds: string[] }>>([]);
+	let registryView = $state<{
+		status: 'unregistered' | 'registered' | 'failed' | 'archiving' | 'archived';
+		syncedAt: string | null;
+		error: string | null;
+		team: string | null;
+		key: string | null;
+		store: string;
+		dualWriteEnabled: boolean;
+	} | null>(null);
+	let registrySyncing = $state(false);
+
+	async function refreshRegistry() {
+		try {
+			const res = await fetch(`/api/agents/${agentId}/registry`);
+			if (res.ok) {
+				registryView = await res.json();
+			}
+		} catch {
+			/* non-critical */
+		}
+	}
+
+	async function syncRegistry() {
+		registrySyncing = true;
+		try {
+			const res = await fetch(`/api/agents/${agentId}/registry/sync`, {
+				method: 'POST'
+			});
+			if (res.ok) {
+				const result = await res.json();
+				// Merge partial result back into the view; full refresh below keeps it tidy.
+				registryView = registryView
+					? { ...registryView, status: result.status, syncedAt: result.syncedAt, error: result.error }
+					: null;
+			}
+		} finally {
+			registrySyncing = false;
+			await refreshRegistry();
+		}
+	}
 	let versions = $state<AgentVersionSummary[]>([]);
 	let versionsOpen = $state(false);
 	let environments = $state<EnvironmentSummary[]>([]);
@@ -98,14 +141,17 @@
 	async function load() {
 		loading = true;
 		try {
-			const [a, u, e] = await Promise.all([
+			const [a, u, e, r] = await Promise.all([
 				fetch(`/api/agents/${agentId}`).then((r) => r.json()),
 				fetch(`/api/agents/${agentId}/usages`)
 					.then((r) => r.json())
 					.catch(() => ({ usages: [] })),
 				fetch('/api/v1/environments')
 					.then((r) => r.json())
-					.catch(() => ({ environments: [] }))
+					.catch(() => ({ environments: [] })),
+				fetch(`/api/agents/${agentId}/registry`)
+					.then((r) => (r.ok ? r.json() : null))
+					.catch(() => null)
 			]);
 			if (a.error) {
 				errorMessage = a.error;
@@ -115,6 +161,7 @@
 			config = structuredClone(a.agent.config);
 			usages = u.usages ?? [];
 			environments = e.environments ?? [];
+			registryView = r;
 			dirty = false;
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
@@ -1031,6 +1078,68 @@
 								{/each}
 							</ul>
 						{/if}
+					</CardContent>
+				</Card>
+
+				<Card>
+					<CardHeader class="pb-2">
+						<CardTitle class="text-sm flex items-center gap-2">
+							<Database class="size-4" /> Dapr registry
+						</CardTitle>
+					</CardHeader>
+					<CardContent class="space-y-3 text-xs">
+						<div class="flex items-center gap-2 flex-wrap">
+							<RegistryStatusBadge
+								status={registryView?.status ?? 'unregistered'}
+								error={registryView?.error}
+								syncedAt={registryView?.syncedAt}
+							/>
+						</div>
+						{#if registryView}
+							<dl class="space-y-1 text-muted-foreground">
+								<div class="flex justify-between gap-2">
+									<dt>Team</dt>
+									<dd class="font-mono text-foreground truncate" title={registryView.team ?? ''}>
+										{registryView.team ?? '—'}
+									</dd>
+								</div>
+								<div class="flex justify-between gap-2">
+									<dt>Key</dt>
+									<dd class="font-mono text-foreground truncate" title={registryView.key ?? ''}>
+										{registryView.key ?? '—'}
+									</dd>
+								</div>
+								<div class="flex justify-between gap-2">
+									<dt>Store</dt>
+									<dd class="font-mono text-foreground">{registryView.store}</dd>
+								</div>
+								<div class="flex justify-between gap-2">
+									<dt>Dual-write</dt>
+									<dd>{registryView.dualWriteEnabled ? 'enabled' : 'disabled (flag off)'}</dd>
+								</div>
+							</dl>
+							{#if registryView.error}
+								<p class="text-[11px] text-amber-600 dark:text-amber-300 break-words">
+									{registryView.error}
+								</p>
+							{/if}
+						{/if}
+						<div class="flex gap-2 pt-1">
+							<Button
+								variant="outline"
+								size="sm"
+								class="gap-1"
+								disabled={registrySyncing}
+								onclick={syncRegistry}
+							>
+								<RefreshCw class={`size-3 ${registrySyncing ? 'animate-spin' : ''}`} />
+								{registrySyncing ? 'Syncing…' : 'Resync'}
+							</Button>
+						</div>
+						<p class="text-[11px] text-muted-foreground pt-1">
+							Postgres remains source of truth. The registry is a mirror so Dapr-native
+							<code>call_agent</code> lookups resolve this agent by name.
+						</p>
 					</CardContent>
 				</Card>
 

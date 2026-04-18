@@ -100,9 +100,26 @@ export type AgentSummary = {
 	defaultVaultIds: string[];
 	usedByCount?: number;
 	isArchived: boolean;
+	/**
+	 * Dual-write registry sync state. Mirrors `agents.registry_*` columns.
+	 * Postgres remains source of truth; these fields describe the Dapr
+	 * registry's view of this agent. `unregistered` is the default for any
+	 * agent that hasn't been published since the dual-write feature flag
+	 * was enabled.
+	 */
+	registryStatus: AgentRegistryStatus;
+	registrySyncedAt: string | null;
+	registryError: string | null;
 	createdAt: string;
 	updatedAt: string;
 };
+
+export type AgentRegistryStatus =
+	| "unregistered"
+	| "registered"
+	| "failed"
+	| "archiving"
+	| "archived";
 
 export type AgentDetail = AgentSummary & {
 	config: AgentConfig;

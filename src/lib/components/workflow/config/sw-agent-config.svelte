@@ -14,6 +14,7 @@
 	import { ChevronDown, ChevronRight, ExternalLink, Plus } from 'lucide-svelte';
 	import { normalizeAgentTaskConfig } from '$lib/types/agent-graph';
 	import type { AgentSummary } from '$lib/types/agents';
+	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 
 	interface Props {
 		data: Record<string, unknown>;
@@ -181,12 +182,24 @@
 							{selectedAgent.modelSpec}
 						</Badge>
 					{/if}
+					<RegistryStatusBadge
+						status={selectedAgent.registryStatus}
+						error={selectedAgent.registryError}
+						syncedAt={selectedAgent.registrySyncedAt}
+						mini
+					/>
 					{#if selectedAgent.description}
 						<span class="text-xs text-muted-foreground line-clamp-1">
 							{selectedAgent.description}
 						</span>
 					{/if}
 				</div>
+				{#if selectedAgent.registryStatus !== 'registered'}
+					<p class="text-[11px] text-amber-600 dark:text-amber-300 mt-1">
+						Not in the Dapr registry. Native <code>call_agent</code> lookups won't find this agent
+						by name until it's resynced.
+					</p>
+				{/if}
 			{/if}
 		{/if}
 	</div>

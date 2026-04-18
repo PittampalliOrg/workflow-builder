@@ -21,6 +21,7 @@
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
 	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';
+	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import type { AgentSummary } from '$lib/types/agents';
 	import { page } from '$app/state';
 
@@ -237,6 +238,7 @@
 			<th class="px-4 py-2.5 font-medium">Name</th>
 			<th class="px-4 py-2.5 font-medium">Model</th>
 			<th class="px-4 py-2.5 font-medium">Status</th>
+			<th class="px-4 py-2.5 font-medium">Registry</th>
 			<th class="px-4 py-2.5 font-medium">Created</th>
 			<th class="px-4 py-2.5 font-medium w-10"></th>
 		{/snippet}
@@ -261,6 +263,13 @@
 				<Badge variant={a.isArchived ? 'outline' : 'default'} class="text-[10px] bg-green-600/15 text-green-700 dark:text-green-400 border-transparent">
 					{a.isArchived ? 'Archived' : 'Active'}
 				</Badge>
+			</td>
+			<td class="px-4 py-2.5">
+				<RegistryStatusBadge
+					status={a.registryStatus}
+					error={a.registryError}
+					syncedAt={a.registrySyncedAt}
+				/>
 			</td>
 			<td class="px-4 py-2.5 text-xs text-muted-foreground">
 				{formatRelative(a.createdAt)}

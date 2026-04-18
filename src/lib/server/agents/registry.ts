@@ -17,6 +17,7 @@ import type {
 } from "$lib/types/agents";
 import { createDefaultAgentConfig } from "$lib/types/agents";
 import { hashAgentConfig } from "./config-hash";
+import { safeSyncOnArchive, safeSyncOnPublish } from "./registry-sync";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
@@ -44,6 +45,9 @@ function rowToSummary(
 		defaultVaultIds: Array.isArray(row.defaultVaultIds) ? row.defaultVaultIds : [],
 		isArchived: row.isArchived,
 		usedByCount,
+		registryStatus: (row.registryStatus ?? "unregistered") as AgentSummary["registryStatus"],
+		registrySyncedAt: row.registrySyncedAt ? row.registrySyncedAt.toISOString() : null,
+		registryError: row.registryError ?? null,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
@@ -265,6 +269,7 @@ export async function createAgent(
 		return { agent: updated, version };
 	});
 
+	void safeSyncOnPublish(result.agent.id);
 	return rowToDetail(result.agent, result.version);
 }
 
@@ -370,6 +375,15 @@ export async function updateAgent(
 		return { agent: updated, version: versionToReturn };
 	});
 
+	// Only re-sync if the config changed (new version published) or identity
+	// fields that the registry mirrors (name, runtime) were touched. Tag /
+	// avatar / description updates don't need a registry write.
+	const shouldSync =
+		shouldBumpVersion ||
+		input.name !== undefined ||
+		input.runtime !== undefined;
+	if (shouldSync) void safeSyncOnPublish(id);
+
 	if (!result.version) {
 		const fallback = createDefaultAgentConfig();
 		return {
@@ -389,7 +403,9 @@ export async function archiveAgent(id: string): Promise<boolean> {
 		.set({ isArchived: true, updatedAt: new Date() })
 		.where(eq(agents.id, id))
 		.returning({ id: agents.id });
-	return Boolean(row);
+	if (!row) return false;
+	void safeSyncOnArchive(id);
+	return true;
 }
 
 export async function duplicateAgent(

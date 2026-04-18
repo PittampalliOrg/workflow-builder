@@ -2224,6 +2224,9 @@ export const agents = pgTable(
 			onDelete: "cascade",
 		}),
 		isArchived: boolean("is_archived").notNull().default(false),
+		registryStatus: text("registry_status").notNull().default("unregistered"),
+		registrySyncedAt: timestamp("registry_synced_at", { withTimezone: true }),
+		registryError: text("registry_error"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -2232,6 +2235,7 @@ export const agents = pgTable(
 		archivedIdx: index("idx_agents_archived").on(table.isArchived),
 		environmentIdx: index("idx_agents_environment").on(table.environmentId),
 		projectIdx: index("idx_agents_project").on(table.projectId),
+		registryStatusIdx: index("idx_agents_registry_status").on(table.registryStatus),
 	}),
 );
 
