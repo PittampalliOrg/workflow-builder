@@ -2373,8 +2373,15 @@ class OpenShellDurableAgent(DurableAgent):
                 # whole turn on transient agent-side failures, consistent
                 # with Dapr-native durability semantics for workflow-driven
                 # runs (Deploy A of the CMA-alignment plan).
+                # In dapr-agents 1.0.1 the base class registers
+                # agent_workflow under a namespaced name
+                # (dapr.agents.<AgentName>.workflow) via _named(); the
+                # bare "agent_workflow" string is no longer in the
+                # runtime registry. Use the property the SDK exposes for
+                # cross-workflow dispatch so this keeps working even if
+                # the naming scheme changes again.
                 turn_result = yield ctx.call_child_workflow(
-                    "agent_workflow",
+                    self.agent_workflow_name,
                     input=child_input,
                     instance_id=f"{session_id}:turn-{turn_counter}",
                     retry_policy=self._retry_policy,
