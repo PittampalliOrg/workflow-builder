@@ -247,7 +247,9 @@ async function saveState(
 	const body = entries.map((e) => ({
 		key: e.key,
 		value: e.value,
-		...(e.etag ? { etag: { value: e.etag } } : {}),
+		// Dapr HTTP state API expects `etag` as a bare string, not
+		// the { value: string } wrapper the gRPC SDK uses.
+		...(e.etag ? { etag: e.etag } : {}),
 		options: {
 			concurrency: e.firstWrite ? "first-write" : "last-write",
 			consistency: "strong",
