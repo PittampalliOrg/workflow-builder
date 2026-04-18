@@ -142,6 +142,12 @@
 				enableSorting: true
 			}
 		),
+		columnHelper.accessor((row) => row.session ?? null, {
+			id: 'session',
+			header: 'Session',
+			cell: (info) => info.getValue(),
+			enableSorting: false
+		}),
 		columnHelper.display({
 			id: 'actions',
 			header: 'Actions',
@@ -244,6 +250,24 @@
 
 {#snippet phaseCell(phase: SandboxPhase)}
 	<SandboxPhaseBadge {phase} />
+{/snippet}
+
+{#snippet sessionCell(session: Sandbox['session'])}
+	{#if session}
+		<a
+			href="/workspaces/{session.workspaceSlug}/sessions/{session.id}"
+			class="text-primary hover:underline text-xs inline-flex items-center gap-1"
+			title={session.title ?? session.id}
+			onclick={(e) => e.stopPropagation()}
+		>
+			<span class="truncate max-w-[180px]">{session.title ?? session.id.slice(0, 12)}</span>
+			<span class="text-[9px] rounded px-1 bg-muted text-muted-foreground capitalize">
+				{session.status}
+			</span>
+		</a>
+	{:else}
+		<span class="text-xs text-muted-foreground">—</span>
+	{/if}
 {/snippet}
 
 {#snippet actionsCell(name: string)}
@@ -422,6 +446,8 @@
 											{@render typeCell(cell.getValue() as string)}
 										{:else if cell.column.id === 'phase'}
 											{@render phaseCell(cell.getValue() as SandboxPhase)}
+										{:else if cell.column.id === 'session'}
+											{@render sessionCell(cell.getValue() as Sandbox['session'])}
 										{:else if cell.column.id === 'actions'}
 											{@render actionsCell(row.original.name)}
 										{:else}

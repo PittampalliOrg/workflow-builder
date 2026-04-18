@@ -20,6 +20,13 @@ export interface Sandbox {
 		tools: string[];
 		health?: Record<string, unknown> | null;
 	};
+	/** Owning session — populated when the sandbox is bound to a managed-agent session. */
+	session?: {
+		id: string;
+		title: string | null;
+		status: string;
+		workspaceSlug: string;
+	} | null;
 }
 
 export interface SandboxLogEntry {
