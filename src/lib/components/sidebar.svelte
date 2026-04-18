@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getContext, onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { wsPath, DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import {
 		GitBranch,
 		Plug,
@@ -57,16 +58,37 @@
 	type NavItem = { href: string; label: string; icon: typeof GitBranch };
 	type NavGroup = { label: string; icon: typeof GitBranch; badge?: string; items: NavItem[] };
 
+	// Workspace state — declared early so navGroups below can reference
+	// activeSlug without hitting a use-before-declaration error. Actual
+	// fetch + hydration happens in onMount further down.
+	type Workspace = {
+		id: string;
+		slug: string;
+		displayName: string;
+		externalId: string;
+		role: string;
+		isCurrent: boolean;
+	};
+	let workspaces = $state<Workspace[]>([]);
+	let activeWorkspace = $derived(
+		workspaces.find((w) => w.isCurrent) ?? workspaces[0] ?? null
+	);
+
 	// CMA-mirrored nav IA. Groups + labels match platform.claude.com/dashboard exactly.
-	const navGroups: NavGroup[] = [
+	// Workspace-scoped items go under /workspaces/{activeSlug}/*. Org-scoped items
+	// stay flat. `activeSlug` is derived from the current workspace switcher value;
+	// `default` resolves server-side to the caller's current project.
+	const activeSlug = $derived(activeWorkspace?.slug ?? DEFAULT_WORKSPACE_SLUG);
+	const navGroups: NavGroup[] = $derived([
 		{
 			label: 'Build',
 			icon: Wrench,
 			items: [
+				// Workbench is org-scoped in CMA (per /workbench URL), workflows + ops are our own surfaces
 				{ href: '/mcp-chat', label: 'Workbench', icon: MessageSquare },
 				{ href: '/workflows', label: 'Workflows', icon: GitBranch },
 				{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
-				{ href: '/batches', label: 'Batches', icon: Layers },
+				{ href: wsPath(activeSlug, 'batches'), label: 'Batches', icon: Layers },
 				{ href: '/code-functions', label: 'Code Functions', icon: Code }
 			]
 		},
@@ -75,13 +97,13 @@
 			icon: Bot,
 			badge: 'New',
 			items: [
-				{ href: '/agents/quickstart', label: 'Quickstart', icon: Rocket },
-				{ href: '/agents', label: 'Agents', icon: Bot },
-				{ href: '/sessions', label: 'Sessions', icon: MessagesSquare },
-				{ href: '/environments', label: 'Environments', icon: Layers },
-				{ href: '/vaults', label: 'Credential vaults', icon: KeyRound },
-				{ href: '/skills', label: 'Skills', icon: Puzzle },
-				{ href: '/files', label: 'Files', icon: Files },
+				{ href: wsPath(activeSlug, 'agents/quickstart'), label: 'Quickstart', icon: Rocket },
+				{ href: wsPath(activeSlug, 'agents'), label: 'Agents', icon: Bot },
+				{ href: wsPath(activeSlug, 'sessions'), label: 'Sessions', icon: MessagesSquare },
+				{ href: wsPath(activeSlug, 'environments'), label: 'Environments', icon: Layers },
+				{ href: wsPath(activeSlug, 'vaults'), label: 'Credential vaults', icon: KeyRound },
+				{ href: wsPath(activeSlug, 'skills'), label: 'Skills', icon: Puzzle },
+				{ href: wsPath(activeSlug, 'files'), label: 'Files', icon: Files },
 				{ href: '/connections', label: 'Connections', icon: Plug }
 			]
 		},
@@ -90,7 +112,7 @@
 			icon: BarChart3,
 			items: [
 				{ href: '/usage', label: 'Usage', icon: BarChart3 },
-				{ href: '/cost', label: 'Cost', icon: DollarSign },
+				{ href: wsPath(activeSlug, 'cost'), label: 'Cost', icon: DollarSign },
 				{ href: '/observability', label: 'Logs', icon: FileText }
 			]
 		},
@@ -108,13 +130,15 @@
 			label: 'Manage',
 			icon: Settings,
 			items: [
-				{ href: '/settings/api-keys', label: 'API keys', icon: Key },
-				{ href: '/settings/limits', label: 'Limits', icon: Gauge },
+				// CMA splits settings: API keys + limits are workspace-scoped,
+				// members + security & compliance are org-scoped.
+				{ href: `/settings/workspaces/${activeSlug}/keys`, label: 'API keys', icon: Key },
+				{ href: `/settings/workspaces/${activeSlug}/limits`, label: 'Limits', icon: Gauge },
 				{ href: '/settings/members', label: 'Members', icon: Users },
 				{ href: '/settings/security', label: 'Security & compliance', icon: Shield }
 			]
 		}
-	];
+	]);
 
 	// Each group can be expanded/collapsed. Default: active group open, others closed.
 	let openGroups = $state<Record<string, boolean>>({
@@ -175,19 +199,6 @@
 	});
 
 	let displayName = $derived(user?.name || user?.email?.split('@')[0] || 'User');
-
-	type Workspace = {
-		id: string;
-		slug: string;
-		displayName: string;
-		externalId: string;
-		role: string;
-		isCurrent: boolean;
-	};
-	let workspaces = $state<Workspace[]>([]);
-	let activeWorkspace = $derived(
-		workspaces.find((w) => w.isCurrent) ?? workspaces[0] ?? null
-	);
 
 	onMount(async () => {
 		try {
@@ -253,8 +264,13 @@
 					{#each workspaces as w (w.id)}
 						<DropdownMenu.Item
 							onSelect={() => {
-								// Flat CMA routes — workspace scope is resolved from JWT
-								window.location.href = `/agents`;
+								// Jump to the equivalent page in the chosen workspace.
+								// Rewrites the `[slug]` segment in the current URL if
+								// we're on a workspace-scoped page; otherwise lands on
+								// the workspace's Agents page (matches CMA's default).
+								const match = page.url.pathname.match(/^\/workspaces\/[^/]+(\/.*)?$/);
+								const suffix = match?.[1] ?? '/agents';
+								window.location.href = `/workspaces/${w.slug}${suffix}`;
 							}}
 							class="gap-2"
 						>
