@@ -117,6 +117,46 @@
 		}
 		return list;
 	});
+	// Collapse consecutive same-tool rows into one — CMA shows "Web Search × 5"
+	// for a batch of 5 `agent.tool_use` events with the same tool name. We
+	// keep the full list in `displayEvents` for JSON export + debug view, but
+	// the left list uses this compacted shape in Transcript mode.
+	type BatchedEvent = { event: SessionEventEnvelope; count: number };
+	const batchedEvents = $derived.by<BatchedEvent[]>(() => {
+		if (viewMode === 'debug') {
+			return displayEvents.map((event) => ({ event, count: 1 }));
+		}
+		const out: BatchedEvent[] = [];
+		for (const e of displayEvents) {
+			const isTool =
+				e.type === 'agent.tool_use' ||
+				e.type === 'agent.mcp_tool_use' ||
+				e.type === 'agent.custom_tool_use';
+			const name = (e.data as { name?: string; tool_name?: string }).name ??
+				(e.data as { tool_name?: string }).tool_name ??
+				'';
+			const last = out[out.length - 1];
+			const lastIsTool =
+				last &&
+				(last.event.type === 'agent.tool_use' ||
+					last.event.type === 'agent.mcp_tool_use' ||
+					last.event.type === 'agent.custom_tool_use');
+			const lastName = last
+				? (last.event.data as { name?: string; tool_name?: string }).name ??
+					(last.event.data as { tool_name?: string }).tool_name ??
+					''
+				: '';
+			if (isTool && lastIsTool && name === lastName && name) {
+				last.count += 1;
+				// Use the most recent event as the representative so the detail
+				// panel shows the latest invocation's input.
+				last.event = e;
+			} else {
+				out.push({ event: e, count: 1 });
+			}
+		}
+		return out;
+	});
 	// Every event type seen in this session, for the "All events" filter
 	// dropdown. Order matches first-seen order so the menu stays stable
 	// across turns.
@@ -946,16 +986,19 @@
 						</div>
 					{:else}
 						<div class="space-y-0.5 px-1.5">
-							{#each displayEvents as ev (ev.id)}
+							{#each batchedEvents as batch (batch.event.id)}
 								{@const elapsed =
 									sessionStartMs !== null
-										? new Date(ev.createdAt).getTime() - sessionStartMs
+										? new Date(batch.event.createdAt).getTime() - sessionStartMs
 										: undefined}
 								<EventRow
-									event={ev}
-									selected={selectedEvent ? String(selectedEvent.id) === String(ev.id) : false}
+									event={batch.event}
+									batchCount={batch.count}
+									selected={selectedEvent
+										? String(selectedEvent.id) === String(batch.event.id)
+										: false}
 									elapsedMs={elapsed}
-									onClick={() => (selectedEventId = String(ev.id))}
+									onClick={() => (selectedEventId = String(batch.event.id))}
 								/>
 							{/each}
 						</div>

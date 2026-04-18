@@ -9,9 +9,11 @@
 		onClick?: () => void;
 		/** Time relative to the session start, in ms. */
 		elapsedMs?: number;
+		/** Number of events collapsed into this row (consecutive same-tool). */
+		batchCount?: number;
 	}
 
-	const { event, selected = false, onClick, elapsedMs }: Props = $props();
+	const { event, selected = false, onClick, elapsedMs, batchCount = 1 }: Props = $props();
 
 	const kind = $derived(eventKindFor(event.type));
 
@@ -94,7 +96,13 @@
 	onclick={onClick}
 >
 	<EventTypePill {kind} size="xs" />
-	<span class="flex-1 truncate text-foreground/90" title={preview}>{preview}</span>
+	<span class="flex-1 truncate text-foreground/90" title={preview}>
+		{preview}{#if batchCount > 1}
+			<span class="ml-1 rounded bg-muted px-1 py-0 text-[9px] text-muted-foreground"
+				>× {batchCount}</span
+			>
+		{/if}
+	</span>
 	{#if tokens}
 		<span class="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground" title="tokens in / out">
 			<FileText class="size-2.5" />
