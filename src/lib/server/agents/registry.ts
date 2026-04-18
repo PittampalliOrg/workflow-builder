@@ -489,6 +489,9 @@ export type ResolvedAgent = {
 	environmentId: string | null;
 	environmentVersion: number | null;
 	defaultVaultIds: string[];
+	projectId: string | null;
+	runtime: AgentRuntime;
+	registryStatus: string;
 };
 
 export async function resolveAgentRef(
@@ -535,7 +538,75 @@ export async function resolveAgentRef(
 		defaultVaultIds: Array.isArray(agent.defaultVaultIds)
 			? agent.defaultVaultIds
 			: [],
+		projectId: agent.projectId ?? null,
+		runtime: agent.runtime as AgentRuntime,
+		registryStatus: agent.registryStatus ?? "unregistered",
 	};
+}
+
+/**
+ * Resolve a list of peer-agent slugs against the Dapr registry scope
+ * (`projectId` == team). Only returns peers that are currently
+ * `registry_status = 'registered'` — stale-state peers are silently
+ * dropped so a misconfigured workspace doesn't hang a running workflow.
+ * Returns rows in the order of `slugs`; missing slugs are simply absent
+ * from the output array.
+ */
+export async function resolveCallableAgents(
+	projectId: string,
+	slugs: string[],
+): Promise<
+	Array<{
+		slug: string;
+		agentId: string;
+		version: number;
+		runtime: AgentRuntime;
+	}>
+> {
+	if (slugs.length === 0) return [];
+	const database = requireDb();
+	const rows = await database
+		.select({
+			id: agents.id,
+			slug: agents.slug,
+			runtime: agents.runtime,
+			currentVersionId: agents.currentVersionId,
+			registryStatus: agents.registryStatus,
+			isArchived: agents.isArchived,
+		})
+		.from(agents)
+		.where(
+			and(
+				eq(agents.projectId, projectId),
+				eq(agents.isArchived, false),
+				inArray(agents.slug, slugs),
+			),
+		);
+	const versionIds = rows
+		.filter((r) => r.registryStatus === "registered" && r.currentVersionId)
+		.map((r) => r.currentVersionId as string);
+	if (versionIds.length === 0) return [];
+	const versionRows = await database
+		.select({ id: agentVersions.id, version: agentVersions.version })
+		.from(agentVersions)
+		.where(inArray(agentVersions.id, versionIds));
+	const versionsById = new Map(versionRows.map((v) => [v.id, v.version]));
+	const bySlug = new Map(
+		rows
+			.filter((r) => r.registryStatus === "registered" && r.currentVersionId)
+			.map((r) => [
+				r.slug,
+				{
+					slug: r.slug,
+					agentId: r.id,
+					version: versionsById.get(r.currentVersionId as string) ?? 1,
+					runtime: r.runtime as AgentRuntime,
+				},
+			]),
+	);
+	return slugs
+		.map((s) => bySlug.get(s))
+		.filter((x): x is NonNullable<typeof x> => Boolean(x));
 }
 
 export type AgentUsage = {

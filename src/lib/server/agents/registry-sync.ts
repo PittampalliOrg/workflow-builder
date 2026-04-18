@@ -4,6 +4,7 @@ import { db } from "$lib/server/db";
 import { agents, agentVersions } from "$lib/server/db/schema";
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import type { AgentConfig, AgentDetail } from "$lib/types/agents";
+import { lookupBuiltinTool } from "./builtin-tool-catalog";
 
 /**
  * Dual-write: Postgres remains the source of truth for agent CRUD/versioning/
@@ -146,11 +147,14 @@ export function buildAgentMetadata(
 		? "dapr-agent-py-testing"
 		: "dapr-agent-py";
 
-	const builtin = (config.builtinTools || []).map((name) => ({
-		name,
-		description: "",
-		args: "{}",
-	}));
+	const builtin = (config.builtinTools || []).map((name) => {
+		const spec = lookupBuiltinTool(name);
+		return {
+			name,
+			description: spec?.description ?? "",
+			args: spec ? JSON.stringify(spec.args) : "{}",
+		};
+	});
 	const mcpTools = (config.mcpServers || []).map((srv) => ({
 		name: `mcp:${srv.server_name}`,
 		description: srv.displayName || srv.server_name || "",

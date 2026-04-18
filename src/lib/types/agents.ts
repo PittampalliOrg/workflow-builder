@@ -74,10 +74,39 @@ export type AgentConfig = {
 	memory?: AgentMemoryConfig;
 	sandboxPolicy?: SandboxPolicyOverride;
 
+	/**
+	 * Peer agents this agent is allowed to invoke via Dapr Agents'
+	 * `call_agent()` primitive. Slugs scoped to the same workspace
+	 * (`projectId`). The runtime resolves each slug against the Dapr
+	 * agent registry at workflow start; slugs whose target is not
+	 * currently `registered` are silently dropped so a stale peer
+	 * doesn't hang the parent.
+	 *
+	 * Empty / unset = `call_agent` tool is not exposed to the LLM.
+	 * This is a Phase-2 addition on top of the registry dual-write —
+	 * the UI surface is a multi-select picker on the agent-detail
+	 * Capabilities tab (filtered to peers with `registryStatus = 'registered'`).
+	 */
+	callableAgents?: string[];
+
 	runtime: AgentRuntime;
 	runtimeOverridePolicy: AgentRuntimeOverridePolicy;
 
 	configuration?: AgentHotReloadConfig;
+};
+
+/**
+ * Resolved representation of a callable-agent link, emitted by the
+ * workflow resolver into `durable/run.with.body.callableAgents` so the
+ * runtime can invoke by `slug` without re-hitting the Dapr state store.
+ */
+export type ResolvedCallableAgent = {
+	slug: string;
+	agentId: string;
+	version: number;
+	appId: string;
+	team: string;
+	registryKey: string;
 };
 
 export type AgentRef = {

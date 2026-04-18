@@ -1,9 +1,22 @@
-import type { AgentConfig, AgentOverrides, AgentRef } from "$lib/types/agents";
+import type {
+	AgentConfig,
+	AgentOverrides,
+	AgentRef,
+	ResolvedCallableAgent,
+} from "$lib/types/agents";
 import type {
 	EnvironmentConfig,
 	EnvironmentRef,
 } from "$lib/types/environments";
-import { resolveAgentRef, type ResolvedAgent } from "./registry";
+import {
+	resolveAgentRef,
+	resolveCallableAgents,
+	type ResolvedAgent,
+} from "./registry";
+import {
+	agentRegistryKey,
+	teamRegistryPrefix,
+} from "./registry-sync";
 import {
 	resolveEnvironmentRef,
 	type ResolvedEnvironment,
@@ -102,6 +115,32 @@ export async function resolveSpecAgentRefs(
 			? deriveSandboxPolicy(environment.config, overrides?.sandboxPolicy)
 			: undefined;
 
+		// Resolve peer agents listed in config.callableAgents. Only peers
+		// currently `registered` in the Dapr registry are emitted; unregistered
+		// / failed peers are dropped so the runtime doesn't expose a broken
+		// tool. Runs at most once per (project, slug-set) via the project
+		// scope — cache is implicit since the DB read is cheap.
+		let callableAgents: ResolvedCallableAgent[] = [];
+		if (
+			resolved.projectId &&
+			Array.isArray(config.callableAgents) &&
+			config.callableAgents.length > 0
+		) {
+			const peers = await resolveCallableAgents(
+				resolved.projectId,
+				config.callableAgents,
+			);
+			const team = resolved.projectId;
+			callableAgents = peers.map((p) => ({
+				slug: p.slug,
+				agentId: p.agentId,
+				version: p.version,
+				appId: p.runtime,
+				team,
+				registryKey: agentRegistryKey(team, p.slug),
+			}));
+		}
+
 		const inlinedBody: Record<string, unknown> = {
 			...(bodyRecord ?? {}),
 			prompt,
@@ -111,6 +150,12 @@ export async function resolveSpecAgentRefs(
 			timeoutMinutes: overrides?.timeoutMinutes ?? config.timeoutMinutes,
 			cwd: overrides?.cwd ?? config.cwd ?? bodyRecord?.cwd,
 		};
+		if (callableAgents.length > 0) {
+			inlinedBody.callableAgents = callableAgents;
+			inlinedBody.registryTeam = teamRegistryPrefix(
+				resolved.projectId as string,
+			);
+		}
 		if (environment) {
 			inlinedBody.environment = {
 				id: environment.id,
