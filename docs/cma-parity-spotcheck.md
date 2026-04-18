@@ -173,3 +173,4 @@ Now that baseline parity is confirmed, escalate in this order:
 1. **Deep Researcher** template on both sides — stress-tests long-horizon `maxTurns`, tool-taxonomy parity under `web_search` + `web_fetch`, and CMA's citation behavior against ours.
 2. **Incident Commander** — stress-tests MCP auth + credential broker parity (Sentry, Linear, Slack, GitHub MCPs). Requires real MCP credentials; will surface vault and `mcp_connection` differences.
 3. **Custom skill + hooks/plugins** — the features that exist only on our side. Build something that uses our hooks overlay and verify the CMA agent can't do the equivalent (confirming our differentiator).
+Last modified: 2026-04-18T18:02:49Z
