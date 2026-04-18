@@ -25,6 +25,10 @@
 	} from '$lib/components/ui/popover';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import EventRow from '$lib/components/sessions/event-row.svelte';
+	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
+	import SessionTimelineBar from '$lib/components/sessions/session-timeline-bar.svelte';
+	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
@@ -105,6 +109,31 @@
 	// and re-probe on status change to mark the card as "terminated" instead
 	// of inviting the user to click a dead link.
 	let sandboxAlive = $state<'unknown' | 'alive' | 'terminated'>('unknown');
+	// CMA-style compact event list: a single selected event is expanded in
+	// the right-side detail panel. When null, we auto-select the newest
+	// event so the panel is never empty once events start flowing.
+	let selectedEventId = $state<string | null>(null);
+	const sessionStartMs = $derived.by(() => {
+		if (!session?.createdAt) return null;
+		return new Date(session.createdAt).getTime();
+	});
+	const selectedEvent = $derived.by(() => {
+		const list = displayEvents;
+		if (list.length === 0) return null;
+		const explicit = list.find((e) => String(e.id) === selectedEventId);
+		return explicit ?? list[list.length - 1];
+	});
+	// Auto-follow newest while streaming: if the user hasn't pinned a
+	// selection, roll the selected pointer forward as new events arrive.
+	$effect(() => {
+		if (selectedEventId !== null) return;
+		const last = displayEvents[displayEvents.length - 1];
+		if (last) {
+			// no-op: selectedEvent derived handles the default. This effect only
+			// exists to keep the reactive chain attached to displayEvents.
+			void last.id;
+		}
+	});
 
 	let stream = $state<SessionStreamStore | null>(null);
 	let unsub: (() => void) | null = null;
@@ -585,178 +614,70 @@
 					{/if}
 				</span>
 			</div>
-			<div bind:this={scrollEl} class="flex-1 overflow-y-auto p-6 space-y-4">
-				{#if loading}
-					<Skeleton class="h-16" />
-					<Skeleton class="h-16" />
-				{:else if displayEvents.length === 0}
-					<div class="text-center text-muted-foreground text-sm py-16">
-						{session?.status === 'terminated'
-							? 'Session ended with no events.'
-							: 'Waiting for the agent to start…'}
-					</div>
-				{:else}
-					{#each displayEvents as ev (ev.id)}
-						{@const formatted = formatEvent(ev)}
-						{#if formatted.kind === 'user'}
-							<div class="flex justify-end">
-								<div class="max-w-[80%] rounded-lg bg-primary text-primary-foreground p-3 text-sm">
-									<div class="flex items-center gap-1 mb-1 opacity-70 text-[10px]">
-										<User class="size-3" /> you
-									</div>
-									<div class="whitespace-pre-wrap">{formatted.text}</div>
-								</div>
-							</div>
-						{:else if formatted.kind === 'agent'}
-							<div class="flex justify-start group">
-								<div class="max-w-[80%] rounded-lg bg-muted p-3 text-sm">
-									<div class="flex items-center gap-1 mb-1 opacity-70 text-[10px]">
-										<Bot class="size-3" /> agent
-									</div>
-									<div class="whitespace-pre-wrap">{formatted.text}</div>
-								</div>
-								<Button
-									variant="ghost"
-									size="icon"
-									class="size-6 self-start ml-1 opacity-0 group-hover:opacity-100 transition"
-									title="Fork a new session from this point"
-									disabled={forking}
-									onclick={() => forkFromEvent(ev.sequence)}
-								>
-									<GitBranchIcon class="size-3" />
-								</Button>
-							</div>
-						{:else if formatted.kind === 'thinking'}
-							{#if formatted.text}
-								<div class="pl-3">
-									<Reasoning defaultOpen={false} isStreaming={false}>
-										<ReasoningTrigger />
-										<ReasoningContent>
-											<div class="whitespace-pre-wrap text-sm text-muted-foreground pt-2">{formatted.text}</div>
-										</ReasoningContent>
-									</Reasoning>
-								</div>
-							{:else}
-								<div class="flex items-center gap-2 text-xs text-muted-foreground pl-3">
-									<Loader2 class="size-3 animate-spin" /> thinking…
-								</div>
-							{/if}
-						{:else if formatted.kind === 'tool_use'}
-							<div class="rounded border p-3 bg-muted/30">
-								<div class="flex items-center gap-2 text-xs font-mono">
-									<Wrench class="size-3" />
-									<span class="font-semibold">{formatted.name}</span>
-									{#if formatted.needsApproval}
-										<Badge variant="outline" class="text-[10px] text-amber-600">
-											awaits approval
-										</Badge>
-									{/if}
-								</div>
-								<pre class="mt-2 text-[10px] text-muted-foreground overflow-x-auto">{JSON.stringify(formatted.input, null, 2)}</pre>
-								{#if formatted.needsApproval}
-									{@const draft = denyDrafts[formatted.toolUseId] ?? { open: false, reason: '' }}
-									{#if draft.open}
-										<div class="mt-2 space-y-2">
-											<Textarea
-												rows={2}
-												placeholder="Reason shared with the agent (optional)…"
-												value={draft.reason}
-												oninput={(e) => {
-													denyDrafts = {
-														...denyDrafts,
-														[formatted.toolUseId]: {
-															open: true,
-															reason: (e.target as HTMLTextAreaElement).value
-														}
-													};
-												}}
-											/>
-											<div class="flex gap-2">
-												<Button
-													size="sm"
-													variant="destructive"
-													onclick={() => {
-														confirmTool(
-															formatted.toolUseId,
-															false,
-															draft.reason.trim() || undefined
-														);
-														denyDrafts = {
-															...denyDrafts,
-															[formatted.toolUseId]: { open: false, reason: '' }
-														};
-													}}
-												>
-													<X class="size-3" /> Send denial
-												</Button>
-												<Button
-													size="sm"
-													variant="ghost"
-													onclick={() => {
-														denyDrafts = {
-															...denyDrafts,
-															[formatted.toolUseId]: { open: false, reason: '' }
-														};
-													}}
-												>
-													Cancel
-												</Button>
-											</div>
-										</div>
-									{:else}
-										<div class="mt-2 flex gap-2">
-											<Button
-												size="sm"
-												onclick={() => confirmTool(formatted.toolUseId, true)}
-											>
-												<Check class="size-3" /> Allow
-											</Button>
-											<Button
-												size="sm"
-												variant="destructive"
-												onclick={() => {
-													denyDrafts = {
-														...denyDrafts,
-														[formatted.toolUseId]: { open: true, reason: '' }
-													};
-												}}
-											>
-												<X class="size-3" /> Deny
-											</Button>
-										</div>
-									{/if}
-								{/if}
-							</div>
-						{:else if formatted.kind === 'tool_result'}
-							<div class="rounded border bg-background p-2 text-[10px] font-mono">
-								<div class="flex items-center gap-1 text-muted-foreground">
-									<Terminal class="size-3" /> result
-								</div>
-								<pre class="mt-1 overflow-x-auto">{JSON.stringify(formatted.data, null, 2).slice(0, 500)}</pre>
-							</div>
-						{:else if formatted.kind === 'custom_tool_use'}
-							<div class="rounded border border-amber-500/50 bg-amber-500/5 p-3">
-								<div class="flex items-center gap-2 text-xs font-mono">
-									<Wrench class="size-3 text-amber-600" />
-									<span class="font-semibold">{formatted.name}</span>
-									<Badge variant="outline" class="text-[10px]">custom</Badge>
-								</div>
-								<pre class="mt-2 text-[10px] text-muted-foreground overflow-x-auto">{JSON.stringify(formatted.input, null, 2)}</pre>
-								<p class="mt-2 text-[11px] text-muted-foreground">
-									Waiting for orchestrator to post <code>user.custom_tool_result</code>.
-								</p>
-							</div>
-						{:else if formatted.kind === 'status'}
-							<div class="text-[11px] text-muted-foreground text-center py-1">
-								{formatted.text}
-							</div>
-						{:else if formatted.kind === 'other'}
-							<div class="text-[10px] text-muted-foreground">
-								<code>{formatted.type}</code>
-							</div>
-						{/if}
-					{/each}
-				{/if}
+			<!-- CMA-shape timeline bar: one colored segment per event, width
+			     proportional to duration. Click a segment to select. -->
+			{#if displayEvents.length > 0}
+				<div class="border-b px-4 py-2">
+					<SessionTimelineBar
+						events={displayEvents}
+						selectedId={selectedEvent ? String(selectedEvent.id) : null}
+						onSelect={(id) => (selectedEventId = id)}
+					/>
+				</div>
+			{/if}
+
+			<div class="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(260px,380px)_1fr] overflow-hidden">
+				<!-- Left: compact event list -->
+				<div bind:this={scrollEl} class="overflow-y-auto border-r py-1">
+					{#if loading}
+						<div class="p-3 space-y-1.5">
+							<Skeleton class="h-6" />
+							<Skeleton class="h-6" />
+							<Skeleton class="h-6" />
+						</div>
+					{:else if displayEvents.length === 0}
+						<div class="text-center text-muted-foreground text-sm py-16 px-4">
+							{session?.status === 'terminated'
+								? 'Session ended with no events.'
+								: 'Waiting for the agent to start…'}
+						</div>
+					{:else}
+						<div class="space-y-0.5 px-1.5">
+							{#each displayEvents as ev (ev.id)}
+								{@const elapsed =
+									sessionStartMs !== null
+										? new Date(ev.createdAt).getTime() - sessionStartMs
+										: undefined}
+								<EventRow
+									event={ev}
+									selected={selectedEvent ? String(selectedEvent.id) === String(ev.id) : false}
+									elapsedMs={elapsed}
+									onClick={() => (selectedEventId = String(ev.id))}
+								/>
+							{/each}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Right: expanded detail panel -->
+				<div class="overflow-hidden">
+					{#if selectedEvent}
+						{@const elapsed =
+							sessionStartMs !== null
+								? new Date(selectedEvent.createdAt).getTime() - sessionStartMs
+								: undefined}
+						<EventDetailPanel
+							event={selectedEvent}
+							elapsedMs={elapsed}
+							debug={viewMode === 'debug'}
+							onClose={() => (selectedEventId = null)}
+						/>
+					{:else if !loading}
+						<div class="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+							Select an event on the left to see its content.
+						</div>
+					{/if}
+				</div>
 			</div>
 
 			<div class="border-t p-3 space-y-2">
