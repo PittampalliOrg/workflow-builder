@@ -12,10 +12,11 @@ CALL_AGENT_TOOL_NAME = "call_agent"
 def get_call_agent_tool_description() -> str:
     return """Delegate a task to a peer agent registered in the Dapr agent registry.
 
-Spawns a new session on the peer agent's app_id with the supplied prompt,
-and returns the child session's instance ID. Use ReadSessionEvents with
-that ID to poll progress, or let the parent return without waiting if the
-delegation is fire-and-forget.
+Spawns a new session on the peer agent's app_id with the supplied prompt
+and waits for the peer to finish. The tool result is the peer's final
+answer text, returned in the same turn — treat it like any other tool
+output. The child session's ID is also included in the result for audit
+and UI linking (it appears in the sessions list as a child of your run).
 
 Peers are restricted to those configured on this agent's `callableAgents`
 list and currently `registered` in the Dapr registry. Invoking a peer not

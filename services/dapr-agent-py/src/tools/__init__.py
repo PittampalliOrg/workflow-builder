@@ -9,11 +9,14 @@ Read, Write, Edit, Bash, Glob, Grep, etc.
 
 from __future__ import annotations
 
+import os
+
 from dapr_agents.tool.base import AgentTool
 
 from .agent_tool.tool import agent_spawn
 from .ask_user.tool import ask_user
 from .call_agent.tool import call_agent
+from .call_agent.workflow_tool import build_call_agent_workflow_tool
 from .bash_tool.tool import bash_run
 from .file_edit.tool import file_edit
 from .file_read.tool import file_read
@@ -57,10 +60,6 @@ all_tools: list[AgentTool] = [
     _tool(web_search, "WebSearch"),
     # Agent / task management
     _tool(agent_spawn, "Agent"),
-    # Peer-agent invocation via Dapr agent registry. Always registered;
-    # per-run allow-list is injected via the callable_agents thread-local
-    # by agent_workflow.
-    _tool(call_agent, "CallAgent"),
     _tool(task_output, "TaskOutput"),
     _tool(task_stop, "TaskStop"),
     _tool(todo_write, "TodoWrite"),
@@ -77,3 +76,21 @@ all_tools: list[AgentTool] = [
     # and the agent re-fetches earlier events from the durable log instead.
     _tool(read_session_events, "ReadSessionEvents"),
 ]
+
+
+def _is_native_call_agent_enabled() -> bool:
+    raw = (os.environ.get("AGENT_CALL_AGENT_NATIVE") or "").strip().lower()
+    return raw in {"1", "true", "yes"}
+
+
+# Peer-agent invocation. Two registrations gated by feature flag:
+#   AGENT_CALL_AGENT_NATIVE=0 (default) → HTTP-based fire-and-forget tool
+#       (Approach A): LLM gets child_session_id, polls via ReadSessionEvents.
+#   AGENT_CALL_AGENT_NATIVE=1            → WorkflowContextInjectedTool
+#       (Approach B): SDK dispatches via ctx.call_child_workflow inline,
+#       peer's final answer flows back as the tool_result in the same LLM
+#       turn with full Dapr event-sourced durability.
+if _is_native_call_agent_enabled():
+    all_tools.append(build_call_agent_workflow_tool())
+else:
+    all_tools.append(_tool(call_agent, "CallAgent"))

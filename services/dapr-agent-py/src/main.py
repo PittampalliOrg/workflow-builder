@@ -2109,9 +2109,150 @@ class OpenShellDurableAgent(DurableAgent):
         `broadcast_listener`. Without this override, the base hard-codes
         only its two workflows and session_workflow instances fail
         immediately (worker has no entry in the registry).
+
+        Also registers Approach-B peer-invocation machinery:
+        `call_peer_session_workflow` (wrapper) and `create_peer_session_row`
+        (activity). Both are no-ops unless the parent agent's LLM emits a
+        CallAgent tool_call via the native workflow-tool path.
         """
         super().register_workflows(runtime)
         runtime.register_workflow(self.session_workflow)
+        runtime.register_workflow(self.call_peer_session_workflow)
+        runtime.register_activity(self.create_peer_session_row)
+
+    @workflow_entry
+    def call_peer_session_workflow(self, ctx, message: dict):
+        """Two-step peer-delegation wrapper for Approach B.
+
+        Input (built by CallAgentWorkflowTool):
+            {
+              sessionId: "ca-<uuid>-<slug>",  # deterministic, ≤64 chars
+              peerAgentId, peerSlug,
+              prompt,
+              parentSessionId, parentInstanceId, registryTeam,
+            }
+
+        Flow:
+          1. yield create_peer_session_row activity
+             → BFF creates the `sessions` row (idempotent by sessionId)
+             → activity returns resolved {agentConfig, environmentConfig,
+                vaultIds, callableAgents, registryTeam}
+          2. yield session_workflow as a child, passing that childInput +
+             the user prompt as initialEvents + autoTerminate=true.
+          3. Return the child's result dict so the parent agent_workflow's
+             CallAgent tool_result carries the peer's final content back
+             to the LLM in the same turn.
+
+        Every yield is Dapr event-sourced. Deterministic `sessionId`
+        ensures retries re-attach to the same row + same session_workflow
+        instance rather than double-spawning.
+        """
+        row = yield ctx.call_activity(
+            self.create_peer_session_row,
+            input=message,
+        )
+        if not isinstance(row, dict) or not row.get("sessionId"):
+            raise RuntimeError(
+                f"create_peer_session_row returned unexpected payload: {row!r}"
+            )
+        session_id = row["sessionId"]
+        child_result = yield ctx.call_child_workflow(
+            "session_workflow",
+            input={
+                "sessionId": session_id,
+                "agentConfig": row.get("agentConfig") or {},
+                "environmentConfig": row.get("environmentConfig") or {},
+                "vaultIds": row.get("vaultIds") or [],
+                "callableAgents": row.get("callableAgents") or [],
+                "registryTeam": row.get("registryTeam"),
+                "initialEvents": [
+                    {
+                        "type": "user.message",
+                        "content": [
+                            {"type": "text", "text": str(message.get("prompt") or "")}
+                        ],
+                    }
+                ],
+                "autoTerminateAfterEndTurn": True,
+            },
+            instance_id=session_id,
+        )
+        # session_workflow returns a dict with content/success/sessionId/turn.
+        # Pass it through verbatim — the SDK serializes this as the CallAgent
+        # tool's tool_result content, which the parent LLM sees directly.
+        result = (
+            child_result
+            if isinstance(child_result, dict)
+            else {"content": str(child_result or "")}
+        )
+        result.setdefault("sessionId", session_id)
+        result.setdefault("peerSlug", message.get("peerSlug"))
+        return result
+
+    def create_peer_session_row(self, ctx, payload: dict) -> dict:
+        """Activity: POST /api/internal/sessions/spawn-peer?skipSpawn=true
+        to create (or fetch, if replayed) the peer's session row +
+        pre-resolve the agentConfig / environmentConfig / callableAgents
+        block so `call_peer_session_workflow` can spawn session_workflow
+        without a second BFF round-trip.
+
+        Idempotent: the BFF endpoint keys on the deterministic sessionId
+        and short-circuits if the row already exists. Safe under activity
+        retry.
+        """
+        import urllib.error
+        import urllib.request
+
+        session_id = str(payload.get("sessionId") or "").strip()
+        peer_agent_id = str(payload.get("peerAgentId") or "").strip()
+        if not session_id or not peer_agent_id:
+            raise ValueError(
+                "create_peer_session_row requires sessionId + peerAgentId"
+            )
+
+        token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError(
+                "INTERNAL_API_TOKEN not configured on dapr-agent-py"
+            )
+        app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
+        dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
+        url = (
+            f"http://localhost:{dapr_http}/v1.0/invoke/{app_id}"
+            "/method/api/internal/sessions/spawn-peer"
+        )
+        body = {
+            "sessionId": session_id,
+            "peerAgentId": peer_agent_id,
+            "prompt": payload.get("prompt") or "",
+            "parentSessionId": payload.get("parentSessionId"),
+            "parentInstanceId": payload.get("parentInstanceId"),
+            "title": payload.get("title"),
+            "skipSpawn": True,
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(
+                f"spawn-peer rejected (HTTP {exc.code}): {detail}"
+            ) from exc
+        try:
+            return json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"spawn-peer returned non-JSON: {text[:200]!r}"
+            ) from exc
 
     @workflow_entry
     def session_workflow(self, ctx, message: dict):

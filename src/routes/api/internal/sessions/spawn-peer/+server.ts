@@ -5,6 +5,12 @@ import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
 import { agents, sessions, users } from "$lib/server/db/schema";
 import { createSession } from "$lib/server/sessions/registry";
+import {
+	resolveAgentRef,
+	resolveCallableAgents,
+} from "$lib/server/agents/registry";
+import { resolveEnvironmentRef } from "$lib/server/environments/registry";
+import { agentRegistryKey } from "$lib/server/agents/registry-sync";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
 import { sendUserEvent } from "$lib/server/sessions/events";
 
@@ -65,6 +71,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (sessionId.length > 64)
 		return error(400, "sessionId must be ≤64 chars (Dapr workflow cap)");
 
+	const skipSpawnOnReplay = body.skipSpawn === true;
+
 	// Idempotency — return the existing row on replay.
 	const [existing] = await db
 		.select()
@@ -72,13 +80,61 @@ export const POST: RequestHandler = async ({ request }) => {
 		.where(eq(sessions.id, sessionId))
 		.limit(1);
 	if (existing) {
-		return json({
+		const base = {
 			sessionId: existing.id,
 			agentId: existing.agentId,
 			agentVersion: existing.agentVersion,
 			daprInstanceId: existing.daprInstanceId,
 			natsSubject: existing.natsSubject,
 			reused: true,
+		};
+		if (!skipSpawnOnReplay) return json(base);
+
+		// Re-resolve the same shape the fresh-create path returns so
+		// CallAgentWorkflowTool's activity can build session_workflow
+		// input without branching on reused-vs-fresh.
+		const resolvedR = await resolveAgentRef({
+			id: existing.agentId,
+			version: existing.agentVersion ?? undefined,
+		});
+		if (!resolvedR)
+			return error(500, `could not re-resolve peer ${existing.agentId}`);
+		const envRefR =
+			existing.environmentId && existing.environmentVersion !== null
+				? await resolveEnvironmentRef({
+						id: existing.environmentId,
+						version: existing.environmentVersion,
+					})
+				: existing.environmentId
+					? await resolveEnvironmentRef({ id: existing.environmentId })
+					: null;
+		const callableSlugsR = Array.isArray(resolvedR.config.callableAgents)
+			? resolvedR.config.callableAgents
+			: [];
+		const callableAgentsR =
+			resolvedR.projectId && callableSlugsR.length > 0
+				? (
+						await resolveCallableAgents(resolvedR.projectId, callableSlugsR)
+					).map((p) => ({
+						slug: p.slug,
+						agentId: p.agentId,
+						version: p.version,
+						appId: p.runtime,
+						team: resolvedR.projectId as string,
+						registryKey: agentRegistryKey(
+							resolvedR.projectId as string,
+							p.slug,
+						),
+					}))
+				: [];
+		return json({
+			...base,
+			agentConfig: resolvedR.config,
+			environmentConfig: envRefR?.config ?? null,
+			vaultIds: Array.isArray(existing.vaultIds) ? existing.vaultIds : [],
+			callableAgents: callableAgentsR,
+			registryTeam: resolvedR.projectId ?? null,
+			skipSpawn: true,
 		});
 	}
 
@@ -147,6 +203,59 @@ export const POST: RequestHandler = async ({ request }) => {
 		await sendUserEvent(session.id, {
 			type: "user.message",
 			content: [{ type: "text", text: prompt }],
+		});
+	}
+
+	// Approach B path: callers that own their own workflow dispatch (e.g.
+	// the native CallAgentWorkflowTool which yields ctx.call_child_workflow
+	// directly) ask us to skip spawnSessionWorkflow. We still create the
+	// row + initial user event; we additionally return the fully-resolved
+	// childInput the caller needs to build session_workflow's input
+	// deterministically, without a second round-trip to the BFF.
+	const skipSpawn = body.skipSpawn === true;
+	if (skipSpawn) {
+		const resolved = await resolveAgentRef({
+			id: peerAgentId,
+			version: session.agentVersion ?? undefined,
+		});
+		if (!resolved)
+			return error(500, `could not re-resolve peer ${peerAgentId}`);
+		const envRef =
+			session.environmentId && session.environmentVersion !== null
+				? await resolveEnvironmentRef({
+						id: session.environmentId,
+						version: session.environmentVersion,
+					})
+				: session.environmentId
+					? await resolveEnvironmentRef({ id: session.environmentId })
+					: null;
+		const callableSlugs = Array.isArray(resolved.config.callableAgents)
+			? resolved.config.callableAgents
+			: [];
+		const callableAgents =
+			resolved.projectId && callableSlugs.length > 0
+				? (await resolveCallableAgents(resolved.projectId, callableSlugs)).map(
+						(p) => ({
+							slug: p.slug,
+							agentId: p.agentId,
+							version: p.version,
+							appId: p.runtime,
+							team: resolved.projectId as string,
+							registryKey: agentRegistryKey(resolved.projectId as string, p.slug),
+						}),
+					)
+				: [];
+		return json({
+			sessionId: session.id,
+			agentId: session.agentId,
+			agentVersion: session.agentVersion,
+			agentConfig: resolved.config,
+			environmentConfig: envRef?.config ?? null,
+			vaultIds: session.vaultIds,
+			callableAgents,
+			registryTeam: resolved.projectId ?? null,
+			reused: false,
+			skipSpawn: true,
 		});
 	}
 
