@@ -9,6 +9,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > - `docs/hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins subsystem (Claude Code port)
 > - `docs/CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
 > - `docs/openshell-capabilities.md` — OpenShell sandbox capabilities
+> - `docs/cma-parity.md` — CMA (Claude Managed Agents) console parity: workspaces, members, sessions, custom skills, limits, observability
 
 ## Architecture
 
@@ -200,7 +201,12 @@ Rejected slugs (raise `Removed SW 1.0 agent action` at the orchestrator): `claud
 - **mcp_connection**: project-level MCP bindings to app connections and MCP server URLs
 - **mcp_server**, **mcp_run**: hosted MCP server config and execution tracking where used
 - **workflow_connection_ref**: workflow-node connection usage index
-- **api_keys**: JWT API keys for programmatic access
+- **api_keys**: JWT API keys for programmatic access (`wfb_` prefix, SHA-256 hashed at rest; rotation keeps `id` stable). Webhook auth at `/api/workflows/[workflowId]/webhook`.
+- **CMA parity resources**: all workspace-scoped via `project_id` column — `sessions`, `vaults`, `agents`, `environments`, `agent_skill_registry` (nullable for curated-global rows). Scope comes from `locals.session.projectId` which `hooks.server.ts` resolves from the `X-Workspace` header or URL slug.
+- **project_members**: `(project_id, user_id, role)` with role in `ADMIN | EDITOR | OPERATOR | VIEWER`. Last-admin demote/remove is blocked in the API handler.
+- **sessions**: CMA session rows. `workflow_execution_id` links workflow-driven sessions back to their parent `durable/run` node; UI sessions leave it null.
+- **session_events**: append-only CMA event log. `sevt_` id prefix matches the wire format. SSE stream at `/api/v1/sessions/[id]/events/stream`.
+- **files**: standalone files API (distinct from `session_resources`); SHA-1 dedup, 25 MB cap per upload. Session-output auto-upload (`/mnt/session/outputs` + `/sandbox/outputs`) scanned in `services/dapr-agent-py/src/session_outputs.py`.
 - **Browser artifacts**: `workflow_browser_artifacts` (manifest JSONB), `workflow_browser_artifact_blob_payloads` (base64 PNG screenshots)
 - **Observability**: `workflow_execution_logs`, `credential_access_logs`, `workflow_external_events`
 
@@ -236,6 +242,21 @@ Port of Claude Code's hooks + plugins extension surface into the Python Dapr age
 
 > See `docs/activepieces-auth.md` for the full auth flow.
 
+## CMA Parity (Managed Agents Console)
+
+The SvelteKit app mirrors platform.claude.com/dashboard surface-for-surface where it makes sense, while keeping our divergences (visual workflow editor, sandboxes, observability) alongside. Workspace scoping is the unifying invariant: every user-facing resource carries `project_id`, and `hooks.server.ts` resolves scope from the `X-Workspace` header or URL slug into `locals.session.projectId`.
+
+- **Workspaces**: `/workspaces` manages membership; `/workspaces/[slug]/*` is the canonical path for each console surface. Non-member access 404s at the layout guard.
+- **Members**: `/settings/members` — real CRUD via `/api/v1/projects/[projectId]/members`. Roles: ADMIN / EDITOR / OPERATOR / VIEWER. Last-admin demote/remove blocked.
+- **Sessions**: CMA-shape event stream (`agent.message`, `agent.thinking`, `agent.tool_use`, `agent.tool_result`, `session.status_*`). Detail view shows Agent / Environment / Vaults / Workflow run / Sandbox / Observability cards. **Fork**: `POST /api/v1/sessions/[id]/fork` with `fromSequence` re-seeds a new session with replayed events up to N.
+- **Custom skills**: authored by workspace members (`sourceType = "custom"` in `agent_skill_registry`, scoped via `project_id`). `POST /api/agent-skills` + `PATCH /api/agent-skills/[id]` (prompt edit bumps the numeric version). Curated/global rows remain visible to every workspace.
+- **Usage + cost**: `/api/v1/usage` and `/api/v1/cost` are workspace-scoped — prefer `locals.session.projectId`, fall back to `userId` when no active project. Usage joins `agents.name` so rows show labels, not raw IDs.
+- **Limits dashboard**: `/settings/limits` auto-refreshes every 15s via `/api/v1/limits/live` — active session count + per-model rolling-window throughput (sessions/hour, tokens/min/hour). No new tables; computed on-demand from `sessions.usage` + `sessions.status`.
+- **Observability deep-link**: session detail → Phoenix (`/api/observability/phoenix/sessions/[id]`) + ClickHouse trace explorer (`/observability?sessionId=X`). The traces API filters by the `session.id` span attribute emitted by `src/telemetry/`.
+- **Workflow → session cross-link**: workflow run Overview tab lists sessions its `durable/run` nodes spawned via `/api/workflows/executions/[executionId]/sessions`. Refreshes every 5s while agent runs are running.
+
+Full resource map + gap rationale: `docs/cma-parity.md`.
+
 ## Browser Validation (In-Sandbox Screenshots)
 
 The `browser/validate` action captures screenshots of a deployed feature inside the coding agent's OpenShell sandbox, eliminating the need for a second browser sandbox.
@@ -268,5 +289,5 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 
 ---
 
-**Last Updated**: 2026-04-16
-**Status**: Production-ready SvelteKit app with OpenTelemetry observability, OpenShell sandbox execution, `dapr-agent-py` durable agent runs (native Dapr child workflow dispatch + `WorkflowRetryPolicy` callee-side retry) with Claude Code-compatible hooks + plugins subsystem, MCP-enabled agent workflows, and function-router narrowed to sync credential broker + Knative proxy.
+**Last Updated**: 2026-04-18
+**Status**: Production-ready SvelteKit app with CMA (Claude Managed Agents) console parity — workspace-scoped sessions / agents / environments / vaults / skills / files, real members management, live limits dashboard, session fork + observability deep-links, OpenTelemetry observability (OTEL Collector + ClickHouse + Phoenix), OpenShell sandbox execution, `dapr-agent-py` durable agent runs (native Dapr child workflow dispatch + `WorkflowRetryPolicy` callee-side retry) with Claude Code-compatible hooks + plugins subsystem, MCP-enabled agent workflows, and function-router narrowed to sync credential broker + Knative proxy.

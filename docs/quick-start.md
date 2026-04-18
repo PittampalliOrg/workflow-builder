@@ -17,6 +17,16 @@ pnpm fix
 pnpm type-check
 ```
 
+## Tests
+
+```bash
+pnpm test:unit                                      # vitest, pure logic
+pnpm test:e2e                                       # playwright, defaults to localhost:3000
+BASE_URL=https://workflow-builder.tail286401.ts.net pnpm test:e2e
+```
+
+The e2e suite is intentionally thin today — it probes the auth boundary of every CMA-parity endpoint so regressions are caught immediately. Full user-facing E2E awaits a reusable auth fixture. See `docs/cma-parity.md` for the surface map.
+
 ## Fast Inner Loop
 
 Start the DevSpace-based development session:
