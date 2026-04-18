@@ -35,6 +35,37 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	});
 	if (!agent) throw new Error(`Agent ${session.agentId} not found`);
 
+	// Enrich callableAgents: config stores slugs; the runtime needs full
+	// metadata ({slug, agentId, appId, team, registryKey}) to dispatch to
+	// the peer's app_id without re-hitting the registry. Mirrors what the
+	// workflow resolver does for durable/run nodes.
+	const callableSlugs = Array.isArray(agent.config.callableAgents)
+		? agent.config.callableAgents
+		: [];
+	const callableAgents = await (async () => {
+		if (!agent.projectId || callableSlugs.length === 0) return [] as Array<{
+			slug: string;
+			agentId: string;
+			version: number;
+			appId: string;
+			team: string;
+			registryKey: string;
+		}>;
+		const { resolveCallableAgents } = await import("$lib/server/agents/registry");
+		const { agentRegistryKey } = await import(
+			"$lib/server/agents/registry-sync"
+		);
+		const peers = await resolveCallableAgents(agent.projectId, callableSlugs);
+		return peers.map((p) => ({
+			slug: p.slug,
+			agentId: p.agentId,
+			version: p.version,
+			appId: p.runtime,
+			team: agent.projectId as string,
+			registryKey: agentRegistryKey(agent.projectId as string, p.slug),
+		}));
+	})();
+
 	const environment = session.environmentId
 		? await resolveEnvironmentRef({
 				id: session.environmentId,
@@ -53,6 +84,9 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	const payload = {
 		sessionId,
 		agentConfig: agent.config,
+		// Flat metadata the call_agent tool needs to dispatch peers by name.
+		callableAgents,
+		registryTeam: agent.projectId ?? null,
 		environmentConfig: environment ? environment.config : null,
 		vaultIds: session.vaultIds,
 		dbExecutionId: session.workflowExecutionId ?? null,

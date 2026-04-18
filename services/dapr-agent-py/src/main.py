@@ -2349,6 +2349,13 @@ def _freeze_session_child_input(
     workspace_ref = raw_message.get("workspaceRef") or ""
     cwd = raw_message.get("cwd") or "/sandbox"
 
+    # call_agent plumbing: spawn.ts (SvelteKit BFF) enriches the raw
+    # session-start payload with `callableAgents` (full {slug, agentId,
+    # appId, team, registryKey} metadata) + `registryTeam` (the team
+    # string used to key Dapr registry entries). Forward both so the
+    # child agent_workflow can stash them in the call_agent thread-local.
+    callable_agents = raw_message.get("callableAgents") or []
+    registry_team = raw_message.get("registryTeam") or None
     return {
         "task": task,
         "prompt": task,
@@ -2362,6 +2369,8 @@ def _freeze_session_child_input(
         "sandboxName": sandbox_name,
         "workspaceRef": workspace_ref,
         "cwd": cwd,
+        "callableAgents": callable_agents,
+        "registryTeam": registry_team,
         "_session_turn": turn,
         "_message_metadata": {
             "executionId": db_execution_id,
