@@ -194,7 +194,7 @@ export type CustomSkillUpdateInput = {
 	status?: AgentSkillStatus;
 };
 
-function bumpVersion(current: string | null | undefined): string {
+export function bumpVersion(current: string | null | undefined): string {
 	const n = Number.parseInt((current ?? '1').trim(), 10);
 	if (Number.isFinite(n) && n > 0) return String(n + 1);
 	// Non-numeric (e.g. "latest") — fall back to "1" so numeric bumps apply next.

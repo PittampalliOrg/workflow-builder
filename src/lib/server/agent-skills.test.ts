@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { listAgentSkills, parseSkillSearchOutput, skillsCliEnv } from './agent-skills';
+import {
+	bumpVersion,
+	listAgentSkills,
+	parseSkillSearchOutput,
+	skillsCliEnv
+} from './agent-skills';
 
 describe('agent skill registry', () => {
 	it('does not expose code-defined default skills when the database is unavailable', async () => {
@@ -41,5 +46,28 @@ describe('agent skill registry', () => {
 		expect(env.NPM_CONFIG_CACHE).toBe('/tmp/workflow-builder-skills/.npm');
 		expect(env.npm_config_cache).toBe('/tmp/workflow-builder-skills/.npm');
 		expect(env.XDG_CACHE_HOME).toBe('/tmp/workflow-builder-skills/.cache');
+	});
+
+	describe('custom skill version bump', () => {
+		it('increments a numeric version in place', () => {
+			expect(bumpVersion('1')).toBe('2');
+			expect(bumpVersion('42')).toBe('43');
+		});
+
+		it('starts at 2 when the current version is not a positive integer', () => {
+			// Matches the fallback branch — custom skills that were imported
+			// with a non-numeric version (e.g. "latest") should jump to "2"
+			// on the next prompt-edit so future bumps are cleanly numeric.
+			expect(bumpVersion('latest')).toBe('2');
+			expect(bumpVersion('')).toBe('2');
+			expect(bumpVersion(null)).toBe('2');
+			expect(bumpVersion(undefined)).toBe('2');
+			expect(bumpVersion('-3')).toBe('2');
+			expect(bumpVersion('0')).toBe('2');
+		});
+
+		it('trims whitespace before parsing', () => {
+			expect(bumpVersion('  5  ')).toBe('6');
+		});
 	});
 });
