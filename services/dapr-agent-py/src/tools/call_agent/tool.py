@@ -66,7 +66,11 @@ def call_agent(name: str, prompt: str) -> str:
     team = str(peer.get("team") or ctx.registry_team or "")
     slug = str(peer.get("slug"))
 
-    child_instance_id = f"{ctx.parent_instance_id or 'root'}-calls-{slug}-{uuid.uuid4().hex[:8]}"
+    # Dapr caps workflow instance IDs at 64 chars. Keep this short:
+    # 3 (prefix) + 16 (uuid) + 1 (sep) + <=20 (slug) = <=40 chars.
+    # Parent-id linkage flows through the payload.source block below.
+    truncated_slug = slug[:20] if slug else "peer"
+    child_instance_id = f"ca-{uuid.uuid4().hex[:16]}-{truncated_slug}"
 
     # Workflow name follows Dapr Agents' convention:
     #   dapr.agents.{sanitized_name}.workflow
