@@ -1956,8 +1956,15 @@ class OpenShellDurableAgent(DurableAgent):
                     except Exception as exc:
                         logger.warning("[hooks] UserPromptSubmit error: %s", exc)
 
+        agent_workflow_result = None
         try:
-            yield from super().agent_workflow(ctx, message)
+            # In dapr-agents 1.0.1 the base agent_workflow generator returns
+            # the final assistant message via `return final_message`.
+            # `yield from` evaluates to the subgenerator's return value, so
+            # capture it; session_workflow relies on it flowing out as the
+            # per-turn result (and CallAgent's tool_result content ultimately
+            # comes from this dict's "content" field).
+            agent_workflow_result = yield from super().agent_workflow(ctx, message)
 
             # After agent completes, check for PLAN.md and persist full content
             # to Dapr state store (mirrors Claude Code's file-based plan persistence)
@@ -2098,6 +2105,8 @@ class OpenShellDurableAgent(DurableAgent):
                             pass
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[telemetry] interaction end failed: %s", exc)
+
+        return agent_workflow_result
 
     # ------------------------------------------------------------------
     # Session workflow (CMA-shape multi-turn loop)
