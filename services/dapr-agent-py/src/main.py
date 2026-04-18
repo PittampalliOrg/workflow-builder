@@ -2156,6 +2156,17 @@ class OpenShellDurableAgent(DurableAgent):
                 f"create_peer_session_row returned unexpected payload: {row!r}"
             )
         session_id = row["sessionId"]
+        # The wrapper workflow's own Dapr instance_id IS session_id
+        # (CallAgentWorkflowTool passes the same deterministic value).
+        # We must NOT reuse it for session_workflow — Dapr keys workflow
+        # instances by id, and collision causes the dispatcher to replay
+        # both orchestrators against the same event stream (seen as
+        # "Ignoring unexpected taskCompleted event" warnings + the child
+        # stuck in "rescheduling"). Suffix with `:swf` so the inner
+        # session_workflow gets its own instance while sessions.id /
+        # NATS subject / event-log keys remain `session_id`. 64-char
+        # Dapr cap budget: ≤40 chars for base + 4 for suffix = 44.
+        swf_instance_id = f"{session_id}:swf"
         child_result = yield ctx.call_child_workflow(
             "session_workflow",
             input={
@@ -2175,7 +2186,7 @@ class OpenShellDurableAgent(DurableAgent):
                 ],
                 "autoTerminateAfterEndTurn": True,
             },
-            instance_id=session_id,
+            instance_id=swf_instance_id,
         )
         # session_workflow returns a dict with content/success/sessionId/turn.
         # Pass it through verbatim — the SDK serializes this as the CallAgent
