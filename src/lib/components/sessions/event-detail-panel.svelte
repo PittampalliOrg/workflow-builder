@@ -2,6 +2,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
+	import JsonView from './json-view.svelte';
 	import { Check, Clock, Copy, X } from 'lucide-svelte';
 
 	interface Props {
@@ -121,9 +122,7 @@
 	<div class="flex-1 overflow-y-auto px-4 py-3">
 		{#if debug}
 			<div class="text-[10px] font-mono text-muted-foreground mb-2">{event.type}</div>
-			<pre class="overflow-x-auto rounded bg-muted/30 p-3 text-[11px] leading-relaxed"><code
-					>{JSON.stringify(event.data, null, 2)}</code
-				></pre>
+			<JsonView value={event.data} />
 		{:else if kind === 'user' || kind === 'agent'}
 			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Content</div>
 			<div class="prose prose-sm dark:prose-invert mt-2 max-w-none whitespace-pre-wrap">
@@ -136,13 +135,11 @@
 			</div>
 		{:else if kind === 'tool'}
 			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Input</div>
-			<pre class="mt-2 overflow-x-auto rounded bg-muted/30 p-3 text-[11px] leading-relaxed"><code
-					>{JSON.stringify(toolInput, null, 2)}</code
-				></pre>
+			<div class="mt-2">
+				<JsonView value={toolInput} />
+			</div>
 		{:else}
-			<pre class="overflow-x-auto rounded bg-muted/30 p-3 text-[11px] leading-relaxed"><code
-					>{JSON.stringify(event.data, null, 2)}</code
-				></pre>
+			<JsonView value={event.data} />
 		{/if}
 	</div>
 </div>

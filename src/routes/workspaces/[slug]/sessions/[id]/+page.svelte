@@ -44,16 +44,26 @@
 		Bot,
 		Activity,
 		Check,
+		ChevronDown,
+		ChevronUp,
+		Cloud,
 		Clock,
 		Code2,
 		Container,
+		Download,
 		ExternalLink,
+		FileText,
+		Filter,
 		Layers,
 		Loader2,
 		MessagesSquare,
+		MoreVertical,
+		PanelRight,
 		Save,
+		Search,
 		Send,
 		Settings,
+		Sparkles,
 		Square,
 		Terminal,
 		User,
@@ -80,13 +90,46 @@
 	// and raw status events. Debug: show every event verbatim.
 	let viewMode = $state<'transcript' | 'debug'>('transcript');
 	const displayEvents = $derived.by(() => {
-		if (viewMode === 'debug') return events;
-		return events.filter((e) => {
-			if (e.type === 'agent.thinking') return false;
-			if (e.type.startsWith('session.status_') && e.type !== 'session.status_terminated')
-				return false;
-			return true;
-		});
+		let list = events;
+		if (viewMode !== 'debug') {
+			list = list.filter((e) => {
+				if (e.type === 'agent.thinking') return false;
+				if (e.type.startsWith('session.status_') && e.type !== 'session.status_terminated')
+					return false;
+				return true;
+			});
+		}
+		if (visibleKinds.size > 0) {
+			list = list.filter((e) => visibleKinds.has(e.type));
+		}
+		if (searchText.trim()) {
+			const q = searchText.trim().toLowerCase();
+			list = list.filter((e) => {
+				if (e.type.toLowerCase().includes(q)) return true;
+				const d = e.data as Record<string, unknown>;
+				const content = (d.content as Array<{ text?: string }>) ?? [];
+				const text = content
+					.map((c) => (typeof c?.text === 'string' ? c.text : ''))
+					.join(' ')
+					.toLowerCase();
+				return text.includes(q);
+			});
+		}
+		return list;
+	});
+	// Every event type seen in this session, for the "All events" filter
+	// dropdown. Order matches first-seen order so the menu stays stable
+	// across turns.
+	const eventTypeSet = $derived.by(() => {
+		const seen: string[] = [];
+		const set = new Set<string>();
+		for (const e of events) {
+			if (!set.has(e.type)) {
+				set.add(e.type);
+				seen.push(e.type);
+			}
+		}
+		return seen;
 	});
 	let isConnected = $state(false);
 	let isConsolidating = $state(false);
@@ -113,6 +156,12 @@
 	// the right-side detail panel. When null, we auto-select the newest
 	// event so the panel is never empty once events start flowing.
 	let selectedEventId = $state<string | null>(null);
+	let rightRailOpen = $state(true);
+	// CMA's "All events" filter is a multi-select — pick which event types
+	// to show. Default: all distinct kinds present in the stream.
+	let visibleKinds = $state<Set<string>>(new Set());
+	let eventFilterOpen = $state(false);
+	let searchText = $state('');
 	const sessionStartMs = $derived.by(() => {
 		if (!session?.createdAt) return null;
 		return new Date(session.createdAt).getTime();
@@ -123,6 +172,100 @@
 		const explicit = list.find((e) => String(e.id) === selectedEventId);
 		return explicit ?? list[list.length - 1];
 	});
+	// Session duration — from createdAt to the most recent event (or now if
+	// still streaming). Used for the CMA-shape metadata pill.
+	const sessionDurationMs = $derived.by(() => {
+		if (!sessionStartMs) return null;
+		if (events.length === 0) return null;
+		const last = events[events.length - 1];
+		const endTs = last ? new Date(last.createdAt).getTime() : Date.now();
+		return endTs - sessionStartMs;
+	});
+	// Total token budget across the whole session. Reads session.usage
+	// (the authoritative sum the server writes) when present, otherwise
+	// aggregates agent events client-side as a best-effort.
+	const totalTokens = $derived.by(() => {
+		const u = session?.usage as
+			| { input_tokens?: number; output_tokens?: number }
+			| undefined;
+		if (u) {
+			return {
+				input: u.input_tokens ?? 0,
+				output: u.output_tokens ?? 0
+			};
+		}
+		let input = 0;
+		let output = 0;
+		for (const e of events) {
+			const d = e.data as { usage?: { input_tokens?: number; output_tokens?: number } };
+			if (d?.usage) {
+				input += d.usage.input_tokens ?? 0;
+				output += d.usage.output_tokens ?? 0;
+			}
+		}
+		return { input, output };
+	});
+
+	function formatSessionDuration(ms: number | null): string {
+		if (ms === null || ms <= 0) return '—';
+		if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+		const mins = Math.floor(ms / 60_000);
+		const secs = Math.floor((ms % 60_000) / 1000);
+		if (mins < 60) return `${mins}m ${secs.toString().padStart(2, '0')}s`;
+		const hours = Math.floor(mins / 60);
+		return `${hours}h ${(mins % 60).toString().padStart(2, '0')}m`;
+	}
+	function fmtTokensCompact(n: number): string {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+		return String(n);
+	}
+	function formatCreatedAt(iso: string | null | undefined): string {
+		if (!iso) return '';
+		const diff = Date.now() - new Date(iso).getTime();
+		if (diff < 60_000) return 'just now';
+		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+		return new Date(iso).toLocaleDateString();
+	}
+
+	async function copyAllEvents() {
+		const payload = displayEvents.map((e) => ({
+			id: e.id,
+			type: e.type,
+			timestamp: e.createdAt,
+			data: e.data
+		}));
+		try {
+			await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+		} catch {
+			/* clipboard blocked */
+		}
+	}
+	function downloadEvents() {
+		const payload = displayEvents.map((e) => ({
+			id: e.id,
+			sequence: e.sequence,
+			type: e.type,
+			timestamp: e.createdAt,
+			data: e.data
+		}));
+		const jsonl = payload.map((o) => JSON.stringify(o)).join('\n');
+		const blob = new Blob([jsonl], { type: 'application/jsonl' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `${sessionId}.events.jsonl`;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+	function toggleKindFilter(type: string) {
+		const next = new Set(visibleKinds);
+		if (next.has(type)) next.delete(type);
+		else next.add(type);
+		visibleKinds = next;
+	}
 	// Auto-follow newest while streaming: if the user hasn't pinned a
 	// selection, roll the selected pointer forward as new events arrive.
 	$effect(() => {
@@ -457,7 +600,8 @@
 </script>
 
 <div class="flex flex-col h-screen">
-	<div class="border-b bg-muted/30 px-4 py-2 flex items-center gap-1 text-xs text-muted-foreground">
+	<!-- Breadcrumb strip: sessions → id (copy) + prev/next nav arrows. -->
+	<div class="border-b bg-muted/30 px-4 py-1.5 flex items-center gap-2 text-xs text-muted-foreground">
 		<a href="/workspaces/{slug}/sessions" class="hover:text-foreground">Sessions</a>
 		<span class="text-muted-foreground/60">/</span>
 		{#if session}
@@ -465,101 +609,139 @@
 		{:else}
 			<span>Loading…</span>
 		{/if}
-	</div>
-	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
-		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
-			<ArrowLeft class="size-4" />
-		</Button>
-		<div class="flex items-center gap-2 flex-1 min-w-0">
-			<div class="size-8 rounded bg-primary/10 flex items-center justify-center">
-				<MessagesSquare class="size-4 text-primary" />
-			</div>
-			<div class="flex-1 min-w-0">
-				{#if editingTitle}
-					<div class="flex items-center gap-2">
-						<Input bind:value={titleDraft} placeholder="Session title" />
-						<Button size="sm" onclick={saveTitle}>
-							<Save class="size-3" /> Save
-						</Button>
-						<Button size="sm" variant="ghost" onclick={() => (editingTitle = false)}>
-							<X class="size-3" />
-						</Button>
-					</div>
-				{:else}
-					<button
-						type="button"
-						class="text-left w-full"
-						onclick={() => {
-							editingTitle = true;
-							titleDraft = session?.title ?? '';
-						}}
-					>
-						<div class="font-semibold text-base truncate">
-							{session?.title ?? 'Untitled session'}
-						</div>
-						<div class="text-xs text-muted-foreground">
-							{session?.agentId ?? '…'} · v{session?.agentVersion ?? '—'} ·
-							<span class="capitalize">{session?.status ?? 'loading'}</span>
-						</div>
-					</button>
-				{/if}
-			</div>
+		<div class="ml-2 flex items-center gap-0.5">
+			<Button variant="ghost" size="icon" class="size-6" title="Previous session (older)" disabled>
+				<ChevronUp class="size-3.5" />
+			</Button>
+			<Button variant="ghost" size="icon" class="size-6" title="Next session (newer)" disabled>
+				<ChevronDown class="size-3.5" />
+			</Button>
 		</div>
-		<Badge variant={isConnected ? 'secondary' : 'outline'} class="text-[10px]">
-			{isConsolidating ? 'catching up…' : isConnected ? 'streaming' : 'connecting…'}
-		</Badge>
-		<DropdownMenu.Root>
-			<DropdownMenu.Trigger>
-				{#snippet child({ props })}
-					<Button variant="outline" size="sm" {...props} title="Session controls">
-						<Settings class="size-4" /> Controls
-					</Button>
-				{/snippet}
-			</DropdownMenu.Trigger>
-			<DropdownMenu.Content align="end" class="w-64">
-				<DropdownMenu.Label class="text-[10px] uppercase tracking-wide text-muted-foreground">
-					Model
-				</DropdownMenu.Label>
-				{#each MODEL_OPTIONS as m (m)}
-					<DropdownMenu.Item onSelect={() => setModel(m)} class="font-mono text-xs">
-						{m}
+		<div class="ml-auto flex items-center gap-2">
+			<Badge variant={isConnected ? 'secondary' : 'outline'} class="text-[10px]">
+				{isConsolidating ? 'catching up…' : isConnected ? 'streaming' : 'connecting…'}
+			</Badge>
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<Button variant="outline" size="sm" class="h-7" {...props} title="Session actions">
+							Actions <ChevronDown class="size-3" />
+						</Button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-52">
+					<DropdownMenu.Item
+						onSelect={() => interrupt()}
+						disabled={session?.status !== 'running'}
+					>
+						<Square class="size-3.5" /> Send interrupt
 					</DropdownMenu.Item>
-				{/each}
-				<DropdownMenu.Separator />
-				<div class="px-2 py-1.5 flex items-center justify-between">
-					<Label for="bypass-toggle" class="text-xs">Bypass permissions</Label>
-					<Switch
-						id="bypass-toggle"
-						checked={bypassEnabled}
-						onCheckedChange={(v) => {
-							bypassEnabled = v;
-							setPermissionMode(v ? 'bypass' : 'default');
-						}}
-					/>
-				</div>
-			</DropdownMenu.Content>
-		</DropdownMenu.Root>
-		<Popover>
-			<PopoverTrigger>
-				<Button variant="outline" size="sm" title="Show API snippet">
-					<Code2 class="size-4" /> Code
-				</Button>
-			</PopoverTrigger>
-			<PopoverContent class="w-[560px] p-3" align="end">
-				<div class="text-xs font-semibold mb-1">Post messages via the API</div>
-				<p class="text-xs text-muted-foreground mb-2">
-					Append a user message and stream response events via SSE.
-				</p>
-				<ApiSnippet
-					curl={`curl -X POST $WORKFLOW_BUILDER_URL/api/v1/sessions/${sessionId}/events \\\n  -H 'Authorization: Bearer $WB_API_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"type":"user.message","data":{"content":[{"type":"text","text":"Hello"}]}}'`}
-					python={`import requests\n\nrequests.post(\n    f"{WORKFLOW_BUILDER_URL}/api/v1/sessions/${sessionId}/events",\n    headers={"Authorization": f"Bearer {WB_API_KEY}"},\n    json={\n        "type": "user.message",\n        "data": {"content": [{"type": "text", "text": "Hello"}]},\n    },\n)\n\n# Stream events (SSE)\nwith requests.get(\n    f"{WORKFLOW_BUILDER_URL}/api/v1/sessions/${sessionId}/events/stream",\n    headers={"Authorization": f"Bearer {WB_API_KEY}"},\n    stream=True,\n) as s:\n    for line in s.iter_lines():\n        print(line)`}
-					typescript={`await fetch(\n  \`\${WORKFLOW_BUILDER_URL}/api/v1/sessions/${sessionId}/events\`,\n  {\n    method: 'POST',\n    headers: {\n      Authorization: \`Bearer \${WB_API_KEY}\`,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({\n      type: 'user.message',\n      data: { content: [{ type: 'text', text: 'Hello' }] }\n    })\n  }\n);\n\n// Stream events via EventSource\nconst es = new EventSource(\n  \`\${WORKFLOW_BUILDER_URL}/api/v1/sessions/${sessionId}/events/stream\`\n);\nes.onmessage = (e) => console.log(JSON.parse(e.data));`}
-				/>
-			</PopoverContent>
-		</Popover>
-		<Button variant="outline" size="sm" onclick={archive}>
-			<Archive class="size-4" /> Archive
-		</Button>
+					<DropdownMenu.Item onSelect={() => downloadEvents()}>
+						<Download class="size-3.5" /> Download events…
+					</DropdownMenu.Item>
+					<DropdownMenu.Separator />
+					<DropdownMenu.Label class="text-[10px] uppercase tracking-wide text-muted-foreground">
+						Model
+					</DropdownMenu.Label>
+					{#each MODEL_OPTIONS as m (m)}
+						<DropdownMenu.Item onSelect={() => setModel(m)} class="font-mono text-xs">
+							{m}
+						</DropdownMenu.Item>
+					{/each}
+					<DropdownMenu.Separator />
+					<div class="px-2 py-1.5 flex items-center justify-between text-xs">
+						<Label for="bypass-toggle" class="text-xs">Bypass permissions</Label>
+						<Switch
+							id="bypass-toggle"
+							checked={bypassEnabled}
+							onCheckedChange={(v) => {
+								bypassEnabled = v;
+								setPermissionMode(v ? 'bypass' : 'default');
+							}}
+						/>
+					</div>
+					<DropdownMenu.Separator />
+					<DropdownMenu.Item onSelect={archive} class="text-destructive focus:text-destructive">
+						<Archive class="size-3.5" /> Archive session
+					</DropdownMenu.Item>
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
+			<Button variant="outline" size="sm" class="h-7" disabled title="Coming soon">
+				<Sparkles class="size-3.5" /> Ask Claude
+			</Button>
+		</div>
+	</div>
+
+	<!-- Title + inline metadata pill row. Matches CMA: session id (big),
+	     status pill, agent · environment · duration · tokens · created. -->
+	<header class="border-b px-4 py-3 flex items-center gap-3 flex-wrap">
+		{#if editingTitle}
+			<Input bind:value={titleDraft} placeholder="Session title" class="max-w-md" />
+			<Button size="sm" onclick={saveTitle}>
+				<Save class="size-3" /> Save
+			</Button>
+			<Button size="sm" variant="ghost" onclick={() => (editingTitle = false)}>
+				<X class="size-3" />
+			</Button>
+		{:else}
+			<button
+				type="button"
+				class="text-left"
+				onclick={() => {
+					editingTitle = true;
+					titleDraft = session?.title ?? '';
+				}}
+				title="Click to rename"
+			>
+				<h1 class="font-semibold text-lg leading-tight tracking-tight truncate max-w-[520px]">
+					{session?.title ?? session?.id ?? 'Loading…'}
+				</h1>
+			</button>
+			{#if session}
+				<Badge variant="outline" class="text-[10px] capitalize bg-muted">
+					{session.status}
+				</Badge>
+				<span class="text-muted-foreground/60">·</span>
+				{#if session.agentId}
+					<a
+						href="/workspaces/{slug}/agents/{session.agentId}"
+						class="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-0.5 text-xs hover:bg-muted transition-colors"
+						title="Open agent"
+					>
+						<Bot class="size-3 text-muted-foreground" />
+						<span class="truncate max-w-[160px]">{session.agentId}</span>
+					</a>
+				{/if}
+				{#if session.environmentId}
+					<a
+						href="/workspaces/{slug}/environments/{session.environmentId}"
+						class="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-0.5 text-xs hover:bg-muted transition-colors"
+						title="Open environment"
+					>
+						<Cloud class="size-3 text-muted-foreground" />
+						<span class="truncate max-w-[160px]">{session.environmentId}</span>
+					</a>
+				{/if}
+				<span class="text-muted-foreground/60">·</span>
+				<span class="inline-flex items-center gap-1 text-xs text-muted-foreground">
+					<Clock class="size-3" />
+					{formatSessionDuration(sessionDurationMs)}
+				</span>
+				<span class="text-muted-foreground/60">·</span>
+				<span
+					class="inline-flex items-center gap-1 text-xs text-muted-foreground"
+					title="{totalTokens.input.toLocaleString()} input tokens / {totalTokens.output.toLocaleString()} output tokens"
+				>
+					<FileText class="size-3" />
+					{fmtTokensCompact(totalTokens.input)} / {fmtTokensCompact(totalTokens.output)}
+				</span>
+				<span class="text-muted-foreground/60">·</span>
+				<span class="inline-flex items-center gap-1 text-xs text-muted-foreground">
+					<Clock class="size-3" />
+					{formatCreatedAt(session.createdAt)}
+				</span>
+			{/if}
+		{/if}
 	</header>
 
 	{#if errorMessage || streamError}
@@ -587,7 +769,11 @@
 		</Alert>
 	{/if}
 
-	<div class="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] overflow-hidden">
+	<div
+		class="flex-1 grid grid-cols-1 overflow-hidden {rightRailOpen
+			? 'lg:grid-cols-[1fr_320px]'
+			: ''}"
+	>
 		<div class="flex flex-col overflow-hidden">
 			<div class="border-b px-4 py-2 flex items-center gap-2">
 				<div class="inline-flex rounded-md border bg-muted/30 p-0.5">
@@ -606,13 +792,87 @@
 						Debug
 					</button>
 				</div>
-				<span class="text-[10px] text-muted-foreground">
-					{#if viewMode === 'transcript'}
-						{displayEvents.length} message{displayEvents.length === 1 ? '' : 's'} · thinking + status events hidden
-					{:else}
-						{events.length} raw event{events.length === 1 ? '' : 's'}
-					{/if}
+
+				<DropdownMenu.Root bind:open={eventFilterOpen}>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button variant="ghost" size="sm" class="h-7 gap-1 text-xs" {...props}>
+								<Filter class="size-3" />
+								{visibleKinds.size === 0 ? 'All events' : `${visibleKinds.size} kinds`}
+								<ChevronDown class="size-3" />
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="start" class="w-64">
+						<DropdownMenu.Label class="text-[10px] uppercase tracking-wide text-muted-foreground">
+							Event types
+						</DropdownMenu.Label>
+						{#if eventTypeSet.length === 0}
+							<div class="px-2 py-1.5 text-xs text-muted-foreground">
+								No events yet.
+							</div>
+						{:else}
+							{#each eventTypeSet as t (t)}
+								<DropdownMenu.CheckboxItem
+									checked={visibleKinds.size === 0 || visibleKinds.has(t)}
+									onCheckedChange={() => toggleKindFilter(t)}
+								>
+									<code class="text-[11px]">{t}</code>
+								</DropdownMenu.CheckboxItem>
+							{/each}
+						{/if}
+						{#if visibleKinds.size > 0}
+							<DropdownMenu.Separator />
+							<DropdownMenu.Item onSelect={() => (visibleKinds = new Set())}>
+								Clear filter
+							</DropdownMenu.Item>
+						{/if}
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+
+				<div class="relative">
+					<Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+					<input
+						type="text"
+						placeholder="Search events"
+						bind:value={searchText}
+						class="h-7 w-40 rounded border bg-muted/30 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+					/>
+				</div>
+
+				<span class="ml-1 text-[10px] text-muted-foreground">
+					{displayEvents.length} of {events.length}
 				</span>
+
+				<div class="ml-auto flex items-center gap-1">
+					<Button
+						variant="ghost"
+						size="icon"
+						class="size-7"
+						title={rightRailOpen ? 'Hide side panel' : 'Show side panel'}
+						onclick={() => (rightRailOpen = !rightRailOpen)}
+					>
+						<PanelRight class="size-3.5 {rightRailOpen ? '' : 'opacity-50'}" />
+					</Button>
+					<Button
+						variant="ghost"
+						size="sm"
+						class="h-7 gap-1 text-xs"
+						onclick={copyAllEvents}
+						title="Copy all events to clipboard as JSON"
+					>
+						<FileText class="size-3" /> Copy all
+					</Button>
+					<Button
+						variant="ghost"
+						size="sm"
+						class="h-7 gap-1 text-xs"
+						onclick={downloadEvents}
+						title="Download events as .jsonl"
+					>
+						<Download class="size-3" /> Download
+					</Button>
+				</div>
 			</div>
 			<!-- CMA-shape timeline bar: one colored segment per event, width
 			     proportional to duration. Click a segment to select. -->
@@ -715,7 +975,11 @@
 			</div>
 		</div>
 
-		<aside class="border-l overflow-y-auto p-4 space-y-4 bg-muted/30">
+		<aside
+			class="{rightRailOpen
+				? 'block'
+				: 'hidden'} border-l overflow-y-auto p-4 space-y-4 bg-muted/30"
+		>
 			{#if session}
 				<Card>
 					<CardHeader class="pb-2">
