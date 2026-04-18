@@ -79,7 +79,15 @@
 	// Workspace-scoped items go under /workspaces/{activeSlug}/*. Org-scoped items
 	// stay flat. `activeSlug` is derived from the current workspace switcher value;
 	// `default` resolves server-side to the caller's current project.
-	const activeSlug = $derived(activeWorkspace?.slug ?? DEFAULT_WORKSPACE_SLUG);
+	// When the user is already on a workspace-scoped URL, preserve THAT
+	// slug in nav links instead of the JWT-current workspace — so clicking
+	// nav items doesn't bounce them back to their default workspace.
+	const urlSlug = $derived(
+		(page.params.slug as string | undefined) ?? null,
+	);
+	const activeSlug = $derived(
+		urlSlug ?? activeWorkspace?.slug ?? DEFAULT_WORKSPACE_SLUG,
+	);
 	const navGroups: NavGroup[] = $derived([
 		{
 			label: 'Build',
