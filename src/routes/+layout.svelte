@@ -25,13 +25,45 @@
 	let isAuthPage = $derived(page.url.pathname.startsWith('/auth'));
 	let routeKey = $derived(page.url.pathname);
 
-	// Initialize theme from server data (cookie) or system preference
+	// Initialize theme from server data (cookie) or system preference.
+	// Also install the X-Workspace fetch wrapper so workspace-scoped URL
+	// context follows API calls automatically — hooks.server.ts reads the
+	// header and overrides locals.session.projectId for the duration of
+	// the request. Matches CMA's pattern of scoping API reads by the
+	// active workspace even though the JWT itself is org-scoped.
 	onMount(() => {
 		const savedTheme = data.theme;
 		if (savedTheme === 'dark' || savedTheme === 'light') {
 			ui.setTheme(savedTheme);
 		} else {
 			ui.setTheme('system');
+		}
+
+		if (typeof window !== 'undefined' && !('__wsFetchPatched' in window)) {
+			const orig = window.fetch.bind(window);
+			window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+				const slug = page.params?.slug;
+				if (!slug) return orig(input, init);
+				// Only attach for same-origin requests; don't leak the
+				// header to third-party hosts.
+				const urlStr =
+					typeof input === 'string'
+						? input
+						: input instanceof URL
+							? input.href
+							: input.url;
+				const isSameOrigin =
+					urlStr.startsWith('/') ||
+					urlStr.startsWith(window.location.origin);
+				if (!isSameOrigin) return orig(input, init);
+				const headers = new Headers(init?.headers ?? {});
+				if (!headers.has('X-Workspace')) {
+					headers.set('X-Workspace', slug);
+				}
+				return orig(input, { ...(init ?? {}), headers });
+			}) as typeof window.fetch;
+			(window as Window & { __wsFetchPatched?: boolean }).__wsFetchPatched =
+				true;
 		}
 	});
 
