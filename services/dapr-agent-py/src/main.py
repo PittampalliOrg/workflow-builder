@@ -1132,6 +1132,20 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[compaction] inline pass failed (continuing): %s", exc, exc_info=True)
 
+        # Suppress tool_choice for Anthropic components. DaprChatClient 1.0.1
+        # coerces dict/unknown tool_choice values to the string "required" and
+        # forwards it unchanged to langchaingo, which passes the string to the
+        # Anthropic API. Anthropic rejects strings (it wants an object), so
+        # we null the field at this boundary for Anthropic components. Leaving
+        # it None means Dapr sends no tool_choice at all, which works.
+        saved_tool_choice = None
+        tool_choice_was_set = False
+        if component and "anthropic" in component.lower():
+            saved_tool_choice = self.execution.tool_choice
+            if saved_tool_choice is not None:
+                self.execution.tool_choice = None
+                tool_choice_was_set = True
+
         sess_id = self._session_id_by_instance.get(inst_id)
         try:
             publish_session_event(
@@ -1153,6 +1167,8 @@ class OpenShellDurableAgent(DurableAgent):
             raise
         finally:
             self._active_llm_instance_id = None
+            if tool_choice_was_set:
+                self.execution.tool_choice = saved_tool_choice
         # Extract content summary from the assistant message
         content = ""
         tool_calls = []
