@@ -27,6 +27,7 @@
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
+	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
 	import SessionTimelineBar from '$lib/components/sessions/session-timeline-bar.svelte';
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
@@ -121,10 +122,14 @@
 	// for a batch of 5 `agent.tool_use` events with the same tool name. We
 	// keep the full list in `displayEvents` for JSON export + debug view, but
 	// the left list uses this compacted shape in Transcript mode.
-	type BatchedEvent = { event: SessionEventEnvelope; count: number };
+	type BatchedEvent = {
+		event: SessionEventEnvelope;
+		children: SessionEventEnvelope[];
+		count: number;
+	};
 	const batchedEvents = $derived.by<BatchedEvent[]>(() => {
 		if (viewMode === 'debug') {
-			return displayEvents.map((event) => ({ event, count: 1 }));
+			return displayEvents.map((event) => ({ event, children: [event], count: 1 }));
 		}
 		const out: BatchedEvent[] = [];
 		for (const e of displayEvents) {
@@ -148,14 +153,23 @@
 				: '';
 			if (isTool && lastIsTool && name === lastName && name) {
 				last.count += 1;
-				// Use the most recent event as the representative so the detail
-				// panel shows the latest invocation's input.
+				last.children.push(e);
+				// Representative = latest invocation (its latest input wins in
+				// the detail panel header).
 				last.event = e;
 			} else {
-				out.push({ event: e, count: 1 });
+				out.push({ event: e, children: [e], count: 1 });
 			}
 		}
 		return out;
+	});
+	// Find the batch whose representative is the currently-selected event so
+	// the detail panel can render its children as a stack.
+	const selectedBatch = $derived.by(() => {
+		if (!selectedEvent) return null;
+		return (
+			batchedEvents.find((b) => String(b.event.id) === String(selectedEvent.id)) ?? null
+		);
 	});
 	// Every event type seen in this session, for the "All events" filter
 	// dropdown. Order matches first-seen order so the menu stays stable
@@ -1005,9 +1019,17 @@
 					{/if}
 				</div>
 
-				<!-- Right: expanded detail panel -->
+				<!-- Right: expanded detail panel. Batches of >1 child render as a
+				     collapsible stack so users can drill into each invocation. -->
 				<div class="overflow-hidden">
-					{#if selectedEvent}
+					{#if selectedBatch && selectedBatch.count > 1}
+						<BatchDetailPanel
+							children={selectedBatch.children}
+							{sessionStartMs}
+							debug={viewMode === 'debug'}
+							onClose={() => (selectedEventId = null)}
+						/>
+					{:else if selectedEvent}
 						{@const elapsed =
 							sessionStartMs !== null
 								? new Date(selectedEvent.createdAt).getTime() - sessionStartMs
