@@ -1,17 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { Alert, AlertDescription } from '$lib/components/ui/alert';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
 	import {
 		Dialog,
 		DialogContent,
@@ -30,8 +25,10 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-svelte';
-	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
+	import { Plus, ShieldCheck } from 'lucide-svelte';
+	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import ResourceTable from '$lib/components/console/resource-table.svelte';
+	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';
 	import type { VaultSummary } from '$lib/types/vaults';
 	import { page } from '$app/state';
 
@@ -40,7 +37,7 @@
 	let vaults = $state<VaultSummary[]>([]);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
-	let search = $state('');
+	let tab = $state<'all' | 'active'>('all');
 	let toDelete = $state<VaultSummary | null>(null);
 	let busyId = $state<string | null>(null);
 	let createDialogOpen = $state(false);
@@ -48,12 +45,10 @@
 	let newDescription = $state('');
 	let creating = $state(false);
 
-	let filtered = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		if (!q) return vaults;
+	const visible = $derived.by(() => {
 		return vaults.filter((v) => {
-			const hay = `${v.name} ${v.description ?? ''}`.toLowerCase();
-			return hay.includes(q);
+			if (tab === 'active' && v.isArchived) return false;
+			return true;
 		});
 	});
 
@@ -61,7 +56,7 @@
 		loading = true;
 		errorMessage = null;
 		try {
-			const res = await fetch('/api/v1/vaults');
+			const res = await fetch('/api/v1/vaults?includeArchived=true');
 			if (!res.ok) {
 				errorMessage = `Failed to load vaults (${res.status})`;
 				return;
@@ -117,91 +112,117 @@
 		}
 	}
 
+	function formatRelative(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		if (diff < 60_000) return 'just now';
+		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		return new Date(iso).toLocaleDateString();
+	}
+
 	onMount(load);
 </script>
 
-<ResourceListShell
-	title="Credential vaults"
-	subtitle="Store encrypted credentials for MCP servers. Vaults are attached to sessions by id; the proxy injects them at tool-call time so the sandbox never sees them."
-	itemLabel="vault"
-	itemCount={vaults.length}
-	onSearch={(v) => (search = v)}
-	primaryLabel="New vault"
-	onPrimary={() => (createDialogOpen = true)}
-	{loading}
-	{errorMessage}
-	isEmpty={vaults.length === 0 || filtered.length === 0}
-	{content}
-	{empty}
-/>
-
-{#snippet content()}
-	<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-		{#each filtered as vault (vault.id)}
-			<Card class="group relative hover:shadow-md transition-shadow cursor-pointer">
-				<div class="absolute right-3 top-3 hidden group-hover:flex gap-1 z-10">
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-7 text-destructive"
-						onclick={(e) => {
-							e.stopPropagation();
-							toDelete = vault;
-						}}
-						disabled={busyId === vault.id}
-						title="Archive"
-					>
-						<Trash2 class="size-3.5" />
-					</Button>
-				</div>
-				<button
-					type="button"
-					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/${slug}/vaults/${vault.id}`)}
-				>
-					<CardHeader>
-						<div class="flex items-center gap-2">
-							<div class="size-10 rounded bg-primary/10 flex items-center justify-center">
-								<KeyRound class="size-5 text-primary" />
-							</div>
-							<div class="flex-1 min-w-0">
-								<CardTitle class="truncate text-base">{vault.name}</CardTitle>
-								<CardDescription class="truncate text-xs">
-									{vault.credentialCount} credential{vault.credentialCount === 1 ? '' : 's'}
-								</CardDescription>
-							</div>
-						</div>
-					</CardHeader>
-					<CardContent>
-						<p class="text-xs text-muted-foreground line-clamp-2 min-h-[2.4em]">
-							{vault.description ?? 'No description'}
-						</p>
-					</CardContent>
-				</button>
-			</Card>
-		{/each}
-	</div>
-{/snippet}
-
-{#snippet empty()}
-	{#if vaults.length === 0}
-		<div class="flex flex-col items-center justify-center text-center py-16">
-			<div class="size-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-				<ShieldCheck class="size-10 text-primary" />
-			</div>
-			<h2 class="text-xl font-semibold mb-2">No vaults yet</h2>
-			<p class="text-muted-foreground mb-6 max-w-md">
-				Vaults hold OAuth tokens, bearer tokens, and other credentials your agents need for MCP
-				servers and custom tools. Credentials auto-refresh and never enter the sandbox.
+<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
+	<header class="flex items-start justify-between gap-4 flex-wrap">
+		<div>
+			<h1 class="text-2xl font-semibold">Credential vaults</h1>
+			<p class="text-sm text-muted-foreground mt-1">
+				Manage credential vaults that provide your agents with access to MCP servers and other
+				tools.
 			</p>
-			<Button onclick={() => (createDialogOpen = true)} size="lg">
-				<Plus class="size-4 mr-1" /> Create your first vault
-			</Button>
 		</div>
-	{:else}
-		<div class="text-center text-muted-foreground py-12">No vaults match your search.</div>
+		<Button onclick={() => (createDialogOpen = true)}>
+			<Plus class="size-4" /> New vault
+		</Button>
+	</header>
+
+	{#if errorMessage}
+		<Alert variant="destructive">
+			<AlertDescription>{errorMessage}</AlertDescription>
+		</Alert>
 	{/if}
-{/snippet}
+
+	<div class="inline-flex rounded-md border bg-muted/30 p-0.5">
+		<button
+			type="button"
+			class="px-3 py-1 text-sm rounded {tab === 'all' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+			onclick={() => (tab = 'all')}
+		>
+			All
+		</button>
+		<button
+			type="button"
+			class="px-3 py-1 text-sm rounded {tab === 'active' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+			onclick={() => (tab = 'active')}
+		>
+			Active
+		</button>
+	</div>
+
+	<ResourceTable
+		rows={visible}
+		{loading}
+		onRowClick={(v: VaultSummary) => goto(`/workspaces/${slug}/vaults/${v.id}`)}
+	>
+		{#snippet header()}
+			<th class="px-4 py-2.5 font-medium">ID</th>
+			<th class="px-4 py-2.5 font-medium">Name</th>
+			<th class="px-4 py-2.5 font-medium">Status</th>
+			<th class="px-4 py-2.5 font-medium">Credentials</th>
+			<th class="px-4 py-2.5 font-medium">Created</th>
+			<th class="px-4 py-2.5 font-medium w-10"></th>
+		{/snippet}
+		{#snippet row(vault: VaultSummary)}
+			<td class="px-4 py-2.5">
+				<CopyIdButton value={vault.id} />
+			</td>
+			<td class="px-4 py-2.5 truncate">{vault.name}</td>
+			<td class="px-4 py-2.5">
+				<Badge
+					variant={vault.isArchived ? 'outline' : 'default'}
+					class="text-[10px] bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
+				>
+					{vault.isArchived ? 'Archived' : 'Active'}
+				</Badge>
+			</td>
+			<td class="px-4 py-2.5 text-xs text-muted-foreground">
+				{vault.credentialCount}
+			</td>
+			<td class="px-4 py-2.5 text-xs text-muted-foreground">
+				{formatRelative(vault.createdAt)}
+			</td>
+			<td class="px-4 py-2.5" onclick={(e) => e.stopPropagation()}>
+				<RowMoreActions
+					actions={[
+						{
+							label: 'Archive',
+							onClick: () => {
+								toDelete = vault;
+							},
+							destructive: true,
+							disabled: busyId === vault.id
+						}
+					]}
+				/>
+			</td>
+		{/snippet}
+		{#snippet empty()}
+			<div class="flex flex-col items-center justify-center py-10 space-y-3">
+				<div class="size-14 rounded-full bg-primary/10 flex items-center justify-center">
+					<ShieldCheck class="size-7 text-primary" />
+				</div>
+				<h2 class="text-base font-semibold">No vaults yet</h2>
+				<p class="text-muted-foreground text-sm max-w-md text-center">
+					Create your first vault to get started.
+				</p>
+				<Button onclick={() => (createDialogOpen = true)}>
+					<Plus class="size-4" /> New vault
+				</Button>
+			</div>
+		{/snippet}
+	</ResourceTable>
+</div>
 
 <Dialog bind:open={createDialogOpen}>
 	<DialogContent>

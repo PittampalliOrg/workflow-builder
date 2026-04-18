@@ -1,15 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
+	import { Input } from '$lib/components/ui/input';
+	import { Switch } from '$lib/components/ui/switch';
+	import { Label } from '$lib/components/ui/label';
 	import {
 		AlertDialog,
 		AlertDialogAction,
@@ -20,8 +17,10 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Copy, FileUp, Plus, Sparkles, Trash2, Workflow } from 'lucide-svelte';
-	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
+	import { ArrowRight, Copy, FileUp, Plus, Sparkles, Trash2 } from 'lucide-svelte';
+	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import ResourceTable from '$lib/components/console/resource-table.svelte';
+	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';
 	import type { AgentSummary } from '$lib/types/agents';
 	import { page } from '$app/state';
 
@@ -30,24 +29,24 @@
 	let agents = $state<AgentSummary[]>([]);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
-	let search = $state('');
-	let selectedTag = $state<string | null>(null);
+	let includeArchived = $state(false);
+	let jumpId = $state('');
+	let created = $state<'all' | '7d' | '30d' | '90d'>('all');
 	let agentToDelete = $state<AgentSummary | null>(null);
 	let busyId = $state<string | null>(null);
 
-	let tags = $derived.by(() => {
-		const all = new Set<string>();
-		for (const a of agents) for (const t of a.tags) all.add(t);
-		return Array.from(all).sort();
-	});
-	let filtered = $derived.by(() => {
-		const q = search.trim().toLowerCase();
+	const filtered = $derived.by(() => {
+		const now = Date.now();
+		const cutoff =
+			created === '7d'
+				? now - 7 * 86_400_000
+				: created === '30d'
+					? now - 30 * 86_400_000
+					: created === '90d'
+						? now - 90 * 86_400_000
+						: 0;
 		return agents.filter((a) => {
-			if (q) {
-				const hay = `${a.name} ${a.slug} ${a.description ?? ''}`.toLowerCase();
-				if (!hay.includes(q)) return false;
-			}
-			if (selectedTag && !a.tags.includes(selectedTag)) return false;
+			if (cutoff && new Date(a.createdAt).getTime() < cutoff) return false;
 			return true;
 		});
 	});
@@ -56,7 +55,9 @@
 		loading = true;
 		errorMessage = null;
 		try {
-			const res = await fetch('/api/agents');
+			const params = new URLSearchParams();
+			if (includeArchived) params.set('includeArchived', 'true');
+			const res = await fetch(`/api/agents?${params}`);
 			if (!res.ok) {
 				errorMessage = `Failed to load agents (${res.status})`;
 				return;
@@ -128,179 +129,173 @@
 		}
 	}
 
-	onMount(load);
+	function jumpToAgent() {
+		const id = jumpId.trim();
+		if (!id) return;
+		goto(`/workspaces/${slug}/agents/${id}`);
+	}
+
+	function formatRelative(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		if (diff < 60_000) return 'just now';
+		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+		return new Date(iso).toLocaleDateString();
+	}
+
+	$effect(() => {
+		void includeArchived;
+		void load();
+	});
+
+	onMount(() => void load());
 </script>
 
-<ResourceListShell
-	title="Agents"
-	subtitle="Create and manage autonomous agents."
-	itemLabel="agent"
-	itemCount={agents.length}
-	onSearch={(v) => (search = v)}
-	searchPlaceholder="Search agents…"
-	primaryLabel="New Agent"
-	onPrimary={() => goto(`/workspaces/${slug}/agents/new`)}
-	{loading}
-	{errorMessage}
-	isEmpty={filtered.length === 0}
-	{content}
-	{empty}
-	{filters}
-	{actions}
-/>
-
-{#snippet actions()}
-	<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}>
-		<Sparkles class="size-4" /> From template
-	</Button>
-	<label class="relative cursor-pointer">
-		<input
-			type="file"
-			accept=".md,text/markdown,text/plain"
-			class="sr-only"
-			onchange={importMarkdownFile}
-		/>
-		<span
-			class="inline-flex items-center gap-1 h-9 px-3 rounded-md border bg-background text-sm hover:bg-muted transition-colors"
-		>
-			<FileUp class="size-4" /> Import .md
-		</span>
-	</label>
-{/snippet}
-
-{#snippet filters()}
-	{#if tags.length > 0}
-		<div class="flex flex-wrap gap-2 items-center text-sm">
-			<span class="text-muted-foreground">Tags:</span>
-			<button
-				type="button"
-				class="px-2 py-0.5 rounded border {selectedTag === null
-					? 'bg-primary text-primary-foreground'
-					: 'bg-muted hover:bg-muted/80'}"
-				onclick={() => (selectedTag = null)}>All</button
-			>
-			{#each tags as tag (tag)}
-				<button
-					type="button"
-					class="px-2 py-0.5 rounded border {selectedTag === tag
-						? 'bg-primary text-primary-foreground'
-						: 'bg-muted hover:bg-muted/80'}"
-					onclick={() => (selectedTag = selectedTag === tag ? null : tag)}>#{tag}</button
-				>
-			{/each}
+<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
+	<header class="flex items-start justify-between gap-4 flex-wrap">
+		<div>
+			<h1 class="text-2xl font-semibold">Agents</h1>
+			<p class="text-sm text-muted-foreground mt-1">Create and manage autonomous agents.</p>
 		</div>
-	{/if}
-{/snippet}
-
-{#snippet content()}
-	<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-		{#each filtered as agent (agent.id)}
-			<Card class="group relative hover:shadow-md transition-shadow cursor-pointer">
-				<div class="absolute right-3 top-3 hidden group-hover:flex gap-1 z-10">
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-7"
-						onclick={(e) => {
-							e.stopPropagation();
-							duplicate(agent);
-						}}
-						disabled={busyId === agent.id}
-						title="Duplicate"
-					>
-						<Copy class="size-3.5" />
-					</Button>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-7 text-destructive"
-						onclick={(e) => {
-							e.stopPropagation();
-							agentToDelete = agent;
-						}}
-						disabled={busyId === agent.id}
-						title="Archive"
-					>
-						<Trash2 class="size-3.5" />
-					</Button>
-				</div>
-				<button
-					type="button"
-					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/${slug}/agents/${agent.id}`)}
-				>
-					<CardHeader>
-						<div class="flex items-center gap-2">
-							<div
-								class="size-10 rounded bg-primary/10 flex items-center justify-center text-xl"
-							>
-								{agent.avatar ?? '🤖'}
-							</div>
-							<div class="flex-1 min-w-0">
-								<CardTitle class="truncate text-base">{agent.name}</CardTitle>
-								<CardDescription class="truncate text-xs">
-									{agent.slug}
-								</CardDescription>
-							</div>
-						</div>
-					</CardHeader>
-					<CardContent class="space-y-3">
-						<p class="text-xs text-muted-foreground line-clamp-2 min-h-[2.4em]">
-							{agent.description ?? 'No description'}
-						</p>
-						<div class="flex items-center gap-2 flex-wrap">
-							{#if agent.modelSpec}
-								<Badge variant="outline" class="font-mono text-[10px]">
-									{agent.modelSpec}
-								</Badge>
-							{/if}
-							<Badge variant="secondary" class="text-[10px]">
-								v{agent.currentVersion ?? '—'}
-							</Badge>
-							{#if agent.usedByCount !== undefined}
-								<Badge variant="outline" class="text-[10px]">
-									<Workflow class="size-3 mr-1" />
-									{agent.usedByCount} workflow{agent.usedByCount === 1 ? '' : 's'}
-								</Badge>
-							{/if}
-						</div>
-						{#if agent.tags.length > 0}
-							<div class="flex flex-wrap gap-1">
-								{#each agent.tags as tag (tag)}
-									<span class="text-[10px] px-1.5 py-0.5 rounded bg-muted">#{tag}</span>
-								{/each}
-							</div>
-						{/if}
-					</CardContent>
-				</button>
-			</Card>
-		{/each}
-	</div>
-{/snippet}
-
-{#snippet empty()}
-	{#if agents.length === 0}
-		<div class="flex flex-col items-center justify-center text-center py-16">
-			<div
-				class="size-20 rounded-full bg-primary/10 flex items-center justify-center text-4xl mb-4"
+		<div class="flex items-center gap-2">
+			<Button
+				variant="outline"
+				onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}
 			>
-				🤖
-			</div>
-			<h2 class="text-xl font-semibold mb-2">Create your first agent</h2>
-			<p class="text-muted-foreground mb-6 max-w-md">
-				Define an agent once — model, prompts, MCP servers, skills, hooks — and reference it from
-				any workflow. Start from a template or build from scratch.
-			</p>
-			<div class="flex gap-3">
-				<Button onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)} size="lg">
-					<Plus class="size-4 mr-1" /> Start from a template
+				<Sparkles class="size-4" /> From template
+			</Button>
+			<label class="relative cursor-pointer">
+				<input
+					type="file"
+					accept=".md,text/markdown,text/plain"
+					class="sr-only"
+					onchange={importMarkdownFile}
+				/>
+				<span
+					class="inline-flex items-center gap-1 h-9 px-3 rounded-md border bg-background text-sm hover:bg-muted transition-colors"
+				>
+					<FileUp class="size-4" /> Import .md
+				</span>
+			</label>
+			<Button onclick={() => goto(`/workspaces/${slug}/agents/new`)}>
+				<Plus class="size-4" /> New agent
+			</Button>
+		</div>
+	</header>
+
+	{#if errorMessage}
+		<Alert variant="destructive">
+			<AlertDescription>{errorMessage}</AlertDescription>
+		</Alert>
+	{/if}
+
+	<div class="flex items-center gap-3 flex-wrap">
+		<div class="relative flex-1 min-w-[260px] max-w-md">
+			<ArrowRight class="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+			<Input
+				class="pl-9 pr-3 h-9"
+				placeholder="Go to agent ID"
+				bind:value={jumpId}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') jumpToAgent();
+				}}
+			/>
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<span class="text-xs text-muted-foreground">Created</span>
+			<select
+				class="bg-transparent text-sm focus:outline-none"
+				bind:value={created}
+			>
+				<option value="all">All time</option>
+				<option value="7d">Past 7 days</option>
+				<option value="30d">Past 30 days</option>
+				<option value="90d">Past 90 days</option>
+			</select>
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<Label for="show-archived" class="text-sm">Show archived</Label>
+			<Switch id="show-archived" bind:checked={includeArchived} />
+		</div>
+	</div>
+
+	<ResourceTable
+		rows={filtered}
+		{loading}
+		onRowClick={(a: AgentSummary) => goto(`/workspaces/${slug}/agents/${a.id}`)}
+	>
+		{#snippet header()}
+			<th class="px-4 py-2.5 font-medium">ID</th>
+			<th class="px-4 py-2.5 font-medium">Name</th>
+			<th class="px-4 py-2.5 font-medium">Model</th>
+			<th class="px-4 py-2.5 font-medium">Status</th>
+			<th class="px-4 py-2.5 font-medium">Created</th>
+			<th class="px-4 py-2.5 font-medium w-10"></th>
+		{/snippet}
+		{#snippet row(a: AgentSummary)}
+			<td class="px-4 py-2.5">
+				<CopyIdButton value={a.id} />
+			</td>
+			<td class="px-4 py-2.5">
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-base">{a.avatar ?? '🤖'}</span>
+					<span class="truncate">{a.name}</span>
+				</div>
+			</td>
+			<td class="px-4 py-2.5">
+				{#if a.modelSpec}
+					<code class="text-[11px] text-muted-foreground">{a.modelSpec}</code>
+				{:else}
+					<span class="text-xs text-muted-foreground">—</span>
+				{/if}
+			</td>
+			<td class="px-4 py-2.5">
+				<Badge variant={a.isArchived ? 'outline' : 'default'} class="text-[10px] bg-green-600/15 text-green-700 dark:text-green-400 border-transparent">
+					{a.isArchived ? 'Archived' : 'Active'}
+				</Badge>
+			</td>
+			<td class="px-4 py-2.5 text-xs text-muted-foreground">
+				{formatRelative(a.createdAt)}
+			</td>
+			<td class="px-4 py-2.5" onclick={(e) => e.stopPropagation()}>
+				<RowMoreActions
+					actions={[
+						{
+							label: 'Duplicate',
+							onClick: () => duplicate(a),
+							disabled: busyId === a.id
+						},
+						{
+							label: 'Archive',
+							onClick: () => {
+								agentToDelete = a;
+							},
+							destructive: true,
+							separator: true,
+							disabled: busyId === a.id
+						}
+					]}
+				/>
+			</td>
+		{/snippet}
+		{#snippet empty()}
+			<div class="flex flex-col items-center justify-center py-10 space-y-3">
+				<div class="size-14 rounded-full bg-primary/10 flex items-center justify-center text-2xl">
+					🤖
+				</div>
+				<h2 class="text-base font-semibold">Create your first agent</h2>
+				<p class="text-muted-foreground text-sm max-w-md text-center">
+					Define an agent once — model, prompts, MCP servers, skills — and reference it from
+					any workflow.
+				</p>
+				<Button onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}>
+					<Plus class="size-4" /> Start from a template
 				</Button>
 			</div>
-		</div>
-	{:else}
-		<div class="text-center text-muted-foreground py-12">No agents match your filters.</div>
-	{/if}
-{/snippet}
+		{/snippet}
+	</ResourceTable>
+</div>
 
 <AlertDialog
 	open={agentToDelete !== null}

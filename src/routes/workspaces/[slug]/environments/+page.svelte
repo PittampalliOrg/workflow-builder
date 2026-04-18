@@ -1,15 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
 	import {
 		AlertDialog,
 		AlertDialogAction,
@@ -20,8 +14,10 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Copy, Plus, Sparkles, Trash2 } from 'lucide-svelte';
-	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
+	import { Plus } from 'lucide-svelte';
+	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import ResourceTable from '$lib/components/console/resource-table.svelte';
+	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';
 	import type { EnvironmentSummary } from '$lib/types/environments';
 	import { page } from '$app/state';
 
@@ -30,16 +26,14 @@
 	let environments = $state<EnvironmentSummary[]>([]);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
-	let search = $state('');
+	let tab = $state<'all' | 'active'>('all');
 	let toDelete = $state<EnvironmentSummary | null>(null);
 	let busyId = $state<string | null>(null);
 
-	let filtered = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		if (!q) return environments;
+	const visible = $derived.by(() => {
 		return environments.filter((e) => {
-			const hay = `${e.name} ${e.slug} ${e.description ?? ''}`.toLowerCase();
-			return hay.includes(q);
+			if (tab === 'active' && e.isArchived) return false;
+			return true;
 		});
 	});
 
@@ -47,7 +41,7 @@
 		loading = true;
 		errorMessage = null;
 		try {
-			const res = await fetch('/api/v1/environments');
+			const res = await fetch('/api/v1/environments?includeArchived=true');
 			if (!res.ok) {
 				errorMessage = `Failed to load environments (${res.status})`;
 				return;
@@ -95,130 +89,130 @@
 		}
 	}
 
+	function formatRelative(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		if (diff < 60_000) return 'just now';
+		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		return new Date(iso).toLocaleDateString();
+	}
+
 	onMount(load);
 </script>
 
-<ResourceListShell
-	title="Environments"
-	subtitle="Configuration template for containers, such as sessions or code execution."
-	itemLabel="environment"
-	itemCount={environments.length}
-	onSearch={(v) => (search = v)}
-	primaryLabel="Add environment"
-	onPrimary={() => goto(`/workspaces/${slug}/environments/new`)}
-	{loading}
-	{errorMessage}
-	isEmpty={environments.length === 0 || filtered.length === 0}
-	{content}
-	{empty}
-	{actions}
-/>
-
-{#snippet content()}
-	<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-		{#each filtered as env (env.id)}
-			<Card class="group relative hover:shadow-md transition-shadow cursor-pointer">
-				<div class="absolute right-3 top-3 hidden group-hover:flex gap-1 z-10">
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-7"
-						onclick={(e) => {
-							e.stopPropagation();
-							duplicate(env);
-						}}
-						disabled={busyId === env.id}
-						title="Duplicate"
-					>
-						<Copy class="size-3.5" />
-					</Button>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-7 text-destructive"
-						onclick={(e) => {
-							e.stopPropagation();
-							toDelete = env;
-						}}
-						disabled={busyId === env.id}
-						title="Archive"
-					>
-						<Trash2 class="size-3.5" />
-					</Button>
-				</div>
-				<button
-					type="button"
-					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/${slug}/environments/${env.id}`)}
-				>
-					<CardHeader>
-						<div class="flex items-center gap-2">
-							<div
-								class="size-10 rounded bg-primary/10 flex items-center justify-center text-xl"
-							>
-								{env.avatar ?? '🧱'}
-							</div>
-							<div class="flex-1 min-w-0">
-								<CardTitle class="truncate text-base">{env.name}</CardTitle>
-								<CardDescription class="truncate text-xs">
-									{env.slug}
-								</CardDescription>
-							</div>
-						</div>
-					</CardHeader>
-					<CardContent class="space-y-3">
-						<p class="text-xs text-muted-foreground line-clamp-2 min-h-[2.4em]">
-							{env.description ?? 'No description'}
-						</p>
-						<div class="flex items-center gap-2 flex-wrap">
-							{#if env.sandboxTemplate}
-								<Badge variant="outline" class="font-mono text-[10px]">
-									{env.sandboxTemplate}
-								</Badge>
-							{/if}
-							{#if env.networkingType}
-								<Badge variant="secondary" class="text-[10px]">
-									{env.networkingType}
-								</Badge>
-							{/if}
-							<Badge variant="outline" class="text-[10px]">
-								v{env.currentVersion ?? '—'}
-							</Badge>
-						</div>
-					</CardContent>
-				</button>
-			</Card>
-		{/each}
-	</div>
-{/snippet}
-
-{#snippet actions()}
-	<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/environments/new`)}>
-		<Sparkles class="size-4" /> From template
-	</Button>
-{/snippet}
-
-{#snippet empty()}
-	{#if environments.length === 0}
-		<div class="flex flex-col items-center justify-center text-center py-16">
-			<div
-				class="size-20 rounded-full bg-primary/10 flex items-center justify-center text-4xl mb-4"
-			>
-				🧱
-			</div>
-			<h2 class="text-xl font-semibold mb-2">Create your first environment</h2>
-			<p class="text-muted-foreground mb-6 max-w-md">
-				Environments bundle a sandbox template, networking policy, and package list. Agents
-				reference environments so the same config can drive many agents.
+<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
+	<header class="flex items-start justify-between gap-4 flex-wrap">
+		<div>
+			<h1 class="text-2xl font-semibold">Environments</h1>
+			<p class="text-sm text-muted-foreground mt-1">
+				Configuration template for containers, such as sessions or code execution.
 			</p>
-			<Button onclick={() => goto(`/workspaces/${slug}/environments/new`)} size="lg">
-				<Plus class="size-4 mr-1" /> Start from a template
-			</Button>
 		</div>
-	{:else}
-		<div class="text-center text-muted-foreground py-12">No environments match your search.</div>
+		<Button onclick={() => goto(`/workspaces/${slug}/environments/new`)}>
+			<Plus class="size-4" /> Add environment
+		</Button>
+	</header>
+
+	{#if errorMessage}
+		<Alert variant="destructive">
+			<AlertDescription>{errorMessage}</AlertDescription>
+		</Alert>
 	{/if}
-{/snippet}
+
+	<div class="inline-flex rounded-md border bg-muted/30 p-0.5">
+		<button
+			type="button"
+			class="px-3 py-1 text-sm rounded {tab === 'all' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+			onclick={() => (tab = 'all')}
+		>
+			All
+		</button>
+		<button
+			type="button"
+			class="px-3 py-1 text-sm rounded {tab === 'active' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+			onclick={() => (tab = 'active')}
+		>
+			Active
+		</button>
+	</div>
+
+	<ResourceTable
+		rows={visible}
+		{loading}
+		onRowClick={(e: EnvironmentSummary) => goto(`/workspaces/${slug}/environments/${e.id}`)}
+	>
+		{#snippet header()}
+			<th class="px-4 py-2.5 font-medium">ID</th>
+			<th class="px-4 py-2.5 font-medium">Name</th>
+			<th class="px-4 py-2.5 font-medium">Status</th>
+			<th class="px-4 py-2.5 font-medium">Type</th>
+			<th class="px-4 py-2.5 font-medium">Created</th>
+			<th class="px-4 py-2.5 font-medium w-10"></th>
+		{/snippet}
+		{#snippet row(env: EnvironmentSummary)}
+			<td class="px-4 py-2.5">
+				<CopyIdButton value={env.id} />
+			</td>
+			<td class="px-4 py-2.5">
+				<div class="flex items-center gap-2">
+					<span class="text-base">{env.avatar ?? '🧱'}</span>
+					<span class="truncate">{env.name}</span>
+				</div>
+			</td>
+			<td class="px-4 py-2.5">
+				<Badge
+					variant={env.isArchived ? 'outline' : 'default'}
+					class="text-[10px] bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
+				>
+					{env.isArchived ? 'Archived' : 'Active'}
+				</Badge>
+			</td>
+			<td class="px-4 py-2.5">
+				<Badge variant="outline" class="text-[10px] font-mono">
+					{env.sandboxTemplate ?? 'Cloud'}
+				</Badge>
+			</td>
+			<td class="px-4 py-2.5 text-xs text-muted-foreground">
+				{formatRelative(env.createdAt)}
+			</td>
+			<td class="px-4 py-2.5" onclick={(e) => e.stopPropagation()}>
+				<RowMoreActions
+					actions={[
+						{
+							label: 'Duplicate',
+							onClick: () => duplicate(env),
+							disabled: busyId === env.id
+						},
+						{
+							label: 'Archive',
+							onClick: () => {
+								toDelete = env;
+							},
+							destructive: true,
+							separator: true,
+							disabled: busyId === env.id
+						}
+					]}
+				/>
+			</td>
+		{/snippet}
+		{#snippet empty()}
+			<div class="flex flex-col items-center justify-center py-10 space-y-3">
+				<div class="size-14 rounded-full bg-primary/10 flex items-center justify-center text-2xl">
+					🧱
+				</div>
+				<h2 class="text-base font-semibold">No environments yet</h2>
+				<p class="text-muted-foreground text-sm max-w-md text-center">
+					Environments bundle a sandbox template, networking policy, and package list. Agents
+					reference environments so the same config can drive many agents.
+				</p>
+				<Button onclick={() => goto(`/workspaces/${slug}/environments/new`)}>
+					<Plus class="size-4" /> Add environment
+				</Button>
+			</div>
+		{/snippet}
+	</ResourceTable>
+</div>
 
 <AlertDialog open={toDelete !== null} onOpenChange={(open) => !open && (toDelete = null)}>
 	<AlertDialogContent>
