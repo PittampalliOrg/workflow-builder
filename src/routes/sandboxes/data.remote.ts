@@ -1,5 +1,5 @@
 import { query } from '$app/server';
-import { asc, eq, sql } from 'drizzle-orm';
+import { asc, eq, inArray, or } from 'drizzle-orm';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { normalizeSandboxResponse } from '$lib/utils/sandbox-parse';
 import { listAgentRuntimeSandboxes } from '$lib/server/agent-runtime-sandboxes';
@@ -34,10 +34,18 @@ async function resolveSandboxSessions(
 		.from(sessions)
 		.leftJoin(projects, eq(projects.id, sessions.projectId))
 		.where(
-			sql`(${sessions.workspaceSandboxName} IN ${names}
-				OR ${sessions.sandboxName} IN ${names})`,
+			or(
+				inArray(sessions.workspaceSandboxName, names),
+				inArray(sessions.sandboxName, names),
+			),
 		)
 		.orderBy(asc(sessions.updatedAt));
+	console.log(
+		'[sandbox-session-join] names=' +
+			JSON.stringify(names) +
+			' rows=' +
+			rows.length,
+	);
 
 	// Last write wins when a sandbox is reused — gives the most recent owner.
 	for (const r of rows) {
