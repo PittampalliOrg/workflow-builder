@@ -2185,10 +2185,20 @@ class OpenShellDurableAgent(DurableAgent):
             )
 
             try:
+                # Apply the same retry policy agent_workflow uses internally
+                # (WorkflowRetryPolicy(max_attempts=8, 4s→45s backoff) — see
+                # the DurableAgent instantiation below). Without this, an
+                # agent_workflow turn that exhausts its internal retries
+                # would terminate the session with a single session.error
+                # event. Matching policy lets session_workflow retry the
+                # whole turn on transient agent-side failures, consistent
+                # with Dapr-native durability semantics for workflow-driven
+                # runs (Deploy A of the CMA-alignment plan).
                 turn_result = yield ctx.call_child_workflow(
                     "agent_workflow",
                     input=child_input,
                     instance_id=f"{session_id}:turn-{turn_counter}",
+                    retry_policy=self._retry_policy,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
