@@ -15,6 +15,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		name,
 		description,
 		createdBy: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
 	});
 	if (!agent) return error(404, "Agent not found");
 	return json({ agent }, { status: 201 });

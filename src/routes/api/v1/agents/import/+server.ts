@@ -74,6 +74,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		environmentVersion: environmentVersion ?? null,
 		defaultVaultIds: vaultIds,
 		createdBy: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
 	});
 
 	return json({ agent, warnings }, { status: 201 });

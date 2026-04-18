@@ -12,6 +12,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const environment = await duplicateEnvironment(params.id, {
 		name,
 		createdBy: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
 	});
 	if (!environment) return error(404, "Environment not found");
 	return json({ environment }, { status: 201 });

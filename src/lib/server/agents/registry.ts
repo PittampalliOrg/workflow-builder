@@ -79,6 +79,11 @@ export type ListAgentsFilter = {
 	q?: string;
 	tag?: string;
 	includeArchived?: boolean;
+	/** Scope to a specific workspace/project. When set, only agents
+	 * stamped with this projectId are returned. Rows created before the
+	 * project_scope migration got backfilled to the oldest project, so
+	 * legacy data isn't hidden from single-workspace users. */
+	projectId?: string;
 };
 
 export async function listAgents(
@@ -87,6 +92,7 @@ export async function listAgents(
 	const database = requireDb();
 	const conditions = [] as ReturnType<typeof eq>[];
 	if (!filter.includeArchived) conditions.push(eq(agents.isArchived, false));
+	if (filter.projectId) conditions.push(eq(agents.projectId, filter.projectId));
 
 	const rows = await database
 		.select()
@@ -185,6 +191,7 @@ export type CreateAgentInput = {
 	sourceTemplateSlug?: string | null;
 	sourceTemplateVersion?: number | null;
 	createdBy?: string | null;
+	projectId?: string | null;
 	config: AgentConfig;
 };
 
@@ -221,6 +228,7 @@ export async function createAgent(
 				sourceTemplateSlug: input.sourceTemplateSlug ?? null,
 				sourceTemplateVersion: input.sourceTemplateVersion ?? null,
 				createdBy: input.createdBy ?? null,
+				projectId: input.projectId ?? null,
 			})
 			.returning();
 
@@ -378,6 +386,7 @@ export async function duplicateAgent(
 		name?: string;
 		description?: string | null;
 		createdBy?: string | null;
+		projectId?: string | null;
 	} = {},
 ): Promise<AgentDetail | null> {
 	const existing = await getAgent(id);
@@ -394,6 +403,7 @@ export async function duplicateAgent(
 		sourceTemplateSlug: existing.sourceTemplateSlug ?? undefined,
 		sourceTemplateVersion: existing.sourceTemplateVersion ?? undefined,
 		createdBy: opts.createdBy ?? null,
+		projectId: opts.projectId ?? null,
 		config: existing.config,
 	});
 }

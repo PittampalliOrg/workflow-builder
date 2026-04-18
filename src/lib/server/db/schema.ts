@@ -2123,6 +2123,9 @@ export const environments = pgTable(
 		createdBy: text("created_by").references(() => users.id, {
 			onDelete: "set null",
 		}),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
 		isArchived: boolean("is_archived").notNull().default(false),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -2130,6 +2133,7 @@ export const environments = pgTable(
 	(table) => ({
 		slugUnique: unique("uq_environments_slug").on(table.slug),
 		archivedIdx: index("idx_environments_archived").on(table.isArchived),
+		projectIdx: index("idx_environments_project").on(table.projectId),
 	}),
 );
 
@@ -2203,6 +2207,9 @@ export const agents = pgTable(
 		createdBy: text("created_by").references(() => users.id, {
 			onDelete: "set null",
 		}),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
 		isArchived: boolean("is_archived").notNull().default(false),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -2211,6 +2218,7 @@ export const agents = pgTable(
 		slugUnique: unique("uq_agents_slug").on(table.slug),
 		archivedIdx: index("idx_agents_archived").on(table.isArchived),
 		environmentIdx: index("idx_agents_environment").on(table.environmentId),
+		projectIdx: index("idx_agents_project").on(table.projectId),
 	}),
 );
 

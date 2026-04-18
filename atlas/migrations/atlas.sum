@@ -1,4 +1,4 @@
-h1:bn4wl/3qgVQm4MujGWHVDdQG+Qn6M6TIVXyOKhqwcGw=
+h1:KLGbsuKs3fbvvMXpKs0iRSffAEoEhfZ3TulJSaXy5Ok=
 20260210204758_baseline.sql h1:i0a3DxoyU0gEdXV1ecWYZSJ3pr9ZPS7PdMchjQiQNTA=
 20260212120000_add_workflow_ai_messages.sql h1:MKA9YzLVEh8qXhjuZesrAndI3UvekoOSzTUKLLY07Ms=
 20260217110505_add_resource_library_resources.sql h1:nDoJ/rUulmB6koBi6xI9zEwo3x0Q3JZ56na21UhMFDM=
@@ -28,3 +28,4 @@ h1:bn4wl/3qgVQm4MujGWHVDdQG+Qn6M6TIVXyOKhqwcGw=
 20260421000000_sessions_workspace_sandbox.sql h1:eLmlNyFUBmDmmDpKn+Rz/yj/75MmkT0NcnUMTYjaWMQ=
 20260421010000_files_sha1.sql h1:gpa2eZj4mBhEL6RlekmKhmrwJEQMN3c36bDIlimFTP4=
 20260421020000_workspace_sessions_optional_exec.sql h1:mMH4GBVIFXAvgzM7ebgA7NpKV6/RHiByb7U/8qiD7ao=
+20260422000000_agents_environments_project_scope.sql h1:43xFByWTU1gmqHtbRv2cmPlkCgl7aGOuFA98nVVtbDY=

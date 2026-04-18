@@ -15,7 +15,19 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const q = url.searchParams.get("q") ?? undefined;
 	const tag = url.searchParams.get("tag") ?? undefined;
 	const includeArchived = url.searchParams.get("includeArchived") === "true";
-	const environments = await listEnvironments({ q, tag, includeArchived });
+	const projectIdParam = url.searchParams.get("projectId");
+	const projectId =
+		projectIdParam === "null"
+			? undefined
+			: projectIdParam
+				? projectIdParam
+				: (locals.session.projectId ?? undefined);
+	const environments = await listEnvironments({
+		q,
+		tag,
+		includeArchived,
+		projectId,
+	});
 	return json({ environments });
 };
 
@@ -41,6 +53,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			? body.tags.map((t) => String(t))
 			: undefined,
 		createdBy: locals.session.userId,
+		projectId:
+			typeof body.projectId === "string"
+				? body.projectId
+				: (locals.session.projectId ?? null),
 		config,
 	};
 

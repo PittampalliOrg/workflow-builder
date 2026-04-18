@@ -76,6 +76,7 @@ export type ListEnvironmentsFilter = {
 	q?: string;
 	tag?: string;
 	includeArchived?: boolean;
+	projectId?: string;
 };
 
 export async function listEnvironments(
@@ -84,6 +85,7 @@ export async function listEnvironments(
 	const database = requireDb();
 	const conditions: ReturnType<typeof eq>[] = [];
 	if (!filter.includeArchived) conditions.push(eq(environments.isArchived, false));
+	if (filter.projectId) conditions.push(eq(environments.projectId, filter.projectId));
 
 	const rows = await database
 		.select()
@@ -186,6 +188,7 @@ export type CreateEnvironmentInput = {
 	avatar?: string | null;
 	tags?: string[];
 	createdBy?: string | null;
+	projectId?: string | null;
 	config: EnvironmentConfig;
 };
 
@@ -207,6 +210,7 @@ export async function createEnvironment(
 				avatar: input.avatar ?? null,
 				tags: input.tags ?? [],
 				createdBy: input.createdBy ?? null,
+				projectId: input.projectId ?? null,
 			})
 			.returning();
 		const [version] = await tx
@@ -330,7 +334,11 @@ export async function archiveEnvironment(id: string): Promise<boolean> {
 
 export async function duplicateEnvironment(
 	id: string,
-	opts: { name?: string; createdBy?: string | null } = {},
+	opts: {
+		name?: string;
+		createdBy?: string | null;
+		projectId?: string | null;
+	} = {},
 ): Promise<EnvironmentDetail | null> {
 	const existing = await getEnvironment(id);
 	if (!existing) return null;
@@ -341,6 +349,7 @@ export async function duplicateEnvironment(
 		avatar: existing.avatar,
 		tags: existing.tags,
 		createdBy: opts.createdBy ?? null,
+		projectId: opts.projectId ?? null,
 		config: existing.config,
 	});
 }
