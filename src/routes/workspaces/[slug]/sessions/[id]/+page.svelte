@@ -181,19 +181,12 @@
 		const endTs = last ? new Date(last.createdAt).getTime() : Date.now();
 		return endTs - sessionStartMs;
 	});
-	// Total token budget across the whole session. Reads session.usage
-	// (the authoritative sum the server writes) when present, otherwise
-	// aggregates agent events client-side as a best-effort.
+	// Total token budget across the whole session. Starts from session.usage
+	// when the server has aggregated it, but falls back to summing per-event
+	// usage whenever the server value is zero (common pattern for still-
+	// running sessions where session_workflow hasn't flushed the running
+	// total yet).
 	const totalTokens = $derived.by(() => {
-		const u = session?.usage as
-			| { input_tokens?: number; output_tokens?: number }
-			| undefined;
-		if (u) {
-			return {
-				input: u.input_tokens ?? 0,
-				output: u.output_tokens ?? 0
-			};
-		}
 		let input = 0;
 		let output = 0;
 		for (const e of events) {
@@ -202,6 +195,16 @@
 				input += d.usage.input_tokens ?? 0;
 				output += d.usage.output_tokens ?? 0;
 			}
+		}
+		const u = session?.usage as
+			| { input_tokens?: number; output_tokens?: number }
+			| undefined;
+		if (u && ((u.input_tokens ?? 0) > 0 || (u.output_tokens ?? 0) > 0)) {
+			// Server-aggregated numbers win when present.
+			return {
+				input: u.input_tokens ?? input,
+				output: u.output_tokens ?? output
+			};
 		}
 		return { input, output };
 	});
@@ -300,6 +303,31 @@
 		}
 	}
 
+	// Prev/next session navigation. We cache the caller's session-id list
+	// (most recent 50) once on load so the chevrons iterate without a
+	// round-trip per click. Updated whenever the session itself changes.
+	let neighborSessions = $state<string[]>([]);
+	const prevSessionId = $derived.by(() => {
+		const idx = neighborSessions.indexOf(sessionId);
+		if (idx < 0) return null;
+		return neighborSessions[idx + 1] ?? null;
+	});
+	const nextSessionId = $derived.by(() => {
+		const idx = neighborSessions.indexOf(sessionId);
+		if (idx <= 0) return null;
+		return neighborSessions[idx - 1] ?? null;
+	});
+	async function loadNeighborSessions() {
+		try {
+			const res = await fetch('/api/v1/sessions?limit=50');
+			if (!res.ok) return;
+			const data = (await res.json()) as { sessions: Array<{ id: string }> };
+			neighborSessions = (data.sessions ?? []).map((s) => s.id);
+		} catch {
+			/* non-fatal */
+		}
+	}
+
 	async function checkSandboxLiveness() {
 		if (!session) {
 			sandboxAlive = 'unknown';
@@ -364,6 +392,7 @@
 			await initialLoad();
 			void checkExpiringCreds();
 			void checkSandboxLiveness();
+			void loadNeighborSessions();
 		})();
 		stream = createSessionStream(sessionId);
 		unsub = stream.subscribe((state) => {
@@ -610,10 +639,24 @@
 			<span>Loading…</span>
 		{/if}
 		<div class="ml-2 flex items-center gap-0.5">
-			<Button variant="ghost" size="icon" class="size-6" title="Previous session (older)" disabled>
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-6"
+				title="Newer session"
+				disabled={!nextSessionId}
+				onclick={() => nextSessionId && goto(`/workspaces/${slug}/sessions/${nextSessionId}`)}
+			>
 				<ChevronUp class="size-3.5" />
 			</Button>
-			<Button variant="ghost" size="icon" class="size-6" title="Next session (newer)" disabled>
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-6"
+				title="Older session"
+				disabled={!prevSessionId}
+				onclick={() => prevSessionId && goto(`/workspaces/${slug}/sessions/${prevSessionId}`)}
+			>
 				<ChevronDown class="size-3.5" />
 			</Button>
 		</div>
