@@ -10,6 +10,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > - `docs/CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
 > - `docs/openshell-capabilities.md` — OpenShell sandbox capabilities
 > - `docs/cma-parity.md` — CMA (Claude Managed Agents) console parity: workspaces, members, sessions, custom skills, limits, observability
+> - `docs/callable-agents.md` — `CallAgent` peer-delegation tool (Approach B: native `WorkflowContextInjectedTool` on `dapr-agents>=1.0.1`; peer answer returns as `tool_result` in the same LLM turn)
 
 ## Architecture
 
@@ -290,4 +291,4 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 ---
 
 **Last Updated**: 2026-04-18
-**Status**: Production-ready SvelteKit app with CMA (Claude Managed Agents) console parity — workspace-scoped sessions / agents / environments / vaults / skills / files, real members management, live limits dashboard, session fork + observability deep-links, OpenTelemetry observability (OTEL Collector + ClickHouse + Phoenix), OpenShell sandbox execution, `dapr-agent-py` durable agent runs (native Dapr child workflow dispatch + `WorkflowRetryPolicy` callee-side retry) with Claude Code-compatible hooks + plugins subsystem, MCP-enabled agent workflows, and function-router narrowed to sync credential broker + Knative proxy.
+**Status**: Production-ready SvelteKit app with CMA (Claude Managed Agents) console parity — workspace-scoped sessions / agents / environments / vaults / skills / files, real members management, live limits dashboard, session fork + observability deep-links, OpenTelemetry observability (OTEL Collector + ClickHouse + Phoenix), OpenShell sandbox execution, `dapr-agent-py` (dapr-agents 1.0.1) durable agent runs (native Dapr child workflow dispatch + `WorkflowRetryPolicy` callee-side retry) with Claude Code-compatible hooks + plugins subsystem, MCP-enabled agent workflows, `CallAgent` peer delegation via SDK-native `WorkflowContextInjectedTool` (peer answer returns as `tool_result` in the same LLM turn, full Dapr durability), and function-router narrowed to sync credential broker + Knative proxy.
