@@ -1181,6 +1181,14 @@ def _run_native_durable_agent_child_workflow(
             "vaultIds": child_input.get("vaultIds") or [],
             "initialMessage": run_prompt or prompt,
             "title": f"Workflow {tc.workflow_id} · {task_name}",
+            # Sandbox plumbing — forwarded to ensure-for-workflow which in turn
+            # embeds these in childInput so session_workflow can forward them
+            # to agent_workflow. Required for any durable/run that uses
+            # OpenShell tools (the runtime refuses to bind a sandbox without
+            # a non-empty sandboxName or a workspaceRef starting with "ws_").
+            "workspaceRef": workspace_ref,
+            "sandboxName": flattened_args.get("sandboxName"),
+            "cwd": cwd,
             "_otel": tc.otel_ctx,
         }
         bridge_result = yield ctx.call_activity(

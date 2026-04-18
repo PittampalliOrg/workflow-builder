@@ -84,6 +84,11 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "vaultIds": input_data.get("vaultIds") or [],
             "initialMessage": input_data.get("initialMessage"),
             "title": input_data.get("title"),
+            # Sandbox plumbing forwarded to the BFF's buildChildInput so
+            # session_workflow → agent_workflow can bind the OpenShell sandbox.
+            "workspaceRef": input_data.get("workspaceRef"),
+            "sandboxName": input_data.get("sandboxName"),
+            "cwd": input_data.get("cwd"),
         }
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"

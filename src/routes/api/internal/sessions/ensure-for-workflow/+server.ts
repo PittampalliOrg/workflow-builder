@@ -85,6 +85,21 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof body.title === "string" && body.title.trim()
 			? body.title.trim()
 			: `Workflow run: ${nodeId || workflowId}`;
+	// Sandbox plumbing — the orchestrator resolves these from the durable/run
+	// task spec (workspace_profile output) and forwards them here so
+	// session_workflow → agent_workflow can set up runtime.sandbox_name /
+	// workspace_ref / cwd. Without this, dapr-agent-py's runtime check fails
+	// with "OpenShell sandboxName is required" the first time a tool runs.
+	const bridgeWorkspaceRef =
+		typeof body.workspaceRef === "string" && body.workspaceRef.trim()
+			? body.workspaceRef.trim()
+			: null;
+	const bridgeSandboxName =
+		typeof body.sandboxName === "string" && body.sandboxName.trim()
+			? body.sandboxName.trim()
+			: null;
+	const bridgeCwd =
+		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
 
 	if (!sessionId) return error(400, "sessionId is required");
 	if (!workflowId || !nodeId) return error(400, "workflowId and nodeId are required");
@@ -114,6 +129,9 @@ export const POST: RequestHandler = async ({ request }) => {
 				vaultIds: Array.isArray(existing.vaultIds) ? existing.vaultIds : vaultIds,
 				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
 				initialMessage,
+				workspaceRef: bridgeWorkspaceRef,
+				sandboxName: bridgeSandboxName ?? existing.sandboxName,
+				cwd: bridgeCwd,
 			}),
 			reused: true,
 		});
@@ -131,10 +149,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// auto-id generation by inserting directly, then reuse createSession's
 	// defaults via a follow-up lookup. To keep a single code path, we do a
 	// direct insert here since createSession doesn't accept a pre-computed id.
-	const incomingSandboxName =
-		typeof body.sandboxName === "string" && body.sandboxName.trim()
-			? body.sandboxName.trim()
-			: "dapr-agent-py";
+	const incomingSandboxName = bridgeSandboxName ?? "dapr-agent-py";
 	await db.insert(sessions).values({
 		id: sessionId,
 		title,
@@ -169,6 +184,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			vaultIds,
 			workflowExecutionId,
 			initialMessage,
+			workspaceRef: bridgeWorkspaceRef,
+			sandboxName: incomingSandboxName,
+			cwd: bridgeCwd,
 		}),
 		reused: false,
 	});
@@ -181,6 +199,9 @@ function buildChildInput(params: {
 	vaultIds: string[];
 	workflowExecutionId: string | null;
 	initialMessage: string | null;
+	workspaceRef?: string | null;
+	sandboxName?: string | null;
+	cwd?: string | null;
 }): Record<string, unknown> {
 	return {
 		sessionId: params.sessionId,
@@ -189,6 +210,13 @@ function buildChildInput(params: {
 		vaultIds: params.vaultIds,
 		dbExecutionId: params.workflowExecutionId,
 		autoTerminateAfterEndTurn: true,
+		// Sandbox plumbing — consumed by dapr-agent-py's
+		// _freeze_session_child_input so agent_workflow can set
+		// runtime.sandbox_name / workspace_ref / cwd. Without these,
+		// tools fail with "OpenShell sandboxName is required".
+		workspaceRef: params.workspaceRef ?? null,
+		sandboxName: params.sandboxName ?? null,
+		cwd: params.cwd ?? null,
 		initialEvents: params.initialMessage
 			? [
 					{
