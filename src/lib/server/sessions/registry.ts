@@ -117,6 +117,14 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
 }
 
 export type CreateSessionInput = {
+	/**
+	 * Optional deterministic session id. When supplied, the insert uses it
+	 * verbatim instead of generating a fresh id — letting callers key on
+	 * their own identifier (e.g. parent workflow + tool-call-id). Used by
+	 * peer-agent spawns from CallAgent to stay replay-idempotent. Must be
+	 * ≤64 chars to fit Dapr's workflow instance-id cap if reused there.
+	 */
+	id?: string;
 	agentId: string;
 	agentVersion?: number;
 	environmentId?: string;
@@ -167,23 +175,22 @@ export async function createSession(
 			? resolvedAgent.defaultVaultIds
 			: []);
 
-	const [row] = await database
-		.insert(sessions)
-		.values({
-			title: input.title ?? null,
-			status: "rescheduling",
-			agentId: resolvedAgent.id,
-			agentVersion: resolvedAgent.version,
-			environmentId: environmentId ?? null,
-			environmentVersion,
-			vaultIds,
-			userId: input.userId,
-			projectId: input.projectId ?? null,
-			sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
-			workflowExecutionId: input.workflowExecutionId ?? null,
-			parentExecutionId: input.parentExecutionId ?? null,
-		})
-		.returning();
+	const values = {
+		...(input.id ? { id: input.id } : {}),
+		title: input.title ?? null,
+		status: "rescheduling" as const,
+		agentId: resolvedAgent.id,
+		agentVersion: resolvedAgent.version,
+		environmentId: environmentId ?? null,
+		environmentVersion,
+		vaultIds,
+		userId: input.userId,
+		projectId: input.projectId ?? null,
+		sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
+		workflowExecutionId: input.workflowExecutionId ?? null,
+		parentExecutionId: input.parentExecutionId ?? null,
+	};
+	const [row] = await database.insert(sessions).values(values).returning();
 	return rowToDetail(row);
 }
 
