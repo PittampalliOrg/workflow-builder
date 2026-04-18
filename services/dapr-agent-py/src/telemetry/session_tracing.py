@@ -25,13 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import beta
-from .attributes import (
-    build_genai_interaction_attrs,
-    build_genai_llm_end_attrs,
-    build_genai_llm_start_attrs,
-    build_genai_tool_attrs,
-    get_telemetry_attributes,
-)
+from .attributes import get_telemetry_attributes
 from .providers import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -113,7 +107,6 @@ def start_interaction_span(user_prompt: str) -> Any:
             "user_prompt": prompt_to_log,
             "user_prompt_length": len(user_prompt),
             "interaction.sequence": _interaction_sequence,
-            **build_genai_interaction_attrs(),
         },
     )
 
@@ -176,7 +169,6 @@ def start_llm_request_span(
             "model": model,
             "llm_request.context": "interaction" if interaction_handle else "standalone",
             "speed": "fast" if fast_mode else "normal",
-            **build_genai_llm_start_attrs(model),
         },
     )
     if query_source:
@@ -223,6 +215,7 @@ def end_llm_request_span(
     has_tool_call: bool | None = None,
     ttft_ms: float | None = None,
     model_output: str | None = None,
+    thinking_output: str | None = None,
 ) -> None:
     """End a span returned by `start_llm_request_span`. Span is required."""
     if span is None:
@@ -256,17 +249,7 @@ def end_llm_request_span(
     beta.add_llm_response_attributes(
         end_attrs,
         model_output=model_output,
-    )
-
-    end_attrs.update(
-        build_genai_llm_end_attrs(
-            model=handle.attributes.get("model"),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_creation_tokens=cache_creation_tokens,
-            error=error,
-        )
+        thinking_output=thinking_output,
     )
 
     try:
@@ -296,10 +279,10 @@ def start_tool_span(
     from opentelemetry import trace as otel_trace
 
     interaction_handle = _interaction_ctx.get()
-    extra = {"tool_name": tool_name, **(tool_attributes or {})}
-    tool_call_id = extra.get("tool_call_id") or extra.get("tool.call_id")
-    extra.update(build_genai_tool_attrs(tool_name, tool_call_id=tool_call_id))
-    attrs = _build_attrs("tool", extra)
+    attrs = _build_attrs(
+        "tool",
+        {"tool_name": tool_name, **(tool_attributes or {})},
+    )
     parent_ctx = (
         otel_trace.set_span_in_context(interaction_handle.span)
         if interaction_handle is not None
@@ -447,7 +430,6 @@ def end_tool_execution_span(
         end_attrs["success"] = success
     if error is not None:
         end_attrs["error"] = error
-        end_attrs["error.type"] = error
     try:
         for k, v in end_attrs.items():
             span.set_attribute(k, v)

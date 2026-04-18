@@ -19,8 +19,8 @@
 
 	const preview = $derived.by(() => {
 		const d = event.data as Record<string, unknown>;
-		// User / Agent: first chunk of text content.
-		if (kind === 'user' || kind === 'agent') {
+		// User / Agent / Thinking: first chunk of text content.
+		if (kind === 'user' || kind === 'agent' || kind === 'thinking') {
 			const content = (d.content as Array<{ text?: string }>) ?? [];
 			const joined = content
 				.map((c) => (typeof c?.text === 'string' ? c.text : ''))

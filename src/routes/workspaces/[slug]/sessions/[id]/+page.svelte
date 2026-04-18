@@ -115,13 +115,14 @@
 				agentRegistry = null;
 			});
 	});
-	// Transcript: user-facing messages + tool-use (compacted); hides raw
-	// status events. Debug: show every event verbatim.
+	// Transcript: user-facing messages + tool-use (compacted); hides thinking
+	// and raw status events. Debug: show every event verbatim.
 	let viewMode = $state<'transcript' | 'debug'>('transcript');
 	const displayEvents = $derived.by(() => {
 		let list = events;
 		if (viewMode !== 'debug') {
 			list = list.filter((e) => {
+				if (e.type === 'agent.thinking') return false;
 				if (e.type.startsWith('session.status_') && e.type !== 'session.status_terminated')
 					return false;
 				return true;
@@ -649,6 +650,12 @@
 					kind: 'agent' as const,
 					text: content.map((c) => c.text ?? '').join('')
 				};
+			}
+			case 'agent.thinking': {
+				// CMA shape: data.content = [{type:"text", text:"..."}]
+				const content = (data as { content?: Array<{ text?: string }> }).content ?? [];
+				const text = content.map((c) => c.text ?? '').join('').trim();
+				return { kind: 'thinking' as const, text };
 			}
 			case 'agent.tool_use':
 			case 'agent.mcp_tool_use':

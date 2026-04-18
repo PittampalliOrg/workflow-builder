@@ -264,6 +264,7 @@ def add_llm_response_attributes(
     end_attrs: dict[str, Any],
     *,
     model_output: str | None = None,
+    thinking_output: str | None = None,
 ) -> None:
     """Equivalent of TS `addBetaLLMResponseAttributes`."""
     if not is_beta_tracing_enabled():
@@ -275,6 +276,15 @@ def add_llm_response_attributes(
         if truncated:
             end_attrs["response.model_output_truncated"] = True
             end_attrs["response.model_output_original_length"] = len(model_output)
+
+    if thinking_output is not None:
+        content, truncated = truncate_content(thinking_output)
+        end_attrs["response.thinking_output"] = content
+        if truncated:
+            end_attrs["response.thinking_output_truncated"] = True
+            end_attrs["response.thinking_output_original_length"] = len(
+                thinking_output
+            )
 
 
 def add_tool_input_attributes(span: Any, tool_name: str, tool_input: str) -> None:

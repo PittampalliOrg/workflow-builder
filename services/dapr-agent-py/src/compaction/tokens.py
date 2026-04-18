@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 AUTOCOMPACT_BUFFER_TOKENS = 13_000
 
-# Model -> context window (tokens). Keep in sync with the Dapr
-# conversation-component model metadata and main.py:_COMPONENT_MODEL_MAP.
+# Model -> context window (tokens). Keep in sync with
+# anthropic_adapter.COMPONENT_MODEL_MAP.
 CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-4-6": 200_000,
     "claude-sonnet-4-6-20250414": 200_000,

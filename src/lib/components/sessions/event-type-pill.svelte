@@ -2,6 +2,7 @@
 	export type EventKind =
 		| 'user'
 		| 'agent'
+		| 'thinking'
 		| 'tool'
 		| 'result'
 		| 'model'
@@ -13,11 +14,12 @@
 	 * Map the persisted `session_events.type` (e.g. `agent.message`,
 	 * `agent.tool_use`, `span.model_request_start`) to a short event kind we
 	 * colour-code in the UI. Matches CMA's left-panel pill taxonomy —
-	 * distinct hues for User / Agent / Tool / Result / Model.
+	 * distinct hues for User / Agent / Thinking / Tool / Result / Model.
 	 */
 	export function eventKindFor(type: string): EventKind {
 		if (type === 'user.message' || type === 'user.interrupt') return 'user';
 		if (type === 'agent.message') return 'agent';
+		if (type === 'agent.thinking') return 'thinking';
 		if (
 			type === 'agent.tool_use' ||
 			type === 'agent.mcp_tool_use' ||
@@ -53,6 +55,7 @@
 	const CLASSES: Record<EventKind, string> = {
 		user: 'bg-rose-500/25 text-rose-200 border-rose-400/20',
 		agent: 'bg-teal-500/25 text-teal-200 border-teal-400/20',
+		thinking: 'bg-emerald-500/25 text-emerald-200 border-emerald-400/20',
 		tool: 'bg-muted text-muted-foreground border-border',
 		result: 'bg-amber-500/20 text-amber-200 border-amber-400/20',
 		model: 'bg-slate-500/25 text-slate-200 border-slate-400/20',
@@ -64,6 +67,7 @@
 	const LABELS: Record<EventKind, string> = {
 		user: 'User',
 		agent: 'Agent',
+		thinking: 'Thinking',
 		tool: 'Tool',
 		result: 'Result',
 		model: 'Model',
