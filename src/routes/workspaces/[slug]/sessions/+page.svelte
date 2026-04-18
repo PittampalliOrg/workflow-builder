@@ -24,7 +24,9 @@
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 	let statusFilter = $state<StatusFilter>('all');
-	let agentFilter = $state<string>('all');
+	// Pre-fill from `?agentId=<id>` so deep-links from the agent detail page
+	// land on a pre-filtered list.
+	let agentFilter = $state<string>(page.url.searchParams.get('agentId') ?? 'all');
 	let created = $state<'all' | '7d' | '30d' | '90d'>('all');
 	let includeArchived = $state(false);
 	let jumpId = $state('');

@@ -41,6 +41,7 @@
 		PopoverTrigger
 	} from '$lib/components/ui/popover';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
+	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
 	import AgentMcpPicker from '$lib/components/agents/agent-mcp-picker.svelte';
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
@@ -260,6 +261,22 @@
 />
 
 <div class="flex flex-col h-screen">
+	<div class="border-b bg-muted/30 px-4 py-2 flex items-center gap-1 text-xs text-muted-foreground">
+		<a href="/workspaces/{slug}/agents" class="hover:text-foreground">Agents</a>
+		<span class="text-muted-foreground/60">/</span>
+		<span class="text-foreground">{agent?.name ?? 'Loading…'}</span>
+		{#if agent}
+			<span class="mx-2 text-muted-foreground/60">·</span>
+			<CopyIdButton value={agent.id} />
+			<span class="mx-2 text-muted-foreground/60">·</span>
+			<a
+				class="hover:text-foreground"
+				href="/workspaces/{slug}/sessions?agentId={agent.id}"
+			>
+				Sessions →
+			</a>
+		{/if}
+	</div>
 	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
 		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/agents`)}>
 			<ArrowLeft class="size-4" />
