@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import type {
 	AgentSkillRegistryEntry,
 	AgentSkillStatus
@@ -69,6 +69,7 @@ function registryUrl(source: string, skillName: string, explicit?: string): stri
 function rowToSkill(row: typeof agentSkillRegistry.$inferSelect): AgentSkillRegistryEntry {
 	const installSource = normalizeInstallSource(row.installSource || row.sourceRepo);
 	const skillName = String(row.skillName || row.name || row.slug).trim();
+	const isCustom = row.sourceType === 'custom';
 	return {
 		id: row.id,
 		registryId: row.id,
@@ -77,25 +78,204 @@ function rowToSkill(row: typeof agentSkillRegistry.$inferSelect): AgentSkillRegi
 		description: row.description || undefined,
 		whenToUse: row.whenToUse || row.description || undefined,
 		allowedTools: Array.isArray(row.allowedTools) ? row.allowedTools : [],
-		sourceType: 'registry',
+		sourceType: isCustom ? 'custom' : 'registry',
 		sourceRepo: installSource,
 		sourceRef: row.sourceRef || undefined,
 		skillPath: row.skillPath || undefined,
 		version: row.version,
-		registryUrl: registryUrl(installSource, skillName, row.registryUrl || undefined),
-		installSource,
+		registryUrl: registryUrl(installSource || 'custom', skillName, row.registryUrl || undefined),
+		installSource: installSource || 'custom',
 		skillName,
 		installAgent: row.installAgent || DEFAULT_INSTALL_AGENT,
-		status: row.status
+		status: row.status,
+		projectId: row.projectId ?? null,
+		createdByUserId: row.createdByUserId ?? null,
+		prompt: row.prompt ?? undefined
 	};
 }
 
-export async function listAgentSkills(options: { includeDisabled?: boolean } = {}) {
+export async function listAgentSkills(options: {
+	includeDisabled?: boolean;
+	projectId?: string | null;
+} = {}) {
 	if (!db) return [];
-	const rows = await db.select().from(agentSkillRegistry).orderBy(asc(agentSkillRegistry.name));
+	// Global curated rows (project_id IS NULL) are visible to everyone; custom
+	// rows are only visible inside their owning workspace.
+	const scopeFilter = options.projectId
+		? or(
+				isNull(agentSkillRegistry.projectId),
+				eq(agentSkillRegistry.projectId, options.projectId),
+			)
+		: isNull(agentSkillRegistry.projectId);
+
+	const rows = await db
+		.select()
+		.from(agentSkillRegistry)
+		.where(scopeFilter)
+		.orderBy(asc(agentSkillRegistry.name));
 	return rows
 		.map(rowToSkill)
 		.filter((skill) => options.includeDisabled || skill.status === 'ENABLED');
+}
+
+export type CustomSkillCreateInput = {
+	name: string;
+	slug?: string;
+	description?: string | null;
+	whenToUse?: string | null;
+	prompt: string;
+	allowedTools?: string[];
+	argumentHint?: string | null;
+	model?: string | null;
+	projectId: string;
+	userId: string;
+};
+
+export async function createCustomSkill(input: CustomSkillCreateInput) {
+	if (!db) throw new Error('Database is not configured');
+	const name = input.name.trim();
+	if (!name) throw new Error('name is required');
+	const prompt = input.prompt.trim();
+	if (!prompt) throw new Error('prompt is required');
+
+	const slug = slugify(input.slug || name);
+	if (!slug) throw new Error('name must produce a valid slug');
+
+	const allowedTools = Array.isArray(input.allowedTools)
+		? input.allowedTools.filter((t) => typeof t === 'string' && t.trim().length > 0)
+		: [];
+
+	const contentHash = `custom:${slug}:${Date.now()}`;
+
+	const [row] = await db
+		.insert(agentSkillRegistry)
+		.values({
+			slug,
+			name,
+			description: input.description?.trim() || null,
+			whenToUse: input.whenToUse?.trim() || null,
+			prompt,
+			allowedTools,
+			arguments: [],
+			argumentHint: input.argumentHint?.trim() || null,
+			model: input.model?.trim() || null,
+			userInvocable: true,
+			disableModelInvocation: false,
+			sourceType: 'custom',
+			sourceRepo: null,
+			sourceRef: null,
+			skillPath: null,
+			registryUrl: null,
+			installSource: null,
+			skillName: name,
+			installAgent: DEFAULT_INSTALL_AGENT,
+			version: '1',
+			contentHash,
+			license: null,
+			compatibility: null,
+			packageManifest: null,
+			status: 'ENABLED',
+			createdByUserId: input.userId,
+			projectId: input.projectId
+		})
+		.returning();
+
+	return rowToSkill(row);
+}
+
+export type CustomSkillUpdateInput = {
+	name?: string;
+	description?: string | null;
+	whenToUse?: string | null;
+	prompt?: string;
+	allowedTools?: string[];
+	argumentHint?: string | null;
+	model?: string | null;
+	status?: AgentSkillStatus;
+};
+
+function bumpVersion(current: string | null | undefined): string {
+	const n = Number.parseInt((current ?? '1').trim(), 10);
+	if (Number.isFinite(n) && n > 0) return String(n + 1);
+	// Non-numeric (e.g. "latest") — fall back to "1" so numeric bumps apply next.
+	return '2';
+}
+
+export async function updateCustomSkill(
+	id: string,
+	input: CustomSkillUpdateInput,
+	opts: { userId: string; projectId: string },
+) {
+	if (!db) throw new Error('Database is not configured');
+	const [existing] = await db
+		.select()
+		.from(agentSkillRegistry)
+		.where(eq(agentSkillRegistry.id, id))
+		.limit(1);
+	if (!existing) throw new Error('Skill not found');
+	if (existing.sourceType !== 'custom') {
+		throw new Error('Only custom skills are editable by users');
+	}
+	if (existing.projectId !== opts.projectId) {
+		throw new Error('Skill belongs to another workspace');
+	}
+
+	const patch: Partial<typeof agentSkillRegistry.$inferInsert> & {
+		updatedAt: Date;
+	} = { updatedAt: new Date() };
+	let promptChanged = false;
+
+	if (input.name !== undefined) patch.name = input.name.trim();
+	if (input.description !== undefined) patch.description = input.description?.trim() || null;
+	if (input.whenToUse !== undefined) patch.whenToUse = input.whenToUse?.trim() || null;
+	if (typeof input.prompt === 'string' && input.prompt.trim() !== existing.prompt) {
+		patch.prompt = input.prompt.trim();
+		promptChanged = true;
+	}
+	if (input.allowedTools !== undefined) {
+		patch.allowedTools = input.allowedTools.filter(
+			(t) => typeof t === 'string' && t.trim().length > 0,
+		);
+	}
+	if (input.argumentHint !== undefined)
+		patch.argumentHint = input.argumentHint?.trim() || null;
+	if (input.model !== undefined) patch.model = input.model?.trim() || null;
+	if (input.status && ['ENABLED', 'DISABLED', 'DRAFT'].includes(input.status)) {
+		patch.status = input.status;
+	}
+
+	if (promptChanged) {
+		patch.version = bumpVersion(existing.version);
+		patch.contentHash = `custom:${existing.slug}:${Date.now()}`;
+	}
+
+	const [row] = await db
+		.update(agentSkillRegistry)
+		.set(patch)
+		.where(eq(agentSkillRegistry.id, id))
+		.returning();
+	return rowToSkill(row);
+}
+
+export async function deleteCustomSkill(
+	id: string,
+	opts: { projectId: string },
+): Promise<boolean> {
+	if (!db) throw new Error('Database is not configured');
+	const [existing] = await db
+		.select()
+		.from(agentSkillRegistry)
+		.where(eq(agentSkillRegistry.id, id))
+		.limit(1);
+	if (!existing) return false;
+	if (existing.sourceType !== 'custom' || existing.projectId !== opts.projectId) {
+		throw new Error('Custom skill not found in this workspace');
+	}
+	const [row] = await db
+		.delete(agentSkillRegistry)
+		.where(eq(agentSkillRegistry.id, id))
+		.returning({ id: agentSkillRegistry.id });
+	return Boolean(row);
 }
 
 export async function upsertAgentSkillMetadata(input: SkillMetadataInput, userId: string) {

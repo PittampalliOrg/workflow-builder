@@ -1699,7 +1699,8 @@ export const agentProfileTemplateExamples = pgTable(
 export type AgentSkillRegistryStatus = "ENABLED" | "DISABLED" | "DRAFT";
 export type AgentSkillRegistrySourceType =
 	| "registry"
-	| "profile";
+	| "profile"
+	| "custom";
 
 export const agentSkillRegistry = pgTable(
 	"agent_skill_registry",
@@ -1739,6 +1740,9 @@ export const agentSkillRegistry = pgTable(
 			.default("ENABLED")
 			.$type<AgentSkillRegistryStatus>(),
 		createdByUserId: text("created_by_user_id").references(() => users.id),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -1748,6 +1752,7 @@ export const agentSkillRegistry = pgTable(
 			table.sourceRepo,
 			table.skillPath,
 		),
+		projectIdx: index("idx_agent_skill_registry_project").on(table.projectId),
 	}),
 );
 

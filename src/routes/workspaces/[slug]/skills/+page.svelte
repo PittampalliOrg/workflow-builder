@@ -5,7 +5,8 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { CircleAlert } from 'lucide-svelte';
+	import { Textarea } from '$lib/components/ui/textarea';
+	import { CircleAlert, Plus, Pencil, Trash2, Sparkles } from 'lucide-svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 
@@ -30,6 +31,9 @@
 		version?: string;
 		status?: string;
 		installs?: string;
+		prompt?: string;
+		projectId?: string | null;
+		createdByUserId?: string | null;
 	};
 
 	let skills = $state<AgentSkill[]>([]);
@@ -43,7 +47,17 @@
 	let expanded = $state<string | null>(null);
 	let searchQuery = $state('web design');
 
+	// Custom skill create/edit state.
+	let customDialogOpen = $state(false);
+	let customEditingId = $state<string | null>(null);
+	let customName = $state('');
+	let customDescription = $state('');
+	let customPrompt = $state('');
+	let customAllowedToolsText = $state('');
+	let customSaving = $state(false);
+
 	let enabledCount = $derived(skills.filter((skill) => skill.status !== 'DISABLED').length);
+	let customCount = $derived(skills.filter((skill) => skill.sourceType === 'custom').length);
 
 	function skillId(skill: AgentSkill): string {
 		return skill.registryId || skill.id || skill.slug || skill.name;
@@ -139,6 +153,72 @@
 		await loadSkills();
 	}
 
+	function openCreateCustom() {
+		customEditingId = null;
+		customName = '';
+		customDescription = '';
+		customPrompt = '';
+		customAllowedToolsText = '';
+		customDialogOpen = true;
+	}
+
+	function openEditCustom(skill: AgentSkill) {
+		customEditingId = skill.id ?? null;
+		customName = skill.name;
+		customDescription = skill.description ?? '';
+		customPrompt = skill.prompt ?? '';
+		customAllowedToolsText = (skill.allowedTools ?? []).join(', ');
+		customDialogOpen = true;
+	}
+
+	async function saveCustomSkill() {
+		if (!customName.trim() || !customPrompt.trim()) return;
+		customSaving = true;
+		errorMessage = null;
+		try {
+			const allowedTools = customAllowedToolsText
+				.split(',')
+				.map((t) => t.trim())
+				.filter(Boolean);
+			const body = {
+				name: customName.trim(),
+				description: customDescription.trim() || null,
+				prompt: customPrompt,
+				allowedTools
+			};
+			const url = customEditingId
+				? `/api/agent-skills/${encodeURIComponent(customEditingId)}`
+				: '/api/agent-skills';
+			const method = customEditingId ? 'PATCH' : 'POST';
+			const res = await fetch(url, {
+				method,
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+			if (!res.ok) {
+				errorMessage = (await res.text()).slice(0, 200) || `Save failed (${res.status})`;
+				return;
+			}
+			customDialogOpen = false;
+			await loadSkills();
+		} finally {
+			customSaving = false;
+		}
+	}
+
+	async function deleteCustomSkill(skill: AgentSkill) {
+		if (!skill.id) return;
+		if (!confirm(`Delete custom skill "${skill.name}"?`)) return;
+		const res = await fetch(`/api/agent-skills/${encodeURIComponent(skill.id)}`, {
+			method: 'DELETE'
+		});
+		if (!res.ok) {
+			errorMessage = `Delete failed (${res.status})`;
+			return;
+		}
+		await loadSkills();
+	}
+
 	onMount(() => {
 		void loadSkills();
 	});
@@ -154,6 +234,12 @@
 		</div>
 		<div class="flex items-center gap-2">
 			<Badge variant="outline">{enabledCount} enabled</Badge>
+			{#if customCount > 0}
+				<Badge variant="secondary">{customCount} custom</Badge>
+			{/if}
+			<Button variant="outline" size="sm" onclick={() => openCreateCustom()}>
+				<Plus class="size-3" /> New custom skill
+			</Button>
 			<Button variant="outline" size="sm" onclick={() => void loadSkills()}>
 				{loading ? 'Loading' : 'Refresh'}
 			</Button>
@@ -204,14 +290,33 @@
 												{skill.description || 'No description'}
 											</CardDescription>
 										</button>
-		<Button
-			variant="outline"
-			size="sm"
-			disabled={!canManage}
-			onclick={() => setStatus(skill, skill.status === 'DISABLED')}
-		>
-											{skill.status === 'DISABLED' ? 'Enable' : 'Disable'}
-										</Button>
+		{#if skill.sourceType === 'custom'}
+			<div class="flex items-center gap-1">
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={() => openEditCustom(skill)}
+				>
+					<Pencil class="size-3" /> Edit
+				</Button>
+				<Button
+					variant="ghost"
+					size="sm"
+					onclick={() => void deleteCustomSkill(skill)}
+				>
+					<Trash2 class="size-3" />
+				</Button>
+			</div>
+		{:else}
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={!canManage}
+				onclick={() => setStatus(skill, skill.status === 'DISABLED')}
+			>
+				{skill.status === 'DISABLED' ? 'Enable' : 'Disable'}
+			</Button>
+		{/if}
 									</div>
 								</CardHeader>
 								{#if expanded === skillId(skill)}
@@ -314,3 +419,74 @@
 		</div>
 	</div>
 </div>
+
+{#if customDialogOpen}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+		onclick={(e) => {
+			if (e.target === e.currentTarget) customDialogOpen = false;
+		}}
+		onkeydown={(e) => {
+			if (e.key === 'Escape') customDialogOpen = false;
+		}}
+		role="dialog"
+		tabindex="-1"
+	>
+		<div class="w-full max-w-xl rounded-lg border bg-background p-5 shadow-lg space-y-4">
+			<div>
+				<h3 class="text-base font-semibold flex items-center gap-2">
+					<Sparkles class="size-4" />
+					{customEditingId ? 'Edit custom skill' : 'New custom skill'}
+				</h3>
+				<p class="text-xs text-muted-foreground mt-1">
+					Custom skills live in <code>{slug}</code> and can be attached to agents in
+					this workspace. The prompt is the skill body — agents load it verbatim.
+					Each edit of the prompt bumps the version.
+				</p>
+			</div>
+
+			<div class="space-y-1.5">
+				<Label for="custom-name">Name</Label>
+				<Input id="custom-name" bind:value={customName} placeholder="e.g. Code-review" />
+			</div>
+
+			<div class="space-y-1.5">
+				<Label for="custom-desc">Description (optional)</Label>
+				<Input
+					id="custom-desc"
+					bind:value={customDescription}
+					placeholder="Short one-liner shown in the picker"
+				/>
+			</div>
+
+			<div class="space-y-1.5">
+				<Label for="custom-prompt">Prompt</Label>
+				<Textarea
+					id="custom-prompt"
+					bind:value={customPrompt}
+					placeholder="You are a senior code reviewer…"
+					rows={8}
+				/>
+			</div>
+
+			<div class="space-y-1.5">
+				<Label for="custom-tools">Allowed tools (optional, comma-separated)</Label>
+				<Input
+					id="custom-tools"
+					bind:value={customAllowedToolsText}
+					placeholder="Bash, Read, Grep"
+				/>
+			</div>
+
+			<div class="flex justify-end gap-2 pt-2">
+				<Button variant="ghost" onclick={() => (customDialogOpen = false)}>Cancel</Button>
+				<Button
+					onclick={saveCustomSkill}
+					disabled={!customName.trim() || !customPrompt.trim() || customSaving}
+				>
+					{customSaving ? 'Saving…' : customEditingId ? 'Save changes' : 'Create skill'}
+				</Button>
+			</div>
+		</div>
+	</div>
+{/if}

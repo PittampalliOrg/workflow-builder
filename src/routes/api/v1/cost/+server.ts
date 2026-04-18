@@ -47,7 +47,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		FROM sessions s
 		LEFT JOIN agents a ON a.id = s.agent_id
 		LEFT JOIN agent_versions av ON av.agent_id = s.agent_id AND av.version = s.agent_version
-		WHERE s.user_id = ${locals.session.userId}
+		WHERE ${locals.session.projectId
+			? sql`s.project_id = ${locals.session.projectId}`
+			: sql`s.user_id = ${locals.session.userId}`}
 			AND s.created_at >= ${start.toISOString()}
 			AND s.created_at <= ${end.toISOString()}
 		GROUP BY s.agent_id, av.config->>'modelSpec', a.name

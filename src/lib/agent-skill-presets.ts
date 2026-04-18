@@ -1,6 +1,6 @@
 export type AgentSkillStatus = 'ENABLED' | 'DISABLED' | 'DRAFT';
 
-export type AgentSkillSourceType = 'registry' | 'profile';
+export type AgentSkillSourceType = 'registry' | 'profile' | 'custom';
 
 export type AgentSkillConfig = {
 	name: string;
@@ -25,10 +25,13 @@ export type AgentSkillRegistryEntry = AgentSkillConfig & {
 	id: string;
 	slug: string;
 	status: AgentSkillStatus;
-	sourceType: 'registry';
+	sourceType: 'registry' | 'custom';
 	installSource: string;
 	skillName: string;
 	installAgent: string;
+	projectId?: string | null;
+	createdByUserId?: string | null;
+	prompt?: string;
 };
 
 export function profileSkillSnapshot(skill: AgentSkillConfig): AgentSkillConfig {

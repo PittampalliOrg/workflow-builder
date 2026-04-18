@@ -27,6 +27,7 @@
 		daily: Array<{ day: string; tokensIn: number; tokensOut: number }>;
 		byAgent: Array<{
 			agentId: string;
+			agentName: string | null;
 			tokensIn: number;
 			tokensOut: number;
 			sessions: number;
@@ -263,15 +264,20 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each data.byAgent as row}
+							{#each data.byAgent as row (row.agentId)}
 								<tr class="border-b last:border-0">
 									<td class="py-2">
 										<a
 											href="/agents/{row.agentId}"
 											class="hover:underline text-primary truncate block max-w-[400px]"
 										>
-											{row.agentId}
+											{row.agentName ?? row.agentId}
 										</a>
+										{#if row.agentName}
+											<code class="block text-[10px] text-muted-foreground truncate max-w-[400px]">
+												{row.agentId}
+											</code>
+										{/if}
 									</td>
 									<td class="py-2 text-right">{row.sessions}</td>
 									<td class="py-2 text-right">{fmt(row.tokensIn)}</td>

@@ -1,5 +1,5 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq, gte, lte, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
 import { db } from "$lib/server/db";
 import { sessions, sessionEvents } from "$lib/server/db/schema";
@@ -24,8 +24,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		: now;
 	const groupBy = url.searchParams.get("groupBy") ?? "day";
 
+	// Scope: if the caller has an active workspace, show workspace-level
+	// usage (matches CMA). Otherwise fall back to their own sessions.
+	const scopeFilter = locals.session.projectId
+		? eq(sessions.projectId, locals.session.projectId)
+		: eq(sessions.userId, locals.session.userId);
+
 	const filters = and(
-		eq(sessions.userId, locals.session.userId),
+		scopeFilter,
 		sql`${sessions.createdAt} >= ${start.toISOString()}`,
 		sql`${sessions.createdAt} <= ${end.toISOString()}`,
 	);
@@ -42,6 +48,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		.from(sessions)
 		.where(filters);
 
+	// Daily + per-agent queries share the same scope clause — parameterized
+	// so the SQL statement stays cacheable across invocations.
+	const scopeClause = locals.session.projectId
+		? sql`s.project_id = ${locals.session.projectId}`
+		: sql`s.user_id = ${locals.session.userId}`;
+
 	// Daily breakdown (one row per day in range, zero-filled via SQL series)
 	const daily = await db.execute<{
 		day: string;
@@ -57,44 +69,49 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			coalesce(sum((s.usage->>'output_tokens')::int), 0) AS tokens_out
 		FROM days
 		LEFT JOIN ${sessions} s
-			ON s.user_id = ${locals.session.userId}
+			ON ${scopeClause}
 			AND date(s.created_at) = days.day
 		GROUP BY days.day
 		ORDER BY days.day ASC
 	`);
 
-	// Breakdown by agent
+	// Breakdown by agent — join agent names so the UI can render a label
+	// instead of a raw ID.
 	const byAgent = await db.execute<{
 		agent_id: string;
+		agent_name: string | null;
 		tokens_in: number;
 		tokens_out: number;
 		sessions: number;
 	}>(sql`
 		SELECT
 			s.agent_id AS agent_id,
+			a.name AS agent_name,
 			coalesce(sum((s.usage->>'input_tokens')::int), 0) AS tokens_in,
 			coalesce(sum((s.usage->>'output_tokens')::int), 0) AS tokens_out,
 			count(*) AS sessions
 		FROM ${sessions} s
-		WHERE s.user_id = ${locals.session.userId}
+		LEFT JOIN agents a ON a.id = s.agent_id
+		WHERE ${scopeClause}
 			AND s.created_at >= ${start.toISOString()}
 			AND s.created_at <= ${end.toISOString()}
-		GROUP BY s.agent_id
+		GROUP BY s.agent_id, a.name
 		ORDER BY tokens_out DESC
 		LIMIT 20
 	`);
 
-	// Tool-call count (from session_events where type starts with "agent.tool_use")
-	const [toolCalls] = await db
-		.select({
-			count: sql<number>`count(*)`,
-		})
-		.from(sessionEvents)
-		.where(
-			sql`${sessionEvents.type} IN ('agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use')
-					AND ${sessionEvents.createdAt} >= ${start.toISOString()}
-					AND ${sessionEvents.createdAt} <= ${end.toISOString()}`,
-		);
+	// Tool-call count — scoped to sessions the caller can see by joining
+	// back to `sessions` on session_id.
+	const toolCallsResult = await db.execute<{ count: number }>(sql`
+		SELECT count(*) AS count
+		FROM ${sessionEvents} se
+		JOIN ${sessions} s ON s.id = se.session_id
+		WHERE se.type IN ('agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use')
+			AND ${scopeClause}
+			AND se.created_at >= ${start.toISOString()}
+			AND se.created_at <= ${end.toISOString()}
+	`);
+	const toolCalls = { count: toolCallsResult[0]?.count ?? 0 };
 
 	return json({
 		range: { start: start.toISOString(), end: end.toISOString() },
@@ -114,6 +131,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		})),
 		byAgent: byAgent.map((row) => ({
 			agentId: String(row.agent_id),
+			agentName: row.agent_name ?? null,
 			tokensIn: Number(row.tokens_in),
 			tokensOut: Number(row.tokens_out),
 			sessions: Number(row.sessions),
