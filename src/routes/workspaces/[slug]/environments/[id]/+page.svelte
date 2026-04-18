@@ -35,6 +35,7 @@
 		PopoverTrigger
 	} from '$lib/components/ui/popover';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
+	import EnvironmentOverview from '$lib/components/environments/environment-overview.svelte';
 	import {
 		ArrowLeft,
 		Clock,
@@ -63,7 +64,9 @@
 	let saving = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let dirty = $state(false);
-	let tab = $state<'basics' | 'networking' | 'packages' | 'advanced'>('basics');
+	let tab = $state<'overview' | 'basics' | 'networking' | 'packages' | 'advanced'>(
+		'overview'
+	);
 	let usages = $state<Array<{ agentId: string; agentName: string; agentSlug: string }>>([]);
 	let versions = $state<EnvironmentVersionSummary[]>([]);
 	let versionsOpen = $state(false);
@@ -305,11 +308,18 @@
 			<div class="overflow-y-auto p-6">
 				<Tabs value={tab} onValueChange={(v) => (tab = v as typeof tab)}>
 					<TabsList class="mb-4">
+						<TabsTrigger value="overview">Overview</TabsTrigger>
 						<TabsTrigger value="basics">Basics</TabsTrigger>
 						<TabsTrigger value="networking">Networking</TabsTrigger>
 						<TabsTrigger value="packages">Packages</TabsTrigger>
 						<TabsTrigger value="advanced">Advanced</TabsTrigger>
 					</TabsList>
+
+					<TabsContent value="overview" class="space-y-4">
+						{#if env}
+							<EnvironmentOverview {env} />
+						{/if}
+					</TabsContent>
 
 					<TabsContent value="basics" class="space-y-4">
 						<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
