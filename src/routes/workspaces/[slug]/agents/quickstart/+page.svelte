@@ -17,6 +17,7 @@
 	import {
 		Check,
 		Code,
+		Copy,
 		FileCode,
 		Play,
 		Search,
@@ -36,7 +37,11 @@
 		highlights: string[];
 		mcpServerCount: number;
 		model: string | null;
+		systemPrompt?: string;
+		tools?: string[];
+		skills?: string[];
 	};
+	type PreviewTab = 'yaml' | 'json';
 
 	const steps = [
 		{ slug: 'agent', label: 'Create agent', description: 'POST /v1/agents' },
@@ -54,6 +59,59 @@
 	let agentName = $state('');
 	let describePrompt = $state('');
 	let creating = $state(false);
+	let previewTab = $state<PreviewTab>('yaml');
+	let previewCopied = $state(false);
+
+	function templateYaml(t: TemplateSummary): string {
+		const tools = t.tools?.length ? t.tools : ['agent_toolset_20260401'];
+		const skills = t.skills?.length ? t.skills : [];
+		const mcp = t.mcpServerCount > 0 ? `<${t.mcpServerCount} MCP server(s)>` : '';
+		return [
+			`name: ${agentName.trim() || t.name}`,
+			`description: ${t.description}`,
+			`model: ${t.model ?? 'claude-sonnet-4-6'}`,
+			`system: |`,
+			...(t.systemPrompt ?? 'You are a general-purpose agent that can research, write code, run commands, and use connected tools to complete the user\'s task end to end.')
+				.split('\n')
+				.map((l) => `  ${l}`),
+			`mcp_servers: ${mcp ? `[${mcp}]` : '[]'}`,
+			`tools:`,
+			...tools.map((tt) => `  - type: ${tt}`),
+			`skills: ${skills.length ? `[${skills.map((s) => `"${s}"`).join(', ')}]` : '[]'}`
+		].join('\n');
+	}
+
+	function templateJson(t: TemplateSummary): string {
+		return JSON.stringify(
+			{
+				name: agentName.trim() || t.name,
+				description: t.description,
+				model: t.model ?? 'claude-sonnet-4-6',
+				system:
+					t.systemPrompt ??
+					"You are a general-purpose agent that can research, write code, run commands, and use connected tools to complete the user's task end to end.",
+				mcp_servers: t.mcpServerCount > 0 ? [`<${t.mcpServerCount} MCP server(s)>`] : [],
+				tools: (t.tools?.length ? t.tools : ['agent_toolset_20260401']).map((type) => ({
+					type
+				})),
+				skills: t.skills ?? []
+			},
+			null,
+			2
+		);
+	}
+
+	async function copyPreview() {
+		if (!selected) return;
+		const text = previewTab === 'yaml' ? templateYaml(selected) : templateJson(selected);
+		try {
+			await navigator.clipboard.writeText(text);
+			previewCopied = true;
+			setTimeout(() => (previewCopied = false), 1400);
+		} catch {
+			/* clipboard blocked */
+		}
+	}
 
 	let filtered = $derived.by(() => {
 		const q = search.trim().toLowerCase();
@@ -144,6 +202,11 @@
 </script>
 
 <div class="flex flex-col min-h-screen">
+	<div class="border-b bg-muted/30 px-6 py-2 flex items-center gap-1 text-xs text-muted-foreground">
+		<a href="/workspaces/{slug}/agents" class="hover:text-foreground">Agents</a>
+		<span class="text-muted-foreground/60">/</span>
+		<span class="text-foreground">Quickstart</span>
+	</div>
 	<header class="border-b px-6 py-4">
 		<h1 class="text-2xl font-semibold">Agent Quickstart</h1>
 		<p class="text-sm text-muted-foreground mt-1">
@@ -317,10 +380,23 @@
 					{#if selected}
 						<Card class="border-primary">
 							<CardHeader>
-								<CardTitle class="text-base">{selected.name}</CardTitle>
-								<CardDescription>{selected.description}</CardDescription>
+								<div class="flex items-start justify-between gap-3">
+									<div class="min-w-0 flex-1">
+										<CardTitle class="text-base flex items-center gap-2">
+											{selected.name}
+											<Badge variant="outline" class="text-[10px]">Template</Badge>
+										</CardTitle>
+										<CardDescription>{selected.description}</CardDescription>
+									</div>
+									<Button
+										onclick={() => createFromTemplate(selected!)}
+										disabled={creating}
+									>
+										{creating ? 'Creating…' : 'Use this template'}
+									</Button>
+								</div>
 							</CardHeader>
-							<CardContent class="space-y-3">
+							<CardContent class="space-y-4">
 								<div>
 									<div class="text-[11px] font-medium text-muted-foreground uppercase mb-1">
 										What you get
@@ -334,14 +410,42 @@
 										{/each}
 									</ul>
 								</div>
-								<div class="flex gap-2 pt-2">
-									<Button
-										onclick={() => createFromTemplate(selected!)}
-										disabled={creating}
-									>
-										<Sparkles class="size-4" />
-										{creating ? 'Creating…' : `Create from "${selected.name}"`}
-									</Button>
+
+								<div>
+									<div class="flex items-center justify-between mb-1.5">
+										<div class="inline-flex rounded-md border bg-muted/30 p-0.5">
+											<button
+												type="button"
+												class="px-2.5 py-0.5 text-[11px] rounded {previewTab === 'yaml' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+												onclick={() => (previewTab = 'yaml')}
+											>
+												YAML
+											</button>
+											<button
+												type="button"
+												class="px-2.5 py-0.5 text-[11px] rounded {previewTab === 'json' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+												onclick={() => (previewTab = 'json')}
+											>
+												JSON
+											</button>
+										</div>
+										<Button
+											variant="ghost"
+											size="sm"
+											class="h-6 text-[11px] gap-1"
+											onclick={copyPreview}
+										>
+											{#if previewCopied}
+												<Check class="size-3" /> Copied
+											{:else}
+												<Copy class="size-3" /> Copy
+											{/if}
+										</Button>
+									</div>
+									<pre class="bg-muted rounded p-3 text-[11px] overflow-x-auto font-mono max-h-[320px]"><code>{previewTab === 'yaml' ? templateYaml(selected) : templateJson(selected)}</code></pre>
+								</div>
+
+								<div class="flex gap-2 pt-1">
 									<Button
 										variant="outline"
 										onclick={createBlank}
