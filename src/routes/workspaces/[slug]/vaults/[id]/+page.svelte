@@ -57,6 +57,7 @@
 		VaultCredentialSummary,
 		VaultDetail
 	} from '$lib/types/vaults';
+	import VaultOverview from '$lib/components/vaults/vault-overview.svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -329,6 +330,20 @@
 	{#if loading || !vault}
 		<Skeleton class="h-48" />
 	{:else}
+		<!-- CMA-shape overview: read-only summary + credential list with
+		     expiry chips + rotate actions. The old edit Description + Credentials
+		     table stays below for authoring. -->
+		{#if vault}
+			<VaultOverview
+				{vault}
+				{credentials}
+				onRotate={(credId) => {
+					const target = credentials.find((c) => c.id === credId);
+					if (target) openRotate(target);
+				}}
+			/>
+		{/if}
+
 		<Card>
 			<CardHeader>
 				<CardTitle class="text-sm">Description</CardTitle>
