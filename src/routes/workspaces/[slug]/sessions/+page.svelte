@@ -14,6 +14,9 @@
 	import { Button } from '$lib/components/ui/button';
 	import type { SessionStatus, SessionSummary } from '$lib/types/sessions';
 	import type { AgentSummary } from '$lib/types/agents';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type StatusFilter = 'all' | SessionStatus;
 	type SortBy = 'updated' | 'tokens' | 'title' | 'agent';
@@ -191,7 +194,7 @@
 	itemCount={filtered.length}
 	onSearch={(v) => (search = v)}
 	primaryLabel="New Session"
-	onPrimary={() => goto('/workspaces/default/sessions/new')}
+	onPrimary={() => goto(`/workspaces/${slug}/sessions/new`)}
 	{loading}
 	{errorMessage}
 	isEmpty={sessions.length === 0 || filtered.length === 0}
@@ -270,7 +273,7 @@
 				<button
 					type="button"
 					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/default/sessions/${session.id}`)}
+					onclick={() => goto(`/workspaces/${slug}/sessions/${session.id}`)}
 				>
 					<CardHeader class="pb-2">
 						<div class="flex items-start justify-between gap-2">
@@ -321,7 +324,7 @@
 			<p class="text-muted-foreground mb-6 max-w-md">
 				Sessions will appear here once created through the API or the quickstart flow.
 			</p>
-			<Button onclick={() => goto('/workspaces/default/sessions/new')} size="lg">
+			<Button onclick={() => goto(`/workspaces/${slug}/sessions/new`)} size="lg">
 				<Plus class="size-4 mr-1" /> Start your first session
 			</Button>
 		</div>

@@ -33,6 +33,9 @@
 	import { KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-svelte';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import type { VaultSummary } from '$lib/types/vaults';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	let vaults = $state<VaultSummary[]>([]);
 	let loading = $state(true);
@@ -92,7 +95,7 @@
 			createDialogOpen = false;
 			newName = '';
 			newDescription = '';
-			goto(`/workspaces/default/vaults/${vault.id}`);
+			goto(`/workspaces/${slug}/vaults/${vault.id}`);
 		} finally {
 			creating = false;
 		}
@@ -154,7 +157,7 @@
 				<button
 					type="button"
 					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/default/vaults/${vault.id}`)}
+					onclick={() => goto(`/workspaces/${slug}/vaults/${vault.id}`)}
 				>
 					<CardHeader>
 						<div class="flex items-center gap-2">

@@ -24,6 +24,9 @@
 		Sparkles,
 		Wand2
 	} from 'lucide-svelte';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type TemplateSummary = {
 		slug: string;
@@ -95,7 +98,7 @@
 				return;
 			}
 			const { agent } = await res.json();
-			goto(`/workspaces/default/agents/${agent.id}`);
+			goto(`/workspaces/${slug}/agents/${agent.id}`);
 		} finally {
 			creating = false;
 		}
@@ -116,7 +119,7 @@
 				return;
 			}
 			const { agent } = await res.json();
-			goto(`/workspaces/default/agents/${agent.id}`);
+			goto(`/workspaces/${slug}/agents/${agent.id}`);
 		} finally {
 			creating = false;
 		}
@@ -367,10 +370,10 @@
 							lets you attach it. Otherwise:
 						</p>
 						<div class="flex gap-2">
-							<Button variant="outline" onclick={() => goto('/workspaces/default/environments')}>
+							<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/environments`)}>
 								Browse environments
 							</Button>
-							<Button onclick={() => goto('/workspaces/default/environments/new')}>
+							<Button onclick={() => goto(`/workspaces/${slug}/environments/new`)}>
 								Create environment
 							</Button>
 						</div>
@@ -391,7 +394,7 @@
 							Once your agent + environment are ready, start your first session.
 						</p>
 						<div class="flex gap-2">
-							<Button onclick={() => goto('/workspaces/default/sessions/new')}>
+							<Button onclick={() => goto(`/workspaces/${slug}/sessions/new`)}>
 								<Play class="size-4" /> New session
 							</Button>
 						</div>

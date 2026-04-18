@@ -7,6 +7,9 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { CircleAlert } from 'lucide-svelte';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type AgentSkill = {
 		id?: string;

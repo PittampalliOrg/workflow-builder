@@ -68,6 +68,8 @@
 	} from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	const agentId = page.params.id as string;
 
 	let agent = $state<AgentDetail | null>(null);
@@ -188,7 +190,7 @@
 			forkOpen = false;
 			forkName = '';
 			forkDescription = '';
-			if (forked?.id) goto(`/workspaces/default/agents/${forked.id}`);
+			if (forked?.id) goto(`/workspaces/${slug}/agents/${forked.id}`);
 		} finally {
 			forking = false;
 		}
@@ -259,7 +261,7 @@
 
 <div class="flex flex-col h-screen">
 	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/agents')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/agents`)}>
 			<ArrowLeft class="size-4" />
 		</Button>
 		<div class="flex items-center gap-2 flex-1 min-w-0">
@@ -548,7 +550,7 @@
 								</select>
 								{#if agent.environmentId}
 									<a
-										href="/workspaces/default/environments/{agent.environmentId}"
+										href="/workspaces/{slug}/environments/{agent.environmentId}"
 										target="_blank"
 										class="text-xs text-primary hover:underline flex items-center gap-1"
 									>
@@ -556,7 +558,7 @@
 									</a>
 								{:else}
 									<a
-										href="/workspaces/default/environments/new"
+										href="/workspaces/{slug}/environments/new"
 										target="_blank"
 										class="text-xs text-primary hover:underline"
 									>

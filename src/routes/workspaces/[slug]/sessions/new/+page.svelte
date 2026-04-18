@@ -19,6 +19,8 @@
 	import type { EnvironmentSummary } from '$lib/types/environments';
 	import type { VaultSummary } from '$lib/types/vaults';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	let agents = $state<AgentSummary[]>([]);
 	let environments = $state<EnvironmentSummary[]>([]);
 	let vaults = $state<VaultSummary[]>([]);
@@ -91,7 +93,7 @@
 				return;
 			}
 			const { session } = await res.json();
-			goto(`/workspaces/default/sessions/${session.id}`);
+			goto(`/workspaces/${slug}/sessions/${session.id}`);
 		} finally {
 			submitting = false;
 		}
@@ -108,7 +110,7 @@
 
 <div class="max-w-4xl mx-auto w-full p-6 flex flex-col gap-6">
 	<div class="flex items-center gap-2">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/sessions')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
 			<ArrowLeft class="size-4" /> Back
 		</Button>
 		<h1 class="text-2xl font-semibold">Start a session</h1>
@@ -164,7 +166,7 @@
 				<Label>Vaults</Label>
 				{#if vaults.length === 0}
 					<p class="text-xs text-muted-foreground mt-1">
-						No vaults yet. Add one at <a href="/workspaces/default/vaults" class="text-primary hover:underline">/vaults</a>.
+						No vaults yet. Add one at <a href="/workspaces/{slug}/vaults" class="text-primary hover:underline">/vaults</a>.
 					</p>
 				{:else}
 					<div class="mt-1 flex flex-wrap gap-2">
@@ -200,7 +202,7 @@
 	</Card>
 
 	<div class="flex justify-end gap-2">
-		<Button variant="outline" onclick={() => goto('/workspaces/default/sessions')}>Cancel</Button>
+		<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/sessions`)}>Cancel</Button>
 		<Button onclick={submit} disabled={!agentId || submitting}>
 			<PlayCircle class="size-4" />
 			{submitting ? 'Starting…' : 'Start session'}

@@ -12,6 +12,9 @@
 		Trash2,
 		Upload
 	} from 'lucide-svelte';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type FileRow = {
 		id: string;
@@ -151,7 +154,7 @@
 					</div>
 					{#if f.scopeId}
 						<div class="text-[10px]">
-							scope: <a href="/workspaces/default/sessions/{f.scopeId}" class="text-primary underline">
+							scope: <a href="/workspaces/{slug}/sessions/{f.scopeId}" class="text-primary underline">
 								{f.scopeId}
 							</a>
 						</div>

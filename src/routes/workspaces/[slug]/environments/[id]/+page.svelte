@@ -53,6 +53,8 @@
 		EnvironmentVersionSummary
 	} from '$lib/types/environments';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	const envId = page.params.id as string;
 
 	let env = $state<EnvironmentDetail | null>(null);
@@ -197,7 +199,7 @@
 
 <div class="flex flex-col h-screen">
 	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/environments')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/environments`)}>
 			<ArrowLeft class="size-4" />
 		</Button>
 		<div class="flex items-center gap-2 flex-1 min-w-0">
@@ -615,7 +617,7 @@
 								{#each usages as u}
 									<li>
 										<a
-											href="/workspaces/default/agents/{u.agentId}"
+											href="/workspaces/{slug}/agents/{u.agentId}"
 											class="text-sm hover:underline flex items-center gap-1"
 										>
 											{u.agentName}

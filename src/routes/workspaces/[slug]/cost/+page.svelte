@@ -14,6 +14,8 @@
 	} from '$lib/components/ui/card';
 	import { DollarSign, Download, Info } from 'lucide-svelte';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	type CostPayload = {
 		range: { start: string; end: string };
 		totalCost: number;
@@ -223,7 +225,7 @@
 								<tr class="border-b last:border-0">
 									<td class="py-2">
 										<a
-											href="/workspaces/default/agents/{row.agentId}"
+											href="/workspaces/{slug}/agents/{row.agentId}"
 											class="hover:underline text-primary truncate block max-w-[500px]"
 										>
 											{row.agentName}

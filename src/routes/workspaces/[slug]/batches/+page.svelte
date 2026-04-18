@@ -11,6 +11,9 @@
 	} from '$lib/components/ui/card';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import { Check, Code2, Copy, ExternalLink, Layers, RefreshCw } from 'lucide-svelte';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type BatchRow = {
 		id: string;

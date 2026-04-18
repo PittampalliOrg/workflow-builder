@@ -58,6 +58,8 @@
 		VaultDetail
 	} from '$lib/types/vaults';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	const vaultId = page.params.id as string;
 
 	let vault = $state<VaultDetail | null>(null);
@@ -268,7 +270,7 @@
 
 <div class="flex flex-col max-w-5xl mx-auto w-full p-6 gap-6">
 	<div class="flex items-center gap-2 flex-wrap">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/vaults')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/vaults`)}>
 			<ArrowLeft class="size-4" />
 		</Button>
 		<div class="flex items-center gap-2 flex-1 min-w-0">
@@ -362,7 +364,7 @@
 						<div class="flex flex-wrap gap-2">
 							{#each usages.agents as a (a.id)}
 								<a
-									href="/workspaces/default/agents/{a.id}"
+									href="/workspaces/{slug}/agents/{a.id}"
 									class="inline-flex items-center gap-2 rounded border px-2 py-1 text-xs hover:bg-muted"
 								>
 									<span>{a.avatar ?? '🤖'}</span>

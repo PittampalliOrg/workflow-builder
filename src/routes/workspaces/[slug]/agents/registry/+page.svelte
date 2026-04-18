@@ -4,6 +4,9 @@
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import { CircleAlert } from 'lucide-svelte';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type JsonRecord = Record<string, unknown>;
 

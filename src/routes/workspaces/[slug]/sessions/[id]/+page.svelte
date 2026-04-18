@@ -63,6 +63,8 @@
 		SessionEventEnvelope
 	} from '$lib/types/sessions';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	const sessionId = page.params.id as string;
 
 	let session = $state<SessionDetail | null>(null);
@@ -241,7 +243,7 @@
 				return;
 			}
 			const body = (await res.json()) as { sessionId: string };
-			if (body.sessionId) goto(`/workspaces/default/sessions/${body.sessionId}`);
+			if (body.sessionId) goto(`/workspaces/${slug}/sessions/${body.sessionId}`);
 		} finally {
 			forking = false;
 		}
@@ -264,7 +266,7 @@
 	async function archive() {
 		if (!session) return;
 		const res = await fetch(`/api/v1/sessions/${sessionId}`, { method: 'PATCH' });
-		if (res.ok) goto('/workspaces/default/sessions');
+		if (res.ok) goto(`/workspaces/${slug}/sessions`);
 	}
 
 	async function setModel(modelSpec: string) {
@@ -375,7 +377,7 @@
 
 <div class="flex flex-col h-screen">
 	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/sessions')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
 			<ArrowLeft class="size-4" />
 		</Button>
 		<div class="flex items-center gap-2 flex-1 min-w-0">
@@ -485,7 +487,7 @@
 				{expiringCreds.length} credential{expiringCreds.length === 1 ? '' : 's'}
 				expire{expiringCreds.length === 1 ? 's' : ''} within 24h:
 				{#each expiringCreds as c, i (c.credId)}
-					<a href="/workspaces/default/vaults/{c.vaultId}" class="underline">{c.displayName}</a
+					<a href="/workspaces/{slug}/vaults/{c.vaultId}" class="underline">{c.displayName}</a
 					>{#if i < expiringCreds.length - 1},&nbsp;{/if}
 				{/each}
 				<span class="text-[11px] opacity-70 ml-auto">
@@ -716,7 +718,7 @@
 					</CardHeader>
 					<CardContent class="text-xs space-y-1">
 						<div>
-							<a href="/workspaces/default/agents/{session.agentId}" class="text-primary hover:underline">
+							<a href="/workspaces/{slug}/agents/{session.agentId}" class="text-primary hover:underline">
 								{session.agentId}
 							</a>
 						</div>
@@ -733,7 +735,7 @@
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
 							<a
-								href="/workspaces/default/environments/{session.environmentId}"
+								href="/workspaces/{slug}/environments/{session.environmentId}"
 								class="text-primary hover:underline"
 							>
 								{session.environmentId}
@@ -750,7 +752,7 @@
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
 							{#each session.vaultIds as vid}
-								<a href="/workspaces/default/vaults/{vid}" class="text-primary hover:underline block truncate">
+								<a href="/workspaces/{slug}/vaults/{vid}" class="text-primary hover:underline block truncate">
 									{vid}
 								</a>
 							{/each}

@@ -15,6 +15,8 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { ArrowLeft, Sparkles } from 'lucide-svelte';
 
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
 	type Template = {
 		slug: string;
 		name: string;
@@ -91,7 +93,7 @@
 				return;
 			}
 			const { agent } = await res.json();
-			goto(`/workspaces/default/agents/${agent.id}`);
+			goto(`/workspaces/${slug}/agents/${agent.id}`);
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -102,7 +104,7 @@
 
 <div class="max-w-5xl mx-auto w-full p-6 flex flex-col gap-6">
 	<div class="flex items-center gap-2">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/agents')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/agents`)}>
 			<ArrowLeft class="size-4" /> Back
 		</Button>
 		<h1 class="text-2xl font-semibold">New Agent</h1>

@@ -23,6 +23,9 @@
 	import { Copy, FileUp, Plus, Sparkles, Trash2, Workflow } from 'lucide-svelte';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import type { AgentSummary } from '$lib/types/agents';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	let agents = $state<AgentSummary[]>([]);
 	let loading = $state(true);
@@ -117,7 +120,7 @@
 				return;
 			}
 			const { agent } = (await res.json()) as { agent: AgentSummary };
-			goto(`/workspaces/default/agents/${agent.id}`);
+			goto(`/workspaces/${slug}/agents/${agent.id}`);
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -136,7 +139,7 @@
 	onSearch={(v) => (search = v)}
 	searchPlaceholder="Search agents…"
 	primaryLabel="New Agent"
-	onPrimary={() => goto('/workspaces/default/agents/new')}
+	onPrimary={() => goto(`/workspaces/${slug}/agents/new`)}
 	{loading}
 	{errorMessage}
 	isEmpty={filtered.length === 0}
@@ -147,7 +150,7 @@
 />
 
 {#snippet actions()}
-	<Button variant="outline" onclick={() => goto('/workspaces/default/agents/quickstart')}>
+	<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}>
 		<Sparkles class="size-4" /> From template
 	</Button>
 	<label class="relative cursor-pointer">
@@ -224,7 +227,7 @@
 				<button
 					type="button"
 					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/default/agents/${agent.id}`)}
+					onclick={() => goto(`/workspaces/${slug}/agents/${agent.id}`)}
 				>
 					<CardHeader>
 						<div class="flex items-center gap-2">
@@ -289,7 +292,7 @@
 				any workflow. Start from a template or build from scratch.
 			</p>
 			<div class="flex gap-3">
-				<Button onclick={() => goto('/workspaces/default/agents/quickstart')} size="lg">
+				<Button onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)} size="lg">
 					<Plus class="size-4 mr-1" /> Start from a template
 				</Button>
 			</div>

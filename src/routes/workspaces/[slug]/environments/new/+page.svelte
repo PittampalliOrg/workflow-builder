@@ -13,6 +13,9 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { ArrowLeft, Sparkles } from 'lucide-svelte';
 	import type { EnvironmentConfig } from '$lib/types/environments';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type Template = {
 		slug: string;
@@ -94,7 +97,7 @@
 				return;
 			}
 			const { environment } = await res.json();
-			goto(`/workspaces/default/environments/${environment.id}`);
+			goto(`/workspaces/${slug}/environments/${environment.id}`);
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -105,7 +108,7 @@
 
 <div class="max-w-5xl mx-auto w-full p-6 flex flex-col gap-6">
 	<div class="flex items-center gap-2">
-		<Button variant="ghost" size="sm" onclick={() => goto('/workspaces/default/environments')}>
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/environments`)}>
 			<ArrowLeft class="size-4" /> Back
 		</Button>
 		<h1 class="text-2xl font-semibold">New Environment</h1>

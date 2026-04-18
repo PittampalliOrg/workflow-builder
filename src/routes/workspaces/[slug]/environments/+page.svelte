@@ -23,6 +23,9 @@
 	import { Copy, Plus, Sparkles, Trash2 } from 'lucide-svelte';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import type { EnvironmentSummary } from '$lib/types/environments';
+	import { page } from '$app/state';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	let environments = $state<EnvironmentSummary[]>([]);
 	let loading = $state(true);
@@ -102,7 +105,7 @@
 	itemCount={environments.length}
 	onSearch={(v) => (search = v)}
 	primaryLabel="Add environment"
-	onPrimary={() => goto('/workspaces/default/environments/new')}
+	onPrimary={() => goto(`/workspaces/${slug}/environments/new`)}
 	{loading}
 	{errorMessage}
 	isEmpty={environments.length === 0 || filtered.length === 0}
@@ -146,7 +149,7 @@
 				<button
 					type="button"
 					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/default/environments/${env.id}`)}
+					onclick={() => goto(`/workspaces/${slug}/environments/${env.id}`)}
 				>
 					<CardHeader>
 						<div class="flex items-center gap-2">
@@ -190,7 +193,7 @@
 {/snippet}
 
 {#snippet actions()}
-	<Button variant="outline" onclick={() => goto('/workspaces/default/environments/new')}>
+	<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/environments/new`)}>
 		<Sparkles class="size-4" /> From template
 	</Button>
 {/snippet}
@@ -208,7 +211,7 @@
 				Environments bundle a sandbox template, networking policy, and package list. Agents
 				reference environments so the same config can drive many agents.
 			</p>
-			<Button onclick={() => goto('/workspaces/default/environments/new')} size="lg">
+			<Button onclick={() => goto(`/workspaces/${slug}/environments/new`)} size="lg">
 				<Plus class="size-4 mr-1" /> Start from a template
 			</Button>
 		</div>
