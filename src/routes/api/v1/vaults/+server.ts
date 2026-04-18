@@ -7,12 +7,17 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const q = url.searchParams.get("q") ?? undefined;
 	const includeArchived = url.searchParams.get("includeArchived") === "true";
 	const projectIdParam = url.searchParams.get("projectId");
+	// Default to the caller's active workspace projectId (set by the
+	// X-Workspace header hook), so the vaults list follows the current
+	// URL's workspace instead of showing cross-workspace rows. Explicit
+	// `?projectId=null` still returns org-shared vaults; explicit
+	// `?projectId=<id>` scopes to that project.
 	const projectId =
 		projectIdParam === "null"
 			? null
-			: projectIdParam === null
-				? undefined
-				: projectIdParam;
+			: projectIdParam
+				? projectIdParam
+				: locals.session.projectId;
 	const vaults = await listVaults({ q, includeArchived, projectId });
 	return json({ vaults });
 };

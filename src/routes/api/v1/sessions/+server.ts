@@ -24,6 +24,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
 	const sessions = await listSessions({
 		userId: locals.session.userId,
+		// locals.session.projectId was overridden by hooks.server.ts when the
+		// request carried an X-Workspace header or came from a workspace-scoped
+		// URL. Sessions from other workspaces are correctly excluded.
+		projectId: locals.session.projectId,
 		agentId,
 		status: status ?? undefined,
 		includeArchived,

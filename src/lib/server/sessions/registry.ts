@@ -71,6 +71,10 @@ function resourceRowToDto(row: SessionResourceRow): SessionResource {
 
 export type ListSessionsFilter = {
 	userId?: string;
+	/** Scope to a specific workspace/project. When set, non-matching
+	 * sessions are excluded even if they belong to the same user — matches
+	 * CMA's workspace-isolation model. */
+	projectId?: string;
 	agentId?: string;
 	status?: SessionStatus;
 	includeArchived?: boolean;
@@ -83,6 +87,8 @@ export async function listSessions(
 	const database = requireDb();
 	const conditions: ReturnType<typeof eq>[] = [];
 	if (filter.userId) conditions.push(eq(sessions.userId, filter.userId));
+	if (filter.projectId)
+		conditions.push(eq(sessions.projectId, filter.projectId));
 	if (filter.agentId) conditions.push(eq(sessions.agentId, filter.agentId));
 	if (filter.status) conditions.push(eq(sessions.status, filter.status));
 	if (!filter.includeArchived) {
