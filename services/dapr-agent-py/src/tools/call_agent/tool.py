@@ -30,10 +30,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 import uuid
 from typing import Any
-
-from dapr.clients import DaprClient
 
 from .._callable_agents_context import get_callable_agents_context
 
@@ -111,24 +111,40 @@ def call_agent(name: str, prompt: str) -> str:
         "title": f"Delegated from {ctx.parent_session_id or 'agent'}: {prompt.strip()[:40]}",
     }
 
+    dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
+    url = (
+        f"http://localhost:{dapr_http}/v1.0/invoke/{_WORKFLOW_BUILDER_APP_ID}"
+        "/method/api/internal/sessions/spawn-peer"
+    )
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Token": token,
+        },
+        method="POST",
+    )
     try:
-        with DaprClient() as client:
-            response = client.invoke_method(
-                app_id=_WORKFLOW_BUILDER_APP_ID,
-                method_name="api/internal/sessions/spawn-peer",
-                http_verb="POST",
-                data=json.dumps(payload).encode("utf-8"),
-                content_type="application/json",
-                headers={"X-Internal-Token": token},
-                timeout=15,
-            )
-            body_text = (
-                response.text()
-                if hasattr(response, "text")
-                else response.data.decode("utf-8")
-            )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body_text = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        logger.warning(
+            "[call_agent] BFF spawn-peer rejected (HTTP %d) for peer %s: %s",
+            exc.code,
+            slug,
+            detail,
+        )
+        return json.dumps(
+            {
+                "error": (
+                    f"BFF rejected spawn-peer for '{slug}' (HTTP {exc.code}): {detail}"
+                )
+            }
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[call_agent] invoke failed for peer %s: %s", slug, exc)
+        logger.warning("[call_agent] BFF request failed for peer %s: %s", slug, exc)
         return json.dumps(
             {
                 "error": (
