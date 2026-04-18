@@ -84,30 +84,44 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			});
 		}
 
-		// Provision a per-session OpenShell sandbox so bash/file tools work on
-		// UI-initiated sessions (workflow-driven sessions get theirs from the
-		// preceding workspace_profile node). Best-effort: if provisioning
-		// fails, the session still runs but tool calls will error — same
-		// degraded mode pre-this-change.
-		try {
-			const sandbox = await provisionSessionSandbox({
-				executionId: session.id,
-				name: session.title ?? `session-${session.id.slice(0, 8)}`,
-				sandboxTemplate:
-					typeof body.sandboxTemplate === "string"
-						? (body.sandboxTemplate as string)
-						: "base",
-				keepAfterRun: true,
-			});
-			await attachWorkspaceSandbox(session.id, sandbox.sandboxName);
-			session.workspaceSandboxName = sandbox.sandboxName;
-		} catch (sandboxErr) {
-			console.error("[sessions] sandbox provisioning failed:", sandboxErr);
-			// Surface on the session row but don't fail the whole create.
-			session.errorMessage =
-				sandboxErr instanceof Error
-					? sandboxErr.message
-					: "Sandbox provisioning failed";
+		// Sandbox provisioning modes (Anthropic CMA TTFT win, Tier 2b):
+		//   - "eager" (default, legacy): provision at session-create time so
+		//     bash/file tools work as soon as the agent starts. Adds sandbox
+		//     boot latency to every session's TTFT, even sessions that never
+		//     touch the shell.
+		//   - "lazy": skip provisioning here. The agent binds to a sandbox
+		//     lazily on first workspace-tool use via the idempotent
+		//     workspace/profile activity. Saves setup cost for chat-only
+		//     sessions; matches Anthropic's "hands as cattle" pattern.
+		// Workflow-driven sessions are unaffected — they get their sandbox
+		// from the preceding workspace_profile workflow node.
+		const provisioning =
+			typeof body.provisioning === "string" &&
+			body.provisioning.trim().toLowerCase() === "lazy"
+				? "lazy"
+				: "eager";
+
+		if (provisioning === "eager") {
+			try {
+				const sandbox = await provisionSessionSandbox({
+					executionId: session.id,
+					name: session.title ?? `session-${session.id.slice(0, 8)}`,
+					sandboxTemplate:
+						typeof body.sandboxTemplate === "string"
+							? (body.sandboxTemplate as string)
+							: "base",
+					keepAfterRun: true,
+				});
+				await attachWorkspaceSandbox(session.id, sandbox.sandboxName);
+				session.workspaceSandboxName = sandbox.sandboxName;
+			} catch (sandboxErr) {
+				console.error("[sessions] sandbox provisioning failed:", sandboxErr);
+				// Surface on the session row but don't fail the whole create.
+				session.errorMessage =
+					sandboxErr instanceof Error
+						? sandboxErr.message
+						: "Sandbox provisioning failed";
+			}
 		}
 
 		// Spawn the Dapr workflow instance. Failures here don't roll back the

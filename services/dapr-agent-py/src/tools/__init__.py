@@ -21,6 +21,7 @@ from .glob_tool.tool import glob_search
 from .grep_tool.tool import grep_search
 from .mcp_resources.tool import list_mcp_resources, read_mcp_resource
 from .notebook_edit.tool import notebook_edit
+from .read_session_events.tool import read_session_events
 from .send_message.tool import send_message
 from .skill_tool.tool import run_skill
 from .task_output.tool import task_output
@@ -66,4 +67,8 @@ all_tools: list[AgentTool] = [
     # MCP resources
     _tool(list_mcp_resources, "ListMcpResources"),
     _tool(read_mcp_resource, "ReadMcpResource"),
+    # Session event log (Anthropic CMA getEvents() pattern). Meaningful when
+    # agentConfig.contextStrategy == "event_log" — then compaction is off
+    # and the agent re-fetches earlier events from the durable log instead.
+    _tool(read_session_events, "ReadSessionEvents"),
 ]

@@ -35,6 +35,12 @@ class OpenShellRuntime:
         self._session: SandboxSession | None = None
         self._sandbox_name: str | None = None
         self._cwd = os.environ.get(SANDBOX_CWD_ENV, DEFAULT_CWD)
+        # Session id for the currently-running workflow entry. Set by
+        # session_workflow / agent_workflow at entry time (non-replaying)
+        # so built-in tools like read_session_events can scope to the
+        # caller's session without the agent having to pass it. Unset
+        # (None) for non-session-bound invocations.
+        self._session_id: str | None = None
 
     @property
     def cwd(self) -> str:
@@ -44,6 +50,19 @@ class OpenShellRuntime:
     def sandbox_name(self) -> str:
         self._ensure_session()
         return self._sandbox_name or "unknown"
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    def set_session_id(self, session_id: str | None) -> None:
+        """Attach the current CMA session id to this runtime (process-local).
+
+        Called from workflow entry points so tools in the same process can
+        scope reads/writes to the caller's session without the agent
+        manually passing the id.
+        """
+        self._session_id = (session_id or "").strip() or None
 
     def set_sandbox_name(self, name: str | None) -> None:
         """Target an orchestrator-assigned OpenShell sandbox."""

@@ -132,6 +132,25 @@ def _per_run_override(message: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _context_strategy(message: dict[str, Any]) -> str:
+    """Extract agentConfig.contextStrategy (Anthropic CMA pattern).
+
+    When set to "event_log", compaction is force-disabled — the agent
+    manages context by re-fetching events from the durable session log
+    (see src/tools/read_session_events/). Any other value (including the
+    default "compaction") keeps existing compaction behavior.
+    """
+    agent_config = _extract_agent_config(message) or {}
+    raw = agent_config.get("contextStrategy") or agent_config.get(
+        "context_strategy"
+    )
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"event_log", "event-log", "eventlog"}:
+            return "event_log"
+    return "compaction"
+
+
 def resolve_config(message: dict[str, Any] | None) -> CompactionConfig:
     """Resolve env + per-run overrides into a single CompactionConfig.
 
@@ -139,9 +158,20 @@ def resolve_config(message: dict[str, Any] | None) -> CompactionConfig:
     config must be passed through activity payloads so retries see the
     same values (env is still OK to read inside activities, but we prefer
     the deterministic path).
+
+    If agentConfig.contextStrategy == "event_log", compaction is forced
+    off regardless of env / per-run overrides. Compaction and event-log
+    interrogation are alternatives per Anthropic's Managed Agents design
+    — they shouldn't both run in the same turn.
     """
     base = _env_config()
     overrides = _per_run_override(message or {})
+    if _context_strategy(message or {}) == "event_log":
+        overrides["enabled"] = False
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "[compaction] disabled for this run: contextStrategy=event_log"
+            )
     if not overrides:
         return base
     merged = {**asdict(base), **overrides}

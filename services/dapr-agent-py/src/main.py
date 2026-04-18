@@ -2111,6 +2111,13 @@ class OpenShellDurableAgent(DurableAgent):
         if not session_id:
             raise RuntimeError("session_workflow requires sessionId")
 
+        # Stamp the process-local runtime with the current session id so
+        # tools like ReadSessionEvents can scope reads to this session
+        # without the agent having to pass the id explicitly. Safe on
+        # replay: this is just in-memory state that gets reset per
+        # workflow entry.
+        get_runtime().set_session_id(session_id)
+
         agent_cfg = _coerce_agent_config(message.get("agentConfig")) or {}
         env_cfg = message.get("environmentConfig") or {}
         vault_ids = message.get("vaultIds") or []
