@@ -1,5 +1,5 @@
 import { query } from '$app/server';
-import { and, eq, isNotNull, or, inArray } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { normalizeSandboxResponse } from '$lib/utils/sandbox-parse';
 import { listAgentRuntimeSandboxes } from '$lib/server/agent-runtime-sandboxes';
@@ -12,8 +12,9 @@ import type { Sandbox } from '$lib/types/sandbox';
  * Returns a map keyed by sandbox name → { sessionId, title, status, slug }.
  *
  * Both `workspace_sandbox_name` (per-session OpenShell `ws-*`) and the
- * shared `sandbox_name` (agent-runtime pod) are joined so the list page
- * can show the owning session for both shapes when they're 1:1.
+ * shared `sandbox_name` (agent-runtime pod) are joined. Using a raw IN
+ * (...) fragment so the query is stable across drizzle versions —
+ * earlier attempts with `or(inArray, inArray)` returned empty rows.
  */
 async function resolveSandboxSessions(
 	names: string[],
@@ -33,18 +34,10 @@ async function resolveSandboxSessions(
 		.from(sessions)
 		.leftJoin(projects, eq(projects.id, sessions.projectId))
 		.where(
-			and(
-				or(
-					inArray(sessions.workspaceSandboxName, names),
-					inArray(sessions.sandboxName, names),
-				),
-				or(
-					isNotNull(sessions.workspaceSandboxName),
-					isNotNull(sessions.sandboxName),
-				),
-			),
+			sql`(${sessions.workspaceSandboxName} IN ${names}
+				OR ${sessions.sandboxName} IN ${names})`,
 		)
-		.orderBy(sessions.updatedAt);
+		.orderBy(asc(sessions.updatedAt));
 
 	// Last write wins when a sandbox is reused — gives the most recent owner.
 	for (const r of rows) {
