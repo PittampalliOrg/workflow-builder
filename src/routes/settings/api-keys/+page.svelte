@@ -24,7 +24,7 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Copy, DollarSign, Key, Plus, Trash2 } from 'lucide-svelte';
+	import { Copy, DollarSign, Key, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
 
 	type ApiKeyRow = {
 		id: string;
@@ -43,6 +43,7 @@
 	let newSecret = $state<string | null>(null);
 	let toDelete = $state<ApiKeyRow | null>(null);
 	let busyId = $state<string | null>(null);
+	let toRotate = $state<ApiKeyRow | null>(null);
 
 	async function load() {
 		loading = true;
@@ -81,6 +82,28 @@
 			await load();
 		} finally {
 			creating = false;
+		}
+	}
+
+	async function rotate() {
+		if (!toRotate) return;
+		busyId = toRotate.id;
+		errorMessage = null;
+		try {
+			const res = await fetch(`/api/settings/api-keys/${toRotate.id}/rotate`, {
+				method: 'POST'
+			});
+			if (!res.ok) {
+				errorMessage = `Rotate failed (${res.status})`;
+				return;
+			}
+			const row = await res.json();
+			newSecret = row.key; // reuse the create dialog's "secret shown once" flow
+			toRotate = null;
+			createOpen = true;
+			await load();
+		} finally {
+			busyId = null;
 		}
 	}
 
@@ -186,7 +209,17 @@
 									<DollarSign class="size-3" /> View cost
 								</button>
 							</td>
-							<td class="p-3">
+							<td class="p-3 flex items-center justify-end gap-1">
+								<Button
+									variant="ghost"
+									size="icon"
+									class="size-7"
+									onclick={() => (toRotate = key)}
+									disabled={busyId === key.id}
+									title="Rotate key"
+								>
+									<RefreshCw class="size-3.5" />
+								</Button>
 								<Button
 									variant="ghost"
 									size="icon"
@@ -271,6 +304,22 @@
 		<AlertDialogFooter>
 			<AlertDialogCancel>Cancel</AlertDialogCancel>
 			<AlertDialogAction onclick={revoke}>Revoke</AlertDialogAction>
+		</AlertDialogFooter>
+	</AlertDialogContent>
+</AlertDialog>
+
+<AlertDialog open={toRotate !== null} onOpenChange={(open) => !open && (toRotate = null)}>
+	<AlertDialogContent>
+		<AlertDialogHeader>
+			<AlertDialogTitle>Rotate {toRotate?.name ?? 'this key'}?</AlertDialogTitle>
+			<AlertDialogDescription>
+				A new secret will be generated. The existing secret stops working immediately —
+				update any clients holding the old value. The key id stays the same.
+			</AlertDialogDescription>
+		</AlertDialogHeader>
+		<AlertDialogFooter>
+			<AlertDialogCancel>Cancel</AlertDialogCancel>
+			<AlertDialogAction onclick={rotate}>Rotate</AlertDialogAction>
 		</AlertDialogFooter>
 	</AlertDialogContent>
 </AlertDialog>

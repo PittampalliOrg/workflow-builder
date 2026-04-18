@@ -8,6 +8,7 @@ import { queryClickHouse, CLICKHOUSE_DB } from '$lib/server/otel/clickhouse';
  */
 export const GET: RequestHandler = async ({ url }) => {
 	const service = url.searchParams.get('service') || '';
+	const sessionId = url.searchParams.get('sessionId') || '';
 	const limit = parseInt(url.searchParams.get('limit') || '30');
 
 	try {
@@ -16,9 +17,20 @@ export const GET: RequestHandler = async ({ url }) => {
 		);
 		const services = serviceRows.map((r) => r.ServiceName as string);
 
-		const whereClause = service
-			? `WHERE ServiceName = '${service.replace(/'/g, "''")}' AND Timestamp > now() - INTERVAL 7 DAY`
-			: 'WHERE Timestamp > now() - INTERVAL 7 DAY';
+		const clauses = ["Timestamp > now() - INTERVAL 7 DAY"];
+		if (service) {
+			clauses.push(`ServiceName = '${service.replace(/'/g, "''")}'`);
+		}
+		// Filter traces to a specific session via the session_id span attribute
+		// emitted by src/telemetry/. This keeps the OTel dashboard drill-downs
+		// linked from the session detail page actually scoped.
+		if (sessionId) {
+			const safe = sessionId.replace(/'/g, "''");
+			clauses.push(
+				`TraceId IN (SELECT DISTINCT TraceId FROM ${CLICKHOUSE_DB}.otel_traces WHERE SpanAttributes['session.id'] = '${safe}' OR SpanAttributes['session_id'] = '${safe}')`
+			);
+		}
+		const whereClause = `WHERE ${clauses.join(" AND ")}`;
 
 		const traceRows = await queryClickHouse(`
 			SELECT

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Loader2, RefreshCw, Search, CircleAlert } from 'lucide-svelte';
+	import { page } from '$app/state';
+	import { Loader2, RefreshCw, Search, CircleAlert, X } from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
@@ -26,12 +27,17 @@
 	let autoRefresh = $state(false);
 	let error = $state<string | null>(null);
 
+	// Session filter: read from URL (?sessionId=...) so deep-links from the
+	// session detail page land pre-filtered. Clearable via the "clear" chip.
+	const sessionIdFilter = $derived(page.url.searchParams.get('sessionId') ?? '');
+
 	async function fetchTraces() {
 		isLoading = true;
 		error = null;
 		try {
 			const params = new URLSearchParams({ limit: '50' });
 			if (selectedService) params.set('service', selectedService);
+			if (sessionIdFilter) params.set('sessionId', sessionIdFilter);
 			const res = await fetch(`/api/observability/traces?${params}`);
 			const data = await res.json();
 			if (data.error && !data.traces?.length) {
@@ -61,10 +67,10 @@
 		return () => clearInterval(interval);
 	});
 
-	// Refetch when service filter changes
+	// Refetch when service filter or the URL-backed session filter changes
 	$effect(() => {
-		// Track selectedService to re-run
 		void selectedService;
+		void sessionIdFilter;
 		fetchTraces();
 	});
 
@@ -93,7 +99,22 @@
 
 <div class="flex h-full flex-col">
 	<header class="flex h-12 items-center justify-between border-b border-border px-6">
-		<h1 class="text-sm font-semibold tracking-tight">Traces</h1>
+		<div class="flex items-center gap-2">
+			<h1 class="text-sm font-semibold tracking-tight">Traces</h1>
+			{#if sessionIdFilter}
+				<Badge variant="secondary" class="text-[10px] gap-1">
+					session={sessionIdFilter.slice(0, 10)}
+					<button
+						type="button"
+						class="ml-1 inline-flex size-3 items-center justify-center rounded hover:bg-background/50"
+						onclick={() => goto('/observability')}
+						aria-label="Clear session filter"
+					>
+						<X size={10} />
+					</button>
+				</Badge>
+			{/if}
+		</div>
 		<div class="flex items-center gap-3">
 			<!-- Service filter -->
 			<div class="flex items-center gap-2">

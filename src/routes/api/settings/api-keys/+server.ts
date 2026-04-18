@@ -46,10 +46,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return error(400, { message: 'name is required' });
 	}
 
-	// Generate a random API key: wf_<32 random hex chars>
+	// Generate a random API key: wfb_<32 random hex chars>. The `wfb_` prefix
+	// matches the webhook validator in /api/workflows/[workflowId]/webhook.
 	const rawBytes = randomBytes(32);
-	const plaintextKey = `wf_${rawBytes.toString('hex')}`;
-	const keyPrefix = plaintextKey.slice(0, 10) + '...';
+	const plaintextKey = `wfb_${rawBytes.toString('hex')}`;
+	const keyPrefix = plaintextKey.slice(0, 11) + '...';
 	const keyHash = createHash('sha256').update(plaintextKey).digest('hex');
 
 	const id = generateId();

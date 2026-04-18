@@ -37,10 +37,12 @@
 		Archive,
 		ArrowLeft,
 		Bot,
+		Activity,
 		Check,
 		Clock,
 		Code2,
 		Container,
+		ExternalLink,
 		Layers,
 		Loader2,
 		MessagesSquare,
@@ -759,6 +761,34 @@
 						</CardContent>
 					</Card>
 				{/if}
+
+				<Card>
+					<CardHeader class="pb-2">
+						<CardTitle class="text-sm flex items-center gap-2">
+							<Activity class="size-4" /> Observability
+						</CardTitle>
+					</CardHeader>
+					<CardContent class="text-xs space-y-1.5">
+						<a
+							href="/api/observability/phoenix/sessions/{session.id}"
+							target="_blank"
+							rel="noreferrer"
+							class="text-primary hover:underline flex items-center gap-1"
+						>
+							Open in Phoenix <ExternalLink class="size-3" />
+						</a>
+						<a
+							href="/observability?sessionId={session.id}"
+							class="text-primary hover:underline block"
+						>
+							Trace explorer ↗
+						</a>
+						<div class="text-[10px] text-muted-foreground pt-1">
+							Spans emitted by the durable agent runtime — LLM calls, tool calls,
+							compaction events.
+						</div>
+					</CardContent>
+				</Card>
 
 				{#if session.workflowExecutionId}
 					<Card>
