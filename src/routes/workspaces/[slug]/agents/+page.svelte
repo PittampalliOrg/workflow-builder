@@ -30,6 +30,7 @@
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 	let includeArchived = $state(false);
+	let includeEphemeral = $state(false);
 	let jumpId = $state('');
 	let created = $state<'all' | '7d' | '30d' | '90d'>('all');
 	let agentToDelete = $state<AgentSummary | null>(null);
@@ -57,6 +58,7 @@
 		try {
 			const params = new URLSearchParams();
 			if (includeArchived) params.set('includeArchived', 'true');
+			if (includeEphemeral) params.set('includeEphemeral', 'true');
 			const res = await fetch(`/api/agents?${params}`);
 			if (!res.ok) {
 				errorMessage = `Failed to load agents (${res.status})`;
@@ -146,6 +148,7 @@
 
 	$effect(() => {
 		void includeArchived;
+		void includeEphemeral;
 		void load();
 	});
 
@@ -217,6 +220,10 @@
 		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
 			<Label for="show-archived" class="text-sm">Show archived</Label>
 			<Switch id="show-archived" bind:checked={includeArchived} />
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<Label for="show-ephemeral" class="text-sm">Show workflow-spawned</Label>
+			<Switch id="show-ephemeral" bind:checked={includeEphemeral} />
 		</div>
 	</div>
 

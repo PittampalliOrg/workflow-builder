@@ -412,6 +412,11 @@ export const workflowExecutions = pgTable(
 		userId: text("user_id")
 			.notNull()
 			.references(() => users.id),
+		// CMA alignment: scope executions by workspace/project. Backfilled from
+		// workflows.project_id in migration 0035; nullable for pre-CMA rows.
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "set null",
+		}),
 		status: text("status")
 			.notNull()
 			.$type<"pending" | "running" | "success" | "error" | "cancelled">(),
@@ -454,6 +459,9 @@ export const workflowExecutions = pgTable(
 		),
 		sessionIdx: index("idx_workflow_executions_session").on(
 			table.workflowSessionId,
+		),
+		projectIdx: index("idx_workflow_executions_project_id").on(
+			table.projectId,
 		),
 		rerunOfExecutionFk: foreignKey({
 			columns: [table.rerunOfExecutionId],

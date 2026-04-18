@@ -8,6 +8,7 @@ import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
+import { assertInScope } from '$lib/server/workflows/project-scope';
 import { validateTriggerModel } from '$lib/server/workflows/model-validation';
 import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 import {
@@ -64,6 +65,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		.limit(1);
 
 	if (!workflow) return error(404, 'Workflow not found');
+
+	// CMA scoping: if the caller has an active workspace (X-Workspace header
+	// or /workspaces/[slug]/ URL) and the workflow belongs to a different
+	// workspace, return 404 so existence isn't leaked across workspaces.
+	// Pre-CMA workflows with a null project_id fall back to ownership check.
+	assertInScope(
+		{ projectId: workflow.projectId ?? null, userId: workflow.userId },
+		locals.session,
+		'Workflow not found'
+	);
 
 	const storedSpec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 

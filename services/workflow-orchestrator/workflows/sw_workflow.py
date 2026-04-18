@@ -1153,17 +1153,15 @@ def _run_native_durable_agent_child_workflow(
                 track_err,
             )
 
-    # Workflow↔Session bridge: when WORKFLOW_USE_SESSIONS=true and the node
-    # targets dapr-agent-py, route through session_workflow so the run
-    # appears in /sessions/{id} with full event history and reuses the
-    # same runtime path as UI-initiated sessions. Falls back to the
-    # historical agent_workflow child workflow when the flag is off.
-    use_sessions = (
-        os.environ.get("WORKFLOW_USE_SESSIONS", "").strip().lower() == "true"
-    )
+    # Workflow↔Session bridge is now a structural invariant: every durable/run
+    # against dapr-agent-py routes through session_workflow so the run appears
+    # in /sessions/{id} with full event history and reuses the same runtime
+    # path as UI-initiated sessions. The previous WORKFLOW_USE_SESSIONS feature
+    # flag (OFF branch = direct call_child_workflow("agent_workflow", ...))
+    # was removed in Deploy B of the CMA-alignment plan after the flag had
+    # been on in production since 2026-04-17 with no issues.
     session_bridge_eligible = (
-        use_sessions
-        and target.get("app_id") == "dapr-agent-py"
+        target.get("app_id") == "dapr-agent-py"
         and target.get("workflow_name") == "agent_workflow"
     )
 

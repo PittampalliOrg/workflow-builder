@@ -1155,7 +1155,7 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, name, description, user_id, nodes, edges, spec, spec_version, dapr_workflow_name
+            SELECT id, name, description, user_id, project_id, nodes, edges, spec, spec_version, dapr_workflow_name
             FROM workflows
             WHERE id = %s
             """,
@@ -1170,6 +1170,7 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
             wf_name,
             wf_description,
             user_id,
+            project_id,
             nodes_json,
             edges_json,
             spec_json,
@@ -1186,6 +1187,7 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
             "name": wf_name,
             "description": wf_description,
             "userId": user_id,
+            "projectId": project_id,
             "nodes": nodes,
             "edges": edges,
             "spec": spec,
@@ -1207,8 +1209,15 @@ def _create_workflow_execution(
     workflow_id: str,
     user_id: str,
     trigger_data: dict[str, Any],
+    project_id: str | None = None,
 ) -> str:
-    """Create a running workflow_executions row and return its ID."""
+    """Create a running workflow_executions row and return its ID.
+
+    CMA alignment: execution rows carry the owning project_id so downstream
+    APIs can scope by workspace without joining through workflows. The
+    column was added in migration 0035 and is backfilled for historical
+    rows; callers should pass workflow_record["projectId"] when available.
+    """
     import psycopg2
 
     execution_id = _generate_execution_id()
@@ -1219,14 +1228,15 @@ def _create_workflow_execution(
             cur.execute(
                 """
                 INSERT INTO workflow_executions (
-                    id, workflow_id, user_id, status, input, phase, progress, workflow_session_id
+                    id, workflow_id, user_id, project_id, status, input, phase, progress, workflow_session_id
                 )
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
                 """,
                 (
                     execution_id,
                     workflow_id,
                     user_id,
+                    project_id,
                     "running",
                     json.dumps(trigger_data or {}),
                     "running",
@@ -2177,6 +2187,7 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
                 workflow_id=workflow_record["id"],
                 user_id=workflow_record["userId"],
                 trigger_data=request.triggerData,
+                project_id=workflow_record.get("projectId"),
             )
 
         otel_ctx = _merge_otel_context(http_request)

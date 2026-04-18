@@ -84,20 +84,32 @@ export type ListAgentsFilter = {
 	 * project_scope migration got backfilled to the oldest project, so
 	 * legacy data isn't hidden from single-workspace users. */
 	projectId?: string;
+	/** Include workflow-spawned ephemeral agents (tagged
+	 * "workflow-ephemeral" by `findOrCreateEphemeralAgent`). Default false
+	 * — per CMA alignment these shells represent sessions, not user-owned
+	 * agents, and shouldn't pollute the workspace Agents list. */
+	includeEphemeral?: boolean;
 };
 
 export async function listAgents(
 	filter: ListAgentsFilter = {},
 ): Promise<AgentSummary[]> {
 	const database = requireDb();
-	const conditions = [] as ReturnType<typeof eq>[];
+	const conditions: unknown[] = [];
 	if (!filter.includeArchived) conditions.push(eq(agents.isArchived, false));
 	if (filter.projectId) conditions.push(eq(agents.projectId, filter.projectId));
+	if (!filter.includeEphemeral) {
+		// agents.tags is JSONB; use the @> containment operator.
+		conditions.push(
+			sql`NOT (${agents.tags} @> '["workflow-ephemeral"]'::jsonb)`,
+		);
+	}
 
 	const rows = await database
 		.select()
 		.from(agents)
-		.where(conditions.length > 0 ? and(...conditions) : undefined)
+		// biome-ignore lint/suspicious/noExplicitAny: mixed drizzle SQL expression types in conditions array
+		.where(conditions.length > 0 ? and(...(conditions as any[])) : undefined)
 		.orderBy(asc(agents.name));
 
 	if (rows.length === 0) return [];

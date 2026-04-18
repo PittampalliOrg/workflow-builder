@@ -9,6 +9,7 @@ import {
 } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { extractExecutionTraceIds } from '$lib/server/otel/clickhouse';
+import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
 export interface NormalizedLog {
 	stepName: string;
@@ -27,7 +28,7 @@ export interface NormalizedLog {
  * Returns normalized per-step logs for the execution.
  * Sources: workflowExecutionLogs table, then falls back to output.outputs from the execution record.
  */
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
 	const { executionId } = params;
 
 	if (!db) {
@@ -42,6 +43,18 @@ export const GET: RequestHandler = async ({ params }) => {
 		.limit(1);
 
 	if (!execution) {
+		return error(404, 'Execution not found');
+	}
+
+	// CMA scoping: return 404 when the caller's active workspace doesn't own
+	// this execution. Pre-CMA rows (null project_id) fall back to ownership.
+	if (
+		locals.session?.userId &&
+		!isResourceInScope(
+			{ projectId: execution.projectId ?? null, userId: execution.userId },
+			locals.session
+		)
+	) {
 		return error(404, 'Execution not found');
 	}
 

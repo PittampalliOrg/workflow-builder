@@ -1,11 +1,14 @@
 """
 Spawn-session activity for the workflow↔session bridge.
 
-Called by ``sw_workflow.py`` when ``WORKFLOW_USE_SESSIONS=true`` for a
-``durable/run`` node. Creates the ephemeral agent row + session row in
-workflow-builder's DB via an internal endpoint and returns the child
-workflow input that the orchestrator then passes to a Dapr
-``call_child_workflow("session_workflow", ...)`` call.
+Called by ``sw_workflow.py`` for every ``durable/run`` node that targets
+``dapr-agent-py`` (structural invariant after Deploy B of the CMA-
+alignment plan — the previous ``WORKFLOW_USE_SESSIONS=true`` feature
+flag was removed once the bridge stabilized). Creates the ephemeral
+agent row + session row in workflow-builder's DB via an internal
+endpoint and returns the child workflow input that the orchestrator
+then passes to a Dapr ``call_child_workflow("session_workflow", ...)``
+call.
 
 Durability:
   * Idempotent — the orchestrator passes a deterministic ``sessionId``

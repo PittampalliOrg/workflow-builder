@@ -1176,7 +1176,7 @@
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
 							<a
-								href="/workflow-ops/executions?executionId={session.workflowExecutionId}"
+								href="/workflows/runs/{session.workflowExecutionId}"
 								class="text-primary hover:underline truncate block"
 							>
 								{session.workflowExecutionId}

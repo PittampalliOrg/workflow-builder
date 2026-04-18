@@ -37,7 +37,8 @@
 		Users,
 		Key,
 		Gauge,
-		Wrench
+		Wrench,
+		Workflow
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -113,6 +114,7 @@
 				{ href: wsPath(activeSlug, 'vaults'), label: 'Credential vaults', icon: KeyRound },
 				{ href: wsPath(activeSlug, 'skills'), label: 'Skills', icon: Puzzle },
 				{ href: wsPath(activeSlug, 'files'), label: 'Files', icon: Files },
+				{ href: wsPath(activeSlug, 'workflows'), label: 'Workflows', icon: Workflow },
 				{ href: '/connections', label: 'Connections', icon: Plug }
 			]
 		},

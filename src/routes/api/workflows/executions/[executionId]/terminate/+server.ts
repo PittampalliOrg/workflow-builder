@@ -4,6 +4,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { db } from '$lib/server/db';
 import { workflowAgentRuns, workflowExecutions } from '$lib/server/db/schema';
+import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
 /**
  * POST /api/workflows/executions/[executionId]/terminate
@@ -11,7 +12,7 @@ import { workflowAgentRuns, workflowExecutions } from '$lib/server/db/schema';
  * Terminates a running workflow execution by proxying
  * to the Dapr orchestrator terminate endpoint.
  */
-export const POST: RequestHandler = async ({ params, request }) => {
+export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const { executionId } = params;
 	if (!db) {
 		throw error(503, { message: 'Database not configured' });
@@ -33,13 +34,26 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const [execution] = await db
 		.select({
 			id: workflowExecutions.id,
-			daprInstanceId: workflowExecutions.daprInstanceId
+			daprInstanceId: workflowExecutions.daprInstanceId,
+			projectId: workflowExecutions.projectId,
+			userId: workflowExecutions.userId
 		})
 		.from(workflowExecutions)
 		.where(eq(workflowExecutions.id, executionId))
 		.limit(1);
 
 	if (!execution) {
+		throw error(404, { message: 'Execution not found' });
+	}
+
+	// CMA scoping: 404 on cross-workspace terminate to avoid existence leak.
+	if (
+		locals.session?.userId &&
+		!isResourceInScope(
+			{ projectId: execution.projectId ?? null, userId: execution.userId },
+			locals.session
+		)
+	) {
 		throw error(404, { message: 'Execution not found' });
 	}
 

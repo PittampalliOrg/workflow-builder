@@ -18,6 +18,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const q = url.searchParams.get("q") ?? undefined;
 	const tag = url.searchParams.get("tag") ?? undefined;
 	const includeArchived = url.searchParams.get("includeArchived") === "true";
+	const includeEphemeral =
+		url.searchParams.get("includeEphemeral") === "true";
 	const projectIdParam = url.searchParams.get("projectId");
 	const projectId =
 		projectIdParam === "null"
@@ -29,6 +31,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		q,
 		tag,
 		includeArchived,
+		includeEphemeral,
 		projectId,
 	});
 	return json({ agents });
