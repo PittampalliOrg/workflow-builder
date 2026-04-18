@@ -99,6 +99,12 @@
 	let expiringCreds = $state<
 		Array<{ vaultId: string; credId: string; displayName: string; expiresAt: string }>
 	>([]);
+	// Liveness of the per-session OpenShell sandbox. Sessions persist the
+	// sandbox name forever, but OpenShell GCs the sandbox after the session
+	// terminates — so links to /sandboxes/<name> often 404. We probe on load
+	// and re-probe on status change to mark the card as "terminated" instead
+	// of inviting the user to click a dead link.
+	let sandboxAlive = $state<'unknown' | 'alive' | 'terminated'>('unknown');
 
 	let stream = $state<SessionStreamStore | null>(null);
 	let unsub: (() => void) | null = null;
@@ -119,6 +125,24 @@
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function checkSandboxLiveness() {
+		if (!session) {
+			sandboxAlive = 'unknown';
+			return;
+		}
+		const name = session.workspaceSandboxName ?? session.sandboxName;
+		if (!name) {
+			sandboxAlive = 'unknown';
+			return;
+		}
+		try {
+			const res = await fetch(`/api/sandboxes/${encodeURIComponent(name)}`);
+			sandboxAlive = res.ok ? 'alive' : 'terminated';
+		} catch {
+			sandboxAlive = 'unknown';
 		}
 	}
 
@@ -167,6 +191,7 @@
 		void (async () => {
 			await initialLoad();
 			void checkExpiringCreds();
+			void checkSandboxLiveness();
 		})();
 		stream = createSessionStream(sessionId);
 		unsub = stream.subscribe((state) => {
@@ -177,6 +202,18 @@
 			if (state.session) session = state.session;
 			queueScroll();
 		});
+	});
+
+	// Re-probe sandbox liveness whenever session transitions to terminated.
+	let lastKnownStatus = $state<string | null>(null);
+	$effect(() => {
+		const status = session?.status ?? null;
+		if (status !== lastKnownStatus) {
+			lastKnownStatus = status;
+			if (status === 'terminated' || status === 'idle') {
+				void checkSandboxLiveness();
+			}
+		}
 	});
 
 	onDestroy(() => {
@@ -860,15 +897,33 @@
 				{/if}
 
 				{#if session.workspaceSandboxName || session.sandboxName}
+					{@const sbxName = session.workspaceSandboxName ?? session.sandboxName}
 					<Card>
 						<CardHeader class="pb-2">
 							<CardTitle class="text-sm flex items-center gap-2">
 								<Container class="size-4" />
 								{session.workspaceSandboxName ? 'Session sandbox' : 'Sandbox runtime'}
+								{#if sandboxAlive === 'alive'}
+									<Badge
+										variant="outline"
+										class="text-[9px] gap-1 bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
+									>
+										<span class="size-1.5 rounded-full bg-green-500"></span>
+										live
+									</Badge>
+								{:else if sandboxAlive === 'terminated'}
+									<Badge variant="outline" class="text-[9px]">terminated</Badge>
+								{/if}
 							</CardTitle>
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
-							{#if session.workspaceSandboxName}
+							{#if sandboxAlive === 'terminated'}
+								<span class="font-mono text-muted-foreground line-through">{sbxName}</span>
+								<div class="text-muted-foreground text-[10px]">
+									The sandbox has been garbage-collected. Live terminal, files, and logs
+									are no longer available for this session.
+								</div>
+							{:else if session.workspaceSandboxName}
 								<a
 									href="/sandboxes/{session.workspaceSandboxName}"
 									class="text-primary hover:underline font-mono"
