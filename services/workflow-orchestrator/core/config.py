@@ -62,8 +62,6 @@ class OrchestratorConfig:
     # name override.
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "agent_workflow"
     CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "claudeCodeRunWorkflowV1"
-    DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "agent_workflow"
-    DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "agent_workflow"
 
     # Runtime feature gate and startup checks
     ENFORCE_MIN_DAPR_VERSION: str = "false"
@@ -104,8 +102,6 @@ class OrchestratorConfig:
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME",
-                "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
-                "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -181,14 +177,6 @@ class OrchestratorConfig:
             "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "claudeCodeRunWorkflowV1",
-            ),
-            "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME": (
-                "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
-                "agent_workflow",
-            ),
-            "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
-                "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
-                "agent_workflow",
             ),
             "ENFORCE_MIN_DAPR_VERSION": (
                 "ENFORCE_MIN_DAPR_VERSION",

@@ -67,18 +67,8 @@ wfr = wf.WorkflowRuntime()
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _is_replaying(ctx: wf.DaprWorkflowContext) -> bool:
-    value = getattr(ctx, "is_replaying", False)
-    if callable(value):
-        try:
-            return bool(value())
-        except Exception:
-            return False
-    return bool(value)
-
-
 def _log_info(ctx: wf.DaprWorkflowContext, msg: str, *args: Any) -> None:
-    if not _is_replaying(ctx):
+    if not ctx.is_replaying:
         logger.info(msg, *args)
 
 

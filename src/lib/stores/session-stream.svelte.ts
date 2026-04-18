@@ -151,7 +151,6 @@ export function createSessionStream(sessionId: string): SessionStreamStore {
 		// Subscribe to every event type we care about.
 		const types = [
 			"agent.message",
-			"agent.thinking",
 			"agent.tool_use",
 			"agent.mcp_tool_use",
 			"agent.custom_tool_use",

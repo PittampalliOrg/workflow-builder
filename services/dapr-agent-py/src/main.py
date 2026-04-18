@@ -69,7 +69,7 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
-from src.event_publisher import publish_session_event, scope_session, unscope_session
+from src.event_publisher import publish_session_event
 from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.hooks import (
     HooksSnapshot,
@@ -280,11 +280,23 @@ pubsub_config = AgentPubSubConfig(
     broadcast_topic=AGENT_BROADCAST_TOPIC,
 )
 
+AGENT_REGISTRY_STORE = os.environ.get("AGENT_REGISTRY_STORE", "").strip()
+if not AGENT_REGISTRY_STORE:
+    raise RuntimeError(
+        "AGENT_REGISTRY_STORE env var is required. The Dapr registry is "
+        "shared with any app that scopes the named state-store component; "
+        "an unset value would silently collapse into the `agent-registry` "
+        "default and risk cross-app peer-tool injection via _load_tools."
+    )
+AGENT_REGISTRY_TEAM = os.environ.get("AGENT_REGISTRY_TEAM", "default")
+logger.info(
+    "Agent registry: store=%s team=%s",
+    AGENT_REGISTRY_STORE,
+    AGENT_REGISTRY_TEAM,
+)
 registry_config = AgentRegistryConfig(
-    store=StateStoreService(
-        store_name=os.environ.get("AGENT_REGISTRY_STORE", "agent-registry")
-    ),
-    team_name=os.environ.get("AGENT_REGISTRY_TEAM", "default"),
+    store=StateStoreService(store_name=AGENT_REGISTRY_STORE),
+    team_name=AGENT_REGISTRY_TEAM,
 )
 
 # ---------------------------------------------------------------------------
@@ -856,6 +868,24 @@ def _materialize_instance_skill_packages(
     return updated
 
 
+# Dapr conversation-component → Anthropic model-id map used by compaction
+# (context-window lookup + token counting). Kept inline here rather than in
+# the component YAML so compaction doesn't need a round-trip to Dapr metadata.
+_COMPONENT_MODEL_MAP: dict[str, str] = {
+    "llm-anthropic-sonnet": "claude-sonnet-4-6",
+    "llm-anthropic-opus": "claude-opus-4-7",
+    "llm-anthropic-haiku": "claude-haiku-4-5-20251001",
+}
+
+
+def _resolve_model_id(component: str | None) -> str | None:
+    if not component:
+        return None
+    if component in _COMPONENT_MODEL_MAP:
+        return _COMPONENT_MODEL_MAP[component]
+    return component
+
+
 class OpenShellDurableAgent(DurableAgent):
     """DurableAgent wrapper that targets the requested OpenShell sandbox."""
 
@@ -1025,14 +1055,39 @@ class OpenShellDurableAgent(DurableAgent):
             tools.append(tool)
         return tools
 
+    def _compaction_caller(
+        self,
+        component: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: Any = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """LLM caller used by the compaction engine for summarization.
+
+        Runs through ``DaprChatClient.generate()``. ``max_tokens`` is not
+        forwarded by DaprChatClient in 1.0.1 (only ``structured_mode`` flows
+        through ``parameters``), so summary length is bounded by the
+        conversation-component's default (typically 4096 tokens). Summaries
+        of very long sessions may truncate; ``messages_dropped`` in the
+        compaction result remains accurate regardless.
+        """
+        resp = self.llm.generate(
+            messages=messages,
+            llm_component=component,
+            tools=tools,
+        )
+        content = ""
+        try:
+            if resp and getattr(resp, "results", None):
+                msg = resp.results[0].message
+                content = getattr(msg, "content", "") or ""
+        except Exception:  # noqa: BLE001
+            content = ""
+        return {"content": content}
+
     def call_llm(self, ctx, payload):
         """Publish llm_start/llm_complete streaming events with content."""
-        # Re-apply Anthropic adapter on each call (survives durable workflow replay)
-        try:
-            from src.anthropic_adapter import patch_for_anthropic
-            patch_for_anthropic(self.llm)
-        except Exception:
-            pass
         exec_id = self._exec_id or ""
         inst_id = self._inst_id or payload.get("instance_id", "")
         component = getattr(self.llm, "_llm_component", None)
@@ -1044,18 +1099,13 @@ class OpenShellDurableAgent(DurableAgent):
         # entry.messages via save_state; super().call_llm() will reload the
         # compacted state. Failures are advisory and never block call_llm.
         try:
-            from src.anthropic_adapter import _call_anthropic_sdk, _get_anthropic_model
             from src.compaction import maybe_compact
 
             cfg = self._compaction_cfg_by_instance.get(inst_id)
             if cfg is not None and cfg.enabled:
                 turn_index = self._compaction_call_count_by_instance.get(inst_id, 0)
                 self._compaction_call_count_by_instance[inst_id] = turn_index + 1
-                model_id = (
-                    _get_anthropic_model(component)
-                    if component and "anthropic" in component
-                    else (component or None)
-                )
+                model_id = _resolve_model_id(component) if component else None
                 runtime_for_compact = get_runtime()
                 result = maybe_compact(
                     self,
@@ -1064,7 +1114,7 @@ class OpenShellDurableAgent(DurableAgent):
                     config=cfg,
                     model=model_id,
                     component=component,
-                    caller=_call_anthropic_sdk,
+                    caller=self._compaction_caller,
                     turn_index=turn_index,
                     runtime=runtime_for_compact,
                     session_id=self._session_id_by_instance.get(inst_id),
@@ -1082,15 +1132,6 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[compaction] inline pass failed (continuing): %s", exc, exc_info=True)
 
-        # Suppress tool_choice for Anthropic components — the Dapr langchaingo
-        # Anthropic adapter passes tool_choice as a string ("auto") but the
-        # Anthropic API expects a dict ({"type": "auto"}), causing HTTP 400.
-        # Workaround: temporarily clear tool_choice for Anthropic calls.
-        saved_tool_choice = None
-        if component and "anthropic" in component:
-            saved_tool_choice = self.execution.tool_choice
-            self.execution.tool_choice = None
-
         sess_id = self._session_id_by_instance.get(inst_id)
         try:
             publish_session_event(
@@ -1098,9 +1139,6 @@ class OpenShellDurableAgent(DurableAgent):
             )
         except Exception:
             pass
-        # Scope session for the inner call chain — the Anthropic adapter
-        # reads this contextvar to emit agent.thinking events.
-        scope_token = scope_session(sess_id, inst_id)
         try:
             self._active_llm_instance_id = inst_id
             result = super().call_llm(ctx, payload)
@@ -1115,10 +1153,6 @@ class OpenShellDurableAgent(DurableAgent):
             raise
         finally:
             self._active_llm_instance_id = None
-            unscope_session(scope_token)
-            # Restore tool_choice if it was suppressed for Anthropic
-            if saved_tool_choice is not None:
-                self.execution.tool_choice = saved_tool_choice
         # Extract content summary from the assistant message
         content = ""
         tool_calls = []
@@ -2384,22 +2418,10 @@ class OpenShellDurableAgent(DurableAgent):
             )
 
             try:
-                # Apply the same retry policy agent_workflow uses internally
-                # (WorkflowRetryPolicy(max_attempts=8, 4s→45s backoff) — see
-                # the DurableAgent instantiation below). Without this, an
-                # agent_workflow turn that exhausts its internal retries
-                # would terminate the session with a single session.error
-                # event. Matching policy lets session_workflow retry the
-                # whole turn on transient agent-side failures, consistent
-                # with Dapr-native durability semantics for workflow-driven
-                # runs (Deploy A of the CMA-alignment plan).
-                # In dapr-agents 1.0.1 the base class registers
-                # agent_workflow under a namespaced name
-                # (dapr.agents.<AgentName>.workflow) via _named(); the
-                # bare "agent_workflow" string is no longer in the
-                # runtime registry. Use the property the SDK exposes for
-                # cross-workflow dispatch so this keeps working even if
-                # the naming scheme changes again.
+                # Mirror the agent_workflow retry policy (max_attempts=8,
+                # 4s→45s backoff) so transient agent-side failures don't
+                # drop the whole session. We bypass dapr_agents.call_agent()
+                # because it does not forward retry_policy.
                 turn_result = yield ctx.call_child_workflow(
                     self.agent_workflow_name,
                     input=child_input,
@@ -2659,15 +2681,6 @@ except Exception as exc:
 # FastAPI application
 # ---------------------------------------------------------------------------
 
-# Patch DaprChatClient for Anthropic — the Dapr sidecar's langchaingo layer
-# sends tool_choice as a string even when None/not-passed, breaking Anthropic.
-# This is a Go-side bug that can't be fixed from Python.
-try:
-    from src.anthropic_adapter import patch_for_anthropic
-    patch_for_anthropic(agent.llm)
-except Exception as exc:
-    logger.warning("Anthropic adapter patch failed: %s", exc)
-
 try:
     from src.openai_adapter import patch_for_openai
     patch_for_openai(agent.llm)
@@ -2680,6 +2693,16 @@ runner = AgentRunner()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s starting", AGENT_SERVICE_NAME)
+    try:
+        from dapr_agents.workflow.utils.subscription import TTLDedupeBackend
+
+        logger.info(
+            "Pubsub dedupe backend available: %s (%s)",
+            TTLDedupeBackend.__name__,
+            TTLDedupeBackend.__module__,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Pubsub dedupe backend unavailable: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)

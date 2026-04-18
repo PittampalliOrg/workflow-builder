@@ -21,7 +21,6 @@
 	const title = $derived.by(() => {
 		if (kind === 'user') return 'Message';
 		if (kind === 'agent') return 'Message';
-		if (kind === 'thinking') return 'Thinking';
 		if (kind === 'tool') {
 			const d = event.data as { name?: string; tool_name?: string };
 			return String(d.name ?? d.tool_name ?? 'Tool use');
@@ -127,11 +126,6 @@
 			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Content</div>
 			<div class="prose prose-sm dark:prose-invert mt-2 max-w-none whitespace-pre-wrap">
 				{textContent || '(empty)'}
-			</div>
-		{:else if kind === 'thinking'}
-			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Reasoning</div>
-			<div class="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
-				{textContent || '(no text captured)'}
 			</div>
 		{:else if kind === 'tool'}
 			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Input</div>

@@ -138,17 +138,10 @@ def _normalize_messages(
 
 def _extract_openai_response(
     response: dict[str, Any],
-) -> tuple[str, list[dict[str, Any]], list[str]]:
-    """Returns (content, tool_calls, thinking_blocks).
-
-    Responses API emits `{type: "reasoning", summary: [{type:"summary_text",
-    text:"..."}]}` items when `reasoning.summary` is set. We pull those out
-    as thinking blocks so they land in session_events as agent.thinking
-    rather than getting mixed into the assistant message.
-    """
+) -> tuple[str, list[dict[str, Any]]]:
+    """Returns (content, tool_calls). Reasoning summaries are discarded."""
     content_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
-    thinking_blocks: list[str] = []
     for item in response.get("output") or []:
         item_type = item.get("type")
         if item_type == "message":
@@ -165,35 +158,7 @@ def _extract_openai_response(
                     "arguments": str(item.get("arguments") or "{}"),
                 },
             })
-        elif item_type == "reasoning":
-            for summary in item.get("summary") or []:
-                if isinstance(summary, dict):
-                    text = str(summary.get("text") or "")
-                    if text.strip():
-                        thinking_blocks.append(text)
-    return "".join(content_parts), tool_calls, thinking_blocks
-
-
-def _emit_thinking(thinking_blocks: list[str]) -> None:
-    """Emit agent.thinking events from OpenAI reasoning summaries via the
-    contextvar set by main.py:call_llm."""
-    if not thinking_blocks:
-        return
-    try:
-        from src.event_publisher import get_scoped_session, publish_session_event
-
-        sid, iid = get_scoped_session()
-        if not sid:
-            return
-        for text in thinking_blocks:
-            publish_session_event(
-                sid,
-                "agent.thinking",
-                {"content": [{"type": "text", "text": text}]},
-                instance_id=iid,
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[openai-responses] thinking emit failed: %s", exc)
+    return "".join(content_parts), tool_calls
 
 
 def _auth_headers() -> tuple[dict[str, str], str]:
@@ -311,11 +276,7 @@ def _call_openai_responses(
         request_body["max_output_tokens"] = max_tokens
     if model.startswith("gpt-5") or model.startswith("o"):
         effort = os.environ.get("OPENAI_REASONING_EFFORT", "medium")
-        # summary="detailed" tells the Responses API to echo back reasoning
-        # summaries in the output; without it we'd get reasoning tokens
-        # charged but no visible content for agent.thinking.
-        summary = os.environ.get("OPENAI_REASONING_SUMMARY", "detailed")
-        request_body["reasoning"] = {"effort": effort, "summary": summary}
+        request_body["reasoning"] = {"effort": effort}
     if response_format is not None:
         try:
             schema = _strict_json_schema(response_format.model_json_schema())
@@ -347,8 +308,7 @@ def _call_openai_responses(
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
 
-    content, tool_calls, thinking_blocks = _extract_openai_response(data)
-    _emit_thinking(thinking_blocks)
+    content, tool_calls = _extract_openai_response(data)
     result: dict[str, Any] = {
         "role": "assistant",
         "content": content or None,

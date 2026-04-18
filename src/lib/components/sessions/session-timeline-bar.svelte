@@ -39,7 +39,6 @@
 	const FILL: Record<EventKind, string> = {
 		user: 'bg-rose-500',
 		agent: 'bg-blue-500',
-		thinking: 'bg-emerald-500',
 		tool: 'bg-muted-foreground/40',
 		result: 'bg-amber-500',
 		model: 'bg-slate-500',
@@ -51,7 +50,6 @@
 	const FILL_ACTIVE: Record<EventKind, string> = {
 		user: 'bg-rose-400',
 		agent: 'bg-blue-400',
-		thinking: 'bg-emerald-400',
 		tool: 'bg-muted-foreground/70',
 		result: 'bg-amber-400',
 		model: 'bg-slate-400',

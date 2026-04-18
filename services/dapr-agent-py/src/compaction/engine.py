@@ -174,7 +174,7 @@ def _render_transcript(messages: list[Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-AnthropicCaller = Callable[..., dict[str, Any]]
+SummaryCaller = Callable[..., dict[str, Any]]
 
 
 def _call_summary_llm(
@@ -182,12 +182,12 @@ def _call_summary_llm(
     component: str,
     messages: list[dict[str, Any]],
     max_tokens: int,
-    caller: AnthropicCaller,
+    caller: SummaryCaller,
 ) -> str:
-    """Invoke the Anthropic SDK (via caller) and return the raw summary text.
+    """Invoke the LLM via the caller and return the raw summary text.
 
-    The caller is typically `src.anthropic_adapter._call_anthropic_sdk`,
-    which already implements the output-token escalation path. The
+    The caller is supplied by the agent (see OpenShellDurableAgent
+    ``_compaction_caller``) and runs through DaprChatClient. The
     summarization prompt sits in a SYSTEM-role message of `messages`.
     """
     result = caller(
@@ -313,7 +313,7 @@ def maybe_compact(
     config: CompactionConfig,
     model: str | None,
     component: str | None,
-    caller: AnthropicCaller,
+    caller: SummaryCaller,
     turn_index: int = 0,
     runtime: Any = None,
     anthropic_client: Any = None,

@@ -110,10 +110,10 @@
 		detail: string;
 	} {
 		const { type, data } = event;
-		if (type === 'agent.message' || type === 'agent.thinking') {
+		if (type === 'agent.message') {
 			const content = (data as { content?: Array<{ text?: string }> }).content ?? [];
 			const text = content.map((c) => c.text ?? '').join('');
-			return { kind: 'agent', label: type === 'agent.thinking' ? 'thinking' : 'agent', detail: truncate(text) };
+			return { kind: 'agent', label: 'agent', detail: truncate(text) };
 		}
 		if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
 			return {
