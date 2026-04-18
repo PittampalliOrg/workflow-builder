@@ -24,6 +24,7 @@
 		PopoverTrigger
 	} from '$lib/components/ui/popover';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
+	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
@@ -71,6 +72,18 @@
 
 	let session = $state<SessionDetail | null>(null);
 	let events = $state<SessionEventEnvelope[]>([]);
+	// Transcript: user-facing messages + tool-use (compacted); hides thinking
+	// and raw status events. Debug: show every event verbatim.
+	let viewMode = $state<'transcript' | 'debug'>('transcript');
+	const displayEvents = $derived.by(() => {
+		if (viewMode === 'debug') return events;
+		return events.filter((e) => {
+			if (e.type === 'agent.thinking') return false;
+			if (e.type.startsWith('session.status_') && e.type !== 'session.status_terminated')
+				return false;
+			return true;
+		});
+	});
 	let isConnected = $state(false);
 	let isConsolidating = $state(false);
 	let streamError = $state<string | null>(null);
@@ -378,6 +391,15 @@
 </script>
 
 <div class="flex flex-col h-screen">
+	<div class="border-b bg-muted/30 px-4 py-2 flex items-center gap-1 text-xs text-muted-foreground">
+		<a href="/workspaces/{slug}/sessions" class="hover:text-foreground">Sessions</a>
+		<span class="text-muted-foreground/60">/</span>
+		{#if session}
+			<CopyIdButton value={session.id} />
+		{:else}
+			<span>Loading…</span>
+		{/if}
+	</div>
 	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
 		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
 			<ArrowLeft class="size-4" />
@@ -501,18 +523,43 @@
 
 	<div class="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] overflow-hidden">
 		<div class="flex flex-col overflow-hidden">
+			<div class="border-b px-4 py-2 flex items-center gap-2">
+				<div class="inline-flex rounded-md border bg-muted/30 p-0.5">
+					<button
+						type="button"
+						class="px-3 py-1 text-xs rounded {viewMode === 'transcript' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+						onclick={() => (viewMode = 'transcript')}
+					>
+						Transcript
+					</button>
+					<button
+						type="button"
+						class="px-3 py-1 text-xs rounded {viewMode === 'debug' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+						onclick={() => (viewMode = 'debug')}
+					>
+						Debug
+					</button>
+				</div>
+				<span class="text-[10px] text-muted-foreground">
+					{#if viewMode === 'transcript'}
+						{displayEvents.length} message{displayEvents.length === 1 ? '' : 's'} · thinking + status events hidden
+					{:else}
+						{events.length} raw event{events.length === 1 ? '' : 's'}
+					{/if}
+				</span>
+			</div>
 			<div bind:this={scrollEl} class="flex-1 overflow-y-auto p-6 space-y-4">
 				{#if loading}
 					<Skeleton class="h-16" />
 					<Skeleton class="h-16" />
-				{:else if events.length === 0}
+				{:else if displayEvents.length === 0}
 					<div class="text-center text-muted-foreground text-sm py-16">
 						{session?.status === 'terminated'
 							? 'Session ended with no events.'
 							: 'Waiting for the agent to start…'}
 					</div>
 				{:else}
-					{#each events as ev (ev.id)}
+					{#each displayEvents as ev (ev.id)}
 						{@const formatted = formatEvent(ev)}
 						{#if formatted.kind === 'user'}
 							<div class="flex justify-end">
