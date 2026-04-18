@@ -29,16 +29,21 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				Duration / 1e6 AS DurationMs,
 				SpanAttributes['model'] AS Model,
 				SpanAttributes['request.id'] AS RequestId,
-				SpanAttributes['type'] AS Type,
+				SpanAttributes['query_source'] AS QuerySource,
+				SpanAttributes['llm_request.context'] AS Context,
 				SpanAttributes['service_tier'] AS ServiceTier,
 				SpanAttributes['input_tokens'] AS InputTokens,
 				SpanAttributes['output_tokens'] AS OutputTokens,
-				SpanAttributes['session.id'] AS SessionId,
+				SpanAttributes['success'] AS Success,
 				StatusCode
 			FROM ${CLICKHOUSE_DB}.otel_traces
-			WHERE SpanName IN ('span.model_request_start', 'span.model_request_end',
-				'claude_code.model_request', 'llm.request', 'anthropic.messages.create')
-				AND Timestamp > now() - INTERVAL 7 DAY
+			WHERE SpanName IN (
+				'claude_code.llm_request',
+				'dapr-agent-py.call_llm',
+				'span.model_request_start',
+				'span.model_request_end',
+				'anthropic.messages.create'
+			) AND Timestamp > now() - INTERVAL 7 DAY
 			ORDER BY Timestamp DESC
 			LIMIT ${safeLimit}
 		`);
@@ -47,15 +52,18 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			timestamp: String(r.Timestamp),
 			traceId: String(r.TraceId),
 			spanId: String(r.SpanId),
-			requestId: r.RequestId ? String(r.RequestId) : null,
+			requestId: r.RequestId ? String(r.RequestId) : String(r.SpanId),
 			model: r.Model ? String(r.Model) : null,
-			sessionId: r.SessionId ? String(r.SessionId) : null,
-			type: r.Type ? String(r.Type) : "HTTP",
+			sessionId: null,
+			type: r.Context ? String(r.Context) : "Streaming",
 			serviceTier: r.ServiceTier ? String(r.ServiceTier) : "Standard",
 			inputTokens: r.InputTokens ? Number(r.InputTokens) : null,
 			outputTokens: r.OutputTokens ? Number(r.OutputTokens) : null,
 			durationMs: Math.round(Number(r.DurationMs ?? 0)),
-			status: (r.StatusCode as string) === "Error" ? "error" : "ok",
+			status:
+				(r.StatusCode as string) === "Error" || r.Success === "false"
+					? "error"
+					: "ok",
 		}));
 
 		return json({ logs, asOf: new Date().toISOString() });
