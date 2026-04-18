@@ -174,3 +174,4 @@ Now that baseline parity is confirmed, escalate in this order:
 2. **Incident Commander** — stress-tests MCP auth + credential broker parity (Sentry, Linear, Slack, GitHub MCPs). Requires real MCP credentials; will surface vault and `mcp_connection` differences.
 3. **Custom skill + hooks/plugins** — the features that exist only on our side. Build something that uses our hooks overlay and verify the CMA agent can't do the equivalent (confirming our differentiator).
 Last modified: 2026-04-18T18:02:49Z
+Last modified: 2026-04-18T18:05:29Z
