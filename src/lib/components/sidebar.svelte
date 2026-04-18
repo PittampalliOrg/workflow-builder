@@ -66,6 +66,7 @@
 				{ href: '/mcp-chat', label: 'Workbench', icon: MessageSquare },
 				{ href: '/workflows', label: 'Workflows', icon: GitBranch },
 				{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
+				{ href: '/batches', label: 'Batches', icon: Layers },
 				{ href: '/code-functions', label: 'Code Functions', icon: Code }
 			]
 		},

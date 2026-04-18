@@ -17,6 +17,7 @@
 		ExternalLink,
 		KeyRound,
 		Layers,
+		MessageSquare,
 		MessagesSquare,
 		Plus,
 		Sparkles
@@ -117,8 +118,11 @@
 			<Button onclick={() => goto('/agents/quickstart')}>
 				<Sparkles class="size-4" /> Get started with agents
 			</Button>
+			<Button variant="outline" onclick={() => goto('/mcp-chat')}>
+				<MessageSquare class="size-4" /> Generate a prompt
+			</Button>
 			<Button variant="outline" onclick={() => goto('/settings/api-keys')}>
-				Get API Key
+				<KeyRound class="size-4" /> Get API Key
 			</Button>
 		</div>
 	</header>
