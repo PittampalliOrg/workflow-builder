@@ -40,9 +40,9 @@ For OpenAI GPT-5.4, the mapping is:
 openai/gpt-5.4 -> llm-openai-gpt5 -> OpenAI Responses API model gpt-5.4
 ```
 
-`dapr-agent-py` uses OpenAI OAuth headers when available and falls back to
-`OPENAI_API_KEY`. Reasoning effort is controlled by `OPENAI_REASONING_EFFORT`;
-tool-heavy workbook runs have been validated with `low`.
+`dapr-agent-py` uses `OPENAI_API_KEY` for OpenAI model calls. Reasoning effort
+is controlled by `OPENAI_REASONING_EFFORT`; tool-heavy workbook runs have been
+validated with `low`.
 
 ## Design Principles
 

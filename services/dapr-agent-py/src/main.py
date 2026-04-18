@@ -172,10 +172,6 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "gpt-5.4": "llm-openai-gpt5",
     "openai/o3": "llm-openai-o3",
     "o3": "llm-openai-o3",
-    # Google
-    "google/gemini-3.1-pro": "llm-google-gemini",
-    "gemini-3.1-pro": "llm-google-gemini",
-    "gemini-3.1-pro-preview": "llm-google-gemini",
 }
 DEFAULT_LLM_COMPONENT = os.environ.get(
     "DAPR_LLM_COMPONENT_DEFAULT", "llm-anthropic-opus"
@@ -1037,12 +1033,6 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_anthropic(self.llm)
         except Exception:
             pass
-        try:
-            from src.gemini_adapter import patch_for_gemini
-            patch_for_gemini(self.llm)
-        except Exception:
-            pass
-
         exec_id = self._exec_id or ""
         inst_id = self._inst_id or payload.get("instance_id", "")
         component = getattr(self.llm, "_llm_component", None)
@@ -2466,36 +2456,12 @@ try:
 except Exception as exc:
     logger.warning("OpenAI adapter patch failed: %s", exc)
 
-try:
-    from src.gemini_adapter import patch_for_gemini
-    patch_for_gemini(agent.llm)
-except Exception as exc:
-    logger.warning("Gemini adapter patch failed: %s", exc)
-
 runner = AgentRunner()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s starting", AGENT_SERVICE_NAME)
-    try:
-        from src.oauth.manager import oauth_manager
-
-        oauth_manager.start_refresh_task()
-    except Exception as exc:
-        logger.warning("OAuth refresh task start failed: %s", exc)
-    try:
-        from src.openai_oauth.manager import openai_oauth_manager
-
-        openai_oauth_manager.start_refresh_task()
-    except Exception as exc:
-        logger.warning("OpenAI OAuth refresh task start failed: %s", exc)
-    try:
-        from src.gemini_oauth.manager import gemini_oauth_manager
-
-        gemini_oauth_manager.start_refresh_task()
-    except Exception as exc:
-        logger.warning("Gemini OAuth refresh task start failed: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
@@ -2517,28 +2483,6 @@ app = FastAPI(
 # Wire agent pub/sub routes and HTTP endpoints onto the FastAPI app.
 # When app= is provided, serve() returns the app without starting uvicorn.
 runner.serve(agent, app=app, port=8002)
-
-# Mount OAuth endpoints (/oauth/login, /oauth/callback, /oauth/status, etc.).
-try:
-    from src.oauth.routes import router as oauth_router
-
-    app.include_router(oauth_router)
-except Exception as exc:
-    logger.warning("OAuth routes not loaded: %s", exc)
-
-try:
-    from src.openai_oauth.routes import router as openai_oauth_router
-
-    app.include_router(openai_oauth_router)
-except Exception as exc:
-    logger.warning("OpenAI OAuth routes not loaded: %s", exc)
-
-try:
-    from src.gemini_oauth.routes import router as gemini_oauth_router
-
-    app.include_router(gemini_oauth_router)
-except Exception as exc:
-    logger.warning("Gemini OAuth routes not loaded: %s", exc)
 
 # Instrument FastAPI with OTEL
 if _otel_ready:

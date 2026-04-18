@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import importlib
-import io
 import json
 import os
 import sys
-from urllib.error import HTTPError
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -28,28 +26,38 @@ class _Response:
         return json.dumps(self.payload).encode()
 
 
-def test_openai_oauth_permission_failure_retries_with_api_key(monkeypatch) -> None:
+def test_openai_auth_headers_use_api_key_only(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert adapter._auth_headers() == (
+        {"Authorization": "Bearer sk-test"},
+        "openai-api-key",
+    )
+
+
+def test_openai_auth_headers_require_api_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    try:
+        adapter._auth_headers()
+    except RuntimeError as exc:
+        assert str(exc) == "No OpenAI authentication configured. Set OPENAI_API_KEY."
+    else:
+        raise AssertionError("Expected missing OPENAI_API_KEY to raise RuntimeError")
+
+
+def test_openai_responses_uses_api_key(monkeypatch) -> None:
     calls: list[str] = []
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         adapter,
         "_auth_headers",
-        lambda: ({"Authorization": "Bearer oauth-token"}, "openai-oauth"),
+        lambda: ({"Authorization": "Bearer sk-test"}, "openai-api-key"),
     )
 
     def urlopen(req, timeout: int):
         calls.append(req.headers["Authorization"])
-        if len(calls) == 1:
-            raise HTTPError(
-                req.full_url,
-                401,
-                "Unauthorized",
-                {},
-                io.BytesIO(
-                    b'{"error":{"message":"Missing scopes: api.responses.write"}}'
-                ),
-            )
         return _Response({
             "id": "resp_test",
             "status": "completed",
@@ -67,7 +75,7 @@ def test_openai_oauth_permission_failure_retries_with_api_key(monkeypatch) -> No
         None,
     )
 
-    assert calls == ["Bearer oauth-token", "Bearer sk-test"]
+    assert calls == ["Bearer sk-test"]
     assert result["content"] == "ok"
     assert result["metadata"]["auth_mode"] == "openai-api-key"
 

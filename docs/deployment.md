@@ -84,10 +84,12 @@ OpenAI adapter. A workflow can select GPT-5.4 by setting:
 }
 ```
 
-The deployed pod must have OpenAI auth available through connected OAuth or
-`OPENAI_API_KEY`. `OPENAI_REASONING_EFFORT=low` is the recommended deployment
-setting for tool-heavy GPT-5.4 workflows such as spreadsheet generation because
-it keeps tool-call latency bounded.
+The deployed pod must set `OPENAI_API_KEY` for OpenAI model calls and
+`ANTHROPIC_API_KEY` for Anthropic model calls. Gemini model routing is disabled
+until an API-key-backed Gemini adapter is added.
+`OPENAI_REASONING_EFFORT=low` is the recommended deployment setting for
+tool-heavy GPT-5.4 workflows such as spreadsheet generation because it keeps
+tool-call latency bounded.
 
 For XLSX workflows, `openshell-agent-runtime` must use a runtime script or
 configuration that maps:
@@ -180,7 +182,8 @@ Important runtime dependencies include:
 - `WORKFLOW_ORCHESTRATOR_URL`
 - `DAPR_HOST`
 - `DAPR_HTTP_PORT`
-- `OPENAI_API_KEY` or connected OpenAI OAuth state for GPT-5.4 runs
+- `ANTHROPIC_API_KEY` for Anthropic model runs
+- `OPENAI_API_KEY` for GPT-5.4 runs
 - `OPENAI_REASONING_EFFORT` for OpenAI Responses API reasoning control
 - OpenShell runtime availability
 - local Gitea registry reachability from cluster nodes

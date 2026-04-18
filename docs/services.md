@@ -111,7 +111,9 @@ Model selection:
 - `openai/gpt-5.4` and `gpt-5.4` resolve to `llm-openai-gpt5`.
 - `llm-openai-gpt5` calls OpenAI Responses API model `gpt-5.4`.
 - `openai/o3` and `o3` resolve to `llm-openai-o3`.
-- OpenAI auth uses connected OpenAI OAuth headers when present, then falls back to `OPENAI_API_KEY`.
+- OpenAI auth requires `OPENAI_API_KEY`; `dapr-agent-py` does not use model-provider OAuth for OpenAI calls.
+- Anthropic auth requires `ANTHROPIC_API_KEY`; `dapr-agent-py` does not use Claude OAuth for Anthropic calls.
+- Gemini model routing is disabled until an API-key-backed Gemini adapter is added.
 - `OPENAI_REASONING_EFFORT` controls Responses API reasoning effort for GPT-5 and `o` models. Use `low` for tool-heavy workflows that need frequent short tool calls; use a higher value only when slower, deeper reasoning is worth the latency.
 
 Operational evidence for model routing should come from both execution events

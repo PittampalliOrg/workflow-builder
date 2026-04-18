@@ -1,9 +1,4 @@
-"""OpenAI Responses API adapter for DaprChatClient.
-
-The OpenAI components normally go through Dapr conversation components. This
-adapter lets dapr-agent-py use ChatGPT OAuth tokens captured by the Codex-style
-device flow while preserving API-key fallback.
-"""
+"""OpenAI Responses API adapter for DaprChatClient."""
 
 from __future__ import annotations
 
@@ -202,22 +197,11 @@ def _emit_thinking(thinking_blocks: list[str]) -> None:
 
 
 def _auth_headers() -> tuple[dict[str, str], str]:
-    try:
-        from src.openai_oauth.manager import openai_oauth_manager
-
-        headers = openai_oauth_manager.get_auth_headers()
-        if headers:
-            return headers, "openai-oauth"
-    except Exception:
-        pass
-
     api_key_headers = _api_key_auth_headers()
     if api_key_headers:
         return api_key_headers
 
-    raise RuntimeError(
-        "No OpenAI authentication configured. Set OPENAI_API_KEY or connect OpenAI OAuth."
-    )
+    raise RuntimeError("No OpenAI authentication configured. Set OPENAI_API_KEY.")
 
 
 def _api_key_auth_headers() -> tuple[dict[str, str], str] | None:
@@ -286,8 +270,7 @@ def _call_openai_responses(
     response_format: Any = None,
 ) -> dict[str, Any]:
     model = _get_openai_model(component)
-    # claude_code.llm_request span — wraps the whole OpenAI Responses call
-    # including the OAuth→API-key fallback retry path.
+    # claude_code.llm_request span wraps the whole OpenAI Responses call.
     import time as _time
 
     llm_span = None
@@ -362,24 +345,7 @@ def _call_openai_responses(
             data = json.loads(resp.read() or b"{}")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        api_key_headers = _api_key_auth_headers()
-        if auth_mode == "openai-oauth" and exc.code in {401, 403} and api_key_headers:
-            auth_headers, auth_mode = api_key_headers
-            retry_req = _make_openai_request(url, request_body, auth_headers)
-            logger.warning(
-                "[openai-responses] OAuth auth failed with HTTP %s; retrying with OPENAI_API_KEY",
-                exc.code,
-            )
-            try:
-                with urllib.request.urlopen(retry_req, timeout=timeout) as resp:
-                    data = json.loads(resp.read() or b"{}")
-            except HTTPError as retry_exc:
-                detail = retry_exc.read().decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"OpenAI Responses API failed ({retry_exc.code}): {detail}"
-                ) from retry_exc
-        else:
-            raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
+        raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
 
     content, tool_calls, thinking_blocks = _extract_openai_response(data)
     _emit_thinking(thinking_blocks)
