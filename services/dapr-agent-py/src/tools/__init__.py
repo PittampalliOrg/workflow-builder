@@ -13,6 +13,7 @@ from dapr_agents.tool.base import AgentTool
 
 from .agent_tool.tool import agent_spawn
 from .ask_user.tool import ask_user
+from .call_agent.tool import call_agent
 from .bash_tool.tool import bash_run
 from .file_edit.tool import file_edit
 from .file_read.tool import file_read
@@ -56,6 +57,10 @@ all_tools: list[AgentTool] = [
     _tool(web_search, "WebSearch"),
     # Agent / task management
     _tool(agent_spawn, "Agent"),
+    # Peer-agent invocation via Dapr agent registry. Always registered;
+    # per-run allow-list is injected via the callable_agents thread-local
+    # by agent_workflow.
+    _tool(call_agent, "CallAgent"),
     _tool(task_output, "TaskOutput"),
     _tool(task_stop, "TaskStop"),
     _tool(todo_write, "TodoWrite"),

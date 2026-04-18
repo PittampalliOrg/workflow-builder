@@ -1761,6 +1761,47 @@ class OpenShellDurableAgent(DurableAgent):
                 len(mcp_configs),
                 instance_id,
             )
+        # Extract per-instance callable peer-agent allow-list. The TypeScript
+        # resolver emits `body.callableAgents: [{slug, agentId, appId, team,
+        # registryKey}, ...]` when the agent's AgentConfig.callableAgents is
+        # non-empty; we stash it in a thread-local so the `call_agent` tool
+        # (src/tools/call_agent) can find it when the LLM invokes it.
+        try:
+            from src.tools._callable_agents_context import (
+                set_callable_agents_context,
+            )
+
+            raw_callable = message.get("callableAgents") or agent_config.get(
+                "callableAgents"
+            )
+            if isinstance(raw_callable, list):
+                callable_agents = [
+                    item for item in raw_callable if isinstance(item, dict)
+                ]
+            else:
+                callable_agents = []
+            registry_team = (
+                str(message.get("registryTeam") or "").strip()
+                or str(agent_config.get("registryTeam") or "").strip()
+                or None
+            )
+            set_callable_agents_context(
+                callable_agents=callable_agents,
+                registry_team=registry_team,
+                parent_instance_id=instance_id,
+                parent_session_id=session_id_raw or None,
+            )
+            if callable_agents and not ctx.is_replaying:
+                logger.info(
+                    "[call_agent] %d peer agent(s) available for instance %s: %s",
+                    len(callable_agents),
+                    instance_id,
+                    ", ".join(
+                        str(p.get("slug", "?")) for p in callable_agents
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[call_agent] context setup failed: %s", exc)
         # Extract per-instance skill configs (parallel to MCP extraction)
         skill_registry = get_skill_registry()
         raw_skill_items = _extract_raw_skill_items(message)
