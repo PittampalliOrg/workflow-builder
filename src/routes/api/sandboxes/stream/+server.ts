@@ -3,6 +3,7 @@ import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { normalizeSandboxResponse } from '$lib/utils/sandbox-parse';
 import { sandboxEventBus, type SandboxBusEvent } from '$lib/server/sandbox-event-bus';
 import { listAgentRuntimeSandboxes } from '$lib/server/agent-runtime-sandboxes';
+import { attachSandboxSessions } from '$lib/server/sandbox-sessions';
 import type { Sandbox } from '$lib/types/sandbox';
 
 const POLL_INTERVAL_MS = 2000;
@@ -22,7 +23,7 @@ async function mergeRuntimeSandboxes(sandboxes: Sandbox[]): Promise<Sandbox[]> {
 	for (const sandbox of runtimeSandboxes) {
 		byName.set(sandbox.name, sandbox);
 	}
-	return Array.from(byName.values());
+	return attachSandboxSessions(Array.from(byName.values()));
 }
 
 async function fetchSandboxes(): Promise<Sandbox[]> {
@@ -38,7 +39,9 @@ async function fetchSandboxes(): Promise<Sandbox[]> {
 	if (openshellResult.status === 'fulfilled' && !openshellResult.value.ok && runtimeResult.status !== 'fulfilled') {
 		throw new Error(`OpenShell sandboxes fetch failed (${openshellResult.value.status})`);
 	}
-	return [...openshellSandboxes, ...runtimeSandboxes];
+	// Stamp the owning session so the list page's Session column is populated
+	// on both the initial SSE snapshot and every poll-driven refresh.
+	return attachSandboxSessions([...openshellSandboxes, ...runtimeSandboxes]);
 }
 
 export const GET: RequestHandler = async ({ request }) => {
