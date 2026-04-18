@@ -122,7 +122,7 @@
 			items: [
 				{ href: '/usage', label: 'Usage', icon: BarChart3 },
 				{ href: wsPath(activeSlug, 'cost'), label: 'Cost', icon: DollarSign },
-				{ href: '/observability', label: 'Logs', icon: FileText }
+				{ href: wsPath(activeSlug, 'logs'), label: 'Logs', icon: FileText }
 			]
 		},
 		{
