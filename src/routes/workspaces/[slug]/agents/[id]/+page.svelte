@@ -42,6 +42,7 @@
 	} from '$lib/components/ui/popover';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import AgentOverview from '$lib/components/agents/agent-overview.svelte';
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
 	import AgentMcpPicker from '$lib/components/agents/agent-mcp-picker.svelte';
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
@@ -86,7 +87,9 @@
 	let forkName = $state('');
 	let forkDescription = $state('');
 	let forking = $state(false);
-	let tab = $state<'basics' | 'capabilities' | 'sandbox' | 'advanced'>('basics');
+	let tab = $state<'overview' | 'basics' | 'capabilities' | 'sandbox' | 'advanced' | 'sessions'>(
+		'overview'
+	);
 	let usages = $state<Array<{ workflowId: string; workflowName: string; nodeIds: string[] }>>([]);
 	let versions = $state<AgentVersionSummary[]>([]);
 	let versionsOpen = $state(false);
@@ -484,11 +487,21 @@
 			<div class="overflow-y-auto p-6">
 				<Tabs value={tab} onValueChange={(v) => (tab = v as typeof tab)}>
 					<TabsList class="mb-4">
+						<TabsTrigger value="overview">Overview</TabsTrigger>
 						<TabsTrigger value="basics">Basics</TabsTrigger>
 						<TabsTrigger value="capabilities">Capabilities</TabsTrigger>
 						<TabsTrigger value="sandbox">Sandbox</TabsTrigger>
 						<TabsTrigger value="advanced">Advanced</TabsTrigger>
+						<TabsTrigger value="sessions">Sessions</TabsTrigger>
 					</TabsList>
+
+					<TabsContent value="overview" class="space-y-4">
+						{#if agent}
+							<AgentOverview {agent} />
+						{:else}
+							<Skeleton class="h-60" />
+						{/if}
+					</TabsContent>
 
 					<TabsContent value="basics" class="space-y-6">
 						<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -964,6 +977,26 @@
 								</div>
 							</div>
 						</div>
+					</TabsContent>
+
+					<TabsContent value="sessions" class="space-y-3">
+						{#if agent}
+							<div class="rounded border bg-muted/20 p-4">
+								<p class="text-sm text-muted-foreground">
+									Sessions created from this agent are listed in the main Sessions page,
+									pre-filtered by <code class="text-[11px]">agentId</code>.
+								</p>
+								<div class="mt-3">
+									<Button
+										size="sm"
+										onclick={() =>
+											goto(`/workspaces/${slug}/sessions?agentId=${agent!.id}`)}
+									>
+										Open sessions for {agent.name} →
+									</Button>
+								</div>
+							</div>
+						{/if}
 					</TabsContent>
 				</Tabs>
 			</div>
