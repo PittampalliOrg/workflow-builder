@@ -1,17 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
+	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
-	import {
-		Card,
-		CardContent,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
-	import * as Select from '$lib/components/ui/select';
-	import { MessagesSquare, Plus } from 'lucide-svelte';
-	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
+	import { Switch } from '$lib/components/ui/switch';
+	import { Label } from '$lib/components/ui/label';
+	import { ArrowRight, MessagesSquare, Plus } from 'lucide-svelte';
+	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
+	import ResourceTable from '$lib/components/console/resource-table.svelte';
+	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';
 	import type { SessionStatus, SessionSummary } from '$lib/types/sessions';
 	import type { AgentSummary } from '$lib/types/agents';
 	import { page } from '$app/state';
@@ -19,87 +18,47 @@
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	type StatusFilter = 'all' | SessionStatus;
-	type SortBy = 'updated' | 'tokens' | 'title' | 'agent';
 
 	let sessions = $state<SessionSummary[]>([]);
 	let agents = $state<AgentSummary[]>([]);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
-	let search = $state('');
 	let statusFilter = $state<StatusFilter>('all');
 	let agentFilter = $state<string>('all');
-	let sortBy = $state<SortBy>('updated');
+	let created = $state<'all' | '7d' | '30d' | '90d'>('all');
+	let includeArchived = $state(false);
+	let jumpId = $state('');
+	let busyId = $state<string | null>(null);
 
-	// Active sessions get fast refreshes; idle lists back off to 30s so an
-	// unattended tab doesn't hammer the DB.
 	const ACTIVE_POLL_MS = 3_000;
 	const IDLE_POLL_MS = 30_000;
 	let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-	let agentsById = $derived.by(() => {
+	const agentsById = $derived.by(() => {
 		const m = new Map<string, AgentSummary>();
 		for (const a of agents) m.set(a.id, a);
 		return m;
 	});
 
-	const statusFilterLabel = $derived(
-		statusFilter === 'all' ? 'All statuses' : statusFilter
-	);
-	const agentFilterLabel = $derived(
-		agentFilter === 'all'
-			? 'All agents'
-			: agentsById.get(agentFilter)?.name ?? agentFilter
-	);
-	const sortLabel = $derived(
-		sortBy === 'updated'
-			? 'Recently updated'
-			: sortBy === 'tokens'
-				? 'Tokens (high → low)'
-				: sortBy === 'title'
-					? 'Title (A–Z)'
-					: 'Agent (A–Z)'
-	);
-
-	function tokenTotal(s: SessionSummary): number {
-		return (s.usage?.input_tokens ?? 0) + (s.usage?.output_tokens ?? 0);
-	}
-
-	let filtered = $derived.by(() => {
-		const q = search.trim().toLowerCase();
-		let out = sessions.filter((s) => {
-			if (statusFilter !== 'all' && s.status !== statusFilter) return false;
-			if (agentFilter !== 'all' && s.agentId !== agentFilter) return false;
-			if (!q) return true;
-			const agent = agentsById.get(s.agentId);
-			const hay = `${s.title ?? ''} ${agent?.name ?? ''} ${s.agentId}`.toLowerCase();
-			return hay.includes(q);
-		});
-		out = [...out];
-		switch (sortBy) {
-			case 'tokens':
-				out.sort((a, b) => tokenTotal(b) - tokenTotal(a));
-				break;
-			case 'title':
-				out.sort((a, b) =>
-					(a.title ?? '').localeCompare(b.title ?? '', undefined, {
-						sensitivity: 'base'
-					})
-				);
-				break;
-			case 'agent':
-				out.sort((a, b) => {
-					const aa = agentsById.get(a.agentId)?.name ?? a.agentId;
-					const bb = agentsById.get(b.agentId)?.name ?? b.agentId;
-					return aa.localeCompare(bb, undefined, { sensitivity: 'base' });
-				});
-				break;
-			default:
-				out.sort(
-					(a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-				);
-				break;
-		}
-		return out;
+	const filtered = $derived.by(() => {
+		const now = Date.now();
+		const cutoff =
+			created === '7d'
+				? now - 7 * 86_400_000
+				: created === '30d'
+					? now - 30 * 86_400_000
+					: created === '90d'
+						? now - 90 * 86_400_000
+						: 0;
+		return sessions
+			.filter((s) => {
+				if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+				if (agentFilter !== 'all' && s.agentId !== agentFilter) return false;
+				if (cutoff && new Date(s.createdAt).getTime() < cutoff) return false;
+				if (!includeArchived && s.archivedAt) return false;
+				return true;
+			})
+			.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 	});
 
 	const hasActiveSessions = $derived(
@@ -110,13 +69,11 @@
 		if (!opts.silent) loading = true;
 		if (!opts.silent) errorMessage = null;
 		try {
-			// Server-side status param narrows payload when possible. Leave agent
-			// filter client-side so the dropdown can filter already-loaded data
-			// without re-fetching the full agent list on every change.
 			const qs = new URLSearchParams();
 			if (statusFilter !== 'all') qs.set('status', statusFilter);
+			if (includeArchived) qs.set('includeArchived', 'true');
 			const [sRes, aRes] = await Promise.all([
-				fetch(`/api/v1/sessions${qs.toString() ? `?${qs}` : ''}`),
+				fetch(`/api/v1/sessions?${qs}`),
 				fetch('/api/agents')
 			]);
 			if (!sRes.ok) {
@@ -147,6 +104,26 @@
 		}, delay);
 	}
 
+	async function archive(session: SessionSummary) {
+		busyId = session.id;
+		try {
+			const res = await fetch(`/api/v1/sessions/${session.id}`, { method: 'DELETE' });
+			if (!res.ok) {
+				errorMessage = `Archive failed (${res.status})`;
+				return;
+			}
+			await load({ silent: true });
+		} finally {
+			busyId = null;
+		}
+	}
+
+	function jumpToSession() {
+		const id = jumpId.trim();
+		if (!id) return;
+		goto(`/workspaces/${slug}/sessions/${id}`);
+	}
+
 	function statusColor(status: string): string {
 		switch (status) {
 			case 'running':
@@ -167,8 +144,15 @@
 		if (diff < 60_000) return 'just now';
 		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
 		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
 		return new Date(iso).toLocaleDateString();
 	}
+
+	$effect(() => {
+		void statusFilter;
+		void includeArchived;
+		void load();
+	});
 
 	onMount(async () => {
 		await load();
@@ -178,157 +162,162 @@
 	onDestroy(() => {
 		if (pollTimer) clearTimeout(pollTimer);
 	});
-
-	// Re-fetch when the status filter changes because it narrows the server
-	// query. Other filters (agent, search, sort) are client-side only.
-	function onStatusFilterChange(v: string | undefined) {
-		statusFilter = (v as StatusFilter) ?? 'all';
-		void load({ silent: true });
-	}
 </script>
 
-<ResourceListShell
-	title="Sessions"
-	subtitle="Trace and debug Claude Managed Agents sessions."
-	itemLabel="session"
-	itemCount={filtered.length}
-	onSearch={(v) => (search = v)}
-	primaryLabel="New Session"
-	onPrimary={() => goto(`/workspaces/${slug}/sessions/new`)}
-	{loading}
-	{errorMessage}
-	isEmpty={sessions.length === 0 || filtered.length === 0}
-	{content}
-	{filters}
-	{empty}
-/>
+<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
+	<header class="flex items-start justify-between gap-4 flex-wrap">
+		<div>
+			<h1 class="text-2xl font-semibold">Sessions</h1>
+			<p class="text-sm text-muted-foreground mt-1">
+				Trace and debug Claude Managed Agents sessions.
+			</p>
+		</div>
+		<Button onclick={() => goto(`/workspaces/${slug}/sessions/new`)}>
+			<Plus class="size-4" /> New session
+		</Button>
+	</header>
 
-{#snippet filters()}
-	<div class="flex items-center gap-2 flex-wrap">
-		<Select.Root
-			type="single"
-			value={statusFilter}
-			onValueChange={onStatusFilterChange}
-		>
-			<Select.Trigger class="h-8 min-w-[150px] text-xs">
-				{statusFilterLabel}
-			</Select.Trigger>
-			<Select.Content>
-				<Select.Item value="all">All statuses</Select.Item>
-				<Select.Item value="running">Running</Select.Item>
-				<Select.Item value="idle">Idle</Select.Item>
-				<Select.Item value="rescheduling">Rescheduling</Select.Item>
-				<Select.Item value="terminated">Terminated</Select.Item>
-			</Select.Content>
-		</Select.Root>
+	{#if errorMessage}
+		<Alert variant="destructive">
+			<AlertDescription>{errorMessage}</AlertDescription>
+		</Alert>
+	{/if}
 
-		<Select.Root
-			type="single"
-			value={agentFilter}
-			onValueChange={(v) => (agentFilter = v ?? 'all')}
-		>
-			<Select.Trigger class="h-8 min-w-[180px] text-xs">
-				{agentFilterLabel}
-			</Select.Trigger>
-			<Select.Content>
-				<Select.Item value="all">All agents</Select.Item>
+	<div class="flex items-center gap-3 flex-wrap">
+		<div class="relative flex-1 min-w-[240px] max-w-md">
+			<ArrowRight class="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+			<Input
+				class="pl-9 pr-3 h-9"
+				placeholder="Go to session ID"
+				bind:value={jumpId}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') jumpToSession();
+				}}
+			/>
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<span class="text-xs text-muted-foreground">Created</span>
+			<select class="bg-transparent text-sm focus:outline-none" bind:value={created}>
+				<option value="all">All time</option>
+				<option value="7d">Past 7 days</option>
+				<option value="30d">Past 30 days</option>
+				<option value="90d">Past 90 days</option>
+			</select>
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<span class="text-xs text-muted-foreground">Agent</span>
+			<select
+				class="bg-transparent text-sm focus:outline-none max-w-[160px]"
+				bind:value={agentFilter}
+			>
+				<option value="all">All agents</option>
 				{#each agents as a (a.id)}
-					<Select.Item value={a.id}>
-						{a.avatar ?? '🤖'} {a.name}
-					</Select.Item>
+					<option value={a.id}>{a.name}</option>
 				{/each}
-			</Select.Content>
-		</Select.Root>
-
-		<Select.Root
-			type="single"
-			value={sortBy}
-			onValueChange={(v) => (sortBy = (v as SortBy) ?? 'updated')}
-		>
-			<Select.Trigger class="h-8 min-w-[180px] text-xs">
-				{sortLabel}
-			</Select.Trigger>
-			<Select.Content>
-				<Select.Item value="updated">Recently updated</Select.Item>
-				<Select.Item value="tokens">Tokens (high → low)</Select.Item>
-				<Select.Item value="title">Title (A–Z)</Select.Item>
-				<Select.Item value="agent">Agent (A–Z)</Select.Item>
-			</Select.Content>
-		</Select.Root>
-
+			</select>
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<span class="text-xs text-muted-foreground">Status</span>
+			<select
+				class="bg-transparent text-sm focus:outline-none"
+				bind:value={statusFilter}
+			>
+				<option value="all">All</option>
+				<option value="running">Running</option>
+				<option value="idle">Idle</option>
+				<option value="rescheduling">Rescheduling</option>
+				<option value="terminated">Terminated</option>
+			</select>
+		</div>
+		<div class="flex items-center gap-2 h-9 rounded-md border px-3">
+			<Label for="show-archived" class="text-sm">Show archived</Label>
+			<Switch id="show-archived" bind:checked={includeArchived} />
+		</div>
 		{#if hasActiveSessions}
 			<Badge variant="outline" class="text-[10px] gap-1">
 				<span class="size-1.5 rounded-full bg-blue-500 animate-pulse"></span>
-				Live updates every 3s
+				Live · 3s
 			</Badge>
 		{/if}
 	</div>
-{/snippet}
 
-{#snippet content()}
-	<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-		{#each filtered as session (session.id)}
-			{@const agent = agentsById.get(session.agentId)}
-			<Card class="cursor-pointer hover:shadow-md transition-shadow">
-				<button
-					type="button"
-					class="text-left w-full h-full"
-					onclick={() => goto(`/workspaces/${slug}/sessions/${session.id}`)}
+	<ResourceTable
+		rows={filtered}
+		{loading}
+		onRowClick={(s: SessionSummary) => goto(`/workspaces/${slug}/sessions/${s.id}`)}
+	>
+		{#snippet header()}
+			<th class="px-4 py-2.5 font-medium">ID</th>
+			<th class="px-4 py-2.5 font-medium">Name</th>
+			<th class="px-4 py-2.5 font-medium">Status</th>
+			<th class="px-4 py-2.5 font-medium">Agent</th>
+			<th class="px-4 py-2.5 font-medium">Tokens</th>
+			<th class="px-4 py-2.5 font-medium">Updated</th>
+			<th class="px-4 py-2.5 font-medium w-10"></th>
+		{/snippet}
+		{#snippet row(s: SessionSummary)}
+			{@const agent = agentsById.get(s.agentId)}
+			<td class="px-4 py-2.5">
+				<CopyIdButton value={s.id} />
+			</td>
+			<td class="px-4 py-2.5">
+				<span class="truncate block max-w-[200px]">{s.title ?? '—'}</span>
+			</td>
+			<td class="px-4 py-2.5">
+				<span
+					class="rounded-full px-2 py-0.5 text-[10px] font-medium {statusColor(s.status)}"
 				>
-					<CardHeader class="pb-2">
-						<div class="flex items-start justify-between gap-2">
-							<CardTitle class="text-base line-clamp-1">
-								{session.title ?? 'Untitled session'}
-							</CardTitle>
-							<span
-								class="rounded-full px-2 py-0.5 text-[10px] font-medium {statusColor(
-									session.status
-								)}"
-							>
-								{session.status}
-							</span>
-						</div>
-						<p class="text-xs text-muted-foreground">
-							{agent?.avatar ?? '🤖'} {agent?.name ?? session.agentId}
-							{#if session.agentVersion !== null}
-								<span class="text-[10px]">· v{session.agentVersion}</span>
-							{/if}
-						</p>
-					</CardHeader>
-					<CardContent class="pt-0 text-[11px] text-muted-foreground space-y-1">
-						<div>Updated {formatRelative(session.updatedAt)}</div>
-						{#if session.usage?.input_tokens || session.usage?.output_tokens}
-							<div>
-								<Badge variant="outline" class="text-[10px]">
-									in {session.usage.input_tokens ?? 0} · out {session.usage.output_tokens ?? 0}
-								</Badge>
-							</div>
-						{/if}
-						{#if session.errorMessage}
-							<div class="text-destructive line-clamp-1">{session.errorMessage}</div>
-						{/if}
-					</CardContent>
-				</button>
-			</Card>
-		{/each}
-	</div>
-{/snippet}
-
-{#snippet empty()}
-	{#if sessions.length === 0}
-		<div class="flex flex-col items-center justify-center text-center py-16">
-			<div class="size-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-				<MessagesSquare class="size-10 text-primary" />
+					{s.status}
+				</span>
+			</td>
+			<td class="px-4 py-2.5">
+				{#if agent}
+					<Badge variant="outline" class="text-[11px] gap-1">
+						<span>{agent.avatar ?? '🤖'}</span>
+						<span class="truncate max-w-[140px]">{agent.name}</span>
+					</Badge>
+				{:else}
+					<code class="text-[10px] text-muted-foreground">{s.agentId.slice(0, 10)}</code>
+				{/if}
+			</td>
+			<td class="px-4 py-2.5 text-xs text-muted-foreground">
+				{#if s.usage?.input_tokens || s.usage?.output_tokens}
+					{(s.usage.input_tokens ?? 0).toLocaleString()} /
+					{(s.usage.output_tokens ?? 0).toLocaleString()}
+				{:else}
+					—
+				{/if}
+			</td>
+			<td class="px-4 py-2.5 text-xs text-muted-foreground">
+				{formatRelative(s.updatedAt)}
+			</td>
+			<td class="px-4 py-2.5" onclick={(e) => e.stopPropagation()}>
+				<RowMoreActions
+					actions={[
+						{
+							label: 'Archive',
+							onClick: () => archive(s),
+							destructive: true,
+							disabled: busyId === s.id
+						}
+					]}
+				/>
+			</td>
+		{/snippet}
+		{#snippet empty()}
+			<div class="flex flex-col items-center justify-center py-10 space-y-3">
+				<div class="size-14 rounded-full bg-primary/10 flex items-center justify-center">
+					<MessagesSquare class="size-7 text-primary" />
+				</div>
+				<h2 class="text-base font-semibold">No sessions yet</h2>
+				<p class="text-muted-foreground text-sm max-w-md text-center">
+					Sessions appear here once created through the API, the Quickstart flow, or a workflow
+					<code class="text-[10px]">durable/run</code> node.
+				</p>
+				<Button onclick={() => goto(`/workspaces/${slug}/sessions/new`)}>
+					<Plus class="size-4" /> Start your first session
+				</Button>
 			</div>
-			<h2 class="text-xl font-semibold mb-2">No sessions yet</h2>
-			<p class="text-muted-foreground mb-6 max-w-md">
-				Sessions will appear here once created through the API or the quickstart flow.
-			</p>
-			<Button onclick={() => goto(`/workspaces/${slug}/sessions/new`)} size="lg">
-				<Plus class="size-4 mr-1" /> Start your first session
-			</Button>
-		</div>
-	{:else}
-		<div class="text-center text-muted-foreground py-12">No sessions match your filters.</div>
-	{/if}
-{/snippet}
+		{/snippet}
+	</ResourceTable>
+</div>
