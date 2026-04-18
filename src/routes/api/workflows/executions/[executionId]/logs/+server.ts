@@ -136,6 +136,10 @@ export const GET: RequestHandler = async ({ params }) => {
 		return null;
 	}
 
+	// Stamp each event with the linking ids the client-side filters look for.
+	// For sessions-bridged runs, workflow_agent_runs.id === sessions.id ===
+	// dapr_instance_id, so setting both to e.sessionId lets
+	// eventsForAgentRun() match by run.id or run.daprInstanceId.
 	return json({
 		logs,
 		agentEvents: agentEvents.map((e) => {
@@ -144,8 +148,9 @@ export const GET: RequestHandler = async ({ params }) => {
 				id: e.id,
 				type: e.type,
 				sourceEventId: e.sourceEventId,
-				workflowAgentRunId: null,
-				daprInstanceId: null,
+				workflowAgentRunId: e.sessionId,
+				daprInstanceId: e.sessionId,
+				sessionId: e.sessionId,
 				toolName: pickString(data, 'tool_name', 'toolName', 'name'),
 				phase: pickString(data, 'phase'),
 				data,

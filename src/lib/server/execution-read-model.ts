@@ -145,13 +145,16 @@ function mapSessionAgentEvent(row: SessionEventRow): ExecutionTimelineEvent {
 					? data.name
 					: null;
 	const phase = typeof data.phase === 'string' ? data.phase : null;
+	// For sessions-bridged runs, workflow_agent_runs.id === sessions.id ===
+	// dapr_instance_id. Stamping both linking fields with the session id so
+	// the client-side eventsForAgentRun() filter matches on either.
 	return {
 		id: row.sequence,
 		type: row.type,
 		data,
 		timestamp: row.createdAt.toISOString(),
-		workflowAgentRunId: null,
-		daprInstanceId: null,
+		workflowAgentRunId: row.sessionId,
+		daprInstanceId: row.sessionId,
 		sourceEventId: row.sourceEventId,
 		phase,
 		toolName

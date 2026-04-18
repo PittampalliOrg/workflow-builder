@@ -230,14 +230,22 @@ export const GET: RequestHandler = async ({ params, request }) => {
 										data.data?.sourceEventId ||
 										data.data?.id ||
 										data.id,
+									// Sessions-bridged runs stream events keyed by sessionId,
+									// which equals workflow_agent_runs.id === dapr_instance_id.
+									// Fall back to sessionId when no explicit agent-run field is
+									// set so the eventsForAgentRun filter matches.
 									workflowAgentRunId:
 										data.workflowAgentRunId ||
-										data.data?.workflowAgentRunId,
+										data.data?.workflowAgentRunId ||
+										data.sessionId ||
+										data.data?.sessionId,
 									daprInstanceId:
 										data.daprInstanceId ||
 										data.data?.daprInstanceId ||
 										data.instanceId ||
-										data.data?.instanceId,
+										data.data?.instanceId ||
+										data.sessionId ||
+										data.data?.sessionId,
 									phase: data.phase || data.data?.phase,
 									toolName: data.toolName || data.data?.toolName || data.data?.name
 								}, seq);
