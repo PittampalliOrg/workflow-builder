@@ -1,0 +1,265 @@
+{
+  "id": "animation-3b1b-v2-managed",
+  "name": "3B1B Skill Animation (managed agent)",
+  "description": "Managed-agent variant of the 3B1B skill-animation workflow. The create_3b1b_animation task binds to the animation-3b1b-builder agent via agentRef instead of carrying an inline agentConfig.",
+  "visibility": "public",
+  "spec": {
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "workspace_profile",
+            "rootPath": "/sandbox",
+            "managedBy": "workflow-builder:sandbox-policy",
+            "timeoutMs": 1200000,
+            "ttlSeconds": 7200,
+            "enabledTools": [
+              "execute_command",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "mkdir",
+              "file_stat"
+            ],
+            "keepAfterRun": true,
+            "sandboxPolicy": {
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200,
+              "keepAfterRun": true
+            },
+            "sandboxTemplate": "dapr-agent",
+            "commandTimeoutMs": 900000
+          }
+        }
+      },
+      {
+        "create_3b1b_animation": {
+          "call": "durable/run",
+          "with": {
+            "cwd": "/sandbox",
+            "body": {
+              "prompt": "${ \"Use the registered Skill tool skill named exactly `3b1b-style-animation`. Do not invoke `3b1b-style-animation-skill`; that is the registry package name, not the runtime skill name. Start by calling the Skill tool with skill=`3b1b-style-animation` and args=`\" + (.input.animationDescription // \"Create a concise 3Blue1Brown-style derivative animation for x^2\") + \"`. Then build the project in /sandbox/3b1b-style-animation-example. Create a self-contained browser animation with index.html, styles.css, script.js, and README.md. The animation request is: \" + (.input.animationDescription // \"Create a concise 3Blue1Brown-style derivative animation for x^2\") + \". Prefer Canvas or SVG so the result can run with a simple static file server. The browser animation is the required deliverable. Use stable DOM ids for workflow validation: the main canvas must be <canvas id=\\\"canvas\\\">, the play/pause control must be <button id=\\\"btn-play\\\">, and the restart/reset control must be <button id=\\\"btn-restart\\\">. Do not install Manim during this run. If a Manim scene is useful, include scene.py as optional source only, but do not let Manim availability affect completion. Do not leave your own preview server running; you may run a temporary local HTTP server only for a quick 200 check and stop it. At the end, report the files created and the exact command to preview the animation from /sandbox/3b1b-style-animation-example.\" }",
+              "agentRef": {
+                "id": "9mg45nG313FLp1u82zqOP"
+              }
+            },
+            "mode": "execute_direct",
+            "maxTurns": 120,
+            "agentGraph": {
+              "edges": [
+                {
+                  "id": "input->decide",
+                  "source": "input",
+                  "target": "decide"
+                },
+                {
+                  "id": "decide->tool-batch",
+                  "source": "decide",
+                  "target": "tool-batch"
+                },
+                {
+                  "id": "tool-batch->memory-write",
+                  "source": "tool-batch",
+                  "target": "memory-write"
+                },
+                {
+                  "id": "memory-write->finish",
+                  "source": "memory-write",
+                  "target": "finish"
+                }
+              ],
+              "nodes": [
+                {
+                  "id": "input",
+                  "data": {
+                    "label": "Input",
+                    "config": {},
+                    "stepType": "input"
+                  },
+                  "position": {
+                    "x": 120,
+                    "y": 60
+                  }
+                },
+                {
+                  "id": "decide",
+                  "data": {
+                    "label": "Plan Animation",
+                    "config": {},
+                    "stepType": "decide"
+                  },
+                  "position": {
+                    "x": 120,
+                    "y": 200
+                  }
+                },
+                {
+                  "id": "tool-batch",
+                  "data": {
+                    "label": "Create Files",
+                    "config": {},
+                    "stepType": "tool_batch"
+                  },
+                  "position": {
+                    "x": 120,
+                    "y": 340
+                  }
+                },
+                {
+                  "id": "memory-write",
+                  "data": {
+                    "label": "Persist Summary",
+                    "config": {},
+                    "stepType": "memory_write"
+                  },
+                  "position": {
+                    "x": 120,
+                    "y": 480
+                  }
+                },
+                {
+                  "id": "finish",
+                  "data": {
+                    "label": "Finish",
+                    "config": {},
+                    "stepType": "finish"
+                  },
+                  "position": {
+                    "x": 120,
+                    "y": 620
+                  }
+                }
+              ],
+              "version": "v1"
+            },
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "sandboxPolicy": {
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200,
+              "keepAfterRun": true
+            },
+            "timeoutMinutes": 120,
+            "cleanupWorkspace": false
+          }
+        }
+      },
+      {
+        "validate_preview": {
+          "call": "browser/validate",
+          "with": {
+            "body": {
+              "input": {
+                "steps": [
+                  {
+                    "id": "load",
+                    "url": "/",
+                    "label": "Load preview",
+                    "action": "visit",
+                    "pauseMs": 2000,
+                    "successCriteria": "Canvas renders and the animation title is visible",
+                    "waitForSelector": "canvas#canvas"
+                  },
+                  {
+                    "id": "play",
+                    "label": "Play animation",
+                    "action": "click",
+                    "pauseMs": 1500,
+                    "selector": "#btn-play",
+                    "successCriteria": "The play control responds"
+                  },
+                  {
+                    "id": "restart",
+                    "label": "Restart animation",
+                    "action": "click",
+                    "pauseMs": 1000,
+                    "selector": "#btn-restart",
+                    "successCriteria": "The restart control responds"
+                  }
+                ],
+                "baseUrl": "http://127.0.0.1:3009",
+                "repoPath": "/sandbox/3b1b-style-animation-example",
+                "rootPath": "/sandbox",
+                "demoTitle": "3B1B generated animation validation",
+                "timeoutMs": 120000,
+                "workingDir": "/sandbox",
+                "captureMode": "validation",
+                "demoSummary": "${ .input.animationDescription // \"3Blue1Brown-style generated animation\" }",
+                "sandboxName": "${ .workspace_profile.sandboxName // \"\" }",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "viewportPreset": "desktop"
+              }
+            }
+          }
+        }
+      },
+      {
+        "start_preview": {
+          "call": "browser/start-preview",
+          "with": {
+            "body": {
+              "input": {
+                "baseUrl": "http://127.0.0.1:3009",
+                "repoPath": "/sandbox/3b1b-style-animation-example",
+                "rootPath": "/sandbox",
+                "keepAlive": true,
+                "previewId": "${ \"3b1b-style-animation-preview-\" + .runtime.dbExecutionId }",
+                "timeoutMs": 7200000,
+                "workingDir": "/sandbox",
+                "sandboxName": "${ .workspace_profile.sandboxName // \"\" }",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "installCommand": "",
+                "timeoutSeconds": 7200,
+                "devServerCommand": ""
+              }
+            }
+          }
+        }
+      }
+    ],
+    "input": {
+      "schema": {
+        "format": "json",
+        "document": {
+          "type": "object",
+          "required": [
+            "animationDescription"
+          ],
+          "properties": {
+            "animationDescription": {
+              "type": "string",
+              "title": "Animation description",
+              "default": "Create a concise 3Blue1Brown-style derivative animation for x^2",
+              "description": "Describe the 3Blue1Brown-style animation the agent should build."
+            }
+          }
+        }
+      }
+    },
+    "document": {
+      "dsl": "1.0.0",
+      "name": "three-b-one-b-skill-animation-example-fresh",
+      "title": "3B1B Skill Animation Example Fresh",
+      "summary": "Creates a short derivative animation using the 3b1b-style-animation skill in a per-run Dapr sandbox, then starts an interactive preview from the generated app.",
+      "version": "1.0.1",
+      "namespace": "workflow-builder",
+      "x-workflow-builder": {
+        "input": {
+          "fields": {
+            "animationDescription": {
+              "type": "textarea",
+              "label": "Animation description",
+              "description": "Describe the 3Blue1Brown-style animation the agent should build.",
+              "defaultValue": "Create a concise 3Blue1Brown-style derivative animation for x^2"
+            }
+          }
+        }
+      }
+    }
+  },
+  "nodes": [],
+  "edges": []
+}
