@@ -16,6 +16,7 @@
 		LogOut,
 		Eye,
 		Code,
+		Briefcase,
 		ChevronsUpDown,
 		Server,
 		Container,
@@ -283,6 +284,16 @@
 							{/if}
 						</DropdownMenu.Item>
 					{/each}
+					<DropdownMenu.Separator />
+					<DropdownMenu.Item
+						onSelect={() => {
+							window.location.href = '/workspaces';
+						}}
+						class="gap-2 text-xs text-muted-foreground"
+					>
+						<Briefcase size={12} />
+						<span>Manage workspaces</span>
+					</DropdownMenu.Item>
 				</DropdownMenu.Content>
 			</DropdownMenu.Root>
 		</div>

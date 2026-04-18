@@ -1,47 +1,52 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { projects, projectMembers } from "$lib/server/db/schema";
+import {
+	createWorkspace,
+	listWorkspaces,
+} from "$lib/server/workspaces/registry";
 
-/**
- * GET /api/v1/workspaces
- *
- * Returns the projects the current user is a member of, in the shape the
- * sidebar switcher expects. Mirrors CMA's workspace dropdown.
- * The slug `default` always resolves to the user's primary project.
- */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!db) return error(503, "Database not configured");
-
-	const rows = await db
-		.select({
-			id: projects.id,
-			displayName: projects.displayName,
-			externalId: projects.externalId,
-			role: projectMembers.role,
-			createdAt: projects.createdAt,
-		})
-		.from(projects)
-		.innerJoin(
-			projectMembers,
-			and(
-				eq(projectMembers.projectId, projects.id),
-				eq(projectMembers.userId, locals.session.userId),
-			),
-		)
-		.orderBy(projects.createdAt);
-
+	const workspaces = await listWorkspaces({
+		userId: locals.session.userId,
+		currentProjectId: locals.session.projectId,
+	});
 	return json({
 		currentProjectId: locals.session.projectId,
-		workspaces: rows.map((r) => ({
-			id: r.id,
-			slug: r.id === locals.session!.projectId ? "default" : r.externalId,
-			displayName: r.displayName,
-			externalId: r.externalId,
-			role: r.role,
-			isCurrent: r.id === locals.session!.projectId,
-		})),
+		workspaces,
 	});
+};
+
+/**
+ * Create a new workspace. Caller becomes ADMIN.
+ * Body: { displayName: string, externalId?: string }
+ */
+export const POST: RequestHandler = async ({ request, locals }) => {
+	if (!locals.session?.userId) return error(401, "Authentication required");
+	const body = (await request.json().catch(() => ({}))) as Record<
+		string,
+		unknown
+	>;
+	const displayName =
+		typeof body.displayName === "string" ? body.displayName.trim() : "";
+	if (!displayName) return error(400, "displayName is required");
+	const externalId =
+		typeof body.externalId === "string" && body.externalId.trim()
+			? body.externalId.trim()
+			: undefined;
+	try {
+		const workspace = await createWorkspace({
+			displayName,
+			externalId,
+			userId: locals.session.userId,
+			platformId: locals.session.platformId,
+		});
+		return json({ workspace }, { status: 201 });
+	} catch (err) {
+		// external_id unique collision lands here
+		return error(
+			400,
+			err instanceof Error ? err.message : "Workspace create failed",
+		);
+	}
 };

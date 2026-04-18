@@ -23,7 +23,12 @@ const authHandle: Handle = async ({ event, resolve }) => {
 	const session = await getSession(event.request, event.cookies);
 
 	event.locals.session = session
-		? { userId: session.user.id, email: session.user.email, projectId: session.user.projectId }
+		? {
+				userId: session.user.id,
+				email: session.user.email,
+				projectId: session.user.projectId,
+				platformId: session.user.platformId,
+			}
 		: null;
 
 	return resolve(event);
