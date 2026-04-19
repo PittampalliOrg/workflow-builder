@@ -1329,6 +1329,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 keepAfterRun: args.keepAfterRun,
                 ttlSeconds: args.ttlSeconds,
                 sandboxPolicy: args.sandboxPolicy,
+                // Forward the CMA-shape package manifest so openshell-agent-
+                // runtime can install declared deps before the first agent
+                // turn. Entries are {manager, spec}; empty/missing is a no-op.
+                environmentPackages: args.environmentPackages,
+                // Surface any extra env config (networking toggles, metadata)
+                // verbatim so future openshell-agent-runtime features can
+                // opt in without another function-router rebuild.
+                environmentConfig: args.environmentConfig,
                 workflowId: body.workflow_id,
                 nodeId: body.node_id,
                 nodeName: body.node_name,
