@@ -97,28 +97,31 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap MCP tools at module-init time
+# MCP bootstrap (called from FastAPI @app.on_event("startup") in main.py)
 # ---------------------------------------------------------------------------
 #
-# Per dapr-agents 1.0.1's canonical pattern (see quickstarts/06-agent-mcp-
-# client-stdio and sdk-docs on tools=), MCP tools are loaded synchronously
-# BEFORE the DurableAgent is constructed and passed via tools=[...]. Per-
-# instance dynamic MCP (session_workflow → call_activity → mutate
-# _mcp_configs_by_instance) fights the Dapr workflow determinism model:
-# orchestrator bodies replay from the top, so in-memory state written from
-# inside the orchestrator has no durable history. Activities are the
-# correct side-effect channel, but their state still evaporates on pod
-# restart. Static load-at-startup sidesteps both issues: tools live in
-# self.tool_executor for the pod's lifetime; no durability problem.
+# Per dapr-agents 1.0.1's canonical pattern, MCP tools are registered on
+# the agent's tool_executor at startup and remain static for the pod's
+# lifetime — per-instance dynamic MCP fights the Dapr workflow determinism
+# model (orchestrator bodies replay from the top; in-memory state written
+# from inside the orchestrator has no durable history).
+#
+# We cannot run the async connect at module-import time because uvicorn
+# has already started its asyncio loop and `asyncio.run()` forbids nested
+# loops. Instead, main.py installs a FastAPI startup hook that awaits
+# `bootstrap_mcp_tools(agent)` after uvicorn is up.
 #
 # Controlled by env var DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON —
 # JSON list of entries:
 #   [{"name": "playwright", "transport": "streamable_http",
 #     "url": "http://playwright-mcp-service.workflow-builder.svc.cluster.local:3100/mcp"}]
-# Empty / unset → no MCP bootstrap (default).
+# Empty / unset → no MCP bootstrap.
 
-def _load_bootstrap_mcp_tools() -> list:
-    import asyncio
+async def bootstrap_mcp_tools(agent) -> int:
+    """Connect to every MCP server declared in the bootstrap env var and
+    register the resulting tools on ``agent.tool_executor``. Safe to call
+    once at FastAPI startup; no-op on subsequent calls (dedupes by tool
+    name). Returns the number of tools added."""
     import json as _json
     import logging
 
@@ -126,7 +129,7 @@ def _load_bootstrap_mcp_tools() -> list:
 
     raw = (os.environ.get("DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON") or "").strip()
     if not raw:
-        return []
+        return 0
     try:
         entries = _json.loads(raw)
     except _json.JSONDecodeError as exc:
@@ -134,88 +137,78 @@ def _load_bootstrap_mcp_tools() -> list:
             "[mcp-bootstrap] invalid JSON in DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON: %s",
             exc,
         )
-        return []
+        return 0
     if not isinstance(entries, list) or not entries:
-        return []
+        return 0
 
     from dapr_agents.tool.mcp import MCPClient
 
-    async def _connect_all() -> list:
-        # persistent_connections=True keeps the underlying stdio/http
-        # transport alive for the agent's lifetime — necessary for static
-        # bootstrap because we're not closing the client between turns.
-        client = MCPClient(persistent_connections=True)
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            name = str(
-                entry.get("name")
-                or entry.get("server_name")
-                or entry.get("serverName")
-                or ""
-            ).strip()
-            transport = str(entry.get("transport") or "streamable_http").lower()
-            if not name:
-                continue
-            try:
-                if transport in ("streamable_http", "streamable-http", "http"):
-                    await client.connect_streamable_http(
-                        server_name=name,
-                        url=str(entry.get("url") or ""),
-                        headers=entry.get("headers"),
-                    )
-                elif transport == "sse":
-                    await client.connect_sse(
-                        server_name=name,
-                        url=str(entry.get("url") or ""),
-                        headers=entry.get("headers"),
-                    )
-                elif transport == "stdio":
-                    await client.connect_stdio(
-                        server_name=name,
-                        command=str(entry.get("command") or ""),
-                        args=entry.get("args"),
-                        env=entry.get("env"),
-                    )
-                else:
-                    logger.warning(
-                        "[mcp-bootstrap] unsupported transport %r for %s",
-                        transport,
-                        name,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[mcp-bootstrap] connect %s failed: %s", name, exc
-                )
-        return client.get_all_tools()
-
-    # asyncio.run() works when no loop is running on the current thread
-    # (this is the case at module-import time before anything starts).
-    # MCPClient uses anyio task groups internally and gets confused when
-    # the loop is swapped between threads, so we run on the main thread.
-    try:
-        tools = asyncio.run(_connect_all())
-    except RuntimeError as exc:
-        # Fallback: loop already running (e.g. reload path). Try new loop.
-        logger.warning(
-            "[mcp-bootstrap] asyncio.run failed (%s); trying new_event_loop", exc
-        )
-        loop = asyncio.new_event_loop()
+    client = MCPClient(persistent_connections=True)
+    connected = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(
+            entry.get("name")
+            or entry.get("server_name")
+            or entry.get("serverName")
+            or ""
+        ).strip()
+        transport = str(entry.get("transport") or "streamable_http").lower()
+        if not name:
+            continue
         try:
-            tools = loop.run_until_complete(_connect_all())
-        finally:
-            loop.close()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[mcp-bootstrap] load failed: %s", exc)
-        return []
+            if transport in ("streamable_http", "streamable-http", "http"):
+                await client.connect_streamable_http(
+                    server_name=name,
+                    url=str(entry.get("url") or ""),
+                    headers=entry.get("headers"),
+                )
+            elif transport == "sse":
+                await client.connect_sse(
+                    server_name=name,
+                    url=str(entry.get("url") or ""),
+                    headers=entry.get("headers"),
+                )
+            elif transport == "stdio":
+                await client.connect_stdio(
+                    server_name=name,
+                    command=str(entry.get("command") or ""),
+                    args=entry.get("args"),
+                    env=entry.get("env"),
+                )
+            else:
+                logger.warning(
+                    "[mcp-bootstrap] unsupported transport %r for %s",
+                    transport,
+                    name,
+                )
+                continue
+            connected += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[mcp-bootstrap] connect %s failed: %s", name, exc
+            )
+    if connected == 0:
+        return 0
+
+    tools = client.get_all_tools()
+    existing = {getattr(t, "name", None) for t in agent.tool_executor.list_tools()}
+    added = 0
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        if name and name in existing:
+            continue
+        agent.tool_executor.register_tool(tool)
+        added += 1
     logger.warning(
-        "[mcp-bootstrap] loaded %d MCP tool(s) from %d server(s)",
-        len(tools),
-        len(entries),
+        "[mcp-bootstrap] connected %d server(s), added %d new tool(s) to agent",
+        connected,
+        added,
     )
-    return tools
-
-
-_bootstrap_mcp_tools = _load_bootstrap_mcp_tools()
-if _bootstrap_mcp_tools:
-    all_tools.extend(_bootstrap_mcp_tools)
+    # Keep the MCPClient alive on the agent to prevent transport close.
+    try:
+        setattr(agent, "_bootstrap_mcp_client", client)
+    except Exception:
+        pass
+    return added

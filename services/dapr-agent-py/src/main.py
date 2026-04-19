@@ -2799,6 +2799,19 @@ runner = AgentRunner()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s starting", AGENT_SERVICE_NAME)
+    # Bootstrap MCP tools from the env-var manifest (DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON).
+    # Runs inside FastAPI's event loop so MCPClient's anyio transports work
+    # correctly; skips cleanly if the env var is empty. Registers tools on
+    # agent.tool_executor so every subsequent call_llm activity sees them
+    # via get_llm_tools().
+    try:
+        from src.tools import bootstrap_mcp_tools as _bootstrap_mcp_tools
+
+        added = await _bootstrap_mcp_tools(agent)
+        if added:
+            logger.info("[mcp-bootstrap] added %d tool(s) to agent", added)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcp-bootstrap] startup hook failed: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
