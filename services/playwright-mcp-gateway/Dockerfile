@@ -9,20 +9,26 @@
 
 FROM mcr.microsoft.com/playwright:v1.49.1-jammy
 
-ENV PW_BROWSERS_PATH=/ms-playwright \
-    NODE_ENV=production \
-    PORT=3100
-
-# Install the MCP server globally so the binary is on PATH.
-RUN npm install -g @playwright/mcp@latest \
- && npx --yes playwright install --with-deps chromium \
- && rm -rf /root/.npm
+ENV NODE_ENV=production \
+    PORT=3100 \
+    HOME=/app \
+    npm_config_cache=/tmp/npm-cache
 
 WORKDIR /app
+
+# Install the MCP server globally + Chromium. Run once at build time so the
+# runtime container has zero network dependency on npm / browsers.
+RUN npm install -g @playwright/mcp@latest \
+ && npx --yes playwright install --with-deps chromium \
+ && rm -rf /tmp/npm-cache /root/.npm \
+ && chown -R 1000:1000 /app
+
+USER 1000
 EXPOSE 3100
 
-# --isolated gives each MCP session a fresh browser context (matches
-# Nimble's stateless-per-call semantics; avoids cross-session leakage).
-# --headless is required for server-side use with no X server.
-ENTRYPOINT ["npx", "@playwright/mcp"]
+# Resolve the installed binary directly — `npx` at runtime would re-hit the
+# npm registry and fail inside restricted network namespaces. The globally
+# installed shim lives at /usr/bin/mcp-server-playwright (playwright base
+# image has npm's global bin symlinked there).
+ENTRYPOINT ["mcp-server-playwright"]
 CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated"]
