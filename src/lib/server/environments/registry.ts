@@ -16,12 +16,129 @@ import type {
 	EnvironmentSummary,
 	EnvironmentVersionSummary,
 } from "$lib/types/environments";
-import { createDefaultEnvironmentConfig } from "$lib/types/environments";
+import {
+	createDefaultEnvironmentConfig,
+	PACKAGE_MANAGERS,
+} from "$lib/types/environments";
 import { hashEnvironmentConfig } from "./config-hash";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
 	return db;
+}
+
+/**
+ * Raised when a write-path caller submits an EnvironmentConfig whose
+ * array-typed fields were stored as the wrong shape. Mirrors
+ * AgentConfigValidationError and gets translated to HTTP 400 by the API
+ * handlers. The openshell-agent-runtime policy renderer silently rejects
+ * mis-shaped values (like the dapr-agents runtime does for agent config),
+ * so catching this at the boundary keeps the sandbox-side assumptions simple.
+ */
+export class EnvironmentConfigValidationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "EnvironmentConfigValidationError";
+	}
+}
+
+const PACKAGE_MANAGER_SET = new Set(PACKAGE_MANAGERS);
+// Conservative but permissive-enough for real package names + version pins:
+// apt/deb names can have letters/digits/+ - . _, pip/npm add = @ /, cargo allows _
+const PACKAGE_SPEC_RE = /^[a-zA-Z0-9._@/+-]+(?:==[^\s]+)?$/;
+const BARE_HOST_RE = /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+export function validateEnvironmentConfig(config: unknown): void {
+	if (!config || typeof config !== "object" || Array.isArray(config)) {
+		throw new EnvironmentConfigValidationError("config must be an object");
+	}
+	const c = config as Record<string, unknown>;
+
+	const net = c.networking as Record<string, unknown> | undefined;
+	if (!net || typeof net !== "object") {
+		throw new EnvironmentConfigValidationError(
+			"config.networking must be an object",
+		);
+	}
+	const netType = net.type;
+	if (netType !== "unrestricted" && netType !== "limited") {
+		throw new EnvironmentConfigValidationError(
+			`config.networking.type must be "unrestricted" or "limited" (got ${String(netType)})`,
+		);
+	}
+	if (netType === "limited") {
+		const hosts = net.allowedHosts;
+		if (hosts !== undefined && hosts !== null) {
+			if (!Array.isArray(hosts)) {
+				throw new EnvironmentConfigValidationError(
+					"config.networking.allowedHosts must be an array of strings",
+				);
+			}
+			for (const h of hosts) {
+				if (typeof h !== "string" || !BARE_HOST_RE.test(h)) {
+					throw new EnvironmentConfigValidationError(
+						`config.networking.allowedHosts entries must be bare hosts (no protocol/port): got "${String(h)}"`,
+					);
+				}
+			}
+		}
+		for (const flag of ["allowMcpServers", "allowPackageManagers"] as const) {
+			const v = net[flag];
+			if (v !== undefined && v !== null && typeof v !== "boolean") {
+				throw new EnvironmentConfigValidationError(
+					`config.networking.${flag} must be a boolean`,
+				);
+			}
+		}
+	}
+
+	const pkgs = c.packages;
+	if (pkgs !== undefined && pkgs !== null) {
+		if (!Array.isArray(pkgs)) {
+			throw new EnvironmentConfigValidationError(
+				"config.packages must be an array",
+			);
+		}
+		for (const pkg of pkgs) {
+			if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) {
+				throw new EnvironmentConfigValidationError(
+					"config.packages entries must be {manager, spec} objects",
+				);
+			}
+			const p = pkg as Record<string, unknown>;
+			if (typeof p.manager !== "string" || !PACKAGE_MANAGER_SET.has(p.manager as typeof PACKAGE_MANAGERS[number])) {
+				throw new EnvironmentConfigValidationError(
+					`config.packages.manager must be one of ${PACKAGE_MANAGERS.join(", ")} (got "${String(p.manager)}")`,
+				);
+			}
+			if (typeof p.spec !== "string" || !PACKAGE_SPEC_RE.test(p.spec)) {
+				throw new EnvironmentConfigValidationError(
+					`config.packages.spec must match ${PACKAGE_SPEC_RE} (got "${String(p.spec)}")`,
+				);
+			}
+		}
+	}
+
+	const meta = c.metadata;
+	if (meta !== undefined && meta !== null) {
+		if (typeof meta !== "object" || Array.isArray(meta)) {
+			throw new EnvironmentConfigValidationError(
+				"config.metadata must be an object of lowercase string keys",
+			);
+		}
+		for (const [k, v] of Object.entries(meta as Record<string, unknown>)) {
+			if (!/^[a-z0-9._-]+$/.test(k)) {
+				throw new EnvironmentConfigValidationError(
+					`config.metadata key "${k}" must be lowercase alphanumeric (with . _ -)`,
+				);
+			}
+			if (typeof v !== "string") {
+				throw new EnvironmentConfigValidationError(
+					`config.metadata["${k}"] must be a string`,
+				);
+			}
+		}
+	}
 }
 
 function rowToSummary(
@@ -195,6 +312,7 @@ export type CreateEnvironmentInput = {
 export async function createEnvironment(
 	input: CreateEnvironmentInput,
 ): Promise<EnvironmentDetail> {
+	validateEnvironmentConfig(input.config);
 	const database = requireDb();
 	const desiredSlug = input.slug?.trim() || slugify(input.name) || "environment";
 	const slug = await ensureUniqueSlug(desiredSlug);
@@ -248,6 +366,7 @@ export async function updateEnvironment(
 	id: string,
 	input: UpdateEnvironmentInput,
 ): Promise<EnvironmentDetail | null> {
+	if (input.config !== undefined) validateEnvironmentConfig(input.config);
 	const database = requireDb();
 	const [existing] = await database
 		.select()

@@ -58,14 +58,14 @@
 		{
 			slug: 'locked-down',
 			name: 'Locked-down sandbox',
-			description: 'Default image with allowed_hosts networking — only the hosts you list are reachable.',
+			description: 'Default image with Limited networking — only the hosts you list are reachable.',
 			avatar: '🔒',
 			config: {
 				sandboxTemplate: 'dapr-agent',
 				sandboxMode: 'per-run',
 				keepAfterRun: false,
 				ttlSeconds: 7200,
-				networking: { type: 'allowed_hosts', allowedHosts: [] }
+				networking: { type: 'limited', allowedHosts: [] }
 			},
 			highlights: ['Egress restricted to an allow-list', 'Edit hosts in the Networking tab']
 		}

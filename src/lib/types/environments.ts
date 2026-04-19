@@ -4,14 +4,23 @@ export type EnvironmentNetworkingUnrestricted = {
 	type: "unrestricted";
 };
 
-export type EnvironmentNetworkingAllowedHosts = {
-	type: "allowed_hosts";
-	allowedHosts: string[];
+/**
+ * CMA-parity "Limited" networking mode. Matches platform.claude.com's
+ * environment editor: an allow-list of hosts plus two carve-out flags for
+ * package-manager registries and MCP servers. We still accept the legacy
+ * "allowed_hosts" type name on the read path for backward compatibility, but
+ * writes must use "limited".
+ */
+export type EnvironmentNetworkingLimited = {
+	type: "limited";
+	allowedHosts?: string[];
+	allowMcpServers?: boolean;
+	allowPackageManagers?: boolean;
 };
 
 export type EnvironmentNetworking =
 	| EnvironmentNetworkingUnrestricted
-	| EnvironmentNetworkingAllowedHosts;
+	| EnvironmentNetworkingLimited;
 
 export type EnvironmentResourceLimits = {
 	memoryMb?: number;
@@ -30,13 +39,50 @@ export type EnvironmentSandboxMode =
 	| "per-node"
 	| "provided";
 
+/**
+ * Package manager namespaces CMA supports, in the install-order it documents:
+ * apt → cargo → gem → go → npm → pip. Our sandbox init container runs them in
+ * the same order for parity.
+ */
+export type PackageManager =
+	| "apt"
+	| "cargo"
+	| "gem"
+	| "go"
+	| "npm"
+	| "pip";
+
+export const PACKAGE_MANAGERS: readonly PackageManager[] = [
+	"apt",
+	"cargo",
+	"gem",
+	"go",
+	"npm",
+	"pip",
+] as const;
+
+/**
+ * One package to install inside the sandbox. `spec` is the native manager
+ * syntax the packaged tool accepts — for pip/npm that's a name, optionally
+ * pinned with `==` / `@`; for apt it's a package name.
+ */
+export type EnvironmentPackage = {
+	manager: PackageManager;
+	spec: string;
+};
+
 export type EnvironmentConfig = {
 	sandboxTemplate: string;
 	sandboxMode: EnvironmentSandboxMode;
 	keepAfterRun: boolean;
 	ttlSeconds?: number;
 	networking: EnvironmentNetworking;
-	packages?: string[];
+	/**
+	 * CMA-shape package manifest. Legacy string[] data is migrated on read
+	 * (assumed all pip) but writes must use the structured shape.
+	 */
+	packages?: EnvironmentPackage[];
+	metadata?: Record<string, string>;
 	resourceLimits?: EnvironmentResourceLimits;
 };
 

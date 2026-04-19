@@ -90,7 +90,7 @@
 					</Badge>
 				{/if}
 			</div>
-			{#if cfg.networking.type === 'allowed_hosts'}
+			{#if cfg.networking.type === 'limited'}
 				{@const allowed = cfg.networking.allowedHosts ?? []}
 				{#if allowed.length > 0}
 					<Collapsible bind:open={hostsOpen}>
@@ -154,8 +154,12 @@
 					</CollapsibleTrigger>
 					<CollapsibleContent>
 						<ul class="divide-y border-t">
-							{#each pkgs as pkg (pkg)}
-								<li class="px-3 py-1.5 font-mono text-[11px]">{pkg}</li>
+							{#each pkgs as pkg (pkg.manager + ':' + pkg.spec)}
+								<li class="px-3 py-1.5 font-mono text-[11px]">
+									<span class="text-muted-foreground">{pkg.manager}</span>
+									<span class="mx-1 text-muted-foreground/50">›</span>
+									{pkg.spec}
+								</li>
 							{/each}
 						</ul>
 					</CollapsibleContent>

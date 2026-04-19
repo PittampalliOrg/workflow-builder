@@ -51,8 +51,12 @@
 		EnvironmentConfig,
 		EnvironmentDetail,
 		EnvironmentNetworking,
-		EnvironmentVersionSummary
+		EnvironmentNetworkingLimited,
+		EnvironmentPackage,
+		EnvironmentVersionSummary,
+		PackageManager
 	} from '$lib/types/environments';
+	import { PACKAGE_MANAGERS } from '$lib/types/environments';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -71,7 +75,10 @@
 	let versions = $state<EnvironmentVersionSummary[]>([]);
 	let versionsOpen = $state(false);
 	let newHost = $state('');
-	let newPkg = $state('');
+	let newPkgManager = $state<PackageManager>('pip');
+	let newPkgSpec = $state('');
+	let newMetaKey = $state('');
+	let newMetaValue = $state('');
 
 	async function load() {
 		loading = true;
@@ -161,31 +168,66 @@
 		updateConfig('networking', next);
 	}
 
+	/** Preserve the current Limited-mode extras (allowedHosts + toggles) across
+	 * host edits so the toggle states don't reset when a host is added. */
+	function currentLimited(): EnvironmentNetworkingLimited {
+		if (config?.networking.type === 'limited') return config.networking;
+		return { type: 'limited', allowedHosts: [] };
+	}
+
 	function addHost() {
 		if (!config || newHost.trim() === '') return;
-		if (config.networking.type !== 'allowed_hosts') return;
-		const hosts = [...config.networking.allowedHosts, newHost.trim()];
-		setNetworking({ type: 'allowed_hosts', allowedHosts: hosts });
+		if (config.networking.type !== 'limited') return;
+		const base = currentLimited();
+		const hosts = [...(base.allowedHosts ?? []), newHost.trim()];
+		setNetworking({ ...base, allowedHosts: hosts });
 		newHost = '';
 	}
 
 	function removeHost(host: string) {
-		if (!config || config.networking.type !== 'allowed_hosts') return;
-		const hosts = config.networking.allowedHosts.filter((h) => h !== host);
-		setNetworking({ type: 'allowed_hosts', allowedHosts: hosts });
+		if (!config || config.networking.type !== 'limited') return;
+		const base = currentLimited();
+		const hosts = (base.allowedHosts ?? []).filter((h) => h !== host);
+		setNetworking({ ...base, allowedHosts: hosts });
+	}
+
+	function toggleLimitedFlag(flag: 'allowMcpServers' | 'allowPackageManagers', value: boolean) {
+		if (!config || config.networking.type !== 'limited') return;
+		setNetworking({ ...currentLimited(), [flag]: value });
 	}
 
 	function addPackage() {
-		if (!config || newPkg.trim() === '') return;
-		const pkgs = [...(config.packages ?? []), newPkg.trim()];
-		updateConfig('packages', pkgs);
-		newPkg = '';
+		if (!config || newPkgSpec.trim() === '') return;
+		const pkg: EnvironmentPackage = { manager: newPkgManager, spec: newPkgSpec.trim() };
+		// Dedup on (manager, spec) pair so re-adding the same row is idempotent.
+		const existing = config.packages ?? [];
+		if (existing.some((p) => p.manager === pkg.manager && p.spec === pkg.spec)) return;
+		updateConfig('packages', [...existing, pkg]);
+		newPkgSpec = '';
 	}
 
-	function removePackage(pkg: string) {
+	function removePackage(pkg: EnvironmentPackage) {
 		if (!config) return;
-		const pkgs = (config.packages ?? []).filter((p) => p !== pkg);
+		const pkgs = (config.packages ?? []).filter(
+			(p) => !(p.manager === pkg.manager && p.spec === pkg.spec)
+		);
 		updateConfig('packages', pkgs);
+	}
+
+	function addMetadata() {
+		if (!config || newMetaKey.trim() === '' || newMetaValue.trim() === '') return;
+		const key = newMetaKey.trim().toLowerCase();
+		const meta = { ...(config.metadata ?? {}), [key]: newMetaValue };
+		updateConfig('metadata', meta);
+		newMetaKey = '';
+		newMetaValue = '';
+	}
+
+	function removeMetadata(key: string) {
+		if (!config) return;
+		const meta = { ...(config.metadata ?? {}) };
+		delete meta[key];
+		updateConfig('metadata', meta);
 	}
 
 	onMount(load);
@@ -434,8 +476,11 @@
 					</TabsContent>
 
 					<TabsContent value="networking" class="space-y-4">
+						<p class="text-sm text-muted-foreground">
+							Configure network access policies for this environment.
+						</p>
 						<div class="space-y-3">
-							<Label>Mode</Label>
+							<Label>Type</Label>
 							<div class="grid grid-cols-2 gap-3">
 								<button
 									type="button"
@@ -451,66 +496,94 @@
 								</button>
 								<button
 									type="button"
-									class="text-left p-4 rounded border {config.networking.type ===
-									'allowed_hosts'
+									class="text-left p-4 rounded border {config.networking.type === 'limited'
 										? 'border-primary ring-1 ring-primary'
 										: 'hover:border-primary/50'}"
 									onclick={() =>
 										setNetworking({
-											type: 'allowed_hosts',
+											type: 'limited',
 											allowedHosts:
-												config!.networking.type === 'allowed_hosts'
-													? config!.networking.allowedHosts
+												config!.networking.type === 'limited'
+													? (config!.networking.allowedHosts ?? [])
 													: []
 										})}
 								>
-									<div class="font-medium text-sm">Allowed hosts</div>
+									<div class="font-medium text-sm">Limited</div>
 									<div class="text-xs text-muted-foreground">
-										Lock egress to a list of hostnames (package managers + custom).
+										Allow-list hosts + optional package-manager / MCP carve-outs.
 									</div>
 								</button>
 							</div>
 						</div>
 
-						{#if config.networking.type === 'allowed_hosts'}
-							<div class="space-y-3 border-t pt-4">
-								<Label>Allowed hosts</Label>
-								<div class="flex gap-2">
-									<Input
-										placeholder="api.example.com"
-										bind:value={newHost}
-										onkeydown={(e) => {
-											if (e.key === 'Enter') {
-												e.preventDefault();
-												addHost();
-											}
-										}}
+						{#if config.networking.type === 'limited'}
+							{@const lim = config.networking}
+							<div class="space-y-4 border-t pt-4">
+								<div class="flex items-center justify-between">
+									<div>
+										<div class="text-sm">Allow MCP server network access</div>
+										<div class="text-xs text-muted-foreground">
+											Permit the sandbox to reach configured MCP endpoints even when
+											they're not in the allowed-hosts list.
+										</div>
+									</div>
+									<Switch
+										checked={lim.allowMcpServers ?? false}
+										onCheckedChange={(v) => toggleLimitedFlag('allowMcpServers', v)}
 									/>
-									<Button onclick={addHost} disabled={!newHost.trim()}>
-										<Plus class="size-4" /> Add
-									</Button>
 								</div>
-								<div class="flex flex-wrap gap-2">
-									{#each config.networking.allowedHosts as host}
-										<span
-											class="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-mono"
-										>
-											{host}
-											<button
-												type="button"
-												class="text-muted-foreground hover:text-destructive"
-												onclick={() => removeHost(host)}
+								<div class="flex items-center justify-between">
+									<div>
+										<div class="text-sm">Allow package manager network access</div>
+										<div class="text-xs text-muted-foreground">
+											Permit pip / npm / apt / go / cargo / gem to reach their default
+											registries so declared packages can install.
+										</div>
+									</div>
+									<Switch
+										checked={lim.allowPackageManagers ?? false}
+										onCheckedChange={(v) => toggleLimitedFlag('allowPackageManagers', v)}
+									/>
+								</div>
+								<div class="space-y-2">
+									<Label>Allowed hosts</Label>
+									<div class="flex gap-2">
+										<Input
+											placeholder="api.example.com"
+											bind:value={newHost}
+											onkeydown={(e) => {
+												if (e.key === 'Enter') {
+													e.preventDefault();
+													addHost();
+												}
+											}}
+										/>
+										<Button onclick={addHost} disabled={!newHost.trim()}>
+											<Plus class="size-4" /> Add
+										</Button>
+									</div>
+									<div class="flex flex-wrap gap-2">
+										{#each lim.allowedHosts ?? [] as host}
+											<span
+												class="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-mono"
 											>
-												<X class="size-3" />
-											</button>
-										</span>
-									{/each}
-									{#if config.networking.allowedHosts.length === 0}
-										<p class="text-xs text-muted-foreground">
-											No hosts allowed yet. MCP servers must have their domain listed here
-											or tool calls will silently fail.
-										</p>
-									{/if}
+												{host}
+												<button
+													type="button"
+													class="text-muted-foreground hover:text-destructive"
+													onclick={() => removeHost(host)}
+												>
+													<X class="size-3" />
+												</button>
+											</span>
+										{/each}
+										{#if (lim.allowedHosts ?? []).length === 0}
+											<p class="text-xs text-muted-foreground">
+												No hosts allowed yet. MCP servers must have their domain listed
+												here, or enable "Allow MCP server network access" above.
+											</p>
+										{/if}
+									</div>
 								</div>
 							</div>
 						{/if}
@@ -518,13 +591,21 @@
 
 					<TabsContent value="packages" class="space-y-4">
 						<p class="text-sm text-muted-foreground">
-							Packages preinstalled when the sandbox boots. Names map to the underlying package
-							manager (pip, apt, etc. — depends on the sandbox template).
+							Specify packages and their versions available in this environment.
+							Install order: apt → cargo → gem → go → npm → pip.
 						</p>
 						<div class="flex gap-2">
+							<select
+								class="h-9 w-28 shrink-0 rounded border bg-background px-2 text-sm"
+								bind:value={newPkgManager}
+							>
+								{#each PACKAGE_MANAGERS as m}
+									<option value={m}>{m}</option>
+								{/each}
+							</select>
 							<Input
-								placeholder="pandas"
-								bind:value={newPkg}
+								placeholder="package package==1.0.0"
+								bind:value={newPkgSpec}
 								onkeydown={(e) => {
 									if (e.key === 'Enter') {
 										e.preventDefault();
@@ -532,28 +613,84 @@
 									}
 								}}
 							/>
-							<Button onclick={addPackage} disabled={!newPkg.trim()}>
+							<Button onclick={addPackage} disabled={!newPkgSpec.trim()}>
 								<Plus class="size-4" /> Add
 							</Button>
 						</div>
-						<div class="flex flex-wrap gap-2">
-							{#each config.packages ?? [] as pkg}
-								<span
-									class="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-mono"
+						<div class="space-y-1.5">
+							{#each config.packages ?? [] as pkg (pkg.manager + ':' + pkg.spec)}
+								<div
+									class="flex items-center gap-2 rounded border px-3 py-2 text-sm"
 								>
-									{pkg}
+									<Badge variant="outline" class="w-14 justify-center font-mono text-[10px]">
+										{pkg.manager}
+									</Badge>
+									<span class="flex-1 font-mono text-xs">{pkg.spec}</span>
 									<button
 										type="button"
 										class="text-muted-foreground hover:text-destructive"
 										onclick={() => removePackage(pkg)}
 									>
-										<X class="size-3" />
+										<X class="size-4" />
 									</button>
-								</span>
+								</div>
 							{/each}
 							{#if (config.packages ?? []).length === 0}
-								<p class="text-xs text-muted-foreground">No preinstalled packages.</p>
+								<p class="text-xs text-muted-foreground">No packages configured.</p>
 							{/if}
+						</div>
+
+						<div class="border-t pt-4 space-y-2">
+							<Label>Metadata</Label>
+							<p class="text-xs text-muted-foreground">
+								Custom key-value tags. Keys must be lowercase.
+							</p>
+							<div class="flex gap-2">
+								<Input
+									placeholder="client_key"
+									bind:value={newMetaKey}
+									onkeydown={(e) => {
+										if (e.key === 'Enter') {
+											e.preventDefault();
+											addMetadata();
+										}
+									}}
+								/>
+								<Input
+									placeholder="value"
+									bind:value={newMetaValue}
+									onkeydown={(e) => {
+										if (e.key === 'Enter') {
+											e.preventDefault();
+											addMetadata();
+										}
+									}}
+								/>
+								<Button
+									onclick={addMetadata}
+									disabled={!newMetaKey.trim() || !newMetaValue.trim()}
+								>
+									<Plus class="size-4" /> Add
+								</Button>
+							</div>
+							<div class="space-y-1.5">
+								{#each Object.entries(config.metadata ?? {}) as [k, v] (k)}
+									<div
+										class="flex items-center gap-2 rounded border px-3 py-2 text-sm"
+									>
+										<span class="font-mono text-xs text-muted-foreground">{k}</span>
+										<span class="text-muted-foreground/50">=</span>
+										<span class="flex-1 font-mono text-xs">{v}</span>
+										<button
+											type="button"
+											class="text-muted-foreground hover:text-destructive"
+											onclick={() => removeMetadata(k)}
+										>
+											<X class="size-4" />
+										</button>
+									</div>
+								{/each}
+							</div>
 						</div>
 					</TabsContent>
 

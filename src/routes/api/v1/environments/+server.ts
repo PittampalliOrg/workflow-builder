@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
+	EnvironmentConfigValidationError,
 	createEnvironment,
 	listEnvironments,
 	type CreateEnvironmentInput,
@@ -60,7 +61,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		config,
 	};
 
-	const environment = await createEnvironment(input);
+	let environment;
+	try {
+		environment = await createEnvironment(input);
+	} catch (e) {
+		if (e instanceof EnvironmentConfigValidationError) return error(400, e.message);
+		throw e;
+	}
 	return json({ environment }, { status: 201 });
 };
 

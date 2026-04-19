@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
+	EnvironmentConfigValidationError,
 	archiveEnvironment,
 	getEnvironment,
 	updateEnvironment,
@@ -20,27 +21,33 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		string,
 		unknown
 	>;
-	const environment = await updateEnvironment(params.id, {
-		name: typeof body.name === "string" ? body.name : undefined,
-		description:
-			typeof body.description === "string" || body.description === null
-				? (body.description as string | null)
+	let environment;
+	try {
+		environment = await updateEnvironment(params.id, {
+			name: typeof body.name === "string" ? body.name : undefined,
+			description:
+				typeof body.description === "string" || body.description === null
+					? (body.description as string | null)
+					: undefined,
+			avatar:
+				typeof body.avatar === "string" || body.avatar === null
+					? (body.avatar as string | null)
+					: undefined,
+			tags: Array.isArray(body.tags)
+				? body.tags.map((t) => String(t))
 				: undefined,
-		avatar:
-			typeof body.avatar === "string" || body.avatar === null
-				? (body.avatar as string | null)
-				: undefined,
-		tags: Array.isArray(body.tags)
-			? body.tags.map((t) => String(t))
-			: undefined,
-		config:
-			body.config && typeof body.config === "object"
-				? (body.config as EnvironmentConfig)
-				: undefined,
-		changelog:
-			typeof body.changelog === "string" ? body.changelog : undefined,
-		publishedBy: locals.session.userId,
-	});
+			config:
+				body.config && typeof body.config === "object"
+					? (body.config as EnvironmentConfig)
+					: undefined,
+			changelog:
+				typeof body.changelog === "string" ? body.changelog : undefined,
+			publishedBy: locals.session.userId,
+		});
+	} catch (e) {
+		if (e instanceof EnvironmentConfigValidationError) return error(400, e.message);
+		throw e;
+	}
 	if (!environment) return error(404, "Environment not found");
 	return json({ environment });
 };
