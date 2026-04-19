@@ -23,6 +23,7 @@
 		description: string;
 		avatar: string;
 		config: Partial<EnvironmentConfig>;
+		baseEnvSlug: string | null;
 		highlights: string[];
 	};
 
@@ -30,30 +31,30 @@
 		{
 			slug: 'dapr-agent-default',
 			name: 'Default sandbox',
-			description: 'Standard dapr-agent sandbox, unrestricted networking, no preinstalled packages.',
+			description: 'Inherits the dapr-agent built-in image, unrestricted networking, no extra packages.',
 			avatar: '🧱',
 			config: {
-				sandboxTemplate: 'dapr-agent',
 				sandboxMode: 'per-run',
 				keepAfterRun: false,
 				ttlSeconds: 7200,
 				networking: { type: 'unrestricted' }
 			},
-			highlights: ['dapr-agent image', 'per-run sandboxes', 'unrestricted egress']
+			baseEnvSlug: 'dapr-agent',
+			highlights: ['Inherits dapr-agent', 'per-run sandboxes', 'unrestricted egress']
 		},
 		{
 			slug: 'dapr-agent-xlsx',
 			name: 'Office docs sandbox',
-			description: 'Adds Excel/Word/PowerPoint tooling for spreadsheet/docx/pptx workflows.',
+			description: 'Inherits dapr-agent-xlsx for Excel/Word/PowerPoint workflows.',
 			avatar: '📊',
 			config: {
-				sandboxTemplate: 'dapr-agent-xlsx',
 				sandboxMode: 'per-run',
 				keepAfterRun: false,
 				ttlSeconds: 7200,
 				networking: { type: 'unrestricted' }
 			},
-			highlights: ['dapr-agent-xlsx image', 'openpyxl + python-docx + python-pptx preinstalled']
+			baseEnvSlug: 'dapr-agent-xlsx',
+			highlights: ['Inherits dapr-agent-xlsx', 'openpyxl + python-docx + python-pptx preinstalled']
 		},
 		{
 			slug: 'locked-down',
@@ -61,12 +62,12 @@
 			description: 'Default image with Limited networking — only the hosts you list are reachable.',
 			avatar: '🔒',
 			config: {
-				sandboxTemplate: 'dapr-agent',
 				sandboxMode: 'per-run',
 				keepAfterRun: false,
 				ttlSeconds: 7200,
 				networking: { type: 'limited', allowedHosts: [] }
 			},
+			baseEnvSlug: 'dapr-agent',
 			highlights: ['Egress restricted to an allow-list', 'Edit hosts in the Networking tab']
 		}
 	];
@@ -84,12 +85,14 @@
 		errorMessage = null;
 		try {
 			const config = blank || !chosen ? undefined : chosen.config;
+			const baseEnvSlug = blank || !chosen ? undefined : chosen.baseEnvSlug;
 			const res = await fetch('/api/v1/environments', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					name: name.trim() || chosen?.name || 'Untitled Environment',
-					config
+					config,
+					baseEnvSlug
 				})
 			});
 			if (!res.ok) {

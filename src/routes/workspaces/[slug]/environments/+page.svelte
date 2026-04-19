@@ -145,7 +145,7 @@
 			<th class="px-4 py-2.5 font-medium">ID</th>
 			<th class="px-4 py-2.5 font-medium">Name</th>
 			<th class="px-4 py-2.5 font-medium">Status</th>
-			<th class="px-4 py-2.5 font-medium">Type</th>
+			<th class="px-4 py-2.5 font-medium">Build</th>
 			<th class="px-4 py-2.5 font-medium">Created</th>
 			<th class="px-4 py-2.5 font-medium w-10"></th>
 		{/snippet}
@@ -168,9 +168,21 @@
 				</Badge>
 			</td>
 			<td class="px-4 py-2.5">
-				<Badge variant="outline" class="text-[10px] font-mono">
-					{env.sandboxTemplate ?? 'Cloud'}
-				</Badge>
+				<div class="flex flex-wrap items-center gap-1">
+					<Badge
+						variant={env.build?.lastBuildStatus === 'built'
+							? 'secondary'
+							: env.build?.lastBuildStatus === 'failed'
+								? 'destructive'
+								: 'outline'}
+						class="text-[10px]"
+					>
+						{env.build?.lastBuildStatus ?? 'unbuilt'}
+					</Badge>
+					{#if env.isBuiltin}
+						<Badge variant="outline" class="text-[10px]">built-in</Badge>
+					{/if}
+				</div>
 			</td>
 			<td class="px-4 py-2.5 text-xs text-muted-foreground">
 				{formatRelative(env.createdAt)}

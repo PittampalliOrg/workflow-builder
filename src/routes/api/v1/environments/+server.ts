@@ -58,6 +58,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			typeof body.projectId === "string"
 				? body.projectId
 				: (locals.session.projectId ?? null),
+		baseEnvSlug:
+			typeof body.baseEnvSlug === "string" || body.baseEnvSlug === null
+				? (body.baseEnvSlug as string | null)
+				: undefined,
 		config,
 	};
 

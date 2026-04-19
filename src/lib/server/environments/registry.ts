@@ -373,6 +373,7 @@ export type CreateEnvironmentInput = {
 	tags?: string[];
 	createdBy?: string | null;
 	projectId?: string | null;
+	baseEnvSlug?: string | null;
 	config: EnvironmentConfig;
 };
 
@@ -396,6 +397,7 @@ export async function createEnvironment(
 				tags: input.tags ?? [],
 				createdBy: input.createdBy ?? null,
 				projectId: input.projectId ?? null,
+				baseEnvSlug: input.baseEnvSlug ?? null,
 			})
 			.returning();
 		const [version] = await tx
@@ -538,6 +540,7 @@ export async function duplicateEnvironment(
 		tags: existing.tags,
 		createdBy: opts.createdBy ?? null,
 		projectId: opts.projectId ?? null,
+		baseEnvSlug: existing.baseEnvSlug,
 		config: existing.config,
 	});
 }
