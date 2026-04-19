@@ -24,8 +24,14 @@ const NAMESPACE_PATH =
 
 const DEFAULT_AGENT_RUNTIME_NAMESPACE =
 	process.env.AGENT_RUNTIME_NAMESPACE ?? "openshell";
-const K8S_HOST = process.env.KUBERNETES_HOST ?? "kubernetes.default.svc";
-const K8S_PORT = process.env.KUBERNETES_PORT ?? "443";
+// Inside a pod Kubernetes sets KUBERNETES_SERVICE_HOST + KUBERNETES_SERVICE_PORT
+// (numeric). The plain KUBERNETES_PORT var is a URL like `tcp://10.98.0.1:443`,
+// not a bare port — don't use it.
+const K8S_HOST =
+	process.env.KUBERNETES_SERVICE_HOST ??
+	process.env.KUBERNETES_HOST ??
+	"kubernetes.default.svc";
+const K8S_PORT = process.env.KUBERNETES_SERVICE_PORT ?? "443";
 
 let cachedToken: string | null = null;
 let cachedAgent: https.Agent | null = null;
