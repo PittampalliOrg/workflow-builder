@@ -714,11 +714,13 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 			};
 		}
 	}
-	// If we don't have an environment-managed imageTag yet, fall back to the
-	// default per-agent sandbox image. This unblocks the first publish before
-	// Phase-3 env builds land.
+	// Per-agent runtime pod always runs the dapr-agent-py-sandbox image —
+	// the Python agent host that layers dapr-agent-py + dapr-agents +
+	// tools on top of openshell-sandbox. environmentRecord.imageTag is the
+	// WORKSPACE sandbox image (plain openshell-sandbox with env-specific
+	// packages) used by workspace/profile tools, NOT by the agent runtime
+	// itself. Mixing those up was a Phase-4 bug.
 	const imageTag =
-		environmentRecord?.imageTag ??
 		env.AGENT_RUNTIME_DEFAULT_IMAGE ??
 		"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
 
