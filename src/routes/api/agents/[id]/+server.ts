@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
+	AgentConfigValidationError,
 	archiveAgent,
 	getAgent,
 	updateAgent,
@@ -21,40 +22,46 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		unknown
 	>;
 	const runtime = pickRuntime(body.runtime);
-	const agent = await updateAgent(params.id, {
-		name: typeof body.name === "string" ? body.name : undefined,
-		description:
-			typeof body.description === "string" || body.description === null
-				? (body.description as string | null)
+	let agent;
+	try {
+		agent = await updateAgent(params.id, {
+			name: typeof body.name === "string" ? body.name : undefined,
+			description:
+				typeof body.description === "string" || body.description === null
+					? (body.description as string | null)
+					: undefined,
+			avatar:
+				typeof body.avatar === "string" || body.avatar === null
+					? (body.avatar as string | null)
+					: undefined,
+			tags: Array.isArray(body.tags)
+				? body.tags.map((t) => String(t))
 				: undefined,
-		avatar:
-			typeof body.avatar === "string" || body.avatar === null
-				? (body.avatar as string | null)
+			runtime,
+			environmentId:
+				typeof body.environmentId === "string" || body.environmentId === null
+					? (body.environmentId as string | null)
+					: undefined,
+			environmentVersion:
+				typeof body.environmentVersion === "number" ||
+				body.environmentVersion === null
+					? (body.environmentVersion as number | null)
+					: undefined,
+			defaultVaultIds: Array.isArray(body.defaultVaultIds)
+				? body.defaultVaultIds.map((v) => String(v))
 				: undefined,
-		tags: Array.isArray(body.tags)
-			? body.tags.map((t) => String(t))
-			: undefined,
-		runtime,
-		environmentId:
-			typeof body.environmentId === "string" || body.environmentId === null
-				? (body.environmentId as string | null)
-				: undefined,
-		environmentVersion:
-			typeof body.environmentVersion === "number" ||
-			body.environmentVersion === null
-				? (body.environmentVersion as number | null)
-				: undefined,
-		defaultVaultIds: Array.isArray(body.defaultVaultIds)
-			? body.defaultVaultIds.map((v) => String(v))
-			: undefined,
-		config:
-			body.config && typeof body.config === "object"
-				? (body.config as AgentConfig)
-				: undefined,
-		changelog:
-			typeof body.changelog === "string" ? body.changelog : undefined,
-		publishedBy: locals.session.userId,
-	});
+			config:
+				body.config && typeof body.config === "object"
+					? (body.config as AgentConfig)
+					: undefined,
+			changelog:
+				typeof body.changelog === "string" ? body.changelog : undefined,
+			publishedBy: locals.session.userId,
+		});
+	} catch (e) {
+		if (e instanceof AgentConfigValidationError) return error(400, e.message);
+		throw e;
+	}
 	if (!agent) return error(404, "Agent not found");
 	return json({ agent });
 };

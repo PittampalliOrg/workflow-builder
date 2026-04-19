@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { BUILTIN_AGENT_PROFILES } from "$lib/server/agent-profiles";
 import {
+	AgentConfigValidationError,
 	createAgent,
 	listAgents,
 	type CreateAgentInput,
@@ -80,7 +81,13 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 		config,
 	};
 
-	const agent = await createAgent(input);
+	let agent;
+	try {
+		agent = await createAgent(input);
+	} catch (e) {
+		if (e instanceof AgentConfigValidationError) return error(400, e.message);
+		throw e;
+	}
 	return json({ agent }, { status: 201 });
 };
 

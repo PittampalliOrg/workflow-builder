@@ -24,6 +24,71 @@ function requireDb() {
 	return db;
 }
 
+/**
+ * Raised when a write-path caller submits an AgentConfig whose array-typed
+ * fields were stored as the wrong shape (string, object, etc). The dapr-agents
+ * runtime silently drops mis-shaped values (see main.py:1594 `isinstance(...,
+ * list)` guard), so without validation we accumulate DB rows the agent never
+ * actually reads. Route handlers should translate this into a 400.
+ */
+export class AgentConfigValidationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AgentConfigValidationError";
+	}
+}
+
+const ARRAY_OF_STRING_FIELDS = [
+	"instructions",
+	"styleGuidelines",
+	"builtinTools",
+	"plugins",
+] as const;
+
+const ARRAY_FIELDS = [
+	"skills",
+	"mcpServers",
+	"callableAgents",
+	"tools",
+] as const;
+
+/**
+ * Validate array-typed fields on AgentConfig match the runtime's expectations.
+ * Throws AgentConfigValidationError on mismatch. Does NOT mutate; callers are
+ * responsible for normalization if they want to coerce.
+ */
+export function validateAgentConfig(config: unknown): void {
+	if (!config || typeof config !== "object" || Array.isArray(config)) {
+		throw new AgentConfigValidationError("config must be an object");
+	}
+	const c = config as Record<string, unknown>;
+	for (const key of ARRAY_OF_STRING_FIELDS) {
+		const v = c[key];
+		if (v === undefined || v === null) continue;
+		if (!Array.isArray(v)) {
+			throw new AgentConfigValidationError(
+				`config.${key} must be an array of strings (got ${typeof v})`,
+			);
+		}
+		for (const item of v) {
+			if (typeof item !== "string") {
+				throw new AgentConfigValidationError(
+					`config.${key} must contain only strings`,
+				);
+			}
+		}
+	}
+	for (const key of ARRAY_FIELDS) {
+		const v = c[key];
+		if (v === undefined || v === null) continue;
+		if (!Array.isArray(v)) {
+			throw new AgentConfigValidationError(
+				`config.${key} must be an array (got ${typeof v})`,
+			);
+		}
+	}
+}
+
 function rowToSummary(
 	row: Agent,
 	currentVersion: number | null,
@@ -222,6 +287,7 @@ function slugify(value: string): string {
 export async function createAgent(
 	input: CreateAgentInput,
 ): Promise<AgentDetail> {
+	validateAgentConfig(input.config);
 	const database = requireDb();
 	const desiredSlug = input.slug?.trim() || slugify(input.name) || "agent";
 	const slug = await ensureUniqueSlug(desiredSlug);
@@ -307,6 +373,7 @@ export async function updateAgent(
 	id: string,
 	input: UpdateAgentInput,
 ): Promise<AgentDetail | null> {
+	if (input.config !== undefined) validateAgentConfig(input.config);
 	const database = requireDb();
 	const [existing] = await database
 		.select()

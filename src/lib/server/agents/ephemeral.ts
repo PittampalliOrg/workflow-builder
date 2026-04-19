@@ -3,6 +3,7 @@ import { db } from "$lib/server/db";
 import { agents, agentVersions } from "$lib/server/db/schema";
 import type { AgentConfig } from "$lib/types/agents";
 import { hashAgentConfig } from "./config-hash";
+import { validateAgentConfig } from "./registry";
 
 /**
  * Find-or-create an ephemeral agent row for a workflow `durable/run` node.
@@ -22,6 +23,7 @@ export async function findOrCreateEphemeralAgent(params: {
 	userId: string;
 }): Promise<{ agentId: string; agentVersion: number }> {
 	if (!db) throw new Error("Database not configured");
+	validateAgentConfig(params.agentConfig);
 	const slug = ephemeralSlug(params.workflowId, params.nodeId);
 	const configHash = hashAgentConfig(params.agentConfig);
 
