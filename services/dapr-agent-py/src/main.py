@@ -1545,17 +1545,21 @@ class OpenShellDurableAgent(DurableAgent):
     @message_router(message_model=TriggerAction)
     def agent_workflow(self, ctx, message: dict):
         if not ctx.is_replaying:
-            _ac = message.get("agentConfig") if isinstance(message, dict) else None
-            _mcps = (_ac or {}).get("mcpServers") if isinstance(_ac, dict) else None
-            logger.warning(
-                "[mcp] agent_workflow entry: msg_type=%s msg_keys=%s ac_type=%s mcp_len=%s",
-                type(message).__name__,
-                sorted(message.keys())[:12] if isinstance(message, dict) else None,
-                type(_ac).__name__,
-                len(_mcps) if isinstance(_mcps, list) else (
-                    "not-list" if _mcps is not None else None
-                ),
-            )
+            import sys
+            try:
+                _ac = message.get("agentConfig") if isinstance(message, dict) else None
+                _mcps = (_ac or {}).get("mcpServers") if isinstance(_ac, dict) else None
+                print(
+                    "[mcp-debug] agent_workflow entry: "
+                    f"msg_type={type(message).__name__} "
+                    f"msg_keys={sorted(message.keys())[:15] if isinstance(message, dict) else None} "
+                    f"ac_type={type(_ac).__name__} "
+                    f"mcp_len={len(_mcps) if isinstance(_mcps, list) else ('not-list' if _mcps is not None else None)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except Exception as _e:
+                print(f"[mcp-debug] entry log failed: {_e}", file=sys.stderr, flush=True)
         metadata = _parse_metadata(message.get("metadata")) | _parse_metadata(
             message.get("_message_metadata")
         )
