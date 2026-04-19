@@ -117,10 +117,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-import sys as _sys_probe
-_sys_probe.stderr.write("[mcp-debug] main.py module imported (stderr probe)\n")
-_sys_probe.stderr.flush()
-
 DEFAULT_MAX_ITERATIONS = int(os.environ.get("DAPR_AGENT_PY_MAX_ITERATIONS", "120"))
 
 def _build_system_prompt(cwd: str, sandbox_name: str | None = None) -> str:
@@ -438,25 +434,10 @@ def _extract_mcp_server_configs(
     if message.get("agentConfig") and not isinstance(agent_config, dict):
         logger.warning("[mcp] Skipping invalid JSON agentConfig")
     if not isinstance(agent_config, dict):
-        logger.warning(
-            "[mcp] extract: agentConfig absent/invalid — top-level message keys=%s",
-            list(message.keys()) if isinstance(message, dict) else type(message).__name__,
-        )
         return {}, {}
     raw_servers = agent_config.get("mcpServers")
     if not isinstance(raw_servers, list):
-        logger.warning(
-            "[mcp] extract: agentConfig has no mcpServers list — agentConfig keys=%s "
-            "(raw_servers type=%s)",
-            list(agent_config.keys()),
-            type(raw_servers).__name__,
-        )
         return {}, {}
-    logger.warning(
-        "[mcp] extract: agentConfig.mcpServers has %d entr%s",
-        len(raw_servers),
-        "y" if len(raw_servers) == 1 else "ies",
-    )
 
     configs: dict[str, dict[str, Any]] = {}
     allowed_tools_by_server: dict[str, set[str]] = {}
@@ -1548,21 +1529,6 @@ class OpenShellDurableAgent(DurableAgent):
     @workflow_entry
     @message_router(message_model=TriggerAction)
     def agent_workflow(self, ctx, message: dict):
-        import sys
-        try:
-            _ac = message.get("agentConfig") if isinstance(message, dict) else None
-            _mcps = (_ac or {}).get("mcpServers") if isinstance(_ac, dict) else None
-            sys.stderr.write(
-                f"[mcp-debug] agent_workflow entry replaying={getattr(ctx, 'is_replaying', '?')} "
-                f"msg_type={type(message).__name__} "
-                f"msg_keys={sorted(message.keys())[:15] if isinstance(message, dict) else None} "
-                f"ac_type={type(_ac).__name__} "
-                f"mcp_len={len(_mcps) if isinstance(_mcps, list) else ('not-list' if _mcps is not None else None)}\n"
-            )
-            sys.stderr.flush()
-        except Exception as _e:
-            sys.stderr.write(f"[mcp-debug] entry log failed: {_e}\n")
-            sys.stderr.flush()
         metadata = _parse_metadata(message.get("metadata")) | _parse_metadata(
             message.get("_message_metadata")
         )
@@ -2416,6 +2382,42 @@ class OpenShellDurableAgent(DurableAgent):
                 task=task_text,
                 raw_message=message,
             )
+
+            # Option-C MCP bridge: the agent_workflow body that would normally
+            # extract agentConfig.mcpServers and seed `_mcp_configs_by_instance`
+            # isn't being invoked for child workflows dispatched by name in
+            # dapr-agents 1.0.1 — `ctx.call_child_workflow(self.agent_workflow_name, ...)`
+            # dispatches through the durable-task registry, and our override
+            # body never runs. Seed the cache here directly (session_workflow
+            # IS our code and IS running) so `call_llm`'s `_ensure_mcp_client`
+            # path can still connect the MCP servers and surface their tools
+            # via get_llm_tools. Keyed on the CHILD workflow's instance_id so
+            # the per-turn call_llm activity picks up the right configs.
+            child_instance_id = f"{session_id}:turn-{turn_counter}"
+            if not ctx.is_replaying:
+                try:
+                    mcp_configs, mcp_allowed_tools = _extract_mcp_server_configs(
+                        child_input
+                    )
+                    if mcp_configs:
+                        self._mcp_configs_by_instance[child_instance_id] = mcp_configs
+                        self._mcp_allowed_tools_by_instance[child_instance_id] = (
+                            mcp_allowed_tools
+                        )
+                        logger.info(
+                            "[mcp] session_workflow seeded %d MCP server config(s) "
+                            "for child instance %s (turn=%d)",
+                            len(mcp_configs),
+                            child_instance_id,
+                            turn_counter,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] session_workflow failed to seed MCP configs for "
+                        "child instance %s: %s",
+                        child_instance_id,
+                        exc,
+                    )
 
             try:
                 # Apply the same retry policy agent_workflow uses internally
