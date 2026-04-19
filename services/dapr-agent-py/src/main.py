@@ -2394,36 +2394,28 @@ class OpenShellDurableAgent(DurableAgent):
             # via get_llm_tools. Keyed on the CHILD workflow's instance_id so
             # the per-turn call_llm activity picks up the right configs.
             child_instance_id = f"{session_id}:turn-{turn_counter}"
+            import sys as _sys
+            _sys.stderr.write(
+                f"[mcp-seed] replaying={ctx.is_replaying} session={session_id} child={child_instance_id}\n"
+            )
+            _sys.stderr.flush()
             if not ctx.is_replaying:
                 try:
                     mcp_configs, mcp_allowed_tools = _extract_mcp_server_configs(
                         child_input
                     )
+                    _sys.stderr.write(
+                        f"[mcp-seed] extracted {len(mcp_configs)} configs names={list(mcp_configs.keys())}\n"
+                    )
+                    _sys.stderr.flush()
                     if mcp_configs:
                         self._mcp_configs_by_instance[child_instance_id] = mcp_configs
                         self._mcp_allowed_tools_by_instance[child_instance_id] = (
                             mcp_allowed_tools
                         )
-                        logger.warning(
-                            "[mcp] session_workflow seeded %d MCP server config(s) "
-                            "for child instance %s (turn=%d)",
-                            len(mcp_configs),
-                            child_instance_id,
-                            turn_counter,
-                        )
-                    else:
-                        logger.warning(
-                            "[mcp] session_workflow: agentConfig.mcpServers yielded "
-                            "no valid configs for child %s",
-                            child_instance_id,
-                        )
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[mcp] session_workflow failed to seed MCP configs for "
-                        "child instance %s: %s",
-                        child_instance_id,
-                        exc,
-                    )
+                    _sys.stderr.write(f"[mcp-seed] exc: {exc!r}\n")
+                    _sys.stderr.flush()
 
             try:
                 # Apply the same retry policy agent_workflow uses internally
