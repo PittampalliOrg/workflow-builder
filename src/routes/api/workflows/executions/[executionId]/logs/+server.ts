@@ -149,6 +149,22 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		return null;
 	}
 
+	// event_publisher.py in dapr-agent-py renames internal agent events to the
+	// CMA-shape types the /sessions/[id] UI expects. The run-detail Timeline
+	// and Canvas graph still filter on the raw dapr-agents names, so reverse
+	// the mapping here for Timeline-tab consumption. `data._internalType`
+	// already carries the pre-rename type when present.
+	const CMA_TO_INTERNAL: Record<string, string> = {
+		"agent.message": "llm_complete",
+		"agent.tool_use": "tool_call_start",
+		"agent.tool_result": "tool_call_end",
+	};
+	function toInternalType(cmaType: string, data: Record<string, unknown>): string {
+		const stashed = data["_internalType"];
+		if (typeof stashed === "string" && stashed.trim()) return stashed;
+		return CMA_TO_INTERNAL[cmaType] ?? cmaType;
+	}
+
 	// Stamp each event with the linking ids the client-side filters look for.
 	// For sessions-bridged runs, workflow_agent_runs.id === sessions.id ===
 	// dapr_instance_id, so setting both to e.sessionId lets
@@ -159,7 +175,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			const data = (e.data && typeof e.data === 'object' ? (e.data as Record<string, unknown>) : {});
 			return {
 				id: e.id,
-				type: e.type,
+				type: toInternalType(e.type, data),
 				sourceEventId: e.sourceEventId,
 				workflowAgentRunId: e.sessionId,
 				daprInstanceId: e.sessionId,
