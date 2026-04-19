@@ -89,49 +89,34 @@ For provider integrations (Gmail, Slack, Discord, etc.), use this format:
 ### dapr-agent-py agent runs
 Use only \`call: durable/run\` for embedded agent execution. Do not use \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
 New agent workflows should use \`sandboxPolicy.mode: per-run\` by default so workflow-builder compiles one \`workspace/profile\` task and wires \`workspaceRef\` into each agent run. Use \`shared-runtime\` only when the user asks for the fastest shared runtime path, and use \`provided\` only when the user gives an external \`workspaceRef\`.
-Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
+
+Every \`durable/run\` task MUST bind to a pre-registered managed agent via \`body.agentRef\`. Inline agent configuration (\`agentConfig\`, \`modelSpec\`, \`systemPrompt\`, \`mcpServers\`, \`skills\`, \`callableAgents\`) is REJECTED by the resolver at execute time. The user must supply an agent id (or slug) in the conversation — or have one already referenced in the current workflow that you can reuse. If no agent id is available, stop and tell the user to visit the Agents section and either pick an existing agent or create one before asking you to add a \`durable/run\` task.
 
 \`\`\`yaml
 - run-agent:
     call: durable/run
     with:
-      prompt: "Do the requested work."
+      cwd: /sandbox
       mode: execute_direct
-      agentRuntime: dapr-agent-py
+      workspaceRef: "\${ .workspace_profile.workspaceRef }"
       sandboxPolicy:
         mode: per-run
         template: dapr-agent
-        keepAfterRun: false
-      cwd: /sandbox
-      agentConfig:
-        runtime: dapr-agent-py
-        profileRef:
-          templateId: builtin:default-sandbox-agent
-          templateVersion: 1
-          slug: default-sandbox-agent
-          source: builtin
-        runtimeOverridePolicy:
-          allowToolNarrowing: true
-          allowServerAdditions: false
-          allowCredentialBinding: true
-          allowSkillAdditions: false
-          allowSkillNarrowing: true
-        profileSnapshot:
-          mcpServers: []
-          skills: []
-          runtimeOverridePolicy:
-            allowToolNarrowing: true
-            allowServerAdditions: false
-            allowCredentialBinding: true
-            allowSkillAdditions: false
-            allowSkillNarrowing: true
-        mcpConnectionMode: explicit
-        mcpServers: []
-        skills: []
+      body:
+        prompt: "Do the requested work."
+        agentRef:
+          id: "<managed-agent-id>"  # from list_agents (non-ephemeral rows)
+          version: 1                  # optional; omit to float to current
+        overrides:                    # optional per-run only
+          maxTurns: 100
+          timeoutMinutes: 30
+          cwd: /sandbox               # overrides with.cwd if set
+          tools: ["read_file","write_file"]  # narrow the agent's toolset
 \`\`\`
 
-Prefer global agent profiles for MCP access: \`default-sandbox-agent\`, \`github-mcp-agent\`, \`browser-testing-agent\`, and \`full-testing-agent\`. To expose MCP tools, select the matching profile and only narrow \`allowedTools\`; do not add arbitrary MCP servers unless the user explicitly asks for custom inline configuration.
-Skills are configured in \`agentConfig.skills\` as registry references only. Do not create inline skill prompts. Each selected skill should include \`name\`, \`installSource\` (for example \`vercel-labs/agent-skills\`), \`skillName\`, and optional \`registryUrl\`, \`version\`, \`installAgent\`, and \`allowedTools\`.
+The managed agent already carries \`modelSpec\`, \`systemPrompt\`, \`instructions\`, \`builtinTools\`, \`mcpServers\`, \`skills\`, and \`callableAgents\`. Do not duplicate those into the workflow task — they are agent-level config and belong in the Agents section, not the workflow spec. Per-node \`overrides\` are limited to \`{maxTurns, timeoutMinutes, cwd, tools, sandboxPolicy}\`; everything else must be set on the agent.
+
+Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile — and note this is also a property of the agent, not the task.
 
 ### CRITICAL: Only use real actions
 - Every task MUST use a \`call:\` with a real action from the available integrations (e.g., \`gmail/send_email\`)
