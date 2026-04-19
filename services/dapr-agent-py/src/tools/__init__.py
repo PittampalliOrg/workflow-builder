@@ -94,3 +94,114 @@ if _is_native_call_agent_enabled():
     all_tools.append(build_call_agent_workflow_tool())
 else:
     all_tools.append(_tool(call_agent, "CallAgent"))
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap MCP tools at module-init time
+# ---------------------------------------------------------------------------
+#
+# Per dapr-agents 1.0.1's canonical pattern (see quickstarts/06-agent-mcp-
+# client-stdio and sdk-docs on tools=), MCP tools are loaded synchronously
+# BEFORE the DurableAgent is constructed and passed via tools=[...]. Per-
+# instance dynamic MCP (session_workflow → call_activity → mutate
+# _mcp_configs_by_instance) fights the Dapr workflow determinism model:
+# orchestrator bodies replay from the top, so in-memory state written from
+# inside the orchestrator has no durable history. Activities are the
+# correct side-effect channel, but their state still evaporates on pod
+# restart. Static load-at-startup sidesteps both issues: tools live in
+# self.tool_executor for the pod's lifetime; no durability problem.
+#
+# Controlled by env var DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON —
+# JSON list of entries:
+#   [{"name": "playwright", "transport": "streamable_http",
+#     "url": "http://playwright-mcp-service.workflow-builder.svc.cluster.local:3100/mcp"}]
+# Empty / unset → no MCP bootstrap (default).
+
+def _load_bootstrap_mcp_tools() -> list:
+    import asyncio
+    import json as _json
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    raw = (os.environ.get("DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON") or "").strip()
+    if not raw:
+        return []
+    try:
+        entries = _json.loads(raw)
+    except _json.JSONDecodeError as exc:
+        logger.warning(
+            "[mcp-bootstrap] invalid JSON in DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON: %s",
+            exc,
+        )
+        return []
+    if not isinstance(entries, list) or not entries:
+        return []
+
+    from dapr_agents.tool.mcp import MCPClient
+
+    async def _connect_all() -> list:
+        # persistent_connections=True keeps the underlying stdio/http
+        # transport alive for the agent's lifetime — necessary for static
+        # bootstrap because we're not closing the client between turns.
+        client = MCPClient(persistent_connections=True)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = str(
+                entry.get("name")
+                or entry.get("server_name")
+                or entry.get("serverName")
+                or ""
+            ).strip()
+            transport = str(entry.get("transport") or "streamable_http").lower()
+            if not name:
+                continue
+            try:
+                if transport in ("streamable_http", "streamable-http", "http"):
+                    await client.connect_streamable_http(
+                        server_name=name,
+                        url=str(entry.get("url") or ""),
+                        headers=entry.get("headers"),
+                    )
+                elif transport == "sse":
+                    await client.connect_sse(
+                        server_name=name,
+                        url=str(entry.get("url") or ""),
+                        headers=entry.get("headers"),
+                    )
+                elif transport == "stdio":
+                    await client.connect_stdio(
+                        server_name=name,
+                        command=str(entry.get("command") or ""),
+                        args=entry.get("args"),
+                        env=entry.get("env"),
+                    )
+                else:
+                    logger.warning(
+                        "[mcp-bootstrap] unsupported transport %r for %s",
+                        transport,
+                        name,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[mcp-bootstrap] connect %s failed: %s", name, exc
+                )
+        return client.get_all_tools()
+
+    try:
+        tools = asyncio.run(_connect_all())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcp-bootstrap] load failed: %s", exc)
+        return []
+    logger.info(
+        "[mcp-bootstrap] loaded %d MCP tool(s) from %d server(s)",
+        len(tools),
+        len(entries),
+    )
+    return tools
+
+
+_bootstrap_mcp_tools = _load_bootstrap_mcp_tools()
+if _bootstrap_mcp_tools:
+    all_tools.extend(_bootstrap_mcp_tools)
