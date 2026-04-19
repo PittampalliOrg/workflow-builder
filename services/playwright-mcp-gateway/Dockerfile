@@ -30,5 +30,5 @@ EXPOSE 3100
 # npm registry and fail inside restricted network namespaces. The globally
 # installed shim lives at /usr/bin/mcp-server-playwright (playwright base
 # image has npm's global bin symlinked there).
-ENTRYPOINT ["mcp-server-playwright"]
+ENTRYPOINT ["playwright-mcp"]
 CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated"]
