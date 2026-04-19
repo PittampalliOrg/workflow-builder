@@ -81,6 +81,10 @@
 		SessionDetail,
 		SessionEventEnvelope
 	} from '$lib/types/sessions';
+	import {
+		agentSummaryStore,
+		ensureAgentSummaries
+	} from '$lib/stores/agent-summary.svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -93,6 +97,19 @@
 		syncedAt: string | null;
 		error: string | null;
 	} | null>(null);
+	// Breadcrumb back to the workflow run that spawned this session (set
+	// only when session.workflowExecutionId is present — i.e., the bridge
+	// created this session for a durable/run task).
+	let workflowRunContext = $state<{
+		workflowId: string;
+		workflowName: string;
+		executionId: string;
+	} | null>(null);
+	const agents = agentSummaryStore();
+
+	onMount(() => {
+		void ensureAgentSummaries();
+	});
 
 	$effect(() => {
 		const id = session?.agentId;
@@ -114,6 +131,43 @@
 			.catch(() => {
 				agentRegistry = null;
 			});
+	});
+
+	$effect(() => {
+		const execId = session?.workflowExecutionId;
+		if (!execId) {
+			workflowRunContext = null;
+			return;
+		}
+		// Two-step hydration: status → workflowId, then workflow → name.
+		(async () => {
+			try {
+				const statusRes = await fetch(`/api/workflows/executions/${execId}/status`);
+				if (!statusRes.ok) {
+					workflowRunContext = null;
+					return;
+				}
+				const status = await statusRes.json();
+				const workflowId = status?.workflowId ? String(status.workflowId) : null;
+				if (!workflowId) {
+					workflowRunContext = null;
+					return;
+				}
+				let workflowName = workflowId;
+				try {
+					const wfRes = await fetch(`/api/workflows/${workflowId}`);
+					if (wfRes.ok) {
+						const wf = await wfRes.json();
+						if (wf?.name) workflowName = String(wf.name);
+					}
+				} catch {
+					/* fall back to id */
+				}
+				workflowRunContext = { workflowId, workflowName, executionId: String(execId) };
+			} catch {
+				workflowRunContext = null;
+			}
+		})();
 	});
 	// Transcript: user-facing messages + tool-use (compacted); hides thinking
 	// and raw status events. Debug: show every event verbatim.
@@ -797,6 +851,30 @@
 		</div>
 	</div>
 
+	{#if workflowRunContext}
+		<!-- Breadcrumb: this session was spawned by a workflow durable/run node. -->
+		<div class="border-b px-4 py-2 text-xs text-muted-foreground flex items-center gap-1.5">
+			<Workflow class="size-3" />
+			<span>Workflow run</span>
+			<span class="text-muted-foreground/60">·</span>
+			<a
+				href="/workflows/{workflowRunContext.workflowId}"
+				class="hover:underline truncate max-w-[220px] text-foreground"
+				title={workflowRunContext.workflowName}
+			>
+				{workflowRunContext.workflowName}
+			</a>
+			<span class="text-muted-foreground/60">·</span>
+			<a
+				href="/workflows/{workflowRunContext.workflowId}/runs/{workflowRunContext.executionId}"
+				class="hover:underline font-mono text-[11px] text-foreground"
+				title="Open workflow run"
+			>
+				#{workflowRunContext.executionId}
+			</a>
+		</div>
+	{/if}
+
 	<!-- Title + inline metadata pill row. Matches CMA: session id (big),
 	     status pill, agent · environment · duration · tokens · created. -->
 	<header class="border-b px-4 py-3 flex items-center gap-3 flex-wrap">
@@ -828,13 +906,14 @@
 				</Badge>
 				<span class="text-muted-foreground/60">·</span>
 				{#if session.agentId}
+					{@const agentHit = agents.map.get(session.agentId)}
 					<a
 						href="/workspaces/{slug}/agents/{session.agentId}"
 						class="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-0.5 text-xs hover:bg-muted transition-colors"
-						title="Open agent"
+						title={agentHit ? `Open agent · ${session.agentId}` : 'Open agent'}
 					>
 						<Bot class="size-3 text-muted-foreground" />
-						<span class="truncate max-w-[160px]">{session.agentId}</span>
+						<span class="truncate max-w-[200px]">{agentHit?.name ?? session.agentId}</span>
 					</a>
 					{#if agentRegistry}
 						<RegistryStatusBadge

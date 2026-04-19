@@ -617,8 +617,10 @@ export type AgentUsage = {
 
 /**
  * Scan workflow nodes for references to an agent. O(workflows) — not hot path.
- * Reads the canvas-side `nodes` JSONB (not the compiled spec) since that is the
- * source of truth for user edits; the spec is downstream.
+ * Reads both the canvas-side `nodes` JSONB (legacy Svelte-Flow editor shape)
+ * AND the compiled `spec.do` JSONB (modern SW 1.0 task list). Either can be
+ * the source of truth depending on the workflow's history; walking both
+ * guarantees we don't miss references. De-duplicates per (workflow, node).
  */
 export async function findAgentUsages(agentId: string): Promise<AgentUsage[]> {
 	const database = requireDb();
@@ -627,16 +629,19 @@ export async function findAgentUsages(agentId: string): Promise<AgentUsage[]> {
 			id: workflows.id,
 			name: workflows.name,
 			nodes: workflows.nodes,
+			spec: workflows.spec,
 		})
 		.from(workflows);
 	const usages: AgentUsage[] = [];
 	for (const row of rows) {
-		const nodeIds = collectNodeIdsReferencingAgent(row.nodes, agentId);
-		if (nodeIds.length > 0) {
+		const nodeIdsFromNodes = collectNodeIdsReferencingAgent(row.nodes, agentId);
+		const nodeIdsFromSpec = collectTaskNamesReferencingAgent(row.spec, agentId);
+		const merged = Array.from(new Set([...nodeIdsFromNodes, ...nodeIdsFromSpec]));
+		if (merged.length > 0) {
 			usages.push({
 				workflowId: row.id,
 				workflowName: row.name ?? row.id,
-				nodeIds,
+				nodeIds: merged,
 			});
 		}
 	}
@@ -664,6 +669,125 @@ function collectNodeIdsReferencingAgent(
 			const id = (node as Record<string, unknown>).id;
 			if (typeof id === "string") out.push(id);
 		}
+	}
+	return out;
+}
+
+function collectTaskNamesReferencingAgent(
+	spec: unknown,
+	agentId: string,
+): string[] {
+	if (!spec || typeof spec !== "object") return [];
+	const doArr = (spec as { do?: unknown }).do;
+	if (!Array.isArray(doArr)) return [];
+	const out: string[] = [];
+	for (const entry of doArr) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const taskName = Object.keys(entry as Record<string, unknown>)[0];
+		const task = taskName ? (entry as Record<string, unknown>)[taskName] : null;
+		if (!task || typeof task !== "object") continue;
+		if ((task as { call?: string }).call !== "durable/run") continue;
+		const withBlock = ((task as Record<string, unknown>).with ?? {}) as Record<
+			string,
+			unknown
+		>;
+		const body = (withBlock.body ?? withBlock) as Record<string, unknown>;
+		const ref = (body.agentRef ?? withBlock.agentRef) as
+			| Record<string, unknown>
+			| undefined;
+		if (ref && ref.id === agentId && typeof taskName === "string") {
+			out.push(taskName);
+		}
+	}
+	return out;
+}
+
+/**
+ * Bulk usage counts across every managed agent in a single pass. Walks both
+ * `nodes` and `spec.do` JSONB per workflow, aggregates into a Map keyed by
+ * agentId. Used by the agents list page to render a "Used by" column
+ * without N round-trips.
+ */
+export async function findAllAgentUsageCounts(): Promise<
+	Record<string, { workflowCount: number; nodeCount: number }>
+> {
+	const database = requireDb();
+	const rows = await database
+		.select({
+			id: workflows.id,
+			nodes: workflows.nodes,
+			spec: workflows.spec,
+		})
+		.from(workflows);
+	const byAgent = new Map<
+		string,
+		{ workflows: Set<string>; nodes: number }
+	>();
+
+	function bump(agentId: string, workflowId: string) {
+		const existing = byAgent.get(agentId) ?? {
+			workflows: new Set<string>(),
+			nodes: 0,
+		};
+		existing.workflows.add(workflowId);
+		existing.nodes += 1;
+		byAgent.set(agentId, existing);
+	}
+
+	for (const row of rows) {
+		// Walk nodes[].data.taskConfig
+		if (Array.isArray(row.nodes)) {
+			for (const node of row.nodes) {
+				if (!node || typeof node !== "object") continue;
+				const data = (node as Record<string, unknown>).data as
+					| Record<string, unknown>
+					| undefined;
+				const taskConfig = data?.taskConfig as
+					| Record<string, unknown>
+					| undefined;
+				if (!taskConfig || taskConfig.call !== "durable/run") continue;
+				const withBlock = taskConfig.with as Record<string, unknown> | undefined;
+				const body = (withBlock?.body ?? withBlock) as
+					| Record<string, unknown>
+					| undefined;
+				const ref = (body?.agentRef ?? withBlock?.agentRef) as
+					| Record<string, unknown>
+					| undefined;
+				if (ref && typeof ref.id === "string") {
+					bump(ref.id, row.id);
+				}
+			}
+		}
+		// Walk spec.do
+		const spec = row.spec as { do?: unknown } | null;
+		const doArr = spec && Array.isArray(spec.do) ? spec.do : null;
+		if (doArr) {
+			for (const entry of doArr) {
+				if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+				const taskName = Object.keys(entry as Record<string, unknown>)[0];
+				const task = taskName
+					? (entry as Record<string, unknown>)[taskName]
+					: null;
+				if (!task || typeof task !== "object") continue;
+				if ((task as { call?: string }).call !== "durable/run") continue;
+				const withBlock = ((task as Record<string, unknown>).with ?? {}) as Record<
+					string,
+					unknown
+				>;
+				const body = (withBlock.body ?? withBlock) as Record<string, unknown>;
+				const ref = (body.agentRef ?? withBlock.agentRef) as
+					| Record<string, unknown>
+					| undefined;
+				if (ref && typeof ref.id === "string") {
+					bump(ref.id, row.id);
+				}
+			}
+		}
+	}
+
+	const out: Record<string, { workflowCount: number; nodeCount: number }> = {};
+	for (const [agentId, v] of byAgent.entries()) {
+		out[agentId] = { workflowCount: v.workflows.size, nodeCount: v.nodes };
 	}
 	return out;
 }

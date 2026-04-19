@@ -3,10 +3,11 @@
 	import { goto } from '$app/navigation';
 	import { onDestroy } from 'svelte';
 	import { formatDistanceToNow } from 'date-fns';
-	import { Loader2, CheckCircle2, XCircle, Clock, ExternalLink } from 'lucide-svelte';
+	import { Loader2, CheckCircle2, XCircle, Clock, ExternalLink, Bot } from 'lucide-svelte';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '$lib/components/ui/table';
+	import { wsPath } from '$lib/utils/workspace-path';
 
 	let workflowId = $derived(page.params.workflowId);
 
@@ -15,8 +16,13 @@
 		status: string;
 		startTime?: string;
 		createdAt?: string;
+		startedAt?: string;
 		endTime?: string;
 		completedAt?: string;
+		/** Set by /runs-summary: bridge-spawned sessions for this run. */
+		sessionIds?: string[];
+		/** Set by /runs-summary: agents those sessions used. */
+		agents?: Array<{ id: string; name: string }>;
 	}
 
 	let executions = $state<Execution[]>([]);
@@ -31,7 +37,7 @@
 
 	async function fetchExecutions() {
 		try {
-			const res = await fetch(`/api/workflows/${workflowId}/executions`);
+			const res = await fetch(`/api/workflows/${workflowId}/runs-summary`);
 			if (!res.ok) throw new Error('Failed to fetch executions');
 			const data = await res.json();
 			executions = Array.isArray(data) ? data : data.executions ?? [];
@@ -42,8 +48,14 @@
 		}
 	}
 
+	function renderAgents(agents: Execution['agents']): string {
+		if (!agents || agents.length === 0) return '';
+		if (agents.length <= 2) return agents.map((a) => a.name).join(', ');
+		return `${agents[0].name}, ${agents[1].name} +${agents.length - 2} more`;
+	}
+
 	function formatDuration(exec: Execution): string {
-		const start = exec.startTime ?? exec.createdAt;
+		const start = exec.startTime ?? exec.startedAt ?? exec.createdAt;
 		if (!start) return '-';
 		const startDate = new Date(start);
 		const end = exec.endTime ?? exec.completedAt;
@@ -139,6 +151,8 @@
 						<TableRow class="border-b border-border bg-muted/50">
 							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Execution ID</TableHead>
 							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Status</TableHead>
+							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Agent</TableHead>
+							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Session</TableHead>
 							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Started</TableHead>
 							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Duration</TableHead>
 							<TableHead class="px-4 py-3 text-right text-xs font-medium text-muted-foreground"></TableHead>
@@ -146,7 +160,7 @@
 					</TableHeader>
 					<TableBody class="divide-y divide-border">
 						{#each executions as exec (exec.id)}
-							{@const startStr = exec.startTime ?? exec.createdAt}
+							{@const startStr = exec.startTime ?? exec.startedAt ?? exec.createdAt}
 							<TableRow
 								class="hover:bg-muted/30 transition-colors cursor-pointer"
 								onclick={() => goto(`/workflows/${workflowId}/runs/${exec.id}`)}
@@ -167,6 +181,35 @@
 										{/if}
 										{exec.status}
 									</Badge>
+								</TableCell>
+								<TableCell class="px-4 py-3 text-sm">
+									{#if exec.agents && exec.agents.length > 0}
+										<div class="flex items-center gap-1.5 text-muted-foreground">
+											<Bot size={12} />
+											<span class="truncate max-w-[200px]" title={exec.agents.map((a) => a.name).join(', ')}>
+												{renderAgents(exec.agents)}
+											</span>
+										</div>
+									{:else}
+										<span class="text-xs italic text-muted-foreground/60">—</span>
+									{/if}
+								</TableCell>
+								<TableCell class="px-4 py-3 text-sm">
+									{#if exec.sessionIds && exec.sessionIds.length === 1}
+										<a
+											href={wsPath(null, `sessions/${exec.sessionIds[0]}`)}
+											onclick={(e) => e.stopPropagation()}
+											class="text-xs text-primary hover:underline"
+										>
+											{exec.sessionIds[0].slice(0, 8)}
+										</a>
+									{:else if exec.sessionIds && exec.sessionIds.length > 1}
+										<span class="text-xs text-muted-foreground" title={exec.sessionIds.join('\n')}>
+											{exec.sessionIds.length} sessions
+										</span>
+									{:else}
+										<span class="text-xs italic text-muted-foreground/60">—</span>
+									{/if}
 								</TableCell>
 								<TableCell class="px-4 py-3 text-sm text-muted-foreground">
 									{#if startStr}

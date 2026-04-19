@@ -36,6 +36,9 @@
 	let created = $state<'all' | '7d' | '30d' | '90d'>('all');
 	let agentToDelete = $state<AgentSummary | null>(null);
 	let busyId = $state<string | null>(null);
+	// Map<agentId, {workflowCount, nodeCount}> — fetched once on mount from
+	// /api/agents/usages-summary. Drives the "Used by" column.
+	let usageCounts = $state<Record<string, { workflowCount: number; nodeCount: number }>>({});
 
 	const filtered = $derived.by(() => {
 		const now = Date.now();
@@ -60,13 +63,22 @@
 			const params = new URLSearchParams();
 			if (includeArchived) params.set('includeArchived', 'true');
 			if (includeEphemeral) params.set('includeEphemeral', 'true');
-			const res = await fetch(`/api/agents?${params}`);
-			if (!res.ok) {
-				errorMessage = `Failed to load agents (${res.status})`;
+			const [agentsRes, usagesRes] = await Promise.all([
+				fetch(`/api/agents?${params}`),
+				fetch('/api/agents/usages-summary')
+			]);
+			if (!agentsRes.ok) {
+				errorMessage = `Failed to load agents (${agentsRes.status})`;
 				return;
 			}
-			const data = (await res.json()) as { agents: AgentSummary[] };
+			const data = (await agentsRes.json()) as { agents: AgentSummary[] };
 			agents = data.agents ?? [];
+			if (usagesRes.ok) {
+				const payload = (await usagesRes.json()) as {
+					counts: Record<string, { workflowCount: number; nodeCount: number }>;
+				};
+				usageCounts = payload.counts ?? {};
+			}
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -239,10 +251,12 @@
 			<th class="px-4 py-2.5 font-medium">Model</th>
 			<th class="px-4 py-2.5 font-medium">Status</th>
 			<th class="px-4 py-2.5 font-medium">Registry</th>
+			<th class="px-4 py-2.5 font-medium">Used by</th>
 			<th class="px-4 py-2.5 font-medium">Created</th>
 			<th class="px-4 py-2.5 font-medium w-10"></th>
 		{/snippet}
 		{#snippet row(a: AgentSummary)}
+			{@const usage = usageCounts[a.id]}
 			<td class="px-4 py-2.5">
 				<CopyIdButton value={a.id} />
 			</td>
@@ -270,6 +284,16 @@
 					error={a.registryError}
 					syncedAt={a.registrySyncedAt}
 				/>
+			</td>
+			<td class="px-4 py-2.5 text-xs">
+				{#if usage && usage.workflowCount > 0}
+					<span class="text-foreground">
+						{usage.workflowCount} workflow{usage.workflowCount === 1 ? '' : 's'} ·
+						{usage.nodeCount} node{usage.nodeCount === 1 ? '' : 's'}
+					</span>
+				{:else}
+					<span class="text-muted-foreground/60 italic">unused</span>
+				{/if}
 			</td>
 			<td class="px-4 py-2.5 text-xs text-muted-foreground">
 				{formatRelative(a.createdAt)}

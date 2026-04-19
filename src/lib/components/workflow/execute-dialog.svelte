@@ -81,6 +81,32 @@
 
 	let isSubmitting = $state(false);
 	let errorMsg = $state<string | null>(null);
+
+	/** Walk spec.do and collect task names of durable/run tasks without
+	 * a bound agentRef. Mirrors the server-side resolver at
+	 * src/lib/server/agents/resolver.ts so the user sees the 400 reason
+	 * proactively instead of after submit. */
+	function findUnboundAgentTasks(spec: Record<string, unknown> | null | undefined): string[] {
+		const unbound: string[] = [];
+		if (!spec || typeof spec !== 'object') return unbound;
+		const doArr = (spec as { do?: unknown }).do;
+		if (!Array.isArray(doArr)) return unbound;
+		for (const entry of doArr) {
+			if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+			const taskName = Object.keys(entry as Record<string, unknown>)[0];
+			const task = taskName ? (entry as Record<string, unknown>)[taskName] : null;
+			if (!task || typeof task !== 'object') continue;
+			if ((task as { call?: string }).call !== 'durable/run') continue;
+			const withBlock = ((task as Record<string, unknown>).with ?? {}) as Record<string, unknown>;
+			const body = (withBlock.body ?? withBlock) as Record<string, unknown>;
+			const bodyRef = (body.agentRef as { id?: string } | undefined)?.id;
+			const withRef = (withBlock.agentRef as { id?: string } | undefined)?.id;
+			if (!bodyRef && !withRef) unbound.push(taskName as string);
+		}
+		return unbound;
+	}
+
+	let unboundAgentTasks = $derived(findUnboundAgentTasks(store.spec));
 	let rawJson = $state('{}');
 	let inputMode = $state<'form' | 'json'>('form');
 	let formValues = $state<Record<string, string>>({});
@@ -280,6 +306,19 @@
 			<DialogTitle>Execute Workflow</DialogTitle>
 		</DialogHeader>
 
+		{#if unboundAgentTasks.length > 0}
+			<Alert variant="destructive">
+				<CircleAlert class="size-4" />
+				<AlertDescription>
+					{unboundAgentTasks.length === 1 ? 'Task' : 'Tasks'}
+					<strong>{unboundAgentTasks.join(', ')}</strong>
+					{unboundAgentTasks.length === 1 ? "doesn't have" : "don't have"}
+					an agent selected. Open each node's Properties panel and bind a managed
+					agent before executing.
+				</AlertDescription>
+			</Alert>
+		{/if}
+
 		{#if errorMsg}
 			<Alert variant="destructive">
 				<CircleAlert class="size-4" />
@@ -419,7 +458,13 @@
 				<Button variant="outline" type="button" onclick={handleClose}>
 					Cancel
 				</Button>
-				<Button type="submit" disabled={isSubmitting}>
+				<Button
+					type="submit"
+					disabled={isSubmitting || unboundAgentTasks.length > 0}
+					title={unboundAgentTasks.length > 0
+						? 'Bind an agent to every durable/run task first'
+						: undefined}
+				>
 					{#if isSubmitting}
 						<Loader2 size={14} class="animate-spin" /> Starting...
 					{:else}
