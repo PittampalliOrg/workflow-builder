@@ -117,6 +117,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+import sys as _sys_probe
+_sys_probe.stderr.write("[mcp-debug] main.py module imported (stderr probe)\n")
+_sys_probe.stderr.flush()
+
 DEFAULT_MAX_ITERATIONS = int(os.environ.get("DAPR_AGENT_PY_MAX_ITERATIONS", "120"))
 
 def _build_system_prompt(cwd: str, sandbox_name: str | None = None) -> str:
