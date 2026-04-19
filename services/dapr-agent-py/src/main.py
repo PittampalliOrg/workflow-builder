@@ -988,7 +988,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_clients_by_instance[instance_id] = client
         self._mcp_config_hash_by_instance[instance_id] = config_hash
         self._mcp_tools_by_instance[instance_id] = tools
-        logger.info(
+        logger.warning(
             "[mcp] Connected %d MCP server(s), loaded %d tool(s) for instance %s",
             len(configs),
             len(tools),
@@ -2404,12 +2404,18 @@ class OpenShellDurableAgent(DurableAgent):
                         self._mcp_allowed_tools_by_instance[child_instance_id] = (
                             mcp_allowed_tools
                         )
-                        logger.info(
+                        logger.warning(
                             "[mcp] session_workflow seeded %d MCP server config(s) "
                             "for child instance %s (turn=%d)",
                             len(mcp_configs),
                             child_instance_id,
                             turn_counter,
+                        )
+                    else:
+                        logger.warning(
+                            "[mcp] session_workflow: agentConfig.mcpServers yielded "
+                            "no valid configs for child %s",
+                            child_instance_id,
                         )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
