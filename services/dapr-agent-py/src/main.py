@@ -1010,6 +1010,11 @@ class OpenShellDurableAgent(DurableAgent):
     def get_llm_tools(self):
         tools = list(super().get_llm_tools())
         instance_id = self._active_llm_instance_id or self._inst_id or ""
+        logger.warning(
+            "[mcp] get_llm_tools called: super()=%d tools, inst_id=%s",
+            len(tools),
+            instance_id,
+        )
         mcp_tools = self._mcp_tools_by_instance.get(instance_id) or {}
         if not mcp_tools:
             return tools
