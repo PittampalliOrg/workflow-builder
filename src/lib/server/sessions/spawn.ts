@@ -119,7 +119,17 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 
 	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(targetAppId)}/method/internal/sessions/spawn`;
+	// Per-agent runtime pods live in the `openshell` namespace; the
+	// workflow-builder sidecar that we invoke from lives in
+	// `workflow-builder`. Dapr cross-namespace service invoke syntax is
+	// `<app-id>.<namespace>`. The legacy shared dapr-agent-py pods are in
+	// the same namespace as workflow-builder so the bare app-id still works
+	// for them, but per-agent runtimes need the explicit namespace suffix.
+	const isPerAgent = targetAppId.startsWith("agent-runtime-");
+	const invokeTarget = isPerAgent
+		? `${targetAppId}.${process.env.AGENT_RUNTIME_NAMESPACE ?? "openshell"}`
+		: targetAppId;
+	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/spawn`;
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -164,7 +174,11 @@ export async function raiseSessionUserEvents(
 	});
 	const targetAppId = agent?.runtimeAppId ?? (agent ? `agent-runtime-${agent.slug}` : "dapr-agent-py");
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(targetAppId)}/method/internal/sessions/raise-event`;
+	const isPerAgent = targetAppId.startsWith("agent-runtime-");
+	const invokeTarget = isPerAgent
+		? `${targetAppId}.${process.env.AGENT_RUNTIME_NAMESPACE ?? "openshell"}`
+		: targetAppId;
+	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`;
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
