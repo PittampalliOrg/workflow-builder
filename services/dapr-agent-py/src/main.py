@@ -1032,6 +1032,12 @@ class OpenShellDurableAgent(DurableAgent):
 
     def call_llm(self, ctx, payload):
         """Publish llm_start/llm_complete streaming events with content."""
+        import sys as _sys
+        _sys.stderr.write(
+            f"[call-llm-probe] entered: payload_keys={list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__} "
+            f"tools_on_executor={len(self.tool_executor.list_tools())}\n"
+        )
+        _sys.stderr.flush()
         # Re-apply Anthropic adapter on each call (survives durable workflow replay)
         try:
             from src.anthropic_adapter import patch_for_anthropic
