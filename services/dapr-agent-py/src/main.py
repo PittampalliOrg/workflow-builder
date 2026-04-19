@@ -434,10 +434,25 @@ def _extract_mcp_server_configs(
     if message.get("agentConfig") and not isinstance(agent_config, dict):
         logger.warning("[mcp] Skipping invalid JSON agentConfig")
     if not isinstance(agent_config, dict):
+        logger.info(
+            "[mcp] extract: agentConfig absent/invalid — top-level message keys=%s",
+            list(message.keys()) if isinstance(message, dict) else type(message).__name__,
+        )
         return {}, {}
     raw_servers = agent_config.get("mcpServers")
     if not isinstance(raw_servers, list):
+        logger.info(
+            "[mcp] extract: agentConfig has no mcpServers list — agentConfig keys=%s "
+            "(raw_servers type=%s)",
+            list(agent_config.keys()),
+            type(raw_servers).__name__,
+        )
         return {}, {}
+    logger.info(
+        "[mcp] extract: agentConfig.mcpServers has %d entr%s",
+        len(raw_servers),
+        "y" if len(raw_servers) == 1 else "ies",
+    )
 
     configs: dict[str, dict[str, Any]] = {}
     allowed_tools_by_server: dict[str, set[str]] = {}
