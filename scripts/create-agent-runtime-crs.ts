@@ -16,10 +16,7 @@
  *     pnpm tsx scripts/create-agent-runtime-crs.ts
  */
 
-import { config as loadEnv } from "dotenv";
-loadEnv();
-
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 
