@@ -2128,6 +2128,16 @@ class OpenShellDurableAgent(DurableAgent):
         runtime.register_workflow(self.session_workflow)
         runtime.register_workflow(self.call_peer_session_workflow)
         runtime.register_activity(self.create_peer_session_row)
+        # Activity that populates self._mcp_configs_by_instance[instance_id]
+        # for a given turn's child workflow. Yielded by session_workflow
+        # before ctx.call_child_workflow so the child's call_llm activity
+        # finds pre-seeded MCP configs and `_ensure_mcp_client` connects.
+        # This is the Dapr-compliant side-effect channel: dict mutations
+        # and MCP stdio/http connections are banned from orchestrator bodies
+        # (they re-run deterministically on every replay); activities ARE
+        # allowed to have side effects (Dapr caches their return value and
+        # only re-runs on worker failure).
+        runtime.register_activity(self.seed_mcp_for_instance)
 
     @workflow_entry
     def call_peer_session_workflow(self, ctx, message: dict):
@@ -2274,6 +2284,67 @@ class OpenShellDurableAgent(DurableAgent):
                 f"spawn-peer returned non-JSON: {text[:200]!r}"
             ) from exc
 
+    def seed_mcp_for_instance(
+        self,
+        ctx: wf.WorkflowActivityContext,
+        payload: dict,
+    ) -> dict:
+        """Activity: seed the per-instance MCP cache so a downstream
+        ``call_llm`` activity's ``_ensure_mcp_client`` can connect.
+
+        Orchestrator bodies in Dapr workflows are deterministic and replayed
+        from the top on every workflow wake-up — direct mutations to
+        ``self._mcp_configs_by_instance[...]`` from inside ``session_workflow``
+        are silently dropped because the mutation has no durable history.
+        Activities ARE allowed to have side effects (Dapr caches their return
+        value in history and only re-runs them on worker failure), so we do
+        the stdio-MCP-or-HTTP-MCP setup here instead.
+
+        Input (payload): ``{"instance_id": str, "agentConfig": dict}``.
+        Returns: ``{"connected": [server_name, ...], "count": N}`` so the
+        activity's effect is visible in the workflow's history log.
+        """
+        instance_id = str(payload.get("instance_id") or "").strip()
+        if not instance_id:
+            return {"connected": [], "count": 0, "reason": "no_instance_id"}
+        agent_config = payload.get("agentConfig") or {}
+        mcp_configs, mcp_allowed_tools = _extract_mcp_server_configs(
+            {"agentConfig": agent_config}
+        )
+        if not mcp_configs:
+            return {"connected": [], "count": 0, "reason": "no_mcp_servers"}
+        self._mcp_configs_by_instance[instance_id] = mcp_configs
+        self._mcp_allowed_tools_by_instance[instance_id] = mcp_allowed_tools
+        # Eagerly connect so the very first call_llm on this instance finds
+        # already-populated tools. _ensure_mcp_client is idempotent — it
+        # short-circuits via the config-hash cache if reinvoked with the
+        # same configs on a call_llm replay.
+        try:
+            self._ensure_mcp_client(instance_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[mcp] seed_mcp_for_instance %s: MCP connect failed: %s",
+                instance_id,
+                exc,
+            )
+            return {
+                "connected": [],
+                "count": len(mcp_configs),
+                "error": str(exc)[:200],
+            }
+        connected_tools = self._mcp_tools_by_instance.get(instance_id) or {}
+        logger.info(
+            "[mcp] seed_mcp_for_instance %s: %d server(s), %d tool(s)",
+            instance_id,
+            len(mcp_configs),
+            len(connected_tools),
+        )
+        return {
+            "connected": sorted(mcp_configs.keys()),
+            "tool_count": len(connected_tools),
+            "count": len(mcp_configs),
+        }
+
     @workflow_entry
     def session_workflow(self, ctx, message: dict):
         """Multi-turn session loop wrapping ``agent_workflow`` as a child
@@ -2394,28 +2465,30 @@ class OpenShellDurableAgent(DurableAgent):
             # via get_llm_tools. Keyed on the CHILD workflow's instance_id so
             # the per-turn call_llm activity picks up the right configs.
             child_instance_id = f"{session_id}:turn-{turn_counter}"
-            import sys as _sys
-            _sys.stderr.write(
-                f"[mcp-seed] replaying={ctx.is_replaying} session={session_id} child={child_instance_id}\n"
-            )
-            _sys.stderr.flush()
-            if not ctx.is_replaying:
-                try:
-                    mcp_configs, mcp_allowed_tools = _extract_mcp_server_configs(
-                        child_input
-                    )
-                    _sys.stderr.write(
-                        f"[mcp-seed] extracted {len(mcp_configs)} configs names={list(mcp_configs.keys())}\n"
-                    )
-                    _sys.stderr.flush()
-                    if mcp_configs:
-                        self._mcp_configs_by_instance[child_instance_id] = mcp_configs
-                        self._mcp_allowed_tools_by_instance[child_instance_id] = (
-                            mcp_allowed_tools
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    _sys.stderr.write(f"[mcp-seed] exc: {exc!r}\n")
-                    _sys.stderr.flush()
+
+            # Dapr-compliant MCP bridge: yield to the `seed_mcp_for_instance`
+            # activity so the side-effect (populating self._mcp_configs_by_instance
+            # + pre-connecting MCP clients) happens in a place where side
+            # effects are allowed. Orchestrator bodies re-run deterministically
+            # on every replay — direct `self.*` mutations from here have no
+            # durable history and get dropped.
+            try:
+                yield ctx.call_activity(
+                    self.seed_mcp_for_instance,
+                    input={
+                        "instance_id": child_instance_id,
+                        "agentConfig": agent_cfg,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Non-fatal: if MCP seeding fails we still try the turn;
+                # the agent just won't have MCP tools for this turn.
+                logger.warning(
+                    "[session] %s turn %d: seed_mcp_for_instance failed: %s",
+                    session_id,
+                    turn_counter,
+                    exc,
+                )
 
             try:
                 # Apply the same retry policy agent_workflow uses internally
