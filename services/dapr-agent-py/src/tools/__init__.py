@@ -189,38 +189,26 @@ def _load_bootstrap_mcp_tools() -> list:
                 )
         return client.get_all_tools()
 
-    # asyncio.run() fails if an event loop is already running on this
-    # thread (OTEL/dapr-agents set one up at import time). Run the
-    # connect+fetch in an isolated thread with its own loop.
-    import concurrent.futures
-    import threading
-
-    def _run_in_new_loop(coro):
+    # asyncio.run() works when no loop is running on the current thread
+    # (this is the case at module-import time before anything starts).
+    # MCPClient uses anyio task groups internally and gets confused when
+    # the loop is swapped between threads, so we run on the main thread.
+    try:
+        tools = asyncio.run(_connect_all())
+    except RuntimeError as exc:
+        # Fallback: loop already running (e.g. reload path). Try new loop.
+        logger.warning(
+            "[mcp-bootstrap] asyncio.run failed (%s); trying new_event_loop", exc
+        )
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(coro)
+            tools = loop.run_until_complete(_connect_all())
         finally:
-            try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
-            finally:
-                loop.close()
-
-    fut: concurrent.futures.Future = concurrent.futures.Future()
-
-    def _worker() -> None:
-        try:
-            fut.set_result(_run_in_new_loop(_connect_all()))
-        except Exception as exc:  # noqa: BLE001
-            fut.set_exception(exc)
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    try:
-        tools = fut.result(timeout=30)
+            loop.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-bootstrap] load failed: %s", exc)
         return []
-    logger.info(
+    logger.warning(
         "[mcp-bootstrap] loaded %d MCP tool(s) from %d server(s)",
         len(tools),
         len(entries),
