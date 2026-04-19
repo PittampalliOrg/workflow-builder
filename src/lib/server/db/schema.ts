@@ -1,5 +1,6 @@
 import {
 	relations,
+	sql,
 	type InferInsertModel,
 	type InferSelectModel,
 } from "drizzle-orm";
@@ -2182,6 +2183,87 @@ export const environmentVersions = pgTable(
 );
 
 // ============================================================================
+// Sandbox Profiles (pre-built image catalog)
+// ============================================================================
+
+/**
+ * Curated catalog of pre-built sandbox images. Mirrors CMA's blank-slate
+ * `packages` manifest but bakes everything into the Docker image at build
+ * time, because OpenShell's runtime client.exec path doesn't reliably
+ * support apt/pip installs (apt needs root; pip under client.exec hits
+ * 403 even with `access: full` policy). Per NVIDIA's documented pattern,
+ * system libs belong in the image, pip-at-runtime is advisory only.
+ *
+ * A profile is a single logical image: slug → Dockerfile → image tag.
+ * Admin console edits update the packages manifest, regenerate the
+ * Dockerfile server-side, commit it to stacks/workflow-builder, and
+ * auto-trigger a Tekton rebuild. Environments reference profiles by
+ * slug via `environment.sandboxTemplate`.
+ */
+export const sandboxProfiles = pgTable(
+	"sandbox_profiles",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		// null = inherits from the root `openshell-sandbox:latest` image.
+		// Otherwise this must be another profile's slug; the resolved
+		// `FROM` in the generated Dockerfile is the parent profile's
+		// current imageTag. 1-level inheritance — no chains.
+		baseProfileSlug: text("base_profile_slug"),
+		packages: jsonb("packages")
+			.$type<{
+				apt?: string[];
+				pip?: string[];
+				npm?: string[];
+				cargo?: string[];
+				gem?: string[];
+				go?: string[];
+			}>()
+			.notNull()
+			.default({}),
+		// Capability flags surfaced to _workspace_capabilities() in the
+		// runtime. Derived from packages during seed but can be hand-edited.
+		capabilities: jsonb("capabilities")
+			.$type<string[]>()
+			.notNull()
+			.default([]),
+		// Build tracking — filled in by the Tekton pipeline + admin-
+		// console polling. `imageTag` is the specific tag the sandbox
+		// should pull (includes git SHA for cacheability).
+		dockerfilePath: text("dockerfile_path"),
+		imageTag: text("image_tag"),
+		lastBuildSha: text("last_build_sha"),
+		lastBuildAt: timestamp("last_build_at"),
+		lastBuildStatus: text("last_build_status"),
+		lastBuildError: text("last_build_error"),
+		// `isBuiltin: true` guards the seeded profiles
+		// (dapr-agent, dapr-agent-xlsx, dapr-agent-animation,
+		// dapr-agent-datasci, dapr-agent-webdev) from archive+delete.
+		isArchived: boolean("is_archived").notNull().default(false),
+		isBuiltin: boolean("is_builtin").notNull().default(false),
+		createdBy: text("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		archivedIdx: index("idx_sandbox_profiles_archived").on(table.isArchived),
+		projectIdx: index("idx_sandbox_profiles_project")
+			.on(table.projectId)
+			.where(sql`${table.projectId} IS NOT NULL`),
+		baseIdx: index("idx_sandbox_profiles_base").on(table.baseProfileSlug),
+	}),
+);
+
+// ============================================================================
 // Agents (Named Agent Definitions)
 // ============================================================================
 
@@ -2782,6 +2864,8 @@ export type Environment = typeof environments.$inferSelect;
 export type NewEnvironment = typeof environments.$inferInsert;
 export type EnvironmentVersion = typeof environmentVersions.$inferSelect;
 export type NewEnvironmentVersion = typeof environmentVersions.$inferInsert;
+export type SandboxProfile = typeof sandboxProfiles.$inferSelect;
+export type NewSandboxProfile = typeof sandboxProfiles.$inferInsert;
 export type Vault = typeof vaults.$inferSelect;
 export type NewVault = typeof vaults.$inferInsert;
 export type VaultCredential = typeof vaultCredentials.$inferSelect;
