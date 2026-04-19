@@ -64,29 +64,82 @@ export async function getOwnNamespace(): Promise<string> {
 
 type KubeRequestInit = RequestInit & { retries?: number };
 
+/**
+ * One-shot https.request wrapped in a Response-compatible interface.
+ * We avoid the global fetch() because undici's fetch ignores the
+ * `agent` option, leaving no way to supply the kube CA cert — the
+ * handshake then fails with the opaque "TypeError: fetch failed".
+ */
+function httpsRequest(
+	url: string,
+	method: string,
+	headers: Record<string, string>,
+	body: string | undefined,
+	agent: https.Agent,
+): Promise<Response> {
+	return new Promise((resolve, reject) => {
+		const u = new URL(url);
+		const req = https.request(
+			{
+				hostname: u.hostname,
+				port: u.port || 443,
+				path: `${u.pathname}${u.search}`,
+				method,
+				headers: body !== undefined ? { ...headers, "Content-Length": String(Buffer.byteLength(body)) } : headers,
+				agent,
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (c) => chunks.push(Buffer.from(c)));
+				res.on("end", () => {
+					const buf = Buffer.concat(chunks);
+					resolve(
+						new Response(buf, {
+							status: res.statusCode ?? 0,
+							statusText: res.statusMessage ?? "",
+							headers: Object.fromEntries(
+								Object.entries(res.headers).flatMap(([k, v]) =>
+									v === undefined ? [] : [[k, Array.isArray(v) ? v.join(", ") : v]],
+								),
+							),
+						}),
+					);
+				});
+				res.on("error", reject);
+			},
+		);
+		req.on("error", reject);
+		if (body !== undefined) req.write(body);
+		req.end();
+	});
+}
+
 async function kubeFetch(path: string, init: KubeRequestInit = {}): Promise<Response> {
 	const token = await getToken();
 	const agent = await getAgent();
 	const url = `https://${K8S_HOST}:${K8S_PORT}${path}`;
 	const retries = init.retries ?? 2;
-	const headers = new Headers(init.headers);
-	headers.set("Authorization", `Bearer ${token}`);
-	if (!headers.has("Content-Type") && init.body) {
-		headers.set("Content-Type", "application/json");
+	const hdrs: Record<string, string> = {
+		Authorization: `Bearer ${token}`,
+		Accept: "application/json",
+	};
+	if (init.headers) {
+		for (const [k, v] of new Headers(init.headers)) hdrs[k] = v;
 	}
-	headers.set("Accept", "application/json");
+	const bodyStr =
+		init.body === undefined || init.body === null
+			? undefined
+			: typeof init.body === "string"
+				? init.body
+				: String(init.body);
+	if (bodyStr !== undefined && !hdrs["Content-Type"]) {
+		hdrs["Content-Type"] = "application/json";
+	}
+	const method = (init.method ?? "GET").toUpperCase();
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
-			// Node's undici fetch honors agent via the `dispatcher` option
-			// only when it's a Dispatcher instance; falls back to global when
-			// undefined. For raw https.Agent we pass via the nodejs agent option
-			// (cast through unknown to dodge the DOM RequestInit type).
-			const res = await fetch(url, {
-				...init,
-				headers,
-				agent,
-			} as unknown as RequestInit);
+			const res = await httpsRequest(url, method, hdrs, bodyStr, agent);
 			if (res.status >= 500 && attempt < retries) {
 				await sleep(200 * (attempt + 1));
 				continue;
