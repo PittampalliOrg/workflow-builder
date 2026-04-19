@@ -18,4 +18,4 @@ COPY src /app/src
 USER 1000
 
 # kopf expects the module path; main.py wires the handlers.
-CMD ["kopf", "run", "--standalone", "--all-namespaces=false", "--namespace=openshell", "/app/src/main.py"]
+CMD ["kopf", "run", "--standalone", "--namespace=openshell", "/app/src/main.py"]

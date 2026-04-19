@@ -247,7 +247,7 @@ def on_delete(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
             raise
 
 
-@kopf.on.field(GROUP, VERSION, PLURAL, field=f"metadata.annotations.{ANNO_WAKE}")
+@kopf.on.field(GROUP, VERSION, PLURAL, field=("metadata", "annotations", ANNO_WAKE))
 def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> None:
     if old == new or not new:
         return
@@ -263,7 +263,7 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
     })
 
 
-@kopf.on.field(GROUP, VERSION, PLURAL, field=f"metadata.annotations.{ANNO_SLEEP}")
+@kopf.on.field(GROUP, VERSION, PLURAL, field=("metadata", "annotations", ANNO_SLEEP))
 def on_sleep(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> None:
     if old == new or not new:
         return
@@ -278,7 +278,7 @@ def on_sleep(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: 
     })
 
 
-@kopf.on.field(GROUP, VERSION, PLURAL, field=f"metadata.annotations.{ANNO_LAST_ACTIVE}")
+@kopf.on.field(GROUP, VERSION, PLURAL, field=("metadata", "annotations", ANNO_LAST_ACTIVE))
 def on_last_active(old: Any, new: Any, name: str, namespace: str, **_: Any) -> None:
     """BFF stamps this on every session dispatch. Cheap mirror into status."""
     if old == new or not new:
