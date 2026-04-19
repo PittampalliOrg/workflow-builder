@@ -66,12 +66,20 @@
 				err = a.message;
 				return;
 			}
-			profile = a.profile;
-			editedName = profile!.name;
-			editedDescription = profile!.description ?? '';
-			editedBaseSlug = profile!.baseProfileSlug;
-			editedPackages = structuredClone(profile!.packages ?? {});
-			editedCapabilities = [...(profile!.capabilities ?? [])];
+			// Clone from the raw fetch payload BEFORE assigning to reactive
+			// state — structuredClone can't traverse Svelte's reactive
+			// proxies, so cloning `profile!.packages` after `profile = a.profile`
+			// throws `Failed to execute 'structuredClone' on 'Window': #<Object>
+			// could not be cloned.` Mirrors the pattern in the env + agent
+			// detail pages which clone from `a.environment.config` /
+			// `a.agent.config` directly.
+			const fresh = a.profile as SandboxProfile;
+			editedName = fresh.name;
+			editedDescription = fresh.description ?? '';
+			editedBaseSlug = fresh.baseProfileSlug;
+			editedPackages = structuredClone(fresh.packages ?? {});
+			editedCapabilities = [...(fresh.capabilities ?? [])];
+			profile = fresh;
 			otherProfiles = ((all.profiles as SandboxProfile[]) ?? []).filter(
 				(p) => p.id !== profileId && !p.baseProfileSlug // 1-level only
 			);
