@@ -119,12 +119,16 @@ async function kubeFetch(path: string, init: KubeRequestInit = {}): Promise<Resp
 	const agent = await getAgent();
 	const url = `https://${K8S_HOST}:${K8S_PORT}${path}`;
 	const retries = init.retries ?? 2;
+	// Node's Headers normalizes keys to lowercase on iteration. Keep the
+	// lowercase form as our internal shape so header-presence checks work
+	// regardless of the caller's casing, then http.request handles mixed
+	// case correctly over the wire.
 	const hdrs: Record<string, string> = {
-		Authorization: `Bearer ${token}`,
-		Accept: "application/json",
+		authorization: `Bearer ${token}`,
+		accept: "application/json",
 	};
 	if (init.headers) {
-		for (const [k, v] of new Headers(init.headers)) hdrs[k] = v;
+		for (const [k, v] of new Headers(init.headers)) hdrs[k.toLowerCase()] = v;
 	}
 	const bodyStr =
 		init.body === undefined || init.body === null
@@ -132,8 +136,8 @@ async function kubeFetch(path: string, init: KubeRequestInit = {}): Promise<Resp
 			: typeof init.body === "string"
 				? init.body
 				: String(init.body);
-	if (bodyStr !== undefined && !hdrs["Content-Type"]) {
-		hdrs["Content-Type"] = "application/json";
+	if (bodyStr !== undefined && !hdrs["content-type"]) {
+		hdrs["content-type"] = "application/json";
 	}
 	const method = (init.method ?? "GET").toUpperCase();
 
