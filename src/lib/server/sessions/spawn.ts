@@ -60,7 +60,9 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			slug: p.slug,
 			agentId: p.agentId,
 			version: p.version,
-			appId: p.runtime,
+			// Per-agent-runtime plan: peer dispatch targets agent-runtime-<slug>,
+			// not the legacy shared-pod enum (p.runtime).
+			appId: p.runtimeAppId ?? `agent-runtime-${p.slug}`,
 			team: agent.projectId as string,
 			registryKey: agentRegistryKey(agent.projectId as string, p.slug),
 		}));
@@ -100,15 +102,24 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		initialEvents,
 	};
 
-	// The Dapr workflow HTTP API does not route cross-app via placement —
-	// the runtime must be registered on the sidecar that receives the
-	// call. workflow-builder hosts no workflows. Instead, invoke the
-	// /internal/sessions/spawn endpoint on dapr-agent-py via Dapr
-	// service-invoke; that endpoint calls StartInstance on its own
-	// sidecar which owns the session_workflow runtime.
+	// Per-agent-runtime plan: dispatch to the agent's dedicated pod
+	// (agent-runtime-<slug>) instead of the shared dapr-agent-py pod. Wake
+	// the runtime first so Dapr placement + the agent-workflow runtime are
+	// live before we call StartInstance on the sidecar.
+	const targetAppId = agent.runtimeAppId ?? `agent-runtime-${agent.slug}`;
+	try {
+		const { wakeAgentRuntime } = await import("$lib/server/kube/client");
+		await wakeAgentRuntime(agent.slug, 30_000);
+	} catch (err) {
+		console.warn(
+			`[session-spawn] wake ${agent.slug} failed, continuing anyway:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+
 	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0/invoke/dapr-agent-py/method/internal/sessions/spawn`;
+	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(targetAppId)}/method/internal/sessions/spawn`;
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -146,8 +157,14 @@ export async function raiseSessionUserEvents(
 ): Promise<void> {
 	const session = await getSession(sessionId);
 	if (!session?.daprInstanceId) return; // not yet spawned — events will be picked up at spawn time via listEvents
+	// Route raise-event to the same per-agent pod that owns the session.
+	const agent = await resolveAgentRef({
+		id: session.agentId,
+		version: session.agentVersion ?? undefined,
+	});
+	const targetAppId = agent?.runtimeAppId ?? (agent ? `agent-runtime-${agent.slug}` : "dapr-agent-py");
 	const daprEndpoint = getDaprSidecarUrl();
-	const url = `${daprEndpoint}/v1.0/invoke/dapr-agent-py/method/internal/sessions/raise-event`;
+	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(targetAppId)}/method/internal/sessions/raise-event`;
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
