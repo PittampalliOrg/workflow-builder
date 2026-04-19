@@ -193,6 +193,10 @@ async def bootstrap_mcp_tools(agent) -> int:
         return 0
 
     tools = client.get_all_tools()
+    logger.warning(
+        "[mcp-bootstrap] client.get_all_tools() returned %d tool(s)",
+        len(tools),
+    )
     existing = {getattr(t, "name", None) for t in agent.tool_executor.list_tools()}
     added = 0
     for tool in tools:
