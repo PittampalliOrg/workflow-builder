@@ -1,3 +1,4 @@
+import { error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 
 /**
@@ -19,4 +20,15 @@ export function validateInternalToken(request: Request): boolean {
 		request.headers.get('x-internal-token') ||
 		request.headers.get('authorization')?.replace('Bearer ', '');
 	return !!token && token === expected;
+}
+
+/**
+ * Throw a 401 if the request doesn't carry a valid INTERNAL_API_TOKEN.
+ * Convenience wrapper for SvelteKit request handlers on /api/internal/*
+ * routes.
+ */
+export function requireInternal(request: Request): void {
+	if (!validateInternalToken(request)) {
+		throw error(401, 'invalid or missing INTERNAL_API_TOKEN');
+	}
 }

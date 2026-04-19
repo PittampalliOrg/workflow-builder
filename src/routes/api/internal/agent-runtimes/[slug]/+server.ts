@@ -1,5 +1,5 @@
 import type { RequestHandler } from "./$types";
-import { error, json } from "@sveltejs/kit";
+import { json } from "@sveltejs/kit";
 
 import {
 	getAgentRuntime,
@@ -8,13 +8,7 @@ import {
 	agentRuntimeName,
 	type AgentRuntimeSpec,
 } from "$lib/server/kube/client";
-import { validateInternalToken } from "$lib/server/internal-auth";
-
-function requireInternal(request: Request): void {
-	if (!validateInternalToken(request)) {
-		throw error(401, "invalid or missing INTERNAL_API_TOKEN");
-	}
-}
+import { requireInternal } from "$lib/server/internal-auth";
 
 /**
  * Internal read-through of an AgentRuntime CR status for the UI + other

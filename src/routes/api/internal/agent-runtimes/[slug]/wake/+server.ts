@@ -1,14 +1,8 @@
 import type { RequestHandler } from "./$types";
-import { error, json } from "@sveltejs/kit";
+import { json } from "@sveltejs/kit";
 
 import { wakeAgentRuntime } from "$lib/server/kube/client";
-import { validateInternalToken } from "$lib/server/internal-auth";
-
-function requireInternal(request: Request): void {
-	if (!validateInternalToken(request)) {
-		throw error(401, "invalid or missing INTERNAL_API_TOKEN");
-	}
-}
+import { requireInternal } from "$lib/server/internal-auth";
 
 /**
  * POST /api/internal/agent-runtimes/:slug/wake
