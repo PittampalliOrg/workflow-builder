@@ -551,6 +551,34 @@ def _resolve_native_agent_runtime(
     flattened_args: dict[str, Any],
     agent_config: dict[str, Any] | None,
 ) -> tuple[str, dict[str, str]]:
+    """Resolve the Dapr app-id + child workflow name to dispatch a durable/run.
+
+    Per-agent-runtime plan: the resolver stamps `agentAppId` (e.g.
+    `agent-runtime-<slug>`) into the body, derived from agents.runtime_app_id.
+    When present, it takes precedence over the legacy `agentRuntime` enum
+    (`dapr-agent-py` | `dapr-agent-py-testing`). Legacy enum stays supported
+    through the rollout window; unrecognized runtimes default to
+    agent-runtime-<slug> if agentSlug is known, else hard-fail.
+    """
+    agent_app_id = (
+        flattened_args.get("agentAppId").strip()
+        if isinstance(flattened_args.get("agentAppId"), str)
+        and flattened_args.get("agentAppId").strip()
+        else agent_config.get("agentAppId").strip()
+        if isinstance(agent_config, dict)
+        and isinstance(agent_config.get("agentAppId"), str)
+        and agent_config.get("agentAppId").strip()
+        else ""
+    )
+
+    if agent_app_id:
+        return agent_app_id, {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": agent_app_id,
+            "instance_prefix": "durable",
+        }
+
+    # Fallback to the legacy shared-pod enum during the rollout window.
     runtime = (
         flattened_args.get("agentRuntime").strip()
         if isinstance(flattened_args.get("agentRuntime"), str)
@@ -568,12 +596,35 @@ def _resolve_native_agent_runtime(
         and agent_config.get("agentRuntime").strip()
         else "dapr-agent-py"
     )
-    if runtime not in _NATIVE_DURABLE_AGENT_TARGETS:
-        allowed = ", ".join(sorted(_NATIVE_DURABLE_AGENT_TARGETS))
-        raise RuntimeError(
-            f"Unsupported durable/run agentRuntime '{runtime}'. Allowed runtimes: {allowed}"
-        )
-    return runtime, _NATIVE_DURABLE_AGENT_TARGETS[runtime]
+    if runtime in _NATIVE_DURABLE_AGENT_TARGETS:
+        return runtime, _NATIVE_DURABLE_AGENT_TARGETS[runtime]
+
+    # Per-agent-runtime plan: if the resolver didn't stamp agentAppId but
+    # agentSlug is present, derive the per-agent runtime on the fly. This
+    # keeps older workflow specs working without re-publishing.
+    agent_slug = (
+        flattened_args.get("agentSlug").strip()
+        if isinstance(flattened_args.get("agentSlug"), str)
+        and flattened_args.get("agentSlug").strip()
+        else agent_config.get("slug").strip()
+        if isinstance(agent_config, dict)
+        and isinstance(agent_config.get("slug"), str)
+        and agent_config.get("slug").strip()
+        else ""
+    )
+    if agent_slug:
+        derived = f"agent-runtime-{agent_slug}"
+        return derived, {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": derived,
+            "instance_prefix": "durable",
+        }
+
+    allowed = ", ".join(sorted(_NATIVE_DURABLE_AGENT_TARGETS))
+    raise RuntimeError(
+        f"Unsupported durable/run agentRuntime '{runtime}' and no agentAppId/agentSlug in body. "
+        f"Allowed legacy runtimes: {allowed}"
+    )
 
 
 def _parse_optional_int(value: Any) -> int | None:
@@ -1160,10 +1211,11 @@ def _run_native_durable_agent_child_workflow(
     # flag (OFF branch = direct call_child_workflow("agent_workflow", ...))
     # was removed in Deploy B of the CMA-alignment plan after the flag had
     # been on in production since 2026-04-17 with no issues.
-    session_bridge_eligible = (
-        target.get("app_id") == "dapr-agent-py"
-        and target.get("workflow_name") == "agent_workflow"
-    )
+    # Route every agent_workflow dispatch through session_workflow. This
+    # matches both the legacy shared-pod path (app_id=dapr-agent-py) and the
+    # per-agent runtime path (app_id=agent-runtime-<slug>); session_workflow
+    # is registered on both pods via the same source tree.
+    session_bridge_eligible = target.get("workflow_name") == "agent_workflow"
 
     if session_bridge_eligible:
         from activities.spawn_session import spawn_session_for_workflow
@@ -1206,7 +1258,10 @@ def _run_native_durable_agent_child_workflow(
             "session_workflow",
             input=_freeze(bridge_child_input),
             instance_id=child_instance_id,
-            app_id="dapr-agent-py",
+            # Per-agent-runtime plan: dispatch session_workflow to the
+            # agent's dedicated pod (target["app_id"] == "agent-runtime-<slug>"
+            # or legacy "dapr-agent-py" / "dapr-agent-py-testing").
+            app_id=target["app_id"],
         )
     else:
         child_result = yield ctx.call_child_workflow(
@@ -1225,7 +1280,7 @@ def _run_native_durable_agent_child_workflow(
         # Bridge path: session_workflow wrapped agent_workflow. Report the
         # accurate outer child workflow name + the session id.
         child_result.setdefault("childWorkflowName", "session_workflow")
-        child_result.setdefault("childAppId", "dapr-agent-py")
+        child_result.setdefault("childAppId", target["app_id"])
         child_result.setdefault("sessionId", child_instance_id)
     else:
         child_result.setdefault("childWorkflowName", target["workflow_name"])

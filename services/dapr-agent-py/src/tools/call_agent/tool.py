@@ -164,7 +164,7 @@ def call_agent(name: str, prompt: str) -> str:
         if response_body.get("daprInstanceId")
         else response_body.get("reused", False) and "already_running" or "pending",
         "peer": slug,
-        "peer_app_id": str(peer.get("appId") or "dapr-agent-py"),
+        "peer_app_id": str(peer.get("appId") or f"agent-runtime-{slug}"),
         "child_session_id": response_body.get("sessionId") or child_session_id,
         "dapr_instance_id": response_body.get("daprInstanceId"),
         "registry_team": str(peer.get("team") or ctx.registry_team or ""),

@@ -623,6 +623,17 @@ export async function safeSyncOnPublish(agentId: string): Promise<void> {
 			err instanceof Error ? err.message : err,
 		);
 	}
+	// Per-agent-runtime plan: materialize / refresh the AgentRuntime CR
+	// alongside the registry dual-write. Kept fire-and-forget — never blocks
+	// the publish response. Controller reconciles idempotently on CR upsert.
+	try {
+		await syncAgentRuntimeCR(agentId);
+	} catch (err) {
+		console.warn(
+			`[agent-runtime] publish CR sync threw for ${agentId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
 }
 
 export async function safeSyncOnArchive(agentId: string): Promise<void> {
@@ -640,4 +651,132 @@ export async function safeSyncOnArchive(agentId: string): Promise<void> {
 			err instanceof Error ? err.message : err,
 		);
 	}
+	try {
+		await deleteAgentRuntimeCR(agentId);
+	} catch (err) {
+		console.warn(
+			`[agent-runtime] archive CR delete threw for ${agentId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AgentRuntime CR sync helpers
+// ---------------------------------------------------------------------------
+
+async function syncAgentRuntimeCR(agentId: string): Promise<void> {
+	const [kubeClient, envModule] = await Promise.all([
+		import("$lib/server/kube/client"),
+		import("$lib/server/db/schema").then((m) => ({
+			environments: m.environments,
+			environmentVersions: m.environmentVersions,
+		})),
+	]);
+
+	const rows = await requireDb()
+		.select({ agent: agents })
+		.from(agents)
+		.where(eq(agents.id, agentId))
+		.limit(1);
+	const row = rows[0]?.agent;
+	if (!row || row.isArchived) return;
+
+	let environmentRecord: {
+		id?: string;
+		slug?: string;
+		version?: number;
+		imageTag?: string | null;
+	} | null = null;
+	if (row.environmentId) {
+		const envRows = await requireDb()
+			.select({
+				env: envModule.environments,
+				version: envModule.environmentVersions,
+			})
+			.from(envModule.environments)
+			.leftJoin(
+				envModule.environmentVersions,
+				eq(
+					envModule.environments.currentVersionId,
+					envModule.environmentVersions.id,
+				),
+			)
+			.where(eq(envModule.environments.id, row.environmentId))
+			.limit(1);
+		const envRow = envRows[0];
+		if (envRow?.env) {
+			environmentRecord = {
+				id: envRow.env.id,
+				slug: envRow.env.slug,
+				version: envRow.version?.version,
+				imageTag: envRow.version?.imageTag ?? null,
+			};
+		}
+	}
+	// If we don't have an environment-managed imageTag yet, fall back to the
+	// default per-agent sandbox image. This unblocks the first publish before
+	// Phase-3 env builds land.
+	const imageTag =
+		environmentRecord?.imageTag ??
+		env.AGENT_RUNTIME_DEFAULT_IMAGE ??
+		"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
+
+	const config = await loadCurrentAgentConfig(agentId);
+	const mcpServers = (config?.mcpServers ?? []).map((s) => ({
+		name: s.serverName ?? s.name ?? "mcp",
+		transport: (s.transport ?? "streamable_http") as
+			| "streamable_http"
+			| "sse"
+			| "stdio"
+			| "websocket",
+		url: s.url,
+		command: s.command,
+		args: s.args,
+		headers: s.headers,
+		env: s.env,
+	}));
+
+	await kubeClient.upsertAgentRuntime({
+		agentSlug: row.slug,
+		projectId: row.projectId,
+		appId: row.runtimeAppId ?? `agent-runtime-${row.slug}`,
+		environment: {
+			id: environmentRecord?.id,
+			slug: environmentRecord?.slug,
+			version: environmentRecord?.version,
+			imageTag,
+		},
+		mcpServers,
+	});
+}
+
+async function deleteAgentRuntimeCR(agentId: string): Promise<void> {
+	const rows = await requireDb()
+		.select({ slug: agents.slug })
+		.from(agents)
+		.where(eq(agents.id, agentId))
+		.limit(1);
+	const slug = rows[0]?.slug;
+	if (!slug) return;
+	const kubeClient = await import("$lib/server/kube/client");
+	await kubeClient.deleteAgentRuntime(slug);
+}
+
+async function loadCurrentAgentConfig(
+	agentId: string,
+): Promise<AgentConfig | null> {
+	const rows = await requireDb()
+		.select({ agent: agents })
+		.from(agents)
+		.where(eq(agents.id, agentId))
+		.limit(1);
+	const row = rows[0]?.agent;
+	if (!row?.currentVersionId) return null;
+	const versionRows = await requireDb()
+		.select({ version: agentVersions })
+		.from(agentVersions)
+		.where(eq(agentVersions.id, row.currentVersionId))
+		.limit(1);
+	return (versionRows[0]?.version?.config as AgentConfig | undefined) ?? null;
 }

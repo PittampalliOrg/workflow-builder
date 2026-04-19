@@ -558,6 +558,10 @@ export type ResolvedAgent = {
 	defaultVaultIds: string[];
 	projectId: string | null;
 	runtime: AgentRuntime;
+	/** Per-agent sandbox runtime app-id, e.g. agent-runtime-<slug>. Null
+	 *  for unpublished agents; resolver stamps this into the durable/run
+	 *  body for orchestrator routing. */
+	runtimeAppId: string | null;
 	registryStatus: string;
 };
 
@@ -607,6 +611,7 @@ export async function resolveAgentRef(
 			: [],
 		projectId: agent.projectId ?? null,
 		runtime: agent.runtime as AgentRuntime,
+		runtimeAppId: agent.runtimeAppId ?? null,
 		registryStatus: agent.registryStatus ?? "unregistered",
 	};
 }
@@ -628,6 +633,7 @@ export async function resolveCallableAgents(
 		agentId: string;
 		version: number;
 		runtime: AgentRuntime;
+		runtimeAppId: string | null;
 	}>
 > {
 	if (slugs.length === 0) return [];
@@ -637,6 +643,7 @@ export async function resolveCallableAgents(
 			id: agents.id,
 			slug: agents.slug,
 			runtime: agents.runtime,
+			runtimeAppId: agents.runtimeAppId,
 			currentVersionId: agents.currentVersionId,
 			registryStatus: agents.registryStatus,
 			isArchived: agents.isArchived,
@@ -668,6 +675,7 @@ export async function resolveCallableAgents(
 					agentId: r.id,
 					version: versionsById.get(r.currentVersionId as string) ?? 1,
 					runtime: r.runtime as AgentRuntime,
+					runtimeAppId: r.runtimeAppId ?? null,
 				},
 			]),
 	);

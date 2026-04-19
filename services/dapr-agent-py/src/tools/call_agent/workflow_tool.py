@@ -104,11 +104,19 @@ def _schedule_peer_session(
         _child_instance_id or f"ca-{uuid.uuid4().hex[:16]}-{truncated_slug}"
     )
 
+    # Per-agent-runtime plan: peer's appId comes from the registry entry
+    # populated by the BFF's dual-write (which reads agents.runtime_app_id).
+    # Derive `agent-runtime-<slug>` as a fallback so older registry rows
+    # written before the new column was populated still route cleanly.
+    peer_app_id = str(peer.get("appId") or "").strip()
+    if not peer_app_id:
+        peer_app_id = f"agent-runtime-{slug}"
+
     workflow_input = {
         "sessionId": child_instance_id,
         "peerAgentId": peer_agent_id,
         "peerSlug": slug,
-        "peerAppId": str(peer.get("appId") or "dapr-agent-py"),
+        "peerAppId": peer_app_id,
         "registryTeam": peer.get("team") or peer_ctx.registry_team,
         "prompt": prompt.strip(),
         "parentSessionId": peer_ctx.parent_session_id,

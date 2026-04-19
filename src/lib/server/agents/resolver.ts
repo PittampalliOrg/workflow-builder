@@ -135,17 +135,33 @@ export async function resolveSpecAgentRefs(
 				slug: p.slug,
 				agentId: p.agentId,
 				version: p.version,
-				appId: p.runtime,
+				// Per-agent-runtime routing: peer workflows dispatch to
+				// agent-runtime-<slug>, not the shared dapr-agent-py pod.
+				// `p.runtime` ("dapr-agent-py" | "dapr-agent-py-testing") is
+				// the legacy shared-pod selector and still lands in the body
+				// for the hybrid-rollout window, but orchestrator + CallAgent
+				// prefer `appId` when present.
+				appId: p.runtimeAppId ?? `agent-runtime-${p.slug}`,
 				team,
 				registryKey: agentRegistryKey(team, p.slug),
 			}));
 		}
+
+		// Per-agent-runtime plan: stamp the target Dapr app-id derived from
+		// the agent's runtimeAppId column (set at publish time by
+		// registry-sync). Orchestrator passes this into
+		// ctx.call_child_workflow(app_id=...) so every session lands in the
+		// agent's dedicated pod with its own tool_executor + MCP bootstrap.
+		const agentAppId =
+			resolved.runtimeAppId ?? `agent-runtime-${resolved.slug}`;
 
 		const inlinedBody: Record<string, unknown> = {
 			...(bodyRecord ?? {}),
 			prompt,
 			agentConfig: config,
 			agentRuntime: config.runtime ?? "dapr-agent-py",
+			agentAppId,
+			agentSlug: resolved.slug,
 			maxTurns: overrides?.maxTurns ?? config.maxTurns,
 			timeoutMinutes: overrides?.timeoutMinutes ?? config.timeoutMinutes,
 			cwd: overrides?.cwd ?? config.cwd ?? bodyRecord?.cwd,
@@ -175,6 +191,8 @@ export async function resolveSpecAgentRefs(
 		withRecord.body = inlinedBody;
 		withRecord.prompt = prompt;
 		withRecord.agentRuntime = config.runtime ?? "dapr-agent-py";
+		withRecord.agentAppId = agentAppId;
+		withRecord.agentSlug = resolved.slug;
 		withRecord.agentConfig = config;
 		if (sandboxPolicy) withRecord.sandboxPolicy = sandboxPolicy;
 		delete withRecord.agentRef;
