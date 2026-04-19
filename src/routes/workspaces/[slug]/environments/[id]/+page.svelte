@@ -37,6 +37,11 @@
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import EnvironmentOverview from '$lib/components/environments/environment-overview.svelte';
 	import {
+		ensureSandboxProfiles,
+		lookupSandboxProfile,
+		sandboxProfilesStore
+	} from '$lib/stores/sandbox-profiles.svelte';
+	import {
 		ArrowLeft,
 		Clock,
 		Code2,
@@ -230,7 +235,15 @@
 		updateConfig('metadata', meta);
 	}
 
-	onMount(load);
+	const profilesState = $derived(sandboxProfilesStore());
+	const selectedProfile = $derived(
+		lookupSandboxProfile(config?.sandboxTemplate ?? null)
+	);
+
+	onMount(() => {
+		load();
+		ensureSandboxProfiles();
+	});
 </script>
 
 <svelte:window
@@ -417,17 +430,28 @@
 							<h3 class="font-semibold text-sm">Sandbox</h3>
 							<div class="grid grid-cols-2 gap-3">
 								<div>
-									<Label>Template</Label>
-									<Input
+									<Label>Profile</Label>
+									<select
+										class="w-full mt-1 rounded-md border bg-background px-3 py-2 text-sm"
 										value={config.sandboxTemplate}
-										oninput={(e) =>
+										onchange={(e) =>
 											updateConfig(
 												'sandboxTemplate',
-												(e.target as HTMLInputElement).value
+												(e.target as HTMLSelectElement).value
 											)}
-									/>
+									>
+										{#each profilesState.profiles as p (p.slug)}
+											<option value={p.slug}>
+												{p.name} ({p.slug}){p.isBuiltin ? ' · built-in' : ''}
+											</option>
+										{/each}
+									</select>
 									<p class="text-[11px] text-muted-foreground mt-1">
-										Matches the container image name (e.g. <code>dapr-agent</code>).
+										Pre-built sandbox image with declared packages baked in.
+										Manage at <a
+											href="/admin/sandbox-profiles"
+											class="underline hover:text-foreground">/admin/sandbox-profiles</a
+										>.
 									</p>
 								</div>
 								<div>
@@ -471,6 +495,42 @@
 										}}
 									/>
 								</div>
+								{#if selectedProfile}
+									<div class="col-span-2 rounded border bg-muted/20 p-3 space-y-2">
+										<div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+											What's baked in: {selectedProfile.name}
+										</div>
+										{#if selectedProfile.description}
+											<p class="text-xs text-muted-foreground">
+												{selectedProfile.description}
+											</p>
+										{/if}
+										<div class="flex flex-wrap gap-1.5 pt-1">
+											{#each Object.entries(selectedProfile.packages ?? {}) as [manager, specs]}
+												{#if specs && specs.length > 0}
+													<span
+														class="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] font-mono"
+													>
+														<span class="text-muted-foreground">{manager}</span>
+														<span>{specs.length}</span>
+													</span>
+												{/if}
+											{/each}
+											{#if selectedProfile.capabilities && selectedProfile.capabilities.length > 0}
+												<span
+													class="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-[10px]"
+												>
+													caps: {selectedProfile.capabilities.join(', ')}
+												</span>
+											{/if}
+										</div>
+										{#if selectedProfile.imageTag}
+											<div class="font-mono text-[10px] text-muted-foreground truncate">
+												{selectedProfile.imageTag}
+											</div>
+										{/if}
+									</div>
+								{/if}
 							</div>
 						</div>
 					</TabsContent>
@@ -590,6 +650,13 @@
 					</TabsContent>
 
 					<TabsContent value="packages" class="space-y-4">
+						<div class="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+							Runtime installs go through OpenShell's CONNECT-proxy and don't
+							reliably support pip / apt in all cases. For anything an agent
+							imports at every run, prefer a
+							<a href="/admin/sandbox-profiles" class="underline">sandbox profile</a>
+							with these packages pre-baked at image build time.
+						</div>
 						<p class="text-sm text-muted-foreground">
 							Specify packages and their versions available in this environment.
 							Install order: apt → cargo → gem → go → npm → pip.
