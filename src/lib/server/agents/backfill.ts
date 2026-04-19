@@ -258,11 +258,6 @@ export async function backfillInlineAgents(): Promise<BackfillReport> {
 		const spec = isRecord(wf.spec) ? (wf.spec as Record<string, unknown>) : null;
 		const doArr = spec && Array.isArray(spec.do) ? (spec.do as Array<Record<string, unknown>>) : null;
 		const nextDo: Array<Record<string, unknown>> = [];
-		if (doArr && doArr.length > 0) {
-			console.log(
-				`[backfill] ${wf.id}: scanning spec.do (${doArr.length} entries)`,
-			);
-		}
 		if (doArr) {
 			for (const entry of doArr) {
 				if (!isRecord(entry)) {
@@ -274,12 +269,6 @@ export async function backfillInlineAgents(): Promise<BackfillReport> {
 				if (!taskName || !isRecord(task)) {
 					nextDo.push(entry);
 					continue;
-				}
-				if (task.call === "durable/run") {
-					const extracted0 = extractInlineConfigFromSpecTask(task);
-					console.log(
-						`[backfill] ${wf.id} task=${taskName} call=durable/run extracted=${extracted0 ? "yes" : "no"}`,
-					);
 				}
 				const extracted = extractInlineConfigFromSpecTask(task);
 				if (!extracted) {
