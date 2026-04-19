@@ -189,8 +189,34 @@ def _load_bootstrap_mcp_tools() -> list:
                 )
         return client.get_all_tools()
 
+    # asyncio.run() fails if an event loop is already running on this
+    # thread (OTEL/dapr-agents set one up at import time). Run the
+    # connect+fetch in an isolated thread with its own loop.
+    import concurrent.futures
+    import threading
+
+    def _run_in_new_loop(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            finally:
+                loop.close()
+
+    fut: concurrent.futures.Future = concurrent.futures.Future()
+
+    def _worker() -> None:
+        try:
+            fut.set_result(_run_in_new_loop(_connect_all()))
+        except Exception as exc:  # noqa: BLE001
+            fut.set_exception(exc)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
     try:
-        tools = asyncio.run(_connect_all())
+        tools = fut.result(timeout=30)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-bootstrap] load failed: %s", exc)
         return []
