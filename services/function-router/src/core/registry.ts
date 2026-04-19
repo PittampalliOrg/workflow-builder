@@ -24,7 +24,11 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "code/*": { appId: "code-runtime", type: "knative" },
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-  "workspace/*": { appId: "workspace-runtime", type: "knative" },
+  // workspace/* was routed to the legacy `workspace-runtime` TS service
+  // (decommissioned 2026-04-16 per CLAUDE.md). openshell-agent-runtime
+  // now owns the `workspace/profile` + `workspace/command` + browser
+  // handlers, so consolidate the runtime here.
+  "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
   // Default fallback: all other slugs route to fn-activepieces
   _default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -42,7 +46,7 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "code/*": { appId: "code-runtime", type: "knative" },
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-  "workspace/*": { appId: "workspace-runtime", type: "knative" },
+  "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
   // AP piece routing is cross-cutting: if the mounted ConfigMap is missing
   // _default (or not mounted at all), every AP action would fall through to
   // the throw-on-unknown branch. Defense-in-depth — belt and suspenders with
