@@ -192,7 +192,48 @@ async def bootstrap_mcp_tools(agent) -> int:
     if connected == 0:
         return 0
 
+    # Playwright MCP's streamable_http mode occasionally returns 0 tools
+    # on the first list despite the connect succeeding — retry a few times
+    # with a small delay. Tools live on _server_tools dict populated by
+    # _load_tools_from_session; retrying gives anyio tasks time to settle.
     tools = client.get_all_tools()
+    if not tools:
+        import asyncio as _asyncio_retry
+
+        for attempt in range(1, 5):
+            await _asyncio_retry.sleep(1.0 * attempt)
+            # Refetch tools; MCPClient keeps sessions alive in persistent mode
+            # so we re-call _load_tools_from_session for each server.
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(
+                    entry.get("name")
+                    or entry.get("server_name")
+                    or entry.get("serverName")
+                    or ""
+                ).strip()
+                if not name or name not in getattr(client, "_sessions", {}):
+                    continue
+                try:
+                    await client._load_tools_from_session(
+                        name, client._sessions[name]
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp-bootstrap] retry %d _load_tools_from_session %s failed: %s",
+                        attempt,
+                        name,
+                        exc,
+                    )
+            tools = client.get_all_tools()
+            if tools:
+                logger.warning(
+                    "[mcp-bootstrap] got %d tool(s) after %d retry attempt(s)",
+                    len(tools),
+                    attempt,
+                )
+                break
     logger.warning(
         "[mcp-bootstrap] client.get_all_tools() returned %d tool(s)",
         len(tools),
