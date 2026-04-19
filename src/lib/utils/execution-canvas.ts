@@ -113,12 +113,22 @@ export function buildExecutionCanvasState(
 	}
 
 	if (activeNodeId) {
-		nodeStatuses[activeNodeId] =
-			executionStatus === 'error' && activeNodeStatus === 'idle'
-				? 'error'
-				: isTerminal && activeNodeStatus !== 'idle'
-					? activeNodeStatus
-					: 'running';
+		// When the workflow has finished, the current node is the last one
+		// executed. If the snapshot carries an explicit per-node status, honor
+		// it; otherwise inherit the execution's terminal status. Previously we
+		// fell through to 'running' here, which left agent nodes spinning
+		// perpetually after a successful run (the workflow-level completed
+		// event doesn't always stamp a per-node success into nodeStatuses,
+		// e.g. for durable/run children whose terminal state is tracked via
+		// workflow_agent_runs instead).
+		if (executionStatus === 'error' && activeNodeStatus === 'idle') {
+			nodeStatuses[activeNodeId] = 'error';
+		} else if (isTerminal) {
+			nodeStatuses[activeNodeId] =
+				activeNodeStatus !== 'idle' ? activeNodeStatus : executionStatus;
+		} else {
+			nodeStatuses[activeNodeId] = 'running';
+		}
 	}
 
 	if (executionStatus === 'success' && endNodeId) {
