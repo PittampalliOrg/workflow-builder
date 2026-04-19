@@ -718,7 +718,11 @@
 								<Label>Instructions (one per line)</Label>
 								<Textarea
 									rows={4}
-									value={(config.instructions ?? []).join('\n')}
+									value={Array.isArray(config.instructions)
+										? config.instructions.join('\n')
+										: typeof config.instructions === 'string'
+										? config.instructions
+										: ''}
 									oninput={(e) => {
 										const lines = (e.target as HTMLTextAreaElement).value
 											.split('\n')
@@ -733,7 +737,11 @@
 								<Textarea
 									rows={3}
 									placeholder="e.g. Use Markdown, cite file paths as file_path:line_number"
-									value={(config.styleGuidelines ?? []).join('\n')}
+									value={Array.isArray(config.styleGuidelines)
+										? config.styleGuidelines.join('\n')
+										: typeof config.styleGuidelines === 'string'
+										? config.styleGuidelines
+										: ''}
 									oninput={(e) => {
 										const lines = (e.target as HTMLTextAreaElement).value
 											.split('\n')
