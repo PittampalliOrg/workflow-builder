@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
@@ -262,14 +262,25 @@ export async function listEnvironments(
 	filter: ListEnvironmentsFilter = {},
 ): Promise<EnvironmentSummary[]> {
 	const database = requireDb();
-	const conditions: ReturnType<typeof eq>[] = [];
-	if (!filter.includeArchived) conditions.push(eq(environments.isArchived, false));
-	if (filter.projectId) conditions.push(eq(environments.projectId, filter.projectId));
+	// Builtin envs (is_builtin = true) carry a NULL project_id — they're
+	// workspace-agnostic and have to surface in every project's list. Scope
+	// filtering therefore always ORs `isBuiltin = true` alongside the
+	// project_id match.
+	const predicates: ReturnType<typeof eq>[] = [];
+	if (!filter.includeArchived) predicates.push(eq(environments.isArchived, false));
+	if (filter.projectId) {
+		predicates.push(
+			or(
+				eq(environments.projectId, filter.projectId),
+				eq(environments.isBuiltin, true),
+			)!,
+		);
+	}
 
 	const rows = await database
 		.select()
 		.from(environments)
-		.where(conditions.length > 0 ? and(...conditions) : undefined)
+		.where(predicates.length > 0 ? and(...predicates) : undefined)
 		.orderBy(asc(environments.name));
 	if (rows.length === 0) return [];
 
