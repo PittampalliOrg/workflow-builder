@@ -21,8 +21,18 @@
 			(config as { systemPrompt?: string }).systemPrompt ?? '').trim(),
 	);
 	const mcpServers = $derived(
-		(config as { mcpServers?: Array<{ name?: string; url?: string; id?: string }> }).mcpServers ??
-			[],
+		(
+			config as {
+				mcpServers?: Array<{
+					name?: string;
+					url?: string;
+					id?: string;
+					server_name?: string;
+					serverName?: string;
+					displayName?: string;
+				}>;
+			}
+		).mcpServers ?? [],
 	);
 	const builtinTools = $derived(
 		(config as { builtinTools?: string[] }).builtinTools ?? [],
@@ -138,10 +148,12 @@
 			{/if}
 			{#if mcpServers.length > 0}
 				<div class="rounded border bg-muted/20 divide-y">
-					{#each mcpServers as server (server.id ?? server.name)}
+					{#each mcpServers as server, i (server.id ?? server.server_name ?? server.serverName ?? server.name ?? i)}
+						{@const label =
+							server.displayName ?? server.name ?? server.serverName ?? server.server_name ?? 'MCP server'}
 						<div class="flex items-center gap-2 px-3 py-2 text-sm">
 							<Package class="size-4 text-muted-foreground" />
-							<span class="font-medium">{server.name ?? 'MCP server'}</span>
+							<span class="font-medium">{label}</span>
 							{#if server.url}
 								<code class="text-[10px] text-muted-foreground truncate flex-1">{server.url}</code>
 							{/if}
