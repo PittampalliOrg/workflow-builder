@@ -165,6 +165,41 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		return CMA_TO_INTERNAL[cmaType] ?? cmaType;
 	}
 
+	// CMA rename also reshapes the data payload; the run-detail UI still
+	// reads the pre-rename field names, so reverse the reshape here.
+	// tool_call_start CMA: {name, input} → internal: {toolName, args}
+	// tool_call_end  CMA: {tool_name, output, ...} → internal: {toolName, output, ...}
+	// llm_complete  CMA: {content:[{text,type:"text"}], toolCalls} → internal: {content: string, toolCalls}
+	function toInternalData(
+		internalType: string,
+		data: Record<string, unknown>,
+	): Record<string, unknown> {
+		const out: Record<string, unknown> = { ...data };
+		if (internalType === "tool_call_start") {
+			if (!("toolName" in out) && typeof out.name === "string") out.toolName = out.name;
+			if (!("args" in out) && out.input !== undefined) out.args = out.input;
+		} else if (internalType === "tool_call_end" || internalType === "tool_call_error") {
+			if (!("toolName" in out)) {
+				const tn = out.tool_name ?? out.toolName ?? out.name;
+				if (typeof tn === "string") out.toolName = tn;
+			}
+		} else if (internalType === "llm_complete") {
+			if (Array.isArray(out.content)) {
+				const joined = out.content
+					.map((block) => {
+						if (block && typeof block === "object") {
+							const text = (block as Record<string, unknown>).text;
+							if (typeof text === "string") return text;
+						}
+						return "";
+					})
+					.join("");
+				out.content = joined;
+			}
+		}
+		return out;
+	}
+
 	// Stamp each event with the linking ids the client-side filters look for.
 	// For sessions-bridged runs, workflow_agent_runs.id === sessions.id ===
 	// dapr_instance_id, so setting both to e.sessionId lets
@@ -172,15 +207,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	return json({
 		logs,
 		agentEvents: agentEvents.map((e) => {
-			const data = (e.data && typeof e.data === 'object' ? (e.data as Record<string, unknown>) : {});
+			const rawData = (e.data && typeof e.data === 'object' ? (e.data as Record<string, unknown>) : {});
+			const internalType = toInternalType(e.type, rawData);
+			const data = toInternalData(internalType, rawData);
 			return {
 				id: e.id,
-				type: toInternalType(e.type, data),
+				type: internalType,
 				sourceEventId: e.sourceEventId,
 				workflowAgentRunId: e.sessionId,
 				daprInstanceId: e.sessionId,
 				sessionId: e.sessionId,
-				toolName: pickString(data, 'tool_name', 'toolName', 'name'),
+				toolName: pickString(data, 'toolName', 'tool_name', 'name'),
 				phase: pickString(data, 'phase'),
 				data,
 				timestamp: e.createdAt?.toISOString() ?? ''
