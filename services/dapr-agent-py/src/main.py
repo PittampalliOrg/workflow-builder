@@ -1544,22 +1544,21 @@ class OpenShellDurableAgent(DurableAgent):
     @workflow_entry
     @message_router(message_model=TriggerAction)
     def agent_workflow(self, ctx, message: dict):
-        if not ctx.is_replaying:
-            import sys
-            try:
-                _ac = message.get("agentConfig") if isinstance(message, dict) else None
-                _mcps = (_ac or {}).get("mcpServers") if isinstance(_ac, dict) else None
-                print(
-                    "[mcp-debug] agent_workflow entry: "
-                    f"msg_type={type(message).__name__} "
-                    f"msg_keys={sorted(message.keys())[:15] if isinstance(message, dict) else None} "
-                    f"ac_type={type(_ac).__name__} "
-                    f"mcp_len={len(_mcps) if isinstance(_mcps, list) else ('not-list' if _mcps is not None else None)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            except Exception as _e:
-                print(f"[mcp-debug] entry log failed: {_e}", file=sys.stderr, flush=True)
+        import sys
+        try:
+            _ac = message.get("agentConfig") if isinstance(message, dict) else None
+            _mcps = (_ac or {}).get("mcpServers") if isinstance(_ac, dict) else None
+            sys.stderr.write(
+                f"[mcp-debug] agent_workflow entry replaying={getattr(ctx, 'is_replaying', '?')} "
+                f"msg_type={type(message).__name__} "
+                f"msg_keys={sorted(message.keys())[:15] if isinstance(message, dict) else None} "
+                f"ac_type={type(_ac).__name__} "
+                f"mcp_len={len(_mcps) if isinstance(_mcps, list) else ('not-list' if _mcps is not None else None)}\n"
+            )
+            sys.stderr.flush()
+        except Exception as _e:
+            sys.stderr.write(f"[mcp-debug] entry log failed: {_e}\n")
+            sys.stderr.flush()
         metadata = _parse_metadata(message.get("metadata")) | _parse_metadata(
             message.get("_message_metadata")
         )
