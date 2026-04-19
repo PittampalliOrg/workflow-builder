@@ -112,7 +112,7 @@ export async function resolveSpecAgentRefs(
 		const config = applyOverrides(resolved.config, overrides);
 		const prompt = pickPrompt(withBlock, bodyRecord);
 		const sandboxPolicy = environment
-			? deriveSandboxPolicy(environment.config, overrides?.sandboxPolicy)
+			? deriveSandboxPolicy(environment, overrides?.sandboxPolicy)
 			: undefined;
 
 		// Resolve peer agents listed in config.callableAgents. Only peers
@@ -162,6 +162,8 @@ export async function resolveSpecAgentRefs(
 				slug: environment.slug,
 				version: environment.version,
 				config: environment.config,
+				imageTag: environment.imageTag,
+				baseEnvSlug: environment.baseEnvSlug,
 			};
 		}
 		if (sandboxPolicy) inlinedBody.sandboxPolicy = sandboxPolicy;
@@ -185,19 +187,25 @@ export async function resolveSpecAgentRefs(
 /**
  * Backward-compatible sandbox policy shape. dapr-agent-py still reads
  * `sandboxPolicy.{mode, template, keepAfterRun, ttlSeconds}`; we derive it
- * from the environment config at resolve time. When Phase 3 rewires the agent
- * runtime to consume `body.environment.config` directly, this fallback goes.
+ * from the environment config at resolve time.
+ *
+ * Post-collapse: `template` is the env's own slug (each env maps 1:1 to a
+ * baked image). Legacy `sandboxTemplate` field on the config is honored if
+ * still present so agents that hard-coded it don't break, but the env slug
+ * is the intended source going forward.
  */
 function deriveSandboxPolicy(
-	env: EnvironmentConfig,
+	environment: ResolvedEnvironment,
 	override?: Partial<Record<string, unknown>>,
 ): Record<string, unknown> {
+	const cfg = environment.config;
 	const base: Record<string, unknown> = {
-		mode: env.sandboxMode,
-		template: env.sandboxTemplate,
-		keepAfterRun: env.keepAfterRun,
+		mode: cfg.sandboxMode,
+		template: cfg.sandboxTemplate ?? environment.slug,
+		keepAfterRun: cfg.keepAfterRun,
 	};
-	if (env.ttlSeconds !== undefined) base.ttlSeconds = env.ttlSeconds;
+	if (cfg.ttlSeconds !== undefined) base.ttlSeconds = cfg.ttlSeconds;
+	if (environment.imageTag) base.imageTag = environment.imageTag;
 	return { ...base, ...(override ?? {}) };
 }
 

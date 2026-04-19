@@ -1,5 +1,5 @@
 /**
- * Gitea REST helper for sandbox-profile image rebuilds. The workflow-builder
+ * Gitea REST helper for environment image rebuilds. The workflow-builder
  * pod has admin credentials to the in-cluster Gitea via the
  * `workflow-builder-gitea-admin` secret (env: GITEA_USERNAME / GITEA_PASSWORD).
  * We reuse those to push generated Dockerfiles — same auth pattern the

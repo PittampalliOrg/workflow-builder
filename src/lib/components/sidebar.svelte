@@ -37,7 +37,6 @@
 		Users,
 		Key,
 		Gauge,
-		Boxes,
 		Wrench,
 		Workflow
 	} from 'lucide-svelte';
@@ -147,7 +146,6 @@
 				{ href: `/settings/workspaces/${activeSlug}/keys`, label: 'API keys', icon: Key },
 				{ href: `/settings/workspaces/${activeSlug}/limits`, label: 'Limits', icon: Gauge },
 				{ href: '/settings/members', label: 'Members', icon: Users },
-				{ href: '/admin/sandbox-profiles', label: 'Sandbox profiles', icon: Boxes },
 				{ href: '/settings/security', label: 'Security & compliance', icon: Shield }
 			]
 		}

@@ -8,6 +8,8 @@ import {
 	type EnvironmentVersion,
 } from "$lib/server/db/schema";
 import type {
+	CmaPackages,
+	EnvironmentBuildArtifacts,
 	EnvironmentConfig,
 	EnvironmentDetail,
 	EnvironmentNetworking,
@@ -92,28 +94,52 @@ export function validateEnvironmentConfig(config: unknown): void {
 		}
 	}
 
+	// CMA-shape package manifest: { apt?: [...], pip?: [...], npm?: [...], ... }
 	const pkgs = c.packages;
 	if (pkgs !== undefined && pkgs !== null) {
-		if (!Array.isArray(pkgs)) {
+		if (typeof pkgs !== "object" || Array.isArray(pkgs)) {
 			throw new EnvironmentConfigValidationError(
-				"config.packages must be an array",
+				"config.packages must be an object keyed by package manager",
 			);
 		}
-		for (const pkg of pkgs) {
-			if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) {
+		for (const [manager, specs] of Object.entries(
+			pkgs as Record<string, unknown>,
+		)) {
+			if (!PACKAGE_MANAGER_SET.has(manager as typeof PACKAGE_MANAGERS[number])) {
 				throw new EnvironmentConfigValidationError(
-					"config.packages entries must be {manager, spec} objects",
+					`config.packages key "${manager}" must be one of ${PACKAGE_MANAGERS.join(", ")}`,
 				);
 			}
-			const p = pkg as Record<string, unknown>;
-			if (typeof p.manager !== "string" || !PACKAGE_MANAGER_SET.has(p.manager as typeof PACKAGE_MANAGERS[number])) {
+			if (specs === undefined || specs === null) continue;
+			if (!Array.isArray(specs)) {
 				throw new EnvironmentConfigValidationError(
-					`config.packages.manager must be one of ${PACKAGE_MANAGERS.join(", ")} (got "${String(p.manager)}")`,
+					`config.packages.${manager} must be an array of strings`,
 				);
 			}
-			if (typeof p.spec !== "string" || !PACKAGE_SPEC_RE.test(p.spec)) {
+			for (const spec of specs) {
+				if (typeof spec !== "string" || !PACKAGE_SPEC_RE.test(spec)) {
+					throw new EnvironmentConfigValidationError(
+						`config.packages.${manager} entries must match ${PACKAGE_SPEC_RE} (got "${String(spec)}")`,
+					);
+				}
+			}
+		}
+	}
+
+	// `capabilities` is a plain string[] — informational flags surfaced to the
+	// sandbox runtime. The image is still the source of truth; we validate the
+	// shape but don't enforce a vocabulary.
+	const caps = c.capabilities;
+	if (caps !== undefined && caps !== null) {
+		if (!Array.isArray(caps)) {
+			throw new EnvironmentConfigValidationError(
+				"config.capabilities must be an array of strings",
+			);
+		}
+		for (const cap of caps) {
+			if (typeof cap !== "string" || !/^[a-z0-9._-]+$/.test(cap)) {
 				throw new EnvironmentConfigValidationError(
-					`config.packages.spec must match ${PACKAGE_SPEC_RE} (got "${String(p.spec)}")`,
+					`config.capabilities entries must be lowercase slugs (got "${String(cap)}")`,
 				);
 			}
 		}
@@ -141,10 +167,43 @@ export function validateEnvironmentConfig(config: unknown): void {
 	}
 }
 
+function emptyBuildArtifacts(): EnvironmentBuildArtifacts {
+	return {
+		imageTag: null,
+		dockerfilePath: null,
+		lastBuildSha: null,
+		lastBuildAt: null,
+		lastBuildStatus: null,
+		lastBuildError: null,
+	};
+}
+
+function versionToBuild(
+	version: EnvironmentVersion | null | undefined,
+): EnvironmentBuildArtifacts {
+	if (!version) return emptyBuildArtifacts();
+	const status = version.lastBuildStatus ?? null;
+	// Migration stores "building" / "built" / "failed" — narrow to the type
+	// so the UI can exhaustive-switch without a cast.
+	const narrowed =
+		status === "built" || status === "building" || status === "failed"
+			? status
+			: null;
+	return {
+		imageTag: version.imageTag ?? null,
+		dockerfilePath: version.dockerfilePath ?? null,
+		lastBuildSha: version.lastBuildSha ?? null,
+		lastBuildAt: version.lastBuildAt ? version.lastBuildAt.toISOString() : null,
+		lastBuildStatus: narrowed,
+		lastBuildError: version.lastBuildError ?? null,
+	};
+}
+
 function rowToSummary(
 	row: Environment,
 	currentVersion: number | null,
 	config: EnvironmentConfig | null,
+	build: EnvironmentBuildArtifacts,
 	usedByCount?: number,
 ): EnvironmentSummary {
 	return {
@@ -159,6 +218,9 @@ function rowToSummary(
 		sandboxTemplate: config?.sandboxTemplate ?? null,
 		networkingType: (config?.networking?.type as EnvironmentNetworking["type"]) ?? null,
 		isArchived: row.isArchived,
+		isBuiltin: row.isBuiltin,
+		baseEnvSlug: row.baseEnvSlug ?? null,
+		build,
 		usedByCount,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
@@ -171,7 +233,7 @@ function rowToDetail(
 ): EnvironmentDetail {
 	const config = version.config as unknown as EnvironmentConfig;
 	return {
-		...rowToSummary(row, version.version, config),
+		...rowToSummary(row, version.version, config, versionToBuild(version)),
 		config,
 	};
 }
@@ -233,7 +295,12 @@ export async function listEnvironments(
 			const config = version
 				? (version.config as unknown as EnvironmentConfig)
 				: null;
-			return rowToSummary(row, version?.version ?? null, config);
+			return rowToSummary(
+				row,
+				version?.version ?? null,
+				config,
+				versionToBuild(version),
+			);
 		})
 		.filter((summary) => {
 			if (q) {
@@ -261,7 +328,7 @@ export async function getEnvironment(
 	if (!row.currentVersionId) {
 		const fallback = createDefaultEnvironmentConfig();
 		return {
-			...rowToSummary(row, null, fallback),
+			...rowToSummary(row, null, fallback, emptyBuildArtifacts()),
 			config: fallback,
 		};
 	}
@@ -358,6 +425,7 @@ export type UpdateEnvironmentInput = {
 	avatar?: string | null;
 	tags?: string[];
 	config?: EnvironmentConfig;
+	baseEnvSlug?: string | null;
 	changelog?: string | null;
 	publishedBy?: string | null;
 };
@@ -409,6 +477,7 @@ export async function updateEnvironment(
 		if (input.description !== undefined) patch.description = input.description;
 		if (input.avatar !== undefined) patch.avatar = input.avatar;
 		if (input.tags !== undefined) patch.tags = input.tags;
+		if (input.baseEnvSlug !== undefined) patch.baseEnvSlug = input.baseEnvSlug;
 		if (newVersion) patch.currentVersionId = newVersion.id;
 
 		const [updated] = await tx
@@ -434,7 +503,7 @@ export async function updateEnvironment(
 	if (!result.version) {
 		const fallback = createDefaultEnvironmentConfig();
 		return {
-			...rowToSummary(result.env, null, fallback),
+			...rowToSummary(result.env, null, fallback, emptyBuildArtifacts()),
 			config: fallback,
 		};
 	}
@@ -526,6 +595,8 @@ export type ResolvedEnvironment = {
 	slug: string;
 	version: number;
 	config: EnvironmentConfig;
+	imageTag: string | null;
+	baseEnvSlug: string | null;
 };
 
 export async function resolveEnvironmentRef(
@@ -567,7 +638,29 @@ export async function resolveEnvironmentRef(
 		slug: env.slug,
 		version: version.version,
 		config: version.config as unknown as EnvironmentConfig,
+		imageTag: version.imageTag ?? null,
+		baseEnvSlug: env.baseEnvSlug ?? null,
 	};
+}
+
+/**
+ * Slug-based lookup mirror of resolveEnvironmentRef — used by the
+ * openshell-agent-runtime BFF resolver so the Python pod can translate a
+ * template slug (e.g. "dapr-agent-animation") into the concrete imageTag
+ * without going through the Drizzle id flow. The Python runtime today uses
+ * hardcoded dicts; this endpoint replaces them.
+ */
+export async function resolveEnvironmentBySlug(
+	slug: string,
+): Promise<ResolvedEnvironment | null> {
+	const database = requireDb();
+	const [env] = await database
+		.select()
+		.from(environments)
+		.where(eq(environments.slug, slug))
+		.limit(1);
+	if (!env) return null;
+	return resolveEnvironmentRef({ id: env.id });
 }
 
 export type EnvironmentUsage = {
@@ -593,4 +686,117 @@ export async function findEnvironmentUsages(
 		agentName: r.name,
 		agentSlug: r.slug,
 	}));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build artifacts — mutate on the current environment_version row.
+//
+// The image is owned by the environment's current version: editing packages
+// bumps the version and creates a fresh row with null build artifacts; we
+// then stamp status "building" → "built"/"failed" as the Tekton pipeline
+// progresses. Mirror of the sandbox_profiles build helpers pre-collapse.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function currentVersionIdForEnv(envId: string): Promise<string> {
+	const database = requireDb();
+	const [row] = await database
+		.select({ currentVersionId: environments.currentVersionId })
+		.from(environments)
+		.where(eq(environments.id, envId))
+		.limit(1);
+	if (!row || !row.currentVersionId) {
+		throw new Error(
+			`environment ${envId} has no current version — cannot record build state`,
+		);
+	}
+	return row.currentVersionId;
+}
+
+export async function markEnvironmentBuildStarted(envId: string): Promise<void> {
+	const database = requireDb();
+	const versionId = await currentVersionIdForEnv(envId);
+	await database
+		.update(environmentVersions)
+		.set({
+			lastBuildStatus: "building",
+			lastBuildAt: new Date(),
+			lastBuildError: null,
+		})
+		.where(eq(environmentVersions.id, versionId));
+}
+
+export async function markEnvironmentBuildSucceeded(
+	envId: string,
+	artifacts: {
+		sha: string;
+		imageTag: string;
+		dockerfilePath: string;
+	},
+): Promise<void> {
+	const database = requireDb();
+	const versionId = await currentVersionIdForEnv(envId);
+	await database
+		.update(environmentVersions)
+		.set({
+			lastBuildStatus: "built",
+			lastBuildAt: new Date(),
+			lastBuildSha: artifacts.sha,
+			imageTag: artifacts.imageTag,
+			dockerfilePath: artifacts.dockerfilePath,
+			lastBuildError: null,
+		})
+		.where(eq(environmentVersions.id, versionId));
+}
+
+export async function markEnvironmentBuildFailed(
+	envId: string,
+	error: string,
+): Promise<void> {
+	const database = requireDb();
+	const versionId = await currentVersionIdForEnv(envId);
+	await database
+		.update(environmentVersions)
+		.set({
+			lastBuildStatus: "failed",
+			lastBuildAt: new Date(),
+			lastBuildError: error.slice(0, 2000),
+		})
+		.where(eq(environmentVersions.id, versionId));
+}
+
+/**
+ * Build a `BaseImageResolver` closure for the Dockerfile generator. Looks up
+ * the current `imageTag` for a given env slug. Used by the builder when the
+ * target env declares `baseEnvSlug` so the generated `FROM` points at that
+ * parent env's last-built image (1-level inheritance; no recursion).
+ */
+export async function getBaseImageResolver(): Promise<
+	(slug: string) => string | null
+> {
+	const database = requireDb();
+	// Small dataset (~5-50 envs), fetch once + cache in the closure.
+	const rows = await database
+		.select({
+			slug: environments.slug,
+			currentVersionId: environments.currentVersionId,
+		})
+		.from(environments);
+	const idBySlug = new Map(
+		rows
+			.filter((r) => r.currentVersionId)
+			.map((r) => [r.slug, r.currentVersionId as string]),
+	);
+	const versionIds = Array.from(idBySlug.values());
+	const versionRows = versionIds.length
+		? await database
+				.select({ id: environmentVersions.id, imageTag: environmentVersions.imageTag })
+				.from(environmentVersions)
+				.where(inArray(environmentVersions.id, versionIds))
+		: [];
+	const tagByVersionId = new Map(versionRows.map((v) => [v.id, v.imageTag]));
+	return (slug: string) => {
+		const versionId = idBySlug.get(slug);
+		if (!versionId) return null;
+		return tagByVersionId.get(versionId) ?? null;
+	};
 }

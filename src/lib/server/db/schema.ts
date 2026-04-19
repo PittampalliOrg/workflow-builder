@@ -2141,6 +2141,14 @@ export const environments = pgTable(
 			onDelete: "cascade",
 		}),
 		isArchived: boolean("is_archived").notNull().default(false),
+		// Catalog metadata absorbed from sandbox_profiles in migration 0038.
+		// `isBuiltin: true` guards the seeded envs (dapr-agent, dapr-agent-xlsx,
+		// dapr-agent-animation, dapr-agent-datasci, dapr-agent-webdev) from
+		// archive+delete. `baseEnvSlug` replaces the old base_profile_slug —
+		// null means the Dockerfile FROMs the root openshell-sandbox image;
+		// otherwise it points at another env's slug (1-level inheritance).
+		isBuiltin: boolean("is_builtin").notNull().default(false),
+		baseEnvSlug: text("base_env_slug"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -2148,6 +2156,8 @@ export const environments = pgTable(
 		slugUnique: unique("uq_environments_slug").on(table.slug),
 		archivedIdx: index("idx_environments_archived").on(table.isArchived),
 		projectIdx: index("idx_environments_project").on(table.projectId),
+		builtinIdx: index("idx_environments_builtin").on(table.isBuiltin),
+		baseIdx: index("idx_environments_base").on(table.baseEnvSlug),
 	}),
 );
 
@@ -2168,6 +2178,17 @@ export const environmentVersions = pgTable(
 		publishedBy: text("published_by").references(() => users.id, {
 			onDelete: "set null",
 		}),
+		// Build artifacts absorbed from sandbox_profiles in migration 0038.
+		// Filled in by the Tekton pipeline + admin-console polling. `imageTag`
+		// is the specific tag the sandbox should pull (includes git SHA for
+		// cacheability). A new version bumps iff config changed — build state
+		// stays on the current version until the next package edit.
+		imageTag: text("image_tag"),
+		dockerfilePath: text("dockerfile_path"),
+		lastBuildSha: text("last_build_sha"),
+		lastBuildAt: timestamp("last_build_at"),
+		lastBuildStatus: text("last_build_status"),
+		lastBuildError: text("last_build_error"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 	(table) => ({

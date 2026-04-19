@@ -37,11 +37,6 @@
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import EnvironmentOverview from '$lib/components/environments/environment-overview.svelte';
 	import {
-		ensureSandboxProfiles,
-		lookupSandboxProfile,
-		sandboxProfilesStore
-	} from '$lib/stores/sandbox-profiles.svelte';
-	import {
 		ArrowLeft,
 		Clock,
 		Code2,
@@ -50,14 +45,17 @@
 		Save,
 		Bot,
 		X,
-		Plus
+		Plus,
+		Hammer,
+		FileCode2
 	} from 'lucide-svelte';
 	import type {
+		CmaPackages,
 		EnvironmentConfig,
 		EnvironmentDetail,
 		EnvironmentNetworking,
 		EnvironmentNetworkingLimited,
-		EnvironmentPackage,
+		EnvironmentSummary,
 		EnvironmentVersionSummary,
 		PackageManager
 	} from '$lib/types/environments';
@@ -73,7 +71,7 @@
 	let saving = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let dirty = $state(false);
-	let tab = $state<'overview' | 'basics' | 'networking' | 'packages' | 'advanced'>(
+	let tab = $state<'overview' | 'basics' | 'networking' | 'packages' | 'build' | 'advanced'>(
 		'overview'
 	);
 	let usages = $state<Array<{ agentId: string; agentName: string; agentSlug: string }>>([]);
@@ -84,28 +82,80 @@
 	let newPkgSpec = $state('');
 	let newMetaKey = $state('');
 	let newMetaValue = $state('');
+	// List of other envs available as a base for 1-level inheritance. We fetch
+	// the full env list once so the Basics tab's Base-env picker can list other
+	// builtins without a per-keystroke roundtrip.
+	let allEnvs = $state<EnvironmentSummary[]>([]);
+	let dockerfilePreview = $state<string | null>(null);
+	let dockerfileLoading = $state(false);
+	let building = $state(false);
+	let buildMessage = $state<string | null>(null);
 
 	async function load() {
 		loading = true;
 		try {
-			const [a, u] = await Promise.all([
+			const [a, u, eAll] = await Promise.all([
 				fetch(`/api/v1/environments/${envId}`).then((r) => r.json()),
 				fetch(`/api/v1/environments/${envId}/usages`)
 					.then((r) => r.json())
-					.catch(() => ({ usages: [] }))
+					.catch(() => ({ usages: [] })),
+				fetch('/api/v1/environments')
+					.then((r) => r.json())
+					.catch(() => ({ environments: [] }))
 			]);
 			if (a.error) {
 				errorMessage = a.error;
 				return;
 			}
 			env = a.environment;
-			config = structuredClone(a.environment.config);
+			// structuredClone on a Svelte $state proxy throws DataCloneError — go
+			// through JSON to drop the proxy wrappers before re-assigning.
+			config = JSON.parse(JSON.stringify(a.environment.config)) as EnvironmentConfig;
 			usages = u.usages ?? [];
+			allEnvs = eAll.environments ?? [];
 			dirty = false;
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadDockerfilePreview() {
+		if (!env) return;
+		dockerfileLoading = true;
+		try {
+			const res = await fetch(`/api/v1/environments/${env.id}/dockerfile-preview`);
+			if (res.ok) {
+				const data = (await res.json()) as { dockerfile: string };
+				dockerfilePreview = data.dockerfile;
+			} else {
+				dockerfilePreview = `# preview failed: ${res.status}`;
+			}
+		} catch (err) {
+			dockerfilePreview = `# preview failed: ${err instanceof Error ? err.message : String(err)}`;
+		} finally {
+			dockerfileLoading = false;
+		}
+	}
+
+	async function triggerBuild() {
+		if (!env) return;
+		building = true;
+		buildMessage = null;
+		try {
+			const res = await fetch(`/api/v1/environments/${env.id}/build`, { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok) {
+				buildMessage = data.error ?? `build failed (${res.status})`;
+				return;
+			}
+			buildMessage = `Queued build: ${(data.commitSha ?? '').slice(0, 12)}`;
+			await load();
+		} catch (err) {
+			buildMessage = err instanceof Error ? err.message : String(err);
+		} finally {
+			building = false;
 		}
 	}
 
@@ -139,7 +189,7 @@
 			}
 			const { environment: updated } = await res.json();
 			env = updated;
-			config = structuredClone(updated.config);
+			config = JSON.parse(JSON.stringify(updated.config)) as EnvironmentConfig;
 			dirty = false;
 		} finally {
 			saving = false;
@@ -203,20 +253,41 @@
 
 	function addPackage() {
 		if (!config || newPkgSpec.trim() === '') return;
-		const pkg: EnvironmentPackage = { manager: newPkgManager, spec: newPkgSpec.trim() };
-		// Dedup on (manager, spec) pair so re-adding the same row is idempotent.
-		const existing = config.packages ?? [];
-		if (existing.some((p) => p.manager === pkg.manager && p.spec === pkg.spec)) return;
-		updateConfig('packages', [...existing, pkg]);
+		const spec = newPkgSpec.trim();
+		const existing = config.packages ?? {};
+		const current = existing[newPkgManager] ?? [];
+		// Dedup on spec so re-adding the same row is idempotent.
+		if (current.includes(spec)) return;
+		const next: CmaPackages = {
+			...existing,
+			[newPkgManager]: [...current, spec]
+		};
+		updateConfig('packages', next);
 		newPkgSpec = '';
 	}
 
-	function removePackage(pkg: EnvironmentPackage) {
+	function removePackage(manager: PackageManager, spec: string) {
 		if (!config) return;
-		const pkgs = (config.packages ?? []).filter(
-			(p) => !(p.manager === pkg.manager && p.spec === pkg.spec)
-		);
-		updateConfig('packages', pkgs);
+		const existing = config.packages ?? {};
+		const current = existing[manager] ?? [];
+		const filtered = current.filter((s) => s !== spec);
+		const next: CmaPackages = { ...existing };
+		if (filtered.length === 0) {
+			delete next[manager];
+		} else {
+			next[manager] = filtered;
+		}
+		updateConfig('packages', next);
+	}
+
+	// Flatten {apt: [...], pip: [...]} into a single list for rendering.
+	function flattenPackages(pkgs: CmaPackages | undefined): Array<{ manager: PackageManager; spec: string }> {
+		const out: Array<{ manager: PackageManager; spec: string }> = [];
+		for (const manager of PACKAGE_MANAGERS) {
+			const specs = pkgs?.[manager] ?? [];
+			for (const spec of specs) out.push({ manager, spec });
+		}
+		return out;
 	}
 
 	function addMetadata() {
@@ -235,14 +306,50 @@
 		updateConfig('metadata', meta);
 	}
 
-	const profilesState = $derived(sandboxProfilesStore());
-	const selectedProfile = $derived(
-		lookupSandboxProfile(config?.sandboxTemplate ?? null)
-	);
+	// Base-env picker (1-level inheritance). A builtin env — or a user env that
+	// itself inherits from root — can be chosen as a parent. We exclude self
+	// and archived envs, plus any env that already inherits from this one to
+	// prevent cycles (1-level spec forbids chains anyway).
+	const baseCandidates = $derived.by(() => {
+		if (!env) return [] as EnvironmentSummary[];
+		return allEnvs.filter(
+			(e) => e.id !== env!.id && !e.isArchived && e.baseEnvSlug === null
+		);
+	});
+
+	const selectedBase = $derived.by(() => {
+		if (!env?.baseEnvSlug) return null;
+		return allEnvs.find((e) => e.slug === env!.baseEnvSlug) ?? null;
+	});
+
+	async function updateBaseEnv(slug: string | null) {
+		if (!env) return;
+		saving = true;
+		errorMessage = null;
+		try {
+			const res = await fetch(`/api/v1/environments/${env.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ baseEnvSlug: slug })
+			});
+			if (!res.ok) {
+				errorMessage = `Base env save failed (${res.status})`;
+				return;
+			}
+			await load();
+		} finally {
+			saving = false;
+		}
+	}
 
 	onMount(() => {
 		load();
-		ensureSandboxProfiles();
+	});
+
+	$effect(() => {
+		if (tab === 'build' && env && dockerfilePreview === null && !dockerfileLoading) {
+			loadDockerfilePreview();
+		}
 	});
 </script>
 
@@ -367,6 +474,7 @@
 						<TabsTrigger value="basics">Basics</TabsTrigger>
 						<TabsTrigger value="networking">Networking</TabsTrigger>
 						<TabsTrigger value="packages">Packages</TabsTrigger>
+						<TabsTrigger value="build">Build</TabsTrigger>
 						<TabsTrigger value="advanced">Advanced</TabsTrigger>
 					</TabsList>
 
@@ -430,28 +538,25 @@
 							<h3 class="font-semibold text-sm">Sandbox</h3>
 							<div class="grid grid-cols-2 gap-3">
 								<div>
-									<Label>Profile</Label>
+									<Label>Base environment</Label>
 									<select
 										class="w-full mt-1 rounded-md border bg-background px-3 py-2 text-sm"
-										value={config.sandboxTemplate}
-										onchange={(e) =>
-											updateConfig(
-												'sandboxTemplate',
-												(e.target as HTMLSelectElement).value
-											)}
+										value={env.baseEnvSlug ?? ''}
+										onchange={(e) => {
+											const v = (e.target as HTMLSelectElement).value;
+											updateBaseEnv(v === '' ? null : v);
+										}}
 									>
-										{#each profilesState.profiles as p (p.slug)}
-											<option value={p.slug}>
-												{p.name} ({p.slug}){p.isBuiltin ? ' · built-in' : ''}
+										<option value="">root (openshell-sandbox)</option>
+										{#each baseCandidates as b (b.slug)}
+											<option value={b.slug}>
+												{b.name} ({b.slug}){b.isBuiltin ? ' · built-in' : ''}
 											</option>
 										{/each}
 									</select>
 									<p class="text-[11px] text-muted-foreground mt-1">
-										Pre-built sandbox image with declared packages baked in.
-										Manage at <a
-											href="/admin/sandbox-profiles"
-											class="underline hover:text-foreground">/admin/sandbox-profiles</a
-										>.
+										This environment's Dockerfile FROMs the chosen parent. 1-level only;
+										parent must inherit from root.
 									</p>
 								</div>
 								<div>
@@ -495,38 +600,19 @@
 										}}
 									/>
 								</div>
-								{#if selectedProfile}
+								{#if selectedBase}
 									<div class="col-span-2 rounded border bg-muted/20 p-3 space-y-2">
 										<div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-											What's baked in: {selectedProfile.name}
+											Inherits from: {selectedBase.name}
 										</div>
-										{#if selectedProfile.description}
+										{#if selectedBase.description}
 											<p class="text-xs text-muted-foreground">
-												{selectedProfile.description}
+												{selectedBase.description}
 											</p>
 										{/if}
-										<div class="flex flex-wrap gap-1.5 pt-1">
-											{#each Object.entries(selectedProfile.packages ?? {}) as [manager, specs]}
-												{#if specs && specs.length > 0}
-													<span
-														class="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] font-mono"
-													>
-														<span class="text-muted-foreground">{manager}</span>
-														<span>{specs.length}</span>
-													</span>
-												{/if}
-											{/each}
-											{#if selectedProfile.capabilities && selectedProfile.capabilities.length > 0}
-												<span
-													class="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-[10px]"
-												>
-													caps: {selectedProfile.capabilities.join(', ')}
-												</span>
-											{/if}
-										</div>
-										{#if selectedProfile.imageTag}
+										{#if selectedBase.build?.imageTag}
 											<div class="font-mono text-[10px] text-muted-foreground truncate">
-												{selectedProfile.imageTag}
+												{selectedBase.build.imageTag}
 											</div>
 										{/if}
 									</div>
@@ -650,16 +736,10 @@
 					</TabsContent>
 
 					<TabsContent value="packages" class="space-y-4">
-						<div class="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
-							Runtime installs go through OpenShell's CONNECT-proxy and don't
-							reliably support pip / apt in all cases. For anything an agent
-							imports at every run, prefer a
-							<a href="/admin/sandbox-profiles" class="underline">sandbox profile</a>
-							with these packages pre-baked at image build time.
-						</div>
 						<p class="text-sm text-muted-foreground">
-							Specify packages and their versions available in this environment.
-							Install order: apt → cargo → gem → go → npm → pip.
+							Packages are baked into the image at build time. Save, then head to
+							the <strong>Build</strong> tab to trigger a rebuild. Install order:
+							apt → cargo → gem → go → npm → pip.
 						</p>
 						<div class="flex gap-2">
 							<select
@@ -684,8 +764,9 @@
 								<Plus class="size-4" /> Add
 							</Button>
 						</div>
+						{@const flat = flattenPackages(config.packages)}
 						<div class="space-y-1.5">
-							{#each config.packages ?? [] as pkg (pkg.manager + ':' + pkg.spec)}
+							{#each flat as pkg (pkg.manager + ':' + pkg.spec)}
 								<div
 									class="flex items-center gap-2 rounded border px-3 py-2 text-sm"
 								>
@@ -696,13 +777,13 @@
 									<button
 										type="button"
 										class="text-muted-foreground hover:text-destructive"
-										onclick={() => removePackage(pkg)}
+										onclick={() => removePackage(pkg.manager, pkg.spec)}
 									>
 										<X class="size-4" />
 									</button>
 								</div>
 							{/each}
-							{#if (config.packages ?? []).length === 0}
+							{#if flat.length === 0}
 								<p class="text-xs text-muted-foreground">No packages configured.</p>
 							{/if}
 						</div>
@@ -758,6 +839,97 @@
 									</div>
 								{/each}
 							</div>
+						</div>
+					</TabsContent>
+
+					<TabsContent value="build" class="space-y-4">
+						<div class="rounded border p-4 space-y-3">
+							<div class="flex items-center justify-between gap-3">
+								<div>
+									<div class="text-sm font-semibold">Image build</div>
+									<div class="text-xs text-muted-foreground">
+										Rebuild this environment's image. Saves packages first, then
+										commits a generated Dockerfile to Gitea — Tekton picks it up
+										from there.
+									</div>
+								</div>
+								<Button onclick={triggerBuild} disabled={building || dirty}>
+									<Hammer class="size-4" />
+									{building ? 'Queuing…' : 'Build'}
+								</Button>
+							</div>
+							{#if dirty}
+								<p class="text-xs text-amber-600">Save pending changes before building.</p>
+							{/if}
+							{#if buildMessage}
+								<p class="text-xs text-muted-foreground">{buildMessage}</p>
+							{/if}
+							<div class="grid grid-cols-2 gap-3 text-xs">
+								<div>
+									<div class="text-muted-foreground">Status</div>
+									<Badge
+										variant={env.build?.lastBuildStatus === 'built'
+											? 'secondary'
+											: env.build?.lastBuildStatus === 'failed'
+												? 'destructive'
+												: 'outline'}
+									>
+										{env.build?.lastBuildStatus ?? 'unbuilt'}
+									</Badge>
+								</div>
+								<div>
+									<div class="text-muted-foreground">Last build</div>
+									<div>
+										{env.build?.lastBuildAt
+											? new Date(env.build.lastBuildAt).toLocaleString()
+											: '—'}
+									</div>
+								</div>
+								<div class="col-span-2">
+									<div class="text-muted-foreground">Image tag</div>
+									<div class="font-mono text-[11px] truncate">
+										{env.build?.imageTag ?? '—'}
+									</div>
+								</div>
+								<div class="col-span-2">
+									<div class="text-muted-foreground">Last build SHA</div>
+									<div class="font-mono text-[11px] truncate">
+										{env.build?.lastBuildSha ?? '—'}
+									</div>
+								</div>
+								{#if env.build?.lastBuildError}
+									<div class="col-span-2">
+										<div class="text-muted-foreground">Error</div>
+										<div class="font-mono text-[11px] text-destructive whitespace-pre-wrap">
+											{env.build.lastBuildError}
+										</div>
+									</div>
+								{/if}
+							</div>
+						</div>
+
+						<div class="rounded border p-4 space-y-2">
+							<div class="flex items-center justify-between">
+								<div class="flex items-center gap-2">
+									<FileCode2 class="size-4" />
+									<div class="text-sm font-semibold">Dockerfile preview</div>
+								</div>
+								<Button
+									variant="outline"
+									size="sm"
+									onclick={loadDockerfilePreview}
+									disabled={dockerfileLoading}
+								>
+									{dockerfileLoading ? 'Loading…' : 'Refresh'}
+								</Button>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								Generated from the current packages manifest. This is what gets
+								committed to Gitea when you hit Build.
+							</p>
+							<pre
+								class="rounded bg-muted/40 p-3 text-[11px] font-mono overflow-auto max-h-[480px]"
+							>{dockerfilePreview ?? (dockerfileLoading ? 'Loading…' : '# Click Refresh to generate preview')}</pre>
 						</div>
 					</TabsContent>
 

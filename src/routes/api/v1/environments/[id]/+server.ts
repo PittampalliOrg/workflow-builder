@@ -40,6 +40,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 				body.config && typeof body.config === "object"
 					? (body.config as EnvironmentConfig)
 					: undefined,
+			baseEnvSlug:
+				typeof body.baseEnvSlug === "string" || body.baseEnvSlug === null
+					? (body.baseEnvSlug as string | null)
+					: undefined,
 			changelog:
 				typeof body.changelog === "string" ? body.changelog : undefined,
 			publishedBy: locals.session.userId,

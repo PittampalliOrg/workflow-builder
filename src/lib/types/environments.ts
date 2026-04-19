@@ -61,30 +61,81 @@ export const PACKAGE_MANAGERS: readonly PackageManager[] = [
 	"pip",
 ] as const;
 
-/**
- * One package to install inside the sandbox. `spec` is the native manager
- * syntax the packaged tool accepts — for pip/npm that's a name, optionally
- * pinned with `==` / `@`; for apt it's a package name.
- */
-export type EnvironmentPackage = {
-	manager: PackageManager;
-	spec: string;
-};
-
 export type EnvironmentConfig = {
-	sandboxTemplate: string;
+	/**
+	 * DEPRECATED — retained for rollback safety during the Profile→Env
+	 * collapse. Reader code SHOULD ignore this; writer code MUST NOT set it.
+	 * The environment's own slug is the template identifier going forward.
+	 */
+	sandboxTemplate?: string;
 	sandboxMode: EnvironmentSandboxMode;
 	keepAfterRun: boolean;
 	ttlSeconds?: number;
 	networking: EnvironmentNetworking;
 	/**
-	 * CMA-shape package manifest. Legacy string[] data is migrated on read
-	 * (assumed all pip) but writes must use the structured shape.
+	 * CMA-shape package manifest — {manager: [specs, ...]}. Installed via
+	 * the Dockerfile generator at image-build time (not at sandbox create
+	 * time) since OpenShell's runtime install path is unreliable.
 	 */
-	packages?: EnvironmentPackage[];
+	packages?: CmaPackages;
+	/**
+	 * Capability slugs surfaced to the sandbox-capability matcher. Informational;
+	 * the sandbox image is the source of truth for what's actually available.
+	 */
+	capabilities?: string[];
 	metadata?: Record<string, string>;
 	resourceLimits?: EnvironmentResourceLimits;
 };
+
+/**
+ * CMA-shape package manifest. Each key is a package-manager name; the value
+ * is a list of specs in that manager's native syntax (pip: "pkg==1.0.0",
+ * npm: "pkg@1.0.0", apt: package name, cargo: "pkg@1.0.0", gem: "pkg:1.0",
+ * go: "module@ver"). Mirrors platform.claude.com environment.packages.
+ */
+export type CmaPackages = {
+	apt?: string[];
+	pip?: string[];
+	npm?: string[];
+	cargo?: string[];
+	gem?: string[];
+	go?: string[];
+};
+
+/**
+ * Build artifacts live on the environment_version row (columns added in
+ * migration 0038). Not part of the config JSONB — they're stamped by the
+ * Tekton pipeline + admin-UI polling.
+ */
+export type EnvironmentBuildArtifacts = {
+	imageTag: string | null;
+	dockerfilePath: string | null;
+	lastBuildSha: string | null;
+	lastBuildAt: string | null;
+	lastBuildStatus: "built" | "building" | "failed" | null;
+	lastBuildError: string | null;
+};
+
+/**
+ * Builtin env slugs seeded by the migration. Each maps 1:1 to a pre-built
+ * image tag. Custom envs can inherit from these via `environments.base_env_slug`
+ * (1-level inheritance only, enforced by the registry validator).
+ */
+export const BUILTIN_ENVIRONMENT_SLUGS = [
+	"dapr-agent",
+	"dapr-agent-xlsx",
+	"dapr-agent-animation",
+	"dapr-agent-datasci",
+	"dapr-agent-webdev",
+] as const;
+
+export type BuiltinEnvironmentSlug = (typeof BUILTIN_ENVIRONMENT_SLUGS)[number];
+
+/**
+ * Env slugs are used as Docker image tag suffixes — lowercase alphanumerics +
+ * dashes, no leading/trailing dash, no double dashes.
+ */
+export const ENVIRONMENT_SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export type EnvironmentRef = {
 	id: string;
@@ -104,6 +155,9 @@ export type EnvironmentSummary = {
 	networkingType: EnvironmentNetworking["type"] | null;
 	usedByCount?: number;
 	isArchived: boolean;
+	isBuiltin: boolean;
+	baseEnvSlug: string | null;
+	build: EnvironmentBuildArtifacts;
 	createdAt: string;
 	updatedAt: string;
 };

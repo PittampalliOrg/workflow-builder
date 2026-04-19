@@ -43,16 +43,24 @@
 </script>
 
 <div class="space-y-6">
-	<!-- Sandbox template -->
+	<!-- Sandbox image -->
 	<section class="space-y-2">
 		<h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-			Sandbox template
+			Sandbox image
 		</h3>
 		<div class="rounded border bg-muted/20 p-3 space-y-2">
 			<div class="flex items-center gap-2">
 				<Container class="size-4 text-muted-foreground" />
-				<code class="text-sm font-mono">{cfg.sandboxTemplate}</code>
+				<code class="text-sm font-mono">{env.slug}</code>
+				{#if env.isBuiltin}
+					<Badge variant="outline" class="text-[10px]">built-in</Badge>
+				{/if}
 			</div>
+			{#if env.baseEnvSlug}
+				<div class="text-[11px] text-muted-foreground">
+					Inherits from <code class="font-mono">{env.baseEnvSlug}</code>
+				</div>
+			{/if}
 			<div class="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
 				<Badge variant="outline" class="text-[10px] gap-1">
 					<Settings class="size-2.5" />
@@ -66,7 +74,24 @@
 						TTL: {formatTtl(cfg.ttlSeconds)}
 					</Badge>
 				{/if}
+				{#if env.build?.lastBuildStatus}
+					<Badge
+						variant={env.build.lastBuildStatus === 'built'
+							? 'secondary'
+							: env.build.lastBuildStatus === 'failed'
+								? 'destructive'
+								: 'outline'}
+						class="text-[10px]"
+					>
+						{env.build.lastBuildStatus}
+					</Badge>
+				{/if}
 			</div>
+			{#if env.build?.imageTag}
+				<div class="font-mono text-[10px] text-muted-foreground truncate">
+					{env.build.imageTag}
+				</div>
+			{/if}
 		</div>
 	</section>
 
@@ -125,8 +150,10 @@
 	</section>
 
 	<!-- Packages -->
-	{#if cfg.packages && cfg.packages.length > 0}
-		{@const pkgs = cfg.packages}
+	{#if cfg.packages && Object.values(cfg.packages).some((v) => Array.isArray(v) && v.length > 0)}
+		{@const flatPkgs = Object.entries(cfg.packages).flatMap(([manager, specs]) =>
+			(specs ?? []).map((spec) => ({ manager, spec }))
+		)}
 		<section class="space-y-2">
 			<h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
 				Packages
@@ -142,7 +169,7 @@
 							>
 								<span class="flex items-center gap-2 text-sm">
 									<Package class="size-4 text-muted-foreground" />
-									{pkgs.length} package{pkgs.length === 1 ? '' : 's'}
+									{flatPkgs.length} package{flatPkgs.length === 1 ? '' : 's'}
 								</span>
 								{#if packagesOpen}
 									<ChevronDown class="size-3" />
@@ -154,7 +181,7 @@
 					</CollapsibleTrigger>
 					<CollapsibleContent>
 						<ul class="divide-y border-t">
-							{#each pkgs as pkg (pkg.manager + ':' + pkg.spec)}
+							{#each flatPkgs as pkg (pkg.manager + ':' + pkg.spec)}
 								<li class="px-3 py-1.5 font-mono text-[11px]">
 									<span class="text-muted-foreground">{pkg.manager}</span>
 									<span class="mx-1 text-muted-foreground/50">›</span>
