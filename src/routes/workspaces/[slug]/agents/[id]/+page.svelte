@@ -43,6 +43,7 @@
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import AgentOverview from '$lib/components/agents/agent-overview.svelte';
+	import AgentRuntimeCard from '$lib/components/agents/agent-runtime-card.svelte';
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
 	import AgentMcpPicker from '$lib/components/agents/agent-mcp-picker.svelte';
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
@@ -978,21 +979,13 @@
 							</div>
 							<div class="col-span-2">
 								<Label>Runtime</Label>
-								<select
-									class="w-full mt-1 rounded-md border bg-background px-3 py-2 text-sm"
-									value={agent.runtime}
-									onchange={(e) => {
-										if (!agent) return;
-										agent = {
-											...agent,
-											runtime: (e.target as HTMLSelectElement).value as typeof agent.runtime
-										};
-										markDirty();
-									}}
-								>
-									<option value="dapr-agent-py">dapr-agent-py</option>
-									<option value="dapr-agent-py-testing">dapr-agent-py-testing</option>
-								</select>
+								<p class="mt-1 text-xs text-muted-foreground">
+									Per-agent sandbox runtime. App-id is derived from the agent slug;
+									one Deployment per agent, scaled to zero when idle.
+								</p>
+								<div class="mt-2">
+									<AgentRuntimeCard slug={agent.slug} canManage={true} />
+								</div>
 							</div>
 						</div>
 
