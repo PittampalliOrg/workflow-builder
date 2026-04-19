@@ -599,6 +599,29 @@
 											updateConfig('ttlSeconds', Number.isFinite(n) ? n : undefined);
 										}}
 									/>
+									<p class="mt-1 text-xs text-muted-foreground">
+										Workspace sandbox TTL — how long the per-run sandbox stays alive after a
+										workflow finishes. Distinct from the agent-runtime idle TTL below.
+									</p>
+								</div>
+								<div class="col-span-2">
+									<Label>Agent-runtime idle TTL (seconds)</Label>
+									<Input
+										type="number"
+										min="60"
+										value={config.agentRuntimeIdleTtlSeconds ?? 1800}
+										oninput={(e) => {
+											const n = Number((e.target as HTMLInputElement).value);
+											updateConfig(
+												'agentRuntimeIdleTtlSeconds',
+												Number.isFinite(n) && n >= 60 ? n : undefined
+											);
+										}}
+									/>
+									<p class="mt-1 text-xs text-muted-foreground">
+										Scale the per-agent runtime pod to 0 after this many seconds without a
+										session dispatch. Default 1800 (30 min). Minimum 60.
+									</p>
 								</div>
 								{#if selectedBase}
 									<div class="col-span-2 rounded border bg-muted/20 p-3 space-y-2">

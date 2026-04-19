@@ -739,6 +739,31 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		env: s.env,
 	}));
 
+	// Read agent-runtime idle TTL from the environment config if present.
+	// Null/undefined leaves the CR default (1800s) in place.
+	let idleTtlSeconds: number | undefined;
+	if (row.environmentId) {
+		const cfgRows = await requireDb()
+			.select({ config: envModule.environmentVersions.config })
+			.from(envModule.environmentVersions)
+			.leftJoin(
+				envModule.environments,
+				eq(envModule.environments.currentVersionId, envModule.environmentVersions.id),
+			)
+			.where(eq(envModule.environments.id, row.environmentId))
+			.limit(1);
+		const raw = cfgRows[0]?.config as
+			| { agentRuntimeIdleTtlSeconds?: number }
+			| undefined;
+		if (
+			raw &&
+			typeof raw.agentRuntimeIdleTtlSeconds === "number" &&
+			raw.agentRuntimeIdleTtlSeconds >= 60
+		) {
+			idleTtlSeconds = raw.agentRuntimeIdleTtlSeconds;
+		}
+	}
+
 	await kubeClient.upsertAgentRuntime({
 		agentSlug: row.slug,
 		projectId: row.projectId,
@@ -750,6 +775,7 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 			imageTag,
 		},
 		mcpServers,
+		lifecycle: idleTtlSeconds ? { idleTtlSeconds } : undefined,
 	});
 }
 

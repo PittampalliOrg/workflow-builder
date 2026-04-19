@@ -38,7 +38,8 @@
 		Key,
 		Gauge,
 		Wrench,
-		Workflow
+		Workflow,
+		Cpu
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -133,6 +134,7 @@
 			items: [
 				{ href: '/monitor', label: 'Monitor', icon: Activity },
 				{ href: '/sandboxes', label: 'Sandboxes', icon: Container },
+				{ href: '/admin/agent-runtimes', label: 'Agent runtimes', icon: Cpu },
 				{ href: '/activities', label: 'Activities', icon: Server },
 				{ href: '/dapr-system', label: 'Dapr System', icon: Network }
 			]

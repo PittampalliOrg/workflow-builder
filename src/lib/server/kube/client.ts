@@ -165,6 +165,17 @@ export function agentRuntimeName(agentSlug: string): string {
 	return `agent-runtime-${agentSlug}`;
 }
 
+export async function listAgentRuntimes(
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<AgentRuntime[]> {
+	const res = await kubeFetch(crCollectionPath(namespace));
+	if (!res.ok) {
+		throw new Error(`listAgentRuntimes failed: ${res.status}`);
+	}
+	const body = (await res.json()) as { items?: AgentRuntime[] };
+	return body.items ?? [];
+}
+
 export async function getAgentRuntime(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,

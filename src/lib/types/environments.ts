@@ -71,6 +71,13 @@ export type EnvironmentConfig = {
 	sandboxMode: EnvironmentSandboxMode;
 	keepAfterRun: boolean;
 	ttlSeconds?: number;
+	/**
+	 * Per-agent sandbox runtime idle TTL (seconds). When an agent using this
+	 * environment sits without a session dispatch for this long, the
+	 * agent-runtime-controller scales its Deployment to 0. Optional override;
+	 * defaults to 1800 at the CR layer when absent. Minimum 60.
+	 */
+	agentRuntimeIdleTtlSeconds?: number;
 	networking: EnvironmentNetworking;
 	/**
 	 * CMA-shape package manifest — {manager: [specs, ...]}. Installed via
