@@ -133,6 +133,16 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                                 {"name": "DAPR_AGENT_PY_PLUGIN_PATHS", "value": "/etc/dapr-agent-py/plugins"},
                                 {"name": "DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON", "value": bootstrap},
                                 {"name": "AGENT_CALL_AGENT_NATIVE", "value": "1"},
+                                # BFF base URL for session event mirroring. INTERNAL_API_TOKEN
+                                # arrives via envFrom from dapr-agent-py-secrets (Azure
+                                # Key Vault -> ExternalSecret adds the INTERNAL-API-TOKEN
+                                # key). With both set, src/event_publisher.py POSTs every
+                                # agent.message / agent.tool_use event to the BFF ingest
+                                # endpoint so the UI Test panel shows live activity.
+                                {
+                                    "name": "WORKFLOW_BUILDER_URL",
+                                    "value": "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+                                },
                             ],
                             "envFrom": [
                                 {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
