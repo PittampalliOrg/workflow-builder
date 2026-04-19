@@ -179,6 +179,7 @@ export async function backfillInlineAgents(): Promise<BackfillReport> {
 			id: workflows.id,
 			name: workflows.name,
 			nodes: workflows.nodes,
+			spec: workflows.spec,
 			userId: workflows.userId,
 		})
 		.from(workflows);
@@ -194,53 +195,112 @@ export async function backfillInlineAgents(): Promise<BackfillReport> {
 	// Cache: configHash -> { agentId, version }
 	const hashCache = new Map<string, { id: string; version: number }>();
 
-	for (const wf of workflowRows) {
-		const originalNodes = wf.nodes as NodeRecord[] | null;
-		if (!Array.isArray(originalNodes)) continue;
-		let mutated = false;
-		const nextNodes: NodeRecord[] = [];
-		for (const node of originalNodes) {
-			const extracted = extractInlineConfig(node);
-			if (!extracted) {
-				nextNodes.push(node);
-				continue;
-			}
-			const config = normalizeInlineToAgentConfig(
-				extracted.inline,
-				extracted.body,
-			);
-			const hash = hashAgentConfig(config);
-
-			let ref = hashCache.get(hash);
-			if (!ref) {
-				ref = await findOrCreateAgentByHash({
-					hash,
-					config,
-					proposedName: proposedAgentName(
-						extracted.inline,
-						wf.name ?? wf.id,
-						typeof (node as NodeRecord).id === "string"
-							? ((node as NodeRecord).id as string)
-							: "agent",
-					),
-					createdBy: wf.userId,
-					onCreated: () => report.agentsCreated++,
-					onReused: () => report.agentsReused++,
-				});
-				hashCache.set(hash, ref);
-			} else {
-				report.agentsReused++;
-			}
-
-			const rewritten = rewriteNodeWithRef(node, extracted.body, ref, extracted.inline);
-			nextNodes.push(rewritten);
-			mutated = true;
-			report.nodesRewritten++;
+	async function resolveRef(
+		inline: Record<string, unknown>,
+		body: NodeRecord,
+		wfLabel: string,
+		taskLabel: string,
+		createdBy: string | null,
+	): Promise<{ id: string; version: number }> {
+		const config = normalizeInlineToAgentConfig(inline, body);
+		const hash = hashAgentConfig(config);
+		const cached = hashCache.get(hash);
+		if (cached) {
+			report.agentsReused++;
+			return cached;
 		}
-		if (mutated) {
+		const ref = await findOrCreateAgentByHash({
+			hash,
+			config,
+			proposedName: proposedAgentName(inline, wfLabel, taskLabel),
+			createdBy,
+			onCreated: () => report.agentsCreated++,
+			onReused: () => report.agentsReused++,
+		});
+		hashCache.set(hash, ref);
+		return ref;
+	}
+
+	for (const wf of workflowRows) {
+		let mutatedNodes = false;
+		let mutatedSpec = false;
+		const wfLabel = wf.name ?? wf.id;
+
+		// ── legacy Svelte Flow nodes path ──
+		const originalNodes = wf.nodes as NodeRecord[] | null;
+		const nextNodes: NodeRecord[] = [];
+		if (Array.isArray(originalNodes)) {
+			for (const node of originalNodes) {
+				const extracted = extractInlineConfig(node);
+				if (!extracted) {
+					nextNodes.push(node);
+					continue;
+				}
+				const taskLabel =
+					typeof (node as NodeRecord).id === "string"
+						? ((node as NodeRecord).id as string)
+						: "agent";
+				const ref = await resolveRef(
+					extracted.inline,
+					extracted.body,
+					wfLabel,
+					taskLabel,
+					wf.userId,
+				);
+				const rewritten = rewriteNodeWithRef(node, extracted.body, ref, extracted.inline);
+				nextNodes.push(rewritten);
+				mutatedNodes = true;
+				report.nodesRewritten++;
+			}
+		}
+
+		// ── modern SW 1.0 spec.do path ──
+		const spec = isRecord(wf.spec) ? (wf.spec as Record<string, unknown>) : null;
+		const doArr = spec && Array.isArray(spec.do) ? (spec.do as Array<Record<string, unknown>>) : null;
+		const nextDo: Array<Record<string, unknown>> = [];
+		if (doArr) {
+			for (const entry of doArr) {
+				if (!isRecord(entry)) {
+					nextDo.push(entry);
+					continue;
+				}
+				const taskName = Object.keys(entry)[0];
+				const task = taskName ? entry[taskName] : null;
+				if (!taskName || !isRecord(task)) {
+					nextDo.push(entry);
+					continue;
+				}
+				const extracted = extractInlineConfigFromSpecTask(task);
+				if (!extracted) {
+					nextDo.push(entry);
+					continue;
+				}
+				const ref = await resolveRef(
+					extracted.inline,
+					extracted.body,
+					wfLabel,
+					taskName,
+					wf.userId,
+				);
+				const rewrittenTask = rewriteSpecTaskWithRef(
+					task,
+					extracted.body,
+					ref,
+					extracted.inline,
+				);
+				nextDo.push({ ...entry, [taskName]: rewrittenTask });
+				mutatedSpec = true;
+				report.nodesRewritten++;
+			}
+		}
+
+		if (mutatedNodes || mutatedSpec) {
+			const updatePayload: Record<string, unknown> = { updatedAt: new Date() };
+			if (mutatedNodes) updatePayload.nodes = nextNodes;
+			if (mutatedSpec && spec) updatePayload.spec = { ...spec, do: nextDo };
 			await database
 				.update(workflows)
-				.set({ nodes: nextNodes, updatedAt: new Date() })
+				.set(updatePayload)
 				.where(eq(workflows.id, wf.id));
 			report.workflowsTouched++;
 		}
@@ -317,6 +377,77 @@ async function ensureUniqueSlug(base: string): Promise<string> {
 		suffix += 1;
 		candidate = `${base}-${suffix}`;
 	}
+}
+
+/**
+ * Extract inline agentConfig from a spec.do task (modern SW 1.0 format).
+ * Mirrors extractInlineConfig but walks `spec.do[i][taskName]` rather
+ * than `nodes[i].data.taskConfig`. Returns null if the task isn't a
+ * durable/run, is already on agentRef, or has no inline config.
+ */
+function extractInlineConfigFromSpecTask(task: Record<string, unknown>): {
+	body: NodeRecord;
+	inline: Record<string, unknown>;
+} | null {
+	if (task.call !== "durable/run") return null;
+	const withBlock = isRecord(task.with) ? task.with : {};
+	const body = isRecord(withBlock.body) ? withBlock.body : withBlock;
+	if (isRecord(body.agentRef)) return null; // already migrated
+	const inline = isRecord(body.agentConfig)
+		? body.agentConfig
+		: isRecord(withBlock.agentConfig)
+			? withBlock.agentConfig
+			: null;
+	if (!inline) return null;
+	return { body, inline };
+}
+
+/**
+ * Rewrite a spec.do task in place to use `agentRef` instead of `agentConfig`.
+ * Parallel to rewriteNodeWithRef but targets the SW 1.0 spec shape
+ * (with.body.agentRef rather than node.data.taskConfig.with.body.agentRef).
+ */
+function rewriteSpecTaskWithRef(
+	task: Record<string, unknown>,
+	originalBody: NodeRecord,
+	ref: { id: string; version: number },
+	inline: Record<string, unknown>,
+): Record<string, unknown> {
+	const withBlock = isRecord(task.with) ? { ...task.with } : {};
+
+	const prompt =
+		typeof originalBody.prompt === "string"
+			? originalBody.prompt
+			: typeof withBlock.prompt === "string"
+				? (withBlock.prompt as string)
+				: "";
+
+	const bodyKeep = { ...originalBody } as Record<string, unknown>;
+	delete bodyKeep.agentConfig;
+	const overrides: Record<string, unknown> = {};
+	if (typeof bodyKeep.maxTurns === "number") overrides.maxTurns = bodyKeep.maxTurns;
+	if (typeof bodyKeep.timeoutMinutes === "number")
+		overrides.timeoutMinutes = bodyKeep.timeoutMinutes;
+	if (typeof bodyKeep.cwd === "string" && bodyKeep.cwd) overrides.cwd = bodyKeep.cwd;
+	if (isRecord(bodyKeep.sandboxPolicy)) overrides.sandboxPolicy = bodyKeep.sandboxPolicy;
+	const toolsFromInline = Array.isArray(inline.tools) ? (inline.tools as unknown[]) : null;
+	if (toolsFromInline && toolsFromInline.length > 0) overrides.tools = toolsFromInline;
+
+	const nextBody: Record<string, unknown> = {
+		...bodyKeep,
+		prompt,
+		agentRef: ref,
+	};
+	delete nextBody.agentConfig;
+	if (Object.keys(overrides).length > 0) nextBody.overrides = overrides;
+
+	const nextWith: Record<string, unknown> = {
+		...withBlock,
+		body: nextBody,
+	};
+	delete nextWith.agentConfig;
+
+	return { ...task, call: "durable/run", with: nextWith };
 }
 
 function rewriteNodeWithRef(
