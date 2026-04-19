@@ -2286,7 +2286,7 @@ class OpenShellDurableAgent(DurableAgent):
 
     def seed_mcp_for_instance(
         self,
-        ctx: wf.WorkflowActivityContext,
+        ctx,
         payload: dict,
     ) -> dict:
         """Activity: seed the per-instance MCP cache so a downstream
@@ -2304,13 +2304,25 @@ class OpenShellDurableAgent(DurableAgent):
         Returns: ``{"connected": [server_name, ...], "count": N}`` so the
         activity's effect is visible in the workflow's history log.
         """
+        import sys as _sys
+        _sys.stderr.write(
+            f"[mcp-seed-activity] entered with keys={list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}\n"
+        )
+        _sys.stderr.flush()
         instance_id = str(payload.get("instance_id") or "").strip()
         if not instance_id:
+            _sys.stderr.write("[mcp-seed-activity] no instance_id\n")
+            _sys.stderr.flush()
             return {"connected": [], "count": 0, "reason": "no_instance_id"}
         agent_config = payload.get("agentConfig") or {}
         mcp_configs, mcp_allowed_tools = _extract_mcp_server_configs(
             {"agentConfig": agent_config}
         )
+        _sys.stderr.write(
+            f"[mcp-seed-activity] instance={instance_id} extracted={len(mcp_configs)} "
+            f"names={list(mcp_configs.keys())}\n"
+        )
+        _sys.stderr.flush()
         if not mcp_configs:
             return {"connected": [], "count": 0, "reason": "no_mcp_servers"}
         self._mcp_configs_by_instance[instance_id] = mcp_configs
