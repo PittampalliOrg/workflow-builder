@@ -396,17 +396,28 @@ def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
 
 @kopf.on.update(GROUP, VERSION, PLURAL, field="spec")
 def on_spec_update(spec: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> None:
-    """Re-patch Deployment when spec changes (image, mcpServers, etc.)."""
+    """Re-patch Deployment when spec changes (image, mcpServers, etc.).
+
+    Use replace rather than merge-patch so fields removed from the desired
+    spec (e.g., an old exec probe we replaced with tcpSocket) actually
+    disappear — strategic merge would union the two probe handler types and
+    Kubernetes would 422 "may not specify more than 1 handler type".
+    """
     dep_name = _deployment_name(spec["agentSlug"])
     dep = _build_deployment(dep_name, namespace, dict(spec))
     # Preserve current replica count on spec update — don't bounce a hot pod.
     try:
         live = APPS_V1.read_namespaced_deployment(name=dep_name, namespace=namespace)
         dep["spec"]["replicas"] = live.spec.replicas or 0
+        # resourceVersion is required for replace so we don't race with any
+        # concurrent writer.
+        dep["metadata"]["resourceVersion"] = live.metadata.resource_version
+        APPS_V1.replace_namespaced_deployment(name=dep_name, namespace=namespace, body=dep)
     except client.ApiException as exc:
         if exc.status != 404:
             raise
-    APPS_V1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=dep)
+        # Deployment was deleted out-of-band — re-create cleanly.
+        APPS_V1.create_namespaced_deployment(namespace=namespace, body=dep)
     reconcile_mcp_service(dict(spec), namespace, logger)
     logger.info("spec update applied to Deployment %s", dep_name)
 
