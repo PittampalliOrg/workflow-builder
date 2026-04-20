@@ -170,14 +170,18 @@ func (v *VNCServer) Run(ctx context.Context) error {
 	//   -forever       keep serving after the last client disconnects
 	//   -shared        allow multiple concurrent clients
 	//   -rfbport 5901  pin the port
-	//   -noxdamage     damage ext is sometimes flaky on xvfb
-	//   -quiet         suppress per-client handshake chatter
+	//   -wait 40       40ms between framebuffer polls (~25 fps). Without
+	//                  this x11vnc pegs 100% CPU, starves its own accept
+	//                  loop, and never completes the RFB handshake.
+	//   -defer 40      batch screen-update coalescence window.
+	//   -nocursor      don't render a cursor sprite (Chromium has its own).
+	//   -quiet         suppress per-client handshake chatter.
 	cmd := exec.CommandContext(ctx, "bash", "-c",
 		"set -e; "+
 			"Xvfb :1 -screen 0 1280x1024x24 -ac +extension RANDR -nolisten tcp & "+
 			"XVFB_PID=$!; "+
 			"for i in $(seq 1 50); do xdpyinfo -display :1 >/dev/null 2>&1 && break; sleep 0.1; done; "+
-			"exec x11vnc -display :1 -nopw -forever -shared -rfbport 5901 -noxdamage -quiet",
+			"exec x11vnc -display :1 -nopw -forever -shared -rfbport 5901 -wait 40 -defer 40 -nocursor -quiet",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
