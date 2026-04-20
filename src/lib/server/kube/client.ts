@@ -37,7 +37,7 @@ let cachedToken: string | null = null;
 let cachedAgent: https.Agent | null = null;
 let cachedNamespace: string | null = null;
 
-async function getToken(): Promise<string> {
+export async function getToken(): Promise<string> {
 	if (cachedToken) return cachedToken;
 	const raw = await fs.readFile(TOKEN_PATH, "utf-8");
 	cachedToken = raw.trim();
@@ -50,6 +50,18 @@ async function getAgent(): Promise<https.Agent> {
 	cachedAgent = new https.Agent({ ca, keepAlive: true });
 	return cachedAgent;
 }
+
+/** Raw CA cert buffer — exported so the WS exec client can build its
+ *  own TLS options without colliding on the https.Agent cache. */
+let cachedCa: Buffer | null = null;
+export async function getKubeCA(): Promise<Buffer> {
+	if (cachedCa) return cachedCa;
+	cachedCa = await fs.readFile(CA_PATH);
+	return cachedCa;
+}
+
+export const KUBE_HOST = K8S_HOST;
+export const KUBE_PORT = K8S_PORT;
 
 export async function getOwnNamespace(): Promise<string> {
 	if (cachedNamespace) return cachedNamespace;
@@ -329,6 +341,53 @@ export async function upsertAgentRuntime(
  * ready flag is true. A half-started pod (agent-py up, chromium still
  * pulling) returns null so callers surface "reconnecting" in the UI.
  */
+/** Minimal Pod shape used by the BFF for live-view features. */
+export type AgentRuntimePodInfo = {
+	name: string;
+	namespace: string;
+	podIP: string;
+	containers: Array<{ name: string; ready: boolean }>;
+};
+
+/**
+ * Return the full Running pod (name + IP + container-readiness list) for the
+ * agent-runtime pod of the given slug. The shell proxy needs `metadata.name`
+ * for the k8s exec URL; the browser state panel needs the same IP the VNC
+ * route used. One call pays for both.
+ */
+export async function getAgentRuntimePod(
+	agentSlug: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<AgentRuntimePodInfo | null> {
+	const dep = agentRuntimeName(agentSlug);
+	const selector = encodeURIComponent(`app=${dep}`);
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${namespace}/pods?labelSelector=${selector}`,
+	);
+	if (!res.ok) return null;
+	const body = (await res.json()) as {
+		items?: Array<{
+			metadata?: { name?: string; namespace?: string };
+			status?: {
+				phase?: string;
+				podIP?: string;
+				containerStatuses?: Array<{ name?: string; ready?: boolean }>;
+			};
+		}>;
+	};
+	for (const pod of body.items ?? []) {
+		if (pod.status?.phase !== "Running") continue;
+		const name = pod.metadata?.name;
+		const podIP = pod.status?.podIP;
+		if (!name || !podIP) continue;
+		const containers = (pod.status?.containerStatuses ?? [])
+			.filter((c): c is { name: string; ready: boolean } => typeof c.name === "string")
+			.map((c) => ({ name: c.name, ready: c.ready === true }));
+		return { name, namespace: pod.metadata?.namespace ?? namespace, podIP, containers };
+	}
+	return null;
+}
+
 export async function getAgentRuntimePodIP(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,

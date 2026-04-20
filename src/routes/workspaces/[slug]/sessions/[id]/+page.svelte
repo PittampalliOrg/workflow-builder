@@ -34,7 +34,8 @@
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
-	import LiveBrowserView from '$lib/components/sessions/live-browser-view.svelte';
+	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
+	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import {
 		Reasoning,
@@ -171,13 +172,20 @@
 		})();
 	});
 	// Transcript: user-facing messages + tool-use (compacted); hides thinking
-	// and raw status events. Debug: show every event verbatim. Live browser:
-	// noVNC view of the agent's chromium sidecar, only offered when the
-	// agent's runtime CR has browserSidecar.enabled=true and the pod is Active.
-	let viewMode = $state<'transcript' | 'debug' | 'live-browser'>('transcript');
+	// and raw status events. Debug: every event verbatim. Browser state:
+	// MCP-driven snapshot + console of the agent's chromium sidecar.
+	// Shell: web terminal via Kubernetes pods/exec into a chosen pod
+	// container. The last two tabs are gated by runtime flags.
+	let viewMode = $state<'transcript' | 'debug' | 'browser-state' | 'shell'>('transcript');
 
-	// Runtime flags (polled) that drive whether the Live browser tab is shown.
-	let runtimeFlags = $state<{ browserSidecarEnabled: boolean; liveBrowserAvailable: boolean; phase?: string } | null>(null);
+	// Runtime flags (polled) that drive which extra tabs are visible.
+	let runtimeFlags = $state<{
+		browserSidecarEnabled: boolean;
+		browserMcpAvailable: boolean;
+		shellAvailable: boolean;
+		shellContainers: string[];
+		phase?: string;
+	} | null>(null);
 	let runtimeTimer: ReturnType<typeof setInterval> | null = null;
 	async function refreshRuntimeFlags() {
 		try {
@@ -185,17 +193,23 @@
 			if (!res.ok) return;
 			const body = (await res.json()) as {
 				browserSidecarEnabled?: boolean;
-				liveBrowserAvailable?: boolean;
+				browserMcpAvailable?: boolean;
+				shellAvailable?: boolean;
+				shellContainers?: string[];
 				phase?: string;
 			};
 			runtimeFlags = {
 				browserSidecarEnabled: body.browserSidecarEnabled === true,
-				liveBrowserAvailable: body.liveBrowserAvailable === true,
+				browserMcpAvailable: body.browserMcpAvailable === true,
+				shellAvailable: body.shellAvailable === true,
+				shellContainers: body.shellContainers ?? [],
 				phase: body.phase,
 			};
-			// If the user selected the tab before the pod was ready, keep them
-			// there; the LiveBrowserView handles its own reconnect.
-			if (viewMode === 'live-browser' && !runtimeFlags.browserSidecarEnabled) {
+			// Fallback if a gated tab becomes unavailable mid-session.
+			if (viewMode === 'browser-state' && !runtimeFlags.browserSidecarEnabled) {
+				viewMode = 'transcript';
+			}
+			if (viewMode === 'shell' && !runtimeFlags.shellAvailable) {
 				viewMode = 'transcript';
 			}
 		} catch {
@@ -1041,13 +1055,24 @@
 					{#if runtimeFlags?.browserSidecarEnabled}
 						<button
 							type="button"
-							title={runtimeFlags.liveBrowserAvailable
-								? 'Watch the agent drive its browser live'
+							title={runtimeFlags.browserMcpAvailable
+								? 'See what the agent is rendering'
 								: `Agent not ready yet (phase: ${runtimeFlags.phase ?? 'unknown'})`}
-							class="px-3 py-1 text-xs rounded {viewMode === 'live-browser' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
-							onclick={() => (viewMode = 'live-browser')}
+							class="px-3 py-1 text-xs rounded {viewMode === 'browser-state' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+							disabled={!runtimeFlags.browserMcpAvailable}
+							onclick={() => (viewMode = 'browser-state')}
 						>
-							Live browser
+							Browser state
+						</button>
+					{/if}
+					{#if runtimeFlags?.shellAvailable}
+						<button
+							type="button"
+							title="Open a shell into one of the agent pod's containers"
+							class="px-3 py-1 text-xs rounded {viewMode === 'shell' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+							onclick={() => (viewMode = 'shell')}
+						>
+							Shell
 						</button>
 					{/if}
 				</div>
@@ -1145,12 +1170,15 @@
 				</div>
 			{/if}
 
-			{#if viewMode === 'live-browser'}
+			{#if viewMode === 'browser-state'}
 				<div class="flex-1 overflow-hidden p-3">
-					<LiveBrowserView
+					<BrowserStatePanel sessionId={session?.id ?? sessionId} />
+				</div>
+			{:else if viewMode === 'shell'}
+				<div class="flex-1 overflow-hidden p-3">
+					<PodShellPanel
 						sessionId={session?.id ?? sessionId}
-						viewOnly={true}
-						showWaking={runtimeFlags?.phase === 'Starting' || runtimeFlags?.phase === 'Sleeping'}
+						containers={runtimeFlags?.shellContainers ?? []}
 					/>
 				</div>
 			{:else}

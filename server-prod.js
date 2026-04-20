@@ -1,19 +1,22 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
 import process from 'node:process';
-import net from 'node:net';
 import { handler } from './build/handler.js';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const TERMINAL_PATH_RE = /^\/api\/sandboxes\/([^/]+)\/terminal\/([^/]+)$/;
-const VNC_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/browser\/vnc$/;
+const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
 
-// Live browser VNC proxy config. Keep resolver in-process — we'll dial the
-// BFF itself on localhost:PORT to reuse its session-auth + pod-ip lookup,
-// rather than duplicating the Kubernetes client here.
-const VNC_RESOLVER_ORIGIN =
-	process.env.VNC_RESOLVER_ORIGIN || `http://127.0.0.1:${PORT}`;
+// Preflight origin: the BFF hits itself for the resolver endpoint that
+// enforces auth + workspace scope. The `SHELL_RESOLVER_ORIGIN` env var
+// is a test-only escape hatch.
+const SHELL_RESOLVER_ORIGIN =
+	process.env.SHELL_RESOLVER_ORIGIN || `http://127.0.0.1:${PORT}`;
+
+const K8S_HOST = process.env.KUBERNETES_SERVICE_HOST || 'kubernetes.default.svc';
+const K8S_PORT = process.env.KUBERNETES_SERVICE_PORT || '443';
 
 function getUpstreamWsUrl() {
 	return (
@@ -38,9 +41,9 @@ const server = http.createServer(handler);
 
 server.on('upgrade', (req, socket, head) => {
 	const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-	const vncMatch = url.pathname.match(VNC_PATH_RE);
-	if (vncMatch) {
-		handleVncUpgrade(req, socket, head, vncMatch[1], url.searchParams.get('viewOnly') !== '0');
+	const shellMatch = url.pathname.match(SHELL_PATH_RE);
+	if (shellMatch) {
+		handleShellUpgrade(req, socket, head, shellMatch[1], url.searchParams.get('container') || 'chromium');
 		return;
 	}
 	const match = url.pathname.match(TERMINAL_PATH_RE);
@@ -119,24 +122,50 @@ process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
 // ---------------------------------------------------------------------------
-// Live browser VNC proxy (WS -> raw TCP on agent pod's chromium :5901)
+// Pod shell proxy: browser WS <-> k8s pods/exec WS (v4.channel.k8s.io).
 // ---------------------------------------------------------------------------
 //
-// Auth + session -> pod-IP lookup happens via an internal HTTP call to this
-// same BFF, so we don't duplicate the DB/Kubernetes clients here in plain JS.
-// The TypeScript implementation used by vite dev lives at
-// src/lib/server/ws-vnc-proxy.ts; this file mirrors its RFB filter behavior.
+// The shell tab opens a WebSocket to /api/v1/sessions/<id>/shell?container=<c>.
+// We authenticate via an internal HTTP call to the BFF's session-cookie-gated
+// resolver (/api/v1/sessions/<id>/shell/resolve?container=<c>) that returns
+// { pod, namespace, container }. Then we open a TLS WebSocket to the
+// Kubernetes API with our pod service-account token + the in-cluster CA and
+// multiplex channel-framed frames.
+//
+// v4.channel.k8s.io framing:
+//   0 stdin (client -> server)
+//   1 stdout (server -> client)
+//   2 stderr (server -> client)
+//   3 error  (server -> client; JSON status envelope)
+//   4 resize (client -> server; JSON {Width, Height})
+//
+// Browser-side framing (matches sandbox-terminal.svelte):
+//   text "\x01{json}" -> resize channel 4
+//   anything else     -> stdin channel 0
 
-const IDLE_MS = 10 * 60 * 1000;
+const TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+const CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
 
-async function resolveAgent(req) {
-	const resolverUrl = `${VNC_RESOLVER_ORIGIN}/api/v1/sessions/${encodeURIComponent(req.sessionId)}/browser/resolve`;
+let cachedToken = null;
+async function getKubeToken() {
+	if (cachedToken) return cachedToken;
+	cachedToken = (await fs.readFile(TOKEN_PATH, 'utf-8')).trim();
+	return cachedToken;
+}
+
+let cachedCa = null;
+async function getKubeCA() {
+	if (cachedCa) return cachedCa;
+	cachedCa = await fs.readFile(CA_PATH);
+	return cachedCa;
+}
+
+async function resolveShell(req, sessionId, container) {
+	const resolverUrl =
+		`${SHELL_RESOLVER_ORIGIN}/api/v1/sessions/${encodeURIComponent(sessionId)}/shell/resolve?container=${encodeURIComponent(container)}`;
 	const res = await fetch(resolverUrl, {
 		method: 'POST',
 		headers: {
-			'content-type': 'application/json',
-			// Forward caller's cookie (contains the access token) + any
-			// authorization header — the endpoint enforces workspace scope.
 			...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
 			...(req.headers.authorization ? { authorization: req.headers.authorization } : {})
 		}
@@ -145,136 +174,144 @@ async function resolveAgent(req) {
 	return res.json();
 }
 
-function handleVncUpgrade(req, socket, head, sessionId, viewOnly) {
-	req.sessionId = decodeURIComponent(sessionId);
-	resolveAgent(req)
-		.then((result) => {
-			if (result.error) {
-				const code = result.error === 401 ? 401 : result.error === 404 ? 404 : 503;
-				socket.write(`HTTP/1.1 ${code} ${code === 401 ? 'Unauthorized' : code === 404 ? 'Not Found' : 'Unavailable'}\r\n\r\n`);
-				socket.destroy();
-				return;
-			}
-			wss.handleUpgrade(req, socket, head, (browserWs) => {
-				pipeVnc(browserWs, result.podIP, viewOnly);
-			});
-		})
-		.catch(() => {
-			socket.destroy();
-		});
+function buildExecUrl(namespace, pod, container) {
+	const params = new URLSearchParams();
+	params.set('container', container);
+	params.set('stdin', 'true');
+	params.set('stdout', 'true');
+	params.set('stderr', 'true');
+	params.set('tty', 'true');
+	params.append('command', '/bin/sh');
+	params.append('command', '-c');
+	params.append('command', 'command -v bash >/dev/null 2>&1 && exec bash -l || exec sh');
+	return (
+		`wss://${K8S_HOST}:${K8S_PORT}` +
+		`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(pod)}/exec?` +
+		params.toString()
+	);
 }
 
-function pipeVnc(browserWs, podIP, viewOnly) {
-	const tcp = net.createConnection({ host: podIP, port: 5901 });
-	const filter = viewOnly ? createRfbViewOnlyFilter() : null;
-	let idleTimer = null;
-	const bumpIdle = () => {
-		if (idleTimer) clearTimeout(idleTimer);
-		idleTimer = setTimeout(() => {
+function handleShellUpgrade(req, socket, head, sessionIdRaw, containerRaw) {
+	const sessionId = decodeURIComponent(sessionIdRaw);
+	const container = decodeURIComponent(containerRaw);
+	(async () => {
+		const res = await resolveShell(req, sessionId, container);
+		if (res.error) {
+			const code = res.error === 401 ? 401 : res.error === 404 ? 404 : 503;
+			const name =
+				code === 401 ? 'Unauthorized' : code === 404 ? 'Not Found' : 'Service Unavailable';
+			socket.write(`HTTP/1.1 ${code} ${name}\r\n\r\n`);
+			socket.destroy();
+			return;
+		}
+		const [token, ca] = await Promise.all([getKubeToken(), getKubeCA()]);
+		const upstream = new WebSocket(buildExecUrl(res.namespace, res.pod, res.container), ['v4.channel.k8s.io'], {
+			headers: { Authorization: `Bearer ${token}` },
+			ca
+		});
+		wss.handleUpgrade(req, socket, head, (browserWs) => {
+			pipeShell(browserWs, upstream);
+		});
+	})().catch(() => {
+		try {
+			socket.destroy();
+		} catch {
+			/* noop */
+		}
+	});
+}
+
+function pipeShell(browserWs, upstream) {
+	let browserClosed = false;
+	let upstreamClosed = false;
+
+	upstream.on('message', (data) => {
+		if (browserClosed) return;
+		const buf = Buffer.isBuffer(data)
+			? data
+			: data instanceof ArrayBuffer
+			? Buffer.from(new Uint8Array(data))
+			: Buffer.concat(data);
+		if (buf.length < 1) return;
+		const channel = buf[0];
+		const payload = buf.subarray(1);
+		if (channel === 1 || channel === 2) {
 			try {
-				browserWs.close(1000, 'idle timeout');
+				browserWs.send(payload, { binary: true });
 			} catch {
 				/* noop */
 			}
+		}
+		// channel 3 = error; we log & let the upstream close handler terminate.
+	});
+
+	upstream.on('close', (code, reason) => {
+		upstreamClosed = true;
+		if (browserWs.readyState === WebSocket.OPEN) {
 			try {
-				tcp.destroy();
+				browserWs.close(forwardableCloseCode(code), closeReason(reason));
 			} catch {
 				/* noop */
 			}
-		}, IDLE_MS);
-	};
-	bumpIdle();
+		}
+	});
+	upstream.on('error', () => {
+		upstreamClosed = true;
+		if (browserWs.readyState === WebSocket.OPEN) {
+			try {
+				browserWs.close(1011, 'upstream error');
+			} catch {
+				/* noop */
+			}
+		}
+	});
 
 	browserWs.on('message', (data, isBinary) => {
-		bumpIdle();
-		if (!isBinary) return;
+		if (upstreamClosed) return;
+		if (!isBinary) {
+			const str = data.toString();
+			if (str.startsWith('\x01')) {
+				try {
+					const msg = JSON.parse(str.slice(1));
+					if (msg.type === 'resize' && msg.cols && msg.rows) {
+						const payload = Buffer.from(JSON.stringify({ Width: msg.cols, Height: msg.rows }), 'utf8');
+						if (upstream.readyState === WebSocket.OPEN) {
+							upstream.send(Buffer.concat([Buffer.from([4]), payload]));
+						}
+						return;
+					}
+				} catch {
+					/* fall through */
+				}
+			}
+			if (upstream.readyState === WebSocket.OPEN) {
+				upstream.send(Buffer.concat([Buffer.from([0]), Buffer.from(str, 'utf8')]));
+			}
+			return;
+		}
 		const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-		const forwarded = filter ? filter.feed(buf) : buf;
-		if (forwarded.length && !tcp.destroyed) tcp.write(forwarded);
-	});
-
-	tcp.on('data', (data) => {
-		bumpIdle();
-		if (browserWs.readyState === WebSocket.OPEN) {
-			browserWs.send(data, { binary: true });
+		if (upstream.readyState === WebSocket.OPEN) {
+			upstream.send(Buffer.concat([Buffer.from([0]), buf]));
 		}
 	});
-
-	const closeBoth = (code = 1006, reason = 'closed') => {
-		if (idleTimer) clearTimeout(idleTimer);
-		try {
-			if (browserWs.readyState === WebSocket.OPEN) browserWs.close(code, reason.slice(0, 123));
-		} catch {
-			/* noop */
-		}
-		try {
-			if (!tcp.destroyed) tcp.destroy();
-		} catch {
-			/* noop */
-		}
-	};
-
-	tcp.on('close', () => closeBoth(1000, 'upstream closed'));
-	tcp.on('error', () => closeBoth(1011, 'upstream error'));
-	browserWs.on('close', () => closeBoth());
-	browserWs.on('error', () => closeBoth(1011, 'client error'));
-}
-
-function createRfbViewOnlyFilter() {
-	// See RFBViewOnlyFilter in src/lib/server/ws-vnc-proxy.ts for commentary.
-	let buf = Buffer.alloc(0);
-	let handshakeBytesLeft = 12;
-	let securityTypeSent = false;
-	let clientInitSent = false;
-
-	function messageLen(type) {
-		if (type === 0x00) return 20;
-		if (type === 0x02) {
-			if (buf.length < 4) return null;
-			const num = buf.readUInt16BE(2);
-			return 4 + 4 * num;
-		}
-		if (type === 0x03) return 10;
-		if (type === 0x04) return 8;
-		if (type === 0x05) return 6;
-		if (type === 0x06) {
-			if (buf.length < 8) return null;
-			const len = buf.readUInt32BE(4);
-			return 8 + len;
-		}
-		return 1;
-	}
-
-	return {
-		feed(chunk) {
-			buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
-			const out = [];
-			if (handshakeBytesLeft > 0) {
-				const take = Math.min(handshakeBytesLeft, buf.length);
-				out.push(buf.subarray(0, take));
-				handshakeBytesLeft -= take;
-				buf = buf.subarray(take);
+	browserWs.on('close', () => {
+		browserClosed = true;
+		if (upstream.readyState === WebSocket.OPEN) {
+			try {
+				upstream.close(1000, 'client close');
+			} catch {
+				/* noop */
 			}
-			if (handshakeBytesLeft === 0 && !securityTypeSent && buf.length >= 1) {
-				out.push(buf.subarray(0, 1));
-				buf = buf.subarray(1);
-				securityTypeSent = true;
-			}
-			if (securityTypeSent && !clientInitSent && buf.length >= 1) {
-				out.push(buf.subarray(0, 1));
-				buf = buf.subarray(1);
-				clientInitSent = true;
-			}
-			while (clientInitSent && buf.length >= 1) {
-				const type = buf[0];
-				const len = messageLen(type);
-				if (len === null) return Buffer.concat(out);
-				if (buf.length < len) break;
-				const msg = buf.subarray(0, len);
-				buf = buf.subarray(len);
-				if (type === 0x00 || type === 0x02 || type === 0x03) out.push(msg);
-			}
-			return Buffer.concat(out);
 		}
-	};
+	});
+	browserWs.on('error', () => {
+		browserClosed = true;
+		if (upstream.readyState === WebSocket.OPEN) {
+			try {
+				upstream.close(1011, 'client error');
+			} catch {
+				/* noop */
+			}
+		}
+	});
 }

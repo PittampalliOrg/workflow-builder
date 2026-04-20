@@ -15,10 +15,10 @@ function wsUpgradeProxy(): Plugin {
 					const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
 					const isTerminal =
 						pathname.startsWith('/api/sandboxes/') && pathname.includes('/terminal/');
-					const isVnc = /^\/api\/v1\/sessions\/[^/]+\/browser\/vnc$/.test(pathname);
-					if (!isTerminal && !isVnc) return;
-					const modPath = isVnc
-						? '/src/lib/server/ws-vnc-proxy.ts'
+					const isShell = /^\/api\/v1\/sessions\/[^/]+\/shell$/.test(pathname);
+					if (!isTerminal && !isShell) return;
+					const modPath = isShell
+						? '/src/lib/server/ws-kube-exec-proxy.ts'
 						: '/src/lib/server/ws-terminal-proxy.ts';
 					server
 						.ssrLoadModule(modPath)
@@ -49,15 +49,6 @@ export default defineConfig({
 		allowedHosts: true
 	},
 	ssr: {
-		noExternal: ['@lucide/svelte', 'nats'],
-		// @novnc/novnc uses top-level await in a CommonJS-looking module that
-		// Rollup can't parse during the SSR build, but the library is only
-		// imported dynamically from an onMount handler (client-only). Keeping
-		// it external means the SSR bundle never analyzes it at all. The
-		// CLIENT bundle still processes the module — we intentionally do NOT
-		// add it to optimizeDeps.exclude because then Vite would ship the
-		// bare specifier to the browser and the dynamic import would fail to
-		// resolve at runtime.
-		external: ['@novnc/novnc']
+		noExternal: ['@lucide/svelte', 'nats']
 	}
 });

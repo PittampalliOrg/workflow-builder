@@ -116,13 +116,6 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
                 # chromium already binds natively, so nginx is unnecessary.
                 {"name": "CHROME_CDP_HOST_REWRITE", "value": "false"},
             ],
-            "ports": [
-                # VNC on 5901 is what the BFF's /api/v1/sessions/<id>/browser/vnc
-                # WebSocket proxy dials (via Pod IP) for the in-UI live browser
-                # view. Declaring the port makes the intent visible in
-                # `kubectl describe pod` — Pod IP:5901 is reachable regardless.
-                {"name": "vnc", "containerPort": 5901},
-            ],
             "resources": chrome_resources,
             "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
         },
@@ -132,23 +125,22 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
             "imagePullPolicy": "Always",
             "args": [
                 "--port", "3100",
-                "--host", "127.0.0.1",            # only reachable in-pod
+                # Bound to 0.0.0.0 so the per-agent ClusterIP Service
+                # (agent-runtime-<slug>-mcp:3100) can reach the pod.
+                # Cross-pod reachability is bounded to callers in the
+                # cluster; BFF endpoints that invoke this MCP enforce
+                # workspace-role scope before relaying.
+                "--host", "0.0.0.0",
                 "--allowed-hosts", "*",
                 "--output-dir", "/tmp/playwright-mcp-output",
                 "--cdp-endpoint", "http://localhost:9222",
             ],
+            "ports": [
+                {"name": "mcp", "containerPort": 3100},
+            ],
             "resources": mcp_resources,
-            # Bound to 127.0.0.1 so the kubelet can't TCP-probe it from
-            # the pod IP. Use an exec probe that runs inside the
-            # container, which shares the loopback with the listener.
             "readinessProbe": {
-                "exec": {
-                    "command": [
-                        "node",
-                        "-e",
-                        "require('net').connect(3100,'127.0.0.1',()=>process.exit(0)).on('error',()=>process.exit(1))",
-                    ]
-                },
+                "tcpSocket": {"port": 3100},
                 "initialDelaySeconds": 3,
                 "periodSeconds": 5,
             },
@@ -310,6 +302,67 @@ def _scale_deployment(name: str, namespace: str, replicas: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# MCP Service upsert/delete
+# ---------------------------------------------------------------------------
+
+
+def _mcp_service_name(agent_slug: str) -> str:
+    return f"{_deployment_name(agent_slug)}-mcp"
+
+
+def _build_mcp_service(svc_name: str, dep_name: str, namespace: str, slug: str) -> dict[str, Any]:
+    """Per-agent ClusterIP Service exposing playwright-mcp :3100 to the BFF.
+    Selecting app=agent-runtime-<slug> matches the pod label set in
+    _build_deployment. The Service only exists while browserSidecar is
+    enabled; see reconcile_mcp_service() below.
+    """
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": svc_name,
+            "namespace": namespace,
+            "labels": {
+                "app": dep_name,
+                LABEL_ROLE: "agent-runtime",
+                LABEL_SLUG: slug,
+            },
+        },
+        "spec": {
+            "type": "ClusterIP",
+            "selector": {"app": dep_name},
+            "ports": [
+                {"name": "mcp", "port": 3100, "targetPort": 3100, "protocol": "TCP"},
+            ],
+        },
+    }
+
+
+def reconcile_mcp_service(spec: dict[str, Any], namespace: str, logger: logging.Logger) -> None:
+    """Create/patch the MCP Service when browserSidecar.enabled; delete when not."""
+    slug = spec["agentSlug"]
+    dep_name = _deployment_name(slug)
+    svc_name = _mcp_service_name(slug)
+    want = bool((spec.get("browserSidecar") or {}).get("enabled"))
+    if want:
+        body = _build_mcp_service(svc_name, dep_name, namespace, slug)
+        try:
+            CORE_V1.create_namespaced_service(namespace=namespace, body=body)
+            logger.info("created Service %s", svc_name)
+        except client.ApiException as exc:
+            if exc.status != 409:
+                raise
+            CORE_V1.patch_namespaced_service(name=svc_name, namespace=namespace, body=body)
+    else:
+        try:
+            CORE_V1.delete_namespaced_service(name=svc_name, namespace=namespace)
+            logger.info("deleted Service %s (browserSidecar disabled)", svc_name)
+        except client.ApiException as exc:
+            if exc.status != 404:
+                raise
+
+
+# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
@@ -328,6 +381,8 @@ def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
             raise
         APPS_V1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=dep)
         logger.info("patched existing Deployment %s", dep_name)
+
+    reconcile_mcp_service(dict(spec), namespace, logger)
 
     _patch_status(name, namespace, {
         "phase": "Sleeping",
@@ -352,6 +407,7 @@ def on_spec_update(spec: dict, name: str, namespace: str, logger: logging.Logger
         if exc.status != 404:
             raise
     APPS_V1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=dep)
+    reconcile_mcp_service(dict(spec), namespace, logger)
     logger.info("spec update applied to Deployment %s", dep_name)
 
 
@@ -361,6 +417,13 @@ def on_delete(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
     try:
         APPS_V1.delete_namespaced_deployment(name=dep_name, namespace=namespace)
         logger.info("deleted Deployment %s", dep_name)
+    except client.ApiException as exc:
+        if exc.status != 404:
+            raise
+    # Also drop the MCP Service if one exists (reconcile_mcp_service treats
+    # a spec without browserSidecar.enabled as "delete").
+    try:
+        reconcile_mcp_service({"agentSlug": spec["agentSlug"]}, namespace, logger)
     except client.ApiException as exc:
         if exc.status != 404:
             raise

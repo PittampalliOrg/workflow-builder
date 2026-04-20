@@ -4,12 +4,17 @@ import { and, eq } from 'drizzle-orm';
 
 import { db } from '$lib/server/db';
 import { agents, sessions } from '$lib/server/db/schema';
-import { getAgentRuntime } from '$lib/server/kube/client';
+import { getAgentRuntime, getAgentRuntimePod } from '$lib/server/kube/client';
 
 /**
  * Compact runtime-flags read for the session detail page. Tells the UI
- * whether this session's agent has a browser sidecar at all, and whether
- * the Live browser tab can connect right now (pod phase == Active).
+ *  - whether the agent has a browser sidecar at all (gates the Browser
+ *    state panel),
+ *  - whether the Browser state panel can render right now (pod Active +
+ *    chromium + playwright-mcp ready),
+ *  - whether the Shell tab is available (pod Active — shell works for
+ *    any runtime pod, not just browser ones), and
+ *  - which container names the shell dropdown should offer.
  *
  * Polled every 10s by the session page — cheap enough to not warrant
  * caching. Workspace-scoped via locals.session.projectId.
@@ -38,12 +43,33 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const cr = await getAgentRuntime(slug);
 	const browserSidecarEnabled = cr?.spec?.browserSidecar?.enabled === true;
 	const phase = cr?.status?.phase ?? 'Unknown';
-	const liveBrowserAvailable = browserSidecarEnabled && phase === 'Active';
+
+	// Discover the live pod (if any) so the shell dropdown knows which
+	// containers to offer. When the CR is Sleeping the pod won't exist
+	// and containers will be empty — the UI hides the tab.
+	let shellContainers: string[] = [];
+	let browserMcpAvailable = false;
+	if (phase === 'Active') {
+		const pod = await getAgentRuntimePod(slug);
+		if (pod) {
+			shellContainers = pod.containers.filter((c) => c.ready).map((c) => c.name);
+			// MCP panel needs the chromium + playwright-mcp sidecar pair
+			// both ready so the per-agent Service backend is live.
+			if (browserSidecarEnabled) {
+				const chromiumReady = pod.containers.some((c) => c.name === 'chromium' && c.ready);
+				const mcpReady = pod.containers.some((c) => c.name === 'playwright-mcp' && c.ready);
+				browserMcpAvailable = chromiumReady && mcpReady;
+			}
+		}
+	}
+	const shellAvailable = phase === 'Active' && shellContainers.length > 0;
 
 	return json({
 		agentSlug: slug,
 		browserSidecarEnabled,
-		liveBrowserAvailable,
+		browserMcpAvailable,
+		shellAvailable,
+		shellContainers,
 		phase,
 	});
 };

@@ -156,30 +156,12 @@ type VNCServer struct {
 func (v *VNCServer) Run(ctx context.Context) error {
 	log := klog.FromContext(ctx)
 
-	// Xtigervnc combines display server and VNC exporter. We avoided
-	// x11vnc (an earlier attempt) because it pegs CPU on the framebuffer
-	// poll loop and starved its own accept() path. Xtigervnc has a more
-	// robust event loop.
-	//
-	// Known TigerVNC limitation: SConnection rejects SetPixelFormat
-	// requests for formats other than the server's native rgb888 with
-	// "invalid pixel format". noVNC in the browser prefers bgr888 and
-	// normally sends a matching SetPixelFormat post-handshake. The
-	// client-side LiveBrowserView monkey-patches RFB._sendSetPixelFormat
-	// to a no-op, so noVNC sticks with the server's default rgb888 and
-	// Xtigervnc is happy.
-	//
-	// Flags:
-	//   -SecurityTypes None      no password; BFF WS proxy auths.
-	//   -AlwaysShared            accept new clients without kicking the
-	//                            previous one — LiveBrowserView reconnects.
-	//   -DisconnectClients=0     belt-and-suspenders partner to AlwaysShared.
-	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1",
-		"-geometry", "1280x1024",
-		"-SecurityTypes", "None",
-		"-AlwaysShared",
-		"-DisconnectClients=0",
-	)
+	// Xtigervnc provides Chromium's X display (:1). The VNC port (5901)
+	// is not exposed on any Service or as a Pod containerPort, so it is
+	// unreachable cross-pod — keeping TigerVNC's default auth-required
+	// posture. For a live "see what the agent is rendering" UX, the
+	// Browser state tab polls Playwright MCP's browser_take_screenshot.
+	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1", "-geometry", "1280x1024")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
