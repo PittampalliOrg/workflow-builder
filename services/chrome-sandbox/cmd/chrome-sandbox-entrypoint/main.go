@@ -156,8 +156,13 @@ type VNCServer struct {
 func (v *VNCServer) Run(ctx context.Context) error {
 	log := klog.FromContext(ctx)
 
-	// TODO: Parameterize the command / arguments
-	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1", "-geometry", "1280x1024")
+	// -SecurityTypes None: Xtigervnc's default advertises TLS + VNCAuth,
+	// which a browser-side noVNC client inside the Workflow Builder UI
+	// can't complete (no password, no TLS cert). Pod-to-pod VNC traffic
+	// is already bounded — the port isn't on any Service, the BFF WS
+	// proxy authenticates the caller, and the connection is cluster-
+	// internal — so running unauthenticated VNC here is acceptable.
+	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1", "-geometry", "1280x1024", "-SecurityTypes", "None")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
