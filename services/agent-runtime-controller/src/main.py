@@ -123,7 +123,14 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                         {
                             "name": "dapr-agent-py",
                             "image": image,
-                            "imagePullPolicy": "IfNotPresent",
+                            # Always pull: the default env image tag is
+                            # dapr-agent-py-sandbox:latest, which moves on
+                            # every sandbox-image build. IfNotPresent would
+                            # pin every per-agent pod to whatever digest the
+                            # node cached first — stale pods would silently
+                            # keep running old code even after a fresh
+                            # `:latest` retag.
+                            "imagePullPolicy": "Always",
                             "ports": [{"name": "http", "containerPort": 8002}],
                             "env": [
                                 {"name": "AGENT_SERVICE_NAME", "value": app_id},
