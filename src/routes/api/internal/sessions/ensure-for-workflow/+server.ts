@@ -7,6 +7,7 @@ import { agents, sessions, workflowExecutions, workflows } from "$lib/server/db/
 import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
+import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import type { AgentConfig } from "$lib/types/agents";
 
 /**
@@ -66,10 +67,26 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 		}
 	}
-	const agentConfig =
+	const rawAgentConfig =
 		body.agentConfig && typeof body.agentConfig === "object"
 			? (body.agentConfig as unknown as AgentConfig)
 			: null;
+	// Apply the per-agent browser sidecar MCP rewrite (same helper that
+	// src/lib/server/sessions/spawn.ts uses for direct sessions). Without
+	// this, workflow-driven sessions keep the stdio Playwright preset and
+	// `npx @playwright/mcp@latest` runs inside the dapr-agent-py container
+	// — there's no Chromium binary there. The rewrite routes tools through
+	// the in-pod playwright-mcp sidecar at http://localhost:3100/mcp,
+	// which talks to the pod's chromium container via CDP.
+	const agentConfig = rawAgentConfig
+		? ({
+				...rawAgentConfig,
+				mcpServers: rewriteMcpForBrowserSidecar(
+					(rawAgentConfig as { mcpServers?: unknown[] })
+						.mcpServers as never,
+				).mcpServers,
+			} as AgentConfig)
+		: null;
 	const environmentConfig =
 		body.environmentConfig && typeof body.environmentConfig === "object"
 			? (body.environmentConfig as Record<string, unknown>)
