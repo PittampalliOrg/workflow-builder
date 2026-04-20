@@ -32,10 +32,14 @@ flags+=(--start-maximized) # We're the only thing running, use the whole screen
 
 flags+=(--disable-field-trial-config) # Keeps things consistent and a little faster (?)
 
-flags+=(--remote-debugging-port=9222) # Enable remote debugging
-flags+=(--remote-debugging-address=0.0.0.0) # Bind CDP on all interfaces — default 127.0.0.1 is unreachable from playwright-mcp-gateway via the k8s Service.
-flags+=(--user-data-dir=/tmp/chrome-data) # DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.
+flags+=(--remote-debugging-port=9222) # Enable remote debugging.
+flags+=(--user-data-dir=/tmp/chrome-data) # DevTools remote debugging requires a non-default data directory.
 
+# Chromium 119+ silently ignores --remote-debugging-address=0.0.0.0 and
+# only binds CDP on 127.0.0.1 (security change). socat forwards the
+# cross-pod 0.0.0.0:9222 traffic to Chrome's localhost listener so
+# playwright-mcp-gateway can reach us via the k8s Service.
+socat TCP-LISTEN:9223,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9222 &
 
 # Launch Chrome
 chromium "${flags[@]}" "https://www.google.com"

@@ -42,6 +42,7 @@ RUN apt-get update \
         tigervnc-standalone-server \
         x11-utils \
         xdg-utils \
+        socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium from openshell-sandbox lives at /opt/pw-browsers/chromium-*/chrome.
