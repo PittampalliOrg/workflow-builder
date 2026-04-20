@@ -739,21 +739,34 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		env: s.env,
 	}));
 
-	// Detect Playwright MCP: either a server named "playwright" or one whose
-	// URL points at playwright-mcp-* in-cluster. When found, enable the
-	// browser sidecar so the agent pod gets its own chromium + MCP gateway,
-	// and rewrite the MCP URL to http://localhost:3100/mcp so the agent
-	// talks to the in-pod sidecar (no cross-pod CDP relay, no Host rewrite).
-	const playwrightIdx = rawMcpServers.findIndex(
-		(s) =>
-			s.name?.toLowerCase() === "playwright" ||
-			(s.url ?? "").includes("playwright-mcp"),
-	);
+	// Detect Playwright MCP. Triggers the browser-sidecar + URL rewrite:
+	//   - server named "playwright" (hosted / streamable_http variant), OR
+	//   - URL pointing at playwright-mcp-* in-cluster, OR
+	//   - stdio preset whose command/args reference @playwright/mcp (the
+	//     BROWSER_PRESETS from agent-mcp-picker save with name="mcp" but
+	//     args=["@playwright/mcp@latest"] — the browser-preset UX should
+	//     still flip the sidecar flag).
+	function isPlaywright(s: { name?: string; url?: string; command?: string; args?: string[] }): boolean {
+		const n = s.name?.toLowerCase() ?? "";
+		if (n === "playwright") return true;
+		if ((s.url ?? "").includes("playwright-mcp")) return true;
+		const argsStr = (s.args ?? []).join(" ").toLowerCase();
+		if (argsStr.includes("@playwright/mcp")) return true;
+		return false;
+	}
+	const playwrightIdx = rawMcpServers.findIndex(isPlaywright);
 	const useBrowserSidecar = playwrightIdx >= 0;
+	// Only rewrite to the in-pod sidecar URL when the match is the hosted/
+	// streamable_http kind. stdio presets keep their command/args — they
+	// run inside the dapr-agent-py container alongside the sidecar's
+	// playwright-mcp (which the agent can still reach separately if it
+	// ever wants to hit the in-cluster endpoint).
 	const mcpServers = useBrowserSidecar
-		? rawMcpServers.map((s, i) =>
-				i === playwrightIdx ? { ...s, url: "http://localhost:3100/mcp" } : s,
-			)
+		? rawMcpServers.map((s, i) => {
+				if (i !== playwrightIdx) return s;
+				const isStdio = s.transport === "stdio";
+				return isStdio ? s : { ...s, url: "http://localhost:3100/mcp" };
+			})
 		: rawMcpServers;
 
 	// Read agent-runtime idle TTL from the environment config if present.
