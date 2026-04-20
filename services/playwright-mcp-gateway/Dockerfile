@@ -7,11 +7,8 @@
 # default CMD is stdio. Nimble's MCPService CRD has no `command` override,
 # so we need an image whose ENTRYPOINT launches HTTP on 3100 with no args.
 
-# The @playwright/mcp@latest package (currently v0.0.70) bundles Playwright
-# ~1.56 which expects Chromium 1217. An older base image (v1.49.1) ships
-# Playwright 1.49 which spawns Chromium with a different argv shape — the
-# result is `chrome_crashpad_handler: --database is required` at launch.
-# Match the base image to a Playwright minor that understands Chromium 1217.
+# Align the bundled Playwright with @playwright/mcp@latest so the browser
+# argv shape matches the Chromium revision being launched.
 FROM mcr.microsoft.com/playwright:v1.56.0-noble
 
 ENV NODE_ENV=production \
@@ -21,10 +18,14 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-# Install the MCP server globally + Chromium. Run once at build time so the
-# runtime container has zero network dependency on npm / browsers.
+# Install @playwright/mcp + Chrome channel (not Chromium). Chrome ships a
+# pre-configured crashpad_handler + database directory so it launches cleanly
+# without CAP_SYS_ADMIN. Chromium 1217 spawns crashpad_handler without a
+# --database flag and crashes with "--database is required" regardless of
+# --disable-breakpad / --no-sandbox. Using the Chrome channel is the most
+# reliable fix.
 RUN npm install -g @playwright/mcp@latest \
- && npx --yes playwright install --with-deps chromium \
+ && npx --yes playwright install --with-deps chrome \
  && rm -rf /tmp/npm-cache /root/.npm \
  && chown -R 1000:1000 /app
 
@@ -39,9 +40,8 @@ ENTRYPOINT ["playwright-mcp"]
 # --allowed-hosts '*' disables the built-in host header check so cluster DNS
 # names (playwright-mcp-service.workflow-builder.svc.cluster.local) reach
 # the server; otherwise it 403s everything except localhost.
-# --no-sandbox: Chromium's setuid sandbox requires CAP_SYS_ADMIN which we
-# don't grant. Without this flag the crashpad handler dies at launch with
-# "Failed to launch the browser process".
-# Larger /dev/shm is also required (mounted as emptyDir medium=Memory by
-# the MCPService CRD → see Nimble shared-mcp-catalog).
-CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated", "--allowed-hosts", "*", "--browser", "chromium", "--no-sandbox"]
+# --browser chrome: use the stable Chrome channel — its crashpad_handler is
+# pre-configured so the process launches cleanly in unprivileged containers.
+# --no-sandbox: Chrome's setuid sandbox still requires CAP_SYS_ADMIN we
+# don't grant.
+CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated", "--allowed-hosts", "*", "--browser", "chrome", "--no-sandbox"]
