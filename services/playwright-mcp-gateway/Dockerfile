@@ -14,18 +14,21 @@ FROM mcr.microsoft.com/playwright:v1.56.0-noble
 ENV NODE_ENV=production \
     PORT=3100 \
     HOME=/app \
-    npm_config_cache=/tmp/npm-cache
+    npm_config_cache=/tmp/npm-cache \
+    XDG_CACHE_HOME=/tmp/cache \
+    XDG_CONFIG_HOME=/tmp/config \
+    XDG_DATA_HOME=/tmp/data
 
 WORKDIR /app
 
-# Install @playwright/mcp + Chrome channel (not Chromium). Chrome ships a
-# pre-configured crashpad_handler + database directory so it launches cleanly
-# without CAP_SYS_ADMIN. Chromium 1217 spawns crashpad_handler without a
-# --database flag and crashes with "--database is required" regardless of
-# --disable-breakpad / --no-sandbox. Using the Chrome channel is the most
-# reliable fix.
+# Firefox has no crashpad_handler spawn — Chromium/Chrome 138+ both
+# exit at launch with "chrome_crashpad_handler: --database is required"
+# when running under readOnlyRootFilesystem + unprivileged + --headless,
+# and neither --disable-breakpad nor --no-sandbox suppresses the spawn.
+# Firefox uses its own crash-reporter that's disabled cleanly in headless
+# mode.
 RUN npm install -g @playwright/mcp@latest \
- && npx --yes playwright install --with-deps chrome \
+ && npx --yes playwright install --with-deps firefox \
  && rm -rf /tmp/npm-cache /root/.npm \
  && chown -R 1000:1000 /app
 
@@ -36,12 +39,17 @@ EXPOSE 3100
 # npm registry and fail inside restricted network namespaces. The globally
 # installed shim lives at /usr/bin/mcp-server-playwright (playwright base
 # image has npm's global bin symlinked there).
+# Pre-create crashpad database dir in the writable /tmp volume so Chrome's
+# crashpad_handler has somewhere to write on every launch. Without this,
+# Chrome 138+ spawns chrome_crashpad_handler without a --database arg
+# (known bug — issues.chromium.org/362306373) and exits with SIGTRAP.
+RUN mkdir -p /tmp/crashdumps /tmp/cache /tmp/config /tmp/data
+
 ENTRYPOINT ["playwright-mcp"]
 # --allowed-hosts '*' disables the built-in host header check so cluster DNS
 # names (playwright-mcp-service.workflow-builder.svc.cluster.local) reach
 # the server; otherwise it 403s everything except localhost.
-# --browser chrome: use the stable Chrome channel — its crashpad_handler is
-# pre-configured so the process launches cleanly in unprivileged containers.
-# --no-sandbox: Chrome's setuid sandbox still requires CAP_SYS_ADMIN we
-# don't grant.
-CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated", "--allowed-hosts", "*", "--browser", "chrome", "--no-sandbox"]
+# --browser chrome: stable Chrome channel (Chromium crashes identically
+# in this environment; Chrome is the documented baseline).
+# --no-sandbox: setuid sandbox requires CAP_SYS_ADMIN we don't grant.
+CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated", "--allowed-hosts", "*", "--browser", "firefox", "--no-sandbox"]
