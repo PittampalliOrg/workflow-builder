@@ -35,14 +35,18 @@ FROM ${BASE_IMAGE}
 
 USER root
 
-# tigervnc-standalone-server provides Xtigervnc; x11-utils provides xdpyinfo
-# which the Go entrypoint uses to probe VNC readiness. nginx rewrites the
-# Host header on inbound CDP traffic (Chromium's DNS-rebinding guard
-# only accepts Host: localhost or an IP literal, so the Kubernetes
-# Service's DNS name gets 500'd without a rewrite).
+# Display + VNC export stack:
+#   xvfb      virtual X framebuffer (display :1)
+#   x11vnc    VNC server that exports the framebuffer on :5901. TigerVNC
+#             was rejecting bgr888 SetPixelFormat requests from noVNC,
+#             closing every browser live-view connection mid-handshake.
+#   x11-utils xdpyinfo for the Go entrypoint's readiness probe.
+#   nginx-light rewrites Host on cross-pod CDP traffic so Chromium's
+#   DNS-rebinding guard accepts requests reaching us via a Service DNS.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tigervnc-standalone-server \
+        xvfb \
+        x11vnc \
         x11-utils \
         xdg-utils \
         nginx-light \

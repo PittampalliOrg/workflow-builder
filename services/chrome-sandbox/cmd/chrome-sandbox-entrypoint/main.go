@@ -156,24 +156,28 @@ type VNCServer struct {
 func (v *VNCServer) Run(ctx context.Context) error {
 	log := klog.FromContext(ctx)
 
-	// -SecurityTypes None: Xtigervnc's default advertises TLS + VNCAuth,
-	// which a browser-side noVNC client inside the Workflow Builder UI
-	// can't complete (no password, no TLS cert). Pod-to-pod VNC traffic
-	// is already bounded — the port isn't on any Service, the BFF WS
-	// proxy authenticates the caller, and the connection is cluster-
-	// internal — so running unauthenticated VNC here is acceptable.
+	// Xvfb + x11vnc instead of Xtigervnc. TigerVNC's SConnection rejects
+	// SetPixelFormat(bgr888) as "invalid pixel format" — noVNC in the
+	// browser always requests bgr888 because canvas is little-endian BGRA,
+	// so every browser client was closed mid-handshake. x11vnc accepts any
+	// valid pixel format the client asks for and transcodes server-side.
 	//
-	// -AlwaysShared: accept new clients without kicking the previous
-	// connection. The LiveBrowserView reconnects on disconnect, and
-	// multiple observers can watch concurrently — without this flag
-	// each new connection terminates the old one mid-frame.
+	// The two processes share display :1: Xvfb hosts a virtual framebuffer
+	// there; x11vnc exports it to TCP :5901.
 	//
-	// -DisconnectClients=0: belt-and-suspenders partner to AlwaysShared.
-	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1",
-		"-geometry", "1280x1024",
-		"-SecurityTypes", "None",
-		"-AlwaysShared",
-		"-DisconnectClients=0",
+	// x11vnc flags:
+	//   -nopw          no auth (BFF WS proxy gates the connection)
+	//   -forever       keep serving after the last client disconnects
+	//   -shared        allow multiple concurrent clients
+	//   -rfbport 5901  pin the port
+	//   -noxdamage     damage ext is sometimes flaky on xvfb
+	//   -quiet         suppress per-client handshake chatter
+	cmd := exec.CommandContext(ctx, "bash", "-c",
+		"set -e; "+
+			"Xvfb :1 -screen 0 1280x1024x24 -ac +extension RANDR -nolisten tcp & "+
+			"XVFB_PID=$!; "+
+			"for i in $(seq 1 50); do xdpyinfo -display :1 >/dev/null 2>&1 && break; sleep 0.1; done; "+
+			"exec x11vnc -display :1 -nopw -forever -shared -rfbport 5901 -noxdamage -quiet",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
