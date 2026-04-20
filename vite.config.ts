@@ -53,12 +53,11 @@ export default defineConfig({
 		// @novnc/novnc uses top-level await in a CommonJS-looking module that
 		// Rollup can't parse during the SSR build, but the library is only
 		// imported dynamically from an onMount handler (client-only). Keeping
-		// it external means the SSR bundle never analyzes it at all.
+		// it external means the SSR bundle never analyzes it at all. The
+		// CLIENT bundle still processes the module — we intentionally do NOT
+		// add it to optimizeDeps.exclude because then Vite would ship the
+		// bare specifier to the browser and the dynamic import would fail to
+		// resolve at runtime.
 		external: ['@novnc/novnc']
-	},
-	// For the client build, keep the dynamic import code-split so noVNC only
-	// loads on the session page that actually needs it.
-	optimizeDeps: {
-		exclude: ['@novnc/novnc']
 	}
 });
