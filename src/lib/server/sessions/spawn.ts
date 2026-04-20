@@ -3,6 +3,7 @@ import { attachRuntime, getSession } from "$lib/server/sessions/registry";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { listEvents } from "$lib/server/sessions/events";
+import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
@@ -83,9 +84,24 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		.filter((e) => e.type.startsWith("user."))
 		.map((e) => e.data);
 
+	// Rewrite Playwright MCP entries to point at the per-agent browser
+	// sidecar (http://localhost:3100/mcp). The DB config stores stdio
+	// presets from agent-mcp-picker; sending those unmodified makes the
+	// agent try to launch Chromium inside the dapr-agent-py container
+	// (no binary). The per-turn config wins at runtime over the bootstrap
+	// env var (see dapr-agent-py _ensure_mcp_client_async), so this
+	// rewrite must happen here — registry-sync only covers the bootstrap.
+	const { mcpServers: rewrittenMcp } = rewriteMcpForBrowserSidecar(
+		(agent.config as { mcpServers?: unknown[] }).mcpServers as never,
+	);
+	const agentConfigForDispatch = {
+		...agent.config,
+		mcpServers: rewrittenMcp,
+	};
+
 	const payload = {
 		sessionId,
-		agentConfig: agent.config,
+		agentConfig: agentConfigForDispatch,
 		// Flat metadata the call_agent tool needs to dispatch peers by name.
 		callableAgents,
 		registryTeam: agent.projectId ?? null,
