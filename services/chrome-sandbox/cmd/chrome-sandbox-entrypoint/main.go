@@ -162,7 +162,19 @@ func (v *VNCServer) Run(ctx context.Context) error {
 	// is already bounded — the port isn't on any Service, the BFF WS
 	// proxy authenticates the caller, and the connection is cluster-
 	// internal — so running unauthenticated VNC here is acceptable.
-	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1", "-geometry", "1280x1024", "-SecurityTypes", "None")
+	//
+	// -AlwaysShared: accept new clients without kicking the previous
+	// connection. The LiveBrowserView reconnects on disconnect, and
+	// multiple observers can watch concurrently — without this flag
+	// each new connection terminates the old one mid-frame.
+	//
+	// -DisconnectClients=0: belt-and-suspenders partner to AlwaysShared.
+	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1",
+		"-geometry", "1280x1024",
+		"-SecurityTypes", "None",
+		"-AlwaysShared",
+		"-DisconnectClients=0",
+	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
