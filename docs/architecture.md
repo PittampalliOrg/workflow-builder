@@ -6,18 +6,26 @@ Workflow Builder is a visual workflow system that uses Dapr Workflows for durabl
 
 The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 
-- `workflow-builder`: SvelteKit UI and BFF
-- `workflow-builder-svelte`: alternate Svelte frontend deployment
-- `workflow-orchestrator`: Python Dapr durable workflow owner
-- `function-router`: action router
-- `dapr-agent-py`: native Python Dapr agent runtime for `durable/run`
-- `openshell-agent-runtime`: canonical OpenShell workspace, browser, and standard agent runtime
-- `dapr-swe`: separate distributed coding workflow runtime
+- `workflow-builder`: SvelteKit UI and BFF (Dapr app-id: `workflow-builder`, `workflow-builder` namespace)
+- `workflow-orchestrator`: Python Dapr durable workflow owner (`workflow-builder` namespace)
+- `function-router`: action router (Dapr service invoke target for non-agent slugs)
+- `agent-runtime-controller`: Kopf operator in `workflow-builder` namespace; reconciles `AgentRuntime` CRs → one `Deployment/agent-runtime-<slug>` per published agent
+- `agent-runtime-<slug>`: dynamic per-agent pods (app-id `agent-runtime-<slug>`), one per published agent, scale 0↔1 on demand via wake/idle TTL. Contain `dapr-agent-py` main container + `seed-openshell-config` init + `daprd` sidecar + optional `chromium` + `playwright-mcp` browser sidecars.
+- `dapr-agent-py` (legacy shared pod): kept for backwards compat; new workflows address agents by `agentRef` → `agent-runtime-<slug>` instead.
+- `openshell-agent-runtime`: OpenShell control-plane for per-session sandboxes (sandboxes live in `openshell` namespace and are reached via mTLS from agent-runtime pods)
 - `fn-activepieces`: default SaaS action backend
-- `postgresql`: workflow definitions, executions, artifacts, approvals, and child-run metadata
-- `redis` plus Dapr sidecars: workflow state, pub/sub, service invocation, and actor durability
+- `postgresql`: workflow definitions, executions, artifacts, approvals, child-run metadata, sessions, agents, agent_versions
+- `redis` plus Dapr sidecars: workflow state, pub/sub, service invocation, actor durability
 
-The active runtime model is OpenShell-only for sandboxed agent work.
+Per-agent runtime pods run in the **same namespace as the orchestrator**
+(`workflow-builder`) — Dapr workflow sub-orchestration resolves the
+child's workflow actor in the parent's namespace, so cross-namespace
+placement is not supported at the workflow-SDK layer.
+
+See `docs/per-agent-runtime.md` for the full per-agent model:
+controller lifecycle, pod shape, Dapr Component scoping, wake/idle TTL,
+dispatch paths (direct session vs workflow bridge), and troubleshooting
+cheatsheet.
 
 Model selection for `durable/run` is data-driven. `dapr-agent-py` reads
 `agentConfig.modelSpec` from the workflow call, maps that value to a Dapr LLM
