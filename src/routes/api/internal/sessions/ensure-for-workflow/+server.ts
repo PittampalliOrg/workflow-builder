@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
-import { sessions, workflowExecutions, workflows } from "$lib/server/db/schema";
+import { agents, sessions, workflowExecutions, workflows } from "$lib/server/db/schema";
 import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
@@ -118,6 +118,23 @@ export const POST: RequestHandler = async ({ request }) => {
 		.where(eq(sessions.id, sessionId))
 		.limit(1);
 	if (existing) {
+		// Also wake on replay/idempotent hits — the orchestrator's
+		// `ctx.call_child_workflow` still needs the target pod live.
+		const reuseSlug = await resolveWakeSlug({
+			agentConfig,
+			agentId: existing.agentId,
+		});
+		if (reuseSlug) {
+			try {
+				const { wakeAgentRuntime } = await import("$lib/server/kube/client");
+				await wakeAgentRuntime(reuseSlug, 30_000);
+			} catch (err) {
+				console.warn(
+					`[ensure-for-workflow] reuse wake ${reuseSlug} failed, continuing anyway:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
 		return json({
 			sessionId: existing.id,
 			agentId: existing.agentId,
@@ -171,6 +188,33 @@ export const POST: RequestHandler = async ({ request }) => {
 			type: "user.message",
 			content: [{ type: "text", text: initialMessage }],
 		});
+	}
+
+	// Wake the target per-agent runtime before responding. The parent workflow
+	// will yield `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>")`
+	// immediately after this activity returns. Dapr's CreateWorkflowInstance
+	// RPC requires the target app to be registered with placement — if the
+	// pod is scaled to 0 the call times out with
+	// "the app may not be available: context deadline exceeded" and the
+	// orchestrator silently stalls (see durabletask-dapr 0.17.4 behavior).
+	// Mirrors the wake call in `src/lib/server/sessions/spawn.ts` for direct
+	// (UI-initiated) sessions. Non-blocking: if wake fails we still respond
+	// so the orchestrator can surface a proper error on the next yield.
+	const wakeSlug = await resolveWakeSlug({ agentConfig, agentId });
+	if (wakeSlug) {
+		try {
+			const { wakeAgentRuntime } = await import("$lib/server/kube/client");
+			await wakeAgentRuntime(wakeSlug, 30_000);
+		} catch (err) {
+			console.warn(
+				`[ensure-for-workflow] wake ${wakeSlug} failed, continuing anyway:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+	} else {
+		console.warn(
+			`[ensure-for-workflow] no agent slug resolved for session ${sessionId}; skipping wake`,
+		);
 	}
 
 	return json({
@@ -231,3 +275,44 @@ function buildChildInput(params: {
 // Silence "unused import" linter — createSession is reserved for future
 // expansion (e.g., when the caller stops pre-computing sessionId).
 void createSession;
+
+/**
+ * Derive the agent slug for the wake call. The slug is the last segment of
+ * the per-agent runtime app-id (`agent-runtime-<slug>`) and matches the
+ * AgentRuntime CR name.
+ *
+ * Resolution order:
+ *  1. `agentConfig.agentAppId` — stamped by the orchestrator for workflow-
+ *     driven runs (`agent-runtime-<slug>`). Strip the prefix.
+ *  2. `agents.slug` lookup by `agentId` — covers ephemeral workflow agents
+ *     where `agentAppId` isn't in the inline config.
+ *
+ * Returns null when no slug can be derived; the caller skips wake and logs.
+ */
+async function resolveWakeSlug(params: {
+	agentConfig: AgentConfig | null;
+	agentId: string | null;
+}): Promise<string | null> {
+	const cfg = params.agentConfig as
+		| (AgentConfig & { agentAppId?: unknown; slug?: unknown })
+		| null;
+	const appId =
+		typeof cfg?.agentAppId === "string" && cfg.agentAppId.trim()
+			? cfg.agentAppId.trim()
+			: null;
+	if (appId && appId.startsWith("agent-runtime-")) {
+		return appId.slice("agent-runtime-".length);
+	}
+	const inlineSlug =
+		typeof cfg?.slug === "string" && cfg.slug.trim() ? cfg.slug.trim() : null;
+	if (inlineSlug) return inlineSlug;
+	if (params.agentId && db) {
+		const [row] = await db
+			.select({ slug: agents.slug })
+			.from(agents)
+			.where(eq(agents.id, params.agentId))
+			.limit(1);
+		if (row?.slug) return row.slug;
+	}
+	return null;
+}
