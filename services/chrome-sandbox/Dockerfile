@@ -1,5 +1,5 @@
 # Compile our golang binaries in a separate stage to keep the final image small.
-FROM golang:1.26.2 AS builder
+FROM docker.io/library/golang:1.26.2 AS builder
 
 WORKDIR /src
 
@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 go build -o /chrome-sandbox-entrypoint ./cmd/chrome-sandbox-en
 
 #----------------------
 # Use a base image with a minimal set of packages.
-FROM debian:13-slim
+FROM docker.io/library/debian:13-slim
 
 #----------------------
 # Install general prerequisite packages.
