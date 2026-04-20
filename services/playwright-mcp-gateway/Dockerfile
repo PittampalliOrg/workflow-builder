@@ -34,4 +34,4 @@ ENTRYPOINT ["playwright-mcp"]
 # --allowed-hosts '*' disables the built-in host header check so cluster DNS
 # names (playwright-mcp-service.workflow-builder.svc.cluster.local) reach
 # the server; otherwise it 403s everything except localhost.
-CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated", "--allowed-hosts", "*"]
+CMD ["--port", "3100", "--host", "0.0.0.0", "--headless", "--isolated", "--allowed-hosts", "*", "--browser", "chromium"]
