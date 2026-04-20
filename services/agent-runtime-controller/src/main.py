@@ -41,7 +41,7 @@ ANNO_LAST_ACTIVE = "agents.x-k8s.io/last-active"
 DEFAULT_IDLE_TTL = 1800
 IDLE_CHECK_INTERVAL = 60
 
-DEFAULT_NAMESPACE = os.environ.get("CONTROLLER_NAMESPACE", "openshell")
+DEFAULT_NAMESPACE = os.environ.get("CONTROLLER_NAMESPACE", "workflow-builder")
 DEFAULT_SA = os.environ.get("AGENT_RUNTIME_SERVICE_ACCOUNT", "agent-runtime")
 # Image pull secrets reused from dapr-agent-py Deployment pattern.
 DEFAULT_PULL_SECRETS = [

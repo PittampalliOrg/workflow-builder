@@ -22,8 +22,13 @@ const CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 const NAMESPACE_PATH =
 	"/var/run/secrets/kubernetes.io/serviceaccount/namespace";
 
+// Per-agent runtime pods now live in workflow-builder (same ns as the
+// orchestrator) so Dapr workflow sub-orchestration can resolve the
+// child workflow's actor type in the parent's namespace. The env var
+// override exists only for the rollback path — flip to "openshell" to
+// reverse the namespace move without a rebuild.
 const DEFAULT_AGENT_RUNTIME_NAMESPACE =
-	process.env.AGENT_RUNTIME_NAMESPACE ?? "openshell";
+	process.env.AGENT_RUNTIME_NAMESPACE ?? "workflow-builder";
 // Inside a pod Kubernetes sets KUBERNETES_SERVICE_HOST + KUBERNETES_SERVICE_PORT
 // (numeric). The plain KUBERNETES_PORT var is a URL like `tcp://10.98.0.1:443`,
 // not a bare port — don't use it.
