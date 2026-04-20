@@ -44,4 +44,5 @@ ENTRYPOINT ["playwright-mcp"]
 CMD ["--port", "3100", \
      "--host", "0.0.0.0", \
      "--allowed-hosts", "*", \
+     "--output-dir", "/tmp/playwright-mcp-output", \
      "--cdp-endpoint", "http://chrome-sandbox-service.workflow-builder.svc.cluster.local:9222"]
