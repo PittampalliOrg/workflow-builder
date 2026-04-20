@@ -41,7 +41,7 @@ flags+=(--user-data-dir=/tmp/chrome-data) # DevTools remote debugging requires a
 # terminates on 9223, rewrites Host -> localhost, and forwards to
 # chromium's 127.0.0.1:9222 — covering both /json/* HTTP and the
 # /devtools/* WebSocket upgrade.
-nginx -g 'daemon off;' &
+/usr/sbin/nginx -g 'daemon off;' &
 
 # Launch Chrome
 chromium "${flags[@]}" "https://www.google.com"
