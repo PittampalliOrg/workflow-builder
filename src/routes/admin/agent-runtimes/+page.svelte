@@ -13,6 +13,7 @@
 		imageTag: string | null;
 		mcpServers: string[];
 		idleTtlSeconds: number;
+		browserSidecarEnabled?: boolean;
 	};
 
 	let runtimes = $state<Runtime[]>([]);
@@ -20,7 +21,7 @@
 	let err = $state<string | null>(null);
 	let busy = $state<Record<string, 'wake' | 'sleep' | null>>({});
 	let timer: ReturnType<typeof setInterval> | null = null;
-	let filter = $state<'all' | 'active' | 'sleeping'>('all');
+	let filter = $state<'all' | 'active' | 'sleeping' | 'browser'>('all');
 
 	async function refresh() {
 		try {
@@ -80,14 +81,17 @@
 			? runtimes
 			: filter === 'active'
 				? runtimes.filter((r) => r.phase === 'Active' || r.phase === 'Starting')
-				: runtimes.filter((r) => r.phase === 'Sleeping')
+				: filter === 'sleeping'
+					? runtimes.filter((r) => r.phase === 'Sleeping')
+					: runtimes.filter((r) => r.browserSidecarEnabled === true),
 	);
 
 	const stats = $derived({
 		total: runtimes.length,
 		active: runtimes.filter((r) => r.phase === 'Active').length,
 		sleeping: runtimes.filter((r) => r.phase === 'Sleeping').length,
-		failed: runtimes.filter((r) => r.phase === 'Failed').length
+		failed: runtimes.filter((r) => r.phase === 'Failed').length,
+		browser: runtimes.filter((r) => r.browserSidecarEnabled === true).length,
 	});
 
 	onMount(() => {
@@ -111,8 +115,8 @@
 		<Button variant="outline" onclick={refresh} disabled={loading}>Refresh</Button>
 	</div>
 
-	<div class="grid grid-cols-4 gap-3">
-		{#each [['Total', stats.total, 'bg-slate-400'], ['Active', stats.active, 'bg-emerald-500'], ['Sleeping', stats.sleeping, 'bg-slate-500'], ['Failed', stats.failed, 'bg-red-600']] as [label, n, color]}
+	<div class="grid grid-cols-5 gap-3">
+		{#each [['Total', stats.total, 'bg-slate-400'], ['Active', stats.active, 'bg-emerald-500'], ['Sleeping', stats.sleeping, 'bg-slate-500'], ['Failed', stats.failed, 'bg-red-600'], ['Browser', stats.browser, 'bg-sky-500']] as [label, n, color]}
 			<div class="rounded-lg border bg-card p-3">
 				<div class="flex items-center gap-1.5">
 					<span class={`h-1.5 w-1.5 rounded-full ${color as string}`}></span>
@@ -141,6 +145,14 @@
 		>
 			Sleeping
 		</Button>
+		<Button
+			variant={filter === 'browser' ? 'default' : 'outline'}
+			size="sm"
+			onclick={() => (filter = 'browser')}
+			title="Only show agents with a chromium + playwright-mcp sidecar"
+		>
+			🌐 Browser
+		</Button>
 	</div>
 
 	{#if err}
@@ -157,6 +169,7 @@
 					<th class="px-3 py-2 font-medium">Phase</th>
 					<th class="px-3 py-2 font-medium">Replicas</th>
 					<th class="px-3 py-2 font-medium">MCPs</th>
+					<th class="px-3 py-2 font-medium w-8" title="Browser sidecar (chromium + playwright-mcp)">🌐</th>
 					<th class="px-3 py-2 font-medium">Last active</th>
 					<th class="px-3 py-2 font-medium">Idle TTL</th>
 					<th class="px-3 py-2 font-medium text-right">Actions</th>
@@ -175,6 +188,13 @@
 						<td class="px-3 py-2">{rt.readyReplicas}/{rt.replicas}</td>
 						<td class="px-3 py-2 text-xs">
 							{rt.mcpServers.length ? rt.mcpServers.join(', ') : '—'}
+						</td>
+						<td class="px-3 py-2 text-center">
+							{#if rt.browserSidecarEnabled}
+								<span aria-label="Browser sidecar enabled" title="chromium + playwright-mcp">🌐</span>
+							{:else}
+								<span class="text-muted-foreground/40">—</span>
+							{/if}
 						</td>
 						<td class="px-3 py-2 text-xs">{relativeTime(rt.lastActiveAt)}</td>
 						<td class="px-3 py-2 text-xs">{(rt.idleTtlSeconds / 60).toFixed(0)}m</td>
@@ -202,7 +222,7 @@
 				{/each}
 				{#if filtered.length === 0}
 					<tr>
-						<td colspan="7" class="px-3 py-6 text-center text-sm text-muted-foreground">
+						<td colspan="8" class="px-3 py-6 text-center text-sm text-muted-foreground">
 							{loading ? 'Loading…' : 'No runtimes match this filter.'}
 						</td>
 					</tr>

@@ -42,6 +42,11 @@
 		return m;
 	});
 
+	// Slug → whether that agent has a browser sidecar. Fetched alongside
+	// the sessions + agents batch so a 🌐 can render inline in the Agent
+	// column when applicable. One extra round trip per page load.
+	let browserSidecarBySlug = $state<Record<string, boolean>>({});
+
 	const filtered = $derived.by(() => {
 		const now = Date.now();
 		const cutoff =
@@ -74,9 +79,10 @@
 			const qs = new URLSearchParams();
 			if (statusFilter !== 'all') qs.set('status', statusFilter);
 			if (includeArchived) qs.set('includeArchived', 'true');
-			const [sRes, aRes] = await Promise.all([
+			const [sRes, aRes, rRes] = await Promise.all([
 				fetch(`/api/v1/sessions?${qs}`),
-				fetch('/api/agents')
+				fetch('/api/agents'),
+				fetch('/api/v1/agent-runtimes'),
 			]);
 			if (!sRes.ok) {
 				if (!opts.silent) errorMessage = `Failed to load sessions (${sRes.status})`;
@@ -87,6 +93,16 @@
 			if (aRes.ok) {
 				const aData = (await aRes.json()) as { agents: AgentSummary[] };
 				agents = aData.agents ?? [];
+			}
+			if (rRes.ok) {
+				const rData = (await rRes.json()) as {
+					runtimes: Array<{ slug: string; browserSidecarEnabled?: boolean }>;
+				};
+				const map: Record<string, boolean> = {};
+				for (const r of rData.runtimes ?? []) {
+					if (r.browserSidecarEnabled) map[r.slug] = true;
+				}
+				browserSidecarBySlug = map;
 			}
 		} catch (err) {
 			if (!opts.silent) errorMessage = err instanceof Error ? err.message : String(err);
@@ -277,6 +293,15 @@
 					<Badge variant="outline" class="text-[11px] gap-1">
 						<span>{agent.avatar ?? '🤖'}</span>
 						<span class="truncate max-w-[140px]">{agent.name}</span>
+						{#if browserSidecarBySlug[agent.slug]}
+							<span
+								title="Browser sidecar (chromium + playwright-mcp)"
+								aria-label="Browser agent"
+								class="text-[10px] leading-none"
+							>
+								🌐
+							</span>
+						{/if}
 					</Badge>
 				{:else}
 					<code class="text-[10px] text-muted-foreground">{s.agentId.slice(0, 10)}</code>
