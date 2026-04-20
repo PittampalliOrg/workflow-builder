@@ -547,31 +547,6 @@ _NATIVE_DURABLE_AGENT_TARGETS = {
 }
 
 
-def _qualify_agent_runtime_app_id(app_id: str) -> str:
-    """Append the cross-namespace suffix for per-agent runtime targets.
-
-    The parent workflow (workflow-orchestrator) lives in the
-    `workflow-builder` namespace. Per-agent runtimes live in
-    `openshell`. Dapr's workflow actor routing goes through placement,
-    which registers actor types as `dapr.internal.<namespace>.<appId>.workflow`.
-    Without the `.openshell` suffix, call_child_workflow tries to find the
-    app in the parent's namespace and fails with "the app may not be
-    available: context deadline exceeded" — this is the root cause of the
-    task-5 replay loop bug that silently stalls every durable/run workflow.
-
-    Legacy targets (dapr-agent-py / dapr-agent-py-testing in the
-    workflow-builder namespace) don't need qualification, so we only
-    append the suffix for `agent-runtime-*` app-ids and only when the
-    caller hasn't already qualified.
-    """
-    if not app_id.startswith("agent-runtime-"):
-        return app_id
-    if "." in app_id:
-        return app_id
-    ns = os.environ.get("AGENT_RUNTIME_NAMESPACE") or "openshell"
-    return f"{app_id}.{ns}"
-
-
 def _resolve_native_agent_runtime(
     flattened_args: dict[str, Any],
     agent_config: dict[str, Any] | None,
@@ -599,7 +574,7 @@ def _resolve_native_agent_runtime(
     if agent_app_id:
         return agent_app_id, {
             "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-            "app_id": _qualify_agent_runtime_app_id(agent_app_id),
+            "app_id": agent_app_id,
             "instance_prefix": "durable",
         }
 
@@ -641,7 +616,7 @@ def _resolve_native_agent_runtime(
         derived = f"agent-runtime-{agent_slug}"
         return derived, {
             "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-            "app_id": _qualify_agent_runtime_app_id(derived),
+            "app_id": derived,
             "instance_prefix": "durable",
         }
 
