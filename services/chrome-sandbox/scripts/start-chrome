@@ -41,7 +41,15 @@ flags+=(--user-data-dir=/tmp/chrome-data) # DevTools remote debugging requires a
 # terminates on 9223, rewrites Host -> localhost, and forwards to
 # chromium's 127.0.0.1:9222 — covering both /json/* HTTP and the
 # /devtools/* WebSocket upgrade.
-/usr/sbin/nginx -g 'daemon off;' &
+#
+# Colocated-sidecar mode: when this image runs as a sidecar next to
+# playwright-mcp-gateway in the same Pod, localhost CDP works natively
+# (Host: localhost passes Chromium's guard without a rewrite). The
+# controller sets CHROME_CDP_HOST_REWRITE=false to skip nginx so we
+# don't waste ~5-10 MB of pod memory on an unused proxy.
+if [ "${CHROME_CDP_HOST_REWRITE:-true}" = "true" ]; then
+  /usr/sbin/nginx -g 'daemon off;' &
+fi
 
 # Launch Chrome
 chromium "${flags[@]}" "https://www.google.com"

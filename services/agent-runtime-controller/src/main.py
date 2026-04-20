@@ -53,6 +53,16 @@ DEFAULT_PULL_SECRETS = [
     if s.strip()
 ]
 
+# Defaults for the optional browser sidecar (Chromium + playwright-mcp-gateway).
+DEFAULT_CHROME_IMAGE = os.environ.get(
+    "AGENT_RUNTIME_CHROME_IMAGE",
+    "gitea-ryzen.tail286401.ts.net/giteaadmin/chrome-sandbox:latest",
+)
+DEFAULT_PW_MCP_IMAGE = os.environ.get(
+    "AGENT_RUNTIME_PW_MCP_IMAGE",
+    "gitea-ryzen.tail286401.ts.net/giteaadmin/playwright-mcp-gateway:latest",
+)
+
 
 def _load_kube() -> None:
     try:
@@ -76,6 +86,67 @@ def _deployment_name(agent_slug: str) -> str:
     return f"agent-runtime-{agent_slug}"
 
 
+def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (containers, volumes) for the chromium + playwright-mcp sidecar pair.
+
+    Colocating chromium + the MCP gateway in the agent pod means Playwright
+    reaches CDP via http://localhost:9222 — Chromium accepts Host: localhost
+    natively, no nginx Host rewrite, no cross-pod round-trip. Each agent runtime
+    gets its own browser, so sessions can't see each other's pages.
+    """
+    chrome_image = browser_spec.get("chromeImage") or DEFAULT_CHROME_IMAGE
+    mcp_image = browser_spec.get("mcpGatewayImage") or DEFAULT_PW_MCP_IMAGE
+    chrome_resources = browser_spec.get("chromeResources") or {
+        "requests": {"memory": "512Mi", "cpu": "200m"},
+        "limits":   {"memory": "2Gi",   "cpu": "2000m"},
+    }
+    mcp_resources = browser_spec.get("mcpResources") or {
+        "requests": {"memory": "128Mi", "cpu": "50m"},
+        "limits":   {"memory": "512Mi", "cpu": "500m"},
+    }
+    containers = [
+        {
+            "name": "chromium",
+            "image": chrome_image,
+            "imagePullPolicy": "Always",
+            "env": [
+                # chrome-sandbox's start-chrome starts nginx on 9223 for the
+                # cross-pod Host-rewrite case. In the colocated sidecar
+                # layout, playwright-mcp reaches us via localhost:9222, which
+                # chromium already binds natively, so nginx is unnecessary.
+                {"name": "CHROME_CDP_HOST_REWRITE", "value": "false"},
+            ],
+            "resources": chrome_resources,
+            "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+        },
+        {
+            "name": "playwright-mcp",
+            "image": mcp_image,
+            "imagePullPolicy": "Always",
+            "args": [
+                "--port", "3100",
+                "--host", "127.0.0.1",            # only reachable in-pod
+                "--allowed-hosts", "*",
+                "--output-dir", "/tmp/playwright-mcp-output",
+                "--cdp-endpoint", "http://localhost:9222",
+            ],
+            "resources": mcp_resources,
+            "readinessProbe": {
+                "tcpSocket": {"port": 3100},
+                "initialDelaySeconds": 3,
+                "periodSeconds": 5,
+            },
+        },
+    ]
+    volumes = [
+        {
+            "name": "dshm",
+            "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"},
+        },
+    ]
+    return containers, volumes
+
+
 def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[str, Any]:
     image = spec["environment"]["imageTag"]
     slug = spec["agentSlug"]
@@ -87,6 +158,22 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     }
     pull_secrets = spec.get("imagePullSecrets") or [{"name": n} for n in DEFAULT_PULL_SECRETS]
     service_account = spec.get("serviceAccountName") or DEFAULT_SA
+
+    browser_spec = spec.get("browserSidecar") or {}
+    browser_enabled = bool(browser_spec.get("enabled"))
+    extra_containers: list[dict[str, Any]] = []
+    extra_volumes: list[dict[str, Any]] = []
+    if browser_enabled:
+        extra_containers, extra_volumes = _build_browser_sidecars(browser_spec)
+
+    pod_spec: dict[str, Any] = {
+        "serviceAccountName": service_account,
+        "terminationGracePeriodSeconds": 60,
+        "imagePullSecrets": pull_secrets,
+        "containers": [],  # filled below
+    }
+    if extra_volumes:
+        pod_spec["volumes"] = extra_volumes
 
     return {
         "apiVersion": "apps/v1",
@@ -116,9 +203,7 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                     "annotations": {},
                 },
                 "spec": {
-                    "serviceAccountName": service_account,
-                    "terminationGracePeriodSeconds": 60,
-                    "imagePullSecrets": pull_secrets,
+                    **pod_spec,
                     "containers": [
                         {
                             "name": "dapr-agent-py",
@@ -171,7 +256,8 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                                 "httpGet": {"path": "/readyz", "port": 8002},
                                 "periodSeconds": 5,
                             },
-                        }
+                        },
+                        *extra_containers,
                     ],
                 },
             },

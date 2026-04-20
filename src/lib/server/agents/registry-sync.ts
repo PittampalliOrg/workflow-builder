@@ -725,7 +725,7 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
 
 	const config = await loadCurrentAgentConfig(agentId);
-	const mcpServers = (config?.mcpServers ?? []).map((s) => ({
+	const rawMcpServers = (config?.mcpServers ?? []).map((s) => ({
 		name: s.serverName ?? s.name ?? "mcp",
 		transport: (s.transport ?? "streamable_http") as
 			| "streamable_http"
@@ -738,6 +738,23 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		headers: s.headers,
 		env: s.env,
 	}));
+
+	// Detect Playwright MCP: either a server named "playwright" or one whose
+	// URL points at playwright-mcp-* in-cluster. When found, enable the
+	// browser sidecar so the agent pod gets its own chromium + MCP gateway,
+	// and rewrite the MCP URL to http://localhost:3100/mcp so the agent
+	// talks to the in-pod sidecar (no cross-pod CDP relay, no Host rewrite).
+	const playwrightIdx = rawMcpServers.findIndex(
+		(s) =>
+			s.name?.toLowerCase() === "playwright" ||
+			(s.url ?? "").includes("playwright-mcp"),
+	);
+	const useBrowserSidecar = playwrightIdx >= 0;
+	const mcpServers = useBrowserSidecar
+		? rawMcpServers.map((s, i) =>
+				i === playwrightIdx ? { ...s, url: "http://localhost:3100/mcp" } : s,
+			)
+		: rawMcpServers;
 
 	// Read agent-runtime idle TTL from the environment config if present.
 	// Null/undefined leaves the CR default (1800s) in place.
@@ -776,6 +793,7 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		},
 		mcpServers,
 		lifecycle: idleTtlSeconds ? { idleTtlSeconds } : undefined,
+		browserSidecar: useBrowserSidecar ? { enabled: true } : undefined,
 	});
 }
 

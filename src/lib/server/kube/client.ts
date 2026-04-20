@@ -171,6 +171,20 @@ export type AgentRuntimeMcpServer = {
 	headers?: Record<string, string>;
 };
 
+export type AgentRuntimeBrowserSidecar = {
+	enabled: boolean;
+	chromeImage?: string;
+	mcpGatewayImage?: string;
+	chromeResources?: {
+		requests?: Record<string, string>;
+		limits?: Record<string, string>;
+	};
+	mcpResources?: {
+		requests?: Record<string, string>;
+		limits?: Record<string, string>;
+	};
+};
+
 export type AgentRuntimeSpec = {
 	agentSlug: string;
 	projectId?: string | null;
@@ -186,6 +200,7 @@ export type AgentRuntimeSpec = {
 		idleTtlSeconds?: number;
 		maxReplicas?: number;
 	};
+	browserSidecar?: AgentRuntimeBrowserSidecar;
 };
 
 export type AgentRuntimeStatus = {
