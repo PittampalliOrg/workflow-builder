@@ -131,8 +131,17 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
                 "--cdp-endpoint", "http://localhost:9222",
             ],
             "resources": mcp_resources,
+            # Bound to 127.0.0.1 so the kubelet can't TCP-probe it from
+            # the pod IP. Use an exec probe that runs inside the
+            # container, which shares the loopback with the listener.
             "readinessProbe": {
-                "tcpSocket": {"port": 3100},
+                "exec": {
+                    "command": [
+                        "node",
+                        "-e",
+                        "require('net').connect(3100,'127.0.0.1',()=>process.exit(0)).on('error',()=>process.exit(1))",
+                    ]
+                },
                 "initialDelaySeconds": 3,
                 "periodSeconds": 5,
             },
