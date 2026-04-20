@@ -11,6 +11,7 @@
 			environment?: { imageTag?: string };
 			mcpServers?: Array<{ name: string }>;
 			lifecycle?: { idleTtlSeconds?: number };
+			browserSidecar?: { enabled?: boolean };
 		};
 		status?: {
 			phase?: 'Pending' | 'Sleeping' | 'Starting' | 'Active' | 'Failed' | string;
@@ -20,6 +21,9 @@
 			lastActiveAt?: string;
 			message?: string;
 		};
+		browserSidecarEnabled?: boolean;
+		browserMcpAvailable?: boolean;
+		pod?: { name: string; containers: Array<{ name: string; ready: boolean }> } | null;
 	};
 
 	let {
@@ -173,10 +177,45 @@
 				{/if}
 			</dd>
 
+			<dt class="text-muted-foreground">Browser</dt>
+			<dd class="col-span-2">
+				{#if status.browserSidecarEnabled}
+					<span class="inline-flex items-center gap-1">
+						<span aria-hidden="true">🌐</span>
+						Sidecar enabled
+						<span class="text-muted-foreground/70">(chromium + playwright-mcp)</span>
+					</span>
+				{:else}
+					<span class="text-muted-foreground">none</span>
+				{/if}
+			</dd>
+
 			<dt class="text-muted-foreground">Replicas</dt>
 			<dd class="col-span-2">
 				{status.status?.readyReplicas ?? 0}/{status.status?.replicas ?? 0}
 			</dd>
+
+			{#if status.pod?.containers?.length}
+				<dt class="text-muted-foreground">Containers</dt>
+				<dd class="col-span-2 flex flex-wrap gap-1">
+					{#each status.pod.containers as c (c.name)}
+						<span
+							title={c.ready ? 'Ready' : 'Not ready'}
+							class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] {c.ready
+								? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
+								: 'border-muted-foreground/30 text-muted-foreground'}"
+						>
+							<span
+								class="inline-block size-1.5 rounded-full {c.ready
+									? 'bg-emerald-500'
+									: 'bg-muted-foreground/40'}"
+								aria-hidden="true"
+							></span>
+							{c.name}
+						</span>
+					{/each}
+				</dd>
+			{/if}
 
 			<dt class="text-muted-foreground">Last active</dt>
 			<dd class="col-span-2">{relativeTime(status.status?.lastActiveAt)}</dd>

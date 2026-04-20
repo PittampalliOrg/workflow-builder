@@ -40,6 +40,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 			imageTag: cr.spec.environment?.imageTag ?? null,
 			mcpServers: (cr.spec.mcpServers ?? []).map((s) => s.name),
 			idleTtlSeconds: cr.spec.lifecycle?.idleTtlSeconds ?? 1800,
+			// Small surface for the agents list page: does this agent have
+			// a chromium + playwright-mcp sidecar pair? Drives the 🌐 badge
+			// in the Runtime column.
+			browserSidecarEnabled: cr.spec.browserSidecar?.enabled === true,
 		}));
 
 	return json({ runtimes: rows });

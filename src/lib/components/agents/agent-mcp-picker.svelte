@@ -255,9 +255,26 @@
 				</label>
 			{/each}
 		</div>
-		<p class="text-[11px] text-muted-foreground">
-			Browser presets run as stdio MCP servers inside the agent container. They need their CLI
-			prerequisites available in the environment's sandbox template.
-		</p>
+		{#if BROWSER_PRESETS.some((p) => isPresetSelected(p))}
+			<div
+				role="note"
+				class="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-300 flex gap-2"
+			>
+				<span aria-hidden="true">🌐</span>
+				<div class="space-y-1">
+					<p class="font-medium">Browser sidecar will be provisioned.</p>
+					<p class="text-amber-600/90 dark:text-amber-300/80">
+						Publishing this agent adds <code>chromium</code> and <code>playwright-mcp</code>
+						containers to its pod (~1 GB memory, 10–30 s cold start). Sessions for this agent
+						expose "Browser state" and "Shell" tabs.
+					</p>
+				</div>
+			</div>
+		{:else}
+			<p class="text-[11px] text-muted-foreground">
+				Adding a browser preset auto-provisions a chromium + playwright-mcp sidecar on the agent's
+				runtime pod.
+			</p>
+		{/if}
 	</div>
 </div>

@@ -3,6 +3,7 @@ import { error, json } from "@sveltejs/kit";
 
 import {
 	getAgentRuntime,
+	getAgentRuntimePod,
 	agentRuntimeName,
 } from "$lib/server/kube/client";
 import { db } from "$lib/server/db";
@@ -48,11 +49,26 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		});
 	}
 	// Derived flags for the UI: browserSidecarEnabled drives whether the
-	// "Live browser" tab is offered at all; liveBrowserAvailable says whether
-	// it can actually connect right now (phase Active means the pod is ready).
+	// Browser state tab is offered at all; browserMcpAvailable says whether
+	// it can actually connect right now (phase Active + chromium + mcp ready).
 	const browserSidecarEnabled = cr.spec?.browserSidecar?.enabled === true;
-	const liveBrowserAvailable =
-		browserSidecarEnabled && cr.status?.phase === "Active";
+
+	// Live container readiness (Sleeping → empty list). Drives the
+	// per-container badges in AgentRuntimeCard and is cheap since we're
+	// already hitting the K8s API for the CR.
+	let podContainers: Array<{ name: string; ready: boolean }> = [];
+	let podName: string | null = null;
+	if (cr.status?.phase === "Active") {
+		const pod = await getAgentRuntimePod(slug);
+		if (pod) {
+			podContainers = pod.containers;
+			podName = pod.name;
+		}
+	}
+	const chromiumReady = podContainers.some((c) => c.name === "chromium" && c.ready);
+	const mcpReady = podContainers.some((c) => c.name === "playwright-mcp" && c.ready);
+	const browserMcpAvailable = browserSidecarEnabled && chromiumReady && mcpReady;
+
 	return json({
 		name: cr.metadata.name,
 		namespace: cr.metadata.namespace,
@@ -61,6 +77,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		status: cr.status ?? {},
 		annotations: cr.metadata.annotations ?? {},
 		browserSidecarEnabled,
-		liveBrowserAvailable,
+		browserMcpAvailable,
+		pod: podName ? { name: podName, containers: podContainers } : null,
 	});
 };

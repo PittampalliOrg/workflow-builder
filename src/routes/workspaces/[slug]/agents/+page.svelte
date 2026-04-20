@@ -40,6 +40,11 @@
 	// /api/agents/usages-summary. Drives the "Used by" column.
 	let usageCounts = $state<Record<string, { workflowCount: number; nodeCount: number }>>({});
 
+	// Runtime phase + browser-sidecar flag per agent slug. Populated by a
+	// single GET /api/v1/agent-runtimes call so the list column isn't N+1.
+	type RuntimeInfo = { phase: string; browserSidecarEnabled: boolean };
+	let runtimes = $state<Record<string, RuntimeInfo>>({});
+
 	const filtered = $derived.by(() => {
 		const now = Date.now();
 		const cutoff =
@@ -63,9 +68,10 @@
 			const params = new URLSearchParams();
 			if (includeArchived) params.set('includeArchived', 'true');
 			if (includeEphemeral) params.set('includeEphemeral', 'true');
-			const [agentsRes, usagesRes] = await Promise.all([
+			const [agentsRes, usagesRes, runtimesRes] = await Promise.all([
 				fetch(`/api/agents?${params}`),
-				fetch('/api/agents/usages-summary')
+				fetch('/api/agents/usages-summary'),
+				fetch('/api/v1/agent-runtimes'),
 			]);
 			if (!agentsRes.ok) {
 				errorMessage = `Failed to load agents (${agentsRes.status})`;
@@ -78,6 +84,19 @@
 					counts: Record<string, { workflowCount: number; nodeCount: number }>;
 				};
 				usageCounts = payload.counts ?? {};
+			}
+			if (runtimesRes.ok) {
+				const payload = (await runtimesRes.json()) as {
+					runtimes: Array<{ slug: string; phase: string; browserSidecarEnabled?: boolean }>;
+				};
+				const map: Record<string, RuntimeInfo> = {};
+				for (const r of payload.runtimes ?? []) {
+					map[r.slug] = {
+						phase: r.phase,
+						browserSidecarEnabled: r.browserSidecarEnabled === true,
+					};
+				}
+				runtimes = map;
 			}
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
@@ -250,6 +269,7 @@
 			<th class="px-4 py-2.5 font-medium">Name</th>
 			<th class="px-4 py-2.5 font-medium">Model</th>
 			<th class="px-4 py-2.5 font-medium">Status</th>
+			<th class="px-4 py-2.5 font-medium">Runtime</th>
 			<th class="px-4 py-2.5 font-medium">Registry</th>
 			<th class="px-4 py-2.5 font-medium">Used by</th>
 			<th class="px-4 py-2.5 font-medium">Created</th>
@@ -277,6 +297,38 @@
 				<Badge variant={a.isArchived ? 'outline' : 'default'} class="text-[10px] bg-green-600/15 text-green-700 dark:text-green-400 border-transparent">
 					{a.isArchived ? 'Archived' : 'Active'}
 				</Badge>
+			</td>
+			<td class="px-4 py-2.5">
+				{#if runtimes[a.slug]}
+					{@const rt = runtimes[a.slug]}
+					<span class="inline-flex items-center gap-1.5 text-[11px]">
+						<span
+							title={rt.phase}
+							class="inline-block size-1.5 rounded-full {rt.phase === 'Active'
+								? 'bg-emerald-500'
+								: rt.phase === 'Starting'
+									? 'bg-amber-500 animate-pulse'
+									: rt.phase === 'Failed'
+										? 'bg-red-500'
+										: rt.phase === 'Sleeping'
+											? 'bg-slate-500'
+											: 'bg-slate-400'}"
+							aria-hidden="true"
+						></span>
+						<span class="text-muted-foreground">{rt.phase}</span>
+						{#if rt.browserSidecarEnabled}
+							<span
+								title="Browser sidecar (chromium + playwright-mcp)"
+								aria-label="Browser sidecar"
+								class="text-[10px] leading-none"
+							>
+								🌐
+							</span>
+						{/if}
+					</span>
+				{:else}
+					<span class="text-[11px] text-muted-foreground/60">—</span>
+				{/if}
 			</td>
 			<td class="px-4 py-2.5">
 				<RegistryStatusBadge

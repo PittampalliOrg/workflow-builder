@@ -140,7 +140,18 @@
 								{tpl.avatar}
 							</div>
 							<div class="flex-1 min-w-0">
-								<CardTitle class="text-base">{tpl.name}</CardTitle>
+								<CardTitle class="text-base flex items-center gap-1.5">
+									{tpl.name}
+									{#if tpl.tags.includes('browser')}
+										<span
+											title="Provisions a browser sidecar (chromium + playwright-mcp)"
+											class="text-[10px]"
+											aria-label="Browser sidecar"
+										>
+											🌐
+										</span>
+									{/if}
+								</CardTitle>
 								<CardDescription class="text-xs line-clamp-2">
 									{tpl.description}
 								</CardDescription>
@@ -204,6 +215,17 @@
 							<Badge variant="secondary">#{tag}</Badge>
 						{/each}
 					</div>
+					{#if chosenTemplate.tags.includes('browser')}
+						<Alert class="text-xs">
+							<AlertDescription>
+								<span aria-hidden="true">🌐</span>
+								<strong>Browser sidecar</strong> — this agent's runtime pod will include
+								<code>chromium</code> + <code>playwright-mcp</code> containers (~1 GB memory,
+								10–30 s cold start). Its sessions expose a "Browser state" tab (live page
+								screenshots + console) and a "Shell" tab.
+							</AlertDescription>
+						</Alert>
+					{/if}
 				{/if}
 				<div class="pt-4">
 					<Button
