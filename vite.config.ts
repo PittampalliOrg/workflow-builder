@@ -2,9 +2,9 @@ import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig, type Plugin } from 'vite';
 
-function wsTerminalProxy(): Plugin {
+function wsUpgradeProxy(): Plugin {
 	return {
-		name: 'ws-terminal-proxy',
+		name: 'ws-upgrade-proxy',
 		configureServer(server) {
 			const attach = () => {
 				if (!server.httpServer) {
@@ -13,14 +13,23 @@ function wsTerminalProxy(): Plugin {
 				}
 				server.httpServer.on('upgrade', (req, socket, head) => {
 					const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
-					if (!pathname.startsWith('/api/sandboxes/') || !pathname.includes('/terminal/')) return;
-
+					const isTerminal =
+						pathname.startsWith('/api/sandboxes/') && pathname.includes('/terminal/');
+					const isVnc = /^\/api\/v1\/sessions\/[^/]+\/browser\/vnc$/.test(pathname);
+					if (!isTerminal && !isVnc) return;
+					const modPath = isVnc
+						? '/src/lib/server/ws-vnc-proxy.ts'
+						: '/src/lib/server/ws-terminal-proxy.ts';
 					server
-						.ssrLoadModule('/src/lib/server/ws-terminal-proxy.ts')
+						.ssrLoadModule(modPath)
 						.then((mod) => {
-							(mod.handleUpgrade as (req: unknown, socket: unknown, head: unknown) => boolean)(
-								req, socket, head
-							);
+							const fn = mod.handleUpgrade as (
+								req: unknown,
+								socket: unknown,
+								head: unknown,
+							) => boolean | Promise<boolean>;
+							const r = fn(req, socket, head);
+							if (r instanceof Promise) r.catch(() => {});
 						})
 						.catch(() => {
 							// let other handlers proceed
@@ -33,7 +42,7 @@ function wsTerminalProxy(): Plugin {
 }
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), wsTerminalProxy()],
+	plugins: [tailwindcss(), sveltekit(), wsUpgradeProxy()],
 	server: {
 		port: 3000,
 		host: true,

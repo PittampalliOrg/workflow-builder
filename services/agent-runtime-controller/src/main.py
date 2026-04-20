@@ -116,6 +116,13 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
                 # chromium already binds natively, so nginx is unnecessary.
                 {"name": "CHROME_CDP_HOST_REWRITE", "value": "false"},
             ],
+            "ports": [
+                # VNC on 5901 is what the BFF's /api/v1/sessions/<id>/browser/vnc
+                # WebSocket proxy dials (via Pod IP) for the in-UI live browser
+                # view. Declaring the port makes the intent visible in
+                # `kubectl describe pod` — Pod IP:5901 is reachable regardless.
+                {"name": "vnc", "containerPort": 5901},
+            ],
             "resources": chrome_resources,
             "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
         },

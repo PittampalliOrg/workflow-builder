@@ -43,8 +43,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			exists: false,
 			phase: "Unknown",
 			replicas: 0,
+			browserSidecarEnabled: false,
+			liveBrowserAvailable: false,
 		});
 	}
+	// Derived flags for the UI: browserSidecarEnabled drives whether the
+	// "Live browser" tab is offered at all; liveBrowserAvailable says whether
+	// it can actually connect right now (phase Active means the pod is ready).
+	const browserSidecarEnabled = cr.spec?.browserSidecar?.enabled === true;
+	const liveBrowserAvailable =
+		browserSidecarEnabled && cr.status?.phase === "Active";
 	return json({
 		name: cr.metadata.name,
 		namespace: cr.metadata.namespace,
@@ -52,5 +60,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		spec: cr.spec,
 		status: cr.status ?? {},
 		annotations: cr.metadata.annotations ?? {},
+		browserSidecarEnabled,
+		liveBrowserAvailable,
 	});
 };

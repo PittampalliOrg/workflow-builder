@@ -44,6 +44,9 @@ importers:
       '@dagrejs/dagre':
         specifier: ^3.0.0
         version: 3.0.0
+      '@novnc/novnc':
+        specifier: ^1.6.0
+        version: 1.6.0
       '@opentelemetry/api-logs':
         specifier: ^0.212.0
         version: 0.212.0
@@ -822,6 +825,9 @@ packages:
 
   '@marijn/find-cluster-break@1.0.2':
     resolution: {integrity: sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g==}
+
+  '@novnc/novnc@1.6.0':
+    resolution: {integrity: sha512-CJrmdSe9Yt2ZbLsJpVFoVkEu0KICEvnr3njW25Nz0jodaiFJtg8AYLGZogRYy0/N5HUWkGUsCmegKXYBSqwygw==}
 
   '@opentelemetry/api-logs@0.211.0':
     resolution: {integrity: sha512-swFdZq8MCdmdR22jTVGQDhwqDzcI4M10nhjXkLr1EsIzXgZBqm4ZlmmcWsg3TSNf+3mzgOiqveXmBLZuDi2Lgg==}
@@ -3643,6 +3649,8 @@ snapshots:
       svelte: 5.55.1
 
   '@marijn/find-cluster-break@1.0.2': {}
+
+  '@novnc/novnc@1.6.0': {}
 
   '@opentelemetry/api-logs@0.211.0':
     dependencies:

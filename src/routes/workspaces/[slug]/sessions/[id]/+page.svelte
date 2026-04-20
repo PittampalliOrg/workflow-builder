@@ -34,6 +34,7 @@
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
+	import LiveBrowserView from '$lib/components/sessions/live-browser-view.svelte';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import {
 		Reasoning,
@@ -170,8 +171,37 @@
 		})();
 	});
 	// Transcript: user-facing messages + tool-use (compacted); hides thinking
-	// and raw status events. Debug: show every event verbatim.
-	let viewMode = $state<'transcript' | 'debug'>('transcript');
+	// and raw status events. Debug: show every event verbatim. Live browser:
+	// noVNC view of the agent's chromium sidecar, only offered when the
+	// agent's runtime CR has browserSidecar.enabled=true and the pod is Active.
+	let viewMode = $state<'transcript' | 'debug' | 'live-browser'>('transcript');
+
+	// Runtime flags (polled) that drive whether the Live browser tab is shown.
+	let runtimeFlags = $state<{ browserSidecarEnabled: boolean; liveBrowserAvailable: boolean; phase?: string } | null>(null);
+	let runtimeTimer: ReturnType<typeof setInterval> | null = null;
+	async function refreshRuntimeFlags() {
+		try {
+			const res = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/runtime-flags`);
+			if (!res.ok) return;
+			const body = (await res.json()) as {
+				browserSidecarEnabled?: boolean;
+				liveBrowserAvailable?: boolean;
+				phase?: string;
+			};
+			runtimeFlags = {
+				browserSidecarEnabled: body.browserSidecarEnabled === true,
+				liveBrowserAvailable: body.liveBrowserAvailable === true,
+				phase: body.phase,
+			};
+			// If the user selected the tab before the pod was ready, keep them
+			// there; the LiveBrowserView handles its own reconnect.
+			if (viewMode === 'live-browser' && !runtimeFlags.browserSidecarEnabled) {
+				viewMode = 'transcript';
+			}
+		} catch {
+			/* poll again next tick */
+		}
+	}
 	const displayEvents = $derived.by(() => {
 		let list = events;
 		if (viewMode !== 'debug') {
@@ -529,6 +559,10 @@
 			void checkExpiringCreds();
 			void checkSandboxLiveness();
 			void loadNeighborSessions();
+			void refreshRuntimeFlags();
+			runtimeTimer = setInterval(() => {
+				void refreshRuntimeFlags();
+			}, 10_000);
 		})();
 		stream = createSessionStream(sessionId);
 		unsub = stream.subscribe((state) => {
@@ -556,6 +590,7 @@
 	onDestroy(() => {
 		if (unsub) unsub();
 		stream?.dispose();
+		if (runtimeTimer) clearInterval(runtimeTimer);
 	});
 
 	function queueScroll() {
@@ -1003,6 +1038,18 @@
 					>
 						Debug
 					</button>
+					{#if runtimeFlags?.browserSidecarEnabled}
+						<button
+							type="button"
+							title={runtimeFlags.liveBrowserAvailable
+								? 'Watch the agent drive its browser live'
+								: `Agent not ready yet (phase: ${runtimeFlags.phase ?? 'unknown'})`}
+							class="px-3 py-1 text-xs rounded {viewMode === 'live-browser' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+							onclick={() => (viewMode = 'live-browser')}
+						>
+							Live browser
+						</button>
+					{/if}
 				</div>
 
 				<DropdownMenu.Root bind:open={eventFilterOpen}>
@@ -1098,6 +1145,15 @@
 				</div>
 			{/if}
 
+			{#if viewMode === 'live-browser'}
+				<div class="flex-1 overflow-hidden p-3">
+					<LiveBrowserView
+						sessionId={session?.id ?? sessionId}
+						viewOnly={true}
+						showWaking={runtimeFlags?.phase === 'Starting' || runtimeFlags?.phase === 'Sleeping'}
+					/>
+				</div>
+			{:else}
 			<div class="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(260px,380px)_1fr] overflow-hidden">
 				<!-- Left: compact event list -->
 				<div bind:this={scrollEl} class="overflow-y-auto border-r py-1">
@@ -1162,6 +1218,7 @@
 					{/if}
 				</div>
 			</div>
+			{/if}
 
 			<div class="border-t p-3 space-y-2">
 				<div class="flex gap-2">

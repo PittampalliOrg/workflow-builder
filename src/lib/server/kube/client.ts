@@ -317,6 +317,49 @@ export async function upsertAgentRuntime(
 	return (await res.json()) as AgentRuntime;
 }
 
+/**
+ * Return the Pod IP of the currently-running agent-runtime pod for the given
+ * agent slug, or `null` when no pod is ready. Used by the live-browser WS
+ * proxy to dial the chromium sidecar's VNC port (5901) directly — we prefer
+ * Pod IP over a per-agent Service because agent-runtime pods are Dapr-app-id
+ * routed, not Service routed, and spinning up one Service per agent would
+ * explode the service count with the agent catalog.
+ *
+ * "Ready" here means: pod.phase == Running AND the `chromium` container's
+ * ready flag is true. A half-started pod (agent-py up, chromium still
+ * pulling) returns null so callers surface "reconnecting" in the UI.
+ */
+export async function getAgentRuntimePodIP(
+	agentSlug: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<string | null> {
+	const dep = agentRuntimeName(agentSlug);
+	const selector = encodeURIComponent(`app=${dep}`);
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${namespace}/pods?labelSelector=${selector}`,
+	);
+	if (!res.ok) return null;
+	const body = (await res.json()) as {
+		items?: Array<{
+			status?: {
+				phase?: string;
+				podIP?: string;
+				containerStatuses?: Array<{ name?: string; ready?: boolean }>;
+			};
+		}>;
+	};
+	for (const pod of body.items ?? []) {
+		const phase = pod.status?.phase;
+		if (phase !== "Running") continue;
+		const chromium = (pod.status?.containerStatuses ?? []).find(
+			(c) => c.name === "chromium",
+		);
+		if (!chromium?.ready) continue;
+		if (pod.status?.podIP) return pod.status.podIP;
+	}
+	return null;
+}
+
 export async function deleteAgentRuntime(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
