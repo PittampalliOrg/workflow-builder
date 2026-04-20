@@ -7,7 +7,12 @@
 # default CMD is stdio. Nimble's MCPService CRD has no `command` override,
 # so we need an image whose ENTRYPOINT launches HTTP on 3100 with no args.
 
-FROM mcr.microsoft.com/playwright:v1.49.1-jammy
+# The @playwright/mcp@latest package (currently v0.0.70) bundles Playwright
+# ~1.56 which expects Chromium 1217. An older base image (v1.49.1) ships
+# Playwright 1.49 which spawns Chromium with a different argv shape — the
+# result is `chrome_crashpad_handler: --database is required` at launch.
+# Match the base image to a Playwright minor that understands Chromium 1217.
+FROM mcr.microsoft.com/playwright:v1.56.0-noble
 
 ENV NODE_ENV=production \
     PORT=3100 \
