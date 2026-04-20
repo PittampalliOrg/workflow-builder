@@ -143,7 +143,21 @@ async def bootstrap_mcp_tools(agent) -> int:
 
     from dapr_agents.tool.mcp import MCPClient
 
-    client = MCPClient(persistent_connections=True)
+    # persistent_connections=False: the bootstrap session's anyio TaskGroup
+    # is entered under the FastAPI startup task. When Dapr workflow
+    # activities call a tool from a different asyncio task, reusing the
+    # cached session fails silently at the anyio cancel-scope boundary —
+    # the HTTP POST returns 200 but the streamed response can't be
+    # delivered cross-task, so the MCP server immediately closes the
+    # session and no tool_result ever surfaces.
+    #
+    # Ephemeral mode opens + closes a fresh session in the current
+    # activity's task context, paying one extra initialize/tools/list
+    # round-trip per call but correctly delivering the tool_result. Used
+    # tools are still registered on agent.tool_executor at bootstrap —
+    # the executor closure captures (client, server_name, tool_name), so
+    # ephemeral connections happen at invocation time.
+    client = MCPClient(persistent_connections=False)
     connected = 0
     for entry in entries:
         if not isinstance(entry, dict):
