@@ -35,18 +35,17 @@ FROM ${BASE_IMAGE}
 
 USER root
 
-# Display + VNC export stack:
-#   xvfb      virtual X framebuffer (display :1)
-#   x11vnc    VNC server that exports the framebuffer on :5901. TigerVNC
-#             was rejecting bgr888 SetPixelFormat requests from noVNC,
-#             closing every browser live-view connection mid-handshake.
-#   x11-utils xdpyinfo for the Go entrypoint's readiness probe.
+# Display + VNC:
+#   tigervnc-standalone-server provides Xtigervnc (display :1 + :5901 VNC).
+#   x11-utils provides xdpyinfo for the Go entrypoint's readiness probe.
 #   nginx-light rewrites Host on cross-pod CDP traffic so Chromium's
-#   DNS-rebinding guard accepts requests reaching us via a Service DNS.
+#     DNS-rebinding guard accepts requests reaching us via a Service DNS.
+# TigerVNC rejects non-native SetPixelFormat requests; the client-side
+# LiveBrowserView monkey-patches noVNC to skip that message so Xtigervnc
+# stays on rgb888 (see comment in the Go entrypoint).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        xvfb \
-        x11vnc \
+        tigervnc-standalone-server \
         x11-utils \
         xdg-utils \
         nginx-light \

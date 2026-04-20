@@ -47,6 +47,18 @@
 			client.scaleViewport = true;
 			client.resizeSession = false;
 
+			// TigerVNC (Xtigervnc) on the server side rejects SetPixelFormat
+			// requests for anything other than its native rgb888 with
+			// "invalid pixel format", closing the socket mid-frame. noVNC
+			// otherwise sends a bgr888 preference post-handshake because
+			// HTMLCanvas is little-endian BGRA. Neutralize the method so
+			// the client keeps the server's default rgb888 (noVNC transcodes
+			// at paint time either way — the perf cost is negligible).
+			const internal = client as unknown as { _sendSetPixelFormat?: () => void };
+			if (typeof internal._sendSetPixelFormat === 'function') {
+				internal._sendSetPixelFormat = () => {};
+			}
+
 			client.addEventListener('connect', () => {
 				status = 'connected';
 				reconnectAttempt = 0;

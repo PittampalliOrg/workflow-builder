@@ -156,32 +156,29 @@ type VNCServer struct {
 func (v *VNCServer) Run(ctx context.Context) error {
 	log := klog.FromContext(ctx)
 
-	// Xvfb + x11vnc instead of Xtigervnc. TigerVNC's SConnection rejects
-	// SetPixelFormat(bgr888) as "invalid pixel format" — noVNC in the
-	// browser always requests bgr888 because canvas is little-endian BGRA,
-	// so every browser client was closed mid-handshake. x11vnc accepts any
-	// valid pixel format the client asks for and transcodes server-side.
+	// Xtigervnc combines display server and VNC exporter. We avoided
+	// x11vnc (an earlier attempt) because it pegs CPU on the framebuffer
+	// poll loop and starved its own accept() path. Xtigervnc has a more
+	// robust event loop.
 	//
-	// The two processes share display :1: Xvfb hosts a virtual framebuffer
-	// there; x11vnc exports it to TCP :5901.
+	// Known TigerVNC limitation: SConnection rejects SetPixelFormat
+	// requests for formats other than the server's native rgb888 with
+	// "invalid pixel format". noVNC in the browser prefers bgr888 and
+	// normally sends a matching SetPixelFormat post-handshake. The
+	// client-side LiveBrowserView monkey-patches RFB._sendSetPixelFormat
+	// to a no-op, so noVNC sticks with the server's default rgb888 and
+	// Xtigervnc is happy.
 	//
-	// x11vnc flags:
-	//   -nopw          no auth (BFF WS proxy gates the connection)
-	//   -forever       keep serving after the last client disconnects
-	//   -shared        allow multiple concurrent clients
-	//   -rfbport 5901  pin the port
-	//   -wait 40       40ms between framebuffer polls (~25 fps). Without
-	//                  this x11vnc pegs 100% CPU, starves its own accept
-	//                  loop, and never completes the RFB handshake.
-	//   -defer 40      batch screen-update coalescence window.
-	//   -nocursor      don't render a cursor sprite (Chromium has its own).
-	//   -quiet         suppress per-client handshake chatter.
-	cmd := exec.CommandContext(ctx, "bash", "-c",
-		"set -e; "+
-			"Xvfb :1 -screen 0 1280x1024x24 -ac +extension RANDR -nolisten tcp & "+
-			"XVFB_PID=$!; "+
-			"for i in $(seq 1 50); do xdpyinfo -display :1 >/dev/null 2>&1 && break; sleep 0.1; done; "+
-			"exec x11vnc -display :1 -nopw -forever -shared -rfbport 5901 -wait 40 -defer 40 -nocursor -quiet",
+	// Flags:
+	//   -SecurityTypes None      no password; BFF WS proxy auths.
+	//   -AlwaysShared            accept new clients without kicking the
+	//                            previous one — LiveBrowserView reconnects.
+	//   -DisconnectClients=0     belt-and-suspenders partner to AlwaysShared.
+	cmd := exec.CommandContext(ctx, "Xtigervnc", ":1",
+		"-geometry", "1280x1024",
+		"-SecurityTypes", "None",
+		"-AlwaysShared",
+		"-DisconnectClients=0",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
