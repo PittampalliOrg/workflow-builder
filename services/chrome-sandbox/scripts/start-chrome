@@ -33,6 +33,7 @@ flags+=(--start-maximized) # We're the only thing running, use the whole screen
 flags+=(--disable-field-trial-config) # Keeps things consistent and a little faster (?)
 
 flags+=(--remote-debugging-port=9222) # Enable remote debugging
+flags+=(--remote-debugging-address=0.0.0.0) # Bind CDP on all interfaces — default 127.0.0.1 is unreachable from playwright-mcp-gateway via the k8s Service.
 flags+=(--user-data-dir=/tmp/chrome-data) # DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.
 
 
