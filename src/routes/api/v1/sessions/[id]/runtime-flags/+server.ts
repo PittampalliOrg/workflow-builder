@@ -6,6 +6,12 @@ import { db } from '$lib/server/db';
 import { agents, sessions } from '$lib/server/db/schema';
 import { getAgentRuntime, getAgentRuntimePod } from '$lib/server/kube/client';
 
+// Must stay in sync with ALLOWED_CONTAINERS in ws-kube-exec-proxy.ts and
+// the matching set in server-prod.js. Don't offer a container in the UI
+// that the shell proxy will 400 on — offering daprd would be surprising
+// (it's the Dapr sidecar, not user-authored code).
+const SHELLABLE_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py']);
+
 /**
  * Compact runtime-flags read for the session detail page. Tells the UI
  *  - whether the agent has a browser sidecar at all (gates the Browser
@@ -52,7 +58,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (phase === 'Active') {
 		const pod = await getAgentRuntimePod(slug);
 		if (pod) {
-			shellContainers = pod.containers.filter((c) => c.ready).map((c) => c.name);
+			// Filter to the shell-proxy allow-list so the dropdown never offers
+			// a container the backend will reject (e.g., daprd).
+			shellContainers = pod.containers
+				.filter((c) => c.ready && SHELLABLE_CONTAINERS.has(c.name))
+				.map((c) => c.name);
 			// MCP panel needs the chromium + playwright-mcp sidecar pair
 			// both ready so the per-agent Service backend is live.
 			if (browserSidecarEnabled) {

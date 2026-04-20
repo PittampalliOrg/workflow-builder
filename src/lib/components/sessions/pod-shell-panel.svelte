@@ -1,16 +1,14 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
 	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
 
-	let {
-		sessionId,
-		containers,
-	}: {
+	type Props = {
 		sessionId: string;
 		/** Ready container names from runtime-flags; the user picks one. */
 		containers: string[];
-	} = $props();
+	};
+	let { sessionId, containers }: Props = $props();
 
 	interface TerminalFitAddon {
 		activate: (terminal: Terminal) => void;
@@ -18,46 +16,60 @@
 		dispose: () => void;
 	}
 
-	// Default to a sensible first container. Preference order is
-	// chromium > playwright-mcp > dapr-agent-py (most likely "what do I
-	// want to inspect" for a browser agent).
+	// Preference order for the initial pick: chromium first, then the MCP
+	// sidecar, then the agent runtime. Kept outside the component render so
+	// it's referentially stable.
 	const PREFERRED = ['chromium', 'playwright-mcp', 'dapr-agent-py'];
-	const initialContainer =
-		PREFERRED.find((c) => containers.includes(c)) ?? containers[0] ?? '';
-	let selectedContainer = $state(initialContainer);
 
-	let terminal = $state<Terminal>();
-	let terminalFrame: HTMLDivElement | null = null;
-	let ws: WebSocket | null = null;
-	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	let fitRetryTimer: ReturnType<typeof setTimeout> | null = null;
-	let fitAnimationFrame = 0;
-	let fitAddon: TerminalFitAddon | null = null;
-	let frameObserver: ResizeObserver | null = null;
-	let resizeSubscription: { dispose?: () => void } | null = null;
-	let attachAddon: { activate: (terminal: Terminal) => void; dispose: () => void } | null = null;
-	let sendTerminalResize: ((cols: number, rows: number) => void) | null = null;
-	let reconnectDelay = 1000;
-	let intentionalClose = false;
-	const MAX_RECONNECT_DELAY = 15000;
-
-	const options: ITerminalOptions = {
+	// Static options — declared once at module scope so prop reactivity in
+	// the parent never churns the Xterm component via a fresh reference.
+	const xtermOptions: ITerminalOptions = {
 		fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
 		fontSize: 13,
 		lineHeight: 1.2,
 		cursorBlink: true,
 		cursorStyle: 'bar',
+		scrollback: 5000,
 		theme: {
 			background: '#09090b',
 			foreground: '#fafafa',
 			cursor: '#fafafa',
-			selectionBackground: '#3f3f46'
-		}
+			selectionBackground: '#3f3f46',
+		},
 	};
 
-	function getWsUrl(): string {
+	// ---- State ----
+	let selectedContainer = $state(
+		PREFERRED.find((c) => containers.includes(c)) ?? containers[0] ?? '',
+	);
+	/** High-level connection phase surfaced to the user — rendered as a
+	 *  small badge above the terminal rather than as writeln() spam. That
+	 *  single source of truth avoids the "flashing" effect that came from
+	 *  the terminal scrolling a new "Disconnected / Reconnecting / Connecting"
+	 *  banner on every reconnect cycle. */
+	let connectionState = $state<'connecting' | 'open' | 'reconnecting' | 'closed'>('connecting');
+	let lastCloseReason = $state<string | null>(null);
+
+	// ---- Refs ----
+	let terminal: Terminal | undefined;
+	let terminalFrame: HTMLDivElement | null = null;
+	let ws: WebSocket | null = null;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let fitAnimationFrame = 0;
+	let fitAddon: TerminalFitAddon | null = null;
+	let frameObserver: ResizeObserver | null = null;
+	let resizeSubscription: { dispose?: () => void } | null = null;
+	let attachAddon: { activate: (t: Terminal) => void; dispose: () => void } | null = null;
+	let sendTerminalResize: ((cols: number, rows: number) => void) | null = null;
+	let reconnectDelay = 1000;
+	let intentionalClose = false;
+	let destroyed = false;
+	const MAX_RECONNECT_DELAY = 15000;
+
+	function buildWsUrl(container: string): string {
 		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		return `${proto}//${location.host}/api/v1/sessions/${encodeURIComponent(sessionId)}/shell?container=${encodeURIComponent(selectedContainer)}`;
+		return `${proto}//${location.host}/api/v1/sessions/${encodeURIComponent(sessionId)}/shell?container=${encodeURIComponent(container)}`;
 	}
 
 	function disposeBindings() {
@@ -68,145 +80,181 @@
 		sendTerminalResize = null;
 	}
 
-	function clearPendingFits() {
-		if (fitAnimationFrame) {
-			cancelAnimationFrame(fitAnimationFrame);
-			fitAnimationFrame = 0;
-		}
-		if (fitRetryTimer) {
-			clearTimeout(fitRetryTimer);
-			fitRetryTimer = null;
-		}
-	}
-
 	function fitTerminal(): boolean {
 		if (!terminalFrame || !fitAddon || !terminalFrame.offsetWidth || !terminalFrame.offsetHeight) {
 			return false;
 		}
-		fitAddon.fit();
-		if (terminal && sendTerminalResize) {
-			sendTerminalResize(terminal.cols, terminal.rows);
+		try {
+			fitAddon.fit();
+		} catch {
+			return false;
 		}
+		if (terminal && sendTerminalResize) sendTerminalResize(terminal.cols, terminal.rows);
 		return true;
 	}
 
-	function queueFit(retry = true) {
-		clearPendingFits();
+	/** Coalesce multiple fit requests (ResizeObserver storms, socket-open +
+	 *  addon-load overlap) into a single RAF-driven fit so we only
+	 *  re-render the xterm grid once per animation frame. */
+	function scheduleFit() {
+		if (fitAnimationFrame) return;
 		fitAnimationFrame = requestAnimationFrame(() => {
 			fitAnimationFrame = 0;
-			const fitted = fitTerminal();
-			if (!fitted && retry) {
-				fitRetryTimer = setTimeout(() => queueFit(false), 75);
-			}
+			fitTerminal();
 		});
 	}
 
-	async function connect(term: Terminal, options: { resetDisplay?: boolean } = {}) {
+	async function connect(container: string) {
+		if (!terminal || destroyed) return;
+		// Tear down any previous socket first.
 		if (ws) {
-			ws.close();
+			try {
+				ws.close();
+			} catch {
+				/* noop */
+			}
 			ws = null;
 		}
 		disposeBindings();
-		if (options.resetDisplay) {
-			term.clear();
-			term.writeln(`\x1b[32mPod shell\x1b[0m \x1b[90m[${selectedContainer}]\x1b[0m`);
-			term.writeln('');
-		}
-		term.writeln('\x1b[90mConnecting…\x1b[0m');
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		reconnectTimer = null;
 
-		const socket = new WebSocket(getWsUrl());
+		connectionState = 'connecting';
+		lastCloseReason = null;
+
+		const socket = new WebSocket(buildWsUrl(container));
 		socket.binaryType = 'arraybuffer';
 		ws = socket;
 
+		// Lazy-load AttachAddon once per connect.
 		const { AttachAddon } = await XtermAddon.AttachAddon();
+		if (destroyed || ws !== socket) return;
 
 		socket.onopen = () => {
+			if (!terminal) return;
 			reconnectDelay = 1000;
+			connectionState = 'open';
 			attachAddon = new AttachAddon(socket, { bidirectional: true });
-			term.loadAddon(attachAddon);
+			terminal.loadAddon(attachAddon);
 
-			const sendResize = (cols: number, rows: number) => {
+			sendTerminalResize = (cols: number, rows: number) => {
 				if (socket.readyState === WebSocket.OPEN) {
 					socket.send(`\x01${JSON.stringify({ type: 'resize', cols, rows })}`);
 				}
 			};
-			sendTerminalResize = sendResize;
-			resizeSubscription = term.onResize(({ cols, rows }) => sendResize(cols, rows));
-			queueFit();
-			sendResize(term.cols, term.rows);
+			resizeSubscription = terminal.onResize(({ cols, rows }) => sendTerminalResize!(cols, rows));
+			scheduleFit();
+			sendTerminalResize(terminal.cols, terminal.rows);
 		};
 
 		socket.onclose = (ev) => {
 			disposeBindings();
-			if (intentionalClose) return;
-			term.writeln('');
-			term.writeln(
-				`\x1b[90mDisconnected${ev.reason ? ': ' + ev.reason : ''} (code ${ev.code})\x1b[0m`,
-			);
-			scheduleReconnect(term);
+			if (intentionalClose || destroyed) {
+				connectionState = 'closed';
+				return;
+			}
+			lastCloseReason = ev.reason || null;
+			connectionState = 'reconnecting';
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			reconnectTimer = setTimeout(() => {
+				reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+				connect(selectedContainer);
+			}, reconnectDelay);
 		};
 
 		socket.onerror = () => {
-			// onclose follows
+			// onclose follows naturally; state transitions there.
 		};
-	}
-
-	function scheduleReconnect(term: Terminal) {
-		if (intentionalClose) return;
-		if (reconnectTimer) clearTimeout(reconnectTimer);
-		term.writeln(`\x1b[90mReconnecting in ${reconnectDelay / 1000}s…\x1b[0m`);
-		reconnectTimer = setTimeout(() => {
-			reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
-			connect(term, { resetDisplay: true });
-		}, reconnectDelay);
 	}
 
 	async function onLoad(term: Terminal) {
 		terminal = term;
-
 		const { FitAddon } = await XtermAddon.FitAddon();
+		if (destroyed) return;
 		fitAddon = new FitAddon();
 		term.loadAddon(fitAddon);
-
 		await tick();
-		queueFit();
-
+		scheduleFit();
 		if (terminalFrame) {
-			frameObserver = new ResizeObserver(() => queueFit());
+			// Debounced to absorb resize storms during layout.
+			frameObserver = new ResizeObserver(() => {
+				if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+				resizeDebounceTimer = setTimeout(() => scheduleFit(), 80);
+			});
 			frameObserver.observe(terminalFrame);
 		}
-
-		term.writeln(`\x1b[32mPod shell\x1b[0m \x1b[90m[${selectedContainer}]\x1b[0m`);
+		// Intro banner — written once per mount, not on every reconnect.
+		term.writeln('\x1b[32m╭─ Pod shell ─╮\x1b[0m');
 		term.writeln('');
-		connect(term);
+		connect(selectedContainer);
 	}
 
+	/** Container switcher: tear down current WS, open a new one, leave the
+	 *  terminal buffer intact so the user's scroll history survives. */
 	function switchContainer(next: string) {
-		if (!next || next === selectedContainer) return;
+		if (!next || next === selectedContainer || !terminal) return;
 		selectedContainer = next;
 		if (reconnectTimer) clearTimeout(reconnectTimer);
-		if (terminal) {
-			connect(terminal, { resetDisplay: true });
-		}
+		reconnectTimer = null;
+		// Visually separate the two sessions without clearing the buffer.
+		terminal.writeln('');
+		terminal.writeln(`\x1b[90m── switching to ${next} ──\x1b[0m`);
+		connect(next);
 	}
 
-	onMount(() => {
-		const onWindowResize = () => queueFit();
+	// ---- Svelte 5 lifecycle via $effect ----
+	$effect(() => {
+		const onWindowResize = () => scheduleFit();
 		window.addEventListener('resize', onWindowResize);
 		return () => {
+			destroyed = true;
 			intentionalClose = true;
+			window.removeEventListener('resize', onWindowResize);
 			if (reconnectTimer) clearTimeout(reconnectTimer);
-			clearPendingFits();
+			if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+			if (fitAnimationFrame) cancelAnimationFrame(fitAnimationFrame);
 			frameObserver?.disconnect();
 			fitAddon?.dispose?.();
 			disposeBindings();
-			window.removeEventListener('resize', onWindowResize);
 			if (ws) {
-				ws.close();
+				try {
+					ws.close();
+				} catch {
+					/* noop */
+				}
 				ws = null;
 			}
 		};
 	});
+
+	// Keep `selectedContainer` valid when the parent's `containers` prop
+	// changes (e.g., pod restarts and a container drops). `untrack` prevents
+	// a feedback loop — we only want to react to the prop, not the state.
+	$effect(() => {
+		if (containers.length === 0) return;
+		if (!containers.includes(untrack(() => selectedContainer))) {
+			const fallback = PREFERRED.find((c) => containers.includes(c)) ?? containers[0];
+			if (fallback) {
+				selectedContainer = fallback;
+				if (terminal) connect(fallback);
+			}
+		}
+	});
+
+	const statusLabel = $derived.by(() => {
+		if (connectionState === 'open') return 'Connected';
+		if (connectionState === 'connecting') return 'Connecting…';
+		if (connectionState === 'reconnecting')
+			return `Reconnecting${lastCloseReason ? ` — ${lastCloseReason}` : '…'}`;
+		return 'Closed';
+	});
+	const statusTone = $derived(
+		connectionState === 'open'
+			? 'bg-emerald-500'
+			: connectionState === 'connecting' || connectionState === 'reconnecting'
+				? 'bg-amber-500 animate-pulse'
+				: 'bg-muted-foreground/40',
+	);
 </script>
 
 <div class="flex h-full flex-col gap-2">
@@ -221,16 +269,18 @@
 				<option value={c}>{c}</option>
 			{/each}
 		</select>
-		<span class="ml-auto text-muted-foreground/70">
-			Shell opens bash if available, else /bin/sh
+		<span class="ml-2 inline-flex items-center gap-1.5" aria-live="polite">
+			<span class="inline-block size-2 shrink-0 rounded-full {statusTone}" aria-hidden="true"></span>
+			<span class="text-muted-foreground">{statusLabel}</span>
 		</span>
+		<span class="ml-auto text-muted-foreground/70 truncate">bash if available, else /bin/sh</span>
 	</div>
 
 	<div
 		bind:this={terminalFrame}
 		class="pod-shell-frame flex-1 min-h-0 overflow-hidden rounded-md border bg-[#09090b] p-1"
 	>
-		<Xterm class="h-full w-full" {options} {onLoad} />
+		<Xterm class="h-full w-full" options={xtermOptions} {onLoad} />
 	</div>
 </div>
 
