@@ -447,9 +447,24 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
     dep_name = _deployment_name(spec["agentSlug"])
     logger.info("wake signal %s -> scaling Deployment %s to 1", new, dep_name)
     _scale_deployment(dep_name, namespace, 1)
+    # Read the live Deployment to decide phase — on_deployment_event may
+    # have already set phase=Active (if the pod was already running for
+    # another reason), and we'd otherwise stomp that to Starting. Pick
+    # Active when readyReplicas≥1 so the wake handler is idempotent.
+    phase = "Starting"
+    ready = 1
+    try:
+        live = APPS_V1.read_namespaced_deployment(name=dep_name, namespace=namespace)
+        ready = int((live.status.ready_replicas or 0))
+        if ready >= 1:
+            phase = "Active"
+    except client.ApiException as exc:
+        if exc.status != 404:
+            logger.warning("on_wake live deployment read failed: %s", exc)
     _patch_status(name, namespace, {
-        "phase": "Starting",
+        "phase": phase,
         "replicas": 1,
+        "readyReplicas": ready,
         "lastActiveAt": _now_iso(),
         "lastTransitionTime": _now_iso(),
         "message": f"Wake requested at {new}",

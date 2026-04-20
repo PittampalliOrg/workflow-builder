@@ -17,30 +17,45 @@
 	const FRAME_INTERVAL_MS = 1000;
 	const STATE_INTERVAL_MS = 2000;
 
-	// Holds the displayed src; new frames are preloaded off-screen and
-	// swapped in via frameReady(), so the old image stays on screen until
-	// the new one has decoded — eliminates the between-request flash.
+	// Holds the displayed src. Each new frame is fetched as a Blob and
+	// exposed via URL.createObjectURL so the <img> assignment resolves
+	// instantly from memory — no second network fetch (the screenshot
+	// endpoint sends Cache-Control: no-store, which was causing the
+	// previous-frame flicker with a plain <img src> swap). The previous
+	// object URL is revoked after the new frame paints.
 	let displaySrc = $state<string>('');
-	let frameFetching = $state(false);
+	let frameFetching = false;
+	let previousObjectUrl: string | null = null;
 	let browserState = $state<BrowserState | null>(null);
 	let stateErr = $state<string | null>(null);
 	let loadingState = $state(true);
 	let consoleOpen = $state(false);
 
-	function bumpFrame() {
+	async function bumpFrame() {
 		if (frameFetching) return;
 		frameFetching = true;
-		const next = `/api/v1/sessions/${encodeURIComponent(sessionId)}/browser/screenshot?t=${Date.now()}`;
-		const img = new Image();
-		img.onload = () => {
-			displaySrc = next;
+		try {
+			const res = await fetch(
+				`/api/v1/sessions/${encodeURIComponent(sessionId)}/browser/screenshot?t=${Date.now()}`,
+				{ credentials: 'include' },
+			);
+			if (!res.ok) return;
+			const blob = await res.blob();
+			const nextUrl = URL.createObjectURL(blob);
+			const prev = previousObjectUrl;
+			previousObjectUrl = nextUrl;
+			displaySrc = nextUrl;
+			// Revoke the previous URL one tick after the src swap so the
+			// paint has landed. Safari can otherwise hit a decoded blob
+			// that's been torn down mid-paint.
+			if (prev) {
+				requestAnimationFrame(() => URL.revokeObjectURL(prev));
+			}
+		} catch {
+			// Keep the last frame; next tick will retry.
+		} finally {
 			frameFetching = false;
-		};
-		img.onerror = () => {
-			// Keep the last frame visible; poll again next tick.
-			frameFetching = false;
-		};
-		img.src = next;
+		}
 	}
 
 	async function refreshState() {
@@ -71,14 +86,15 @@
 		// Kick off the first frame + state fetch immediately so there's no
 		// visible delay before the panel populates.
 		untrack(() => {
-			bumpFrame();
+			void bumpFrame();
 			void refreshState();
 		});
-		const frameTimer = setInterval(bumpFrame, FRAME_INTERVAL_MS);
+		const frameTimer = setInterval(() => void bumpFrame(), FRAME_INTERVAL_MS);
 		const stateTimer = setInterval(() => void refreshState(), STATE_INTERVAL_MS);
 		return () => {
 			clearInterval(frameTimer);
 			clearInterval(stateTimer);
+			if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
 		};
 	});
 
