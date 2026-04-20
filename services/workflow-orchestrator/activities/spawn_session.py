@@ -84,6 +84,13 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "vaultIds": input_data.get("vaultIds") or [],
             "initialMessage": input_data.get("initialMessage"),
             "title": input_data.get("title"),
+            # Forward the per-agent runtime identity so the BFF can wake
+            # the target pod before returning. Without the wake, the parent's
+            # subsequent ctx.call_child_workflow times out because the agent-
+            # runtime pod is scaled to 0 and not registered with Dapr
+            # placement. See src/routes/api/internal/sessions/ensure-for-workflow.
+            "agentAppId": input_data.get("agentAppId"),
+            "agentSlug": input_data.get("agentSlug"),
             # Sandbox plumbing forwarded to the BFF's buildChildInput so
             # session_workflow → agent_workflow can bind the OpenShell sandbox.
             "workspaceRef": input_data.get("workspaceRef"),

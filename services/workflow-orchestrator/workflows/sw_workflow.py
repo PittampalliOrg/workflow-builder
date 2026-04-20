@@ -1233,6 +1233,16 @@ def _run_native_durable_agent_child_workflow(
             "vaultIds": child_input.get("vaultIds") or [],
             "initialMessage": run_prompt or prompt,
             "title": f"Workflow {tc.workflow_id} · {task_name}",
+            # Per-agent runtime target identity. The BFF needs agentAppId
+            # (or agentSlug) to wake the target pod BEFORE the parent yields
+            # ctx.call_child_workflow(app_id=target["app_id"]) — otherwise
+            # Dapr's CreateWorkflowInstance RPC times out with
+            # "the app may not be available: context deadline exceeded"
+            # and the parent orchestrator silently stalls on the task-5
+            # completion event.
+            "agentAppId": target.get("app_id"),
+            "agentSlug": flattened_args.get("agentSlug")
+            or (agent_config.get("slug") if isinstance(agent_config, dict) else None),
             # Sandbox plumbing — forwarded to ensure-for-workflow which in turn
             # embeds these in childInput so session_workflow can forward them
             # to agent_workflow. Required for any durable/run that uses
