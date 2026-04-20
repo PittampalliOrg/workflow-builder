@@ -35,11 +35,13 @@ flags+=(--disable-field-trial-config) # Keeps things consistent and a little fas
 flags+=(--remote-debugging-port=9222) # Enable remote debugging.
 flags+=(--user-data-dir=/tmp/chrome-data) # DevTools remote debugging requires a non-default data directory.
 
-# Chromium 119+ silently ignores --remote-debugging-address=0.0.0.0 and
-# only binds CDP on 127.0.0.1 (security change). socat forwards the
-# cross-pod 0.0.0.0:9222 traffic to Chrome's localhost listener so
-# playwright-mcp-gateway can reach us via the k8s Service.
-socat TCP-LISTEN:9223,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9222 &
+# Chromium 119+ only accepts Host: localhost (or an IP literal) on its
+# /json/* HTTP endpoints (DNS-rebinding protection). Cross-pod clients
+# hitting us via the k8s Service's DNS name would get 500. nginx
+# terminates on 9223, rewrites Host -> localhost, and forwards to
+# chromium's 127.0.0.1:9222 — covering both /json/* HTTP and the
+# /devtools/* WebSocket upgrade.
+nginx -g 'daemon off;' &
 
 # Launch Chrome
 chromium "${flags[@]}" "https://www.google.com"

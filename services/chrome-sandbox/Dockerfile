@@ -36,13 +36,16 @@ FROM ${BASE_IMAGE}
 USER root
 
 # tigervnc-standalone-server provides Xtigervnc; x11-utils provides xdpyinfo
-# which the Go entrypoint uses to probe VNC readiness.
+# which the Go entrypoint uses to probe VNC readiness. nginx rewrites the
+# Host header on inbound CDP traffic (Chromium's DNS-rebinding guard
+# only accepts Host: localhost or an IP literal, so the Kubernetes
+# Service's DNS name gets 500'd without a rewrite).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tigervnc-standalone-server \
         x11-utils \
         xdg-utils \
-        socat \
+        nginx-light \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium from openshell-sandbox lives at /opt/pw-browsers/chromium-*/chrome.
@@ -56,9 +59,22 @@ RUN set -eux; \
 # X11 socket dir
 RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 
-# Drop in the entrypoint + start-chrome wrapper.
+# Drop in the entrypoint + start-chrome wrapper + nginx CDP proxy config.
+# nginx rewrites Host: -> localhost on inbound 9223 traffic so Chromium's
+# DNS-rebinding guard accepts the connection from playwright-mcp-gateway
+# (which reaches us via the k8s Service's DNS name).
 COPY --chmod=0755 scripts/start-chrome /start-chrome
+COPY --chmod=0644 scripts/nginx-cdp.conf /etc/nginx/nginx.conf
 COPY --from=builder --chmod=0755 /chrome-sandbox-entrypoint /chrome-sandbox-entrypoint
+
+# nginx writes pid + temp + log under /var; sandbox user can't touch those.
+# Redirect everything under /tmp and make the runtime dirs world-writable
+# (the image already drops to the non-root sandbox user below).
+RUN set -eux; \
+    mkdir -p /tmp/nginx /tmp/nginx/client_body /tmp/nginx/proxy /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi /tmp/nginx/log; \
+    chmod -R 0777 /tmp/nginx; \
+    rm -f /var/log/nginx/* 2>/dev/null || true; \
+    chmod -R 0777 /var/log/nginx /var/lib/nginx 2>/dev/null || true
 
 # OpenShell's sandbox user owns everything at runtime.
 RUN chown -R sandbox:sandbox /home/sandbox 2>/dev/null || true
