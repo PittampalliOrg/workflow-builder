@@ -142,7 +142,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (reuseSlug) {
 			try {
 				const { wakeAgentRuntime } = await import("$lib/server/kube/client");
-				await wakeAgentRuntime(reuseSlug, 30_000);
+				await wakeAgentRuntime(reuseSlug, 20_000);
 			} catch (err) {
 				console.warn(
 					`[ensure-for-workflow] reuse wake ${reuseSlug} failed, continuing anyway:`,
@@ -224,7 +224,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (wakeSlug) {
 		try {
 			const { wakeAgentRuntime } = await import("$lib/server/kube/client");
-			await wakeAgentRuntime(wakeSlug, 30_000);
+			// Keep the wake budget well below the Python activity's 30s read
+			// timeout (spawn_session.py) so we return 200 before the caller
+			// abandons the request. A cold 4-container browser-sidecar pod
+			// won't always reach phase=Active in 20s — in that case the wake
+			// throws ("timeout") but the session row + childInput are still
+			// returned so the parent can yield call_child_workflow; Dapr
+			// will retry the child-workflow schedule until placement catches
+			// up with the pod that keeps warming in the background.
+			await wakeAgentRuntime(wakeSlug, 20_000);
 		} catch (err) {
 			console.warn(
 				`[ensure-for-workflow] wake ${wakeSlug} failed, continuing anyway:`,

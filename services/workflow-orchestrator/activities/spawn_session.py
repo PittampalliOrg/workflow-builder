@@ -100,11 +100,17 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"
         try:
+            # 60s read timeout: the BFF endpoint synchronously wakes the
+            # per-agent runtime pod before responding (up to ~20s for a
+            # cold 4-container browser-sidecar pod) + does DB writes. A
+            # 30s budget is tight when the placement service hasn't
+            # caught up; 60s gives the wake path room without masking
+            # true infrastructure outages.
             response = requests.post(
                 endpoint,
                 json=payload,
                 headers={"X-Internal-Token": internal_token},
-                timeout=30,
+                timeout=60,
             )
         except requests.exceptions.RequestException as exc:
             logger.warning(
