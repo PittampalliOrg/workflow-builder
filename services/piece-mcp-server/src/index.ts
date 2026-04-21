@@ -101,7 +101,7 @@ function createMcpServer(): Server {
 		},
 	);
 
-	registerPieceTools(server, piece, metadata);
+	registerPieceTools(server, piece, metadata, normalizePieceName(pieceName));
 	return server;
 }
 
@@ -319,7 +319,7 @@ async function main(): Promise<void> {
 			{ name: "dry-run", version: "0.0.0" },
 			{ capabilities: { tools: {} } },
 		);
-		registeredTools = registerPieceTools(dryServer, piece, metadata);
+		registeredTools = registerPieceTools(dryServer, piece, metadata, normalizedName);
 	}
 
 	// Start HTTP server

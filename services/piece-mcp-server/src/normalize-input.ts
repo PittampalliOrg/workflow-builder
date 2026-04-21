@@ -31,6 +31,12 @@ function extensionFromMimeType(value: string): string | undefined {
 		return "xlsx";
 	}
 	if (mimeType === "application/vnd.ms-excel") return "xls";
+	if (
+		mimeType ===
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	) {
+		return "pptx";
+	}
 	if (mimeType === "text/csv") return "csv";
 	if (mimeType === "application/pdf") return "pdf";
 	if (mimeType === "application/json") return "json";
@@ -38,12 +44,74 @@ function extensionFromMimeType(value: string): string | undefined {
 	return undefined;
 }
 
-function normalizeFileValue(
+/**
+ * Fetch a URL and convert the response body to base64. Used to transparently
+ * resolve FILE props passed as `{url: "..."}` into `{base64, data, extension}`
+ * so pieces that only read `fileData.base64` (e.g. microsoft-onedrive's
+ * upload_onedrive_file) work seamlessly. Bypasses the LLM-truncates-large-
+ * base64-in-tool-call-args problem by fetching server-side.
+ */
+async function fetchUrlAsBase64(
+	url: string,
+): Promise<{ base64: string; extension?: string } | null> {
+	try {
+		const res = await fetch(url, { redirect: "follow" });
+		if (!res.ok) {
+			console.warn(
+				`[normalize-input] FILE url fetch failed: ${res.status} ${url}`,
+			);
+			return null;
+		}
+		const buf = Buffer.from(await res.arrayBuffer());
+		const base64 = buf.toString("base64");
+		const contentType = res.headers.get("content-type") || "";
+		const extension = extensionFromMimeType(contentType);
+		return { base64, extension };
+	} catch (err) {
+		console.warn(
+			`[normalize-input] FILE url fetch threw: ${err instanceof Error ? err.message : String(err)} ${url}`,
+		);
+		return null;
+	}
+}
+
+async function normalizeFileValue(
 	value: unknown,
 	fallbackExtension?: string,
-): unknown {
+): Promise<unknown> {
 	if (isRecord(value)) {
 		const fileValue: Record<string, unknown> = { ...value };
+		// URL-mode: if only `url` is provided (no base64/data yet), fetch the
+		// URL server-side and populate base64 so downstream pieces that read
+		// `fileData.base64` (microsoft-onedrive, google-drive, etc.) work.
+		// This bypasses the LLM-can't-emit-large-base64 tool-call-arg limit —
+		// the agent just points at a reachable URL and we do the transport.
+		const hasBase64 =
+			typeof fileValue.base64 === "string" &&
+			(fileValue.base64 as string).length > 0;
+		const hasData =
+			typeof fileValue.data === "string" &&
+			(fileValue.data as string).length > 0;
+		if (
+			!hasBase64 &&
+			!hasData &&
+			typeof fileValue.url === "string" &&
+			(fileValue.url as string).trim().length > 0
+		) {
+			const fetched = await fetchUrlAsBase64(
+				(fileValue.url as string).trim(),
+			);
+			if (fetched) {
+				fileValue.base64 = fetched.base64;
+				fileValue.data = fetched.base64;
+				if (
+					typeof fileValue.extension !== "string" &&
+					fetched.extension
+				) {
+					fileValue.extension = fetched.extension;
+				}
+			}
+		}
 		if (
 			typeof fileValue.base64 === "string" &&
 			fileValue.data === undefined
@@ -72,7 +140,7 @@ function normalizeFileValue(
 		try {
 			const parsed = JSON.parse(trimmed) as unknown;
 			if (isRecord(parsed)) {
-				return normalizeFileValue(parsed, fallbackExtension);
+				return await normalizeFileValue(parsed, fallbackExtension);
 			}
 		} catch {
 			const base64Match = trimmed.match(
@@ -191,10 +259,10 @@ function applyKnownAliases(
 	}
 }
 
-export function normalizeActionInput(
+export async function normalizeActionInput(
 	action: { props?: unknown },
 	input: Record<string, unknown>,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
 	const normalizedInput: Record<string, unknown> = { ...input };
 	if (!isRecord(action.props)) {
 		return normalizedInput;
@@ -212,7 +280,7 @@ export function normalizeActionInput(
 		const currentValue = normalizedInput[propKey];
 
 		if (propType === "FILE") {
-			normalizedInput[propKey] = normalizeFileValue(
+			normalizedInput[propKey] = await normalizeFileValue(
 				currentValue,
 				extensionFromFilename(normalizedInput.fileName),
 			);

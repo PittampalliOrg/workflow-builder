@@ -16,11 +16,12 @@ import {
 	RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
-import type { Piece } from "@activepieces/pieces-framework";
+import type { Action, Piece } from "@activepieces/pieces-framework";
 import { actionPropsToSchema, type JsonSchema } from "./prop-schema.js";
 import { normalizeActionInput } from "./normalize-input.js";
 import { buildActionContext } from "./context-factory.js";
 import { resolveAuth } from "./auth-resolver.js";
+import { extensionsFor } from "./extensions/index.js";
 
 /**
  * Convert a JSON Schema object to a Zod raw shape for use with McpServer.registerTool().
@@ -97,6 +98,7 @@ export function registerPieceTools(
 	server: Server,
 	piece: Piece,
 	metadata: PieceMetadataRow,
+	pieceName?: string,
 ): RegisteredTool[] {
 	const actions = metadata.actions ?? {};
 	const registeredTools: RegisteredTool[] = [];
@@ -108,11 +110,16 @@ export function registerPieceTools(
 		inputSchema: Record<string, unknown>;
 	}> = [];
 
-	// Map of tool name → handler info
+	// Map of tool name → handler info. `runtimeAction` is stashed here so
+	// both vendored-piece actions and in-repo extension actions share the
+	// same execution path in the CallTool handler below (no branching on
+	// "is this an extension" at call time).
+	// biome-ignore lint/suspicious/noExplicitAny: Action's generics are internal
 	const toolHandlers = new Map<
 		string,
 		{
 			requireAuth: boolean;
+			runtimeAction: Action<any, any>;
 		}
 	>();
 
@@ -147,9 +154,43 @@ export function registerPieceTools(
 
 		toolHandlers.set(actionKey, {
 			requireAuth: actionDef.requireAuth !== false,
+			runtimeAction: action,
 		});
 
 		registeredTools.push({ name: actionKey, description });
+	}
+
+	// Extension actions — supplementary tools defined next to this file in
+	// src/extensions/<piece-name>.ts. Registered alongside vendored actions
+	// so agents see them in the same tools/list. See src/extensions/index.ts.
+	if (pieceName) {
+		for (const extAction of extensionsFor(pieceName)) {
+			const displayName = extAction.displayName || extAction.name;
+			const description = extAction.description
+				? `${displayName}: ${extAction.description}`
+				: displayName;
+			const props = (extAction.props ?? {}) as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const inputSchema = actionPropsToSchema(props);
+
+			toolDefs.push({
+				name: extAction.name,
+				description,
+				inputSchema,
+			});
+
+			toolHandlers.set(extAction.name, {
+				requireAuth: Boolean(extAction.auth),
+				runtimeAction: extAction,
+			});
+
+			registeredTools.push({ name: extAction.name, description });
+			console.log(
+				`[piece-mcp] Registered extension tool: ${extAction.name} (piece=${pieceName})`,
+			);
+		}
 	}
 
 	// Register ListTools handler
@@ -174,7 +215,7 @@ export function registerPieceTools(
 			};
 		}
 
-		const { requireAuth } = handler;
+		const { requireAuth, runtimeAction } = handler;
 
 		try {
 			// Resolve auth if needed
@@ -194,12 +235,9 @@ export function registerPieceTools(
 				}
 			}
 
-			// Re-fetch action from piece (guaranteed non-null since we verified at registration)
-			const runtimeAction = piece.getAction(name)!;
-
 			// Normalize input (unwrap dropdowns, etc.)
 			const inputArgs = (args ?? {}) as Record<string, unknown>;
-			const normalizedInput = normalizeActionInput(runtimeAction, inputArgs);
+			const normalizedInput = await normalizeActionInput(runtimeAction, inputArgs);
 
 			// Build AP execution context
 			const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -333,7 +371,7 @@ export function registerPieceToolsWithUI(
 					}
 
 					const runtimeAction = piece.getAction(actionKey)!;
-					const normalizedInput = normalizeActionInput(runtimeAction, args);
+					const normalizedInput = await normalizeActionInput(runtimeAction, args);
 
 					const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 					const { context } = buildActionContext({
@@ -371,6 +409,103 @@ export function registerPieceToolsWithUI(
 		);
 
 		registeredTools.push({ name: actionKey, description });
+	}
+
+	// Extension actions for this piece — see src/extensions/.
+	for (const extAction of extensionsFor(pieceName)) {
+		const displayName = extAction.displayName || extAction.name;
+		const description = extAction.description
+			? `${displayName}: ${extAction.description}`
+			: displayName;
+		const props = (extAction.props ?? {}) as Record<
+			string,
+			Record<string, unknown>
+		>;
+		const jsonSchema = actionPropsToSchema(props);
+		const zodShape = jsonSchemaToZodShape(jsonSchema);
+
+		const uiMeta = {
+			ui: { resourceUri },
+			"ui/resourceUri": resourceUri,
+		};
+
+		// biome-ignore lint/suspicious/noExplicitAny: see vendored-action registration above
+		(server as any).registerTool(
+			extAction.name,
+			{
+				title: displayName,
+				description,
+				// biome-ignore lint/suspicious/noExplicitAny: SDK generic pathology
+				inputSchema: zodShape as any,
+				_meta: uiMeta,
+				// biome-ignore lint/suspicious/noExplicitAny: SDK generic pathology
+			} as any,
+			async (args: Record<string, unknown>) => {
+				const requireAuth = Boolean(extAction.auth);
+				try {
+					let auth: unknown;
+					if (requireAuth) {
+						auth = await resolveAuth();
+						if (auth == null) {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: `Missing credentials for "${extAction.name}". Set CONNECTION_EXTERNAL_ID or CREDENTIALS_JSON env var.`,
+									},
+								],
+								isError: true,
+							};
+						}
+					}
+
+					const normalizedInput = await normalizeActionInput(
+						extAction,
+						args,
+					);
+					const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+					const { context } = buildActionContext({
+						auth,
+						propsValue: normalizedInput,
+						executionId,
+						actionName: extAction.name,
+					});
+					const result = await extAction.run(context);
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text:
+									typeof result === "string"
+										? result
+										: JSON.stringify(result, null, 2),
+							},
+						],
+					};
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					console.error(
+						`[piece-mcp] Extension tool "${extAction.name}" failed:`,
+						error,
+					);
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Action "${extAction.name}" failed: ${message}`,
+							},
+						],
+						isError: true,
+					};
+				}
+			},
+		);
+
+		registeredTools.push({ name: extAction.name, description });
+		console.log(
+			`[piece-mcp] Registered extension tool (UI): ${extAction.name} (piece=${pieceName})`,
+		);
 	}
 
 	return registeredTools;

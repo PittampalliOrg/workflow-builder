@@ -25,8 +25,8 @@ const getRangeAction = {
 };
 
 describe("normalizeActionInput", () => {
-	it("parses FILE props passed as JSON strings", () => {
-		const normalized = normalizeActionInput(uploadAction, {
+	it("parses FILE props passed as JSON strings", async () => {
+		const normalized = await normalizeActionInput(uploadAction, {
 			fileName: "report.xlsx",
 			file: JSON.stringify({
 				base64: "UEsDBAo=",
@@ -42,8 +42,8 @@ describe("normalizeActionInput", () => {
 		});
 	});
 
-	it("parses FILE props passed as Python-style dict strings", () => {
-		const normalized = normalizeActionInput(uploadAction, {
+	it("parses FILE props passed as Python-style dict strings", async () => {
+		const normalized = await normalizeActionInput(uploadAction, {
 			fileName: "report.xlsx",
 			file: "{'base64': 'UEsDBAo=', 'data': 'UEsDBAo=', 'extension': 'xlsx'}",
 		});
@@ -55,8 +55,8 @@ describe("normalizeActionInput", () => {
 		});
 	});
 
-	it("fills FILE data and extension from object input", () => {
-		const normalized = normalizeActionInput(uploadAction, {
+	it("fills FILE data and extension from object input", async () => {
+		const normalized = await normalizeActionInput(uploadAction, {
 			fileName: "report.xlsx",
 			file: { base64: "UEsDBAo=" },
 		});
@@ -68,8 +68,8 @@ describe("normalizeActionInput", () => {
 		});
 	});
 
-	it("parses FILE props passed as data URIs", () => {
-		const normalized = normalizeActionInput(uploadAction, {
+	it("parses FILE props passed as data URIs", async () => {
+		const normalized = await normalizeActionInput(uploadAction, {
 			file: "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBAo=",
 		});
 
@@ -80,8 +80,8 @@ describe("normalizeActionInput", () => {
 		});
 	});
 
-	it("maps common Excel workbook aliases", () => {
-		const normalized = normalizeActionInput(getWorksheetsAction, {
+	it("maps common Excel workbook aliases", async () => {
+		const normalized = await normalizeActionInput(getWorksheetsAction, {
 			workbookId: "workbook-123",
 			returnAll: "True",
 		});
@@ -90,8 +90,8 @@ describe("normalizeActionInput", () => {
 		expect(normalized.returnAll).toBe(true);
 	});
 
-	it("maps common Excel workbook and worksheet aliases for range actions", () => {
-		const normalized = normalizeActionInput(getRangeAction, {
+	it("maps common Excel workbook and worksheet aliases for range actions", async () => {
+		const normalized = await normalizeActionInput(getRangeAction, {
 			workbookId: "workbook-123",
 			worksheetId: "worksheet-456",
 			range: "A1:C5",
