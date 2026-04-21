@@ -12,7 +12,7 @@ The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 - `agent-runtime-controller`: Kopf operator in `workflow-builder` namespace; reconciles `AgentRuntime` CRs → one `Deployment/agent-runtime-<slug>` per published agent
 - `agent-runtime-<slug>`: dynamic per-agent pods (app-id `agent-runtime-<slug>`), one per published agent, scale 0↔1 on demand via wake/idle TTL. Contain `dapr-agent-py` main container + `seed-openshell-config` init + `daprd` sidecar + optional `chromium` + `playwright-mcp` browser sidecars.
 - `dapr-agent-py` (legacy shared pod): kept for backwards compat; new workflows address agents by `agentRef` → `agent-runtime-<slug>` instead.
-- `openshell-agent-runtime`: OpenShell control-plane for per-session sandboxes (sandboxes live in `openshell` namespace and are reached via mTLS from agent-runtime pods)
+- `openshell-agent-runtime`: consolidated action handler for `workspace/* + browser/* + openshell/*` (per 2026-04-19 cutover). Also the OpenShell control-plane for per-session sandboxes — sandboxes live in the `openshell` namespace and are reached via mTLS from agent-runtime pods.
 - `fn-activepieces`: default SaaS action backend
 - `postgresql`: workflow definitions, executions, artifacts, approvals, child-run metadata, sessions, agents, agent_versions
 - `redis` plus Dapr sidecars: workflow state, pub/sub, service invocation, actor durability
@@ -142,11 +142,11 @@ browser
      -> durable/run  => ctx.call_child_workflow -> dapr-agent-py  (native; no function-router hop)
      -> everything else => Dapr service invoke -> function-router
         -> system/*      -> fn-system
-        -> workspace/*   -> workspace-runtime
+        -> workspace/*   -> openshell-agent-runtime
         -> browser/*     -> openshell-agent-runtime
         -> openshell/*   -> openshell-agent-runtime
         -> code/*        -> code-runtime
-        -> dapr-swe/*    -> dapr-swe
+        -> web/*         -> crawl4ai-adapter
         -> _default      -> fn-activepieces
 
 openshell-agent-runtime / dapr-agent-py / dapr-swe
@@ -243,11 +243,13 @@ to-service dispatcher. Invoked by workflow-orchestrator via Dapr service invoke
 Provides:
 
 - **Slug routing** by `actionType` prefix: `system/*`, `workspace/*`, `browser/*`,
-  `openshell/*`, `code/*`, `dapr-swe/*`, `_default` → `fn-activepieces`.
-  The registry is ConfigMap-driven (`/config/functions.json`) with a hardcoded
-  `BUILTIN_FALLBACK_REGISTRY` override for cross-cutting routes (including the
-  `_default` AP fallback) so misconfigured ConfigMaps can't break AP piece
-  dispatch.
+  `openshell/*`, `code/*`, `web/*`, `_default` → `fn-activepieces`.
+  `workspace/*`, `browser/*`, and `openshell/*` all resolve to `openshell-agent-runtime`
+  after the 2026-04-19 consolidation (legacy `workspace-runtime` TS service
+  decommissioned). The registry is ConfigMap-driven (`/config/functions.json`),
+  **authoritative over** the hardcoded `BUILTIN_FALLBACK_REGISTRY` which only
+  fills in slugs the ConfigMap omits (merge order corrected 2026-04-20 in
+  `services/function-router/src/core/registry.ts`).
 - **Credential broker**: AES-256-CBC decrypt from `app_connection` via the
   workflow-builder WB API, mapped to env-var names per integration, with
   `credential_access_logs` audit rows. It is the **only** service with access
@@ -279,11 +281,22 @@ Provides:
 
 ### openshell-agent-runtime
 
+Single consolidated backend for `workspace/*`, `browser/*`, and `openshell/*`
+action slugs (post 2026-04-19 function-router cutover; legacy `workspace-runtime`
+TS service decommissioned).
+
 Provides:
 
 - OpenShell-backed workspace profile, clone, command, and cleanup
-- browser materialization and validation
+- browser materialization, validation, and live-preview proxy endpoints
 - sandbox template mapping, including `dapr-agent-xlsx` for Excel workbook workflows
+
+Because this service is stateless w.r.t. the `workflow_workspace_sessions`
+table, the orchestrator yields a `persist_workspace_session` activity after
+every `workspace/profile` action completes with `keepAfterRun=true` — that
+activity UPSERTs the row so the BFF proxy at
+`src/routes/api/workflows/executions/[executionId]/sandbox-preview/[previewId]/`
+can resolve the retained sandbox.
 
 It is a runtime backend, not the orchestration owner.
 

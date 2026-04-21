@@ -24,11 +24,11 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "code/*": { appId: "code-runtime", type: "knative" },
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-  // workspace/* was routed to the legacy `workspace-runtime` TS service
-  // (decommissioned 2026-04-16 per CLAUDE.md). openshell-agent-runtime
-  // now owns the `workspace/profile` + `workspace/command` + browser
-  // handlers, so consolidate the runtime here.
+  // openshell-agent-runtime owns workspace/profile, workspace/command, and the
+  // browser helpers post-consolidation. (workspace-runtime TS service was
+  // decommissioned 2026-04-16 per CLAUDE.md.)
   "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
+  "web/*": { appId: "crawl4ai-adapter", type: "knative" },
   // Default fallback: all other slugs route to fn-activepieces
   _default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -47,6 +47,7 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
   "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
+  "web/*": { appId: "crawl4ai-adapter", type: "knative" },
   // AP piece routing is cross-cutting: if the mounted ConfigMap is missing
   // _default (or not mounted at all), every AP action would fall through to
   // the throw-on-unknown branch. Defense-in-depth — belt and suspenders with
@@ -74,10 +75,11 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
     try {
       const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
       const loaded = JSON.parse(content) as FunctionRegistry;
-      // Merge builtin fallbacks on top so the live ConfigMap stays authoritative
-      // for supported runtimes, while core workspace/browser routes still exist in
-      // sparse local-dev registries.
-      cachedRegistry = { ...loaded, ...BUILTIN_FALLBACK_REGISTRY };
+      // ConfigMap is authoritative. Builtin fallbacks only fill in slugs that
+      // the ConfigMap omits — this preserves the core workspace/browser/openshell
+      // routes on sparse local-dev registries without overriding operator intent
+      // expressed via the live ConfigMap.
+      cachedRegistry = { ...BUILTIN_FALLBACK_REGISTRY, ...loaded };
       cacheTimestamp = now;
       console.log(
         `[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${REGISTRY_FILE_PATH} (with builtin overrides)`,

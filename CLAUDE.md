@@ -65,7 +65,7 @@ actor-lookup layer.
 - **Direct (UI-initiated) sessions** go through `src/lib/server/sessions/spawn.ts`, which wakes `agent-runtime-<slug>` and then calls Dapr workflow `StartInstance` on the target app via service invoke. Bare app-id (no `.namespace` suffix) now that BFF + target are same-ns.
 - **MCP sidecar rewrite**: both paths (direct session + workflow bridge) call `rewriteMcpForBrowserSidecar` (`src/lib/server/agents/mcp-sidecar.ts`) before dispatch. Any `mcpServers` entry matching Playwright (by name, URL, or `@playwright/mcp` args) becomes `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }` — the in-pod playwright-mcp container's CDP-over-chromium endpoint.
 - **Dapr Component scoping** within `workflow-builder` ns is partitioned so every pod sees exactly one `actorStateStore=true` Component (Dapr rejects pods with more than one): `workflowstatestore` is scoped to `workflow-orchestrator + workspace-runtime`; `dapr-agent-py-statestore` is scoped to legacy `dapr-agent-py` + BFF + the enumerated `agent-runtime-<slug>` app-ids; `agent-workflow` is scoped to legacy names only. New agent slugs must be added to `dapr-agent-py-statestore.scopes` in `packages/components/active-development/manifests/dapr-agent-py/Component-dapr-agent-py-statestore.yaml` — follow-up work is to have the controller patch this automatically on CR create.
-- Every non-agent action goes `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | workspace-runtime | openshell-agent-runtime | code-runtime}`. The orchestrator uses `activities/dapr_invoke.py` (no raw HTTP).
+- Every non-agent action goes `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | openshell-agent-runtime | code-runtime | crawl4ai-adapter}`. The orchestrator uses `activities/dapr_invoke.py` (no raw HTTP). `openshell-agent-runtime` consolidates `workspace/*`, `browser/*`, and `openshell/*` handlers after the 2026-04-19 function-router cutover (legacy `workspace-runtime` TS service decommissioned).
 - function-router owns credential decryption (AES-256-CBC from `app_connection`) + `credential_access_logs` audit. Orchestrator never holds plaintext secrets.
 
 ## Tech Stack
@@ -76,7 +76,7 @@ actor-lookup layer.
 - **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
 - **Durable AI Agent**: per-agent `agent-runtime-<slug>` pod running `dapr-agent-py` (native Python Dapr runtime). Materialized from `AgentRuntime` CRs (`agents.x-k8s.io/v1alpha1`) by the `agent-runtime-controller` Kopf operator. Scales 0↔1 on demand; wake triggered by `agents.x-k8s.io/wake` annotation.
-- **Function Execution**: function-router (Dapr invoke) → fn-system, fn-activepieces, workspace-runtime, openshell-agent-runtime, code-runtime
+- **Function Execution**: function-router (Dapr invoke) → fn-system, fn-activepieces, openshell-agent-runtime (owns `workspace/* + browser/* + openshell/*`), code-runtime
 - **Durable Agent Dispatch**: orchestrator → `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>")`. Parent + child share the `workflow-builder` namespace (Dapr workflow actor routing resolves placement intra-namespace only).
 - **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
@@ -104,7 +104,7 @@ pnpm test:e2e         # Run Playwright E2E tests
 | **agent-runtime-controller** | n/a | Kopf operator in `workflow-builder` ns; reconciles `AgentRuntime` CRs → one Deployment per agent (`agent-runtime-<slug>`) with dapr-agent-py + daprd + optional browser sidecar + seed-openshell-config init container |
 | **agent-runtime-&lt;slug&gt;** | n/a (app-id Dapr-routed) | Dynamic per-agent pod materialized by the controller. Runs `dapr-agent-py` with `@workflow_entry session_workflow` + `agent_workflow`. Scales to 0 on idle TTL; woken on demand via the `agents.x-k8s.io/wake` annotation. |
 | **dapr-agent-py** (legacy) | n/a | Legacy shared pod kept for backwards compat + for the one `openshell-durable-agent` enum path. New workflows all dispatch to `agent-runtime-<slug>` via `agentRef`. |
-| **function-router** | 8080 | Sync credential broker + Knative proxy. Receives Dapr invoke from orchestrator, decrypts credentials, routes to fn-system / fn-activepieces / workspace-runtime / openshell-agent-runtime / code-runtime. Does **not** route `durable/run` or any `dapr-agent-py/*` slug. |
+| **function-router** | 8080 | Sync credential broker + Knative proxy. Receives Dapr invoke from orchestrator, decrypts credentials, routes to fn-system / fn-activepieces / openshell-agent-runtime (`workspace/* + browser/* + openshell/*`) / code-runtime / crawl4ai-adapter. Does **not** route `durable/run` or any `dapr-agent-py/*` slug. The `function-registry` ConfigMap is authoritative over the built-in fallback registry (see `services/function-router/src/core/registry.ts` loadRegistry merge order, corrected 2026-04-20). |
 | **fn-system** | 8080 | System actions: http-request, database-query, condition |
 | **mcp-gateway** | 8080 | Hosted MCP endpoint for external AI clients |
 | **fn-activepieces** | 8080 | AP executor for default-routed piece actions in the current cluster runtime |
@@ -182,7 +182,7 @@ Actions are routed by `actionType` slug prefix. Orchestrator → function-router
 |--------|---------|----------|----------|
 | `durable/run` | `agent-runtime-<slug>` (per-agent pod) | Native Dapr child workflow (`session_workflow` → `agent_workflow`). Target app-id comes from `agentRef` → `agents.runtime_app_id` → `agent-runtime-<slug>`. Falls back to legacy `dapr-agent-py` only when neither `agentAppId` nor `agentSlug` is stamped. | Every agent turn |
 | `system/*` | fn-system | Dapr invoke → function-router | `system/http-request`, `system/database-query`, `system/condition` |
-| `workspace/*` | workspace-runtime | Dapr invoke → function-router | Workspace profile, clone, command, file, cleanup |
+| `workspace/*` | openshell-agent-runtime | Dapr invoke → function-router | Workspace profile, clone, command, file, cleanup. Orchestrator also yields `persist_workspace_session` activity after `workspace/profile` with `keepAfterRun=true` to UPSERT the row into `workflow_workspace_sessions` (which powers the live-preview proxy). |
 | `browser/*` | openshell-agent-runtime | Dapr invoke → function-router | Browser profile, clone, command, capture-flow, validate |
 | `openshell/*` | openshell-agent-runtime | Dapr invoke → function-router | OpenShell runtime helper routes |
 | `code/*` | code-runtime | Dapr invoke → function-router | Saved TS/Python code function execution |
