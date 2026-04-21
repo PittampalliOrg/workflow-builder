@@ -151,6 +151,31 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     for output in tc.task_outputs.values():
         if _output_requests_keep(output):
             return False
+
+    # Inspect the workflow spec itself for any workspace/* step that declared
+    # `with.keepAfterRun=true`. openshell-agent-runtime doesn't echo this flag
+    # back in its response, so checking only task_outputs misses the user's
+    # explicit intent. Matching on call prefix keeps it narrow — only
+    # workspace-provisioning steps can signal "keep the sandbox alive".
+    try:
+        for _, task_data in tc.workflow.unwrap_tasks():
+            if not isinstance(task_data, dict):
+                continue
+            call = str(task_data.get("call") or "")
+            if not call.startswith("workspace/"):
+                continue
+            with_block = task_data.get("with")
+            if isinstance(with_block, dict) and _as_bool(with_block.get("keepAfterRun"), False):
+                return False
+            body = with_block.get("body") if isinstance(with_block, dict) else None
+            if isinstance(body, dict):
+                inp = body.get("input") if isinstance(body.get("input"), dict) else body
+                if isinstance(inp, dict) and _as_bool(inp.get("keepAfterRun"), False):
+                    return False
+    except Exception:
+        # Defensive: never let a spec-inspection failure block cleanup behaviour.
+        pass
+
     return not keep_sandbox
 
 
