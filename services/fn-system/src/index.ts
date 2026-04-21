@@ -8,6 +8,7 @@
  * - database-query
  * - condition
  * - dapr-converse-structured-output
+ * - apns-send
  */
 
 import { otelLogMixin } from "./otel.js";
@@ -15,6 +16,11 @@ import { otelLogMixin } from "./otel.js";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { z } from "zod";
+import {
+	APNS_SEND_ACTIONS,
+	apnsSendStep,
+	ApnsSendInputSchema,
+} from "./steps/apns-send.js";
 import { conditionStep, ConditionInputSchema } from "./steps/condition.js";
 import {
 	databaseQueryStep,
@@ -30,6 +36,11 @@ import {
 	HttpRequestInputSchema,
 } from "./steps/http-request.js";
 import type { ExecuteRequest, ExecuteResponse } from "./types.js";
+
+const ALL_ACTIONS = [
+	...DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS,
+	...APNS_SEND_ACTIONS,
+] as const;
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -88,25 +99,25 @@ async function main() {
 				"system-actions",
 				"dapr-conversation-alpha2",
 				"structured-output",
+				"apple-push-notifications",
 			],
 			registeredWorkflows: [],
-			registeredActivities: DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS.map(
-				(action) => ({
-					id: action.id,
-					name: action.name,
-					displayName: action.displayName,
-					description: action.description,
-					doc: null,
-					sourceCode: null,
-					sourceHtml: null,
-				}),
-			),
+			registeredActivities: ALL_ACTIONS.map((action) => ({
+				id: action.id,
+				name: action.name,
+				displayName: action.displayName,
+				description: action.description,
+				doc: null,
+				sourceCode: null,
+				sourceHtml: null,
+			})),
 			additional: {
 				steps: [
 					"http-request",
 					"database-query",
 					"condition",
 					"dapr-converse-structured-output",
+					"apns-send",
 				],
 			},
 		}),
@@ -121,16 +132,17 @@ async function main() {
 				"system-actions",
 				"dapr-conversation-alpha2",
 				"structured-output",
+				"apple-push-notifications",
 			],
-			actions: DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS,
-			count: DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS.length,
+			actions: ALL_ACTIONS,
+			count: ALL_ACTIONS.length,
 		}),
 	);
 
 	app.get<{ Params: { id: string } }>(
 		"/api/metadata/actions/:id",
 		async (request, reply) => {
-			const action = DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS.find(
+			const action = ALL_ACTIONS.find(
 				(item) => item.id === request.params.id || item.name === request.params.id,
 			);
 			if (!action) {
@@ -224,10 +236,26 @@ async function main() {
 				break;
 			}
 
+			case "apns-send": {
+				const input = ApnsSendInputSchema.safeParse(body.input);
+				if (!input.success) {
+					result = {
+						success: false,
+						error: `Invalid input for apns-send: ${input.error.issues.map((issue) => issue.message).join("; ")}`,
+					};
+					break;
+				}
+				const r = await apnsSendStep(input.data);
+				result = r.success
+					? { success: true, data: r.data }
+					: { success: false, error: r.error };
+				break;
+			}
+
 			default:
 				result = {
 					success: false,
-					error: `Unknown step: ${body.step}. Available steps: http-request, database-query, condition, dapr-converse-structured-output`,
+					error: `Unknown step: ${body.step}. Available steps: http-request, database-query, condition, dapr-converse-structured-output, apns-send`,
 				};
 		}
 
