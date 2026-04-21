@@ -288,6 +288,25 @@ def _response_to_assistant_message(
     return blocks
 
 
+def _stream_final_message(client: Any, **request_kwargs: Any) -> Any:
+    """Run a streaming messages request and return the final aggregated Message.
+
+    Anthropic rejects non-streaming calls it estimates will exceed 10 minutes
+    (400 "Streaming is required for operations that may take longer than 10
+    minutes"). This helper uses `client.messages.stream(...)` and returns the
+    final aggregated `Message`, which has the same shape as the response from
+    `client.messages.create(...)`, so downstream extraction logic can stay
+    unchanged. See https://github.com/anthropics/anthropic-sdk-python#long-requests.
+    """
+    with client.messages.stream(**request_kwargs) as stream:
+        # Drain the iterator before calling get_final_message() so internal
+        # aggregation completes. The iterator must be consumed for the SDK to
+        # assemble the final message object.
+        for _event in stream:
+            pass
+        return stream.get_final_message()
+
+
 def _call_anthropic_sdk(
     component: str,
     messages: list[dict],
@@ -383,7 +402,7 @@ def _call_anthropic_sdk(
     )
 
     try:
-        response = client.messages.create(**request_kwargs)
+        response = _stream_final_message(client, **request_kwargs)
         content, tool_calls, thinking_blocks = _extract_response(response)
         _emit_thinking(thinking_blocks)
         if ttft_ms_recorded is None and llm_span is not None:
@@ -428,7 +447,7 @@ def _call_anthropic_sdk(
             max_tokens, ESCALATED_MAX_TOKENS,
         )
         request_kwargs["max_tokens"] = ESCALATED_MAX_TOKENS
-        response = client.messages.create(**request_kwargs)
+        response = _stream_final_message(client, **request_kwargs)
         content, tool_calls, thinking_blocks = _extract_response(response)
         _emit_thinking(thinking_blocks)
         _u = getattr(response, "usage", None)
@@ -473,7 +492,7 @@ def _call_anthropic_sdk(
         request_kwargs["messages"] = continuation_messages
         request_kwargs["max_tokens"] = max_tokens
 
-        response = client.messages.create(**request_kwargs)
+        response = _stream_final_message(client, **request_kwargs)
         content, tool_calls, thinking_blocks = _extract_response(response)
         _emit_thinking(thinking_blocks)
         _u = getattr(response, "usage", None)
