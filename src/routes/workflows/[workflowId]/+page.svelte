@@ -10,6 +10,8 @@
 	import WorkflowCanvas from '$lib/components/workflow/workflow-canvas.svelte';
 	import WorkflowToolbar from '$lib/components/workflow/workflow-toolbar.svelte';
 	import RightPanel from '$lib/components/workflow/right-panel.svelte';
+	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
+	import { ListOrdered, MessagesSquare } from 'lucide-svelte';
 	import { page } from '$app/state';
 
 	const store = createWorkflowStore();
@@ -138,6 +140,37 @@
 </script>
 
 <div class="flex h-full flex-col">
+	<!-- Breadcrumb strip above the toolbar. Provides cross-links to the run
+	     list and workflow-driven sessions so users can move between the
+	     editor, runs, and sessions without hunting through menus. -->
+	<div class="flex items-center justify-between gap-3 border-b border-border bg-muted/20 px-3 py-1.5">
+		<AppBreadcrumb
+			items={[
+				{ label: 'Workflows', href: '/workflows' },
+				{
+					label: store.workflowName || 'Workflow',
+					truncate: true
+				}
+			]}
+		/>
+		<div class="flex items-center gap-1 text-xs">
+			<a
+				href={`/workflows/${workflowId}/runs`}
+				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent"
+				title="All runs for this workflow"
+			>
+				<ListOrdered class="size-3.5" /> Runs
+			</a>
+			<a
+				href={`/workspaces/default/sessions?source=workflow&q=${workflowId}`}
+				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent"
+				title="Sessions spawned by this workflow"
+			>
+				<MessagesSquare class="size-3.5" /> Sessions
+			</a>
+		</div>
+	</div>
+
 	<WorkflowToolbar />
 
 	<div class="relative flex flex-1 overflow-hidden">

@@ -10,6 +10,19 @@
 	import { wsPath } from '$lib/utils/workspace-path';
 
 	let workflowId = $derived(page.params.workflowId);
+	let workflowName = $state<string>('');
+
+	async function fetchWorkflowName() {
+		try {
+			const res = await fetch(`/api/workflows/${workflowId}`);
+			if (res.ok) {
+				const data = await res.json();
+				workflowName = data?.name ?? '';
+			}
+		} catch {
+			// Fall back to id-only label.
+		}
+	}
 
 	interface Execution {
 		id: string;
@@ -85,6 +98,7 @@
 	// Initial fetch
 	$effect(() => {
 		fetchExecutions();
+		fetchWorkflowName();
 	});
 
 	// Auto-refresh when running executions exist
@@ -109,11 +123,17 @@
 		<Breadcrumb.Root>
 			<Breadcrumb.List class="gap-1 text-xs">
 				<Breadcrumb.Item>
-					<Breadcrumb.Link href="/workflows" class="text-[10px] uppercase tracking-wide">Workflows</Breadcrumb.Link>
+					<Breadcrumb.Link href="/workflows" class="text-xs">Workflows</Breadcrumb.Link>
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator class="[&>svg]:size-3" />
 				<Breadcrumb.Item>
-					<Breadcrumb.Link href="/workflows/{workflowId}" class="text-xs">Editor</Breadcrumb.Link>
+					<Breadcrumb.Link
+						href="/workflows/{workflowId}"
+						class="text-xs truncate max-w-[220px]"
+						title={workflowName || workflowId}
+					>
+						{workflowName || workflowId}
+					</Breadcrumb.Link>
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator class="[&>svg]:size-3" />
 				<Breadcrumb.Item>
@@ -121,6 +141,14 @@
 				</Breadcrumb.Item>
 			</Breadcrumb.List>
 		</Breadcrumb.Root>
+		<a
+			href={`/workspaces/default/sessions?source=workflow&q=${workflowId}`}
+			class="ml-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+			title="Sessions spawned by any run of this workflow"
+		>
+			Sessions
+			<ExternalLink class="size-3" />
+		</a>
 		{#if hasRunning}
 			<span class="flex items-center gap-1 text-xs text-muted-foreground">
 				<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>

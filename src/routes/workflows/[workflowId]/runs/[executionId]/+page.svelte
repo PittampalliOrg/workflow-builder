@@ -35,7 +35,8 @@
 		Bot,
 		Zap,
 		FileDiff,
-		RefreshCw
+		RefreshCw,
+		MessagesSquare
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
@@ -113,6 +114,7 @@
 	// Workflow canvas data
 	let workflowNodes = $state<Node[]>([]);
 	let workflowEdges = $state<Edge[]>([]);
+	let workflowName = $state<string>('');
 
 	// Logs
 	interface StepLog {
@@ -615,6 +617,7 @@
 			const data = await res.json();
 			workflowNodes = data.nodes ?? [];
 			workflowEdges = data.edges ?? [];
+			workflowName = data.name ?? '';
 		} catch {
 			// Leave canvas empty on error
 		} finally {
@@ -1209,7 +1212,17 @@
 		<Breadcrumb.Root>
 			<Breadcrumb.List class="gap-1 text-xs">
 				<Breadcrumb.Item>
-					<Breadcrumb.Link href="/workflows/{workflowId}" class="text-[10px] uppercase tracking-wide">Editor</Breadcrumb.Link>
+					<Breadcrumb.Link href="/workflows" class="text-xs">Workflows</Breadcrumb.Link>
+				</Breadcrumb.Item>
+				<Breadcrumb.Separator class="[&>svg]:size-3" />
+				<Breadcrumb.Item>
+					<Breadcrumb.Link
+						href="/workflows/{workflowId}"
+						class="text-xs truncate max-w-[220px]"
+						title={workflowName || workflowId}
+					>
+						{workflowName || workflowId}
+					</Breadcrumb.Link>
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator class="[&>svg]:size-3" />
 				<Breadcrumb.Item>
@@ -1217,7 +1230,9 @@
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator class="[&>svg]:size-3" />
 				<Breadcrumb.Item>
-					<Breadcrumb.Page class="text-xs font-mono">{executionId.slice(0, 8)}</Breadcrumb.Page>
+					<Breadcrumb.Page class="text-xs font-mono" title={executionId}>
+						{executionId.slice(0, 8)}
+					</Breadcrumb.Page>
 				</Breadcrumb.Item>
 			</Breadcrumb.List>
 		</Breadcrumb.Root>
@@ -1233,12 +1248,21 @@
 			traceId={traceId ?? undefined}
 		/>
 
-		{#if executionState.isConnected}
-			<span class="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-				<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-				Live
-			</span>
-		{/if}
+		<div class="ml-auto flex items-center gap-2 text-xs">
+			<a
+				href={`/workspaces/default/sessions?source=workflow&q=${executionId}`}
+				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent text-muted-foreground hover:text-foreground"
+				title="Sessions spawned by this run"
+			>
+				<MessagesSquare class="size-3.5" /> Sessions
+			</a>
+			{#if executionState.isConnected}
+				<span class="flex items-center gap-1 text-muted-foreground">
+					<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
+					Live
+				</span>
+			{/if}
+		</div>
 	</header>
 
 	<!-- Tabbed content -->

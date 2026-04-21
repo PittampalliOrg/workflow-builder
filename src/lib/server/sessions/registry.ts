@@ -3,6 +3,8 @@ import { db } from "$lib/server/db";
 import {
 	sessions,
 	sessionResources,
+	workflowExecutions,
+	workflows,
 	type Session,
 	type SessionResource as SessionResourceRow,
 } from "$lib/server/db/schema";
@@ -22,7 +24,12 @@ function requireDb() {
 	return db;
 }
 
-function rowToSummary(row: Session): SessionSummary {
+type WorkflowContext = { workflowId: string | null; workflowName: string | null };
+
+function rowToSummary(
+	row: Session,
+	ctx: WorkflowContext = { workflowId: null, workflowName: null },
+): SessionSummary {
 	return {
 		id: row.id,
 		title: row.title ?? null,
@@ -36,6 +43,8 @@ function rowToSummary(row: Session): SessionSummary {
 		usage: (row.usage as SessionUsage) ?? {},
 		errorMessage: row.errorMessage ?? null,
 		workflowExecutionId: row.workflowExecutionId ?? null,
+		workflowId: ctx.workflowId,
+		workflowName: ctx.workflowName,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 		completedAt: row.completedAt ? row.completedAt.toISOString() : null,
@@ -43,9 +52,12 @@ function rowToSummary(row: Session): SessionSummary {
 	};
 }
 
-function rowToDetail(row: Session): SessionDetail {
+function rowToDetail(
+	row: Session,
+	ctx: WorkflowContext = { workflowId: null, workflowName: null },
+): SessionDetail {
 	return {
-		...rowToSummary(row),
+		...rowToSummary(row, ctx),
 		daprInstanceId: row.daprInstanceId ?? null,
 		natsSubject: row.natsSubject ?? null,
 		parentExecutionId: row.parentExecutionId ?? null,
@@ -98,22 +110,50 @@ export async function listSessions(
 	}
 
 	const rows = await database
-		.select()
+		.select({
+			session: sessions,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+		})
 		.from(sessions)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, sessions.workflowExecutionId),
+		)
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
 		.where(conditions.length > 0 ? and(...conditions) : undefined)
 		.orderBy(desc(sessions.createdAt))
 		.limit(filter.limit ?? 100);
-	return rows.map(rowToSummary);
+	return rows.map((r) =>
+		rowToSummary(r.session, {
+			workflowId: r.workflowId ?? null,
+			workflowName: r.workflowName ?? null,
+		}),
+	);
 }
 
 export async function getSession(id: string): Promise<SessionDetail | null> {
 	const database = requireDb();
 	const [row] = await database
-		.select()
+		.select({
+			session: sessions,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+		})
 		.from(sessions)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, sessions.workflowExecutionId),
+		)
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
 		.where(eq(sessions.id, id))
 		.limit(1);
-	return row ? rowToDetail(row) : null;
+	return row
+		? rowToDetail(row.session, {
+				workflowId: row.workflowId ?? null,
+				workflowName: row.workflowName ?? null,
+			})
+		: null;
 }
 
 export type CreateSessionInput = {

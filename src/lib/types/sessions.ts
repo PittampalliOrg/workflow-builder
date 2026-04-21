@@ -34,6 +34,9 @@ export type SessionSummary = {
 	usage: SessionUsage;
 	errorMessage: string | null;
 	workflowExecutionId: string | null;
+	/** Populated for workflow-driven sessions via join in listSessions. */
+	workflowId: string | null;
+	workflowName: string | null;
 	createdAt: string;
 	updatedAt: string;
 	completedAt: string | null;
