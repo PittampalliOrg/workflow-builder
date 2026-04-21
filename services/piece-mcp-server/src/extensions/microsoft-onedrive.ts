@@ -59,7 +59,13 @@ export const createUploadSession = createAction({
 		parentFolderId: Property.ShortText({
 			displayName: "Parent folder ID",
 			description:
-				"Optional — OneDrive folder item-id to upload into. Defaults to 'root'. Use list_folders to find IDs.",
+				"Optional — OneDrive folder item-id to upload into. Mutually exclusive with parentPath. Use list_folders to find IDs, or prefer parentPath for path-based targeting.",
+			required: false,
+		}),
+		parentPath: Property.ShortText({
+			displayName: "Parent folder path",
+			description:
+				"Optional — path-based alternative to parentFolderId, e.g. '/Nimbus' or '/Reports/Q1-2026'. Leading slash optional. Graph auto-creates missing folders. Preferred over parentFolderId for agents because no folder-id lookup is needed.",
 			required: false,
 		}),
 		conflictBehavior: Property.StaticDropdown({
@@ -91,13 +97,23 @@ export const createUploadSession = createAction({
 				`createUploadSession: no access_token in ctx.auth. auth keys=${JSON.stringify(authKeys)}`,
 			);
 		}
-		const parentId =
-			ctx.propsValue.parentFolderId && ctx.propsValue.parentFolderId.trim()
-				? ctx.propsValue.parentFolderId.trim()
-				: "root";
 		const conflict = ctx.propsValue.conflictBehavior || "replace";
-		const encoded = encodeURIComponent(ctx.propsValue.fileName);
-		const url = `${ONEDRIVE_BASE_URL}/items/${parentId}:/${encoded}:/createUploadSession`;
+		const encodedFile = encodeURIComponent(ctx.propsValue.fileName);
+		const parentId = ctx.propsValue.parentFolderId?.trim() || "";
+		const parentPath = ctx.propsValue.parentPath?.trim() || "";
+		let url: string;
+		if (parentPath) {
+			// Path-based — Graph auto-creates missing folders. Strip leading/
+			// trailing slashes, URL-encode each segment so special chars survive.
+			const segs = parentPath.split("/").filter(Boolean).map(encodeURIComponent);
+			const pathPart = segs.length > 0 ? segs.join("/") + "/" : "";
+			url = `${ONEDRIVE_BASE_URL}/items/root:/${pathPart}${encodedFile}:/createUploadSession`;
+		} else if (parentId) {
+			url = `${ONEDRIVE_BASE_URL}/items/${parentId}:/${encodedFile}:/createUploadSession`;
+		} else {
+			// Default — upload to drive root with fileName as the target.
+			url = `${ONEDRIVE_BASE_URL}/items/root:/${encodedFile}:/createUploadSession`;
+		}
 
 		const res = await httpClient.sendRequest<{
 			uploadUrl?: string;
