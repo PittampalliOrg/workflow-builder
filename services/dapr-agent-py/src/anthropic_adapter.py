@@ -44,6 +44,15 @@ ESCALATED_MAX_TOKENS = int(
 # (mirrors MAX_OUTPUT_TOKENS_RECOVERY_LIMIT in query.ts)
 MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
 
+# Image tool_result compaction: keep only the last N image-bearing tool_results
+# in the prompt. Older ones get replaced with a text placeholder that preserves
+# the tool_use_id link but drops the base64 payload. Each Playwright screenshot
+# is ~100–500KB base64 (>50k tokens); 16 of them can blow Anthropic's 1M-token
+# prompt limit (observed on run rea90ZntWG3DdFKTnOOZO: 2,992,291 tokens → HTTP 400).
+MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT = int(
+    os.environ.get("DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS", "3")
+)
+
 # Recovery message injected between continuation attempts
 # (mirrors query.ts lines 1225-1227)
 _RECOVERY_MESSAGE = (
@@ -93,6 +102,112 @@ def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
         })
 
     return anthropic_tools if anthropic_tools else None
+
+
+def _contains_image_block(content: Any) -> bool:
+    """True if any element in a content list looks like an Anthropic image block."""
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(b, dict) and b.get("type") == "image"
+        for b in content
+    )
+
+
+def _strip_images_from_tool_result(
+    tool_result_block: dict[str, Any],
+    tool_use_id: str,
+) -> dict[str, Any]:
+    """Return a tool_result block with any image content replaced by a short
+    text placeholder so the tool_use↔tool_result link stays intact but the
+    base64 payload is dropped."""
+    body = tool_result_block.get("content")
+    if isinstance(body, list):
+        new_blocks: list[dict[str, Any]] = []
+        image_count = 0
+        for b in body:
+            if isinstance(b, dict) and b.get("type") == "image":
+                image_count += 1
+                continue
+            new_blocks.append(b)
+        if image_count:
+            new_blocks.append({
+                "type": "text",
+                "text": f"[compacted: {image_count} screenshot(s) dropped from context to fit prompt budget]",
+            })
+        if not new_blocks:
+            new_blocks.append({"type": "text", "text": "[compacted screenshot]"})
+        return {
+            **tool_result_block,
+            "content": new_blocks,
+        }
+    return tool_result_block
+
+
+def _compact_image_tool_results(
+    messages: list[dict[str, Any]],
+    *,
+    keep_last: int,
+) -> list[dict[str, Any]]:
+    """Walk messages, find user-role tool_result blocks that embed image
+    content, and keep only the last `keep_last` intact. Older image-bearing
+    tool_results get their image blocks replaced by a placeholder.
+
+    Idempotent + deterministic: pass same messages, get same result; no network
+    calls, no state. Safe to run on every generate() call even inside Dapr
+    workflow replays.
+    """
+    if keep_last < 0:
+        return messages
+
+    # First pass: identify indices of (message_idx, block_idx) for every
+    # tool_result block that contains images.
+    image_positions: list[tuple[int, int]] = []
+    for mi, msg in enumerate(messages):
+        role = msg.get("role") if isinstance(msg, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if role != "user" or not isinstance(content, list):
+            continue
+        for bi, block in enumerate(content):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                if _contains_image_block(block.get("content")):
+                    image_positions.append((mi, bi))
+
+    if len(image_positions) <= keep_last:
+        return messages
+
+    # Everything except the last `keep_last` gets compacted.
+    to_compact = set(image_positions[:-keep_last]) if keep_last > 0 else set(image_positions)
+    if not to_compact:
+        return messages
+
+    compacted_msgs: list[dict[str, Any]] = []
+    for mi, msg in enumerate(messages):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            compacted_msgs.append(msg)
+            continue
+        new_content = []
+        touched = False
+        for bi, block in enumerate(content):
+            if (mi, bi) in to_compact and isinstance(block, dict):
+                new_content.append(
+                    _strip_images_from_tool_result(block, block.get("tool_use_id", ""))
+                )
+                touched = True
+            else:
+                new_content.append(block)
+        if touched:
+            compacted_msgs.append({**msg, "content": new_content})
+        else:
+            compacted_msgs.append(msg)
+
+    logger.info(
+        "[anthropic-sdk] compacted %d old image tool_result(s); kept last %d",
+        len(to_compact),
+        min(keep_last, len(image_positions)),
+    )
+    return compacted_msgs
 
 
 def _extract_response(response: Any) -> tuple[str, list[dict], list[str]]:
@@ -536,6 +651,19 @@ def patch_for_anthropic(llm_client: Any) -> None:
                 else:
                     merged.append(msg)
             messages = merged
+
+            # Image-compaction: Playwright screenshot tool_results accumulate
+            # ~100-500KB base64 per image; 16 of them can blow Anthropic's 1M
+            # token prompt cap (observed on run rea90ZntWG3DdFKTnOOZO —
+            # 2.99M tokens HTTP 400). Keep only the most-recent
+            # MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT images; replace older image
+            # blocks inside tool_result content with a short placeholder that
+            # preserves the tool_use_id association so the model sees a valid
+            # structured response, just without the pixel payload.
+            messages = _compact_image_tool_results(
+                messages,
+                keep_last=MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT,
+            )
 
             try:
                 result = _call_anthropic_sdk(
