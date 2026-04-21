@@ -26,16 +26,19 @@
  * a one-line fix.
  */
 
-import {
-	oneDriveAuth,
-	oneDriveCommon,
-} from "@activepieces/piece-microsoft-onedrive";
+import { oneDriveAuth } from "@activepieces/piece-microsoft-onedrive";
 import { createAction, Property } from "@activepieces/pieces-framework";
 import {
 	httpClient,
 	HttpMethod,
 	AuthenticationType,
 } from "@activepieces/pieces-common";
+
+// The piece's internal `oneDriveCommon.baseUrl` is NOT re-exported from the
+// package main entry — only `oneDriveAuth` is public surface. Graph's OneDrive
+// base URL is stable (/v1.0/me/drive) so inlining it here is acceptable and
+// keeps us off deep-imports that break on piece version bumps.
+const ONEDRIVE_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive";
 
 export const createUploadSession = createAction({
 	auth: oneDriveAuth,
@@ -81,7 +84,7 @@ export const createUploadSession = createAction({
 				: "root";
 		const conflict = ctx.propsValue.conflictBehavior || "replace";
 		const encoded = encodeURIComponent(ctx.propsValue.fileName);
-		const url = `${oneDriveCommon.baseUrl}/items/${parentId}:/${encoded}:/createUploadSession`;
+		const url = `${ONEDRIVE_BASE_URL}/items/${parentId}:/${encoded}:/createUploadSession`;
 
 		const res = await httpClient.sendRequest<{
 			uploadUrl?: string;
