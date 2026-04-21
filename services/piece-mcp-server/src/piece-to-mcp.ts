@@ -181,8 +181,16 @@ export function registerPieceTools(
 				inputSchema,
 			});
 
+			// requireAuth: true unconditionally. The Boolean(extAction.auth) check
+			// was racey — when a TS ESM file imports a CJS-compiled piece, the
+			// piece's `exports.oneDriveAuth = PieceAuth.OAuth2(...)` may not have
+			// executed yet when our `createAction({auth: oneDriveAuth, ...})`
+			// runs, leaving extAction.auth undefined even though the action
+			// semantically requires auth. Every extension we register today is
+			// for an authenticated piece; if that changes, add an explicit
+			// `requireAuth: false` marker on the Action-like object instead.
 			toolHandlers.set(extAction.name, {
-				requireAuth: Boolean(extAction.auth),
+				requireAuth: true,
 				runtimeAction: extAction,
 			});
 
@@ -441,7 +449,9 @@ export function registerPieceToolsWithUI(
 				// biome-ignore lint/suspicious/noExplicitAny: SDK generic pathology
 			} as any,
 			async (args: Record<string, unknown>) => {
-				const requireAuth = Boolean(extAction.auth);
+				// Always require auth for extensions — see registerPieceTools for
+				// the CJS-import-timing rationale.
+				const requireAuth = true;
 				try {
 					let auth: unknown;
 					if (requireAuth) {

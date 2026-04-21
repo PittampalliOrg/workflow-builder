@@ -78,6 +78,19 @@ export const createUploadSession = createAction({
 		}),
 	},
 	async run(ctx) {
+		// Diagnostic for ctx.auth shape — tracking down "Cannot read properties
+		// of undefined (reading 'access_token')" in early deploys.
+		const authKeys = ctx.auth ? Object.keys(ctx.auth as Record<string, unknown>) : null;
+		console.log(
+			`[create_upload_session] ctx.auth keys=${JSON.stringify(authKeys)}; type=${typeof ctx.auth}`,
+		);
+		const accessToken =
+			(ctx.auth as { access_token?: string } | undefined)?.access_token;
+		if (!accessToken) {
+			throw new Error(
+				`createUploadSession: no access_token in ctx.auth. auth keys=${JSON.stringify(authKeys)}`,
+			);
+		}
 		const parentId =
 			ctx.propsValue.parentFolderId && ctx.propsValue.parentFolderId.trim()
 				? ctx.propsValue.parentFolderId.trim()
@@ -97,7 +110,7 @@ export const createUploadSession = createAction({
 			},
 			authentication: {
 				type: AuthenticationType.BEARER_TOKEN,
-				token: ctx.auth.access_token,
+				token: accessToken,
 			},
 		});
 
