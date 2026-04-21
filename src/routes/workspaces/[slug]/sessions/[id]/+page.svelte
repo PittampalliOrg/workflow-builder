@@ -77,6 +77,7 @@
 	} from 'lucide-svelte';
 	import {
 		createSessionStream,
+		type InFlightPartial,
 		type SessionStreamStore
 	} from '$lib/stores/session-stream.svelte';
 	import type {
@@ -94,6 +95,7 @@
 
 	let session = $state<SessionDetail | null>(null);
 	let events = $state<SessionEventEnvelope[]>([]);
+	let inFlightPartials = $state<Record<string, InFlightPartial>>({});
 	let agentRegistry = $state<{
 		status: 'unregistered' | 'registered' | 'failed' | 'archiving' | 'archived';
 		syncedAt: string | null;
@@ -564,6 +566,7 @@
 			isConsolidating = state.isConsolidating;
 			streamError = state.error;
 			events = state.events;
+			inFlightPartials = state.inFlightPartials;
 			if (state.session) session = state.session;
 			queueScroll();
 		});
@@ -1193,6 +1196,33 @@
 									elapsedMs={elapsed}
 									onClick={() => (selectedEventId = String(batch.event.id))}
 								/>
+							{/each}
+							{#each Object.entries(inFlightPartials) as [key, partial] (key)}
+								<div
+									class="flex items-start gap-2 rounded border border-dashed border-teal-400/20 bg-teal-500/5 px-2 py-1.5 text-xs"
+									title="streaming from the model"
+								>
+									<span
+										class="inline-flex shrink-0 items-center rounded border px-1.5 py-0 text-[9px] font-medium
+										{partial.kind === 'thinking'
+											? 'bg-emerald-500/25 text-emerald-200 border-emerald-400/20'
+											: partial.kind === 'tool_input'
+												? 'bg-muted text-muted-foreground border-border'
+												: 'bg-teal-500/25 text-teal-200 border-teal-400/20'}"
+									>
+										{partial.kind === 'thinking'
+											? 'Thinking…'
+											: partial.kind === 'tool_input'
+												? 'Tool…'
+												: 'Agent…'}
+									</span>
+									<span class="flex-1 truncate font-mono text-[11px] text-foreground/80">
+										{partial.text.slice(-120)}
+									</span>
+									<span
+										class="inline-block size-1.5 shrink-0 animate-pulse rounded-full bg-teal-400/80"
+									></span>
+								</div>
 							{/each}
 						</div>
 					{/if}

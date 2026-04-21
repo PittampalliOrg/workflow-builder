@@ -14,17 +14,53 @@ function requireDb() {
 	return db;
 }
 
-function rowToEnvelope(row: SessionEventRow): SessionEventEnvelope {
+function rowToEnvelope(
+	row: SessionEventRow,
+	opts: { preview?: boolean } = {},
+): SessionEventEnvelope {
+	const rawData = (row.data as Record<string, unknown>) ?? {};
+	const data = opts.preview ? stripFullPayload(rawData) : rawData;
 	return {
 		id: row.id,
 		sessionId: row.sessionId,
 		sequence: row.sequence,
 		type: row.type,
-		data: (row.data as Record<string, unknown>) ?? {},
+		data,
 		processedAt: row.processedAt ? row.processedAt.toISOString() : null,
 		sourceEventId: row.sourceEventId ?? null,
 		createdAt: row.createdAt.toISOString(),
 	};
+}
+
+/**
+ * Replace the full payload fields with their `preview` counterparts so the
+ * SSE stream and list endpoints default to sending compact rows. The UI
+ * pulls the full envelope on demand via /api/v1/sessions/[id]/events/[eventId].
+ *
+ * Supported preview fields (set by the agent side, see
+ * services/dapr-agent-py/src/event_publisher.py::_cma_shape +
+ * services/dapr-agent-py/src/main.py run_tool()):
+ *   - `preview` for llm_complete content (already normalized to `content`
+ *     array on the agent side; we strip `content` and leave `preview`).
+ *   - `input_preview` for tool_call_start input.
+ *   - `output_preview` for tool_call_end output.
+ *
+ * Other fields are passed through unchanged.
+ */
+function stripFullPayload(
+	data: Record<string, unknown>,
+): Record<string, unknown> {
+	const out: Record<string, unknown> = { ...data };
+	if ("preview" in out && "content" in out) {
+		delete out.content;
+	}
+	if ("input_preview" in out && "input" in out) {
+		delete out.input;
+	}
+	if ("output_preview" in out && "output" in out) {
+		delete out.output;
+	}
+	return out;
 }
 
 /**
@@ -109,7 +145,7 @@ export async function appendEvent(
 
 export async function listEvents(
 	sessionId: string,
-	opts: { afterSequence?: number; limit?: number } = {},
+	opts: { afterSequence?: number; limit?: number; preview?: boolean } = {},
 ): Promise<SessionEventEnvelope[]> {
 	const database = requireDb();
 	const conditions = [eq(sessionEvents.sessionId, sessionId)];
@@ -122,7 +158,27 @@ export async function listEvents(
 		.where(and(...conditions))
 		.orderBy(asc(sessionEvents.sequence))
 		.limit(opts.limit ?? 1000);
-	return rows.map(rowToEnvelope);
+	return rows.map((r) => rowToEnvelope(r, { preview: opts.preview }));
+}
+
+/**
+ * Fetch a single event by id. Returns the full (un-stripped) envelope. Used
+ * by the debug panel's "Load full payload" affordance when the SSE stream
+ * sent a preview-only shape.
+ */
+export async function getEvent(
+	sessionId: string,
+	eventId: string,
+): Promise<SessionEventEnvelope | null> {
+	const database = requireDb();
+	const [row] = await database
+		.select()
+		.from(sessionEvents)
+		.where(
+			and(eq(sessionEvents.sessionId, sessionId), eq(sessionEvents.id, eventId)),
+		)
+		.limit(1);
+	return row ? rowToEnvelope(row, { preview: false }) : null;
 }
 
 /**

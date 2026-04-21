@@ -104,10 +104,16 @@ def _cma_shape(
     if event_type == "llm_complete":
         content = payload.pop("content", "") or ""
         if isinstance(content, str):
+            # CMA shape: `content` is an array of typed blocks. Full text
+            # lives here; `preview` (if set by the caller) is kept as a
+            # separate field so the row-view can summarize without re-walking
+            # the content array.
             payload["content"] = [{"type": "text", "text": content}]
+        # `preview` / `oversized` / `size_bytes` pass through as-is.
     elif event_type == "tool_call_start":
         payload["name"] = payload.pop("toolName", None) or payload.get("name")
         payload["input"] = payload.pop("args", None) or payload.get("input") or {}
+        # `input_preview` / `oversized` / `size_bytes` pass through as-is.
     elif event_type in ("tool_call_end", "tool_call_error"):
         payload["tool_name"] = payload.pop("toolName", None) or payload.get("tool_name")
         output = payload.pop("output", None)
@@ -117,6 +123,7 @@ def _cma_shape(
         if error:
             payload["error"] = error
             payload.setdefault("is_error", True)
+        # `output_preview` / `oversized` / `size_bytes` pass through as-is.
     return cma_type, payload
 
 

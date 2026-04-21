@@ -37,9 +37,18 @@
 			return 'Tool result';
 		}
 		if (kind === 'model') {
-			const inTok = d.input_tokens ?? '-';
-			const outTok = d.output_tokens ?? '-';
-			return `${inTok} input → ${outTok} output`;
+			const inTok = Number(d.input_tokens ?? 0);
+			const outTok = Number(d.output_tokens ?? 0);
+			const cacheRead = Number(d.cache_read_input_tokens ?? 0);
+			const cacheCreate = Number(d.cache_creation_input_tokens ?? 0);
+			const parts = [`${fmtTokens(inTok)} in`, `${fmtTokens(outTok)} out`];
+			if (cacheRead > 0) {
+				const denom = cacheRead + inTok;
+				const pct = denom > 0 ? Math.round((cacheRead / denom) * 100) : 0;
+				parts.push(`cache ${fmtTokens(cacheRead)} (${pct}%)`);
+			}
+			if (cacheCreate > 0) parts.push(`+${fmtTokens(cacheCreate)} cached`);
+			return parts.join(' · ');
 		}
 		if (kind === 'status') {
 			return String(event.type).replace('session.status_', '').replace(/^./, (c) => c.toUpperCase());

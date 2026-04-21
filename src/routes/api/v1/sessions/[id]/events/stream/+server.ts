@@ -1,23 +1,27 @@
 import type { RequestHandler } from "./$types";
 import { listEvents } from "$lib/server/sessions/events";
 import { getSession } from "$lib/server/sessions/registry";
+import { sql } from "$lib/server/db";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
-const POLL_INTERVAL_MS = 1500;
 const TERMINAL_STATUSES = new Set(["terminated"]);
 
 /**
- * SSE stream of session events. MVP implementation: DB-polling loop that
- * reads everything after the last-known sequence every POLL_INTERVAL_MS.
- * Replay-on-reconnect is supported via the standard `Last-Event-ID` header
- * — clients resume from their last sequence without loss.
+ * SSE stream of session events. Backed by Postgres LISTEN/NOTIFY via
+ * `postgres-js`'s `sql.listen()`. Migration 0042 installed a trigger on
+ * `session_events` that fires `pg_notify('session_events', {...})` on each
+ * insert; we subscribe once per open SSE connection, filter by session id,
+ * and call `listEvents(sessionId, { afterSequence })` to pull the new row(s).
+ *
+ * Replay-on-reconnect is preserved via the standard `Last-Event-ID` header
+ * — clients resume from their last sequence without loss. The listen socket
+ * is owned by the postgres-js client pool, not this connection, so it
+ * survives BFF restarts differently from an EventSource: the SSE socket
+ * drops, the browser reconnects with Last-Event-ID, and we gap-fill via the
+ * initial backfill poll below.
  *
  * When the session reaches a terminal status, the stream emits a
- * `session.status_terminated` synthetic (if not already on the log) and
- * closes.
- *
- * Phase 3.5 can swap the poll loop for a NATS subject subscription when
- * dapr-agent-py emits events over NATS; the client contract is the same.
+ * `session.terminated` synthetic and closes.
  */
 export const GET: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) {
@@ -44,7 +48,11 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 		async start(controller) {
 			const encoder = new TextEncoder();
 			let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-			let pollTimer: ReturnType<typeof setInterval> | null = null;
+			let unlisten: (() => Promise<void>) | null = null;
+			// Serializes drain() invocations so concurrent notifies don't race
+			// on the shared `lastSequence` cursor.
+			let draining = false;
+			let drainAgain = false;
 
 			function write(event: string, data: unknown, id?: number) {
 				if (cancelled) return;
@@ -70,46 +78,93 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 				}
 			}
 
-			async function poll() {
+			async function drain() {
 				if (cancelled) return;
+				if (draining) {
+					drainAgain = true;
+					return;
+				}
+				draining = true;
 				try {
-					const events = await listEvents(sessionId, {
-						afterSequence: lastSequence,
-					});
-					for (const event of events) {
-						write(event.type, event, event.sequence);
-						lastSequence = event.sequence;
-					}
-					// Re-read session to detect terminal transitions emitted out-of-band.
-					const current = await getSession(sessionId);
-					if (current && TERMINAL_STATUSES.has(current.status)) {
-						write("session.terminated", { session: current });
-						cleanup();
-						controller.close();
-					}
+					do {
+						drainAgain = false;
+						const events = await listEvents(sessionId, {
+							afterSequence: lastSequence,
+							preview: true,
+						});
+						for (const event of events) {
+							write(event.type, event, event.sequence);
+							lastSequence = event.sequence;
+						}
+						// Re-read session to detect terminal transitions emitted out-of-band.
+						const current = await getSession(sessionId);
+						if (current && TERMINAL_STATUSES.has(current.status)) {
+							write("session.terminated", { session: current });
+							cleanup();
+							controller.close();
+							return;
+						}
+					} while (drainAgain && !cancelled);
 				} catch (err) {
 					write("error", {
 						message: err instanceof Error ? err.message : String(err),
 					});
+				} finally {
+					draining = false;
+				}
+			}
+
+			function onNotify(payloadStr: string) {
+				if (cancelled) return;
+				try {
+					const payload = JSON.parse(payloadStr) as {
+						sessionId?: string;
+						sequence?: number;
+					};
+					if (payload.sessionId !== sessionId) return;
+					void drain();
+				} catch {
+					// Malformed payload — fall back to a drain anyway; cheap enough.
+					void drain();
 				}
 			}
 
 			function cleanup() {
 				if (heartbeatTimer) clearInterval(heartbeatTimer);
-				if (pollTimer) clearInterval(pollTimer);
 				heartbeatTimer = null;
-				pollTimer = null;
+				if (unlisten) {
+					const u = unlisten;
+					unlisten = null;
+					void u().catch(() => {
+						/* ignore */
+					});
+				}
 			}
 
 			// Flush any proxy buffers so the browser accepts the stream immediately.
 			comment(" ".repeat(2048));
 			write("session.snapshot", { session });
 
-			// Initial backfill from the DB.
-			await poll();
+			// Initial backfill: drain anything that landed before LISTEN was armed.
+			await drain();
+
+			// Arm LISTEN only after the backfill so notifications that fire during
+			// backfill don't race with the cursor. The listen call itself resolves
+			// once the server has acknowledged the LISTEN command.
+			if (sql && !cancelled) {
+				try {
+					const meta = await sql.listen("session_events", onNotify);
+					unlisten = () => meta.unlisten();
+					// One more drain in case rows landed between backfill and LISTEN arm.
+					void drain();
+				} catch (err) {
+					write("error", {
+						message: `LISTEN arm failed: ${err instanceof Error ? err.message : String(err)}`,
+					});
+				}
+			}
 
 			heartbeatTimer = setInterval(() => comment("heartbeat"), HEARTBEAT_INTERVAL_MS);
-			pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
 			request.signal.addEventListener("abort", () => {
 				cancelled = true;

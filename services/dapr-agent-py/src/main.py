@@ -136,6 +136,51 @@ SESSION_TURN_TIMEOUT_SECONDS = int(
     os.environ.get("DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS", "600")
 )
 
+# Absolute cap on a single session event envelope's serialized size. Postgres
+# jsonb has no hard limit other than TOAST (~1 GB), but bigger blobs fan out
+# into the SSE stream, the consolidation fetch, and the client's in-memory
+# buffer. 256 KB comfortably fits a verbose tool response while still letting
+# the UI keep 500 events hot without OOM.
+_MAX_ENVELOPE_BYTES = int(os.environ.get("DAPR_AGENT_PY_MAX_ENVELOPE_BYTES", "262144"))
+
+
+def _json_preview(value: Any, max_chars: int) -> str:
+    """JSON-serialize `value` for display, truncated to `max_chars`. If
+    the value isn't JSON-serializable, fall back to repr()."""
+    try:
+        s = json.dumps(value, default=str, ensure_ascii=False)
+    except Exception:
+        s = repr(value)
+    if len(s) > max_chars:
+        return s[:max_chars] + "…"
+    return s
+
+
+def _prepare_payload_with_preview(
+    value: Any,
+    *,
+    mode: str,
+    preview_len: int,
+) -> tuple[Any, bool, int]:
+    """Return (payload, oversized, size_bytes) for a session_events data
+    value. `mode` is "text" (plain string) or "json" (arbitrary dict). When
+    the serialized size exceeds `_MAX_ENVELOPE_BYTES`, payload is None and
+    `oversized` is True; the caller substitutes a placeholder.
+    """
+    try:
+        if mode == "text":
+            size = len((value or "").encode("utf-8", "ignore")) if isinstance(value, str) else len(
+                json.dumps(value, default=str, ensure_ascii=False).encode("utf-8", "ignore")
+            )
+        else:
+            size = len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8", "ignore"))
+    except Exception:
+        size = 0
+    if size > _MAX_ENVELOPE_BYTES:
+        return (None, True, size)
+    return (value, False, size)
+
+
 def _build_system_prompt(cwd: str, sandbox_name: str | None = None) -> str:
     """Build the system prompt with a structured <env> block.
 
@@ -1182,11 +1227,11 @@ class OpenShellDurableAgent(DurableAgent):
         if isinstance(result, dict):
             raw = result.get("content", "")
             if isinstance(raw, str):
-                content = raw[:500]
+                content = raw
             elif isinstance(raw, list):
                 content = " ".join(
-                    b.get("text", "")[:200] for b in raw if isinstance(b, dict) and b.get("type") == "text"
-                )[:500]
+                    b.get("text", "") for b in raw if isinstance(b, dict) and b.get("type") == "text"
+                )
             tc = result.get("tool_calls")
             if isinstance(tc, list):
                 tool_calls = [
@@ -1206,10 +1251,21 @@ class OpenShellDurableAgent(DurableAgent):
                     streak, inst_id,
                 )
                 try:
+                    cb_content, cb_oversized, cb_size = _prepare_payload_with_preview(
+                        content, mode="text", preview_len=500,
+                    )
+                    cb_payload: dict[str, Any] = {
+                        "content": cb_content if not cb_oversized else "",
+                        "preview": (content[:500] if isinstance(content, str) else ""),
+                        "toolCalls": tool_calls,
+                    }
+                    if cb_oversized:
+                        cb_payload["oversized"] = True
+                        cb_payload["size_bytes"] = cb_size
                     publish_session_event(
                         sess_id,
                         "llm_complete",
-                        {"content": content, "toolCalls": tool_calls},
+                        cb_payload,
                         instance_id=inst_id,
                     )
                 except Exception:
@@ -1223,10 +1279,21 @@ class OpenShellDurableAgent(DurableAgent):
                     "(thinking-only response with stop_reason=end_turn and no tool_use)."
                 )
         try:
+            lc_content, lc_oversized, lc_size = _prepare_payload_with_preview(
+                content, mode="text", preview_len=500,
+            )
+            lc_payload: dict[str, Any] = {
+                "content": lc_content if not lc_oversized else "",
+                "preview": (content[:500] if isinstance(content, str) else ""),
+                "toolCalls": tool_calls,
+            }
+            if lc_oversized:
+                lc_payload["oversized"] = True
+                lc_payload["size_bytes"] = lc_size
             publish_session_event(
                 sess_id,
                 "llm_complete",
-                {"content": content, "toolCalls": tool_calls},
+                lc_payload,
                 instance_id=inst_id,
             )
         except Exception:
@@ -1391,13 +1458,31 @@ class OpenShellDurableAgent(DurableAgent):
                     pass
 
           try:
+              full_args = tool_args if isinstance(tool_args, dict) else {}
+              args_data, args_oversized, args_size = _prepare_payload_with_preview(
+                  full_args,
+                  mode="json",
+                  preview_len=300,
+              )
+              start_payload: dict[str, Any] = {
+                  "toolName": tool_name,
+                  "args": args_data,
+                  "input_preview": _json_preview(full_args, 300),
+              }
+              if args_oversized:
+                  start_payload["oversized"] = True
+                  start_payload["size_bytes"] = args_size
+                  # Preserve top-level keys as a hint even when the full blob
+                  # was dropped — lets the UI show "keys: foo, bar" instead of
+                  # "(oversized)".
+                  start_payload["args"] = {
+                      k: "[omitted: oversized]"
+                      for k in full_args.keys()
+                  }
               publish_session_event(
                   sess_id,
                   "tool_call_start",
-                  {
-                      "toolName": tool_name,
-                      "args": {k: str(v)[:200] for k, v in (tool_args or {}).items()},
-                  },
+                  start_payload,
                   source_event_id=f"{tool_call_id}:start" if tool_call_id else None,
                   instance_id=inst_id,
               )
@@ -1583,11 +1668,21 @@ class OpenShellDurableAgent(DurableAgent):
               except Exception as exc:
                   logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
           try:
+              full_output = output or ""
+              output_data, output_oversized, output_size = _prepare_payload_with_preview(
+                  full_output,
+                  mode="text",
+                  preview_len=500,
+              )
               payload: dict[str, Any] = {
                   "toolName": tool_name,
                   "success": True,
-                  "output": (output or "")[:500],
+                  "output": output_data,
+                  "output_preview": (full_output[:500] if isinstance(full_output, str) else ""),
               }
+              if output_oversized:
+                  payload["oversized"] = True
+                  payload["size_bytes"] = output_size
               if checkpoint is not None:
                   payload["codeCheckpoint"] = checkpoint
               publish_session_event(

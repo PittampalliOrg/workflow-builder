@@ -32,7 +32,7 @@
 			type === 'agent.custom_tool_result'
 		)
 			return 'result';
-		if (type.startsWith('span.model_request')) return 'model';
+		if (type.startsWith('span.model_request') || type === 'agent.llm_usage') return 'model';
 		if (type.startsWith('session.status_')) return 'status';
 		if (type.startsWith('span.')) return 'span';
 		return 'other';

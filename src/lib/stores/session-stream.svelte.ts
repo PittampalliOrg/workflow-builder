@@ -4,6 +4,19 @@ import type {
 	SessionEventEnvelope,
 } from "$lib/types/sessions";
 
+/** Kind of in-flight partial assistant content — mirrors the agent-side
+ * delta event type without the `agent.` prefix. */
+export type InFlightKind = "message" | "thinking" | "tool_input";
+
+export interface InFlightPartial {
+	kind: InFlightKind;
+	text: string;
+	// For tool_input deltas — lets the UI associate streaming JSON with the
+	// forthcoming agent.tool_use envelope.
+	toolUseId?: string;
+	updatedAt: number;
+}
+
 export interface SessionStreamState {
 	isConnected: boolean;
 	error: string | null;
@@ -13,6 +26,12 @@ export interface SessionStreamState {
 	// True while a history-catchup fetch is running after a (re)connect. UI
 	// can show a "catching up…" indicator during this window.
 	isConsolidating: boolean;
+	/** Partial assistant content accumulating from *_delta events. Keyed by
+	 * `${contentBlockIndex}` (block index is unique per LLM call; the agent
+	 * side never interleaves calls on the same session, so collisions only
+	 * happen if a new call starts before we clear the prior one — which the
+	 * `agent.message` arrival handles). */
+	inFlightPartials: Record<string, InFlightPartial>;
 }
 
 export type SessionStreamStore = Readable<SessionStreamState> & {
@@ -27,6 +46,7 @@ export function createSessionStream(sessionId: string): SessionStreamStore {
 		events: [],
 		lastSequence: 0,
 		isConsolidating: false,
+		inFlightPartials: {},
 	};
 	const { subscribe, update } = writable<SessionStreamState>(initial);
 
@@ -133,17 +153,89 @@ export function createSessionStream(sessionId: string): SessionStreamStore {
 				}
 			}
 		});
+		// Delta events carry partial assistant content. They're still stored in
+		// `events` (so sequence ordering + debug view show them) but also fold
+		// into `inFlightPartials[block_index]` which the detail panel reads to
+		// render a streaming bubble. `agent.message` / `agent.thinking` /
+		// `agent.tool_use` arrival evicts the matching partial.
+		const DELTA_TO_KIND: Record<string, InFlightKind> = {
+			"agent.message_delta": "message",
+			"agent.thinking_delta": "thinking",
+			"agent.tool_input_delta": "tool_input",
+		};
+		const FINAL_TO_KIND: Record<string, InFlightKind> = {
+			"agent.message": "message",
+			"agent.thinking": "thinking",
+			"agent.tool_use": "tool_input",
+		};
+
+		function applyDelta(
+			s: SessionStreamState,
+			envelope: SessionEventEnvelope,
+		): SessionStreamState {
+			const kind = DELTA_TO_KIND[envelope.type];
+			if (!kind) return s;
+			const data = envelope.data as {
+				content_block_index?: number;
+				text?: string;
+				partial_json?: string;
+				tool_use_id?: string;
+			};
+			const idx = Number(data.content_block_index ?? 0);
+			const chunk = data.text ?? data.partial_json ?? "";
+			const key = `${idx}`;
+			const prior = s.inFlightPartials[key];
+			const nextPartial: InFlightPartial = {
+				kind,
+				text: (prior?.text ?? "") + chunk,
+				toolUseId: data.tool_use_id ?? prior?.toolUseId,
+				updatedAt: Date.now(),
+			};
+			return {
+				...s,
+				inFlightPartials: { ...s.inFlightPartials, [key]: nextPartial },
+			};
+		}
+
+		function clearFinalized(
+			s: SessionStreamState,
+			envelope: SessionEventEnvelope,
+		): SessionStreamState {
+			const kind = FINAL_TO_KIND[envelope.type];
+			if (!kind) return s;
+			// The agent side doesn't echo content_block_index on the final
+			// envelope, so we clear every partial of the matching kind. This is
+			// correct because a given LLM call only emits one content block per
+			// kind of terminal text event at a time (message: one assistant
+			// content block; thinking: one thinking block per call; tool_use:
+			// multiple but each gets its own envelope and the index mapping is
+			// no longer visible after flush).
+			const next: Record<string, InFlightPartial> = {};
+			for (const [k, v] of Object.entries(s.inFlightPartials)) {
+				if (v.kind !== kind) next[k] = v;
+			}
+			return { ...s, inFlightPartials: next };
+		}
+
 		// Catch-all for typed session events (agent.message, agent.tool_use, etc.)
 		const genericHandler = (ev: MessageEvent) => {
 			try {
 				const envelope = JSON.parse(ev.data) as SessionEventEnvelope;
 				if (seenIds.has(envelope.id)) return;
 				seenIds.add(envelope.id);
-				patch((s) => ({
-					...s,
-					events: [...s.events, envelope].slice(-500),
-					lastSequence: Math.max(s.lastSequence, envelope.sequence),
-				}));
+				patch((s) => {
+					let next: SessionStreamState = {
+						...s,
+						events: [...s.events, envelope].slice(-500),
+						lastSequence: Math.max(s.lastSequence, envelope.sequence),
+					};
+					if (envelope.type in DELTA_TO_KIND) {
+						next = applyDelta(next, envelope);
+					} else if (envelope.type in FINAL_TO_KIND) {
+						next = clearFinalized(next, envelope);
+					}
+					return next;
+				});
 			} catch {
 				/* ignore */
 			}
@@ -151,13 +243,17 @@ export function createSessionStream(sessionId: string): SessionStreamStore {
 		// Subscribe to every event type we care about.
 		const types = [
 			"agent.message",
+			"agent.message_delta",
 			"agent.thinking",
+			"agent.thinking_delta",
 			"agent.tool_use",
+			"agent.tool_input_delta",
 			"agent.mcp_tool_use",
 			"agent.custom_tool_use",
 			"agent.tool_result",
 			"agent.mcp_tool_result",
 			"agent.thread_context_compacted",
+			"agent.llm_usage",
 			"session.status_running",
 			"session.status_idle",
 			"session.status_rescheduled",
