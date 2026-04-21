@@ -45,8 +45,10 @@
 	let sourceFilter = $state<SourceFilter>(
 		(url.searchParams.get('source') as SourceFilter) ?? 'all'
 	);
+	// Default to 30d so the list stays bounded as sessions accumulate. Users
+	// can explicitly switch to "All time" to see older history.
 	let created = $state<CreatedFilter>(
-		(url.searchParams.get('created') as CreatedFilter) ?? 'all'
+		(url.searchParams.get('created') as CreatedFilter) ?? '30d'
 	);
 	let searchText = $state<string>(url.searchParams.get('q') ?? '');
 	let includeArchived = $state(url.searchParams.get('archived') === 'true');
@@ -90,7 +92,9 @@
 						s.title ?? '',
 						s.id,
 						s.workflowName ?? '',
-						s.workflowExecutionId ?? ''
+						s.workflowExecutionId ?? '',
+						s.agentName ?? '',
+						s.agentSlug ?? ''
 					]
 						.join(' ')
 						.toLowerCase();
@@ -495,17 +499,32 @@
 				{/if}
 			</td>
 			<td class="px-4 py-2.5">
-				{#if agent}
-					<Badge variant="outline" class="text-[11px] gap-1">
-						<span>{agent.avatar ?? '🤖'}</span>
-						<span class="truncate max-w-[140px]">{agent.name}</span>
-						{#if browserSidecarBySlug[agent.slug]}
+				{#if s.agentName}
+					{@const slug = s.agentSlug ?? agent?.slug}
+					<Badge
+						variant="outline"
+						class="text-[11px] gap-1"
+						title={s.agentEphemeral
+							? 'Workflow-ephemeral agent (inline agentConfig in a durable/run step)'
+							: s.agentName}
+					>
+						<span>{s.agentAvatar ?? agent?.avatar ?? (s.agentEphemeral ? '⚡' : '🤖')}</span>
+						<span class="truncate max-w-[160px]">{s.agentName}</span>
+						{#if slug && browserSidecarBySlug[slug]}
 							<span
 								title="Browser sidecar (chromium + playwright-mcp)"
 								aria-label="Browser agent"
 								class="text-[10px] leading-none"
 							>
 								🌐
+							</span>
+						{/if}
+						{#if s.agentEphemeral}
+							<span
+								class="text-[9px] uppercase tracking-wide text-muted-foreground/70"
+								title="Spawned from inline agentConfig — not a saved agent"
+							>
+								eph
 							</span>
 						{/if}
 					</Badge>

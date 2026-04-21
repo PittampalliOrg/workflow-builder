@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
+	agents,
 	sessions,
 	sessionResources,
 	workflowExecutions,
@@ -24,12 +25,29 @@ function requireDb() {
 	return db;
 }
 
-type WorkflowContext = { workflowId: string | null; workflowName: string | null };
+type JoinContext = {
+	workflowId: string | null;
+	workflowName: string | null;
+	agentName: string | null;
+	agentSlug: string | null;
+	agentAvatar: string | null;
+	agentTags: string[] | null;
+};
+
+const EMPTY_CTX: JoinContext = {
+	workflowId: null,
+	workflowName: null,
+	agentName: null,
+	agentSlug: null,
+	agentAvatar: null,
+	agentTags: null,
+};
 
 function rowToSummary(
 	row: Session,
-	ctx: WorkflowContext = { workflowId: null, workflowName: null },
+	ctx: JoinContext = EMPTY_CTX,
 ): SessionSummary {
+	const agentTags = Array.isArray(ctx.agentTags) ? ctx.agentTags : [];
 	return {
 		id: row.id,
 		title: row.title ?? null,
@@ -45,6 +63,10 @@ function rowToSummary(
 		workflowExecutionId: row.workflowExecutionId ?? null,
 		workflowId: ctx.workflowId,
 		workflowName: ctx.workflowName,
+		agentName: ctx.agentName,
+		agentSlug: ctx.agentSlug,
+		agentAvatar: ctx.agentAvatar,
+		agentEphemeral: agentTags.includes("workflow-ephemeral"),
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 		completedAt: row.completedAt ? row.completedAt.toISOString() : null,
@@ -52,10 +74,7 @@ function rowToSummary(
 	};
 }
 
-function rowToDetail(
-	row: Session,
-	ctx: WorkflowContext = { workflowId: null, workflowName: null },
-): SessionDetail {
+function rowToDetail(row: Session, ctx: JoinContext = EMPTY_CTX): SessionDetail {
 	return {
 		...rowToSummary(row, ctx),
 		daprInstanceId: row.daprInstanceId ?? null,
@@ -114,6 +133,10 @@ export async function listSessions(
 			session: sessions,
 			workflowId: workflowExecutions.workflowId,
 			workflowName: workflows.name,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			agentAvatar: agents.avatar,
+			agentTags: agents.tags,
 		})
 		.from(sessions)
 		.leftJoin(
@@ -121,6 +144,7 @@ export async function listSessions(
 			eq(workflowExecutions.id, sessions.workflowExecutionId),
 		)
 		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.leftJoin(agents, eq(agents.id, sessions.agentId))
 		.where(conditions.length > 0 ? and(...conditions) : undefined)
 		.orderBy(desc(sessions.createdAt))
 		.limit(filter.limit ?? 100);
@@ -128,6 +152,10 @@ export async function listSessions(
 		rowToSummary(r.session, {
 			workflowId: r.workflowId ?? null,
 			workflowName: r.workflowName ?? null,
+			agentName: r.agentName ?? null,
+			agentSlug: r.agentSlug ?? null,
+			agentAvatar: r.agentAvatar ?? null,
+			agentTags: (r.agentTags as string[] | null) ?? null,
 		}),
 	);
 }
@@ -139,6 +167,10 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
 			session: sessions,
 			workflowId: workflowExecutions.workflowId,
 			workflowName: workflows.name,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			agentAvatar: agents.avatar,
+			agentTags: agents.tags,
 		})
 		.from(sessions)
 		.leftJoin(
@@ -146,12 +178,17 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
 			eq(workflowExecutions.id, sessions.workflowExecutionId),
 		)
 		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.leftJoin(agents, eq(agents.id, sessions.agentId))
 		.where(eq(sessions.id, id))
 		.limit(1);
 	return row
 		? rowToDetail(row.session, {
 				workflowId: row.workflowId ?? null,
 				workflowName: row.workflowName ?? null,
+				agentName: row.agentName ?? null,
+				agentSlug: row.agentSlug ?? null,
+				agentAvatar: row.agentAvatar ?? null,
+				agentTags: (row.agentTags as string[] | null) ?? null,
 			})
 		: null;
 }

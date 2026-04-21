@@ -2545,6 +2545,12 @@ export const sessions = pgTable(
 		workspaceSandboxIdx: index("idx_sessions_workspace_sandbox").on(
 			table.workspaceSandboxName,
 		),
+		// Composite partial index that serves the workspace sessions list
+		// query (WHERE project_id = X AND archived_at IS NULL ORDER BY
+		// created_at DESC LIMIT N). Added in migration 0041.
+		projectCreatedIdx: index("idx_sessions_project_created")
+			.on(table.projectId, table.createdAt.desc())
+			.where(sql`${table.archivedAt} IS NULL`),
 	}),
 );
 
