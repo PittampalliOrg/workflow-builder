@@ -136,40 +136,20 @@
 	});
 
 	$effect(() => {
+		// Workflow context now ships on SessionDetail via a server-side join
+		// in listSessions/getSession — no extra round-trips needed.
 		const execId = session?.workflowExecutionId;
-		if (!execId) {
+		const wfId = session?.workflowId;
+		const wfName = session?.workflowName;
+		if (!execId || !wfId) {
 			workflowRunContext = null;
 			return;
 		}
-		// Two-step hydration: status → workflowId, then workflow → name.
-		(async () => {
-			try {
-				const statusRes = await fetch(`/api/workflows/executions/${execId}/status`);
-				if (!statusRes.ok) {
-					workflowRunContext = null;
-					return;
-				}
-				const status = await statusRes.json();
-				const workflowId = status?.workflowId ? String(status.workflowId) : null;
-				if (!workflowId) {
-					workflowRunContext = null;
-					return;
-				}
-				let workflowName = workflowId;
-				try {
-					const wfRes = await fetch(`/api/workflows/${workflowId}`);
-					if (wfRes.ok) {
-						const wf = await wfRes.json();
-						if (wf?.name) workflowName = String(wf.name);
-					}
-				} catch {
-					/* fall back to id */
-				}
-				workflowRunContext = { workflowId, workflowName, executionId: String(execId) };
-			} catch {
-				workflowRunContext = null;
-			}
-		})();
+		workflowRunContext = {
+			workflowId: wfId,
+			workflowName: wfName ?? wfId,
+			executionId: String(execId)
+		};
 	});
 	// Transcript: user-facing messages + tool-use (compacted); hides thinking
 	// and raw status events. Debug: every event verbatim. Browser state:

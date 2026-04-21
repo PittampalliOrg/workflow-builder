@@ -153,10 +153,13 @@ export const workflows = pgTable("workflows", {
 		.notNull()
 		.references(() => users.id),
 	// Project scoping (MCP and multi-user parity with Activepieces).
-	// Nullable for backward-compat; new workflows should always set this.
-	projectId: text("project_id").references(() => projects.id, {
-		onDelete: "cascade",
-	}),
+	// Enforced NOT NULL in migration 0040 after backfill; POST /api/workflows
+	// stamps this from locals.session.projectId on every insert.
+	projectId: text("project_id")
+		.notNull()
+		.references(() => projects.id, {
+			onDelete: "cascade",
+		}),
 	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
 	nodes: jsonb("nodes").notNull().$type<any[]>(),
 	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
@@ -2542,6 +2545,12 @@ export const sessions = pgTable(
 		workspaceSandboxIdx: index("idx_sessions_workspace_sandbox").on(
 			table.workspaceSandboxName,
 		),
+		// Composite partial index that serves the workspace sessions list
+		// query (WHERE project_id = X AND archived_at IS NULL ORDER BY
+		// created_at DESC LIMIT N). Added in migration 0041.
+		projectCreatedIdx: index("idx_sessions_project_created")
+			.on(table.projectId, table.createdAt.desc())
+			.where(sql`${table.archivedAt} IS NULL`),
 	}),
 );
 

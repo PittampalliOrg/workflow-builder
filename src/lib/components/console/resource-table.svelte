@@ -33,8 +33,12 @@
 	}: Props<T> = $props();
 </script>
 
-<div class="border rounded-md overflow-hidden">
-	<table class="w-full text-sm">
+<!-- Wrap in a horizontal scroll container so wide column sets
+     (e.g. the sessions table with 9 columns) don't clip on narrow
+     viewports. The inner table keeps w-full so narrow tables still
+     stretch to fill. -->
+<div class="border rounded-md overflow-x-auto">
+	<table class="w-full min-w-max text-sm">
 		<thead class="bg-muted/30">
 			<tr class="text-left text-[11px] uppercase tracking-wide text-muted-foreground border-b">
 				{@render header()}

@@ -25,9 +25,11 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!db) return error(503, 'Database not configured');
+	if (!locals.session?.userId) return error(401, 'Authentication required');
+	if (!locals.session.projectId)
+		return error(400, 'No active workspace — cannot create workflow');
 
 	const body = await request.json();
-	const userId = locals.session?.userId || 'system';
 
 	const [workflow] = await db
 		.insert(workflows)
@@ -36,7 +38,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			nodes: body.nodes || [],
 			edges: body.edges || [],
 			engineType: body.engineType || 'dapr',
-			userId
+			userId: locals.session.userId,
+			projectId: locals.session.projectId
 		})
 		.returning();
 

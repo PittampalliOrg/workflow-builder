@@ -13,7 +13,10 @@ import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
+
+from dapr.ext.workflow import when_any as wf_when_any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -118,6 +121,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ITERATIONS = int(os.environ.get("DAPR_AGENT_PY_MAX_ITERATIONS", "120"))
+# Circuit breaker: after this many consecutive empty (or failed) LLM
+# responses within a single agent_workflow instance, raise to break the
+# loop. 3 covers the occasional empty-text-only response while stopping
+# runaway retries. See __init__ comment near _empty_llm_response_count_by_instance.
+EMPTY_RESPONSE_THRESHOLD = int(
+    os.environ.get("DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD", "3")
+)
+# Per-turn timer for session_workflow's call_child_workflow — if the child
+# agent_workflow doesn't return within this many seconds, session_workflow
+# raises AgentError so session.error/status_terminated can publish instead
+# of the workflow hanging until pod idle-reap.
+SESSION_TURN_TIMEOUT_SECONDS = int(
+    os.environ.get("DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS", "600")
+)
 
 def _build_system_prompt(cwd: str, sandbox_name: str | None = None) -> str:
     """Build the system prompt with a structured <env> block.
@@ -897,6 +914,15 @@ class OpenShellDurableAgent(DurableAgent):
         # try/finally on non-replay ticks only.
         self._interaction_span_by_instance: dict[str, Any] = {}
         self._interaction_ctx_token_by_instance: dict[str, Any] = {}
+        # Empty-response circuit breaker: tracks consecutive LLM invocations
+        # that returned empty content AND no tool_calls (or failed outright),
+        # per workflow instance. After EMPTY_RESPONSE_THRESHOLD consecutive
+        # empties, call_llm raises to break agent_workflow out of a stuck
+        # loop — mirrors the thinking-only-no-tool-use pattern documented
+        # in anthropics/anthropic-sdk-python#1204 (Opus 4.7 + adaptive
+        # thinking + tools occasionally emits stop_reason=end_turn with an
+        # empty text block and no tool_use).
+        self._empty_llm_response_count_by_instance: dict[str, int] = {}
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -1123,6 +1149,26 @@ class OpenShellDurableAgent(DurableAgent):
                 )
             except Exception:
                 pass
+            # Count failures as "empty" for circuit-breaker purposes. Dapr's
+            # activity-level retry will re-invoke us up to max_attempts=8
+            # before the exception escapes; we want to short-circuit once
+            # we've seen EMPTY_RESPONSE_THRESHOLD total empties for this
+            # instance (across retries + real empty responses combined).
+            streak = self._empty_llm_response_count_by_instance.get(inst_id, 0) + 1
+            self._empty_llm_response_count_by_instance[inst_id] = streak
+            if streak >= EMPTY_RESPONSE_THRESHOLD:
+                logger.warning(
+                    "[call-llm] circuit-breaker tripped after %d empty/failed LLM responses for instance %s; surfacing AgentError to break the loop",
+                    streak, inst_id,
+                )
+                self._empty_llm_response_count_by_instance.pop(inst_id, None)
+                from dapr_agents.types.exceptions import AgentError
+                raise AgentError(
+                    f"LLM returned empty/failed responses {streak} consecutive times; "
+                    "circuit breaker tripped to prevent runaway loop. "
+                    "Likely cause: anthropics/anthropic-sdk-python#1204 "
+                    "(thinking-only response) or persistent provider errors."
+                ) from exc
             raise
         finally:
             self._active_llm_instance_id = None
@@ -1146,6 +1192,36 @@ class OpenShellDurableAgent(DurableAgent):
                 tool_calls = [
                     t.get("function", {}).get("name", "") for t in tc if isinstance(t, dict)
                 ]
+        # Circuit-breaker bookkeeping on the success path: a response that
+        # carries text content OR tool_calls resets the empty-streak counter;
+        # a response with neither increments it. See EMPTY_RESPONSE_THRESHOLD.
+        if content.strip() or tool_calls:
+            self._empty_llm_response_count_by_instance.pop(inst_id, None)
+        else:
+            streak = self._empty_llm_response_count_by_instance.get(inst_id, 0) + 1
+            self._empty_llm_response_count_by_instance[inst_id] = streak
+            if streak >= EMPTY_RESPONSE_THRESHOLD:
+                logger.warning(
+                    "[call-llm] circuit-breaker tripped after %d empty-content LLM responses for instance %s; surfacing AgentError to break the loop",
+                    streak, inst_id,
+                )
+                try:
+                    publish_session_event(
+                        sess_id,
+                        "llm_complete",
+                        {"content": content, "toolCalls": tool_calls},
+                        instance_id=inst_id,
+                    )
+                except Exception:
+                    pass
+                self._empty_llm_response_count_by_instance.pop(inst_id, None)
+                from dapr_agents.types.exceptions import AgentError
+                raise AgentError(
+                    f"LLM returned empty responses {streak} consecutive times; "
+                    "circuit breaker tripped to prevent runaway loop. "
+                    "Likely cause: anthropics/anthropic-sdk-python#1204 "
+                    "(thinking-only response with stop_reason=end_turn and no tool_use)."
+                )
         try:
             publish_session_event(
                 sess_id,
@@ -2530,12 +2606,31 @@ class OpenShellDurableAgent(DurableAgent):
                 # runtime registry. Use the property the SDK exposes for
                 # cross-workflow dispatch so this keeps working even if
                 # the naming scheme changes again.
-                turn_result = yield ctx.call_child_workflow(
+                # Per-turn timeout safety net: agent_workflow has its own
+                # empty-response circuit breaker in call_llm, but this guards
+                # against any other stuck-state (MCP hang, tool loop, etc.)
+                # by giving up after SESSION_TURN_TIMEOUT_SECONDS and
+                # propagating a timeout AgentError that triggers the
+                # session.error / status_terminated publish below.
+                child_task = ctx.call_child_workflow(
                     self.agent_workflow_name,
                     input=child_input,
                     instance_id=f"{session_id}:turn-{turn_counter}",
                     retry_policy=self._retry_policy,
                 )
+                timer_task = ctx.create_timer(
+                    timedelta(seconds=SESSION_TURN_TIMEOUT_SECONDS)
+                )
+                winner = yield wf_when_any([child_task, timer_task])
+                if winner is timer_task:
+                    from dapr_agents.types.exceptions import AgentError
+                    raise AgentError(
+                        f"Session turn {turn_counter} exceeded "
+                        f"{SESSION_TURN_TIMEOUT_SECONDS}s timeout; "
+                        "terminating session to prevent indefinite hang. "
+                        "Check agent_workflow state for stuck LLM or tool calls."
+                    )
+                turn_result = child_task.get_result()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[session] %s turn %d failed: %s",

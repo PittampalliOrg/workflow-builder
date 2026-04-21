@@ -34,6 +34,16 @@ export type SessionSummary = {
 	usage: SessionUsage;
 	errorMessage: string | null;
 	workflowExecutionId: string | null;
+	/** Populated for workflow-driven sessions via join in listSessions. */
+	workflowId: string | null;
+	workflowName: string | null;
+	/** Joined from the agents table so the UI can render a name for
+	 * workflow-ephemeral agents too — those are filtered out of the
+	 * /api/agents catalog by design but still need a label in sessions. */
+	agentName: string | null;
+	agentSlug: string | null;
+	agentAvatar: string | null;
+	agentEphemeral: boolean;
 	createdAt: string;
 	updatedAt: string;
 	completedAt: string | null;

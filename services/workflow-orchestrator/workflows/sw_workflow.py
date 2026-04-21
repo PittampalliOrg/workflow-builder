@@ -47,6 +47,7 @@ from core.sw_expressions import (
 )
 from core.template_resolver import resolve_templates
 from activities.execute_action import execute_action
+from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
 from activities.log_external_event import (
@@ -150,6 +151,31 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     for output in tc.task_outputs.values():
         if _output_requests_keep(output):
             return False
+
+    # Inspect the workflow spec itself for any workspace/* step that declared
+    # `with.keepAfterRun=true`. openshell-agent-runtime doesn't echo this flag
+    # back in its response, so checking only task_outputs misses the user's
+    # explicit intent. Matching on call prefix keeps it narrow — only
+    # workspace-provisioning steps can signal "keep the sandbox alive".
+    try:
+        for _, task_data in tc.workflow.unwrap_tasks():
+            if not isinstance(task_data, dict):
+                continue
+            call = str(task_data.get("call") or "")
+            if not call.startswith("workspace/"):
+                continue
+            with_block = task_data.get("with")
+            if isinstance(with_block, dict) and _as_bool(with_block.get("keepAfterRun"), False):
+                return False
+            body = with_block.get("body") if isinstance(with_block, dict) else None
+            if isinstance(body, dict):
+                inp = body.get("input") if isinstance(body.get("input"), dict) else body
+                if isinstance(inp, dict) and _as_bool(inp.get("keepAfterRun"), False):
+                    return False
+    except Exception:
+        # Defensive: never let a spec-inspection failure block cleanup behaviour.
+        pass
+
     return not keep_sandbox
 
 
@@ -522,6 +548,7 @@ def _resolve_function_call(
 # callee in dapr-agent-py/src/main.py.
 _AGENT_ACTION_TYPES: set[str] = {"durable/run"}
 _NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run"}
+_DURABLE_CRAWL4AI_ACTION_TYPES = {"web/crawl.async"}
 _REMOVED_AGENT_ACTION_TYPES = {
     "claude/run",
     "openshell/run",
@@ -1348,6 +1375,141 @@ def _resolve_native_agent_args(
     return resolved_native_args
 
 
+def _resolved_call_args(
+    task_data: dict[str, Any],
+    tc: "TaskContext",
+    resolved: dict[str, Any],
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """Resolve a standard call task's input and function arguments."""
+    task_input = _resolve_task_input(task_data, tc)
+    expr_context = _build_expression_context(
+        tc,
+        task_input=task_input,
+        has_task_input=True,
+    )
+    resolved_args = evaluate_structure(resolved.get("args", {}) or {}, expr_context)
+    if not isinstance(resolved_args, dict):
+        resolved_args = {}
+
+    action_input = {}
+    if isinstance(resolved_args.get("input"), dict):
+        action_input = resolved_args["input"]
+    elif isinstance(resolved_args.get("body"), dict) and isinstance(
+        resolved_args["body"].get("input"), dict
+    ):
+        action_input = resolved_args["body"]["input"]
+
+    return task_input, resolved_args, action_input
+
+
+def _crawl4ai_timeout_ms(value: Any, default_ms: int) -> int:
+    parsed = _parse_optional_int(value)
+    if parsed is None:
+        return default_ms
+    return max(1_000, min(parsed, 1_800_000))
+
+
+def _crawl4ai_poll_ms(value: Any) -> int:
+    parsed = _parse_optional_int(value)
+    if parsed is None:
+        return 5_000
+    return max(1_000, min(parsed, 60_000))
+
+
+def _run_durable_crawl4ai_job(
+    ctx: wf.DaprWorkflowContext,
+    task_name: str,
+    task_data: dict[str, Any],
+    tc: "TaskContext",
+    resolved: dict[str, Any],
+    action_type: str,
+) -> Any:
+    task_input, resolved_args, action_input = _resolved_call_args(task_data, tc, resolved)
+    input_payload = action_input or resolved_args
+    timeout_ms = _crawl4ai_timeout_ms(input_payload.get("timeoutMs"), 900_000)
+    poll_ms = _crawl4ai_poll_ms(input_payload.get("pollMs"))
+    start_ms = _now_ms(ctx)
+
+    started = yield ctx.call_activity(
+        crawl4ai_start_job,
+        input=_freeze(
+            {
+                "input": input_payload,
+                "workflowId": tc.workflow_id,
+                "executionId": tc.execution_id,
+                "dbExecutionId": tc.db_execution_id,
+                "nodeId": task_name,
+                "_otel": tc.otel_ctx,
+            }
+        ),
+    )
+    if not isinstance(started, dict) or not started.get("jobId"):
+        raise RuntimeError("Crawl4AI async job did not return a jobId")
+
+    job_id = str(started["jobId"])
+    _log_info(
+        ctx,
+        "[SW Workflow] Crawl4AI async job started: task=%s jobId=%s",
+        task_name,
+        job_id,
+    )
+
+    while True:
+        status = yield ctx.call_activity(
+            crawl4ai_get_job_status,
+            input=_freeze(
+                {
+                    "jobId": job_id,
+                    "workflowId": tc.workflow_id,
+                    "executionId": tc.execution_id,
+                    "dbExecutionId": tc.db_execution_id,
+                    "nodeId": task_name,
+                    "_otel": tc.otel_ctx,
+                }
+            ),
+        )
+        if isinstance(status, dict) and status.get("complete"):
+            result = {
+                "success": bool(status.get("success")),
+                "data": status,
+                "error": status.get("error") if isinstance(status.get("error"), str) else None,
+                "duration_ms": _elapsed_ms(ctx, start_ms),
+            }
+            result = _apply_task_output_definition(
+                task_data,
+                tc,
+                task_input=task_input,
+                raw_output=result,
+            )
+            _store_task_output(tc, task_name, action_type, result)
+            tc.completed_tasks.add(task_name)
+            if not result.get("success", True):
+                raise RuntimeError(result.get("error") or f"Crawl4AI job failed: {job_id}")
+            return result
+
+        if _elapsed_ms(ctx, start_ms) >= timeout_ms:
+            result = {
+                "success": False,
+                "data": {
+                    "jobId": job_id,
+                    "status": status if isinstance(status, dict) else None,
+                },
+                "error": f"Crawl4AI job {job_id} did not complete within {timeout_ms}ms",
+                "duration_ms": _elapsed_ms(ctx, start_ms),
+            }
+            result = _apply_task_output_definition(
+                task_data,
+                tc,
+                task_input=task_input,
+                raw_output=result,
+            )
+            _store_task_output(tc, task_name, action_type, result)
+            tc.completed_tasks.add(task_name)
+            raise RuntimeError(result.get("error") or f"Crawl4AI job timed out: {job_id}")
+
+        yield ctx.create_timer(timedelta(milliseconds=poll_ms))
+
+
 def _handle_call_task(
     ctx: wf.DaprWorkflowContext,
     task_name: str,
@@ -1373,6 +1535,17 @@ def _handle_call_task(
             f"Removed SW 1.0 agent action '{action_type}' in workflow task '{task_name}'. "
             "Use 'durable/run' for all embedded agent execution."
         )
+
+    if action_type in _DURABLE_CRAWL4AI_ACTION_TYPES:
+        result = yield from _run_durable_crawl4ai_job(
+            ctx,
+            task_name,
+            task_data,
+            tc,
+            resolved,
+            action_type,
+        )
+        return result
 
     # Agent actions: prefer native durable child workflows when available
     if action_type in _AGENT_ACTION_TYPES:
@@ -1406,11 +1579,7 @@ def _handle_call_task(
 
     # Standard call: single-shot HTTP via function-router.
     # Materialize task input and call arguments through SW `${ ... }` expressions.
-    task_input = _resolve_task_input(task_data, tc)
-    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
-    resolved_args = evaluate_structure(resolved.get("args", {}) or {}, expr_context)
-    if not isinstance(resolved_args, dict):
-        resolved_args = {}
+    task_input, resolved_args, action_input = _resolved_call_args(task_data, tc, resolved)
 
     raw_config = {
         "actionType": action_type,
@@ -1420,13 +1589,6 @@ def _handle_call_task(
     # For piece/action calls: extract input fields from nested body.input or top-level input
     # so fn-activepieces receives them as flat propsValue fields while preserving
     # the original resolved arguments for generic OpenShell/function-router actions.
-    action_input = {}
-    if isinstance(resolved_args.get("input"), dict):
-        action_input = resolved_args["input"]
-    elif isinstance(resolved_args.get("body"), dict) and isinstance(
-        resolved_args["body"].get("input"), dict
-    ):
-        action_input = resolved_args["body"]["input"]
     if action_input:
         raw_config["input"] = action_input
 
@@ -1472,6 +1634,36 @@ def _handle_call_task(
         task_input=task_input,
         raw_output=result,
     )
+
+    # Persist workspace_profile rows so the BFF sandbox-preview proxy can resolve
+    # the run's retained sandbox. Legacy workspace-runtime did this upsert; the
+    # port to openshell-agent-runtime (2026-04-19 commit 5c74e218) never ported
+    # the DB write. Orchestrator now owns the row.
+    if (
+        action_type == "workspace/profile"
+        and isinstance(result, dict)
+        and result.get("success", True)
+    ):
+        keep_after_run = _as_bool(
+            (resolved_config or {}).get("keepAfterRun")
+            if isinstance(resolved_config, dict)
+            else False,
+            False,
+        )
+        if not keep_after_run and isinstance(task_input, dict):
+            keep_after_run = _as_bool(task_input.get("keepAfterRun"), False)
+        if keep_after_run:
+            yield ctx.call_activity(
+                "persist_workspace_session",
+                input=_freeze({
+                    "workflowExecutionId": tc.db_execution_id,
+                    "actionType": action_type,
+                    "keepAfterRun": True,
+                    "taskName": task_name,
+                    "result": result,
+                    "_otel": tc.otel_ctx,
+                }),
+            )
 
     # Store in NodeOutputs format for cross-node template resolution
     _store_task_output(tc, task_name, action_type, result)

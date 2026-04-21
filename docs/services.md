@@ -63,16 +63,16 @@ TypeScript sync credential broker + Knative routing proxy.
 - Key endpoint: `POST /execute`
 - Responsibilities:
   - **Credential broker**: the only service with Dapr secret store + WB decrypt API access. AES-256-CBC decrypts AP connection values, maps to env-var names per integration, writes `credential_access_logs` audit rows.
-  - **Slug-to-service routing**: ConfigMap-driven registry (`/config/functions.json`) with hardcoded `BUILTIN_FALLBACK_REGISTRY` override.
+  - **Slug-to-service routing**: ConfigMap-driven registry (`/config/functions.json`). The ConfigMap is **authoritative** over the hardcoded `BUILTIN_FALLBACK_REGISTRY`; builtin only fills slugs the ConfigMap omits (merge order corrected 2026-04-20 in `services/function-router/src/core/registry.ts`).
   - **Knative response normalization**: flattens inconsistent `{success, data, error}` shapes.
 
 Current route contract (merged registry — ConfigMap + BUILTIN):
 
-- `workspace/*` → `workspace-runtime`
+- `workspace/*` → `openshell-agent-runtime` (consolidated 2026-04-19; legacy `workspace-runtime` TS service decommissioned)
 - `browser/*` → `openshell-agent-runtime`
 - `openshell/*` → `openshell-agent-runtime`
 - `code/*` → `code-runtime`
-- `dapr-swe/*` → `dapr-swe`
+- `web/*` → `crawl4ai-adapter`
 - `workflow-orchestrator/*` → `workflow-orchestrator`
 - `_default` → `fn-activepieces` (set in both ConfigMap and BUILTIN for defense-in-depth)
 
@@ -136,7 +136,8 @@ Canonical OpenShell runtime for workspace and browser flows.
   - `workspace/clone`
   - `workspace/command`
   - `workspace/cleanup`
-  - `browser/*`
+  - `browser/*` (including `browser/validate` and `browser/start-preview`)
+  - `openshell/*` helper routes
 
 Important behavior:
 
@@ -145,6 +146,9 @@ Important behavior:
 - maps sandbox templates to images for specialized runtimes
 - supports retained Claude session handoff
 - runs browser validation against materialized workspace state
+- stateless w.r.t. `workflow_workspace_sessions` — the orchestrator's
+  `persist_workspace_session` activity upserts that row after
+  `workspace/profile` completes with `keepAfterRun=true`
 
 The XLSX workflow path depends on the `dapr-agent-xlsx` sandbox template. That
 template must resolve to the custom `openshell-sandbox-xlsx` image, not the base

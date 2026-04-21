@@ -174,14 +174,92 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     if browser_enabled:
         extra_containers, extra_volumes = _build_browser_sidecars(browser_spec)
 
+    # OpenShell gateway config + mTLS certs. Without these, every tool the
+    # agent runs that touches the per-session sandbox (write_file, bash_run,
+    # etc.) fails with "[Errno 2] No such file or directory:
+    # '/root/.config/openshell/active_gateway'". Mirrors the
+    # seed-openshell-config init container on the legacy dapr-agent-py
+    # Deployment (packages/components/active-development/manifests/
+    # dapr-agent-py/Deployment-dapr-agent-py.yaml).
+    openshell_init = {
+        "name": "seed-openshell-config",
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["sh", "-c"],
+        "args": [
+            (
+                'set -eu\n'
+                'CONFIG_ROOT="${XDG_CONFIG_HOME}/openshell"\n'
+                'GATEWAY_DIR="${CONFIG_ROOT}/gateways/${OPENSHELL_GATEWAY_NAME}"\n'
+                'MTLS_DIR="${GATEWAY_DIR}/mtls"\n'
+                'install -d -m 700 "${MTLS_DIR}"\n'
+                'cat >"${GATEWAY_DIR}/metadata.json" <<EOF\n'
+                '{\n'
+                '  "name": "${OPENSHELL_GATEWAY_NAME}",\n'
+                '  "gateway_endpoint": "${OPENSHELL_GATEWAY_URL}",\n'
+                '  "is_remote": false,\n'
+                '  "gateway_port": ${OPENSHELL_GATEWAY_PORT},\n'
+                '  "auth_mode": "mtls"\n'
+                '}\n'
+                'EOF\n'
+                'printf \'%s\\n\' "${OPENSHELL_GATEWAY_NAME}" > "${CONFIG_ROOT}/active_gateway"\n'
+                'cp /etc/openshell-tls/client/tls.crt "${MTLS_DIR}/tls.crt"\n'
+                'cp /etc/openshell-tls/client/tls.key "${MTLS_DIR}/tls.key"\n'
+                'if [ -f /etc/openshell-tls/client/ca.crt ]; then\n'
+                '  cp /etc/openshell-tls/client/ca.crt "${MTLS_DIR}/ca.crt"\n'
+                'else\n'
+                '  cp /etc/openshell-tls/client-ca/tls.crt "${MTLS_DIR}/ca.crt"\n'
+                'fi\n'
+                'chmod 644 "${MTLS_DIR}/ca.crt" "${MTLS_DIR}/tls.crt"\n'
+                'chmod 600 "${MTLS_DIR}/tls.key"\n'
+            )
+        ],
+        "env": [
+            {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
+            {
+                "name": "OPENSHELL_GATEWAY_URL",
+                "value": "https://openshell.openshell.svc.cluster.local:8080",
+            },
+            {"name": "OPENSHELL_GATEWAY_NAME", "value": "ryzen-internal"},
+            {"name": "OPENSHELL_GATEWAY_PORT", "value": "8080"},
+        ],
+        "volumeMounts": [
+            {"name": "openshell-config", "mountPath": "/root/.config"},
+            {
+                "name": "openshell-client-tls",
+                "mountPath": "/etc/openshell-tls/client",
+                "readOnly": True,
+            },
+            {
+                "name": "openshell-client-ca",
+                "mountPath": "/etc/openshell-tls/client-ca",
+                "readOnly": True,
+            },
+        ],
+    }
+    openshell_volumes: list[dict[str, Any]] = [
+        {"name": "openshell-config", "emptyDir": {}},
+        {
+            "name": "openshell-client-tls",
+            "secret": {"defaultMode": 256, "secretName": "openshell-client-tls"},
+        },
+        {
+            "name": "openshell-client-ca",
+            "secret": {
+                "defaultMode": 292,
+                "secretName": "openshell-server-client-ca",
+            },
+        },
+    ]
+
     pod_spec: dict[str, Any] = {
         "serviceAccountName": service_account,
         "terminationGracePeriodSeconds": 60,
         "imagePullSecrets": pull_secrets,
+        "initContainers": [openshell_init],
         "containers": [],  # filled below
+        "volumes": [*openshell_volumes, *extra_volumes],
     }
-    if extra_volumes:
-        pod_spec["volumes"] = extra_volumes
 
     return {
         "apiVersion": "apps/v1",
@@ -227,6 +305,11 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                             "ports": [{"name": "http", "containerPort": 8002}],
                             "env": [
                                 {"name": "AGENT_SERVICE_NAME", "value": app_id},
+                                # OpenShell CLI reads ${XDG_CONFIG_HOME}/openshell/active_gateway
+                                # + gateway metadata files populated by the seed-openshell-config
+                                # init container. Without this, every OpenShell-backed tool
+                                # (write_file, bash_run, etc.) fails with ENOENT on active_gateway.
+                                {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
                                 {"name": "DAPR_LLM_COMPONENT_DEFAULT", "value": "llm-anthropic-opus"},
                                 {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "true"},
                                 {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "true"},
@@ -248,6 +331,9 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                                 {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
                                 {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
                                 {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
+                            ],
+                            "volumeMounts": [
+                                {"name": "openshell-config", "mountPath": "/root/.config"},
                             ],
                             "resources": resources,
                             "startupProbe": {

@@ -1,8 +1,11 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
+	agents,
 	sessions,
 	sessionResources,
+	workflowExecutions,
+	workflows,
 	type Session,
 	type SessionResource as SessionResourceRow,
 } from "$lib/server/db/schema";
@@ -22,7 +25,29 @@ function requireDb() {
 	return db;
 }
 
-function rowToSummary(row: Session): SessionSummary {
+type JoinContext = {
+	workflowId: string | null;
+	workflowName: string | null;
+	agentName: string | null;
+	agentSlug: string | null;
+	agentAvatar: string | null;
+	agentTags: string[] | null;
+};
+
+const EMPTY_CTX: JoinContext = {
+	workflowId: null,
+	workflowName: null,
+	agentName: null,
+	agentSlug: null,
+	agentAvatar: null,
+	agentTags: null,
+};
+
+function rowToSummary(
+	row: Session,
+	ctx: JoinContext = EMPTY_CTX,
+): SessionSummary {
+	const agentTags = Array.isArray(ctx.agentTags) ? ctx.agentTags : [];
 	return {
 		id: row.id,
 		title: row.title ?? null,
@@ -36,6 +61,12 @@ function rowToSummary(row: Session): SessionSummary {
 		usage: (row.usage as SessionUsage) ?? {},
 		errorMessage: row.errorMessage ?? null,
 		workflowExecutionId: row.workflowExecutionId ?? null,
+		workflowId: ctx.workflowId,
+		workflowName: ctx.workflowName,
+		agentName: ctx.agentName,
+		agentSlug: ctx.agentSlug,
+		agentAvatar: ctx.agentAvatar,
+		agentEphemeral: agentTags.includes("workflow-ephemeral"),
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 		completedAt: row.completedAt ? row.completedAt.toISOString() : null,
@@ -43,9 +74,9 @@ function rowToSummary(row: Session): SessionSummary {
 	};
 }
 
-function rowToDetail(row: Session): SessionDetail {
+function rowToDetail(row: Session, ctx: JoinContext = EMPTY_CTX): SessionDetail {
 	return {
-		...rowToSummary(row),
+		...rowToSummary(row, ctx),
 		daprInstanceId: row.daprInstanceId ?? null,
 		natsSubject: row.natsSubject ?? null,
 		parentExecutionId: row.parentExecutionId ?? null,
@@ -98,22 +129,68 @@ export async function listSessions(
 	}
 
 	const rows = await database
-		.select()
+		.select({
+			session: sessions,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			agentAvatar: agents.avatar,
+			agentTags: agents.tags,
+		})
 		.from(sessions)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, sessions.workflowExecutionId),
+		)
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.leftJoin(agents, eq(agents.id, sessions.agentId))
 		.where(conditions.length > 0 ? and(...conditions) : undefined)
 		.orderBy(desc(sessions.createdAt))
 		.limit(filter.limit ?? 100);
-	return rows.map(rowToSummary);
+	return rows.map((r) =>
+		rowToSummary(r.session, {
+			workflowId: r.workflowId ?? null,
+			workflowName: r.workflowName ?? null,
+			agentName: r.agentName ?? null,
+			agentSlug: r.agentSlug ?? null,
+			agentAvatar: r.agentAvatar ?? null,
+			agentTags: (r.agentTags as string[] | null) ?? null,
+		}),
+	);
 }
 
 export async function getSession(id: string): Promise<SessionDetail | null> {
 	const database = requireDb();
 	const [row] = await database
-		.select()
+		.select({
+			session: sessions,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			agentAvatar: agents.avatar,
+			agentTags: agents.tags,
+		})
 		.from(sessions)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, sessions.workflowExecutionId),
+		)
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.leftJoin(agents, eq(agents.id, sessions.agentId))
 		.where(eq(sessions.id, id))
 		.limit(1);
-	return row ? rowToDetail(row) : null;
+	return row
+		? rowToDetail(row.session, {
+				workflowId: row.workflowId ?? null,
+				workflowName: row.workflowName ?? null,
+				agentName: row.agentName ?? null,
+				agentSlug: row.agentSlug ?? null,
+				agentAvatar: row.agentAvatar ?? null,
+				agentTags: (row.agentTags as string[] | null) ?? null,
+			})
+		: null;
 }
 
 export type CreateSessionInput = {
