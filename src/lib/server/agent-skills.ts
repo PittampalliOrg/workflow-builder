@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type {
 	AgentSkillRegistryEntry,
 	AgentSkillStatus
@@ -147,22 +147,13 @@ export async function listAgentSkills(options: {
 	projectId?: string | null;
 } = {}) {
 	if (!db) return [];
-	// Global curated rows (project_id IS NULL) are visible to everyone; custom
-	// rows are only visible inside their owning workspace.
-	const scopeFilter = options.projectId
-		? or(
-				isNull(agentSkillRegistry.projectId),
-				eq(agentSkillRegistry.projectId, options.projectId),
-			)
-		: isNull(agentSkillRegistry.projectId);
-
 	// One round-trip: skills + current-version agent attachment counts. The
 	// LATERAL subquery unnests `agent_versions.config->'skills'` and matches
 	// on either `registryId` or `slug` (legacy attachments can omit registryId).
 	// Scoped to the caller's workspace + globals, restricted to
 	// `agents.current_version_id` so deleted older versions don't inflate counts.
-	// NB: avoid jsonpath string literals here — drizzle's `sql` template
-	// tokenizer mis-parses the `$rid` / `$sl` vars as parameter refs.
+	// All column refs use the `s` alias so they cooperate with the LATERAL
+	// subquery's own FROM clause.
 	const projectId = options.projectId ?? null;
 	const rows = await db.execute(sql`
 		SELECT s.*, COALESCE(u.n, 0)::int AS used_by_count
@@ -179,7 +170,9 @@ export async function listAgentSkills(options: {
 					WHERE (se->>'registryId') = s.id OR (se->>'slug') = s.slug
 				)
 		) u ON true
-		WHERE ${scopeFilter}
+		WHERE s.project_id IS NULL
+			OR (${projectId === null}::boolean AND false)
+			OR s.project_id = ${projectId}
 		ORDER BY s.name ASC
 	`);
 	type RawRow = typeof agentSkillRegistry.$inferSelect & { used_by_count: number };
