@@ -198,6 +198,7 @@ export async function listAgentSkills(options: {
 			FROM agents a
 			JOIN agent_versions av ON av.id = a.current_version_id
 			WHERE a.is_archived = false
+				AND NOT COALESCE(a.tags, '[]'::jsonb) @> '["workflow-ephemeral"]'::jsonb
 				AND (${projectId === null}::boolean OR a.project_id = ${projectId} OR a.project_id IS NULL)
 				AND EXISTS (
 					SELECT 1
