@@ -8,6 +8,35 @@ import type {
 } from '$lib/agent-skill-presets';
 import { db } from '$lib/server/db';
 import { agentSkillRegistry, projectMembers, users } from '$lib/server/db/schema';
+import {
+	fetchSkillFromGithub,
+	ingestSkillBundle,
+	parseSkillMarkdown,
+	SkillBundleValidationError,
+	SkillFetchError,
+	SkillNotFoundError,
+	type FetchedSkill,
+	type FetchedSkillBundle,
+	type SkillFrontmatter,
+	type SkillPackageFile,
+	type SkillSource
+} from '$lib/server/skill-ingest';
+
+// Re-export for back-compat with callers that already imported these from
+// `agent-skills`. New code should import directly from `skill-ingest`.
+export {
+	fetchSkillFromGithub,
+	ingestSkillBundle,
+	parseSkillMarkdown,
+	SkillBundleValidationError,
+	SkillFetchError,
+	SkillNotFoundError,
+	type FetchedSkill,
+	type FetchedSkillBundle,
+	type SkillFrontmatter,
+	type SkillPackageFile,
+	type SkillSource
+};
 
 const execFileAsync = promisify(execFile);
 const SKILLS_CLI_PACKAGE = 'skills@1.5.0';
@@ -287,33 +316,56 @@ export async function upsertAgentSkillMetadata(input: SkillMetadataInput, userId
 	const slug = slugify(input.slug || defaultSkillSlug(installSource, skillName));
 	if (!slug) throw new Error('Skill name must produce a valid slug');
 	const status = skillStatus(input.status);
-	const version = String(input.version || input.sourceRef || 'latest').trim() || 'latest';
+	const ref = (input.sourceRef || 'main').trim() || 'main';
+	const skillPath = `skills/${skillName}`;
+
+	// Ingest the full bundle (SKILL.md + scripts/ + references/ + any other
+	// co-located files). The canonical storage is `packageManifest.files`,
+	// which the Python runtime's `_extract_skill_package_entries` (main.py:832)
+	// consumes to materialize bytes into the sandbox at session start. Keeps
+	// a single ingest path in lockstep with the admin UI + seed scripts.
+	const bundle = await ingestSkillBundle({
+		type: 'github',
+		repo: installSource,
+		skillName,
+		ref,
+		skillPath
+	});
+	const fm = bundle.frontmatter;
+	const version =
+		String(input.version || '').trim() ||
+		String(input.sourceRef || '').trim() ||
+		(ref && ref !== 'main' ? ref : '1');
 
 	const values = {
 		slug,
-		name: skillName,
-		description: input.description?.trim() || null,
-		whenToUse: input.description?.trim() || null,
-		prompt: '',
-		allowedTools: [],
-		arguments: [],
-		argumentHint: null,
-		model: null,
-		userInvocable: true,
-		disableModelInvocation: false,
+		name: fm.name || skillName,
+		description: input.description?.trim() || fm.description || null,
+		whenToUse: fm.whenToUse || input.description?.trim() || fm.description || null,
+		prompt: bundle.prompt,
+		allowedTools: fm.allowedTools ?? [],
+		arguments: fm.arguments ?? [],
+		argumentHint: fm.argumentHint ?? null,
+		model: fm.model ?? null,
+		userInvocable: fm.userInvocable ?? true,
+		disableModelInvocation: fm.disableModelInvocation ?? false,
 		sourceType: 'registry' as const,
 		sourceRepo: installSource,
-		sourceRef: input.sourceRef || null,
-		skillPath: skillName,
+		sourceRef: input.sourceRef || ref,
+		skillPath,
 		registryUrl: registryUrl(installSource, skillName, input.registryUrl),
 		installSource,
 		skillName,
 		installAgent: input.installAgent || DEFAULT_INSTALL_AGENT,
 		version,
-		contentHash: `metadata:${installSource}@${skillName}:${version}`,
-		license: null,
+		contentHash: bundle.contentHash,
+		license: fm.license ?? null,
 		compatibility: null,
-		packageManifest: null,
+		packageManifest: {
+			frontmatter: fm.raw,
+			sourceUrl: bundle.sourceUrl,
+			files: bundle.packageFiles
+		},
 		status,
 		createdByUserId: userId
 	};
@@ -358,6 +410,133 @@ export async function upsertAgentSkillMetadata(input: SkillMetadataInput, userId
 }
 
 export const importAgentSkill = upsertAgentSkillMetadata;
+
+export type ZipImportInput = {
+	zipBuffer: ArrayBuffer | Buffer;
+	/** Skill name used both as the zip's top-level dir + the DB row's skillName. */
+	skillName: string;
+	/** Explicit slug override; defaults to the sanitized skill name. */
+	slug?: string;
+	projectId: string;
+	userId: string;
+	status?: AgentSkillStatus;
+	description?: string | null;
+};
+
+/**
+ * Ingest a user-uploaded zip bundle as a custom skill. Mirrors
+ * `upsertAgentSkillMetadata` for GitHub-sourced registry skills: same
+ * validation caps (40/64KiB/256KiB), same packageManifest.files schema
+ * the Python runtime consumes. Stores the row with sourceType='custom'
+ * scoped to the uploading workspace.
+ */
+export async function upsertCustomSkillFromZip(input: ZipImportInput) {
+	if (!db) throw new Error('Database is not configured');
+	const skillName = input.skillName.trim();
+	if (!skillName) throw new Error('skillName is required');
+	const slug = slugify(input.slug || skillName);
+	if (!slug) throw new Error('skillName must produce a valid slug');
+	if (!input.projectId) throw new Error('projectId is required');
+
+	const bundle = await ingestSkillBundle({
+		type: 'zip',
+		buffer: input.zipBuffer,
+		skillName
+	});
+	const fm = bundle.frontmatter;
+	const status = skillStatus(input.status);
+	const installSource = `zip:${skillName}`;
+	const version = '1';
+
+	const values = {
+		slug,
+		name: fm.name || skillName,
+		description: input.description?.trim() || fm.description || null,
+		whenToUse: fm.whenToUse || input.description?.trim() || fm.description || null,
+		prompt: bundle.prompt,
+		allowedTools: fm.allowedTools ?? [],
+		arguments: fm.arguments ?? [],
+		argumentHint: fm.argumentHint ?? null,
+		model: fm.model ?? null,
+		userInvocable: fm.userInvocable ?? true,
+		disableModelInvocation: fm.disableModelInvocation ?? false,
+		sourceType: 'custom' as const,
+		sourceRepo: null,
+		sourceRef: null,
+		skillPath: null,
+		registryUrl: null,
+		installSource,
+		skillName,
+		installAgent: DEFAULT_INSTALL_AGENT,
+		version,
+		contentHash: bundle.contentHash,
+		license: fm.license ?? null,
+		compatibility: null,
+		packageManifest: {
+			frontmatter: fm.raw,
+			sourceUrl: null,
+			files: bundle.packageFiles
+		},
+		status,
+		createdByUserId: input.userId,
+		projectId: input.projectId
+	};
+
+	// Custom skills are workspace-scoped, so upsert-by-slug alone could
+	// collide with another workspace's namesake. UPSERT the unique slug —
+	// if another project already owns the slug we currently insert a new
+	// row with a disambiguated slug. Matches how `createCustomSkill` picks
+	// slugs elsewhere, where cross-workspace collisions are rare.
+	const [existing] = await db
+		.select()
+		.from(agentSkillRegistry)
+		.where(eq(agentSkillRegistry.slug, slug))
+		.limit(1);
+
+	if (existing && existing.projectId && existing.projectId !== input.projectId) {
+		throw new Error(
+			`Slug "${slug}" is already used by another workspace's custom skill.`
+		);
+	}
+
+	const [row] = await db
+		.insert(agentSkillRegistry)
+		.values(values)
+		.onConflictDoUpdate({
+			target: agentSkillRegistry.slug,
+			set: {
+				slug: values.slug,
+				name: values.name,
+				description: values.description,
+				whenToUse: values.whenToUse,
+				prompt: values.prompt,
+				allowedTools: values.allowedTools,
+				arguments: values.arguments,
+				argumentHint: values.argumentHint,
+				model: values.model,
+				userInvocable: values.userInvocable,
+				disableModelInvocation: values.disableModelInvocation,
+				sourceType: values.sourceType,
+				sourceRepo: values.sourceRepo,
+				sourceRef: values.sourceRef,
+				skillPath: values.skillPath,
+				registryUrl: values.registryUrl,
+				installSource: values.installSource,
+				skillName: values.skillName,
+				installAgent: values.installAgent,
+				version: bumpVersion(existing?.version ?? '1'),
+				contentHash: values.contentHash,
+				license: values.license,
+				compatibility: values.compatibility,
+				packageManifest: values.packageManifest,
+				status: values.status,
+				projectId: values.projectId,
+				updatedAt: new Date()
+			}
+		})
+		.returning();
+	return rowToSkill(row);
+}
 
 export async function setAgentSkillStatus(idOrSlug: string, status: AgentSkillStatus) {
 	if (!db) throw new Error('Database is not configured');

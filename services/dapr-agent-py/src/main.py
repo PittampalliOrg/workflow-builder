@@ -835,6 +835,13 @@ def _extract_skill_package_entries(item: dict[str, Any]) -> list[dict[str, str]]
     raw_files = manifest.get("files")
     if not isinstance(raw_files, list):
         return []
+    # Caps are kept in lock-step with the BFF ingester (see
+    # src/lib/server/skill-ingest.ts `PACKAGE_MAX_*`). The BFF rejects
+    # bundles that exceed these at ingestion; the runtime silently skips
+    # individual oversize files as belt-and-braces for older rows.
+    max_file_bytes = 128 * 1024
+    max_total_bytes = 2 * 1024 * 1024
+    max_files = 80
     entries: list[dict[str, str]] = []
     total_bytes = 0
     for raw_file in raw_files:
@@ -845,15 +852,15 @@ def _extract_skill_package_entries(item: dict[str, Any]) -> list[dict[str, str]]
         if not rel_path or not isinstance(content, str):
             continue
         encoded_size = len(content.encode("utf-8"))
-        if encoded_size > 64 * 1024:
+        if encoded_size > max_file_bytes:
             logger.warning("[skills] Skipping oversized package file %s", rel_path)
             continue
-        if total_bytes + encoded_size > 256 * 1024:
+        if total_bytes + encoded_size > max_total_bytes:
             logger.warning("[skills] Skipping package file %s because package limit was reached", rel_path)
             continue
         total_bytes += encoded_size
         entries.append({"path": rel_path, "content": content})
-        if len(entries) >= 40:
+        if len(entries) >= max_files:
             break
     return entries
 
@@ -1109,18 +1116,43 @@ class OpenShellDurableAgent(DurableAgent):
             instance_id,
         )
         mcp_tools = self._mcp_tools_by_instance.get(instance_id) or {}
-        if not mcp_tools:
-            return tools
+        if mcp_tools:
+            existing_names = {
+                _normalize_tool_lookup_name(getattr(tool, "name", ""))
+                for tool in tools
+            }
+            for key, tool in mcp_tools.items():
+                if key in existing_names:
+                    logger.warning("[mcp] Skipping MCP tool name collision: %s", tool.name)
+                    continue
+                tools.append(tool)
 
-        existing_names = {
-            _normalize_tool_lookup_name(getattr(tool, "name", ""))
-            for tool in tools
-        }
-        for key, tool in mcp_tools.items():
-            if key in existing_names:
-                logger.warning("[mcp] Skipping MCP tool name collision: %s", tool.name)
-                continue
-            tools.append(tool)
+        # Hard allowed-tools enforcement when a skill is active. Mirrors
+        # Claude Code's tools/SkillTool/SkillTool.ts:775-806 contextModifier
+        # — while a skill whose frontmatter declared `allowed-tools` is
+        # running, the LLM only sees those tools (plus Skill itself, so it
+        # can still chain-activate or terminate). Any unrelated tool call
+        # the model attempts falls back to "tool not found" rather than
+        # executing — safer than relying on the soft-enforcement header.
+        from src.tools.skill_tool.tool import get_active_skill_allowed_tools
+
+        allowed = get_active_skill_allowed_tools()
+        if allowed:
+            allowed_norm = {_normalize_tool_lookup_name(name) for name in allowed}
+            # Always keep the Skill tool itself — matches Claude Code's carve-out.
+            allowed_norm.add(_normalize_tool_lookup_name("Skill"))
+            before = len(tools)
+            tools = [
+                t
+                for t in tools
+                if _normalize_tool_lookup_name(getattr(t, "name", "")) in allowed_norm
+            ]
+            logger.info(
+                "[skills] Active-skill allowed_tools filter: kept %d/%d tools (%s)",
+                len(tools),
+                before,
+                sorted(allowed_norm),
+            )
         return tools
 
     def call_llm(self, ctx, payload):

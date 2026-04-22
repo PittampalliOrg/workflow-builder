@@ -65,6 +65,9 @@ importers:
       '@xyflow/svelte':
         specifier: ^1.5.2
         version: 1.5.2(svelte@5.55.1)
+      adm-zip:
+        specifier: ^0.5.17
+        version: 0.5.17
       ai:
         specifier: ^6.0.158
         version: 6.0.158(zod@4.3.6)
@@ -180,6 +183,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.0.0
         version: 4.2.2(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
+      '@types/adm-zip':
+        specifier: ^0.5.8
+        version: 0.5.8
       '@types/bcryptjs':
         specifier: ^3.0.0
         version: 3.0.0
@@ -1906,6 +1912,9 @@ packages:
     resolution: {integrity: sha512-Ah2PomRoRjrV7f3zQDUJ5Cp6oy5yxTpLGJkpS3dSOyFN7ldAQUeY0BUTCo8mY2OOrkHIjKmlIoDRH12LFv99vw==}
     engines: {node: '>=16'}
 
+  '@types/adm-zip@0.5.8':
+    resolution: {integrity: sha512-RVVH7QvZYbN+ihqZ4kX/dMiowf6o+Jk1fNwiSdx0NahBJLU787zkULhGhJM8mf/obmLGmgdMM0bXsQTmyfbR7Q==}
+
   '@types/aws-lambda@8.10.161':
     resolution: {integrity: sha512-rUYdp+MQwSFocxIOcSsYSF3YYYC/uUpMbCY/mbO21vGqfrEYvNSoPyKYDj6RhXXpPfS0KstW9RwG3qXh9sL7FQ==}
 
@@ -2084,6 +2093,10 @@ packages:
     resolution: {integrity: sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw==}
     engines: {node: '>=0.4.0'}
     hasBin: true
+
+  adm-zip@0.5.17:
+    resolution: {integrity: sha512-+Ut8d9LLqwEvHHJl1+PIHqoyDxFgVN847JTVM3Izi3xHDWPE4UtzzXysMZQs64DMcrJfBeS/uoEP4AD3HQHnQQ==}
+    engines: {node: '>=12.0'}
 
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
@@ -4942,6 +4955,10 @@ snapshots:
     dependencies:
       '@tanstack/store': 0.9.3
 
+  '@types/adm-zip@0.5.8':
+    dependencies:
+      '@types/node': 22.19.15
+
   '@types/aws-lambda@8.10.161': {}
 
   '@types/bcryptjs@3.0.0':
@@ -5134,6 +5151,8 @@ snapshots:
       acorn: 8.16.0
 
   acorn@8.16.0: {}
+
+  adm-zip@0.5.17: {}
 
   agent-base@7.1.4: {}
 
