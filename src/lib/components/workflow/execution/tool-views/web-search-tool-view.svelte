@@ -61,7 +61,7 @@
 </script>
 
 <ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={Globe} iconClass="text-sky-400" />
+	<ToolCallHeader {toolName} {label} {state} icon={Globe} iconClass="text-sky-500/80" />
 	{#if (phase === 'start' && query) || (phase === 'end' && error)}
 		<ToolCallContent>
 			{#if phase === 'start' && query}

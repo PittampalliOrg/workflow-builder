@@ -1611,47 +1611,41 @@
 
 				<!-- Stats bar -->
 				{#if turnCount > 0 || toolCallCount > 0}
-					<div class="border-b border-border px-4 py-2">
-						<div class="flex items-center gap-4 rounded-lg bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-emerald-500/10 px-4 py-2">
+					<div class="border-b border-border bg-muted/30 px-4 py-2">
+						<div class="flex items-center gap-3 text-xs text-muted-foreground">
 							<div class="flex items-center gap-1.5">
-								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500/20">
-									<MessageSquare size={12} class="text-blue-400" />
-								</div>
-								<div class="text-xs">
-									<span class="font-semibold text-blue-400">{turnCount}</span>
-									<span class="text-muted-foreground"> turn{turnCount !== 1 ? 's' : ''}</span>
-								</div>
+								{#if isRunning}
+									<span class="relative flex size-1.5">
+										<span class="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500 opacity-60"></span>
+										<span class="relative inline-flex size-1.5 rounded-full bg-emerald-500"></span>
+									</span>
+								{/if}
+								<MessageSquare class="size-3 text-muted-foreground/70" />
+								<span class="font-medium tabular-nums text-foreground transition-all">{turnCount}</span>
+								<span>turn{turnCount !== 1 ? 's' : ''}</span>
 							</div>
-							<div class="h-4 w-px bg-border"></div>
+							<div class="h-3 w-px bg-border"></div>
 							<div class="flex items-center gap-1.5">
-								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-orange-500/20">
-									<Wrench size={12} class="text-orange-400" />
-								</div>
-								<div class="text-xs">
-									<span class="font-semibold text-orange-400">{toolCallCount}</span>
-									<span class="text-muted-foreground"> tool{toolCallCount !== 1 ? 's' : ''}</span>
-								</div>
+								<Wrench class="size-3 text-muted-foreground/70" />
+								<span class="font-medium tabular-nums text-foreground transition-all">{toolCallCount}</span>
+								<span>tool{toolCallCount !== 1 ? 's' : ''}</span>
 							</div>
-							<div class="h-4 w-px bg-border"></div>
+							<div class="h-3 w-px bg-border"></div>
 							<div class="flex items-center gap-1.5">
-								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/20">
-									<Zap size={12} class="text-emerald-400" />
-								</div>
-								<div class="text-xs">
-									<span class="font-semibold text-emerald-400">{timelineEvents.length}</span>
-									<span class="text-muted-foreground"> events</span>
-								</div>
+								<Zap class="size-3 text-muted-foreground/70" />
+								<span class="font-medium tabular-nums text-foreground transition-all">{timelineEvents.length}</span>
+								<span>events</span>
 							</div>
 							<!-- Aggregated context-window usage. Driven by a $derived
 							     that sums every agent.llm_usage event in timelineEvents,
 							     so it updates live as the SSE stream appends events. -->
 							{#if usedTokens > 0}
-								<div class="h-4 w-px bg-border"></div>
+								<div class="h-3 w-px bg-border"></div>
 								<Context {usedTokens} {maxTokens} {usage} modelId={aggregatedUsage.model ?? 'unknown'}>
-									<ContextTrigger variant="ghost" size="sm" class="h-6 gap-1.5 px-2 text-xs">
-										<Gauge class="size-3 text-slate-400" />
-										<span class="font-semibold text-slate-300">{fmtTokens(usedTokens)}</span>
-										<span class="text-muted-foreground"> / {fmtTokens(maxTokens)}</span>
+									<ContextTrigger variant="ghost" size="sm" class="h-6 gap-1 px-1.5 text-xs">
+										<Gauge class="size-3 text-muted-foreground/70" />
+										<span class="font-medium tabular-nums text-foreground">{fmtTokens(usedTokens)}</span>
+										<span class="text-muted-foreground">/ {fmtTokens(maxTokens)}</span>
 									</ContextTrigger>
 									<ContextContent>
 										<ContextContentHeader>
@@ -1683,7 +1677,7 @@
 							{executionId}
 						/>
 					{#if timelineItems.length > 0}
-						<ChatContainerContent class="space-y-3">
+						<ChatContainerContent class="mx-auto max-w-4xl divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm [&>*]:px-4 [&>*]:py-3">
 							{#each timelineItems as item, i (item.key)}
 								{#if item.kind === 'tool'}
 									{@const ToolComponent = getToolComponent(item.toolName)}
@@ -1709,10 +1703,9 @@
 										</div>
 
 									{:else if evtType === 'llm_start'}
-										<!-- Only show Thinking... for the last event while running -->
-										{#if i === timelineItems.length - 1 && isRunning}
-											<ThinkingBar />
-										{/if}
+										<!-- Global thinking indicator lives below the {#each} (always visible
+										     at the bottom while isRunning). This branch is intentionally empty
+										     to avoid a per-turn ThinkingBar above tool calls. -->
 
 									{:else if evtType === 'llm_complete'}
 										{@const content = event.data?.content ? String(event.data.content).trim() : ''}
@@ -1838,6 +1831,9 @@
 									{/if}
 								{/if}
 							{/each}
+							{#if isRunning}
+								<ThinkingBar />
+							{/if}
 						</ChatContainerContent>
 						<ChatContainerScrollAnchor />
 					{:else if executionState.error}

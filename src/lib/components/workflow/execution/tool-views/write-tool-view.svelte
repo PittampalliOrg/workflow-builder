@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import SandboxCodeViewer from '$lib/components/sandbox/sandbox-code-viewer.svelte';
-	import Pencil from 'lucide-svelte/icons/pencil';
+	import FileEdit from 'lucide-svelte/icons/file-edit';
 	import { getDisplayPath, countLines, truncateLines, detectLang, MAX_FILE_WRITE_RENDER_LINES } from './tool-utils';
 
 	interface Props {
@@ -47,7 +47,7 @@
 </script>
 
 <ToolCall bind:open={isOpen}>
-	<ToolCallHeader {toolName} {label} state={toolState} icon={Pencil} iconClass="text-emerald-400" />
+	<ToolCallHeader {toolName} {label} state={toolState} icon={FileEdit} iconClass="text-emerald-500/80" />
 
 	{#if content && (!isOpen || !isTruncated)}
 		<div class="border-t">

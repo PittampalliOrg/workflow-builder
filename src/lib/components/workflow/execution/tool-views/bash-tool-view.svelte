@@ -38,7 +38,7 @@
 </script>
 
 <ToolCall bind:open={isOpen}>
-	<ToolCallHeader {toolName} {label} state={toolState} icon={Terminal} iconClass="text-amber-400" />
+	<ToolCallHeader {toolName} {label} state={toolState} icon={Terminal} iconClass="text-amber-500/80" />
 	<ToolCallContent>
 		{#if phase === 'start' && command}
 			<div class="max-h-[20vh] overflow-auto">

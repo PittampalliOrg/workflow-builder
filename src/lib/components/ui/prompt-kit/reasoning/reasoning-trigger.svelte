@@ -2,7 +2,7 @@
 	import { getReasoningContext } from "./reasoning-context.svelte";
 	import { cn } from "$lib/components/ui/utils";
 	import ChevronDown from "lucide-svelte/icons/chevron-down";
-	import Sparkles from "lucide-svelte/icons/sparkles";
+	import BrainCircuit from "lucide-svelte/icons/brain-circuit";
 	import type { Snippet } from "svelte";
 
 	interface Props {
@@ -24,7 +24,7 @@
 	onclick={() => context.toggle()}
 	{...rest}
 >
-	<Sparkles class="size-4 shrink-0 text-amber-400" />
+	<BrainCircuit class="size-4 shrink-0 text-muted-foreground" />
 	<span class="flex-1 text-left text-muted-foreground">
 		{#if children}
 			{@render children()}

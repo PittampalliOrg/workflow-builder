@@ -61,7 +61,10 @@ class ChatContainerContext {
 		if (!this.#element) return;
 
 		const { scrollTop, scrollHeight, clientHeight } = this.#element;
-		const threshold = 50;
+		// Generous threshold so small scroll nudges don't unpin from the bottom
+		// while streaming deltas are appending — keeps the "follow" behavior
+		// sticky during active runs.
+		const threshold = 240;
 		const isAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
 
 		this.#isAtBottom = isAtBottom;
@@ -149,7 +152,10 @@ class ChatContainerContext {
 		if (!this.#element) return;
 
 		const { scrollTop, scrollHeight, clientHeight } = this.#element;
-		const threshold = 50;
+		// Generous threshold so small scroll nudges don't unpin from the bottom
+		// while streaming deltas are appending — keeps the "follow" behavior
+		// sticky during active runs.
+		const threshold = 240;
 		const isAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
 
 		this.#isAtBottom = isAtBottom;

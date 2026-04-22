@@ -41,7 +41,7 @@
 </script>
 
 <ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={Search} iconClass="text-violet-400" />
+	<ToolCallHeader {toolName} {label} {state} icon={Search} iconClass="text-violet-500/80" />
 	<ToolCallContent>
 		{#if phase === 'end'}
 			{#if error}

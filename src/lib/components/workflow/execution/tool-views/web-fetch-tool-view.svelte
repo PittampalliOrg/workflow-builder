@@ -69,7 +69,7 @@
 </script>
 
 <ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={Download} iconClass="text-teal-400" />
+	<ToolCallHeader {toolName} {label} {state} icon={Download} iconClass="text-teal-500/80" />
 	{#if phase === 'start' || (phase === 'end' && error)}
 		<ToolCallContent>
 			{#if phase === 'start'}

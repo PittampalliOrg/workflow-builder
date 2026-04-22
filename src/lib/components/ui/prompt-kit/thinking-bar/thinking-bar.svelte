@@ -14,29 +14,31 @@
 
 <div
 	class={cn(
-		"flex items-center gap-2.5 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-2.5",
+		"flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2",
 		className
 	)}
 	{...restProps}
 >
-	<div class="relative flex items-center">
-		<span class="thinking-shimmer text-sm font-medium text-blue-400">{text}...</span>
-	</div>
+	<span class="relative flex size-1.5">
+		<span class="absolute inline-flex size-full animate-ping rounded-full bg-muted-foreground/50 opacity-60"></span>
+		<span class="relative inline-flex size-1.5 rounded-full bg-muted-foreground/70"></span>
+	</span>
+	<span class="thinking-shimmer text-sm font-medium">{text}…</span>
 </div>
 
 <style>
 	.thinking-shimmer {
 		background: linear-gradient(
 			90deg,
-			oklch(0.707 0.165 254.624) 0%,
-			oklch(0.707 0.165 254.624 / 0.4) 50%,
-			oklch(0.707 0.165 254.624) 100%
+			hsl(var(--foreground) / 0.95) 0%,
+			hsl(var(--muted-foreground) / 0.45) 50%,
+			hsl(var(--foreground) / 0.95) 100%
 		);
 		background-size: 200% auto;
 		-webkit-background-clip: text;
 		background-clip: text;
 		-webkit-text-fill-color: transparent;
-		animation: shimmer 2s linear infinite;
+		animation: shimmer 2.4s linear infinite;
 	}
 
 	@keyframes shimmer {

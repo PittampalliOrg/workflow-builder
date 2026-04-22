@@ -29,7 +29,7 @@
 </script>
 
 <ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={FolderOpen} iconClass="text-yellow-400" />
+	<ToolCallHeader {toolName} {label} {state} icon={FolderOpen} iconClass="text-yellow-500/80" />
 	<ToolCallContent>
 		{#if phase === 'end'}
 			{#if error}

@@ -24,7 +24,7 @@
 </script>
 
 <ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={FileText} iconClass="text-blue-400" />
+	<ToolCallHeader {toolName} {label} {state} icon={FileText} iconClass="text-blue-500/80" />
 	{#if phase === 'end' && error}
 		<ToolCallContent>
 			<ToolCallResult error>

@@ -57,7 +57,7 @@
 </script>
 
 <ToolCall bind:open={isOpen}>
-	<ToolCallHeader toolName={displayName} {label} state={toolState} icon={Plug} iconClass="text-purple-400" />
+	<ToolCallHeader toolName={displayName} {label} state={toolState} icon={Plug} iconClass="text-purple-500/80" />
 	<ToolCallContent>
 		{#if phase === 'start' && args && Object.keys(args).length > 0}
 			<div class="space-y-2 p-3">
