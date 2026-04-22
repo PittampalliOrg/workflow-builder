@@ -82,10 +82,23 @@
 		TaskContent,
 		TaskItem
 	} from '$lib/components/ui/ai-elements/task/index.js';
+	import {
+		Context,
+		ContextTrigger,
+		ContextContent,
+		ContextContentHeader,
+		ContextContentBody,
+		ContextContentFooter,
+		ContextInputUsage,
+		ContextOutputUsage,
+		ContextCacheUsage,
+		ContextReasoningUsage
+	} from '$lib/components/ui/ai-elements/context';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import { withAgentNodeMetrics } from '$lib/utils/agent-node-metrics';
+	import { fmtTokens, modelContextWindow } from '$lib/utils/format-tokens';
 	import {
 		buildTimelineItems,
 		eventType,
@@ -332,6 +345,51 @@
 			return false;
 		})
 	);
+
+	// Aggregate tokens from every agent.llm_usage event so the Context
+	// compound in the stats banner can show the total context-window
+	// consumption for the whole run, not just per-call. Updates reactively
+	// via $derived as new events stream in via SSE (no polling, no refresh).
+	type AggregatedUsage = {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheCreationTokens: number;
+		reasoningTokens: number;
+		model: string | null;
+	};
+	const aggregatedUsage = $derived.by<AggregatedUsage>(() => {
+		const acc: AggregatedUsage = {
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			reasoningTokens: 0,
+			model: null
+		};
+		for (const e of timelineEvents) {
+			if (e.type !== 'agent.llm_usage') continue;
+			const d = e.data as Record<string, unknown>;
+			acc.inputTokens += Number(d.input_tokens ?? 0);
+			acc.outputTokens += Number(d.output_tokens ?? 0);
+			acc.cacheReadTokens += Number(d.cache_read_input_tokens ?? 0);
+			acc.cacheCreationTokens += Number(d.cache_creation_input_tokens ?? 0);
+			if (typeof d.model === 'string') acc.model = d.model;
+		}
+		return acc;
+	});
+	const usedTokens = $derived(
+		aggregatedUsage.inputTokens +
+		aggregatedUsage.outputTokens +
+		aggregatedUsage.cacheCreationTokens
+	);
+	const maxTokens = $derived(modelContextWindow(aggregatedUsage.model));
+	const usage = $derived({
+		inputTokens: aggregatedUsage.inputTokens,
+		outputTokens: aggregatedUsage.outputTokens,
+		cachedInputTokens: aggregatedUsage.cacheReadTokens,
+		reasoningTokens: aggregatedUsage.reasoningTokens
+	});
 
 	const snapshot = $derived(executionState.snapshot);
 	const executionStatus = $derived(snapshot?.status ?? 'unknown');
@@ -1583,6 +1641,35 @@
 									<span class="text-muted-foreground"> events</span>
 								</div>
 							</div>
+							<!-- Aggregated context-window usage. Driven by a $derived
+							     that sums every agent.llm_usage event in timelineEvents,
+							     so it updates live as the SSE stream appends events. -->
+							{#if usedTokens > 0}
+								<div class="h-4 w-px bg-border"></div>
+								<Context {usedTokens} {maxTokens} {usage} modelId={aggregatedUsage.model ?? 'unknown'}>
+									<ContextTrigger variant="ghost" size="sm" class="h-6 gap-1.5 px-2 text-xs">
+										<Gauge class="size-3 text-slate-400" />
+										<span class="font-semibold text-slate-300">{fmtTokens(usedTokens)}</span>
+										<span class="text-muted-foreground"> / {fmtTokens(maxTokens)}</span>
+									</ContextTrigger>
+									<ContextContent>
+										<ContextContentHeader>
+											Context window usage
+										</ContextContentHeader>
+										<ContextContentBody>
+											<ContextInputUsage />
+											<ContextOutputUsage />
+											<ContextCacheUsage />
+											<ContextReasoningUsage />
+										</ContextContentBody>
+										<ContextContentFooter>
+											<span class="text-[10px] text-muted-foreground">
+												{aggregatedUsage.model ?? 'model pending'}
+											</span>
+										</ContextContentFooter>
+									</ContextContent>
+								</Context>
+							{/if}
 						</div>
 					</div>
 				{/if}
