@@ -2,15 +2,14 @@ import httpx
 
 
 async def fetch_ws(ip: str, timeout: float = 2.0):
-    """Fetch the browser-level WebSocket URL from the sidecar Chrome."""
+    """Fetch the browser-level WebSocket URL from the sidecar proxy."""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"http://{ip}:9222/json/version", timeout=timeout
+                f"http://{ip}:9223/json/version", timeout=timeout
             )
         if response.status_code != 200:
             return None
-        ws_url = response.json().get("webSocketDebuggerUrl", "")
-        return ws_url.replace("localhost", ip)
+        return response.json().get("webSocketDebuggerUrl", "")
     except Exception:
         return None

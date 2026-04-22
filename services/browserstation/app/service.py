@@ -150,14 +150,14 @@ class BrowserService:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"http://{info.pod_ip}:9222/json/version", timeout=2
+                    f"http://{info.pod_ip}:9223/json/version", timeout=2
                 )
                 response.raise_for_status()
         except Exception as exc:
             await websocket.close(code=1011, reason=f"Chrome unreachable: {exc}")
             return
 
-        chrome_ws_url = f"ws://{info.pod_ip}:9222/{path}"
+        chrome_ws_url = f"ws://{info.pod_ip}:9223/{path}"
 
         async with websockets.connect(chrome_ws_url, timeout=5) as chrome_ws:
 
