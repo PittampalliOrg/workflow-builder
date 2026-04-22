@@ -207,6 +207,30 @@ def _compact_image_tool_results(
         len(to_compact),
         min(keep_last, len(image_positions)),
     )
+
+    # Surface the compaction in the session stream so the UI can annotate the
+    # transcript with "N older screenshots collapsed" instead of silently
+    # losing them. Best-effort; safe during replays because daemon-thread
+    # publish is idempotent at the ingest layer via sourceEventId.
+    try:
+        from src.event_publisher import get_scoped_session, publish_session_event
+
+        sid, iid = get_scoped_session()
+        if sid:
+            publish_session_event(
+                sid,
+                "agent.thread_images_compacted",
+                {
+                    "collapsed": len(to_compact),
+                    "kept": min(keep_last, len(image_positions)),
+                    "total_image_tool_results": len(image_positions),
+                    "keep_last": keep_last,
+                },
+                instance_id=iid,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-event] thread_images_compacted emit failed: %s", exc)
+
     return compacted_msgs
 
 
@@ -288,6 +312,29 @@ def _response_to_assistant_message(
     return blocks
 
 
+_STREAM_DELTAS_ENABLED = os.environ.get(
+    "DAPR_AGENT_PY_STREAM_DELTAS", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+
+# Coalescing thresholds for delta emission. Keep small so the UI stays lively
+# but not so small that we flood the ingest endpoint. 80ms is short enough to
+# look real-time, long enough to batch multiple tokens into one POST.
+_DELTA_COALESCE_MS = int(os.environ.get("DAPR_AGENT_PY_DELTA_COALESCE_MS", "80"))
+_DELTA_COALESCE_BYTES = int(
+    os.environ.get("DAPR_AGENT_PY_DELTA_COALESCE_BYTES", "2048")
+)
+
+
+def _delta_event_type(delta_kind: str) -> str | None:
+    if delta_kind == "text_delta":
+        return "agent.message_delta"
+    if delta_kind == "thinking_delta":
+        return "agent.thinking_delta"
+    if delta_kind == "input_json_delta":
+        return "agent.tool_input_delta"
+    return None
+
+
 def _stream_final_message(client: Any, **request_kwargs: Any) -> Any:
     """Run a streaming messages request and return the final aggregated Message.
 
@@ -297,13 +344,141 @@ def _stream_final_message(client: Any, **request_kwargs: Any) -> Any:
     final aggregated `Message`, which has the same shape as the response from
     `client.messages.create(...)`, so downstream extraction logic can stay
     unchanged. See https://github.com/anthropics/anthropic-sdk-python#long-requests.
+
+    When DAPR_AGENT_PY_STREAM_DELTAS is on (default), this also publishes
+    coalesced delta events into the session event stream so the UI can show
+    partial assistant content as it arrives. Coalescing happens per
+    (content_block_index, delta_kind) key; flushes on elapsed-ms /
+    byte-size / ContentBlockStop whichever fires first.
     """
+    import time
+
+    try:
+        from src.event_publisher import (
+            get_scoped_session,
+            publish_session_event,
+        )
+    except Exception:  # noqa: BLE001
+        get_scoped_session = None  # type: ignore[assignment]
+        publish_session_event = None  # type: ignore[assignment]
+
+    sid: str | None = None
+    iid: str | None = None
+    deltas_on = _STREAM_DELTAS_ENABLED and publish_session_event is not None
+    if deltas_on and get_scoped_session is not None:
+        try:
+            sid, iid = get_scoped_session()
+        except Exception:  # noqa: BLE001
+            sid, iid = None, None
+        if not sid:
+            deltas_on = False
+
+    # Per content_block buffer: {idx: {"kind": str, "buf": str,
+    #                                   "cumulative": int, "opened_at_ns": int,
+    #                                   "tool_use_id": str | None}}
+    buffers: dict[int, dict[str, Any]] = {}
+
+    def flush_block(idx: int) -> None:
+        entry = buffers.get(idx)
+        if not entry or not entry.get("buf"):
+            return
+        ev_type = _delta_event_type(entry["kind"])
+        if ev_type is None:
+            entry["buf"] = ""
+            return
+        payload: dict[str, Any] = {
+            "content_block_index": idx,
+            "text": entry["buf"],
+            "cumulative_len": entry["cumulative"],
+        }
+        if entry.get("tool_use_id"):
+            payload["tool_use_id"] = entry["tool_use_id"]
+            payload["partial_json"] = entry["buf"]
+        try:
+            publish_session_event(  # type: ignore[misc]
+                sid,
+                ev_type,
+                payload,
+                instance_id=iid,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[delta-emit] publish failed: %s", exc)
+        entry["buf"] = ""
+
+    def flush_all() -> None:
+        for idx in list(buffers.keys()):
+            flush_block(idx)
+
     with client.messages.stream(**request_kwargs) as stream:
-        # Drain the iterator before calling get_final_message() so internal
-        # aggregation completes. The iterator must be consumed for the SDK to
-        # assemble the final message object.
-        for _event in stream:
-            pass
+        # Iterate typed events so we can fork deltas into the session stream.
+        # We still have to fully drain before get_final_message(); the SDK's
+        # internal aggregator needs the iterator consumed.
+        for event in stream:
+            if not deltas_on:
+                continue
+            etype = getattr(event, "type", None)
+            if etype == "content_block_start":
+                idx = int(getattr(event, "index", 0) or 0)
+                block = getattr(event, "content_block", None)
+                block_type = getattr(block, "type", None)
+                tool_use_id = (
+                    getattr(block, "id", None)
+                    if block_type == "tool_use"
+                    else None
+                )
+                # Pre-seed the buffer with empty state; the kind is set when
+                # the first delta lands (text_delta / thinking_delta / etc.).
+                buffers[idx] = {
+                    "kind": "",
+                    "buf": "",
+                    "cumulative": 0,
+                    "opened_at_ns": time.monotonic_ns(),
+                    "tool_use_id": tool_use_id,
+                }
+            elif etype == "content_block_delta":
+                idx = int(getattr(event, "index", 0) or 0)
+                delta = getattr(event, "delta", None)
+                delta_kind = getattr(delta, "type", None)
+                if not delta_kind:
+                    continue
+                text_chunk = (
+                    getattr(delta, "text", None)
+                    or getattr(delta, "thinking", None)
+                    or getattr(delta, "partial_json", None)
+                    or ""
+                )
+                if not text_chunk:
+                    continue
+                entry = buffers.setdefault(
+                    idx,
+                    {
+                        "kind": delta_kind,
+                        "buf": "",
+                        "cumulative": 0,
+                        "opened_at_ns": time.monotonic_ns(),
+                        "tool_use_id": None,
+                    },
+                )
+                if not entry["kind"]:
+                    entry["kind"] = delta_kind
+                entry["buf"] += text_chunk
+                entry["cumulative"] += len(text_chunk)
+                # Flush on size threshold.
+                if len(entry["buf"].encode("utf-8", "ignore")) >= _DELTA_COALESCE_BYTES:
+                    flush_block(idx)
+                    entry["opened_at_ns"] = time.monotonic_ns()
+                    continue
+                # Flush on time threshold.
+                age_ms = (time.monotonic_ns() - entry["opened_at_ns"]) / 1_000_000
+                if age_ms >= _DELTA_COALESCE_MS:
+                    flush_block(idx)
+                    entry["opened_at_ns"] = time.monotonic_ns()
+            elif etype == "content_block_stop":
+                idx = int(getattr(event, "index", 0) or 0)
+                flush_block(idx)
+        # Final safety flush before requesting the aggregated message.
+        if deltas_on:
+            flush_all()
         return stream.get_final_message()
 
 
@@ -431,6 +606,35 @@ def _call_anthropic_sdk(
                 )
             except Exception:
                 pass
+        # Emit a usage event even on failure so the UI can show the caller
+        # consumed tokens before the error. recovery_count is not yet defined
+        # here (failure occurred in Attempt 1); use 0.
+        try:
+            from src.event_publisher import (
+                get_scoped_session,
+                publish_session_event,
+            )
+
+            sid, iid = get_scoped_session()
+            if sid:
+                publish_session_event(
+                    sid,
+                    "agent.llm_usage",
+                    {
+                        "model": model,
+                        "input_tokens": agg_input_tokens,
+                        "output_tokens": agg_output_tokens,
+                        "cache_read_input_tokens": agg_cache_read,
+                        "cache_creation_input_tokens": agg_cache_create,
+                        "ttft_ms": ttft_ms_recorded,
+                        "recovery_attempts": 0,
+                        "success": False,
+                        "error": str(exc)[:200],
+                    },
+                    instance_id=iid,
+                )
+        except Exception as pub_exc:  # noqa: BLE001
+            logger.debug("[session-event] llm_usage failure emit failed: %s", pub_exc)
         raise
 
     # -- Layer 1: Escalation retry (mirrors query.ts lines 1193-1221) -----
@@ -556,6 +760,31 @@ def _call_anthropic_sdk(
             _ = record_cost  # suppress unused until pricing lands
         except Exception as exc:  # noqa: BLE001
             logger.warning("[telemetry] llm_request end failed: %s", exc)
+
+    # Mirror usage metrics onto the session event stream so the UI can show
+    # prompt-cache efficiency per turn without cross-referencing Phoenix.
+    try:
+        from src.event_publisher import get_scoped_session, publish_session_event
+
+        sid, iid = get_scoped_session()
+        if sid:
+            publish_session_event(
+                sid,
+                "agent.llm_usage",
+                {
+                    "model": model,
+                    "input_tokens": agg_input_tokens,
+                    "output_tokens": agg_output_tokens,
+                    "cache_read_input_tokens": agg_cache_read,
+                    "cache_creation_input_tokens": agg_cache_create,
+                    "ttft_ms": ttft_ms_recorded,
+                    "recovery_attempts": recovery_count,
+                    "success": True,
+                },
+                instance_id=iid,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-event] llm_usage emit failed: %s", exc)
 
     return result
 

@@ -14,6 +14,7 @@ the LLM reads and follows the instructions.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 from typing import Callable
@@ -21,6 +22,29 @@ from typing import Callable
 from .models import SkillDefinition
 
 logger = logging.getLogger(__name__)
+
+# Hard allowed-tools enforcement. `run_skill` sets this contextvar to the
+# skill's `allowed_tools` tuple (as a frozenset) when the skill activates.
+# `OpenShellDurableAgent.get_llm_tools` reads it to narrow the tool list
+# passed to the LLM during that turn — mirrors Claude Code's
+# SkillTool contextModifier (SkillTool.ts:775-806).
+#
+# When the contextvar is unset or empty, no filtering is applied. The
+# special name "Skill" is always retained so the model can chain-activate
+# or terminate the active skill. Other built-in/MCP tools are filtered to
+# the set the skill declared in its `allowed-tools` frontmatter.
+_active_skill_allowed_tools: contextvars.ContextVar[frozenset[str] | None] = (
+    contextvars.ContextVar("active_skill_allowed_tools", default=None)
+)
+
+
+def get_active_skill_allowed_tools() -> frozenset[str] | None:
+    """Return the tool-name set narrowing in effect for the active skill.
+
+    Returns ``None`` when no skill is active or the skill declared no
+    `allowed-tools` — in which case no filtering is applied.
+    """
+    return _active_skill_allowed_tools.get()
 
 # ---------------------------------------------------------------------------
 # SkillRegistry
@@ -132,8 +156,14 @@ def get_registered_skills() -> dict[str, dict]:
 def run_skill(skill: str, args: str | None = None) -> str:
     """Execute a registered skill or command by name with optional arguments.
 
-    Performs inline expansion: substitutes ``${ARGUMENTS}`` in the skill's
-    prompt and returns the expanded text as the tool result.
+    Performs inline expansion: substitutes ``${ARGUMENTS}`` + ``${SKILL_DIR}``
+    in the skill's prompt and returns the expanded text as the tool result.
+
+    When the skill declares ``allowed-tools`` in its frontmatter, this
+    function also sets the ``_active_skill_allowed_tools`` contextvar so
+    ``get_llm_tools`` narrows the LLM's tool list for the remainder of the
+    turn. Mirrors Claude Code's SkillTool contextModifier
+    (tools/SkillTool/SkillTool.ts:775-806).
     """
     if not skill or not skill.strip():
         return "Error: No skill name provided."
@@ -153,19 +183,26 @@ def run_skill(skill: str, args: str | None = None) -> str:
     # ${ARGUMENTS} substitution (matches Claude Code's substituteArguments)
     prompt = skill_def.prompt.replace("${ARGUMENTS}", args or "")
 
-    # Prepend allowed-tools directive for soft enforcement
+    # ${SKILL_DIR}/${CLAUDE_SKILL_DIR} expansion to the materialized sandbox
+    # path (ports skills/loadSkillsDir.ts:359-363). Agents that reference
+    # `${SKILL_DIR}/scripts/foo.py` in their SKILL.md now resolve to an
+    # absolute path inside the sandbox rather than a literal placeholder.
     if skill_def.package_path:
-        file_list = "\n".join(f"- {path}" for path in skill_def.package_files[:40])
-        package_block = (
-            f"<skill-package name=\"{skill_def.name}\">\n"
-            f"Directory: {skill_def.package_path}\n"
-            f"Files:\n{file_list or '- SKILL.md'}\n"
-            "Use the file tools with this absolute directory when the skill "
-            "refers to bundled references, scripts, examples, or assets.\n"
-            f"</skill-package>\n\n"
+        prompt = (
+            prompt.replace("${SKILL_DIR}", skill_def.package_path)
+            .replace("${CLAUDE_SKILL_DIR}", skill_def.package_path)
         )
-        prompt = package_block + prompt
 
+    # Base-directory header — canonical form from Claude Code's
+    # createSkillCommand (skills/loadSkillsDir.ts:345-347). When the skill
+    # ships scripts/references, tell the agent exactly where they landed so
+    # Read/Bash tools can address them without guessing.
+    if skill_def.package_path:
+        prompt = f"Base directory for this skill: {skill_def.package_path}\n\n" + prompt
+
+    # Soft enforcement header kept as belt-and-braces — the contextvar below
+    # hard-filters the tool list, but an LLM that ignores the header still
+    # sees this reminder inline.
     if skill_def.allowed_tools:
         tools_list = ", ".join(skill_def.allowed_tools)
         header = (
@@ -175,6 +212,13 @@ def run_skill(skill: str, args: str | None = None) -> str:
             f"</skill-context>\n\n"
         )
         prompt = header + prompt
+
+        # Hard enforcement: narrow the tool list the next LLM call sees. The
+        # contextvar scope is per-asyncio-task, which matches a single LLM
+        # turn in our Dapr workflow model. We intentionally do not reset the
+        # token here — the skill remains active until the next activity
+        # boundary rebuilds the ContextVar from scratch.
+        _active_skill_allowed_tools.set(frozenset(skill_def.allowed_tools))
 
     return prompt
 

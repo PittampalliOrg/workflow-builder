@@ -41,9 +41,44 @@ export function eventToolName(event: ExecutionTimelineEvent): string {
 		stringValue(event.toolName) ??
 		stringValue(event.data?.toolName) ??
 		stringValue(nestedData?.toolName) ??
+		// CMA envelope shape: agent.tool_use uses `name`, agent.tool_result
+		// (and mcp.tool_call) uses `tool_name`.
 		stringValue(event.data?.name) ??
+		stringValue(event.data?.tool_name) ??
 		stringValue(nestedData?.name) ??
+		stringValue(nestedData?.tool_name) ??
 		'Tool'
+	);
+}
+
+// --- CMA type → legacy bucket mapping --------------------------------------
+// buildTimelineItems groups events into `kind: 'tool'` pairs (start/end) or
+// generic `kind: 'event'`. These sets classify the CMA types so they get the
+// same treatment as legacy tool_call_* pairs. Order matters for paired
+// grouping: a `*tool_use*` or `mcp.tool_call` begins a tool item; a
+// `*tool_result*` ends one. mcp.tool_call is single-shot (start+end rolled
+// into one event); we treat it as both end-of-a-paired-start-if-open and a
+// standalone completed tool if not paired.
+const CMA_TOOL_START_TYPES: ReadonlySet<string> = new Set([
+	'agent.tool_use',
+	'agent.mcp_tool_use',
+	'agent.custom_tool_use'
+]);
+const CMA_TOOL_END_TYPES: ReadonlySet<string> = new Set([
+	'agent.tool_result',
+	'agent.mcp_tool_result',
+	'agent.custom_tool_result'
+]);
+
+export function isToolStartType(type: string): boolean {
+	return type === 'tool_call_start' || CMA_TOOL_START_TYPES.has(type);
+}
+
+export function isToolEndType(type: string): boolean {
+	return (
+		type === 'tool_call_end' ||
+		type === 'tool_call_error' ||
+		CMA_TOOL_END_TYPES.has(type)
 	);
 }
 
@@ -52,7 +87,10 @@ function eventCallId(event: ExecutionTimelineEvent): string | null {
 		stringValue(event.callId) ??
 		stringValue(event.data?.callId) ??
 		stringValue(event.data?.toolCallId) ??
-		stringValue(event.data?.tool_call_id)
+		stringValue(event.data?.tool_call_id) ??
+		// CMA shape: agent.tool_use / agent.tool_result / mcp.tool_call
+		// all carry `tool_use_id` (durable-streams convention).
+		stringValue(event.data?.tool_use_id)
 	);
 }
 
@@ -152,10 +190,17 @@ function toolOutcome(event: ExecutionTimelineEvent) {
 	const parsedOutput = parseOutput(output);
 	const embeddedError =
 		data.isError === true ||
+		// CMA shape: agent.tool_result / mcp.tool_call carry is_error: true.
+		data.is_error === true ||
 		hasNestedIsError(data) ||
 		hasNestedIsError(parsedOutput) ||
 		/^error executing tool\b/i.test(output.trim());
-	const success = eventType(event) !== 'tool_call_error' && data.success !== false && !error && !embeddedError;
+	const type = eventType(event);
+	const success =
+		type !== 'tool_call_error' &&
+		data.success !== false &&
+		!error &&
+		!embeddedError;
 
 	return { output, error, success };
 }
@@ -217,9 +262,15 @@ export function buildTimelineItems(
 
 	for (const event of events) {
 		const type = eventType(event);
-		if (type === 'tool_call_start') {
+		if (isToolStartType(type)) {
 			const toolName = eventToolName(event);
-			const args = isRecord(event.data?.args) ? event.data.args : undefined;
+			// CMA agent.tool_use carries args under `input`; legacy
+			// tool_call_start uses `args`.
+			const args = isRecord(event.data?.args)
+				? event.data.args
+				: isRecord(event.data?.input)
+					? event.data.input
+					: undefined;
 			const item: Extract<TimelineItem, { kind: 'tool' }> = {
 				kind: 'tool',
 				key: `tool:${eventKey(event)}`,
@@ -237,7 +288,7 @@ export function buildTimelineItems(
 			continue;
 		}
 
-		if (type === 'tool_call_end' || type === 'tool_call_error') {
+		if (isToolEndType(type)) {
 			const item = dequeueTool(event);
 			if (item) {
 				completeToolItem(item, event);

@@ -37,12 +37,52 @@
 			return 'Tool result';
 		}
 		if (kind === 'model') {
-			const inTok = d.input_tokens ?? '-';
-			const outTok = d.output_tokens ?? '-';
-			return `${inTok} input → ${outTok} output`;
+			const inTok = Number(d.input_tokens ?? 0);
+			const outTok = Number(d.output_tokens ?? 0);
+			const cacheRead = Number(d.cache_read_input_tokens ?? 0);
+			const cacheCreate = Number(d.cache_creation_input_tokens ?? 0);
+			const parts = [`${fmtTokens(inTok)} in`, `${fmtTokens(outTok)} out`];
+			if (cacheRead > 0) {
+				const denom = cacheRead + inTok;
+				const pct = denom > 0 ? Math.round((cacheRead / denom) * 100) : 0;
+				parts.push(`cache ${fmtTokens(cacheRead)} (${pct}%)`);
+			}
+			if (cacheCreate > 0) parts.push(`+${fmtTokens(cacheCreate)} cached`);
+			return parts.join(' · ');
 		}
 		if (kind === 'status') {
 			return String(event.type).replace('session.status_', '').replace(/^./, (c) => c.toUpperCase());
+		}
+		if (kind === 'hook') {
+			const ev = String(d.hook_event ?? '');
+			const decision = String(d.decision ?? d.outcome ?? '');
+			const matcher = d.matcher ? ` (${String(d.matcher)})` : '';
+			return `${ev}${matcher} · ${decision}`;
+		}
+		if (kind === 'mcp') {
+			const name = String(d.tool_name ?? 'tool');
+			const server = d.server ? ` @${String(d.server)}` : '';
+			const dur = Number(d.duration_ms ?? 0);
+			const status = d.success === false ? ' · failed' : '';
+			return `${name}${server} · ${dur}ms${status}`;
+		}
+		if (kind === 'alert') {
+			if (event.type === 'agent.circuit_breaker_tripped') {
+				return `Circuit breaker: ${String(d.reason ?? '')} (${d.streak ?? '?'}/${d.threshold ?? '?'})`;
+			}
+			if (event.type === 'session.turn_timeout') {
+				return `Turn ${d.turn ?? '?'} timed out after ${d.timeout_seconds ?? '?'}s`;
+			}
+			if (event.type === 'agent.thread_images_compacted') {
+				return `Collapsed ${d.collapsed ?? '?'} screenshot(s); kept last ${d.kept ?? '?'}`;
+			}
+			if (event.type === 'agent.thread_context_compacted') {
+				return 'Thread context compacted';
+			}
+			if (event.type === 'session.error') {
+				const err = String(d.error ?? '').slice(0, 80);
+				return `Session error${err ? `: ${err}` : ''}`;
+			}
 		}
 		return event.type;
 	});

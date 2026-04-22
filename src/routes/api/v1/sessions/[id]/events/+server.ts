@@ -13,9 +13,14 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		: undefined;
 	const limitParam = url.searchParams.get("limit");
 	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+	// Preview defaults on. Callers that want full payloads pass `?preview=0`.
+	// The single-event route (GET /events/[eventId]) always returns full.
+	const previewParam = url.searchParams.get("preview");
+	const preview = previewParam === "0" || previewParam === "false" ? false : true;
 	const events = await listEvents(params.id, {
 		afterSequence: Number.isFinite(afterSequence) ? afterSequence : undefined,
 		limit: Number.isFinite(limit) ? limit : undefined,
+		preview,
 	});
 	return json({ events });
 };

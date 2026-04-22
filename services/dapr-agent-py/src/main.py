@@ -136,6 +136,51 @@ SESSION_TURN_TIMEOUT_SECONDS = int(
     os.environ.get("DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS", "600")
 )
 
+# Absolute cap on a single session event envelope's serialized size. Postgres
+# jsonb has no hard limit other than TOAST (~1 GB), but bigger blobs fan out
+# into the SSE stream, the consolidation fetch, and the client's in-memory
+# buffer. 256 KB comfortably fits a verbose tool response while still letting
+# the UI keep 500 events hot without OOM.
+_MAX_ENVELOPE_BYTES = int(os.environ.get("DAPR_AGENT_PY_MAX_ENVELOPE_BYTES", "262144"))
+
+
+def _json_preview(value: Any, max_chars: int) -> str:
+    """JSON-serialize `value` for display, truncated to `max_chars`. If
+    the value isn't JSON-serializable, fall back to repr()."""
+    try:
+        s = json.dumps(value, default=str, ensure_ascii=False)
+    except Exception:
+        s = repr(value)
+    if len(s) > max_chars:
+        return s[:max_chars] + "…"
+    return s
+
+
+def _prepare_payload_with_preview(
+    value: Any,
+    *,
+    mode: str,
+    preview_len: int,
+) -> tuple[Any, bool, int]:
+    """Return (payload, oversized, size_bytes) for a session_events data
+    value. `mode` is "text" (plain string) or "json" (arbitrary dict). When
+    the serialized size exceeds `_MAX_ENVELOPE_BYTES`, payload is None and
+    `oversized` is True; the caller substitutes a placeholder.
+    """
+    try:
+        if mode == "text":
+            size = len((value or "").encode("utf-8", "ignore")) if isinstance(value, str) else len(
+                json.dumps(value, default=str, ensure_ascii=False).encode("utf-8", "ignore")
+            )
+        else:
+            size = len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8", "ignore"))
+    except Exception:
+        size = 0
+    if size > _MAX_ENVELOPE_BYTES:
+        return (None, True, size)
+    return (value, False, size)
+
+
 def _build_system_prompt(cwd: str, sandbox_name: str | None = None) -> str:
     """Build the system prompt with a structured <env> block.
 
@@ -790,6 +835,13 @@ def _extract_skill_package_entries(item: dict[str, Any]) -> list[dict[str, str]]
     raw_files = manifest.get("files")
     if not isinstance(raw_files, list):
         return []
+    # Caps are kept in lock-step with the BFF ingester (see
+    # src/lib/server/skill-ingest.ts `PACKAGE_MAX_*`). The BFF rejects
+    # bundles that exceed these at ingestion; the runtime silently skips
+    # individual oversize files as belt-and-braces for older rows.
+    max_file_bytes = 128 * 1024
+    max_total_bytes = 2 * 1024 * 1024
+    max_files = 80
     entries: list[dict[str, str]] = []
     total_bytes = 0
     for raw_file in raw_files:
@@ -800,15 +852,15 @@ def _extract_skill_package_entries(item: dict[str, Any]) -> list[dict[str, str]]
         if not rel_path or not isinstance(content, str):
             continue
         encoded_size = len(content.encode("utf-8"))
-        if encoded_size > 64 * 1024:
+        if encoded_size > max_file_bytes:
             logger.warning("[skills] Skipping oversized package file %s", rel_path)
             continue
-        if total_bytes + encoded_size > 256 * 1024:
+        if total_bytes + encoded_size > max_total_bytes:
             logger.warning("[skills] Skipping package file %s because package limit was reached", rel_path)
             continue
         total_bytes += encoded_size
         entries.append({"path": rel_path, "content": content})
-        if len(entries) >= 40:
+        if len(entries) >= max_files:
             break
     return entries
 
@@ -887,6 +939,11 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_clients_by_instance: dict[str, MCPClient] = {}
         self._mcp_config_hash_by_instance: dict[str, str] = {}
         self._mcp_tools_by_instance: dict[str, dict[str, Any]] = {}
+        # Parallel to _mcp_tools_by_instance — maps the same normalized tool
+        # lookup key to {server_name, transport} so run_tool can emit
+        # mcp.tool_call events with the source server + transport without
+        # re-scanning the MCPClient at call time.
+        self._mcp_tool_sources_by_instance: dict[str, dict[str, dict[str, str]]] = {}
         self._mcp_allowed_tools_by_instance: dict[str, dict[str, set[str]]] = {}
         self._skills_by_instance: dict[str, list[SkillDefinition]] = {}
         self._workspace_ref_by_instance: dict[str, str] = {}
@@ -935,6 +992,7 @@ class OpenShellDurableAgent(DurableAgent):
         client = self._mcp_clients_by_instance.pop(instance_id, None)
         self._mcp_config_hash_by_instance.pop(instance_id, None)
         self._mcp_tools_by_instance.pop(instance_id, None)
+        self._mcp_tool_sources_by_instance.pop(instance_id, None)
         self._mcp_allowed_tools_by_instance.pop(instance_id, None)
         self._mcp_configs_by_instance.pop(instance_id, None)
         if client is not None:
@@ -975,7 +1033,17 @@ class OpenShellDurableAgent(DurableAgent):
             self._mcp_allowed_tools_by_instance.get(instance_id) or {}
         )
         tools: dict[str, Any] = {}
+        tool_sources: dict[str, dict[str, str]] = {}
         for server_name in configs:
+            server_cfg = configs.get(server_name) or {}
+            # Transport: try typed attr first, then dict lookup. Defaults
+            # "stdio" because MCP's canonical default for unspecified
+            # transport is stdio (aligns with the @modelcontextprotocol docs).
+            transport = (
+                str(server_cfg.get("transport") or "").strip()
+                or str(server_cfg.get("type") or "").strip()
+                or "stdio"
+            )
             allowed_tools = allowed_tools_by_server.get(server_name)
             allowed_lookup = (
                 {
@@ -1010,10 +1078,16 @@ class OpenShellDurableAgent(DurableAgent):
                         raw_tool_name,
                     )
                     continue
-                tools[_normalize_tool_lookup_name(tool.name)] = tool
+                norm_key = _normalize_tool_lookup_name(tool.name)
+                tools[norm_key] = tool
+                tool_sources[norm_key] = {
+                    "server": server_name,
+                    "transport": transport,
+                }
         self._mcp_clients_by_instance[instance_id] = client
         self._mcp_config_hash_by_instance[instance_id] = config_hash
         self._mcp_tools_by_instance[instance_id] = tools
+        self._mcp_tool_sources_by_instance[instance_id] = tool_sources
         logger.warning(
             "[mcp] Connected %d MCP server(s), loaded %d tool(s) for instance %s",
             len(configs),
@@ -1042,18 +1116,43 @@ class OpenShellDurableAgent(DurableAgent):
             instance_id,
         )
         mcp_tools = self._mcp_tools_by_instance.get(instance_id) or {}
-        if not mcp_tools:
-            return tools
+        if mcp_tools:
+            existing_names = {
+                _normalize_tool_lookup_name(getattr(tool, "name", ""))
+                for tool in tools
+            }
+            for key, tool in mcp_tools.items():
+                if key in existing_names:
+                    logger.warning("[mcp] Skipping MCP tool name collision: %s", tool.name)
+                    continue
+                tools.append(tool)
 
-        existing_names = {
-            _normalize_tool_lookup_name(getattr(tool, "name", ""))
-            for tool in tools
-        }
-        for key, tool in mcp_tools.items():
-            if key in existing_names:
-                logger.warning("[mcp] Skipping MCP tool name collision: %s", tool.name)
-                continue
-            tools.append(tool)
+        # Hard allowed-tools enforcement when a skill is active. Mirrors
+        # Claude Code's tools/SkillTool/SkillTool.ts:775-806 contextModifier
+        # — while a skill whose frontmatter declared `allowed-tools` is
+        # running, the LLM only sees those tools (plus Skill itself, so it
+        # can still chain-activate or terminate). Any unrelated tool call
+        # the model attempts falls back to "tool not found" rather than
+        # executing — safer than relying on the soft-enforcement header.
+        from src.tools.skill_tool.tool import get_active_skill_allowed_tools
+
+        allowed = get_active_skill_allowed_tools()
+        if allowed:
+            allowed_norm = {_normalize_tool_lookup_name(name) for name in allowed}
+            # Always keep the Skill tool itself — matches Claude Code's carve-out.
+            allowed_norm.add(_normalize_tool_lookup_name("Skill"))
+            before = len(tools)
+            tools = [
+                t
+                for t in tools
+                if _normalize_tool_lookup_name(getattr(t, "name", "")) in allowed_norm
+            ]
+            logger.info(
+                "[skills] Active-skill allowed_tools filter: kept %d/%d tools (%s)",
+                len(tools),
+                before,
+                sorted(allowed_norm),
+            )
         return tools
 
     def call_llm(self, ctx, payload):
@@ -1161,6 +1260,20 @@ class OpenShellDurableAgent(DurableAgent):
                     "[call-llm] circuit-breaker tripped after %d empty/failed LLM responses for instance %s; surfacing AgentError to break the loop",
                     streak, inst_id,
                 )
+                try:
+                    publish_session_event(
+                        sess_id,
+                        "agent.circuit_breaker_tripped",
+                        {
+                            "reason": "llm_exception",
+                            "streak": streak,
+                            "threshold": EMPTY_RESPONSE_THRESHOLD,
+                            "last_error": str(exc)[:200],
+                        },
+                        instance_id=inst_id,
+                    )
+                except Exception:
+                    pass
                 self._empty_llm_response_count_by_instance.pop(inst_id, None)
                 from dapr_agents.types.exceptions import AgentError
                 raise AgentError(
@@ -1182,11 +1295,11 @@ class OpenShellDurableAgent(DurableAgent):
         if isinstance(result, dict):
             raw = result.get("content", "")
             if isinstance(raw, str):
-                content = raw[:500]
+                content = raw
             elif isinstance(raw, list):
                 content = " ".join(
-                    b.get("text", "")[:200] for b in raw if isinstance(b, dict) and b.get("type") == "text"
-                )[:500]
+                    b.get("text", "") for b in raw if isinstance(b, dict) and b.get("type") == "text"
+                )
             tc = result.get("tool_calls")
             if isinstance(tc, list):
                 tool_calls = [
@@ -1206,10 +1319,34 @@ class OpenShellDurableAgent(DurableAgent):
                     streak, inst_id,
                 )
                 try:
+                    cb_content, cb_oversized, cb_size = _prepare_payload_with_preview(
+                        content, mode="text", preview_len=500,
+                    )
+                    cb_payload: dict[str, Any] = {
+                        "content": cb_content if not cb_oversized else "",
+                        "preview": (content[:500] if isinstance(content, str) else ""),
+                        "toolCalls": tool_calls,
+                    }
+                    if cb_oversized:
+                        cb_payload["oversized"] = True
+                        cb_payload["size_bytes"] = cb_size
                     publish_session_event(
                         sess_id,
                         "llm_complete",
-                        {"content": content, "toolCalls": tool_calls},
+                        cb_payload,
+                        instance_id=inst_id,
+                    )
+                except Exception:
+                    pass
+                try:
+                    publish_session_event(
+                        sess_id,
+                        "agent.circuit_breaker_tripped",
+                        {
+                            "reason": "empty_response_content",
+                            "streak": streak,
+                            "threshold": EMPTY_RESPONSE_THRESHOLD,
+                        },
                         instance_id=inst_id,
                     )
                 except Exception:
@@ -1223,10 +1360,21 @@ class OpenShellDurableAgent(DurableAgent):
                     "(thinking-only response with stop_reason=end_turn and no tool_use)."
                 )
         try:
+            lc_content, lc_oversized, lc_size = _prepare_payload_with_preview(
+                content, mode="text", preview_len=500,
+            )
+            lc_payload: dict[str, Any] = {
+                "content": lc_content if not lc_oversized else "",
+                "preview": (content[:500] if isinstance(content, str) else ""),
+                "toolCalls": tool_calls,
+            }
+            if lc_oversized:
+                lc_payload["oversized"] = True
+                lc_payload["size_bytes"] = lc_size
             publish_session_event(
                 sess_id,
                 "llm_complete",
-                {"content": content, "toolCalls": tool_calls},
+                lc_payload,
                 instance_id=inst_id,
             )
         except Exception:
@@ -1391,13 +1539,31 @@ class OpenShellDurableAgent(DurableAgent):
                     pass
 
           try:
+              full_args = tool_args if isinstance(tool_args, dict) else {}
+              args_data, args_oversized, args_size = _prepare_payload_with_preview(
+                  full_args,
+                  mode="json",
+                  preview_len=300,
+              )
+              start_payload: dict[str, Any] = {
+                  "toolName": tool_name,
+                  "args": args_data,
+                  "input_preview": _json_preview(full_args, 300),
+              }
+              if args_oversized:
+                  start_payload["oversized"] = True
+                  start_payload["size_bytes"] = args_size
+                  # Preserve top-level keys as a hint even when the full blob
+                  # was dropped — lets the UI show "keys: foo, bar" instead of
+                  # "(oversized)".
+                  start_payload["args"] = {
+                      k: "[omitted: oversized]"
+                      for k in full_args.keys()
+                  }
               publish_session_event(
                   sess_id,
                   "tool_call_start",
-                  {
-                      "toolName": tool_name,
-                      "args": {k: str(v)[:200] for k, v in (tool_args or {}).items()},
-                  },
+                  start_payload,
                   source_event_id=f"{tool_call_id}:start" if tool_call_id else None,
                   instance_id=inst_id,
               )
@@ -1429,12 +1595,54 @@ class OpenShellDurableAgent(DurableAgent):
                   async def _execute_mcp_tool():
                       return await mcp_tool.arun(**tool_args)
 
+                  mcp_source = (
+                      self._mcp_tool_sources_by_instance.get(inst_id) or {}
+                  ).get(_normalize_tool_lookup_name(tool_name), {})
+                  import time as _time_mcp
+                  mcp_start = _time_mcp.monotonic()
                   try:
                       mcp_result = self._run_asyncio_task(_execute_mcp_tool())
                       serialized_result = serialize_tool_result(mcp_result)
+                      try:
+                          publish_session_event(
+                              sess_id,
+                              "mcp.tool_call",
+                              {
+                                  "tool_name": tool_name,
+                                  "tool_use_id": tool_call_id,
+                                  "server": mcp_source.get("server"),
+                                  "transport": mcp_source.get("transport"),
+                                  "duration_ms": int(
+                                      (_time_mcp.monotonic() - mcp_start) * 1000
+                                  ),
+                                  "success": True,
+                              },
+                              instance_id=inst_id,
+                          )
+                      except Exception:
+                          pass
                   except Exception as exc:
                       error = str(exc)
                       _exec_error = error
+                      try:
+                          publish_session_event(
+                              sess_id,
+                              "mcp.tool_call",
+                              {
+                                  "tool_name": tool_name,
+                                  "tool_use_id": tool_call_id,
+                                  "server": mcp_source.get("server"),
+                                  "transport": mcp_source.get("transport"),
+                                  "duration_ms": int(
+                                      (_time_mcp.monotonic() - mcp_start) * 1000
+                                  ),
+                                  "success": False,
+                                  "error": error[:200],
+                              },
+                              instance_id=inst_id,
+                          )
+                      except Exception:
+                          pass
                       try:
                           publish_session_event(
                               sess_id,
@@ -1583,11 +1791,21 @@ class OpenShellDurableAgent(DurableAgent):
               except Exception as exc:
                   logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
           try:
+              full_output = output or ""
+              output_data, output_oversized, output_size = _prepare_payload_with_preview(
+                  full_output,
+                  mode="text",
+                  preview_len=500,
+              )
               payload: dict[str, Any] = {
                   "toolName": tool_name,
                   "success": True,
-                  "output": (output or "")[:500],
+                  "output": output_data,
+                  "output_preview": (full_output[:500] if isinstance(full_output, str) else ""),
               }
+              if output_oversized:
+                  payload["oversized"] = True
+                  payload["size_bytes"] = output_size
               if checkpoint is not None:
                   payload["codeCheckpoint"] = checkpoint
               publish_session_event(
@@ -2623,6 +2841,18 @@ class OpenShellDurableAgent(DurableAgent):
                 )
                 winner = yield wf_when_any([child_task, timer_task])
                 if winner is timer_task:
+                    if not ctx.is_replaying:
+                        try:
+                            publish_session_event(
+                                session_id,
+                                "session.turn_timeout",
+                                {
+                                    "turn": turn_counter,
+                                    "timeout_seconds": SESSION_TURN_TIMEOUT_SECONDS,
+                                },
+                            )
+                        except Exception:
+                            pass
                     from dapr_agents.types.exceptions import AgentError
                     raise AgentError(
                         f"Session turn {turn_counter} exceeded "

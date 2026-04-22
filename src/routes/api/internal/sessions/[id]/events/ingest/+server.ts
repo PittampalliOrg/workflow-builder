@@ -43,10 +43,21 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			: {};
 	const sourceEventId =
 		typeof body.sourceEventId === "string" ? body.sourceEventId : null;
+	// Producer-Id triple stamped by dapr-agent-py event_publisher on every
+	// envelope (Tier 3). Persisted for provenance + joined with agents.slug
+	// for "events by agent X" aggregation.
+	const producerId =
+		typeof body.producerId === "string" && body.producerId ? body.producerId : null;
+	const producerEpoch =
+		typeof body.producerEpoch === "string" && body.producerEpoch
+			? body.producerEpoch
+			: null;
 	const envelope = await appendEvent(params.id, {
 		type,
 		data,
 		sourceEventId,
+		producerId,
+		producerEpoch,
 	});
 
 	// Mirror status events onto the sessions row so list-page filters and

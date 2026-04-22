@@ -8,6 +8,9 @@
 		| 'model'
 		| 'status'
 		| 'span'
+		| 'hook'
+		| 'mcp'
+		| 'alert'
 		| 'other';
 
 	/**
@@ -32,7 +35,17 @@
 			type === 'agent.custom_tool_result'
 		)
 			return 'result';
-		if (type.startsWith('span.model_request')) return 'model';
+		if (type.startsWith('span.model_request') || type === 'agent.llm_usage') return 'model';
+		if (type === 'hook.decision') return 'hook';
+		if (type === 'mcp.tool_call') return 'mcp';
+		if (
+			type === 'agent.circuit_breaker_tripped' ||
+			type === 'session.turn_timeout' ||
+			type === 'session.error' ||
+			type === 'agent.thread_images_compacted' ||
+			type === 'agent.thread_context_compacted'
+		)
+			return 'alert';
 		if (type.startsWith('session.status_')) return 'status';
 		if (type.startsWith('span.')) return 'span';
 		return 'other';
@@ -61,6 +74,9 @@
 		model: 'bg-slate-500/25 text-slate-200 border-slate-400/20',
 		status: 'bg-purple-500/20 text-purple-200 border-purple-400/20',
 		span: 'bg-blue-500/20 text-blue-200 border-blue-400/20',
+		hook: 'bg-indigo-500/25 text-indigo-200 border-indigo-400/20',
+		mcp: 'bg-cyan-500/25 text-cyan-200 border-cyan-400/20',
+		alert: 'bg-red-500/25 text-red-200 border-red-400/20',
 		other: 'bg-muted text-muted-foreground border-border'
 	};
 
@@ -73,6 +89,9 @@
 		model: 'Model',
 		status: 'Status',
 		span: 'Span',
+		hook: 'Hook',
+		mcp: 'MCP',
+		alert: 'Alert',
 		other: 'Event'
 	};
 

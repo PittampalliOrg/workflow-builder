@@ -316,6 +316,12 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                                 {"name": "DAPR_AGENT_PY_PLUGIN_PATHS", "value": "/etc/dapr-agent-py/plugins"},
                                 {"name": "DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON", "value": bootstrap},
                                 {"name": "AGENT_CALL_AGENT_NATIVE", "value": "1"},
+                                # Agent slug as the Producer-Id for durable-streams-shaped
+                                # session event idempotency (see event_publisher.py
+                                # _default_source_event_id). Joins cleanly with
+                                # agents.slug so "all events from agent X" is a
+                                # one-liner query.
+                                {"name": "AGENT_SLUG", "value": slug},
                                 # BFF base URL for session event mirroring. INTERNAL_API_TOKEN
                                 # arrives via envFrom from dapr-agent-py-secrets (Azure
                                 # Key Vault -> ExternalSecret adds the INTERNAL-API-TOKEN

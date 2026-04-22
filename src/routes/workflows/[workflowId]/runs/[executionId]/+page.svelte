@@ -36,7 +36,11 @@
 		Zap,
 		FileDiff,
 		RefreshCw,
-		MessagesSquare
+		MessagesSquare,
+		AlertTriangle,
+		Cable,
+		Gauge,
+		ShieldCheck
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
@@ -78,10 +82,23 @@
 		TaskContent,
 		TaskItem
 	} from '$lib/components/ui/ai-elements/task/index.js';
+	import {
+		Context,
+		ContextTrigger,
+		ContextContent,
+		ContextContentHeader,
+		ContextContentBody,
+		ContextContentFooter,
+		ContextInputUsage,
+		ContextOutputUsage,
+		ContextCacheUsage,
+		ContextReasoningUsage
+	} from '$lib/components/ui/ai-elements/context';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import { withAgentNodeMetrics } from '$lib/utils/agent-node-metrics';
+	import { fmtTokens, modelContextWindow } from '$lib/utils/format-tokens';
 	import {
 		buildTimelineItems,
 		eventType,
@@ -282,16 +299,97 @@
 		mergeTimelineEvents(persistedAgentEvents, executionState.events)
 	);
 
-	// Derived stats from timeline events
-	let turnCount = $derived(timelineEvents.filter(e => e.type === 'llm_complete' || (e.data?.type as string) === 'llm_complete').length);
-	let toolCallCount = $derived(timelineEvents.filter(e => e.type === 'tool_call_start' || (e.data?.type as string) === 'tool_call_start').length);
+	// Derived stats from timeline events. Counts both legacy (llm_complete /
+	// tool_call_start) and CMA (agent.message / agent.tool_use, etc.)
+	// vocabularies; dedupe by taking max so we don't double-count.
+	const CMA_TOOL_START_RUN = new Set(['agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use']);
+	let turnCount = $derived(Math.max(
+		timelineEvents.filter(e => {
+			const t = e.type ?? (e.data?.type as string) ?? '';
+			return t === 'llm_complete';
+		}).length,
+		timelineEvents.filter(e => {
+			const t = e.type ?? (e.data?.type as string) ?? '';
+			return t === 'agent.message';
+		}).length
+	));
+	let toolCallCount = $derived(Math.max(
+		timelineEvents.filter(e => {
+			const t = e.type ?? (e.data?.type as string) ?? '';
+			return t === 'tool_call_start';
+		}).length,
+		timelineEvents.filter(e => {
+			const t = e.type ?? (e.data?.type as string) ?? '';
+			return CMA_TOOL_START_RUN.has(t);
+		}).length
+	));
 	let significantTimelineEvents = $derived(
-		timelineEvents.filter(e =>
-			['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(
-				e.type ?? (e.data?.type as string) ?? ''
-			)
-		)
+		timelineEvents.filter(e => {
+			const t = e.type ?? (e.data?.type as string) ?? '';
+			// Legacy vocabulary
+			if (['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'tool_call_error', 'run_started', 'run_complete', 'run_error'].includes(t)) {
+				return true;
+			}
+			// CMA vocabulary — include the same types the step-timeline surfaces.
+			if ([
+				'agent.message', 'agent.thinking',
+				'agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use',
+				'agent.tool_result', 'agent.mcp_tool_result', 'agent.custom_tool_result',
+				'agent.llm_usage',
+				'hook.decision', 'mcp.tool_call',
+				'agent.circuit_breaker_tripped', 'session.turn_timeout',
+				'agent.thread_images_compacted', 'session.error'
+			].includes(t)) {
+				return true;
+			}
+			return false;
+		})
 	);
+
+	// Aggregate tokens from every agent.llm_usage event so the Context
+	// compound in the stats banner can show the total context-window
+	// consumption for the whole run, not just per-call. Updates reactively
+	// via $derived as new events stream in via SSE (no polling, no refresh).
+	type AggregatedUsage = {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheCreationTokens: number;
+		reasoningTokens: number;
+		model: string | null;
+	};
+	const aggregatedUsage = $derived.by<AggregatedUsage>(() => {
+		const acc: AggregatedUsage = {
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			reasoningTokens: 0,
+			model: null
+		};
+		for (const e of timelineEvents) {
+			if (e.type !== 'agent.llm_usage') continue;
+			const d = e.data as Record<string, unknown>;
+			acc.inputTokens += Number(d.input_tokens ?? 0);
+			acc.outputTokens += Number(d.output_tokens ?? 0);
+			acc.cacheReadTokens += Number(d.cache_read_input_tokens ?? 0);
+			acc.cacheCreationTokens += Number(d.cache_creation_input_tokens ?? 0);
+			if (typeof d.model === 'string') acc.model = d.model;
+		}
+		return acc;
+	});
+	const usedTokens = $derived(
+		aggregatedUsage.inputTokens +
+		aggregatedUsage.outputTokens +
+		aggregatedUsage.cacheCreationTokens
+	);
+	const maxTokens = $derived(modelContextWindow(aggregatedUsage.model));
+	const usage = $derived({
+		inputTokens: aggregatedUsage.inputTokens,
+		outputTokens: aggregatedUsage.outputTokens,
+		cachedInputTokens: aggregatedUsage.cacheReadTokens,
+		reasoningTokens: aggregatedUsage.reasoningTokens
+	});
 
 	const snapshot = $derived(executionState.snapshot);
 	const executionStatus = $derived(snapshot?.status ?? 'unknown');
@@ -748,6 +846,7 @@
 
 	function eventIcon(type: string) {
 		switch (type) {
+			// Legacy
 			case 'tool_call_start':
 			case 'tool_call_end':
 			case 'tool_call_error':
@@ -761,6 +860,29 @@
 			case 'run_complete':
 				return CheckCircle2;
 			case 'run_error':
+				return XCircle;
+			// CMA Tier 1/2/3
+			case 'agent.tool_use':
+			case 'agent.mcp_tool_use':
+			case 'agent.custom_tool_use':
+			case 'agent.tool_result':
+			case 'agent.mcp_tool_result':
+			case 'agent.custom_tool_result':
+			case 'mcp.tool_call':
+				return Wrench;
+			case 'agent.message':
+			case 'agent.message_delta':
+			case 'agent.thinking':
+			case 'agent.thinking_delta':
+			case 'agent.tool_input_delta':
+			case 'agent.llm_usage':
+				return MessageSquare;
+			case 'hook.decision':
+				return CheckCircle2;
+			case 'agent.circuit_breaker_tripped':
+			case 'session.turn_timeout':
+			case 'agent.thread_images_compacted':
+			case 'session.error':
 				return XCircle;
 			default:
 				return Terminal;
@@ -1519,6 +1641,35 @@
 									<span class="text-muted-foreground"> events</span>
 								</div>
 							</div>
+							<!-- Aggregated context-window usage. Driven by a $derived
+							     that sums every agent.llm_usage event in timelineEvents,
+							     so it updates live as the SSE stream appends events. -->
+							{#if usedTokens > 0}
+								<div class="h-4 w-px bg-border"></div>
+								<Context {usedTokens} {maxTokens} {usage} modelId={aggregatedUsage.model ?? 'unknown'}>
+									<ContextTrigger variant="ghost" size="sm" class="h-6 gap-1.5 px-2 text-xs">
+										<Gauge class="size-3 text-slate-400" />
+										<span class="font-semibold text-slate-300">{fmtTokens(usedTokens)}</span>
+										<span class="text-muted-foreground"> / {fmtTokens(maxTokens)}</span>
+									</ContextTrigger>
+									<ContextContent>
+										<ContextContentHeader>
+											Context window usage
+										</ContextContentHeader>
+										<ContextContentBody>
+											<ContextInputUsage />
+											<ContextOutputUsage />
+											<ContextCacheUsage />
+											<ContextReasoningUsage />
+										</ContextContentBody>
+										<ContextContentFooter>
+											<span class="text-[10px] text-muted-foreground">
+												{aggregatedUsage.model ?? 'model pending'}
+											</span>
+										</ContextContentFooter>
+									</ContextContent>
+								</Context>
+							{/if}
 						</div>
 					</div>
 				{/if}
@@ -1591,6 +1742,92 @@
 												</TaskItem>
 											</TaskContent>
 										</Task>
+
+									{:else if evtType === 'agent.message'}
+										{@const data = (event.data ?? {}) as { content?: Array<{ text?: string }>; preview?: string }}
+										{@const text = data.preview ?? (Array.isArray(data.content) ? data.content.map(b => b?.text ?? '').filter(Boolean).join('\n\n') : '')}
+										{#if text && text.trim()}
+											<div class="flex items-start gap-3 rounded-lg border border-border/40 bg-muted/30 px-4 py-3">
+												<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-background">
+													<ProviderIcon model={agentModel} size={18} />
+												</div>
+												<p class="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{text}</p>
+											</div>
+										{/if}
+
+									{:else if evtType === 'agent.thinking'}
+										{@const tdata = (event.data ?? {}) as { content?: Array<{ text?: string }> }}
+										{@const thinkingText = Array.isArray(tdata.content) ? tdata.content.map(b => b?.text ?? '').filter(Boolean).join('\n\n') : ''}
+										{#if thinkingText && thinkingText.trim()}
+											<Reasoning defaultOpen={false}>
+												<ReasoningTrigger />
+												<ReasoningContent>{thinkingText}</ReasoningContent>
+											</Reasoning>
+										{/if}
+
+									{:else if evtType === 'agent.llm_usage'}
+										{@const u = (event.data ?? {}) as { model?: string; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; ttft_ms?: number | null }}
+										{@const cacheRead = Number(u.cache_read_input_tokens ?? 0)}
+										{@const inputTok = Number(u.input_tokens ?? 0)}
+										{@const hitPct = cacheRead + inputTok > 0 ? Math.round((cacheRead / (cacheRead + inputTok)) * 100) : null}
+										<div class="flex items-center gap-2 rounded-md border border-slate-500/25 bg-slate-500/5 px-3 py-1.5 text-[11px] text-muted-foreground">
+											<Gauge size={12} class="text-slate-400" />
+											<span class="font-mono text-foreground/90">{u.model ?? '?'}</span>
+											<span>·</span>
+											<span>in={inputTok}</span>
+											<span>out={u.output_tokens ?? 0}</span>
+											{#if cacheRead > 0}
+												<span>·</span>
+												<span>cache {cacheRead}{hitPct != null ? ` (${hitPct}%)` : ''}</span>
+											{/if}
+											{#if u.ttft_ms != null}
+												<span>·</span>
+												<span>TTFT {Math.round(Number(u.ttft_ms))}ms</span>
+											{/if}
+										</div>
+
+									{:else if evtType === 'hook.decision'}
+										{@const h = (event.data ?? {}) as { hook_event?: string; matcher?: string; decision?: string; outcome?: string; duration_ms?: number }}
+										<div class="flex items-center gap-2 rounded-md border border-indigo-500/25 bg-indigo-500/5 px-3 py-1.5 text-[11px]">
+											<ShieldCheck size={12} class="text-indigo-400" />
+											<span class="font-mono text-indigo-200">{h.hook_event ?? 'hook'}</span>
+											{#if h.matcher}<span class="text-muted-foreground">({h.matcher})</span>{/if}
+											<span>·</span>
+											<span class="text-foreground/90">{h.decision ?? h.outcome ?? '?'}</span>
+											{#if h.duration_ms != null}<span class="ml-auto font-mono text-muted-foreground">{h.duration_ms}ms</span>{/if}
+										</div>
+
+									{:else if evtType === 'mcp.tool_call'}
+										{@const m = (event.data ?? {}) as { tool_name?: string; server?: string; duration_ms?: number; success?: boolean; error?: string }}
+										<div class="flex items-center gap-2 rounded-md border border-cyan-500/25 bg-cyan-500/5 px-3 py-1.5 text-[11px]">
+											<Cable size={12} class="text-cyan-400" />
+											<span class="font-mono text-cyan-200">{m.tool_name ?? 'tool'}</span>
+											{#if m.server}<span class="text-muted-foreground">@{m.server}</span>{/if}
+											{#if m.success === false}
+												<Badge variant="outline" class="text-[9px] border-red-500/30 text-red-300">failed</Badge>
+											{/if}
+											{#if m.duration_ms != null}<span class="ml-auto font-mono text-muted-foreground">{m.duration_ms}ms</span>{/if}
+										</div>
+
+									{:else if evtType === 'agent.circuit_breaker_tripped' || evtType === 'session.turn_timeout' || evtType === 'agent.thread_images_compacted' || evtType === 'session.error'}
+										{@const alertData = (event.data ?? {}) as Record<string, unknown>}
+										<div class="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-[11px]">
+											<AlertTriangle size={14} class="mt-0.5 shrink-0 text-red-400" />
+											<div class="min-w-0 flex-1">
+												<div class="font-medium text-red-300">
+													{evtType.replace(/^(agent|session)\./, '').replace(/_/g, ' ')}
+												</div>
+												{#if evtType === 'agent.circuit_breaker_tripped'}
+													<div class="text-muted-foreground">Reason: {String(alertData.reason ?? '?')} ({alertData.streak ?? '?'}/{alertData.threshold ?? '?'})</div>
+												{:else if evtType === 'session.turn_timeout'}
+													<div class="text-muted-foreground">Turn {alertData.turn ?? '?'} exceeded {alertData.timeout_seconds ?? '?'}s</div>
+												{:else if evtType === 'agent.thread_images_compacted'}
+													<div class="text-muted-foreground">Collapsed {alertData.collapsed ?? '?'} screenshot(s); kept last {alertData.kept ?? '?'}</div>
+												{:else if evtType === 'session.error'}
+													<div class="whitespace-pre-wrap text-muted-foreground">{String(alertData.error ?? '').slice(0, 400)}</div>
+												{/if}
+											</div>
+										</div>
 									{/if}
 								{/if}
 							{/each}

@@ -42,7 +42,19 @@
 			null
 	);
 
-	const selectedEvents = $derived.by(() => eventsForAgentRun(selectedRun, agentEvents));
+	// Agent activity feed filters out the streaming delta events — they're
+	// incremental pieces that roll up into the terminal agent.message /
+	// agent.thinking / agent.tool_use event, and showing every delta as its
+	// own row floods the feed (e.g. 51 "Composing tool input…" entries for
+	// one run). Terminal events render cleanly with readable labels.
+	const DELTA_TYPES = new Set([
+		'agent.message_delta',
+		'agent.thinking_delta',
+		'agent.tool_input_delta'
+	]);
+	const selectedEvents = $derived.by(() =>
+		eventsForAgentRun(selectedRun, agentEvents).filter((e) => !DELTA_TYPES.has(e.type))
+	);
 	const graph = $derived.by(() => buildAgentLoopGraph(selectedRun, agentEvents));
 
 	function badgeVariant(status: ExecutionAgentRun['status']) {
@@ -63,18 +75,29 @@
 		return new Date(value).toLocaleTimeString();
 	}
 
+	function toolNameOf(event: ExecutionTimelineEvent): string {
+		return String(
+			event.toolName ??
+			event.data.toolName ??
+			event.data.tool_name ??
+			event.data.name ??
+			'unknown'
+		);
+	}
+
 	function eventSummary(event: ExecutionTimelineEvent): string {
+		// Legacy vocabulary
 		if (event.type === 'tool_call_start') {
-			return `Tool ${(event.toolName ?? event.data.toolName ?? event.data.name ?? 'unknown') as string} started`;
+			return `Tool ${toolNameOf(event)} started`;
 		}
 		if (event.type === 'tool_call_end') {
-			return `Tool ${(event.toolName ?? event.data.toolName ?? event.data.name ?? 'unknown') as string} completed`;
+			return `Tool ${toolNameOf(event)} completed`;
 		}
 		if (event.type === 'tool_call_error') {
-			return `Tool ${(event.toolName ?? event.data.toolName ?? event.data.name ?? 'unknown') as string} failed`;
+			return `Tool ${toolNameOf(event)} failed`;
 		}
 		if (event.type === 'llm_start') {
-			return `Model ${((event.data.model ?? event.data.modelName ?? 'unknown') as string)} started`;
+			return `Model ${(event.data.model ?? event.data.modelName ?? 'unknown') as string} started`;
 		}
 		if (event.type === 'llm_complete') {
 			return 'Model response complete';
@@ -84,6 +107,36 @@
 		}
 		if (event.type === 'run_complete') return 'Agent run completed';
 		if (event.type === 'run_error') return `Agent run failed: ${String(event.data.error ?? 'unknown error')}`;
+
+		// CMA Tier 1/2/3 vocabulary
+		if (event.type === 'agent.tool_use' || event.type === 'agent.mcp_tool_use' || event.type === 'agent.custom_tool_use') {
+			return `Tool ${toolNameOf(event)} started`;
+		}
+		if (event.type === 'agent.tool_result' || event.type === 'agent.mcp_tool_result' || event.type === 'agent.custom_tool_result') {
+			const isErr = (event.data as { is_error?: boolean }).is_error === true;
+			return `Tool ${toolNameOf(event)} ${isErr ? 'failed' : 'completed'}`;
+		}
+		if (event.type === 'agent.message') return 'Model response complete';
+		if (event.type === 'agent.thinking') return 'Agent produced a thinking block';
+		if (event.type === 'agent.message_delta') return 'Streaming response…';
+		if (event.type === 'agent.thinking_delta') return 'Streaming thinking…';
+		if (event.type === 'agent.tool_input_delta') return `Composing tool input for ${toolNameOf(event)}…`;
+		if (event.type === 'agent.llm_usage') {
+			const d = event.data as { input_tokens?: number; output_tokens?: number };
+			return `LLM usage: in=${d.input_tokens ?? '?'} out=${d.output_tokens ?? '?'}`;
+		}
+		if (event.type === 'hook.decision') {
+			const d = event.data as { hook_event?: string; decision?: string };
+			return `Hook ${d.hook_event ?? ''} → ${d.decision ?? 'ran'}`;
+		}
+		if (event.type === 'mcp.tool_call') {
+			const d = event.data as { tool_name?: string; server?: string; success?: boolean };
+			return `MCP ${d.tool_name ?? 'tool'}${d.server ? `@${d.server}` : ''} ${d.success === false ? 'failed' : 'ok'}`;
+		}
+		if (event.type === 'agent.circuit_breaker_tripped') return 'Circuit breaker tripped';
+		if (event.type === 'session.turn_timeout') return 'Session turn timed out';
+		if (event.type === 'agent.thread_images_compacted') return 'Thread images compacted';
+
 		return event.type;
 	}
 </script>

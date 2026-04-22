@@ -1,0 +1,152 @@
+/**
+ * Microsoft OneDrive extensions.
+ *
+ * Supplementary actions that layer on top of the vendored
+ * `@activepieces/piece-microsoft-onedrive` package without forking it.
+ * The vendored piece covers small (<4 MB) simple-PUT uploads but routes
+ * large (>4 MB) through Microsoft Graph's resumable `createUploadSession`
+ * protocol. This extension exposes that same createUploadSession mechanism
+ * as its own MCP tool so agents can use it for ALL sizes — bypassing the
+ * hard-to-shepherd-via-LLM-tool-call-args base64 payload entirely.
+ *
+ * Flow the agent uses:
+ *   1. `create_upload_session({fileName, parentFolderId?})` → returns
+ *      `{uploadUrl, expirationDateTime}`. Tiny request + response, no binary.
+ *   2. `execute_command` inside the sandbox:
+ *        curl -X PUT --data-binary @/sandbox/file.pptx \
+ *          -H "Content-Length: <size>" \
+ *          -H "Content-Range: bytes 0-<size-1>/<size>" "$uploadUrl"
+ *      The uploadUrl is pre-authenticated (signed token in the URL itself)
+ *      so no bearer-token plumbing into the sandbox is needed.
+ *   3. Done — file bytes go sandbox→Graph directly, never touch the LLM.
+ *
+ * Maintainability: we only import the stable `oneDriveAuth` + `oneDriveCommon`
+ * surface from the vendored package. Upstream version bumps of the piece
+ * don't affect this file unless those two exports change, in which case it's
+ * a one-line fix.
+ */
+
+import { oneDriveAuth } from "@activepieces/piece-microsoft-onedrive";
+import { createAction, Property } from "@activepieces/pieces-framework";
+import {
+	httpClient,
+	HttpMethod,
+	AuthenticationType,
+} from "@activepieces/pieces-common";
+
+// The piece's internal `oneDriveCommon.baseUrl` is NOT re-exported from the
+// package main entry — only `oneDriveAuth` is public surface. Graph's OneDrive
+// base URL is stable (/v1.0/me/drive) so inlining it here is acceptable and
+// keeps us off deep-imports that break on piece version bumps.
+const ONEDRIVE_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive";
+
+export const createUploadSession = createAction({
+	auth: oneDriveAuth,
+	name: "create_upload_session",
+	displayName: "Create OneDrive upload session (resumable upload)",
+	description:
+		"Returns a pre-authenticated `uploadUrl` for resumable upload of ANY size file. " +
+		"Call this BEFORE uploading binary files (.xlsx, .pptx, etc.) — then PUT the file bytes to the returned uploadUrl with curl from the sandbox. " +
+		"The uploadUrl is self-authenticated (signed token embedded), so no bearer token needs to reach the sandbox. " +
+		"Use this instead of `upload_onedrive_file` for files larger than a few KB because agents can't reliably emit large base64 as tool-call JSON arguments.",
+	props: {
+		fileName: Property.ShortText({
+			displayName: "File name",
+			description:
+				"Name the file will have in OneDrive (e.g. nimbus-q1-board.pptx)",
+			required: true,
+		}),
+		parentFolderId: Property.ShortText({
+			displayName: "Parent folder ID",
+			description:
+				"Optional — OneDrive folder item-id to upload into. Mutually exclusive with parentPath. Use list_folders to find IDs, or prefer parentPath for path-based targeting.",
+			required: false,
+		}),
+		parentPath: Property.ShortText({
+			displayName: "Parent folder path",
+			description:
+				"Optional — path-based alternative to parentFolderId, e.g. '/Nimbus' or '/Reports/Q1-2026'. Leading slash optional. Graph auto-creates missing folders. Preferred over parentFolderId for agents because no folder-id lookup is needed.",
+			required: false,
+		}),
+		conflictBehavior: Property.StaticDropdown({
+			displayName: "Conflict behavior",
+			description:
+				"What to do if a file with the same name already exists.",
+			required: false,
+			defaultValue: "replace",
+			options: {
+				options: [
+					{ label: "Replace (overwrite)", value: "replace" },
+					{ label: "Rename (auto-suffix)", value: "rename" },
+					{ label: "Fail", value: "fail" },
+				],
+			},
+		}),
+	},
+	async run(ctx) {
+		// Diagnostic for ctx.auth shape — tracking down "Cannot read properties
+		// of undefined (reading 'access_token')" in early deploys.
+		const authKeys = ctx.auth ? Object.keys(ctx.auth as Record<string, unknown>) : null;
+		console.log(
+			`[create_upload_session] ctx.auth keys=${JSON.stringify(authKeys)}; type=${typeof ctx.auth}`,
+		);
+		const accessToken =
+			(ctx.auth as { access_token?: string } | undefined)?.access_token;
+		if (!accessToken) {
+			throw new Error(
+				`createUploadSession: no access_token in ctx.auth. auth keys=${JSON.stringify(authKeys)}`,
+			);
+		}
+		const conflict = ctx.propsValue.conflictBehavior || "replace";
+		const encodedFile = encodeURIComponent(ctx.propsValue.fileName);
+		const parentId = ctx.propsValue.parentFolderId?.trim() || "";
+		const parentPath = ctx.propsValue.parentPath?.trim() || "";
+		let url: string;
+		if (parentPath) {
+			// Path-based — Graph auto-creates missing folders. Strip leading/
+			// trailing slashes, URL-encode each segment so special chars survive.
+			const segs = parentPath.split("/").filter(Boolean).map(encodeURIComponent);
+			const pathPart = segs.length > 0 ? segs.join("/") + "/" : "";
+			url = `${ONEDRIVE_BASE_URL}/items/root:/${pathPart}${encodedFile}:/createUploadSession`;
+		} else if (parentId) {
+			url = `${ONEDRIVE_BASE_URL}/items/${parentId}:/${encodedFile}:/createUploadSession`;
+		} else {
+			// Default — upload to drive root with fileName as the target.
+			url = `${ONEDRIVE_BASE_URL}/items/root:/${encodedFile}:/createUploadSession`;
+		}
+
+		const res = await httpClient.sendRequest<{
+			uploadUrl?: string;
+			expirationDateTime?: string;
+		}>({
+			method: HttpMethod.POST,
+			url,
+			body: {
+				item: { "@microsoft.graph.conflictBehavior": conflict },
+			},
+			authentication: {
+				type: AuthenticationType.BEARER_TOKEN,
+				token: accessToken,
+			},
+		});
+
+		if (!res.body?.uploadUrl) {
+			throw new Error(
+				`createUploadSession response missing uploadUrl: ${JSON.stringify(res.body).slice(0, 300)}`,
+			);
+		}
+
+		return {
+			uploadUrl: res.body.uploadUrl,
+			expirationDateTime: res.body.expirationDateTime ?? null,
+			// Echo back the target so the agent has everything in one place.
+			fileName: ctx.propsValue.fileName,
+			parentFolderId: parentId,
+			// Hint for the agent — one-shot curl command template.
+			uploadHint:
+				`curl -X PUT --data-binary @<local-file> -H "Content-Range: bytes 0-\$((<size>-1))/<size>" "<uploadUrl>"`,
+		};
+	},
+});
+
+export const microsoftOneDriveExtensions = [createUploadSession];
