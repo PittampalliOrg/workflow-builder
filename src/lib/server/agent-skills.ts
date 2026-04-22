@@ -154,15 +154,51 @@ export async function listAgentSkills(options: {
 	// `agents.current_version_id` so deleted older versions don't inflate counts.
 	// All column refs use the `s` alias so they cooperate with the LATERAL
 	// subquery's own FROM clause.
+	// `db.execute(sql...)` returns raw postgres-js rows with snake_case
+	// column names. `rowToSkill` (and the $inferSelect shape drizzle's typed
+	// .select() usually produces) expects camelCase. Alias every column we
+	// consume so the mapper stays aligned with the drizzle-typed path used
+	// elsewhere in this file.
 	const projectId = options.projectId ?? null;
 	const rows = await db.execute(sql`
-		SELECT s.*, COALESCE(u.n, 0)::int AS used_by_count
+		SELECT s.id,
+			s.slug,
+			s.name,
+			s.description,
+			s.when_to_use AS "whenToUse",
+			s.prompt,
+			s.allowed_tools AS "allowedTools",
+			s.arguments,
+			s.argument_hint AS "argumentHint",
+			s.model,
+			s.user_invocable AS "userInvocable",
+			s.disable_model_invocation AS "disableModelInvocation",
+			s.source_type AS "sourceType",
+			s.source_repo AS "sourceRepo",
+			s.source_ref AS "sourceRef",
+			s.skill_path AS "skillPath",
+			s.version,
+			s.content_hash AS "contentHash",
+			s.license,
+			s.compatibility,
+			s.package_manifest AS "packageManifest",
+			s.status,
+			s.created_by_user_id AS "createdByUserId",
+			s.created_at AS "createdAt",
+			s.updated_at AS "updatedAt",
+			s.registry_url AS "registryUrl",
+			s.install_source AS "installSource",
+			s.skill_name AS "skillName",
+			s.install_agent AS "installAgent",
+			s.project_id AS "projectId",
+			COALESCE(u.n, 0)::int AS used_by_count
 		FROM agent_skill_registry s
 		LEFT JOIN LATERAL (
 			SELECT count(*) AS n
 			FROM agents a
 			JOIN agent_versions av ON av.id = a.current_version_id
 			WHERE a.is_archived = false
+				AND NOT COALESCE(a.tags, '[]'::jsonb) @> '["workflow-ephemeral"]'::jsonb
 				AND (${projectId === null}::boolean OR a.project_id = ${projectId} OR a.project_id IS NULL)
 				AND EXISTS (
 					SELECT 1

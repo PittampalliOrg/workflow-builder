@@ -70,6 +70,7 @@
 	import { Reasoning, ReasoningTrigger, ReasoningContent } from '$lib/components/ui/prompt-kit/reasoning';
 	import { Message, MessageAvatar, MessageContent } from '$lib/components/ui/prompt-kit/message';
 	import ProviderIcon from '$lib/components/ui/ai-elements/provider-icon.svelte';
+	import { Response as MarkdownResponse } from '$lib/components/ui/ai-elements/response/index.js';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -1716,13 +1717,13 @@
 									{:else if evtType === 'llm_complete'}
 										{@const content = event.data?.content ? String(event.data.content).trim() : ''}
 										{#if content}
-										<!-- LLM text output: render as assistant message like Claude Code's AssistantTextMessage.
-										     Only content blocks are shown; empty llm_complete (tool-calls-only) are skipped. -->
 										<div class="flex items-start gap-3 rounded-lg border border-border/40 bg-muted/30 px-4 py-3">
 											<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-background">
 												<ProviderIcon model={agentModel} size={18} />
 											</div>
-											<p class="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{content}</p>
+											<div class="prose prose-sm dark:prose-invert max-w-none flex-1 text-sm leading-relaxed">
+												<MarkdownResponse {content} parseIncompleteMarkdown={true} />
+											</div>
 										</div>
 										{/if}
 										<!-- When only tool calls and no content, skip — tool_call_start events render them -->
@@ -1744,14 +1745,20 @@
 										</Task>
 
 									{:else if evtType === 'agent.message'}
-										{@const data = (event.data ?? {}) as { content?: Array<{ text?: string }>; preview?: string }}
-										{@const text = data.preview ?? (Array.isArray(data.content) ? data.content.map(b => b?.text ?? '').filter(Boolean).join('\n\n') : '')}
+										{@const data = (event.data ?? {}) as { content?: string | Array<{ text?: string }>; preview?: string }}
+										{@const text = typeof data.content === 'string'
+											? data.content
+											: Array.isArray(data.content)
+												? data.content.map(b => b?.text ?? '').filter(Boolean).join('\n\n')
+												: (data.preview ?? '')}
 										{#if text && text.trim()}
 											<div class="flex items-start gap-3 rounded-lg border border-border/40 bg-muted/30 px-4 py-3">
 												<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-background">
 													<ProviderIcon model={agentModel} size={18} />
 												</div>
-												<p class="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{text}</p>
+												<div class="prose prose-sm dark:prose-invert max-w-none flex-1 text-sm leading-relaxed">
+													<MarkdownResponse content={text} parseIncompleteMarkdown={true} />
+												</div>
 											</div>
 										{/if}
 
