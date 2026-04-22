@@ -72,25 +72,62 @@ def _span_id(span: Any) -> int:
         return id(span)
 
 
-def get_current_trace_context() -> tuple[str | None, str | None]:
-    """Return (trace_id_hex, span_id_hex) from the currently-active OTEL span,
-    or (None, None) when there is no recording span. Hex-formatted for direct
-    embedding in session event envelopes — matches the OTLP wire format.
-    """
+def _extract_ids_from_span(span: Any) -> tuple[str | None, str | None]:
+    """Return (trace_id_hex, span_id_hex) for a span object, or (None, None)
+    if the span is missing/invalid/non-recording."""
     try:
-        from opentelemetry import trace as otel_trace
-
-        span = otel_trace.get_current_span()
         if span is None:
             return None, None
         ctx = span.get_span_context()
-        if not getattr(ctx, "is_valid", lambda: True)():
-            return None, None
-        trace_id = getattr(ctx, "trace_id", 0)
-        span_id = getattr(ctx, "span_id", 0)
+        trace_id = getattr(ctx, "trace_id", 0) or 0
+        span_id = getattr(ctx, "span_id", 0) or 0
         if not trace_id or not span_id:
             return None, None
         return f"{trace_id:032x}", f"{span_id:016x}"
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def get_current_trace_context() -> tuple[str | None, str | None]:
+    """Return (trace_id_hex, span_id_hex) for the current agent-side context.
+
+    Our span helpers (start_llm_request_span / start_tool_span / start_hook_span)
+    use `tracer.start_span` without making the span current, and store handles
+    either in `_tool_ctx` / `_interaction_ctx` ContextVars or in the explicit
+    `_explicit_spans` map (keyed by span_id). So `get_current_span()` from
+    OTEL returns the non-recording default in almost all call sites. We
+    resolve in priority order:
+      1. Innermost tool handle (_tool_ctx)
+      2. Interaction handle (_interaction_ctx)
+      3. The most-recently-started unended span in _explicit_spans
+         (covers claude_code.llm_request / hook / tool.execution)
+      4. OTEL current span fallback (works if caller wraps in `use_span`)
+    """
+    handle = _tool_ctx.get()
+    if handle is not None:
+        tid, sid = _extract_ids_from_span(handle.span)
+        if tid:
+            return tid, sid
+    handle = _interaction_ctx.get()
+    if handle is not None:
+        tid, sid = _extract_ids_from_span(handle.span)
+        if tid:
+            return tid, sid
+    # Pick the innermost (latest-started) not-yet-ended explicit span.
+    if _explicit_spans:
+        latest = max(
+            (h for h in _explicit_spans.values() if not h.ended),
+            key=lambda h: h.start_monotonic,
+            default=None,
+        )
+        if latest is not None:
+            tid, sid = _extract_ids_from_span(latest.span)
+            if tid:
+                return tid, sid
+    try:
+        from opentelemetry import trace as otel_trace
+
+        return _extract_ids_from_span(otel_trace.get_current_span())
     except Exception:  # noqa: BLE001
         return None, None
 
