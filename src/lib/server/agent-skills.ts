@@ -157,26 +157,26 @@ export async function listAgentSkills(options: {
 		: isNull(agentSkillRegistry.projectId);
 
 	// One round-trip: skills + current-version agent attachment counts. The
-	// LATERAL subquery scans agent_versions.config->'skills' via jsonb_path_exists
-	// with BOTH registryId and slug as keys (legacy rows can omit registryId).
-	// Scoped to the caller's workspace + globals, and restricted to
-	// agents.current_version_id so deleted older versions don't inflate counts.
-	// Agents with project_id IS NULL (globals) are visible from any workspace
-	// but are rare — main owner case is workspace-scoped.
+	// LATERAL subquery unnests `agent_versions.config->'skills'` and matches
+	// on either `registryId` or `slug` (legacy attachments can omit registryId).
+	// Scoped to the caller's workspace + globals, restricted to
+	// `agents.current_version_id` so deleted older versions don't inflate counts.
+	// NB: avoid jsonpath string literals here — drizzle's `sql` template
+	// tokenizer mis-parses the `$rid` / `$sl` vars as parameter refs.
 	const projectId = options.projectId ?? null;
 	const rows = await db.execute(sql`
 		SELECT s.*, COALESCE(u.n, 0)::int AS used_by_count
-		FROM ${agentSkillRegistry} s
+		FROM agent_skill_registry s
 		LEFT JOIN LATERAL (
 			SELECT count(*) AS n
 			FROM agents a
 			JOIN agent_versions av ON av.id = a.current_version_id
 			WHERE a.is_archived = false
 				AND (${projectId === null}::boolean OR a.project_id = ${projectId} OR a.project_id IS NULL)
-				AND jsonb_path_exists(
-					av.config,
-					'$.skills[*] ? (@.registryId == $rid || @.slug == $sl)'::jsonpath,
-					jsonb_build_object('rid', s.id, 'sl', s.slug)
+				AND EXISTS (
+					SELECT 1
+					FROM jsonb_array_elements(COALESCE(av.config->'skills', '[]'::jsonb)) se
+					WHERE (se->>'registryId') = s.id OR (se->>'slug') = s.slug
 				)
 		) u ON true
 		WHERE ${scopeFilter}

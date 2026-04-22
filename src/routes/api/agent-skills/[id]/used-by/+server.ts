@@ -36,10 +36,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const projectId = locals.session.projectId ?? null;
 
-	// One query: JOIN agents → current agent_versions, filter by jsonpath on
-	// config.skills[]. Scopes to caller's workspace + globals. The $rid / $sl
-	// keys accept either the registry id or the slug (legacy attachments may
-	// omit registryId).
+	// One query: JOIN agents → current agent_versions, unnest config.skills[]
+	// and match by registryId or slug. Scopes to caller's workspace + globals.
+	// Avoids jsonpath literals (drizzle's sql template tokenizer mis-parses
+	// the `$rid` / `$sl` vars as parameter refs).
 	const rows = await db.execute(sql`
 		SELECT a.id, a.slug, a.name, a.project_id AS "projectId",
 		       a.runtime_app_id AS "runtimeAppId", a.registry_status AS "registryStatus"
@@ -47,10 +47,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		JOIN agent_versions av ON av.id = a.current_version_id
 		WHERE a.is_archived = false
 			AND (${projectId === null}::boolean OR a.project_id = ${projectId} OR a.project_id IS NULL)
-			AND jsonb_path_exists(
-				av.config,
-				'$.skills[*] ? (@.registryId == $rid || @.slug == $sl)'::jsonpath,
-				jsonb_build_object('rid', ${match.id}, 'sl', ${match.slug})
+			AND EXISTS (
+				SELECT 1
+				FROM jsonb_array_elements(COALESCE(av.config->'skills', '[]'::jsonb)) se
+				WHERE (se->>'registryId') = ${match.id}
+				   OR (se->>'slug') = ${match.slug}
 			)
 		ORDER BY a.name ASC
 		LIMIT ${MAX_AGENTS + 1}
