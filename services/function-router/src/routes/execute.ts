@@ -1541,7 +1541,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeName: browserNodeName,
               });
             } else if (isBrowserCaptureFlow) {
-              targetUrl = `${workspaceRuntimeUrl ?? functionUrl}/api/browser/capture-flow`;
+              targetUrl = `${functionUrl}/api/browser/capture-flow`;
               let steps = args.steps;
               if (typeof steps === "string") {
                 try {
@@ -1550,7 +1550,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   /* keep string for downstream validation */
                 }
               }
-              targetUrl = `${workspaceRuntimeUrl ?? functionUrl}/api/browser/capture-flow`;
+              targetUrl = `${functionUrl}/api/browser/capture-flow`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: browserDbExecutionId,
