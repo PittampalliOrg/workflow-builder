@@ -120,5 +120,10 @@ export type SessionEventEnvelope = {
 	data: Record<string, unknown>;
 	processedAt: string | null;
 	sourceEventId: string | null;
+	/** Producer-Id triple for durable-streams-shaped idempotency + provenance.
+	 * producerId = agent slug (joins with agents.slug). producerEpoch = pod
+	 * process start-time in ns. Both null on pre-Tier-3 historical rows. */
+	producerId?: string | null;
+	producerEpoch?: string | null;
 	createdAt: string;
 };

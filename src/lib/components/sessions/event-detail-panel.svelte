@@ -210,6 +210,14 @@
 					</span>
 				{/if}
 				<code class="text-[10px] text-muted-foreground/70">{event.id}</code>
+				{#if event.producerId}
+					<code
+						class="text-[10px] text-muted-foreground/70"
+						title="Producer epoch {event.producerEpoch ?? '(unset)'}"
+					>
+						{event.producerId}
+					</code>
+				{/if}
 			</div>
 		</div>
 		<div class="flex items-center gap-1">

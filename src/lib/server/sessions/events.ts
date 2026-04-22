@@ -28,6 +28,8 @@ function rowToEnvelope(
 		data,
 		processedAt: row.processedAt ? row.processedAt.toISOString() : null,
 		sourceEventId: row.sourceEventId ?? null,
+		producerId: row.producerId ?? null,
+		producerEpoch: row.producerEpoch ?? null,
 		createdAt: row.createdAt.toISOString(),
 	};
 }
@@ -77,6 +79,8 @@ export async function appendEvent(
 		data?: Record<string, unknown>;
 		processedAt?: Date | null;
 		sourceEventId?: string | null;
+		producerId?: string | null;
+		producerEpoch?: string | null;
 	},
 ): Promise<SessionEventEnvelope> {
 	const database = requireDb();
@@ -99,6 +103,8 @@ export async function appendEvent(
 					data: event.data ?? {},
 					processedAt: event.processedAt ?? null,
 					sourceEventId: event.sourceEventId ?? null,
+					producerId: event.producerId ?? null,
+					producerEpoch: event.producerEpoch ?? null,
 				})
 				.returning();
 			return rowToEnvelope(row);

@@ -2573,6 +2573,14 @@ export const sessionEvents = pgTable(
 		data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
 		processedAt: timestamp("processed_at"),
 		sourceEventId: text("source_event_id"),
+		// Producer-Id triple for durable-streams-shaped idempotency. producerId
+		// is the agent slug (joins with agents.slug); producerEpoch is the
+		// emitting pod's process start-time in ns. See event_publisher.py and
+		// migration 0043. Both columns are nullable so pre-upgrade rows stay
+		// valid; the partial unique index uq_session_events_source enforces
+		// dedup only when source_event_id IS NOT NULL.
+		producerId: text("producer_id"),
+		producerEpoch: text("producer_epoch"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 	(table) => ({
@@ -2583,6 +2591,10 @@ export const sessionEvents = pgTable(
 		sessionIdx: index("idx_session_events_session").on(table.sessionId),
 		typeIdx: index("idx_session_events_type").on(table.type),
 		createdIdx: index("idx_session_events_created").on(table.createdAt),
+		producerIdx: index("idx_session_events_producer").on(
+			table.producerId,
+			table.producerEpoch,
+		),
 	}),
 );
 

@@ -18,10 +18,56 @@ import contextvars
 import json
 import logging
 import os
+import socket
 import threading
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Producer identity (durable-streams (Producer-Id, Producer-Epoch, Producer-Seq))
+# ---------------------------------------------------------------------------
+#
+# Every envelope carries these so:
+#   1. The (session_id, source_event_id) UNIQUE constraint on session_events
+#      dedupes daemon-thread retries + stale-pod writes universally — not just
+#      the 6/24 call sites that pass a domain-meaningful source_event_id today.
+#   2. producer_id joins with agents.slug so "events by agent X" is a one-
+#      liner query (CMA-aligned identity, stable across pod restarts).
+#
+# Producer-Id = agent slug (AGENT_SLUG env var stamped by
+#   agent-runtime-controller for per-agent pods; falls back to
+#   WORKFLOW_BUILDER_APP_ID for the legacy shared dapr-agent-py pod;
+#   finally hostname as a last resort).
+# Producer-Epoch = pod process start-time in ns — monotonic across restarts,
+#   collision-free in practice (pods don't restart at nanosecond resolution).
+# Producer-Seq = in-process atomic counter, unique per (id, epoch).
+_PRODUCER_ID = (
+    os.environ.get("AGENT_SLUG")
+    or os.environ.get("WORKFLOW_BUILDER_APP_ID")
+    or socket.gethostname()
+    or "unknown"
+)
+_PRODUCER_EPOCH = str(time.time_ns())
+_PRODUCER_SEQ_LOCK = threading.Lock()
+_PRODUCER_SEQ = 0
+
+
+def _next_producer_seq() -> int:
+    global _PRODUCER_SEQ
+    with _PRODUCER_SEQ_LOCK:
+        _PRODUCER_SEQ += 1
+        return _PRODUCER_SEQ
+
+
+def _default_source_event_id() -> str:
+    """Return a unique {producer_id}:{producer_epoch}:{producer_seq} triple.
+    Called as the default when a caller does not supply a
+    domain-meaningful source_event_id — the 6 existing callers that pass
+    tool_call_id-derived values keep theirs unchanged."""
+    return f"{_PRODUCER_ID}:{_PRODUCER_EPOCH}:{_next_producer_seq()}"
 
 
 # Per-call session scope. main.py's call_llm sets this before delegating into
@@ -244,10 +290,19 @@ def publish_session_event(
     except Exception as exc:  # noqa: BLE001
         logger.debug("[session-ingest] trace-context stamp failed: %s", exc)
 
+    # Fill in source_event_id when the caller did not supply a
+    # domain-meaningful one. The triple is unique across this pod's lifetime
+    # and, because the Producer-Id component is the agent slug (or fallback),
+    # unique cluster-wide when combined with the per-pod epoch. Unique
+    # constraint uq_session_events_source (partial, source_event_id NOT NULL)
+    # then dedupes every event on the ingest path.
+    effective_source = source_event_id or _default_source_event_id()
     envelope = {
         "type": cma_type,
         "data": cma_data,
-        "sourceEventId": source_event_id,
+        "sourceEventId": effective_source,
+        "producerId": _PRODUCER_ID,
+        "producerEpoch": _PRODUCER_EPOCH,
     }
     threading.Thread(
         target=_post_ingest, args=(session_id, envelope), daemon=True
