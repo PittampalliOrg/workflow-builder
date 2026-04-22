@@ -32,20 +32,24 @@
 		return { lines: 0, path: '' };
 	});
 
-	let state = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
+	let toolState = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
 	let label = $derived.by(() => {
 		if (phase === 'start') return displayPath || 'file';
 		const p = parsedOutput;
 		if (p.lines > 0) return `Wrote ${p.lines} lines to ${p.path}`;
 		return output.slice(0, 60) || 'Done';
 	});
+
+	// Claude Code pattern: short files render in full by default (closed state).
+	// Long files render a truncated preview when closed and the full code when
+	// open — mutually exclusive so the first N lines aren't shown twice.
+	let isOpen = $state(false);
 </script>
 
-<ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={Pencil} iconClass="text-emerald-400" />
+<ToolCall bind:open={isOpen}>
+	<ToolCallHeader {toolName} {label} state={toolState} icon={Pencil} iconClass="text-emerald-400" />
 
-	<!-- Claude Code: FileWrite shows first 10 lines of code by DEFAULT (not hidden behind expand) -->
-	{#if content}
+	{#if content && (!isOpen || !isTruncated)}
 		<div class="border-t">
 			<div class="max-h-[30vh] overflow-auto">
 				<SandboxCodeViewer code={preview.text} {lang} />
@@ -56,7 +60,6 @@
 		</div>
 	{/if}
 
-	<!-- Expanded: full content (only if truncated) -->
 	{#if isTruncated}
 		<ToolCallContent>
 			<ToolCallResult label="Full content">

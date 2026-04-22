@@ -36,7 +36,7 @@
 	 */
 	let argsSummary = $derived(args ? renderArgsSummary(args) : '');
 
-	let state = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
+	let toolState = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
 	let formattedOutput = $derived(formatOutputForDisplay(output));
 	let preview = $derived(summarizeCollapsedOutput(output));
 	let isTruncated = $derived(preview.remainingLines > 0);
@@ -52,10 +52,12 @@
 		if (!output) return '(No content)';
 		return firstLine(formattedOutput) || '(No content)';
 	});
+
+	let isOpen = $state(phase === 'end' && !!output && !isTruncated);
 </script>
 
-<ToolCall open={phase === 'end' && !!output && !isTruncated}>
-	<ToolCallHeader toolName={displayName} {label} {state} icon={Plug} iconClass="text-purple-400" />
+<ToolCall bind:open={isOpen}>
+	<ToolCallHeader toolName={displayName} {label} state={toolState} icon={Plug} iconClass="text-purple-400" />
 	<ToolCallContent>
 		{#if phase === 'start' && args && Object.keys(args).length > 0}
 			<div class="space-y-2 p-3">
@@ -86,7 +88,7 @@
 			{/if}
 		{/if}
 	</ToolCallContent>
-	{#if phase === 'end' && output && isTruncated}
+	{#if !isOpen && phase === 'end' && output && isTruncated}
 		<div class="border-t px-3 py-2">
 			<pre class="whitespace-pre-wrap break-all text-[12px] font-mono text-muted-foreground leading-relaxed">{preview.text}</pre>
 			<p class="mt-1 text-[11px] text-muted-foreground/60">… +{preview.remainingLines} lines</p>

@@ -26,12 +26,19 @@
 	let preview = $derived(truncateLines(cleanOutput, MAX_OUTPUT_COLLAPSED_LINES));
 	let isTruncated = $derived(preview.remainingLines > 0);
 
-	let state = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
+	let toolState = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
 	let label = $derived(phase === 'start' ? displayCommand : displayCommand || toolName);
+
+	// Claude Code pattern: when closed, show a truncated preview below the
+	// header. When open, show the full output inside ToolCallContent. The
+	// preview and the full view are mutually exclusive — `isOpen` is bound so
+	// we can hide the preview when the user expands (previously both rendered
+	// simultaneously, duplicating the first N lines).
+	let isOpen = $state(phase === 'end' && !isTruncated);
 </script>
 
-<ToolCall open={phase === 'end' && !isTruncated}>
-	<ToolCallHeader {toolName} {label} {state} icon={Terminal} iconClass="text-amber-400" />
+<ToolCall bind:open={isOpen}>
+	<ToolCallHeader {toolName} {label} state={toolState} icon={Terminal} iconClass="text-amber-400" />
 	<ToolCallContent>
 		{#if phase === 'start' && command}
 			<div class="max-h-[20vh] overflow-auto">
@@ -55,13 +62,10 @@
 		{/if}
 	</ToolCallContent>
 
-	<!-- Collapsed preview: show first 3 lines below the header (Claude Code pattern) -->
-	{#if phase === 'end' && cleanOutput && isTruncated}
+	{#if !isOpen && phase === 'end' && cleanOutput && isTruncated}
 		<div class="border-t px-3 py-2">
 			<pre class="whitespace-pre-wrap break-all text-[12px] font-mono text-muted-foreground leading-relaxed">{preview.text}</pre>
 			<p class="mt-1 text-[11px] text-muted-foreground/60">… +{preview.remainingLines} lines</p>
 		</div>
-	{:else if phase === 'end' && cleanOutput && !isTruncated}
-		<!-- Short output shown directly (no expand needed) -->
 	{/if}
 </ToolCall>
