@@ -21,6 +21,9 @@ import {
 	resolveEnvironmentRef,
 	type ResolvedEnvironment,
 } from "$lib/server/environments/registry";
+import { db } from "$lib/server/db";
+import { agentSkillRegistry } from "$lib/server/db/schema";
+import { inArray } from "drizzle-orm";
 
 export class AgentRefResolutionError extends Error {
 	constructor(
@@ -29,6 +32,74 @@ export class AgentRefResolutionError extends Error {
 	) {
 		super(message);
 		this.name = "AgentRefResolutionError";
+	}
+}
+
+/**
+ * Hydrate each entry of `config.skills[]` from `agent_skill_registry` so
+ * the Python runtime's `_extract_skill_configs` (main.py:602-662) sees a
+ * fully-populated skill. Merges the registry row's `prompt`, `allowedTools`,
+ * `description`, `whenToUse`, `arguments`, `argumentHint`, `model`, and
+ * `packageManifest` onto each entry, keyed by `registryId`. Fields already
+ * present on the entry take precedence (so admin overrides survive).
+ *
+ * Mutates `config.skills` in place. Silent no-op when skills is absent or
+ * empty, or when none of the entries carry a registryId.
+ */
+async function hydrateSkillsFromRegistry(config: AgentConfig): Promise<void> {
+	if (!db) return;
+	const skills = (config as { skills?: unknown }).skills;
+	if (!Array.isArray(skills) || skills.length === 0) return;
+	const ids = new Set<string>();
+	for (const item of skills) {
+		if (!isRecord(item)) continue;
+		const id = typeof item.registryId === "string" ? item.registryId.trim() : "";
+		if (id) ids.add(id);
+	}
+	if (ids.size === 0) return;
+	const rows = await db
+		.select()
+		.from(agentSkillRegistry)
+		.where(inArray(agentSkillRegistry.id, Array.from(ids)));
+	const byId = new Map<string, typeof rows[number]>();
+	for (const row of rows) byId.set(row.id, row);
+	for (const item of skills) {
+		if (!isRecord(item)) continue;
+		const id = typeof item.registryId === "string" ? item.registryId.trim() : "";
+		if (!id) continue;
+		const row = byId.get(id);
+		if (!row) continue;
+		const rec = item as Record<string, unknown>;
+		if (typeof rec.prompt !== "string" || !rec.prompt.trim()) {
+			rec.prompt = row.prompt ?? "";
+		}
+		if (!Array.isArray(rec.allowedTools) || rec.allowedTools.length === 0) {
+			rec.allowedTools = Array.isArray(row.allowedTools) ? row.allowedTools : [];
+		}
+		if (typeof rec.description !== "string" || !rec.description.trim()) {
+			rec.description = row.description ?? "";
+		}
+		if (typeof rec.whenToUse !== "string" || !rec.whenToUse.trim()) {
+			rec.whenToUse = row.whenToUse ?? row.description ?? "";
+		}
+		if (!Array.isArray(rec.arguments) || rec.arguments.length === 0) {
+			rec.arguments = Array.isArray(row.arguments) ? row.arguments : [];
+		}
+		if (typeof rec.argumentHint !== "string" || !rec.argumentHint) {
+			rec.argumentHint = row.argumentHint ?? "";
+		}
+		if (typeof rec.model !== "string" || !rec.model) {
+			rec.model = row.model ?? "";
+		}
+		if (!isRecord(rec.packageManifest)) {
+			rec.packageManifest = row.packageManifest ?? null;
+		}
+		if (typeof rec.skillName !== "string" || !rec.skillName) {
+			rec.skillName = row.skillName ?? row.slug ?? "";
+		}
+		if (typeof rec.version !== "string" || !rec.version) {
+			rec.version = row.version ?? "";
+		}
 	}
 }
 
@@ -110,6 +181,13 @@ export async function resolveSpecAgentRefs(
 
 		const overrides = pickOverrides(withBlock, bodyRecord);
 		const config = applyOverrides(resolved.config, overrides);
+		// Hydrate attached skills from agent_skill_registry. The agent's stored
+		// config only carries the `registryId` pointer — the Python runtime
+		// needs `prompt`, `allowed_tools`, and `packageManifest.files` inline
+		// to activate the skill + materialize its bundled assets. Without
+		// this hydration, `_extract_skill_configs` in dapr-agent-py skips the
+		// skill because `prompt` is empty.
+		await hydrateSkillsFromRegistry(config);
 		const prompt = pickPrompt(withBlock, bodyRecord);
 		const sandboxPolicy = environment
 			? deriveSandboxPolicy(environment, overrides?.sandboxPolicy)

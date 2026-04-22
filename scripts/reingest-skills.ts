@@ -86,9 +86,12 @@ async function importFromZip(
 	form.append("skillName", skillName);
 	if (slug) form.append("slug", slug);
 	form.append("status", "ENABLED");
+	// Pass an Origin header matching the server so SvelteKit's CSRF
+	// cross-site-form-POST guard accepts the upload (the other import route
+	// uses JSON bodies which are exempt; multipart is not).
 	const res = await fetch(`${BFF}/api/admin/agent-skills/import/zip`, {
 		method: "POST",
-		headers: { cookie, "x-workspace": workspace },
+		headers: { cookie, "x-workspace": workspace, origin: BFF },
 		body: form,
 	});
 	const body = await res.text();
