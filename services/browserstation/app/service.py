@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 import httpx
@@ -24,15 +25,16 @@ class BrowserActor:
 
     async def get_info(self):
         ws_url = await fetch_ws(self.pod_ip)
+        devtools_path = urlsplit(ws_url).path.lstrip("/") if ws_url else None
         return BrowserInfo(
             browser_id=self.browser_id,
             pod_ip=self.pod_ip,
             websocket_url=(
-                f"/ws/browsers/{self.browser_id}{ws_url.split('9222')[-1]}"
-                if ws_url
+                f"/ws/browsers/{self.browser_id}/{devtools_path}"
+                if devtools_path
                 else None
             ),
-            chrome_ready=bool(ws_url),
+            chrome_ready=bool(devtools_path),
         )
 
 
