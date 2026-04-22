@@ -1,7 +1,8 @@
 <script lang="ts">
 	import {
 		Check, X, Loader2, Circle, ChevronDown, ChevronRight,
-		Brain, MessageSquare, Wrench, CheckCircle2, XCircle, Bot
+		Brain, MessageSquare, Wrench, CheckCircle2, XCircle, Bot,
+		AlertTriangle, Cable, ShieldCheck, Gauge
 	} from 'lucide-svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import JsonViewer from './json-viewer.svelte';
@@ -78,20 +79,148 @@
 		return durableSteps.length === 1 ? agentEvents : [];
 	}
 
+	// Event types we surface in the chain-of-thought. Covers legacy vocabulary
+	// (llm_*, tool_call_*, run_*) AND CMA-shape (agent.*, hook.decision,
+	// mcp.tool_call, session.*). Streaming deltas (*_delta) are excluded from
+	// the chain because their content rolls up into the corresponding terminal
+	// `agent.message` / `agent.thinking` / `agent.tool_use` event — showing
+	// every delta separately would flood the view.
+	const SIGNIFICANT_EVENT_TYPES = new Set([
+		// Legacy
+		'llm_start', 'llm_complete',
+		'tool_call_start', 'tool_call_end', 'tool_call_error',
+		'run_started', 'run_complete', 'run_error',
+		// CMA — tier 1/2
+		'agent.message', 'agent.thinking',
+		'agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use',
+		'agent.tool_result', 'agent.mcp_tool_result', 'agent.custom_tool_result',
+		'agent.llm_usage',
+		'hook.decision',
+		'mcp.tool_call',
+		// CMA alerts
+		'agent.circuit_breaker_tripped',
+		'session.turn_timeout',
+		'agent.thread_images_compacted',
+		'session.error'
+	]);
+
 	function significantEvents(events: AgentEvent[]): AgentEvent[] {
-		return events.filter((event) =>
-			['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(
-				eventType(event)
-			)
-		);
+		return events.filter((event) => SIGNIFICANT_EVENT_TYPES.has(eventType(event)));
 	}
 
 	function turnCount(events: AgentEvent[]): number {
-		return events.filter((event) => eventType(event) === 'llm_complete').length;
+		// A "turn" = one LLM response landed. Count CMA `agent.message`
+		// + CMA `agent.llm_usage` OR legacy `llm_complete`. Dedup by taking
+		// the max of the two paths so we don't double-count when both fire.
+		const cma = events.filter((event) => eventType(event) === 'agent.message').length;
+		const legacy = events.filter((event) => eventType(event) === 'llm_complete').length;
+		return Math.max(cma, legacy);
 	}
 
 	function toolCount(events: AgentEvent[]): number {
-		return events.filter((event) => eventType(event) === 'tool_call_start').length;
+		// A "tool call" = one tool invocation began. Count CMA tool_use types
+		// + legacy tool_call_start. Dedup via max.
+		const cma = events.filter((event) => {
+			const t = eventType(event);
+			return t === 'agent.tool_use' || t === 'agent.mcp_tool_use' || t === 'agent.custom_tool_use';
+		}).length;
+		const legacy = events.filter((event) => eventType(event) === 'tool_call_start').length;
+		return Math.max(cma, legacy);
+	}
+
+	// Helpers for the CMA render branches below.
+	function cmaToolName(event: AgentEvent): string {
+		const d = event.data as { name?: unknown; tool_name?: unknown };
+		return String(d.name ?? d.tool_name ?? event.toolName ?? 'tool');
+	}
+
+	function cmaToolArgsSummary(event: AgentEvent): string | undefined {
+		const d = event.data as { input?: unknown; input_preview?: unknown };
+		if (typeof d.input_preview === 'string' && d.input_preview) return d.input_preview.slice(0, 150);
+		if (d.input && typeof d.input === 'object') {
+			return Object.entries(d.input as Record<string, unknown>)
+				.map(([k, v]) => `${k}: ${String(v).slice(0, 50)}`)
+				.join(', ')
+				.slice(0, 150);
+		}
+		return undefined;
+	}
+
+	function cmaToolOutputSummary(event: AgentEvent): string | undefined {
+		const d = event.data as { output?: unknown; output_preview?: unknown; error?: unknown };
+		if (typeof d.error === 'string' && d.error) return String(d.error).slice(0, 150);
+		if (typeof d.output_preview === 'string' && d.output_preview) return d.output_preview.slice(0, 150);
+		if (typeof d.output === 'string' && d.output) return d.output.slice(0, 150);
+		return undefined;
+	}
+
+	function cmaMessageText(event: AgentEvent): string | undefined {
+		const d = event.data as { content?: unknown; preview?: unknown };
+		if (typeof d.preview === 'string' && d.preview) return d.preview.slice(0, 200);
+		if (Array.isArray(d.content)) {
+			return (d.content as Array<{ text?: unknown }>)
+				.map((b) => (typeof b?.text === 'string' ? b.text : ''))
+				.filter(Boolean)
+				.join(' ')
+				.slice(0, 200);
+		}
+		return undefined;
+	}
+
+	function llmUsageSummary(event: AgentEvent): string {
+		const d = event.data as {
+			input_tokens?: number; output_tokens?: number;
+			cache_read_input_tokens?: number; cache_creation_input_tokens?: number;
+			model?: string;
+		};
+		const parts: string[] = [];
+		if (d.model) parts.push(String(d.model));
+		if (d.input_tokens != null) parts.push(`in=${d.input_tokens}`);
+		if (d.output_tokens != null) parts.push(`out=${d.output_tokens}`);
+		const cr = Number(d.cache_read_input_tokens ?? 0);
+		const i = Number(d.input_tokens ?? 0);
+		const denom = cr + i;
+		if (cr > 0 && denom > 0) parts.push(`cache ${Math.round((cr / denom) * 100)}%`);
+		return parts.join(' · ');
+	}
+
+	function hookDecisionSummary(event: AgentEvent): string {
+		const d = event.data as { hook_event?: string; decision?: string; matcher?: string; duration_ms?: number };
+		const parts: string[] = [];
+		if (d.hook_event) parts.push(String(d.hook_event));
+		if (d.matcher) parts.push(`(${d.matcher})`);
+		if (d.decision) parts.push(`→ ${d.decision}`);
+		if (d.duration_ms != null) parts.push(`${d.duration_ms}ms`);
+		return parts.join(' ');
+	}
+
+	function mcpCallSummary(event: AgentEvent): string {
+		const d = event.data as { tool_name?: string; server?: string; duration_ms?: number; success?: boolean };
+		const parts: string[] = [];
+		if (d.tool_name) parts.push(String(d.tool_name));
+		if (d.server) parts.push(`@${d.server}`);
+		if (d.duration_ms != null) parts.push(`${d.duration_ms}ms`);
+		if (d.success === false) parts.push('failed');
+		return parts.join(' · ');
+	}
+
+	function alertSummary(event: AgentEvent): string {
+		const t = eventType(event);
+		const d = event.data as Record<string, unknown>;
+		if (t === 'agent.circuit_breaker_tripped') {
+			return `Circuit breaker: ${String(d.reason ?? '')} (${d.streak ?? '?'}/${d.threshold ?? '?'})`;
+		}
+		if (t === 'session.turn_timeout') {
+			return `Turn ${d.turn ?? '?'} exceeded ${d.timeout_seconds ?? '?'}s`;
+		}
+		if (t === 'agent.thread_images_compacted') {
+			return `Collapsed ${d.collapsed ?? '?'} screenshot(s); kept ${d.kept ?? '?'}`;
+		}
+		if (t === 'session.error') {
+			const err = String(d.error ?? '').slice(0, 120);
+			return `Session error${err ? `: ${err}` : ''}`;
+		}
+		return t;
 	}
 
 	let expandedSteps = new SvelteSet<number>();
@@ -279,6 +408,64 @@
 													icon={XCircle}
 													label="Agent error"
 													description={event.data?.error ? String(event.data.error).slice(0, 150) : undefined}
+													status="complete"
+												/>
+											<!-- CMA Tier 1/2/3 event types -->
+											{:else if evtType === 'agent.thinking'}
+												<ChainOfThoughtStep
+													icon={Brain}
+													label="Thinking"
+													description={cmaMessageText(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'agent.message'}
+												<ChainOfThoughtStep
+													icon={MessageSquare}
+													label="Response"
+													description={cmaMessageText(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'agent.tool_use' || evtType === 'agent.mcp_tool_use' || evtType === 'agent.custom_tool_use'}
+												<ChainOfThoughtStep
+													icon={Wrench}
+													label={cmaToolName(event)}
+													description={cmaToolArgsSummary(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'agent.tool_result' || evtType === 'agent.mcp_tool_result' || evtType === 'agent.custom_tool_result'}
+												{@const isErr = (event.data as { is_error?: boolean }).is_error === true}
+												<ChainOfThoughtStep
+													icon={isErr ? XCircle : CheckCircle2}
+													label={`${cmaToolName(event)} ${isErr ? '✗' : '✓'}`}
+													description={cmaToolOutputSummary(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'agent.llm_usage'}
+												<ChainOfThoughtStep
+													icon={Gauge}
+													label="LLM usage"
+													description={llmUsageSummary(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'hook.decision'}
+												<ChainOfThoughtStep
+													icon={ShieldCheck}
+													label="Hook decision"
+													description={hookDecisionSummary(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'mcp.tool_call'}
+												<ChainOfThoughtStep
+													icon={Cable}
+													label="MCP tool call"
+													description={mcpCallSummary(event)}
+													status="complete"
+												/>
+											{:else if evtType === 'agent.circuit_breaker_tripped' || evtType === 'session.turn_timeout' || evtType === 'agent.thread_images_compacted' || evtType === 'session.error'}
+												<ChainOfThoughtStep
+													icon={AlertTriangle}
+													label={evtType.replace(/^(agent|session)\./, '').replace(/_/g, ' ')}
+													description={alertSummary(event)}
 													status="complete"
 												/>
 											{/if}

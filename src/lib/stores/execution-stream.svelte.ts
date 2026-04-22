@@ -74,6 +74,8 @@ export function createExecutionStream(executionId: string) {
 			let isLlmStreaming = state.isLlmStreaming;
 			let llmTokenBuffer = state.llmTokenBuffer;
 			switch (eventType(event)) {
+				// Legacy vocabulary (pre-Tier-1). Kept for any non-dapr-agent-py
+				// path that still emits these.
 				case 'tool_call_start':
 					activeToolName = eventToolName(event) || activeToolName;
 					break;
@@ -93,6 +95,34 @@ export function createExecutionStream(executionId: string) {
 						'';
 					break;
 				case 'llm_complete':
+					isLlmStreaming = false;
+					llmTokenBuffer = '';
+					break;
+				// CMA vocabulary (Tier 1/2). session_events carries these for every
+				// dapr-agent-py run; the run page now renders them alongside
+				// the session-detail page.
+				case 'agent.tool_use':
+				case 'agent.mcp_tool_use':
+				case 'agent.custom_tool_use':
+					activeToolName = eventToolName(event) || activeToolName;
+					break;
+				case 'agent.tool_result':
+				case 'agent.mcp_tool_result':
+				case 'agent.custom_tool_result':
+					activeToolName = null;
+					break;
+				case 'agent.message_delta':
+				case 'agent.thinking_delta':
+				case 'agent.tool_input_delta':
+					isLlmStreaming = true;
+					llmTokenBuffer +=
+						(typeof event.data.text === 'string' && event.data.text) ||
+						(typeof event.data.partial_json === 'string' && event.data.partial_json) ||
+						'';
+					break;
+				case 'agent.message':
+				case 'agent.thinking':
+				case 'agent.llm_usage':
 					isLlmStreaming = false;
 					llmTokenBuffer = '';
 					break;
