@@ -13,6 +13,7 @@
 		ChainOfThoughtContent,
 		ChainOfThoughtStep
 	} from '$lib/components/ui/ai-elements/chain-of-thought/index.js';
+	import { Response } from '$lib/components/ui/ai-elements/response/index.js';
 
 	interface AgentEvent {
 		type: string;
@@ -156,14 +157,15 @@
 
 	function cmaMessageText(event: AgentEvent): string | undefined {
 		const d = event.data as { content?: unknown; preview?: unknown };
-		if (typeof d.preview === 'string' && d.preview) return d.preview.slice(0, 200);
+		if (typeof d.content === 'string' && d.content) return d.content;
 		if (Array.isArray(d.content)) {
-			return (d.content as Array<{ text?: unknown }>)
+			const joined = (d.content as Array<{ text?: unknown }>)
 				.map((b) => (typeof b?.text === 'string' ? b.text : ''))
 				.filter(Boolean)
-				.join(' ')
-				.slice(0, 200);
+				.join('\n\n');
+			if (joined) return joined;
 		}
+		if (typeof d.preview === 'string' && d.preview) return d.preview;
 		return undefined;
 	}
 
@@ -412,19 +414,31 @@
 												/>
 											<!-- CMA Tier 1/2/3 event types -->
 											{:else if evtType === 'agent.thinking'}
+												{@const thinkingText = cmaMessageText(event)}
 												<ChainOfThoughtStep
 													icon={Brain}
 													label="Thinking"
-													description={cmaMessageText(event)}
 													status="complete"
-												/>
+												>
+													{#if thinkingText}
+														<div class="prose prose-sm dark:prose-invert max-w-none text-xs text-muted-foreground">
+															<Response content={thinkingText} parseIncompleteMarkdown={true} />
+														</div>
+													{/if}
+												</ChainOfThoughtStep>
 											{:else if evtType === 'agent.message'}
+												{@const messageText = cmaMessageText(event)}
 												<ChainOfThoughtStep
 													icon={MessageSquare}
 													label="Response"
-													description={cmaMessageText(event)}
 													status="complete"
-												/>
+												>
+													{#if messageText}
+														<div class="prose prose-sm dark:prose-invert max-w-none text-xs text-muted-foreground">
+															<Response content={messageText} parseIncompleteMarkdown={true} />
+														</div>
+													{/if}
+												</ChainOfThoughtStep>
 											{:else if evtType === 'agent.tool_use' || evtType === 'agent.mcp_tool_use' || evtType === 'agent.custom_tool_use'}
 												<ChainOfThoughtStep
 													icon={Wrench}
