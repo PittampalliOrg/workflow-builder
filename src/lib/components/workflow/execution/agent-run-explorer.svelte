@@ -42,7 +42,19 @@
 			null
 	);
 
-	const selectedEvents = $derived.by(() => eventsForAgentRun(selectedRun, agentEvents));
+	// Agent activity feed filters out the streaming delta events — they're
+	// incremental pieces that roll up into the terminal agent.message /
+	// agent.thinking / agent.tool_use event, and showing every delta as its
+	// own row floods the feed (e.g. 51 "Composing tool input…" entries for
+	// one run). Terminal events render cleanly with readable labels.
+	const DELTA_TYPES = new Set([
+		'agent.message_delta',
+		'agent.thinking_delta',
+		'agent.tool_input_delta'
+	]);
+	const selectedEvents = $derived.by(() =>
+		eventsForAgentRun(selectedRun, agentEvents).filter((e) => !DELTA_TYPES.has(e.type))
+	);
 	const graph = $derived.by(() => buildAgentLoopGraph(selectedRun, agentEvents));
 
 	function badgeVariant(status: ExecutionAgentRun['status']) {
