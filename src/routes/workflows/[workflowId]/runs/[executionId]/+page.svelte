@@ -685,6 +685,33 @@
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
 	let timelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
 
+	// Turn navigation — each `llm_complete` / `agent.message` marks a turn
+	// boundary. `turnByItemKey` maps item.key → turn number so the each-loop
+	// can stamp `data-turn-anchor={N}` without a per-iteration counter.
+	// `turnMarkers` is what the sticky chip bar above the feed renders.
+	let turnNav = $derived.by(() => {
+		const byKey = new Map<string, number>();
+		const markers: { turnIndex: number; itemKey: string }[] = [];
+		for (const item of timelineItems) {
+			if (item.kind !== 'event') continue;
+			const t = eventType(item.event);
+			if (t === 'llm_complete' || t === 'agent.message') {
+				const turnIndex = markers.length + 1;
+				markers.push({ turnIndex, itemKey: item.key });
+				byKey.set(item.key, turnIndex);
+			}
+		}
+		return { byKey, markers };
+	});
+
+	function scrollToTurn(turnIndex: number) {
+		if (typeof document === 'undefined') return;
+		const el = document.querySelector(`[data-turn-anchor="${turnIndex}"]`);
+		if (el && 'scrollIntoView' in el) {
+			(el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+		}
+	}
+
 	/** Extract model name from run_started or llm_start events for provider icon display. */
 	let agentModel = $derived.by(() => {
 		for (const ev of timelineEvents) {
@@ -1670,15 +1697,35 @@
 				{/if}
 
 				<div class="relative flex-1 overflow-hidden">
-					<ChatContainerRoot class="h-full overflow-y-auto p-4">
+					<ChatContainerRoot class="h-full overflow-y-auto px-4 py-4 md:px-6">
 						<TimelineAutoScroll
 							active={activeTab === 'timeline'}
 							itemCount={timelineItems.length}
 							{executionId}
 						/>
 					{#if timelineItems.length > 0}
-						<ChatContainerContent class="mx-auto max-w-4xl divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm [&>*]:px-4 [&>*]:py-3">
+						{#if turnNav.markers.length > 1}
+							<div class="sticky top-0 z-10 mx-auto mb-2 flex w-full max-w-[1400px] items-center gap-2 overflow-x-auto rounded-md border bg-background/90 px-3 py-1.5 backdrop-blur">
+								<span class="shrink-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Jump to</span>
+								{#each turnNav.markers as m (m.itemKey)}
+									<button
+										type="button"
+										onclick={() => scrollToTurn(m.turnIndex)}
+										class="shrink-0 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+										title="Jump to turn {m.turnIndex}"
+									>
+										T{m.turnIndex}
+									</button>
+								{/each}
+							</div>
+						{/if}
+						<ChatContainerContent class="mx-auto w-full max-w-[1400px] divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm">
 							{#each timelineItems as item, i (item.key)}
+								{@const turnAnchor = turnNav.byKey.get(item.key)}
+								<div
+									class="px-4 py-3 md:px-5"
+									data-turn-anchor={turnAnchor ?? undefined}
+								>
 								{#if item.kind === 'tool'}
 									{@const ToolComponent = getToolComponent(item.toolName)}
 									<ToolComponent
@@ -1830,9 +1877,12 @@
 										</div>
 									{/if}
 								{/if}
+								</div>
 							{/each}
 							{#if isRunning}
-								<ThinkingBar />
+								<div class="px-4 py-3 md:px-5">
+									<ThinkingBar />
+								</div>
 							{/if}
 						</ChatContainerContent>
 						<ChatContainerScrollAnchor />
