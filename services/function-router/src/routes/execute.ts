@@ -1557,6 +1557,25 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 workspaceRef: args.workspaceRef,
                 baseUrl: args.baseUrl,
                 steps,
+                captureTrace: args.captureTrace,
+                captureVideo: args.captureVideo,
+                viewportPreset: args.viewportPreset,
+                captureMode: args.captureMode,
+                demoTitle: args.demoTitle,
+                demoSummary: args.demoSummary,
+                annotationPlan:
+                  typeof args.annotationPlan === "string"
+                    ? (() => {
+                        try {
+                          return JSON.parse(args.annotationPlan);
+                        } catch {
+                          return args.annotationPlan;
+                        }
+                      })()
+                    : args.annotationPlan,
+                annotationStyle: args.annotationStyle,
+                renderAnnotatedVideo: args.renderAnnotatedVideo,
+                renderCaptions: args.renderCaptions,
                 timeoutMs: args.timeoutMs,
                 metadata:
                   typeof args.metadata === "string"
