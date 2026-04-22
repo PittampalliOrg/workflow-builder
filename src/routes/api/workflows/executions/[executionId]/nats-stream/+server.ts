@@ -1,43 +1,47 @@
 import type { RequestHandler } from './$types';
 import {
 	loadExecutionReadModel,
-	serializeExecutionReadModel
+	serializeExecutionReadModel,
+	listExecutionAgentEvents
 } from '$lib/server/execution-read-model';
-import {
-	getJetStream,
-	getJetStreamManager,
-	WORKFLOW_STREAM_NAME,
-	executionSubject,
-	isNatsAvailable
-} from '$lib/server/nats-client';
-import { db } from '$lib/server/db';
-import { workflowExecutionLogs } from '$lib/server/db/schema';
+import { db, sql } from '$lib/server/db';
+import { sessions } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const SNAPSHOT_INTERVAL_MS = 10_000;
-const CONSUMER_INACTIVE_THRESHOLD_NS = 10_000_000_000; // 10s in nanoseconds
-const FETCH_BATCH_SIZE = 10;
-const FETCH_TIMEOUT_MS = 1000;
 
 /**
- * SSE endpoint backed by direct NATS JetStream consumers.
+ * SSE endpoint for an execution's agent event stream.
  *
- * Each SSE connection creates an ephemeral pull consumer filtered to
- * `workflow.events.<executionId>`. The consumer is auto-cleaned after 10s
- * of inactivity. Supports browser reconnection via Last-Event-ID → NATS
- * sequence number replay.
+ * Phase 4 Step 2b migrated agent event publishing from NATS (`workflow.events.*`)
+ * to Postgres `session_events` + a pg_notify trigger. This endpoint now tails
+ * that notify channel, filtering by the sessions that belong to the given
+ * execution via `sessions.workflow_execution_id`.
  *
- * Falls back to 503 if NATS is unavailable (client should retry with
- * the legacy DB-polling /stream endpoint).
+ * Pipeline:
+ *   1. Initial `snapshot` from loadExecutionReadModel (includes all persisted
+ *      agent events so far).
+ *   2. LISTEN on 'session_events' → on each NOTIFY, if the sessionId belongs
+ *      to this execution, call listExecutionAgentEvents(executionId, cursor)
+ *      and send each new event as `agent_event`.
+ *   3. Every SNAPSHOT_INTERVAL_MS, refresh execution status (phase, progress,
+ *      nodeStatuses) and emit an updated `snapshot` if anything changed. Also
+ *      refresh the execution's session set so late-spawned sessions get
+ *      tracked.
+ *   4. On terminal status (success/error/cancelled), emit `terminal` and
+ *      close.
+ *
+ * The path stays at `/nats-stream` for client compatibility — the client's
+ * execution-stream.svelte.ts store and its `agent_event` handlers remain
+ * identical. Only the server-side transport changed.
  */
 export const GET: RequestHandler = async ({ params, request }) => {
 	const executionId = params.executionId;
-	const lastEventId = Number.parseInt(
-		request.headers.get('last-event-id') ?? '0',
-		10
-	);
-	const isReconnect = Number.isFinite(lastEventId) && lastEventId > 0;
+	// Last-Event-ID is still read to support future per-session reconnect
+	// replay, but the current implementation falls back to the initial
+	// snapshot + LISTEN-tail model for simplicity.
+	void request.headers.get('last-event-id');
 
 	let cancelled = false;
 
@@ -106,87 +110,100 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					return;
 				}
 
-				// Connect to NATS JetStream
-				let js;
-				let jsm;
-				try {
-					js = await getJetStream();
-					jsm = await getJetStreamManager();
-				} catch (err) {
-					// NATS unavailable — send error so client falls back to DB polling
-					send('stream_unavailable', {
-						error: 'NATS unavailable',
-						fallback: true,
-						message: err instanceof Error ? err.message : 'Connection failed'
-					});
-					controller.close();
-					return;
+				// Build initial session set for this execution. Each session here
+				// is a child workflow session bridged from a `durable/run` step.
+				const executionSessions = new Set<string>();
+				async function refreshSessions(): Promise<void> {
+					if (!db) return;
+					try {
+						const rows = await db
+							.select({ id: sessions.id })
+							.from(sessions)
+							.where(eq(sessions.workflowExecutionId, executionId));
+						for (const r of rows) executionSessions.add(r.id);
+					} catch {
+						/* transient DB hiccup — keep whatever we had */
+					}
+				}
+				await refreshSessions();
+
+				// Track the max sequence we've already delivered to this client,
+				// keyed by sessionId (since session_events.sequence is per-session).
+				// Seed from the initial snapshot's agent events.
+				const seqBySession = new Map<string, number>();
+				for (const ev of model.agentEvents ?? []) {
+					const sid = ev.workflowAgentRunId ?? ev.daprInstanceId;
+					if (!sid || typeof ev.id !== 'number') continue;
+					const cur = seqBySession.get(sid) ?? 0;
+					if (ev.id > cur) seqBySession.set(sid, ev.id);
 				}
 
-				// Build filter subjects for this execution.
-				// Subscribe to events from all possible sources:
-				// 1. DB execution ID (from agent-stream bridge)
-				// 2. Dapr parent instance ID (from orchestrator)
-				// 3. Child agent run instance IDs (from agent_runs table)
-				// 4. Child workflow instance IDs (from execution_logs output)
-				// 5. workflow.stream (catch-all for all agent events)
-				const subjectSet = new Set<string>();
-				subjectSet.add(executionSubject(executionId));
-				if (model.instanceId && model.instanceId !== executionId) {
-					subjectSet.add(executionSubject(model.instanceId));
-				}
-				if (model.agentRuns?.length) {
-					for (const run of model.agentRuns) {
-						if (run.daprInstanceId) {
-							subjectSet.add(executionSubject(run.daprInstanceId));
+				// Drain any events that landed after our initial snapshot but
+				// before LISTEN armed. Per-session cursors handle multi-session
+				// executions cleanly (sequence is unique per session, not global).
+				async function drainSession(sessionId: string): Promise<void> {
+					if (cancelled || !db) return;
+					const after = seqBySession.get(sessionId) ?? 0;
+					// listExecutionAgentEvents returns all sessions for this exec
+					// with sequence > after. In the common single-session case,
+					// that's correct. For multi-session we further filter to the
+					// notified session to respect per-session cursors.
+					const events = await listExecutionAgentEvents(executionId, after);
+					for (const ev of events) {
+						const sid = ev.workflowAgentRunId ?? ev.daprInstanceId;
+						if (sid !== sessionId) continue;
+						send('agent_event', ev, ev.id as number);
+						if (typeof ev.id === 'number' && ev.id > (seqBySession.get(sessionId) ?? 0)) {
+							seqBySession.set(sessionId, ev.id);
 						}
 					}
 				}
-				// Check execution_logs for child workflow instance IDs
-				// (dapr-agent-py child workflows store instanceId in output)
-				if (db) {
+
+				// Arm LISTEN. `sql.listen` subscribes once for the whole
+				// process; the callback fires per NOTIFY.
+				let unlisten: (() => Promise<void>) | null = null;
+				let draining = false;
+				let drainAgain = false;
+				async function drainLoop(sessionId: string): Promise<void> {
+					if (draining) { drainAgain = true; return; }
+					draining = true;
 					try {
-						const logs = await db
-							.select({ output: workflowExecutionLogs.output })
-							.from(workflowExecutionLogs)
-							.where(eq(workflowExecutionLogs.executionId, executionId));
-						for (const log of logs) {
-							const out = log.output as Record<string, unknown> | null;
-							if (out?.instanceId && typeof out.instanceId === 'string') {
-								subjectSet.add(executionSubject(out.instanceId));
-							}
-						}
-					} catch { /* ignore */ }
+						do {
+							drainAgain = false;
+							await drainSession(sessionId);
+						} while (drainAgain && !cancelled);
+					} finally {
+						draining = false;
+					}
 				}
-				// Only subscribe to per-execution subjects — the agent-stream handler
-				// bridges events from workflow.stream to these subjects
-				const filterSubjects = [...subjectSet];
-
-				const consumerOpts = {
-					filter_subjects: filterSubjects,
-					ack_policy: 'none',
-					inactive_threshold: CONSUMER_INACTIVE_THRESHOLD_NS,
-					// Use DeliverNew — initial state comes from DB snapshot, NATS is for live events only
-					...(isReconnect
-						? { deliver_policy: 'by_start_sequence', opt_start_seq: lastEventId + 1 }
-						: { deliver_policy: 'new' }
-					)
-				};
-
-				let consumer;
 				try {
-					const info = await jsm.consumers.add(
-						WORKFLOW_STREAM_NAME,
-						consumerOpts as Partial<import('nats').ConsumerConfig>
-					);
-					consumer = await js.consumers.get(WORKFLOW_STREAM_NAME, info.name);
+					const meta = await sql.listen('session_events', (payloadStr: string) => {
+						if (cancelled) return;
+						let payload: { sessionId?: string } = {};
+						try { payload = JSON.parse(payloadStr); } catch { /* fall through */ }
+						const sid = payload.sessionId;
+						if (!sid) return;
+						// If the notified session belongs to this execution,
+						// drain its new events. Unknown sessions trigger a
+						// cheap refresh — covers late-spawned sessions.
+						if (executionSessions.has(sid)) {
+							void drainLoop(sid);
+						} else {
+							void (async () => {
+								await refreshSessions();
+								if (executionSessions.has(sid)) void drainLoop(sid);
+							})();
+						}
+					});
+					unlisten = () => meta.unlisten();
+					// Drain each known session once to cover the gap between
+					// initial snapshot and LISTEN arm.
+					for (const sid of executionSessions) void drainLoop(sid);
 				} catch (err) {
-					// Consumer creation failed (stream may not exist or subjects not matched)
-					console.warn(`[nats-stream] Failed to create consumer for ${filterSubjects.join(', ')}:`, err);
 					send('stream_unavailable', {
-						error: 'Consumer creation failed',
+						error: 'LISTEN arm failed',
 						fallback: true,
-						message: err instanceof Error ? err.message : 'Failed'
+						message: err instanceof Error ? err.message : 'Connection failed'
 					});
 					controller.close();
 					return;
@@ -200,104 +217,55 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					});
 				}, HEARTBEAT_INTERVAL_MS);
 
-				// Streaming loop — fetch messages from pull consumer
-				while (!cancelled) {
-					try {
-						const messages = await consumer.fetch({
-							max_messages: FETCH_BATCH_SIZE,
-							expires: FETCH_TIMEOUT_MS
-						});
-
-						for await (const msg of messages) {
-							if (cancelled) break;
-
-							try {
-								const data = JSON.parse(new TextDecoder().decode(msg.data));
-								const seq = msg.seq;
-
-								// Normalize event for client compatibility
-								send('agent_event', {
-									id: seq,
-									type: data.type || data.data?.type || 'unknown',
-									data: data.data || data,
-									timestamp: data.timestamp || data.data?.timestamp || new Date().toISOString(),
-									executionId: data.executionId || data.data?.executionId,
-									runId: data.runId || data.data?.runId,
-									callId: data.callId || data.data?.callId,
-									source: data.source || data.data?.source,
-									sourceEventId:
-										data.sourceEventId ||
-										data.data?.sourceEventId ||
-										data.data?.id ||
-										data.id,
-									// Sessions-bridged runs stream events keyed by sessionId,
-									// which equals workflow_agent_runs.id === dapr_instance_id.
-									// Fall back to sessionId when no explicit agent-run field is
-									// set so the eventsForAgentRun filter matches.
-									workflowAgentRunId:
-										data.workflowAgentRunId ||
-										data.data?.workflowAgentRunId ||
-										data.sessionId ||
-										data.data?.sessionId,
-									daprInstanceId:
-										data.daprInstanceId ||
-										data.data?.daprInstanceId ||
-										data.instanceId ||
-										data.data?.instanceId ||
-										data.sessionId ||
-										data.data?.sessionId,
-									phase: data.phase || data.data?.phase,
-									toolName: data.toolName || data.data?.toolName || data.data?.name
-								}, seq);
-							} catch {
-								// Skip malformed messages
-							}
-						}
-					} catch (err) {
+				// Status refresh loop — drives terminal detection, phase/progress
+				// updates, and late-spawned-session pickup. Runs until cancel or
+				// terminal status.
+				try {
+					while (!cancelled) {
+						await new Promise((r) => setTimeout(r, SNAPSHOT_INTERVAL_MS));
 						if (cancelled) break;
-						// Consumer may have been deleted (timeout) — recreate
-						const errMsg = err instanceof Error ? err.message : String(err);
-						if (errMsg.includes('consumer not found') || errMsg.includes('404')) {
-							console.warn('[nats-stream] Consumer expired, closing stream');
-							break;
-						}
-						// Transient error — continue after brief wait
-						await new Promise((r) => setTimeout(r, 500));
-					}
-
-					// Periodically refresh execution status from DB (every 3s)
-					if (!cancelled && Date.now() - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
 						lastSnapshotAt = Date.now();
 						try {
 							const updated = await loadExecutionReadModel(executionId, {
 								refreshRuntime: true,
 								includeAgentEvents: false
 							});
-							if (updated) {
-								if (['success', 'error', 'cancelled'].includes(updated.status)) {
-									const finalSerialized = serializeExecutionReadModel(updated, { compact: false });
-									send('snapshot', finalSerialized);
-									send('terminal', {
-										executionId,
-										status: updated.status,
-										completedAt: updated.completedAt,
-										error: updated.error
-									});
-									break;
-								}
-								const snapHash = JSON.stringify({
-									status: updated.status, phase: updated.phase,
-									progress: updated.progress, nodeStatuses: updated.nodeStatuses
+							if (!updated) continue;
+							if (['success', 'error', 'cancelled'].includes(updated.status)) {
+								// One last drain on each session to flush any events
+								// that might race the terminal transition.
+								for (const sid of executionSessions) await drainSession(sid);
+								const finalSerialized = serializeExecutionReadModel(updated, { compact: false });
+								send('snapshot', finalSerialized);
+								send('terminal', {
+									executionId,
+									status: updated.status,
+									completedAt: updated.completedAt,
+									error: updated.error
 								});
-								if (snapHash !== lastSnapshotHash) {
-									lastSnapshotHash = snapHash;
-									const snap = serializeExecutionReadModel(updated, { compact: true });
-									send('snapshot', snap);
-								}
+								break;
+							}
+							// Pick up late-spawned sessions (orchestrator may spawn
+							// child sessions minutes into a long-running workflow).
+							await refreshSessions();
+							const snapHash = JSON.stringify({
+								status: updated.status, phase: updated.phase,
+								progress: updated.progress, nodeStatuses: updated.nodeStatuses
+							});
+							if (snapHash !== lastSnapshotHash) {
+								lastSnapshotHash = snapHash;
+								const snap = serializeExecutionReadModel(updated, { compact: true });
+								send('snapshot', snap);
 							}
 						} catch {
-							// DB read failed — continue with NATS events
+							// Transient DB issue — keep the stream open
 						}
+					}
+				} finally {
+					if (unlisten) {
+						const u = unlisten;
+						unlisten = null;
+						void u().catch(() => { /* ignore */ });
 					}
 				}
 			} catch (err) {
