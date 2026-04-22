@@ -756,7 +756,7 @@
 				entries.push({
 					turnIndex,
 					itemKey: item.key,
-					preview: preview || 'Tool invocation',
+					preview: preview || 'Silent turn',
 					tools: pendingTools,
 					hasError: pendingError,
 				});
