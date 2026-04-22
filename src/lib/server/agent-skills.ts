@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { and, asc, eq, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
 import type {
 	AgentSkillRegistryEntry,
 	AgentSkillStatus
@@ -95,10 +95,26 @@ function registryUrl(source: string, skillName: string, explicit?: string): stri
 	return `https://skills.sh/${source}/${encodeURIComponent(skillName)}`;
 }
 
-function rowToSkill(row: typeof agentSkillRegistry.$inferSelect): AgentSkillRegistryEntry {
+function rowToSkill(
+	row: typeof agentSkillRegistry.$inferSelect,
+	extras: { usedByCount?: number } = {}
+): AgentSkillRegistryEntry {
 	const installSource = normalizeInstallSource(row.installSource || row.sourceRepo);
 	const skillName = String(row.skillName || row.name || row.slug).trim();
 	const isCustom = row.sourceType === 'custom';
+	// Package manifest stores files as { path, content }. Strip content from
+	// the listing payload — callers get paths for display, never raw bytes
+	// (those only flow to the sandbox at session-start). See
+	// services/dapr-agent-py/src/main.py::_extract_skill_package_entries.
+	const manifest = row.packageManifest as { files?: unknown } | null;
+	const rawFiles = Array.isArray(manifest?.files) ? manifest.files : [];
+	const packageFiles = rawFiles
+		.map((f) => {
+			if (!f || typeof f !== 'object') return null;
+			const path = (f as { path?: unknown }).path;
+			return typeof path === 'string' && path.trim() ? { path } : null;
+		})
+		.filter((v): v is { path: string } => v !== null);
 	return {
 		id: row.id,
 		registryId: row.id,
@@ -119,7 +135,10 @@ function rowToSkill(row: typeof agentSkillRegistry.$inferSelect): AgentSkillRegi
 		status: row.status,
 		projectId: row.projectId ?? null,
 		createdByUserId: row.createdByUserId ?? null,
-		prompt: row.prompt ?? undefined
+		prompt: row.prompt ?? undefined,
+		packageFilesCount: packageFiles.length,
+		packageFiles,
+		usedByCount: extras.usedByCount ?? 0
 	};
 }
 
@@ -137,13 +156,36 @@ export async function listAgentSkills(options: {
 			)
 		: isNull(agentSkillRegistry.projectId);
 
-	const rows = await db
-		.select()
-		.from(agentSkillRegistry)
-		.where(scopeFilter)
-		.orderBy(asc(agentSkillRegistry.name));
-	return rows
-		.map(rowToSkill)
+	// One round-trip: skills + current-version agent attachment counts. The
+	// LATERAL subquery scans agent_versions.config->'skills' via jsonb_path_exists
+	// with BOTH registryId and slug as keys (legacy rows can omit registryId).
+	// Scoped to the caller's workspace + globals, and restricted to
+	// agents.current_version_id so deleted older versions don't inflate counts.
+	// Agents with project_id IS NULL (globals) are visible from any workspace
+	// but are rare — main owner case is workspace-scoped.
+	const projectId = options.projectId ?? null;
+	const rows = await db.execute(sql`
+		SELECT s.*, COALESCE(u.n, 0)::int AS used_by_count
+		FROM ${agentSkillRegistry} s
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS n
+			FROM agents a
+			JOIN agent_versions av ON av.id = a.current_version_id
+			WHERE a.is_archived = false
+				AND (${projectId === null}::boolean OR a.project_id = ${projectId} OR a.project_id IS NULL)
+				AND jsonb_path_exists(
+					av.config,
+					'$.skills[*] ? (@.registryId == $rid || @.slug == $sl)'::jsonpath,
+					jsonb_build_object('rid', s.id, 'sl', s.slug)
+				)
+		) u ON true
+		WHERE ${scopeFilter}
+		ORDER BY s.name ASC
+	`);
+	type RawRow = typeof agentSkillRegistry.$inferSelect & { used_by_count: number };
+	const typed = (rows as unknown as RawRow[]) ?? [];
+	return typed
+		.map((r) => rowToSkill(r, { usedByCount: Number(r.used_by_count) || 0 }))
 		.filter((skill) => options.includeDisabled || skill.status === 'ENABLED');
 }
 

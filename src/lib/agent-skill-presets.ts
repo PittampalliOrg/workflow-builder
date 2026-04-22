@@ -32,6 +32,12 @@ export type AgentSkillRegistryEntry = AgentSkillConfig & {
 	projectId?: string | null;
 	createdByUserId?: string | null;
 	prompt?: string;
+	/** Bundled-asset count from packageManifest.files (paths only listed in packageFiles). */
+	packageFilesCount?: number;
+	/** Paths of materialized assets (no content — content is only sent to the sandbox at session-start). */
+	packageFiles?: { path: string }[];
+	/** Number of current-version agents (in the caller's workspace + globals) that attach this skill. */
+	usedByCount?: number;
 };
 
 export function profileSkillSnapshot(skill: AgentSkillConfig): AgentSkillConfig {
