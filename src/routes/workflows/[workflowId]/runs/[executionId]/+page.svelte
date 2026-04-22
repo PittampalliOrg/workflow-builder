@@ -746,10 +746,17 @@
 				}
 				if (!preview && typeof data.preview === 'string') preview = data.preview;
 				preview = preview.replace(/\s+/g, ' ').trim().slice(0, 90);
+				// Fallback for tool-only turns: synthesize a preview from the
+				// tool chain so the outline entry actually tells the user what
+				// happened, not just "(no text response)".
+				if (!preview && pendingTools.length > 0) {
+					const uniqueTools = Array.from(new Set(pendingTools));
+					preview = `Ran ${uniqueTools.slice(0, 3).join(', ')}${uniqueTools.length > 3 ? `, +${uniqueTools.length - 3} more` : ''}`;
+				}
 				entries.push({
 					turnIndex,
 					itemKey: item.key,
-					preview: preview || '(no text response)',
+					preview: preview || 'Tool invocation',
 					tools: pendingTools,
 					hasError: pendingError,
 				});
