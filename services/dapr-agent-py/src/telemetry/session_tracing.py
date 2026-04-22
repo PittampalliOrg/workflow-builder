@@ -72,6 +72,29 @@ def _span_id(span: Any) -> int:
         return id(span)
 
 
+def get_current_trace_context() -> tuple[str | None, str | None]:
+    """Return (trace_id_hex, span_id_hex) from the currently-active OTEL span,
+    or (None, None) when there is no recording span. Hex-formatted for direct
+    embedding in session event envelopes — matches the OTLP wire format.
+    """
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        if span is None:
+            return None, None
+        ctx = span.get_span_context()
+        if not getattr(ctx, "is_valid", lambda: True)():
+            return None, None
+        trace_id = getattr(ctx, "trace_id", 0)
+        span_id = getattr(ctx, "span_id", 0)
+        if not trace_id or not span_id:
+            return None, None
+        return f"{trace_id:032x}", f"{span_id:016x}"
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
 def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     attrs: dict[str, Any] = dict(get_telemetry_attributes())
     attrs["span.type"] = span_type

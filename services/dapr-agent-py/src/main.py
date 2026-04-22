@@ -932,6 +932,11 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_clients_by_instance: dict[str, MCPClient] = {}
         self._mcp_config_hash_by_instance: dict[str, str] = {}
         self._mcp_tools_by_instance: dict[str, dict[str, Any]] = {}
+        # Parallel to _mcp_tools_by_instance — maps the same normalized tool
+        # lookup key to {server_name, transport} so run_tool can emit
+        # mcp.tool_call events with the source server + transport without
+        # re-scanning the MCPClient at call time.
+        self._mcp_tool_sources_by_instance: dict[str, dict[str, dict[str, str]]] = {}
         self._mcp_allowed_tools_by_instance: dict[str, dict[str, set[str]]] = {}
         self._skills_by_instance: dict[str, list[SkillDefinition]] = {}
         self._workspace_ref_by_instance: dict[str, str] = {}
@@ -980,6 +985,7 @@ class OpenShellDurableAgent(DurableAgent):
         client = self._mcp_clients_by_instance.pop(instance_id, None)
         self._mcp_config_hash_by_instance.pop(instance_id, None)
         self._mcp_tools_by_instance.pop(instance_id, None)
+        self._mcp_tool_sources_by_instance.pop(instance_id, None)
         self._mcp_allowed_tools_by_instance.pop(instance_id, None)
         self._mcp_configs_by_instance.pop(instance_id, None)
         if client is not None:
@@ -1020,7 +1026,17 @@ class OpenShellDurableAgent(DurableAgent):
             self._mcp_allowed_tools_by_instance.get(instance_id) or {}
         )
         tools: dict[str, Any] = {}
+        tool_sources: dict[str, dict[str, str]] = {}
         for server_name in configs:
+            server_cfg = configs.get(server_name) or {}
+            # Transport: try typed attr first, then dict lookup. Defaults
+            # "stdio" because MCP's canonical default for unspecified
+            # transport is stdio (aligns with the @modelcontextprotocol docs).
+            transport = (
+                str(server_cfg.get("transport") or "").strip()
+                or str(server_cfg.get("type") or "").strip()
+                or "stdio"
+            )
             allowed_tools = allowed_tools_by_server.get(server_name)
             allowed_lookup = (
                 {
@@ -1055,10 +1071,16 @@ class OpenShellDurableAgent(DurableAgent):
                         raw_tool_name,
                     )
                     continue
-                tools[_normalize_tool_lookup_name(tool.name)] = tool
+                norm_key = _normalize_tool_lookup_name(tool.name)
+                tools[norm_key] = tool
+                tool_sources[norm_key] = {
+                    "server": server_name,
+                    "transport": transport,
+                }
         self._mcp_clients_by_instance[instance_id] = client
         self._mcp_config_hash_by_instance[instance_id] = config_hash
         self._mcp_tools_by_instance[instance_id] = tools
+        self._mcp_tool_sources_by_instance[instance_id] = tool_sources
         logger.warning(
             "[mcp] Connected %d MCP server(s), loaded %d tool(s) for instance %s",
             len(configs),
@@ -1206,6 +1228,20 @@ class OpenShellDurableAgent(DurableAgent):
                     "[call-llm] circuit-breaker tripped after %d empty/failed LLM responses for instance %s; surfacing AgentError to break the loop",
                     streak, inst_id,
                 )
+                try:
+                    publish_session_event(
+                        sess_id,
+                        "agent.circuit_breaker_tripped",
+                        {
+                            "reason": "llm_exception",
+                            "streak": streak,
+                            "threshold": EMPTY_RESPONSE_THRESHOLD,
+                            "last_error": str(exc)[:200],
+                        },
+                        instance_id=inst_id,
+                    )
+                except Exception:
+                    pass
                 self._empty_llm_response_count_by_instance.pop(inst_id, None)
                 from dapr_agents.types.exceptions import AgentError
                 raise AgentError(
@@ -1266,6 +1302,19 @@ class OpenShellDurableAgent(DurableAgent):
                         sess_id,
                         "llm_complete",
                         cb_payload,
+                        instance_id=inst_id,
+                    )
+                except Exception:
+                    pass
+                try:
+                    publish_session_event(
+                        sess_id,
+                        "agent.circuit_breaker_tripped",
+                        {
+                            "reason": "empty_response_content",
+                            "streak": streak,
+                            "threshold": EMPTY_RESPONSE_THRESHOLD,
+                        },
                         instance_id=inst_id,
                     )
                 except Exception:
@@ -1514,12 +1563,54 @@ class OpenShellDurableAgent(DurableAgent):
                   async def _execute_mcp_tool():
                       return await mcp_tool.arun(**tool_args)
 
+                  mcp_source = (
+                      self._mcp_tool_sources_by_instance.get(inst_id) or {}
+                  ).get(_normalize_tool_lookup_name(tool_name), {})
+                  import time as _time_mcp
+                  mcp_start = _time_mcp.monotonic()
                   try:
                       mcp_result = self._run_asyncio_task(_execute_mcp_tool())
                       serialized_result = serialize_tool_result(mcp_result)
+                      try:
+                          publish_session_event(
+                              sess_id,
+                              "mcp.tool_call",
+                              {
+                                  "tool_name": tool_name,
+                                  "tool_use_id": tool_call_id,
+                                  "server": mcp_source.get("server"),
+                                  "transport": mcp_source.get("transport"),
+                                  "duration_ms": int(
+                                      (_time_mcp.monotonic() - mcp_start) * 1000
+                                  ),
+                                  "success": True,
+                              },
+                              instance_id=inst_id,
+                          )
+                      except Exception:
+                          pass
                   except Exception as exc:
                       error = str(exc)
                       _exec_error = error
+                      try:
+                          publish_session_event(
+                              sess_id,
+                              "mcp.tool_call",
+                              {
+                                  "tool_name": tool_name,
+                                  "tool_use_id": tool_call_id,
+                                  "server": mcp_source.get("server"),
+                                  "transport": mcp_source.get("transport"),
+                                  "duration_ms": int(
+                                      (_time_mcp.monotonic() - mcp_start) * 1000
+                                  ),
+                                  "success": False,
+                                  "error": error[:200],
+                              },
+                              instance_id=inst_id,
+                          )
+                      except Exception:
+                          pass
                       try:
                           publish_session_event(
                               sess_id,
@@ -2718,6 +2809,18 @@ class OpenShellDurableAgent(DurableAgent):
                 )
                 winner = yield wf_when_any([child_task, timer_task])
                 if winner is timer_task:
+                    if not ctx.is_replaying:
+                        try:
+                            publish_session_event(
+                                session_id,
+                                "session.turn_timeout",
+                                {
+                                    "turn": turn_counter,
+                                    "timeout_seconds": SESSION_TURN_TIMEOUT_SECONDS,
+                                },
+                            )
+                        except Exception:
+                            pass
                     from dapr_agents.types.exceptions import AgentError
                     raise AgentError(
                         f"Session turn {turn_counter} exceeded "

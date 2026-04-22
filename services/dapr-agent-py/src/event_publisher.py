@@ -228,6 +228,22 @@ def publish_session_event(
     if cma_type is None:
         return  # suppressed — session_workflow emits the canonical equivalent
 
+    # Stamp trace_id + span_id of the currently-active OTEL span onto the
+    # envelope so the UI can deep-link any event row into Phoenix / ClickHouse
+    # without needing a separate correlation step. Best-effort — if the OTEL
+    # provider isn't initialized or there's no recording span (likely during
+    # Dapr workflow replay), we skip silently.
+    try:
+        from src.telemetry.session_tracing import get_current_trace_context
+
+        trace_id, span_id = get_current_trace_context()
+        if trace_id:
+            cma_data.setdefault("traceId", trace_id)
+        if span_id:
+            cma_data.setdefault("spanId", span_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-ingest] trace-context stamp failed: %s", exc)
+
     envelope = {
         "type": cma_type,
         "data": cma_data,

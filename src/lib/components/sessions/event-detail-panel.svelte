@@ -3,7 +3,7 @@
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
 	import JsonView from './json-view.svelte';
-	import { Check, Clock, Copy, Download, Loader2, X } from 'lucide-svelte';
+	import { Check, Clock, Copy, Download, ExternalLink, Loader2, X } from 'lucide-svelte';
 
 	interface Props {
 		event: SessionEventEnvelope;
@@ -65,6 +65,20 @@
 
 	const effectiveData = $derived(fullPayload ?? event.data);
 
+	// OTEL trace deep-link. The agent stamps traceId + spanId on every event
+	// envelope in event_publisher._post_ingest (via get_current_trace_context).
+	// If present, show a link to the trace explorer so users can pivot from
+	// any event row to its backing OTEL span without reconstructing the
+	// correlation manually.
+	const traceId = $derived.by(() => {
+		const d = event.data as { traceId?: unknown };
+		return typeof d.traceId === 'string' && d.traceId ? d.traceId : null;
+	});
+	const spanId = $derived.by(() => {
+		const d = event.data as { spanId?: unknown };
+		return typeof d.spanId === 'string' && d.spanId ? d.spanId : null;
+	});
+
 	const title = $derived.by(() => {
 		if (kind === 'user') return 'Message';
 		if (kind === 'agent') return 'Message';
@@ -79,6 +93,12 @@
 			return 'Model request';
 		}
 		if (kind === 'status') return event.type.replace('session.status_', 'Status: ');
+		if (event.type === 'hook.decision') return 'Hook decision';
+		if (event.type === 'mcp.tool_call') return 'MCP tool call';
+		if (event.type === 'agent.circuit_breaker_tripped') return 'Circuit breaker tripped';
+		if (event.type === 'session.turn_timeout') return 'Turn timeout';
+		if (event.type === 'agent.thread_images_compacted') return 'Images compacted';
+		if (event.type === 'agent.thread_context_compacted') return 'Context compacted';
 		return event.type;
 	});
 
@@ -193,6 +213,17 @@
 			</div>
 		</div>
 		<div class="flex items-center gap-1">
+			{#if traceId}
+				<Button
+					variant="ghost"
+					size="icon"
+					class="size-7"
+					href="/observability/{traceId}"
+					title="View OTEL trace ({spanId ? `span ${spanId.slice(0, 8)}…` : 'trace'})"
+				>
+					<ExternalLink class="size-3.5" />
+				</Button>
+			{/if}
 			{#if hasPreviewShape && !fullPayload}
 				<Button
 					variant="ghost"
@@ -297,6 +328,103 @@
 					</div>
 				{/if}
 			</div>
+		{:else if event.type === 'hook.decision'}
+			{@const d = effectiveData as {
+				hook_event?: string;
+				matcher?: string | null;
+				hook_type?: string;
+				plugin_id?: string | null;
+				outcome?: string;
+				decision?: string | null;
+				duration_ms?: number;
+				exit_code?: number | null;
+				reason?: string | null;
+				tool_use_id?: string | null;
+			}}
+			<div class="grid grid-cols-2 gap-3 text-xs">
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Hook event</div>
+					<div class="mt-1 font-mono">{d.hook_event ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Decision</div>
+					<div class="mt-1 font-mono">{d.decision ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Matcher</div>
+					<div class="mt-1 font-mono truncate">{d.matcher ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Type</div>
+					<div class="mt-1 font-mono">{d.hook_type ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Outcome</div>
+					<div class="mt-1 font-mono">{d.outcome ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Duration</div>
+					<div class="mt-1 font-mono">{d.duration_ms ?? 0}ms</div>
+				</div>
+				{#if d.plugin_id}
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Plugin</div>
+						<div class="mt-1 font-mono truncate">{d.plugin_id}</div>
+					</div>
+				{/if}
+				{#if d.exit_code != null}
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Exit code</div>
+						<div class="mt-1 font-mono">{d.exit_code}</div>
+					</div>
+				{/if}
+			</div>
+			{#if d.reason}
+				<div class="mt-3">
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Reason</div>
+					<div class="mt-1 whitespace-pre-wrap text-xs">{d.reason}</div>
+				</div>
+			{/if}
+		{:else if event.type === 'mcp.tool_call'}
+			{@const d = effectiveData as {
+				tool_name?: string;
+				server?: string | null;
+				transport?: string | null;
+				tool_use_id?: string | null;
+				duration_ms?: number;
+				success?: boolean;
+				error?: string | null;
+			}}
+			<div class="grid grid-cols-2 gap-3 text-xs">
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Tool</div>
+					<div class="mt-1 font-mono truncate">{d.tool_name ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Server</div>
+					<div class="mt-1 font-mono truncate">{d.server ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Transport</div>
+					<div class="mt-1 font-mono">{d.transport ?? '-'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Duration</div>
+					<div class="mt-1 font-mono">{d.duration_ms ?? 0}ms</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Status</div>
+					<div class="mt-1 font-mono">{d.success === false ? 'failed' : 'ok'}</div>
+				</div>
+			</div>
+			{#if d.error}
+				<div class="mt-3">
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Error</div>
+					<div class="mt-1 whitespace-pre-wrap text-xs text-rose-300">{d.error}</div>
+				</div>
+			{/if}
+		{:else if kind === 'alert'}
+			<JsonView value={effectiveData} />
 		{:else}
 			<JsonView value={effectiveData} />
 		{/if}

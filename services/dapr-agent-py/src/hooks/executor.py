@@ -264,6 +264,51 @@ async def execute_hooks(
                 pass
         raise
     agg = _aggregate(event_value, list(results))
+
+    # Emit hook.decision per hook run so the session timeline surfaces
+    # allow/deny/modify decisions alongside tool_use rows. Best-effort; if
+    # the publish fails we still return the aggregated result.
+    try:
+        from src.event_publisher import publish_session_event
+
+        sid = hook_input.get("session_id") if isinstance(hook_input, dict) else None
+        tu_id = hook_input.get("tool_use_id") if isinstance(hook_input, dict) else None
+        if sid:
+            for r in results:
+                out = getattr(r, "output", None)
+                decision = None
+                if out is not None:
+                    spec = out.hook_specific_output or {}
+                    perm = spec.get("permissionDecision")
+                    if isinstance(perm, str):
+                        decision = perm  # allow | ask | deny
+                    elif out.decision == "block":
+                        decision = "block"
+                    elif out.decision == "approve":
+                        decision = "approve"
+                    elif spec.get("updatedInput") is not None:
+                        decision = "modify"
+                if decision is None and r.outcome == "blocking":
+                    decision = "deny"
+                publish_session_event(
+                    sid,
+                    "hook.decision",
+                    {
+                        "hook_event": event_value,
+                        "matcher": r.matcher,
+                        "hook_type": r.hook_type,
+                        "plugin_id": r.plugin_id,
+                        "outcome": r.outcome,
+                        "decision": decision,
+                        "duration_ms": r.duration_ms,
+                        "exit_code": r.exit_code,
+                        "reason": (r.reason or "")[:200] if r.reason else None,
+                        "tool_use_id": tu_id,
+                    },
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[hooks] hook.decision emit failed: %s", exc)
+
     if hook_span is not None:
         try:
             end_hook_span(

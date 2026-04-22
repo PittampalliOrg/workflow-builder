@@ -45,6 +45,9 @@
 		model: 'bg-slate-500',
 		status: 'bg-purple-500',
 		span: 'bg-blue-400',
+		hook: 'bg-indigo-500',
+		mcp: 'bg-cyan-500',
+		alert: 'bg-red-500',
 		other: 'bg-muted-foreground/30'
 	};
 
@@ -57,6 +60,9 @@
 		model: 'bg-slate-400',
 		status: 'bg-purple-400',
 		span: 'bg-blue-300',
+		hook: 'bg-indigo-400',
+		mcp: 'bg-cyan-400',
+		alert: 'bg-red-400',
 		other: 'bg-muted-foreground/60'
 	};
 </script>

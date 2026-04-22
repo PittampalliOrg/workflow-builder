@@ -207,6 +207,30 @@ def _compact_image_tool_results(
         len(to_compact),
         min(keep_last, len(image_positions)),
     )
+
+    # Surface the compaction in the session stream so the UI can annotate the
+    # transcript with "N older screenshots collapsed" instead of silently
+    # losing them. Best-effort; safe during replays because daemon-thread
+    # publish is idempotent at the ingest layer via sourceEventId.
+    try:
+        from src.event_publisher import get_scoped_session, publish_session_event
+
+        sid, iid = get_scoped_session()
+        if sid:
+            publish_session_event(
+                sid,
+                "agent.thread_images_compacted",
+                {
+                    "collapsed": len(to_compact),
+                    "kept": min(keep_last, len(image_positions)),
+                    "total_image_tool_results": len(image_positions),
+                    "keep_last": keep_last,
+                },
+                instance_id=iid,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-event] thread_images_compacted emit failed: %s", exc)
+
     return compacted_msgs
 
 
