@@ -40,9 +40,14 @@
 		AlertTriangle,
 		Cable,
 		Gauge,
-		ShieldCheck
+		ShieldCheck,
+		ListTree,
+		ChevronRight,
+		ChevronLeft
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';
+	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Separator } from '$lib/components/ui/separator';
@@ -683,26 +688,87 @@
 	} satisfies NodeTypes;
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
-	let timelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
+	let allTimelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
 
-	// Turn navigation — each `llm_complete` / `agent.message` marks a turn
-	// boundary. `turnByItemKey` maps item.key → turn number so the each-loop
-	// can stamp `data-turn-anchor={N}` without a per-iteration counter.
-	// `turnMarkers` is what the sticky chip bar above the feed renders.
+	// Filter state — lets users narrow the feed to a category in long threads.
+	type TimelineFilter = 'all' | 'messages' | 'tools' | 'errors';
+	let timelineFilter = $state<TimelineFilter>('all');
+
+	function itemMatchesFilter(item: typeof allTimelineItems[number], f: TimelineFilter): boolean {
+		if (f === 'all') return true;
+		if (item.kind === 'tool') {
+			if (f === 'tools') return true;
+			if (f === 'errors') return item.status === 'error' || !!item.error;
+			return false;
+		}
+		const t = eventType(item.event);
+		if (f === 'messages') return t === 'llm_complete' || t === 'agent.message' || t === 'agent.thinking';
+		if (f === 'errors') return ['run_error', 'agent.circuit_breaker_tripped', 'session.turn_timeout', 'session.error'].includes(t);
+		if (f === 'tools') return t === 'mcp.tool_call' || t === 'hook.decision';
+		return false;
+	}
+	let timelineItems = $derived(allTimelineItems.filter((item) => itemMatchesFilter(item, timelineFilter)));
+
+	// Turn outline — each `llm_complete` / `agent.message` marks a turn
+	// boundary. We collect per-turn context (assistant preview + tools used in
+	// that turn) so the outline panel can show something meaningful rather
+	// than just T1/T2/Tn. Walks allTimelineItems (not filtered) so the outline
+	// always reflects the full thread structure.
+	type TurnOutlineEntry = {
+		turnIndex: number;
+		itemKey: string;
+		preview: string;
+		tools: string[];
+		hasError: boolean;
+	};
 	let turnNav = $derived.by(() => {
 		const byKey = new Map<string, number>();
-		const markers: { turnIndex: number; itemKey: string }[] = [];
-		for (const item of timelineItems) {
-			if (item.kind !== 'event') continue;
+		const entries: TurnOutlineEntry[] = [];
+		let pendingTools: string[] = [];
+		let pendingError = false;
+		for (const item of allTimelineItems) {
+			if (item.kind === 'tool') {
+				pendingTools.push(item.toolName);
+				if (item.status === 'error' || item.error) pendingError = true;
+				continue;
+			}
 			const t = eventType(item.event);
 			if (t === 'llm_complete' || t === 'agent.message') {
-				const turnIndex = markers.length + 1;
-				markers.push({ turnIndex, itemKey: item.key });
+				const turnIndex = entries.length + 1;
+				const data = (item.event.data ?? {}) as { content?: unknown; preview?: unknown };
+				let preview = '';
+				if (typeof data.content === 'string') preview = data.content;
+				else if (Array.isArray(data.content)) {
+					preview = (data.content as Array<{ text?: unknown }>)
+						.map((b) => (typeof b?.text === 'string' ? b.text : ''))
+						.filter(Boolean)
+						.join(' ');
+				}
+				if (!preview && typeof data.preview === 'string') preview = data.preview;
+				preview = preview.replace(/\s+/g, ' ').trim().slice(0, 90);
+				entries.push({
+					turnIndex,
+					itemKey: item.key,
+					preview: preview || '(no text response)',
+					tools: pendingTools,
+					hasError: pendingError,
+				});
 				byKey.set(item.key, turnIndex);
+				pendingTools = [];
+				pendingError = false;
+			}
+			if (['run_error', 'agent.circuit_breaker_tripped', 'session.turn_timeout', 'session.error'].includes(t)) {
+				pendingError = true;
 			}
 		}
-		return { byKey, markers };
+		return { byKey, entries };
 	});
+
+	// Active turn tracking — the outline panel highlights whichever turn's
+	// anchor is closest to the top of the scrolling feed. IntersectionObserver
+	// is set up once the timeline tab mounts.
+	let activeTurn = $state<number | null>(null);
+	let outlineOpen = $state(false);
 
 	function scrollToTurn(turnIndex: number) {
 		if (typeof document === 'undefined') return;
@@ -711,6 +777,65 @@
 			(el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
 		}
 	}
+
+	function scrollToAdjacentTurn(delta: 1 | -1) {
+		const total = turnNav.entries.length;
+		if (total === 0) return;
+		const cur = activeTurn ?? (delta > 0 ? 0 : total + 1);
+		const next = Math.min(Math.max(cur + delta, 1), total);
+		if (next !== cur) scrollToTurn(next);
+	}
+
+	// Wire an IntersectionObserver + keyboard shortcuts once the run page mounts.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+
+		const observer = new IntersectionObserver(
+			(entries) => {
+				// Track the topmost anchor that's currently intersecting.
+				const visible = entries
+					.filter((e) => e.isIntersecting)
+					.map((e) => ({
+						turn: Number((e.target as HTMLElement).dataset.turnAnchor),
+						top: e.boundingClientRect.top,
+					}))
+					.filter((e) => Number.isFinite(e.turn) && e.turn > 0);
+				if (visible.length === 0) return;
+				visible.sort((a, b) => a.top - b.top);
+				activeTurn = visible[0].turn;
+			},
+			{ rootMargin: '-80px 0px -60% 0px', threshold: 0 }
+		);
+
+		let raf = 0;
+		function observeAllAnchors() {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(() => {
+				document.querySelectorAll('[data-turn-anchor]').forEach((el) => observer.observe(el));
+			});
+		}
+		observeAllAnchors();
+		const mo = new MutationObserver(observeAllAnchors);
+		mo.observe(document.body, { childList: true, subtree: true });
+
+		function onKey(e: KeyboardEvent) {
+			// Don't trap keys inside editable surfaces.
+			const target = e.target as HTMLElement | null;
+			if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+			if (e.metaKey || e.ctrlKey || e.altKey) return;
+			if (e.key === '[') { e.preventDefault(); scrollToAdjacentTurn(-1); }
+			else if (e.key === ']') { e.preventDefault(); scrollToAdjacentTurn(1); }
+			else if (e.key === 'o' || e.key === 'O') { e.preventDefault(); outlineOpen = !outlineOpen; }
+		}
+		window.addEventListener('keydown', onKey);
+
+		return () => {
+			observer.disconnect();
+			mo.disconnect();
+			cancelAnimationFrame(raf);
+			window.removeEventListener('keydown', onKey);
+		};
+	});
 
 	/** Extract model name from run_started or llm_start events for provider icon display. */
 	let agentModel = $derived.by(() => {
@@ -1703,22 +1828,111 @@
 							itemCount={timelineItems.length}
 							{executionId}
 						/>
-					{#if timelineItems.length > 0}
-						{#if turnNav.markers.length > 1}
-							<div class="sticky top-0 z-10 mx-auto mb-2 flex w-full max-w-[1400px] items-center gap-2 overflow-x-auto rounded-md border bg-background/90 px-3 py-1.5 backdrop-blur">
-								<span class="shrink-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Jump to</span>
-								{#each turnNav.markers as m (m.itemKey)}
-									<button
-										type="button"
-										onclick={() => scrollToTurn(m.turnIndex)}
-										class="shrink-0 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-										title="Jump to turn {m.turnIndex}"
-									>
-										T{m.turnIndex}
-									</button>
-								{/each}
+					{#if allTimelineItems.length > 0}
+						<!-- Filter pills + Outline trigger. Sticky so they remain accessible while scrolling. -->
+						<div class="sticky top-0 z-10 mx-auto mb-2 flex w-full max-w-[1400px] items-center gap-1 rounded-md border bg-background/95 px-2 py-1.5 backdrop-blur">
+							{#each [{ v: 'all', label: 'All' }, { v: 'messages', label: 'Messages' }, { v: 'tools', label: 'Tools' }, { v: 'errors', label: 'Errors' }] as const as opt (opt.v)}
+								<button
+									type="button"
+									onclick={() => (timelineFilter = opt.v)}
+									class={timelineFilter === opt.v
+										? 'rounded-sm bg-accent px-2 py-1 text-[11px] font-medium text-accent-foreground transition-colors'
+										: 'rounded-sm px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'}
+								>
+									{opt.label}
+								</button>
+							{/each}
+							<div class="mx-1 h-4 w-px bg-border"></div>
+							<div class="flex items-center gap-0.5">
+								<Button
+									variant="ghost"
+									size="sm"
+									class="h-7 w-7 p-0"
+									title="Previous turn ( [ )"
+									onclick={() => scrollToAdjacentTurn(-1)}
+									disabled={turnNav.entries.length === 0}
+								>
+									<ChevronLeft class="size-3.5" />
+								</Button>
+								<span class="min-w-[52px] text-center text-[11px] font-medium tabular-nums text-muted-foreground">
+									{#if turnNav.entries.length > 0}
+										{activeTurn ?? '·'} / {turnNav.entries.length}
+									{:else}
+										—
+									{/if}
+								</span>
+								<Button
+									variant="ghost"
+									size="sm"
+									class="h-7 w-7 p-0"
+									title="Next turn ( ] )"
+									onclick={() => scrollToAdjacentTurn(1)}
+									disabled={turnNav.entries.length === 0}
+								>
+									<ChevronRight class="size-3.5" />
+								</Button>
 							</div>
-						{/if}
+							<div class="ml-auto flex items-center gap-1">
+								<span class="hidden text-[10px] text-muted-foreground/70 md:inline">
+									{timelineItems.length} of {allTimelineItems.length}
+								</span>
+								<Sheet bind:open={outlineOpen}>
+									<SheetTrigger>
+										<Button variant="outline" size="sm" class="h-7 gap-1.5 px-2 text-[11px]" title="Open outline ( o )">
+											<ListTree class="size-3.5" />
+											Outline
+										</Button>
+									</SheetTrigger>
+									<SheetContent side="right" class="w-[380px] sm:max-w-[400px]">
+										<SheetHeader>
+											<SheetTitle>Timeline outline</SheetTitle>
+										</SheetHeader>
+										<div class="flex h-[calc(100%-4rem)] flex-col overflow-y-auto pr-1">
+											{#if turnNav.entries.length === 0}
+												<p class="px-2 py-6 text-center text-xs text-muted-foreground">No assistant turns yet.</p>
+											{:else}
+												<ol class="space-y-1">
+													{#each turnNav.entries as entry (entry.itemKey)}
+														{@const isActive = activeTurn === entry.turnIndex}
+														<li>
+															<button
+																type="button"
+																onclick={() => { scrollToTurn(entry.turnIndex); outlineOpen = false; }}
+																class={isActive
+																	? 'w-full rounded-md border border-accent bg-accent/40 px-3 py-2 text-left transition-colors'
+																	: 'w-full rounded-md border border-transparent px-3 py-2 text-left transition-colors hover:border-border hover:bg-muted/40'}
+															>
+																<div class="flex items-baseline gap-2">
+																	<span class={isActive ? 'text-[10px] font-semibold tabular-nums text-foreground' : 'text-[10px] font-medium tabular-nums text-muted-foreground'}>
+																		T{entry.turnIndex}
+																	</span>
+																	{#if entry.hasError}
+																		<AlertTriangle class="size-3 shrink-0 text-red-500/80" />
+																	{/if}
+																	{#if entry.tools.length > 0}
+																		<span class="ml-auto shrink-0 text-[10px] text-muted-foreground">
+																			{entry.tools.length} tool{entry.tools.length === 1 ? '' : 's'}
+																		</span>
+																	{/if}
+																</div>
+																<p class="mt-0.5 line-clamp-2 text-[12px] leading-snug text-foreground">{entry.preview}</p>
+																{#if entry.tools.length > 0}
+																	<p class="mt-1 truncate text-[10px] text-muted-foreground">
+																		{entry.tools.slice(0, 4).join(' · ')}{entry.tools.length > 4 ? ` · +${entry.tools.length - 4}` : ''}
+																	</p>
+																{/if}
+															</button>
+														</li>
+													{/each}
+												</ol>
+											{/if}
+										</div>
+									</SheetContent>
+								</Sheet>
+							</div>
+						</div>
+					{/if}
+					{#if timelineItems.length > 0}
 						<ChatContainerContent class="mx-auto w-full max-w-[1400px] divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm">
 							{#each timelineItems as item, i (item.key)}
 								{@const turnAnchor = turnNav.byKey.get(item.key)}
