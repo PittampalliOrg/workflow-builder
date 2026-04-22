@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import puppeteer, {
 	type Browser,
 	type ElementHandle,
@@ -38,6 +37,17 @@ const CLEANUP_INTERVAL_MS = Number.parseInt(
 	process.env.BROWSERSTATION_CLEANUP_INTERVAL_MS || "30000",
 	10,
 );
+const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
+const DAPR_HTTP_BASE_URL = trimTrailingSlash(
+	process.env.DAPR_HTTP_BASE_URL || `http://127.0.0.1:${DAPR_HTTP_PORT}`,
+);
+const BROWSERSTATION_MCP_STATESTORE = (
+	process.env.BROWSERSTATION_MCP_STATESTORE || ""
+).trim();
+
+const HANDLE_INDEX_KEY = "browserstation-mcp:handles";
+const HANDLE_KEY_PREFIX = "browserstation-mcp:handle:";
+const IDEMPOTENCY_KEY_PREFIX = "browserstation-mcp:idempotency:";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -53,17 +63,47 @@ type BrowserstationBrowserInfo = {
 	chrome_ready: boolean;
 };
 
-type SessionState = {
-	transport: StreamableHTTPServerTransport;
-	activeBrowserId?: string;
-	ownedBrowserIds: Set<string>;
+type HandleRecord = {
+	sessionHandle: string;
+	browserId: string;
+	ownerKey: string;
+	idempotencyKey?: string;
+	initialUrl?: string;
+	createdAt: number;
 	lastUsedAt: number;
 };
 
-const sessions = new Map<string, SessionState>();
+type BrowserActionArgs = {
+	session_handle: string;
+	timeout_ms?: number;
+};
 
 function trimTrailingSlash(value: string): string {
 	return value.replace(/\/+$/, "");
+}
+
+function now(): number {
+	return Date.now();
+}
+
+function stateStoreEnabled(): boolean {
+	return BROWSERSTATION_MCP_STATESTORE.length > 0;
+}
+
+function ensureStateStoreConfigured(): void {
+	if (!stateStoreEnabled()) {
+		throw new Error(
+			"BROWSERSTATION_MCP_STATESTORE is required for stateless browserstation-mcp",
+		);
+	}
+}
+
+function handleKey(sessionHandle: string): string {
+	return `${HANDLE_KEY_PREFIX}${sessionHandle}`;
+}
+
+function idempotencyKey(ownerKey: string, key: string): string {
+	return `${IDEMPOTENCY_KEY_PREFIX}${encodeURIComponent(ownerKey)}:${encodeURIComponent(key)}`;
 }
 
 function sendJson(
@@ -79,7 +119,6 @@ function setCorsHeaders(res: http.ServerResponse): void {
 	res.setHeader("Access-Control-Allow-Origin", "*");
 	res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
 	res.setHeader("Access-Control-Allow-Headers", "*");
-	res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 }
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
@@ -111,8 +150,136 @@ function errorResult(message: string) {
 	};
 }
 
-function touchSession(state: SessionState): void {
-	state.lastUsedAt = Date.now();
+async function loadStateJson<T>(key: string): Promise<T | null> {
+	ensureStateStoreConfigured();
+	const response = await fetch(
+		`${DAPR_HTTP_BASE_URL}/v1.0/state/${encodeURIComponent(BROWSERSTATION_MCP_STATESTORE)}/${encodeURIComponent(key)}`,
+		{
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(BROWSERSTATION_REQUEST_TIMEOUT_MS),
+		},
+	);
+	if (response.status === 204 || response.status === 404) {
+		return null;
+	}
+	if (!response.ok) {
+		throw new Error(`State GET failed (${response.status})`);
+	}
+	const text = await response.text();
+	if (!text.trim()) {
+		return null;
+	}
+	return JSON.parse(text) as T;
+}
+
+async function saveStateJson(key: string, value: unknown): Promise<void> {
+	ensureStateStoreConfigured();
+	const response = await fetch(
+		`${DAPR_HTTP_BASE_URL}/v1.0/state/${encodeURIComponent(BROWSERSTATION_MCP_STATESTORE)}`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify([{ key, value }]),
+			signal: AbortSignal.timeout(BROWSERSTATION_REQUEST_TIMEOUT_MS),
+		},
+	);
+	if (!response.ok) {
+		throw new Error(`State POST failed (${response.status})`);
+	}
+}
+
+async function deleteStateKey(key: string): Promise<void> {
+	ensureStateStoreConfigured();
+	const response = await fetch(
+		`${DAPR_HTTP_BASE_URL}/v1.0/state/${encodeURIComponent(BROWSERSTATION_MCP_STATESTORE)}/${encodeURIComponent(key)}`,
+		{
+			method: "DELETE",
+			signal: AbortSignal.timeout(BROWSERSTATION_REQUEST_TIMEOUT_MS),
+		},
+	);
+	if (response.status === 404) {
+		return;
+	}
+	if (!response.ok) {
+		throw new Error(`State DELETE failed (${response.status})`);
+	}
+}
+
+async function loadHandleIndex(): Promise<string[]> {
+	const value = await loadStateJson<unknown>(HANDLE_INDEX_KEY);
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.map((entry) => String(entry || "").trim())
+		.filter(Boolean);
+}
+
+async function saveHandleIndex(handles: string[]): Promise<void> {
+	const uniqueHandles = [...new Set(handles.map((handle) => handle.trim()).filter(Boolean))];
+	if (uniqueHandles.length === 0) {
+		await deleteStateKey(HANDLE_INDEX_KEY);
+		return;
+	}
+	await saveStateJson(HANDLE_INDEX_KEY, uniqueHandles);
+}
+
+async function addHandleToIndex(sessionHandle: string): Promise<void> {
+	const handles = new Set(await loadHandleIndex());
+	handles.add(sessionHandle);
+	await saveHandleIndex([...handles]);
+}
+
+async function removeHandleFromIndex(sessionHandle: string): Promise<void> {
+	const handles = new Set(await loadHandleIndex());
+	handles.delete(sessionHandle);
+	await saveHandleIndex([...handles]);
+}
+
+async function loadHandleRecord(
+	sessionHandle: string,
+): Promise<HandleRecord | null> {
+	return loadStateJson<HandleRecord>(handleKey(sessionHandle));
+}
+
+async function saveHandleRecord(record: HandleRecord): Promise<void> {
+	await saveStateJson(handleKey(record.sessionHandle), record);
+	await addHandleToIndex(record.sessionHandle);
+}
+
+async function deleteHandleRecord(sessionHandle: string): Promise<void> {
+	await deleteStateKey(handleKey(sessionHandle));
+	await removeHandleFromIndex(sessionHandle);
+}
+
+async function loadHandleForIdempotency(
+	ownerKey: string,
+	key: string,
+): Promise<string | null> {
+	const value = await loadStateJson<unknown>(idempotencyKey(ownerKey, key));
+	if (!value) {
+		return null;
+	}
+	const sessionHandle = String(value).trim();
+	return sessionHandle || null;
+}
+
+async function saveIdempotencyMapping(
+	ownerKey: string,
+	key: string,
+	sessionHandle: string,
+): Promise<void> {
+	await saveStateJson(idempotencyKey(ownerKey, key), sessionHandle);
+}
+
+async function deleteIdempotencyMapping(
+	ownerKey?: string,
+	key?: string,
+): Promise<void> {
+	if (!ownerKey || !key) {
+		return;
+	}
+	await deleteStateKey(idempotencyKey(ownerKey, key));
 }
 
 function browserstationHeaders(includeJson = false): HeadersInit {
@@ -126,11 +293,11 @@ function browserstationHeaders(includeJson = false): HeadersInit {
 	return headers;
 }
 
-async function browserstationFetch<T>(
+async function browserstationRequest(
 	path: string,
 	init?: RequestInit,
-): Promise<T> {
-	const response = await fetch(`${BROWSERSTATION_BASE_URL}${path}`, {
+): Promise<Response> {
+	return fetch(`${BROWSERSTATION_BASE_URL}${path}`, {
 		...init,
 		headers: {
 			...browserstationHeaders(init?.body !== undefined),
@@ -138,6 +305,13 @@ async function browserstationFetch<T>(
 		},
 		signal: AbortSignal.timeout(BROWSERSTATION_REQUEST_TIMEOUT_MS),
 	});
+}
+
+async function browserstationFetch<T>(
+	path: string,
+	init?: RequestInit,
+): Promise<T> {
+	const response = await browserstationRequest(path, init);
 	if (!response.ok) {
 		const body = await response.text().catch(() => "");
 		throw new Error(
@@ -162,19 +336,52 @@ async function getBrowserInfo(
 	);
 }
 
-async function deleteBrowser(browserId: string): Promise<void> {
-	await browserstationFetch(`/browsers/${encodeURIComponent(browserId)}`, {
-		method: "DELETE",
-	});
+async function getBrowserInfoMaybe(
+	browserId: string,
+): Promise<BrowserstationBrowserInfo | null> {
+	const response = await browserstationRequest(
+		`/browsers/${encodeURIComponent(browserId)}`,
+	);
+	if (response.status === 404) {
+		return null;
+	}
+	if (!response.ok) {
+		const body = await response.text().catch(() => "");
+		throw new Error(
+			`Browserstation request failed (${response.status}): ${body || response.statusText}`,
+		);
+	}
+	return (await response.json()) as BrowserstationBrowserInfo;
+}
+
+async function deleteBrowser(
+	browserId: string,
+	options?: { ignoreMissing?: boolean },
+): Promise<void> {
+	const response = await browserstationRequest(
+		`/browsers/${encodeURIComponent(browserId)}`,
+		{
+			method: "DELETE",
+		},
+	);
+	if (response.status === 404 && options?.ignoreMissing) {
+		return;
+	}
+	if (!response.ok) {
+		const body = await response.text().catch(() => "");
+		throw new Error(
+			`Browserstation request failed (${response.status}): ${body || response.statusText}`,
+		);
+	}
 }
 
 async function waitForBrowserReady(
 	browserId: string,
 	timeoutMs = BROWSERSTATION_READY_TIMEOUT_MS,
 ): Promise<BrowserstationBrowserInfo> {
-	const started = Date.now();
+	const started = now();
 	let lastInfo: BrowserstationBrowserInfo | undefined;
-	while (Date.now() - started < timeoutMs) {
+	while (now() - started < timeoutMs) {
 		lastInfo = await getBrowserInfo(browserId);
 		if (lastInfo.chrome_ready && lastInfo.websocket_url) {
 			return lastInfo;
@@ -197,28 +404,25 @@ function toWebSocketUrl(pathOrUrl: string): string {
 
 async function connectBrowser(
 	browserId: string,
-): Promise<{ browser: Browser; page: Page; wsUrl: string }> {
+): Promise<{ browser: Browser; page: Page }> {
 	const info = await waitForBrowserReady(browserId);
 	if (!info.websocket_url) {
 		throw new Error(`Browser ${browserId} does not expose a websocket URL`);
 	}
-	const wsUrl = toWebSocketUrl(info.websocket_url);
 	const browser = await puppeteer.connect({
-		browserWSEndpoint: wsUrl,
+		browserWSEndpoint: toWebSocketUrl(info.websocket_url),
 		protocolTimeout: BROWSERSTATION_REQUEST_TIMEOUT_MS,
 		defaultViewport: null,
 	});
 	const pages = await browser.pages();
 	const page = pages[0] ?? (await browser.newPage());
-	return { browser, page, wsUrl };
+	return { browser, page };
 }
 
 async function withBrowserPage<T>(
-	state: SessionState,
 	browserId: string,
 	fn: (page: Page) => Promise<T>,
 ): Promise<T> {
-	touchSession(state);
 	const { browser, page } = await connectBrowser(browserId);
 	try {
 		return await fn(page);
@@ -227,39 +431,42 @@ async function withBrowserPage<T>(
 	}
 }
 
-function resolveBrowserId(
-	state: SessionState,
-	requestedBrowserId?: string,
-): string {
-	const browserId = requestedBrowserId?.trim() || state.activeBrowserId;
-	if (!browserId) {
-		throw new Error(
-			"No browser_id provided and no active session browser is available",
-		);
-	}
-	state.activeBrowserId = browserId;
-	return browserId;
+async function touchHandle(record: HandleRecord): Promise<HandleRecord> {
+	const updated = {
+		...record,
+		lastUsedAt: now(),
+	};
+	await saveHandleRecord(updated);
+	return updated;
 }
 
-async function cleanupSession(
-	sessionId: string,
-	state: SessionState,
+async function cleanupHandleRecord(
+	record: HandleRecord,
 	reason: string,
 ): Promise<void> {
-	const ownedIds = [...state.ownedBrowserIds];
-	state.ownedBrowserIds.clear();
-	state.activeBrowserId = undefined;
-	for (const browserId of ownedIds) {
-		try {
-			await deleteBrowser(browserId);
-		} catch (error) {
-			console.warn(
-				`[browserstation-mcp] failed to close browser ${browserId} during ${reason}:`,
-				error,
-			);
+	try {
+		await deleteBrowser(record.browserId, { ignoreMissing: true });
+	} catch (error) {
+		console.warn(
+			`[browserstation-mcp] failed to close browser ${record.browserId} during ${reason}:`,
+			error,
+		);
+	}
+	await deleteHandleRecord(record.sessionHandle);
+	await deleteIdempotencyMapping(record.ownerKey, record.idempotencyKey);
+}
+
+async function findHandleByBrowserId(
+	browserId: string,
+): Promise<HandleRecord | null> {
+	const handles = await loadHandleIndex();
+	for (const sessionHandle of handles) {
+		const record = await loadHandleRecord(sessionHandle);
+		if (record?.browserId === browserId) {
+			return record;
 		}
 	}
-	sessions.delete(sessionId);
+	return null;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -469,7 +676,133 @@ async function assertSafeUrl(rawUrl: string): Promise<void> {
 	}
 }
 
-function createMcpServer(state: SessionState) {
+function normalizeOwnerKey(ownerKey?: string): string {
+	return ownerKey?.trim() || "global";
+}
+
+function normalizeOpenIdempotencyKey(args: {
+	initial_url?: string;
+	idempotency_key?: string;
+}): string {
+	const explicit = args.idempotency_key?.trim();
+	if (explicit) {
+		return explicit;
+	}
+	return args.initial_url?.trim() ? `initial_url:${args.initial_url.trim()}` : "open";
+}
+
+async function resolveHandle(
+	sessionHandle: string,
+): Promise<HandleRecord> {
+	const record = await loadHandleRecord(sessionHandle.trim());
+	if (!record) {
+		throw new Error(`Session handle not found: ${sessionHandle}`);
+	}
+	return touchHandle(record);
+}
+
+async function resolveReusedOpen(
+	ownerKey: string,
+	openKey: string,
+	timeoutMs: number,
+): Promise<HandleRecord | null> {
+	const existingHandle = await loadHandleForIdempotency(ownerKey, openKey);
+	if (!existingHandle) {
+		return null;
+	}
+	const record = await loadHandleRecord(existingHandle);
+	if (!record) {
+		await deleteIdempotencyMapping(ownerKey, openKey);
+		return null;
+	}
+	const browserInfo = await getBrowserInfoMaybe(record.browserId);
+	if (!browserInfo) {
+		return {
+			...record,
+			browserId: "",
+		};
+	}
+	await waitForBrowserReady(record.browserId, timeoutMs);
+	return touchHandle(record);
+}
+
+async function upsertHandleBrowser(
+	record: HandleRecord,
+	browserId: string,
+): Promise<HandleRecord> {
+	const updated: HandleRecord = {
+		...record,
+		browserId,
+		lastUsedAt: now(),
+	};
+	await saveHandleRecord(updated);
+	if (updated.idempotencyKey) {
+		await saveIdempotencyMapping(
+			updated.ownerKey,
+			updated.idempotencyKey,
+			updated.sessionHandle,
+		);
+	}
+	return updated;
+}
+
+async function createOrReuseHandle(args: {
+	initial_url?: string;
+	idempotency_key?: string;
+	owner_key?: string;
+	timeout_ms?: number;
+}): Promise<{
+	record: HandleRecord;
+	reused: boolean;
+	initialState?: JsonRecord;
+}> {
+	if (args.initial_url) {
+		await assertSafeUrl(args.initial_url);
+	}
+	const ownerKey = normalizeOwnerKey(args.owner_key);
+	const openKey = normalizeOpenIdempotencyKey(args);
+	const timeoutMs = args.timeout_ms || BROWSERSTATION_READY_TIMEOUT_MS;
+	const reused = await resolveReusedOpen(ownerKey, openKey, timeoutMs);
+
+	if (reused && reused.browserId) {
+		return { record: reused, reused: true };
+	}
+
+	const sessionHandle = reused?.sessionHandle || randomUUID();
+	const createdAt = reused?.createdAt || now();
+	const created = await createBrowser();
+	const recordBase: HandleRecord = {
+		sessionHandle,
+		browserId: created.browser_id,
+		ownerKey,
+		idempotencyKey: openKey,
+		initialUrl: args.initial_url?.trim(),
+		createdAt,
+		lastUsedAt: now(),
+	};
+
+	try {
+		let initialState: JsonRecord | undefined;
+		if (args.initial_url) {
+			initialState = await withBrowserPage(created.browser_id, async (page) => {
+				await page.goto(args.initial_url!, {
+					timeout: timeoutMs,
+					waitUntil: "domcontentloaded",
+				});
+				return pageSummary(page);
+			});
+		}
+		const persisted = await upsertHandleBrowser(recordBase, created.browser_id);
+		return { record: persisted, reused: false, initialState };
+	} catch (error) {
+		await deleteBrowser(created.browser_id, { ignoreMissing: true }).catch(
+			() => undefined,
+		);
+		throw error;
+	}
+}
+
+function createMcpServer() {
 	const server = new McpServer({
 		name: "browserstation-mcp",
 		version: "1.0.0",
@@ -487,6 +820,18 @@ function createMcpServer(state: SessionState) {
 					.url()
 					.optional()
 					.describe("Optional initial URL to open after the browser starts."),
+				idempotency_key: z
+					.string()
+					.optional()
+					.describe(
+						"Optional idempotency key. Requests with the same owner_key and idempotency_key reuse the same durable handle.",
+					),
+				owner_key: z
+					.string()
+					.optional()
+					.describe(
+						"Optional logical owner scope for idempotency. Defaults to a global scope.",
+					),
 				timeout_ms: z
 					.number()
 					.int()
@@ -495,31 +840,21 @@ function createMcpServer(state: SessionState) {
 					.describe("Optional readiness timeout override in milliseconds."),
 			},
 		},
-		async (args: { initial_url?: string; timeout_ms?: number }) => {
+		async (args: {
+			initial_url?: string;
+			idempotency_key?: string;
+			owner_key?: string;
+			timeout_ms?: number;
+		}) => {
 			try {
-				if (args.initial_url) {
-					await assertSafeUrl(args.initial_url);
-				}
-				const created = await createBrowser();
-				const browserId = created.browser_id;
-				state.activeBrowserId = browserId;
-				state.ownedBrowserIds.add(browserId);
-				touchSession(state);
-
-				let initialState: JsonRecord | undefined;
-				if (args.initial_url) {
-					initialState = await withBrowserPage(state, browserId, async (page) => {
-						await page.goto(args.initial_url!, {
-							timeout: args.timeout_ms || BROWSERSTATION_READY_TIMEOUT_MS,
-							waitUntil: "domcontentloaded",
-						});
-						return pageSummary(page);
-					});
-				}
-
+				const result = await createOrReuseHandle(args);
 				return textResult({
-					browser_id: browserId,
-					initial_state: initialState,
+					session_handle: result.record.sessionHandle,
+					browser_id: result.record.browserId,
+					owner_key: result.record.ownerKey,
+					idempotency_key: result.record.idempotencyKey,
+					reused: result.reused,
+					initial_state: result.initialState,
 				});
 			} catch (error) {
 				return errorResult(
@@ -535,23 +870,44 @@ function createMcpServer(state: SessionState) {
 			title: "Close Browser Session",
 			description: "Close a Browserstation browser session and release its worker.",
 			inputSchema: {
+				session_handle: z
+					.string()
+					.optional()
+					.describe("Durable browser session handle returned from browser_open_session."),
 				browser_id: z
 					.string()
 					.uuid()
 					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Optional direct Browserstation browser_id for compatibility/debugging."),
 			},
 		},
-		async (args: { browser_id?: string }) => {
+		async (args: { session_handle?: string; browser_id?: string }) => {
 			try {
-				const browserId = resolveBrowserId(state, args.browser_id);
-				await deleteBrowser(browserId);
-				state.ownedBrowserIds.delete(browserId);
-				if (state.activeBrowserId === browserId) {
-					state.activeBrowserId = undefined;
+				let record: HandleRecord | null = null;
+				if (args.session_handle?.trim()) {
+					record = await loadHandleRecord(args.session_handle.trim());
+				} else if (args.browser_id?.trim()) {
+					record = await findHandleByBrowserId(args.browser_id.trim());
 				}
-				touchSession(state);
-				return textResult({ browser_id: browserId, status: "closed" });
+
+				if (record) {
+					await cleanupHandleRecord(record, "explicit close");
+					return textResult({
+						session_handle: record.sessionHandle,
+						browser_id: record.browserId,
+						status: "closed",
+					});
+				}
+
+				if (args.browser_id?.trim()) {
+					await deleteBrowser(args.browser_id.trim(), { ignoreMissing: true });
+					return textResult({
+						browser_id: args.browser_id.trim(),
+						status: "closed",
+					});
+				}
+
+				throw new Error("Provide session_handle or browser_id");
 			} catch (error) {
 				return errorResult(
 					`Failed to close Browserstation session: ${(error as Error).message}`,
@@ -566,11 +922,9 @@ function createMcpServer(state: SessionState) {
 			title: "Navigate Browser",
 			description: "Navigate an existing browser session to a new URL.",
 			inputSchema: {
-				browser_id: z
+				session_handle: z
 					.string()
-					.uuid()
-					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Durable browser session handle returned from browser_open_session."),
 				url: z.string().url().describe("Destination URL."),
 				timeout_ms: z
 					.number()
@@ -580,18 +934,22 @@ function createMcpServer(state: SessionState) {
 					.describe("Optional navigation timeout."),
 			},
 		},
-		async (args: { browser_id?: string; url: string; timeout_ms?: number }) => {
+		async (args: BrowserActionArgs & { url: string }) => {
 			try {
 				await assertSafeUrl(args.url);
-				const browserId = resolveBrowserId(state, args.browser_id);
-				const result = await withBrowserPage(state, browserId, async (page) => {
+				const record = await resolveHandle(args.session_handle);
+				const result = await withBrowserPage(record.browserId, async (page) => {
 					await page.goto(args.url, {
 						timeout: args.timeout_ms || BROWSERSTATION_REQUEST_TIMEOUT_MS,
 						waitUntil: "domcontentloaded",
 					});
 					return pageSummary(page);
 				});
-				return textResult({ browser_id: browserId, ...result });
+				return textResult({
+					session_handle: record.sessionHandle,
+					browser_id: record.browserId,
+					...result,
+				});
 			} catch (error) {
 				return errorResult(
 					`Browser navigation failed: ${(error as Error).message}`,
@@ -607,18 +965,20 @@ function createMcpServer(state: SessionState) {
 			description:
 				"Return a structured summary of the current page including title, URL, visible text excerpt, links, buttons, and form fields.",
 			inputSchema: {
-				browser_id: z
+				session_handle: z
 					.string()
-					.uuid()
-					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Durable browser session handle returned from browser_open_session."),
 			},
 		},
-		async (args: { browser_id?: string }) => {
+		async (args: BrowserActionArgs) => {
 			try {
-				const browserId = resolveBrowserId(state, args.browser_id);
-				const result = await withBrowserPage(state, browserId, pageSummary);
-				return textResult({ browser_id: browserId, ...result });
+				const record = await resolveHandle(args.session_handle);
+				const result = await withBrowserPage(record.browserId, pageSummary);
+				return textResult({
+					session_handle: record.sessionHandle,
+					browser_id: record.browserId,
+					...result,
+				});
 			} catch (error) {
 				return errorResult(
 					`Browser snapshot failed: ${(error as Error).message}`,
@@ -634,11 +994,9 @@ function createMcpServer(state: SessionState) {
 			description:
 				"Click an element in the current page by CSS selector or visible text.",
 			inputSchema: {
-				browser_id: z
+				session_handle: z
 					.string()
-					.uuid()
-					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Durable browser session handle returned from browser_open_session."),
 				selector: z
 					.string()
 					.optional()
@@ -655,16 +1013,16 @@ function createMcpServer(state: SessionState) {
 					.describe("Optional element wait timeout."),
 			},
 		},
-		async (args: {
-			browser_id?: string;
-			selector?: string;
-			text?: string;
-			timeout_ms?: number;
-		}) => {
+		async (
+			args: BrowserActionArgs & {
+				selector?: string;
+				text?: string;
+			},
+		) => {
 			try {
-				const browserId = resolveBrowserId(state, args.browser_id);
+				const record = await resolveHandle(args.session_handle);
 				const timeoutMs = args.timeout_ms || BROWSERSTATION_REQUEST_TIMEOUT_MS;
-				const result = await withBrowserPage(state, browserId, async (page) => {
+				const result = await withBrowserPage(record.browserId, async (page) => {
 					const element = await lookupElement({
 						page,
 						selector: args.selector,
@@ -677,7 +1035,11 @@ function createMcpServer(state: SessionState) {
 					);
 					return pageSummary(page);
 				});
-				return textResult({ browser_id: browserId, ...result });
+				return textResult({
+					session_handle: record.sessionHandle,
+					browser_id: record.browserId,
+					...result,
+				});
 			} catch (error) {
 				return errorResult(`Browser click failed: ${(error as Error).message}`);
 			}
@@ -691,11 +1053,9 @@ function createMcpServer(state: SessionState) {
 			description:
 				"Type text into an input, textarea, or editable element identified by CSS selector.",
 			inputSchema: {
-				browser_id: z
+				session_handle: z
 					.string()
-					.uuid()
-					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Durable browser session handle returned from browser_open_session."),
 				selector: z.string().describe("CSS selector for the target input."),
 				text: z.string().describe("Text to type into the element."),
 				clear: z
@@ -714,18 +1074,18 @@ function createMcpServer(state: SessionState) {
 					.describe("Optional element wait timeout."),
 			},
 		},
-		async (args: {
-			browser_id?: string;
-			selector: string;
-			text: string;
-			clear?: boolean;
-			submit?: boolean;
-			timeout_ms?: number;
-		}) => {
+		async (
+			args: BrowserActionArgs & {
+				selector: string;
+				text: string;
+				clear?: boolean;
+				submit?: boolean;
+			},
+		) => {
 			try {
-				const browserId = resolveBrowserId(state, args.browser_id);
+				const record = await resolveHandle(args.session_handle);
 				const timeoutMs = args.timeout_ms || BROWSERSTATION_REQUEST_TIMEOUT_MS;
-				const result = await withBrowserPage(state, browserId, async (page) => {
+				const result = await withBrowserPage(record.browserId, async (page) => {
 					const element = await lookupElement({
 						page,
 						selector: args.selector,
@@ -747,7 +1107,11 @@ function createMcpServer(state: SessionState) {
 					);
 					return pageSummary(page);
 				});
-				return textResult({ browser_id: browserId, ...result });
+				return textResult({
+					session_handle: record.sessionHandle,
+					browser_id: record.browserId,
+					...result,
+				});
 			} catch (error) {
 				return errorResult(`Browser type failed: ${(error as Error).message}`);
 			}
@@ -761,11 +1125,9 @@ function createMcpServer(state: SessionState) {
 			description:
 				"Wait for a selector or visible text to appear in the current page.",
 			inputSchema: {
-				browser_id: z
+				session_handle: z
 					.string()
-					.uuid()
-					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Durable browser session handle returned from browser_open_session."),
 				selector: z
 					.string()
 					.optional()
@@ -782,16 +1144,16 @@ function createMcpServer(state: SessionState) {
 					.describe("Optional wait timeout."),
 			},
 		},
-		async (args: {
-			browser_id?: string;
-			selector?: string;
-			text?: string;
-			timeout_ms?: number;
-		}) => {
+		async (
+			args: BrowserActionArgs & {
+				selector?: string;
+				text?: string;
+			},
+		) => {
 			try {
-				const browserId = resolveBrowserId(state, args.browser_id);
+				const record = await resolveHandle(args.session_handle);
 				const timeoutMs = args.timeout_ms || BROWSERSTATION_REQUEST_TIMEOUT_MS;
-				const result = await withBrowserPage(state, browserId, async (page) => {
+				const result = await withBrowserPage(record.browserId, async (page) => {
 					if (args.selector) {
 						await page.waitForSelector(args.selector, {
 							visible: true,
@@ -804,7 +1166,11 @@ function createMcpServer(state: SessionState) {
 					}
 					return pageSummary(page);
 				});
-				return textResult({ browser_id: browserId, ...result });
+				return textResult({
+					session_handle: record.sessionHandle,
+					browser_id: record.browserId,
+					...result,
+				});
 			} catch (error) {
 				return errorResult(
 					`Browser wait_for failed: ${(error as Error).message}`,
@@ -820,11 +1186,9 @@ function createMcpServer(state: SessionState) {
 			description:
 				"Capture a PNG or JPEG screenshot of the current browser page.",
 			inputSchema: {
-				browser_id: z
+				session_handle: z
 					.string()
-					.uuid()
-					.optional()
-					.describe("Optional Browserstation browser_id. Defaults to the active session browser."),
+					.describe("Durable browser session handle returned from browser_open_session."),
 				full_page: z
 					.boolean()
 					.optional()
@@ -835,15 +1199,16 @@ function createMcpServer(state: SessionState) {
 					.describe("Screenshot format."),
 			},
 		},
-		async (args: {
-			browser_id?: string;
-			full_page?: boolean;
-			type?: "png" | "jpeg";
-		}) => {
+		async (
+			args: BrowserActionArgs & {
+				full_page?: boolean;
+				type?: "png" | "jpeg";
+			},
+		) => {
 			try {
-				const browserId = resolveBrowserId(state, args.browser_id);
+				const record = await resolveHandle(args.session_handle);
 				const imageType = args.type || "png";
-				const payload = await withBrowserPage(state, browserId, async (page) => {
+				const payload = await withBrowserPage(record.browserId, async (page) => {
 					const summary = await pageSummary(page);
 					const bytes = await page.screenshot({
 						fullPage: args.full_page !== false,
@@ -856,7 +1221,11 @@ function createMcpServer(state: SessionState) {
 						{
 							type: "text" as const,
 							text: JSON.stringify(
-								{ browser_id: browserId, ...payload.summary },
+								{
+									session_handle: record.sessionHandle,
+									browser_id: record.browserId,
+									...payload.summary,
+								},
 								null,
 								2,
 							),
@@ -876,82 +1245,61 @@ function createMcpServer(state: SessionState) {
 		},
 	);
 
-	return server.server;
+	return server;
+}
+
+async function reconcilePersistedHandles(): Promise<{
+	activeHandleCount: number;
+}> {
+	const handles = await loadHandleIndex();
+	let activeHandleCount = 0;
+	for (const sessionHandle of handles) {
+		const record = await loadHandleRecord(sessionHandle);
+		if (!record) {
+			await removeHandleFromIndex(sessionHandle);
+			continue;
+		}
+		if (now() - record.lastUsedAt >= IDLE_TTL_MS) {
+			await cleanupHandleRecord(record, "idle timeout");
+			continue;
+		}
+		const info = await getBrowserInfoMaybe(record.browserId);
+		if (!info) {
+			await deleteHandleRecord(record.sessionHandle);
+			await deleteIdempotencyMapping(record.ownerKey, record.idempotencyKey);
+			continue;
+		}
+		activeHandleCount += 1;
+	}
+	return { activeHandleCount };
+}
+
+function startCleanupLoop(): void {
+	setInterval(() => {
+		void reconcilePersistedHandles().catch((error) => {
+			console.warn("[browserstation-mcp] cleanup sweep failed:", error);
+		});
+	}, CLEANUP_INTERVAL_MS).unref();
 }
 
 async function handleMcpPost(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
 ): Promise<void> {
-	const sessionId = req.headers["mcp-session-id"] as string | undefined;
-	let transport: StreamableHTTPServerTransport;
 	const body = await parseBody(req);
+	const transport = new StreamableHTTPServerTransport({
+		sessionIdGenerator: undefined,
+		enableJsonResponse: true,
+	});
+	const server = createMcpServer();
+	await server.connect(transport);
 
-	if (sessionId && sessions.has(sessionId)) {
-		transport = sessions.get(sessionId)!.transport;
-		touchSession(sessions.get(sessionId)!);
-	} else if (!sessionId && isInitializeRequest(body)) {
-		const sessionState: SessionState = {
-			transport: undefined as unknown as StreamableHTTPServerTransport,
-			ownedBrowserIds: new Set<string>(),
-			lastUsedAt: Date.now(),
-		};
-
-		transport = new StreamableHTTPServerTransport({
-			sessionIdGenerator: () => randomUUID(),
-			onsessioninitialized: (sid) => {
-				sessionState.transport = transport;
-				sessions.set(sid, sessionState);
-				console.log(`[browserstation-mcp] session initialized: ${sid}`);
-			},
-		});
-
-		transport.onclose = () => {
-			if (!transport.sessionId) return;
-			void cleanupSession(transport.sessionId, sessionState, "session close");
-			console.log(
-				`[browserstation-mcp] session closed: ${transport.sessionId}`,
-			);
-		};
-
-		const server = createMcpServer(sessionState);
-		await server.connect(transport);
-	} else {
-		sendJson(res, 400, {
-			error: { message: "Bad Request: No valid session ID provided" },
-		});
-		return;
+	try {
+		await transport.handleRequest(req, res, body);
+	} finally {
+		await transport.close().catch(() => undefined);
+		await server.close().catch(() => undefined);
 	}
-
-	await transport.handleRequest(req, res, body);
-}
-
-async function handleMcpGet(
-	req: http.IncomingMessage,
-	res: http.ServerResponse,
-): Promise<void> {
-	const sessionId = req.headers["mcp-session-id"] as string | undefined;
-	if (!sessionId || !sessions.has(sessionId)) {
-		sendJson(res, 404, { error: "Session not found" });
-		return;
-	}
-	const state = sessions.get(sessionId)!;
-	touchSession(state);
-	await state.transport.handleRequest(req, res);
-}
-
-async function handleMcpDelete(
-	req: http.IncomingMessage,
-	res: http.ServerResponse,
-): Promise<void> {
-	const sessionId = req.headers["mcp-session-id"] as string | undefined;
-	if (!sessionId || !sessions.has(sessionId)) {
-		sendJson(res, 404, { error: "Session not found" });
-		return;
-	}
-	const state = sessions.get(sessionId)!;
-	touchSession(state);
-	await state.transport.handleRequest(req, res);
 }
 
 async function handleRequest(
@@ -969,10 +1317,13 @@ async function handleRequest(
 	}
 
 	if (url === "/health" && method === "GET") {
+		const reconcile = await reconcilePersistedHandles();
 		sendJson(res, 200, {
 			service: "browserstation-mcp",
 			browserstationBaseUrl: BROWSERSTATION_BASE_URL,
-			activeSessions: sessions.size,
+			daprHttpBaseUrl: DAPR_HTTP_BASE_URL,
+			stateStore: BROWSERSTATION_MCP_STATESTORE,
+			activeHandles: reconcile.activeHandleCount,
 		});
 		return;
 	}
@@ -980,14 +1331,6 @@ async function handleRequest(
 	if (url === "/mcp") {
 		if (method === "POST") {
 			await handleMcpPost(req, res);
-			return;
-		}
-		if (method === "GET") {
-			await handleMcpGet(req, res);
-			return;
-		}
-		if (method === "DELETE") {
-			await handleMcpDelete(req, res);
 			return;
 		}
 		res.writeHead(405);
@@ -999,21 +1342,10 @@ async function handleRequest(
 	res.end("Not Found");
 }
 
-function startIdleCleanupLoop(): void {
-	setInterval(() => {
-		const now = Date.now();
-		for (const [sessionId, state] of sessions.entries()) {
-			if (now - state.lastUsedAt < IDLE_TTL_MS) continue;
-			console.warn(
-				`[browserstation-mcp] idle timeout for session ${sessionId}; cleaning up owned browsers`,
-			);
-			void cleanupSession(sessionId, state, "idle timeout");
-		}
-	}, CLEANUP_INTERVAL_MS).unref();
-}
-
 async function main(): Promise<void> {
-	startIdleCleanupLoop();
+	ensureStateStoreConfigured();
+	await reconcilePersistedHandles();
+	startCleanupLoop();
 
 	const httpServer = http.createServer(async (req, res) => {
 		try {
@@ -1028,7 +1360,7 @@ async function main(): Promise<void> {
 
 	httpServer.listen(PORT, HOST, () => {
 		console.log(
-			`[browserstation-mcp] listening on http://${HOST}:${PORT} (browserstation=${BROWSERSTATION_BASE_URL})`,
+			`[browserstation-mcp] listening on http://${HOST}:${PORT} (browserstation=${BROWSERSTATION_BASE_URL}, dapr=${DAPR_HTTP_BASE_URL})`,
 		);
 	});
 }
