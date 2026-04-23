@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -571,6 +572,11 @@ _NATIVE_DURABLE_AGENT_TARGETS = {
         "app_id": config.DAPR_AGENT_PY_TESTING_APP_ID,
         "instance_prefix": "durable-testing",
     },
+    "browser-use-agent": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.BROWSER_USE_AGENT_APP_ID,
+        "instance_prefix": "durable-browser-use",
+    },
 }
 
 
@@ -888,6 +894,13 @@ def _next_task_execution_count(tc: "TaskContext", task_name: str) -> int:
     return current
 
 
+def _workflow_ephemeral_slug(workflow_id: str, node_id: str) -> str:
+    short_wf = str(workflow_id or "").strip().lower()[:12]
+    short_node = re.sub(r"[^a-z0-9-]", "-", str(node_id or "").strip().lower())
+    short_node = re.sub(r"-+", "-", short_node)[:24]
+    return f"wf-{short_wf}-{short_node}"
+
+
 def _run_native_durable_agent_child_workflow(
     ctx: wf.DaprWorkflowContext,
     task_name: str,
@@ -918,6 +931,15 @@ def _run_native_durable_agent_child_workflow(
         else None
     )
     agent_runtime, target = _resolve_native_agent_runtime(flattened_args, agent_config)
+    if (
+        agent_runtime == "browser-use-agent"
+        and target.get("app_id") == config.BROWSER_USE_AGENT_APP_ID
+    ):
+        derived_slug = _workflow_ephemeral_slug(tc.workflow_id, task_name)
+        target = {
+            **target,
+            "app_id": f"agent-runtime-{derived_slug}",
+        }
     child_execution_index = _next_task_execution_count(tc, task_name)
     child_instance_id = (
         f"{ctx.instance_id}__{target['instance_prefix']}__{task_name}__run__{child_execution_index}"
@@ -976,7 +998,11 @@ def _run_native_durable_agent_child_workflow(
         and flattened_args.get("workspaceRef").strip()
         else None
     )
-    if not workspace_ref and agent_runtime in {"dapr-agent-py", "dapr-agent-py-testing"}:
+    if not workspace_ref and agent_runtime in {
+        "dapr-agent-py",
+        "dapr-agent-py-testing",
+        "browser-use-agent",
+    }:
         workspace_ref = "local"
     if not workspace_ref:
         raise RuntimeError(
@@ -1139,6 +1165,7 @@ def _run_native_durable_agent_child_workflow(
     child_input = {
         "task": run_prompt,
         "prompt": prompt,
+        "sessionId": child_instance_id,
         "workflow_instance_id": child_instance_id,
         "parentExecutionId": ctx.instance_id,
         "executionId": tc.db_execution_id or tc.execution_id,
@@ -1155,6 +1182,7 @@ def _run_native_durable_agent_child_workflow(
         "timeoutMinutes": timeout_minutes,
         "agentConfig": agent_config,
         "agentGraph": agent_graph if isinstance(agent_graph, dict) else None,
+        "autoTerminateAfterEndTurn": True,
         "loopPolicy": flattened_args.get("loopPolicy")
         if isinstance(flattened_args.get("loopPolicy"), dict)
         else None,
@@ -1232,16 +1260,22 @@ def _run_native_durable_agent_child_workflow(
             )
 
     # Workflow↔Session bridge is now a structural invariant: every durable/run
-    # against dapr-agent-py routes through session_workflow so the run appears
-    # in /sessions/{id} with full event history and reuses the same runtime
-    # path as UI-initiated sessions. The previous WORKFLOW_USE_SESSIONS feature
-    # flag (OFF branch = direct call_child_workflow("agent_workflow", ...))
-    # was removed in Deploy B of the CMA-alignment plan after the flag had
-    # been on in production since 2026-04-17 with no issues.
-    # Route every agent_workflow dispatch through session_workflow. This
-    # matches both the legacy shared-pod path (app_id=dapr-agent-py) and the
-    # per-agent runtime path (app_id=agent-runtime-<slug>); session_workflow
-    # is registered on both pods via the same source tree.
+    # against any durable agent runtime routes through session_workflow so the
+    # run appears in /sessions/{id} with full event history and reuses the
+    # same runtime path as UI-initiated sessions. The previous
+    # WORKFLOW_USE_SESSIONS feature flag (OFF branch = direct
+    # call_child_workflow("agent_workflow", ...)) was removed in Deploy B of
+    # the CMA-alignment plan after the flag had been on in production since
+    # 2026-04-17 with no issues.
+    # Applies uniformly across dapr-agent-py (legacy shared app_id and
+    # per-agent agent-runtime-<slug>) AND browser-use-agent — browser-use
+    # registers both session_workflow + agent_workflow on the per-agent pod
+    # (browser_use/dapr_runtime/service.py:335-340) with the same childInput
+    # shape the BFF's ensure-for-workflow endpoint produces, so no per-runtime
+    # branching is needed. Skipping the bridge for browser-use left the
+    # per-agent Deployment unwoken (no spawn_session_for_workflow activity
+    # → no ensure-for-workflow POST → no wakeAgentRuntime), stalling Dapr's
+    # CreateWorkflowInstance with "context deadline exceeded".
     session_bridge_eligible = target.get("workflow_name") == "agent_workflow"
 
     if session_bridge_eligible:

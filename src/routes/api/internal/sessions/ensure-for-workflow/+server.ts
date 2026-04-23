@@ -78,13 +78,24 @@ export const POST: RequestHandler = async ({ request }) => {
 	// — there's no Chromium binary there. The rewrite routes tools through
 	// the in-pod playwright-mcp sidecar at http://localhost:3100/mcp,
 	// which talks to the pod's chromium container via CDP.
+	//
+	// Skip for runtime=browser-use-agent: browser-use manages its own
+	// browser via Browserstation and doesn't use an in-pod playwright-mcp
+	// sidecar, so the rewrite would mis-route any Playwright preset to a
+	// non-existent localhost:3100 endpoint. Mirrors the skip in
+	// src/lib/server/agents/registry-sync.ts:752-754.
+	const isBrowserUseRuntime =
+		rawAgentConfig != null &&
+		(rawAgentConfig as { runtime?: unknown }).runtime === "browser-use-agent";
 	const agentConfig = rawAgentConfig
 		? ({
 				...rawAgentConfig,
-				mcpServers: rewriteMcpForBrowserSidecar(
-					(rawAgentConfig as { mcpServers?: unknown[] })
-						.mcpServers as never,
-				).mcpServers,
+				mcpServers: isBrowserUseRuntime
+					? (rawAgentConfig as { mcpServers?: unknown[] }).mcpServers
+					: rewriteMcpForBrowserSidecar(
+							(rawAgentConfig as { mcpServers?: unknown[] })
+								.mcpServers as never,
+						).mcpServers,
 			} as AgentConfig)
 		: null;
 	const environmentConfig =
@@ -148,6 +159,17 @@ export const POST: RequestHandler = async ({ request }) => {
 		.where(eq(sessions.id, sessionId))
 		.limit(1);
 	if (existing) {
+		try {
+			const { syncAgentRuntimeCR } = await import(
+				"$lib/server/agents/registry-sync"
+			);
+			await syncAgentRuntimeCR(existing.agentId);
+		} catch (err) {
+			console.warn(
+				`[ensure-for-workflow] sync runtime for existing session ${sessionId} failed:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
 		// Also wake on replay/idempotent hits — the orchestrator's
 		// `ctx.call_child_workflow` still needs the target pod live.
 		const reuseSlug = await resolveWakeSlug({
@@ -193,12 +215,19 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentConfig,
 		userId,
 	});
+	await (async () => {
+		const { syncAgentRuntimeCR } = await import(
+			"$lib/server/agents/registry-sync"
+		);
+		await syncAgentRuntimeCR(agentId);
+	})();
 
 	// Create the session row with the deterministic id. We bypass createSession's
 	// auto-id generation by inserting directly, then reuse createSession's
 	// defaults via a follow-up lookup. To keep a single code path, we do a
 	// direct insert here since createSession doesn't accept a pre-computed id.
-	const incomingSandboxName = bridgeSandboxName ?? "dapr-agent-py";
+	const incomingSandboxName =
+		bridgeSandboxName ?? agentConfig.runtime ?? "dapr-agent-py";
 	await db.insert(sessions).values({
 		id: sessionId,
 		title,
