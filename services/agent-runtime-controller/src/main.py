@@ -364,10 +364,24 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                             "livenessProbe": {
                                 "httpGet": {"path": "/healthz", "port": 8002},
                                 "periodSeconds": 30,
+                                # browser-use turns can briefly block the
+                                # Python event loop during CDP calls or
+                                # AgentHistoryList updates — default
+                                # timeoutSeconds=1 + failureThreshold=3
+                                # killed the pod mid-turn, triggering a
+                                # WorkflowRetryPolicy retry that wasted
+                                # minutes + left session events stalled.
+                                # Loosen to tolerate ~3 min of
+                                # unresponsiveness before declaring the
+                                # container dead.
+                                "timeoutSeconds": 5,
+                                "failureThreshold": 6,
                             },
                             "readinessProbe": {
                                 "httpGet": {"path": "/readyz", "port": 8002},
                                 "periodSeconds": 5,
+                                "timeoutSeconds": 3,
+                                "failureThreshold": 6,
                             },
                         },
                         *extra_containers,
