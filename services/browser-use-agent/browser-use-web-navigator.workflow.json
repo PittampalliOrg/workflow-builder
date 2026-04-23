@@ -1,0 +1,91 @@
+{
+	"id": "browser-use-web-navigator",
+	"name": "Browser Use · Web Navigator",
+	"description": "Open a URL in a real browser and perform an arbitrary navigation task. URL + task are parameterized at trigger time. Browser-use captures screenshots and video along the way and persists them to workflow_browser_artifacts so the run page's Artifacts tab renders them.",
+	"visibility": "public",
+	"spec": {
+		"document": {
+			"dsl": "1.0.0",
+			"namespace": "workflow-builder",
+			"name": "browser-use-web-navigator",
+			"version": "1.0.0",
+			"title": "Browser Use · Web Navigator",
+			"summary": "Parameterized browser-use session: open <url>, do <task>, report page title + final URL, capture screenshots + video.",
+			"x-workflow-builder": {
+				"input": {
+					"mode": "structured",
+					"schema": {
+						"type": "object",
+						"required": ["url", "task"],
+						"properties": {
+							"url": {
+								"type": "string",
+								"title": "Starting URL",
+								"description": "The URL to open in the browser session.",
+								"format": "uri",
+								"default": "https://example.com"
+							},
+							"task": {
+								"type": "string",
+								"title": "Task",
+								"description": "What the agent should do after the page loads.",
+								"default": "Report the exact page title and final URL, plus a one-sentence description of the page content."
+							}
+						}
+					}
+				}
+			}
+		},
+		"do": [
+			{
+				"browser_use_agent": {
+					"call": "durable/run",
+					"with": {
+						"mode": "execute_direct",
+						"maxTurns": 15,
+						"timeoutMinutes": 10,
+						"workspaceRef": "local",
+						"stopCondition": "Stop after the final response reports the page title, final URL, and includes TASK COMPLETE.",
+						"prompt": "${ \"Open \" + .trigger.url + \" in the live browser. \" + .trigger.task + \" When you are done, include the exact page title and final URL in your response. End your final message with TASK COMPLETE.\" }",
+						"agentRef": {
+							"slug": "browser-use-web-navigator"
+						}
+					}
+				}
+			}
+		]
+	},
+	"nodes": [
+		{
+			"id": "start",
+			"type": "start",
+			"position": { "x": 260, "y": 20 },
+			"data": { "label": "Start", "type": "start", "status": "idle", "enabled": true }
+		},
+		{
+			"id": "browser_use_agent",
+			"type": "call",
+			"position": { "x": 260, "y": 180 },
+			"data": {
+				"label": "Browser Use Agent",
+				"type": "agent",
+				"status": "idle",
+				"enabled": true,
+				"agent": {
+					"slug": "browser-use-web-navigator",
+					"runtime": "browser-use-agent"
+				}
+			}
+		},
+		{
+			"id": "end",
+			"type": "end",
+			"position": { "x": 260, "y": 340 },
+			"data": { "label": "End", "type": "end", "status": "idle", "enabled": true }
+		}
+	],
+	"edges": [
+		{ "id": "start-browser_use_agent", "source": "start", "target": "browser_use_agent", "type": "smoothstep" },
+		{ "id": "browser_use_agent-end", "source": "browser_use_agent", "target": "end", "type": "smoothstep" }
+	]
+}
