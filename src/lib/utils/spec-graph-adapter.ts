@@ -76,6 +76,23 @@ function convertGraph(
   const doArray = getDoArray(spec);
   const taskMap = buildTaskMap(doArray);
 
+  // Normalize the trigger-input schema across the two placements SW 1.0
+  // specs use — legacy top-level `spec.input` and the newer
+  // `spec.document['x-workflow-builder'].input.schema` (used by templates
+  // like browser-use-web-navigator). The execute-dialog reads
+  // `startNode.data.taskConfig.input.schema.document`, so we materialize
+  // that shape here even when the raw spec uses the x-workflow-builder
+  // placement.
+  const doc = (spec.document ?? {}) as Record<string, unknown>;
+  const xwb = (doc["x-workflow-builder"] ?? {}) as Record<string, unknown>;
+  const xwbInput = (xwb.input ?? {}) as Record<string, unknown>;
+  const xwbSchema = xwbInput.schema as Record<string, unknown> | undefined;
+  const normalizedTriggerInput = spec.input
+    ? (spec.input as Record<string, unknown>)
+    : xwbSchema
+      ? { format: "json", schema: { format: "json", document: xwbSchema } }
+      : null;
+
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
@@ -132,8 +149,8 @@ function convertGraph(
           nodeType === "start" ? "Start" : nodeType === "end" ? "End" : label,
         type: nodeType,
         taskConfig:
-          nodeType === "start" && spec.input
-            ? { input: spec.input }
+          nodeType === "start" && normalizedTriggerInput
+            ? { input: normalizedTriggerInput }
             : taskDef || {},
         status: "idle",
         enabled: true,
