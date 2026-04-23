@@ -144,9 +144,12 @@ export function buildAgentMetadata(
 	team: string,
 ): AgentMetadataBlob {
 	const config: AgentConfig = agent.config;
-	const runtimeAppId = agent.runtime === "dapr-agent-py-testing"
-		? "dapr-agent-py-testing"
-		: "dapr-agent-py";
+	const runtimeAppId =
+		agent.runtime === "dapr-agent-py-testing"
+			? "dapr-agent-py-testing"
+			: agent.runtime === "browser-use-agent"
+				? "browser-use-agent"
+				: "dapr-agent-py";
 
 	const builtin = (config.builtinTools || []).map((name) => {
 		const spec = lookupBuiltinTool(name);
@@ -666,7 +669,7 @@ export async function safeSyncOnArchive(agentId: string): Promise<void> {
 // AgentRuntime CR sync helpers
 // ---------------------------------------------------------------------------
 
-async function syncAgentRuntimeCR(agentId: string): Promise<void> {
+export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 	const [kubeClient, envModule] = await Promise.all([
 		import("$lib/server/kube/client"),
 		import("$lib/server/db/schema").then((m) => ({
@@ -715,17 +718,17 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 			};
 		}
 	}
-	// Per-agent runtime pod always runs the dapr-agent-py-sandbox image —
-	// the Python agent host that layers dapr-agent-py + dapr-agents +
-	// tools on top of openshell-sandbox. environmentRecord.imageTag is the
-	// WORKSPACE sandbox image (plain openshell-sandbox with env-specific
-	// packages) used by workspace/profile tools, NOT by the agent runtime
-	// itself. Mixing those up was a Phase-4 bug.
-	const imageTag =
-		env.AGENT_RUNTIME_DEFAULT_IMAGE ??
-		"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
-
+	// Per-agent runtime image is chosen by the agent runtime, not the attached
+	// workspace environment. environmentRecord.imageTag is the WORKSPACE sandbox
+	// image used by workspace/profile tools, not the agent runtime image.
 	const config = await loadCurrentAgentConfig(agentId);
+	const imageTag =
+		config?.runtime === "browser-use-agent"
+			? env.AGENT_RUNTIME_BROWSER_USE_DEFAULT_IMAGE ??
+				"gitea-ryzen.tail286401.ts.net/giteaadmin/browser-use-agent-sandbox:latest"
+			: env.AGENT_RUNTIME_DEFAULT_IMAGE ??
+				"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
+
 	const rawMcpServers = (config?.mcpServers ?? []).map((s) => ({
 		name: s.serverName ?? s.name ?? "mcp",
 		transport: (s.transport ?? "streamable_http") as
@@ -746,7 +749,9 @@ async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 	// inside the dapr-agent-py container, which has no Chromium binary.
 	// See src/lib/server/agents/mcp-sidecar.ts for the matcher + rewrite.
 	const { mcpServers, useBrowserSidecar } =
-		rewriteMcpForBrowserSidecar(rawMcpServers);
+		config?.runtime === "browser-use-agent"
+			? { mcpServers: rawMcpServers, useBrowserSidecar: false }
+			: rewriteMcpForBrowserSidecar(rawMcpServers);
 
 	// Read agent-runtime idle TTL from the environment config if present.
 	// Null/undefined leaves the CR default (1800s) in place.

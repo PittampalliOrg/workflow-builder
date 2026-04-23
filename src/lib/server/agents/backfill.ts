@@ -78,7 +78,11 @@ function normalizeInlineToAgentConfig(
 			? inline.mcpConnectionMode
 			: defaults.mcpConnectionMode;
 	const runtime =
-		inline.runtime === "dapr-agent-py-testing" ? "dapr-agent-py-testing" : "dapr-agent-py";
+		inline.runtime === "dapr-agent-py-testing"
+			? "dapr-agent-py-testing"
+			: inline.runtime === "browser-use-agent"
+				? "browser-use-agent"
+				: "dapr-agent-py";
 	const policySource = isRecord(inline.runtimeOverridePolicy)
 		? (inline.runtimeOverridePolicy as typeof defaults.runtimeOverridePolicy)
 		: defaults.runtimeOverridePolicy;

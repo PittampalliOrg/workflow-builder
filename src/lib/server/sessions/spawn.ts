@@ -196,9 +196,14 @@ export async function raiseSessionUserEvents(
 	const targetAppId = agent?.runtimeAppId ?? (agent ? `agent-runtime-${agent.slug}` : "dapr-agent-py");
 	const daprEndpoint = getDaprSidecarUrl();
 	const isPerAgent = targetAppId.startsWith("agent-runtime-");
-	const invokeTarget = isPerAgent
-		? `${targetAppId}.${process.env.AGENT_RUNTIME_NAMESPACE ?? "openshell"}`
-		: targetAppId;
+	const bffNamespace = (process.env.POD_NAMESPACE || "workflow-builder").trim();
+	const targetNamespace = (
+		process.env.AGENT_RUNTIME_NAMESPACE ?? "workflow-builder"
+	).trim();
+	const invokeTarget =
+		isPerAgent && targetNamespace && targetNamespace !== bffNamespace
+			? `${targetAppId}.${targetNamespace}`
+			: targetAppId;
 	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`;
 	const res = await daprFetch(url, {
 		method: "POST",

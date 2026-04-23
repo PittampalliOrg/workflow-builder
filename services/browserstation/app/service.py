@@ -39,6 +39,13 @@ class BrowserActor:
 
 
 class BrowserService:
+    def _find_actor(self, browser_id: str):
+        actors = list_actors(filters=[("class_name", "=", "BrowserActor")])
+        for actor in actors:
+            if actor.name == browser_id:
+                return actor
+        return None
+
     async def health(self):
         try:
             ray_status = ray.is_initialized()
@@ -80,10 +87,7 @@ class BrowserService:
 
     async def create_browser(self):
         browser_id = str(uuid.uuid4())
-        actor = BrowserActor.options(name=browser_id, lifetime="detached").remote(
-            browser_id
-        )
-        await actor.get_info.remote()
+        BrowserActor.options(name=browser_id, lifetime="detached").remote(browser_id)
         return ActorInfo(
             browser_id=browser_id,
             proxy_url=f"/ws/browsers/{browser_id}/devtools/browser",
@@ -117,6 +121,21 @@ class BrowserService:
         return BrowserList(browsers=alive_browsers + pending_browsers)
 
     async def get_browser(self, browser_id: str):
+        actor_record = self._find_actor(browser_id)
+        if actor_record is None:
+            raise HTTPException(status_code=404, detail="Browser not found")
+
+        if actor_record.state == "PENDING_CREATION":
+            return BrowserInfo(
+                browser_id=browser_id,
+                pod_ip="",
+                websocket_url=None,
+                chrome_ready=False,
+            )
+
+        if actor_record.state != "ALIVE":
+            raise HTTPException(status_code=404, detail="Browser not found")
+
         try:
             actor = ray.get_actor(browser_id)
             return await actor.get_info.remote()

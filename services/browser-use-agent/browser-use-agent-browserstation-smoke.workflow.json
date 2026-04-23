@@ -1,0 +1,90 @@
+{
+  "id": "browser-use-agent-browserstation-smoke",
+  "name": "Browser Use Agent Browserstation Smoke",
+  "description": "Validate the browser-use-agent runtime by running a Browserstation-backed browser session against example.com.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "browser-use-agent-browserstation-smoke",
+      "version": "1.0.0",
+      "title": "Browser Use Agent Browserstation Smoke",
+      "summary": "Provision an ephemeral browser-use-agent runtime session and verify it can navigate to example.com through Browserstation.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Task",
+          "promptPlaceholder": "Optionally override the default browser task."
+        }
+      }
+    },
+    "do": [
+      {
+        "browser_use_agent": {
+          "call": "durable/run",
+          "with": {
+            "mode": "execute_direct",
+            "maxTurns": 20,
+            "timeoutMinutes": 15,
+            "stopCondition": "Stop only after the final response includes BROWSER USE VALIDATED and both the page title and final URL.",
+            "prompt": "{{trigger.prompt || \"Open https://example.com in the live browser. Wait for the page to finish loading. Return the exact page title and the final URL. End with BROWSER USE VALIDATED.\"}}",
+            "agentConfig": {
+              "name": "browser-use-agent-browserstation-smoke",
+              "runtime": "browser-use-agent",
+              "modelSpec": "openai/gpt-4.1-mini",
+              "mcpConnectionMode": "explicit",
+              "mcpServers": [],
+              "skills": [],
+              "builtinTools": [],
+              "instructions": [
+                "Use the browser-use runtime with the Browserstation-backed browser for navigation.",
+                "Return the exact page title and final URL in the final answer."
+              ],
+              "runtimeOverridePolicy": {
+                "allowToolNarrowing": true,
+                "allowServerAdditions": false,
+                "allowCredentialBinding": true,
+                "allowSkillAdditions": false,
+                "allowSkillNarrowing": true
+              },
+              "browserArtifacts": {
+                "screenshots": true,
+                "video": true
+              },
+              "memory": {
+                "backend": "dapr_state",
+                "sessionId": "browser-use-agent-browserstation-smoke"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "position": { "x": 260, "y": 20 },
+      "data": { "label": "Start", "type": "start", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "browser_use_agent",
+      "type": "call",
+      "position": { "x": 260, "y": 180 },
+      "data": { "label": "Browser Use Agent", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "position": { "x": 260, "y": 340 },
+      "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start", "target": "browser_use_agent" },
+    { "id": "e2", "source": "browser_use_agent", "target": "end" }
+  ]
+}

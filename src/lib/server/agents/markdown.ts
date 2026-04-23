@@ -85,6 +85,8 @@ export function parseAgentMarkdown(source: string): ParsedAgentMarkdown {
 	const runtime: AgentRuntime =
 		parsed.runtime === "dapr-agent-py-testing"
 			? "dapr-agent-py-testing"
+			: parsed.runtime === "browser-use-agent"
+				? "browser-use-agent"
 			: "dapr-agent-py";
 
 	const toolChoice =

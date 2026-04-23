@@ -92,7 +92,11 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 };
 
 function pickRuntime(value: unknown): AgentRuntime | undefined {
-	if (value === "dapr-agent-py" || value === "dapr-agent-py-testing") {
+	if (
+		value === "dapr-agent-py" ||
+		value === "dapr-agent-py-testing" ||
+		value === "browser-use-agent"
+	) {
 		return value;
 	}
 	return undefined;

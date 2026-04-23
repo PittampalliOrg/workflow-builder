@@ -74,7 +74,7 @@ export async function findOrCreateEphemeralAgent(params: {
 			name,
 			description: `Auto-created for workflow node ${params.nodeId}`,
 			tags: ["workflow-ephemeral"],
-			runtime: "dapr-agent-py",
+			runtime: params.agentConfig.runtime,
 			createdBy: params.userId,
 		})
 		.returning();

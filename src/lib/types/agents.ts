@@ -10,12 +10,20 @@ import type {
  */
 export type SandboxPolicyOverride = Record<string, unknown>;
 
-export type AgentRuntime = "dapr-agent-py" | "dapr-agent-py-testing";
+export type AgentRuntime =
+	| "dapr-agent-py"
+	| "dapr-agent-py-testing"
+	| "browser-use-agent";
 
 export type AgentMemoryConfig = {
 	backend?: "dapr_state" | "conversation_list" | "none";
 	sessionId?: string;
 	storeName?: string;
+};
+
+export type AgentBrowserArtifactsConfig = {
+	screenshots?: boolean;
+	video?: boolean;
 };
 
 export type AgentToolChoice = "auto" | "required" | "none";
@@ -72,6 +80,7 @@ export type AgentConfig = {
 	plugins?: string[];
 
 	memory?: AgentMemoryConfig;
+	browserArtifacts?: AgentBrowserArtifactsConfig;
 	sandboxPolicy?: SandboxPolicyOverride;
 
 	/**

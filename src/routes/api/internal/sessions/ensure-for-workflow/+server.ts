@@ -197,6 +197,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				sessionId: existing.id,
 				agentConfig,
 				environmentConfig,
+				workflowId,
+				nodeId,
 				vaultIds: Array.isArray(existing.vaultIds) ? existing.vaultIds : vaultIds,
 				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
 				initialMessage,
@@ -299,6 +301,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			sessionId,
 			agentConfig,
 			environmentConfig,
+			workflowId,
+			nodeId,
 			vaultIds,
 			workflowExecutionId,
 			initialMessage,
@@ -314,6 +318,8 @@ function buildChildInput(params: {
 	sessionId: string;
 	agentConfig: AgentConfig;
 	environmentConfig: Record<string, unknown> | null;
+	workflowId: string;
+	nodeId: string;
 	vaultIds: string[];
 	workflowExecutionId: string | null;
 	initialMessage: string | null;
@@ -325,6 +331,9 @@ function buildChildInput(params: {
 		sessionId: params.sessionId,
 		agentConfig: params.agentConfig,
 		environmentConfig: params.environmentConfig,
+		workflowId: params.workflowId,
+		nodeId: params.nodeId,
+		workflowExecutionId: params.workflowExecutionId,
 		vaultIds: params.vaultIds,
 		dbExecutionId: params.workflowExecutionId,
 		autoTerminateAfterEndTurn: true,
