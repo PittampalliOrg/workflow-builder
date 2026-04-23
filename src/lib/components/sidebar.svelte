@@ -1,45 +1,18 @@
 <script lang="ts">
 	import { getContext, onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { wsPath, DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
+	import { NAV_GROUPS, resolveNav, type NavGroup } from '$lib/navigation/nav-config';
 	import {
-		GitBranch,
-		Plug,
-		Bot,
-		Activity,
-		Settings,
 		ChevronLeft,
 		ChevronRight,
-		MessageSquare,
 		Moon,
 		Sun,
 		LogOut,
-		Eye,
-		Code,
 		Briefcase,
 		ChevronsUpDown,
-		Server,
-		Container,
-		Network,
-		Puzzle,
-		RotateCcw,
-		Layers,
-		KeyRound,
-		MessagesSquare,
 		ChevronDown,
-		Home,
-		BarChart3,
-		DollarSign,
-		FileText,
-		Files,
-		Rocket,
-		Shield,
-		Users,
-		Key,
-		Gauge,
-		Wrench,
-		Workflow,
-		Cpu
+		Home
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -53,17 +26,15 @@
 		collapsed: boolean;
 		onToggle: () => void;
 		user?: { name: string | null; email: string | null; image: string | null } | null;
+		platformRole?: 'ADMIN' | 'MEMBER';
 	}
 
-	let { collapsed, onToggle, user = null }: Props = $props();
+	let { collapsed, onToggle, user = null, platformRole = 'MEMBER' }: Props = $props();
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 
-	type NavItem = { href: string; label: string; icon: typeof GitBranch };
-	type NavGroup = { label: string; icon: typeof GitBranch; badge?: string; items: NavItem[] };
-
-	// Workspace state — declared early so navGroups below can reference
-	// activeSlug without hitting a use-before-declaration error. Actual
-	// fetch + hydration happens in onMount further down.
+	// Workspace state — fetched from /api/v1/workspaces on mount. Drives the
+	// workspace switcher dropdown and supplies the `slug` context the nav
+	// schema uses to build workspace-scoped hrefs.
 	type Workspace = {
 		id: string;
 		slug: string;
@@ -77,93 +48,29 @@
 		workspaces.find((w) => w.isCurrent) ?? workspaces[0] ?? null
 	);
 
-	// CMA-mirrored nav IA. Groups + labels match platform.claude.com/dashboard exactly.
-	// Workspace-scoped items go under /workspaces/{activeSlug}/*. Org-scoped items
-	// stay flat. `activeSlug` is derived from the current workspace switcher value;
-	// `default` resolves server-side to the caller's current project.
-	// When the user is already on a workspace-scoped URL, preserve THAT
-	// slug in nav links instead of the JWT-current workspace — so clicking
-	// nav items doesn't bounce them back to their default workspace.
+	// When already on a workspace-scoped URL, preserve THAT slug in nav
+	// links instead of the JWT-current workspace — so clicking nav items
+	// doesn't bounce the user back to their default workspace.
 	const urlSlug = $derived(
 		(page.params.slug as string | undefined) ?? null,
 	);
 	const activeSlug = $derived(
 		urlSlug ?? activeWorkspace?.slug ?? DEFAULT_WORKSPACE_SLUG,
 	);
-	const navGroups: NavGroup[] = $derived([
-		{
-			label: 'Build',
-			icon: Wrench,
-			items: [
-				// Workbench is org-scoped in CMA (per /workbench URL), workflows + ops are our own surfaces
-				{ href: '/mcp-chat', label: 'Workbench', icon: MessageSquare },
-				{ href: '/workflows', label: 'Workflows', icon: GitBranch },
-				{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
-				{ href: wsPath(activeSlug, 'batches'), label: 'Batches', icon: Layers },
-				{ href: '/code-functions', label: 'Code Functions', icon: Code }
-			]
-		},
-		{
-			label: 'Managed Agents',
-			icon: Bot,
-			badge: 'New',
-			items: [
-				{ href: wsPath(activeSlug, 'agents/quickstart'), label: 'Quickstart', icon: Rocket },
-				{ href: wsPath(activeSlug, 'agents'), label: 'Agents', icon: Bot },
-				{ href: wsPath(activeSlug, 'sessions'), label: 'Sessions', icon: MessagesSquare },
-				{ href: wsPath(activeSlug, 'environments'), label: 'Environments', icon: Layers },
-				{ href: wsPath(activeSlug, 'vaults'), label: 'Credential vaults', icon: KeyRound },
-				{ href: wsPath(activeSlug, 'skills'), label: 'Skills', icon: Puzzle },
-				{ href: wsPath(activeSlug, 'files'), label: 'Files', icon: Files },
-				{ href: wsPath(activeSlug, 'workflows'), label: 'Workflows', icon: Workflow },
-				{ href: '/connections', label: 'Connections', icon: Plug }
-			]
-		},
-		{
-			label: 'Analytics',
-			icon: BarChart3,
-			items: [
-				{ href: '/usage', label: 'Usage', icon: BarChart3 },
-				{ href: wsPath(activeSlug, 'cost'), label: 'Cost', icon: DollarSign },
-				{ href: wsPath(activeSlug, 'logs'), label: 'Logs', icon: FileText }
-			]
-		},
-		{
-			label: 'Operate',
-			icon: Activity,
-			items: [
-				{ href: '/monitor', label: 'Monitor', icon: Activity },
-				{ href: '/sandboxes', label: 'Sandboxes', icon: Container },
-				{ href: '/admin/agent-runtimes', label: 'Agent runtimes', icon: Cpu },
-				{ href: '/activities', label: 'Activities', icon: Server },
-				{ href: '/dapr-system', label: 'Dapr System', icon: Network }
-			]
-		},
-		{
-			label: 'Manage',
-			icon: Settings,
-			items: [
-				// CMA splits settings: API keys + limits are workspace-scoped,
-				// members + security & compliance are org-scoped.
-				{ href: `/settings/workspaces/${activeSlug}/keys`, label: 'API keys', icon: Key },
-				{ href: `/settings/workspaces/${activeSlug}/limits`, label: 'Limits', icon: Gauge },
-				{ href: '/settings/members', label: 'Members', icon: Users },
-				{ href: '/settings/security', label: 'Security & compliance', icon: Shield }
-			]
-		}
-	]);
 
-	// Each group can be expanded/collapsed. Default: Build + Managed Agents
-	// open, others closed. Persisted to localStorage so the user's preference
-	// survives reloads — matches CMA's chevron-per-section behaviour.
+	// Resolve nav tree from schema using active workspace + role. `resolveNav`
+	// filters admin-only groups/items when platformRole !== 'ADMIN'.
+	const navGroups: NavGroup[] = $derived(
+		resolveNav({ slug: activeSlug, platformRole })
+	);
+
+	// Each group can be expanded/collapsed. Defaults come from the schema
+	// (`defaultOpen`), persisted to localStorage so preference survives
+	// reloads — matches CMA's chevron-per-section behaviour.
 	const SIDEBAR_STORAGE_KEY = 'sidebar:open-groups:v1';
-	const DEFAULT_OPEN_GROUPS: Record<string, boolean> = {
-		Build: true,
-		'Managed Agents': true,
-		Analytics: false,
-		Operate: false,
-		Manage: false
-	};
+	const DEFAULT_OPEN_GROUPS: Record<string, boolean> = Object.fromEntries(
+		NAV_GROUPS.map((g) => [g.label, g.defaultOpen ?? false])
+	);
 	let openGroups = $state<Record<string, boolean>>({ ...DEFAULT_OPEN_GROUPS });
 
 	onMount(() => {
@@ -190,13 +97,12 @@
 		const next = untrack(() => ({ ...openGroups }));
 		let changed = false;
 		for (const group of navGroups) {
-			if (group.items.some((item) => isActive(item.href)) && !next[group.label]) {
+			if (group.items.some((item) => item.match.test(pathname)) && !next[group.label]) {
 				next[group.label] = true;
 				changed = true;
 			}
 		}
 		if (changed) openGroups = next;
-		void pathname; // keep pathname as the effect's tracked dependency
 	});
 
 	function toggleGroup(label: string) {
@@ -210,16 +116,24 @@
 		}
 	}
 
-	function isActive(href: string): boolean {
-		if (href === '/workflow-ops/names') return page.url.pathname.startsWith('/workflow-ops');
-		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
+	function isActive(match: RegExp): boolean {
+		return match.test(page.url.pathname);
 	}
 
+	// Workflow editor embeds a Svelte Flow canvas whose reactive state doesn't
+	// tear down cleanly on SPA navigation back to the list — force a full
+	// reload when going from an editor page to the workflows list.
 	function reloadAttrs(href: string): Record<string, string> {
-		return href === '/workflows' && page.url.pathname.startsWith('/workflows/')
+		const editorPattern = /^\/workspaces\/[^/]+\/workflows\/[^/]+/;
+		const isListHref =
+			href === `/workspaces/${activeSlug}/workflows` ||
+			/^\/workspaces\/[^/]+\/workflows$/.test(href);
+		return isListHref && editorPattern.test(page.url.pathname)
 			? { 'data-sveltekit-reload': '' }
 			: {};
 	}
+
+	const dashboardActive = /^\/dashboard(\/|$)/;
 
 	function toggleTheme() {
 		const next = ui.theme === 'dark' ? 'light' : 'dark';
@@ -261,8 +175,7 @@
 	<div class="flex h-12 items-center border-b border-border {collapsed ? 'justify-center px-0' : 'justify-between px-3'}">
 		{#if !collapsed}
 			<a
-				href="/workflows"
-				{...reloadAttrs('/workflows')}
+				href="/workspaces/{activeSlug}/workflows"
 				class="text-xs font-semibold tracking-tight text-foreground"
 			>
 				Workflow Builder
@@ -349,7 +262,7 @@
 							{...props}
 							href="/dashboard"
 							class="mb-1 flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(
-								'/dashboard'
+								dashboardActive
 							)
 								? 'bg-accent text-accent-foreground'
 								: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
@@ -364,7 +277,7 @@
 			<a
 				href="/dashboard"
 				class="mb-1 flex h-8 items-center gap-2.5 rounded-md px-2.5 text-xs transition-colors {isActive(
-					'/dashboard'
+					dashboardActive
 				)
 					? 'bg-accent font-medium text-accent-foreground'
 					: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
@@ -376,19 +289,20 @@
 
 		<!-- Grouped nav -->
 		<div class="flex flex-col gap-0.5">
-			{#each navGroups as group (group.label)}
+			{#each navGroups as group (group.id)}
 				{#if collapsed}
 					<!-- Collapsed: show group-level icon, flatten items into tooltips -->
-					{#each group.items as item (item.href)}
+					{#each group.items as item (item.id)}
+						{@const itemHref = item.href({ slug: activeSlug, platformRole })}
 						<Tooltip.Root>
 							<Tooltip.Trigger>
 								{#snippet child({ props })}
 									<a
 										{...props}
-										{...reloadAttrs(item.href)}
-										href={item.href}
+										{...reloadAttrs(itemHref)}
+										href={itemHref}
 										class="flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(
-											item.href
+											item.match
 										)
 											? 'bg-accent text-accent-foreground'
 											: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
@@ -430,12 +344,13 @@
 						</button>
 						{#if openGroups[group.label]}
 							<div class="mb-1 ml-0 flex flex-col gap-0.5">
-								{#each group.items as item (item.href)}
+								{#each group.items as item (item.id)}
+									{@const itemHref = item.href({ slug: activeSlug, platformRole })}
 									<a
-										href={item.href}
-										{...reloadAttrs(item.href)}
+										href={itemHref}
+										{...reloadAttrs(itemHref)}
 										class="flex h-7 items-center gap-2.5 rounded-md px-2.5 pl-5 text-xs transition-colors {isActive(
-											item.href
+											item.match
 										)
 											? 'bg-accent font-medium text-accent-foreground'
 											: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"

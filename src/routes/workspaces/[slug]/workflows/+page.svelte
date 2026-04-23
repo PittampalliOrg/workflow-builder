@@ -1,8 +1,10 @@
 <script lang="ts">
 	import type { PageData } from "./$types";
+	import { page } from "$app/state";
 	import { Workflow } from "@lucide/svelte";
 
 	let { data }: { data: PageData } = $props();
+	const slug = $derived(page.params.slug as string);
 
 	function statusColor(status: string): string {
 		switch (status) {
@@ -43,22 +45,13 @@
 				the editor, or a run to view its detail.
 			</p>
 		</div>
-		<a
-			href="/workflows"
-			class="text-sm text-primary hover:underline"
-			data-testid="link-all-workflows"
-		>
-			All workflows →
-		</a>
 	</header>
 
 	{#if data.workflows.length === 0}
 		<div
 			class="rounded-lg border border-dashed p-12 text-center text-sm text-muted-foreground"
 		>
-			No workflows in this workspace yet. Create one from the
-			<a href="/workflows" class="text-primary hover:underline">Workflows</a>
-			editor.
+			No workflows in this workspace yet. Create one from the workflow editor.
 		</div>
 	{:else}
 		<div class="rounded-lg border bg-card overflow-hidden">
@@ -67,6 +60,7 @@
 					<tr>
 						<th class="text-left px-4 py-2">Name</th>
 						<th class="text-left px-4 py-2">Last updated</th>
+						<th class="text-left px-4 py-2">Recent activity</th>
 						<th class="text-left px-4 py-2">Latest run</th>
 						<th class="text-left px-4 py-2">Status</th>
 						<th></th>
@@ -77,7 +71,7 @@
 						<tr class="border-t hover:bg-muted/40">
 							<td class="px-4 py-3">
 								<a
-									href="/workflows/{wf.id}"
+									href="/workspaces/{slug}/workflows/{wf.id}"
 									class="font-medium text-primary hover:underline"
 								>
 									{wf.name || wf.id}
@@ -90,9 +84,33 @@
 								{formatRelative(wf.updatedAt)}
 							</td>
 							<td class="px-4 py-3">
+								{#if wf.recentRuns.length > 0}
+									<div class="flex items-center gap-1.5">
+										{#each wf.recentRuns as r (r.id)}
+											{@const dot =
+												r.status === 'success'
+													? 'bg-emerald-500'
+													: r.status === 'error'
+														? 'bg-red-500'
+														: r.status === 'running' || r.status === 'pending'
+															? 'bg-blue-500 animate-pulse'
+															: 'bg-gray-400'}
+											<a
+												href="/workspaces/{slug}/workflows/{wf.id}/runs/{r.id}"
+												class="size-2.5 rounded-full {dot} hover:ring-2 hover:ring-primary/40 transition-shadow"
+												title={`${r.status} · ${formatRelative(r.startedAt)}`}
+												aria-label={`${r.status} ${formatRelative(r.startedAt)}`}
+											></a>
+										{/each}
+									</div>
+								{:else}
+									<span class="text-xs text-muted-foreground">—</span>
+								{/if}
+							</td>
+							<td class="px-4 py-3">
 								{#if wf.latestExecution}
 									<a
-										href="/workflows/{wf.id}/runs/{wf.latestExecution.id}"
+										href="/workspaces/{slug}/workflows/{wf.id}/runs/{wf.latestExecution.id}"
 										class="text-xs text-primary hover:underline font-mono"
 									>
 										{wf.latestExecution.id.slice(0, 12)}…
@@ -119,7 +137,7 @@
 							</td>
 							<td class="px-4 py-3 text-right text-xs">
 								<a
-									href="/workflows/{wf.id}"
+									href="/workspaces/{slug}/workflows/{wf.id}"
 									class="text-muted-foreground hover:text-primary hover:underline"
 								>
 									Edit →

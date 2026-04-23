@@ -166,7 +166,7 @@
 				<Label>Vaults</Label>
 				{#if vaults.length === 0}
 					<p class="text-xs text-muted-foreground mt-1">
-						No vaults yet. Add one at <a href="/workspaces/{slug}/vaults" class="text-primary hover:underline">/vaults</a>.
+						No credentials yet. Add one at <a href="/workspaces/{slug}/credentials" class="text-primary hover:underline">/credentials</a>.
 					</p>
 				{:else}
 					<div class="mt-1 flex flex-wrap gap-2">

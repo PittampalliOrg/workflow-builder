@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Loader2 } from 'lucide-svelte';
 	import {
 		Dialog,
@@ -22,6 +24,9 @@
 	let prompt = $state('');
 	let isGenerating = $state(false);
 	let errorMessage = $state('');
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	async function generate() {
 		if (!prompt.trim()) return;
@@ -63,7 +68,7 @@
 			// Step 3: Navigate to the editor
 			prompt = '';
 			onClose();
-			goto(`/workflows/${workflow.id}`);
+			goto(`/workspaces/${slug}/workflows/${workflow.id}`);
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : 'Generation failed';
 			console.error('AI generation failed:', err);

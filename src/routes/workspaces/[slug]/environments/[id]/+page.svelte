@@ -363,6 +363,13 @@
 />
 
 <div class="flex flex-col h-screen">
+	<div class="border-b bg-muted/30 px-4 py-2 flex items-center gap-1 text-xs text-muted-foreground">
+		<a href="/workspaces/{slug}" class="hover:text-foreground">Workspace</a>
+		<span class="text-muted-foreground/60">/</span>
+		<a href="/workspaces/{slug}/environments" class="hover:text-foreground">Environments</a>
+		<span class="text-muted-foreground/60">/</span>
+		<span class="text-foreground truncate max-w-[260px]">{env?.name ?? 'Loading…'}</span>
+	</div>
 	<header class="border-b p-3 flex items-center gap-3 flex-wrap">
 		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/environments`)}>
 			<ArrowLeft class="size-4" />
@@ -535,7 +542,16 @@
 						</div>
 
 						<div class="space-y-3 border-t pt-4">
-							<h3 class="font-semibold text-sm">Sandbox</h3>
+							<div class="flex items-center justify-between gap-2">
+								<h3 class="font-semibold text-sm">Sandbox</h3>
+								<a
+									href="/sandboxes"
+									class="text-xs text-primary hover:underline"
+									title="View running sandboxes across all environments"
+								>
+									View active sandboxes →
+								</a>
+							</div>
 							<div class="grid grid-cols-2 gap-3">
 								<div>
 									<Label>Base environment</Label>

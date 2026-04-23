@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import type { Snippet } from 'svelte';
-	import { Key, Gauge, Users, Shield, Settings as SettingsIcon } from 'lucide-svelte';
+	import { Users, Shield, Settings as SettingsIcon } from 'lucide-svelte';
 
 	interface Props {
 		children: Snippet;
@@ -9,9 +9,10 @@
 
 	let { children }: Props = $props();
 
+	// Platform-scoped settings only. Workspace-scoped API keys + Limits moved
+	// to /workspaces/[slug]/settings/{keys,limits} in the Phase 3 cutover and
+	// live under a different layout there.
 	const tabs = [
-		{ href: '/settings/api-keys', label: 'API keys', icon: Key },
-		{ href: '/settings/limits', label: 'Limits', icon: Gauge },
 		{ href: '/settings/members', label: 'Members', icon: Users },
 		{ href: '/settings/security', label: 'Security and compliance', icon: Shield }
 	];

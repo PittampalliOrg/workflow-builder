@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Loader2, KeyRound, Plus, RefreshCw, X } from 'lucide-svelte';
@@ -15,6 +17,9 @@
 	let vaults = $state<VaultSummary[]>([]);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	let attached = $derived(vaults.filter((v) => value.includes(v.id)));
 	let available = $derived(vaults.filter((v) => !value.includes(v.id) && !v.isArchived));
@@ -91,7 +96,7 @@
 						</div>
 						<div class="flex gap-1">
 							<a
-								href="/vaults/{vault.id}"
+								href="/workspaces/{slug}/credentials/{vault.id}"
 								target="_blank"
 								class="text-xs text-primary hover:underline"
 							>
@@ -127,7 +132,7 @@
 	{/if}
 
 	<div class="pt-2 border-t">
-		<a href="/vaults" target="_blank" class="text-xs text-primary hover:underline">
+		<a href="/workspaces/{slug}/credentials" target="_blank" class="text-xs text-primary hover:underline">
 			Manage vaults in the library →
 		</a>
 	</div>

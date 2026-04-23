@@ -890,7 +890,7 @@
 			<span>Workflow run</span>
 			<span class="text-muted-foreground/60">·</span>
 			<a
-				href="/workflows/{workflowRunContext.workflowId}"
+				href="/workspaces/{slug}/workflows/{workflowRunContext.workflowId}"
 				class="hover:underline truncate max-w-[220px] text-foreground"
 				title={workflowRunContext.workflowName}
 			>
@@ -898,7 +898,7 @@
 			</a>
 			<span class="text-muted-foreground/60">·</span>
 			<a
-				href="/workflows/{workflowRunContext.workflowId}/runs/{workflowRunContext.executionId}"
+				href="/workspaces/{slug}/workflows/{workflowRunContext.workflowId}/runs/{workflowRunContext.executionId}"
 				class="hover:underline font-mono text-[11px] text-foreground"
 				title="Open workflow run"
 			>
@@ -1003,7 +1003,7 @@
 				{expiringCreds.length} credential{expiringCreds.length === 1 ? '' : 's'}
 				expire{expiringCreds.length === 1 ? 's' : ''} within 24h:
 				{#each expiringCreds as c, i (c.credId)}
-					<a href="/workspaces/{slug}/vaults/{c.vaultId}" class="underline">{c.displayName}</a
+					<a href="/workspaces/{slug}/credentials/{c.vaultId}" class="underline">{c.displayName}</a
 					>{#if i < expiringCreds.length - 1},&nbsp;{/if}
 				{/each}
 				<span class="text-[11px] opacity-70 ml-auto">
@@ -1341,7 +1341,7 @@
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
 							{#each session.vaultIds as vid}
-								<a href="/workspaces/{slug}/vaults/{vid}" class="text-primary hover:underline block truncate">
+								<a href="/workspaces/{slug}/credentials/{vid}" class="text-primary hover:underline block truncate">
 									{vid}
 								</a>
 							{/each}
@@ -1385,12 +1385,18 @@
 							</CardTitle>
 						</CardHeader>
 						<CardContent class="text-xs space-y-1">
-							<a
-								href="/workflows/runs/{session.workflowExecutionId}"
-								class="text-primary hover:underline truncate block"
-							>
-								{session.workflowExecutionId}
-							</a>
+							{#if session.workflowId}
+								<a
+									href="/workspaces/{slug}/workflows/{session.workflowId}/runs/{session.workflowExecutionId}"
+									class="text-primary hover:underline truncate block"
+								>
+									{session.workflowExecutionId}
+								</a>
+							{:else}
+								<span class="text-muted-foreground truncate block">
+									{session.workflowExecutionId}
+								</span>
+							{/if}
 							<div class="text-muted-foreground text-[10px]">
 								This session was spawned by a <code>durable/run</code> node in
 								a workflow. Click through to see the full DAG.

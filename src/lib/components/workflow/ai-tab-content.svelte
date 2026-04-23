@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Info, ChevronDown, ChevronRight, Plug, Zap, Trash2 } from 'lucide-svelte';
 	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -13,6 +15,9 @@
 	const assistant = getContext<ReturnType<typeof createAiAssistantStore>>('ai-assistant');
 	const buildAgent = getContext<ReturnType<typeof createBuildWorkflowStore>>('build-workflow');
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	let showBuildPanel = $derived(buildAgent.phase !== 'idle');
 
@@ -100,7 +105,7 @@
 			{:else}
 				<div class="flex items-center gap-1">
 					<Plug size={10} />
-					<span>No connections configured — <a href="/connections" class="underline">add one</a></span>
+					<span>No credentials configured — <a href="/workspaces/{slug}/credentials" class="underline">add one</a></span>
 				</div>
 			{/if}
 

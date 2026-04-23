@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -28,6 +30,9 @@
 	let pending = $state(false);
 	let status = $state<'idle' | 'running' | 'complete' | 'error'>('idle');
 	let errorMessage = $state<string | null>(null);
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 	let sessionId = $state<string | null>(null);
 	let stream = $state<SessionStreamStore | null>(null);
 	let events = $state<SessionEventEnvelope[]>([]);
@@ -188,7 +193,7 @@
 				<Badge variant="outline">{sessionStatus}</Badge>
 			{/if}
 			<a
-				href="/sessions/{sessionId}"
+				href="/workspaces/{slug}/sessions/{sessionId}"
 				target="_blank"
 				class="ml-auto hover:underline flex items-center gap-1"
 			>

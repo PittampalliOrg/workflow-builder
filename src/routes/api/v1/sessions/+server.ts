@@ -19,6 +19,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		| "idle"
 		| "terminated"
 		| null;
+	const sourceParam = url.searchParams.get("source") as
+		| "direct"
+		| "workflow"
+		| "api"
+		| null;
+	const workflowId = url.searchParams.get("workflowId") ?? undefined;
+	const executionId = url.searchParams.get("executionId") ?? undefined;
+	const q = url.searchParams.get("q") ?? undefined;
 	const includeArchived = url.searchParams.get("includeArchived") === "true";
 	const limitParam = url.searchParams.get("limit");
 	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
@@ -30,6 +38,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		projectId: locals.session.projectId,
 		agentId,
 		status: status ?? undefined,
+		source: sourceParam ?? undefined,
+		workflowId,
+		executionId,
+		q,
 		includeArchived,
 		limit: Number.isFinite(limit) ? limit : undefined,
 	});

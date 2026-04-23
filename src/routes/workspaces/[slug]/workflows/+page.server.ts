@@ -4,16 +4,20 @@ import type { PageServerLoad } from "./$types";
 import { db } from "$lib/server/db";
 import { workflowExecutions, workflows } from "$lib/server/db/schema";
 
+export type WorkspaceWorkflowRun = {
+	id: string;
+	status: string;
+	startedAt: string;
+	completedAt: string | null;
+};
+
 export type WorkspaceWorkflowRow = {
 	id: string;
 	name: string;
 	updatedAt: string;
-	latestExecution: {
-		id: string;
-		status: string;
-		startedAt: string;
-		completedAt: string | null;
-	} | null;
+	latestExecution: WorkspaceWorkflowRun | null;
+	/** Last 3 executions, newest first. Drives the activity-dots column. */
+	recentRuns: WorkspaceWorkflowRun[];
 };
 
 export const load: PageServerLoad = async ({ locals, params }) => {
@@ -49,12 +53,12 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		return { slug: params.slug, workflows: [] as WorkspaceWorkflowRow[] };
 	}
 
-	// Batch-load each workflow's latest execution. For ~100 workflows this is
-	// a single correlated subquery; for now do a simple per-row lookup since
-	// the list is capped at 100.
+	// Fetch the last 3 executions per workflow to power both the "Latest run"
+	// column and the activity-dots column. Per-workflow loop is fine for the
+	// 100-workflow cap; a window-function rewrite is easy if we hit scale.
 	const results: WorkspaceWorkflowRow[] = [];
 	for (const row of rows) {
-		const [latest] = await db
+		const recentRaw = await db
 			.select({
 				id: workflowExecutions.id,
 				status: workflowExecutions.status,
@@ -64,19 +68,19 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			.from(workflowExecutions)
 			.where(eq(workflowExecutions.workflowId, row.id))
 			.orderBy(desc(workflowExecutions.startedAt))
-			.limit(1);
+			.limit(3);
+		const recentRuns: WorkspaceWorkflowRun[] = recentRaw.map((e) => ({
+			id: e.id,
+			status: e.status,
+			startedAt: e.startedAt.toISOString(),
+			completedAt: e.completedAt?.toISOString() ?? null,
+		}));
 		results.push({
 			id: row.id,
 			name: row.name,
 			updatedAt: row.updatedAt.toISOString(),
-			latestExecution: latest
-				? {
-						id: latest.id,
-						status: latest.status,
-						startedAt: latest.startedAt.toISOString(),
-						completedAt: latest.completedAt?.toISOString() ?? null,
-					}
-				: null,
+			latestExecution: recentRuns[0] ?? null,
+			recentRuns,
 		});
 	}
 

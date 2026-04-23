@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -13,6 +14,7 @@
 		CardTitle
 	} from '$lib/components/ui/card';
 	import {
+		Activity,
 		Bot,
 		ExternalLink,
 		KeyRound,
@@ -53,7 +55,18 @@
 		}>;
 	};
 
+	type RecentRun = {
+		executionId: string;
+		workflowId: string;
+		workflowName: string;
+		status: 'pending' | 'running' | 'success' | 'error' | 'cancelled';
+		startedAt: string;
+		durationMs: number | null;
+		sessionCount: number;
+	};
+
 	let data = $state<DashboardPayload | null>(null);
+	let recentRuns = $state<RecentRun[]>([]);
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
@@ -69,19 +82,28 @@
 		user?.name?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there'
 	);
 
+	// Dashboard is platform-scoped (no [slug] in URL). Use the magic default
+	// slug — hooks.server.ts resolves it to the caller's active workspace.
+	const slug = DEFAULT_WORKSPACE_SLUG;
+
 	async function load() {
 		loading = true;
 		errorMessage = null;
 		try {
-			const [dRes, uRes] = await Promise.all([
+			const [dRes, uRes, rRes] = await Promise.all([
 				fetch('/api/v1/dashboard'),
-				fetch('/api/v1/auth/session').catch(() => null)
+				fetch('/api/v1/auth/session').catch(() => null),
+				fetch('/api/v1/runs?limit=5').catch(() => null)
 			]);
 			if (!dRes.ok) {
 				errorMessage = `Failed to load dashboard (${dRes.status})`;
 				return;
 			}
 			data = (await dRes.json()) as DashboardPayload;
+			if (rRes && rRes.ok) {
+				const rPayload = (await rRes.json()) as { runs: RecentRun[] };
+				recentRuns = rPayload.runs ?? [];
+			}
 			if (uRes && uRes.ok) {
 				const payload = (await uRes.json()) as {
 					user?: { name: string | null; email: string | null };
@@ -115,13 +137,13 @@
 			</p>
 		</div>
 		<div class="flex items-center gap-2">
-			<Button onclick={() => goto('/agents/quickstart')}>
+			<Button onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}>
 				<Sparkles class="size-4" /> Get started with agents
 			</Button>
-			<Button variant="outline" onclick={() => goto('/mcp-chat')}>
+			<Button variant="outline" onclick={() => goto('/workbench')}>
 				<MessageSquare class="size-4" /> Generate a prompt
 			</Button>
-			<Button variant="outline" onclick={() => goto('/settings/api-keys')}>
+			<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/settings/keys`)}>
 				<KeyRound class="size-4" /> Get API Key
 			</Button>
 		</div>
@@ -207,9 +229,67 @@
 					</CardDescription>
 				</CardHeader>
 				<CardContent>
-					<Button size="lg" onclick={() => goto('/agents/quickstart')}>
+					<Button size="lg" onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}>
 						<Sparkles class="size-4" /> Go to Quickstart
 					</Button>
+				</CardContent>
+			</Card>
+		{/if}
+
+		<!-- Recent runs (workflow executions) — added for Phase C to expose
+		     the /runs feed without making users drill into a specific workflow. -->
+		{#if recentRuns.length > 0}
+			<Card>
+				<CardHeader class="pb-2 flex-row items-center justify-between">
+					<div>
+						<CardTitle class="text-base flex items-center gap-2">
+							<Activity class="size-4" /> Recent runs
+						</CardTitle>
+						<CardDescription class="text-xs">
+							Workflow executions across this workspace.
+						</CardDescription>
+					</div>
+					<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
+						View all <ExternalLink class="size-3" />
+					</Button>
+				</CardHeader>
+				<CardContent>
+					<ul class="divide-y">
+						{#each recentRuns as r (r.executionId)}
+							<li class="py-2">
+								<a
+									href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+									class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
+								>
+									<div class="flex items-center gap-2 min-w-0 flex-1">
+										<span class="text-sm truncate" title={r.workflowName}>
+											{r.workflowName}
+										</span>
+										{#if r.sessionCount > 0}
+											<Badge variant="outline" class="text-[10px]">
+												{r.sessionCount} session{r.sessionCount === 1 ? '' : 's'}
+											</Badge>
+										{/if}
+									</div>
+									<Badge
+										variant="outline"
+										class={r.status === 'running' || r.status === 'pending'
+											? 'bg-blue-500/10 text-blue-600'
+											: r.status === 'success'
+												? 'bg-emerald-500/10 text-emerald-600'
+												: r.status === 'error'
+													? 'bg-red-500/10 text-red-600'
+													: 'bg-muted text-muted-foreground'}
+									>
+										{r.status}
+									</Badge>
+									<span class="text-[11px] text-muted-foreground whitespace-nowrap">
+										{formatRelative(r.startedAt)}
+									</span>
+								</a>
+							</li>
+						{/each}
+					</ul>
 				</CardContent>
 			</Card>
 		{/if}
@@ -226,7 +306,7 @@
 							Running + idle; click to open the live stream.
 						</CardDescription>
 					</div>
-					<Button variant="ghost" size="sm" onclick={() => goto('/sessions')}>
+					<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
 						View all <ExternalLink class="size-3" />
 					</Button>
 				</CardHeader>
@@ -237,7 +317,7 @@
 							<button
 								type="button"
 								class="text-primary hover:underline"
-								onclick={() => goto('/sessions/new')}
+								onclick={() => goto(`/workspaces/${slug}/sessions/new`)}
 							>
 								Start one
 							</button>
@@ -248,7 +328,7 @@
 							{#each data.activeSessions as s}
 								<li class="py-2">
 									<a
-										href="/sessions/{s.id}"
+										href="/workspaces/{slug}/sessions/{s.id}"
 										class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
 									>
 										<div class="flex items-center gap-2 min-w-0 flex-1">
@@ -296,8 +376,8 @@
 								<li class="text-xs">
 									<a
 										href={change.kind === 'agent'
-											? `/agents/${change.resourceId}`
-											: `/environments/${change.resourceId}`}
+											? `/workspaces/${slug}/agents/${change.resourceId}`
+											: `/workspaces/${slug}/environments/${change.resourceId}`}
 										class="flex items-center gap-2 hover:underline"
 									>
 										{#if change.kind === 'agent'}
@@ -326,7 +406,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/agents/new')}
+				onclick={() => goto(`/workspaces/${slug}/agents/new`)}
 			>
 				<Bot class="size-4 mb-1" />
 				<div class="text-sm font-medium">Create agent</div>
@@ -335,7 +415,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/sessions/new')}
+				onclick={() => goto(`/workspaces/${slug}/sessions/new`)}
 			>
 				<MessagesSquare class="size-4 mb-1" />
 				<div class="text-sm font-medium">New session</div>
@@ -344,7 +424,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/environments/new')}
+				onclick={() => goto(`/workspaces/${slug}/environments/new`)}
 			>
 				<Layers class="size-4 mb-1" />
 				<div class="text-sm font-medium">Define environment</div>
@@ -355,7 +435,7 @@
 			<button
 				type="button"
 				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
-				onclick={() => goto('/vaults')}
+				onclick={() => goto(`/workspaces/${slug}/credentials`)}
 			>
 				<KeyRound class="size-4 mb-1" />
 				<div class="text-sm font-medium">Add vault</div>

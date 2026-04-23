@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
@@ -100,6 +100,8 @@ function resourceRowToDto(row: SessionResourceRow): SessionResource {
 	};
 }
 
+export type SessionSource = "direct" | "workflow" | "api";
+
 export type ListSessionsFilter = {
 	userId?: string;
 	/** Scope to a specific workspace/project. When set, non-matching
@@ -109,6 +111,22 @@ export type ListSessionsFilter = {
 	agentId?: string;
 	status?: SessionStatus;
 	includeArchived?: boolean;
+	/**
+	 * Filter by session origin. `direct` = user-initiated (no workflow bridge);
+	 * `workflow` = spawned by a durable/run node; `api` = initiated via API
+	 * webhook/scheduler. Maps to presence/absence of `workflow_execution_id`
+	 * and session `origin` column (when we wire it up).
+	 */
+	source?: SessionSource;
+	/** Scope to all sessions spawned by runs of a specific workflow. */
+	workflowId?: string;
+	/** Scope to the sessions that share a single workflow execution. */
+	executionId?: string;
+	/**
+	 * Case-insensitive fuzzy match on title, id, workflow name, or agent name.
+	 * Short queries (<2 chars) are ignored to keep the index usable.
+	 */
+	q?: string;
 	limit?: number;
 };
 
@@ -116,16 +134,44 @@ export async function listSessions(
 	filter: ListSessionsFilter = {},
 ): Promise<SessionSummary[]> {
 	const database = requireDb();
-	const conditions: ReturnType<typeof eq>[] = [];
+	type SqlCondition = ReturnType<typeof eq>;
+	const conditions: SqlCondition[] = [];
 	if (filter.userId) conditions.push(eq(sessions.userId, filter.userId));
 	if (filter.projectId)
 		conditions.push(eq(sessions.projectId, filter.projectId));
 	if (filter.agentId) conditions.push(eq(sessions.agentId, filter.agentId));
 	if (filter.status) conditions.push(eq(sessions.status, filter.status));
+	if (filter.source === "direct") {
+		conditions.push(
+			sql`${sessions.workflowExecutionId} IS NULL` as unknown as SqlCondition,
+		);
+	} else if (filter.source === "workflow") {
+		conditions.push(
+			sql`${sessions.workflowExecutionId} IS NOT NULL` as unknown as SqlCondition,
+		);
+	}
+	// `api` source is a placeholder until we add a `sessions.origin` column;
+	// currently folds into `direct` because workflow_execution_id is null.
+	if (filter.executionId) {
+		conditions.push(eq(sessions.workflowExecutionId, filter.executionId));
+	}
+	if (filter.workflowId) {
+		conditions.push(
+			eq(workflowExecutions.workflowId, filter.workflowId),
+		);
+	}
+	if (filter.q && filter.q.trim().length >= 2) {
+		const needle = `%${filter.q.trim()}%`;
+		const textCondition = or(
+			ilike(sessions.title, needle),
+			ilike(sessions.id, needle),
+			ilike(workflows.name, needle),
+			ilike(agents.name, needle),
+		);
+		if (textCondition) conditions.push(textCondition as SqlCondition);
+	}
 	if (!filter.includeArchived) {
-		conditions.push(sql`${sessions.archivedAt} IS NULL` as unknown as ReturnType<
-			typeof eq
-		>);
+		conditions.push(sql`${sessions.archivedAt} IS NULL` as unknown as SqlCondition);
 	}
 
 	const rows = await database

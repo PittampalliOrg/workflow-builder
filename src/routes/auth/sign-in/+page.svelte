@@ -31,7 +31,7 @@
 				return;
 			}
 
-			goto('/workflows');
+			goto('/dashboard');
 		} catch {
 			error = 'Unable to connect to auth service';
 		} finally {

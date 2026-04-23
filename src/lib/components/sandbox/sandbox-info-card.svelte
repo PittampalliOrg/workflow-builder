@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import SandboxPhaseBadge from './sandbox-phase-badge.svelte';
@@ -23,6 +25,9 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let copiedCmd = $state<string | null>(null);
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	$effect(() => {
 		loading = true;
@@ -151,7 +156,7 @@
 				<div class="space-y-2">
 					{#each linkedExecutions as exec}
 						<a
-							href="/workflows/{exec.workflowId}/runs/{exec.executionId}"
+							href="/workspaces/{slug}/workflows/{exec.workflowId}/runs/{exec.executionId}"
 							class="flex items-center justify-between rounded-md bg-muted/30 px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
 						>
 							<div class="flex items-center gap-2">

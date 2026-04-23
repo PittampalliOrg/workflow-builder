@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { CheckCircle2, Circle, Clock, AlertTriangle } from 'lucide-svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 
 	interface Props {
 		createdAt?: string;
@@ -8,6 +10,10 @@
 	}
 
 	let { createdAt, phase, linkedExecutionId }: Props = $props();
+
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	const GC_HOURS = 4;
 
@@ -80,7 +86,7 @@
 				<Clock class="h-3 w-3 text-muted-foreground/40" />
 			{/if}
 			{#if event.link}
-				<a href="/workflows/runs/{event.link}" class="text-blue-400 hover:underline">{event.label}</a>
+				<a href="/workspaces/{slug}/workflows/runs/{event.link}" class="text-blue-400 hover:underline">{event.label}</a>
 			{:else}
 				<span class="{event.status === 'future' ? 'text-muted-foreground/50' : 'text-muted-foreground'}">{event.label}</span>
 			{/if}

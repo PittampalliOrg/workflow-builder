@@ -5,6 +5,8 @@
 	 */
 	import { getContext } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { ChevronsUpDown, Check, FileText, ArrowRight } from 'lucide-svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Command from '$lib/components/ui/command';
@@ -45,15 +47,19 @@
 		}
 	});
 
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
+
 	function selectWorkflow(id: string) {
 		open = false;
 		if (id === store.workflowId) return;
-		goto(`/workflows/${id}`);
+		goto(`/workspaces/${slug}/workflows/${id}`);
 	}
 
 	function goToAll() {
 		open = false;
-		goto('/workflows');
+		goto(`/workspaces/${slug}/workflows`);
 	}
 
 	function formatTime(dateStr: string): string {

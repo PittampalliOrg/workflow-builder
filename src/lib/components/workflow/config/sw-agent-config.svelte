@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -27,6 +29,9 @@
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
 	let overridesOpen = $state(false);
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	// Normalize incoming taskConfig to the ref-only shape.
 	const taskConfig = $derived(
@@ -146,7 +151,7 @@
 			<Alert class="mt-2">
 				<AlertDescription class="flex items-center justify-between gap-2">
 					<span>No agents defined yet.</span>
-					<a href="/agents/new" target="_blank" class="text-primary hover:underline text-xs">
+					<a href="/workspaces/{slug}/agents/new" target="_blank" class="text-primary hover:underline text-xs">
 						Create one <ExternalLink class="inline size-3" />
 					</a>
 				</AlertDescription>
@@ -167,7 +172,7 @@
 				</select>
 				{#if agentRef?.id}
 					<a
-						href="/agents/{agentRef.id}"
+						href="/workspaces/{slug}/agents/{agentRef.id}"
 						target="_blank"
 						class="text-xs text-primary hover:underline flex items-center gap-1"
 					>
@@ -295,7 +300,7 @@
 	{/if}
 
 	<div class="border-t pt-3">
-		<a href="/agents" target="_blank" class="text-xs text-primary hover:underline">
+		<a href="/workspaces/{slug}/agents" target="_blank" class="text-xs text-primary hover:underline">
 			<Plus class="inline size-3" /> Manage agents in the library
 		</a>
 	</div>

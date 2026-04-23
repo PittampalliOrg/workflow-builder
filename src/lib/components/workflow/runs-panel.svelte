@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { getContext, onDestroy, onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 	import {
 		X, Check, Loader2, CheckCircle2, XCircle, Clock,
@@ -35,6 +37,9 @@
 	let { embedded = false }: Props = $props();
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 
 	interface Execution {
@@ -425,7 +430,7 @@
 							<!-- Actions — separate from the expand click area -->
 							<div class="flex shrink-0 items-center gap-1">
 								<a
-									href="/workflows/{store.workflowId}/runs/{exec.id}"
+									href="/workspaces/{slug}/workflows/{store.workflowId}/runs/{exec.id}"
 									class="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors"
 									title="Open detail page"
 								>

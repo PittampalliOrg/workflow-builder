@@ -96,7 +96,12 @@
 	{/key}
 {:else}
 	<div class="flex h-full">
-		<Sidebar collapsed={ui.sidebarCollapsed} onToggle={ui.toggleSidebar} user={data.user} />
+		<Sidebar
+			collapsed={ui.sidebarCollapsed}
+			onToggle={ui.toggleSidebar}
+			user={data.user}
+			platformRole={data.platformRole}
+		/>
 		<main class="flex-1 overflow-hidden">
 			{#key routeKey}
 				{@render children()}

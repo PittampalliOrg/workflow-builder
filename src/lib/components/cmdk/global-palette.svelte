@@ -19,6 +19,8 @@
 		Container,
 		Activity,
 		Key,
+		Gauge,
+		Users,
 		Settings
 	} from 'lucide-svelte';
 	import type { SessionSummary } from '$lib/types/sessions';
@@ -88,39 +90,52 @@
 			if (res.ok) {
 				const body = (await res.json()) as { session?: { id: string }; id?: string };
 				const id = body.session?.id ?? body.id;
-				if (id) goto(`/sessions/${id}`);
+				if (id) goto(`/workspaces/default/sessions/${id}`);
 			}
 		} catch {
 			// fall through — user can navigate manually
 		}
 	}
 
+	// Palette paths prepend `/workspaces/default/` for workspace-scoped nouns.
+	// The hooks.server.ts resolver swaps `default` for the caller's active
+	// workspace, so these links land on the right project automatically.
 	const navItems: Array<{
 		label: string;
 		path: string;
 		icon: typeof Bot;
 		keywords?: string;
 	}> = [
-		{ label: 'Sessions', path: '/sessions', icon: MessagesSquare, keywords: 'chat' },
-		{ label: 'Agents', path: '/agents', icon: Bot },
-		{ label: 'Environments', path: '/environments', icon: Layers, keywords: 'sandbox' },
-		{ label: 'Credential vaults', path: '/vaults', icon: KeyRound, keywords: 'secrets oauth' },
-		{ label: 'Connections', path: '/connections', icon: Container },
-		{ label: 'Workflows', path: '/workflows', icon: Workflow },
-		{ label: 'Skills', path: '/skills', icon: Sparkles },
-		{ label: 'Usage', path: '/usage', icon: BarChart3 },
-		{ label: 'Observability', path: '/observability', icon: FileText, keywords: 'traces logs' },
+		{ label: 'Runs', path: '/workspaces/default/runs', icon: Activity, keywords: 'executions workflow runs recent' },
+		{ label: 'Sessions', path: '/workspaces/default/sessions', icon: MessagesSquare, keywords: 'chat' },
+		{ label: 'Agents', path: '/workspaces/default/agents', icon: Bot },
+		{ label: 'Environments', path: '/workspaces/default/environments', icon: Layers, keywords: 'sandbox' },
+		{ label: 'Credentials', path: '/workspaces/default/credentials', icon: KeyRound, keywords: 'secrets oauth vault connection' },
+		{ label: 'Workflows', path: '/workspaces/default/workflows', icon: Workflow },
+		{ label: 'Library', path: '/workspaces/default/library', icon: Folder, keywords: 'skills files batches code reusable' },
+		{ label: 'Library: Skills', path: '/workspaces/default/skills', icon: Sparkles, keywords: 'library' },
+		{ label: 'Library: Files', path: '/workspaces/default/files', icon: FileText, keywords: 'library uploads' },
+		{ label: 'Library: Batches', path: '/workspaces/default/batches', icon: Layers, keywords: 'library bulk' },
+		{ label: 'Library: Custom code', path: '/code-functions', icon: Folder, keywords: 'library functions typescript python' },
+		{ label: 'Usage', path: '/workspaces/default/usage', icon: BarChart3 },
+		{ label: 'Observability (traces)', path: '/observability', icon: FileText, keywords: 'traces logs telemetry' },
 		{ label: 'Sandboxes', path: '/sandboxes', icon: Container },
-		{ label: 'Dapr system', path: '/dapr-system', icon: Activity },
-		{ label: 'API keys', path: '/settings/api-keys', icon: Key },
-		{ label: 'Settings', path: '/settings', icon: Settings }
+		{ label: 'Workbench', path: '/workbench', icon: MessagesSquare, keywords: 'mcp chat prototype' },
+		{ label: 'Admin: Dapr system', path: '/admin/dapr', icon: Activity, keywords: 'admin' },
+		{ label: 'Admin: Agent runtimes', path: '/admin/runtimes', icon: Activity, keywords: 'admin pods' },
+		{ label: 'Admin: Workflow instances', path: '/admin/instances', icon: Activity, keywords: 'admin monitor' },
+		{ label: 'Admin: Activities', path: '/admin/activities', icon: Activity, keywords: 'admin dapr' },
+		{ label: 'API keys', path: '/workspaces/default/settings/keys', icon: Key },
+		{ label: 'Limits', path: '/workspaces/default/settings/limits', icon: Gauge },
+		{ label: 'Members', path: '/settings/members', icon: Users },
+		{ label: 'Security', path: '/settings/security', icon: Settings }
 	];
 
 	const quickCreates: Array<{ label: string; path: string; icon: typeof Plus }> = [
-		{ label: 'New session', path: '/sessions/new', icon: Plus },
-		{ label: 'New agent', path: '/agents/new', icon: Plus },
-		{ label: 'New agent (from template)', path: '/agents/quickstart', icon: Sparkles },
-		{ label: 'New environment', path: '/environments/new', icon: Plus }
+		{ label: 'New session', path: '/workspaces/default/sessions/new', icon: Plus },
+		{ label: 'New agent', path: '/workspaces/default/agents/new', icon: Plus },
+		{ label: 'New agent (from template)', path: '/workspaces/default/agents/new?template=1', icon: Sparkles },
+		{ label: 'New environment', path: '/workspaces/default/environments/new', icon: Plus }
 	];
 </script>
 
@@ -148,7 +163,7 @@
 						{#each sessions.slice(0, 12) as s (s.id)}
 							<Command.Item
 								value={`${s.title ?? s.id} ${s.agentId} ${s.id}`}
-								onSelect={() => go(`/sessions/${s.id}`)}
+								onSelect={() => go(`/workspaces/default/sessions/${s.id}`)}
 							>
 								<MessageSquare class="size-4 mr-2 text-muted-foreground" />
 								<div class="flex-1 min-w-0">
@@ -167,7 +182,7 @@
 						{#each agents as a (a.id)}
 							<Command.Item
 								value={`${a.name} ${a.slug ?? ''} ${a.id}`}
-								onSelect={() => go(`/agents/${a.id}`)}
+								onSelect={() => go(`/workspaces/default/agents/${a.id}`)}
 							>
 								<Bot class="size-4 mr-2 text-muted-foreground" />
 								<div class="flex-1 min-w-0">

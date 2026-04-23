@@ -314,6 +314,8 @@
 
 <div class="flex flex-col h-screen">
 	<div class="border-b bg-muted/30 px-4 py-2 flex items-center gap-1 text-xs text-muted-foreground">
+		<a href="/workspaces/{slug}" class="hover:text-foreground">Workspace</a>
+		<span class="text-muted-foreground/60">/</span>
 		<a href="/workspaces/{slug}/agents" class="hover:text-foreground">Agents</a>
 		<span class="text-muted-foreground/60">/</span>
 		<span class="text-foreground">{agent?.name ?? 'Loading…'}</span>
@@ -1083,7 +1085,7 @@
 								{#each usages as u}
 									<li>
 										<a
-											href="/workflows/{u.workflowId}"
+											href="/workspaces/{slug}/workflows/{u.workflowId}"
 											class="text-sm hover:underline flex items-center gap-1"
 										>
 											{u.workflowName}

@@ -3,7 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
-	import { Rocket, Sparkles, Key, MessageSquare, ExternalLink, LifeBuoy } from 'lucide-svelte';
+	import { Rocket, Sparkles, Key, MessageSquare, ExternalLink, LifeBuoy, Activity } from 'lucide-svelte';
 
 	type RecentSession = {
 		id: string;
@@ -13,7 +13,24 @@
 		updatedAt: string | null;
 	};
 
-	const { data }: { data: { user: { name: string | null; email: string | null } | null; recentSessions: RecentSession[] } } = $props();
+	type RecentRun = {
+		executionId: string;
+		workflowId: string;
+		workflowName: string;
+		status: 'pending' | 'running' | 'success' | 'error' | 'cancelled';
+		startedAt: string;
+		durationMs: number | null;
+	};
+
+	const {
+		data,
+	}: {
+		data: {
+			user: { name: string | null; email: string | null } | null;
+			recentSessions: RecentSession[];
+			recentRuns: RecentRun[];
+		};
+	} = $props();
 
 	const slug = $derived(
 		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG
@@ -60,7 +77,7 @@
 
 		<div class="space-y-3">
 			<a
-				href="/workspaces/{slug}/agent-quickstart"
+				href="/workspaces/{slug}/agents"
 				class="group block rounded-xl border border-border bg-card p-5 transition-colors hover:border-primary hover:bg-accent"
 			>
 				<div class="flex items-center gap-3">
@@ -76,7 +93,7 @@
 			</a>
 
 			<a
-				href="/mcp-chat"
+				href="/workbench"
 				class="group block rounded-xl border border-border bg-card p-5 transition-colors hover:border-primary hover:bg-accent"
 			>
 				<div class="flex items-center gap-3">
@@ -91,7 +108,7 @@
 			</a>
 
 			<a
-				href="/settings/api-keys"
+				href="/workspaces/{slug}/settings/keys"
 				class="group block rounded-xl border border-border bg-card p-5 transition-colors hover:border-primary hover:bg-accent"
 			>
 				<div class="flex items-center gap-3">
@@ -106,6 +123,38 @@
 				</div>
 			</a>
 		</div>
+
+		{#if data.recentRuns.length > 0}
+			<section class="space-y-2">
+				<div class="flex items-center justify-between">
+					<h2 class="text-xs uppercase tracking-wider text-muted-foreground">Recent runs</h2>
+					<a href="/workspaces/{slug}/runs" class="text-xs text-primary hover:underline">
+						View all →
+					</a>
+				</div>
+				<div class="space-y-2">
+					{#each data.recentRuns as r (r.executionId)}
+						<a
+							href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+							class="block rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:bg-accent"
+						>
+							<div class="flex items-center justify-between gap-3">
+								<div class="min-w-0 flex-1 flex items-center gap-2">
+									<Activity class="size-3.5 text-muted-foreground shrink-0" />
+									<p class="text-sm truncate" title={r.workflowName}>{r.workflowName}</p>
+								</div>
+								<div class="flex items-center gap-2 text-xs">
+									<Badge variant="outline" class="text-[10px] capitalize">{r.status}</Badge>
+									<span class="text-muted-foreground whitespace-nowrap">
+										{formatRelative(r.startedAt)}
+									</span>
+								</div>
+							</div>
+						</a>
+					{/each}
+				</div>
+			</section>
+		{/if}
 
 		{#if data.recentSessions.length > 0}
 			<section class="space-y-2">

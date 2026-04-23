@@ -1,0 +1,709 @@
+{
+  "agent_versions": [
+    {
+      "agent_id": "1uMzgr7B9Ej3_jto2O7kg",
+      "config": {
+        "browserArtifacts": {
+          "screenshots": true,
+          "video": true
+        },
+        "builtinTools": [],
+        "goal": "Navigate live websites in a real browser and report back what you saw.",
+        "instructions": [
+          "Use the browser-use runtime (Browserstation backend) to open URLs and interact with pages.",
+          "Wait for the page to finish loading before acting on it.",
+          "Describe what you observe: page title, final URL, visible content.",
+          "End every final response with the marker `TASK COMPLETE` so the workflow's stopCondition matches."
+        ],
+        "maxTurns": 15,
+        "mcpConnectionMode": "explicit",
+        "mcpServers": [],
+        "memory": {
+          "backend": "dapr_state",
+          "sessionId": "browser-use-web-navigator"
+        },
+        "modelSpec": "openai/gpt-4.1-mini",
+        "role": "Web navigator",
+        "runtime": "browser-use-agent",
+        "runtimeOverridePolicy": {
+          "allowCredentialBinding": true,
+          "allowServerAdditions": false,
+          "allowSkillAdditions": false,
+          "allowSkillNarrowing": true,
+          "allowToolNarrowing": true
+        },
+        "skills": [],
+        "styleGuidelines": [
+          "Be concise. Prefer bullet points and short sentences.",
+          "Quote the page title verbatim; don't paraphrase."
+        ],
+        "timeoutMinutes": 10
+      },
+      "config_hash": "32fb85555d05839f6b28a80199871e9aed1293ea76714396bc377409c517dfb6",
+      "id": "EOI4UDWCeMVsMZGN1TEEM",
+      "published_by": "640e9vekv3saahy59g8il",
+      "version": 2
+    }
+  ],
+  "agents": [
+    {
+      "avatar": null,
+      "current_version_id": "EOI4UDWCeMVsMZGN1TEEM",
+      "default_vault_ids": [],
+      "description": "Reusable browser-use agent: opens URLs in a real browser and reports what it sees. Screenshots + video capture enabled.",
+      "environment_id": "env_default_sandbox",
+      "environment_version": 1,
+      "id": "1uMzgr7B9Ej3_jto2O7kg",
+      "is_archived": false,
+      "name": "Browser Use \u00b7 Web Navigator",
+      "registry_status": "registered",
+      "runtime": "browser-use-agent",
+      "slug": "browser-use-web-navigator",
+      "tags": [
+        "browser-use",
+        "navigation"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "dapr_workflow_name": null,
+      "description": "Open a URL in a real browser and perform an arbitrary navigation task. URL + task are parameterized at trigger time. Browser-use captures screenshots and video along the way and persists them to workflow_browser_artifacts so the run page's Artifacts tab renders them.",
+      "edges": [
+        {
+          "id": "start-browser_use_agent",
+          "source": "start",
+          "target": "browser_use_agent",
+          "type": "smoothstep"
+        },
+        {
+          "id": "browser_use_agent-end",
+          "source": "browser_use_agent",
+          "target": "end",
+          "type": "smoothstep"
+        }
+      ],
+      "engine_type": "dapr",
+      "id": "browser-use-web-navigator",
+      "name": "Browser Use \u00b7 Web Navigator",
+      "nodes": [
+        {
+          "data": {
+            "enabled": true,
+            "label": "Start",
+            "status": "idle",
+            "taskConfig": {
+              "input": {
+                "format": "json",
+                "schema": {
+                  "document": {
+                    "properties": {
+                      "task": {
+                        "default": "Report the exact page title and final URL, plus a one-sentence description of the page content.",
+                        "description": "What the agent should do after the page loads.",
+                        "title": "Task",
+                        "type": "string"
+                      },
+                      "url": {
+                        "default": "https://example.com",
+                        "description": "The URL to open in the browser session.",
+                        "format": "uri",
+                        "title": "Starting URL",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "url",
+                      "task"
+                    ],
+                    "type": "object"
+                  },
+                  "format": "json"
+                }
+              }
+            },
+            "type": "start"
+          },
+          "id": "start",
+          "position": {
+            "x": 260,
+            "y": 20
+          },
+          "type": "start"
+        },
+        {
+          "data": {
+            "agent": {
+              "id": "1uMzgr7B9Ej3_jto2O7kg",
+              "runtime": "browser-use-agent",
+              "slug": "browser-use-web-navigator"
+            },
+            "enabled": true,
+            "label": "Browser Use Agent",
+            "status": "idle",
+            "type": "agent"
+          },
+          "id": "browser_use_agent",
+          "position": {
+            "x": 260,
+            "y": 180
+          },
+          "type": "call"
+        },
+        {
+          "data": {
+            "enabled": true,
+            "label": "End",
+            "status": "idle",
+            "type": "end"
+          },
+          "id": "end",
+          "position": {
+            "x": 260,
+            "y": 340
+          },
+          "type": "end"
+        }
+      ],
+      "spec": {
+        "do": [
+          {
+            "browser_use_agent": {
+              "call": "durable/run",
+              "with": {
+                "agentRef": {
+                  "id": "1uMzgr7B9Ej3_jto2O7kg",
+                  "slug": "browser-use-web-navigator"
+                },
+                "maxTurns": 15,
+                "mode": "execute_direct",
+                "prompt": "${ \"Open \" + .trigger.url + \" in the live browser. \" + .trigger.task + \" When you are done, include the exact page title and final URL in your response. End your final message with TASK COMPLETE.\" }",
+                "stopCondition": "Stop after the final response reports the page title, final URL, and includes TASK COMPLETE.",
+                "timeoutMinutes": 10,
+                "workspaceRef": "local"
+              }
+            }
+          }
+        ],
+        "document": {
+          "dsl": "1.0.0",
+          "name": "browser-use-web-navigator",
+          "namespace": "workflow-builder",
+          "summary": "Parameterized browser-use session: open <url>, do <task>, report page title + final URL, capture screenshots + video.",
+          "title": "Browser Use \u00b7 Web Navigator",
+          "version": "1.0.0",
+          "x-workflow-builder": {
+            "input": {
+              "mode": "structured",
+              "schema": {
+                "properties": {
+                  "task": {
+                    "default": "Report the exact page title and final URL, plus a one-sentence description of the page content.",
+                    "description": "What the agent should do after the page loads.",
+                    "title": "Task",
+                    "type": "string"
+                  },
+                  "url": {
+                    "default": "https://example.com",
+                    "description": "The URL to open in the browser session.",
+                    "format": "uri",
+                    "title": "Starting URL",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "task"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "spec_version": null,
+      "visibility": "public"
+    },
+    {
+      "dapr_workflow_name": null,
+      "description": "Smoke workflow: exercise powerpoint-agent via workspace/profile \u2192 durable/run",
+      "edges": [
+        {
+          "id": "__start__-office-agent",
+          "source": "__start__",
+          "target": "office-agent"
+        },
+        {
+          "id": "office-agent-__end__",
+          "source": "office-agent",
+          "target": "__end__"
+        }
+      ],
+      "engine_type": "dapr",
+      "id": "powerpoint-agent-smoke",
+      "name": "PowerPoint Agent Smoke",
+      "nodes": [
+        {
+          "data": {
+            "enabled": true,
+            "label": "Start",
+            "status": "idle",
+            "type": "start"
+          },
+          "id": "__start__",
+          "position": {
+            "x": 240,
+            "y": 60
+          },
+          "type": "start"
+        },
+        {
+          "data": {
+            "enabled": true,
+            "label": "PowerPoint Agent",
+            "status": "idle",
+            "taskConfig": {
+              "call": "durable/run",
+              "with": {
+                "body": {
+                  "agentRef": {
+                    "id": "agt_b601a9178513907d",
+                    "version": 1
+                  },
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 30,
+                    "timeoutMinutes": 60
+                  },
+                  "prompt": "Build a 5-slide executive board update deck for a fictional SaaS company 'Nimbus Cloud'. Save it as /sandbox/nimbus-q1-board.pptx. After verifying the file exists, upload it to OneDrive at /Nimbus/nimbus-q1-board.pptx using the create_upload_session + sandbox curl PUT pattern described in your system prompt (do NOT use upload_onedrive_file \u2014 see the CRITICAL OneDrive section).\n\nPrefer python-pptx via execute_command in the sandbox (pip install python-pptx if missing; if pip can't reach pypi, fall back to curl-downloading wheels from files.pythonhosted.org into /tmp/wheels then `pip install --no-index --find-links=/tmp/wheels`). The office-powerpoint-mcp-server's files live on its own volume, so its save_presentation output isn't visible at /sandbox \u2014 use python-pptx for the final save.\n\nRequired slides (set a consistent title-size on each slide):\n  1. Title slide \u2014 Title: 'Nimbus Cloud \u2014 Q1 2026 Board Update'. Subtitle: 'Scaling the PLG Motion'.\n  2. 'KPIs at a Glance' \u2014 4 KPI boxes laid out in a 2x2 grid (each box has a bold metric value + a small label underneath):\n       MRR $545K \u00b7 NPS 62 \u00b7 Churn 1.8% \u00b7 Gross Margin 81%.\n  3. 'Business Highlights' \u2014 bullet list of 3 wins:\n       \u2022 Signed 2 strategic enterprise accounts ($480K ACV combined)\n       \u2022 Launched self-serve trial funnel, 12% trial\u2192paid conversion\n       \u2022 Shipped EU data-residency tier, unlocking 3 pipeline deals\n  4. 'Key Risks' \u2014 bullet list of 2 risks:\n       \u2022 Competitive pressure from Acme Co's April launch (overlap in core Value-Props 3, 7)\n       \u2022 Hiring pipeline behind plan \u2014 need 3 senior ICs by end of Q2\n  5. 'Looking Ahead (Q2)' \u2014 bullet list of 3 asks:\n       \u2022 Close $2M Series A extension to extend runway to 24 months\n       \u2022 GA enterprise SSO + audit-log features\n       \u2022 Hire VP Sales + 2 AE's\n\nFinish by: (a) ls /sandbox/nimbus-q1-board.pptx to confirm the file exists, (b) summarizing slide-by-slide what you built, (c) calling create_upload_session + sandbox curl PUT to upload to /Nimbus/nimbus-q1-board.pptx, (d) reporting the returned OneDrive item id + uploaded size (must match the local size in bytes)."
+                },
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "keepAfterRun": true,
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 7200
+                },
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            },
+            "type": "agent"
+          },
+          "id": "office-agent",
+          "position": {
+            "x": 240,
+            "y": 220
+          },
+          "type": "agent"
+        },
+        {
+          "data": {
+            "enabled": true,
+            "label": "End",
+            "status": "idle",
+            "type": "end"
+          },
+          "id": "__end__",
+          "position": {
+            "x": 240,
+            "y": 400
+          },
+          "type": "end"
+        }
+      ],
+      "spec": {
+        "do": [
+          {
+            "workspace_profile": {
+              "call": "workspace/profile",
+              "with": {
+                "commandTimeoutMs": 900000,
+                "enabledTools": [
+                  "execute_command",
+                  "read_file",
+                  "write_file",
+                  "edit_file",
+                  "list_files",
+                  "mkdir",
+                  "file_stat"
+                ],
+                "keepAfterRun": true,
+                "managedBy": "workflow-builder:sandbox-policy",
+                "name": "workspace_profile",
+                "rootPath": "/sandbox",
+                "sandboxPolicy": {
+                  "keepAfterRun": true,
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 7200
+                },
+                "sandboxTemplate": "dapr-agent",
+                "timeoutMs": 1200000,
+                "ttlSeconds": 7200
+              }
+            }
+          },
+          {
+            "office_agent_run": {
+              "call": "durable/run",
+              "with": {
+                "body": {
+                  "agentAppId": "agent-runtime-powerpoint-agent",
+                  "agentRef": {
+                    "id": "agt_b601a9178513907d"
+                  },
+                  "agentSlug": "powerpoint-agent",
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 30,
+                    "timeoutMinutes": 60
+                  },
+                  "prompt": "${ .trigger.prompt // \"Build a 5-slide executive board update deck for a fictional SaaS company 'Nimbus Cloud'. Save to /sandbox/nimbus-q1-board.pptx. Slides: 1) Title 'Nimbus Cloud \u2014 Q1 2026 Board Update', 2) KPIs 2x2 grid (MRR $545K, NPS 62, Churn 1.8%, Gross Margin 81%), 3) Business Highlights (3 bullets), 4) Key Risks (2 bullets), 5) Looking Ahead Q2 (3 asks). Then upload to OneDrive at /Nimbus/nimbus-q1-board.pptx via create_upload_session + sandbox curl PUT.\" }"
+                },
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "keepAfterRun": true,
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 7200
+                },
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          }
+        ],
+        "document": {
+          "dsl": "1.0.0",
+          "name": "powerpoint-agent-smoke",
+          "namespace": "workflow-builder",
+          "version": "1.0.0"
+        },
+        "input": {
+          "schema": {
+            "properties": {
+              "prompt": {
+                "description": "What PowerPoint deck should be built and uploaded to /Nimbus/ ?",
+                "title": "Prompt",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "spec_version": null,
+      "visibility": "private"
+    },
+    {
+      "dapr_workflow_name": null,
+      "description": "Smoke workflow: exercise excel-agent via workspace/profile \u2192 durable/run",
+      "edges": [
+        {
+          "id": "__start__-office-agent",
+          "source": "__start__",
+          "target": "office-agent"
+        },
+        {
+          "id": "office-agent-__end__",
+          "source": "office-agent",
+          "target": "__end__"
+        }
+      ],
+      "engine_type": "dapr",
+      "id": "excel-agent-smoke",
+      "name": "Excel Agent Smoke",
+      "nodes": [
+        {
+          "data": {
+            "enabled": true,
+            "label": "Start",
+            "status": "idle",
+            "type": "start"
+          },
+          "id": "__start__",
+          "position": {
+            "x": 240,
+            "y": 60
+          },
+          "type": "start"
+        },
+        {
+          "data": {
+            "enabled": true,
+            "label": "Excel Agent",
+            "status": "idle",
+            "taskConfig": {
+              "call": "durable/run",
+              "with": {
+                "body": {
+                  "agentRef": {
+                    "id": "agt_c2cc38d060f82437",
+                    "version": 1
+                  },
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 30,
+                    "timeoutMinutes": 60
+                  },
+                  "prompt": "Build a quarterly financial model for a fictional SaaS company named 'Nimbus Cloud'. Save the workbook as /sandbox/nimbus-financial-model.xlsx. After verifying the file exists, upload it to OneDrive at /Nimbus/nimbus-financial-model.xlsx using the create_upload_session + sandbox curl PUT pattern described in your system prompt (do NOT use upload_onedrive_file \u2014 see the CRITICAL OneDrive section).\n\nUse openpyxl in the sandbox \u2014 the excel-mcp-server has its own volume and its outputs are not visible at /sandbox, so prefer openpyxl (apt-get already has libreoffice-calc and dejavu fonts; pip install openpyxl pandas if missing).\n\nWorkbook must contain FOUR sheets. All calculated fields must be Excel FORMULAS (not hardcoded values):\n\n1. Sheet 'Inputs' (hardcoded assumptions, blue font, one value per cell with a descriptive label in column A):\n   - Starting MRR: $500,000\n   - Gross margin %: 82\n   - New-logo MRR growth %/month: 8\n   - Churn %/month: 2\n   - Opex/month: $180,000\n   - Headcount: 12\n\n2. Sheet 'P&L' (monthly rows Jan\u2013Dec 2026, all derived values via formulas referencing Inputs):\n   - Columns: Month, MRR, Revenue (=MRR*3 for the quarter view), COGS (=Revenue*(1 - Inputs!GrossMargin/100)), Gross Profit (=Revenue-COGS), Operating Expenses (=Inputs!Opex), Net Income (=GrossProfit-OpEx).\n   - MRR progression: row1 = Inputs!StartingMRR; subsequent rows = prev * (1 + (growth - churn)/100).\n\n3. Sheet 'Summary' (yearly totals via SUM over P&L):\n   - Labels: Total Revenue, Total COGS, Total Gross Profit, Total OpEx, Total Net Income \u2014 each row a SUM() formula over the P&L column.\n\n4. Sheet 'KPIs' (single-value formulas):\n   - Annual Recurring Revenue (ARR) = 'P&L'!MRR_Dec * 12\n   - Gross Margin % = Summary!TotalGrossProfit / Summary!TotalRevenue\n   - Net Margin % = Summary!TotalNetIncome / Summary!TotalRevenue\n   - Revenue per Employee = Summary!TotalRevenue / Inputs!Headcount\n\nFinish by: (a) ls /sandbox/nimbus-financial-model.xlsx to confirm the file exists, (b) dumping a short per-sheet summary of the formulas you used, (c) calling create_upload_session + sandbox curl PUT to upload to /Nimbus/nimbus-financial-model.xlsx, (d) reporting the returned OneDrive item id + uploaded size (must match the local size in bytes)."
+                },
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "keepAfterRun": true,
+                  "mode": "per-run",
+                  "template": "dapr-agent-xlsx",
+                  "ttlSeconds": 7200
+                },
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            },
+            "type": "agent"
+          },
+          "id": "office-agent",
+          "position": {
+            "x": 240,
+            "y": 220
+          },
+          "type": "agent"
+        },
+        {
+          "data": {
+            "enabled": true,
+            "label": "End",
+            "status": "idle",
+            "type": "end"
+          },
+          "id": "__end__",
+          "position": {
+            "x": 240,
+            "y": 400
+          },
+          "type": "end"
+        }
+      ],
+      "spec": {
+        "do": [
+          {
+            "workspace_profile": {
+              "call": "workspace/profile",
+              "with": {
+                "commandTimeoutMs": 900000,
+                "enabledTools": [
+                  "execute_command",
+                  "read_file",
+                  "write_file",
+                  "edit_file",
+                  "list_files",
+                  "mkdir",
+                  "file_stat"
+                ],
+                "keepAfterRun": true,
+                "managedBy": "workflow-builder:sandbox-policy",
+                "name": "workspace_profile",
+                "rootPath": "/sandbox",
+                "sandboxPolicy": {
+                  "keepAfterRun": true,
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 7200
+                },
+                "sandboxTemplate": "dapr-agent",
+                "timeoutMs": 1200000,
+                "ttlSeconds": 7200
+              }
+            }
+          },
+          {
+            "office_agent_run": {
+              "call": "durable/run",
+              "with": {
+                "body": {
+                  "agentAppId": "agent-runtime-excel-agent",
+                  "agentRef": {
+                    "id": "agt_c2cc38d060f82437"
+                  },
+                  "agentSlug": "excel-agent",
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 30,
+                    "timeoutMinutes": 60
+                  },
+                  "prompt": "${ .trigger.prompt // \"Create a quarterly P&L workbook for a fictional SaaS company. Save to /sandbox/nimbus-financial-model.xlsx. Cols: Month (Jan/Feb/Mar), Revenue, COGS, Gross Profit, Operating Expenses, Net Income. Use Excel formulas for Gross Profit (Revenue - COGS) and Net Income (Gross Profit - Operating Expenses). Populate realistic SaaS numbers. Then upload to OneDrive at /Nimbus/nimbus-financial-model.xlsx via create_upload_session + sandbox curl PUT.\" }"
+                },
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "keepAfterRun": true,
+                  "mode": "per-run",
+                  "template": "dapr-agent-xlsx",
+                  "ttlSeconds": 7200
+                },
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          }
+        ],
+        "document": {
+          "dsl": "1.0.0",
+          "name": "excel-agent-smoke",
+          "namespace": "workflow-builder",
+          "version": "1.0.0"
+        },
+        "input": {
+          "schema": {
+            "properties": {
+              "prompt": {
+                "description": "What Excel workbook should be built and uploaded to /Nimbus/ ?",
+                "title": "Prompt",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "spec_version": null,
+      "visibility": "private"
+    },
+    {
+      "dapr_workflow_name": null,
+      "description": null,
+      "edges": [],
+      "engine_type": "dapr",
+      "id": "3pvh53PpHSiz-OoEeSW4z",
+      "name": "3B1B Skill Animation Example",
+      "nodes": [],
+      "spec": {
+        "do": [
+          {
+            "workspace_profile": {
+              "call": "workspace/profile",
+              "with": {
+                "commandTimeoutMs": 900000,
+                "keepAfterRun": true,
+                "name": "workspace_profile",
+                "rootPath": "/sandbox",
+                "sandboxTemplate": "dapr-agent-animation",
+                "timeoutMs": 1200000,
+                "ttlSeconds": 7200
+              }
+            }
+          },
+          {
+            "build_3b1b_animation": {
+              "call": "durable/run",
+              "with": {
+                "body": {
+                  "agentRef": {
+                    "id": "9mg45nG313FLp1u82zqOP",
+                    "version": 2
+                  },
+                  "maxTurns": 90,
+                  "mode": "execute_direct",
+                  "prompt": "${ \"\" + .trigger.animationDescription + \" \u2014 Build a self-contained browser animation in /sandbox/3b1b-style-animation-example with index.html, styles.css, script.js, and README.md. Use Canvas or SVG so the result runs via a simple static file server. The browser animation is the required deliverable. Use stable DOM ids for validation: the main canvas must be <canvas id=\\\"canvas\\\">, the play/pause control <button id=\\\"btn-play\\\">, the restart control <button id=\\\"btn-restart\\\">. Do NOT install Manim \u2014 if a scene is useful, include scene.py as optional source only. Do not start any preview server; the downstream start_preview step will do that. Report: files created and a brief outline of the animation logic.\" }"
+                },
+                "cleanupWorkspace": false,
+                "cwd": "/sandbox",
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "timeoutMinutes": 60,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          },
+          {
+            "start_preview": {
+              "call": "browser/start-preview",
+              "with": {
+                "body": {
+                  "input": {
+                    "baseUrl": "http://127.0.0.1:3009",
+                    "devServerCommand": "",
+                    "installCommand": "",
+                    "keepAlive": true,
+                    "previewId": "${ \"3b1b-style-animation-preview-\" + .runtime.dbExecutionId }",
+                    "repoPath": "/sandbox/3b1b-style-animation-example",
+                    "rootPath": "/sandbox",
+                    "sandboxName": "${ .workspace_profile.sandboxName // \"\" }",
+                    "timeoutMs": 7200000,
+                    "timeoutSeconds": 7200,
+                    "workingDir": "/sandbox",
+                    "workspaceRef": "${ .workspace_profile.workspaceRef }"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "validate_with_browser_agent": {
+              "call": "durable/run",
+              "with": {
+                "body": {
+                  "agentRef": {
+                    "id": "9mg45nG313FLp1u82zqOP",
+                    "version": 2
+                  },
+                  "maxTurns": 8,
+                  "mode": "execute_direct",
+                  "prompt": "${ \"Validate the live preview via Playwright MCP. Preview URL: \" + \"http://openshell-agent-runtime.openshell.svc.cluster.local:8083/api/workspaces/preview/\" + .start_preview.result.previewId + \"/\" + \"\\n\\nExactly 3 tool calls, in order. Do NOT call any tool not listed:\\n  1. browser_navigate \u2014 preview URL above.\\n  2. browser_wait_for \u2014 selector canvas#canvas.\\n  3. browser_take_screenshot \u2014 filename: final.png.\\n\\nSTOP after the 3rd tool call. Do not browser_click, browser_snapshot, browser_evaluate, browser_console_messages, browser_run_code, take additional screenshots, or re-navigate. Emit a one-sentence final message listing the 3 tool names. No analysis, no verification.\" }"
+                },
+                "cleanupWorkspace": false,
+                "cwd": "/sandbox",
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "timeoutMinutes": 30,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          }
+        ],
+        "document": {
+          "dsl": "1.0.0",
+          "name": "three-b-one-b-skill-animation-example",
+          "namespace": "workflow-builder",
+          "summary": "Creates a short derivative animation using the 3b1b-style-animation skill in a per-run Dapr sandbox, then starts an interactive preview from the generated app.",
+          "title": "3B1B Skill Animation Example",
+          "version": "1.0.0",
+          "x-workflow-builder": {
+            "input": {
+              "fields": {
+                "animationDescription": {
+                  "defaultValue": "Create a concise 3Blue1Brown-style derivative animation for x^2",
+                  "description": "Describe the 3Blue1Brown-style animation the agent should build.",
+                  "label": "Animation description",
+                  "type": "textarea"
+                }
+              }
+            }
+          }
+        },
+        "input": {
+          "schema": {
+            "document": {
+              "properties": {
+                "animationDescription": {
+                  "default": "Create a concise 3Blue1Brown-style derivative animation for x^2",
+                  "description": "Describe the 3Blue1Brown-style animation the agent should build.",
+                  "title": "Animation description",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "animationDescription"
+              ],
+              "type": "object"
+            },
+            "format": "json"
+          }
+        }
+      },
+      "spec_version": null,
+      "visibility": "private"
+    }
+  ]
+}

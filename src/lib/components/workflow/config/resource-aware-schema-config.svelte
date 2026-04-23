@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -105,6 +107,10 @@
 		dynamicInputs = {},
 		resolveOptions = undefined,
 	}: Props = $props();
+
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	let rootSchema = $derived(asSchema(schema));
 	let fieldEntries = $derived.by(() =>
@@ -613,7 +619,7 @@
 							No {authPieceDisplayName()} connection found
 						</p>
 						<a
-							href="/connections"
+							href="/workspaces/{slug}/credentials"
 							target="_blank"
 							rel="noopener noreferrer"
 							class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -621,7 +627,7 @@
 							+ Connect {authPieceDisplayName()}
 						</a>
 						<p class="mt-1.5 text-[9px] text-muted-foreground">
-							Opens the Connections page to set up OAuth2 or API key
+							Opens the Credentials page to set up OAuth2 or API key
 						</p>
 					</div>
 				{:else if loadingConnections}

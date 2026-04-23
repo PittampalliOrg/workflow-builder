@@ -45,6 +45,11 @@
 	let sourceFilter = $state<SourceFilter>(
 		(url.searchParams.get('source') as SourceFilter) ?? 'all'
 	);
+	// Deep-link filters: workflow detail "Runs" tab links to /sessions?workflowId=X,
+	// and the old /workflows/runs/[id] redirects here with ?executionId=Y. Both
+	// pin the list to a specific upstream workflow/run.
+	let workflowIdFilter = $state<string>(url.searchParams.get('workflowId') ?? '');
+	let executionIdFilter = $state<string>(url.searchParams.get('executionId') ?? '');
 	// Default to 30d so the list stays bounded as sessions accumulate. Users
 	// can explicitly switch to "All time" to see older history.
 	let created = $state<CreatedFilter>(
@@ -123,6 +128,8 @@
 		if (statusFilter !== 'all') next.set('status', statusFilter);
 		if (agentFilter !== 'all') next.set('agentId', agentFilter);
 		if (sourceFilter !== 'all') next.set('source', sourceFilter);
+		if (workflowIdFilter) next.set('workflowId', workflowIdFilter);
+		if (executionIdFilter) next.set('executionId', executionIdFilter);
 		if (created !== 'all') next.set('created', created);
 		if (searchText.trim()) next.set('q', searchText.trim());
 		if (includeArchived) next.set('archived', 'true');
@@ -140,6 +147,10 @@
 			const qs = new URLSearchParams();
 			if (statusFilter !== 'all') qs.set('status', statusFilter);
 			if (agentFilter !== 'all') qs.set('agentId', agentFilter);
+			if (sourceFilter !== 'all') qs.set('source', sourceFilter);
+			if (workflowIdFilter) qs.set('workflowId', workflowIdFilter);
+			if (executionIdFilter) qs.set('executionId', executionIdFilter);
+			if (searchText.trim().length >= 2) qs.set('q', searchText.trim());
 			if (includeArchived) qs.set('includeArchived', 'true');
 			const [sRes, aRes, rRes] = await Promise.all([
 				fetch(`/api/v1/sessions?${qs}`),
@@ -208,6 +219,8 @@
 		statusFilter = 'all';
 		agentFilter = 'all';
 		sourceFilter = 'all';
+		workflowIdFilter = '';
+		executionIdFilter = '';
 		created = 'all';
 		searchText = '';
 		includeArchived = false;
@@ -217,6 +230,8 @@
 		statusFilter !== 'all' ||
 			agentFilter !== 'all' ||
 			sourceFilter !== 'all' ||
+			workflowIdFilter !== '' ||
+			executionIdFilter !== '' ||
 			created !== 'all' ||
 			searchText.trim() !== '' ||
 			includeArchived
@@ -303,10 +318,16 @@
 		return t;
 	}
 
+	// Any filter change that maps to a server-side query param re-fetches the
+	// list. Client-only filters (created, search <2 chars) stay derived.
 	$effect(() => {
 		void statusFilter;
 		void includeArchived;
 		void agentFilter;
+		void sourceFilter;
+		void workflowIdFilter;
+		void executionIdFilter;
+		void searchText;
 		void load();
 	});
 
@@ -485,7 +506,7 @@
 			<td class="px-4 py-2.5">
 				{#if s.workflowExecutionId && s.workflowId}
 					<a
-						href={`/workflows/${s.workflowId}?execution=${s.workflowExecutionId}`}
+						href={`/workspaces/${slug}/workflows/${s.workflowId}/runs/${s.workflowExecutionId}`}
 						onclick={(e) => e.stopPropagation()}
 						class="inline-flex items-center gap-1 text-xs hover:underline text-foreground"
 						title={`Workflow run ${s.workflowExecutionId}`}
