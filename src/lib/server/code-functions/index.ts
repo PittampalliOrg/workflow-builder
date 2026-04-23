@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { codeFunctionRevisions, codeFunctions } from '$lib/server/db/schema';
+import {
+	codeFunctionRevisions,
+	codeFunctions,
+	type CodeFunctionCompositionGraph,
+	type CodeFunctionRole,
+} from '$lib/server/db/schema';
 import { parseCodePreview, type CodeParserLanguage, type CodeParserModel } from '$lib/server/code-parser';
 
 export interface SaveCodeFunctionInput {
@@ -12,6 +17,8 @@ export interface SaveCodeFunctionInput {
 	path?: string | null;
 	source: string;
 	supportingFiles?: Record<string, string> | null;
+	role?: CodeFunctionRole;
+	compositionGraph?: CodeFunctionCompositionGraph | null;
 }
 
 export interface CodeFunctionRevisionSummary {
@@ -35,6 +42,8 @@ export interface CodeFunctionSummary {
 	hasDiagnostics: boolean;
 	latestPublishedVersion: string | null;
 	lastPublishedAt: string | null;
+	role: CodeFunctionRole;
+	compositionGraph: CodeFunctionCompositionGraph | null;
 }
 
 export interface CodeFunctionDetail extends CodeFunctionSummary {
@@ -82,6 +91,8 @@ function normalizeInput(input: SaveCodeFunctionInput): SaveCodeFunctionInput {
 		path: input.path?.trim() || null,
 		source: input.source,
 		supportingFiles: supportingFiles && Object.keys(supportingFiles).length > 0 ? supportingFiles : null,
+		role: input.role ?? 'function',
+		compositionGraph: input.compositionGraph ?? null,
 	};
 }
 
@@ -147,6 +158,8 @@ function toSummary(row: typeof codeFunctions.$inferSelect): CodeFunctionSummary 
 		hasDiagnostics: Array.isArray(row.diagnostics) && row.diagnostics.length > 0,
 		latestPublishedVersion: row.latestPublishedVersion ?? null,
 		lastPublishedAt: row.lastPublishedAt ? row.lastPublishedAt.toISOString() : null,
+		role: (row.role ?? 'function') as CodeFunctionRole,
+		compositionGraph: (row.compositionGraph as CodeFunctionCompositionGraph | null) ?? null,
 	};
 }
 
@@ -238,6 +251,8 @@ function detailFromRevision(
 		hasDiagnostics: Array.isArray(row.diagnostics) && row.diagnostics.length > 0,
 		latestPublishedVersion: row.version,
 		lastPublishedAt: row.publishedAt.toISOString(),
+		role: (row.role ?? 'function') as CodeFunctionRole,
+		compositionGraph: (row.compositionGraph as CodeFunctionCompositionGraph | null) ?? null,
 		source: row.source,
 		supportingFiles:
 			row.supportingFiles && typeof row.supportingFiles === 'object'
@@ -395,6 +410,20 @@ export async function getCodeFunction(
 	return toDetail(row, revisions.map(toRevisionSummary));
 }
 
+export async function getCodeFunctionBySlugForUser(
+	slug: string,
+	userId?: string | null,
+): Promise<CodeFunctionDetail | null> {
+	const database = requireDb();
+	const ownerId = requireUserId(userId);
+	const [row] = await database
+		.select()
+		.from(codeFunctions)
+		.where(and(eq(codeFunctions.slug, slug), eq(codeFunctions.createdBy, ownerId)))
+		.limit(1);
+	return row ? toDetail(row) : null;
+}
+
 export async function getCodeFunctionBySlug(
 	slug: string,
 	version: string,
@@ -488,6 +517,8 @@ export async function publishCodeFunction(
 		imports: row.imports,
 		diagnostics: row.diagnostics,
 		capabilities: row.capabilities,
+		role: (row.role ?? 'function') as CodeFunctionRole,
+		compositionGraph: (row.compositionGraph as CodeFunctionCompositionGraph | null) ?? null,
 		createdBy: ownerId,
 	});
 
@@ -535,6 +566,8 @@ export async function createCodeFunction(
 			imports: model.imports,
 			diagnostics: model.diagnostics,
 			capabilities: model.capabilities,
+			role: normalized.role ?? 'function',
+			compositionGraph: normalized.compositionGraph ?? null,
 			createdBy: ownerId,
 		})
 		.returning();
@@ -571,6 +604,10 @@ export async function updateCodeFunction(
 			imports: model.imports,
 			diagnostics: model.diagnostics,
 			capabilities: model.capabilities,
+			...(normalized.role !== undefined ? { role: normalized.role } : {}),
+			...(normalized.compositionGraph !== undefined
+				? { compositionGraph: normalized.compositionGraph }
+				: {}),
 			updatedAt: new Date(),
 		})
 		.where(and(eq(codeFunctions.id, id), eq(codeFunctions.createdBy, ownerId)))

@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked, FilePlus } from 'lucide-svelte';
+	import { page } from '$app/state';
+	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
+	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked, FilePlus, FileCode2 } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -11,15 +13,33 @@
 	import PublishBadge from './publish-badge.svelte';
 	import ExecuteDialog from './execute-dialog.svelte';
 	import WorkflowSwitcher from './workflow-switcher.svelte';
+	import CodePreviewDialog from './code-preview-dialog.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
 	let isPublishing = $state(false);
 	let showExecuteDialog = $state(false);
+	let showExportDialog = $state(false);
 	let switcherRef: WorkflowSwitcher | undefined = $state();
+	const slug = $derived(
+		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
+	);
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
+
+	// Deep-link from the Run Cockpit's "Submit new run" button:
+	// /workspaces/[slug]/workflows/[id]?execute=1 → auto-opens the Execute
+	// dialog. Strip the param once consumed so reloads don't reopen.
+	$effect(() => {
+		if (!page.url.searchParams.has('execute')) return;
+		showExecuteDialog = true;
+		if (typeof window !== 'undefined') {
+			const next = new URL(window.location.href);
+			next.searchParams.delete('execute');
+			window.history.replaceState(window.history.state, '', next.pathname + next.search);
+		}
+	});
 
 	async function saveWorkflow() {
 		if (!store.workflowId) return;
@@ -100,7 +120,7 @@
 			});
 			if (res.ok) {
 				const workflow = await res.json();
-				goto(`/workflows/${workflow.id}`);
+				goto(`/workspaces/${slug}/workflows/${workflow.id}`);
 			}
 		} catch (err) {
 			console.error('Failed to create workflow:', err);
@@ -211,6 +231,18 @@
 		</Button>
 
 		<Button
+			variant="ghost"
+			size="sm"
+			class="h-7 gap-1 px-2 text-xs"
+			onclick={() => (showExportDialog = true)}
+			disabled={!store.workflowId}
+			title="Export workflow as TypeScript or Python"
+		>
+			<FileCode2 size={12} />
+			Export code
+		</Button>
+
+		<Button
 			size="sm"
 			class="h-7 gap-1.5 px-3 text-xs"
 			onclick={() => (showExecuteDialog = true)}
@@ -226,3 +258,12 @@
 	onClose={() => (showExecuteDialog = false)}
 	onExecute={executeWorkflow}
 />
+
+{#if store.workflowId}
+	<CodePreviewDialog
+		open={showExportDialog}
+		workflowId={store.workflowId}
+		workflowName={store.workflowName ?? 'Workflow'}
+		onClose={() => (showExportDialog = false)}
+	/>
+{/if}

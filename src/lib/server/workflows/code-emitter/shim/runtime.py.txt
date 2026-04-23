@@ -1,0 +1,217 @@
+"""
+Vendored runtime shim for emitted workflows (Python variant).
+
+Ships alongside the emitted workflow in the code_function's supporting_files.
+Edit only the source in
+src/lib/server/workflows/code-emitter/shim/runtime.py.txt and re-emit saved
+workflows to pick up changes.
+
+Transport: WorkflowContext.call_activity POSTs to FN_ROUTER_URL/execute. Uses
+httpx for the async HTTP call.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+from typing import Any, Awaitable, Callable, Dict, Optional
+
+try:
+	import httpx  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+	httpx = None  # type: ignore
+
+
+class UnsupportedJqExpressionError(Exception):
+	pass
+
+
+class WorkflowContext:
+	def __init__(
+		self,
+		router_url: Optional[str] = None,
+		router_token: Optional[str] = None,
+		trigger: Optional[Dict[str, Any]] = None,
+		execution_id: Optional[str] = None,
+	) -> None:
+		self.state: Dict[str, Any] = {}
+		self._tasks: Dict[str, Any] = {}
+		self._router_url = (
+			router_url
+			or os.environ.get("FN_ROUTER_URL")
+			or "http://function-router.workflow-builder.svc.cluster.local:8080"
+		).rstrip("/")
+		self._router_token = router_token or os.environ.get("FN_ROUTER_TOKEN")
+		self._trigger = trigger or {}
+		self._execution_id = execution_id
+
+	async def call_activity(self, slug: str, args: Any) -> Any:
+		if httpx is None:  # pragma: no cover
+			raise RuntimeError("httpx is required for call_activity; add it to dependencies")
+		headers = {"content-type": "application/json"}
+		if self._router_token:
+			headers["authorization"] = f"Bearer {self._router_token}"
+		async with httpx.AsyncClient(timeout=120.0) as client:
+			response = await client.post(
+				f"{self._router_url}/execute",
+				json={
+					"function_slug": slug,
+					"input": args,
+					"execution_id": self._execution_id,
+					"node_name": slug,
+					"trigger_data": self._trigger,
+				},
+				headers=headers,
+			)
+		if response.status_code >= 400:
+			raise RuntimeError(f"function-router {slug} failed: {response.status_code} {response.text}")
+		body = response.json()
+		if body.get("error"):
+			raise RuntimeError(f"{slug}: {body['error']}")
+		data = body.get("data")
+		self._tasks[slug] = data
+		return data
+
+	async def call_unsupported_task(self, kind: str, raw: Any) -> Any:
+		import sys
+		print(f"[workflow-shim] Unsupported task kind \"{kind}\" executed as no-op.", file=sys.stderr)
+		return None
+
+	def set_state(self, patch: Dict[str, Any]) -> None:
+		self.state.update(patch)
+
+	def jq(self, expression: str) -> Any:
+		return self._evaluate(expression)
+
+	async def jq_bool(self, expression: str) -> bool:
+		return bool(self._evaluate(expression))
+
+	async def jq_array(self, expression: str) -> list:
+		value = self._evaluate(expression)
+		if value is None:
+			return []
+		if isinstance(value, list):
+			return value
+		raise RuntimeError(f"jq expression \"{expression}\" did not resolve to a list (got {type(value).__name__})")
+
+	def error_matches(self, err: BaseException, filter_: Dict[str, Any]) -> bool:
+		type_ = filter_.get("type")
+		status = filter_.get("status")
+		if type_ and type(err).__name__ != type_:
+			return False
+		if status is not None and getattr(err, "status", None) != status:
+			return False
+		return True
+
+	def error_matches_jq(self, err: BaseException, expression: str) -> bool:
+		snapshot = WorkflowContext(
+			router_url=self._router_url,
+			router_token=self._router_token,
+			trigger=self._trigger,
+			execution_id=self._execution_id,
+		)
+		snapshot.state.update(self.state)
+		snapshot.state["error"] = self.error_payload(err)
+		return bool(snapshot._evaluate(expression))
+
+	def error_payload(self, err: BaseException) -> Dict[str, Any]:
+		return {"message": str(err), "name": type(err).__name__}
+
+	async def sleep(self, iso_8601: str) -> None:
+		seconds = _parse_iso8601_duration(iso_8601)
+		if seconds > 0:
+			await asyncio.sleep(seconds)
+
+	def _evaluate(self, expression: str) -> Any:
+		trimmed = expression.strip()
+		if not trimmed:
+			return None
+		if trimmed == "true":
+			return True
+		if trimmed == "false":
+			return False
+		if trimmed == "null":
+			return None
+		if re.fullmatch(r"-?\d+(\.\d+)?", trimmed):
+			return float(trimmed) if "." in trimmed else int(trimmed)
+		if (trimmed.startswith('"') and trimmed.endswith('"')) or (
+			trimmed.startswith("'") and trimmed.endswith("'")
+		):
+			return trimmed[1:-1]
+
+		OPS = [
+			(re.compile(r"\s+and\s+"), lambda l, r: bool(l) and bool(r)),
+			(re.compile(r"\s+or\s+"), lambda l, r: bool(l) or bool(r)),
+			(re.compile(r"\s*==\s*"), lambda l, r: l == r),
+			(re.compile(r"\s*!=\s*"), lambda l, r: l != r),
+			(re.compile(r"\s*>=\s*"), lambda l, r: l >= r),
+			(re.compile(r"\s*<=\s*"), lambda l, r: l <= r),
+			(re.compile(r"\s*>\s*"), lambda l, r: l > r),
+			(re.compile(r"\s*<\s*"), lambda l, r: l < r),
+			(re.compile(r"\s*\+\s*"), lambda l, r: l + r),
+			(re.compile(r"\s*-\s*(?!>)"), lambda l, r: l - r),
+		]
+		for pattern, fn in OPS:
+			parts = _split_once(trimmed, pattern)
+			if parts:
+				left, right = parts
+				return fn(self._evaluate(left), self._evaluate(right))
+
+		return self._resolve_path(trimmed)
+
+	def _resolve_path(self, path: str) -> Any:
+		rest = path
+		if rest.startswith("$.trigger"):
+			scope: Any = self._trigger
+			rest = rest[len("$.trigger"):]
+		elif rest.startswith("$task"):
+			scope = {key: {"output": value} for key, value in self._tasks.items()}
+			rest = rest[len("$task"):]
+		elif rest.startswith("$"):
+			scope = self.state
+			rest = rest[1:]
+		else:
+			scope = {"trigger": self._trigger, **self.state}
+
+		if not rest or rest == ".":
+			return scope
+
+		steps = re.findall(r"\.[a-zA-Z_][a-zA-Z0-9_]*|\[\d+\]|\[\*\]|\[\]", rest)
+		value: Any = scope
+		for step in steps:
+			if value is None:
+				return None
+			if step.startswith("."):
+				value = value.get(step[1:]) if isinstance(value, dict) else None
+			elif step in ("[]", "[*]"):
+				return value if isinstance(value, list) else None
+			else:
+				idx = int(step[1:-1])
+				value = value[idx] if isinstance(value, list) and 0 <= idx < len(value) else None
+		return value
+
+
+def _split_once(value: str, pattern: "re.Pattern[str]"):
+	match = pattern.search(value)
+	if not match:
+		return None
+	return value[: match.start()].strip(), value[match.end():].strip()
+
+
+def _parse_iso8601_duration(iso: str) -> float:
+	match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?", iso)
+	if not match:
+		return 0.0
+	hours = float(match.group(1) or 0)
+	minutes = float(match.group(2) or 0)
+	seconds = float(match.group(3) or 0)
+	return hours * 3600 + minutes * 60 + seconds
+
+
+async def run_workflow(
+	main: Callable[["WorkflowContext"], Awaitable[Any]],
+	trigger: Optional[Dict[str, Any]] = None,
+) -> Any:
+	ctx = WorkflowContext(trigger=trigger or {})
+	return await main(ctx)

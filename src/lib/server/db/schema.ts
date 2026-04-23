@@ -2641,6 +2641,13 @@ export const sessionResources = pgTable(
  */
 export type FunctionExecutionType = "builtin" | "oci" | "http";
 export type CodeFunctionLanguage = "typescript" | "python";
+export type CodeFunctionRole = "function" | "workflow";
+export interface CodeFunctionCompositionGraph {
+	activitySlugs: string[];
+	hasFork: boolean;
+	hasSwitch: boolean;
+	hasDurableAgent: boolean;
+}
 
 /**
  * Function execution status
@@ -2758,6 +2765,8 @@ export const codeFunctions = pgTable("code_functions", {
 	diagnostics: jsonb("diagnostics").$type<any[]>(),
 	// biome-ignore lint/suspicious/noExplicitAny: parser-generated capability flags
 	capabilities: jsonb("capabilities").$type<any>(),
+	role: text("role").notNull().default("function").$type<CodeFunctionRole>(),
+	compositionGraph: jsonb("composition_graph").$type<CodeFunctionCompositionGraph>(),
 	latestPublishedVersion: text("latest_published_version"),
 	lastPublishedAt: timestamp("last_published_at"),
 	isEnabled: boolean("is_enabled").notNull().default(true),
@@ -2799,6 +2808,8 @@ export const codeFunctionRevisions = pgTable("code_function_revisions", {
 	diagnostics: jsonb("diagnostics").$type<any[]>(),
 	// biome-ignore lint/suspicious/noExplicitAny: parser-generated capability flags
 	capabilities: jsonb("capabilities").$type<any>(),
+	role: text("role").notNull().default("function").$type<CodeFunctionRole>(),
+	compositionGraph: jsonb("composition_graph").$type<CodeFunctionCompositionGraph>(),
 	publishedAt: timestamp("published_at").notNull().defaultNow(),
 	createdBy: text("created_by").references(() => users.id),
 }, (table) => ({
