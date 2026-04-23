@@ -23,7 +23,8 @@ const STACKS_MAIN_REF_URL =
 	"https://api.github.com/repos/PittampalliOrg/stacks/commits/main";
 const WORKFLOW_BUILDER_COMMIT_URL =
 	"https://api.github.com/repos/PittampalliOrg/workflow-builder/commits/";
-const CACHE_TTL_MS = 60_000;
+const GITOPS_CACHE_TTL_MS = 60_000;
+const GIT_COMMIT_CACHE_TTL_MS = 12 * 60 * 60_000;
 
 type CacheEntry<T> = {
 	expiresAt: number;
@@ -37,6 +38,7 @@ let releasePinsCache: CacheEntry<{
 }> | null = null;
 let stacksMainCache: CacheEntry<GitCommitMetadata | null> | null = null;
 const workflowCommitCache = new Map<string, CacheEntry<GitCommitMetadata | null>>();
+const workflowCommitInflight = new Map<string, Promise<GitCommitMetadata | null>>();
 
 export async function getDeploymentMetadata(): Promise<DeploymentMetadataResponse> {
 	const namespace = await getOwnNamespace();
@@ -100,23 +102,33 @@ async function loadReleasePins(): Promise<{
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 		const doc = yaml.load(await res.text()) as { images?: Record<string, string> } | null;
 		const images = Object.entries(doc?.images ?? {});
-		const desiredImages = await Promise.all(
-			images.map(async ([name, tag]) => {
-				const commitSha = commitShaFromTag(tag);
-				return {
-					name,
-					tag,
-					commitSha,
-					commit: commitSha ? await getWorkflowBuilderCommit(commitSha) : null,
-				};
-			}),
+		const uniqueCommitShas = Array.from(
+			new Set(
+				images
+					.map(([, tag]) => commitShaFromTag(tag))
+					.filter((sha): sha is string => Boolean(sha)),
+			),
 		);
+		const commits = new Map(
+			await Promise.all(
+				uniqueCommitShas.map(async (sha) => [sha, await getWorkflowBuilderCommit(sha)] as const),
+			),
+		);
+		const desiredImages = images.map(([name, tag]) => {
+			const commitSha = commitShaFromTag(tag);
+			return {
+				name,
+				tag,
+				commitSha,
+				commit: commitSha ? (commits.get(commitSha) ?? null) : null,
+			};
+		});
 		const value = {
 			fetchedAt: new Date().toISOString(),
 			desiredImages,
 			error: null,
 		};
-		releasePinsCache = { value, expiresAt: now + CACHE_TTL_MS };
+		releasePinsCache = { value, expiresAt: now + GITOPS_CACHE_TTL_MS };
 		return value;
 	} catch (err) {
 		const value = {
@@ -137,7 +149,7 @@ async function getStacksMain(): Promise<GitCommitMetadata | null> {
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 		const body = (await res.json()) as GithubCommitResponse;
 		const value = githubCommitToMetadata(body, "https://github.com/PittampalliOrg/stacks/commit/");
-		stacksMainCache = { value, expiresAt: now + CACHE_TTL_MS };
+		stacksMainCache = { value, expiresAt: now + GITOPS_CACHE_TTL_MS };
 		return value;
 	} catch {
 		return stacksMainCache?.value ?? null;
@@ -149,7 +161,10 @@ async function getWorkflowBuilderCommit(sha: string): Promise<GitCommitMetadata 
 	const now = Date.now();
 	const cached = workflowCommitCache.get(key);
 	if (cached && cached.expiresAt > now) return cached.value;
-	try {
+	const inflight = workflowCommitInflight.get(key);
+	if (inflight) return inflight;
+
+	const load = (async () => {
 		const res = await fetchWithTimeout(`${WORKFLOW_BUILDER_COMMIT_URL}${encodeURIComponent(sha)}`);
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 		const body = (await res.json()) as GithubCommitResponse;
@@ -157,13 +172,16 @@ async function getWorkflowBuilderCommit(sha: string): Promise<GitCommitMetadata 
 			body,
 			"https://github.com/PittampalliOrg/workflow-builder/commit/",
 		);
-		workflowCommitCache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
+		workflowCommitCache.set(key, { value, expiresAt: Date.now() + GIT_COMMIT_CACHE_TTL_MS });
 		return value;
-	} catch {
+	})().catch(() => {
 		const value = cached?.value ?? null;
-		workflowCommitCache.set(key, { value, expiresAt: now + 15_000 });
+		workflowCommitCache.set(key, { value, expiresAt: Date.now() + 15_000 });
 		return value;
-	}
+	}).finally(() => workflowCommitInflight.delete(key));
+
+	workflowCommitInflight.set(key, load);
+	return load;
 }
 
 function githubCommitToMetadata(
@@ -193,10 +211,12 @@ type GithubCommitResponse = {
 };
 
 async function fetchWithTimeout(url: string): Promise<Response> {
+	const githubToken = readFirstEnv("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_API_TOKEN");
 	return fetch(url, {
 		headers: {
 			accept: "application/vnd.github+json, text/plain;q=0.9, */*;q=0.5",
 			"user-agent": "workflow-builder-deployment-metadata",
+			...(githubToken ? { authorization: `Bearer ${githubToken}` } : {}),
 		},
 		signal: AbortSignal.timeout(4_000),
 	});

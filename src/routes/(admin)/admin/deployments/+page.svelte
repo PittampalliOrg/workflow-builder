@@ -102,6 +102,14 @@
 		return tail.length <= 82 ? tail : `${tail.slice(0, 78)}...`;
 	}
 
+	function shortImageId(imageID: string | null | undefined): string {
+		if (!imageID) return '—';
+		const digest = imageID.includes('@') ? imageID.split('@').pop() : imageID;
+		if (!digest) return '—';
+		if (digest.startsWith('sha256:')) return `sha256:${digest.slice(7, 19)}`;
+		return digest.length <= 28 ? digest : `${digest.slice(0, 25)}...`;
+	}
+
 	function relativeTime(iso: string | null | undefined): string {
 		if (!iso) return '—';
 		const diff = Math.max(0, Date.now() - new Date(iso).getTime());
@@ -262,6 +270,9 @@
 								<TableCell>
 									<div class="max-w-[32rem] truncate font-mono text-xs" title={row.image}>
 										{shortImage(row.image)}
+									</div>
+									<div class="mt-0.5 font-mono text-[0.68rem] text-muted-foreground" title={row.imageID ?? ''}>
+										id {shortImageId(row.imageID)}
 									</div>
 								</TableCell>
 								<TableCell>
