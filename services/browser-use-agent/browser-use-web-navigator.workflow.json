@@ -60,7 +60,39 @@
 			"id": "start",
 			"type": "start",
 			"position": { "x": 260, "y": 20 },
-			"data": { "label": "Start", "type": "start", "status": "idle", "enabled": true }
+			"data": {
+				"label": "Start",
+				"type": "start",
+				"status": "idle",
+				"enabled": true,
+				"taskConfig": {
+					"input": {
+						"format": "json",
+						"schema": {
+							"format": "json",
+							"document": {
+								"type": "object",
+								"required": ["url", "task"],
+								"properties": {
+									"url": {
+										"type": "string",
+										"title": "Starting URL",
+										"format": "uri",
+										"default": "https://example.com",
+										"description": "The URL to open in the browser session."
+									},
+									"task": {
+										"type": "string",
+										"title": "Task",
+										"default": "Report the exact page title and final URL, plus a one-sentence description of the page content.",
+										"description": "What the agent should do after the page loads."
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 		},
 		{
 			"id": "browser_use_agent",
