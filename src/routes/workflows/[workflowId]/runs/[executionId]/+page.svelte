@@ -100,6 +100,12 @@
 		ContextCacheUsage,
 		ContextReasoningUsage
 	} from '$lib/components/ui/ai-elements/context';
+	import {
+		Sources,
+		SourcesTrigger,
+		SourcesContent,
+		Source
+	} from '$lib/components/ai-elements/sources';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
@@ -689,6 +695,24 @@
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
 	let allTimelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
+
+	// Collect unique URLs the agent visited (from browser-use tool_result events)
+	// so the Overview tab can render a consolidated "sources" list.
+	let browserSources = $derived.by(() => {
+		const seen = new Map<string, { url: string; stepNumber?: number; title: string }>();
+		for (const item of allTimelineItems) {
+			if (item.kind !== 'tool' || !item.url) continue;
+			if (seen.has(item.url)) continue;
+			try {
+				const u = new URL(item.url);
+				const title = `${u.hostname}${u.pathname !== '/' ? u.pathname : ''}${u.hash || ''}`;
+				seen.set(item.url, { url: item.url, stepNumber: item.stepNumber, title });
+			} catch {
+				seen.set(item.url, { url: item.url, stepNumber: item.stepNumber, title: item.url });
+			}
+		}
+		return Array.from(seen.values());
+	});
 
 	// Filter state — lets users narrow the feed to a category in long threads.
 	type TimelineFilter = 'all' | 'messages' | 'tools' | 'errors';
@@ -1698,6 +1722,21 @@
 									</li>
 								{/each}
 							</ul>
+						</CardContent>
+					</Card>
+				{/if}
+
+				{#if browserSources.length > 0}
+					<Card>
+						<CardContent class="space-y-3 p-4">
+							<Sources>
+								<SourcesTrigger count={browserSources.length} />
+								<SourcesContent>
+									{#each browserSources as src (src.url)}
+										<Source href={src.url} title={src.stepNumber !== undefined ? `Step ${src.stepNumber} · ${src.title}` : src.title} />
+									{/each}
+								</SourcesContent>
+							</Sources>
 						</CardContent>
 					</Card>
 				{/if}
