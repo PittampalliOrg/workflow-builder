@@ -253,6 +253,13 @@
 			"when": 1776533820000,
 			"tag": "0036_agent_registry_columns",
 			"breakpoints": true
+		},
+		{
+			"idx": 36,
+			"version": "7",
+			"when": 1776981805955,
+			"tag": "0044_code_functions_role",
+			"breakpoints": true
 		}
 	]
 }
