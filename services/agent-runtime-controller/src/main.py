@@ -305,6 +305,19 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                             "ports": [{"name": "http", "containerPort": 8002}],
                             "env": [
                                 {"name": "AGENT_SERVICE_NAME", "value": app_id},
+                                # Override OTEL_SERVICE_NAME for browser-use
+                                # runtime pods so Phoenix/Tempo/Langfuse can
+                                # slice spans by runtime-class. The shared
+                                # `dapr-agent-py-config` ConfigMap (injected
+                                # via envFrom below) bakes in
+                                # OTEL_SERVICE_NAME=dapr-agent-py; an
+                                # explicit env entry overrides that. Detected
+                                # via image tag — no CR schema change needed.
+                                *(
+                                    [{"name": "OTEL_SERVICE_NAME", "value": "browser-use-agent"}]
+                                    if "browser-use-agent" in image
+                                    else []
+                                ),
                                 # OpenShell CLI reads ${XDG_CONFIG_HOME}/openshell/active_gateway
                                 # + gateway metadata files populated by the seed-openshell-config
                                 # init container. Without this, every OpenShell-backed tool
