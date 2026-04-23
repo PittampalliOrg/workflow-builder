@@ -1241,6 +1241,14 @@
 	}
 
 	function browserAppPreviewUrl(artifact: BrowserArtifact): string {
+		// The runtime-preview proxy resolves a retained workspace sandbox
+		// (workflow_workspace_sessions row). Browser-use runs navigate the
+		// live internet via Browserstation — they have no sandbox to proxy,
+		// so the link would 404. Surface only the inline video/screenshots
+		// for those artifacts.
+		const agentRuntime = metadataText(artifact, 'agentRuntime');
+		if (agentRuntime === 'browser-use-agent') return '';
+
 		const repoPath = metadataText(artifact, 'requestedRepoPath');
 		const baseUrl = metadataText(artifact, 'requestedBaseUrl') || artifact.manifestJson.baseUrl;
 		if (!repoPath && !baseUrl) return '';
