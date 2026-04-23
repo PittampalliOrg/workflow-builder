@@ -160,6 +160,8 @@ def _durable_agent_app_id(input_data: dict) -> str:
     runtime = _agent_runtime_from_payload(input_data)
     if runtime == "dapr-agent-py-testing":
         return DAPR_AGENT_PY_TESTING_APP_ID
+    if runtime == "browser-use-agent":
+        return os.environ.get("BROWSER_USE_AGENT_APP_ID", "browser-use-agent")
     return DAPR_AGENT_PY_APP_ID
 
 
@@ -431,6 +433,7 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
         if not workspace_ref and agent_runtime not in {
             "dapr-agent-py",
             "dapr-agent-py-testing",
+            "browser-use-agent",
         }:
             return {
                 "success": False,
