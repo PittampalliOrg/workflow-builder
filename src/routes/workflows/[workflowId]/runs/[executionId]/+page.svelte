@@ -1957,15 +1957,34 @@
 								>
 								{#if item.kind === 'tool'}
 									{@const ToolComponent = getToolComponent(item.toolName)}
-									<ToolComponent
-										phase={item.phase}
-										toolName={item.toolName}
-										args={item.args}
-										output={item.output}
-										success={item.success}
-										error={item.error}
-										state={item.status === 'unknown' ? 'error' : item.status}
-									/>
+									<div class="flex flex-col gap-2">
+										<ToolComponent
+											phase={item.phase}
+											toolName={item.toolName}
+											args={item.args}
+											output={item.output}
+											success={item.success}
+											error={item.error}
+											state={item.status === 'unknown' ? 'error' : item.status}
+										/>
+										{#if item.imageUrl}
+											<figure class="flex flex-col gap-1 rounded-md border border-border/40 bg-muted/20 p-2">
+												<img
+													src={item.imageUrl}
+													alt={`Browser state after step ${item.stepNumber ?? ''}`}
+													loading="lazy"
+													class="max-h-[360px] w-full max-w-[720px] rounded border border-border/30 object-contain"
+												/>
+												{#if item.stepNumber !== undefined || item.url}
+													<figcaption class="text-[11px] text-muted-foreground">
+														{#if item.stepNumber !== undefined}Step {item.stepNumber}{/if}
+														{#if item.stepNumber !== undefined && item.url} · {/if}
+														{#if item.url}<span class="truncate">{item.url}</span>{/if}
+													</figcaption>
+												{/if}
+											</figure>
+										{/if}
+									</div>
 								{:else}
 									{@const event = item.event}
 									{@const evtType = eventType(event)}

@@ -18,6 +18,16 @@ export type TimelineItem =
 			phase: 'start' | 'end';
 			startEvent?: ExecutionTimelineEvent;
 			endEvent?: ExecutionTimelineEvent;
+			// Post-action page screenshot for browser-use runs. Inlined as a
+			// `data:` URL so the Timeline can render a live filmstrip without
+			// an extra network round-trip. Populated from Anthropic-shape
+			// `content: [{type:'image',source:{type:'base64',...}}]` blocks
+			// on the tool_result event.
+			imageUrl?: string;
+			// Optional step metadata (browser-use stamps these on tool_result
+			// so the Timeline can show "Step 3 · https://example.com").
+			stepNumber?: number;
+			url?: string;
 	  };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,6 +215,33 @@ function toolOutcome(event: ExecutionTimelineEvent) {
 	return { output, error, success };
 }
 
+function extractImageDataUrl(event: ExecutionTimelineEvent): string | undefined {
+	// Anthropic content-block shape: data.content = [{type:'image', source:{type:'base64', media_type, data}}, ...].
+	// Returns the first image as a data: URL suitable for <img src=...>.
+	const content = event.data?.content;
+	if (!Array.isArray(content)) return undefined;
+	for (const block of content) {
+		if (!isRecord(block) || block.type !== 'image') continue;
+		const src = block.source;
+		if (!isRecord(src)) continue;
+		if (src.type === 'base64' && typeof src.media_type === 'string' && typeof src.data === 'string') {
+			return `data:${src.media_type};base64,${src.data}`;
+		}
+		// OpenAI-shape fallback: {type:'image', url:'...'}.
+		if (typeof block.url === 'string' && block.url.trim()) {
+			return block.url.trim();
+		}
+	}
+	return undefined;
+}
+
+function extractStepMeta(event: ExecutionTimelineEvent): { stepNumber?: number; url?: string } {
+	const data = event.data ?? {};
+	const stepNumber = typeof data.stepNumber === 'number' ? data.stepNumber : undefined;
+	const url = typeof data.url === 'string' && data.url.trim() ? data.url.trim() : undefined;
+	return { stepNumber, url };
+}
+
 function completeToolItem(
 	item: Extract<TimelineItem, { kind: 'tool' }>,
 	endEvent: ExecutionTimelineEvent
@@ -216,6 +253,11 @@ function completeToolItem(
 	item.success = outcome.success;
 	item.status = outcome.success ? 'completed' : 'error';
 	item.phase = 'end';
+	const imageUrl = extractImageDataUrl(endEvent);
+	if (imageUrl) item.imageUrl = imageUrl;
+	const meta = extractStepMeta(endEvent);
+	if (meta.stepNumber !== undefined) item.stepNumber = meta.stepNumber;
+	if (meta.url) item.url = meta.url;
 }
 
 export function buildTimelineItems(
@@ -294,6 +336,8 @@ export function buildTimelineItems(
 				completeToolItem(item, event);
 			} else {
 				const outcome = toolOutcome(event);
+				const imageUrl = extractImageDataUrl(event);
+				const meta = extractStepMeta(event);
 				items.push({
 					kind: 'tool',
 					key: `tool:${eventKey(event)}`,
@@ -303,7 +347,10 @@ export function buildTimelineItems(
 					success: outcome.success,
 					status: outcome.success ? 'completed' : 'error',
 					phase: 'end',
-					endEvent: event
+					endEvent: event,
+					...(imageUrl ? { imageUrl } : {}),
+					...(meta.stepNumber !== undefined ? { stepNumber: meta.stepNumber } : {}),
+					...(meta.url ? { url: meta.url } : {})
 				});
 			}
 			continue;

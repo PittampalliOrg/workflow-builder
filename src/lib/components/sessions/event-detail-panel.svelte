@@ -149,6 +149,29 @@
 		return typeof preview === 'string' ? preview : '';
 	});
 
+	// Anthropic-shape image blocks from `content[]`. Rendered inline as a
+	// data: URL — browser-use attaches one per `agent.tool_result` to give
+	// the Timeline a live filmstrip of the page state per step.
+	const imageContent = $derived.by(() => {
+		const d = effectiveData as Record<string, unknown>;
+		const content = Array.isArray(d.content) ? d.content : [];
+		const out: Array<{ url: string; mediaType: string }> = [];
+		for (const block of content) {
+			if (!block || typeof block !== 'object') continue;
+			const b = block as Record<string, unknown>;
+			if (b.type !== 'image') continue;
+			const src = b.source as Record<string, unknown> | undefined;
+			if (src && src.type === 'base64' && typeof src.media_type === 'string' && typeof src.data === 'string') {
+				out.push({ url: `data:${src.media_type};base64,${src.data}`, mediaType: src.media_type });
+				continue;
+			}
+			if (typeof b.url === 'string' && b.url.trim()) {
+				out.push({ url: b.url.trim(), mediaType: 'image/*' });
+			}
+		}
+		return out;
+	});
+
 	const toolInput = $derived.by(() => {
 		const d = effectiveData as { input?: unknown; input_preview?: unknown };
 		if (d.input !== undefined) return d.input;
@@ -288,6 +311,19 @@
 			<div class="mt-2">
 				<JsonView value={toolInput} />
 			</div>
+			{#if imageContent.length > 0}
+				<div class="mt-4 text-[10px] uppercase tracking-wider text-muted-foreground">Screenshot</div>
+				<div class="mt-2 flex flex-col gap-2">
+					{#each imageContent as img, i (i)}
+						<img
+							src={img.url}
+							alt="Browser state"
+							loading="lazy"
+							class="max-h-[60vh] w-full rounded border border-border/40 object-contain"
+						/>
+					{/each}
+				</div>
+			{/if}
 		{:else if llmUsage}
 			<div class="space-y-3">
 				<div class="flex items-center gap-2">
