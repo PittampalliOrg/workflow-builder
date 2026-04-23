@@ -160,9 +160,18 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     slug = spec["agentSlug"]
     app_id = spec.get("appId") or _deployment_name(slug)
     bootstrap = json.dumps(spec.get("mcpServers") or [])
+    # browser-use runtime pods OOMKill on the 1Gi default: browser-use's
+    # AgentHistoryList keeps the full screenshot bytes in-memory per step,
+    # the Anthropic client batches images for context, and OTEL span/metric
+    # exporters layer their own buffers on top. 2Gi gives a 3-4 turn run
+    # headroom without the container being reaped mid-turn (which would
+    # then trigger a WorkflowRetryPolicy loop that leaks Browserstation
+    # browsers).
+    is_browser_use = "browser-use-agent" in image
+    default_limits = {"memory": "2Gi" if is_browser_use else "1Gi", "cpu": "1000m"}
     resources = spec.get("resources") or {
         "requests": {"memory": "256Mi", "cpu": "100m"},
-        "limits": {"memory": "1Gi", "cpu": "1000m"},
+        "limits": default_limits,
     }
     pull_secrets = spec.get("imagePullSecrets") or [{"name": n} for n in DEFAULT_PULL_SECRETS]
     service_account = spec.get("serviceAccountName") or DEFAULT_SA
