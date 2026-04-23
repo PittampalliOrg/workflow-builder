@@ -109,7 +109,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAgentRef(value: unknown): value is AgentRef {
 	if (!isRecord(value)) return false;
-	if (typeof value.id !== "string" || !value.id.trim()) return false;
+	// Accept either `id` or `slug` (authoritative id is resolved later from
+	// the agents table). Workflow specs authored from templates / scripts
+	// often stamp only slug; we read the id from the DB at resolve time.
+	const hasId = typeof value.id === "string" && value.id.trim().length > 0;
+	const hasSlug = typeof value.slug === "string" && (value.slug as string).trim().length > 0;
+	if (!hasId && !hasSlug) return false;
 	if ("version" in value && value.version !== undefined) {
 		if (typeof value.version !== "number" || !Number.isFinite(value.version)) {
 			return false;
@@ -147,7 +152,8 @@ export async function resolveSpecAgentRefs(
 			);
 		}
 
-		const key = `${ref.id}#${ref.version ?? "current"}`;
+		const refKey = (ref as AgentRef & { slug?: string }).id || (ref as AgentRef & { slug?: string }).slug || "";
+		const key = `${refKey}#${ref.version ?? "current"}`;
 		let resolved = agentCache.get(key);
 		if (resolved === undefined) {
 			resolved = await resolveAgentRef(ref);
@@ -155,7 +161,7 @@ export async function resolveSpecAgentRefs(
 		}
 		if (!resolved) {
 			throw new AgentRefResolutionError(
-				`Agent "${ref.id}" (version ${ref.version ?? "current"}) referenced by task "${taskName}" was not found.`,
+				`Agent "${(ref as AgentRef & { slug?: string }).id || (ref as AgentRef & { slug?: string }).slug}" (version ${ref.version ?? "current"}) referenced by task "${taskName}" was not found.`,
 				taskName,
 			);
 		}

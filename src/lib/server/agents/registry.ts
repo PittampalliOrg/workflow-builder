@@ -566,14 +566,19 @@ export type ResolvedAgent = {
 };
 
 export async function resolveAgentRef(
-	ref: AgentRef,
+	ref: AgentRef & { slug?: string },
 ): Promise<ResolvedAgent | null> {
 	const database = requireDb();
-	const [agent] = await database
-		.select()
-		.from(agents)
-		.where(eq(agents.id, ref.id))
-		.limit(1);
+	// Lookup by id when present, else by slug. Workflow specs authored by
+	// scripts / templates often stamp only slug; the DB-side id is
+	// resolved here so the rest of the resolver works uniformly.
+	const refSlug = typeof ref.slug === "string" ? ref.slug.trim() : "";
+	const refId = typeof ref.id === "string" ? ref.id.trim() : "";
+	const [agent] = refId
+		? await database.select().from(agents).where(eq(agents.id, refId)).limit(1)
+		: refSlug
+			? await database.select().from(agents).where(eq(agents.slug, refSlug)).limit(1)
+			: [];
 	if (!agent) return null;
 
 	let version: AgentVersion | undefined;
