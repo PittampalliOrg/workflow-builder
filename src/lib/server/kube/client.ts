@@ -79,6 +79,112 @@ export async function getOwnNamespace(): Promise<string> {
 	return cachedNamespace;
 }
 
+export type KubeContainerSpec = {
+	name?: string;
+	image?: string;
+	imagePullPolicy?: string;
+};
+
+export type KubeDeployment = {
+	metadata?: {
+		name?: string;
+		namespace?: string;
+		labels?: Record<string, string>;
+		annotations?: Record<string, string>;
+		creationTimestamp?: string;
+		generation?: number;
+	};
+	spec?: {
+		replicas?: number;
+		selector?: {
+			matchLabels?: Record<string, string>;
+		};
+		template?: {
+			metadata?: {
+				labels?: Record<string, string>;
+			};
+			spec?: {
+				containers?: KubeContainerSpec[];
+				initContainers?: KubeContainerSpec[];
+			};
+		};
+	};
+	status?: {
+		observedGeneration?: number;
+		replicas?: number;
+		updatedReplicas?: number;
+		readyReplicas?: number;
+		availableReplicas?: number;
+		unavailableReplicas?: number;
+		conditions?: Array<{
+			type?: string;
+			status?: string;
+			reason?: string;
+			message?: string;
+			lastTransitionTime?: string;
+		}>;
+	};
+};
+
+export type KubePod = {
+	metadata?: {
+		name?: string;
+		namespace?: string;
+		labels?: Record<string, string>;
+		creationTimestamp?: string;
+	};
+	spec?: {
+		containers?: KubeContainerSpec[];
+		initContainers?: KubeContainerSpec[];
+	};
+	status?: {
+		phase?: string;
+		podIP?: string;
+		startTime?: string;
+		containerStatuses?: Array<{
+			name?: string;
+			ready?: boolean;
+			restartCount?: number;
+			image?: string;
+			imageID?: string;
+		}>;
+		initContainerStatuses?: Array<{
+			name?: string;
+			ready?: boolean;
+			restartCount?: number;
+			image?: string;
+			imageID?: string;
+		}>;
+		conditions?: Array<{
+			type?: string;
+			status?: string;
+			reason?: string;
+			message?: string;
+			lastTransitionTime?: string;
+		}>;
+	};
+};
+
+export async function listDeployments(namespace?: string): Promise<KubeDeployment[]> {
+	const ns = namespace ?? (await getOwnNamespace());
+	const res = await kubeFetch(`/apis/apps/v1/namespaces/${encodeURIComponent(ns)}/deployments`);
+	if (!res.ok) {
+		throw new Error(`listDeployments ${ns} failed: ${res.status} ${await res.text()}`);
+	}
+	const body = (await res.json()) as { items?: KubeDeployment[] };
+	return body.items ?? [];
+}
+
+export async function listPods(namespace?: string): Promise<KubePod[]> {
+	const ns = namespace ?? (await getOwnNamespace());
+	const res = await kubeFetch(`/api/v1/namespaces/${encodeURIComponent(ns)}/pods`);
+	if (!res.ok) {
+		throw new Error(`listPods ${ns} failed: ${res.status} ${await res.text()}`);
+	}
+	const body = (await res.json()) as { items?: KubePod[] };
+	return body.items ?? [];
+}
+
 type KubeRequestInit = RequestInit & { retries?: number };
 
 /**

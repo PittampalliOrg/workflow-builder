@@ -244,6 +244,13 @@ export const NAV_GROUPS: NavGroup[] = [
 				match: prefix("/admin/instances"),
 			},
 			{
+				id: "admin-deployments",
+				label: "Deployments",
+				icon: Container,
+				href: () => "/admin/deployments",
+				match: prefix("/admin/deployments"),
+			},
+			{
 				id: "admin-dapr",
 				label: "Dapr system",
 				icon: Network,
