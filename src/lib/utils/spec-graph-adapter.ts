@@ -192,6 +192,24 @@ function buildLinearGraphFromSpec(
   const doArray = getDoArray(spec);
   if (doArray.length === 0) return { nodes: [], edges: [] };
 
+  // Trigger input schema can live in two places on an SW 1.0 spec:
+  //   (a) `spec.input` (the top-level SW-workflow-builder convention used
+  //       by most older workflows), or
+  //   (b) `spec.document["x-workflow-builder"].input` (used by workflows
+  //       authored from JSON templates — e.g. the browser-use-web-navigator
+  //       workflow). The execute-dialog reads `startNode.data.taskConfig
+  //       .input.schema.document` for form rendering, so we normalize both
+  //       shapes into a single `taskConfig.input` here.
+  const doc = (spec.document ?? {}) as Record<string, unknown>;
+  const xwb = (doc["x-workflow-builder"] ?? {}) as Record<string, unknown>;
+  const xwbInput = (xwb.input ?? {}) as Record<string, unknown>;
+  const xwbSchema = xwbInput.schema as Record<string, unknown> | undefined;
+  const normalizedInput = spec.input
+    ? (spec.input as Record<string, unknown>)
+    : xwbSchema
+      ? { format: "json", schema: { format: "json", document: xwbSchema } }
+      : null;
+
   const nodes: Node[] = [{
     id: "__start__",
     type: "start",
@@ -199,7 +217,7 @@ function buildLinearGraphFromSpec(
     data: {
       label: "Start",
       type: "start",
-      taskConfig: spec.input ? { input: spec.input } : {},
+      taskConfig: normalizedInput ? { input: normalizedInput } : {},
       status: "idle",
       enabled: true,
     },
