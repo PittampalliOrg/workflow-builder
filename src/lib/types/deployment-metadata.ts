@@ -52,6 +52,59 @@ export type LiveDeploymentMetadata = {
 	containers: LiveContainerMetadata[];
 };
 
+export type GitOpsInventoryPromotion = {
+	drySha: string | null;
+	hydratedSha: string | null;
+	healthPhase: string | null;
+};
+
+export type GitOpsInventoryBuild = {
+	pipelineRun: string | null;
+	status: string | null;
+	reason: string | null;
+	startedAt: string | null;
+	finishedAt: string | null;
+};
+
+export type GitOpsInventoryImage = {
+	image: string | null;
+	tag: string | null;
+	digest: string | null;
+	commitSha: string | null;
+};
+
+export type GitOpsInventoryApplication = {
+	name: string;
+	component: string;
+	desired: GitOpsInventoryImage;
+	live: {
+		images: string[];
+		syncStatus: string | null;
+		healthStatus: string | null;
+	};
+	promotion: GitOpsInventoryPromotion | null;
+	build: GitOpsInventoryBuild | null;
+	provenance: Record<string, string> | null;
+	drift: {
+		status: "in_sync" | "pending_rollout" | "unknown" | string;
+	};
+};
+
+export type GitOpsInventoryEnvironment = {
+	name: string;
+	applications: GitOpsInventoryApplication[];
+};
+
+export type GitOpsDeploymentInventory = {
+	generatedAt: string;
+	source: string;
+	releasePins: {
+		images: Record<string, string>;
+		error: string | null;
+	};
+	environments: GitOpsInventoryEnvironment[];
+};
+
 export type DeploymentMetadataResponse = {
 	generatedAt: string;
 	environment: {
@@ -71,5 +124,11 @@ export type DeploymentMetadataResponse = {
 	live: {
 		deployments: LiveDeploymentMetadata[];
 		error: string | null;
+	};
+	inventory: {
+		sourceUrl: string | null;
+		fetchedAt: string | null;
+		error: string | null;
+		data: GitOpsDeploymentInventory | null;
 	};
 };

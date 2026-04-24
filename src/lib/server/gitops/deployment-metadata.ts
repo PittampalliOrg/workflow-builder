@@ -12,6 +12,7 @@ import type {
 	DeploymentMetadataResponse,
 	DesiredImageMetadata,
 	GitCommitMetadata,
+	GitOpsDeploymentInventory,
 	LiveContainerMetadata,
 	LiveDeploymentMetadata,
 	ParsedImageRef,
@@ -25,6 +26,7 @@ const WORKFLOW_BUILDER_COMMIT_URL =
 	"https://api.github.com/repos/PittampalliOrg/workflow-builder/commits/";
 const GITOPS_CACHE_TTL_MS = 60_000;
 const GIT_COMMIT_CACHE_TTL_MS = 12 * 60 * 60_000;
+const HUB_INVENTORY_CACHE_TTL_MS = 15_000;
 
 type CacheEntry<T> = {
 	expiresAt: number;
@@ -37,12 +39,17 @@ let releasePinsCache: CacheEntry<{
 	error: string | null;
 }> | null = null;
 let stacksMainCache: CacheEntry<GitCommitMetadata | null> | null = null;
+let hubInventoryCache: CacheEntry<DeploymentMetadataResponse["inventory"]> | null = null;
 const workflowCommitCache = new Map<string, CacheEntry<GitCommitMetadata | null>>();
 const workflowCommitInflight = new Map<string, Promise<GitCommitMetadata | null>>();
 
 export async function getDeploymentMetadata(): Promise<DeploymentMetadataResponse> {
 	const namespace = await getOwnNamespace();
-	const [gitops, live] = await Promise.all([loadGitOpsState(), loadLiveState(namespace)]);
+	const [gitops, live, inventory] = await Promise.all([
+		loadGitOpsState(),
+		loadLiveState(namespace),
+		loadHubInventory(),
+	]);
 	const appUrl =
 		readFirstEnv("APP_PUBLIC_URL", "APP_URL", "ORIGIN", "NEXT_PUBLIC_APP_URL") ?? null;
 
@@ -57,6 +64,7 @@ export async function getDeploymentMetadata(): Promise<DeploymentMetadataRespons
 		},
 		gitops,
 		live,
+		inventory,
 	};
 }
 
@@ -87,6 +95,62 @@ async function loadGitOpsState(): Promise<DeploymentMetadataResponse["gitops"]> 
 		stacksMain,
 		desiredImages: releasePins.desiredImages,
 	};
+}
+
+async function loadHubInventory(): Promise<DeploymentMetadataResponse["inventory"]> {
+	const sourceUrl = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_URL") ?? null;
+	if (!sourceUrl) {
+		return { sourceUrl: null, fetchedAt: null, error: null, data: null };
+	}
+
+	const now = Date.now();
+	if (
+		hubInventoryCache &&
+		hubInventoryCache.value.sourceUrl === sourceUrl &&
+		hubInventoryCache.expiresAt > now
+	) {
+		return hubInventoryCache.value;
+	}
+
+	try {
+		const token = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_TOKEN");
+		const res = await fetch(sourceUrl, {
+			headers: {
+				accept: "application/json",
+				"user-agent": "workflow-builder-deployment-metadata",
+				...(token ? { authorization: `Bearer ${token}` } : {}),
+			},
+			signal: AbortSignal.timeout(3_000),
+		});
+		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+		const body = (await res.json()) as unknown;
+		if (!isGitOpsDeploymentInventory(body)) {
+			throw new Error("inventory payload is missing generatedAt or environments");
+		}
+		const value = {
+			sourceUrl,
+			fetchedAt: new Date().toISOString(),
+			error: null,
+			data: body,
+		};
+		hubInventoryCache = { value, expiresAt: now + HUB_INVENTORY_CACHE_TTL_MS };
+		return value;
+	} catch (err) {
+		const value = {
+			sourceUrl,
+			fetchedAt: hubInventoryCache?.value.fetchedAt ?? null,
+			error: err instanceof Error ? err.message : String(err),
+			data: hubInventoryCache?.value.data ?? null,
+		};
+		hubInventoryCache = { value, expiresAt: now + 15_000 };
+		return value;
+	}
+}
+
+function isGitOpsDeploymentInventory(value: unknown): value is GitOpsDeploymentInventory {
+	if (!value || typeof value !== "object") return false;
+	const body = value as Partial<GitOpsDeploymentInventory>;
+	return typeof body.generatedAt === "string" && Array.isArray(body.environments);
 }
 
 async function loadReleasePins(): Promise<{

@@ -23,12 +23,18 @@
 	} from '$lib/components/ui/table';
 	import type {
 		DeploymentMetadataResponse,
+		GitOpsInventoryApplication,
+		GitOpsInventoryEnvironment,
 		LiveContainerMetadata,
 		LiveDeploymentMetadata
 	} from '$lib/types/deployment-metadata';
 
 	type LiveRow = LiveContainerMetadata & {
 		deployment: LiveDeploymentMetadata;
+	};
+	type InventoryRow = {
+		environment: GitOpsInventoryEnvironment;
+		application: GitOpsInventoryApplication;
 	};
 
 	let metadata = $state<DeploymentMetadataResponse | null>(null);
@@ -46,6 +52,11 @@
 			deployment.containers.map((container) => ({ ...container, deployment }))
 		)
 	);
+	const inventoryRows = $derived<InventoryRow[]>(
+		(metadata?.inventory.data?.environments ?? []).flatMap((environment) =>
+			environment.applications.map((application) => ({ environment, application }))
+		)
+	);
 
 	const filteredRows = $derived(
 		rows.filter((row) => {
@@ -58,9 +69,15 @@
 
 	const stats = $derived({
 		deployments: metadata?.live.deployments.length ?? 0,
-		containers: rows.length,
-		tracked: rows.filter((row) => row.pinKey).length,
-		drift: releasePinApplies ? rows.filter((row) => row.desiredMatches === false).length : 0
+			containers: rows.length,
+			tracked: rows.filter((row) => row.pinKey).length,
+			drift: releasePinApplies ? rows.filter((row) => row.desiredMatches === false).length : 0
+	});
+	const inventoryStats = $derived({
+		environments: metadata?.inventory.data?.environments.length ?? 0,
+		applications: inventoryRows.length,
+		inSync: inventoryRows.filter((row) => row.application.drift.status === 'in_sync').length,
+		pending: inventoryRows.filter((row) => row.application.drift.status === 'pending_rollout').length
 	});
 
 	async function refresh() {
@@ -69,7 +86,12 @@
 			const res = await fetch('/api/v1/gitops/deployment-metadata');
 			if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 			metadata = (await res.json()) as DeploymentMetadataResponse;
-			errorMessage = metadata.live.error ?? metadata.gitops.releasePinsError ?? null;
+			const errors = [
+				metadata.live.error,
+				metadata.gitops.releasePinsError,
+				metadata.inventory.error
+			].filter((message): message is string => Boolean(message));
+			errorMessage = errors.length ? errors.join(' / ') : null;
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -110,6 +132,12 @@
 		return digest.length <= 28 ? digest : `${digest.slice(0, 25)}...`;
 	}
 
+	function shortDigest(digest: string | null | undefined): string {
+		if (!digest) return '—';
+		if (digest.startsWith('sha256:')) return `sha256:${digest.slice(7, 19)}`;
+		return digest.length <= 20 ? digest : `${digest.slice(0, 17)}...`;
+	}
+
 	function relativeTime(iso: string | null | undefined): string {
 		if (!iso) return '—';
 		const diff = Math.max(0, Date.now() - new Date(iso).getTime());
@@ -145,6 +173,49 @@
 		if (state === 'synced') return 'secondary';
 		if (state === 'drift') return 'destructive';
 		return 'outline';
+	}
+
+	function inventoryCommitSha(row: InventoryRow): string | null {
+		return (
+			row.application.desired.commitSha ??
+			row.application.provenance?.['org.opencontainers.image.revision'] ??
+			null
+		);
+	}
+
+	function inventoryCommitUrl(row: InventoryRow): string | null {
+		const sha = inventoryCommitSha(row);
+		return sha ? `https://github.com/PittampalliOrg/workflow-builder/commit/${sha}` : null;
+	}
+
+	function firstLiveImage(row: InventoryRow): string | null {
+		return row.application.live.images[0] ?? null;
+	}
+
+	function shortOptionalImage(image: string | null | undefined): string {
+		return image ? shortImage(image) : '—';
+	}
+
+	function statusVariant(status: string | null | undefined): 'secondary' | 'destructive' | 'outline' {
+		if (status === 'Synced' || status === 'Healthy' || status === 'success' || status === 'True') {
+			return 'secondary';
+		}
+		if (status === 'OutOfSync' || status === 'Degraded' || status === 'False' || status === 'Failure') {
+			return 'destructive';
+		}
+		return 'outline';
+	}
+
+	function driftLabel(status: string | null | undefined): string {
+		if (status === 'in_sync') return 'In sync';
+		if (status === 'pending_rollout') return 'Pending rollout';
+		return status ? status.replaceAll('_', ' ') : 'Unknown';
+	}
+
+	function driftVariant(status: string | null | undefined): 'secondary' | 'destructive' | 'outline' {
+		if (status === 'in_sync') return 'secondary';
+		if (status === 'pending_rollout' || status === 'unknown') return 'outline';
+		return 'destructive';
 	}
 </script>
 
@@ -217,6 +288,128 @@
 			<div class="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
 				{errorMessage}
 			</div>
+		{/if}
+
+		{#if metadata?.inventory.sourceUrl}
+			<section class="mt-5 space-y-3">
+				<div class="flex flex-wrap items-center justify-between gap-3">
+					<div>
+						<h2 class="text-base font-semibold">Environment matrix</h2>
+						<div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+							<span>{inventoryStats.environments} environments</span>
+							<span class="text-muted-foreground/40">/</span>
+							<span>{inventoryStats.applications} applications</span>
+							<span class="text-muted-foreground/40">/</span>
+							<span>{inventoryStats.inSync} in sync</span>
+							<span class="text-muted-foreground/40">/</span>
+							<span>{inventoryStats.pending} pending</span>
+						</div>
+					</div>
+					<div class="flex items-center gap-1.5 text-xs text-muted-foreground">
+						<Clock3 class="size-3" />
+						<span>
+							{metadata.inventory.data
+								? `Hub updated ${relativeTime(metadata.inventory.data.generatedAt)}`
+								: 'Hub inventory unavailable'}
+						</span>
+					</div>
+				</div>
+
+				<div class="overflow-x-auto rounded-lg border">
+					<Table>
+						<TableHeader>
+							<TableRow>
+								<TableHead>Env</TableHead>
+								<TableHead>Application</TableHead>
+								<TableHead>Desired</TableHead>
+								<TableHead>Live</TableHead>
+								<TableHead>Promotion</TableHead>
+								<TableHead>Build</TableHead>
+								<TableHead>Git / OCI</TableHead>
+								<TableHead>Drift</TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
+							{#each inventoryRows as row (`${row.environment.name}:${row.application.name}`)}
+								<TableRow>
+									<TableCell>
+										<Badge variant="outline">{row.environment.name}</Badge>
+									</TableCell>
+									<TableCell>
+										<div class="font-medium">{row.application.component}</div>
+										<div class="max-w-[14rem] truncate font-mono text-xs text-muted-foreground" title={row.application.name}>
+											{row.application.name}
+										</div>
+									</TableCell>
+									<TableCell>
+										<div class="max-w-[18rem] truncate font-mono text-xs" title={row.application.desired.image ?? ''}>
+											{row.application.desired.tag ?? '—'}
+										</div>
+										<div class="mt-0.5 font-mono text-[0.68rem] text-muted-foreground" title={row.application.desired.digest ?? ''}>
+											{shortDigest(row.application.desired.digest)}
+										</div>
+									</TableCell>
+									<TableCell>
+										<div class="flex flex-wrap gap-1">
+											<Badge variant={statusVariant(row.application.live.syncStatus)}>
+												{row.application.live.syncStatus ?? 'Unknown'}
+											</Badge>
+											<Badge variant={statusVariant(row.application.live.healthStatus)}>
+												{row.application.live.healthStatus ?? 'Unknown'}
+											</Badge>
+										</div>
+										<div class="mt-1 max-w-[20rem] truncate font-mono text-[0.68rem] text-muted-foreground" title={firstLiveImage(row) ?? ''}>
+											{shortOptionalImage(firstLiveImage(row))}
+										</div>
+									</TableCell>
+									<TableCell>
+										<Badge variant={statusVariant(row.application.promotion?.healthPhase)}>
+											{row.application.promotion?.healthPhase ?? 'Unknown'}
+										</Badge>
+										<div class="mt-1 font-mono text-[0.68rem] text-muted-foreground" title={row.application.promotion?.hydratedSha ?? ''}>
+											{shortSha(row.application.promotion?.hydratedSha)}
+										</div>
+									</TableCell>
+									<TableCell>
+										<Badge variant={statusVariant(row.application.build?.status)}>
+											{row.application.build?.reason ?? row.application.build?.status ?? 'Unknown'}
+										</Badge>
+										<div class="mt-1 max-w-[13rem] truncate font-mono text-[0.68rem] text-muted-foreground" title={row.application.build?.pipelineRun ?? ''}>
+											{row.application.build?.pipelineRun ?? '—'}
+										</div>
+									</TableCell>
+									<TableCell>
+										{#if inventoryCommitSha(row)}
+											<a class="font-mono text-xs text-primary hover:underline" href={inventoryCommitUrl(row) ?? '#'} target="_blank" rel="noreferrer">
+												{shortSha(inventoryCommitSha(row))}
+											</a>
+										{:else}
+											<span class="font-mono text-xs text-muted-foreground">—</span>
+										{/if}
+										<div class="mt-1 max-w-[16rem] truncate text-[0.68rem] text-muted-foreground" title={row.application.provenance?.['org.opencontainers.image.created'] ?? ''}>
+											{row.application.provenance?.['org.opencontainers.image.created']
+												? `image ${relativeTime(row.application.provenance['org.opencontainers.image.created'])}`
+												: 'no OCI labels'}
+										</div>
+									</TableCell>
+									<TableCell>
+										<Badge variant={driftVariant(row.application.drift.status)}>
+											{driftLabel(row.application.drift.status)}
+										</Badge>
+									</TableCell>
+								</TableRow>
+							{/each}
+							{#if inventoryRows.length === 0}
+								<TableRow>
+									<TableCell colspan={8} class="py-8 text-center text-sm text-muted-foreground">
+										{loading ? 'Loading hub inventory...' : 'No hub inventory rows are available.'}
+									</TableCell>
+								</TableRow>
+							{/if}
+						</TableBody>
+					</Table>
+				</div>
+			</section>
 		{/if}
 
 		<section class="mt-5 space-y-3">
