@@ -1,3 +1,5 @@
+import dns from "node:dns";
+import https from "node:https";
 import os from "node:os";
 import yaml from "js-yaml";
 
@@ -140,16 +142,12 @@ async function loadHubInventory(): Promise<DeploymentMetadataResponse["inventory
 
 	try {
 		const token = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_TOKEN");
-		const res = await fetch(sourceUrl, {
-			headers: {
-				accept: "application/json",
-				"user-agent": "workflow-builder-deployment-metadata",
-				...(token ? { authorization: `Bearer ${token}` } : {}),
-			},
-			signal: AbortSignal.timeout(3_000),
-		});
-		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-		const body = (await res.json()) as unknown;
+		const headers = {
+			accept: "application/json",
+			"user-agent": "workflow-builder-deployment-metadata",
+			...(token ? { authorization: `Bearer ${token}` } : {}),
+		};
+		const body = await fetchInventoryPayload(sourceUrl, headers);
 		if (!isGitOpsDeploymentInventory(body)) {
 			throw new Error("inventory payload is missing generatedAt or environments");
 		}
@@ -171,6 +169,81 @@ async function loadHubInventory(): Promise<DeploymentMetadataResponse["inventory
 		hubInventoryCache = { value, expiresAt: now + 15_000 };
 		return value;
 	}
+}
+
+async function fetchInventoryPayload(
+	sourceUrl: string,
+	headers: Record<string, string>,
+): Promise<unknown> {
+	try {
+		const res = await fetch(sourceUrl, {
+			headers,
+			signal: AbortSignal.timeout(3_000),
+		});
+		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+		return await res.json();
+	} catch (err) {
+		const egressHost = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_EGRESS_HOST");
+		if (!egressHost || !isTailnetUrl(sourceUrl)) throw err;
+		return await fetchJsonViaHttpsEgress(sourceUrl, egressHost, headers);
+	}
+}
+
+function isTailnetUrl(sourceUrl: string): boolean {
+	try {
+		return new URL(sourceUrl).hostname.endsWith(".ts.net");
+	} catch {
+		return false;
+	}
+}
+
+function fetchJsonViaHttpsEgress(
+	sourceUrl: string,
+	egressHost: string,
+	headers: Record<string, string>,
+): Promise<unknown> {
+	const url = new URL(sourceUrl);
+	if (url.protocol !== "https:") {
+		throw new Error("inventory egress fallback only supports https URLs");
+	}
+
+	return new Promise((resolve, reject) => {
+		const req = https.request(
+			{
+				hostname: url.hostname,
+				servername: url.hostname,
+				port: url.port ? Number(url.port) : 443,
+				path: `${url.pathname}${url.search}`,
+				method: "GET",
+				headers,
+				timeout: 3_000,
+				lookup: (_hostname, options, callback) => {
+					dns.lookup(egressHost, options, callback);
+				},
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk: Buffer) => chunks.push(chunk));
+				res.on("end", () => {
+					const statusCode = res.statusCode ?? 0;
+					if (statusCode < 200 || statusCode >= 300) {
+						reject(new Error(`${statusCode} ${res.statusMessage ?? "HTTP error"}`));
+						return;
+					}
+
+					try {
+						resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+					} catch (err) {
+						reject(err);
+					}
+				});
+			},
+		);
+
+		req.on("timeout", () => req.destroy(new Error("inventory egress request timed out")));
+		req.on("error", reject);
+		req.end();
+	});
 }
 
 function isGitOpsDeploymentInventory(value: unknown): value is GitOpsDeploymentInventory {
