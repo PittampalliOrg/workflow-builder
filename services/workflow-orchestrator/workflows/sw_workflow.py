@@ -1324,6 +1324,11 @@ def _run_native_durable_agent_child_workflow(
             raise RuntimeError(
                 f"workflow↔session bridge: invalid bridge_result for {child_instance_id}"
             )
+        bridge_app_id = target["app_id"]
+        if isinstance(bridge_result, dict):
+            returned_app_id = bridge_result.get("agentAppId")
+            if isinstance(returned_app_id, str) and returned_app_id.strip():
+                bridge_app_id = returned_app_id.strip()
 
         child_result = yield ctx.call_child_workflow(
             "session_workflow",
@@ -1332,7 +1337,7 @@ def _run_native_durable_agent_child_workflow(
             # Per-agent-runtime plan: dispatch session_workflow to the
             # agent's dedicated pod (target["app_id"] == "agent-runtime-<slug>"
             # or legacy "dapr-agent-py" / "dapr-agent-py-testing").
-            app_id=target["app_id"],
+            app_id=bridge_app_id,
         )
     else:
         child_result = yield ctx.call_child_workflow(

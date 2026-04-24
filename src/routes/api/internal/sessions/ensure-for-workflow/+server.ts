@@ -172,7 +172,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 		// Also wake on replay/idempotent hits — the orchestrator's
 		// `ctx.call_child_workflow` still needs the target pod live.
-		const reuseSlug = await resolveWakeSlug({
+		const reuseRuntime = await resolveRuntimeIdentity(existing.agentId);
+		const reuseSlug = reuseRuntime?.slug ?? await resolveWakeSlug({
 			bodyAgentSlug,
 			bodyAgentAppId,
 			agentConfig,
@@ -193,6 +194,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			sessionId: existing.id,
 			agentId: existing.agentId,
 			agentVersion: existing.agentVersion,
+			agentSlug: reuseRuntime?.slug ?? reuseSlug,
+			agentAppId:
+				reuseRuntime?.appId ??
+				(reuseSlug ? `agent-runtime-${reuseSlug}` : bodyAgentAppId),
 			childInput: buildChildInput({
 				sessionId: existing.id,
 				agentConfig,
@@ -205,6 +210,10 @@ export const POST: RequestHandler = async ({ request }) => {
 				workspaceRef: bridgeWorkspaceRef,
 				sandboxName: bridgeSandboxName ?? existing.sandboxName,
 				cwd: bridgeCwd,
+				agentSlug: reuseRuntime?.slug ?? reuseSlug,
+				agentAppId:
+					reuseRuntime?.appId ??
+					(reuseSlug ? `agent-runtime-${reuseSlug}` : bodyAgentAppId),
 			}),
 			reused: true,
 		});
@@ -223,6 +232,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 		await syncAgentRuntimeCR(agentId);
 	})();
+	const runtimeIdentity = await resolveRuntimeIdentity(agentId);
 
 	// Create the session row with the deterministic id. We bypass createSession's
 	// auto-id generation by inserting directly, then reuse createSession's
@@ -263,7 +273,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Mirrors the wake call in `src/lib/server/sessions/spawn.ts` for direct
 	// (UI-initiated) sessions. Non-blocking: if wake fails we still respond
 	// so the orchestrator can surface a proper error on the next yield.
-	const wakeSlug = await resolveWakeSlug({
+	const wakeSlug = runtimeIdentity?.slug ?? await resolveWakeSlug({
 		bodyAgentSlug,
 		bodyAgentAppId,
 		agentConfig,
@@ -297,6 +307,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		sessionId,
 		agentId,
 		agentVersion,
+		agentSlug: runtimeIdentity?.slug ?? wakeSlug,
+		agentAppId:
+			runtimeIdentity?.appId ??
+			(wakeSlug ? `agent-runtime-${wakeSlug}` : bodyAgentAppId),
 		childInput: buildChildInput({
 			sessionId,
 			agentConfig,
@@ -309,6 +323,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			workspaceRef: bridgeWorkspaceRef,
 			sandboxName: incomingSandboxName,
 			cwd: bridgeCwd,
+			agentSlug: runtimeIdentity?.slug ?? wakeSlug,
+			agentAppId:
+				runtimeIdentity?.appId ??
+				(wakeSlug ? `agent-runtime-${wakeSlug}` : bodyAgentAppId),
 		}),
 		reused: false,
 	});
@@ -326,10 +344,14 @@ function buildChildInput(params: {
 	workspaceRef?: string | null;
 	sandboxName?: string | null;
 	cwd?: string | null;
+	agentSlug?: string | null;
+	agentAppId?: string | null;
 }): Record<string, unknown> {
 	return {
 		sessionId: params.sessionId,
 		agentConfig: params.agentConfig,
+		agentSlug: params.agentSlug ?? null,
+		agentAppId: params.agentAppId ?? null,
 		environmentConfig: params.environmentConfig,
 		workflowId: params.workflowId,
 		nodeId: params.nodeId,
@@ -358,6 +380,22 @@ function buildChildInput(params: {
 // Silence "unused import" linter — createSession is reserved for future
 // expansion (e.g., when the caller stops pre-computing sessionId).
 void createSession;
+
+async function resolveRuntimeIdentity(
+	agentId: string | null,
+): Promise<{ slug: string; appId: string } | null> {
+	if (!agentId || !db) return null;
+	const [row] = await db
+		.select({ slug: agents.slug, runtimeAppId: agents.runtimeAppId })
+		.from(agents)
+		.where(eq(agents.id, agentId))
+		.limit(1);
+	if (!row?.slug) return null;
+	return {
+		slug: row.slug,
+		appId: row.runtimeAppId ?? `agent-runtime-${row.slug}`,
+	};
+}
 
 /**
  * Derive the agent slug for the wake call. The slug is the last segment of
