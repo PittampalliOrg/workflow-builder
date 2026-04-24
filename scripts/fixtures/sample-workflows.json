@@ -350,11 +350,9 @@
               "call": "durable/run",
               "with": {
                 "body": {
-                  "agentAppId": "agent-runtime-powerpoint-agent",
                   "agentRef": {
                     "id": "agt_b601a9178513907d"
                   },
-                  "agentSlug": "powerpoint-agent",
                   "overrides": {
                     "cwd": "/sandbox",
                     "maxTurns": 30,
@@ -524,11 +522,9 @@
               "call": "durable/run",
               "with": {
                 "body": {
-                  "agentAppId": "agent-runtime-excel-agent",
                   "agentRef": {
                     "id": "agt_c2cc38d060f82437"
                   },
-                  "agentSlug": "excel-agent",
                   "overrides": {
                     "cwd": "/sandbox",
                     "maxTurns": 30,

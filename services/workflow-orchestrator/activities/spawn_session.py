@@ -148,6 +148,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "sessionId": body.get("sessionId") or session_id,
             "agentId": body.get("agentId"),
             "agentVersion": body.get("agentVersion"),
+            "agentSlug": body.get("agentSlug"),
+            "agentAppId": body.get("agentAppId"),
             "childInput": child_input,
             "reused": bool(body.get("reused")),
         }
