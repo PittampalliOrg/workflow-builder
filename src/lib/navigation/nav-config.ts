@@ -251,6 +251,13 @@ export const NAV_GROUPS: NavGroup[] = [
 				match: prefix("/admin/deployments"),
 			},
 			{
+				id: "admin-gitops",
+				label: "GitOps",
+				icon: GitBranch,
+				href: () => "/admin/gitops",
+				match: prefix("/admin/gitops"),
+			},
+			{
 				id: "admin-dapr",
 				label: "Dapr system",
 				icon: Network,
