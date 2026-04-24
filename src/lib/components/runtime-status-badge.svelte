@@ -113,13 +113,47 @@
 
 	function relativeTime(iso: string | null | undefined): string {
 		if (!iso) return '—';
-		const diff = Math.max(0, Date.now() - new Date(iso).getTime());
+		const time = new Date(iso).getTime();
+		if (Number.isNaN(time)) return '—';
+		const diff = Math.max(0, Date.now() - time);
 		const min = Math.floor(diff / 60_000);
 		if (min < 1) return 'now';
 		if (min < 60) return `${min}m`;
 		const hr = Math.floor(min / 60);
 		if (hr < 24) return `${hr}h`;
 		return `${Math.floor(hr / 24)}d`;
+	}
+
+	function friendlyRelativeTime(iso: string | null | undefined): string {
+		if (!iso) return 'unknown';
+		const time = new Date(iso).getTime();
+		if (Number.isNaN(time)) return 'unknown';
+		const diff = Math.max(0, Date.now() - time);
+		const min = Math.floor(diff / 60_000);
+		if (min < 1) return 'just now';
+		if (min < 60) return `${min} minute${min === 1 ? '' : 's'} ago`;
+		const hr = Math.floor(min / 60);
+		if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`;
+		const days = Math.floor(hr / 24);
+		return `${days} day${days === 1 ? '' : 's'} ago`;
+	}
+
+	function absoluteDateTime(iso: string | null | undefined): string {
+		if (!iso) return 'Time unavailable';
+		const date = new Date(iso);
+		if (Number.isNaN(date.getTime())) return 'Time unavailable';
+		return new Intl.DateTimeFormat(undefined, {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit',
+		}).format(date);
+	}
+
+	function friendlyDateTime(iso: string | null | undefined): string {
+		if (!iso) return 'Time unavailable';
+		return `${friendlyRelativeTime(iso)} - ${absoluteDateTime(iso)}`;
 	}
 
 	async function copyImage() {
@@ -227,6 +261,12 @@
 						{:else}
 							<p class="mt-1 font-mono text-xs">{currentVersion}</p>
 						{/if}
+						<p
+							class="mt-1 text-[10px] text-muted-foreground"
+							title={absoluteDateTime(metadata?.current?.committedAt)}
+						>
+							Committed {friendlyRelativeTime(metadata?.current?.committedAt)}
+						</p>
 					</div>
 				</div>
 
@@ -239,6 +279,11 @@
 						<p class="truncate text-[10px] text-muted-foreground" title={metadata?.current?.commitMessage ?? ''}>
 							{metadata?.current?.commitMessage ?? metadata?.current?.image ?? 'Waiting for metadata'}
 						</p>
+						{#if metadata?.current?.committedAt}
+							<p class="truncate text-[10px] text-muted-foreground" title={absoluteDateTime(metadata.current.committedAt)}>
+								Commit time: {friendlyDateTime(metadata.current.committedAt)}
+							</p>
+						{/if}
 					</div>
 					<button
 						type="button"
@@ -271,6 +316,11 @@
 								<p class="truncate text-[10px] text-muted-foreground" title={row.liveImage ?? ''}>
 									{shortImage(row.liveImage)}
 								</p>
+								{#if row.buildFinishedAt}
+									<p class="truncate text-[10px] text-muted-foreground" title={absoluteDateTime(row.buildFinishedAt)}>
+										Built {friendlyRelativeTime(row.buildFinishedAt)}
+									</p>
+								{/if}
 							</div>
 							<Badge variant={statusVariant(row.driftStatus)} class="justify-center">
 								{driftLabel(row.driftStatus)}
