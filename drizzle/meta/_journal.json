@@ -260,6 +260,13 @@
 			"when": 1776981805955,
 			"tag": "0044_code_functions_role",
 			"breakpoints": true
+		},
+		{
+			"idx": 37,
+			"version": "7",
+			"when": 1777011246282,
+			"tag": "0045_cma_runtime_schema_bridge",
+			"breakpoints": true
 		}
 	]
 }
