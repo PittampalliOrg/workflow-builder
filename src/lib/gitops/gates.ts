@@ -17,6 +17,25 @@ export type GateState = {
  */
 export const STAGING_SOAK_MS = 10 * 60 * 1000;
 
+/**
+ * Values the hub inventory and ArgoCD use to indicate a passing
+ * promotion/health state. Both TitleCase (ArgoCD) and lowercase (hub
+ * gitops-deployment-inventory) variants are accepted.
+ */
+export const PASSING_PROMOTION_STATES = new Set<string>([
+	"Succeeded",
+	"Healthy",
+	"succeeded",
+	"healthy",
+	"success",
+	"True",
+]);
+
+export function isPromotionPassing(phase: string | null | undefined): boolean {
+	if (!phase) return false;
+	return PASSING_PROMOTION_STATES.has(phase);
+}
+
 export type GateOptions = {
 	/** Clock override so tests stay deterministic. */
 	now?: () => number;

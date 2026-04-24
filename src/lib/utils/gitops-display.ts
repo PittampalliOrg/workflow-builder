@@ -28,9 +28,9 @@ export function shortDigest(digest: string | null | undefined): string {
 	return digest.length <= 20 ? digest : `${digest.slice(0, 17)}...`;
 }
 
-export function relativeTime(iso: string | null | undefined): string {
+export function relativeTime(iso: string | null | undefined, now: number = Date.now()): string {
 	if (!iso) return "—";
-	const diff = Math.max(0, Date.now() - new Date(iso).getTime());
+	const diff = Math.max(0, now - new Date(iso).getTime());
 	const min = Math.floor(diff / 60_000);
 	if (min < 1) return "now";
 	if (min < 60) return `${min}m ago`;
@@ -41,25 +41,30 @@ export function relativeTime(iso: string | null | undefined): string {
 
 export type StatusVariant = "secondary" | "destructive" | "outline";
 
+const PASSING_STATUSES = new Set([
+	"Synced",
+	"Healthy",
+	"Succeeded",
+	"True",
+	"success",
+	"healthy",
+	"succeeded",
+]);
+
+const FAILING_STATUSES = new Set([
+	"OutOfSync",
+	"Degraded",
+	"Failed",
+	"Failure",
+	"False",
+	"failed",
+	"failure",
+]);
+
 export function statusVariant(status: string | null | undefined): StatusVariant {
-	if (
-		status === "Synced" ||
-		status === "Healthy" ||
-		status === "success" ||
-		status === "True" ||
-		status === "Succeeded"
-	) {
-		return "secondary";
-	}
-	if (
-		status === "OutOfSync" ||
-		status === "Degraded" ||
-		status === "False" ||
-		status === "Failure" ||
-		status === "Failed"
-	) {
-		return "destructive";
-	}
+	if (!status) return "outline";
+	if (PASSING_STATUSES.has(status)) return "secondary";
+	if (FAILING_STATUSES.has(status)) return "destructive";
 	return "outline";
 }
 
@@ -79,6 +84,18 @@ export function commitShaFromTag(tag: string | null | undefined): string | null 
 	if (!tag) return null;
 	const match = tag.match(/^git-([0-9a-f]{7,40})$/i);
 	return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Display-friendly tag. Renders `git-<40-hex>` as `git-<8-hex>` so it fits on
+ * one line in narrow cards; non-git tags pass through unless they exceed
+ * `maxChars`, in which case they're truncated with an ellipsis.
+ */
+export function shortTag(tag: string | null | undefined, maxChars = 16): string {
+	if (!tag) return "—";
+	const sha = commitShaFromTag(tag);
+	if (sha) return `git-${sha.slice(0, 8)}`;
+	return tag.length <= maxChars ? tag : `${tag.slice(0, maxChars - 1)}…`;
 }
 
 export function formatDurationMs(ms: number | null | undefined): string {

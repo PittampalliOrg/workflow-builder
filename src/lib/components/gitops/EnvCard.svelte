@@ -3,7 +3,6 @@
 		AlertTriangle,
 		CheckCircle2,
 		CircleSlash,
-		Clock3,
 		HardDrive,
 		Package,
 	} from "lucide-svelte";
@@ -16,6 +15,7 @@
 		relativeTime,
 		shortImage,
 		shortSha,
+		shortTag,
 		statusVariant,
 	} from "$lib/utils/gitops-display";
 
@@ -27,7 +27,6 @@
 
 	let { env, cell, specialCase }: Props = $props();
 
-	const envLabel = $derived(env);
 	const envColor = $derived(
 		env === "ryzen"
 			? "text-sky-600 dark:text-sky-400"
@@ -45,95 +44,126 @@
 	const emptyReason = $derived.by(() => {
 		if (cell) return null;
 		if (specialCase === "ryzen-only" && env !== "ryzen") {
-			return "not deployed on this env (ryzen-only)";
+			return "not deployed on this env";
 		}
 		if (specialCase === "sandbox-only" && env === "ryzen") {
-			return "runtime-launched, not deployed on ryzen";
+			return "runtime-launched";
 		}
 		if (specialCase === "ryzen-missing-pin" && env === "ryzen") {
-			return "no ryzen kustomization pin";
+			return "no ryzen pin";
 		}
-		return "no inventory data for this env";
+		return "no inventory data";
 	});
 
 	const isPinOnly = $derived(cell?.source === "pin-only");
 	const isLiveOnly = $derived(cell?.source === "live-only");
 
-	const healthIcon = $derived.by(() => {
-		if (!cell || cell.source !== "inventory") return null;
-		const sync = cell.syncStatus;
-		const health = cell.healthStatus;
-		if (sync === "Synced" && health === "Healthy") return CheckCircle2;
-		if (sync === "OutOfSync" || health === "Degraded") return AlertTriangle;
-		return Clock3;
-	});
+	const displayTag = $derived(cell ? shortTag(cell.tag) : "—");
+	const hasBothGreen = $derived(
+		cell?.source === "inventory" &&
+			cell.syncStatus === "Synced" &&
+			(cell.healthStatus === "Healthy" || cell.healthStatus === "Succeeded"),
+	);
+
+	const showDrift = $derived(
+		!!cell &&
+			cell.driftStatus != null &&
+			cell.driftStatus !== "in_sync",
+	);
+
+	const rowHasIssue = $derived(
+		!!cell &&
+			(cell.syncStatus === "OutOfSync" ||
+				cell.healthStatus === "Degraded" ||
+				cell.driftStatus === "pending_rollout"),
+	);
+
+	const StatusIcon = $derived(
+		rowHasIssue ? AlertTriangle : hasBothGreen ? CheckCircle2 : null,
+	);
 </script>
 
 <div
-	class="flex min-w-[14rem] max-w-[18rem] flex-col gap-1.5 rounded-lg border p-3 text-xs shadow-sm {cell
+	class="group flex min-w-[11rem] flex-1 flex-col gap-1.5 rounded-lg border p-2.5 text-xs shadow-sm snap-start {cell
 		? 'bg-card'
-		: 'bg-muted/30 border-dashed'}"
+		: 'border-dashed bg-muted/30'}"
 >
 	<div class="flex items-center justify-between gap-1">
-		<div class="flex items-center gap-1 font-semibold uppercase tracking-wide {envColor}">
+		<div class="flex items-center gap-1 text-[0.66rem] font-semibold uppercase tracking-wide {envColor}">
 			<HardDrive class="size-3" />
-			{envLabel}
+			{env}
 		</div>
 		{#if isPinOnly}
-			<Badge variant="outline" class="text-[0.65rem]" title="Image tag from release-pins; no live Deployment to reconcile">
+			<Badge
+				variant="outline"
+				class="h-4 px-1 text-[0.6rem]"
+				title="Image tag from release-pins; no live Deployment to reconcile"
+			>
 				<Package class="size-3" />
-				pin only
+				pin
 			</Badge>
 		{:else if isLiveOnly}
-			<Badge variant="outline" class="text-[0.65rem]" title="Read from local Kubernetes Deployment; no hub inventory entry">
-				<HardDrive class="size-3" />
+			<Badge
+				variant="outline"
+				class="h-4 px-1 text-[0.6rem]"
+				title="Read from local Kubernetes Deployment; no hub inventory entry"
+			>
 				live
 			</Badge>
 		{:else if specialCase === "single-source" && cell}
-			<Badge variant="outline" class="text-[0.65rem]" title="agent-runtime-controller is bumped directly in base manifests; all envs share the same image">
-				single-source
+			<Badge variant="outline" class="h-4 px-1 text-[0.6rem]" title="agent-runtime-controller is bumped directly in base manifests">
+				single
 			</Badge>
 		{/if}
 	</div>
 
 	{#if !cell}
-		<div class="flex min-h-[3rem] items-center gap-1.5 text-muted-foreground">
-			<CircleSlash class="size-3.5" />
+		<div class="flex min-h-[2.5rem] items-center gap-1.5 text-muted-foreground">
+			<CircleSlash class="size-3.5 shrink-0" />
 			<span class="text-[0.7rem]">{emptyReason}</span>
 		</div>
 	{:else}
-		<div class="min-w-0 font-mono text-[0.75rem]" title={cell.tag ?? cell.liveImage ?? ""}>
-			{cell.tag ?? (cell.liveImage ? shortImage(cell.liveImage) : "—")}
+		<div
+			class="truncate font-mono text-[0.8rem] leading-tight"
+			title={cell.tag ?? cell.liveImage ?? ""}
+		>
+			{displayTag}
 		</div>
 
 		{#if cell.source === "inventory"}
 			<div class="flex flex-wrap items-center gap-1">
-				{#if healthIcon}
-					{@const HealthIcon = healthIcon}
-					<HealthIcon class="size-3 text-muted-foreground" />
+				{#if StatusIcon}
+					<StatusIcon
+						class={rowHasIssue
+							? "size-3 text-destructive"
+							: "size-3 text-emerald-500"}
+					/>
 				{/if}
-				<Badge variant={statusVariant(cell.syncStatus)} class="text-[0.65rem]">
-					{cell.syncStatus ?? "Unknown"}
-				</Badge>
-				<Badge variant={statusVariant(cell.healthStatus)} class="text-[0.65rem]">
-					{cell.healthStatus ?? "Unknown"}
-				</Badge>
-			</div>
-
-			{#if cell.driftStatus}
-				<div>
-					<Badge variant={driftVariant(cell.driftStatus)} class="text-[0.65rem]">
+				{#if hasBothGreen}
+					<Badge variant="secondary" class="h-4 px-1.5 text-[0.65rem]">
+						Synced · Healthy
+					</Badge>
+				{:else}
+					<Badge variant={statusVariant(cell.syncStatus)} class="h-4 px-1.5 text-[0.65rem]">
+						{cell.syncStatus ?? "Unknown"}
+					</Badge>
+					<Badge variant={statusVariant(cell.healthStatus)} class="h-4 px-1.5 text-[0.65rem]">
+						{cell.healthStatus ?? "Unknown"}
+					</Badge>
+				{/if}
+				{#if showDrift}
+					<Badge variant={driftVariant(cell.driftStatus)} class="h-4 px-1.5 text-[0.65rem]">
 						{driftLabel(cell.driftStatus)}
 					</Badge>
-				</div>
-			{/if}
+				{/if}
+			</div>
 		{:else if cell.source === "live-only"}
 			<div class="flex flex-wrap items-center gap-1">
-				<Badge variant={statusVariant(cell.healthStatus)} class="text-[0.65rem]">
+				<Badge variant={statusVariant(cell.healthStatus)} class="h-4 px-1.5 text-[0.65rem]">
 					{cell.healthStatus ?? "Unknown"}
 				</Badge>
-				{#if cell.driftStatus}
-					<Badge variant={driftVariant(cell.driftStatus)} class="text-[0.65rem]">
+				{#if showDrift}
+					<Badge variant={driftVariant(cell.driftStatus)} class="h-4 px-1.5 text-[0.65rem]">
 						{driftLabel(cell.driftStatus)}
 					</Badge>
 				{/if}
@@ -141,16 +171,23 @@
 		{/if}
 
 		<div class="mt-auto flex items-center justify-between gap-1 text-[0.66rem] text-muted-foreground">
-			<span title={cell.commitSha ?? ""}>
+			<span class="truncate" title={cell.liveImage ?? ""}>
+				{cell.liveImage ? shortImage(cell.liveImage) : ""}
+			</span>
+			<span class="flex shrink-0 items-center gap-1.5">
+				<span>{relativeTime(cell.updatedAt)}</span>
 				{#if ghUrl}
-					<a class="font-mono text-primary hover:underline" href={ghUrl} target="_blank" rel="noreferrer">
+					<a
+						class="font-mono text-primary opacity-0 transition-opacity hover:underline group-hover:opacity-100"
+						href={ghUrl}
+						target="_blank"
+						rel="noreferrer"
+						title={`commit ${cell.commitSha}`}
+					>
 						{shortSha(cell.commitSha)}
 					</a>
-				{:else}
-					<span class="font-mono">{shortSha(cell.commitSha)}</span>
 				{/if}
 			</span>
-			<span>{relativeTime(cell.updatedAt)}</span>
 		</div>
 	{/if}
 </div>

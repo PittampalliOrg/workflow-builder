@@ -1,3 +1,4 @@
+import { isPromotionPassing } from "$lib/gitops/gates";
 import type {
 	DesiredImageMetadata,
 	GitOpsDeploymentInventory,
@@ -345,8 +346,16 @@ export function summarizeMatrix(rows: ServiceRow[]): MatrixSummary {
 		if (cells.length > 0) servicesWithAnyEnv += 1;
 
 		for (const cell of cells) {
-			if (cell.driftStatus === "pending_rollout") driftCount += 1;
-			if (cell.syncStatus === "OutOfSync") driftCount += 1;
+			// Only inventory cells contribute to drift counts — live-only fallback
+			// cells (ryzen from K8s) compare gitea-ryzen tags vs ghcr.io pins and
+			// would always appear to "drift".
+			if (cell.source === "inventory") {
+				const isHealthy =
+					cell.syncStatus === "Synced" &&
+					(cell.healthStatus === "Healthy" || cell.healthStatus === "Succeeded");
+				if (cell.syncStatus === "OutOfSync") driftCount += 1;
+				else if (cell.driftStatus === "pending_rollout" && !isHealthy) driftCount += 1;
+			}
 			if (cell.healthStatus === "Degraded") degradedApps += 1;
 			if (
 				cell.buildStatus === "False" ||
@@ -355,11 +364,7 @@ export function summarizeMatrix(rows: ServiceRow[]): MatrixSummary {
 			) {
 				failedBuilds += 1;
 			}
-			if (
-				cell.promotionHealth &&
-				cell.promotionHealth !== "Succeeded" &&
-				cell.promotionHealth !== "Healthy"
-			) {
+			if (cell.promotionHealth && !isPromotionPassing(cell.promotionHealth)) {
 				pendingPromotions += 1;
 			}
 		}
@@ -373,4 +378,89 @@ export function summarizeMatrix(rows: ServiceRow[]): MatrixSummary {
 		degradedApps,
 		pendingPromotions,
 	};
+}
+
+export type RowOverallStatus = "healthy" | "drift" | "degraded" | "empty" | "unknown";
+
+export type RowSummary = {
+	overall: RowOverallStatus;
+	updatedAt: string | null;
+	hasPopulatedCell: boolean;
+};
+
+/**
+ * Single-row summary that drives the master-table status dot. Worst-state wins:
+ * a degraded cell (or failed build) beats a drifted one, which beats healthy.
+ * `updatedAt` is the most-recent timestamp across the row's populated cells.
+ */
+export function summarizeRow(row: ServiceRow): RowSummary {
+	const cells = ENVIRONMENTS.map((env) => row.envs[env]).filter(
+		(cell): cell is EnvCell => cell !== null,
+	);
+	if (cells.length === 0) {
+		return { overall: "empty", updatedAt: null, hasPopulatedCell: false };
+	}
+
+	let hasDegraded = false;
+	let hasDrift = false;
+	let hasUnknown = false;
+	let anyHealthy = false;
+	let updatedAt: string | null = null;
+
+	for (const cell of cells) {
+		if (cell.updatedAt) {
+			if (!updatedAt || new Date(cell.updatedAt).getTime() > new Date(updatedAt).getTime()) {
+				updatedAt = cell.updatedAt;
+			}
+		}
+		if (
+			cell.healthStatus === "Degraded" ||
+			cell.buildStatus === "False" ||
+			cell.buildReason === "Failed" ||
+			cell.buildReason === "Failure"
+		) {
+			hasDegraded = true;
+			continue;
+		}
+		const isInventoryHealthy =
+			cell.source === "inventory" &&
+			cell.syncStatus === "Synced" &&
+			(cell.healthStatus === "Healthy" || cell.healthStatus === "Succeeded");
+		// Drift only matters when it comes from an inventory cell. A live-only
+		// fallback (ryzen from local K8s) reports drift by comparing its
+		// gitea-ryzen tag against the dev/staging release-pin — different
+		// registries entirely, so the signal is meaningless. We also trust
+		// Synced+Healthy over the inventory's own `drift.status` heuristic.
+		if (cell.source === "inventory") {
+			if (
+				cell.syncStatus === "OutOfSync" ||
+				(cell.driftStatus === "pending_rollout" && !isInventoryHealthy)
+			) {
+				hasDrift = true;
+				continue;
+			}
+		}
+		if (isInventoryHealthy) {
+			anyHealthy = true;
+			continue;
+		}
+		// pin-only and live-only cells don't have full sync/health info; treat
+		// them as neutral (contribute nothing to the overall state, but we don't
+		// flag them as unknown unless no other cell says anything useful).
+		if (cell.source === "inventory") {
+			hasUnknown = true;
+		}
+	}
+
+	const overall: RowOverallStatus = hasDegraded
+		? "degraded"
+		: hasDrift
+			? "drift"
+			: anyHealthy
+				? "healthy"
+				: hasUnknown
+					? "unknown"
+					: "healthy"; // pin-only/live-only only → treat as healthy by default
+
+	return { overall, updatedAt, hasPopulatedCell: true };
 }

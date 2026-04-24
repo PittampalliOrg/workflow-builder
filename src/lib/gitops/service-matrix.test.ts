@@ -337,4 +337,29 @@ describe("summarizeMatrix", () => {
 		expect(summary.degradedApps).toBe(0);
 		expect(summary.pendingPromotions).toBe(0);
 	});
+
+	it("does NOT flag lowercase 'success' promotion health as pending", () => {
+		// This is the hub gitops-deployment-inventory shape observed in prod:
+		// `"promotion": "success"` — must not trigger the AttentionBanner.
+		const inventory = makeInventory({
+			dev: [
+				makeApp({
+					name: "dev-workflow-builder",
+					component: "workflow-builder",
+					promotion: { drySha: null, hydratedSha: null, healthPhase: "success" },
+				}),
+			],
+			staging: [
+				makeApp({
+					name: "staging-workflow-builder",
+					component: "workflow-builder",
+					promotion: { drySha: null, hydratedSha: null, healthPhase: "success" },
+				}),
+			],
+		});
+		const rows = buildServiceMatrix({ inventory, releasePins: [] });
+		const summary = summarizeMatrix(rows);
+		expect(summary.pendingPromotions).toBe(0);
+		expect(summary.driftCount).toBe(0);
+	});
 });

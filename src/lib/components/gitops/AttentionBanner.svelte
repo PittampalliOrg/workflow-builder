@@ -1,7 +1,16 @@
 <script lang="ts">
-	import { AlertTriangle, Flame, GitBranchPlus, ShieldAlert } from "lucide-svelte";
+	import {
+		AlertTriangle,
+		ChevronDown,
+		ChevronRight,
+		Flame,
+		GitBranchPlus,
+		ShieldAlert,
+	} from "lucide-svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
+	import { Button } from "$lib/components/ui/button";
+	import { isPromotionPassing } from "$lib/gitops/gates";
 	import { ENVIRONMENTS, type ServiceRow, summarizeMatrix } from "$lib/gitops/service-matrix";
 
 	type Issue = {
@@ -15,9 +24,12 @@
 		rows: ServiceRow[];
 		tektonBase: string | null;
 		inventoryError?: string | null;
+		onJumpToService?: (service: string) => void;
 	};
 
-	let { rows, tektonBase, inventoryError = null }: Props = $props();
+	let { rows, tektonBase, inventoryError = null, onJumpToService }: Props = $props();
+
+	let expanded = $state(false);
 
 	const summary = $derived(summarizeMatrix(rows));
 
@@ -59,11 +71,7 @@
 						detail: cell.buildPipelineRun ?? cell.buildReason ?? "build failed",
 					});
 				}
-				if (
-					cell.promotionHealth &&
-					cell.promotionHealth !== "Succeeded" &&
-					cell.promotionHealth !== "Healthy"
-				) {
+				if (cell.promotionHealth && !isPromotionPassing(cell.promotionHealth)) {
 					out.push({
 						kind: "stuck-promotion",
 						service: row.service,
@@ -82,8 +90,27 @@
 		return `${base}/#/namespaces/tekton-pipelines/pipelineruns/${encodeURIComponent(pipelineRun)}`;
 	});
 
-	const hasData = $derived(summary.servicesWithAnyEnv > 0);
-	const shouldShow = $derived(inventoryError !== null || (hasData && issues.length > 0));
+	const hasIssues = $derived(issues.length > 0);
+	const shouldShow = $derived(inventoryError !== null || hasIssues);
+
+	// Drift-only state is a transient, self-healing "still promoting" case — soften the colour.
+	const isTransientOnly = $derived(
+		hasIssues &&
+			inventoryError === null &&
+			summary.failedBuilds === 0 &&
+			summary.degradedApps === 0,
+	);
+
+	const banner = $derived(
+		inventoryError !== null
+			? "border-destructive/30 bg-destructive/5 text-destructive"
+			: isTransientOnly
+				? "border-amber-300/50 bg-amber-50/40 text-amber-800 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-200"
+				: "border-destructive/30 bg-destructive/5 text-destructive",
+	);
+
+	const LIMIT = 5;
+	const visibleIssues = $derived(expanded ? issues : issues.slice(0, LIMIT));
 
 	const iconFor = (kind: Issue["kind"]) => {
 		switch (kind) {
@@ -100,10 +127,10 @@
 </script>
 
 {#if shouldShow}
-	<div class="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
-		<div class="flex items-center gap-2 font-medium text-destructive">
+	<div class="rounded-lg border {banner} p-3 text-sm">
+		<div class="flex items-center gap-2 font-medium">
 			<AlertTriangle class="size-4" />
-			What needs attention
+			<span>{isTransientOnly ? "Rollout in progress" : "What needs attention"}</span>
 		</div>
 
 		{#if inventoryError}
@@ -112,49 +139,78 @@
 			</div>
 		{/if}
 
-		{#if issues.length > 0}
-			<div class="mt-2 flex flex-wrap gap-2">
-				<Badge variant="destructive" class="text-[0.7rem]">
-					{summary.driftCount} drift
-				</Badge>
+		{#if hasIssues}
+			<div class="mt-2 flex flex-wrap gap-1.5">
+				{#if summary.driftCount > 0}
+					<Badge
+						variant={isTransientOnly ? "outline" : "destructive"}
+						class="h-5 px-1.5 text-[0.65rem]"
+					>
+						{summary.driftCount} drift
+					</Badge>
+				{/if}
 				{#if summary.failedBuilds > 0}
-					<Badge variant="destructive" class="text-[0.7rem]">
+					<Badge variant="destructive" class="h-5 px-1.5 text-[0.65rem]">
 						{summary.failedBuilds} failed builds
 					</Badge>
 				{/if}
 				{#if summary.degradedApps > 0}
-					<Badge variant="destructive" class="text-[0.7rem]">
+					<Badge variant="destructive" class="h-5 px-1.5 text-[0.65rem]">
 						{summary.degradedApps} degraded
 					</Badge>
 				{/if}
 				{#if summary.pendingPromotions > 0}
-					<Badge variant="outline" class="text-[0.7rem]">
+					<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem]">
 						{summary.pendingPromotions} promotions in-flight
 					</Badge>
 				{/if}
 			</div>
 
-			<ul class="mt-3 space-y-1.5 text-xs">
-				{#each issues.slice(0, 10) as issue (`${issue.kind}:${issue.service}:${issue.env}`)}
+			<ul class="mt-2 space-y-1 text-xs">
+				{#each visibleIssues as issue (`${issue.kind}:${issue.service}:${issue.env}`)}
 					{@const IssueIcon = iconFor(issue.kind)}
 					<li class="flex items-center gap-2">
-						<IssueIcon class="size-3 text-destructive/80" />
-						<span class="font-medium">{issue.service}</span>
-						<span class="text-muted-foreground">on</span>
-						<span class="font-mono text-muted-foreground">{issue.env}</span>
+						<IssueIcon class="size-3 shrink-0 opacity-70" />
+						{#if onJumpToService}
+							<button
+								type="button"
+								class="font-medium hover:underline"
+								onclick={() => onJumpToService?.(issue.service)}
+							>
+								{issue.service}
+							</button>
+						{:else}
+							<span class="font-medium">{issue.service}</span>
+						{/if}
+						<span class="opacity-60">on</span>
+						<span class="font-mono opacity-70">{issue.env}</span>
 						{#if issue.kind === "failed-build" && tektonUrl(issue.detail)}
 							<a class="ml-1 text-primary hover:underline" href={tektonUrl(issue.detail)} target="_blank" rel="noreferrer">
 								{issue.detail}
 							</a>
 						{:else}
-							<span class="ml-1 text-muted-foreground">{issue.detail}</span>
+							<span class="ml-1 opacity-70">{issue.detail}</span>
 						{/if}
 					</li>
 				{/each}
-				{#if issues.length > 10}
-					<li class="text-xs text-muted-foreground">…and {issues.length - 10} more.</li>
-				{/if}
 			</ul>
+
+			{#if issues.length > LIMIT}
+				<Button
+					variant="link"
+					size="sm"
+					class="mt-1 h-6 gap-1 px-0 text-xs"
+					onclick={() => (expanded = !expanded)}
+				>
+					{#if expanded}
+						<ChevronDown class="size-3" />
+						Show fewer
+					{:else}
+						<ChevronRight class="size-3" />
+						View {issues.length - LIMIT} more
+					{/if}
+				</Button>
+			{/if}
 		{/if}
 	</div>
 {/if}

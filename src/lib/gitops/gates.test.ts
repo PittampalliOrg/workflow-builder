@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { argoGates, releasePrGate, STAGING_SOAK_MS } from "./gates";
+import { argoGates, isPromotionPassing, releasePrGate, STAGING_SOAK_MS } from "./gates";
 import type { EnvCell } from "./service-matrix";
 
 function cell(overrides: Partial<EnvCell> = {}): EnvCell {
@@ -27,6 +27,22 @@ function cell(overrides: Partial<EnvCell> = {}): EnvCell {
 		...overrides,
 	};
 }
+
+describe("isPromotionPassing", () => {
+	it("accepts both TitleCase ArgoCD and lowercase hub-inventory success states", () => {
+		for (const s of ["Succeeded", "Healthy", "succeeded", "healthy", "success", "True"]) {
+			expect(isPromotionPassing(s)).toBe(true);
+		}
+	});
+
+	it("rejects failure and unknown states", () => {
+		for (const s of ["Failed", "Degraded", "Unknown", "", "Progressing"]) {
+			expect(isPromotionPassing(s)).toBe(false);
+		}
+		expect(isPromotionPassing(null)).toBe(false);
+		expect(isPromotionPassing(undefined)).toBe(false);
+	});
+});
 
 describe("releasePrGate", () => {
 	it("returns passed when ryzen sha equals dev sha", () => {
