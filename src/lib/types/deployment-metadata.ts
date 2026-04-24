@@ -113,6 +113,7 @@ export type DeploymentMetadataResponse = {
 		appUrl: string | null;
 		nodeEnv: string | null;
 		podName: string | null;
+		detectedFrom?: string;
 	};
 	gitops: {
 		releasePinsSourceUrl: string;
@@ -131,4 +132,55 @@ export type DeploymentMetadataResponse = {
 		error: string | null;
 		data: GitOpsDeploymentInventory | null;
 	};
+};
+
+export type RuntimeImageMetadata = {
+	deploymentName: string;
+	containerName: string;
+	image: string;
+	repository: string;
+	name: string;
+	tag: string | null;
+	digest: string | null;
+	imageID: string | null;
+	commitSha: string | null;
+	commitUrl: string | null;
+	commitMessage: string | null;
+	committedAt: string | null;
+	ready: boolean | null;
+	restartCount: number | null;
+	desiredTag: string | null;
+	desiredMatches: boolean | null;
+};
+
+export type RuntimeEnvironmentMetadata = DeploymentMetadataResponse["environment"] & {
+	detectedFrom: string;
+};
+
+export type RuntimeMatrixRow = {
+	environment: string;
+	applicationName: string;
+	component: string;
+	desiredImage: string | null;
+	desiredTag: string | null;
+	desiredCommitSha: string | null;
+	liveImage: string | null;
+	liveTag: string | null;
+	liveCommitSha: string | null;
+	syncStatus: string | null;
+	healthStatus: string | null;
+	driftStatus: string | null;
+	promotionHealth: string | null;
+	buildReason: string | null;
+	buildStatus: string | null;
+	buildFinishedAt: string | null;
+	generatedAt: string | null;
+};
+
+export type RuntimeMetadataResponse = {
+	generatedAt: string;
+	environment: RuntimeEnvironmentMetadata;
+	current: RuntimeImageMetadata | null;
+	matrix: RuntimeMatrixRow[];
+	errors: string[];
 };

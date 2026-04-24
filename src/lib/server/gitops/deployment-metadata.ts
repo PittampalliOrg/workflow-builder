@@ -16,6 +16,9 @@ import type {
 	LiveContainerMetadata,
 	LiveDeploymentMetadata,
 	ParsedImageRef,
+	RuntimeImageMetadata,
+	RuntimeMatrixRow,
+	RuntimeMetadataResponse,
 } from "$lib/types/deployment-metadata";
 
 const STACKS_RELEASE_PINS_URL =
@@ -27,6 +30,7 @@ const WORKFLOW_BUILDER_COMMIT_URL =
 const GITOPS_CACHE_TTL_MS = 60_000;
 const GIT_COMMIT_CACHE_TTL_MS = 12 * 60 * 60_000;
 const HUB_INVENTORY_CACHE_TTL_MS = 15_000;
+const RUNTIME_METADATA_CACHE_TTL_MS = 15_000;
 
 type CacheEntry<T> = {
 	expiresAt: number;
@@ -40,6 +44,7 @@ let releasePinsCache: CacheEntry<{
 }> | null = null;
 let stacksMainCache: CacheEntry<GitCommitMetadata | null> | null = null;
 let hubInventoryCache: CacheEntry<DeploymentMetadataResponse["inventory"]> | null = null;
+let runtimeMetadataCache: CacheEntry<RuntimeMetadataResponse> | null = null;
 const workflowCommitCache = new Map<string, CacheEntry<GitCommitMetadata | null>>();
 const workflowCommitInflight = new Map<string, Promise<GitCommitMetadata | null>>();
 
@@ -52,15 +57,17 @@ export async function getDeploymentMetadata(): Promise<DeploymentMetadataRespons
 	]);
 	const appUrl =
 		readFirstEnv("APP_PUBLIC_URL", "APP_URL", "ORIGIN", "NEXT_PUBLIC_APP_URL") ?? null;
+	const environment = inferEnvironmentMetadata(appUrl);
 
 	return {
 		generatedAt: new Date().toISOString(),
 		environment: {
-			name: inferEnvironmentName(appUrl),
+			name: environment.name,
 			namespace,
 			appUrl,
 			nodeEnv: process.env.NODE_ENV ?? null,
 			podName: os.hostname() || null,
+			detectedFrom: environment.detectedFrom,
 		},
 		gitops,
 		live,
@@ -76,14 +83,33 @@ function readFirstEnv(...names: string[]): string | undefined {
 	return undefined;
 }
 
-function inferEnvironmentName(appUrl: string | null): string {
-	const explicit = readFirstEnv("WORKFLOW_BUILDER_ENV", "CLUSTER_NAME", "PUBLIC_CLUSTER_NAME");
-	if (explicit) return explicit;
+function inferEnvironmentMetadata(appUrl: string | null): { name: string; detectedFrom: string } {
+	const explicit = readFirstEnvWithName(
+		"WORKFLOW_BUILDER_ENV",
+		"CLUSTER_NAME",
+		"PUBLIC_CLUSTER_NAME",
+	);
+	if (explicit) {
+		return {
+			name: explicit.value,
+			detectedFrom: `env:${explicit.name}`,
+		};
+	}
 	const source = appUrl ?? "";
 	for (const env of ["dev", "staging", "ryzen", "hub"]) {
-		if (source.includes(`workflow-builder-${env}`) || source.includes(`${env}.`)) return env;
+		if (source.includes(`workflow-builder-${env}`) || source.includes(`${env}.`)) {
+			return { name: env, detectedFrom: "appUrl" };
+		}
 	}
-	return "unknown";
+	return { name: "unknown", detectedFrom: "fallback" };
+}
+
+function readFirstEnvWithName(...names: string[]): { name: string; value: string } | null {
+	for (const name of names) {
+		const value = process.env[name]?.trim();
+		if (value) return { name, value };
+	}
+	return null;
 }
 
 async function loadGitOpsState(): Promise<DeploymentMetadataResponse["gitops"]> {
@@ -421,6 +447,178 @@ export async function enrichLiveCommits(
 		}
 	}
 	return response;
+}
+
+export async function getRuntimeMetadata(): Promise<RuntimeMetadataResponse> {
+	const now = Date.now();
+	if (runtimeMetadataCache && runtimeMetadataCache.expiresAt > now) {
+		return runtimeMetadataCache.value;
+	}
+	const metadata = await enrichLiveCommits(await getDeploymentMetadata());
+	const value = toRuntimeMetadata(metadata);
+	runtimeMetadataCache = {
+		value,
+		expiresAt: now + RUNTIME_METADATA_CACHE_TTL_MS,
+	};
+	return value;
+}
+
+export function toRuntimeMetadata(
+	metadata: DeploymentMetadataResponse,
+): RuntimeMetadataResponse {
+	const current = findCurrentRuntimeImage(metadata.live.deployments);
+	const matrix = buildRuntimeMatrix(metadata, current);
+	const errors = [
+		metadata.live.error,
+		metadata.gitops.releasePinsError,
+		metadata.inventory.error,
+	].filter((message): message is string => Boolean(message));
+
+	return {
+		generatedAt: metadata.generatedAt,
+		environment: {
+			...metadata.environment,
+			detectedFrom: metadata.environment.detectedFrom ?? "unknown",
+		},
+		current,
+		matrix,
+		errors,
+	};
+}
+
+function findCurrentRuntimeImage(
+	deployments: LiveDeploymentMetadata[],
+): RuntimeImageMetadata | null {
+	const deployment =
+		deployments.find((candidate) => candidate.name === "workflow-builder") ??
+		deployments.find((candidate) =>
+			candidate.containers.some((container) => container.containerName === "workflow-builder"),
+		);
+	if (!deployment) return null;
+
+	const container =
+		deployment.containers.find((candidate) => candidate.containerName === "workflow-builder") ??
+		deployment.containers.find((candidate) => candidate.name === "workflow-builder") ??
+		deployment.containers.find((candidate) => !candidate.containerName.startsWith("init/"));
+	if (!container) return null;
+
+	return liveContainerToRuntimeImage(deployment.name, container);
+}
+
+function liveContainerToRuntimeImage(
+	deploymentName: string,
+	container: LiveContainerMetadata,
+): RuntimeImageMetadata {
+	return {
+		deploymentName,
+		containerName: container.containerName,
+		image: container.image,
+		repository: container.repository,
+		name: container.name,
+		tag: container.tag,
+		digest: container.digest,
+		imageID: container.imageID,
+		commitSha: container.commitSha,
+		commitUrl: container.commit?.url ?? commitUrl(container.commitSha),
+		commitMessage: container.commit?.message ?? null,
+		committedAt: container.commit?.committedAt ?? null,
+		ready: container.ready,
+		restartCount: container.restartCount,
+		desiredTag: container.desiredTag,
+		desiredMatches: container.desiredMatches,
+	};
+}
+
+function buildRuntimeMatrix(
+	metadata: DeploymentMetadataResponse,
+	current: RuntimeImageMetadata | null,
+): RuntimeMatrixRow[] {
+	const inventoryGeneratedAt = metadata.inventory.data?.generatedAt ?? null;
+	const rows: RuntimeMatrixRow[] = [];
+	for (const environment of metadata.inventory.data?.environments ?? []) {
+		for (const application of environment.applications) {
+			if (!isWorkflowBuilderApplication(application.name, application.component)) continue;
+			const liveImage = selectWorkflowBuilderImage(application.live.images);
+			const parsedLive = liveImage ? parseImageRef(liveImage) : null;
+			rows.push({
+				environment: environment.name,
+				applicationName: application.name,
+				component: application.component,
+				desiredImage: application.desired.image,
+				desiredTag: application.desired.tag,
+				desiredCommitSha: application.desired.commitSha,
+				liveImage,
+				liveTag: parsedLive?.tag ?? null,
+				liveCommitSha: parsedLive?.commitSha ?? null,
+				syncStatus: application.live.syncStatus,
+				healthStatus: application.live.healthStatus,
+				driftStatus: application.drift.status,
+				promotionHealth: application.promotion?.healthPhase ?? null,
+				buildReason: application.build?.reason ?? null,
+				buildStatus: application.build?.status ?? null,
+				buildFinishedAt: application.build?.finishedAt ?? null,
+				generatedAt: inventoryGeneratedAt,
+			});
+		}
+	}
+
+	const currentEnv = metadata.environment.name;
+	if (
+		current &&
+		currentEnv &&
+		!rows.some((row) => row.environment === currentEnv && row.component === "workflow-builder")
+	) {
+		rows.push({
+			environment: currentEnv,
+			applicationName:
+				currentEnv === "unknown" ? current.deploymentName : `${currentEnv}-workflow-builder`,
+			component: "workflow-builder",
+			desiredImage: null,
+			desiredTag: current.desiredTag,
+			desiredCommitSha: null,
+			liveImage: current.image,
+			liveTag: current.tag,
+			liveCommitSha: current.commitSha,
+			syncStatus: null,
+			healthStatus: current.ready === false ? "NotReady" : current.ready === true ? "Healthy" : null,
+			driftStatus:
+				current.desiredMatches === false
+					? "pending_rollout"
+					: current.desiredMatches === true
+						? "in_sync"
+						: "local_live",
+			promotionHealth: null,
+			buildReason: null,
+			buildStatus: null,
+			buildFinishedAt: null,
+			generatedAt: metadata.generatedAt,
+		});
+	}
+
+	return rows.sort((a, b) => {
+		const order = ["dev", "staging", "ryzen", "hub", "unknown"];
+		const aIndex = order.indexOf(a.environment);
+		const bIndex = order.indexOf(b.environment);
+		if (aIndex !== bIndex) {
+			return (aIndex === -1 ? order.length : aIndex) - (bIndex === -1 ? order.length : bIndex);
+		}
+		return a.component.localeCompare(b.component);
+	});
+}
+
+function isWorkflowBuilderApplication(name: string, component: string): boolean {
+	return component === "workflow-builder" || name.endsWith("-workflow-builder");
+}
+
+function selectWorkflowBuilderImage(images: string[]): string | null {
+	for (const image of images) {
+		if (parseImageRef(image).name === "workflow-builder") return image;
+	}
+	return null;
+}
+
+function commitUrl(sha: string | null | undefined): string | null {
+	return sha ? `https://github.com/PittampalliOrg/workflow-builder/commit/${sha}` : null;
 }
 
 export function parseImageRef(image: string): ParsedImageRef {
