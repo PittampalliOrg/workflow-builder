@@ -29,6 +29,8 @@ export const GET: RequestHandler = async ({ url, request }) => {
 		slug: env.slug,
 		version: env.version,
 		imageTag: env.imageTag,
+		imageSource: env.imageSource ?? "stored",
+		imageResolutionWarning: env.imageResolutionWarning ?? null,
 		baseEnvSlug: env.baseEnvSlug,
 		sandboxMode: env.config.sandboxMode,
 		keepAfterRun: env.config.keepAfterRun,

@@ -1,4 +1,4 @@
-import { eq, isNull } from "drizzle-orm";
+import { eq, inArray, isNull } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
@@ -6,8 +6,16 @@ import {
 	environmentVersions,
 } from "$lib/server/db/schema";
 import type { EnvironmentConfig } from "$lib/types/environments";
-import { createDefaultEnvironmentConfig } from "$lib/types/environments";
+import {
+	BUILTIN_ENVIRONMENT_SLUGS,
+	createDefaultEnvironmentConfig,
+} from "$lib/types/environments";
 import { hashEnvironmentConfig } from "./config-hash";
+import {
+	inferWorkflowBuilderEnvironmentName,
+	loadSandboxTemplateImageMap,
+	resolveSandboxImage,
+} from "./image-resolution";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
@@ -19,6 +27,13 @@ export type EnvironmentBackfillReport = {
 	defaultEnvironmentId: string;
 	agentsLinked: number;
 	totalAgents: number;
+};
+
+export type BuiltinSandboxImageRepairReport = {
+	environmentName: string;
+	scanned: number;
+	updated: number;
+	cleared: number;
 };
 
 /**
@@ -103,4 +118,68 @@ async function findDefaultEnvironment() {
 		.where(eq(environments.slug, "default-sandbox"))
 		.limit(1);
 	return row ?? null;
+}
+
+export async function repairBuiltinSandboxEnvironmentImages(): Promise<BuiltinSandboxImageRepairReport> {
+	const database = requireDb();
+	const environmentName = inferWorkflowBuilderEnvironmentName();
+	if (environmentName !== "dev" && environmentName !== "staging") {
+		return {
+			environmentName,
+			scanned: 0,
+			updated: 0,
+			cleared: 0,
+		};
+	}
+
+	const translatedImageMap = loadSandboxTemplateImageMap();
+	const builtinSlugs = Array.from(BUILTIN_ENVIRONMENT_SLUGS);
+	const rows = await database
+		.select({
+			slug: environments.slug,
+			versionId: environmentVersions.id,
+			imageTag: environmentVersions.imageTag,
+		})
+		.from(environments)
+		.innerJoin(
+			environmentVersions,
+			eq(environments.currentVersionId, environmentVersions.id),
+		)
+		.where(inArray(environments.slug, builtinSlugs));
+
+	let updated = 0;
+	let cleared = 0;
+	for (const row of rows) {
+		const resolution = resolveSandboxImage({
+			environmentName,
+			envSlug: row.slug,
+			config: {
+				sandboxMode: "per-run",
+				keepAfterRun: false,
+				networking: { type: "unrestricted" },
+				sandboxTemplate: row.slug,
+			},
+			storedImageTag: row.imageTag ?? null,
+			translatedImageMap,
+		});
+		const nextImageTag = resolution.imageTag;
+		const currentImageTag = row.imageTag ?? null;
+		if (nextImageTag === currentImageTag) continue;
+
+		await database
+			.update(environmentVersions)
+			.set({
+				imageTag: nextImageTag,
+			})
+			.where(eq(environmentVersions.id, row.versionId));
+		updated += 1;
+		if (!nextImageTag) cleared += 1;
+	}
+
+	return {
+		environmentName,
+		scanned: rows.length,
+		updated,
+		cleared,
+	};
 }

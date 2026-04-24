@@ -23,6 +23,12 @@ import {
 	PACKAGE_MANAGERS,
 } from "$lib/types/environments";
 import { hashEnvironmentConfig } from "./config-hash";
+import {
+	inferWorkflowBuilderEnvironmentName,
+	loadSandboxTemplateImageMap,
+	resolveSandboxImage,
+	type SandboxImageSource,
+} from "./image-resolution";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
@@ -610,6 +616,8 @@ export type ResolvedEnvironment = {
 	version: number;
 	config: EnvironmentConfig;
 	imageTag: string | null;
+	imageSource?: SandboxImageSource;
+	imageResolutionWarning?: string | null;
 	baseEnvSlug: string | null;
 };
 
@@ -617,6 +625,8 @@ export async function resolveEnvironmentRef(
 	ref: EnvironmentRef,
 ): Promise<ResolvedEnvironment | null> {
 	const database = requireDb();
+	const environmentName = inferWorkflowBuilderEnvironmentName();
+	const translatedImageMap = loadSandboxTemplateImageMap();
 	const [env] = await database
 		.select()
 		.from(environments)
@@ -646,15 +656,13 @@ export async function resolveEnvironmentRef(
 		version = row;
 	}
 	if (!version) return null;
-
-	return {
-		id: env.id,
-		slug: env.slug,
-		version: version.version,
-		config: version.config as unknown as EnvironmentConfig,
-		imageTag: version.imageTag ?? null,
-		baseEnvSlug: env.baseEnvSlug ?? null,
-	};
+	return resolveEnvironmentVersion(
+		env,
+		version,
+		new Set<string>(),
+		translatedImageMap,
+		environmentName,
+	);
 }
 
 /**
@@ -667,14 +675,102 @@ export async function resolveEnvironmentRef(
 export async function resolveEnvironmentBySlug(
 	slug: string,
 ): Promise<ResolvedEnvironment | null> {
+	return resolveEnvironmentBySlugInternal(
+		slug,
+		new Set<string>(),
+		loadSandboxTemplateImageMap(),
+		inferWorkflowBuilderEnvironmentName(),
+	);
+}
+
+async function resolveEnvironmentBySlugInternal(
+	slug: string,
+	visited: Set<string>,
+	translatedImageMap: Record<string, string>,
+	environmentName: string,
+): Promise<ResolvedEnvironment | null> {
 	const database = requireDb();
 	const [env] = await database
 		.select()
 		.from(environments)
 		.where(eq(environments.slug, slug))
 		.limit(1);
-	if (!env) return null;
-	return resolveEnvironmentRef({ id: env.id });
+	if (!env || !env.currentVersionId) return null;
+	const [version] = await database
+		.select()
+		.from(environmentVersions)
+		.where(eq(environmentVersions.id, env.currentVersionId))
+		.limit(1);
+	if (!version) return null;
+	return resolveEnvironmentVersion(
+		env,
+		version,
+		visited,
+		translatedImageMap,
+		environmentName,
+	);
+}
+
+async function resolveEnvironmentVersion(
+	env: Environment,
+	version: EnvironmentVersion,
+	visited: Set<string>,
+	translatedImageMap: Record<string, string>,
+	environmentName: string,
+): Promise<ResolvedEnvironment> {
+	const config = version.config as unknown as EnvironmentConfig;
+	const templateSlug =
+		typeof config.sandboxTemplate === "string"
+			? config.sandboxTemplate.trim()
+			: "";
+
+	let templateResolution: ResolvedEnvironment | null = null;
+	if (
+		!(version.imageTag ?? "").trim() &&
+		templateSlug &&
+		templateSlug !== env.slug &&
+		!visited.has(templateSlug)
+	) {
+		const nextVisited = new Set(visited);
+		nextVisited.add(env.slug);
+		templateResolution = await resolveEnvironmentBySlugInternal(
+			templateSlug,
+			nextVisited,
+			translatedImageMap,
+			environmentName,
+		);
+	}
+
+	const imageResolution = resolveSandboxImage({
+		environmentName,
+		envSlug: env.slug,
+		config,
+		storedImageTag: version.imageTag ?? null,
+		templateResolution: templateResolution
+			? {
+					imageTag: templateResolution.imageTag,
+					imageSource: templateResolution.imageSource ?? "stored",
+					...(templateResolution.imageResolutionWarning
+						? {
+								imageResolutionWarning:
+									templateResolution.imageResolutionWarning,
+							}
+						: {}),
+				}
+			: null,
+		translatedImageMap,
+	});
+
+	return {
+		id: env.id,
+		slug: env.slug,
+		version: version.version,
+		config,
+		imageTag: imageResolution.imageTag,
+		imageSource: imageResolution.imageSource,
+		imageResolutionWarning: imageResolution.imageResolutionWarning ?? null,
+		baseEnvSlug: env.baseEnvSlug ?? null,
+	};
 }
 
 export type EnvironmentUsage = {
