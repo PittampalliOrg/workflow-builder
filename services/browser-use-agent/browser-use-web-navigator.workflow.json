@@ -42,11 +42,17 @@
 					"call": "durable/run",
 					"with": {
 						"mode": "execute_direct",
-						"maxTurns": 15,
-						"timeoutMinutes": 10,
+						"maxTurns": 8,
+						"timeoutMinutes": 6,
 						"workspaceRef": "local",
 						"stopCondition": "Stop after the final response reports the page title, final URL, and includes TASK COMPLETE.",
-						"prompt": "${ \"Open \" + .trigger.url + \" in the live browser. \" + .trigger.task + \" When you are done, include the exact page title and final URL in your response. End your final message with TASK COMPLETE.\" }",
+						"prompt": "${ \"Open \" + .trigger.url + \" in the live browser. \" + .trigger.task + \"\\n\\nRULES:\\n- If the starting URL returns a CAPTCHA, robot-check, paywall, or 'unusual traffic' page on the first attempt, abandon it. Do NOT retry the CAPTCHA. Switch to a trusted alternate source (BBC, Reuters, AP, NPR, The Guardian) and continue from there.\\n- Re-observe the page state before each click or input. If an element index is reported missing/stale, take a fresh observation and re-identify; do not retry the stale index.\\n- Stop after the task is satisfied. Do NOT search for additional content past what the task asked for.\\n\\nWhen you are done, include the exact page title and final URL in your response. End your final message with TASK COMPLETE.\" }",
+						"agentKwargs": {
+							"vision_detail_level": "low",
+							"max_actions_per_step": 1,
+							"max_history_items": 5,
+							"max_failures": 1
+						},
 						"agentRef": {
 							"slug": "browser-use-web-navigator"
 						}
