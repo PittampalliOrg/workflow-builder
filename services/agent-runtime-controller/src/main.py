@@ -56,11 +56,11 @@ DEFAULT_PULL_SECRETS = [
 # Defaults for the optional browser sidecar (Chromium + playwright-mcp-gateway).
 DEFAULT_CHROME_IMAGE = os.environ.get(
     "AGENT_RUNTIME_CHROME_IMAGE",
-    "gitea-ryzen.tail286401.ts.net/giteaadmin/chrome-sandbox:latest",
+    "ghcr.io/pittampalliorg/chrome-sandbox:latest",
 )
 DEFAULT_PW_MCP_IMAGE = os.environ.get(
     "AGENT_RUNTIME_PW_MCP_IMAGE",
-    "gitea-ryzen.tail286401.ts.net/giteaadmin/playwright-mcp-gateway:latest",
+    "ghcr.io/pittampalliorg/playwright-mcp-gateway:latest",
 )
 
 
@@ -97,11 +97,11 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
     chrome_image = browser_spec.get("chromeImage") or DEFAULT_CHROME_IMAGE
     mcp_image = browser_spec.get("mcpGatewayImage") or DEFAULT_PW_MCP_IMAGE
     chrome_resources = browser_spec.get("chromeResources") or {
-        "requests": {"memory": "512Mi", "cpu": "200m"},
+        "requests": {"memory": "128Mi", "cpu": "100m"},
         "limits":   {"memory": "2Gi",   "cpu": "2000m"},
     }
     mcp_resources = browser_spec.get("mcpResources") or {
-        "requests": {"memory": "128Mi", "cpu": "50m"},
+        "requests": {"memory": "64Mi", "cpu": "25m"},
         "limits":   {"memory": "512Mi", "cpu": "500m"},
     }
     containers = [
