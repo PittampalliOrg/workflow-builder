@@ -97,11 +97,11 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
     chrome_image = browser_spec.get("chromeImage") or DEFAULT_CHROME_IMAGE
     mcp_image = browser_spec.get("mcpGatewayImage") or DEFAULT_PW_MCP_IMAGE
     chrome_resources = browser_spec.get("chromeResources") or {
-        "requests": {"memory": "128Mi", "cpu": "100m"},
+        "requests": {"memory": "64Mi", "cpu": "50m"},
         "limits":   {"memory": "2Gi",   "cpu": "2000m"},
     }
     mcp_resources = browser_spec.get("mcpResources") or {
-        "requests": {"memory": "64Mi", "cpu": "25m"},
+        "requests": {"memory": "32Mi", "cpu": "10m"},
         "limits":   {"memory": "512Mi", "cpu": "500m"},
     }
     containers = [
@@ -170,7 +170,7 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     is_browser_use = "browser-use-agent" in image
     default_limits = {"memory": "2Gi" if is_browser_use else "1Gi", "cpu": "1000m"}
     resources = spec.get("resources") or {
-        "requests": {"memory": "256Mi", "cpu": "100m"},
+        "requests": {"memory": "128Mi", "cpu": "75m"},
         "limits": default_limits,
     }
     pull_secrets = spec.get("imagePullSecrets") or [{"name": n} for n in DEFAULT_PULL_SECRETS]
