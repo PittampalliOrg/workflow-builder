@@ -6,7 +6,7 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends git docker.io \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir swebench requests
+RUN pip install --no-cache-dir swebench requests docker
 
 COPY entrypoint.py /app/entrypoint.py
 

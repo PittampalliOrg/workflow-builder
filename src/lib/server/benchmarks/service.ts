@@ -660,7 +660,10 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		}
 	}
 
-	const status = mapExecutionStatus(row.execution.status, runtimeStatus);
+	const executionFailed = isFailedWorkflowExecution(row.execution);
+	const status = executionFailed
+		? "error"
+		: mapExecutionStatus(row.execution.status, runtimeStatus);
 	if (status === "running" || status === "pending") return row.runInstance;
 
 	const patch = extractModelPatch(runtimeOutput ?? row.execution.output);
@@ -677,7 +680,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		modelPatch: status === "success" ? patch : row.runInstance.modelPatch,
 		patchBytes: status === "success" ? Buffer.byteLength(patch, "utf8") : undefined,
 		patchSha256: status === "success" ? sha256(patch) : undefined,
-		error: status === "success" ? null : row.execution.error,
+		error: status === "success" ? null : workflowExecutionError(row.execution, runtimeOutput),
 		inferenceCompletedAt: now,
 		sessionId: sessionRow[0]?.id ?? row.runInstance.sessionId,
 		updatedAt: now,
@@ -833,7 +836,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	const repoPath = "/sandbox/repo";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
 	const cloneCommand = [
-		"set -euo pipefail",
+		"set -eu",
 		"cd /sandbox",
 		"rm -rf repo",
 		`git clone ${quoteShell(`https://github.com/${params.repo}.git`)} repo`,
@@ -1001,6 +1004,37 @@ function collectStringsByKey(value: unknown, keys: string[]): string[] {
 	};
 	visit(value);
 	return out;
+}
+
+function isFailedWorkflowExecution(execution: {
+	status: string;
+	phase: string | null;
+	error: string | null;
+	output: unknown;
+}): boolean {
+	if (execution.status === "error" || execution.phase === "failed") return true;
+	if (typeof execution.error === "string" && execution.error.trim()) return true;
+	const output = execution.output;
+	if (output && typeof output === "object" && !Array.isArray(output)) {
+		const success = (output as Record<string, unknown>).success;
+		if (success === false) return true;
+	}
+	return false;
+}
+
+function workflowExecutionError(
+	execution: { error: string | null; output: unknown },
+	runtimeOutput: unknown,
+): string | null {
+	if (typeof execution.error === "string" && execution.error.trim()) {
+		return execution.error;
+	}
+	const candidates = collectStringsByKey(runtimeOutput ?? execution.output, [
+		"error",
+		"stderr",
+		"message",
+	]);
+	return candidates.find((candidate) => candidate.trim())?.slice(0, 2000) ?? null;
 }
 
 function serializeRunSummary(row: {

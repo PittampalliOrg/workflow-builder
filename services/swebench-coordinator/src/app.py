@@ -315,6 +315,8 @@ def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]
             return instance
         yield ctx.create_timer(timedelta(seconds=30))
     final_sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
+    if isinstance(final_sync, dict) and isinstance(final_sync.get("instance"), dict):
+        return final_sync["instance"]
     return final_sync
 
 
@@ -345,6 +347,23 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             else:
                 for task in tasks:
                     results.append((yield task))
+        failed_instances = [
+            result
+            for result in results
+            if not isinstance(result, dict) or result.get("status") != "inferred"
+        ]
+        if failed_instances:
+            error_message = _format_inference_failures(failed_instances)
+            yield ctx.call_activity(
+                _mark_run_status,
+                input={"runId": run_id, "status": "failed", "error": error_message},
+            )
+            return {
+                "success": False,
+                "instances": len(results),
+                "failedInstances": len(failed_instances),
+                "error": error_message,
+            }
         predictions = yield ctx.call_activity(_write_predictions, input={"runId": run_id})
         yield ctx.call_activity(
             _start_evaluator_job,
@@ -354,6 +373,23 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     except Exception as exc:
         yield ctx.call_activity(_mark_run_status, input={"runId": run_id, "status": "failed", "error": str(exc)})
         raise
+
+
+def _format_inference_failures(results: list[Any]) -> str:
+    summaries: list[str] = []
+    for result in results[:5]:
+        if not isinstance(result, dict):
+            summaries.append(f"unknown instance returned {type(result).__name__}")
+            continue
+        instance_id = result.get("instanceId") or result.get("instance_id") or "unknown"
+        status = result.get("status") or "unknown"
+        error_text = str(result.get("error") or "").strip()
+        if error_text:
+            summaries.append(f"{instance_id}: {status}: {error_text[:300]}")
+        else:
+            summaries.append(f"{instance_id}: {status}")
+    suffix = "" if len(results) <= 5 else f"; and {len(results) - 5} more"
+    return f"Inference failed for {len(results)} SWE-bench instance(s): {'; '.join(summaries)}{suffix}"
 
 
 @asynccontextmanager

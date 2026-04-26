@@ -5,6 +5,8 @@ import os
 import pathlib
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from typing import Any
 
 import requests
@@ -58,17 +60,31 @@ def wait_for_docker() -> None:
 
     start = time.monotonic()
     while True:
-        result = subprocess.run(
-            ["docker", "info"],
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if result.returncode == 0:
+        if docker_api_ready():
             return
         if time.monotonic() - start >= deadline:
             raise RuntimeError("Docker daemon did not become ready")
         time.sleep(2)
+
+
+def docker_api_ready() -> bool:
+    docker_host = os.environ.get("DOCKER_HOST", "tcp://localhost:2375").strip()
+    if docker_host.startswith("tcp://"):
+        url = "http://" + docker_host.removeprefix("tcp://").rstrip("/") + "/_ping"
+    elif docker_host.startswith("http://") or docker_host.startswith("https://"):
+        url = docker_host.rstrip("/") + "/_ping"
+    else:
+        return subprocess.run(
+            ["docker", "info"],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            return response.status == 200 and response.read().strip() == b"OK"
+    except (OSError, urllib.error.URLError):
+        return False
 
 
 def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[str, Any]]:
