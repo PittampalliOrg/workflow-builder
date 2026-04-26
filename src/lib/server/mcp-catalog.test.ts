@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildHostedMcpGatewayInternalUrl, buildProjectMcpCatalogEntry } from './mcp-catalog';
+import {
+	buildAvailablePieceMcpCatalogEntry,
+	buildHostedMcpGatewayInternalUrl,
+	buildProjectMcpCatalogEntry
+} from './mcp-catalog';
 
 describe('project MCP catalog helpers', () => {
 	it('maps piece connections to stable MCPJam server names', () => {
@@ -18,14 +22,14 @@ describe('project MCP catalog helpers', () => {
 		).toEqual({
 			name: 'ap-microsoft-onedrive',
 			displayName: 'Microsoft OneDrive',
-				url: 'http://ap-microsoft-onedrive-service:3100/mcp',
-				sourceType: 'nimble_piece',
-				pieceName: '@activepieces/piece-microsoft-onedrive',
-				connectionExternalId: 'external-1',
-				headers: {
-					'X-Connection-External-Id': 'external-1'
-				}
-			});
+			url: 'http://ap-microsoft-onedrive-service:3100/mcp',
+			sourceType: 'nimble_piece',
+			pieceName: '@activepieces/piece-microsoft-onedrive',
+			connectionExternalId: 'external-1',
+			headers: {
+				'X-Connection-External-Id': 'external-1'
+			}
+		});
 	});
 
 	it('builds hosted workflow entries with bearer auth and the internal gateway URL', () => {
@@ -125,5 +129,54 @@ describe('project MCP catalog helpers', () => {
 		).toBe(
 			'http://mcp-gateway.workflow-builder.svc.cluster.local:8080/api/v1/projects/project-6/mcp-server/http'
 		);
+	});
+
+	it('builds browser-safe predefined MCP catalog entries', () => {
+		expect(
+			buildAvailablePieceMcpCatalogEntry({
+				pieceName: '@activepieces/piece-github',
+				displayName: 'GitHub',
+				description: 'Repository automation',
+				logoUrl: 'https://example.test/github.svg',
+				categories: ['developer-tools'],
+				auth: {
+					type: 'OAUTH2',
+					displayName: 'GitHub account'
+				},
+				actions: {
+					search_repositories: {},
+					get_repository: {}
+				},
+				oauthAppConfigured: true,
+				appConnections: [
+					{
+						id: 'app-1',
+						externalId: 'conn_app_1',
+						displayName: 'Main GitHub',
+						type: 'PLATFORM_OAUTH2',
+						status: 'ACTIVE'
+					}
+				],
+				mcpConnection: null
+			})
+		).toMatchObject({
+			pieceName: 'github',
+			canonicalPieceName: '@activepieces/piece-github',
+			displayName: 'GitHub',
+			authType: 'OAUTH2',
+			authDisplayName: 'GitHub account',
+			requiresAuth: true,
+			isOAuth2: true,
+			oauthAppConfigured: true,
+			actionCount: 2,
+			registryRef: 'ap-github-service',
+			serverUrl: 'http://ap-github-service:3100/mcp',
+			appConnections: [
+				{
+					externalId: 'conn_app_1',
+					status: 'ACTIVE'
+				}
+			]
+		});
 	});
 });

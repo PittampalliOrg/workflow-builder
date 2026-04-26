@@ -106,7 +106,7 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
             allowCredentialBinding: true
             allowSkillAdditions: false
             allowSkillNarrowing: true
-        mcpConnectionMode: explicit
+        mcpConnectionMode: auto
         mcpServers: []
         skills: []
 \`\`\`

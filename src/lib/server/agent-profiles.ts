@@ -289,7 +289,7 @@ function normalizeConfig(input: {
 		? (toolPolicy.mcpServers.filter(isRecord) as McpServerProfileConfig[])
 		: [];
 	const skills = normalizeSkills(toolPolicy.skills);
-	const mode = String(toolPolicy.mcpConnectionMode || 'explicit').trim();
+	const mode = String(toolPolicy.mcpConnectionMode || 'auto').trim();
 	return {
 		modelSpec:
 			typeof model.modelSpec === 'string'
@@ -300,7 +300,7 @@ function normalizeConfig(input: {
 		maxTurns: numberValue(execution.maxTurns ?? execution.maxIterations),
 		timeoutMinutes: numberValue(execution.timeoutMinutes),
 		builtinTools: stringArray(toolPolicy.builtinTools ?? toolPolicy.tools),
-		mcpConnectionMode: mode === 'project' || mode === 'auto' ? mode : 'explicit',
+		mcpConnectionMode: mode === 'project' || mode === 'explicit' ? mode : 'auto',
 		mcpServers: servers,
 		skills,
 		runtimeOverridePolicy: runtimeOverridePolicy(toolPolicy.runtimeOverridePolicy)

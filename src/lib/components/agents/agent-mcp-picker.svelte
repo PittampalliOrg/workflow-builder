@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Loader2, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
+	import { KeyRound, Loader2, Plug, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
 	import type { McpServerProfileConfig } from '$lib/server/agent-profiles';
 	import type { VaultCredentialSummary, VaultSummary } from '$lib/types/vaults';
 
@@ -22,12 +22,25 @@
 	// which MCP server URLs have a matching credential.
 	let vaults = $state<VaultSummary[]>([]);
 	let credentialsByVault = $state<Record<string, VaultCredentialSummary[]>>({});
+	let projectConnections = $state<ProjectMcpConnection[]>([]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
 	// New server form
 	let newName = $state('');
 	let newUrl = $state('');
+
+	type ProjectMcpConnection = {
+		id: string;
+		displayName: string;
+		sourceType: string;
+		pieceName: string | null;
+		serverKey: string | null;
+		connectionExternalId: string | null;
+		serverUrl: string | null;
+		status: string;
+		metadata: Record<string, unknown> | null;
+	};
 
 	const BROWSER_PRESETS: McpServerProfileConfig[] = [
 		{
@@ -49,17 +62,23 @@
 	];
 
 	onMount(() => {
-		void loadVaults();
+		void loadSupportData();
 	});
 
-	async function loadVaults() {
+	async function loadSupportData() {
 		loading = true;
 		error = null;
 		try {
-			const res = await fetch('/api/v1/vaults');
+			const [res, projectRes] = await Promise.all([
+				fetch('/api/v1/vaults'),
+				fetch('/api/mcp-connections')
+			]);
 			if (!res.ok) {
 				error = `Failed to load vaults (${res.status})`;
 				return;
+			}
+			if (projectRes.ok) {
+				projectConnections = await projectRes.json();
 			}
 			const data = (await res.json()) as { vaults: VaultSummary[] };
 			vaults = data.vaults ?? [];
@@ -85,6 +104,47 @@
 		return (
 			server.server_name ?? server.serverName ?? server.name ?? server.displayName ?? ''
 		);
+	}
+
+	function normalizeName(value: unknown): string {
+		return String(value || '')
+			.trim()
+			.toLowerCase()
+			.replace(/^@activepieces\/piece-/, '')
+			.replace(/[^a-z0-9_-]+/g, '_')
+			.replace(/_+/g, '_')
+			.replace(/^_|_$/g, '');
+	}
+
+	function connectionServerName(connection: ProjectMcpConnection): string {
+		const base =
+			connection.pieceName || connection.serverKey || connection.displayName || connection.id;
+		if (connection.sourceType === 'nimble_piece') return normalizeName(`piece_${base}`);
+		if (connection.sourceType === 'nimble_shared') return normalizeName(`shared_${base}`);
+		if (connection.sourceType === 'custom_url') return normalizeName(`custom_${base}`);
+		return normalizeName(base);
+	}
+
+	function projectServerConfig(connection: ProjectMcpConnection): McpServerProfileConfig {
+		return {
+			server_name: connectionServerName(connection),
+			displayName: connection.displayName,
+			sourceType: connection.sourceType,
+			pieceName: connection.pieceName,
+			serverKey: connection.serverKey,
+			transport: 'streamable_http'
+		};
+	}
+
+	function isProjectSelected(connection: ProjectMcpConnection): boolean {
+		const key = connectionServerName(connection);
+		return value.some((server) => serverKey(server) === key);
+	}
+
+	function toggleProjectConnection(connection: ProjectMcpConnection, on: boolean) {
+		const key = connectionServerName(connection);
+		if (on) onChange([...value.filter((server) => serverKey(server) !== key), projectServerConfig(connection)]);
+		else onChange(value.filter((server) => serverKey(server) !== key));
 	}
 
 	function isPresetSelected(preset: McpServerProfileConfig): boolean {
@@ -145,7 +205,7 @@
 				<option value="auto">Auto — project MCP when no explicit selections</option>
 			</select>
 		</div>
-		<Button variant="outline" size="sm" onclick={() => void loadVaults()}>
+		<Button variant="outline" size="sm" onclick={() => void loadSupportData()}>
 			{#if loading}
 				<Loader2 class="size-3 animate-spin" />
 			{:else}
@@ -158,6 +218,45 @@
 	{#if error}
 		<div class="text-xs text-destructive">{error}</div>
 	{/if}
+
+	<div class="space-y-2">
+		<p class="text-xs font-medium text-muted-foreground">
+			Project MCP connections ({projectConnections.filter((c) => c.status === 'ENABLED').length})
+		</p>
+		{#if connectionMode === 'project'}
+			<div class="rounded border border-dashed p-3 text-xs text-muted-foreground">
+				This agent includes every enabled workspace MCP server. Use explicit mode to narrow the list.
+			</div>
+		{:else}
+			<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+				{#each projectConnections.filter((c) => c.status === 'ENABLED') as conn (conn.id)}
+					<label class="rounded border p-3 text-xs cursor-pointer hover:border-primary/50">
+						<span class="flex items-start gap-2">
+							<input
+								type="checkbox"
+								checked={isProjectSelected(conn)}
+								onchange={(e) =>
+									toggleProjectConnection(conn, (e.target as HTMLInputElement).checked)}
+							/>
+							<span class="min-w-0">
+								<span class="font-medium flex items-center gap-1">
+									<Plug class="size-3" /> {conn.displayName}
+								</span>
+								<span class="block text-[10px] text-muted-foreground truncate">
+									{conn.sourceType}{conn.pieceName ? ` · ${conn.pieceName}` : ''}
+								</span>
+							</span>
+						</span>
+					</label>
+				{/each}
+			</div>
+			{#if projectConnections.filter((c) => c.status === 'ENABLED').length === 0}
+				<div class="rounded border border-dashed p-3 text-xs text-muted-foreground">
+					No enabled workspace MCP servers. Add them from the Connections page.
+				</div>
+			{/if}
+		{/if}
+	</div>
 
 	<div class="space-y-2">
 		<p class="text-xs font-medium text-muted-foreground">
@@ -187,7 +286,7 @@
 									{/if}
 									{#if cred}
 										<Badge variant="secondary" class="text-[10px]">
-											🔑 {cred.displayName}
+											<KeyRound class="size-3" /> {cred.displayName}
 										</Badge>
 									{:else if server.url}
 										<Badge variant="outline" class="text-[10px] text-amber-600">

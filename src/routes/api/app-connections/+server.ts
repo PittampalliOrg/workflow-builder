@@ -4,7 +4,11 @@ import { db } from '$lib/server/db';
 import { appConnections, pieceMetadata } from '$lib/server/db/schema';
 import { desc } from 'drizzle-orm';
 import { encryptObject } from '$lib/server/security/encryption';
-import { AppConnectionStatus } from '$lib/server/types/app-connection';
+import {
+	AppConnectionScope,
+	AppConnectionStatus,
+	AppConnectionType
+} from '$lib/server/types/app-connection';
 import { generateId } from '$lib/server/utils/id';
 import { connectionBelongsToProject } from '$lib/server/app-connection-scope';
 import { requireSessionProjectId } from '$lib/server/mcp-connections';
@@ -85,6 +89,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		url.searchParams.get('provider')?.trim() ||
 		url.searchParams.get('providerId')?.trim() ||
 		'';
+	const searchFilter =
+		url.searchParams.get('q')?.trim() ||
+		url.searchParams.get('search')?.trim() ||
+		url.searchParams.get('displayName')?.trim() ||
+		'';
+	const statusFilter = url.searchParams.get('status')?.trim().toUpperCase() || '';
+	const typeFilter = url.searchParams.get('type')?.trim().toUpperCase() || '';
+	const scopeFilter = url.searchParams.get('scope')?.trim().toUpperCase() || '';
 
 	const [connections, pieces] = await Promise.all([
 		db
@@ -95,8 +107,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				displayName: appConnections.displayName,
 				type: appConnections.type,
 				status: appConnections.status,
+				scope: appConnections.scope,
+				ownerId: appConnections.ownerId,
+				platformId: appConnections.platformId,
 				projectIds: appConnections.projectIds,
-				createdAt: appConnections.createdAt
+				createdAt: appConnections.createdAt,
+				updatedAt: appConnections.updatedAt
 			})
 			.from(appConnections)
 			.orderBy(desc(appConnections.createdAt)),
@@ -142,7 +158,11 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				displayName: connection.displayName,
 				type: connection.type,
 				status: connection.status,
+				scope: connection.scope,
+				ownerId: connection.ownerId,
+				platformId: connection.platformId,
 				createdAt: connection.createdAt,
+				updatedAt: connection.updatedAt,
 				providerId: piece?.name ? normalizePieceName(piece.name) : normalizedPieceName,
 				providerLabel: piece?.displayName || humanizePieceName(connection.pieceName),
 				providerIconUrl: piece?.logoUrl || null,
@@ -151,7 +171,21 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		})
 		.filter((connection) =>
 			matchesPieceFilter(connection.pieceName, pieceNameFilter, pieceMap.get(normalizePieceName(connection.pieceName))) &&
-			matchesPieceFilter(connection.pieceName, providerFilter, pieceMap.get(normalizePieceName(connection.pieceName)))
+			matchesPieceFilter(connection.pieceName, providerFilter, pieceMap.get(normalizePieceName(connection.pieceName))) &&
+			(!statusFilter || connection.status === statusFilter) &&
+			(!typeFilter || connection.type === typeFilter) &&
+			(!scopeFilter || connection.scope === scopeFilter) &&
+			(!searchFilter ||
+				[
+					connection.displayName,
+					connection.pieceName,
+					connection.providerId,
+					connection.providerLabel,
+					connection.category || ''
+				]
+					.join(' ')
+					.toLowerCase()
+					.includes(searchFilter.toLowerCase()))
 		);
 
 	return json(result);
@@ -174,30 +208,53 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return error(400, { message: 'pieceName, displayName, and type are required' });
 	}
 
-	if (type === 'SECRET_TEXT' && !value) {
+	const normalizedType = String(type).toUpperCase() as AppConnectionType;
+	const supportedTypes = new Set<string>(Object.values(AppConnectionType));
+	if (!supportedTypes.has(normalizedType)) {
+		return error(400, { message: `Unsupported connection type: ${type}` });
+	}
+
+	if (normalizedType === AppConnectionType.SECRET_TEXT && !value) {
 		return error(400, { message: 'value is required for SECRET_TEXT connections' });
 	}
 
-	// Encrypt the connection value
-	const encryptedValue = encryptObject(
-		typeof value === 'string' ? { secret_text: value } : value
-	);
+	const isOAuth =
+		normalizedType === AppConnectionType.OAUTH2 ||
+		normalizedType === AppConnectionType.PLATFORM_OAUTH2 ||
+		normalizedType === AppConnectionType.CLOUD_OAUTH2;
+	const rawValue =
+		value && typeof value === 'object' && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: typeof value === 'string'
+				? { secret_text: value }
+				: {};
+	const encryptedValue = encryptObject({
+		type: normalizedType,
+		...rawValue
+	});
 
 	const id = generateId();
 	const externalId = `conn_${id}`;
+	const scope =
+		body.scope === AppConnectionScope.PLATFORM
+			? AppConnectionScope.PLATFORM
+			: AppConnectionScope.PROJECT;
 
 	const [connection] = await db
 		.insert(appConnections)
 		.values({
 			id,
 			externalId,
-			pieceName,
-			displayName,
-			type,
-			status: AppConnectionStatus.ACTIVE,
+			pieceName: String(pieceName),
+			displayName: String(displayName).trim(),
+			type: normalizedType,
+			status: isOAuth ? AppConnectionStatus.MISSING : AppConnectionStatus.ACTIVE,
 			value: encryptedValue,
 			pieceVersion: '0.0.0',
-			projectIds: [projectId]
+			projectIds: [projectId],
+			ownerId: locals.session?.userId ?? null,
+			platformId: locals.session?.platformId ?? null,
+			scope
 		})
 		.returning({
 			id: appConnections.id,
@@ -206,7 +263,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			displayName: appConnections.displayName,
 			type: appConnections.type,
 			status: appConnections.status,
-			createdAt: appConnections.createdAt
+			scope: appConnections.scope,
+			createdAt: appConnections.createdAt,
+			updatedAt: appConnections.updatedAt
 		});
 
 	return json(connection, { status: 201 });

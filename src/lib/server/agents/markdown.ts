@@ -135,7 +135,7 @@ export function parseAgentMarkdown(source: string): ParsedAgentMarkdown {
 			parsed.mcp_connection_mode === "auto" ||
 			parsed.mcp_connection_mode === "explicit"
 				? parsed.mcp_connection_mode
-				: "explicit",
+				: defaults.mcpConnectionMode,
 		mcpServers: mcpServers as AgentConfig["mcpServers"],
 		skills: skills as AgentConfig["skills"],
 		runtime,

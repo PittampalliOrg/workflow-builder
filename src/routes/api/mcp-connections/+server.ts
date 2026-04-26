@@ -20,6 +20,15 @@ function metadataFromBody(value: unknown): Record<string, unknown> {
 	return { transport: 'streamable_http' };
 }
 
+function serverKeyFromDisplayName(value: string): string {
+	return value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, '-')
+		.replace(/-+/g, '-')
+		.replace(/^-|-$/g, '');
+}
+
 export const GET: RequestHandler = async ({ locals }) => {
 	const projectId = requireSessionProjectId(locals);
 	if (!db) return json([]);
@@ -129,6 +138,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			projectId,
 			sourceType: 'custom_url',
 			pieceName: null,
+			serverKey: serverKeyFromDisplayName(displayName),
 			connectionExternalId: null,
 			displayName,
 			serverUrl,

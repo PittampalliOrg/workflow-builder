@@ -209,7 +209,7 @@ export const DEFAULT_BUILTIN_TOOLS = [
 export function createDefaultAgentConfig(): AgentConfig {
 	return {
 		builtinTools: [...DEFAULT_BUILTIN_TOOLS],
-		mcpConnectionMode: "explicit",
+		mcpConnectionMode: "auto",
 		mcpServers: [],
 		skills: [],
 		runtime: "dapr-agent-py",
