@@ -47,6 +47,43 @@ DOCKER_DIND_IMAGE = os.environ.get("SWEBENCH_DOCKER_DIND_IMAGE", "docker.io/libr
 wfr = wf.WorkflowRuntime()
 
 
+EVALUATOR_RESOURCE_PROFILES: dict[str, dict[str, dict[str, dict[str, str]]]] = {
+    "standard": {
+        # Set explicit zero requests so Kubernetes does not default requests
+        # from limits. This lets small/dev clusters with PVC node affinity
+        # schedule one-off evaluator jobs while retaining bounded limits.
+        "evaluator": {
+            "requests": {"cpu": "0", "memory": "0"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        },
+        "docker": {
+            "requests": {"cpu": "0", "memory": "0"},
+            "limits": {"cpu": "2", "memory": "4Gi"},
+        },
+    },
+    "large": {
+        "evaluator": {
+            "requests": {"cpu": "2", "memory": "4Gi"},
+            "limits": {"cpu": "8", "memory": "16Gi"},
+        },
+        "docker": {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        },
+    },
+    "xlarge": {
+        "evaluator": {
+            "requests": {"cpu": "4", "memory": "8Gi"},
+            "limits": {"cpu": "12", "memory": "24Gi"},
+        },
+        "docker": {
+            "requests": {"cpu": "1", "memory": "2Gi"},
+            "limits": {"cpu": "4", "memory": "8Gi"},
+        },
+    },
+}
+
+
 class StartRunRequest(BaseModel):
     runId: str
 
@@ -253,6 +290,7 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     predictions_path = data["predictionsPath"]
     job_name = f"swebench-eval-{run['id'].lower().replace('_', '-')[:44]}"
     instance_ids = run.get("selectedInstanceIds") or []
+    resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
     try:
         from kubernetes import client, config
 
@@ -277,8 +315,8 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             image=EVALUATOR_IMAGE,
             env=env,
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "2", "memory": "4Gi"},
-                limits={"cpu": "8", "memory": "16Gi"},
+                requests=resource_profile["evaluator"]["requests"],
+                limits=resource_profile["evaluator"]["limits"],
             ),
             volume_mounts=[
                 client.V1VolumeMount(name="artifacts", mount_path=str(ARTIFACT_ROOT)),
@@ -291,8 +329,8 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             args=["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"],
             security_context=client.V1SecurityContext(privileged=True),
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "500m", "memory": "1Gi"},
-                limits={"cpu": "4", "memory": "8Gi"},
+                requests=resource_profile["docker"]["requests"],
+                limits=resource_profile["docker"]["limits"],
             ),
             volume_mounts=[
                 client.V1VolumeMount(name="docker-graph", mount_path="/var/lib/docker"),
@@ -333,6 +371,11 @@ def _repo_from_instance_id(instance_id: str) -> str | None:
 
 def _dataset_path(suite_slug: str) -> str:
     return "princeton-nlp/SWE-bench_Verified" if suite_slug == "SWE-bench_Verified" else "princeton-nlp/SWE-bench_Lite"
+
+
+def _evaluator_resource_profile(resource_class: Any) -> dict[str, dict[str, dict[str, str]]]:
+    key = str(resource_class or "standard").strip().lower()
+    return EVALUATOR_RESOURCE_PROFILES.get(key, EVALUATOR_RESOURCE_PROFILES["standard"])
 
 
 def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):

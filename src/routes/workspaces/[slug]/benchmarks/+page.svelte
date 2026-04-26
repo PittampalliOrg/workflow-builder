@@ -133,6 +133,7 @@
 		const total = selectedRun.instances.length || summary.total || 0;
 		if (!total) return 0;
 		const done =
+			(summary.inferred ?? 0) +
 			(summary.resolved ?? 0) +
 			(summary.failed ?? 0) +
 			(summary.error ?? 0) +
@@ -277,7 +278,8 @@
 
 <svelte:head><title>Benchmarks</title></svelte:head>
 
-<div class="p-6 space-y-5 max-w-7xl mx-auto w-full">
+<div class="h-full min-h-0 overflow-y-auto">
+<div class="p-6 pb-10 space-y-5 max-w-7xl mx-auto w-full">
 	<AppBreadcrumb
 		items={[
 			{ label: 'Workspace', href: `/workspaces/${slug}` },
@@ -572,4 +574,5 @@
 			{/if}
 		</section>
 	</div>
+</div>
 </div>
