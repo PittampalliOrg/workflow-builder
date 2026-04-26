@@ -835,6 +835,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 }): Record<string, unknown> {
 	const repoPath = "/sandbox/repo";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
+	const extractPatchCommand = `cd /sandbox/repo && git diff --binary ${quoteShell(params.baseCommit)} --`;
 	const cloneCommand = [
 		"set -eu",
 		"cd /sandbox",
@@ -929,7 +930,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 					call: "workspace/command",
 					with: {
 						workspaceRef: "${ .workspace_profile.workspaceRef }",
-						command: "cd /sandbox/repo && git diff --binary",
+						command: extractPatchCommand,
 						timeoutMs: 120_000,
 					},
 					output: {

@@ -95,6 +95,7 @@ def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[s
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        visit_aggregate_report(payload, path, by_instance)
         visit_result_payload(payload, path, by_instance)
     results: list[dict[str, Any]] = []
     for instance_id in instance_ids:
@@ -112,6 +113,52 @@ def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[s
     return results
 
 
+def visit_aggregate_report(payload: Any, path: pathlib.Path, out: dict[str, dict[str, Any]]) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    resolved_ids = string_set(payload.get("resolved_ids"))
+    unresolved_ids = string_set(payload.get("unresolved_ids"))
+    error_ids = string_set(payload.get("error_ids"))
+    empty_patch_ids = string_set(payload.get("empty_patch_ids"))
+    incomplete_ids = string_set(payload.get("incomplete_ids"))
+    if not any((resolved_ids, unresolved_ids, error_ids, empty_patch_ids, incomplete_ids)):
+        return
+
+    summary = summarize_aggregate_report(payload)
+    for instance_id in sorted(resolved_ids):
+        out[instance_id] = make_result(
+            instance_id=instance_id,
+            resolved=True,
+            status="resolved",
+            path=path,
+            payload=payload,
+            test_output_summary=summary,
+        )
+    for instance_id in sorted(unresolved_ids | empty_patch_ids):
+        error = "Empty patch" if instance_id in empty_patch_ids else None
+        out[instance_id] = make_result(
+            instance_id=instance_id,
+            resolved=False,
+            status="failed",
+            path=path,
+            payload=payload,
+            error=error,
+            test_output_summary=summary,
+        )
+    for instance_id in sorted(error_ids | incomplete_ids):
+        error = "Evaluation did not complete" if instance_id in incomplete_ids else "Harness error"
+        out[instance_id] = make_result(
+            instance_id=instance_id,
+            resolved=False,
+            status="error",
+            path=path,
+            payload=payload,
+            error=error,
+            test_output_summary=summary,
+        )
+
+
 def visit_result_payload(payload: Any, path: pathlib.Path, out: dict[str, dict[str, Any]]) -> None:
     if isinstance(payload, dict):
         instance_id = payload.get("instance_id") or payload.get("instanceId")
@@ -119,18 +166,73 @@ def visit_result_payload(payload: Any, path: pathlib.Path, out: dict[str, dict[s
             resolved = payload.get("resolved")
             if resolved is None and isinstance(payload.get(instance_id), dict):
                 resolved = payload[instance_id].get("resolved")
-            out[instance_id] = {
-                "instance_id": instance_id,
-                "resolved": bool(resolved),
-                "status": "resolved" if resolved else "failed",
-                "logs_path": str(path),
-                "harness_result": payload,
-            }
+            out[instance_id] = make_result(
+                instance_id=instance_id,
+                resolved=bool(resolved),
+                status="resolved" if resolved else "failed",
+                path=path,
+                payload=payload,
+            )
+        for key, value in payload.items():
+            if isinstance(key, str) and "__" in key and isinstance(value, dict):
+                resolved = value.get("resolved")
+                if resolved is not None:
+                    out[key] = make_result(
+                        instance_id=key,
+                        resolved=bool(resolved),
+                        status="resolved" if resolved else "failed",
+                        path=path,
+                        payload=value,
+                    )
         for value in payload.values():
             visit_result_payload(value, path, out)
     elif isinstance(payload, list):
         for value in payload:
             visit_result_payload(value, path, out)
+
+
+def make_result(
+    *,
+    instance_id: str,
+    resolved: bool,
+    status: str,
+    path: pathlib.Path,
+    payload: dict[str, Any],
+    error: str | None = None,
+    test_output_summary: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "instance_id": instance_id,
+        "resolved": resolved,
+        "status": status,
+        "logs_path": str(path),
+        "harness_result": payload,
+    }
+    if error:
+        result["error"] = error
+    if test_output_summary:
+        result["test_output_summary"] = test_output_summary
+    return result
+
+
+def string_set(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
+def summarize_aggregate_report(payload: dict[str, Any]) -> str:
+    fields = [
+        ("total", "total_instances"),
+        ("submitted", "submitted_instances"),
+        ("completed", "completed_instances"),
+        ("resolved", "resolved_instances"),
+        ("unresolved", "unresolved_instances"),
+        ("empty_patches", "empty_patch_instances"),
+        ("errors", "error_instances"),
+    ]
+    parts = [f"{label}={payload[key]}" for label, key in fields if key in payload]
+    return "SWE-bench report: " + ", ".join(parts) if parts else "SWE-bench report"
 
 
 def post_results(run_id: str, results: list[dict[str, Any]], error: str | None = None) -> None:
