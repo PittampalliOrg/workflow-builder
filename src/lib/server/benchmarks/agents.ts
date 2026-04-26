@@ -19,6 +19,23 @@ export type ValidBenchmarkAgent = BenchmarkAgentCandidate & {
 	version: number;
 };
 
+export class BenchmarkAgentValidationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "BenchmarkAgentValidationError";
+	}
+}
+
+function validationError(message: string): never {
+	throw new BenchmarkAgentValidationError(message);
+}
+
+function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
+	if (agent.runtimeAppId?.startsWith("agent-runtime-")) return agent.runtimeAppId;
+	if (agent.slug && agent.runtime === "dapr-agent-py") return `agent-runtime-${agent.slug}`;
+	return agent.runtimeAppId ?? null;
+}
+
 /**
  * SWE-bench V1 intentionally runs inference only through published
  * dapr-agent-py agents using durable/run and agent-runtime-<slug> pods.
@@ -28,26 +45,27 @@ export type ValidBenchmarkAgent = BenchmarkAgentCandidate & {
 export function assertDaprAgentPyBenchmarkAgent(
 	agent: BenchmarkAgentCandidate | null | undefined,
 ): ValidBenchmarkAgent {
-	if (!agent) throw new Error("Selected agent was not found");
-	if (agent.isArchived) throw new Error("Selected agent is archived");
+	if (!agent) validationError("Selected agent was not found");
+	if (agent.isArchived) validationError("Selected agent is archived");
 	if (agent.runtime !== "dapr-agent-py") {
-		throw new Error(
+		validationError(
 			`SWE-bench runs require a dapr-agent-py runtime; got ${agent.runtime ?? "unknown"}`,
 		);
 	}
-	if (!agent.slug) throw new Error("Selected agent is missing a slug");
-	if (!agent.runtimeAppId?.startsWith("agent-runtime-")) {
-		throw new Error(
+	if (!agent.slug) validationError("Selected agent is missing a slug");
+	const runtimeAppId = resolveRuntimeAppId(agent);
+	if (!runtimeAppId?.startsWith("agent-runtime-")) {
+		validationError(
 			"Selected agent must be published to an agent-runtime-<slug> runtime",
 		);
 	}
 	if (!agent.currentVersionId || !agent.version) {
-		throw new Error("Selected agent must have a published version");
+		validationError("Selected agent must have a published version");
 	}
 	if (agent.registryStatus !== "registered") {
-		throw new Error(
+		validationError(
 			`Selected agent must be registered before benchmarking; current status is ${agent.registryStatus ?? "unknown"}`,
 		);
 	}
-	return agent as ValidBenchmarkAgent;
+	return { ...agent, runtimeAppId } as ValidBenchmarkAgent;
 }

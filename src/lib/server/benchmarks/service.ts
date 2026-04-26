@@ -494,6 +494,8 @@ export async function startSwebenchCoordinator(runId: string) {
 		throw new Error(
 			typeof body.error === "string"
 				? body.error
+				: typeof body.detail === "string"
+					? body.detail
 				: `SWE-bench coordinator returned ${res.status}`,
 		);
 	}

@@ -19,6 +19,21 @@ describe("benchmark agent validation", () => {
 		);
 	});
 
+	it("derives the per-agent runtime app id for legacy registered rows", () => {
+		expect(
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				runtimeAppId: "dapr-agent-py",
+			}).runtimeAppId,
+		).toBe("agent-runtime-solver");
+		expect(
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				runtimeAppId: null,
+			}).runtimeAppId,
+		).toBe("agent-runtime-solver");
+	});
+
 	it("rejects non-dapr-agent-py runtimes", () => {
 		expect(() =>
 			assertDaprAgentPyBenchmarkAgent({
@@ -32,9 +47,9 @@ describe("benchmark agent validation", () => {
 		expect(() =>
 			assertDaprAgentPyBenchmarkAgent({
 				...baseAgent,
-				runtimeAppId: null,
+				currentVersionId: null,
 			}),
-		).toThrow(/agent-runtime/);
+		).toThrow(/published version/);
 		expect(() =>
 			assertDaprAgentPyBenchmarkAgent({
 				...baseAgent,

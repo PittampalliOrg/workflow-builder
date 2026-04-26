@@ -7,6 +7,7 @@ import {
 	markBenchmarkRunStatus,
 	startSwebenchCoordinator,
 } from "$lib/server/benchmarks/service";
+import { BenchmarkAgentValidationError } from "$lib/server/benchmarks/agents";
 
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -22,45 +23,55 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return error(400, "No active workspace — cannot create benchmark run");
 	}
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-	const run = await createBenchmarkRun({
-		projectId: locals.session.projectId,
-		userId: locals.session.userId,
-		suiteSlug: String(body.suiteSlug ?? body.suite ?? ""),
-		agentId: String(body.agentId ?? ""),
-		agentVersion:
-			typeof body.agentVersion === "number"
-				? body.agentVersion
-				: body.agentVersion
-					? Number.parseInt(String(body.agentVersion), 10)
+	let run;
+	try {
+		run = await createBenchmarkRun({
+			projectId: locals.session.projectId,
+			userId: locals.session.userId,
+			suiteSlug: String(body.suiteSlug ?? body.suite ?? ""),
+			agentId: String(body.agentId ?? ""),
+			agentVersion:
+				typeof body.agentVersion === "number"
+					? body.agentVersion
+					: body.agentVersion
+						? Number.parseInt(String(body.agentVersion), 10)
+						: undefined,
+			instanceIds: body.instanceIds ?? body.selectedInstanceIds ?? "",
+			modelNameOrPath:
+				typeof body.modelNameOrPath === "string"
+					? body.modelNameOrPath
 					: undefined,
-		instanceIds: body.instanceIds ?? body.selectedInstanceIds ?? "",
-		modelNameOrPath:
-			typeof body.modelNameOrPath === "string" ? body.modelNameOrPath : undefined,
-		modelConfigLabel:
-			typeof body.modelConfigLabel === "string" ? body.modelConfigLabel : null,
-		concurrency:
-			typeof body.concurrency === "number"
-				? body.concurrency
-				: body.concurrency
-					? Number.parseInt(String(body.concurrency), 10)
-					: undefined,
-		timeoutSeconds:
-			typeof body.timeoutSeconds === "number"
-				? body.timeoutSeconds
-				: body.timeoutSeconds
-					? Number.parseInt(String(body.timeoutSeconds), 10)
-					: undefined,
-		maxTurns:
-			typeof body.maxTurns === "number"
-				? body.maxTurns
-				: body.maxTurns
-					? Number.parseInt(String(body.maxTurns), 10)
+			modelConfigLabel:
+				typeof body.modelConfigLabel === "string" ? body.modelConfigLabel : null,
+			concurrency:
+				typeof body.concurrency === "number"
+					? body.concurrency
+					: body.concurrency
+						? Number.parseInt(String(body.concurrency), 10)
+						: undefined,
+			timeoutSeconds:
+				typeof body.timeoutSeconds === "number"
+					? body.timeoutSeconds
+					: body.timeoutSeconds
+						? Number.parseInt(String(body.timeoutSeconds), 10)
+						: undefined,
+			maxTurns:
+				typeof body.maxTurns === "number"
+					? body.maxTurns
+					: body.maxTurns
+						? Number.parseInt(String(body.maxTurns), 10)
+						: null,
+			evaluatorResourceClass:
+				typeof body.evaluatorResourceClass === "string"
+					? body.evaluatorResourceClass
 					: null,
-		evaluatorResourceClass:
-			typeof body.evaluatorResourceClass === "string"
-				? body.evaluatorResourceClass
-				: null,
-	});
+		});
+	} catch (err) {
+		if (err instanceof BenchmarkAgentValidationError) {
+			return json({ message: err.message }, { status: 400 });
+		}
+		throw err;
+	}
 
 	let coordinatorStartError: string | null = null;
 	try {

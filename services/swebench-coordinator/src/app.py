@@ -390,16 +390,13 @@ def start_benchmark_run(body: StartRunRequest, request: Request):
     instance_id = f"swebench-run-{body.runId}"
     try:
         DaprWorkflowClient().schedule_new_workflow(
-            workflow="swebench_run_workflow",
-            input={"runId": body.runId, "requestedAt": time.time()},
-            instance_id=instance_id,
-        )
-    except TypeError:
-        DaprWorkflowClient().schedule_new_workflow(
             workflow=swebench_run_workflow,
             input={"runId": body.runId, "requestedAt": time.time()},
             instance_id=instance_id,
         )
+    except Exception as exc:
+        logger.exception("Failed to schedule SWE-bench run workflow %s", instance_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"success": True, "executionId": instance_id}
 
 
