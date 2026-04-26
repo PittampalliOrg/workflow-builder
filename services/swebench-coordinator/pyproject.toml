@@ -1,0 +1,22 @@
+[project]
+name = "swebench-coordinator"
+version = "0.1.0"
+description = "Dapr Workflow coordinator for workflow-builder SWE-bench runs"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "dapr==1.17.1",
+    "dapr-ext-workflow==1.17.1",
+    "requests>=2.31.0",
+    "psycopg2-binary>=2.9.0",
+    "datasets>=3.0.0",
+    "kubernetes>=31.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

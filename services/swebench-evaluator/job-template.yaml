@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: swebench-eval-REPLACE_RUN_ID
+  namespace: workflow-builder
+  labels:
+    app: swebench-evaluator
+    benchmark.workflow-builder.io/run-id: REPLACE_RUN_ID
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: swebench-evaluator
+        benchmark.workflow-builder.io/run-id: REPLACE_RUN_ID
+    spec:
+      restartPolicy: Never
+      serviceAccountName: swebench-coordinator
+      imagePullSecrets:
+        - name: ghcr-pull-credentials
+      containers:
+        - name: docker-daemon
+          image: docker.io/library/docker:27-dind
+          args:
+            - --host=tcp://0.0.0.0:2375
+            - --host=unix:///var/run/docker.sock
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          volumeMounts:
+            - name: docker-graph
+              mountPath: /var/lib/docker
+        - name: evaluator
+          image: ghcr.io/pittampalliorg/swebench-evaluator:latest
+          env:
+            - name: DATASET_NAME
+              value: princeton-nlp/SWE-bench_Lite
+            - name: DATASET_SPLIT
+              value: test
+            - name: PREDICTIONS_PATH
+              value: /artifacts/REPLACE_RUN_ID/predictions.jsonl
+            - name: RUN_ID
+              value: REPLACE_RUN_ID
+            - name: INSTANCE_IDS
+              value: ""
+            - name: WORKFLOW_BUILDER_URL
+              value: http://workflow-builder.workflow-builder.svc.cluster.local:3000
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375
+            - name: SWEBENCH_IMAGE_NAMESPACE
+              value: swebench
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: workflow-builder-secrets
+                  key: INTERNAL_API_TOKEN
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "8"
+              memory: 16Gi
+          volumeMounts:
+            - name: artifacts
+              mountPath: /artifacts
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: swebench-artifacts
+        - name: docker-graph
+          emptyDir: {}

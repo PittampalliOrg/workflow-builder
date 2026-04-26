@@ -34,6 +34,7 @@ import {
 	Wrench,
 	Cpu,
 	Settings as SettingsIcon,
+	FlaskConical,
 } from "lucide-svelte";
 
 // Lucide icons ship as component constructors — `typeof <Icon>` is the
@@ -156,6 +157,14 @@ export const NAV_GROUPS: NavGroup[] = [
 				icon: MessagesSquare,
 				href: ({ slug }) => `/workspaces/${slug}/sessions`,
 				match: /^\/workspaces\/[^/]+\/sessions(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
+			{
+				id: "benchmarks",
+				label: "Benchmarks",
+				icon: FlaskConical,
+				href: ({ slug }) => `/workspaces/${slug}/benchmarks`,
+				match: /^\/workspaces\/[^/]+\/benchmarks(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
 			{

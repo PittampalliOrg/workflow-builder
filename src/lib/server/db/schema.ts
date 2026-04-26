@@ -2599,6 +2599,263 @@ export const sessionEvents = pgTable(
 	}),
 );
 
+// ============================================================================
+// Benchmarks (SWE-bench Verified/Lite)
+// ============================================================================
+
+export type BenchmarkRunStatus =
+	| "queued"
+	| "inferencing"
+	| "evaluating"
+	| "completed"
+	| "failed"
+	| "cancelled";
+export type BenchmarkRunInstanceStatus =
+	| "queued"
+	| "inferencing"
+	| "inferred"
+	| "evaluating"
+	| "resolved"
+	| "failed"
+	| "error"
+	| "timeout"
+	| "cancelled";
+export type BenchmarkArtifactKind =
+	| "predictions_jsonl"
+	| "model_patch"
+	| "harness_result"
+	| "logs"
+	| "test_output";
+
+export const benchmarkSuites = pgTable(
+	"benchmark_suites",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull(),
+		name: text("name").notNull(),
+		description: text("description"),
+		datasetName: text("dataset_name").notNull(),
+		datasetSplit: text("dataset_split").notNull().default("test"),
+		sourceUrl: text("source_url"),
+		defaultInstanceLimit: integer("default_instance_limit"),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		slugUnique: unique("uq_benchmark_suites_slug").on(table.slug),
+		datasetIdx: index("idx_benchmark_suites_dataset").on(
+			table.datasetName,
+			table.datasetSplit,
+		),
+	}),
+);
+
+export const benchmarkInstances = pgTable(
+	"benchmark_instances",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		suiteId: text("suite_id")
+			.notNull()
+			.references(() => benchmarkSuites.id, { onDelete: "cascade" }),
+		instanceId: text("instance_id").notNull(),
+		repo: text("repo"),
+		baseCommit: text("base_commit"),
+		problemStatement: text("problem_statement"),
+		hintsText: text("hints_text"),
+		testMetadata: jsonb("test_metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		goldPatch: text("gold_patch"),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		suiteInstanceUnique: unique("uq_benchmark_instances_suite_instance").on(
+			table.suiteId,
+			table.instanceId,
+		),
+		suiteIdx: index("idx_benchmark_instances_suite").on(table.suiteId),
+		instanceIdx: index("idx_benchmark_instances_instance").on(
+			table.instanceId,
+		),
+		repoIdx: index("idx_benchmark_instances_repo").on(table.repo),
+	}),
+);
+
+export const benchmarkRuns = pgTable(
+	"benchmark_runs",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		suiteId: text("suite_id")
+			.notNull()
+			.references(() => benchmarkSuites.id, { onDelete: "restrict" }),
+		agentId: text("agent_id")
+			.notNull()
+			.references(() => agents.id, { onDelete: "restrict" }),
+		agentVersion: integer("agent_version").notNull(),
+		agentRuntime: text("agent_runtime").notNull(),
+		agentRuntimeAppId: text("agent_runtime_app_id").notNull(),
+		status: text("status")
+			.notNull()
+			.default("queued")
+			.$type<BenchmarkRunStatus>(),
+		modelNameOrPath: text("model_name_or_path").notNull(),
+		modelConfigLabel: text("model_config_label"),
+		selectedInstanceIds: jsonb("selected_instance_ids")
+			.$type<string[]>()
+			.notNull()
+			.default([]),
+		concurrency: integer("concurrency").notNull().default(1),
+		timeoutSeconds: integer("timeout_seconds").notNull().default(7200),
+		maxTurns: integer("max_turns"),
+		evaluatorResourceClass: text("evaluator_resource_class")
+			.notNull()
+			.default("standard"),
+		coordinatorExecutionId: text("coordinator_execution_id"),
+		evaluatorJobName: text("evaluator_job_name"),
+		predictionsPath: text("predictions_path"),
+		summary: jsonb("summary")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		error: text("error"),
+		cancelRequestedAt: timestamp("cancel_requested_at"),
+		startedAt: timestamp("started_at"),
+		completedAt: timestamp("completed_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		projectCreatedIdx: index("idx_benchmark_runs_project_created").on(
+			table.projectId,
+			table.createdAt,
+		),
+		statusIdx: index("idx_benchmark_runs_status").on(table.status),
+		suiteIdx: index("idx_benchmark_runs_suite").on(table.suiteId),
+		agentIdx: index("idx_benchmark_runs_agent").on(table.agentId),
+	}),
+);
+
+export const benchmarkRunInstances = pgTable(
+	"benchmark_run_instances",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runId: text("run_id")
+			.notNull()
+			.references(() => benchmarkRuns.id, { onDelete: "cascade" }),
+		benchmarkInstanceId: text("benchmark_instance_id").references(
+			() => benchmarkInstances.id,
+			{ onDelete: "set null" },
+		),
+		instanceId: text("instance_id").notNull(),
+		status: text("status")
+			.notNull()
+			.default("queued")
+			.$type<BenchmarkRunInstanceStatus>(),
+		sessionId: text("session_id").references(() => sessions.id, {
+			onDelete: "set null",
+		}),
+		workflowExecutionId: text("workflow_execution_id").references(
+			() => workflowExecutions.id,
+			{ onDelete: "set null" },
+		),
+		daprInstanceId: text("dapr_instance_id"),
+		sandboxName: text("sandbox_name"),
+		workspaceRef: text("workspace_ref"),
+		modelPatch: text("model_patch"),
+		patchSha256: text("patch_sha256"),
+		patchBytes: integer("patch_bytes"),
+		usage: jsonb("usage")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		timings: jsonb("timings")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		traceIds: jsonb("trace_ids").$type<string[]>().notNull().default([]),
+		error: text("error"),
+		logsPath: text("logs_path"),
+		testOutputSummary: text("test_output_summary"),
+		harnessResult: jsonb("harness_result").$type<Record<string, unknown>>(),
+		startedAt: timestamp("started_at"),
+		inferenceCompletedAt: timestamp("inference_completed_at"),
+		evaluatedAt: timestamp("evaluated_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		runInstanceUnique: unique("uq_benchmark_run_instances_run_instance").on(
+			table.runId,
+			table.instanceId,
+		),
+		runIdx: index("idx_benchmark_run_instances_run").on(table.runId),
+		statusIdx: index("idx_benchmark_run_instances_status").on(table.status),
+		sessionIdx: index("idx_benchmark_run_instances_session").on(
+			table.sessionId,
+		),
+		workflowExecutionIdx: index(
+			"idx_benchmark_run_instances_workflow_execution",
+		).on(table.workflowExecutionId),
+	}),
+);
+
+export const benchmarkArtifacts = pgTable(
+	"benchmark_artifacts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runId: text("run_id")
+			.notNull()
+			.references(() => benchmarkRuns.id, { onDelete: "cascade" }),
+		runInstanceId: text("run_instance_id").references(
+			() => benchmarkRunInstances.id,
+			{ onDelete: "cascade" },
+		),
+		kind: text("kind").notNull().$type<BenchmarkArtifactKind>(),
+		path: text("path").notNull(),
+		contentType: text("content_type"),
+		sizeBytes: integer("size_bytes"),
+		sha256: text("sha256"),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		runIdx: index("idx_benchmark_artifacts_run").on(table.runId),
+		instanceIdx: index("idx_benchmark_artifacts_instance").on(
+			table.runInstanceId,
+		),
+		kindIdx: index("idx_benchmark_artifacts_kind").on(table.kind),
+	}),
+);
+
 /**
  * Resources mounted into a session's sandbox at startup — files, GitHub
  * repos. GitHub repos carry a reference to a vault credential (the clone
@@ -2946,3 +3203,14 @@ export type SessionEvent = typeof sessionEvents.$inferSelect;
 export type NewSessionEvent = typeof sessionEvents.$inferInsert;
 export type SessionResource = typeof sessionResources.$inferSelect;
 export type NewSessionResource = typeof sessionResources.$inferInsert;
+export type BenchmarkSuite = typeof benchmarkSuites.$inferSelect;
+export type NewBenchmarkSuite = typeof benchmarkSuites.$inferInsert;
+export type BenchmarkInstance = typeof benchmarkInstances.$inferSelect;
+export type NewBenchmarkInstance = typeof benchmarkInstances.$inferInsert;
+export type BenchmarkRun = typeof benchmarkRuns.$inferSelect;
+export type NewBenchmarkRun = typeof benchmarkRuns.$inferInsert;
+export type BenchmarkRunInstance = typeof benchmarkRunInstances.$inferSelect;
+export type NewBenchmarkRunInstance =
+	typeof benchmarkRunInstances.$inferInsert;
+export type BenchmarkArtifact = typeof benchmarkArtifacts.$inferSelect;
+export type NewBenchmarkArtifact = typeof benchmarkArtifacts.$inferInsert;

@@ -1,0 +1,575 @@
+<script lang="ts">
+	import { onDestroy, onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { Alert, AlertDescription } from '$lib/components/ui/alert';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
+	import { Label } from '$lib/components/ui/label';
+	import { Textarea } from '$lib/components/ui/textarea';
+	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
+	import {
+		Activity,
+		Bot,
+		Download,
+		ExternalLink,
+		FileDiff,
+		FlaskConical,
+		RefreshCw,
+		StopCircle,
+	} from 'lucide-svelte';
+
+	type Suite = {
+		id: string;
+		slug: 'SWE-bench_Verified' | 'SWE-bench_Lite';
+		name: string;
+		description: string | null;
+		datasetName: string;
+		defaultInstanceLimit: number | null;
+		instanceCount: number;
+		runCount: number;
+	};
+
+	type Agent = {
+		id: string;
+		name: string;
+		slug: string;
+		runtime: string;
+		currentVersion: number | null;
+		modelSpec: { provider?: string; model?: string } | null;
+		registryStatus: string;
+	};
+
+	type RunSummary = {
+		id: string;
+		suiteSlug: string;
+		suiteName: string;
+		agentName: string;
+		agentSlug: string | null;
+		agentVersion: number;
+		status: RunStatus;
+		modelNameOrPath: string;
+		selectedInstanceIds: string[];
+		concurrency: number;
+		timeoutSeconds: number;
+		evaluatorResourceClass: string;
+		coordinatorExecutionId: string | null;
+		evaluatorJobName: string | null;
+		predictionsPath: string | null;
+		summary: Record<string, number>;
+		error: string | null;
+		createdAt: string;
+		updatedAt: string;
+	};
+
+	type RunInstance = {
+		id: string;
+		instanceId: string;
+		status: string;
+		repo: string | null;
+		baseCommit: string | null;
+		problemStatement: string | null;
+		sessionId: string | null;
+		workflowExecutionId: string | null;
+		daprInstanceId: string | null;
+		sandboxName: string | null;
+		workspaceRef: string | null;
+		modelPatch: string | null;
+		patchBytes: number | null;
+		error: string | null;
+		logsPath: string | null;
+		testOutputSummary: string | null;
+		harnessResult: Record<string, unknown> | null;
+	};
+
+	type RunDetail = RunSummary & {
+		instances: RunInstance[];
+		artifacts: Array<{ id: string; kind: string; path: string; createdAt: string }>;
+	};
+
+	type RunStatus = 'queued' | 'inferencing' | 'evaluating' | 'completed' | 'failed' | 'cancelled';
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
+	let suites = $state<Suite[]>([]);
+	let agents = $state<Agent[]>([]);
+	let runs = $state<RunSummary[]>([]);
+	let selectedRun = $state<RunDetail | null>(null);
+	let selectedInstanceId = $state('');
+	let loading = $state(true);
+	let creating = $state(false);
+	let errorMessage = $state<string | null>(null);
+
+	let suiteSlug = $state<'SWE-bench_Verified' | 'SWE-bench_Lite'>('SWE-bench_Lite');
+	let agentId = $state('');
+	let instanceIdsText = $state('sympy__sympy-20590');
+	let modelConfigLabel = $state('');
+	let concurrency = $state(1);
+	let timeoutSeconds = $state(7200);
+	let maxTurns = $state(80);
+	let evaluatorResourceClass = $state('standard');
+
+	let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const runnableAgents = $derived(
+		agents.filter((a) => a.runtime === 'dapr-agent-py' && a.registryStatus === 'registered' && a.currentVersion)
+	);
+	const selectedInstance = $derived(
+		selectedRun?.instances.find((item) => item.instanceId === selectedInstanceId) ?? selectedRun?.instances[0] ?? null
+	);
+	const activeRun = $derived(
+		selectedRun?.status === 'queued' ||
+			selectedRun?.status === 'inferencing' ||
+			selectedRun?.status === 'evaluating'
+	);
+	const resolvedRate = $derived.by(() => {
+		const summary = selectedRun?.summary;
+		if (!summary || typeof summary.total !== 'number' || summary.total === 0) return 0;
+		return Math.round(((summary.resolved ?? 0) / summary.total) * 100);
+	});
+	const progressRate = $derived.by(() => {
+		if (!selectedRun) return 0;
+		const summary = selectedRun.summary ?? {};
+		const total = selectedRun.instances.length || summary.total || 0;
+		if (!total) return 0;
+		const done =
+			(summary.resolved ?? 0) +
+			(summary.failed ?? 0) +
+			(summary.error ?? 0) +
+			(summary.timeout ?? 0) +
+			(summary.cancelled ?? 0);
+		return Math.round((done / total) * 100);
+	});
+
+	async function loadAll(opts: { silent?: boolean } = {}) {
+		if (!opts.silent) {
+			loading = true;
+			errorMessage = null;
+		}
+		try {
+			const [suitesRes, agentsRes, runsRes] = await Promise.all([
+				fetch('/api/benchmarks/suites'),
+				fetch('/api/agents'),
+				fetch('/api/benchmarks/runs'),
+			]);
+			if (!suitesRes.ok) throw new Error(`Failed to load suites (${suitesRes.status})`);
+			if (!agentsRes.ok) throw new Error(`Failed to load agents (${agentsRes.status})`);
+			if (!runsRes.ok) throw new Error(`Failed to load runs (${runsRes.status})`);
+			suites = ((await suitesRes.json()) as { suites: Suite[] }).suites ?? [];
+			agents = ((await agentsRes.json()) as { agents: Agent[] }).agents ?? [];
+			runs = ((await runsRes.json()) as { runs: RunSummary[] }).runs ?? [];
+			if (!agentId && runnableAgents.length > 0) agentId = runnableAgents[0].id;
+			if (!selectedRun && runs.length > 0) await loadRun(runs[0].id, { silent: true });
+			else if (selectedRun) await loadRun(selectedRun.id, { silent: true });
+		} catch (err) {
+			if (!opts.silent) errorMessage = err instanceof Error ? err.message : String(err);
+		} finally {
+			if (!opts.silent) loading = false;
+		}
+	}
+
+	async function loadRun(runId: string, opts: { silent?: boolean } = {}) {
+		try {
+			const res = await fetch(`/api/benchmarks/runs/${runId}`);
+			if (!res.ok) throw new Error(`Failed to load run (${res.status})`);
+			selectedRun = ((await res.json()) as { run: RunDetail }).run;
+			if (!selectedInstanceId || !selectedRun.instances.find((i) => i.instanceId === selectedInstanceId)) {
+				selectedInstanceId = selectedRun.instances[0]?.instanceId ?? '';
+			}
+		} catch (err) {
+			if (!opts.silent) errorMessage = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	async function createRun() {
+		creating = true;
+		errorMessage = null;
+		try {
+			const res = await fetch('/api/benchmarks/runs', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					suiteSlug,
+					agentId,
+					instanceIds: instanceIdsText,
+					modelConfigLabel: modelConfigLabel.trim() || undefined,
+					concurrency,
+					timeoutSeconds,
+					maxTurns,
+					evaluatorResourceClass,
+				}),
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) throw new Error(body.message ?? body.error ?? `Create failed (${res.status})`);
+			selectedRun = body.run;
+			selectedInstanceId = selectedRun?.instances[0]?.instanceId ?? '';
+			await loadAll({ silent: true });
+			if (body.coordinatorStartError) errorMessage = body.coordinatorStartError;
+		} catch (err) {
+			errorMessage = err instanceof Error ? err.message : String(err);
+		} finally {
+			creating = false;
+		}
+	}
+
+	async function cancelRun() {
+		if (!selectedRun) return;
+		const res = await fetch(`/api/benchmarks/runs/${selectedRun.id}/cancel`, { method: 'POST' });
+		if (!res.ok) {
+			errorMessage = `Cancel failed (${res.status})`;
+			return;
+		}
+		const body = (await res.json()) as { run: RunDetail };
+		selectedRun = body.run;
+		await loadAll({ silent: true });
+	}
+
+	function schedulePoll() {
+		if (pollTimer) clearTimeout(pollTimer);
+		pollTimer = setTimeout(async () => {
+			if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+				await loadAll({ silent: true });
+			}
+			schedulePoll();
+		}, activeRun ? 4000 : 30000);
+	}
+
+	function statusColor(status: string): string {
+		switch (status) {
+			case 'completed':
+			case 'resolved':
+				return 'bg-emerald-500/15 text-emerald-600';
+			case 'inferencing':
+			case 'evaluating':
+				return 'bg-blue-500/15 text-blue-600';
+			case 'queued':
+			case 'inferred':
+				return 'bg-amber-500/15 text-amber-600';
+			case 'failed':
+			case 'error':
+			case 'timeout':
+				return 'bg-red-500/15 text-red-600';
+			case 'cancelled':
+				return 'bg-gray-400/15 text-gray-600';
+			default:
+				return 'bg-muted text-muted-foreground';
+		}
+	}
+
+	function formatRelative(iso: string | null | undefined): string {
+		if (!iso) return 'never';
+		const diff = Date.now() - new Date(iso).getTime();
+		if (diff < 60_000) return 'just now';
+		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		return new Date(iso).toLocaleDateString();
+	}
+
+	onMount(async () => {
+		await loadAll();
+		schedulePoll();
+	});
+
+	onDestroy(() => {
+		if (pollTimer) clearTimeout(pollTimer);
+	});
+</script>
+
+<svelte:head><title>Benchmarks</title></svelte:head>
+
+<div class="p-6 space-y-5 max-w-7xl mx-auto w-full">
+	<AppBreadcrumb
+		items={[
+			{ label: 'Workspace', href: `/workspaces/${slug}` },
+			{ label: 'Benchmarks' }
+		]}
+	/>
+
+	<header class="flex items-start justify-between gap-4 flex-wrap">
+		<div>
+			<h1 class="text-2xl font-semibold flex items-center gap-2">
+				<FlaskConical class="size-6" /> Benchmarks
+			</h1>
+			<p class="text-sm text-muted-foreground mt-1">
+				Run SWE-bench Verified and Lite through published dapr-agent-py agents.
+			</p>
+		</div>
+		<Button variant="outline" onclick={() => loadAll()}>
+			<RefreshCw class="size-4" /> Refresh
+		</Button>
+	</header>
+
+	{#if errorMessage}
+		<Alert variant="destructive">
+			<AlertDescription>{errorMessage}</AlertDescription>
+		</Alert>
+	{/if}
+
+	<div class="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+		<section class="border rounded-lg p-4 space-y-4 bg-background">
+			<div>
+				<h2 class="text-base font-medium">New Run</h2>
+				<p class="text-xs text-muted-foreground mt-1">
+					Inference uses durable/run and the selected agent runtime pod.
+				</p>
+			</div>
+
+			<div class="space-y-2">
+				<Label for="suite">Suite</Label>
+				<select id="suite" class="w-full h-9 rounded-md border bg-background px-3 text-sm" bind:value={suiteSlug}>
+					{#each suites as suite}
+						<option value={suite.slug}>{suite.name}</option>
+					{/each}
+				</select>
+			</div>
+
+			<div class="space-y-2">
+				<Label for="agent">Agent</Label>
+				<select id="agent" class="w-full h-9 rounded-md border bg-background px-3 text-sm" bind:value={agentId}>
+					{#each runnableAgents as agent}
+						<option value={agent.id}>
+							{agent.name} v{agent.currentVersion} ({agent.slug})
+						</option>
+					{/each}
+				</select>
+				{#if runnableAgents.length === 0}
+					<p class="text-xs text-red-600">No registered dapr-agent-py agents are available.</p>
+				{/if}
+			</div>
+
+			<div class="space-y-2">
+				<Label for="instances">Instance IDs</Label>
+				<Textarea
+					id="instances"
+					class="min-h-28 font-mono text-xs"
+					bind:value={instanceIdsText}
+				/>
+			</div>
+
+			<div class="grid grid-cols-2 gap-3">
+				<div class="space-y-2">
+					<Label for="concurrency">Concurrency</Label>
+					<Input id="concurrency" type="number" min="1" max="32" bind:value={concurrency} />
+				</div>
+				<div class="space-y-2">
+					<Label for="max-turns">Max Turns</Label>
+					<Input id="max-turns" type="number" min="1" bind:value={maxTurns} />
+				</div>
+			</div>
+
+			<div class="grid grid-cols-2 gap-3">
+				<div class="space-y-2">
+					<Label for="timeout">Timeout Seconds</Label>
+					<Input id="timeout" type="number" min="60" bind:value={timeoutSeconds} />
+				</div>
+				<div class="space-y-2">
+					<Label for="resource">Evaluator</Label>
+					<select id="resource" class="w-full h-9 rounded-md border bg-background px-3 text-sm" bind:value={evaluatorResourceClass}>
+						<option value="standard">Standard</option>
+						<option value="large">Large</option>
+						<option value="xlarge">XLarge</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="space-y-2">
+				<Label for="label">Model Label</Label>
+				<Input id="label" placeholder="agent label for predictions.jsonl" bind:value={modelConfigLabel} />
+			</div>
+
+			<Button class="w-full" onclick={createRun} disabled={creating || !agentId || runnableAgents.length === 0}>
+				<Activity class="size-4" /> {creating ? 'Creating...' : 'Start benchmark'}
+			</Button>
+		</section>
+
+		<section class="space-y-5 min-w-0">
+			<div class="border rounded-lg bg-background overflow-hidden">
+				<div class="px-4 py-3 border-b flex items-center justify-between gap-3">
+					<div>
+						<h2 class="text-base font-medium">Runs</h2>
+						<p class="text-xs text-muted-foreground">{runs.length} recent benchmark runs</p>
+					</div>
+				</div>
+				<div class="divide-y max-h-72 overflow-auto">
+					{#if loading}
+						<div class="p-4 text-sm text-muted-foreground">Loading benchmarks...</div>
+					{:else if runs.length === 0}
+						<div class="p-4 text-sm text-muted-foreground">No benchmark runs yet.</div>
+					{:else}
+						{#each runs as run}
+							<button
+								type="button"
+								class="w-full text-left px-4 py-3 hover:bg-muted/50 transition-colors {selectedRun?.id === run.id ? 'bg-muted/60' : ''}"
+								onclick={() => loadRun(run.id)}
+							>
+								<div class="flex items-center justify-between gap-3">
+									<div class="min-w-0">
+										<div class="flex items-center gap-2 min-w-0">
+											<span class="font-medium truncate">{run.suiteName}</span>
+											<Badge class={statusColor(run.status)}>{run.status}</Badge>
+										</div>
+										<div class="text-xs text-muted-foreground mt-1 truncate">
+											{run.agentName} · {run.selectedInstanceIds.length} instances · {formatRelative(run.createdAt)}
+										</div>
+									</div>
+									<div class="text-xs text-muted-foreground shrink-0">{Math.round(((run.summary?.resolved ?? 0) / Math.max(run.summary?.total ?? run.selectedInstanceIds.length, 1)) * 100)}%</div>
+								</div>
+							</button>
+						{/each}
+					{/if}
+				</div>
+			</div>
+
+			{#if selectedRun}
+				<div class="border rounded-lg bg-background overflow-hidden">
+					<div class="px-4 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
+						<div>
+							<div class="flex items-center gap-2">
+								<h2 class="text-base font-medium">{selectedRun.suiteName}</h2>
+								<Badge class={statusColor(selectedRun.status)}>{selectedRun.status}</Badge>
+							</div>
+							<p class="text-xs text-muted-foreground mt-1">
+								{selectedRun.modelNameOrPath} · concurrency {selectedRun.concurrency} · {formatRelative(selectedRun.createdAt)}
+							</p>
+						</div>
+						<div class="flex items-center gap-2">
+							<a href={`/api/benchmarks/runs/${selectedRun.id}/predictions.jsonl`}>
+								<Button variant="outline" size="sm">
+									<Download class="size-4" /> Predictions
+								</Button>
+							</a>
+							{#if activeRun}
+								<Button variant="destructive" size="sm" onclick={cancelRun}>
+									<StopCircle class="size-4" /> Cancel
+								</Button>
+							{/if}
+						</div>
+					</div>
+
+					<div class="p-4 grid gap-4 md:grid-cols-4">
+						<div class="space-y-1">
+							<div class="text-xs text-muted-foreground">Progress</div>
+							<div class="text-2xl font-semibold">{progressRate}%</div>
+							<div class="h-1.5 rounded-full bg-muted overflow-hidden">
+								<div class="h-full bg-blue-500" style={`width: ${progressRate}%`}></div>
+							</div>
+						</div>
+						<div class="space-y-1">
+							<div class="text-xs text-muted-foreground">Resolved</div>
+							<div class="text-2xl font-semibold">{resolvedRate}%</div>
+							<div class="text-xs text-muted-foreground">{selectedRun.summary?.resolved ?? 0} of {selectedRun.summary?.total ?? selectedRun.instances.length}</div>
+						</div>
+						<div class="space-y-1">
+							<div class="text-xs text-muted-foreground">Evaluator Job</div>
+							<div class="text-sm font-mono truncate">{selectedRun.evaluatorJobName ?? 'pending'}</div>
+						</div>
+						<div class="space-y-1">
+							<div class="text-xs text-muted-foreground">Coordinator</div>
+							<div class="text-sm font-mono truncate">{selectedRun.coordinatorExecutionId ?? 'not started'}</div>
+						</div>
+					</div>
+
+					{#if selectedRun.error}
+						<div class="px-4 pb-4">
+							<Alert variant="destructive">
+								<AlertDescription>{selectedRun.error}</AlertDescription>
+							</Alert>
+						</div>
+					{/if}
+				</div>
+
+				<div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+					<div class="border rounded-lg bg-background overflow-hidden min-w-0">
+						<div class="px-4 py-3 border-b">
+							<h2 class="text-base font-medium">Instances</h2>
+						</div>
+						<div class="overflow-auto">
+							<table class="w-full text-sm">
+								<thead class="bg-muted/50 text-xs text-muted-foreground">
+									<tr>
+										<th class="text-left font-medium px-4 py-2">Instance</th>
+										<th class="text-left font-medium px-4 py-2">Repo</th>
+										<th class="text-left font-medium px-4 py-2">Status</th>
+										<th class="text-right font-medium px-4 py-2">Patch</th>
+									</tr>
+								</thead>
+								<tbody class="divide-y">
+									{#each selectedRun.instances as instance}
+										<tr
+											class="cursor-pointer hover:bg-muted/40 {selectedInstanceId === instance.instanceId ? 'bg-muted/60' : ''}"
+											onclick={() => (selectedInstanceId = instance.instanceId)}
+										>
+											<td class="px-4 py-2 font-mono text-xs">{instance.instanceId}</td>
+											<td class="px-4 py-2">{instance.repo ?? 'pending import'}</td>
+											<td class="px-4 py-2"><Badge class={statusColor(instance.status)}>{instance.status}</Badge></td>
+											<td class="px-4 py-2 text-right text-xs text-muted-foreground">
+												{instance.patchBytes ? `${instance.patchBytes} B` : '—'}
+											</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					</div>
+
+					<aside class="border rounded-lg bg-background overflow-hidden min-w-0">
+						<div class="px-4 py-3 border-b">
+							<h2 class="text-base font-medium">Instance Detail</h2>
+						</div>
+						{#if selectedInstance}
+							<div class="p-4 space-y-4">
+								<div>
+									<div class="font-mono text-xs break-all">{selectedInstance.instanceId}</div>
+									<div class="flex items-center gap-2 mt-2">
+										<Badge class={statusColor(selectedInstance.status)}>{selectedInstance.status}</Badge>
+										{#if selectedInstance.sessionId}
+											<a class="text-xs text-blue-600 inline-flex items-center gap-1" href={`/workspaces/${slug}/sessions/${selectedInstance.sessionId}`}>
+												<Bot class="size-3" /> Session <ExternalLink class="size-3" />
+											</a>
+										{/if}
+									</div>
+								</div>
+
+								{#if selectedInstance.problemStatement}
+									<div>
+										<div class="text-xs text-muted-foreground mb-1">Problem</div>
+										<p class="text-sm max-h-32 overflow-auto whitespace-pre-wrap">{selectedInstance.problemStatement}</p>
+									</div>
+								{/if}
+
+								{#if selectedInstance.error}
+									<Alert variant="destructive">
+										<AlertDescription>{selectedInstance.error}</AlertDescription>
+									</Alert>
+								{/if}
+
+								<div>
+									<div class="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+										<FileDiff class="size-3" /> Patch Diff
+									</div>
+									<pre class="text-xs rounded-md bg-muted p-3 max-h-80 overflow-auto whitespace-pre-wrap">{selectedInstance.modelPatch || 'No patch captured yet.'}</pre>
+								</div>
+
+								{#if selectedInstance.testOutputSummary}
+									<div>
+										<div class="text-xs text-muted-foreground mb-1">Test Output</div>
+										<pre class="text-xs rounded-md bg-muted p-3 max-h-40 overflow-auto whitespace-pre-wrap">{selectedInstance.testOutputSummary}</pre>
+									</div>
+								{/if}
+
+								<div class="text-xs text-muted-foreground space-y-1">
+									<div>Workflow: <span class="font-mono">{selectedInstance.workflowExecutionId ?? 'pending'}</span></div>
+									<div>Dapr: <span class="font-mono">{selectedInstance.daprInstanceId ?? 'pending'}</span></div>
+									<div>Sandbox: <span class="font-mono">{selectedInstance.sandboxName ?? 'pending'}</span></div>
+									<div>Logs: <span class="font-mono break-all">{selectedInstance.logsPath ?? 'pending'}</span></div>
+								</div>
+							</div>
+						{:else}
+							<div class="p-4 text-sm text-muted-foreground">Select an instance.</div>
+						{/if}
+					</aside>
+				</div>
+			{/if}
+		</section>
+	</div>
+</div>
