@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import urllib.error
@@ -24,32 +25,39 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     wait_for_docker()
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "swebench.harness.run_evaluation",
-        "--dataset_name",
-        dataset_name,
-        "--split",
-        split,
-        "--predictions_path",
-        predictions_path,
-        "--run_id",
-        run_id,
-        "--max_workers",
-        max_workers,
-        "--namespace",
-        image_namespace,
-    ]
-    if instance_ids:
-        cmd.extend(["--instance_ids", *instance_ids])
+    try:
+        cmd = [
+            sys.executable,
+            "-m",
+            "swebench.harness.run_evaluation",
+            "--dataset_name",
+            dataset_name,
+            "--split",
+            split,
+            "--predictions_path",
+            predictions_path,
+            "--run_id",
+            run_id,
+            "--max_workers",
+            max_workers,
+            "--namespace",
+            image_namespace,
+        ]
+        if instance_ids:
+            cmd.extend(["--instance_ids", *instance_ids])
 
-    result = subprocess.run(cmd, cwd=str(log_dir), text=True, capture_output=True)
-    (log_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
-    (log_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
-    parsed_results = parse_results(log_dir, instance_ids)
-    post_results(run_id, parsed_results if result.returncode == 0 else parsed_results, error=None if result.returncode == 0 else result.stderr[-4000:])
-    return result.returncode
+        result = subprocess.run(cmd, cwd=str(log_dir), text=True, capture_output=True)
+        (log_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
+        (log_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
+        parsed_results = parse_results(log_dir, instance_ids)
+        post_results(
+            run_id,
+            parsed_results if result.returncode == 0 else parsed_results,
+            error=None if result.returncode == 0 else result.stderr[-4000:],
+        )
+        return result.returncode
+    finally:
+        stop_docker_sidecar()
 
 
 def wait_for_docker() -> None:
@@ -85,6 +93,36 @@ def docker_api_ready() -> bool:
             return response.status == 200 and response.read().strip() == b"OK"
     except (OSError, urllib.error.URLError):
         return False
+
+
+def stop_docker_sidecar() -> None:
+    enabled = os.environ.get("SWEBENCH_STOP_DOCKER_SIDECAR", "true").lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return
+
+    current_pid = os.getpid()
+    for proc in pathlib.Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        pid = int(proc.name)
+        if pid == current_pid:
+            continue
+        try:
+            comm = (proc / "comm").read_text(encoding="utf-8", errors="ignore").strip()
+            cmdline = (
+                (proc / "cmdline")
+                .read_bytes()
+                .replace(b"\x00", b" ")
+                .decode("utf-8", errors="ignore")
+            )
+        except OSError:
+            continue
+        if "dockerd" not in f"{comm} {cmdline}":
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
 
 
 def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[str, Any]]:

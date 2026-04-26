@@ -271,6 +271,7 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             spec=client.V1PodSpec(
                 restart_policy="Never",
                 service_account_name="swebench-coordinator",
+                share_process_namespace=True,
                 image_pull_secrets=[client.V1LocalObjectReference(name="ghcr-pull-credentials")],
                 containers=[docker_daemon, container],
                 volumes=[
