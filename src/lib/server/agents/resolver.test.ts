@@ -138,10 +138,18 @@ describe("resolveSpecAgentRefs", () => {
 		const body = withBlock.body as Record<string, unknown>;
 		expect(body.agentRef).toBeUndefined();
 		expect(body.agentConfig).toEqual(config);
+		expect(body.agentId).toBe("a1");
+		expect(body.agentVersion).toBe(3);
+		expect(body.agentAppId).toBe("agent-runtime-code-agent");
+		expect(body.agentSlug).toBe("code-agent");
 		expect(body.prompt).toBe("hello");
 		expect(withBlock.agentRef).toBeUndefined();
 		expect(withBlock.agentConfig).toEqual(config);
 		expect(withBlock.agentRuntime).toBe("dapr-agent-py");
+		expect(withBlock.agentId).toBe("a1");
+		expect(withBlock.agentVersion).toBe(3);
+		expect(withBlock.agentAppId).toBe("agent-runtime-code-agent");
+		expect(withBlock.agentSlug).toBe("code-agent");
 	});
 
 	it("throws AgentRefResolutionError when agentRef is missing on a durable/run task", async () => {

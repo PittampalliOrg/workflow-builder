@@ -1,9 +1,15 @@
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
-import { agents, sessions, workflowExecutions, workflows } from "$lib/server/db/schema";
+import {
+	agents,
+	agentVersions,
+	sessions,
+	workflowExecutions,
+	workflows,
+} from "$lib/server/db/schema";
 import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
@@ -141,6 +147,16 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof body.agentSlug === "string" && body.agentSlug.trim()
 			? body.agentSlug.trim()
 			: null;
+	const bodyAgentId =
+		typeof body.agentId === "string" && body.agentId.trim()
+			? body.agentId.trim()
+			: null;
+	const bodyAgentVersion =
+		typeof body.agentVersion === "number" && Number.isFinite(body.agentVersion)
+			? Math.trunc(body.agentVersion)
+			: typeof body.agentVersion === "string" && body.agentVersion.trim()
+				? Number.parseInt(body.agentVersion, 10)
+				: null;
 
 	if (!sessionId) return error(400, "sessionId is required");
 	if (!workflowId || !nodeId) return error(400, "workflowId and nodeId are required");
@@ -219,13 +235,24 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 	}
 
-	// Resolve or create the ephemeral agent + version pinned to this node.
-	const { agentId, agentVersion } = await findOrCreateEphemeralAgent({
-		workflowId,
-		nodeId,
-		agentConfig,
-		userId,
+	// Resolved workflow specs carry the original published agent identity.
+	// Use it when present so workflow-driven sessions execute in the published
+	// agent-runtime-<slug> pod. Specs without that identity are older inline
+	// configs and still get a workflow-scoped ephemeral agent.
+	const publishedAgent = await resolvePublishedWorkflowAgent({
+		agentId: bodyAgentId,
+		agentVersion: bodyAgentVersion,
+		projectId,
 	});
+	const sessionAgent =
+		publishedAgent ??
+		(await findOrCreateEphemeralAgent({
+			workflowId,
+			nodeId,
+			agentConfig,
+			userId,
+		}));
+	const { agentId, agentVersion } = sessionAgent;
 	await (async () => {
 		const { syncAgentRuntimeCR } = await import(
 			"$lib/server/agents/registry-sync"
@@ -395,6 +422,66 @@ async function resolveRuntimeIdentity(
 		slug: row.slug,
 		appId: row.runtimeAppId ?? `agent-runtime-${row.slug}`,
 	};
+}
+
+async function resolvePublishedWorkflowAgent(params: {
+	agentId: string | null;
+	agentVersion: number | null;
+	projectId: string | null;
+}): Promise<{ agentId: string; agentVersion: number } | null> {
+	if (!params.agentId || !db) return null;
+	const [agent] = await db
+		.select({
+			id: agents.id,
+			projectId: agents.projectId,
+			currentVersionId: agents.currentVersionId,
+			isArchived: agents.isArchived,
+		})
+		.from(agents)
+		.where(eq(agents.id, params.agentId))
+		.limit(1);
+	if (!agent || agent.isArchived) {
+		throw error(400, `agent ${params.agentId} is not available`);
+	}
+	if (params.projectId && agent.projectId !== params.projectId) {
+		throw error(403, `agent ${params.agentId} is not in this project`);
+	}
+	const requestedVersion = params.agentVersion;
+	if (
+		Number.isInteger(requestedVersion) &&
+		requestedVersion !== null &&
+		requestedVersion > 0
+	) {
+		const [version] = await db
+			.select({ version: agentVersions.version })
+			.from(agentVersions)
+			.where(
+				and(
+					eq(agentVersions.agentId, agent.id),
+					eq(agentVersions.version, requestedVersion),
+				),
+			)
+			.limit(1);
+		if (!version) {
+			throw error(
+				400,
+				`agent ${params.agentId} version ${requestedVersion} is not available`,
+			);
+		}
+		return { agentId: agent.id, agentVersion: version.version };
+	}
+	if (!agent.currentVersionId) {
+		throw error(400, `agent ${params.agentId} has no current version`);
+	}
+	const [current] = await db
+		.select({ version: agentVersions.version })
+		.from(agentVersions)
+		.where(eq(agentVersions.id, agent.currentVersionId))
+		.limit(1);
+	if (!current) {
+		throw error(400, `agent ${params.agentId} current version is not available`);
+	}
+	return { agentId: agent.id, agentVersion: current.version };
 }
 
 /**

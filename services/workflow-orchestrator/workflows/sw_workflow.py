@@ -1301,6 +1301,8 @@ def _run_native_durable_agent_child_workflow(
             # "the app may not be available: context deadline exceeded"
             # and the parent orchestrator silently stalls on the task-5
             # completion event.
+            "agentId": flattened_args.get("agentId"),
+            "agentVersion": flattened_args.get("agentVersion"),
             "agentAppId": target.get("app_id"),
             "agentSlug": flattened_args.get("agentSlug")
             or (agent_config.get("slug") if isinstance(agent_config, dict) else None),

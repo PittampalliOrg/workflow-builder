@@ -244,6 +244,8 @@ export async function resolveSpecAgentRefs(
 			prompt,
 			agentConfig: config,
 			agentRuntime: config.runtime ?? "dapr-agent-py",
+			agentId: resolved.id,
+			agentVersion: resolved.version,
 			agentAppId,
 			agentSlug: resolved.slug,
 			maxTurns: overrides?.maxTurns ?? config.maxTurns,
@@ -275,6 +277,8 @@ export async function resolveSpecAgentRefs(
 		withRecord.body = inlinedBody;
 		withRecord.prompt = prompt;
 		withRecord.agentRuntime = config.runtime ?? "dapr-agent-py";
+		withRecord.agentId = resolved.id;
+		withRecord.agentVersion = resolved.version;
 		withRecord.agentAppId = agentAppId;
 		withRecord.agentSlug = resolved.slug;
 		withRecord.agentConfig = config;

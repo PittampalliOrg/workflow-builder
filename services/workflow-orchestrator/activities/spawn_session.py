@@ -89,6 +89,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             # subsequent ctx.call_child_workflow times out because the agent-
             # runtime pod is scaled to 0 and not registered with Dapr
             # placement. See src/routes/api/internal/sessions/ensure-for-workflow.
+            "agentId": input_data.get("agentId"),
+            "agentVersion": input_data.get("agentVersion"),
             "agentAppId": input_data.get("agentAppId"),
             "agentSlug": input_data.get("agentSlug"),
             # Sandbox plumbing forwarded to the BFF's buildChildInput so
