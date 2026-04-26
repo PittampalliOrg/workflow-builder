@@ -2390,8 +2390,9 @@ export const agentVersions = pgTable(
 /**
  * Vaults group credentials that agents/sessions attach by id. Anthropic's
  * Managed Agents vault model — credentials never leave the host and are
- * injected at tool-call time by function-router (the proxy). Replaces the
- * per-piece `mcp_connection` table for MCP-bound auth.
+ * injected at tool-call time by function-router (the proxy). This complements
+ * project-level `mcp_connection` rows, which are still used by the workflow
+ * orchestrator when resolving project-scoped MCP servers.
  */
 export const vaults = pgTable(
 	"vaults",

@@ -43,6 +43,13 @@ function trimTrailingSlash(value: string | null | undefined): string {
 	return (value || '').replace(/\/+$/, '');
 }
 
+function connectionHeaders(
+	connectionExternalId: string | null | undefined
+): Record<string, string> | undefined {
+	const externalId = connectionExternalId?.trim();
+	return externalId ? { 'X-Connection-External-Id': externalId } : undefined;
+}
+
 export function buildHostedMcpGatewayInternalUrl(
 	projectId: string,
 	baseUrl = 'http://mcp-gateway.workflow-builder.svc.cluster.local:8080'
@@ -83,13 +90,15 @@ export function buildProjectMcpCatalogEntry(
 	if (sourceType === 'nimble_piece') {
 		const piece = normalizePieceName(row.pieceName);
 		if (!piece) return null;
+		const headers = connectionHeaders(row.connectionExternalId);
 		return {
 			name: `ap-${piece}`,
 			displayName,
 			url,
 			sourceType,
 			pieceName: row.pieceName,
-			connectionExternalId: row.connectionExternalId
+			connectionExternalId: row.connectionExternalId,
+			...(headers ? { headers } : {})
 		};
 	}
 
@@ -100,11 +109,8 @@ export function buildProjectMcpCatalogEntry(
 	if (!baseName) return null;
 
 	const prefix =
-		sourceType === 'nimble_shared'
-			? 'shared'
-			: sourceType === 'custom_url'
-				? 'custom'
-				: 'mcp';
+		sourceType === 'nimble_shared' ? 'shared' : sourceType === 'custom_url' ? 'custom' : 'mcp';
+	const headers = connectionHeaders(row.connectionExternalId);
 
 	return {
 		name: `${prefix}-${baseName}`,
@@ -112,6 +118,7 @@ export function buildProjectMcpCatalogEntry(
 		url,
 		sourceType,
 		serverKey: row.serverKey,
-		connectionExternalId: row.connectionExternalId
+		connectionExternalId: row.connectionExternalId,
+		...(headers ? { headers } : {})
 	};
 }

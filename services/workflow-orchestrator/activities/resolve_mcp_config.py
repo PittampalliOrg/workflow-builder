@@ -259,6 +259,7 @@ def _build_server_config(
     piece_name = row.get("piece_name")
     server_key = row.get("server_key")
     server_url = str(row.get("server_url") or "").strip()
+    connection_external_id = str(row.get("connection_external_id") or "").strip()
     metadata = _json_obj(row.get("metadata"))
 
     if source_type == "hosted_workflow":
@@ -309,7 +310,7 @@ def _build_server_config(
         "displayName": display_name,
         "sourceType": source_type,
         "pieceName": piece_name,
-        "connectionExternalId": row.get("connection_external_id"),
+        "connectionExternalId": connection_external_id or None,
         "transport": _transport_from_metadata(metadata),
         "url": _qualify_mcp_server_url(
             {
@@ -319,6 +320,8 @@ def _build_server_config(
             server_url,
         ),
     }
+    if connection_external_id:
+        config["headers"] = {"X-Connection-External-Id": connection_external_id}
     allowed_tools = _allowed_tools_from_metadata(metadata)
     if allowed_tools:
         config["allowedTools"] = allowed_tools

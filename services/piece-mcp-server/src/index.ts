@@ -24,6 +24,10 @@ import {
 	type PieceMetadataRow,
 	type RegisteredTool,
 } from "./piece-to-mcp.js";
+import {
+	runWithRequestAuthContext,
+	type RequestAuthContext,
+} from "./auth-resolver.js";
 import type { Piece } from "@activepieces/pieces-framework";
 
 const PORT = parseInt(process.env.PORT || "3100", 10);
@@ -31,6 +35,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 
 // Session-scoped transports
 const sessions = new Map<string, StreamableHTTPServerTransport>();
+const sessionAuthContexts = new Map<string, RequestAuthContext>();
 
 // Loaded at startup
 let piece: Piece;
@@ -72,6 +77,26 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
 		});
 		req.on("error", reject);
 	});
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+	return Array.isArray(value) ? value[0] : value;
+}
+
+function authContextFromRequest(
+	req: http.IncomingMessage,
+	sessionId?: string,
+): RequestAuthContext {
+	const connectionExternalId =
+		firstHeader(req.headers["x-connection-external-id"])
+			?.trim()
+			|| firstHeader(req.headers["x-workflow-builder-connection-external-id"])
+				?.trim()
+			|| (sessionId
+				? sessionAuthContexts.get(sessionId)?.connectionExternalId?.trim()
+				: undefined)
+			|| undefined;
+	return { connectionExternalId };
 }
 
 /** Create a new MCP Server instance with all piece tools registered. */
@@ -200,18 +225,25 @@ async function handleMcpPost(
 ): Promise<void> {
 	const sessionId = req.headers["mcp-session-id"] as string | undefined;
 	let transport: StreamableHTTPServerTransport;
+	const requestAuthContext = authContextFromRequest(req, sessionId);
 
 	const body = await parseBody(req);
 
 	if (sessionId && sessions.has(sessionId)) {
 		// Existing session
 		transport = sessions.get(sessionId)!;
+		if (requestAuthContext.connectionExternalId) {
+			sessionAuthContexts.set(sessionId, requestAuthContext);
+		}
 	} else if (!sessionId && isInitializeRequest(body)) {
 		// New session
 		transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => crypto.randomUUID(),
 			onsessioninitialized: (sid) => {
 				sessions.set(sid, transport);
+				if (requestAuthContext.connectionExternalId) {
+					sessionAuthContexts.set(sid, requestAuthContext);
+				}
 				console.log(`[piece-mcp] New session: ${sid}`);
 			},
 		});
@@ -219,6 +251,7 @@ async function handleMcpPost(
 		transport.onclose = () => {
 			if (transport.sessionId) {
 				sessions.delete(transport.sessionId);
+				sessionAuthContexts.delete(transport.sessionId);
 				console.log(`[piece-mcp] Session closed: ${transport.sessionId}`);
 			}
 		};
@@ -232,7 +265,9 @@ async function handleMcpPost(
 		return;
 	}
 
-	await transport.handleRequest(req, res, body);
+	await runWithRequestAuthContext(requestAuthContext, () =>
+		transport.handleRequest(req, res, body),
+	);
 }
 
 async function handleMcpGet(
@@ -245,7 +280,13 @@ async function handleMcpGet(
 		return;
 	}
 	const transport = sessions.get(sessionId)!;
-	await transport.handleRequest(req, res);
+	const requestAuthContext = authContextFromRequest(req, sessionId);
+	if (requestAuthContext.connectionExternalId) {
+		sessionAuthContexts.set(sessionId, requestAuthContext);
+	}
+	await runWithRequestAuthContext(requestAuthContext, () =>
+		transport.handleRequest(req, res),
+	);
 }
 
 async function handleMcpDelete(
@@ -258,7 +299,12 @@ async function handleMcpDelete(
 		return;
 	}
 	const transport = sessions.get(sessionId)!;
-	await transport.handleRequest(req, res);
+	const requestAuthContext = authContextFromRequest(req, sessionId);
+	await runWithRequestAuthContext(requestAuthContext, () =>
+		transport.handleRequest(req, res),
+	);
+	sessions.delete(sessionId);
+	sessionAuthContexts.delete(sessionId);
 }
 
 // ── Main ─────────────────────────────────────────────────────

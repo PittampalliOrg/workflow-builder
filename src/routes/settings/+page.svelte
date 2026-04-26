@@ -10,7 +10,7 @@
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '$lib/components/ui/dialog';
 	import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '$lib/components/ui/table';
-	import { CircleAlert, Copy, Check, Lock, Trash2, Loader2, Power, PowerOff } from 'lucide-svelte';
+	import { CircleAlert, Copy, Check, Lock, Trash2, Loader2, Power, PowerOff, Plus } from 'lucide-svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
 	import { env } from '$env/dynamic/public';
@@ -49,17 +49,18 @@
 
 	// Database-loaded OAuth apps (enriched with display names and logos from server)
 	const oauthApps = $derived(($page.data.oauthApps ?? []) as Array<{
-		id: string;
+		id: string | null;
 		pieceName: string;
 		clientId: string;
 		displayName: string;
 		logoUrl: string | null;
-		createdAt: string;
-		updatedAt: string;
+		configured: boolean;
+		createdAt: string | null;
+		updatedAt: string | null;
 	}>);
 
 	// Redirect URI for OAuth apps
-	const redirectUri = $derived(`${baseUrl}/redirect`);
+	const redirectUri = $derived(`${baseUrl}/api/app-connections/oauth2/callback`);
 
 	// OAuth app configure dialog
 	let oauthDialogOpen = $state(false);
@@ -92,19 +93,21 @@
 			if (res.ok) {
 				oauthDialogOpen = false;
 				oauthDialogApp = null;
-				toast.success('OAuth app updated');
+				toast.success('OAuth app saved');
 				await invalidateAll();
 			} else {
-				toast.error('Failed to update OAuth app');
+				const data = await res.json().catch(() => ({}));
+				toast.error(data.message || 'Failed to save OAuth app');
 			}
 		} catch {
-			toast.error('Failed to update OAuth app');
+			toast.error('Failed to save OAuth app');
 		} finally {
 			oauthSaving = false;
 		}
 	}
 
 	async function deleteOauthApp(app: typeof oauthApps[number]) {
+		if (!app.id) return;
 		try {
 			const res = await fetch(`/api/settings/oauth-apps?id=${app.id}`, { method: 'DELETE' });
 			if (res.ok) {
@@ -563,7 +566,7 @@
 						<!-- OAuth Apps Table -->
 						{#if oauthApps.length === 0}
 							<div class="py-12 text-center text-sm text-muted-foreground">
-								No OAuth apps configured. Sync piece metadata first.
+								No OAuth-capable pieces found. Sync piece metadata first.
 							</div>
 						{:else}
 							<Table>
@@ -576,7 +579,7 @@
 									</TableRow>
 								</TableHeader>
 								<TableBody>
-									{#each oauthApps as app (app.id)}
+									{#each oauthApps as app (app.id ?? app.pieceName)}
 										<TableRow>
 											<TableCell>
 												<div class="flex items-center gap-2">
@@ -591,20 +594,32 @@
 												</div>
 											</TableCell>
 											<TableCell>
-												<code class="font-mono text-[10px] text-muted-foreground">{app.clientId}</code>
+												{#if app.clientId}
+													<code class="font-mono text-[10px] text-muted-foreground">{app.clientId}</code>
+												{:else}
+													<span class="text-[10px] text-muted-foreground">Not configured</span>
+												{/if}
 											</TableCell>
 											<TableCell>
-												<Badge variant="default" class="gap-1 text-[9px]">
-													<Lock size={10} />
-													Configured
-												</Badge>
+												{#if app.configured}
+													<Badge variant="default" class="gap-1 text-[9px]">
+														<Lock size={10} />
+														Configured
+													</Badge>
+												{:else}
+													<Badge variant="secondary" class="text-[9px]">Missing</Badge>
+												{/if}
 											</TableCell>
 											<TableCell class="text-right">
 												<div class="flex items-center justify-end gap-1">
-													<Button variant="outline" size="sm" class="h-7 text-[10px]" onclick={() => openOauthDialog(app)}>Update</Button>
-													<Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" onclick={() => deleteOauthApp(app)}>
-														<Trash2 size={12} />
+													<Button variant="outline" size="sm" class="h-7 text-[10px]" onclick={() => openOauthDialog(app)}>
+														{app.configured ? 'Update' : 'Configure'}
 													</Button>
+													{#if app.id}
+														<Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-destructive" onclick={() => deleteOauthApp(app)}>
+															<Trash2 size={12} />
+														</Button>
+													{/if}
 												</div>
 											</TableCell>
 										</TableRow>
@@ -620,22 +635,29 @@
 					<div class="space-y-6">
 						<Card>
 							<CardHeader>
-								<CardTitle class="text-sm">MCP Connections have moved to Vaults</CardTitle>
+								<CardTitle class="flex items-center gap-2 text-sm">
+									Add Custom MCP Server
+								</CardTitle>
 							</CardHeader>
-							<CardContent class="space-y-3 text-xs text-muted-foreground">
-								<p>
-									MCP credentials now live in <strong>Vaults</strong>. Vaults group encrypted
-									credentials that agents and sessions attach by id; the proxy injects them
-									into MCP tool calls at call time so the sandbox never sees the secret.
-								</p>
-								<p>
-									Open the new <a href="/workspaces/default/credentials" class="text-primary hover:underline">Credentials library</a>
-									to create a vault, add credentials, and attach it to an agent.
-								</p>
+							<CardContent>
+								<form class="flex items-end gap-3" onsubmit={(e) => { e.preventDefault(); createMcpCustom(); }}>
+									<div class="flex-1 space-y-1">
+										<Label class="text-[11px]">Display Name</Label>
+										<Input bind:value={mcpCustomName} placeholder="My MCP Server" class="text-xs" />
+									</div>
+									<div class="flex-[2] space-y-1">
+										<Label class="text-[11px]">Server URL</Label>
+										<Input bind:value={mcpCustomUrl} placeholder="http://localhost:3100/mcp" class="font-mono text-xs" />
+									</div>
+									<Button size="sm" class="h-8" type="submit" disabled={mcpCreating || !mcpCustomName.trim() || !mcpCustomUrl.trim()}>
+										{#if mcpCreating}<Loader2 size={12} class="animate-spin" />{/if}
+										<Plus size={12} />
+										Add
+									</Button>
+								</form>
 							</CardContent>
 						</Card>
-						{#if false}
-						<!-- Legacy MCP section retained below for compile — dead code -->
+
 						<!-- MCP Connections Table -->
 						<div>
 							<h3 class="text-sm font-semibold mb-3">Managed Connections</h3>
@@ -746,7 +768,6 @@
 								</Table>
 							{/if}
 						</div>
-						{/if}
 					</div>
 				</TabsContent>
 			</Tabs>
@@ -808,11 +829,17 @@
 			</div>
 			<div class="space-y-1.5">
 				<Label for="oauth-client-secret">Client Secret</Label>
-				<Input id="oauth-client-secret" type="password" bind:value={oauthClientSecret} placeholder="Leave blank to keep existing" class="text-xs" />
+				<Input
+					id="oauth-client-secret"
+					type="password"
+					bind:value={oauthClientSecret}
+					placeholder={oauthDialogApp?.configured ? 'Leave blank to keep existing' : 'Required for new app'}
+					class="text-xs"
+				/>
 			</div>
 			<DialogFooter>
 				<Button variant="outline" type="button" onclick={() => { oauthDialogOpen = false; oauthDialogApp = null; }}>Cancel</Button>
-				<Button type="submit" disabled={oauthSaving || !oauthClientId.trim()}>
+				<Button type="submit" disabled={oauthSaving || !oauthClientId.trim() || (!oauthDialogApp?.configured && !oauthClientSecret.trim())}>
 					{#if oauthSaving}<Loader2 size={12} class="animate-spin" />{/if}
 					Save
 				</Button>

@@ -18,11 +18,14 @@ describe('project MCP catalog helpers', () => {
 		).toEqual({
 			name: 'ap-microsoft-onedrive',
 			displayName: 'Microsoft OneDrive',
-			url: 'http://ap-microsoft-onedrive-service:3100/mcp',
-			sourceType: 'nimble_piece',
-			pieceName: '@activepieces/piece-microsoft-onedrive',
-			connectionExternalId: 'external-1'
-		});
+				url: 'http://ap-microsoft-onedrive-service:3100/mcp',
+				sourceType: 'nimble_piece',
+				pieceName: '@activepieces/piece-microsoft-onedrive',
+				connectionExternalId: 'external-1',
+				headers: {
+					'X-Connection-External-Id': 'external-1'
+				}
+			});
 	});
 
 	it('builds hosted workflow entries with bearer auth and the internal gateway URL', () => {

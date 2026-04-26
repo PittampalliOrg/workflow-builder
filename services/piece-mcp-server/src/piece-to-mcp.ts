@@ -235,7 +235,7 @@ export function registerPieceTools(
 						content: [
 							{
 								type: "text" as const,
-								text: `Missing credentials for "${name}". Set CONNECTION_EXTERNAL_ID or CREDENTIALS_JSON env var.`,
+								text: `Missing credentials for "${name}". Set X-Connection-External-Id, CONNECTION_EXTERNAL_ID, or CREDENTIALS_JSON.`,
 							},
 						],
 						isError: true,
@@ -370,7 +370,7 @@ export function registerPieceToolsWithUI(
 								content: [
 									{
 										type: "text" as const,
-										text: `Missing credentials for "${actionKey}". Set CONNECTION_EXTERNAL_ID or CREDENTIALS_JSON env var.`,
+											text: `Missing credentials for "${actionKey}". Set X-Connection-External-Id, CONNECTION_EXTERNAL_ID, or CREDENTIALS_JSON.`,
 									},
 								],
 								isError: true,
@@ -461,7 +461,7 @@ export function registerPieceToolsWithUI(
 								content: [
 									{
 										type: "text" as const,
-										text: `Missing credentials for "${extAction.name}". Set CONNECTION_EXTERNAL_ID or CREDENTIALS_JSON env var.`,
+											text: `Missing credentials for "${extAction.name}". Set X-Connection-External-Id, CONNECTION_EXTERNAL_ID, or CREDENTIALS_JSON.`,
 									},
 								],
 								isError: true,

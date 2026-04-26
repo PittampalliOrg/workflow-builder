@@ -580,6 +580,16 @@ def _extract_mcp_server_configs(
             }
             if safe_headers:
                 config["headers"] = safe_headers
+        connection_external_id = str(
+            item.get("connectionExternalId") or item.get("connection_external_id") or ""
+        ).strip()
+        if connection_external_id:
+            config_headers = config.setdefault("headers", {})
+            if not any(
+                str(key).lower() == "x-connection-external-id"
+                for key in config_headers
+            ):
+                config_headers["X-Connection-External-Id"] = connection_external_id
         for numeric_key in ("timeout", "sse_read_timeout"):
             value = item.get(numeric_key)
             if isinstance(value, (int, float)) and value > 0:

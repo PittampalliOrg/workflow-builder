@@ -295,6 +295,13 @@ export const NAV_GROUPS: NavGroup[] = [
 				visibility: { workspaceScoped: true },
 			},
 			{
+				id: "platform-settings",
+				label: "Platform settings",
+				icon: SettingsIcon,
+				href: () => "/settings",
+				match: /^\/settings\/?$/,
+			},
+			{
 				id: "members",
 				label: "Members",
 				icon: Users,

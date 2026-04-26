@@ -111,6 +111,7 @@ def test_resolves_logical_profile_server_to_project_connection(monkeypatch):
             "connectionExternalId": "conn_1",
             "transport": "streamable_http",
             "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp",
+            "headers": {"X-Connection-External-Id": "conn_1"},
             "allowedTools": ["list_repositories"],
         }
     ]

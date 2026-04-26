@@ -23,19 +23,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		.where(eq(users.id, locals.session.userId))
 		.limit(1);
 
-	// Load all configured OAuth apps from the database
-	const oauthApps = db
-		? await db
-				.select({
-					id: platformOauthApps.id,
-					pieceName: platformOauthApps.pieceName,
-					clientId: platformOauthApps.clientId,
-					createdAt: platformOauthApps.createdAt,
-					updatedAt: platformOauthApps.updatedAt
-				})
-				.from(platformOauthApps)
-				.orderBy(platformOauthApps.pieceName)
-		: [];
+	const platformId = user?.platformId ?? locals.session.platformId;
+
+	// Load configured OAuth apps for the caller's platform.
+	const oauthApps =
+		db && platformId
+			? await db
+					.select({
+						id: platformOauthApps.id,
+						pieceName: platformOauthApps.pieceName,
+						clientId: platformOauthApps.clientId,
+						createdAt: platformOauthApps.createdAt,
+						updatedAt: platformOauthApps.updatedAt
+					})
+					.from(platformOauthApps)
+					.where(eq(platformOauthApps.platformId, platformId))
+					.orderBy(platformOauthApps.pieceName)
+			: [];
 
 	// Load piece metadata for logos — get distinct OAuth2 pieces
 	const oauthPieces = db
@@ -50,18 +54,38 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 				.orderBy(pieceMetadata.name, pieceMetadata.displayName)
 		: [];
 
-	// Build a lookup map: pieceName → { displayName, logoUrl }
-	const pieceMap = new Map(oauthPieces.map(p => [
-		`@activepieces/piece-${p.name}`,
-		{ displayName: p.displayName, logoUrl: p.logoUrl }
-	]));
+	const configuredByPiece = new Map(
+		oauthApps.map((app) => [normalizePieceName(app.pieceName), app])
+	);
+	const oauthPieceNames = new Set(oauthPieces.map((piece) => piece.name));
 
-	// Enrich oauth apps with piece display info
-	const enrichedOauthApps = oauthApps.map(app => ({
-		...app,
-		displayName: pieceMap.get(app.pieceName)?.displayName || formatPieceName(app.pieceName),
-		logoUrl: pieceMap.get(app.pieceName)?.logoUrl || null
-	}));
+	const enrichedOauthApps = [
+		...oauthPieces.map((piece) => {
+			const app = configuredByPiece.get(piece.name);
+			return {
+				id: app?.id ?? null,
+				pieceName: `@activepieces/piece-${piece.name}`,
+				clientId: app?.clientId ?? '',
+				displayName: piece.displayName || formatPieceName(piece.name),
+				logoUrl: piece.logoUrl || null,
+				configured: Boolean(app),
+				createdAt: app?.createdAt ?? null,
+				updatedAt: app?.updatedAt ?? null
+			};
+		}),
+		...oauthApps
+			.filter((app) => !oauthPieceNames.has(normalizePieceName(app.pieceName)))
+			.map((app) => ({
+				id: app.id,
+				pieceName: app.pieceName,
+				clientId: app.clientId,
+				displayName: formatPieceName(app.pieceName),
+				logoUrl: null,
+				configured: true,
+				createdAt: app.createdAt,
+				updatedAt: app.updatedAt
+			}))
+	].sort((a, b) => a.displayName.localeCompare(b.displayName));
 
 	return {
 		profile: user || null,
@@ -70,9 +94,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	};
 };
 
+function normalizePieceName(pieceName: string): string {
+	return pieceName.startsWith('@activepieces/piece-')
+		? pieceName.slice('@activepieces/piece-'.length)
+		: pieceName;
+}
+
 function formatPieceName(pieceName: string): string {
-	return pieceName
-		.replace('@activepieces/piece-', '')
+	return normalizePieceName(pieceName)
 		.split('-')
 		.map(w => w.charAt(0).toUpperCase() + w.slice(1))
 		.join(' ');
