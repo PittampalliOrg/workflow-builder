@@ -223,10 +223,15 @@ _TRANSIENT_WORKFLOW_RUNTIME_ERROR_MARKERS = (
     "connection refused",
     "workflow engine",
     "statuscode.unavailable",
+    "deadline exceeded",
 )
 
 
-def _get_workflow_runtime_status(timeout_seconds: float = 2.0) -> tuple[bool, dict[str, Any]]:
+def _get_workflow_runtime_status(
+    timeout_seconds: float = 2.0,
+    *,
+    include_taskhub: bool = True,
+) -> tuple[bool, dict[str, Any]]:
     """
     Probe the local Dapr sidecar and workflow task hub before serving traffic.
     """
@@ -262,24 +267,36 @@ def _get_workflow_runtime_status(timeout_seconds: float = 2.0) -> tuple[bool, di
         metadata_payload = metadata_response.json() if metadata_response.content else {}
         details["runtimeVersion"] = metadata_payload.get("runtimeVersion")
         details["appId"] = metadata_payload.get("id")
+        workflows_metadata = metadata_payload.get("workflows") or {}
+        connected_workers = 0
+        if isinstance(workflows_metadata, dict):
+            raw_workers = workflows_metadata.get("connectedWorkers")
+            try:
+                connected_workers = int(raw_workers or 0)
+            except (TypeError, ValueError):
+                connected_workers = 0
+        details["workflowConnectedWorkers"] = connected_workers
+        if connected_workers < 1:
+            errors.append("workflow runtime has no connected Dapr workflow workers")
     except Exception as exc:
         details["metadataError"] = str(exc)
         errors.append(f"metadata probe failed: {exc}")
 
-    try:
-        response = _taskhub_call(
-            "GetInstance",
-            pb.GetInstanceRequest(
-                instanceId=_WORKFLOW_RUNTIME_PROBE_INSTANCE_ID,
-                getInputsAndOutputs=False,
-            ),
-        )
-        details["taskhubReady"] = True
-        details["taskhubProbeExists"] = bool(getattr(response, "exists", False))
-    except Exception as exc:
-        details["taskhubReady"] = False
-        details["taskhubError"] = str(exc)
-        errors.append(f"taskhub probe failed: {exc}")
+    if include_taskhub:
+        try:
+            response = _taskhub_call(
+                "GetInstance",
+                pb.GetInstanceRequest(
+                    instanceId=_WORKFLOW_RUNTIME_PROBE_INSTANCE_ID,
+                    getInputsAndOutputs=False,
+                ),
+            )
+            details["taskhubReady"] = True
+            details["taskhubProbeExists"] = bool(getattr(response, "exists", False))
+        except Exception as exc:
+            details["taskhubReady"] = False
+            details["taskhubError"] = str(exc)
+            errors.append(f"taskhub probe failed: {exc}")
 
     details["errors"] = errors
     return (len(errors) == 0, details)
@@ -2708,7 +2725,25 @@ def subscribe():
 @app.get("/healthz")
 def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "workflow-orchestrator"}
+    ready, runtime_status = _get_workflow_runtime_status(
+        timeout_seconds=0.5,
+        include_taskhub=False,
+    )
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "unhealthy",
+                "service": "workflow-orchestrator",
+                "code": "workflow_runtime_unavailable",
+                "runtimeStatus": runtime_status,
+            },
+        )
+    return {
+        "status": "healthy",
+        "service": "workflow-orchestrator",
+        "runtimeStatus": runtime_status,
+    }
 
 
 @app.get("/readyz")

@@ -78,6 +78,36 @@ def _bff(method: str, path: str, *, json_body: dict[str, Any] | None = None, tim
     return res.json()
 
 
+def _bff_with_retry(
+    method: str,
+    path: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout: int = 60,
+    attempts: int = 3,
+    delay_seconds: float = 15,
+) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _bff(method, path, json_body=json_body, timeout=timeout)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            logger.warning(
+                "BFF %s %s failed on attempt %s/%s; retrying in %.1fs: %s",
+                method,
+                path,
+                attempt,
+                attempts,
+                delay_seconds,
+                exc,
+            )
+            time.sleep(delay_seconds)
+    raise last_error or RuntimeError(f"BFF {method} {path} failed")
+
+
 def _connect_db():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is required for SWE-bench metadata import")
@@ -177,11 +207,13 @@ def _ensure_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
 def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _bff(
+    return _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/start",
         json_body={},
-        timeout=120,
+        timeout=90,
+        attempts=3,
+        delay_seconds=20,
     )
 
 
