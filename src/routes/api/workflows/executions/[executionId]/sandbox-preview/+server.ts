@@ -1,6 +1,10 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getExecutionSandboxPreviewInfo } from '$lib/server/workflows/sandbox-preview';
+import {
+	buildRuntimePreviewPath,
+	getExecutionWorkspaceRoute
+} from '$lib/server/workflows/runtime-preview-url';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 
 type StartBody = {
@@ -67,7 +71,17 @@ export const POST: RequestHandler = async ({ params, request, url }) => {
 	}
 
 	const proxyBasePath = `/api/workflows/executions/${encodeURIComponent(executionId)}/sandbox-preview/${encodeURIComponent(previewId)}`;
-	const pageBasePath = `/workflows/runtime-preview/${encodeURIComponent(executionId)}?previewId=${encodeURIComponent(previewId)}`;
+	const pageSearchParams = new URLSearchParams();
+	pageSearchParams.set('previewId', previewId);
+	if (payload.repoPath) pageSearchParams.set('repoPath', payload.repoPath);
+	if (payload.installCommand) pageSearchParams.set('installCommand', payload.installCommand);
+	if (payload.devServerCommand) pageSearchParams.set('devServerCommand', payload.devServerCommand);
+	if (payload.baseUrl) pageSearchParams.set('baseUrl', payload.baseUrl);
+	pageSearchParams.set('timeoutSeconds', String(payload.timeoutSeconds));
+	const workspaceRoute = await getExecutionWorkspaceRoute(executionId);
+	const pageBasePath = workspaceRoute
+		? buildRuntimePreviewPath(executionId, workspaceRoute.workspaceSlug, pageSearchParams.toString())
+		: `/workflows/runtime-preview/${encodeURIComponent(executionId)}?${pageSearchParams.toString()}`;
 	const origin = publicOrigin(request, url);
 
 	return json({

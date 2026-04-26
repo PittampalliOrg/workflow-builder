@@ -1288,6 +1288,13 @@
 		return port ? `npm run dev -- --host 0.0.0.0 --port ${port}` : '';
 	}
 
+	function runtimePreviewPath(targetExecutionId: string, queryString = ''): string {
+		const base = slug
+			? `/workspaces/${encodeURIComponent(slug)}/workflows/runtime-preview/${encodeURIComponent(targetExecutionId)}`
+			: `/workflows/runtime-preview/${encodeURIComponent(targetExecutionId)}`;
+		return queryString ? `${base}?${queryString}` : base;
+	}
+
 	function browserAppPreviewUrl(artifact: BrowserArtifact): string {
 		// The runtime-preview proxy resolves a retained workspace sandbox
 		// (workflow_workspace_sessions row). Browser-use runs navigate the
@@ -1313,7 +1320,7 @@
 			if (command) params.set('devServerCommand', command);
 		}
 		params.set('timeoutSeconds', '7200');
-		return `/workflows/runtime-preview/${encodeURIComponent(executionId)}?${params.toString()}`;
+		return runtimePreviewPath(executionId, params.toString());
 	}
 
 	function annotationCues(artifact: BrowserArtifact): BrowserAnnotationCue[] {
@@ -1387,7 +1394,7 @@
 		if (installCommand) params.set('installCommand', installCommand);
 		params.set('timeoutSeconds', '7200');
 
-		return `/workflows/runtime-preview/${encodeURIComponent(executionId)}?${params.toString()}`;
+		return runtimePreviewPath(executionId, params.toString());
 	}
 
 	function findPreviewActionResult(value: unknown, depth = 0): PreviewActionResult | null {
@@ -1448,7 +1455,7 @@
 				: typeof sandboxKeptValue === 'string'
 					? ['true', '1', 'yes'].includes(sandboxKeptValue.trim().toLowerCase())
 					: false;
-		return sandboxKept ? `/workflows/runtime-preview/${encodeURIComponent(executionId)}` : '';
+		return sandboxKept ? runtimePreviewPath(executionId) : '';
 	});
 
 	const primaryAppPreviewUrl = $derived.by(() => {
