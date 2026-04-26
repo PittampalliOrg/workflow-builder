@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS benchmark_suites (
 	id text PRIMARY KEY,
 	slug text NOT NULL,
@@ -180,5 +178,3 @@ ON CONFLICT (slug) DO UPDATE SET
 	default_instance_limit = EXCLUDED.default_instance_limit,
 	metadata = benchmark_suites.metadata || EXCLUDED.metadata,
 	updated_at = now();
-
-COMMIT;
