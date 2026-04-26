@@ -34,6 +34,14 @@ import type {
 	ObservabilityWorkflowStep
 } from '$lib/types/observability';
 
+type TraceBackendData = {
+	traceSpans: ObservabilityTraceSpan[];
+	logs: ObservabilityLogEntry[];
+	llmSpans: ObservabilityLlmSpan[];
+	toolSpans: ObservabilityToolSpan[];
+	warningMessage: string | null;
+};
+
 function formatMetric(value: number | null | undefined, suffix = 'ms'): string | null {
 	if (value == null || !Number.isFinite(value)) return null;
 	if (suffix === 'tokens') return `${value} ${suffix}`;
@@ -98,6 +106,72 @@ function parseTimestamp(value: string | null | undefined): number {
 	if (!value) return 0;
 	const parsed = new Date(value).getTime();
 	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function emptyTraceBackendData(warningMessage: string | null): TraceBackendData {
+	return {
+		traceSpans: [],
+		logs: [],
+		llmSpans: [],
+		toolSpans: [],
+		warningMessage
+	};
+}
+
+function formatTraceBackendWarning(err: unknown): string {
+	const message = err instanceof Error ? err.message : String(err);
+	if (message === 'fetch failed') {
+		return 'Trace details unavailable: ClickHouse trace backend is unreachable';
+	}
+	return `Trace details unavailable: ${message}`;
+}
+
+function traceBackendWarningIssue(args: {
+	scope: 'session' | 'trace';
+	identifier: string;
+	warningMessage: string | null;
+	timestamp: string | null;
+}): ObservabilityIssueMarker | null {
+	if (!args.warningMessage) return null;
+	return {
+		id: `issue-trace-backend-unavailable-${args.scope}-${args.identifier}`,
+		label: args.warningMessage,
+		severity: 'warning',
+		timestamp: args.timestamp ?? new Date().toISOString(),
+		serviceName: 'otel-clickhouse'
+	};
+}
+
+async function loadSessionTraceBackend(sessionId: string): Promise<TraceBackendData> {
+	try {
+		const [traceSpans, logs, llmSpans, toolSpans] = await Promise.all([
+			getSessionTraceSpans(sessionId),
+			getSessionLogs(sessionId),
+			getSessionLlmSpans(sessionId),
+			getSessionToolSpans(sessionId)
+		]);
+		return { traceSpans, logs, llmSpans, toolSpans, warningMessage: null };
+	} catch (err) {
+		const warningMessage = formatTraceBackendWarning(err);
+		console.warn('[observability] Session trace backend query failed', { sessionId, warningMessage });
+		return emptyTraceBackendData(warningMessage);
+	}
+}
+
+async function loadTraceBackend(traceId: string): Promise<TraceBackendData> {
+	try {
+		const [traceSpans, logs, llmSpans, toolSpans] = await Promise.all([
+			getTraceSpans(traceId),
+			getTraceLogs(traceId),
+			getTraceLlmSpans(traceId),
+			getTraceToolSpans(traceId)
+		]);
+		return { traceSpans, logs, llmSpans, toolSpans, warningMessage: null };
+	} catch (err) {
+		const warningMessage = formatTraceBackendWarning(err);
+		console.warn('[observability] Trace backend query failed', { traceId, warningMessage });
+		return emptyTraceBackendData(warningMessage);
+	}
 }
 
 function firstNonEmptyMessage(messages: ObservabilityLlmMessage[]): string | null {
@@ -786,16 +860,22 @@ function dedupeByKey<T>(items: T[], keyFn: (item: T) => string): T[] {
 export async function buildSessionInvestigation(sessionOrExecutionId: string): Promise<ObservabilityInvestigationPayload> {
 	const resolved = await resolveExecutionForInvestigation(sessionOrExecutionId);
 	const sessionId = resolved.sessionId ?? sessionOrExecutionId;
-	const [{ steps, status, startedAt, completedAt }, traceSpans, logs, llmSpans, toolSpans] =
-		await Promise.all([
-			getWorkflowSteps(sessionOrExecutionId),
-			getSessionTraceSpans(sessionId),
-			getSessionLogs(sessionId),
-			getSessionLlmSpans(sessionId),
-			getSessionToolSpans(sessionId)
-		]);
+	const [{ steps, status, startedAt, completedAt }, traceBackend] = await Promise.all([
+		getWorkflowSteps(sessionOrExecutionId),
+		loadSessionTraceBackend(sessionId)
+	]);
+	const { traceSpans, logs, llmSpans, toolSpans } = traceBackend;
 
-	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
+	const traceBackendIssue = traceBackendWarningIssue({
+		scope: 'session',
+		identifier: sessionId,
+		warningMessage: traceBackend.warningMessage,
+		timestamp: startedAt ?? completedAt
+	});
+	const issues = [
+		...buildIssues(traceSpans, logs, steps, toolSpans),
+		...(traceBackendIssue ? [traceBackendIssue] : [])
+	];
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	return {
@@ -827,40 +907,61 @@ export async function buildSessionInvestigation(sessionOrExecutionId: string): P
 }
 
 export async function buildTraceInvestigation(traceId: string): Promise<ObservabilityInvestigationPayload> {
-	const [traceSpansOriginal, traceLogs, traceLlmSpans, traceToolSpans] = await Promise.all([
-		getTraceSpans(traceId),
-		getTraceLogs(traceId),
-		getTraceLlmSpans(traceId),
-		getTraceToolSpans(traceId)
-	]);
+	const traceBackend = await loadTraceBackend(traceId);
+	const {
+		traceSpans: traceSpansOriginal,
+		logs: traceLogs,
+		llmSpans: traceLlmSpans,
+		toolSpans: traceToolSpans
+	} = traceBackend;
 
 	const sessionId =
 		traceSpansOriginal.find((span) => typeof span.attributes?.['session.id'] === 'string')?.attributes?.['session.id']?.toString() ??
 		traceLlmSpans[0]?.sessionId ??
 		traceToolSpans[0]?.sessionId ??
 		null;
-	const sessionExtras: [
-		ObservabilityTraceSpan[],
-		ObservabilityLogEntry[],
-		ObservabilityLlmSpan[],
-		ObservabilityToolSpan[],
-		{ steps: ObservabilityWorkflowStep[]; status: string | null; startedAt: string | null; completedAt: string | null }
-	] = sessionId
-		? await Promise.all([
-				getSessionTraceSpans(sessionId),
-				getSessionLogs(sessionId),
-				getSessionLlmSpans(sessionId),
-				getSessionToolSpans(sessionId),
-				getWorkflowSteps(sessionId)
-			])
-		: [[], [], [], [], { steps: [], status: null, startedAt: null, completedAt: null }];
-	const [sessionTraceSpans, sessionLogs, sessionLlmSpans, sessionToolSpans, sessionSteps] = sessionExtras;
+	let sessionTraceBackend = emptyTraceBackendData(null);
+	let sessionSteps: {
+		steps: ObservabilityWorkflowStep[];
+		status: string | null;
+		startedAt: string | null;
+		completedAt: string | null;
+	} = { steps: [], status: null, startedAt: null, completedAt: null };
+	if (sessionId) {
+		[sessionTraceBackend, sessionSteps] = await Promise.all([
+			loadSessionTraceBackend(sessionId),
+			getWorkflowSteps(sessionId)
+		]);
+	}
+	const {
+		traceSpans: sessionTraceSpans,
+		logs: sessionLogs,
+		llmSpans: sessionLlmSpans,
+		toolSpans: sessionToolSpans
+	} = sessionTraceBackend;
 	const traceSpans = dedupeByKey([...traceSpansOriginal, ...sessionTraceSpans], (span) => `${span.traceId}-${span.spanId}`);
 	const logs = dedupeByKey([...traceLogs, ...sessionLogs], (log) => `${log.timestamp}-${log.traceId}-${log.spanId}-${log.body}`);
 	const llmSpans = dedupeByKey([...traceLlmSpans, ...sessionLlmSpans], (span) => `${span.traceId}-${span.spanId}`);
 	const toolSpans = dedupeByKey([...traceToolSpans, ...sessionToolSpans], (span) => `${span.traceId}-${span.spanId}`);
 	const steps = sessionSteps.steps;
-	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
+	const traceBackendIssue = traceBackendWarningIssue({
+		scope: 'trace',
+		identifier: traceId,
+		warningMessage: traceBackend.warningMessage,
+		timestamp: traceSpans[0]?.startTime ?? sessionSteps.startedAt
+	});
+	const sessionTraceBackendIssue = sessionId
+		? traceBackendWarningIssue({
+				scope: 'session',
+				identifier: sessionId,
+				warningMessage: sessionTraceBackend.warningMessage,
+				timestamp: sessionSteps.startedAt ?? traceSpans[0]?.startTime
+			})
+		: null;
+	const issues = [
+		...buildIssues(traceSpans, logs, steps, toolSpans),
+		...[traceBackendIssue, sessionTraceBackendIssue].filter((issue): issue is ObservabilityIssueMarker => Boolean(issue))
+	];
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	return {
