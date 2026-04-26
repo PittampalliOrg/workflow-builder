@@ -66,7 +66,6 @@ function serverIdentityValues(server: Record<string, unknown>): Set<string> {
 		"pieceName",
 		"serverKey",
 		"displayName",
-		"sourceType",
 	]) {
 		const value = String(server[key] || "").trim();
 		if (!value) continue;

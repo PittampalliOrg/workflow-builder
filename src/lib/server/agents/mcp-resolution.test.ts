@@ -6,6 +6,18 @@ describe("agent MCP resolution", () => {
 		const result = resolveMcpServerConfigsFromRows({
 			rows: [
 				{
+					id: "mcp_0",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "microsoft-excel-365",
+					serverKey: null,
+					connectionExternalId: "conn_excel",
+					displayName: "Microsoft Excel 365",
+					registryRef: "ap-microsoft-excel-365-service",
+					serverUrl: "http://ap-microsoft-excel-365-service:3100/mcp",
+					metadata: { transport: "streamable_http" },
+				},
+				{
 					id: "mcp_1",
 					projectId: "project-1",
 					sourceType: "nimble_piece",

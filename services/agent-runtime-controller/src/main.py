@@ -127,9 +127,9 @@ def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.L
         return
 
     if isinstance(scopes, list):
-        patch = [{"op": "add", "path": "/scopes/-", "value": app_id}]
+        patch = {"scopes": [*scopes, app_id]}
     else:
-        patch = [{"op": "add", "path": "/scopes", "value": [app_id]}]
+        patch = {"scopes": [app_id]}
     CUSTOM.patch_namespaced_custom_object(
         group=DAPR_GROUP,
         version=DAPR_VERSION,
@@ -137,7 +137,6 @@ def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.L
         plural=DAPR_COMPONENT_PLURAL,
         name=AGENT_STATESTORE_COMPONENT,
         body=patch,
-        _content_type="application/json-patch+json",
     )
     logger.info(
         "enrolled app id %s in Dapr Component %s scopes",
