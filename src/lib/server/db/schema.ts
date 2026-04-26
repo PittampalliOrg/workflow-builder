@@ -12,6 +12,7 @@ import {
 	integer,
 	jsonb,
 	pgTable,
+	real,
 	serial,
 	text,
 	timestamp,
@@ -2856,6 +2857,362 @@ export const benchmarkArtifacts = pgTable(
 	}),
 );
 
+// ============================================================================
+// Evaluations (generic datasets, eval contracts, runs, graders, artifacts)
+// ============================================================================
+
+export type EvaluationGraderType =
+	| "string_check"
+	| "text_similarity"
+	| "score_model"
+	| "python"
+	| "multi"
+	| "external_harness";
+
+export type EvaluationRunStatus =
+	| "queued"
+	| "running"
+	| "grading"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export type EvaluationRunItemStatus =
+	| "queued"
+	| "running"
+	| "grading"
+	| "passed"
+	| "failed"
+	| "error"
+	| "cancelled"
+	| "skipped";
+
+export type EvaluationSubjectType =
+	| "agent"
+	| "workflow"
+	| "imported_outputs"
+	| "model";
+
+export type EvaluationArtifactKind =
+	| "dataset_import"
+	| "generated_output"
+	| "grader_result"
+	| "external_harness"
+	| "logs"
+	| "report"
+	| "predictions_jsonl";
+
+export const evaluationDatasets = pgTable(
+	"evaluation_datasets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		createdBy: text("created_by")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		description: text("description"),
+		sourceType: text("source_type").notNull().default("manual"),
+		sourceUrl: text("source_url"),
+		schema: jsonb("schema")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		projectCreatedIdx: index("idx_evaluation_datasets_project_created").on(
+			table.projectId,
+			table.createdAt,
+		),
+		projectNameIdx: index("idx_evaluation_datasets_project_name").on(
+			table.projectId,
+			table.name,
+		),
+	}),
+);
+
+export const evaluationDatasetRows = pgTable(
+	"evaluation_dataset_rows",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		datasetId: text("dataset_id")
+			.notNull()
+			.references(() => evaluationDatasets.id, { onDelete: "cascade" }),
+		externalId: text("external_id"),
+		input: jsonb("input")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		expectedOutput: jsonb("expected_output").$type<unknown>(),
+		generatedOutput: jsonb("generated_output").$type<unknown>(),
+		annotations: jsonb("annotations")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		rating: integer("rating"),
+		feedback: text("feedback"),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		datasetIdx: index("idx_evaluation_dataset_rows_dataset").on(
+			table.datasetId,
+		),
+		externalIdx: index("idx_evaluation_dataset_rows_external").on(
+			table.externalId,
+		),
+		datasetExternalUnique: unique(
+			"uq_evaluation_dataset_rows_dataset_external",
+		).on(table.datasetId, table.externalId),
+	}),
+);
+
+export const evaluations = pgTable(
+	"evaluations",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		createdBy: text("created_by")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		datasetId: text("dataset_id").references(() => evaluationDatasets.id, {
+			onDelete: "set null",
+		}),
+		name: text("name").notNull(),
+		description: text("description"),
+		taskConfig: jsonb("task_config")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		dataSourceConfig: jsonb("data_source_config")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		testingCriteria: jsonb("testing_criteria")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		projectCreatedIdx: index("idx_evaluations_project_created").on(
+			table.projectId,
+			table.createdAt,
+		),
+		datasetIdx: index("idx_evaluations_dataset").on(table.datasetId),
+	}),
+);
+
+export const evaluationGraders = pgTable(
+	"evaluation_graders",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		evaluationId: text("evaluation_id")
+			.notNull()
+			.references(() => evaluations.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		type: text("type").notNull().$type<EvaluationGraderType>(),
+		config: jsonb("config")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		weight: integer("weight").notNull().default(1),
+		passThreshold: real("pass_threshold").notNull().default(1),
+		orderIndex: integer("order_index").notNull().default(0),
+		enabled: boolean("enabled").notNull().default(true),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		evaluationIdx: index("idx_evaluation_graders_evaluation").on(
+			table.evaluationId,
+		),
+		typeIdx: index("idx_evaluation_graders_type").on(table.type),
+	}),
+);
+
+export const evaluationRuns = pgTable(
+	"evaluation_runs",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		evaluationId: text("evaluation_id")
+			.notNull()
+			.references(() => evaluations.id, { onDelete: "cascade" }),
+		datasetId: text("dataset_id").references(() => evaluationDatasets.id, {
+			onDelete: "set null",
+		}),
+		status: text("status")
+			.notNull()
+			.default("queued")
+			.$type<EvaluationRunStatus>(),
+		subjectType: text("subject_type")
+			.notNull()
+			.default("imported_outputs")
+			.$type<EvaluationSubjectType>(),
+		subjectId: text("subject_id"),
+		subjectVersion: text("subject_version"),
+		executionConfig: jsonb("execution_config")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		coordinatorExecutionId: text("coordinator_execution_id"),
+		summary: jsonb("summary")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		usage: jsonb("usage")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		error: text("error"),
+		cancelRequestedAt: timestamp("cancel_requested_at"),
+		startedAt: timestamp("started_at"),
+		completedAt: timestamp("completed_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		projectCreatedIdx: index("idx_evaluation_runs_project_created").on(
+			table.projectId,
+			table.createdAt,
+		),
+		statusIdx: index("idx_evaluation_runs_status").on(table.status),
+		evaluationIdx: index("idx_evaluation_runs_evaluation").on(
+			table.evaluationId,
+		),
+		datasetIdx: index("idx_evaluation_runs_dataset").on(table.datasetId),
+	}),
+);
+
+export const evaluationRunItems = pgTable(
+	"evaluation_run_items",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runId: text("run_id")
+			.notNull()
+			.references(() => evaluationRuns.id, { onDelete: "cascade" }),
+		datasetRowId: text("dataset_row_id").references(
+			() => evaluationDatasetRows.id,
+			{ onDelete: "set null" },
+		),
+		rowIndex: integer("row_index").notNull().default(0),
+		status: text("status")
+			.notNull()
+			.default("queued")
+			.$type<EvaluationRunItemStatus>(),
+		input: jsonb("input")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		expectedOutput: jsonb("expected_output").$type<unknown>(),
+		generatedOutput: jsonb("generated_output").$type<unknown>(),
+		graderResults: jsonb("grader_results")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		scores: jsonb("scores")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		usage: jsonb("usage")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		traceIds: jsonb("trace_ids").$type<string[]>().notNull().default([]),
+		sessionId: text("session_id").references(() => sessions.id, {
+			onDelete: "set null",
+		}),
+		workflowExecutionId: text("workflow_execution_id").references(
+			() => workflowExecutions.id,
+			{ onDelete: "set null" },
+		),
+		daprInstanceId: text("dapr_instance_id"),
+		error: text("error"),
+		startedAt: timestamp("started_at"),
+		completedAt: timestamp("completed_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		runIdx: index("idx_evaluation_run_items_run").on(table.runId),
+		statusIdx: index("idx_evaluation_run_items_status").on(table.status),
+		datasetRowIdx: index("idx_evaluation_run_items_dataset_row").on(
+			table.datasetRowId,
+		),
+		workflowExecutionIdx: index(
+			"idx_evaluation_run_items_workflow_execution",
+		).on(table.workflowExecutionId),
+	}),
+);
+
+export const evaluationArtifacts = pgTable(
+	"evaluation_artifacts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runId: text("run_id")
+			.notNull()
+			.references(() => evaluationRuns.id, { onDelete: "cascade" }),
+		runItemId: text("run_item_id").references(() => evaluationRunItems.id, {
+			onDelete: "cascade",
+		}),
+		kind: text("kind").notNull().$type<EvaluationArtifactKind>(),
+		path: text("path"),
+		content: jsonb("content").$type<unknown>(),
+		contentType: text("content_type"),
+		sizeBytes: integer("size_bytes"),
+		sha256: text("sha256"),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		runIdx: index("idx_evaluation_artifacts_run").on(table.runId),
+		itemIdx: index("idx_evaluation_artifacts_item").on(table.runItemId),
+		kindIdx: index("idx_evaluation_artifacts_kind").on(table.kind),
+	}),
+);
+
 /**
  * Resources mounted into a session's sandbox at startup — files, GitHub
  * repos. GitHub repos carry a reference to a vault credential (the clone
@@ -3214,3 +3571,18 @@ export type NewBenchmarkRunInstance =
 	typeof benchmarkRunInstances.$inferInsert;
 export type BenchmarkArtifact = typeof benchmarkArtifacts.$inferSelect;
 export type NewBenchmarkArtifact = typeof benchmarkArtifacts.$inferInsert;
+export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;
+export type NewEvaluationDataset = typeof evaluationDatasets.$inferInsert;
+export type EvaluationDatasetRow = typeof evaluationDatasetRows.$inferSelect;
+export type NewEvaluationDatasetRow =
+	typeof evaluationDatasetRows.$inferInsert;
+export type Evaluation = typeof evaluations.$inferSelect;
+export type NewEvaluation = typeof evaluations.$inferInsert;
+export type EvaluationGrader = typeof evaluationGraders.$inferSelect;
+export type NewEvaluationGrader = typeof evaluationGraders.$inferInsert;
+export type EvaluationRun = typeof evaluationRuns.$inferSelect;
+export type NewEvaluationRun = typeof evaluationRuns.$inferInsert;
+export type EvaluationRunItem = typeof evaluationRunItems.$inferSelect;
+export type NewEvaluationRunItem = typeof evaluationRunItems.$inferInsert;
+export type EvaluationArtifact = typeof evaluationArtifacts.$inferSelect;
+export type NewEvaluationArtifact = typeof evaluationArtifacts.$inferInsert;

@@ -8,7 +8,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!db) return json([]);
 
 	const limit = parseInt(url.searchParams.get('limit') || '50');
-	const result = await db
+	const projectOnly = url.searchParams.get('projectOnly') === '1';
+	if (projectOnly && !locals.session?.projectId) return json([]);
+	let query = db
 		.select({
 			id: workflows.id,
 			name: workflows.name,
@@ -17,8 +19,11 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			updatedAt: workflows.updatedAt
 		})
 		.from(workflows)
-		.orderBy(desc(workflows.updatedAt))
-		.limit(limit);
+		.$dynamic();
+	if (projectOnly && locals.session?.projectId) {
+		query = query.where(eq(workflows.projectId, locals.session.projectId));
+	}
+	const result = await query.orderBy(desc(workflows.updatedAt)).limit(limit);
 
 	return json(result);
 };

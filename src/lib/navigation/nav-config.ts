@@ -160,11 +160,11 @@ export const NAV_GROUPS: NavGroup[] = [
 				visibility: { workspaceScoped: true },
 			},
 			{
-				id: "benchmarks",
-				label: "Benchmarks",
+				id: "evaluations",
+				label: "Evaluations",
 				icon: FlaskConical,
-				href: ({ slug }) => `/workspaces/${slug}/benchmarks`,
-				match: /^\/workspaces\/[^/]+\/benchmarks(\/|$)/,
+				href: ({ slug }) => `/workspaces/${slug}/evaluations`,
+				match: /^\/workspaces\/[^/]+\/(evaluations|benchmarks)(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
 			{
