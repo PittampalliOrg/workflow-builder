@@ -31,6 +31,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 GROUP = "agents.x-k8s.io"
 VERSION = "v1alpha1"
 PLURAL = "agentruntimes"
+DAPR_GROUP = "dapr.io"
+DAPR_VERSION = "v1alpha1"
+DAPR_COMPONENT_PLURAL = "components"
 
 LABEL_ROLE = "agents.x-k8s.io/role"
 LABEL_SLUG = "agents.x-k8s.io/slug"
@@ -43,6 +46,10 @@ IDLE_CHECK_INTERVAL = 60
 
 DEFAULT_NAMESPACE = os.environ.get("CONTROLLER_NAMESPACE", "workflow-builder")
 DEFAULT_SA = os.environ.get("AGENT_RUNTIME_SERVICE_ACCOUNT", "agent-runtime")
+AGENT_STATESTORE_COMPONENT = os.environ.get(
+    "AGENT_RUNTIME_STATESTORE_COMPONENT",
+    "dapr-agent-py-statestore",
+)
 # Image pull secrets reused from dapr-agent-py Deployment pattern.
 DEFAULT_PULL_SECRETS = [
     s.strip()
@@ -84,6 +91,59 @@ CUSTOM = client.CustomObjectsApi()
 
 def _deployment_name(agent_slug: str) -> str:
     return f"agent-runtime-{agent_slug}"
+
+
+def _app_id(spec: dict[str, Any]) -> str:
+    return str(spec.get("appId") or _deployment_name(spec["agentSlug"]))
+
+
+def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
+    """Enroll the per-agent Dapr app id in the shared actor state store.
+
+    Dapr durable workflows use the actor backend. Each runtime pod must see
+    exactly one actorStateStore=true Component, so the centralized
+    dapr-agent-py state store is scoped and the controller mutates only the
+    scopes list. Workflow history stays centralized; no per-agent state store
+    is created or deleted.
+    """
+    if not app_id:
+        return
+    try:
+        component = CUSTOM.get_namespaced_custom_object(
+            group=DAPR_GROUP,
+            version=DAPR_VERSION,
+            namespace=namespace,
+            plural=DAPR_COMPONENT_PLURAL,
+            name=AGENT_STATESTORE_COMPONENT,
+        )
+    except client.ApiException as exc:
+        raise RuntimeError(
+            f"Dapr Component {AGENT_STATESTORE_COMPONENT!r} is required before "
+            f"AgentRuntime {app_id!r} can host durable workflows"
+        ) from exc
+
+    scopes = component.get("scopes")
+    if isinstance(scopes, list) and app_id in scopes:
+        return
+
+    if isinstance(scopes, list):
+        patch = [{"op": "add", "path": "/scopes/-", "value": app_id}]
+    else:
+        patch = [{"op": "add", "path": "/scopes", "value": [app_id]}]
+    CUSTOM.patch_namespaced_custom_object(
+        group=DAPR_GROUP,
+        version=DAPR_VERSION,
+        namespace=namespace,
+        plural=DAPR_COMPONENT_PLURAL,
+        name=AGENT_STATESTORE_COMPONENT,
+        body=patch,
+        _content_type="application/json-patch+json",
+    )
+    logger.info(
+        "enrolled app id %s in Dapr Component %s scopes",
+        app_id,
+        AGENT_STATESTORE_COMPONENT,
+    )
 
 
 def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -499,6 +559,7 @@ def reconcile_mcp_service(spec: dict[str, Any], namespace: str, logger: logging.
 def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> dict:
     """Materialize Deployment at replicas=0."""
     dep_name = _deployment_name(spec["agentSlug"])
+    ensure_agent_statestore_scope(_app_id(spec), namespace, logger)
     dep = _build_deployment(dep_name, namespace, dict(spec))
 
     try:
@@ -532,6 +593,7 @@ def on_spec_update(spec: dict, name: str, namespace: str, logger: logging.Logger
     Kubernetes would 422 "may not specify more than 1 handler type".
     """
     dep_name = _deployment_name(spec["agentSlug"])
+    ensure_agent_statestore_scope(_app_id(spec), namespace, logger)
     dep = _build_deployment(dep_name, namespace, dict(spec))
     # Preserve current replica count on spec update — don't bounce a hot pod.
     try:
@@ -573,6 +635,7 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
     if old == new or not new:
         return
     dep_name = _deployment_name(spec["agentSlug"])
+    ensure_agent_statestore_scope(_app_id(spec), namespace, logger)
     logger.info("wake signal %s -> scaling Deployment %s to 1", new, dep_name)
     _scale_deployment(dep_name, namespace, 1)
     # Read the live Deployment to decide phase — on_deployment_event may

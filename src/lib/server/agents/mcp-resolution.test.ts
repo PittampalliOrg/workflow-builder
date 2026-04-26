@@ -1,0 +1,88 @@
+import { describe, expect, it } from "vitest";
+import { resolveMcpServerConfigsFromRows } from "./mcp-resolution";
+
+describe("agent MCP resolution", () => {
+	it("resolves a logical piece descriptor to the enabled project MCP connection", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_1",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "microsoft-outlook",
+					serverKey: null,
+					connectionExternalId: "conn_outlook",
+					displayName: "Microsoft Outlook",
+					registryRef: "ap-microsoft-outlook-service",
+					serverUrl: "http://ap-microsoft-outlook-service:3100/mcp",
+					metadata: { transport: "streamable_http" },
+				},
+			],
+			requestedServers: [
+				{
+					server_name: "piece_microsoft-outlook",
+					displayName: "Microsoft Outlook",
+					sourceType: "nimble_piece",
+					pieceName: "microsoft-outlook",
+					transport: "streamable_http",
+					allowedTools: ["list_emails"],
+				},
+			],
+		});
+
+		expect(result.warnings).toEqual([]);
+		expect(result.mcpServers).toEqual([
+			{
+				server_name: "piece_microsoft-outlook",
+				name: "piece_microsoft-outlook",
+				displayName: "Microsoft Outlook",
+				sourceType: "nimble_piece",
+				pieceName: "microsoft-outlook",
+				serverKey: null,
+				connectionExternalId: "conn_outlook",
+				transport: "streamable_http",
+				url: "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local:3100/mcp",
+				headers: { "X-Connection-External-Id": "conn_outlook" },
+				allowedTools: ["list_emails"],
+			},
+		]);
+	});
+
+	it("includes all project connections in project mode without duplicating explicit selections", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_1",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					serverKey: null,
+					connectionExternalId: "conn_github",
+					displayName: "GitHub",
+					registryRef: "ap-github-service",
+					serverUrl: "http://ap-github-service:3100/mcp",
+					metadata: null,
+				},
+				{
+					id: "mcp_2",
+					projectId: "project-1",
+					sourceType: "custom_url",
+					pieceName: null,
+					serverKey: "docs",
+					connectionExternalId: null,
+					displayName: "Docs",
+					registryRef: null,
+					serverUrl: "https://docs.example.test/mcp",
+					metadata: null,
+				},
+			],
+			requestedServers: [{ pieceName: "github", displayName: "GitHub" }],
+			includeProjectConnections: true,
+		});
+
+		expect(result.mcpServers.map((server) => server.server_name)).toEqual([
+			"piece_github",
+			"custom_docs",
+		]);
+	});
+});

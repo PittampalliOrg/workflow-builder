@@ -75,8 +75,15 @@
 				status = 'error';
 				return;
 			}
-			const { session } = (await res.json()) as { session: { id: string } };
+			const { session } = (await res.json()) as {
+				session: { id: string; daprInstanceId?: string | null; errorMessage?: string | null };
+			};
 			sessionId = session.id;
+			if (!session.daprInstanceId && session.errorMessage) {
+				errorMessage = `Session start failed: ${session.errorMessage}`;
+				status = 'error';
+				return;
+			}
 			stream = createSessionStream(session.id);
 			unsub = stream.subscribe((state) => {
 				events = state.events;

@@ -6,6 +6,7 @@ import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import type { AgentConfig, AgentDetail } from "$lib/types/agents";
 import { lookupBuiltinTool } from "./builtin-tool-catalog";
 import { rewriteMcpForBrowserSidecar } from "./mcp-sidecar";
+import { resolveAgentConfigMcpForProject } from "./mcp-resolution";
 
 /**
  * Dual-write: Postgres remains the source of truth for agent CRUD/versioning/
@@ -722,21 +723,24 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 	// workspace environment. environmentRecord.imageTag is the WORKSPACE sandbox
 	// image used by workspace/profile tools, not the agent runtime image.
 	const config = await loadCurrentAgentConfig(agentId);
+	const resolvedConfig = config
+		? await resolveAgentConfigMcpForProject(config, row.projectId)
+		: null;
 	const imageTag =
-		config?.runtime === "browser-use-agent"
+		resolvedConfig?.runtime === "browser-use-agent"
 			? env.AGENT_RUNTIME_BROWSER_USE_DEFAULT_IMAGE ??
 				"gitea-ryzen.tail286401.ts.net/giteaadmin/browser-use-agent-sandbox:latest"
 			: env.AGENT_RUNTIME_DEFAULT_IMAGE ??
 				"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
 
-	const rawMcpServers = (config?.mcpServers ?? []).map((s) => ({
-		name: s.serverName ?? s.name ?? "mcp",
+	const rawMcpServers = (resolvedConfig?.mcpServers ?? []).map((s) => ({
+		name: s.server_name ?? s.serverName ?? s.name ?? "mcp",
 		transport: (s.transport ?? "streamable_http") as
 			| "streamable_http"
 			| "sse"
 			| "stdio"
 			| "websocket",
-		url: s.url,
+		url: s.url ?? s.serverUrl,
 		command: s.command,
 		args: s.args,
 		headers: s.headers,
@@ -749,7 +753,7 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 	// inside the dapr-agent-py container, which has no Chromium binary.
 	// See src/lib/server/agents/mcp-sidecar.ts for the matcher + rewrite.
 	const { mcpServers, useBrowserSidecar } =
-		config?.runtime === "browser-use-agent"
+		resolvedConfig?.runtime === "browser-use-agent"
 			? { mcpServers: rawMcpServers, useBrowserSidecar: false }
 			: rewriteMcpForBrowserSidecar(rawMcpServers);
 

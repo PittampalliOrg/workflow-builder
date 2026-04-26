@@ -75,6 +75,7 @@ export type AgentConfig = {
 	tools?: string[];
 	mcpConnectionMode: "project" | "explicit" | "auto";
 	mcpServers: McpServerProfileConfig[];
+	mcpConnectionWarnings?: string[];
 	skills: AgentSkillConfig[];
 	hooks?: AgentHooksConfig;
 	plugins?: string[];

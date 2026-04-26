@@ -4,6 +4,7 @@ import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
+import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
 
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
@@ -91,11 +92,15 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// (no binary). The per-turn config wins at runtime over the bootstrap
 	// env var (see dapr-agent-py _ensure_mcp_client_async), so this
 	// rewrite must happen here — registry-sync only covers the bootstrap.
+	const resolvedAgentConfig = await resolveAgentConfigMcpForProject(
+		agent.config,
+		agent.projectId,
+	);
 	const { mcpServers: rewrittenMcp } = rewriteMcpForBrowserSidecar(
-		(agent.config as { mcpServers?: unknown[] }).mcpServers as never,
+		(resolvedAgentConfig as { mcpServers?: unknown[] }).mcpServers as never,
 	);
 	const agentConfigForDispatch = {
-		...agent.config,
+		...resolvedAgentConfig,
 		mcpServers: rewrittenMcp,
 	};
 

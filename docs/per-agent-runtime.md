@@ -60,13 +60,13 @@ partition access so each pod sees exactly one:
 | Component | `actorStateStore` | Scopes (allowlist) |
 |---|---|---|
 | `workflowstatestore` | true | `workflow-orchestrator`, `workspace-runtime` |
-| `dapr-agent-py-statestore` | true | `dapr-agent-py`, `dapr-agent-py-testing`, `workflow-builder`, every enumerated `agent-runtime-<slug>` |
+| `dapr-agent-py-statestore` | true | `dapr-agent-py`, `dapr-agent-py-testing`, `workflow-builder`, controller-enrolled `agent-runtime-<slug>` app ids |
 | `agent-workflow` | true | legacy slugs only; no active consumer |
 
-**Adding a new agent**: append the slug to the `scopes:` list in
-`packages/components/active-development/manifests/dapr-agent-py/Component-dapr-agent-py-statestore.yaml`.
-Follow-up work: have the controller patch this automatically on CR
-create so the enumeration stays in sync.
+**Adding a new agent**: create or update its `AgentRuntime` CR. The
+`agent-runtime-controller` patches `dapr-agent-py-statestore.scopes` with
+the runtime app id before creating or waking the pod, preserving the single
+centralized actor state store required by Dapr durable workflows.
 
 Non-actor components (`agent-registry`, `agent-memory`,
 `runtime-config`, `pubsub`, `llm-*`, `kubernetes-secrets`) are

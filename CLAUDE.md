@@ -216,10 +216,10 @@ A Dapr sidecar refuses to start if it sees more than one Component with `actorSt
 | Component | `actorStateStore` | Scopes | Used by |
 |---|---|---|---|
 | `workflowstatestore` | true | workflow-orchestrator | Parent orchestrator history (`wfstate_*` tables) |
-| `dapr-agent-py-statestore` | true | dapr-agent-py, dapr-agent-py-testing, workflow-builder, `agent-runtime-<slug>` × N | Per-agent pod actor state + BFF workflow state |
+| `dapr-agent-py-statestore` | true | dapr-agent-py, dapr-agent-py-testing, workflow-builder, controller-enrolled `agent-runtime-<slug>` app ids | Per-agent pod actor state + BFF workflow state |
 | `agent-workflow` | true | legacy openshell-durable-agent / vanilla-durable-agent (no active consumers) | n/a |
 
-**When adding a new agent**, its slug must be appended to `dapr-agent-py-statestore.scopes` in `packages/components/active-development/manifests/dapr-agent-py/Component-dapr-agent-py-statestore.yaml`. TODO: have the controller patch this on CR create so the list stays in sync with the CR catalog automatically.
+**When adding a new agent**, create or update its `AgentRuntime` CR. The `agent-runtime-controller` patches `dapr-agent-py-statestore.scopes` with the runtime app id before creating or waking the pod, so the CR catalog stays aligned with the centralized Dapr actor state store.
 
 ## Workflow → Session Bridge
 

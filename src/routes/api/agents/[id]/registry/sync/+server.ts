@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { registerAgent } from "$lib/server/agents/registry-sync";
+import { registerAgent, syncAgentRuntimeCR } from "$lib/server/agents/registry-sync";
 
 /**
  * POST /api/agents/{id}/registry/sync
@@ -11,5 +11,6 @@ import { registerAgent } from "$lib/server/agents/registry-sync";
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const result = await registerAgent(params.id);
+	await syncAgentRuntimeCR(params.id);
 	return json(result);
 };
