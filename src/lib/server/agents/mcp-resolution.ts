@@ -110,8 +110,36 @@ function shouldQualifyMcpUrl(server: Record<string, unknown>): boolean {
 	);
 }
 
-function qualifyMcpServerUrl(server: Record<string, unknown>, rawUrl: string): string {
+function isActivepiecesPieceServiceHost(hostname: string): boolean {
+	const serviceName = hostname.split(".")[0] ?? "";
+	return /^ap-[a-z0-9]([-a-z0-9]*[a-z0-9])?-service$/.test(serviceName);
+}
+
+function shouldUseKnativePieceServiceUrl(server: Record<string, unknown>): boolean {
+	const sourceType = String(server.sourceType || server.source_type || "");
+	const registryRef = String(server.registryRef || server.registry_ref || "");
+	return sourceType === "nimble_piece" || registryRef.startsWith("ap-");
+}
+
+function normalizeLegacyPieceMcpPort(server: Record<string, unknown>, rawUrl: string): string {
 	const text = rawUrl.trim();
+	if (!text || !shouldUseKnativePieceServiceUrl(server)) return text;
+	let parsed: URL;
+	try {
+		parsed = new URL(text);
+	} catch {
+		return text;
+	}
+	if (!["http:", "https:"].includes(parsed.protocol)) return text;
+	if (isActivepiecesPieceServiceHost(parsed.hostname) && parsed.port === "3100") {
+		parsed.port = "";
+		return parsed.toString();
+	}
+	return text;
+}
+
+function qualifyMcpServerUrl(server: Record<string, unknown>, rawUrl: string): string {
+	const text = normalizeLegacyPieceMcpPort(server, rawUrl);
 	if (!text || !shouldQualifyMcpUrl(server)) return text;
 	let parsed: URL;
 	try {

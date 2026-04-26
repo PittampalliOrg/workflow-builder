@@ -27,8 +27,27 @@ export function pieceMcpRegistryRef(pieceName: string): string {
 	return `ap-${normalizePieceName(pieceName)}-service`;
 }
 
+function isActivepiecesPieceServiceHost(hostname: string): boolean {
+	const serviceName = hostname.split('.')[0] ?? '';
+	return /^ap-[a-z0-9]([-a-z0-9]*[a-z0-9])?-service$/.test(serviceName);
+}
+
+export function normalizePieceMcpServerUrl(value: string): string {
+	const text = value.trim();
+	if (!text) return text;
+	try {
+		const url = new URL(text);
+		if (isActivepiecesPieceServiceHost(url.hostname) && url.port === '3100') {
+			url.port = '';
+		}
+		return url.toString();
+	} catch {
+		return text;
+	}
+}
+
 export function pieceMcpServerUrl(pieceName: string): string {
-	return `http://${pieceMcpRegistryRef(pieceName)}:3100/mcp`;
+	return `http://${pieceMcpRegistryRef(pieceName)}/mcp`;
 }
 
 export function humanizePieceName(pieceName: string): string {

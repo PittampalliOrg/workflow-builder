@@ -4,7 +4,8 @@ import {
 	normalizePieceName,
 	pieceCandidates,
 	pieceMcpRegistryRef,
-	pieceMcpServerUrl
+	pieceMcpServerUrl,
+	normalizePieceMcpServerUrl
 } from './mcp-connections';
 
 describe('mcp connection helpers', () => {
@@ -18,7 +19,10 @@ describe('mcp connection helpers', () => {
 	it('derives the Nimble piece MCP service identity', () => {
 		expect(pieceMcpRegistryRef('microsoft-excel-365')).toBe('ap-microsoft-excel-365-service');
 		expect(pieceMcpServerUrl('@activepieces/piece-microsoft-excel-365')).toBe(
-			'http://ap-microsoft-excel-365-service:3100/mcp'
+			'http://ap-microsoft-excel-365-service/mcp'
+		);
+		expect(normalizePieceMcpServerUrl('http://ap-microsoft-excel-365-service:3100/mcp')).toBe(
+			'http://ap-microsoft-excel-365-service/mcp'
 		);
 	});
 

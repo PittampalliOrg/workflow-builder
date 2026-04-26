@@ -53,7 +53,7 @@ describe("agent MCP resolution", () => {
 				serverKey: null,
 				connectionExternalId: "conn_outlook",
 				transport: "streamable_http",
-				url: "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local:3100/mcp",
+				url: "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local/mcp",
 				headers: { "X-Connection-External-Id": "conn_outlook" },
 				allowedTools: ["list_emails"],
 			},

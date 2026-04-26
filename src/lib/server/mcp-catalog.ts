@@ -1,5 +1,11 @@
 import type { McpConnectionSourceType } from '$lib/server/db/schema';
-import { humanizePieceName, normalizePieceName } from '$lib/server/mcp-connections';
+import {
+	humanizePieceName,
+	normalizePieceName,
+	normalizePieceMcpServerUrl,
+	pieceMcpRegistryRef,
+	pieceMcpServerUrl
+} from '$lib/server/mcp-connections';
 
 export type ProjectMcpCatalogRow = {
 	id: string;
@@ -164,8 +170,8 @@ export function buildAvailablePieceMcpCatalogEntry(input: {
 		isOAuth2: isOAuth2AuthType(authType),
 		oauthAppConfigured: Boolean(input.oauthAppConfigured),
 		actionCount: actionTotal,
-		registryRef: `ap-${pieceName}-service`,
-		serverUrl: `http://ap-${pieceName}-service:3100/mcp`,
+		registryRef: pieceMcpRegistryRef(pieceName),
+		serverUrl: pieceMcpServerUrl(pieceName),
 		appConnections: input.appConnections ?? [],
 		mcpConnection: input.mcpConnection ?? null
 	};
@@ -198,7 +204,9 @@ export function buildProjectMcpCatalogEntry(
 		};
 	}
 
-	const url = row.serverUrl?.trim();
+	const rawUrl = row.serverUrl?.trim();
+	const url =
+		sourceType === 'nimble_piece' && rawUrl ? normalizePieceMcpServerUrl(rawUrl) : rawUrl;
 	if (!url || !/^https?:\/\//.test(url)) return null;
 
 	if (sourceType === 'nimble_piece') {

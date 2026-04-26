@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { mcpConnections } from '$lib/server/db/schema';
-import { requireSessionProjectId } from '$lib/server/mcp-connections';
+import { normalizePieceMcpServerUrl, requireSessionProjectId } from '$lib/server/mcp-connections';
 
 function toolNameFromUnknown(value: unknown): string | null {
 	if (typeof value === 'string') {
@@ -62,7 +62,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!connection.serverUrl) return json({ toolNames: [], source: 'none' });
 
 	try {
-		const response = await fetch(healthUrl(connection.serverUrl), {
+		const response = await fetch(healthUrl(normalizePieceMcpServerUrl(connection.serverUrl)), {
 			headers: { Accept: 'application/json' },
 			signal: AbortSignal.timeout(5000)
 		});

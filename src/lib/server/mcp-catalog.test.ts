@@ -22,7 +22,7 @@ describe('project MCP catalog helpers', () => {
 		).toEqual({
 			name: 'ap-microsoft-onedrive',
 			displayName: 'Microsoft OneDrive',
-			url: 'http://ap-microsoft-onedrive-service:3100/mcp',
+			url: 'http://ap-microsoft-onedrive-service/mcp',
 			sourceType: 'nimble_piece',
 			pieceName: '@activepieces/piece-microsoft-onedrive',
 			connectionExternalId: 'external-1',
@@ -170,7 +170,7 @@ describe('project MCP catalog helpers', () => {
 			oauthAppConfigured: true,
 			actionCount: 2,
 			registryRef: 'ap-github-service',
-			serverUrl: 'http://ap-github-service:3100/mcp',
+			serverUrl: 'http://ap-github-service/mcp',
 			appConnections: [
 				{
 					externalId: 'conn_app_1',

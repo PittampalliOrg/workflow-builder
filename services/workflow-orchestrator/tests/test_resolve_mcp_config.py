@@ -107,14 +107,71 @@ def test_resolves_logical_profile_server_to_project_connection(monkeypatch):
             "server_name": "piece_github",
             "displayName": "GitHub",
             "sourceType": "nimble_piece",
-            "pieceName": "github",
-            "connectionExternalId": "conn_1",
-            "transport": "streamable_http",
-            "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp",
+                "pieceName": "github",
+                "connectionExternalId": "conn_1",
+                "transport": "streamable_http",
+                "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp",
             "headers": {"X-Connection-External-Id": "conn_1"},
             "allowedTools": ["list_repositories"],
         }
     ]
+
+
+def test_matches_piece_descriptor_by_piece_name_not_source_type(monkeypatch):
+    rows = [
+        {
+            "id": "mcp_excel",
+            "project_id": "default",
+            "source_type": "nimble_piece",
+            "piece_name": "microsoft-excel-365",
+            "server_key": None,
+            "connection_external_id": "conn_excel",
+            "display_name": "Microsoft Excel 365",
+            "registry_ref": "ap-microsoft-excel-365-service",
+            "server_url": "http://ap-microsoft-excel-365-service:3100/mcp",
+            "metadata": {"transport": "streamable_http"},
+        },
+        {
+            "id": "mcp_outlook",
+            "project_id": "default",
+            "source_type": "nimble_piece",
+            "piece_name": "microsoft-outlook",
+            "server_key": None,
+            "connection_external_id": "conn_outlook",
+            "display_name": "Microsoft Outlook",
+            "registry_ref": "ap-microsoft-outlook-service",
+            "server_url": "http://ap-microsoft-outlook-service:3100/mcp",
+            "metadata": {"transport": "streamable_http"},
+        },
+    ]
+    monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        resolve_mcp_config.psycopg2,
+        "connect",
+        lambda _url: FakeConnection(rows),
+    )
+
+    result = resolve_mcp_config.resolve_agent_mcp_servers(
+        None,
+        {
+            "projectId": "default",
+            "requestedServers": [
+                {
+                    "server_name": "piece_microsoft-outlook",
+                    "sourceType": "nimble_piece",
+                    "pieceName": "microsoft-outlook",
+                }
+            ],
+        },
+    )
+
+    assert result["warnings"] == []
+    assert result["mcpServers"][0]["pieceName"] == "microsoft-outlook"
+    assert result["mcpServers"][0]["connectionExternalId"] == "conn_outlook"
+    assert (
+        result["mcpServers"][0]["url"]
+        == "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local/mcp"
+    )
 
 
 def test_keeps_direct_stdio_server_without_database():
@@ -171,7 +228,7 @@ def test_qualifies_direct_nimble_service_url_for_cross_namespace_agents():
                 "sourceType": "nimble_piece",
                 "registryRef": "ap-microsoft-onedrive-service",
                 "transport": "streamable_http",
-                "url": "http://ap-microsoft-onedrive-service.workflow-builder.svc.cluster.local:3100/mcp",
+                "url": "http://ap-microsoft-onedrive-service.workflow-builder.svc.cluster.local/mcp",
                 "allowedTools": ["list_files", "list_folders"],
             }
         ],

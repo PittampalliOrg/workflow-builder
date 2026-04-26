@@ -112,7 +112,6 @@ def _server_identity_values(server: dict[str, Any]) -> set[str]:
         "pieceName",
         "serverKey",
         "displayName",
-        "sourceType",
     ):
         value = str(server.get(key) or "").strip()
         if value:
@@ -154,8 +153,31 @@ def _should_qualify_server_url(server: dict[str, Any]) -> bool:
     }
 
 
-def _qualify_mcp_server_url(server: dict[str, Any], url: str) -> str:
+def _is_activepieces_piece_service_host(hostname: str) -> bool:
+    service_name = hostname.split(".", 1)[0]
+    return bool(re.match(r"^ap-[a-z0-9]([-a-z0-9]*[a-z0-9])?-service$", service_name))
+
+
+def _should_use_knative_piece_service_url(server: dict[str, Any]) -> bool:
+    source_type = str(server.get("sourceType") or server.get("source_type") or "")
+    registry_ref = str(server.get("registryRef") or server.get("registry_ref") or "")
+    return source_type == "nimble_piece" or registry_ref.startswith("ap-")
+
+
+def _normalize_legacy_piece_mcp_port(server: dict[str, Any], url: str) -> str:
     text = str(url or "").strip()
+    if not text or not _should_use_knative_piece_service_url(server):
+        return text
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return text
+    if _is_activepieces_piece_service_host(parsed.hostname) and parsed.port == 3100:
+        return urlunparse(parsed._replace(netloc=parsed.hostname))
+    return text
+
+
+def _qualify_mcp_server_url(server: dict[str, Any], url: str) -> str:
+    text = _normalize_legacy_piece_mcp_port(server, str(url or ""))
     if not text or not _should_qualify_server_url(server):
         return text
     parsed = urlparse(text)
