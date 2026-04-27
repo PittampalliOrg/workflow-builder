@@ -43,6 +43,7 @@ import {
 import {
 	aggregateGraderResults,
 	runGrader,
+	runGraderAsync,
 	validateGraderDefinition,
 	type GraderDefinition,
 	type GraderResult,
@@ -1441,22 +1442,24 @@ async function gradeLoadedEvaluationRunItem(
 ) {
 	const database = requireDb();
 	const weights = new Map(activeGraders.map((grader) => [grader.id, grader.weight]));
-	const results = activeGraders.map((grader) =>
-		runGrader(
-			{
-				id: grader.id,
-				name: grader.name,
-				type: grader.type,
-				config: grader.config,
-				weight: grader.weight,
-				passThreshold: grader.passThreshold,
-				enabled: grader.enabled,
-			},
-			{
-				input: item.input,
-				expectedOutput: item.expectedOutput,
-				generatedOutput: item.generatedOutput,
-			},
+	const results = await Promise.all(
+		activeGraders.map((grader) =>
+			runGraderAsync(
+				{
+					id: grader.id,
+					name: grader.name,
+					type: grader.type,
+					config: grader.config,
+					weight: grader.weight,
+					passThreshold: grader.passThreshold,
+					enabled: grader.enabled,
+				},
+				{
+					input: item.input,
+					expectedOutput: item.expectedOutput,
+					generatedOutput: item.generatedOutput,
+				},
+			),
 		),
 	);
 	const aggregate = aggregateGraderResults(results, weights);

@@ -176,6 +176,32 @@ export function runGrader(
 	}
 }
 
+/**
+ * Async variant of runGrader. Sync types fall through to runGrader; types that
+ * need an external service (score_model, python, endpoint-shaped
+ * external_harness) dispatch to the async runners in `./grader-runners.ts`.
+ *
+ * Service layer should use this instead of `runGrader` whenever possible.
+ */
+export async function runGraderAsync(
+	grader: GraderDefinition,
+	context: GraderContext,
+): Promise<GraderResult> {
+	const needsAsync =
+		grader.type === "score_model" ||
+		grader.type === "python" ||
+		(grader.type === "external_harness" &&
+			typeof grader.config.url === "string" &&
+			(grader.config.url as string).trim().length > 0);
+	if (!needsAsync) return runGrader(grader, context);
+	const runners = await import("./grader-runners");
+	const result = await runners.runGraderAsync(grader, context);
+	if (result.skipped && result.error === "async runner declined; use sync runGrader") {
+		return runGrader(grader, context);
+	}
+	return result;
+}
+
 export function aggregateGraderResults(
 	results: GraderResult[],
 	weightsById = new Map<string, number>(),

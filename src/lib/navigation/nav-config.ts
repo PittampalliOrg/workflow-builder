@@ -72,7 +72,14 @@ export type NavItem = {
 };
 
 export type NavGroup = {
-	id: "build" | "managed-agents" | "analytics" | "operate" | "manage" | "admin";
+	id:
+		| "build"
+		| "managed-agents"
+		| "optimize"
+		| "analytics"
+		| "operate"
+		| "manage"
+		| "admin";
 	label: string;
 	icon: LucideIcon;
 	badge?: string;
@@ -160,14 +167,6 @@ export const NAV_GROUPS: NavGroup[] = [
 				visibility: { workspaceScoped: true },
 			},
 			{
-				id: "evaluations",
-				label: "Evaluations",
-				icon: FlaskConical,
-				href: ({ slug }) => `/workspaces/${slug}/evaluations`,
-				match: /^\/workspaces\/[^/]+\/(evaluations|benchmarks)(\/|$)/,
-				visibility: { workspaceScoped: true },
-			},
-			{
 				id: "environments",
 				label: "Environments",
 				icon: Layers,
@@ -189,6 +188,22 @@ export const NAV_GROUPS: NavGroup[] = [
 				icon: Plug,
 				href: ({ slug }) => `/workspaces/${slug}/connections`,
 				match: /^\/workspaces\/[^/]+\/connections(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
+		],
+	},
+	{
+		id: "optimize",
+		label: "Optimize",
+		icon: FlaskConical,
+		defaultOpen: true,
+		items: [
+			{
+				id: "evaluations",
+				label: "Evaluations",
+				icon: FlaskConical,
+				href: ({ slug }) => `/workspaces/${slug}/evaluations`,
+				match: /^\/workspaces\/[^/]+\/(evaluations|benchmarks)(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
 		],

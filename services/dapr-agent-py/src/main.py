@@ -3790,6 +3790,70 @@ def raise_session_event_endpoint(request: dict) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/grader-evaluate")
+def grader_evaluate(payload: dict):
+    """Synchronous one-shot LLM call for the workflow-builder evaluations
+    `score_model` (Model labeler / Model scorer) graders.
+
+    The BFF side calls this via Dapr service-invoke after waking the per-agent
+    runtime pod. We bypass the workflow / agent runtime entirely and call the
+    Anthropic SDK directly with the supplied system + user prompts. No tools,
+    no compaction, no MCP — graders are stateless.
+
+    Body shape:
+        { "systemPrompt": str?, "userPrompt": str, "model": str? (component name) }
+
+    Response:
+        { "output": str }
+    """
+    user_prompt = str(payload.get("userPrompt") or "").strip()
+    system_prompt = str(payload.get("systemPrompt") or "")
+    component = (
+        str(payload.get("model") or "").strip()
+        or os.environ.get("EVALUATIONS_GRADER_LLM_COMPONENT", "")
+        or DEFAULT_LLM_COMPONENT
+    )
+
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="userPrompt is required")
+
+    try:
+        from src.anthropic_adapter import _call_anthropic_sdk
+    except Exception as exc:  # pragma: no cover - import failure surfaces config issue
+        raise HTTPException(status_code=500, detail=f"adapter import failed: {exc}")
+
+    messages = [{"role": "user", "content": user_prompt}]
+    kwargs: dict = {}
+    if system_prompt.strip():
+        kwargs["system"] = system_prompt
+
+    try:
+        result = _call_anthropic_sdk(
+            component=component,
+            messages=messages,
+            tools=None,
+            **kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[grader-evaluate] LLM call failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {exc}")
+
+    content = result.get("content") if isinstance(result, dict) else None
+    if isinstance(content, list):
+        # Anthropic SDK returns a list of blocks; concatenate text blocks
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif hasattr(block, "type") and getattr(block, "type", "") == "text":
+                parts.append(str(getattr(block, "text", "")))
+        output = "".join(parts)
+    else:
+        output = str(content or "")
+
+    return {"output": output}
+
+
 @app.get("/healthz")
 async def health_check() -> dict:
     return {"status": "healthy", "service": AGENT_SERVICE_NAME}
