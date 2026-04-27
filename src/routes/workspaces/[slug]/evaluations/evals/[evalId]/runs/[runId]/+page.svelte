@@ -9,7 +9,7 @@
 	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
 	import RunItemsTable from '$lib/components/evaluations/run-items-table.svelte';
 	import RunInspectDrawer from '$lib/components/evaluations/run-inspect-drawer.svelte';
-	import type { RunDetail } from '$lib/components/evaluations/types';
+	import type { RunDetail, RunItem } from '$lib/components/evaluations/types';
 	import { ArrowLeft, Download, RefreshCw, StopCircle } from 'lucide-svelte';
 
 	type RunStatus = RunDetail['status'];
@@ -23,6 +23,9 @@
 	let busy = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let selectedItemId = $state<string | null>(null);
+	let selectedItemDetail = $state<RunItem | null>(null);
+	let selectedItemLoading = $state(false);
+	let selectedItemRequest = 0;
 	let pollHandle: ReturnType<typeof setTimeout> | null = null;
 
 	const isActive = $derived(
@@ -83,13 +86,14 @@
 			errorMessage = null;
 		}
 		try {
-			const res = await fetch(`/api/evaluations/runs/${runId}`);
+			const res = await fetch(`/api/evaluations/runs/${runId}?items=summary`);
 			if (!res.ok) {
 				errorMessage = `Failed to load run (${res.status})`;
 				return;
 			}
 			const data = (await res.json()) as { run: RunDetail };
 			run = data.run;
+			if (selectedItemId) void loadSelectedItemDetail(selectedItemId);
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : 'Failed to load run';
 		} finally {
@@ -148,6 +152,21 @@
 		selectedItemId = e.detail.id;
 	}
 
+	async function loadSelectedItemDetail(itemId: string) {
+		const requestId = ++selectedItemRequest;
+		selectedItemLoading = true;
+		try {
+			const res = await fetch(`/api/evaluations/runs/${runId}/items/${itemId}`);
+			if (!res.ok) return;
+			const data = (await res.json()) as { item: RunItem };
+			if (requestId === selectedItemRequest) selectedItemDetail = data.item;
+		} catch {
+			// Keep the compact row visible in the drawer if the detail fetch fails.
+		} finally {
+			if (requestId === selectedItemRequest) selectedItemLoading = false;
+		}
+	}
+
 	function schedulePoll() {
 		if (pollHandle) clearTimeout(pollHandle);
 		pollHandle = setTimeout(() => {
@@ -157,6 +176,16 @@
 
 	$effect(() => {
 		if (runId) load();
+	});
+
+	$effect(() => {
+		const itemId = selectedItemId;
+		selectedItemDetail = null;
+		if (!itemId) {
+			selectedItemLoading = false;
+			return;
+		}
+		loadSelectedItemDetail(itemId);
 	});
 
 	$effect(() => {
@@ -352,6 +381,8 @@
 	<RunInspectDrawer
 		{run}
 		{selectedItemId}
+		{selectedItemDetail}
+		{selectedItemLoading}
 		onClose={() => (selectedItemId = null)}
 		onSelect={(id) => (selectedItemId = id)}
 	/>

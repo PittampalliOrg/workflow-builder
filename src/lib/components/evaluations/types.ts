@@ -42,6 +42,7 @@ export type RunItem = {
 	error: string | null;
 	startedAt: string | null;
 	completedAt: string | null;
+	compact?: boolean;
 };
 
 export type RunDetail = {

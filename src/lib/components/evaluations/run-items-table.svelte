@@ -56,12 +56,48 @@
 
 	function shortJson(value: unknown, max = 80): string {
 		if (value === undefined || value === null) return '—';
-		try {
-			const s = typeof value === 'string' ? value : JSON.stringify(value);
-			return s.length > max ? `${s.slice(0, max)}…` : s;
-		} catch {
-			return String(value);
+		const s = previewValue(value);
+		return s.length > max ? `${s.slice(0, max)}…` : s;
+	}
+
+	function previewValue(value: unknown): string {
+		if (typeof value === 'string') return value;
+		if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+		if (Array.isArray(value)) return `Array(${value.length})`;
+		if (value && typeof value === 'object') {
+			const record = value as Record<string, unknown>;
+			if (typeof record.preview === 'string') return record.preview;
+			const pairs: string[] = [];
+			for (const key of [
+				'taskId',
+				'suite',
+				'entryPoint',
+				'phase',
+				'success',
+				'testFileSha256',
+				'workflowOutput',
+				'prompt'
+			]) {
+				if (record[key] !== undefined) pairs.push(`${key}: ${previewAtom(record[key])}`);
+				if (pairs.length >= 3) break;
+			}
+			if (pairs.length) return `{ ${pairs.join(', ')} }`;
+			return `{ ${Object.keys(record).slice(0, 4).join(', ')}${Object.keys(record).length > 4 ? ', …' : ''} }`;
 		}
+		return String(value);
+	}
+
+	function previewAtom(value: unknown): string {
+		if (typeof value === 'string') return JSON.stringify(value.length > 36 ? `${value.slice(0, 36)}…` : value);
+		if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+		if (Array.isArray(value)) return `Array(${value.length})`;
+		if (value && typeof value === 'object') {
+			const record = value as Record<string, unknown>;
+			if (record.exitCode !== undefined) return `{ exitCode: ${record.exitCode} }`;
+			if (record.passed !== undefined) return `{ passed: ${record.passed} }`;
+			return '{…}';
+		}
+		return String(value);
 	}
 
 	function gradePassedIcon(g: GraderResult | undefined) {

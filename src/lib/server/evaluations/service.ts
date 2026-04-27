@@ -1205,7 +1205,13 @@ export async function listEvaluationRuns(projectId: string, limit = 50) {
 	);
 }
 
-export async function getEvaluationRun(projectId: string, runId: string) {
+type EvaluationRunItemMode = "full" | "summary";
+
+export async function getEvaluationRun(
+	projectId: string,
+	runId: string,
+	options: { itemMode?: EvaluationRunItemMode } = {},
+) {
 	const database = requireDb();
 	const [row] = await database
 		.select({
@@ -1236,9 +1242,34 @@ export async function getEvaluationRun(projectId: string, runId: string) {
 			evaluationName: row.evaluationName,
 			datasetName: row.datasetName,
 		}),
-		items: items.map(serializeRunItem),
+		items: items.map((item) =>
+			options.itemMode === "summary"
+				? serializeRunItemSummary(item)
+				: serializeRunItem(item),
+		),
 		artifacts: artifacts.map(serializeArtifact),
 	};
+}
+
+export async function getEvaluationRunItem(
+	projectId: string,
+	runId: string,
+	itemId: string,
+) {
+	const database = requireDb();
+	const [row] = await database
+		.select({ item: evaluationRunItems })
+		.from(evaluationRunItems)
+		.innerJoin(evaluationRuns, eq(evaluationRuns.id, evaluationRunItems.runId))
+		.where(
+			and(
+				eq(evaluationRuns.projectId, projectId),
+				eq(evaluationRunItems.runId, runId),
+				eq(evaluationRunItems.id, itemId),
+			),
+		)
+		.limit(1);
+	return row ? serializeRunItem(row.item) : null;
 }
 
 export async function createEvaluationRun(input: CreateEvaluationRunInput) {
@@ -3264,6 +3295,144 @@ function serializeRunItem(item: typeof evaluationRunItems.$inferSelect) {
 		createdAt: item.createdAt.toISOString(),
 		updatedAt: item.updatedAt.toISOString(),
 	};
+}
+
+function serializeRunItemSummary(item: typeof evaluationRunItems.$inferSelect) {
+	return {
+		...serializeRunItem(item),
+		input: compactRunItemInput(item.input),
+		expectedOutput: compactRunItemExpectedOutput(item.expectedOutput),
+		generatedOutput: compactRunItemGeneratedOutput(item.generatedOutput),
+		compact: true,
+	};
+}
+
+function compactRunItemInput(value: unknown) {
+	if (!isRecord(value)) return compactPrimitive(value);
+	const prompt = readString(value.prompt);
+	const solvePrompt = readString(value.solvePrompt);
+	const runtimeProbeCommand = readString(value.runtimeProbeCommand);
+	return dropUndefined({
+		taskId: readString(value.taskId) ?? readString(value.instanceId) ?? readString(value.id),
+		suite: readString(value.suite),
+		entryPoint: readString(value.entryPoint),
+		libs: Array.isArray(value.libs) ? value.libs : undefined,
+		prompt: prompt ? compactString(prompt, 220) : undefined,
+		omitted: dropUndefined({
+			promptBytes: prompt ? byteLength(prompt) : undefined,
+			solvePromptBytes: solvePrompt ? byteLength(solvePrompt) : undefined,
+			runtimeProbeCommandBytes: runtimeProbeCommand
+				? byteLength(runtimeProbeCommand)
+				: undefined,
+		}),
+	});
+}
+
+function compactRunItemExpectedOutput(value: unknown) {
+	if (!isRecord(value)) return compactPrimitive(value);
+	const testFileContent = readString(value.testFileContent);
+	const canonicalSolution = readString(value.canonicalSolution);
+	return dropUndefined({
+		testHarness: readString(value.testHarness),
+		testHarnessVersion:
+			typeof value.testHarnessVersion === "number" ? value.testHarnessVersion : undefined,
+		testFileSha256: readString(value.testFileSha256),
+		canonicalSolution: canonicalSolution
+			? compactString(canonicalSolution, 220)
+			: undefined,
+		omitted: dropUndefined({
+			testFileContentBytes: testFileContent ? byteLength(testFileContent) : undefined,
+			canonicalSolutionBytes: canonicalSolution
+				? byteLength(canonicalSolution)
+				: undefined,
+		}),
+	});
+}
+
+function compactRunItemGeneratedOutput(value: unknown) {
+	if (!isRecord(value)) return compactPrimitive(value);
+	const workflowOutput = isRecord(value.workflowOutput) ? value.workflowOutput : {};
+	const pytestOutput = readString(workflowOutput.pytestOutput);
+	const stdout = readString(workflowOutput.stdout);
+	const stderr = readString(workflowOutput.stderr);
+	const solutionContent = readString(workflowOutput.solutionContent);
+	return dropUndefined({
+		success: typeof value.success === "boolean" ? value.success : undefined,
+		phase: readString(value.phase),
+		durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
+		error: readString(value.error),
+		workflowOutput: dropUndefined({
+			taskId: readString(workflowOutput.taskId),
+			passed: typeof workflowOutput.passed === "boolean" ? workflowOutput.passed : undefined,
+			exitCode:
+				typeof workflowOutput.exitCode === "number" ||
+				typeof workflowOutput.exitCode === "string"
+					? workflowOutput.exitCode
+					: undefined,
+			protocol: isRecord(workflowOutput.protocol) ? workflowOutput.protocol : undefined,
+			sandboxName: readString(workflowOutput.sandboxName),
+			solutionPath: readString(workflowOutput.solutionPath),
+			solutionSha256: readString(workflowOutput.solutionSha256),
+			testFileSha256: readString(workflowOutput.testFileSha256),
+			runtimeProbe: isRecord(workflowOutput.runtimeProbe)
+				? compactCommandOutput(workflowOutput.runtimeProbe)
+				: undefined,
+			pytestOutput: pytestOutput ? tailString(pytestOutput, 1800) : undefined,
+			stdout: stdout && stdout !== pytestOutput ? tailString(stdout, 1200) : undefined,
+			stderr: stderr ? tailString(stderr, 1200) : undefined,
+			solutionContent: solutionContent
+				? compactString(solutionContent, 800)
+				: undefined,
+			omitted: dropUndefined({
+				raw: isRecord(workflowOutput.raw) ? "workflow step outputs" : undefined,
+				pytestOutputBytes: pytestOutput ? byteLength(pytestOutput) : undefined,
+				stdoutBytes: stdout ? byteLength(stdout) : undefined,
+				stderrBytes: stderr ? byteLength(stderr) : undefined,
+				solutionContentBytes: solutionContent
+					? byteLength(solutionContent)
+					: undefined,
+			}),
+		}),
+	});
+}
+
+function compactCommandOutput(value: Record<string, unknown>) {
+	return dropUndefined({
+		exitCode:
+			typeof value.exitCode === "number" || typeof value.exitCode === "string"
+				? value.exitCode
+				: undefined,
+		stdout: readString(value.stdout) ? tailString(readString(value.stdout) ?? "", 1000) : undefined,
+		stderr: readString(value.stderr) ? tailString(readString(value.stderr) ?? "", 1000) : undefined,
+	});
+}
+
+function compactPrimitive(value: unknown) {
+	return typeof value === "string" ? compactString(value, 500) : value;
+}
+
+function compactString(value: string, max: number) {
+	return value.length > max
+		? {
+				preview: value.slice(0, max),
+				bytes: byteLength(value),
+				truncated: true,
+			}
+		: value;
+}
+
+function tailString(value: string, max: number) {
+	return value.length > max ? `...${value.slice(-max)}` : value;
+}
+
+function byteLength(value: string) {
+	return Buffer.byteLength(value, "utf8");
+}
+
+function dropUndefined<T extends Record<string, unknown>>(value: T) {
+	return Object.fromEntries(
+		Object.entries(value).filter(([, entry]) => entry !== undefined),
+	) as Partial<T>;
 }
 
 function serializeArtifact(artifact: typeof evaluationArtifacts.$inferSelect) {

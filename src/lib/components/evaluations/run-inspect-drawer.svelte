@@ -17,13 +17,24 @@
 	interface Props {
 		run: RunDetail;
 		selectedItemId: string | null;
+		selectedItemDetail?: RunDetail['items'][number] | null;
+		selectedItemLoading?: boolean;
 		onClose: () => void;
 		onSelect: (id: string) => void;
 	}
 
-	let { run, selectedItemId, onClose, onSelect }: Props = $props();
+	let {
+		run,
+		selectedItemId,
+		selectedItemDetail = null,
+		selectedItemLoading = false,
+		onClose,
+		onSelect
+	}: Props = $props();
 
-	const selectedItem = $derived(run.items.find((i) => i.id === selectedItemId) ?? null);
+	const selectedItem = $derived(
+		selectedItemDetail ?? run.items.find((i) => i.id === selectedItemId) ?? null
+	);
 	const selectedIndex = $derived(
 		selectedItem ? run.items.findIndex((i) => i.id === selectedItemId) : -1
 	);
@@ -61,12 +72,34 @@
 
 	function shortJson(value: unknown, max = 60): string {
 		if (value === undefined || value === null) return '—';
-		try {
-			const s = typeof value === 'string' ? value : JSON.stringify(value);
-			return s.length > max ? `${s.slice(0, max)}…` : s;
-		} catch {
-			return String(value);
+		const s = previewValue(value);
+		return s.length > max ? `${s.slice(0, max)}…` : s;
+	}
+
+	function previewValue(value: unknown): string {
+		if (typeof value === 'string') return value;
+		if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+		if (Array.isArray(value)) return `Array(${value.length})`;
+		if (value && typeof value === 'object') {
+			const record = value as Record<string, unknown>;
+			if (typeof record.preview === 'string') return record.preview;
+			const pairs: string[] = [];
+			for (const key of ['taskId', 'suite', 'entryPoint', 'phase', 'success', 'prompt']) {
+				if (record[key] !== undefined) pairs.push(`${key}: ${previewAtom(record[key])}`);
+				if (pairs.length >= 2) break;
+			}
+			if (pairs.length) return `{ ${pairs.join(', ')} }`;
+			return `{ ${Object.keys(record).slice(0, 3).join(', ')}${Object.keys(record).length > 3 ? ', …' : ''} }`;
 		}
+		return String(value);
+	}
+
+	function previewAtom(value: unknown): string {
+		if (typeof value === 'string') return JSON.stringify(value.length > 32 ? `${value.slice(0, 32)}…` : value);
+		if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+		if (Array.isArray(value)) return `Array(${value.length})`;
+		if (value && typeof value === 'object') return '{…}';
+		return String(value);
 	}
 
 	function graderDisplayName(g: GraderResult, fallback: string): string {
@@ -143,6 +176,9 @@
 				<!-- Right pane: details -->
 				<div class="flex-1 min-w-0 overflow-y-auto p-6">
 					<div class="flex flex-col gap-5">
+						{#if selectedItemLoading}
+							<div class="text-xs text-muted-foreground">Loading full row…</div>
+						{/if}
 						<!-- Input -->
 						<section class="flex flex-col gap-1.5">
 							<h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

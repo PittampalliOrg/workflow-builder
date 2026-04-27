@@ -10,7 +10,7 @@
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
 	import RunItemsTable from '$lib/components/evaluations/run-items-table.svelte';
 	import RunInspectDrawer from '$lib/components/evaluations/run-inspect-drawer.svelte';
-	import type { RunDetail } from '$lib/components/evaluations/types';
+	import type { RunDetail, RunItem } from '$lib/components/evaluations/types';
 	import { ArrowLeft, ChevronRight, Database, FlaskConical, Play } from 'lucide-svelte';
 
 	type GraderType =
@@ -79,6 +79,9 @@
 	let dataLoading = $state(false);
 	let dataError = $state<string | null>(null);
 	let selectedItemId = $state<string | null>(null);
+	let selectedItemDetail = $state<RunItem | null>(null);
+	let selectedItemLoading = $state(false);
+	let selectedItemRequest = 0;
 
 	async function load() {
 		loading = true;
@@ -104,8 +107,10 @@
 	async function loadRunDetail(runId: string) {
 		dataLoading = true;
 		dataError = null;
+		selectedItemId = null;
+		selectedItemDetail = null;
 		try {
-			const res = await fetch(`/api/evaluations/runs/${runId}`);
+			const res = await fetch(`/api/evaluations/runs/${runId}?items=summary`);
 			if (!res.ok) {
 				dataError = `Failed to load run (${res.status})`;
 				return;
@@ -116,6 +121,21 @@
 			dataError = err instanceof Error ? err.message : 'Failed to load run';
 		} finally {
 			dataLoading = false;
+		}
+	}
+
+	async function loadSelectedItemDetail(runId: string, itemId: string) {
+		const requestId = ++selectedItemRequest;
+		selectedItemLoading = true;
+		try {
+			const res = await fetch(`/api/evaluations/runs/${runId}/items/${itemId}`);
+			if (!res.ok) return;
+			const data = (await res.json()) as { item: RunItem };
+			if (requestId === selectedItemRequest) selectedItemDetail = data.item;
+		} catch {
+			// The compact row stays visible in the drawer if the detail request fails.
+		} finally {
+			if (requestId === selectedItemRequest) selectedItemLoading = false;
 		}
 	}
 
@@ -173,6 +193,17 @@
 		const id = selectedRunId;
 		if (!id) return;
 		loadRunDetail(id);
+	});
+
+	$effect(() => {
+		const runId = selectedRunId;
+		const itemId = selectedItemId;
+		selectedItemDetail = null;
+		if (!runId || !itemId) {
+			selectedItemLoading = false;
+			return;
+		}
+		loadSelectedItemDetail(runId, itemId);
 	});
 </script>
 
@@ -395,6 +426,8 @@
 	<RunInspectDrawer
 		run={selectedRun}
 		{selectedItemId}
+		{selectedItemDetail}
+		{selectedItemLoading}
 		onClose={() => (selectedItemId = null)}
 		onSelect={(id) => (selectedItemId = id)}
 	/>

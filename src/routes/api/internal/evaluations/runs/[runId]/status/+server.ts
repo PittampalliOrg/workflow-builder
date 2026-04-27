@@ -28,7 +28,9 @@ export const GET: RequestHandler = async ({ request, params }) => {
 		.where(eq(evaluationRuns.id, params.runId))
 		.limit(1);
 	if (!run) return error(404, "Evaluation run not found");
-	const fullRun = await getEvaluationRun(run.projectId, params.runId);
+	const fullRun = await getEvaluationRun(run.projectId, params.runId, {
+		itemMode: "summary",
+	});
 	return json({ run: fullRun });
 };
 
