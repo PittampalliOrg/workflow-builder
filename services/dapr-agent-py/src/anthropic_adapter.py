@@ -593,6 +593,10 @@ def _call_anthropic_sdk(
     # JSON-shaped response (see /api/grader-evaluate).
     if isinstance(kwargs.get("system"), str) and kwargs["system"].strip():
         request_kwargs["system"] = kwargs["system"]
+    forced_tool_choice = (
+        isinstance(kwargs.get("tool_choice"), dict)
+        and kwargs["tool_choice"].get("type") == "tool"
+    )
     if kwargs.get("tool_choice") is not None:
         request_kwargs["tool_choice"] = kwargs["tool_choice"]
     # Enable adaptive thinking on Opus 4.6/4.7. `display: "summarized"` opts
@@ -600,7 +604,9 @@ def _call_anthropic_sdk(
     # stream it into session_events as agent.thinking. Note: sampling params
     # (temperature, top_p, top_k) must NOT be set on Opus 4.7 when thinking
     # is enabled — this adapter doesn't set them, so we're safe.
-    if _model_supports_adaptive_thinking(model):
+    # Anthropic also rejects thinking + tool_choice={type:"tool"} (forced
+    # single-tool selection); suppress thinking in that case.
+    if _model_supports_adaptive_thinking(model) and not forced_tool_choice:
         request_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
 
     logger.info(
