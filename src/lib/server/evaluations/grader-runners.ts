@@ -99,7 +99,30 @@ async function runScoreModelGrader(
 		);
 	}
 
-	const parsed = parseJsonReply(raw);
+	let parsed = parseJsonReply(raw);
+
+	// Fallback: models sometimes ignore the "respond with JSON" instruction and
+	// emit a bare label string ("Pass", "Fail", "Positive", ...). If we know
+	// the labeler's allowed labels we can recover.
+	if (!parsed && mode === "labeler") {
+		const passingLabels = readPassingLabels(grader.config.passingLabels);
+		const allLabels = readAllLabels(grader.config.labels);
+		const known = new Set([...passingLabels, ...allLabels].map((s) => s.toLowerCase()));
+		const trimmed = raw.trim();
+		const firstToken = trimmed.split(/[\s.,;:!?]+/)[0] ?? "";
+		if (firstToken && known.has(firstToken.toLowerCase())) {
+			parsed = { label: firstToken, reasoning: trimmed };
+		}
+	}
+
+	// Fallback for scorer: a bare numeric response is acceptable.
+	if (!parsed && mode === "scorer") {
+		const numeric = Number(raw.trim());
+		if (Number.isFinite(numeric)) {
+			parsed = { score: numeric, reasoning: raw.trim() };
+		}
+	}
+
 	if (!parsed) {
 		return {
 			id: grader.id,
@@ -464,6 +487,18 @@ function readPassingLabels(value: unknown): string[] {
 		return value.filter((v): v is string => typeof v === "string");
 	}
 	return [];
+}
+
+function readAllLabels(value: unknown): string[] {
+	// model_labeler config.labels is `Array<{ label: string, passing: boolean }>`
+	if (!Array.isArray(value)) return [];
+	const out: string[] = [];
+	for (const entry of value) {
+		if (isRecord(entry) && typeof entry.label === "string" && entry.label) {
+			out.push(entry.label);
+		}
+	}
+	return out;
 }
 
 function normalizeOnto01(value: number, range: { min: number; max: number }): number {
