@@ -1,7 +1,7 @@
 {
   "id": "code-eval-item",
   "name": "Coding eval item",
-  "description": "Run a single coding-eval row: provision a Python sandbox, write the test file, let the agent solve, then run pytest and capture pass/fail. Used by HumanEval+, MBPP+, and BigCodeBench evaluation templates.",
+  "description": "Run a single coding-eval row: provision the suite-specific Python sandbox, write the test file, let the agent solve, then run pytest and capture pass/fail. Used by HumanEval+, MBPP+, and BigCodeBench evaluation templates.",
   "visibility": "public",
   "specVersion": "1.0.0",
   "engineType": "dapr",
@@ -12,7 +12,7 @@
       "name": "code-eval-item",
       "version": "1.0.0",
       "title": "Coding eval item",
-      "summary": "Provision a Python sandbox, write the test file, let an agent solve the task, run pytest, and emit pass/fail."
+      "summary": "Provision a suite-specific Python sandbox, write the test file, let an agent solve the task, run pytest, and emit pass/fail."
     },
     "do": [
       {
@@ -21,7 +21,7 @@
           "with": {
             "name": "code-eval-${ .trigger.taskId // .trigger.evaluation.itemId }",
             "rootPath": "/sandbox",
-            "sandboxTemplate": "code-eval",
+            "sandboxTemplate": "${ .trigger.sandboxTemplate // \"code-eval-evalplus\" }",
             "ttlSeconds": 1800,
             "keepAfterRun": true,
             "managedBy": "workflow-builder:evaluations:code-eval",
@@ -39,7 +39,7 @@
             "sandboxPolicy": {
               "keepAfterRun": true,
               "mode": "per-run",
-              "template": "code-eval",
+              "template": "${ .trigger.sandboxTemplate // \"code-eval-evalplus\" }",
               "ttlSeconds": 1800
             }
           }
@@ -51,6 +51,7 @@
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "command": "${ .trigger.runtimeProbeCommand }",
+            "allowFailure": true,
             "timeoutMs": 60000
           },
           "output": {
@@ -66,6 +67,7 @@
       {
         "write_test": {
           "call": "workspace/write_file",
+          "if": "${ (.validate_runtime.exitCode // 1) == 0 }",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "path": "/sandbox/test_solution.py",
@@ -77,6 +79,7 @@
       {
         "solve": {
           "call": "durable/run",
+          "if": "${ (.validate_runtime.exitCode // 1) == 0 }",
           "with": {
             "body": {
               "agentRef": "${ .trigger.agentRef }",
@@ -94,7 +97,7 @@
             "sandboxPolicy": {
               "keepAfterRun": true,
               "mode": "per-run",
-              "template": "code-eval",
+              "template": "${ .trigger.sandboxTemplate // \"code-eval-evalplus\" }",
               "ttlSeconds": 1800
             }
           }
@@ -103,6 +106,7 @@
       {
         "restore_test": {
           "call": "workspace/write_file",
+          "if": "${ (.validate_runtime.exitCode // 1) == 0 }",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "path": "/sandbox/test_solution.py",
@@ -114,6 +118,7 @@
       {
         "run_tests": {
           "call": "workspace/command",
+          "if": "${ (.validate_runtime.exitCode // 1) == 0 }",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "command": "set -u; cd /sandbox; if [ -f solution.py ]; then missing=0; else echo 'MISSING_SOLUTION' >&2; : > solution.py; missing=1; fi; run_dir=/tmp/code_eval_run; [ \"${run_dir}\" = \"/tmp/code_eval_run\" ] || exit 3; rm -rf \"${run_dir}\"; mkdir -p \"${run_dir}\"; cp /sandbox/solution.py \"${run_dir}/solution.py\"; cp /sandbox/test_solution.py \"${run_dir}/test_solution.py\"; cd \"${run_dir}\"; if [ \"${missing}\" = \"1\" ]; then pytest_exit=2; else PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CODE_EVAL_SOLUTION_PATH=\"${run_dir}/solution.py\" /sandbox/.venv/bin/python -m pytest -q --tb=short --noconftest test_solution.py 2>&1; pytest_exit=$?; fi; echo \"__PYTEST_EXIT_CODE__=${pytest_exit}\"; exit ${pytest_exit}",
@@ -133,6 +138,7 @@
       {
         "read_solution": {
           "call": "workspace/read_file",
+          "if": "${ (.validate_runtime.exitCode // 1) == 0 }",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "path": "/sandbox/solution.py",
@@ -149,6 +155,7 @@
       {
         "capture_metadata": {
           "call": "workspace/command",
+          "if": "${ (.validate_runtime.exitCode // 1) == 0 }",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "command": "set -eu; /sandbox/.venv/bin/python - <<'PY'\nimport hashlib, json, pathlib\n\ndef digest(path):\n    p = pathlib.Path(path)\n    if not p.is_file():\n        return {'exists': False, 'sha256': '', 'bytes': 0}\n    data = p.read_bytes()\n    return {'exists': True, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}\n\nsolution = digest('/sandbox/solution.py')\ntest_file = digest('/sandbox/test_solution.py')\nprint(json.dumps({\n    'solutionSha256': solution['sha256'],\n    'solutionBytes': solution['bytes'],\n    'solutionExists': solution['exists'],\n    'testFileSha256': test_file['sha256'],\n    'testFileBytes': test_file['bytes'],\n    'testFileExists': test_file['exists'],\n}, sort_keys=True))\nPY",
@@ -169,9 +176,9 @@
       "as": {
         "taskId": "${ .trigger.taskId }",
         "passed": "${ (.run_tests.exitCode // 1) == 0 }",
-        "exitCode": "${ .run_tests.exitCode }",
-        "stdout": "${ .run_tests.stdout }",
-        "stderr": "${ .run_tests.stderr }",
+        "exitCode": "${ .run_tests.exitCode // 1 }",
+        "stdout": "${ .run_tests.stdout // \"\" }",
+        "stderr": "${ .run_tests.stderr // \"\" }",
         "pytestOutput": "${ (.run_tests.stdout // \"\") + (if ((.run_tests.stderr // \"\") == \"\") then \"\" else \"\\n\" + .run_tests.stderr end) }",
         "solutionPath": "/sandbox/solution.py",
         "solutionContent": "${ .read_solution.content // \"\" }",

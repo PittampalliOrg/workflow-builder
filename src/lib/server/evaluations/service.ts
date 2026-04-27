@@ -152,6 +152,8 @@ export type CreateCodeEvalTemplateInput = {
 };
 
 const CODE_EVAL_WORKFLOW_ID = "code-eval-item";
+const CODE_EVAL_EVALPLUS_SANDBOX_TEMPLATE = "code-eval-evalplus";
+const CODE_EVAL_BIGCODEBENCH_SANDBOX_TEMPLATE = "code-eval-bigcodebench";
 
 const CODE_EVAL_SUITES: Record<
 	CodeEvalSuiteSlug,
@@ -638,6 +640,7 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 				suite: "string",
 				solvePrompt: "string",
 				runtimeProbeCommand: "string",
+				sandboxTemplate: "string",
 			},
 			expectedOutput: {
 				testFileContent: "string",
@@ -674,6 +677,7 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 			protocolMode: CODE_EVAL_PROTOCOL_MODE,
 			benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
 			workflowId: CODE_EVAL_WORKFLOW_ID,
+			sandboxTemplate: codeEvalSandboxTemplateForSuite(suiteSlug),
 		},
 		dataSourceConfig: {
 			type: "dataset",
@@ -692,6 +696,7 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 			datasetName: suite.datasetName,
 			datasetSplit: suite.datasetSplit,
 			datasetRevision: suite.datasetRevision ?? null,
+			sandboxTemplate: codeEvalSandboxTemplateForSuite(suiteSlug),
 			protocolMode: CODE_EVAL_PROTOCOL_MODE,
 			benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
 		},
@@ -749,6 +754,7 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 		readString(record.code) ??
 		"";
 	const libs = normalizeCodeEvalLibs(record.libs ?? record.required_libs);
+	const sandboxTemplate = codeEvalSandboxTemplateForSuite(params.suiteSlug);
 	const testFileContent = normalizeCodeEvalTestFile({
 		test,
 		entryPoint,
@@ -767,6 +773,7 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 		outerRecord,
 		promptSource: promptInfo.source,
 		libs,
+		sandboxTemplate,
 		testFileSha256,
 		datasetRevision: suite?.datasetRevision ?? null,
 	});
@@ -780,6 +787,7 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 			solvePrompt,
 			runtimeProbeCommand,
 			libs,
+			sandboxTemplate,
 		},
 		expectedOutput: {
 			testFileContent,
@@ -822,6 +830,7 @@ function buildCodeEvalRowMetadata(params: {
 	outerRecord: Record<string, unknown>;
 	promptSource: string;
 	libs: string[];
+	sandboxTemplate: string;
 	testFileSha256: string;
 	datasetRevision: string | null;
 }): Record<string, unknown> {
@@ -832,6 +841,7 @@ function buildCodeEvalRowMetadata(params: {
 		promptSource: params.promptSource,
 		protocolMode: CODE_EVAL_PROTOCOL_MODE,
 		benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
+		sandboxTemplate: params.sandboxTemplate,
 		testFileSha256: params.testFileSha256,
 	};
 	const rowIndex =
@@ -911,6 +921,12 @@ function normalizeCodeEvalLibs(value: unknown): string[] {
 	return out;
 }
 
+function codeEvalSandboxTemplateForSuite(suiteSlug: CodeEvalSuiteSlug): string {
+	return suiteSlug === "bigcodebench"
+		? CODE_EVAL_BIGCODEBENCH_SANDBOX_TEMPLATE
+		: CODE_EVAL_EVALPLUS_SANDBOX_TEMPLATE;
+}
+
 function parseCodeEvalLibString(value: string): string[] {
 	const trimmed = value.trim();
 	if (!trimmed) return [];
@@ -928,13 +944,26 @@ function buildCodeEvalRuntimeProbeCommand(libs: string[]): string {
 		"aliases = {",
 		'    "beautifulsoup4": "bs4",',
 		'    "bs4": "bs4",',
+		'    "Django": "django",',
+		'    "django": "django",',
+		'    "Faker": "faker",',
+		'    "Flask-Mail": "flask_mail",',
+		'    "Levenshtein": "Levenshtein",',
+		'    "opencv-python": "cv2",',
+		'    "opencv-python-headless": "cv2",',
 		'    "Pillow": "PIL",',
 		'    "pillow": "PIL",',
+		'    "pycryptodome": "Crypto",',
 		'    "pyyaml": "yaml",',
 		'    "PyYAML": "yaml",',
 		'    "python-dateutil": "dateutil",',
+		'    "python-docx": "docx",',
+		'    "python-Levenshtein": "Levenshtein",',
+		'    "Requests": "requests",',
+		'    "scikit-image": "skimage",',
 		'    "scikit-learn": "sklearn",',
 		'    "sklearn": "sklearn",',
+		'    "Werkzeug": "werkzeug",',
 		"}",
 		"missing = []",
 		"importlib.import_module('pytest')",
@@ -1049,7 +1078,7 @@ function buildCodeEvalSolvePrompt(params: {
 		"Constraints:",
 		"- Write only /sandbox/solution.py. Do not modify /sandbox/test_solution.py or create alternate solution files.",
 		"- Do not hardcode the test inputs/outputs. Implement the algorithm correctly.",
-		"- Dependencies needed by the benchmark row are preinstalled in /sandbox/.venv. Do not run pip install unless explicitly debugging the runtime.",
+		"- Dependencies needed by the benchmark row are preinstalled in /sandbox/.venv. Benchmark mode forbids runtime package installation: Do not run pip install, uv pip install, python -m pip, apt-get, npm install, or any package manager.",
 		`- Run \`${CODE_EVAL_PYTEST_COMMAND}\` from /sandbox to check your work. Iterate until it passes, but do not invent new tests.`,
 		"- Stop once the test file passes or you've exhausted your turn budget.",
 	].join("\n");

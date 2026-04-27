@@ -173,6 +173,15 @@ describe("code-eval template normalization", () => {
 		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
 			"Do not run pip install",
 		);
+		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
+			"Benchmark mode forbids runtime package installation",
+		);
+		expect((row.input as { solvePrompt: string }).solvePrompt).not.toContain(
+			"unless explicitly debugging",
+		);
+		expect((row.input as { sandboxTemplate: string }).sandboxTemplate).toBe(
+			"code-eval-evalplus",
+		);
 		expect(row.expectedOutput).toEqual(
 			expect.objectContaining({ testFileSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
 		);
@@ -256,9 +265,13 @@ describe("code-eval template normalization", () => {
 		expect((row.input as { runtimeProbeCommand: string }).runtimeProbeCommand).toContain(
 			'libs = ["pandas","networkx"]',
 		);
+		expect((row.input as { sandboxTemplate: string }).sandboxTemplate).toBe(
+			"code-eval-bigcodebench",
+		);
 		expect(row.metadata).toMatchObject({
 			protocolMode: "internal-agent-visible-tests",
 			benchmarkComparable: false,
+			sandboxTemplate: "code-eval-bigcodebench",
 			promptSource: "instruct_prompt",
 			bigcodebench: {
 				split: "complete",
@@ -309,6 +322,38 @@ describe("code-eval template normalization", () => {
 		});
 	});
 
+	it("maps BigCodeBench package names to importable module aliases", () => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "bigcodebench",
+			index: 0,
+			row: {
+				task_id: "BigCodeBench/alias",
+				instruct_prompt: "Use package aliases.",
+				entry_point: "task_func",
+				libs: [
+					"Pillow",
+					"opencv-python-headless",
+					"pycryptodome",
+					"python-docx",
+					"scikit-image",
+					"PyYAML",
+				],
+				test: "def test_default():\n    assert task_func() is None\n",
+			},
+		});
+		const command = (row.input as { runtimeProbeCommand: string }).runtimeProbeCommand;
+
+		expect(command).toContain('"Pillow": "PIL"');
+		expect(command).toContain('"opencv-python-headless": "cv2"');
+		expect(command).toContain('"pycryptodome": "Crypto"');
+		expect(command).toContain('"python-docx": "docx"');
+		expect(command).toContain('"scikit-image": "skimage"');
+		expect(command).toContain('"PyYAML": "yaml"');
+		expect(command).toContain(
+			'libs = ["Pillow","opencv-python-headless","pycryptodome","python-docx","scikit-image","PyYAML"]',
+		);
+	});
+
 	it("unwraps Hugging Face dataset-server row envelopes", () => {
 		const row = normalizeCodeEvalRowForEvaluation({
 			suiteSlug: "humaneval-plus",
@@ -354,7 +399,9 @@ describe("code-eval template normalization", () => {
 			readFileSync("services/code-eval-runner/code-eval-item.workflow.json", "utf8"),
 		) as {
 			spec: {
-				do: Array<Record<string, { call: string; with: Record<string, unknown> }>>;
+				do: Array<
+					Record<string, { call: string; if?: string; with: Record<string, unknown> }>
+				>;
 				output: Record<string, unknown>;
 			};
 			edges: Array<{ source: string; target: string }>;
@@ -371,20 +418,27 @@ describe("code-eval template normalization", () => {
 			"capture_metadata",
 		]);
 		expect(workflow.spec.do[0].workspace_profile.with.sandboxTemplate).toBe(
-			"code-eval",
+			'${ .trigger.sandboxTemplate // "code-eval-evalplus" }',
 		);
 		expect(workflow.spec.do[0].workspace_profile.with).not.toHaveProperty("sandboxImage");
 
 		const validateRuntime = workflow.spec.do[1].validate_runtime;
 		expect(validateRuntime.call).toBe("workspace/command");
 		expect(validateRuntime.with.command).toBe("${ .trigger.runtimeProbeCommand }");
+		expect(validateRuntime.with.allowFailure).toBe(true);
 
 		const writeTest = workflow.spec.do[2].write_test;
 		expect(writeTest.call).toBe("workspace/write_file");
+		expect(writeTest.if).toBe("${ (.validate_runtime.exitCode // 1) == 0 }");
 		expect(writeTest.with.timeoutMs).toBe(60_000);
+
+		const solve = workflow.spec.do[3].solve;
+		expect(solve.if).toBe("${ (.validate_runtime.exitCode // 1) == 0 }");
+		expect(JSON.stringify(solve.with)).toContain("code-eval-evalplus");
 
 		const restoreTest = workflow.spec.do[4].restore_test;
 		expect(restoreTest.call).toBe("workspace/write_file");
+		expect(restoreTest.if).toBe("${ (.validate_runtime.exitCode // 1) == 0 }");
 		expect(restoreTest.with.path).toBe("/sandbox/test_solution.py");
 		expect(restoreTest.with.content).toBe(
 			"${ .trigger.evaluation.expectedOutput.testFileContent }",
@@ -393,6 +447,7 @@ describe("code-eval template normalization", () => {
 
 		const runTests = workflow.spec.do[5].run_tests;
 		expect(runTests.call).toBe("workspace/command");
+		expect(runTests.if).toBe("${ (.validate_runtime.exitCode // 1) == 0 }");
 		expect(runTests.with.command).toContain("cp /sandbox/solution.py");
 		expect(runTests.with.command).toContain("cp /sandbox/test_solution.py");
 		expect(runTests.with.command).toContain(
@@ -405,14 +460,17 @@ describe("code-eval template normalization", () => {
 
 		const readSolution = workflow.spec.do[6].read_solution;
 		expect(readSolution.call).toBe("workspace/read_file");
+		expect(readSolution.if).toBe("${ (.validate_runtime.exitCode // 1) == 0 }");
 		expect(readSolution.with.path).toBe("/sandbox/solution.py");
 
 		const captureMetadata = workflow.spec.do[7].capture_metadata;
 		expect(captureMetadata.call).toBe("workspace/command");
+		expect(captureMetadata.if).toBe("${ (.validate_runtime.exitCode // 1) == 0 }");
 		expect(captureMetadata.with.command).toContain("hashlib.sha256");
 		expect(JSON.stringify(workflow.spec.output)).toContain("solutionContent");
 		expect(JSON.stringify(workflow.spec.output)).toContain("solutionSha256");
 		expect(JSON.stringify(workflow.spec.output)).toContain("runtimeProbe");
+		expect(JSON.stringify(workflow.spec.output)).toContain(".run_tests.exitCode // 1");
 		expect(workflow.edges).toEqual(
 			expect.arrayContaining([
 				{
