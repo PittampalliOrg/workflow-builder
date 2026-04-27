@@ -3854,6 +3854,7 @@ def grader_evaluate(payload: dict):
             "name": response_tool_name,
             "description": "Emit a strictly-typed evaluation result.",
             "input_schema": response_schema,
+            "strict": True,
         }]
         kwargs["tool_choice"] = {"type": "tool", "name": response_tool_name}
 

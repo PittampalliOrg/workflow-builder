@@ -80,12 +80,35 @@ def _get_anthropic_model(component: str) -> str:
 
 
 def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
-    """Convert AgentTool objects to Anthropic tool format."""
+    """Convert tools to Anthropic tool format.
+
+    Accepts either AgentTool-like objects (the agent path: `tool.name`,
+    `tool.description`, `tool.args_model.model_json_schema()`) or already-
+    formatted Anthropic dicts (`{"name", "description"?, "input_schema",
+    "strict"?}`). The grader-evaluate path passes dicts directly so the
+    caller can supply a strict response schema without wrapping it in an
+    AgentTool.
+    """
     if not tools:
         return None
 
     anthropic_tools = []
     for tool in tools:
+        if isinstance(tool, dict):
+            name = tool.get("name")
+            if not name:
+                continue
+            schema = tool.get("input_schema") or {"type": "object", "properties": {}}
+            entry: dict = {
+                "name": name,
+                "description": tool.get("description") or name,
+                "input_schema": schema,
+            }
+            if tool.get("strict") is True:
+                entry["strict"] = True
+            anthropic_tools.append(entry)
+            continue
+
         schema = {}
         if hasattr(tool, "args_model") and tool.args_model:
             try:
