@@ -43,7 +43,7 @@ ENV VIRTUAL_ENV=/sandbox/.venv
 ENV PATH="/sandbox/.venv/bin:${PATH}"
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     rm -rf /sandbox/.venv \
- && uv venv --python "${PYTHON_VERSION}" /sandbox/.venv \
+ && uv venv --seed --python "${PYTHON_VERSION}" /sandbox/.venv \
  && /sandbox/.venv/bin/python -m pip install --upgrade --no-compile --disable-pip-version-check pip setuptools wheel \
  && /sandbox/.venv/bin/python -m pip install --no-compile --disable-pip-version-check \
     pytest pytest-timeout evalplus \
