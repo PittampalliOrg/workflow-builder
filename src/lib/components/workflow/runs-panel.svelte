@@ -107,12 +107,18 @@
 		}
 	});
 
-	// Fetch executions list
+	// Fetch executions list. Uses include=summary so the polled response
+	// drops input/output JSONB; the panel only renders id/status/timestamps
+	// from the polled list, and gets live output from the SSE stream when
+	// an execution is expanded. Without this, BigCodeBench-shaped runs make
+	// the canvas freeze on every 2s poll cycle.
 	async function fetchExecutions() {
 		if (!store.workflowId) return;
 		isLoadingList = true;
 		try {
-			const res = await fetch(`/api/workflows/${store.workflowId}/executions`);
+			const res = await fetch(
+				`/api/workflows/${store.workflowId}/executions?include=summary`
+			);
 			if (res.ok) {
 				executions = await res.json();
 			}

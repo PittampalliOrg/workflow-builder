@@ -104,11 +104,10 @@ export function findAgentRunForNode(
 	);
 }
 
-export function buildAgentProgress(
+function progressFromRelevant(
 	run: ExecutionAgentRun,
-	events: ExecutionTimelineEvent[]
+	relevant: ExecutionTimelineEvent[]
 ): AgentProgress {
-	const relevant = eventsForRun(run, events);
 	const toolEvents = relevant.filter((event) => eventType(event) === 'tool_call_start');
 	return {
 		turnCount: turnCount(relevant),
@@ -118,25 +117,81 @@ export function buildAgentProgress(
 	};
 }
 
+export function buildAgentProgress(
+	run: ExecutionAgentRun,
+	events: ExecutionTimelineEvent[]
+): AgentProgress {
+	return progressFromRelevant(run, eventsForRun(run, events));
+}
+
+// Per-node memoization for withAgentNodeMetrics. The canvas $effect re-runs on
+// every event push (which happens every 2s during an active run via the runs
+// panel poll). Without memoization, every poll cycle spreads every node's data
+// and re-walks the events array per agent run, producing fresh node identities
+// that force Svelte Flow to reconcile the canvas. Caching by (node identity,
+// run.id, run.status, eventCount) lets unchanged nodes return their previous
+// result object verbatim.
+type CacheEntry = {
+	node: Node;
+	runId: string;
+	runStatus: ExecutionAgentRun['status'];
+	eventCount: number;
+	result: Node;
+};
+const metricsCache = new Map<string, CacheEntry>();
+
 export function withAgentNodeMetrics(
 	nodes: Node[],
 	runs: ExecutionAgentRun[],
 	events: ExecutionTimelineEvent[]
 ): Node[] {
-	if (runs.length === 0) return nodes;
+	if (runs.length === 0) {
+		if (metricsCache.size > 0) metricsCache.clear();
+		return nodes;
+	}
 
-	return nodes.map((node) => {
+	const seen = new Set<string>();
+	const out = nodes.map((node) => {
+		seen.add(node.id);
 		const run = findAgentRunForNode(node, runs);
-		if (!run) return node;
+		if (!run) {
+			metricsCache.delete(node.id);
+			return node;
+		}
 
-		return {
+		const relevantEvents = eventsForRun(run, events);
+		const cached = metricsCache.get(node.id);
+		if (
+			cached &&
+			cached.node === node &&
+			cached.runId === run.id &&
+			cached.runStatus === run.status &&
+			cached.eventCount === relevantEvents.length
+		) {
+			return cached.result;
+		}
+
+		const result: Node = {
 			...node,
 			data: {
 				...(node.data as Record<string, unknown>),
 				status: nodeStatusForRun(run.status),
 				agentRunId: run.id,
-				agentProgress: buildAgentProgress(run, events)
+				agentProgress: progressFromRelevant(run, relevantEvents)
 			}
 		};
+		metricsCache.set(node.id, {
+			node,
+			runId: run.id,
+			runStatus: run.status,
+			eventCount: relevantEvents.length,
+			result
+		});
+		return result;
 	});
+
+	for (const id of metricsCache.keys()) {
+		if (!seen.has(id)) metricsCache.delete(id);
+	}
+	return out;
 }

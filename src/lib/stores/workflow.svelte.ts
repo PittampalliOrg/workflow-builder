@@ -50,7 +50,7 @@ export type WorkflowEdge = Edge;
 
 function cloneJsonValue<T>(value: T): T {
   if (value === undefined) return value;
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 function snapshotNode(node: WorkflowNode): WorkflowNode {

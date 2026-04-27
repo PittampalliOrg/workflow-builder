@@ -166,7 +166,7 @@
 
 	async function ensureSelectedExecution(workflowId: string) {
 		try {
-			const response = await fetch(`/api/workflows/${workflowId}/executions`);
+			const response = await fetch(`/api/workflows/${workflowId}/executions?include=summary`);
 			if (!response.ok) return;
 			const executions = (await response.json()) as Array<{ id: string; status: string }>;
 			const preferred = executions.find((execution) =>
