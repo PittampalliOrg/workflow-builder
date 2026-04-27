@@ -7,7 +7,7 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-	"git+https://github.com/PittampalliOrg/SWE-bench.git@e922ef7cf282d2505588ee46a0162b5cf6a58406" \
+	"git+https://github.com/PittampalliOrg/SWE-bench.git@6b32ec7dc48358aa7a6e3f8e12e9c72e5647e3cd" \
 	requests \
 	docker
 
