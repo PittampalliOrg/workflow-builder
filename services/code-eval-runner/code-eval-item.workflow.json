@@ -22,6 +22,7 @@
             "name": "code-eval-${ .trigger.taskId // .trigger.evaluation.itemId }",
             "rootPath": "/sandbox",
             "sandboxTemplate": "code-eval",
+            "sandboxImage": "gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox-code-eval:latest",
             "ttlSeconds": 1800,
             "keepAfterRun": true,
             "managedBy": "workflow-builder:evaluations:code-eval",
@@ -47,12 +48,12 @@
       },
       {
         "write_test": {
-          "call": "workspace/file",
+          "call": "workspace/write_file",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
-            "operation": "write",
             "path": "/sandbox/test_solution.py",
-            "content": "${ .trigger.evaluation.expectedOutput.testFileContent }"
+            "content": "${ .trigger.evaluation.expectedOutput.testFileContent }",
+            "timeoutMs": 60000
           }
         }
       },
@@ -83,11 +84,22 @@
         }
       },
       {
+        "restore_test": {
+          "call": "workspace/write_file",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "path": "/sandbox/test_solution.py",
+            "content": "${ .trigger.evaluation.expectedOutput.testFileContent }",
+            "timeoutMs": 60000
+          }
+        }
+      },
+      {
         "run_tests": {
           "call": "workspace/command",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
-            "command": "set -u; cd /sandbox && [ -f solution.py ] || { echo 'MISSING_SOLUTION' >&2; exit 2; }; python -m pytest -q --tb=short test_solution.py 2>&1; pytest_exit=$?; echo \"__PYTEST_EXIT_CODE__=${pytest_exit}\"; exit ${pytest_exit}",
+            "command": "set -u; cd /sandbox && [ -f solution.py ] || { echo 'MISSING_SOLUTION' >&2; exit 2; }; run_dir=/tmp/code_eval_run; [ \"${run_dir}\" = \"/tmp/code_eval_run\" ] || exit 3; rm -rf \"${run_dir}\"; mkdir -p \"${run_dir}\"; cp /sandbox/solution.py \"${run_dir}/solution.py\"; cp /sandbox/test_solution.py \"${run_dir}/test_solution.py\"; cd \"${run_dir}\"; PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CODE_EVAL_SOLUTION_PATH=\"${run_dir}/solution.py\" python -m pytest -q --tb=short --noconftest test_solution.py 2>&1; pytest_exit=$?; echo \"__PYTEST_EXIT_CODE__=${pytest_exit}\"; exit ${pytest_exit}",
             "timeoutMs": 180000
           },
           "output": {
@@ -144,7 +156,7 @@
       "position": { "x": 80, "y": 340 },
       "data": {
         "label": "Write test file",
-        "actionType": "workspace/file",
+        "actionType": "workspace/write_file",
         "description": "Drop the eval row's pytest test file at /sandbox/test_solution.py."
       }
     },
@@ -159,9 +171,19 @@
       }
     },
     {
-      "id": "run_tests",
+      "id": "restore_test",
       "type": "action",
       "position": { "x": 80, "y": 620 },
+      "data": {
+        "label": "Restore test file",
+        "actionType": "workspace/write_file",
+        "description": "Restore the canonical eval test after the agent turn before pytest runs."
+      }
+    },
+    {
+      "id": "run_tests",
+      "type": "action",
+      "position": { "x": 80, "y": 760 },
       "data": {
         "label": "pytest",
         "actionType": "workspace/command",
@@ -173,6 +195,7 @@
     { "id": "e1", "source": "trigger", "target": "workspace_profile", "type": "default" },
     { "id": "e2", "source": "workspace_profile", "target": "write_test", "type": "default" },
     { "id": "e3", "source": "write_test", "target": "solve", "type": "default" },
-    { "id": "e4", "source": "solve", "target": "run_tests", "type": "default" }
+    { "id": "e4", "source": "solve", "target": "restore_test", "type": "default" },
+    { "id": "e5", "source": "restore_test", "target": "run_tests", "type": "default" }
   ]
 }

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
 	buildAgentEvaluationWorkflowSpec,
+	buildCodeEvalDefaultGraders,
 	buildSwebenchEvaluationWorkflowSpec,
 	extractEvaluationGeneratedOutput,
 	extractSwebenchModelPatch,
+	normalizeCodeEvalRowForEvaluation,
 	parseDatasetImport,
 	prepareEvaluationWorkflowTriggerData,
 } from "./service";
@@ -129,6 +132,169 @@ describe("evaluation agent workflow", () => {
 	});
 });
 
+describe("code-eval template normalization", () => {
+	it.each([
+		["humaneval-plus", { task_id: "HumanEval/0", entry_point: "add_one" }],
+		["mbpp-plus", { task_id: "2", code: "def add_one(x):\n    return x + 1\n" }],
+	] as const)("wraps %s check(candidate) tests for pytest discovery", (suiteSlug, rowBase) => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug,
+			index: 0,
+			row: {
+				...rowBase,
+				prompt: "Write add_one.",
+				test: "def check(candidate):\n    assert candidate(1) == 2\n",
+			},
+		});
+		const content = codeEvalTestFileContent(row);
+
+		expect(content).toContain(
+			'_wb_solution_path = _wb_Path(_wb_os.environ.get("CODE_EVAL_SOLUTION_PATH") or "/sandbox/solution.py")',
+		);
+		expect(content).toContain(
+			'_wb_spec = _wb_importlib_util.spec_from_file_location("solution", _wb_solution_path)',
+		);
+		expect(content).toContain("_wb_sys.modules[_wb_spec.name] = _wb_solution");
+		expect(content).toContain('_wb_entry_point = "add_one"');
+		expect(content).toContain("candidate = getattr(_wb_solution, _wb_entry_point)");
+		expect(content).toContain("globals()[_wb_entry_point] = candidate");
+		expect(content).toContain("def check(candidate):");
+		expect(content).toContain("def test_evalplus_check():");
+		expect(content).toContain("    check(candidate)");
+		expect(content).not.toContain("def test_code_eval_script_executed():");
+		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
+			"python -m pytest -q test_solution.py",
+		);
+		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
+			"Write only /sandbox/solution.py",
+		);
+	});
+
+	it("adds a pytest sentinel for MBPP+ top-level assertion scripts", () => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "mbpp-plus",
+			index: 0,
+			row: {
+				task_id: 2,
+				code: "def similar_elements(test_tup1, test_tup2):\n    return tuple(set(test_tup1) & set(test_tup2))\n",
+				prompt: "Write a function to find shared elements.",
+				test: "assert set(similar_elements((3, 4), (4, 5))) == {4}\n",
+			},
+		});
+		const content = codeEvalTestFileContent(row);
+
+		expect(row.externalId).toBe("2");
+		expect(content).toContain('_wb_entry_point = "similar_elements"');
+		expect(content).toContain("assert set(similar_elements((3, 4), (4, 5))) == {4}");
+		expect(content).toContain("def test_code_eval_script_executed():");
+		expect(content).not.toContain("def test_evalplus_check():");
+	});
+
+	it("preserves BigCodeBench pytest-shaped tests without check wrapping", () => {
+		const originalTest = [
+			"import unittest",
+			"",
+			"class TestCases(unittest.TestCase):",
+			"    def test_default(self):",
+			"        self.assertEqual(task_func(), 1)",
+		].join("\n");
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "bigcodebench",
+			index: 0,
+			row: {
+				task_id: "BigCodeBench/0",
+				complete_prompt: "def task_func():\n    pass\n",
+				entry_point: "task_func",
+				test: originalTest,
+			},
+		});
+		const content = codeEvalTestFileContent(row);
+
+		expect(content).toContain('_wb_entry_point = "task_func"');
+		expect(content).toContain(originalTest);
+		expect(content).not.toContain("def test_evalplus_check():");
+		expect(content).not.toContain("def test_code_eval_script_executed():");
+	});
+
+	it("uses only the deterministic Tests pass grader by default", () => {
+		const graders = buildCodeEvalDefaultGraders();
+
+		expect(graders).toEqual([
+			{
+				name: "Tests pass",
+				type: "string_check",
+				config: {
+					operation: "equals",
+					targetPath: "generatedOutput.workflowOutput.exitCode",
+					value: "0",
+				},
+				passThreshold: 1,
+				weight: 1,
+				enabled: true,
+			},
+		]);
+		expect(graders.map((grader) => grader.type)).not.toContain("score_model");
+		expect(graders.every((grader) => grader.enabled !== false)).toBe(true);
+	});
+
+	it("restores canonical tests and runs pytest from a clean directory", () => {
+		const workflow = JSON.parse(
+			readFileSync("services/code-eval-runner/code-eval-item.workflow.json", "utf8"),
+		) as {
+			spec: {
+				do: Array<Record<string, { call: string; with: Record<string, string> }>>;
+			};
+			edges: Array<{ source: string; target: string }>;
+		};
+		const steps = workflow.spec.do.map((step) => Object.keys(step)[0]);
+		expect(steps).toEqual([
+			"workspace_profile",
+			"write_test",
+			"solve",
+			"restore_test",
+			"run_tests",
+		]);
+		expect(workflow.spec.do[0].workspace_profile.with.sandboxTemplate).toBe(
+			"code-eval",
+		);
+		expect(workflow.spec.do[0].workspace_profile.with.sandboxImage).toContain(
+			"openshell-sandbox-code-eval",
+		);
+		const writeTest = workflow.spec.do[1].write_test;
+		expect(writeTest.call).toBe("workspace/write_file");
+		expect(writeTest.with.timeoutMs).toBe(60_000);
+
+		const restoreTest = workflow.spec.do[3].restore_test;
+		expect(restoreTest.call).toBe("workspace/write_file");
+		expect(restoreTest.with.path).toBe("/sandbox/test_solution.py");
+		expect(restoreTest.with.content).toBe(
+			"${ .trigger.evaluation.expectedOutput.testFileContent }",
+		);
+		expect(restoreTest.with.timeoutMs).toBe(60_000);
+
+		const runTests = workflow.spec.do[4].run_tests;
+		expect(runTests.call).toBe("workspace/command");
+		expect(runTests.with.command).toContain("cp /sandbox/solution.py");
+		expect(runTests.with.command).toContain("cp /sandbox/test_solution.py");
+		expect(runTests.with.command).toContain(
+			'CODE_EVAL_SOLUTION_PATH="${run_dir}/solution.py"',
+		);
+		expect(runTests.with.command).toContain("PYTEST_DISABLE_PLUGIN_AUTOLOAD=1");
+		expect(runTests.with.command).toContain("--noconftest test_solution.py");
+		expect(workflow.edges).toEqual(
+			expect.arrayContaining([
+				{ id: "e4", source: "solve", target: "restore_test", type: "default" },
+				{
+					id: "e5",
+					source: "restore_test",
+					target: "run_tests",
+					type: "default",
+				},
+			]),
+		);
+	});
+});
+
 describe("evaluation output extraction", () => {
 	it("prefers generated output fields from workflow results", () => {
 		expect(
@@ -159,3 +325,10 @@ describe("evaluation output extraction", () => {
 		).toContain("diff --git");
 	});
 });
+
+function codeEvalTestFileContent(row: ReturnType<typeof normalizeCodeEvalRowForEvaluation>) {
+	expect(row.expectedOutput).toEqual(
+		expect.objectContaining({ testFileContent: expect.any(String) }),
+	);
+	return (row.expectedOutput as { testFileContent: string }).testFileContent;
+}
