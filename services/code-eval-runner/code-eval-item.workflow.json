@@ -1,0 +1,178 @@
+{
+  "id": "code-eval-item",
+  "name": "Coding eval item",
+  "description": "Run a single coding-eval row: provision a Python sandbox, write the test file, let the agent solve, then run pytest and capture pass/fail. Used by HumanEval+, MBPP+, and BigCodeBench evaluation templates.",
+  "visibility": "public",
+  "specVersion": "1.0.0",
+  "engineType": "dapr",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder.evaluations",
+      "name": "code-eval-item",
+      "version": "1.0.0",
+      "title": "Coding eval item",
+      "summary": "Provision a Python sandbox, write the test file, let an agent solve the task, run pytest, and emit pass/fail."
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "code-eval-${ .trigger.taskId // .trigger.evaluation.itemId }",
+            "rootPath": "/sandbox",
+            "sandboxTemplate": "code-eval",
+            "ttlSeconds": 1800,
+            "keepAfterRun": true,
+            "managedBy": "workflow-builder:evaluations:code-eval",
+            "commandTimeoutMs": 180000,
+            "timeoutMs": 240000,
+            "enabledTools": [
+              "execute_command",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "mkdir",
+              "file_stat"
+            ],
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "code-eval",
+              "ttlSeconds": 1800
+            }
+          }
+        }
+      },
+      {
+        "write_test": {
+          "call": "workspace/file",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "operation": "write",
+            "path": "/sandbox/test_solution.py",
+            "content": "${ .trigger.evaluation.expectedOutput.testFileContent }"
+          }
+        }
+      },
+      {
+        "solve": {
+          "call": "durable/run",
+          "with": {
+            "body": {
+              "agentRef": "${ .trigger.agentRef }",
+              "prompt": "${ .trigger.solvePrompt }",
+              "overrides": {
+                "cwd": "/sandbox",
+                "maxTurns": 30,
+                "timeoutMinutes": 8
+              }
+            },
+            "mode": "execute_direct",
+            "cwd": "/sandbox",
+            "sandboxName": "${ .workspace_profile.sandboxName }",
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "code-eval",
+              "ttlSeconds": 1800
+            }
+          }
+        }
+      },
+      {
+        "run_tests": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "command": "set -u; cd /sandbox && [ -f solution.py ] || { echo 'MISSING_SOLUTION' >&2; exit 2; }; python -m pytest -q --tb=short test_solution.py 2>&1; pytest_exit=$?; echo \"__PYTEST_EXIT_CODE__=${pytest_exit}\"; exit ${pytest_exit}",
+            "timeoutMs": 180000
+          },
+          "output": {
+            "as": {
+              "exitCode": "${ .output.result.exitCode // .output.exitCode // 1 }",
+              "stdout": "${ .output.result.stdout // .output.stdout // \"\" }",
+              "stderr": "${ .output.result.stderr // .output.stderr // \"\" }",
+              "raw": "${ .output }"
+            }
+          }
+        }
+      }
+    ],
+    "output": {
+      "as": {
+        "taskId": "${ .trigger.taskId }",
+        "passed": "${ (.run_tests.exitCode // 1) == 0 }",
+        "exitCode": "${ .run_tests.exitCode }",
+        "stdout": "${ .run_tests.stdout }",
+        "stderr": "${ .run_tests.stderr }",
+        "solutionPath": "/sandbox/solution.py",
+        "raw": {
+          "solve": "${ .solve }",
+          "runTests": "${ .run_tests.raw }"
+        },
+        "workspaceRef": "${ .workspace_profile.workspaceRef }",
+        "sandboxName": "${ .workspace_profile.sandboxName }"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 80, "y": 60 },
+      "data": {
+        "label": "Eval item trigger",
+        "description": "Receives taskId, prompt, expectedOutput.testFileContent, and agentRef from the eval coordinator."
+      }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "action",
+      "position": { "x": 80, "y": 200 },
+      "data": {
+        "label": "Provision sandbox",
+        "actionType": "workspace/profile",
+        "description": "Stand up a Python code-eval sandbox with file/exec tools."
+      }
+    },
+    {
+      "id": "write_test",
+      "type": "action",
+      "position": { "x": 80, "y": 340 },
+      "data": {
+        "label": "Write test file",
+        "actionType": "workspace/file",
+        "description": "Drop the eval row's pytest test file at /sandbox/test_solution.py."
+      }
+    },
+    {
+      "id": "solve",
+      "type": "action",
+      "position": { "x": 80, "y": 480 },
+      "data": {
+        "label": "Agent solves",
+        "actionType": "durable/run",
+        "description": "Hand the prompt to the published agent. Agent must write its solution to /sandbox/solution.py."
+      }
+    },
+    {
+      "id": "run_tests",
+      "type": "action",
+      "position": { "x": 80, "y": 620 },
+      "data": {
+        "label": "pytest",
+        "actionType": "workspace/command",
+        "description": "Run pytest on the agent's solution and capture exit code + stdout."
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "workspace_profile", "type": "default" },
+    { "id": "e2", "source": "workspace_profile", "target": "write_test", "type": "default" },
+    { "id": "e3", "source": "write_test", "target": "solve", "type": "default" },
+    { "id": "e4", "source": "solve", "target": "run_tests", "type": "default" }
+  ]
+}

@@ -135,6 +135,65 @@ export type CreateSwebenchEvaluationTemplateInput = {
 	rows?: unknown[];
 };
 
+export type CodeEvalSuiteSlug = "humaneval-plus" | "mbpp-plus" | "bigcodebench";
+
+export type CreateCodeEvalTemplateInput = {
+	projectId: string;
+	userId: string;
+	suiteSlug: CodeEvalSuiteSlug;
+	name?: string | null;
+	description?: string | null;
+	rows?: unknown[];
+	graderAgentSlug?: string | null;
+};
+
+const CODE_EVAL_WORKFLOW_ID = "code-eval-item";
+
+const CODE_EVAL_SUITES: Record<
+	CodeEvalSuiteSlug,
+	{
+		name: string;
+		description: string;
+		datasetName: string;
+		datasetSplit: string;
+		sourceUrl: string;
+	}
+> = {
+	"humaneval-plus": {
+		name: "HumanEval+",
+		description:
+			"164 short Python function-completion tasks from EvalPlus (HumanEval with extra correctness tests).",
+		datasetName: "evalplus/humanevalplus",
+		datasetSplit: "test",
+		sourceUrl: "https://github.com/evalplus/evalplus",
+	},
+	"mbpp-plus": {
+		name: "MBPP+",
+		description:
+			"~378 entry-level Python tasks (sanitized MBPP) with EvalPlus's expanded correctness tests.",
+		datasetName: "evalplus/mbppplus",
+		datasetSplit: "test",
+		sourceUrl: "https://github.com/evalplus/evalplus",
+	},
+	bigcodebench: {
+		name: "BigCodeBench",
+		description:
+			"1140 practical Python tasks calling 139 libraries; tests run with pytest.",
+		datasetName: "bigcode/bigcodebench",
+		datasetSplit: "v0.1.4",
+		sourceUrl: "https://github.com/bigcode-project/bigcodebench",
+	},
+};
+
+export function normalizeCodeEvalSuiteSlug(value: string): CodeEvalSuiteSlug {
+	const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, "-");
+	if (normalized === "humaneval-plus" || normalized === "humanevalplus" || normalized === "humaneval+")
+		return "humaneval-plus";
+	if (normalized === "mbpp-plus" || normalized === "mbppplus" || normalized === "mbpp+") return "mbpp-plus";
+	if (normalized === "bigcodebench" || normalized === "big-code-bench") return "bigcodebench";
+	throw new Error(`Unsupported code-eval suite: ${value}`);
+}
+
 export async function listEvaluationDatasets(projectId: string) {
 	const database = requireDb();
 	const datasets = await database
@@ -516,7 +575,7 @@ export async function createSwebenchEvaluationTemplate(
 				type: "string_check",
 				config: {
 					operation: "contains",
-					targetPath: "generatedOutput.modelPatch",
+					targetPath: "generatedOutput.workflowOutput.modelPatch",
 					value: "diff --git",
 				},
 				passThreshold: 1,
@@ -527,7 +586,7 @@ export async function createSwebenchEvaluationTemplate(
 				type: "external_harness",
 				config: {
 					harness: "swebench",
-					resultPath: "generatedOutput.evaluation",
+					resultPath: "generatedOutput.workflowOutput.evaluation",
 					passPath: "resolved",
 					scorePath: "score",
 				},
@@ -537,6 +596,225 @@ export async function createSwebenchEvaluationTemplate(
 		],
 	});
 	return { dataset, evaluation };
+}
+
+export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput) {
+	const suiteSlug = normalizeCodeEvalSuiteSlug(input.suiteSlug);
+	const suite = CODE_EVAL_SUITES[suiteSlug];
+	if (!suite) throw error(400, `Unsupported code-eval suite: ${suiteSlug}`);
+
+	const incomingRows = Array.isArray(input.rows) ? input.rows : [];
+	if (incomingRows.length === 0) {
+		throw error(
+			400,
+			`At least one ${suite.name} row is required (caller must fetch from datasets-server.huggingface.co/rows for ${suite.datasetName})`,
+		);
+	}
+	const normalizedRows = incomingRows.map((row, index) =>
+		normalizeCodeEvalRowForEvaluation({ suiteSlug, row, index }),
+	);
+
+	const baseName = input.name?.trim() || suite.name;
+	const dataset = await createEvaluationDataset({
+		projectId: input.projectId,
+		userId: input.userId,
+		name: `${baseName} Dataset`,
+		description:
+			input.description?.trim() ||
+			`${suite.name} rows imported as a generic evaluation dataset.`,
+		sourceType: "code-eval",
+		sourceUrl: suite.sourceUrl,
+		schema: {
+			input: {
+				taskId: "string",
+				prompt: "string",
+				entryPoint: "string",
+				suite: "string",
+				solvePrompt: "string",
+			},
+			expectedOutput: {
+				testFileContent: "string",
+				canonicalSolution: "string",
+			},
+		},
+		metadata: {
+			family: "code-eval",
+			suiteSlug,
+			datasetName: suite.datasetName,
+			datasetSplit: suite.datasetSplit,
+		},
+		rows: normalizedRows,
+	});
+
+	const graderAgentSlug = input.graderAgentSlug?.trim() || "coding-assistant";
+
+	const evaluation = await createEvaluationDefinition({
+		projectId: input.projectId,
+		userId: input.userId,
+		name: baseName,
+		description:
+			input.description?.trim() ||
+			`${suite.name} evaluation. The agent reads each task's prompt + tests, writes /sandbox/solution.py, and we run pytest to score it.`,
+		datasetId: dataset.id,
+		taskConfig: {
+			adapter: "code-eval",
+			suiteSlug,
+			datasetName: suite.datasetName,
+			workflowId: CODE_EVAL_WORKFLOW_ID,
+		},
+		dataSourceConfig: {
+			type: "dataset",
+			datasetId: dataset.id,
+			sourceType: "code-eval",
+		},
+		testingCriteria: {
+			adapter: "pytest",
+			predictionPath: "generatedOutput.workflowOutput.solutionPath",
+		},
+		metadata: {
+			family: "code-eval",
+			suiteSlug,
+			datasetName: suite.datasetName,
+		},
+		graders: [
+			{
+				name: "Tests pass",
+				type: "string_check",
+				config: {
+					operation: "equals",
+					targetPath: "generatedOutput.workflowOutput.exitCode",
+					value: "0",
+				},
+				passThreshold: 1,
+				weight: 1,
+			},
+			{
+				name: "Solution implements the task (LLM judge)",
+				type: "score_model",
+				config: {
+					mode: "labeler",
+					model: graderAgentSlug,
+					targetPath: "generatedOutput.workflowOutput.solutionPath",
+					rubric:
+						"Reviewer judges whether the candidate solution actually implements the task vs hardcoding the test answers.",
+					labels: [
+						{ label: "Pass", passing: true },
+						{ label: "Fail", passing: false },
+					],
+					passingLabels: ["Pass"],
+					responseSchema: {
+						type: "object",
+						properties: {
+							label: { enum: ["Pass", "Fail"] },
+							reasoning: { type: "string" },
+						},
+						required: ["label", "reasoning"],
+						additionalProperties: false,
+					},
+					responseToolName: "emit_evaluation",
+					systemTemplate: [
+						"You are a strict code reviewer for a coding evaluation.",
+						"You will be shown a task prompt, the agent's candidate solution, and the pytest test code.",
+						"Decide whether the candidate solution genuinely implements the task (Pass) or just hardcodes test outputs / fails to implement the algorithm (Fail).",
+						"Reasoning should be one short sentence.",
+					].join("\n"),
+					userTemplate: [
+						"Suite: {{item.suite}}",
+						"Task: {{item.taskId}}",
+						"",
+						"--- Prompt ---",
+						"{{item.prompt}}",
+						"",
+						"--- Pytest tests ---",
+						"{{item.expectedOutput.testFileContent}}",
+						"",
+						"--- Candidate solution path ---",
+						"{{sample.output_text}}",
+					].join("\n"),
+				},
+				passThreshold: 1,
+				weight: 1,
+			},
+		],
+	});
+	return { dataset, evaluation };
+}
+
+function normalizeCodeEvalRowForEvaluation(params: {
+	suiteSlug: CodeEvalSuiteSlug;
+	row: unknown;
+	index: number;
+}): DatasetRowInput {
+	const record = isRecord(params.row) ? params.row : {};
+	const taskId =
+		readString(record.task_id) ??
+		readString(record.taskId) ??
+		`${params.suiteSlug}-${params.index + 1}`;
+	const prompt =
+		readString(record.prompt) ??
+		readString(record.complete_prompt) ??
+		readString(record.instruct_prompt) ??
+		"";
+	if (!prompt) {
+		throw error(400, `Code-eval row ${taskId} is missing prompt`);
+	}
+	const test = readString(record.test) ?? readString(record.test_code) ?? "";
+	if (!test) {
+		throw error(400, `Code-eval row ${taskId} is missing test code`);
+	}
+	const entryPoint =
+		readString(record.entry_point) ??
+		readString(record.entryPoint) ??
+		"solution";
+	const canonicalSolution =
+		readString(record.canonical_solution) ??
+		readString(record.canonicalSolution) ??
+		"";
+	const solvePrompt = buildCodeEvalSolvePrompt({
+		taskId,
+		prompt,
+		entryPoint,
+	});
+	return {
+		externalId: taskId,
+		input: {
+			taskId,
+			prompt,
+			entryPoint,
+			suite: params.suiteSlug,
+			solvePrompt,
+		},
+		expectedOutput: {
+			testFileContent: test,
+			canonicalSolution,
+		},
+		annotations: {},
+		metadata: {
+			family: "code-eval",
+			suiteSlug: params.suiteSlug,
+		},
+	};
+}
+
+function buildCodeEvalSolvePrompt(params: {
+	taskId: string;
+	prompt: string;
+	entryPoint: string;
+}): string {
+	return [
+		`You are solving coding-eval task ${params.taskId}.`,
+		"",
+		"Task prompt:",
+		params.prompt,
+		"",
+		`Write your complete solution to /sandbox/solution.py. Define ${params.entryPoint} (and any helpers it needs) so that the existing /sandbox/test_solution.py passes when invoked with \`python -m pytest -q test_solution.py\`.`,
+		"",
+		"Constraints:",
+		"- Place all code in /sandbox/solution.py. Do not modify /sandbox/test_solution.py.",
+		"- Do not hardcode the test inputs/outputs. Implement the algorithm correctly.",
+		"- You may run pytest yourself to check. Iterate until it passes, but do not invent new tests.",
+		"- Stop once the test file passes or you've exhausted your turn budget.",
+	].join("\n");
 }
 
 export async function updateEvaluationDefinition(params: {
@@ -1148,33 +1426,63 @@ export async function startEvaluationRunItemWorkflow(params: {
 	let triggerData: Record<string, unknown>;
 
 	if (row.run.subjectType === "agent") {
-		workflow = await ensureHiddenEvaluationWorkflow({
-			projectId: row.run.projectId,
-			userId: row.run.userId,
-		});
-		const rawSpec =
-			row.evaluation.taskConfig.adapter === "swebench"
-				? buildSwebenchEvaluationWorkflowSpec({
-						evaluationName: row.evaluation.name,
-						agentId: row.run.subjectId,
-						agentVersion: parseOptionalInteger(row.run.subjectVersion),
-						input: row.item.input,
-						taskConfig: row.evaluation.taskConfig,
-						executionConfig: row.run.executionConfig,
-					})
-				: buildAgentEvaluationWorkflowSpec({
-						evaluationName: row.evaluation.name,
-						agentId: row.run.subjectId,
-						agentVersion: parseOptionalInteger(row.run.subjectVersion),
-						input: row.item.input,
-						taskConfig: row.evaluation.taskConfig,
-					});
-		spec = await resolveEvaluationSpecAgentRefs(rawSpec);
-		triggerData = {
-			runId: row.run.id,
-			itemId: row.item.id,
-			input: row.item.input,
-		};
+		const taskConfigWorkflowId =
+			typeof row.evaluation.taskConfig.workflowId === "string"
+				? row.evaluation.taskConfig.workflowId.trim()
+				: "";
+		if (taskConfigWorkflowId) {
+			// Workflow-as-DB path. The eval template stores a workflowId
+			// pointing at a row in the workflows table (e.g. "code-eval-item"
+			// for HumanEval/MBPP/BigCodeBench). The agent's id+version are
+			// stamped into the trigger data as `agentRef`, and the workflow
+			// JSON references it via `${ .trigger.agentRef }` inside its
+			// durable/run step. This lets operators tune prompts/maxTurns
+			// without redeploying the BFF.
+			workflow = await loadEvaluationSubjectWorkflow({
+				projectId: row.run.projectId,
+				workflowId: taskConfigWorkflowId,
+			});
+			spec = await prepareEvaluationSubjectWorkflowSpec(workflow.spec);
+			const agentRef: Record<string, unknown> = { id: row.run.subjectId };
+			const agentVersion = parseOptionalInteger(row.run.subjectVersion);
+			if (agentVersion != null) agentRef.version = agentVersion;
+			triggerData = await prepareEvaluationWorkflowTriggerData({
+				spec,
+				runId: row.run.id,
+				itemId: row.item.id,
+				datasetRowId: row.item.datasetRowId,
+				input: { ...row.item.input, agentRef },
+				expectedOutput: row.item.expectedOutput,
+			});
+		} else {
+			workflow = await ensureHiddenEvaluationWorkflow({
+				projectId: row.run.projectId,
+				userId: row.run.userId,
+			});
+			const rawSpec =
+				row.evaluation.taskConfig.adapter === "swebench"
+					? buildSwebenchEvaluationWorkflowSpec({
+							evaluationName: row.evaluation.name,
+							agentId: row.run.subjectId,
+							agentVersion: parseOptionalInteger(row.run.subjectVersion),
+							input: row.item.input,
+							taskConfig: row.evaluation.taskConfig,
+							executionConfig: row.run.executionConfig,
+						})
+					: buildAgentEvaluationWorkflowSpec({
+							evaluationName: row.evaluation.name,
+							agentId: row.run.subjectId,
+							agentVersion: parseOptionalInteger(row.run.subjectVersion),
+							input: row.item.input,
+							taskConfig: row.evaluation.taskConfig,
+						});
+			spec = await resolveEvaluationSpecAgentRefs(rawSpec);
+			triggerData = {
+				runId: row.run.id,
+				itemId: row.item.id,
+				input: row.item.input,
+			};
+		}
 	} else if (row.run.subjectType === "workflow") {
 		workflow = await loadEvaluationSubjectWorkflow({
 			projectId: row.run.projectId,
