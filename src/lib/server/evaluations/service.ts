@@ -2040,6 +2040,25 @@ async function gradeLoadedEvaluationRunItem(
 	activeGraders: Array<typeof evaluationGraders.$inferSelect>,
 ) {
 	const database = requireDb();
+	const infrastructureError = detectCodeEvalInfrastructureFailure(
+		item.input,
+		item.generatedOutput,
+	);
+	if (infrastructureError) {
+		const [updated] = await database
+			.update(evaluationRunItems)
+			.set({
+				status: "error",
+				graderResults: {},
+				scores: {},
+				error: infrastructureError,
+				completedAt: new Date(),
+				updatedAt: new Date(),
+			})
+			.where(eq(evaluationRunItems.id, item.id))
+			.returning();
+		return updated ?? item;
+	}
 	const weights = new Map(activeGraders.map((grader) => [grader.id, grader.weight]));
 	const results = await Promise.all(
 		activeGraders.map((grader) =>
@@ -2080,6 +2099,43 @@ async function gradeLoadedEvaluationRunItem(
 		.where(eq(evaluationRunItems.id, item.id))
 		.returning();
 	return updated ?? item;
+}
+
+export function detectCodeEvalInfrastructureFailure(
+	input: unknown,
+	generatedOutput: unknown,
+): string | null {
+	const inputRecord = isRecord(input) ? input : {};
+	const generated = isRecord(generatedOutput) ? generatedOutput : {};
+	const workflowOutput = isRecord(generated.workflowOutput)
+		? generated.workflowOutput
+		: isRecord(generated.output)
+			? generated.output
+			: generated;
+	const protocol = isRecord(workflowOutput.protocol) ? workflowOutput.protocol : {};
+	const isCodeEval =
+		typeof inputRecord.suite === "string" ||
+		protocol.mode === CODE_EVAL_PROTOCOL_MODE ||
+		workflowOutput.benchmarkComparable === CODE_EVAL_BENCHMARK_COMPARABLE;
+	if (!isCodeEval) return null;
+	const runtimeProbe = isRecord(workflowOutput.runtimeProbe)
+		? workflowOutput.runtimeProbe
+		: null;
+	if (!runtimeProbe) return null;
+	const rawExitCode = runtimeProbe.exitCode;
+	const exitCode =
+		typeof rawExitCode === "number"
+			? rawExitCode
+			: typeof rawExitCode === "string"
+				? Number.parseInt(rawExitCode, 10)
+				: 0;
+	if (exitCode === 0 || !Number.isFinite(exitCode)) return null;
+	const stderr =
+		typeof runtimeProbe.stderr === "string" ? runtimeProbe.stderr.trim() : "";
+	const stdout =
+		typeof runtimeProbe.stdout === "string" ? runtimeProbe.stdout.trim() : "";
+	const detail = (stderr || stdout || "runtime probe failed").slice(0, 600);
+	return `Code-eval runtime validation failed before grading (exit ${exitCode}): ${detail}`;
 }
 
 function normalizeGraders(graders: unknown[] | undefined): GraderDefinition[] {

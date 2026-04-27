@@ -5,6 +5,7 @@ import {
 	buildCodeEvalDefaultGraders,
 	buildSwebenchEvaluationWorkflowSpec,
 	collectEvaluationTraceIds,
+	detectCodeEvalInfrastructureFailure,
 	extractEvaluationGeneratedOutput,
 	extractSwebenchModelPatch,
 	normalizeCodeEvalRowForEvaluation,
@@ -483,6 +484,27 @@ describe("evaluation output extraction", () => {
 			"0123456789abcdef0123456789abcdef",
 			"fedcba9876543210fedcba9876543210",
 		]);
+	});
+
+	it("classifies failed code-eval runtime probes as infrastructure failures", () => {
+		expect(
+			detectCodeEvalInfrastructureFailure(
+				{ suite: "bigcodebench" },
+				{
+					workflowOutput: {
+						exitCode: 0,
+						runtimeProbe: {
+							exitCode: 1,
+							stderr: "ModuleNotFoundError: No module named 'pytest'",
+						},
+						protocol: {
+							mode: "internal-agent-visible-tests",
+							benchmarkComparable: false,
+						},
+					},
+				},
+			),
+		).toContain("runtime validation failed");
 	});
 });
 
