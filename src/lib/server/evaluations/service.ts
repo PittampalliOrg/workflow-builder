@@ -1433,19 +1433,24 @@ export async function startEvaluationRunItemWorkflow(params: {
 		if (taskConfigWorkflowId) {
 			// Workflow-as-DB path. The eval template stores a workflowId
 			// pointing at a row in the workflows table (e.g. "code-eval-item"
-			// for HumanEval/MBPP/BigCodeBench). The agent's id+version are
-			// stamped into the trigger data as `agentRef`, and the workflow
-			// JSON references it via `${ .trigger.agentRef }` inside its
-			// durable/run step. This lets operators tune prompts/maxTurns
-			// without redeploying the BFF.
+			// for HumanEval/MBPP/BigCodeBench). We stamp the agent's id+version
+			// into every durable/run task's body.agentRef BEFORE calling
+			// prepareEvaluationSubjectWorkflowSpec — resolveSpecAgentRefs runs
+			// at workflow-load time, BEFORE jq expressions evaluate, so a
+			// `${ .trigger.agentRef }` placeholder would fail the resolver's
+			// AgentRef shape check.
 			workflow = await loadEvaluationSubjectWorkflow({
 				projectId: row.run.projectId,
 				workflowId: taskConfigWorkflowId,
 			});
-			spec = await prepareEvaluationSubjectWorkflowSpec(workflow.spec);
 			const agentRef: Record<string, unknown> = { id: row.run.subjectId };
 			const agentVersion = parseOptionalInteger(row.run.subjectVersion);
 			if (agentVersion != null) agentRef.version = agentVersion;
+			const stampedSpec = stampAgentRefIntoDurableRunSteps(
+				workflow.spec as Record<string, unknown>,
+				agentRef,
+			);
+			spec = await prepareEvaluationSubjectWorkflowSpec(stampedSpec);
 			triggerData = await prepareEvaluationWorkflowTriggerData({
 				spec,
 				runId: row.run.id,
@@ -2359,6 +2364,45 @@ async function loadEvaluationSubjectWorkflow(params: {
 		.limit(1);
 	if (!workflow) throw error(404, "Workflow subject not found");
 	return workflow;
+}
+
+/**
+ * Walk an SW 1.0 spec and replace every `durable/run` task's
+ * `with.body.agentRef` with the supplied static `{id, version}` object.
+ *
+ * Used by the workflow-as-DB code-eval path. The canonical workflow JSON
+ * authors `agentRef` as a jq placeholder string so the canvas displays it
+ * generically, but `resolveSpecAgentRefs` runs BEFORE jq evaluation and
+ * needs a real ref object.
+ *
+ * Skips tasks that already have a structured agentRef so any future
+ * pre-stamped workflow is left alone. Returns a deep-copied spec (does
+ * not mutate input).
+ */
+function stampAgentRefIntoDurableRunSteps(
+	spec: Record<string, unknown>,
+	agentRef: Record<string, unknown>,
+): Record<string, unknown> {
+	const cloned = JSON.parse(JSON.stringify(spec)) as Record<string, unknown>;
+	const doList = Array.isArray(cloned.do) ? cloned.do : [];
+	for (const step of doList) {
+		if (!isRecord(step)) continue;
+		for (const taskName of Object.keys(step)) {
+			const task = step[taskName];
+			if (!isRecord(task)) continue;
+			if (task.call !== "durable/run") continue;
+			const withBlock = isRecord(task.with) ? (task.with as Record<string, unknown>) : null;
+			if (!withBlock) continue;
+			const body = isRecord(withBlock.body) ? (withBlock.body as Record<string, unknown>) : null;
+			if (!body) continue;
+			const existing = body.agentRef;
+			if (isRecord(existing) && (typeof existing.id === "string" || typeof existing.slug === "string")) {
+				continue;
+			}
+			body.agentRef = { ...agentRef };
+		}
+	}
+	return cloned;
 }
 
 async function prepareEvaluationSubjectWorkflowSpec(
