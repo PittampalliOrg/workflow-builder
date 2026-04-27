@@ -38,6 +38,8 @@ def main() -> int:
             predictions_path,
             "--run_id",
             run_id,
+            "--report_dir",
+            str(log_dir),
             "--max_workers",
             max_workers,
             "--namespace",

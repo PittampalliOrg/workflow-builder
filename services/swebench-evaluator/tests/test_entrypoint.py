@@ -82,3 +82,34 @@ def test_parse_results_marks_aggregate_errors(tmp_path: Path):
     assert results[0]["status"] == "error"
     assert results[0]["resolved"] is False
     assert results[0]["error"] == "Harness error"
+
+
+def test_main_writes_report_to_artifact_log_dir(monkeypatch, tmp_path: Path):
+    entrypoint = load_entrypoint()
+    captured = {}
+
+    monkeypatch.setenv("DATASET_NAME", "princeton-nlp/SWE-bench_Lite")
+    monkeypatch.setenv("PREDICTIONS_PATH", "/artifacts/run_1/predictions.jsonl")
+    monkeypatch.setenv("RUN_ID", "run_1")
+    monkeypatch.setenv("INSTANCE_IDS", "sympy__sympy-20590")
+    monkeypatch.setenv("SWEBENCH_LOG_DIR", str(tmp_path / "harness"))
+    monkeypatch.setenv("DOCKER_WAIT_SECONDS", "0")
+    monkeypatch.setenv("SWEBENCH_STOP_DOCKER_SIDECAR", "false")
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
+    monkeypatch.setattr(entrypoint, "post_results", lambda *args, **kwargs: None)
+    monkeypatch.setattr(entrypoint, "wait_for_docker", lambda: None)
+    monkeypatch.setattr(entrypoint, "stop_docker_sidecar", lambda: None)
+    monkeypatch.setattr(entrypoint, "parse_results", lambda *args, **kwargs: [])
+
+    assert entrypoint.main() == 0
+
+    cmd = captured["cmd"]
+    log_dir = str(tmp_path / "harness")
+    assert cmd[cmd.index("--report_dir") + 1] == log_dir
+    assert captured["kwargs"]["cwd"] == log_dir

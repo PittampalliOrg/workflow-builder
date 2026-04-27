@@ -6,7 +6,10 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends git docker.io \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir swebench requests docker
+RUN pip install --no-cache-dir \
+	"git+https://github.com/PittampalliOrg/SWE-bench.git@e922ef7cf282d2505588ee46a0162b5cf6a58406" \
+	requests \
+	docker
 
 COPY entrypoint.py /app/entrypoint.py
 
