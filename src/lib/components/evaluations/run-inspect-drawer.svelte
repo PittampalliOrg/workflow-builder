@@ -93,7 +93,7 @@
 <Sheet open={selectedItemId !== null} onOpenChange={(o) => !o && onClose()}>
 	<SheetContent
 		side="right"
-		class="w-[1000px] sm:max-w-[1000px] p-0 flex flex-col"
+		class="w-[min(1100px,95vw)] data-[side=right]:sm:max-w-[min(1100px,95vw)] p-0 flex flex-col"
 		{onkeydown}
 	>
 		{#if selectedItem}
@@ -149,7 +149,7 @@
 								Input
 							</h3>
 							<pre
-								class="bg-muted p-3 rounded-md text-xs overflow-auto max-h-64">{JSON.stringify(
+								class="bg-muted p-3 rounded-md text-xs overflow-auto max-h-64 whitespace-pre break-normal font-mono leading-snug">{JSON.stringify(
 									selectedItem.input,
 									null,
 									2
@@ -163,7 +163,7 @@
 									Expected
 								</h3>
 								<pre
-									class="bg-muted p-3 rounded-md text-xs overflow-auto max-h-48">{JSON.stringify(
+									class="bg-muted p-3 rounded-md text-xs overflow-auto max-h-48 whitespace-pre break-normal font-mono leading-snug">{JSON.stringify(
 										selectedItem.expectedOutput,
 										null,
 										2
@@ -177,7 +177,7 @@
 								Output
 							</h3>
 							<pre
-								class="bg-muted p-3 rounded-md text-xs overflow-auto max-h-64">{selectedItem.generatedOutput !==
+								class="bg-muted p-3 rounded-md text-xs overflow-auto max-h-64 whitespace-pre break-normal font-mono leading-snug">{selectedItem.generatedOutput !==
 									undefined && selectedItem.generatedOutput !== null
 									? JSON.stringify(selectedItem.generatedOutput, null, 2)
 									: '—'}</pre>
@@ -215,7 +215,7 @@
 									{/if}
 									{#if g.details}
 										<pre
-											class="bg-muted p-2 rounded text-[11px] overflow-auto max-h-48">{JSON.stringify(
+											class="bg-muted p-2 rounded text-[11px] overflow-auto max-h-48 whitespace-pre break-normal font-mono leading-snug">{JSON.stringify(
 												g.details,
 												null,
 												2
@@ -234,7 +234,7 @@
 									Error
 								</h3>
 								<pre
-									class="bg-destructive/10 border border-destructive/20 p-3 rounded-md text-xs overflow-auto max-h-48">{selectedItem.error}</pre>
+									class="bg-destructive/10 border border-destructive/20 p-3 rounded-md text-xs overflow-auto max-h-48 whitespace-pre-wrap break-words font-mono leading-snug">{selectedItem.error}</pre>
 							</section>
 						{/if}
 						{#if selectedItem.traceIds?.length}
