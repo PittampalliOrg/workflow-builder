@@ -69,9 +69,18 @@ export function resolveSandboxImage(
 	const environmentName = normalizeEnvironmentName(input.environmentName);
 	const translatedImageMap = input.translatedImageMap ?? {};
 	const templateKeys = sandboxImageKeysForEnvironment(input.envSlug, input.config);
+	const directTranslatedImage =
+		translatedImageMap[normalizeSandboxImageKey(input.envSlug)]?.trim() || null;
 	const translatedImage = findMappedSandboxImage(templateKeys, translatedImageMap);
 	const storedImageTag = normalizeImageTag(input.storedImageTag);
 	const templateResolution = input.templateResolution ?? null;
+
+	if (isSpokeEnvironment(environmentName) && directTranslatedImage) {
+		return {
+			imageTag: directTranslatedImage,
+			imageSource: "translated",
+		};
+	}
 
 	if (storedImageTag) {
 		return resolveConcreteImage({

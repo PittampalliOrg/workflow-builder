@@ -17,13 +17,13 @@ function envConfig(overrides: Partial<EnvironmentConfig> = {}): EnvironmentConfi
 
 const SPOKE_IMAGE_MAP = {
 	"dapr-agent":
-		"ghcr.io/pittampalliorg/openshell-sandbox:git-58783236bd0b04c57f7a320b5eaa5cebbfd974b2",
+		"ghcr.io/pittampalliorg/openshell-sandbox:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 	"default-sandbox":
-		"ghcr.io/pittampalliorg/openshell-sandbox:git-58783236bd0b04c57f7a320b5eaa5cebbfd974b2",
+		"ghcr.io/pittampalliorg/openshell-sandbox:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 	"dapr-agent-xlsx":
-		"ghcr.io/pittampalliorg/openshell-sandbox-xlsx:git-c67463ed142b4c2a074bb2135f240cf422acf284",
+		"ghcr.io/pittampalliorg/openshell-sandbox-xlsx:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 	xlsx:
-		"ghcr.io/pittampalliorg/openshell-sandbox-xlsx:git-c67463ed142b4c2a074bb2135f240cf422acf284",
+		"ghcr.io/pittampalliorg/openshell-sandbox-xlsx:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 };
 
 describe("resolveSandboxImage", () => {
@@ -56,7 +56,24 @@ describe("resolveSandboxImage", () => {
 
 		expect(result).toEqual({
 			imageTag:
+				"ghcr.io/pittampalliorg/openshell-sandbox:git-16a428b0acf22d940f3154e0dbe08b90217721da",
+			imageSource: "translated",
+		});
+	});
+
+	it("prefers direct spoke pins over stale stored builtin images", () => {
+		const result = resolveSandboxImage({
+			environmentName: "dev",
+			envSlug: "dapr-agent",
+			config: envConfig(),
+			storedImageTag:
 				"ghcr.io/pittampalliorg/openshell-sandbox:git-58783236bd0b04c57f7a320b5eaa5cebbfd974b2",
+			translatedImageMap: SPOKE_IMAGE_MAP,
+		});
+
+		expect(result).toEqual({
+			imageTag:
+				"ghcr.io/pittampalliorg/openshell-sandbox:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 			imageSource: "translated",
 		});
 	});
@@ -73,7 +90,7 @@ describe("resolveSandboxImage", () => {
 
 		expect(result).toEqual({
 			imageTag:
-				"ghcr.io/pittampalliorg/openshell-sandbox-xlsx:git-c67463ed142b4c2a074bb2135f240cf422acf284",
+				"ghcr.io/pittampalliorg/openshell-sandbox-xlsx:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 			imageSource: "translated",
 		});
 	});
@@ -86,7 +103,7 @@ describe("resolveSandboxImage", () => {
 			storedImageTag: null,
 			templateResolution: {
 				imageTag:
-					"ghcr.io/pittampalliorg/openshell-sandbox:git-58783236bd0b04c57f7a320b5eaa5cebbfd974b2",
+					"ghcr.io/pittampalliorg/openshell-sandbox:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 				imageSource: "translated",
 			},
 			translatedImageMap: SPOKE_IMAGE_MAP,
@@ -94,7 +111,7 @@ describe("resolveSandboxImage", () => {
 
 		expect(result).toEqual({
 			imageTag:
-				"ghcr.io/pittampalliorg/openshell-sandbox:git-58783236bd0b04c57f7a320b5eaa5cebbfd974b2",
+				"ghcr.io/pittampalliorg/openshell-sandbox:git-16a428b0acf22d940f3154e0dbe08b90217721da",
 			imageSource: "translated",
 		});
 	});
