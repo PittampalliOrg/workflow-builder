@@ -563,6 +563,15 @@ def _call_anthropic_sdk(
     }
     if anthropic_tools:
         request_kwargs["tools"] = anthropic_tools
+    # Forward optional pass-through kwargs to the SDK. `system` and
+    # `tool_choice` are accepted by `messages.create`/`messages.stream`
+    # directly. `tool_choice={"type":"tool","name":"emit_evaluation"}` is the
+    # forced-tool path used by the score_model labeler grader to guarantee a
+    # JSON-shaped response (see /api/grader-evaluate).
+    if isinstance(kwargs.get("system"), str) and kwargs["system"].strip():
+        request_kwargs["system"] = kwargs["system"]
+    if kwargs.get("tool_choice") is not None:
+        request_kwargs["tool_choice"] = kwargs["tool_choice"]
     # Enable adaptive thinking on Opus 4.6/4.7. `display: "summarized"` opts
     # into receiving thinking text (Opus 4.7 omits by default) so we can
     # stream it into session_events as agent.thinking. Note: sampling params

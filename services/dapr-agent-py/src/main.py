@@ -3801,10 +3801,23 @@ def grader_evaluate(payload: dict):
     no compaction, no MCP — graders are stateless.
 
     Body shape:
-        { "systemPrompt": str?, "userPrompt": str, "model": str? (component name) }
+        {
+          "systemPrompt": str?,
+          "userPrompt": str,
+          "model": str? (component name),
+          "responseSchema": dict? (JSON Schema; when set, request a strict
+              tool-call response shaped like the schema),
+          "responseToolName": str? (defaults to "emit_evaluation"),
+        }
 
     Response:
-        { "output": str }
+        {
+          "output": str,                 # text content (empty when toolUse set)
+          "toolUse": {                   # present iff responseSchema was set
+              "name": str,
+              "input": dict,
+          } | None,
+        }
     """
     user_prompt = str(payload.get("userPrompt") or "").strip()
     system_prompt = str(payload.get("systemPrompt") or "")
@@ -3813,6 +3826,10 @@ def grader_evaluate(payload: dict):
         or os.environ.get("EVALUATIONS_GRADER_LLM_COMPONENT", "")
         or DEFAULT_LLM_COMPONENT
     )
+    response_schema = payload.get("responseSchema")
+    if response_schema is not None and not isinstance(response_schema, dict):
+        raise HTTPException(status_code=400, detail="responseSchema must be a JSON object")
+    response_tool_name = str(payload.get("responseToolName") or "emit_evaluation").strip()
 
     if not user_prompt:
         raise HTTPException(status_code=400, detail="userPrompt is required")
@@ -3827,11 +3844,24 @@ def grader_evaluate(payload: dict):
     if system_prompt.strip():
         kwargs["system"] = system_prompt
 
+    forced_tool: list[dict] | None = None
+    if response_schema is not None:
+        # Strict-mode forced single tool. Anthropic constrains the response to
+        # the supplied input_schema (grammar-constrained decoding) and returns
+        # a single tool_use block whose `input` is the schema-conformant dict.
+        # See docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use
+        forced_tool = [{
+            "name": response_tool_name,
+            "description": "Emit a strictly-typed evaluation result.",
+            "input_schema": response_schema,
+        }]
+        kwargs["tool_choice"] = {"type": "tool", "name": response_tool_name}
+
     try:
         result = _call_anthropic_sdk(
             component=component,
             messages=messages,
-            tools=None,
+            tools=forced_tool,
             **kwargs,
         )
     except Exception as exc:  # noqa: BLE001
@@ -3851,7 +3881,25 @@ def grader_evaluate(payload: dict):
     else:
         output = str(content or "")
 
-    return {"output": output}
+    tool_use_resp: dict | None = None
+    tool_calls = result.get("tool_calls") if isinstance(result, dict) else None
+    if isinstance(tool_calls, list) and tool_calls:
+        first = tool_calls[0]
+        fn = first.get("function") if isinstance(first, dict) else None
+        if isinstance(fn, dict):
+            args_raw = fn.get("arguments")
+            args_dict: dict | None = None
+            if isinstance(args_raw, str):
+                try:
+                    args_dict = json.loads(args_raw)
+                except (ValueError, TypeError):
+                    args_dict = None
+            elif isinstance(args_raw, dict):
+                args_dict = args_raw
+            if isinstance(args_dict, dict):
+                tool_use_resp = {"name": fn.get("name") or response_tool_name, "input": args_dict}
+
+    return {"output": output, "toolUse": tool_use_resp}
 
 
 @app.get("/healthz")

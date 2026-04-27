@@ -106,12 +106,27 @@ export function validateGraderConfig(
 				referencePath: readString(config.referencePath, "expectedOutput"),
 				threshold: clampNumber(config.threshold, 0, 1, 0.8),
 			};
-		case "score_model":
-			return {
+		case "score_model": {
+			// `responseSchema` opts the labeler/scorer into Anthropic strict
+			// tool-use: the per-agent runtime's /api/grader-evaluate forwards
+			// it as a forced single tool whose input is grammar-constrained
+			// to the schema. `responseToolName` is the tool's `name` field
+			// (defaults to "emit_evaluation" on the runtime side). Any
+			// passing existing config without these fields keeps the legacy
+			// prose-prompt + bare-label fallback behavior unchanged.
+			const out: Record<string, unknown> = {
 				...config,
 				targetPath: readString(config.targetPath, "generatedOutput"),
 				rubric: readString(config.rubric, ""),
 			};
+			if (isRecord(config.responseSchema)) {
+				out.responseSchema = config.responseSchema;
+			}
+			if (typeof config.responseToolName === "string" && config.responseToolName.trim()) {
+				out.responseToolName = config.responseToolName.trim();
+			}
+			return out;
+		}
 		case "python":
 			return {
 				...config,

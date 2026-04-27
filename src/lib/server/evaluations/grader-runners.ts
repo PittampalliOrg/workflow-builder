@@ -89,9 +89,20 @@ async function runScoreModelGrader(
 	const systemPrompt = renderTemplate(systemTemplate, variables);
 	const userPrompt = renderTemplate(userTemplate, variables);
 
-	let raw: string;
+	const responseSchema = isRecord(grader.config.responseSchema)
+		? (grader.config.responseSchema as Record<string, unknown>)
+		: undefined;
+	const responseToolName =
+		typeof grader.config.responseToolName === "string" && grader.config.responseToolName.trim()
+			? grader.config.responseToolName.trim()
+			: "emit_evaluation";
+
+	let evaluatorReply: { output: string; toolUse?: { name: string; input: Record<string, unknown> } };
 	try {
-		raw = await invokeEvaluatorAgent(slug, systemPrompt, userPrompt);
+		evaluatorReply = await invokeEvaluatorAgent(slug, systemPrompt, userPrompt, {
+			responseSchema,
+			responseToolName,
+		});
 	} catch (err) {
 		return skipped(
 			grader,
@@ -99,7 +110,17 @@ async function runScoreModelGrader(
 		);
 	}
 
-	let parsed = parseJsonReply(raw);
+	const raw = evaluatorReply.output ?? "";
+	let parsed: Record<string, unknown> | null = null;
+
+	// Strict-tool path: when the runtime forced a single tool call, its
+	// `input` already conforms to `responseSchema`. Skip JSON parsing of
+	// free-text and use the structured object directly.
+	if (evaluatorReply.toolUse && isRecord(evaluatorReply.toolUse.input)) {
+		parsed = evaluatorReply.toolUse.input;
+	}
+
+	if (!parsed) parsed = parseJsonReply(raw);
 
 	// Fallback: models sometimes ignore the "respond with JSON" instruction and
 	// emit a bare label string ("Pass", "Fail", "Positive", ...). If we know
@@ -188,24 +209,46 @@ async function invokeEvaluatorAgent(
 	slug: string,
 	systemPrompt: string,
 	userPrompt: string,
-): Promise<string> {
+	options: {
+		responseSchema?: Record<string, unknown>;
+		responseToolName?: string;
+	} = {},
+): Promise<{ output: string; toolUse?: { name: string; input: Record<string, unknown> } }> {
+	const requestBody: Record<string, unknown> = { systemPrompt, userPrompt };
+	if (options.responseSchema) {
+		requestBody.responseSchema = options.responseSchema;
+		if (options.responseToolName) {
+			requestBody.responseToolName = options.responseToolName;
+		}
+	}
+
 	// Path 1: operator-supplied direct HTTPS endpoint. Same shape as the
 	// dapr-agent-py endpoint below — kept for cases where the operator wants to
 	// proxy grading through their own service (e.g., a Cloudflare Worker that
-	// wraps OpenAI / a custom rubric pipeline).
+	// wraps OpenAI / a custom rubric pipeline). Operator endpoints may or
+	// may not honor `responseSchema`; we forward it and read `toolUse` when
+	// present, otherwise fall back to text.
 	const direct = env.EVALUATIONS_GRADER_URL?.trim();
 	if (direct) {
 		const res = await daprFetch(direct, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ systemPrompt, userPrompt, agentSlug: slug }),
+			body: JSON.stringify({ ...requestBody, agentSlug: slug }),
 			maxRetries: 2,
 		});
 		if (!res.ok) {
 			throw new Error(`grader endpoint ${direct} returned ${res.status}`);
 		}
-		const data = (await res.json()) as { output?: string; text?: string };
-		return data.output ?? data.text ?? JSON.stringify(data);
+		const data = (await res.json()) as {
+			output?: string;
+			text?: string;
+			toolUse?: { name?: string; input?: unknown };
+		};
+		const toolUse =
+			data.toolUse && typeof data.toolUse.name === "string" && isRecord(data.toolUse.input)
+				? { name: data.toolUse.name, input: data.toolUse.input }
+				: undefined;
+		return { output: data.output ?? data.text ?? "", toolUse };
 	}
 
 	// Path 2: Dapr service-invoke against the per-agent runtime pod's
@@ -226,7 +269,7 @@ async function invokeEvaluatorAgent(
 	const res = await daprFetch(url, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ systemPrompt, userPrompt }),
+		body: JSON.stringify(requestBody),
 		maxRetries: 1,
 	});
 	if (!res.ok) {
@@ -235,9 +278,17 @@ async function invokeEvaluatorAgent(
 			`agent-runtime-${slug} /api/grader-evaluate returned ${res.status}: ${text.slice(0, 300)}`,
 		);
 	}
-	const data = (await res.json()) as { output?: string };
-	if (!data.output) throw new Error("evaluator returned empty output");
-	return data.output;
+	const data = (await res.json()) as {
+		output?: string;
+		toolUse?: { name?: string; input?: unknown };
+	};
+	const toolUse =
+		data.toolUse && typeof data.toolUse.name === "string" && isRecord(data.toolUse.input)
+			? { name: data.toolUse.name, input: data.toolUse.input }
+			: undefined;
+	const output = data.output ?? "";
+	if (!output && !toolUse) throw new Error("evaluator returned empty output");
+	return { output, toolUse };
 }
 
 function envEvaluatorSlug(): string {
