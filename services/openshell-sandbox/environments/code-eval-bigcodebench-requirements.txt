@@ -5,6 +5,8 @@
 # - numpy 1.24.3, scipy 1.10.1, numba 0.57.1, and scikit-image 0.21.0 are used
 #   together because the upstream numpy/scipy/scikit-image pins force source
 #   builds or old ABI constraints on Python 3.10.
+# - networkx 2.8.8 replaces upstream 2.6.3 because scikit-image 0.21 requires
+#   networkx>=2.8 on Python 3.10.
 # - tensorflow-cpu/keras 2.13.1 replaces tensorflow/keras 2.11.0 while still
 #   providing import tensorflow and import keras in this CPU-only sandbox.
 # - python-Levenshtein replaces python-Levenshtein-wheels; Levenshtein is still
@@ -37,7 +39,7 @@ lxml==4.9.3
 matplotlib==3.7.0
 mechanize==0.4.9
 natsort==7.1.1
-networkx==2.6.3
+networkx==2.8.8
 nltk==3.8
 numba==0.57.1
 numpy==1.24.3

@@ -6,7 +6,7 @@ FROM ghcr.io/astral-sh/uv:0.9.17 AS uv-bin
 
 # Sandbox environment for BigCodeBench rows. This follows BigCodeBench's E2B
 # template shape: Python 3.10, pytest, the bigcodebench package, and the
-# benchmark's broad eval dependency pool. Pin deviations are documented in
+# benchmark's broad eval dependency pool. Python 3.10 pin deviations are documented in
 # environments/code-eval-bigcodebench-requirements.txt.
 
 FROM ${BASE_IMAGE}
