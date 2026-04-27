@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+
+# Sandbox environment for HumanEval+, MBPP+, and BigCodeBench evals.
+# Each eval row mounts a test_solution.py + has the agent write
+# /sandbox/solution.py, then we run pytest against it. This image bakes the
+# pytest + evalplus + bigcodebench library pool so individual rows don't
+# pay a 60-90s pip install. ~2 GB extra over the base openshell-sandbox.
+#
+# The library list comes from BigCodeBench's requirements; HumanEval+/MBPP+
+# don't need extras beyond stdlib but BigCodeBench tasks call 139 third-party
+# libs, so we install the most common ones up front.
+
+ARG BASE_IMAGE=gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox:latest
+FROM ${BASE_IMAGE}
+
+# System package layers run as root; drop back to the sandbox user at the end
+# so the image matches OpenShell's runtime expectations.
+USER root
+
+# Build toolchain + headers BigCodeBench tasks expect (numpy/scipy/cryptography
+# wheels are usually prebuilt for x86_64 manylinux, but several niche tasks
+# require source builds — keep gcc + python-dev around).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential python3-dev libffi-dev libssl-dev pkg-config curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install pytest + EvalPlus harness + BigCodeBench top-of-funnel libraries
+# into the sandbox venv. Skip the bigcodebench package itself for v1 — we
+# read tasks via HuggingFace and run pytest directly, so bigcodebench's
+# Docker harness is overkill. (Re-add if we ever want to reuse their
+# verification script verbatim.)
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    /sandbox/.venv/bin/pip install --no-compile --disable-pip-version-check \
+    pytest pytest-timeout \
+    numpy pandas scipy scikit-learn matplotlib pillow \
+    requests beautifulsoup4 lxml \
+    sympy networkx \
+    flask jinja2 pyyaml \
+    python-dateutil regex tqdm \
+    cryptography \
+    nltk
+
+# Drop back to the sandbox user so OpenShell's policy (run_as_user: sandbox)
+# matches what the image actually runs as. The sandbox user is defined in the
+# root openshell-sandbox image.
+USER sandbox
+WORKDIR /sandbox
