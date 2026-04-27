@@ -281,6 +281,13 @@
 			"when": 1777197600000,
 			"tag": "0047_evaluations",
 			"breakpoints": true
+		},
+		{
+			"idx": 40,
+			"version": "7",
+			"when": 1777333579000,
+			"tag": "0048_workspace_change_artifacts_compat",
+			"breakpoints": true
 		}
 	]
 }
