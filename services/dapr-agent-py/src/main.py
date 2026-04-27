@@ -73,6 +73,7 @@ from src.code_checkpoint import (
     should_checkpoint_tool,
 )
 from src.event_publisher import publish_session_event, scope_session, unscope_session
+from src.mcp_retry import connect_mcp_client_with_retries
 from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.hooks import (
     HooksSnapshot,
@@ -1029,16 +1030,22 @@ class OpenShellDurableAgent(DurableAgent):
         if self._mcp_config_hash_by_instance.get(instance_id) == config_hash:
             return
 
-        existing = self._mcp_clients_by_instance.pop(instance_id, None)
+        existing = self._mcp_clients_by_instance.get(instance_id)
+        client = await connect_mcp_client_with_retries(
+            configs,
+            client_factory=lambda: MCPClient(persistent_connections=False),
+            logger=logger,
+            context=f"instance {instance_id}",
+        )
         if existing is not None:
-            await existing.close()
-
-        client = MCPClient(persistent_connections=False)
-        try:
-            await client.connect_from_config(configs)
-        except Exception:
-            await client.close()
-            raise
+            try:
+                await existing.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[mcp] Failed to close previous MCP client for %s: %s",
+                    instance_id,
+                    exc,
+                )
         allowed_tools_by_server = (
             self._mcp_allowed_tools_by_instance.get(instance_id) or {}
         )
@@ -1105,17 +1112,19 @@ class OpenShellDurableAgent(DurableAgent):
             instance_id,
         )
 
-    def _ensure_mcp_client(self, instance_id: str) -> None:
+    def _ensure_mcp_client(self, instance_id: str) -> bool:
         if not instance_id:
-            return
+            return False
         try:
             self._run_asyncio_task(self._ensure_mcp_client_async(instance_id))
+            return True
         except Exception as exc:
             logger.warning(
                 "[mcp] Failed to connect MCP servers for instance %s: %s",
                 instance_id,
                 exc,
             )
+            return False
 
     def get_llm_tools(self):
         tools = list(super().get_llm_tools())
@@ -2647,7 +2656,12 @@ class OpenShellDurableAgent(DurableAgent):
         # short-circuits via the config-hash cache if reinvoked with the
         # same configs on a call_llm replay.
         try:
-            self._ensure_mcp_client(instance_id)
+            if not self._ensure_mcp_client(instance_id):
+                return {
+                    "connected": [],
+                    "count": len(mcp_configs),
+                    "error": "connect_failed",
+                }
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[mcp] seed_mcp_for_instance %s: MCP connect failed: %s",
