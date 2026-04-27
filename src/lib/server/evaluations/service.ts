@@ -897,18 +897,26 @@ function normalizeCodeEvalLibs(value: unknown): string[] {
 	const source = Array.isArray(value)
 		? value
 		: typeof value === "string"
-			? value.split(/[,;\s]+/g)
+			? parseCodeEvalLibString(value)
 			: [];
 	const out: string[] = [];
 	const seen = new Set<string>();
 	for (const item of source) {
 		if (typeof item !== "string") continue;
-		const lib = item.trim();
+		const lib = item.trim().replace(/^[\s'"\[\(]+|[\s'"\]\)]+$/g, "");
 		if (!lib || seen.has(lib)) continue;
 		seen.add(lib);
 		out.push(lib);
 	}
 	return out;
+}
+
+function parseCodeEvalLibString(value: string): string[] {
+	const trimmed = value.trim();
+	if (!trimmed) return [];
+	const quoted = Array.from(trimmed.matchAll(/['"]([^'"]+)['"]/g), (match) => match[1]);
+	if (quoted.length > 0) return quoted;
+	return trimmed.split(/[,;\s]+/g);
 }
 
 function buildCodeEvalRuntimeProbeCommand(libs: string[]): string {

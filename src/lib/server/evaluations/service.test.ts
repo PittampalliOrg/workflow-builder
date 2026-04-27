@@ -275,6 +275,39 @@ describe("code-eval template normalization", () => {
 		expect(content).not.toContain("def test_code_eval_script_executed():");
 	});
 
+	it("parses BigCodeBench stringified libs into importable module names", () => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "bigcodebench",
+			index: 0,
+			row: {
+				task_id: "BigCodeBench/38",
+				instruct_prompt: "Use pandas, matplotlib, and sklearn.",
+				entry_point: "task_func",
+				libs: "['pandas', 'matplotlib', 'sklearn']",
+				test: [
+					"import unittest",
+					"class TestCases(unittest.TestCase):",
+					"    def test_default(self):",
+					"        self.assertEqual(task_func(), 1)",
+				].join("\n"),
+			},
+		});
+
+		expect((row.input as { libs: string[] }).libs).toEqual([
+			"pandas",
+			"matplotlib",
+			"sklearn",
+		]);
+		expect((row.input as { runtimeProbeCommand: string }).runtimeProbeCommand).toContain(
+			'libs = ["pandas","matplotlib","sklearn"]',
+		);
+		expect(row.metadata).toMatchObject({
+			bigcodebench: {
+				libs: ["pandas", "matplotlib", "sklearn"],
+			},
+		});
+	});
+
 	it("unwraps Hugging Face dataset-server row envelopes", () => {
 		const row = normalizeCodeEvalRowForEvaluation({
 			suiteSlug: "humaneval-plus",
