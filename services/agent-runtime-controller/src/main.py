@@ -46,6 +46,10 @@ IDLE_CHECK_INTERVAL = 60
 
 DEFAULT_NAMESPACE = os.environ.get("CONTROLLER_NAMESPACE", "workflow-builder")
 DEFAULT_SA = os.environ.get("AGENT_RUNTIME_SERVICE_ACCOUNT", "agent-runtime")
+DEFAULT_OPENSHELL_GATEWAY_NAME = os.environ.get(
+    "OPENSHELL_GATEWAY_NAME",
+    "ryzen-internal",
+)
 AGENT_STATESTORE_COMPONENT = os.environ.get(
     "AGENT_RUNTIME_STATESTORE_COMPONENT",
     "dapr-agent-py-statestore",
@@ -288,7 +292,7 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                 "name": "OPENSHELL_GATEWAY_URL",
                 "value": "https://openshell.openshell.svc.cluster.local:8080",
             },
-            {"name": "OPENSHELL_GATEWAY_NAME", "value": "ryzen-internal"},
+            {"name": "OPENSHELL_GATEWAY_NAME", "value": DEFAULT_OPENSHELL_GATEWAY_NAME},
             {"name": "OPENSHELL_GATEWAY_PORT", "value": "8080"},
         ],
         "volumeMounts": [

@@ -22,7 +22,6 @@
             "name": "code-eval-${ .trigger.taskId // .trigger.evaluation.itemId }",
             "rootPath": "/sandbox",
             "sandboxTemplate": "code-eval",
-            "sandboxImage": "gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox-code-eval:latest",
             "ttlSeconds": 1800,
             "keepAfterRun": true,
             "managedBy": "workflow-builder:evaluations:code-eval",
@@ -42,6 +41,24 @@
               "mode": "per-run",
               "template": "code-eval",
               "ttlSeconds": 1800
+            }
+          }
+        }
+      },
+      {
+        "validate_runtime": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "command": "${ .trigger.runtimeProbeCommand }",
+            "timeoutMs": 60000
+          },
+          "output": {
+            "as": {
+              "exitCode": "${ .output.result.exitCode // .output.exitCode // 1 }",
+              "stdout": "${ .output.result.stdout // .output.stdout // \"\" }",
+              "stderr": "${ .output.result.stderr // .output.stderr // \"\" }",
+              "raw": "${ .output }"
             }
           }
         }
@@ -99,8 +116,43 @@
           "call": "workspace/command",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
-            "command": "set -u; cd /sandbox && [ -f solution.py ] || { echo 'MISSING_SOLUTION' >&2; exit 2; }; run_dir=/tmp/code_eval_run; [ \"${run_dir}\" = \"/tmp/code_eval_run\" ] || exit 3; rm -rf \"${run_dir}\"; mkdir -p \"${run_dir}\"; cp /sandbox/solution.py \"${run_dir}/solution.py\"; cp /sandbox/test_solution.py \"${run_dir}/test_solution.py\"; cd \"${run_dir}\"; PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CODE_EVAL_SOLUTION_PATH=\"${run_dir}/solution.py\" python -m pytest -q --tb=short --noconftest test_solution.py 2>&1; pytest_exit=$?; echo \"__PYTEST_EXIT_CODE__=${pytest_exit}\"; exit ${pytest_exit}",
+            "command": "set -u; cd /sandbox; if [ -f solution.py ]; then missing=0; else echo 'MISSING_SOLUTION' >&2; : > solution.py; missing=1; fi; run_dir=/tmp/code_eval_run; [ \"${run_dir}\" = \"/tmp/code_eval_run\" ] || exit 3; rm -rf \"${run_dir}\"; mkdir -p \"${run_dir}\"; cp /sandbox/solution.py \"${run_dir}/solution.py\"; cp /sandbox/test_solution.py \"${run_dir}/test_solution.py\"; cd \"${run_dir}\"; if [ \"${missing}\" = \"1\" ]; then pytest_exit=2; else PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CODE_EVAL_SOLUTION_PATH=\"${run_dir}/solution.py\" /sandbox/.venv/bin/python -m pytest -q --tb=short --noconftest test_solution.py 2>&1; pytest_exit=$?; fi; echo \"__PYTEST_EXIT_CODE__=${pytest_exit}\"; exit ${pytest_exit}",
+            "allowFailure": true,
             "timeoutMs": 180000
+          },
+          "output": {
+            "as": {
+              "exitCode": "${ .output.result.exitCode // .output.exitCode // 1 }",
+              "stdout": "${ .output.result.stdout // .output.stdout // \"\" }",
+              "stderr": "${ .output.result.stderr // .output.stderr // \"\" }",
+              "raw": "${ .output }"
+            }
+          }
+        }
+      },
+      {
+        "read_solution": {
+          "call": "workspace/read_file",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "path": "/sandbox/solution.py",
+            "timeoutMs": 60000
+          },
+          "output": {
+            "as": {
+              "content": "${ .output.result.content // .output.content // .output.result.output // .output.output // \"\" }",
+              "raw": "${ .output }"
+            }
+          }
+        }
+      },
+      {
+        "capture_metadata": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "command": "set -eu; /sandbox/.venv/bin/python - <<'PY'\nimport hashlib, json, pathlib\n\ndef digest(path):\n    p = pathlib.Path(path)\n    if not p.is_file():\n        return {'exists': False, 'sha256': '', 'bytes': 0}\n    data = p.read_bytes()\n    return {'exists': True, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}\n\nsolution = digest('/sandbox/solution.py')\ntest_file = digest('/sandbox/test_solution.py')\nprint(json.dumps({\n    'solutionSha256': solution['sha256'],\n    'solutionBytes': solution['bytes'],\n    'solutionExists': solution['exists'],\n    'testFileSha256': test_file['sha256'],\n    'testFileBytes': test_file['bytes'],\n    'testFileExists': test_file['exists'],\n}, sort_keys=True))\nPY",
+            "timeoutMs": 60000
           },
           "output": {
             "as": {
@@ -120,10 +172,26 @@
         "exitCode": "${ .run_tests.exitCode }",
         "stdout": "${ .run_tests.stdout }",
         "stderr": "${ .run_tests.stderr }",
+        "pytestOutput": "${ (.run_tests.stdout // \"\") + (if ((.run_tests.stderr // \"\") == \"\") then \"\" else \"\\n\" + .run_tests.stderr end) }",
         "solutionPath": "/sandbox/solution.py",
+        "solutionContent": "${ .read_solution.content // \"\" }",
+        "solutionSha256": "${ (((.capture_metadata.stdout // \"{}\") | fromjson? | .solutionSha256) // \"\") }",
+        "testFileSha256": "${ (((.capture_metadata.stdout // \"{}\") | fromjson? | .testFileSha256) // .trigger.evaluation.expectedOutput.testFileSha256 // \"\") }",
+        "runtimeProbe": {
+          "exitCode": "${ .validate_runtime.exitCode }",
+          "stdout": "${ .validate_runtime.stdout }",
+          "stderr": "${ .validate_runtime.stderr }"
+        },
+        "protocol": {
+          "mode": "internal-agent-visible-tests",
+          "benchmarkComparable": false
+        },
         "raw": {
           "solve": "${ .solve }",
-          "runTests": "${ .run_tests.raw }"
+          "validateRuntime": "${ .validate_runtime.raw }",
+          "runTests": "${ .run_tests.raw }",
+          "readSolution": "${ .read_solution.raw }",
+          "captureMetadata": "${ .capture_metadata.raw }"
         },
         "workspaceRef": "${ .workspace_profile.workspaceRef }",
         "sandboxName": "${ .workspace_profile.sandboxName }"
@@ -151,9 +219,19 @@
       }
     },
     {
-      "id": "write_test",
+      "id": "validate_runtime",
       "type": "action",
       "position": { "x": 80, "y": 340 },
+      "data": {
+        "label": "Validate runtime",
+        "actionType": "workspace/command",
+        "description": "Verify pytest and row-declared benchmark libraries are importable before the agent runs."
+      }
+    },
+    {
+      "id": "write_test",
+      "type": "action",
+      "position": { "x": 80, "y": 480 },
       "data": {
         "label": "Write test file",
         "actionType": "workspace/write_file",
@@ -163,7 +241,7 @@
     {
       "id": "solve",
       "type": "action",
-      "position": { "x": 80, "y": 480 },
+      "position": { "x": 80, "y": 620 },
       "data": {
         "label": "Agent solves",
         "actionType": "durable/run",
@@ -173,7 +251,7 @@
     {
       "id": "restore_test",
       "type": "action",
-      "position": { "x": 80, "y": 620 },
+      "position": { "x": 80, "y": 760 },
       "data": {
         "label": "Restore test file",
         "actionType": "workspace/write_file",
@@ -183,19 +261,42 @@
     {
       "id": "run_tests",
       "type": "action",
-      "position": { "x": 80, "y": 760 },
+      "position": { "x": 80, "y": 900 },
       "data": {
         "label": "pytest",
         "actionType": "workspace/command",
         "description": "Run pytest on the agent's solution and capture exit code + stdout."
       }
+    },
+    {
+      "id": "read_solution",
+      "type": "action",
+      "position": { "x": 80, "y": 1040 },
+      "data": {
+        "label": "Read solution",
+        "actionType": "workspace/read_file",
+        "description": "Read /sandbox/solution.py after tests for audit and grader inspection."
+      }
+    },
+    {
+      "id": "capture_metadata",
+      "type": "action",
+      "position": { "x": 80, "y": 1180 },
+      "data": {
+        "label": "Capture hashes",
+        "actionType": "workspace/command",
+        "description": "Capture solution and test SHA-256 hashes for run inspection."
+      }
     }
   ],
   "edges": [
     { "id": "e1", "source": "trigger", "target": "workspace_profile", "type": "default" },
-    { "id": "e2", "source": "workspace_profile", "target": "write_test", "type": "default" },
-    { "id": "e3", "source": "write_test", "target": "solve", "type": "default" },
-    { "id": "e4", "source": "solve", "target": "restore_test", "type": "default" },
-    { "id": "e5", "source": "restore_test", "target": "run_tests", "type": "default" }
+    { "id": "e2", "source": "workspace_profile", "target": "validate_runtime", "type": "default" },
+    { "id": "e3", "source": "validate_runtime", "target": "write_test", "type": "default" },
+    { "id": "e4", "source": "write_test", "target": "solve", "type": "default" },
+    { "id": "e5", "source": "solve", "target": "restore_test", "type": "default" },
+    { "id": "e6", "source": "restore_test", "target": "run_tests", "type": "default" },
+    { "id": "e7", "source": "run_tests", "target": "read_solution", "type": "default" },
+    { "id": "e8", "source": "read_solution", "target": "capture_metadata", "type": "default" }
   ]
 }

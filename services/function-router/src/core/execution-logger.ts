@@ -33,6 +33,10 @@ export type TimingBreakdown = {
   wasColdStart?: boolean;
 };
 
+const SENSITIVE_KEY_PATTERN =
+  /(api[_-]?key|access[_-]?token|auth|authorization|bearer|client[_-]?secret|credential|password|secret|token)/i;
+const REDACTED = "[REDACTED]";
+
 /**
  * Generate a random ID (similar to the app's generateId)
  */
@@ -43,6 +47,78 @@ function generateId(): string {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
+}
+
+export function sanitizeExecutionLogValue(value: unknown): unknown {
+  return sanitizeValue(value, new WeakSet<object>());
+}
+
+function sanitizeValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeValue(item, seen));
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      out[key] = REDACTED;
+    } else {
+      out[key] = sanitizeValue(child, seen);
+    }
+  }
+  return out;
+}
+
+function redactSensitiveText(value: string): string {
+  let text = value;
+  text = text.replace(
+    /\b([A-Z0-9_]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH|AUTHORIZATION|BEARER|CLIENT[_-]?SECRET|CREDENTIAL|PASSWORD|SECRET|TOKEN)[A-Z0-9_]*)\s*=\s*(['"]?)([^\s'";&|]+)/gi,
+    (_match, name: string, quote: string) => `${name}=${quote}${REDACTED}`,
+  );
+  text = text.replace(
+    /\b(authorization|x-api-key|api-key)\s*:\s*([^\r\n]+)/gi,
+    (_match, name: string) => `${name}: ${REDACTED}`,
+  );
+  text = text.replace(
+    /\b(bearer)\s+[A-Za-z0-9._~+/=-]+/gi,
+    (_match, name: string) => `${name} ${REDACTED}`,
+  );
+  text = text.replace(
+    /https?:\/\/[^\s'"<>]+/gi,
+    (rawUrl) => redactSensitiveUrl(rawUrl),
+  );
+  return text;
+}
+
+function redactSensitiveUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.username || parsed.password) {
+      parsed.username = REDACTED;
+      parsed.password = "";
+    }
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (SENSITIVE_KEY_PATTERN.test(key)) {
+        parsed.searchParams.set(key, REDACTED);
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return rawUrl.replace(
+      /([?&][^=\s&]*(?:key|token|password|secret|auth)[^=\s&]*=)([^&\s]+)/gi,
+      `$1${REDACTED}`,
+    );
+  }
+}
+
+function stringifyForLog(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return JSON.stringify(sanitizeExecutionLogValue(value));
 }
 
 /**
@@ -68,7 +144,7 @@ export async function logExecutionStart(
         ${entry.nodeType},
         ${entry.actionType || null},
         'running',
-        ${JSON.stringify(entry.input) || null},
+        ${stringifyForLog(entry.input)},
         ${startedAt},
         ${startedAt}
       )
@@ -107,8 +183,8 @@ export async function logExecutionComplete(
       UPDATE workflow_execution_logs
       SET
         status = ${status},
-        output = ${result.output ? JSON.stringify(result.output) : null},
-        error = ${result.error || null},
+        output = ${stringifyForLog(result.output)},
+        error = ${typeof result.error === "string" ? redactSensitiveText(result.error) : null},
         completed_at = ${completedAt},
         duration = ${String(result.durationMs)},
         credential_fetch_ms = ${timing.credentialFetchMs ?? null},
@@ -149,9 +225,9 @@ export async function logExecution(entry: ExecutionLogEntry): Promise<string> {
         ${entry.nodeType},
         ${entry.actionType || null},
         ${entry.status},
-        ${entry.input ? JSON.stringify(entry.input) : null},
-        ${entry.output ? JSON.stringify(entry.output) : null},
-        ${entry.error || null},
+        ${stringifyForLog(entry.input)},
+        ${stringifyForLog(entry.output)},
+        ${typeof entry.error === "string" ? redactSensitiveText(entry.error) : null},
         ${entry.startedAt || now},
         ${entry.completedAt || (entry.status !== "pending" && entry.status !== "running" ? now : null)},
         ${entry.durationMs ? String(entry.durationMs) : null},

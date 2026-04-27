@@ -1858,13 +1858,40 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
 
             if (!response && typeof resolvedMastra?.success === "boolean") {
+              const allowWorkspaceCommandFailure =
+                (isWorkspaceCommand || isBrowserCommand) &&
+                parseBooleanInput(args.allowFailure) === true;
               if (!resolvedMastra.success) {
                 const nestedFailure = getMastraNestedFailure(
                   pluginId,
                   toolId,
                   resolvedMastra,
                 );
-                if (
+                if (allowWorkspaceCommandFailure) {
+                  response = {
+                    success: true,
+                    data: {
+                      toolId:
+                        typeof resolvedMastra.toolId === "string"
+                          ? resolvedMastra.toolId
+                          : toolId,
+                      result:
+                        resolvedMastra.result !== undefined
+                          ? resolvedMastra.result
+                          : resolvedMastra,
+                      ...(resolvedMastra.result &&
+                      typeof resolvedMastra.result === "object"
+                        ? (resolvedMastra.result as Record<string, unknown>)
+                        : {}),
+                      allowedFailure: true,
+                      originalError:
+                        typeof resolvedMastra.error === "string"
+                          ? resolvedMastra.error
+                          : nestedFailure,
+                    },
+                    duration_ms: 0,
+                  };
+                } else if (
                   isNoFileChangeReviewResult(pluginId, toolId, resolvedMastra)
                 ) {
                   response = {
@@ -1913,7 +1940,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   toolId,
                   resolvedMastra,
                 );
-                if (nestedFailure) {
+                if (nestedFailure && !allowWorkspaceCommandFailure) {
                   response = {
                     success: false,
                     data: {

@@ -4,6 +4,7 @@ import {
 	buildAgentEvaluationWorkflowSpec,
 	buildCodeEvalDefaultGraders,
 	buildSwebenchEvaluationWorkflowSpec,
+	collectEvaluationTraceIds,
 	extractEvaluationGeneratedOutput,
 	extractSwebenchModelPatch,
 	normalizeCodeEvalRowForEvaluation,
@@ -163,10 +164,16 @@ describe("code-eval template normalization", () => {
 		expect(content).toContain("    check(candidate)");
 		expect(content).not.toContain("def test_code_eval_script_executed():");
 		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
-			"python -m pytest -q test_solution.py",
+			"/sandbox/.venv/bin/python -m pytest -q --tb=short --noconftest test_solution.py",
 		);
 		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
 			"Write only /sandbox/solution.py",
+		);
+		expect((row.input as { solvePrompt: string }).solvePrompt).toContain(
+			"Do not run pip install",
+		);
+		expect(row.expectedOutput).toEqual(
+			expect.objectContaining({ testFileSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
 		);
 	});
 
@@ -190,7 +197,32 @@ describe("code-eval template normalization", () => {
 		expect(content).not.toContain("def test_evalplus_check():");
 	});
 
-	it("preserves BigCodeBench pytest-shaped tests without check wrapping", () => {
+	it("preserves MBPP+ audit metadata", () => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "mbpp-plus",
+			index: 0,
+			row: {
+				task_id: 2,
+				code: "def add_one(x):\n    return x + 1\n",
+				prompt: "Write add_one.",
+				test: "def check(candidate):\n    assert candidate(1) == 2\n",
+				test_list: ["assert add_one(1) == 2"],
+				test_imports: ["import math"],
+			},
+		});
+
+		expect(row.metadata).toMatchObject({
+			protocolMode: "internal-agent-visible-tests",
+			benchmarkComparable: false,
+			evalplus: {
+				testList: ["assert add_one(1) == 2"],
+				testImports: ["import math"],
+				code: "def add_one(x):\n    return x + 1",
+			},
+		});
+	});
+
+	it("uses BigCodeBench instruct prompts and preserves protocol metadata", () => {
 		const originalTest = [
 			"import unittest",
 			"",
@@ -204,16 +236,62 @@ describe("code-eval template normalization", () => {
 			row: {
 				task_id: "BigCodeBench/0",
 				complete_prompt: "def task_func():\n    pass\n",
+				instruct_prompt: "Write task_func using pandas.",
+				code_prompt: "def task_func():\n",
 				entry_point: "task_func",
+				libs: ["pandas", "networkx"],
+				canonical_solution: "def task_func():\n    return 1\n",
+				split: "complete",
+				subset: "hard",
 				test: originalTest,
 			},
 		});
 		const content = codeEvalTestFileContent(row);
 
+		expect((row.input as { prompt: string }).prompt).toBe("Write task_func using pandas.");
+		expect((row.input as { runtimeProbeCommand: string }).runtimeProbeCommand).toContain(
+			"importlib.import_module('pytest')",
+		);
+		expect((row.input as { runtimeProbeCommand: string }).runtimeProbeCommand).toContain(
+			'libs = ["pandas","networkx"]',
+		);
+		expect(row.metadata).toMatchObject({
+			protocolMode: "internal-agent-visible-tests",
+			benchmarkComparable: false,
+			promptSource: "instruct_prompt",
+			bigcodebench: {
+				split: "complete",
+				subset: "hard",
+				libs: ["pandas", "networkx"],
+				completePrompt: "def task_func():\n    pass",
+				instructPrompt: "Write task_func using pandas.",
+				codePrompt: "def task_func():",
+				canonicalSolution: "def task_func():\n    return 1",
+			},
+		});
 		expect(content).toContain('_wb_entry_point = "task_func"');
 		expect(content).toContain(originalTest);
 		expect(content).not.toContain("def test_evalplus_check():");
 		expect(content).not.toContain("def test_code_eval_script_executed():");
+	});
+
+	it("unwraps Hugging Face dataset-server row envelopes", () => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "humaneval-plus",
+			index: 0,
+			row: {
+				row_idx: 7,
+				row: {
+					task_id: "HumanEval/7",
+					prompt: "Write identity.",
+					entry_point: "identity",
+					test: "def check(candidate):\n    assert candidate(1) == 1\n",
+				},
+			},
+		});
+
+		expect(row.externalId).toBe("HumanEval/7");
+		expect(row.metadata).toMatchObject({ sourceRowIndex: 7 });
 	});
 
 	it("uses only the deterministic Tests pass grader by default", () => {
@@ -237,34 +315,41 @@ describe("code-eval template normalization", () => {
 		expect(graders.every((grader) => grader.enabled !== false)).toBe(true);
 	});
 
-	it("restores canonical tests and runs pytest from a clean directory", () => {
+	it("validates runtime, restores canonical tests, captures solution, and runs pytest from a clean directory", () => {
 		const workflow = JSON.parse(
 			readFileSync("services/code-eval-runner/code-eval-item.workflow.json", "utf8"),
 		) as {
 			spec: {
-				do: Array<Record<string, { call: string; with: Record<string, string> }>>;
+				do: Array<Record<string, { call: string; with: Record<string, unknown> }>>;
+				output: Record<string, unknown>;
 			};
 			edges: Array<{ source: string; target: string }>;
 		};
 		const steps = workflow.spec.do.map((step) => Object.keys(step)[0]);
 		expect(steps).toEqual([
 			"workspace_profile",
+			"validate_runtime",
 			"write_test",
 			"solve",
 			"restore_test",
 			"run_tests",
+			"read_solution",
+			"capture_metadata",
 		]);
 		expect(workflow.spec.do[0].workspace_profile.with.sandboxTemplate).toBe(
 			"code-eval",
 		);
-		expect(workflow.spec.do[0].workspace_profile.with.sandboxImage).toContain(
-			"openshell-sandbox-code-eval",
-		);
-		const writeTest = workflow.spec.do[1].write_test;
+		expect(workflow.spec.do[0].workspace_profile.with).not.toHaveProperty("sandboxImage");
+
+		const validateRuntime = workflow.spec.do[1].validate_runtime;
+		expect(validateRuntime.call).toBe("workspace/command");
+		expect(validateRuntime.with.command).toBe("${ .trigger.runtimeProbeCommand }");
+
+		const writeTest = workflow.spec.do[2].write_test;
 		expect(writeTest.call).toBe("workspace/write_file");
 		expect(writeTest.with.timeoutMs).toBe(60_000);
 
-		const restoreTest = workflow.spec.do[3].restore_test;
+		const restoreTest = workflow.spec.do[4].restore_test;
 		expect(restoreTest.call).toBe("workspace/write_file");
 		expect(restoreTest.with.path).toBe("/sandbox/test_solution.py");
 		expect(restoreTest.with.content).toBe(
@@ -272,7 +357,7 @@ describe("code-eval template normalization", () => {
 		);
 		expect(restoreTest.with.timeoutMs).toBe(60_000);
 
-		const runTests = workflow.spec.do[4].run_tests;
+		const runTests = workflow.spec.do[5].run_tests;
 		expect(runTests.call).toBe("workspace/command");
 		expect(runTests.with.command).toContain("cp /sandbox/solution.py");
 		expect(runTests.with.command).toContain("cp /sandbox/test_solution.py");
@@ -280,14 +365,38 @@ describe("code-eval template normalization", () => {
 			'CODE_EVAL_SOLUTION_PATH="${run_dir}/solution.py"',
 		);
 		expect(runTests.with.command).toContain("PYTEST_DISABLE_PLUGIN_AUTOLOAD=1");
+		expect(runTests.with.command).toContain("/sandbox/.venv/bin/python -m pytest");
 		expect(runTests.with.command).toContain("--noconftest test_solution.py");
+		expect(runTests.with.allowFailure).toBe(true);
+
+		const readSolution = workflow.spec.do[6].read_solution;
+		expect(readSolution.call).toBe("workspace/read_file");
+		expect(readSolution.with.path).toBe("/sandbox/solution.py");
+
+		const captureMetadata = workflow.spec.do[7].capture_metadata;
+		expect(captureMetadata.call).toBe("workspace/command");
+		expect(captureMetadata.with.command).toContain("hashlib.sha256");
+		expect(JSON.stringify(workflow.spec.output)).toContain("solutionContent");
+		expect(JSON.stringify(workflow.spec.output)).toContain("solutionSha256");
+		expect(JSON.stringify(workflow.spec.output)).toContain("runtimeProbe");
 		expect(workflow.edges).toEqual(
 			expect.arrayContaining([
-				{ id: "e4", source: "solve", target: "restore_test", type: "default" },
 				{
-					id: "e5",
+					id: "e2",
+					source: "workspace_profile",
+					target: "validate_runtime",
+					type: "default",
+				},
+				{
+					id: "e6",
 					source: "restore_test",
 					target: "run_tests",
+					type: "default",
+				},
+				{
+					id: "e7",
+					source: "run_tests",
+					target: "read_solution",
 					type: "default",
 				},
 			]),
@@ -323,6 +432,24 @@ describe("evaluation output extraction", () => {
 				modelPatch: "diff --git a/a.py b/a.py\n+change",
 			}),
 		).toContain("diff --git");
+	});
+
+	it("collects trace IDs without confusing SHA-256 hashes for traces", () => {
+		expect(
+			collectEvaluationTraceIds(
+				{ traceId: "0123456789abcdef0123456789abcdef" },
+				{
+					workflowOutput: {
+						solutionSha256:
+							"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					},
+					outputs: [{ trace_ids: ["fedcba9876543210fedcba9876543210"] }],
+				},
+			),
+		).toEqual([
+			"0123456789abcdef0123456789abcdef",
+			"fedcba9876543210fedcba9876543210",
+		]);
 	});
 });
 

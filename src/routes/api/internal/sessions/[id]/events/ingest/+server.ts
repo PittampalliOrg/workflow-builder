@@ -5,8 +5,9 @@ import { validateInternalToken } from "$lib/server/internal-auth";
 import { appendEvent } from "$lib/server/sessions/events";
 import { updateSessionStatus } from "$lib/server/sessions/registry";
 import { db } from "$lib/server/db";
-import { sessions } from "$lib/server/db/schema";
+import { evaluationRunItems, sessions } from "$lib/server/db/schema";
 import { persistCodeCheckpointFromAgentEvent } from "$lib/server/workflows/code-checkpoints";
+import { recordEvaluationArtifact } from "$lib/server/evaluations/service";
 import { cleanupSessionSandbox } from "$lib/server/sandboxes/provision";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -15,6 +16,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringOrNull(value: unknown): string | null {
 	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function checkpointRemoteWarning(value: unknown): Record<string, unknown> | null {
+	if (!isRecord(value)) return null;
+	const remoteStatus = stringOrNull(value.remoteStatus);
+	const remoteError = stringOrNull(value.remoteError);
+	if (!remoteError) return null;
+	if (remoteStatus !== "error" && remoteStatus !== "skipped") return null;
+	return {
+		remoteStatus,
+		remoteError,
+		remoteRef: stringOrNull(value.remoteRef),
+		toolCallId: stringOrNull(value.toolCallId),
+		toolName: stringOrNull(value.toolName),
+	};
 }
 
 /**
@@ -125,6 +141,34 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					nodeId: null,
 					payload: data.codeCheckpoint,
 				});
+				const checkpointWarning = checkpointRemoteWarning(data.codeCheckpoint);
+				if (checkpointWarning) {
+					const [evalItem] = await db
+						.select({
+							id: evaluationRunItems.id,
+							runId: evaluationRunItems.runId,
+						})
+						.from(evaluationRunItems)
+						.where(eq(evaluationRunItems.workflowExecutionId, sessionRow.workflowExecutionId))
+						.limit(1);
+					if (evalItem) {
+						await recordEvaluationArtifact({
+							runId: evalItem.runId,
+							runItemId: evalItem.id,
+							kind: "logs",
+							path: `warnings/code-checkpoint/${sourceEventId ?? envelope.id}.json`,
+							content: {
+								warning: "Code checkpoint remote push failed",
+								checkpoint: checkpointWarning,
+							},
+							contentType: "application/json",
+							metadata: {
+								artifactWarning: true,
+								source: "code_checkpoint",
+							},
+						});
+					}
+				}
 			}
 		} catch (err) {
 			console.warn("[session-ingest] code checkpoint persist failed:", err);

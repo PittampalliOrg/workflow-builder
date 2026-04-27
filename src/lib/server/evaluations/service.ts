@@ -51,6 +51,10 @@ import {
 
 const HIDDEN_EVALUATION_WORKFLOW_NAME = "Evaluation item runner";
 const DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS = 900_000;
+const CODE_EVAL_PROTOCOL_MODE = "internal-agent-visible-tests";
+const CODE_EVAL_BENCHMARK_COMPARABLE = false;
+const CODE_EVAL_PYTEST_COMMAND =
+	"/sandbox/.venv/bin/python -m pytest -q --tb=short --noconftest test_solution.py";
 const RUN_TERMINAL_STATUSES = new Set<EvaluationRunStatus>([
 	"completed",
 	"failed",
@@ -156,6 +160,7 @@ const CODE_EVAL_SUITES: Record<
 		description: string;
 		datasetName: string;
 		datasetSplit: string;
+		datasetRevision?: string;
 		sourceUrl: string;
 	}
 > = {
@@ -180,7 +185,8 @@ const CODE_EVAL_SUITES: Record<
 		description:
 			"1140 practical Python tasks calling 139 libraries; tests run with pytest.",
 		datasetName: "bigcode/bigcodebench",
-		datasetSplit: "v0.1.4",
+		datasetSplit: "test",
+		datasetRevision: "v0.1.4",
 		sourceUrl: "https://github.com/bigcode-project/bigcodebench",
 	},
 };
@@ -631,9 +637,11 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 				entryPoint: "string",
 				suite: "string",
 				solvePrompt: "string",
+				runtimeProbeCommand: "string",
 			},
 			expectedOutput: {
 				testFileContent: "string",
+				testFileSha256: "string",
 				canonicalSolution: "string",
 			},
 		},
@@ -642,6 +650,9 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 			suiteSlug,
 			datasetName: suite.datasetName,
 			datasetSplit: suite.datasetSplit,
+			datasetRevision: suite.datasetRevision ?? null,
+			protocolMode: CODE_EVAL_PROTOCOL_MODE,
+			benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
 		},
 		rows: normalizedRows,
 	});
@@ -652,12 +663,16 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 		name: baseName,
 		description:
 			input.description?.trim() ||
-			`${suite.name} evaluation. The agent reads each task's prompt + tests, writes /sandbox/solution.py, and we run pytest to score it.`,
+			`${suite.name} evaluation. The agent reads each task's prompt + tests, writes /sandbox/solution.py, and we run deterministic pytest to score it.`,
 		datasetId: dataset.id,
 		taskConfig: {
 			adapter: "code-eval",
 			suiteSlug,
 			datasetName: suite.datasetName,
+			datasetSplit: suite.datasetSplit,
+			datasetRevision: suite.datasetRevision ?? null,
+			protocolMode: CODE_EVAL_PROTOCOL_MODE,
+			benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
 			workflowId: CODE_EVAL_WORKFLOW_ID,
 		},
 		dataSourceConfig: {
@@ -667,12 +682,18 @@ export async function createCodeEvalTemplate(input: CreateCodeEvalTemplateInput)
 		},
 		testingCriteria: {
 			adapter: "pytest",
-			predictionPath: "generatedOutput.workflowOutput.solutionPath",
+			protocolMode: CODE_EVAL_PROTOCOL_MODE,
+			benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
+			predictionPath: "generatedOutput.workflowOutput.solutionContent",
 		},
 		metadata: {
 			family: "code-eval",
 			suiteSlug,
 			datasetName: suite.datasetName,
+			datasetSplit: suite.datasetSplit,
+			datasetRevision: suite.datasetRevision ?? null,
+			protocolMode: CODE_EVAL_PROTOCOL_MODE,
+			benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
 		},
 		graders: buildCodeEvalDefaultGraders(),
 	});
@@ -701,16 +722,15 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 	row: unknown;
 	index: number;
 }): DatasetRowInput {
-	const record = isRecord(params.row) ? params.row : {};
+	const outerRecord = isRecord(params.row) ? params.row : {};
+	const record = isRecord(outerRecord.row) ? outerRecord.row : outerRecord;
+	const suite = CODE_EVAL_SUITES[params.suiteSlug];
 	const taskId =
 		readCodeEvalScalar(record.task_id) ??
 		readCodeEvalScalar(record.taskId) ??
 		`${params.suiteSlug}-${params.index + 1}`;
-	const prompt =
-		readString(record.prompt) ??
-		readString(record.complete_prompt) ??
-		readString(record.instruct_prompt) ??
-		"";
+	const promptInfo = selectCodeEvalPrompt(params.suiteSlug, record);
+	const prompt = promptInfo.prompt;
 	if (!prompt) {
 		throw error(400, `Code-eval row ${taskId} is missing prompt`);
 	}
@@ -728,6 +748,7 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 		readString(record.canonicalSolution) ??
 		readString(record.code) ??
 		"";
+	const libs = normalizeCodeEvalLibs(record.libs ?? record.required_libs);
 	const testFileContent = normalizeCodeEvalTestFile({
 		test,
 		entryPoint,
@@ -737,6 +758,18 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 		prompt,
 		entryPoint,
 	});
+	const runtimeProbeCommand = buildCodeEvalRuntimeProbeCommand(libs);
+	const testFileSha256 = sha256(testFileContent);
+	const metadata = buildCodeEvalRowMetadata({
+		suiteSlug: params.suiteSlug,
+		taskId,
+		record,
+		outerRecord,
+		promptSource: promptInfo.source,
+		libs,
+		testFileSha256,
+		datasetRevision: suite?.datasetRevision ?? null,
+	});
 	return {
 		externalId: taskId,
 		input: {
@@ -745,17 +778,175 @@ export function normalizeCodeEvalRowForEvaluation(params: {
 			entryPoint,
 			suite: params.suiteSlug,
 			solvePrompt,
+			runtimeProbeCommand,
+			libs,
 		},
 		expectedOutput: {
 			testFileContent,
+			testFileSha256,
 			canonicalSolution,
 		},
 		annotations: {},
-		metadata: {
-			family: "code-eval",
-			suiteSlug: params.suiteSlug,
-		},
+		metadata,
 	};
+}
+
+function selectCodeEvalPrompt(
+	suiteSlug: CodeEvalSuiteSlug,
+	record: Record<string, unknown>,
+): { prompt: string; source: string } {
+	const candidates: Array<[string, string | null]> =
+		suiteSlug === "bigcodebench"
+			? [
+					["instruct_prompt", readString(record.instruct_prompt)],
+					["prompt", readString(record.prompt)],
+					["complete_prompt", readString(record.complete_prompt)],
+					["code_prompt", readString(record.code_prompt)],
+				]
+			: [
+					["prompt", readString(record.prompt)],
+					["instruct_prompt", readString(record.instruct_prompt)],
+					["complete_prompt", readString(record.complete_prompt)],
+					["code_prompt", readString(record.code_prompt)],
+				];
+	for (const [source, prompt] of candidates) {
+		if (prompt) return { prompt, source };
+	}
+	return { prompt: "", source: "missing" };
+}
+
+function buildCodeEvalRowMetadata(params: {
+	suiteSlug: CodeEvalSuiteSlug;
+	taskId: string;
+	record: Record<string, unknown>;
+	outerRecord: Record<string, unknown>;
+	promptSource: string;
+	libs: string[];
+	testFileSha256: string;
+	datasetRevision: string | null;
+}): Record<string, unknown> {
+	const metadata: Record<string, unknown> = {
+		family: "code-eval",
+		suiteSlug: params.suiteSlug,
+		taskId: params.taskId,
+		promptSource: params.promptSource,
+		protocolMode: CODE_EVAL_PROTOCOL_MODE,
+		benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
+		testFileSha256: params.testFileSha256,
+	};
+	const rowIndex =
+		typeof params.outerRecord.row_idx === "number"
+			? params.outerRecord.row_idx
+			: typeof params.outerRecord.rowIndex === "number"
+				? params.outerRecord.rowIndex
+				: null;
+	if (rowIndex != null) metadata.sourceRowIndex = rowIndex;
+
+	if (params.suiteSlug === "mbpp-plus") {
+		metadata.evalplus = {
+			taskId: params.taskId,
+			testList: cloneJsonValue(params.record.test_list),
+			testImports: cloneJsonValue(params.record.test_imports),
+			code: readString(params.record.code) ?? null,
+		};
+	}
+
+	if (params.suiteSlug === "humaneval-plus") {
+		metadata.evalplus = {
+			taskId: params.taskId,
+			entryPoint: readString(params.record.entry_point) ?? null,
+		};
+	}
+
+	if (params.suiteSlug === "bigcodebench") {
+		metadata.bigcodebench = {
+			taskId: params.taskId,
+			split: normalizeBigCodeBenchSplit(readString(params.record.split)),
+			subset: normalizeBigCodeBenchSubset(readString(params.record.subset)),
+			datasetRevision: readString(params.record.dataset_revision) ?? params.datasetRevision,
+			completePrompt: readString(params.record.complete_prompt) ?? null,
+			instructPrompt: readString(params.record.instruct_prompt) ?? null,
+			codePrompt: readString(params.record.code_prompt) ?? null,
+			libs: params.libs,
+			canonicalSolution: readString(params.record.canonical_solution) ?? null,
+			entryPoint: readString(params.record.entry_point) ?? null,
+		};
+	}
+
+	return metadata;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+	if (value === undefined) return undefined;
+	try {
+		return JSON.parse(JSON.stringify(value)) as unknown;
+	} catch {
+		return null;
+	}
+}
+
+function normalizeBigCodeBenchSplit(value: string | null): "complete" | "instruct" {
+	return value === "complete" ? "complete" : "instruct";
+}
+
+function normalizeBigCodeBenchSubset(value: string | null): "full" | "hard" {
+	return value === "hard" ? "hard" : "full";
+}
+
+function normalizeCodeEvalLibs(value: unknown): string[] {
+	const source = Array.isArray(value)
+		? value
+		: typeof value === "string"
+			? value.split(/[,;\s]+/g)
+			: [];
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const item of source) {
+		if (typeof item !== "string") continue;
+		const lib = item.trim();
+		if (!lib || seen.has(lib)) continue;
+		seen.add(lib);
+		out.push(lib);
+	}
+	return out;
+}
+
+function buildCodeEvalRuntimeProbeCommand(libs: string[]): string {
+	return [
+		"set -eu",
+		"/sandbox/.venv/bin/python - <<'PY'",
+		"import importlib, json, sys",
+		`libs = ${JSON.stringify(libs)}`,
+		"aliases = {",
+		'    "beautifulsoup4": "bs4",',
+		'    "bs4": "bs4",',
+		'    "Pillow": "PIL",',
+		'    "pillow": "PIL",',
+		'    "pyyaml": "yaml",',
+		'    "PyYAML": "yaml",',
+		'    "python-dateutil": "dateutil",',
+		'    "scikit-learn": "sklearn",',
+		'    "sklearn": "sklearn",',
+		"}",
+		"missing = []",
+		"importlib.import_module('pytest')",
+		"for lib in libs:",
+		"    module = aliases.get(lib) or aliases.get(lib.lower()) or lib.replace('-', '_')",
+		"    try:",
+		"        importlib.import_module(module)",
+		"    except Exception as exc:",
+		"        missing.append({'lib': lib, 'module': module, 'error': str(exc)})",
+		"payload = {",
+		"    'ok': not missing,",
+		"    'python': sys.version.split()[0],",
+		"    'pytest': importlib.import_module('pytest').__version__,",
+		"    'libs': libs,",
+		"    'missing': missing,",
+		"}",
+		"print(json.dumps(payload, sort_keys=True))",
+		"raise SystemExit(1 if missing else 0)",
+		"PY",
+	].join("\n");
 }
 
 function normalizeCodeEvalTestFile(params: {
@@ -850,7 +1041,8 @@ function buildCodeEvalSolvePrompt(params: {
 		"Constraints:",
 		"- Write only /sandbox/solution.py. Do not modify /sandbox/test_solution.py or create alternate solution files.",
 		"- Do not hardcode the test inputs/outputs. Implement the algorithm correctly.",
-		"- Run `python -m pytest -q test_solution.py` from /sandbox to check your work. Iterate until it passes, but do not invent new tests.",
+		"- Dependencies needed by the benchmark row are preinstalled in /sandbox/.venv. Do not run pip install unless explicitly debugging the runtime.",
+		`- Run \`${CODE_EVAL_PYTEST_COMMAND}\` from /sandbox to check your work. Iterate until it passes, but do not invent new tests.`,
 		"- Stop once the test file passes or you've exhausted your turn budget.",
 	].join("\n");
 }
@@ -1016,6 +1208,10 @@ export async function createEvaluationRun(input: CreateEvaluationRunInput) {
 	if (subjectType !== "imported_outputs" && !input.subjectId?.trim()) {
 		throw error(400, "Evaluation run subjectId is required");
 	}
+	const executionConfig = buildEvaluationRunExecutionConfig(
+		evaluation,
+		input.executionConfig,
+	);
 	const now = new Date();
 	const [run] = await database.transaction(async (tx) => {
 		const [createdRun] = await tx
@@ -1029,7 +1225,7 @@ export async function createEvaluationRun(input: CreateEvaluationRunInput) {
 				subjectType,
 				subjectId: input.subjectId?.trim() || null,
 				subjectVersion: input.subjectVersion?.trim() || null,
-				executionConfig: input.executionConfig ?? {},
+				executionConfig,
 				startedAt: subjectType === "imported_outputs" ? now : null,
 				summary: { total: rows.length },
 			})
@@ -1062,6 +1258,29 @@ export async function createEvaluationRun(input: CreateEvaluationRunInput) {
 		await gradeEvaluationRunById(run.id);
 	}
 	return getEvaluationRun(input.projectId, run.id);
+}
+
+function buildEvaluationRunExecutionConfig(
+	evaluation: typeof evaluations.$inferSelect,
+	inputConfig: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+	const config = { ...(inputConfig ?? {}) };
+	const isCodeEval =
+		evaluation.taskConfig?.adapter === "code-eval" ||
+		evaluation.metadata?.family === "code-eval";
+	if (!isCodeEval) return config;
+	const existingSandboxPolicy = isRecord(config.sandboxPolicy)
+		? config.sandboxPolicy
+		: {};
+	return {
+		...config,
+		sandboxPolicy: {
+			...existingSandboxPolicy,
+			mode: "per-run",
+		},
+		protocolMode: CODE_EVAL_PROTOCOL_MODE,
+		benchmarkComparable: CODE_EVAL_BENCHMARK_COMPARABLE,
+	};
 }
 
 export async function gradeEvaluationRun(projectId: string, runId: string) {
@@ -1275,6 +1494,7 @@ export async function syncEvaluationRunItemFromExecution(params: {
 
 	let runtimeStatus: string | null = null;
 	let runtimeOutput: unknown = row.execution.output;
+	let runtimeTraceId: string | null = null;
 	if (row.execution.daprInstanceId) {
 		const res = await daprFetch(
 			`${getOrchestratorUrl()}/api/v2/workflows/${row.execution.daprInstanceId}/status`,
@@ -1284,8 +1504,21 @@ export async function syncEvaluationRunItemFromExecution(params: {
 			const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 			runtimeStatus =
 				typeof body.runtimeStatus === "string" ? body.runtimeStatus : null;
+			runtimeTraceId =
+				readString(body.traceId) ??
+				readString(body.trace_id) ??
+				runtimeTraceId;
 			runtimeOutput = body.output ?? body.outputs ?? runtimeOutput;
 		}
+	}
+	const primaryTraceId = runtimeTraceId ?? row.execution.primaryTraceId ?? null;
+	if (runtimeTraceId && runtimeTraceId !== row.execution.primaryTraceId) {
+		await database
+			.update(workflowExecutions)
+			.set({
+				primaryTraceId: runtimeTraceId,
+			})
+			.where(eq(workflowExecutions.id, row.execution.id));
 	}
 
 	const executionFailed = isFailedWorkflowExecution(row.execution);
@@ -1297,6 +1530,11 @@ export async function syncEvaluationRunItemFromExecution(params: {
 	const now = new Date();
 	const generatedOutput = extractEvaluationGeneratedOutput(
 		runtimeOutput ?? row.execution.output,
+	);
+	const traceIds = collectEvaluationTraceIds(
+		{ traceId: primaryTraceId },
+		runtimeOutput,
+		row.execution.output,
 	);
 	const sessionRow = row.item.workflowExecutionId
 		? await database
@@ -1311,6 +1549,7 @@ export async function syncEvaluationRunItemFromExecution(params: {
 			.set({
 				status: "grading",
 				generatedOutput,
+				traceIds,
 				sessionId: sessionRow[0]?.id ?? row.item.sessionId,
 				completedAt: null,
 				error: null,
@@ -1329,6 +1568,7 @@ export async function syncEvaluationRunItemFromExecution(params: {
 		.set({
 			status: itemStatus,
 			error: workflowExecutionError(row.execution, runtimeOutput),
+			traceIds,
 			sessionId: sessionRow[0]?.id ?? row.item.sessionId,
 			completedAt: now,
 			updatedAt: now,
@@ -2056,6 +2296,37 @@ function workflowExecutionError(
 		"message",
 	]);
 	return candidates.find((candidate) => candidate.trim())?.slice(0, 2000) ?? null;
+}
+
+export function collectEvaluationTraceIds(...values: unknown[]): string[] {
+	const traceIds = new Set<string>();
+	const visit = (node: unknown) => {
+		if (!node) return;
+		if (Array.isArray(node)) {
+			for (const item of node) visit(item);
+			return;
+		}
+		if (!isRecord(node)) return;
+		for (const [key, child] of Object.entries(node)) {
+			if (
+				(key === "traceId" || key === "trace_id" || key === "primaryTraceId") &&
+				typeof child === "string" &&
+				child.trim()
+			) {
+				traceIds.add(child.trim());
+				continue;
+			}
+			if ((key === "traceIds" || key === "trace_ids") && Array.isArray(child)) {
+				for (const traceId of child) {
+					if (typeof traceId === "string" && traceId.trim()) traceIds.add(traceId.trim());
+				}
+				continue;
+			}
+			if (typeof child === "object" && child !== null) visit(child);
+		}
+	};
+	for (const value of values) visit(value);
+	return Array.from(traceIds);
 }
 
 function collectStringsByKey(value: unknown, keys: string[]): string[] {

@@ -454,9 +454,27 @@ function sampleFromContext(context: GraderContext): Record<string, unknown> {
 		out.output = generated;
 		// Try common fields for output_text
 		if (isRecord(generated)) {
+			const workflowOutput = isRecord(generated.workflowOutput)
+				? generated.workflowOutput
+				: isRecord(generated.workflow_output)
+					? generated.workflow_output
+					: generated;
+			if (typeof workflowOutput.solutionContent === "string") {
+				out.solutionContent = workflowOutput.solutionContent;
+				out.output_text = workflowOutput.solutionContent;
+			}
+			if (typeof workflowOutput.pytestOutput === "string") {
+				out.pytestOutput = workflowOutput.pytestOutput;
+			}
+			if (typeof workflowOutput.stdout === "string") out.stdout = workflowOutput.stdout;
+			if (typeof workflowOutput.stderr === "string") out.stderr = workflowOutput.stderr;
+			const raw = isRecord(workflowOutput.raw) ? workflowOutput.raw : null;
+			if (raw && raw.solve !== undefined) out.solveOutput = raw.solve;
 			const candidate =
 				generated.output_text ?? generated.text ?? generated.content;
-			if (typeof candidate === "string") out.output_text = candidate;
+			if (typeof candidate === "string" && out.output_text === undefined) {
+				out.output_text = candidate;
+			}
 		}
 	}
 	return out;
