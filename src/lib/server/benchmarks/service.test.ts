@@ -3,6 +3,7 @@ import {
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
 	extractBenchmarkRuntimeLinks,
+	resolveBenchmarkInstanceStatusAfterInference,
 } from "./service";
 
 describe("SWE-bench workflow spec", () => {
@@ -100,5 +101,20 @@ describe("SWE-bench workflow spec", () => {
 			"0123456789abcdef0123456789abcdef",
 			"fedcba9876543210fedcba9876543210",
 		]);
+	});
+
+	it("preserves evaluator-owned instance status when inference is re-synced", () => {
+		expect(resolveBenchmarkInstanceStatusAfterInference("inferencing", "success")).toBe(
+			"inferred",
+		);
+		expect(resolveBenchmarkInstanceStatusAfterInference("resolved", "success")).toBe(
+			"resolved",
+		);
+		expect(resolveBenchmarkInstanceStatusAfterInference("failed", "success")).toBe(
+			"failed",
+		);
+		expect(resolveBenchmarkInstanceStatusAfterInference("evaluating", "error")).toBe(
+			"evaluating",
+		);
 	});
 });

@@ -37,6 +37,7 @@ import {
 	buildPredictionsJsonl,
 	buildSwebenchPrediction,
 	canTransitionBenchmarkRun,
+	INSTANCE_TERMINAL_STATUSES,
 	normalizeInstanceIds,
 	normalizeSwebenchSuiteSlug,
 	repoFromInstanceId,
@@ -48,6 +49,8 @@ import {
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+type ExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
+type CompletedExecutionStatus = Exclude<ExecutionStatus, "pending" | "running">;
 
 function requireDb() {
 	if (!db) throw error(503, "Database not configured");
@@ -703,7 +706,10 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		],
 	});
 	const update: Partial<typeof benchmarkRunInstances.$inferInsert> = {
-		status: status === "success" ? "inferred" : status,
+		status: resolveBenchmarkInstanceStatusAfterInference(
+			row.runInstance.status,
+			status,
+		),
 		modelPatch: status === "success" ? patch : row.runInstance.modelPatch,
 		patchBytes: status === "success" ? Buffer.byteLength(patch, "utf8") : undefined,
 		patchSha256: status === "success" ? sha256(patch) : undefined,
@@ -1199,10 +1205,20 @@ function serializeRunSummary(row: {
 	};
 }
 
+export function resolveBenchmarkInstanceStatusAfterInference(
+	currentStatus: BenchmarkRunInstanceStatus,
+	inferenceStatus: CompletedExecutionStatus,
+): BenchmarkRunInstanceStatus {
+	if (currentStatus === "evaluating" || INSTANCE_TERMINAL_STATUSES.has(currentStatus)) {
+		return currentStatus;
+	}
+	return inferenceStatus === "success" ? "inferred" : inferenceStatus;
+}
+
 function mapExecutionStatus(
 	dbStatus: string,
 	runtimeStatus: string | null,
-): "pending" | "running" | "success" | "error" | "cancelled" {
+): ExecutionStatus {
 	switch ((runtimeStatus ?? "").toUpperCase()) {
 		case "COMPLETED":
 			return "success";
