@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG BASE_IMAGE
+ARG BASE_IMAGE=gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox:git-a1784a18be5a1c636e53d80a086ad693cd63a630@sha256:d7510fcd22cd6cb2a26309a8c52074c9d195211df76f41f4ef9b6bd92424833f
 ARG PYTHON_VERSION=3.11
 FROM ghcr.io/astral-sh/uv:0.9.17 AS uv-bin
 
