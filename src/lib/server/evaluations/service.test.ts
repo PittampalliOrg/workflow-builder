@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	buildAgentEvaluationWorkflowSpec,
 	buildCodeEvalDefaultGraders,
@@ -160,6 +163,8 @@ describe("code-eval template normalization", () => {
 		expect(content).toContain('_wb_entry_point = "add_one"');
 		expect(content).toContain("candidate = getattr(_wb_solution, _wb_entry_point)");
 		expect(content).toContain("globals()[_wb_entry_point] = candidate");
+		expect(content).not.toContain("_wb_target_globals");
+		expect(content).not.toContain("vars(_wb_solution).items()");
 		expect(content).toContain("def check(candidate):");
 		expect(content).toContain("def test_evalplus_check():");
 		expect(content).toContain("    check(candidate)");
@@ -273,6 +278,8 @@ describe("code-eval template normalization", () => {
 			benchmarkComparable: false,
 			sandboxTemplate: "code-eval-bigcodebench",
 			promptSource: "instruct_prompt",
+			testHarness: "bigcodebench-shared-module-globals",
+			testHarnessVersion: 2,
 			bigcodebench: {
 				split: "complete",
 				subset: "hard",
@@ -284,9 +291,74 @@ describe("code-eval template normalization", () => {
 			},
 		});
 		expect(content).toContain('_wb_entry_point = "task_func"');
+		expect(content).toContain("_wb_target_globals = globals()");
+		expect(content).toContain("for _wb_name, _wb_value in vars(_wb_solution).items():");
+		expect(content).toContain(
+			'if not (_wb_name.startswith("__") and _wb_name.endswith("__")):',
+		);
 		expect(content).toContain(originalTest);
 		expect(content).not.toContain("def test_evalplus_check():");
 		expect(content).not.toContain("def test_code_eval_script_executed():");
+	});
+
+	it("runs BigCodeBench tests that reference solution module import aliases", () => {
+		const row = normalizeCodeEvalRowForEvaluation({
+			suiteSlug: "bigcodebench",
+			index: 180,
+			row: {
+				task_id: "BigCodeBench/180",
+				instruct_prompt: "Use os and matplotlib-style plotting helpers.",
+				code_prompt: [
+					"import os",
+					"import matplotlib.pyplot as plt",
+					"",
+					"def task_func(path):",
+					"    pass",
+				].join("\n"),
+				entry_point: "task_func",
+				libs: ["matplotlib"],
+				test: [
+					"import unittest",
+					"",
+					"class TestCases(unittest.TestCase):",
+					"    def test_solution_import_aliases_are_visible(self):",
+					'        self.assertEqual(os.path.basename("/tmp/example.txt"), "example.txt")',
+					'        self.assertEqual(plt.__name__, "matplotlib.pyplot")',
+					'        self.assertEqual(task_func("/tmp/example.txt"), "example.txt")',
+				].join("\n"),
+			},
+		});
+		const dir = mkdtempSync(join(tmpdir(), "bigcodebench-harness-"));
+		try {
+			const solutionPath = join(dir, "solution.py");
+			writeFileSync(
+				solutionPath,
+				[
+					"import os",
+					"import types",
+					'plt = types.SimpleNamespace(__name__="matplotlib.pyplot")',
+					"",
+					"def task_func(path):",
+					"    return os.path.basename(path)",
+					"",
+				].join("\n"),
+			);
+			writeFileSync(join(dir, "test_solution.py"), codeEvalTestFileContent(row));
+
+			const result = spawnSync("python3", ["-m", "unittest", "-q", "test_solution"], {
+				cwd: dir,
+				env: {
+					...process.env,
+					CODE_EVAL_SOLUTION_PATH: solutionPath,
+				},
+				encoding: "utf8",
+			});
+
+			expect(`${result.stdout}${result.stderr}`).not.toContain("NameError");
+			expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+		} finally {
+			rmSync(dir, { force: true, recursive: true });
+		}
 	});
 
 	it("parses BigCodeBench stringified libs into importable module names", () => {
