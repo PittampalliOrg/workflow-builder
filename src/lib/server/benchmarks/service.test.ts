@@ -47,7 +47,7 @@ describe("SWE-bench workflow spec", () => {
 			spec.do as Array<Record<string, { with: { command: string } }>>
 		)[3].extract_patch;
 		expect(extractPatch.with.command).toBe(
-			"cd /sandbox/repo && git diff --binary 'cffd4e0f86fefd4802349a9f9b19ed70934ea354' --",
+			"set -eu\ncd /sandbox/repo\nrm -rf .cache\ngit diff --binary 'cffd4e0f86fefd4802349a9f9b19ed70934ea354' --",
 		);
 	});
 

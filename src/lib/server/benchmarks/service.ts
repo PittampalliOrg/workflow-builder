@@ -877,7 +877,12 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 }): Record<string, unknown> {
 	const repoPath = "/sandbox/repo";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
-	const extractPatchCommand = `cd /sandbox/repo && git diff --binary ${quoteShell(params.baseCommit)} --`;
+	const extractPatchCommand = [
+		"set -eu",
+		"cd /sandbox/repo",
+		"rm -rf .cache",
+		`git diff --binary ${quoteShell(params.baseCommit)} --`,
+	].join("\n");
 	const cloneCommand = [
 		"set -eu",
 		"cd /sandbox",
@@ -1016,6 +1021,10 @@ function buildSwebenchPrompt(params: {
 		"Problem statement:",
 		params.problemStatement,
 		params.hintsText ? `\nHints:\n${params.hintsText}` : "",
+		"",
+		"Sandbox notes:",
+		"- The default `python` may be newer than some SWE-bench repositories expect; `python3.12` is available and is often a safer choice for older Python projects.",
+		"- You may install missing repo/test dependencies in the sandbox when needed, but keep source changes limited to the repository fix.",
 		"",
 		"Work in /sandbox/repo only. Make the smallest source changes needed to resolve the issue. Do not create commits. When finished, leave the working tree with the final patch applied.",
 	].join("\n");
