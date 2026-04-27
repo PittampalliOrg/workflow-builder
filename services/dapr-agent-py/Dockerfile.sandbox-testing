@@ -7,7 +7,7 @@ FROM gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox:latest
 USER root
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv-bin /uv /uvx /usr/local/bin/

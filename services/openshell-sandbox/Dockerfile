@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-0t64 \
     xvfb \
     python3-pip \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Playwright browsers to a shared location accessible by all users.

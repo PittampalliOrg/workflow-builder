@@ -2733,6 +2733,7 @@ class OpenShellDurableAgent(DurableAgent):
         # result, and self-terminate. UI-initiated sessions leave this unset
         # so the multi-turn loop continues across user events.
         auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
+        turn_timeout_seconds = _session_turn_timeout_seconds(message)
 
         if not ctx.is_replaying:
             publish_session_event(
@@ -2860,9 +2861,7 @@ class OpenShellDurableAgent(DurableAgent):
                     instance_id=f"{session_id}:turn-{turn_counter}",
                     retry_policy=self._retry_policy,
                 )
-                timer_task = ctx.create_timer(
-                    timedelta(seconds=SESSION_TURN_TIMEOUT_SECONDS)
-                )
+                timer_task = ctx.create_timer(timedelta(seconds=turn_timeout_seconds))
                 winner = yield wf_when_any([child_task, timer_task])
                 if winner is timer_task:
                     if not ctx.is_replaying:
@@ -2872,7 +2871,7 @@ class OpenShellDurableAgent(DurableAgent):
                                 "session.turn_timeout",
                                 {
                                     "turn": turn_counter,
-                                    "timeout_seconds": SESSION_TURN_TIMEOUT_SECONDS,
+                                    "timeout_seconds": turn_timeout_seconds,
                                 },
                             )
                         except Exception:
@@ -2880,7 +2879,7 @@ class OpenShellDurableAgent(DurableAgent):
                     from dapr_agents.types.exceptions import AgentError
                     raise AgentError(
                         f"Session turn {turn_counter} exceeded "
-                        f"{SESSION_TURN_TIMEOUT_SECONDS}s timeout; "
+                        f"{turn_timeout_seconds}s timeout; "
                         "terminating session to prevent indefinite hang. "
                         "Check agent_workflow state for stuck LLM or tool calls."
                     )
@@ -3016,6 +3015,7 @@ def _freeze_session_child_input(
         "sandboxName": sandbox_name,
         "workspaceRef": workspace_ref,
         "cwd": cwd,
+        "timeoutMinutes": raw_message.get("timeoutMinutes"),
         "callableAgents": callable_agents,
         "registryTeam": registry_team,
         "_session_turn": turn,
@@ -3025,6 +3025,23 @@ def _freeze_session_child_input(
             "turn": turn,
         },
     }
+
+
+def _session_turn_timeout_seconds(message: dict) -> int:
+    """Use workflow-provided timeoutMinutes for single-turn durable runs.
+
+    UI sessions do not set timeoutMinutes, so they keep the process default.
+    SWE-bench and other workflow-driven runs pass a larger timeout through the
+    orchestrator; the session wrapper should not preempt that run at 600s.
+    """
+    raw = message.get("timeoutMinutes") or message.get("timeout_minutes")
+    try:
+        minutes = int(raw)
+    except (TypeError, ValueError):
+        return SESSION_TURN_TIMEOUT_SECONDS
+    if minutes <= 0:
+        return SESSION_TURN_TIMEOUT_SECONDS
+    return max(SESSION_TURN_TIMEOUT_SECONDS, minutes * 60)
 
 
 # ---------------------------------------------------------------------------

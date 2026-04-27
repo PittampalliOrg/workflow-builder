@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { error } from "@sveltejs/kit";
 import {
+	asc,
 	and,
 	count,
 	desc,
@@ -19,6 +20,7 @@ import {
 	benchmarkRunInstances,
 	benchmarkRuns,
 	benchmarkSuites,
+	sessionEvents,
 	sessions,
 	workflowExecutions,
 	workflows,
@@ -322,6 +324,7 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 			daprInstanceId: runInstance.daprInstanceId,
 			sandboxName: runInstance.sandboxName,
 			workspaceRef: runInstance.workspaceRef,
+			traceIds: runInstance.traceIds,
 			modelPatch: runInstance.modelPatch,
 			patchBytes: runInstance.patchBytes,
 			error: runInstance.error,
@@ -670,11 +673,35 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	const now = new Date();
 	const sessionRow = row.runInstance.workflowExecutionId
 		? await database
-				.select({ id: sessions.id })
+				.select({
+					id: sessions.id,
+					sandboxName: sessions.sandboxName,
+					workspaceSandboxName: sessions.workspaceSandboxName,
+				})
 				.from(sessions)
 				.where(eq(sessions.workflowExecutionId, row.runInstance.workflowExecutionId))
 				.limit(1)
 		: [];
+	const sessionEventRows = sessionRow[0]?.id
+		? await database
+				.select({ data: sessionEvents.data })
+				.from(sessionEvents)
+				.where(eq(sessionEvents.sessionId, sessionRow[0].id))
+				.orderBy(asc(sessionEvents.sequence))
+		: [];
+	const runtimeLinks = extractBenchmarkRuntimeLinks({
+		currentSandboxName: row.runInstance.sandboxName,
+		currentWorkspaceRef: row.runInstance.workspaceRef,
+		currentTraceIds: row.runInstance.traceIds,
+		sessionSandboxName: sessionRow[0]?.sandboxName,
+		sessionWorkspaceSandboxName: sessionRow[0]?.workspaceSandboxName,
+		values: [
+			{ primaryTraceId: row.execution.primaryTraceId },
+			row.execution.output,
+			runtimeOutput,
+			...sessionEventRows.map((event) => event.data),
+		],
+	});
 	const update: Partial<typeof benchmarkRunInstances.$inferInsert> = {
 		status: status === "success" ? "inferred" : status,
 		modelPatch: status === "success" ? patch : row.runInstance.modelPatch,
@@ -683,8 +710,17 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		error: status === "success" ? null : workflowExecutionError(row.execution, runtimeOutput),
 		inferenceCompletedAt: now,
 		sessionId: sessionRow[0]?.id ?? row.runInstance.sessionId,
+		sandboxName: runtimeLinks.sandboxName,
+		workspaceRef: runtimeLinks.workspaceRef,
+		traceIds: runtimeLinks.traceIds,
 		updatedAt: now,
 	};
+	if (!row.execution.primaryTraceId && runtimeLinks.traceIds[0]) {
+		await database
+			.update(workflowExecutions)
+			.set({ primaryTraceId: runtimeLinks.traceIds[0] })
+			.where(eq(workflowExecutions.id, row.execution.id));
+	}
 	const [updated] = await database
 		.update(benchmarkRunInstances)
 		.set(update)
@@ -989,6 +1025,86 @@ function extractModelPatch(value: unknown): string {
 	return candidates.find((candidate) => candidate.includes("diff --git")) ?? "";
 }
 
+export function extractBenchmarkRuntimeLinks(input: {
+	currentSandboxName?: string | null;
+	currentWorkspaceRef?: string | null;
+	currentTraceIds?: string[] | null;
+	sessionSandboxName?: string | null;
+	sessionWorkspaceSandboxName?: string | null;
+	values: unknown[];
+}): { sandboxName?: string; workspaceRef?: string; traceIds: string[] } {
+	const sandboxName = firstNonBlank(
+		input.currentSandboxName,
+		input.sessionSandboxName,
+		input.sessionWorkspaceSandboxName,
+		firstStringByKey(input.values, ["sandboxName", "sandbox_name"]),
+	);
+	const workspaceRef = firstNonBlank(
+		input.currentWorkspaceRef,
+		firstStringByKey(input.values, [
+			"workspaceRef",
+			"workspace_ref",
+			"workspace.ref",
+		]),
+	);
+	const traceIds = collectBenchmarkTraceIds(
+		{ traceIds: input.currentTraceIds ?? [] },
+		...input.values,
+	);
+	return {
+		sandboxName: sandboxName ?? undefined,
+		workspaceRef: workspaceRef ?? undefined,
+		traceIds,
+	};
+}
+
+export function collectBenchmarkTraceIds(...values: unknown[]): string[] {
+	const traceIds = new Set<string>();
+	const visit = (node: unknown) => {
+		if (!node) return;
+		if (Array.isArray(node)) {
+			for (const item of node) visit(item);
+			return;
+		}
+		if (!isRecord(node)) return;
+		for (const [key, child] of Object.entries(node)) {
+			if (
+				(key === "traceId" ||
+					key === "trace_id" ||
+					key === "traceID" ||
+					key === "primaryTraceId" ||
+					key === "primary_trace_id") &&
+				typeof child === "string" &&
+				child.trim()
+			) {
+				traceIds.add(child.trim());
+				continue;
+			}
+			if ((key === "traceIds" || key === "trace_ids") && Array.isArray(child)) {
+				for (const traceId of child) {
+					if (typeof traceId === "string" && traceId.trim()) {
+						traceIds.add(traceId.trim());
+					}
+				}
+				continue;
+			}
+			if (typeof child === "object" && child !== null) visit(child);
+		}
+	};
+	for (const value of values) visit(value);
+	return Array.from(traceIds);
+}
+
+function firstStringByKey(values: unknown[], keys: string[]): string | null {
+	for (const value of values) {
+		const found = collectStringsByKey(value, keys).find((candidate) =>
+			Boolean(candidate.trim()),
+		);
+		if (found) return found.trim();
+	}
+	return null;
+}
+
 function collectStringsByKey(value: unknown, keys: string[]): string[] {
 	const wanted = new Set(keys);
 	const out: string[] = [];
@@ -1005,6 +1121,13 @@ function collectStringsByKey(value: unknown, keys: string[]): string[] {
 	};
 	visit(value);
 	return out;
+}
+
+function firstNonBlank(...values: Array<string | null | undefined>): string | null {
+	for (const value of values) {
+		if (typeof value === "string" && value.trim()) return value.trim();
+	}
+	return null;
 }
 
 function isFailedWorkflowExecution(execution: {

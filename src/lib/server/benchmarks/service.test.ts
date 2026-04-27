@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildSwebenchInstanceWorkflowSpec } from "./service";
+import {
+	buildSwebenchInstanceWorkflowSpec,
+	collectBenchmarkTraceIds,
+	extractBenchmarkRuntimeLinks,
+} from "./service";
 
 describe("SWE-bench workflow spec", () => {
 	it("uses a POSIX-compatible checkout command", () => {
@@ -44,5 +48,57 @@ describe("SWE-bench workflow spec", () => {
 		expect(extractPatch.with.command).toBe(
 			"cd /sandbox/repo && git diff --binary 'cffd4e0f86fefd4802349a9f9b19ed70934ea354' --",
 		);
+	});
+
+	it("projects sandbox, workspace, and trace links from workflow/session telemetry", () => {
+		const links = extractBenchmarkRuntimeLinks({
+			currentSandboxName: null,
+			currentWorkspaceRef: null,
+			currentTraceIds: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+			sessionSandboxName: "ws-session",
+			sessionWorkspaceSandboxName: null,
+			values: [
+				{
+					outputs: {
+						workspace_profile: {
+							workspaceRef: "ws_profile",
+							sandboxName: "ws-profile-sandbox",
+						},
+					},
+				},
+				{
+					traceId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					codeCheckpoint: {
+						workspaceRef: "ws_checkpoint",
+						sandboxName: "ws-checkpoint-sandbox",
+					},
+				},
+			],
+		});
+
+		expect(links).toEqual({
+			sandboxName: "ws-session",
+			workspaceRef: "ws_profile",
+			traceIds: [
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			],
+		});
+	});
+
+	it("collects benchmark trace ids only from trace-shaped fields", () => {
+		expect(
+			collectBenchmarkTraceIds(
+				{ primaryTraceId: "0123456789abcdef0123456789abcdef" },
+				{
+					patchSha256:
+						"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					nested: { trace_ids: ["fedcba9876543210fedcba9876543210"] },
+				},
+			),
+		).toEqual([
+			"0123456789abcdef0123456789abcdef",
+			"fedcba9876543210fedcba9876543210",
+		]);
 	});
 });
