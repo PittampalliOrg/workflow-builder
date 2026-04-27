@@ -27,12 +27,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 ENV VIRTUAL_ENV=/sandbox/.venv
 ENV PATH="/sandbox/.venv/bin:${PATH}"
+# Install the BigCodeBench package without its model-runner extras; otherwise
+# pip pulls GPU torch/CUDA wheels that are irrelevant for pytest sandbox tasks.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     rm -rf /sandbox/.venv \
  && uv venv --seed --python "${PYTHON_VERSION}" /sandbox/.venv \
  && /sandbox/.venv/bin/python -m pip install --upgrade --no-compile --disable-pip-version-check pip setuptools wheel \
- && /sandbox/.venv/bin/python -m pip install --no-compile --disable-pip-version-check --timeout 2000 \
+ && /sandbox/.venv/bin/python -m pip install --no-compile --disable-pip-version-check --no-deps --timeout 2000 \
     bigcodebench==0.2.5 \
+ && /sandbox/.venv/bin/python -m pip install --no-compile --disable-pip-version-check --timeout 2000 \
     pytest-timeout==2.3.1 \
  && /sandbox/.venv/bin/python -m pip install --no-compile --disable-pip-version-check --timeout 2000 \
     -r /tmp/bigcodebench-requirements.txt \
