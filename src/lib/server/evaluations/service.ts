@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { error } from "@sveltejs/kit";
 import { env } from "$env/dynamic/private";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	evaluationArtifacts,
@@ -2352,13 +2352,22 @@ async function loadEvaluationSubjectWorkflow(params: {
 	workflowId: string;
 }) {
 	const database = requireDb();
+	// Accept the workflow if it belongs to the caller's project OR has
+	// `visibility=public`. Public workflows are intentionally cross-project
+	// reusable (the canonical "code-eval-item" workflow seeded for the
+	// HumanEval/MBPP/BigCodeBench eval templates is one — every workspace
+	// pointing taskConfig.workflowId at it should resolve regardless of
+	// which project owns the row in the DB).
 	const [workflow] = await database
 		.select()
 		.from(workflows)
 		.where(
 			and(
-				eq(workflows.projectId, params.projectId),
 				eq(workflows.id, params.workflowId),
+				or(
+					eq(workflows.projectId, params.projectId),
+					eq(workflows.visibility, "public"),
+				),
 			),
 		)
 		.limit(1);
