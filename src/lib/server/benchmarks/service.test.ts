@@ -77,9 +77,11 @@ describe("SWE-bench workflow spec", () => {
 		const extractPatch = (
 			spec.do as Array<Record<string, { with: { command: string } }>>
 		)[4].extract_patch;
-		expect(extractPatch.with.command).toBe(
-			"set -eu\ncd /sandbox/repo\nrm -rf /sandbox/.cache .cache\ngit diff --binary 'cffd4e0f86fefd4802349a9f9b19ed70934ea354' --",
+		expect(extractPatch.with.command).toContain(
+			"git diff --binary 'cffd4e0f86fefd4802349a9f9b19ed70934ea354' -- .",
 		);
+		expect(extractPatch.with.command).toContain("':(exclude)**/tests/**'");
+		expect(extractPatch.with.command).toContain("':(exclude)testing/**'");
 	});
 
 	it("prompts agents for source-only changes and later official grading", () => {
@@ -104,6 +106,9 @@ describe("SWE-bench workflow spec", () => {
 		)[3].solve;
 		expect(solve.with.body.prompt).toContain("Official grading happens later");
 		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
+		expect(solve.with.body.prompt).toContain("editing implementation files only");
+		expect(solve.with.body.prompt).toContain("Do not edit tests");
+		expect(solve.with.body.prompt).toContain("final benchmark patch excludes");
 		expect(solve.with.body.prompt).toContain("Do not use web search");
 		expect(solve.with.body.prompt).toContain(".prepare_environment.promptNotes");
 		expect(solve.with.body.overrides.tools).toEqual([

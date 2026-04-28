@@ -58,6 +58,16 @@ import { buildStableWorkspaceRef } from "./workspace-ref";
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+const SWEBENCH_PATCH_EXCLUDE_PATHS = [
+	":(exclude)**/tests/**",
+	":(exclude)tests/**",
+	":(exclude)test/**",
+	":(exclude)testing/**",
+	":(exclude)**/test_*.py",
+	":(exclude)**/*_test.py",
+	":(exclude)**/conftest.py",
+	":(exclude)**/fixtures/**",
+];
 type ExecutionStatus =
 	| "pending"
 	| "running"
@@ -1127,7 +1137,10 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		"set -eu",
 		"cd /sandbox/repo",
 		"rm -rf /sandbox/.cache .cache",
-		`git diff --binary ${quoteShell(params.baseCommit)} --`,
+		[
+			`git diff --binary ${quoteShell(params.baseCommit)} -- .`,
+			...SWEBENCH_PATCH_EXCLUDE_PATHS.map((path) => quoteShell(path)),
+		].join(" \\\n  "),
 	].join("\n");
 	const cloneCommand = [
 		"set -eu",
@@ -1266,7 +1279,9 @@ function buildSwebenchPrompt(params: {
 		"Sandbox notes:",
 		"- Work only in /sandbox/repo.",
 		"- Do not create commits; leave source changes in the working tree.",
-		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
+		"- Produce the repository fix by editing implementation files only.",
+		"- Do not edit tests, test fixtures, benchmark metadata, generated artifact files, or files that only make local tests pass.",
+		"- The final benchmark patch excludes test and fixture paths; implementation fixes must be outside those paths.",
 		"- Running local tests is optional and best-effort. Official grading happens later in a Docker SWE-bench evaluator job.",
 		"- Do not use web search, web fetch, external issue pages, PR pages, or solution commits. Use only the repository contents, the problem statement, and local sandbox commands.",
 		...environmentNotes,
