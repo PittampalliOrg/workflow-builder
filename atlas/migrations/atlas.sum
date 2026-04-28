@@ -1,4 +1,4 @@
-h1:Rwe4vYxofPIowBQqffT1YBcuOGPQBfXGHUvcaNYj0dU=
+h1:dEw7FogijDDlimYpUS9uytAvJumXVEVxTvrYanZdqO4=
 20260210204758_baseline.sql h1:i0a3DxoyU0gEdXV1ecWYZSJ3pr9ZPS7PdMchjQiQNTA=
 20260212120000_add_workflow_ai_messages.sql h1:MKA9YzLVEh8qXhjuZesrAndI3UvekoOSzTUKLLY07Ms=
 20260217110505_add_resource_library_resources.sql h1:nDoJ/rUulmB6koBi6xI9zEwo3x0Q3JZ56na21UhMFDM=
@@ -37,3 +37,4 @@ h1:Rwe4vYxofPIowBQqffT1YBcuOGPQBfXGHUvcaNYj0dU=
 20260427235900_swebench_status_split.sql h1:OzgnOZ7d/UtImGD/DaMDsr9NqoC4jY1d8G7bHvJHx+I=
 20260428120000_swebench_inference_environment.sql h1:zgU/bcKXpoBj4+DDyJzXDDrkQGfGjluPmQTr3Q3f3kA=
 20260428143000_environment_image_builds.sql h1:vZagIszP1cN8kwNPT/VbsKnZh1VWwJIZ8N51F9ufLP8=
+20260428190000_environment_build_activity.sql h1:eWLanENLMGzoXAMPqT8v9/X04O7CQjDVp4e7v4sJhDU=

@@ -309,6 +309,13 @@
 			"when": 1777386600000,
 			"tag": "0051_environment_image_builds",
 			"breakpoints": true
+		},
+		{
+			"idx": 44,
+			"version": "7",
+			"when": 1777390200000,
+			"tag": "0052_environment_build_activity",
+			"breakpoints": true
 		}
 	]
 }

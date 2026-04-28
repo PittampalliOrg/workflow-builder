@@ -52,7 +52,7 @@ import {
 	swebenchInferenceEnvironmentPromptNotes,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "./inference-environments";
-import { plannedSwebenchInferenceEnvironment } from "$lib/server/environments/environment-image-builds";
+import { plannedSwebenchInferenceEnvironmentWithBuild } from "$lib/server/environments/environment-image-builds";
 import { buildStableWorkspaceRef } from "./workspace-ref";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
@@ -607,7 +607,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		projectId: row.run.projectId,
 		userId: row.run.userId,
 	});
-	const inferenceEnvironment = plannedSwebenchInferenceEnvironment({
+	const inferenceEnvironment = await plannedSwebenchInferenceEnvironmentWithBuild({
 		suiteSlug: normalizeSwebenchSuiteSlug(row.suite.slug),
 		repo: row.instance.repo,
 		baseCommit: row.instance.baseCommit,

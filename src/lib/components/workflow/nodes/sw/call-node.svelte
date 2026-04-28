@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Globe } from 'lucide-svelte';
+	import { Globe, PackageCheck } from 'lucide-svelte';
 	import BaseSWNode from '../base-sw-node.svelte';
 	import type { PortConfig } from '$lib/types/workflow-handles';
 
@@ -17,8 +17,37 @@
 
 	let subtitle = $derived.by(() => {
 		const config = data.taskConfig as Record<string, unknown> | undefined;
+		const build = data.environmentBuild as Record<string, unknown> | undefined;
+		if (config?.call === 'environment/ensure' && build) {
+			const status = typeof build.environmentStatus === 'string'
+				? build.environmentStatus
+				: typeof build.status === 'string'
+					? build.status
+					: 'building';
+			const latest = build.latestActivityEvent as Record<string, unknown> | undefined;
+			const latestType = typeof latest?.eventType === 'string' ? latest.eventType.replaceAll('_', ' ') : '';
+			return latestType ? `${status} · ${latestType}` : status;
+		}
 		if (config?.call) return String(config.call);
 		return '';
+	});
+
+	let isEnvironmentNode = $derived.by(() => {
+		const config = data.taskConfig as Record<string, unknown> | undefined;
+		return config?.call === 'environment/ensure';
+	});
+
+	let environmentStatus = $derived.by(() => {
+		const build = data.environmentBuild as Record<string, unknown> | undefined;
+		const status = typeof build?.environmentStatus === 'string'
+			? build.environmentStatus
+			: typeof build?.status === 'string'
+				? build.status
+				: null;
+		if (status === 'validated' || status === 'succeeded') return 'success';
+		if (status === 'failed' || status === 'cancelled') return 'error';
+		if (status === 'building' || status === 'queued' || status === 'validating' || status === 'pushing') return 'running';
+		return data.status as string | undefined;
 	});
 
 	// Extract provider icon URL from action catalog detail or catalog function
@@ -30,7 +59,21 @@
 		return null;
 	});
 
-	let nodeData = $derived(subtitle ? { ...data, description: subtitle } : data);
+	let nodeData = $derived({
+		...data,
+		...(subtitle ? { description: subtitle } : {}),
+		...(isEnvironmentNode && environmentStatus ? { status: environmentStatus } : {}),
+	});
+	let Icon = $derived(isEnvironmentNode ? PackageCheck : Globe);
+	let iconColor = $derived(
+		isEnvironmentNode
+			? environmentStatus === 'success'
+				? 'bg-emerald-500/15 text-emerald-500'
+				: environmentStatus === 'error'
+					? 'bg-red-500/15 text-red-500'
+					: 'bg-blue-500/15 text-blue-500'
+			: 'bg-amber-500/15 text-amber-400'
+	);
 </script>
 
-<BaseSWNode data={nodeData} {selected} {ports} icon={Globe} iconColor="bg-amber-500/15 text-amber-400" {providerIconUrl} />
+<BaseSWNode data={nodeData} {selected} {ports} icon={Icon} {iconColor} {providerIconUrl} />

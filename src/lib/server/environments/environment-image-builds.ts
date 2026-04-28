@@ -1,18 +1,29 @@
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql as drizzleSql } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import {
+	benchmarkRunInstances,
+	benchmarkRuns,
+	environmentBuildActivityEvents,
 	environmentImageBuilds,
+	type EnvironmentBuildActivityEvent,
+	type EnvironmentBuildActivityEventType,
 	type EnvironmentImageBuild,
 	type EnvironmentImageBuildStatus,
 	type EnvironmentImageBuildStrategy,
+	type NewEnvironmentBuildActivityEvent,
 } from "$lib/server/db/schema";
 import {
 	createTektonPipelineRun,
 	getTektonPipelineRun,
+	listTektonTaskRunsForPipelineRun,
 	tektonPipelineRunResults,
 	tektonSucceededCondition,
+	tektonTaskRunResults,
+	tektonTaskRunSucceededCondition,
+	type TektonPipelineRun,
+	type TektonTaskRun,
 } from "$lib/server/kube/tekton";
 import {
 	resolveSwebenchInferenceEnvironment,
@@ -23,6 +34,15 @@ import type { SwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 const DEFAULT_SANDBOX_TEMPLATE = "dapr-agent";
 const DEFAULT_TEKTON_NAMESPACE = "tekton-pipelines";
 const DEFAULT_GIT_REVISION = "main";
+const ACTIVE_BUILD_STATUSES = new Set<EnvironmentImageBuildStatus>([
+	"queued",
+	"building",
+]);
+const TERMINAL_BUILD_STATUSES = new Set<EnvironmentImageBuildStatus>([
+	"validated",
+	"failed",
+	"cancelled",
+]);
 
 export type EnsureSwebenchEnvironmentInput = {
 	dataset?: string | null;
@@ -78,6 +98,84 @@ export type EnvironmentPrepareResult = {
 	error?: string;
 	source?: string;
 	reason?: string;
+};
+
+export type NormalizedEnvironmentBuildActivityEvent = Omit<
+	NewEnvironmentBuildActivityEvent,
+	"createdAt" | "updatedAt"
+> & {
+	id: string;
+	eventTimestamp: Date;
+};
+
+export type SerializedEnvironmentBuildActivityEvent = {
+	id: string;
+	buildId: string;
+	environmentKey: string;
+	eventKey: string;
+	eventType: EnvironmentBuildActivityEventType;
+	pipelineRunName: string | null;
+	pipelineRunNamespace: string | null;
+	taskRunName: string | null;
+	phase: string | null;
+	reason: string | null;
+	message: string | null;
+	timestamp: string;
+	rawMetadata: Record<string, unknown>;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type SerializedEnvironmentBuildSnapshot = {
+	id: string;
+	dataset: string;
+	suite: string | null;
+	repo: string;
+	version: string | null;
+	environmentSetupCommit: string | null;
+	baseCommit: string | null;
+	environmentKey: string;
+	envSpecHash: string;
+	buildStrategy: EnvironmentImageBuildStrategy;
+	status: EnvironmentImageBuildStatus;
+	sandboxTemplate: string;
+	sandboxImage: string | null;
+	digest: string | null;
+	imageName: string | null;
+	imageTag: string | null;
+	dockerfilePath: string | null;
+	validationCommand: string | null;
+	validationStatus: string | null;
+	validationLogRef: string | null;
+	buildLogRef: string | null;
+	pipelineRunName: string | null;
+	pipelineRunNamespace: string | null;
+	pipelineRunUrl: string | null;
+	error: string | null;
+	requestedAt: string;
+	startedAt: string | null;
+	completedAt: string | null;
+	builtAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type EnvironmentBuildActivityResponse = {
+	build: SerializedEnvironmentBuildSnapshot;
+	events: SerializedEnvironmentBuildActivityEvent[];
+	latestEvent: SerializedEnvironmentBuildActivityEvent | null;
+	syncError?: string;
+};
+
+export type BenchmarkRunEnvironmentActivityResponse = {
+	runId: string;
+	instances: Array<{
+		runInstanceId: string;
+		instanceId: string;
+		build: SerializedEnvironmentBuildSnapshot | null;
+		events: SerializedEnvironmentBuildActivityEvent[];
+		latestEvent: SerializedEnvironmentBuildActivityEvent | null;
+	}>;
 };
 
 export function buildSwebenchEnvironmentSpec(
@@ -201,6 +299,16 @@ export function plannedSwebenchInferenceEnvironment(
 	};
 }
 
+export async function plannedSwebenchInferenceEnvironmentWithBuild(
+	input: EnsureSwebenchEnvironmentInput,
+): Promise<ResolvedSwebenchInferenceEnvironment> {
+	const planned = plannedSwebenchInferenceEnvironment(input);
+	if (!planned.envSpecHash || planned.environmentStatus === "validated") return planned;
+	const build = await getBuildBySpecHash(planned.envSpecHash).catch(() => null);
+	if (!build) return planned;
+	return rowToEnvironment(build);
+}
+
 export async function ensureSwebenchEnvironment(
 	input: EnsureSwebenchEnvironmentInput,
 ): Promise<EnvironmentPrepareResult> {
@@ -234,7 +342,7 @@ export async function ensureSwebenchEnvironment(
 	const pipelineRunNamespace = row.pipelineRunNamespace ?? DEFAULT_TEKTON_NAMESPACE;
 	if (!row.pipelineRunName) {
 		try {
-			await submitSwebenchPipelineRun(spec, pipelineRunName, pipelineRunNamespace);
+			const submitted = await submitSwebenchPipelineRun(spec, pipelineRunName, pipelineRunNamespace);
 			const [updated] = await database
 				.update(environmentImageBuilds)
 				.set({
@@ -247,7 +355,20 @@ export async function ensureSwebenchEnvironment(
 				})
 				.where(eq(environmentImageBuilds.id, row.id))
 				.returning();
-			return resultFromBuild(updated ?? row);
+			const next = updated ?? row;
+			await persistBuildActivityEvents(
+				normalizeEnvironmentBuildActivityEvents({
+					build: next,
+					pipelineRun: submitted.pipelineRun ?? {
+						metadata: {
+							name: pipelineRunName,
+							namespace: pipelineRunNamespace,
+						},
+					},
+					taskRuns: [],
+				}),
+			);
+			return resultFromBuild(next);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			const [failed] = await database
@@ -260,6 +381,9 @@ export async function ensureSwebenchEnvironment(
 				})
 				.where(eq(environmentImageBuilds.id, row.id))
 				.returning();
+			await persistBuildActivityEvents(
+				normalizeEnvironmentBuildActivityEvents({ build: failed ?? row, taskRuns: [] }),
+			);
 			if (isTektonBackendUnavailable(message)) {
 				return fallbackResult(
 					spec,
@@ -346,7 +470,11 @@ async function insertBuild(
 			set: { updatedAt: new Date() },
 		})
 		.returning();
-	return row ?? (await getBuildBySpecHash(spec.envSpecHash))!;
+	const build = row ?? (await getBuildBySpecHash(spec.envSpecHash))!;
+	await persistBuildActivityEvents(
+		normalizeEnvironmentBuildActivityEvents({ build, taskRuns: [] }),
+	);
+	return build;
 }
 
 async function getBuildBySpecHash(hash: string): Promise<EnvironmentImageBuild | null> {
@@ -359,13 +487,26 @@ async function getBuildBySpecHash(hash: string): Promise<EnvironmentImageBuild |
 	return row ?? null;
 }
 
-async function syncEnvironmentBuild(row: EnvironmentImageBuild): Promise<EnvironmentImageBuild> {
+export async function syncEnvironmentBuild(
+	row: EnvironmentImageBuild,
+	options: { forceTerminal?: boolean } = {},
+): Promise<EnvironmentImageBuild> {
+	await persistBuildActivityEvents(
+		normalizeEnvironmentBuildActivityEvents({ build: row, taskRuns: [] }),
+	);
 	if (!row.pipelineRunName || !row.pipelineRunNamespace) return row;
-	if (row.status === "validated" || row.status === "failed" || row.status === "cancelled") {
+	if (TERMINAL_BUILD_STATUSES.has(row.status) && !options.forceTerminal) {
 		return row;
 	}
 	const pipelineRun = await getTektonPipelineRun(row.pipelineRunNamespace, row.pipelineRunName);
 	if (!pipelineRun) return row;
+	const taskRuns = await listTektonTaskRunsForPipelineRun(
+		row.pipelineRunNamespace,
+		row.pipelineRunName,
+	);
+	await persistBuildActivityEvents(
+		normalizeEnvironmentBuildActivityEvents({ build: row, pipelineRun, taskRuns }),
+	);
 	const condition = tektonSucceededCondition(pipelineRun);
 	if (!condition || condition.status === "Unknown") return row;
 
@@ -386,6 +527,13 @@ async function syncEnvironmentBuild(row: EnvironmentImageBuild): Promise<Environ
 				})
 				.where(eq(environmentImageBuilds.id, row.id))
 				.returning();
+			await persistBuildActivityEvents(
+				normalizeEnvironmentBuildActivityEvents({
+					build: updated ?? row,
+					pipelineRun,
+					taskRuns,
+				}),
+			);
 			return updated ?? row;
 		}
 		const builtAt =
@@ -406,6 +554,13 @@ async function syncEnvironmentBuild(row: EnvironmentImageBuild): Promise<Environ
 			})
 			.where(eq(environmentImageBuilds.id, row.id))
 			.returning();
+		await persistBuildActivityEvents(
+			normalizeEnvironmentBuildActivityEvents({
+				build: updated ?? row,
+				pipelineRun,
+				taskRuns,
+			}),
+		);
 		return updated ?? row;
 	}
 
@@ -419,6 +574,13 @@ async function syncEnvironmentBuild(row: EnvironmentImageBuild): Promise<Environ
 		})
 		.where(eq(environmentImageBuilds.id, row.id))
 		.returning();
+	await persistBuildActivityEvents(
+		normalizeEnvironmentBuildActivityEvents({
+			build: updated ?? row,
+			pipelineRun,
+			taskRuns,
+		}),
+	);
 	return updated ?? row;
 }
 
@@ -427,7 +589,7 @@ async function submitSwebenchPipelineRun(
 	pipelineRunName: string,
 	namespace: string,
 ) {
-	await createTektonPipelineRun(namespace, {
+	return createTektonPipelineRun(namespace, {
 		apiVersion: "tekton.dev/v1",
 		kind: "PipelineRun",
 		metadata: {
@@ -468,6 +630,718 @@ async function submitSwebenchPipelineRun(
 			],
 		},
 	});
+}
+
+export function normalizeEnvironmentBuildActivityEvents(input: {
+	build: EnvironmentImageBuild;
+	pipelineRun?: TektonPipelineRun | null;
+	taskRuns?: TektonTaskRun[];
+}): NormalizedEnvironmentBuildActivityEvent[] {
+	const { build, pipelineRun = null, taskRuns = [] } = input;
+	const events: NormalizedEnvironmentBuildActivityEvent[] = [];
+	const pipelineRunName =
+		readString(pipelineRun?.metadata?.name) ?? build.pipelineRunName ?? null;
+	const pipelineRunNamespace =
+		readString(pipelineRun?.metadata?.namespace) ?? build.pipelineRunNamespace ?? null;
+
+	function pushEvent(args: {
+		eventType: EnvironmentBuildActivityEventType;
+		timestamp: unknown;
+		pipelineRunName?: string | null;
+		pipelineRunNamespace?: string | null;
+		taskRunName?: string | null;
+		phase?: string | null;
+		reason?: string | null;
+		message?: string | null;
+		rawMetadata?: Record<string, unknown>;
+	}) {
+		const eventTimestamp =
+			coerceDate(args.timestamp) ??
+			build.completedAt ??
+			build.startedAt ??
+			build.requestedAt ??
+			build.createdAt;
+		const eventKey = buildActivityEventKey({
+			eventType: args.eventType,
+			pipelineRunName: args.pipelineRunName ?? pipelineRunName,
+			pipelineRunNamespace: args.pipelineRunNamespace ?? pipelineRunNamespace,
+			taskRunName: args.taskRunName ?? null,
+			phase: args.phase ?? null,
+			timestamp: eventTimestamp,
+		});
+		events.push({
+			id: deterministicActivityId(build.id, eventKey),
+			buildId: build.id,
+			environmentKey: build.environmentKey,
+			eventKey,
+			eventType: args.eventType,
+			pipelineRunName: args.pipelineRunName ?? pipelineRunName,
+			pipelineRunNamespace: args.pipelineRunNamespace ?? pipelineRunNamespace,
+			taskRunName: args.taskRunName ?? null,
+			phase: args.phase ?? null,
+			reason: args.reason ?? null,
+			message: args.message ?? null,
+			eventTimestamp,
+			rawMetadata: args.rawMetadata ?? {},
+		});
+	}
+
+	pushEvent({
+		eventType: "build_queued",
+		timestamp: build.requestedAt ?? build.createdAt,
+		phase: "queued",
+		reason: "requested",
+		message: `Environment build queued for ${build.environmentKey}`,
+		rawMetadata: {
+			source: "environment_image_builds",
+			envSpecHash: build.envSpecHash,
+			status: build.status,
+		},
+	});
+
+	if (pipelineRunName) {
+		pushEvent({
+			eventType: "pipelinerun_created",
+			timestamp: pipelineRun?.metadata?.creationTimestamp ?? build.startedAt ?? build.createdAt,
+			phase: "created",
+			reason: "PipelineRunCreated",
+			message: `Tekton PipelineRun ${pipelineRunName} created`,
+			rawMetadata: compactObject({
+				metadata: pipelineRun?.metadata,
+				spec: pipelineRun?.spec,
+			}),
+		});
+	}
+
+	const sortedTaskRuns = [...taskRuns].sort((a, b) => {
+		const aTime =
+			coerceDate(a.status?.startTime)?.getTime() ??
+			coerceDate(a.metadata?.creationTimestamp)?.getTime() ??
+			0;
+		const bTime =
+			coerceDate(b.status?.startTime)?.getTime() ??
+			coerceDate(b.metadata?.creationTimestamp)?.getTime() ??
+			0;
+		if (aTime !== bTime) return aTime - bTime;
+		return (a.metadata?.name ?? "").localeCompare(b.metadata?.name ?? "");
+	});
+
+	for (const taskRun of sortedTaskRuns) {
+		const taskRunName = readString(taskRun.metadata?.name);
+		if (!taskRunName) continue;
+		const pipelineTaskName =
+			readString(taskRun.metadata?.labels?.["tekton.dev/pipelineTask"]) ?? taskRunName;
+		const taskCondition = tektonTaskRunSucceededCondition(taskRun);
+		const taskResults = tektonTaskRunResults(taskRun);
+		const taskRaw = compactObject({
+			metadata: taskRun.metadata,
+			status: {
+				conditions: taskRun.status?.conditions,
+				startTime: taskRun.status?.startTime,
+				completionTime: taskRun.status?.completionTime,
+				podName: taskRun.status?.podName,
+				steps: taskRun.status?.steps,
+				results: taskResults,
+			},
+		});
+
+		if (taskRun.status?.startTime) {
+			pushEvent({
+				eventType: "task_started",
+				timestamp: taskRun.status.startTime,
+				taskRunName,
+				phase: pipelineTaskName,
+				reason: "TaskRunStarted",
+				message: `Task ${pipelineTaskName} started`,
+				rawMetadata: taskRaw,
+			});
+			if (isValidationTask(pipelineTaskName, taskRunName)) {
+				pushEvent({
+					eventType: "validation_started",
+					timestamp: taskRun.status.startTime,
+					taskRunName,
+					phase: pipelineTaskName,
+					reason: "ValidationStarted",
+					message: "Environment image validation started",
+					rawMetadata: taskRaw,
+				});
+			}
+		}
+
+		if (taskCondition?.status === "True") {
+			pushEvent({
+				eventType: "task_succeeded",
+				timestamp:
+					taskRun.status?.completionTime ??
+					taskCondition.lastTransitionTime ??
+					taskRun.status?.startTime,
+				taskRunName,
+				phase: pipelineTaskName,
+				reason: taskCondition.reason ?? "Succeeded",
+				message: taskCondition.message ?? `Task ${pipelineTaskName} succeeded`,
+				rawMetadata: taskRaw,
+			});
+			if (isValidationTask(pipelineTaskName, taskRunName)) {
+				pushEvent({
+					eventType: "validation_succeeded",
+					timestamp:
+						taskRun.status?.completionTime ??
+						taskCondition.lastTransitionTime ??
+						taskRun.status?.startTime,
+					taskRunName,
+					phase: pipelineTaskName,
+					reason: taskResults.validation_status || taskCondition.reason || "Validated",
+					message:
+						readString(taskResults.validation_log_ref) ??
+						taskCondition.message ??
+						"Environment image validation succeeded",
+					rawMetadata: taskRaw,
+				});
+			}
+		} else if (taskCondition?.status === "False") {
+			const message =
+				taskCondition.message ??
+				failedTaskStepMessage(taskRun) ??
+				`Task ${pipelineTaskName} failed`;
+			pushEvent({
+				eventType: "task_failed",
+				timestamp:
+					taskRun.status?.completionTime ??
+					taskCondition.lastTransitionTime ??
+					taskRun.status?.startTime,
+				taskRunName,
+				phase: pipelineTaskName,
+				reason: taskCondition.reason ?? "Failed",
+				message,
+				rawMetadata: taskRaw,
+			});
+			if (isValidationTask(pipelineTaskName, taskRunName)) {
+				pushEvent({
+					eventType: "validation_failed",
+					timestamp:
+						taskRun.status?.completionTime ??
+						taskCondition.lastTransitionTime ??
+						taskRun.status?.startTime,
+					taskRunName,
+					phase: pipelineTaskName,
+					reason: taskCondition.reason ?? "ValidationFailed",
+					message,
+					rawMetadata: taskRaw,
+				});
+			}
+		}
+	}
+
+	if (pipelineRun) {
+		const condition = tektonSucceededCondition(pipelineRun);
+		const results = tektonPipelineRunResults(pipelineRun);
+		const resultTimestamp =
+			readString(results.built_at) ??
+			pipelineRun.status?.completionTime ??
+			build.completedAt ??
+			build.builtAt ??
+			build.startedAt ??
+			build.createdAt;
+		const pipelineRaw = compactObject({
+			metadata: pipelineRun.metadata,
+			status: {
+				conditions: pipelineRun.status?.conditions,
+				startTime: pipelineRun.status?.startTime,
+				completionTime: pipelineRun.status?.completionTime,
+				results,
+			},
+		});
+
+		if (readString(results.validation_status)) {
+			const validationStatus = readString(results.validation_status)!;
+			const validationFailed = /fail|error|invalid/i.test(validationStatus);
+			pushEvent({
+				eventType: validationFailed ? "validation_failed" : "validation_succeeded",
+				timestamp: resultTimestamp,
+				phase: "validation",
+				reason: validationStatus,
+				message:
+					readString(results.validation_log_ref) ??
+					(validationFailed
+						? "Environment image validation failed"
+						: "Environment image validation succeeded"),
+				rawMetadata: pipelineRaw,
+			});
+		}
+
+		if (readString(results.image_ref)) {
+			pushEvent({
+				eventType: "image_pushed",
+				timestamp: resultTimestamp,
+				phase: "pushed",
+				reason: "ImagePushed",
+				message: readString(results.image_ref),
+				rawMetadata: pipelineRaw,
+			});
+		}
+		if (readString(results.image_digest)) {
+			pushEvent({
+				eventType: "digest_captured",
+				timestamp: resultTimestamp,
+				phase: "captured",
+				reason: "DigestCaptured",
+				message: readString(results.image_digest),
+				rawMetadata: pipelineRaw,
+			});
+		}
+
+		if (condition?.status === "True") {
+			pushEvent({
+				eventType: "build_succeeded",
+				timestamp:
+					pipelineRun.status?.completionTime ??
+					condition.lastTransitionTime ??
+					build.completedAt,
+				phase: "Succeeded",
+				reason: condition.reason ?? "Succeeded",
+				message: condition.message ?? "Environment image build succeeded",
+				rawMetadata: pipelineRaw,
+			});
+		} else if (condition?.status === "False") {
+			pushEvent({
+				eventType: "build_failed",
+				timestamp:
+					pipelineRun.status?.completionTime ??
+					condition.lastTransitionTime ??
+					build.completedAt,
+				phase: "Failed",
+				reason: condition.reason ?? "Failed",
+				message: condition.message ?? "Tekton PipelineRun failed",
+				rawMetadata: pipelineRaw,
+			});
+		}
+	} else if (build.status === "validated") {
+		pushEvent({
+			eventType: "build_succeeded",
+			timestamp: build.completedAt ?? build.builtAt ?? build.updatedAt,
+			phase: "Succeeded",
+			reason: "Validated",
+			message: "Environment image build succeeded",
+			rawMetadata: { source: "environment_image_builds", status: build.status },
+		});
+	} else if (build.status === "failed" || build.status === "cancelled") {
+		pushEvent({
+			eventType: "build_failed",
+			timestamp: build.completedAt ?? build.updatedAt,
+			phase: build.status === "cancelled" ? "Cancelled" : "Failed",
+			reason: build.status,
+			message: build.error ?? "Environment image build failed",
+			rawMetadata: { source: "environment_image_builds", status: build.status },
+		});
+	}
+
+	return dedupeEvents(events);
+}
+
+async function persistBuildActivityEvents(
+	events: NormalizedEnvironmentBuildActivityEvent[],
+): Promise<number> {
+	if (events.length === 0) return 0;
+	const database = requireDb();
+	await database
+		.insert(environmentBuildActivityEvents)
+		.values(events)
+		.onConflictDoUpdate({
+			target: environmentBuildActivityEvents.id,
+			set: {
+				pipelineRunName: drizzleSql`excluded.pipeline_run_name`,
+				pipelineRunNamespace: drizzleSql`excluded.pipeline_run_namespace`,
+				taskRunName: drizzleSql`excluded.task_run_name`,
+				phase: drizzleSql`excluded.phase`,
+				reason: drizzleSql`excluded.reason`,
+				message: drizzleSql`excluded.message`,
+				rawMetadata: drizzleSql`excluded.raw_metadata`,
+				updatedAt: new Date(),
+			},
+		});
+	return events.length;
+}
+
+export async function getEnvironmentBuildActivity(
+	buildId: string,
+	options: { sync?: boolean; forceTerminal?: boolean } = {},
+): Promise<EnvironmentBuildActivityResponse | null> {
+	const database = requireDb();
+	const [initial] = await database
+		.select()
+		.from(environmentImageBuilds)
+		.where(eq(environmentImageBuilds.id, buildId))
+		.limit(1);
+	if (!initial) return null;
+
+	let build = initial;
+	let syncError: string | undefined;
+	if (options.sync ?? true) {
+		try {
+			build = await syncEnvironmentBuild(initial, {
+				forceTerminal: options.forceTerminal ?? true,
+			});
+		} catch (err) {
+			syncError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	const events = await database
+		.select()
+		.from(environmentBuildActivityEvents)
+		.where(eq(environmentBuildActivityEvents.buildId, build.id))
+		.orderBy(
+			asc(environmentBuildActivityEvents.eventTimestamp),
+			asc(environmentBuildActivityEvents.eventType),
+			asc(environmentBuildActivityEvents.createdAt),
+		);
+	const serializedEvents = events.map(serializeActivityEvent);
+	return {
+		build: serializeBuildSnapshot(build),
+		events: serializedEvents,
+		latestEvent: serializedEvents.at(-1) ?? null,
+		...(syncError ? { syncError } : {}),
+	};
+}
+
+export async function getBenchmarkRunEnvironmentActivity(
+	projectId: string,
+	runId: string,
+	options: { syncActive?: boolean } = {},
+): Promise<BenchmarkRunEnvironmentActivityResponse | null> {
+	const database = requireDb();
+	const [run] = await database
+		.select({ id: benchmarkRuns.id })
+		.from(benchmarkRuns)
+		.where(and(eq(benchmarkRuns.id, runId), eq(benchmarkRuns.projectId, projectId)))
+		.limit(1);
+	if (!run) return null;
+
+	const rows = await database
+		.select({
+			runInstanceId: benchmarkRunInstances.id,
+			instanceId: benchmarkRunInstances.instanceId,
+			inferenceEnvironment: benchmarkRunInstances.inferenceEnvironment,
+		})
+		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+		.where(and(eq(benchmarkRunInstances.runId, runId), eq(benchmarkRuns.projectId, projectId)))
+		.orderBy(benchmarkRunInstances.createdAt);
+
+	const refs = rows.map((row) => ({
+		...row,
+		ref: environmentBuildRef(row.inferenceEnvironment),
+	}));
+	const buildIds = uniqueStrings(refs.map((row) => row.ref.buildId));
+	const envSpecHashes = uniqueStrings(refs.map((row) => row.ref.envSpecHash));
+	const environmentKeys = uniqueStrings(refs.map((row) => row.ref.environmentKey));
+
+	const buildsById = new Map<string, EnvironmentImageBuild>();
+	const buildsByHash = new Map<string, EnvironmentImageBuild>();
+	const buildsByKey = new Map<string, EnvironmentImageBuild>();
+	for (const build of await selectBuildsByRefs(buildIds, envSpecHashes, environmentKeys)) {
+		buildsById.set(build.id, build);
+		buildsByHash.set(build.envSpecHash, build);
+		if (!buildsByKey.has(build.environmentKey)) buildsByKey.set(build.environmentKey, build);
+	}
+
+	if (options.syncActive) {
+		for (const [key, build] of Array.from(buildsById.entries())) {
+			if (!ACTIVE_BUILD_STATUSES.has(build.status)) continue;
+			try {
+				const synced = await syncEnvironmentBuild(build);
+				buildsById.set(key, synced);
+				buildsByHash.set(synced.envSpecHash, synced);
+				if (!buildsByKey.has(synced.environmentKey)) {
+					buildsByKey.set(synced.environmentKey, synced);
+				}
+			} catch {
+				/* Activity endpoints should remain readable during transient Tekton errors. */
+			}
+		}
+	}
+
+	const resolvedRefs = refs.map((row) => {
+		const build =
+			(row.ref.buildId ? buildsById.get(row.ref.buildId) : null) ??
+			(row.ref.envSpecHash ? buildsByHash.get(row.ref.envSpecHash) : null) ??
+			(row.ref.environmentKey ? buildsByKey.get(row.ref.environmentKey) : null) ??
+			null;
+		return { ...row, build };
+	});
+	for (const row of resolvedRefs) {
+		if (!row.build || row.ref.buildId) continue;
+		if (!row.ref.envSpecHash || row.ref.envSpecHash !== row.build.envSpecHash) continue;
+		const inferenceEnvironment = mergeBuildMetadataIntoInferenceEnvironment(
+			row.inferenceEnvironment,
+			row.build,
+		);
+		if (!inferenceEnvironment) continue;
+		await database
+			.update(benchmarkRunInstances)
+			.set({ inferenceEnvironment, updatedAt: new Date() })
+			.where(eq(benchmarkRunInstances.id, row.runInstanceId));
+	}
+
+	const allBuildIds = Array.from(buildsById.keys());
+	const eventRows = allBuildIds.length
+		? await database
+				.select()
+				.from(environmentBuildActivityEvents)
+				.where(inArray(environmentBuildActivityEvents.buildId, allBuildIds))
+				.orderBy(
+					asc(environmentBuildActivityEvents.eventTimestamp),
+					asc(environmentBuildActivityEvents.eventType),
+					asc(environmentBuildActivityEvents.createdAt),
+				)
+		: [];
+	const eventsByBuildId = new Map<string, SerializedEnvironmentBuildActivityEvent[]>();
+	for (const event of eventRows) {
+		const list = eventsByBuildId.get(event.buildId) ?? [];
+		list.push(serializeActivityEvent(event));
+		eventsByBuildId.set(event.buildId, list);
+	}
+
+	return {
+		runId,
+		instances: resolvedRefs.map((row) => {
+			const build = row.build;
+			const events = build ? eventsByBuildId.get(build.id) ?? [] : [];
+			return {
+				runInstanceId: row.runInstanceId,
+				instanceId: row.instanceId,
+				build: build ? serializeBuildSnapshot(build) : null,
+				events,
+				latestEvent: events.at(-1) ?? null,
+			};
+		}),
+	};
+}
+
+function serializeActivityEvent(
+	event: EnvironmentBuildActivityEvent,
+): SerializedEnvironmentBuildActivityEvent {
+	return {
+		id: event.id,
+		buildId: event.buildId,
+		environmentKey: event.environmentKey,
+		eventKey: event.eventKey,
+		eventType: event.eventType,
+		pipelineRunName: event.pipelineRunName,
+		pipelineRunNamespace: event.pipelineRunNamespace,
+		taskRunName: event.taskRunName,
+		phase: event.phase,
+		reason: event.reason,
+		message: event.message,
+		timestamp: event.eventTimestamp.toISOString(),
+		rawMetadata: event.rawMetadata,
+		createdAt: event.createdAt.toISOString(),
+		updatedAt: event.updatedAt.toISOString(),
+	};
+}
+
+function serializeBuildSnapshot(build: EnvironmentImageBuild): SerializedEnvironmentBuildSnapshot {
+	return {
+		id: build.id,
+		dataset: build.dataset,
+		suite: build.suite,
+		repo: build.repo,
+		version: build.version,
+		environmentSetupCommit: build.environmentSetupCommit,
+		baseCommit: build.baseCommit,
+		environmentKey: build.environmentKey,
+		envSpecHash: build.envSpecHash,
+		buildStrategy: build.buildStrategy,
+		status: build.status,
+		sandboxTemplate: build.sandboxTemplate,
+		sandboxImage: build.sandboxImage,
+		digest: build.digest,
+		imageName: build.imageName,
+		imageTag: build.imageTag,
+		dockerfilePath: build.dockerfilePath,
+		validationCommand: build.validationCommand,
+		validationStatus: build.validationStatus,
+		validationLogRef: build.validationLogRef,
+		buildLogRef: build.buildLogRef,
+		pipelineRunName: build.pipelineRunName,
+		pipelineRunNamespace: build.pipelineRunNamespace,
+		pipelineRunUrl: tektonPipelineRunUrl(build.pipelineRunNamespace, build.pipelineRunName),
+		error: build.error,
+		requestedAt: build.requestedAt.toISOString(),
+		startedAt: build.startedAt?.toISOString() ?? null,
+		completedAt: build.completedAt?.toISOString() ?? null,
+		builtAt: build.builtAt?.toISOString() ?? null,
+		createdAt: build.createdAt.toISOString(),
+		updatedAt: build.updatedAt.toISOString(),
+	};
+}
+
+async function selectBuildsByRefs(
+	buildIds: string[],
+	envSpecHashes: string[],
+	environmentKeys: string[],
+): Promise<EnvironmentImageBuild[]> {
+	const database = requireDb();
+	const byId = buildIds.length
+		? await database
+				.select()
+				.from(environmentImageBuilds)
+				.where(inArray(environmentImageBuilds.id, buildIds))
+		: [];
+	const byHash = envSpecHashes.length
+		? await database
+				.select()
+				.from(environmentImageBuilds)
+				.where(inArray(environmentImageBuilds.envSpecHash, envSpecHashes))
+		: [];
+	const byKey = environmentKeys.length
+		? await database
+				.select()
+				.from(environmentImageBuilds)
+				.where(inArray(environmentImageBuilds.environmentKey, environmentKeys))
+				.orderBy(desc(environmentImageBuilds.updatedAt))
+		: [];
+	const seen = new Set<string>();
+	const builds: EnvironmentImageBuild[] = [];
+	for (const build of [...byId, ...byHash, ...byKey]) {
+		if (seen.has(build.id)) continue;
+		seen.add(build.id);
+		builds.push(build);
+	}
+	return builds;
+}
+
+function environmentBuildRef(value: unknown): {
+	buildId: string | null;
+	envSpecHash: string | null;
+	environmentKey: string | null;
+} {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return { buildId: null, envSpecHash: null, environmentKey: null };
+	}
+	const record = value as Record<string, unknown>;
+	return {
+		buildId: readString(record.buildId) ?? readString(record.build_id),
+		envSpecHash: readString(record.envSpecHash) ?? readString(record.env_spec_hash),
+		environmentKey:
+			readString(record.environmentKey) ?? readString(record.environment_key),
+	};
+}
+
+function mergeBuildMetadataIntoInferenceEnvironment(
+	value: unknown,
+	build: EnvironmentImageBuild,
+): Record<string, unknown> | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const current = value as Record<string, unknown>;
+	const next: Record<string, unknown> = { ...current };
+	next.buildId = build.id;
+	next.environmentStatus = buildStatusForInferenceEnvironment(build.status);
+	next.status = build.status;
+	next.environmentKey = build.environmentKey;
+	next.envSpecHash = build.envSpecHash;
+	next.buildStrategy = build.buildStrategy;
+	next.sandboxTemplate = build.sandboxTemplate;
+	if (build.sandboxImage) next.sandboxImage = build.sandboxImage;
+	if (build.digest) next.digest = build.digest;
+	if (build.validationStatus) next.validationStatus = build.validationStatus;
+	if (build.validationLogRef) next.validationLogRef = build.validationLogRef;
+	if (build.validationCommand) next.validationCommand = build.validationCommand;
+	if (build.buildLogRef) next.buildLogRef = build.buildLogRef;
+	if (build.pipelineRunName) next.pipelineRunName = build.pipelineRunName;
+	if (build.pipelineRunNamespace) next.pipelineRunNamespace = build.pipelineRunNamespace;
+	if (build.builtAt) next.builtAt = build.builtAt.toISOString();
+	return next;
+}
+
+function buildStatusForInferenceEnvironment(
+	status: EnvironmentImageBuildStatus,
+): "validated" | "failed" | "building" {
+	if (status === "validated") return "validated";
+	if (status === "failed" || status === "cancelled") return "failed";
+	return "building";
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+	return Array.from(
+		new Set(values.filter((value): value is string => Boolean(value?.trim()))),
+	);
+}
+
+function dedupeEvents(
+	events: NormalizedEnvironmentBuildActivityEvent[],
+): NormalizedEnvironmentBuildActivityEvent[] {
+	const seen = new Set<string>();
+	const out: NormalizedEnvironmentBuildActivityEvent[] = [];
+	for (const event of events) {
+		if (seen.has(event.eventKey)) continue;
+		seen.add(event.eventKey);
+		out.push(event);
+	}
+	return out.sort(
+		(a, b) =>
+			a.eventTimestamp.getTime() - b.eventTimestamp.getTime() ||
+			a.eventType.localeCompare(b.eventType),
+	);
+}
+
+function buildActivityEventKey(input: {
+	eventType: EnvironmentBuildActivityEventType;
+	pipelineRunName: string | null | undefined;
+	pipelineRunNamespace: string | null | undefined;
+	taskRunName: string | null | undefined;
+	phase: string | null | undefined;
+	timestamp: Date;
+}): string {
+	return [
+		input.eventType,
+		input.pipelineRunNamespace ?? "",
+		input.pipelineRunName ?? "",
+		input.taskRunName ?? "",
+		input.phase ?? "",
+		input.timestamp.toISOString(),
+	]
+		.join("|")
+		.toLowerCase();
+}
+
+function deterministicActivityId(buildId: string, eventKey: string): string {
+	return `eba_${sha256Hex(`${buildId}:${eventKey}`).slice(0, 40)}`;
+}
+
+function isValidationTask(...values: Array<string | null | undefined>): boolean {
+	return values.some((value) => /validat(e|ion)|smoke[-_ ]?test/i.test(value ?? ""));
+}
+
+function failedTaskStepMessage(taskRun: TektonTaskRun): string | null {
+	const failedStep = taskRun.status?.steps?.find((step) => step.terminated);
+	const terminated = failedStep?.terminated as Record<string, unknown> | undefined;
+	return (
+		readString(terminated?.message) ??
+		readString(terminated?.reason) ??
+		(failedStep?.name ? `Step ${failedStep.name} failed` : null)
+	);
+}
+
+function compactObject(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>).filter(([, child]) => child !== undefined),
+	);
+}
+
+function coerceDate(value: unknown): Date | null {
+	if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+	return parseDate(value);
+}
+
+function tektonPipelineRunUrl(
+	namespace: string | null | undefined,
+	name: string | null | undefined,
+): string | null {
+	const base = readString(env.TEKTON_DASHBOARD_BASE_URL) ?? readString(env.TEKTON_DASHBOARD_URL);
+	if (!base || !namespace || !name) return null;
+	return `${base.replace(/\/+$/, "")}/namespaces/${encodeURIComponent(namespace)}/pipelineruns/${encodeURIComponent(name)}`;
 }
 
 function resultFromBuild(row: EnvironmentImageBuild): EnvironmentPrepareResult {
@@ -560,8 +1434,10 @@ function fallbackResult(
 		reason,
 		buildStrategy: input.buildStrategy ?? undefined,
 		envSpecHash: input.envSpecHash ?? undefined,
+		buildId: row?.id,
 		buildLogRef: row?.buildLogRef ?? undefined,
 		pipelineRunName: row?.pipelineRunName ?? undefined,
+		pipelineRunNamespace: row?.pipelineRunNamespace ?? undefined,
 	};
 	return {
 		success: true,
@@ -590,7 +1466,7 @@ function fallbackResult(
 
 function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInferenceEnvironment {
 	return {
-		environmentStatus: row.status === "validated" ? "validated" : row.status === "failed" ? "failed" : "building",
+		environmentStatus: buildStatusForInferenceEnvironment(row.status),
 		suite: row.suite ?? "",
 		repo: row.repo,
 		version: row.version ?? undefined,
@@ -608,8 +1484,10 @@ function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInference
 		reason: row.error ?? undefined,
 		buildStrategy: row.buildStrategy,
 		envSpecHash: row.envSpecHash,
+		buildId: row.id,
 		buildLogRef: row.buildLogRef ?? undefined,
 		pipelineRunName: row.pipelineRunName ?? undefined,
+		pipelineRunNamespace: row.pipelineRunNamespace ?? undefined,
 	};
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildSwebenchEnvironmentSpec,
+	normalizeEnvironmentBuildActivityEvents,
 	plannedSwebenchInferenceEnvironment,
 } from "./environment-image-builds";
 
@@ -86,4 +87,168 @@ describe("SWE-bench environment image build planning", () => {
 			"For local imports and tests in this source-layout repo, prefix Python commands with PYTHONPATH=src.",
 		);
 	});
+
+	it("normalizes PipelineRun and TaskRun status into deterministic activity events", () => {
+		const build = mockBuild();
+		const events = normalizeEnvironmentBuildActivityEvents({
+			build,
+			pipelineRun: {
+				metadata: {
+					name: "swe-env-abc",
+					namespace: "tekton-pipelines",
+					creationTimestamp: "2026-04-28T12:00:01.000Z",
+				},
+				status: {
+					startTime: "2026-04-28T12:00:02.000Z",
+					completionTime: "2026-04-28T12:05:00.000Z",
+					conditions: [
+						{
+							type: "Succeeded",
+							status: "True",
+							reason: "Succeeded",
+							message: "pipeline completed",
+							lastTransitionTime: "2026-04-28T12:05:00.000Z",
+						},
+					],
+					results: [
+						{ name: "image_ref", value: "registry/swebench:env-abc" },
+						{ name: "image_digest", value: "sha256:111" },
+						{ name: "validation_status", value: "validated" },
+						{ name: "validation_log_ref", value: "tekton://taskruns/validate-image" },
+					],
+				},
+			},
+			taskRuns: [
+				{
+					metadata: {
+						name: "swe-env-abc-validate-image",
+						namespace: "tekton-pipelines",
+						labels: {
+							"tekton.dev/pipelineRun": "swe-env-abc",
+							"tekton.dev/pipelineTask": "validate-image",
+						},
+					},
+					status: {
+						startTime: "2026-04-28T12:03:00.000Z",
+						completionTime: "2026-04-28T12:04:00.000Z",
+						conditions: [
+							{
+								type: "Succeeded",
+								status: "True",
+								reason: "Succeeded",
+								lastTransitionTime: "2026-04-28T12:04:00.000Z",
+							},
+						],
+					},
+				},
+			],
+		});
+
+		expect(events[0]?.eventType).toBe("build_queued");
+		expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+			"build_queued",
+			"pipelinerun_created",
+			"task_started",
+			"validation_started",
+			"task_succeeded",
+			"validation_succeeded",
+			"validation_succeeded",
+			"image_pushed",
+			"digest_captured",
+			"build_succeeded",
+		]));
+		expect(events.find((event) => event.eventType === "image_pushed")?.message).toBe(
+			"registry/swebench:env-abc",
+		);
+
+		const repeated = normalizeEnvironmentBuildActivityEvents({
+			build,
+			pipelineRun: {
+				metadata: { name: "swe-env-abc", namespace: "tekton-pipelines" },
+				status: {
+					completionTime: "2026-04-28T12:05:00.000Z",
+					conditions: [{ type: "Succeeded", status: "True" }],
+					results: [{ name: "image_digest", value: "sha256:111" }],
+				},
+			},
+		});
+		expect(new Set(events.map((event) => event.id)).size).toBe(events.length);
+		expect(
+			repeated.find((event) => event.eventType === "digest_captured")?.id,
+		).toBe(events.find((event) => event.eventType === "digest_captured")?.id);
+	});
+
+	it("captures failed validation task details", () => {
+		const events = normalizeEnvironmentBuildActivityEvents({
+			build: mockBuild({ status: "building" }),
+			taskRuns: [
+				{
+					metadata: {
+						name: "swe-env-abc-validate-image",
+						labels: { "tekton.dev/pipelineTask": "validate-image" },
+					},
+					status: {
+						startTime: "2026-04-28T12:03:00.000Z",
+						completionTime: "2026-04-28T12:04:00.000Z",
+						conditions: [
+							{
+								type: "Succeeded",
+								status: "False",
+								reason: "Failed",
+								message: "pytest import smoke test failed",
+								lastTransitionTime: "2026-04-28T12:04:00.000Z",
+							},
+						],
+					},
+				},
+			],
+		});
+
+		const failed = events.find((event) => event.eventType === "validation_failed");
+		expect(failed).toMatchObject({
+			taskRunName: "swe-env-abc-validate-image",
+			phase: "validate-image",
+			reason: "Failed",
+			message: "pytest import smoke test failed",
+		});
+	});
 });
+
+function mockBuild(overrides: Record<string, unknown> = {}) {
+	const now = new Date("2026-04-28T12:00:00.000Z");
+	return {
+		id: "build_1",
+		dataset: "SWE-bench/SWE-bench_Lite",
+		suite: "SWE-bench_Lite",
+		repo: "sympy/sympy",
+		version: "1.7",
+		environmentSetupCommit: null,
+		baseCommit: "abc123",
+		environmentKey: "sympy-1.7",
+		envSpecHash: "a".repeat(64),
+		buildStrategy: "swebench-harness",
+		status: "building",
+		sandboxTemplate: "dapr-agent",
+		sandboxImage: null,
+		digest: null,
+		imageName: "swebench-inference-sympy-1.7",
+		imageTag: "env-abc",
+		dockerfilePath: "Dockerfile",
+		validationCommand: "python -m pytest --version",
+		validationStatus: null,
+		validationLogRef: null,
+		buildLogRef: null,
+		pipelineRunName: "swe-env-abc",
+		pipelineRunNamespace: "tekton-pipelines",
+		spec: {},
+		metadata: {},
+		error: null,
+		requestedAt: now,
+		startedAt: now,
+		completedAt: null,
+		builtAt: null,
+		createdAt: now,
+		updatedAt: now,
+		...overrides,
+	} as never;
+}

@@ -13,12 +13,16 @@
 	import {
 		Activity,
 		Bot,
+		CheckCircle2,
+		Clock3,
 		Download,
 		ExternalLink,
 		FileDiff,
 		FlaskConical,
+		Hammer,
 		RefreshCw,
 		StopCircle,
+		XCircle,
 	} from 'lucide-svelte';
 
 	type Suite = {
@@ -99,6 +103,43 @@
 
 	type RunStatus = 'queued' | 'inferencing' | 'evaluating' | 'completed' | 'failed' | 'cancelled';
 
+	type EnvironmentBuildSnapshot = {
+		id: string;
+		environmentKey: string;
+		status: string;
+		pipelineRunName: string | null;
+		pipelineRunNamespace: string | null;
+		pipelineRunUrl: string | null;
+		buildLogRef: string | null;
+		validationLogRef: string | null;
+		validationCommand: string | null;
+		digest: string | null;
+		sandboxImage: string | null;
+		error: string | null;
+		startedAt: string | null;
+		completedAt: string | null;
+		builtAt: string | null;
+	};
+
+	type BuildActivityEvent = {
+		id: string;
+		buildId: string;
+		eventType: string;
+		taskRunName: string | null;
+		phase: string | null;
+		reason: string | null;
+		message: string | null;
+		timestamp: string;
+	};
+
+	type BuildActivityGroup = {
+		runInstanceId: string;
+		instanceId: string;
+		build: EnvironmentBuildSnapshot | null;
+		events: BuildActivityEvent[];
+		latestEvent: BuildActivityEvent | null;
+	};
+
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	function selectOptimizeTab(tab: string) {
@@ -117,6 +158,7 @@
 	let loading = $state(true);
 	let creating = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let buildActivityByInstance = $state<Record<string, BuildActivityGroup>>({});
 
 	let suiteSlug = $state<'SWE-bench_Verified' | 'SWE-bench_Lite'>('SWE-bench_Lite');
 	let agentId = $state('');
@@ -128,6 +170,9 @@
 	let evaluatorResourceClass = $state('standard');
 
 	let pollTimer: ReturnType<typeof setTimeout> | null = null;
+	let buildStream: EventSource | null = null;
+	let buildStreamBuildId: string | null = null;
+	let deepLinkConsumed = false;
 
 	const runnableAgents = $derived(
 		agents.filter((a) => a.runtime === 'dapr-agent-py' && a.registryStatus === 'registered' && a.currentVersion)
@@ -135,6 +180,10 @@
 	const selectedInstance = $derived(
 		selectedRun?.instances.find((item) => item.instanceId === selectedInstanceId) ?? selectedRun?.instances[0] ?? null
 	);
+	const selectedBuildActivity = $derived(
+		selectedInstance ? (buildActivityByInstance[selectedInstance.instanceId] ?? null) : null
+	);
+	const selectedBuildId = $derived(selectedBuildActivity?.build?.id ?? null);
 	const activeRun = $derived(
 		selectedRun?.status === 'queued' ||
 			selectedRun?.status === 'inferencing' ||
@@ -194,7 +243,12 @@
 			agents = ((await agentsRes.json()) as { agents: Agent[] }).agents ?? [];
 			runs = ((await runsRes.json()) as { runs: RunSummary[] }).runs ?? [];
 			if (!agentId && runnableAgents.length > 0) agentId = runnableAgents[0].id;
-			if (!selectedRun && runs.length > 0) await loadRun(runs[0].id, { silent: true });
+			const requestedRunId = deepLinkConsumed ? null : page.url.searchParams.get('run');
+			if (requestedRunId) {
+				deepLinkConsumed = true;
+				await loadRun(requestedRunId, { silent: true });
+			}
+			else if (!selectedRun && runs.length > 0) await loadRun(runs[0].id, { silent: true });
 			else if (selectedRun) await loadRun(selectedRun.id, { silent: true });
 		} catch (err) {
 			if (!opts.silent) errorMessage = err instanceof Error ? err.message : String(err);
@@ -205,10 +259,22 @@
 
 	async function loadRun(runId: string, opts: { silent?: boolean } = {}) {
 		try {
-			const res = await fetch(`/api/benchmarks/runs/${runId}`);
-			if (!res.ok) throw new Error(`Failed to load run (${res.status})`);
-			selectedRun = ((await res.json()) as { run: RunDetail }).run;
-			if (!selectedInstanceId || !selectedRun.instances.find((i) => i.instanceId === selectedInstanceId)) {
+			const [runRes, activityRes] = await Promise.all([
+				fetch(`/api/benchmarks/runs/${runId}`),
+				fetch(`/api/benchmarks/runs/${runId}/activity?sync=0`),
+			]);
+			if (!runRes.ok) throw new Error(`Failed to load run (${runRes.status})`);
+			selectedRun = ((await runRes.json()) as { run: RunDetail }).run;
+			if (activityRes.ok) {
+				const activity = (await activityRes.json()) as { instances: BuildActivityGroup[] };
+				buildActivityByInstance = Object.fromEntries(
+					(activity.instances ?? []).map((group) => [group.instanceId, group])
+				);
+			}
+			const requestedInstanceId = page.url.searchParams.get('instance');
+			if (requestedInstanceId && selectedRun.instances.find((i) => i.instanceId === requestedInstanceId)) {
+				selectedInstanceId = requestedInstanceId;
+			} else if (!selectedInstanceId || !selectedRun.instances.find((i) => i.instanceId === selectedInstanceId)) {
 				selectedInstanceId = selectedRun.instances[0]?.instanceId ?? '';
 			}
 		} catch (err) {
@@ -238,6 +304,7 @@
 			if (!res.ok) throw new Error(body.message ?? body.error ?? `Create failed (${res.status})`);
 			selectedRun = body.run;
 			selectedInstanceId = selectedRun?.instances[0]?.instanceId ?? '';
+			buildActivityByInstance = {};
 			await loadAll({ silent: true });
 			if (body.coordinatorStartError) errorMessage = body.coordinatorStartError;
 		} catch (err) {
@@ -343,6 +410,130 @@
 		return new Date(iso).toLocaleDateString();
 	}
 
+	function eventLabel(event: BuildActivityEvent | null | undefined): string {
+		if (!event) return 'waiting for activity';
+		const labels: Record<string, string> = {
+			build_queued: 'Build queued',
+			pipelinerun_created: 'PipelineRun created',
+			task_started: 'Task started',
+			task_succeeded: 'Task succeeded',
+			task_failed: 'Task failed',
+			validation_started: 'Validation started',
+			validation_succeeded: 'Validation passed',
+			validation_failed: 'Validation failed',
+			image_pushed: 'Image pushed',
+			digest_captured: 'Digest captured',
+			build_succeeded: 'Build succeeded',
+			build_failed: 'Build failed',
+		};
+		return labels[event.eventType] ?? formatStatus(event.eventType);
+	}
+
+	function activityStatus(group: BuildActivityGroup | null | undefined, env: Record<string, unknown> | null | undefined) {
+		return group?.build?.status ?? inferenceEnvironmentStatus(env);
+	}
+
+	function shortDigest(value: string | null | undefined) {
+		if (!value) return null;
+		return value.length > 22 ? `${value.slice(0, 19)}...` : value;
+	}
+
+	function latestFailure(group: BuildActivityGroup | null | undefined): BuildActivityEvent | null {
+		if (!group) return null;
+		for (let index = group.events.length - 1; index >= 0; index -= 1) {
+			const event = group.events[index];
+			if (event.eventType.endsWith('_failed') || event.eventType === 'build_failed') return event;
+		}
+		return null;
+	}
+
+	function mergeBuildActivitySnapshot(snapshot: {
+		build: EnvironmentBuildSnapshot;
+		events: BuildActivityEvent[];
+		latestEvent: BuildActivityEvent | null;
+	}) {
+		if (!selectedInstance) return;
+		const existing = buildActivityByInstance[selectedInstance.instanceId];
+		if (!existing) return;
+		buildActivityByInstance = {
+			...buildActivityByInstance,
+			[selectedInstance.instanceId]: {
+				...existing,
+				build: snapshot.build,
+				events: snapshot.events,
+				latestEvent: snapshot.latestEvent,
+			},
+		};
+	}
+
+	function upsertBuildActivityEvent(event: BuildActivityEvent) {
+		const entries = Object.entries(buildActivityByInstance);
+		const match = entries.find(([, group]) => group.build?.id === event.buildId);
+		if (!match) return;
+		const [instanceId, group] = match;
+		const events = group.events.some((item) => item.id === event.id)
+			? group.events.map((item) => (item.id === event.id ? event : item))
+			: [...group.events, event];
+		buildActivityByInstance = {
+			...buildActivityByInstance,
+			[instanceId]: {
+				...group,
+				events,
+				latestEvent: event,
+			},
+		};
+	}
+
+	$effect(() => {
+		const buildId = selectedBuildId;
+		if (typeof EventSource === 'undefined' || !buildId) {
+			buildStream?.close();
+			buildStream = null;
+			buildStreamBuildId = null;
+			return;
+		}
+		if (buildStreamBuildId === buildId) return;
+		buildStream?.close();
+		buildStreamBuildId = buildId;
+		const stream = new EventSource(`/api/environment-builds/${encodeURIComponent(buildId)}/stream`);
+		buildStream = stream;
+		stream.addEventListener('snapshot', (event) => {
+			try {
+				mergeBuildActivitySnapshot(JSON.parse((event as MessageEvent).data));
+			} catch {
+				/* ignore malformed stream payloads */
+			}
+		});
+		stream.addEventListener('activity_event', (event) => {
+			try {
+				upsertBuildActivityEvent(JSON.parse((event as MessageEvent).data));
+			} catch {
+				/* ignore malformed stream payloads */
+			}
+		});
+		stream.addEventListener('terminal', () => {
+			stream.close();
+			if (buildStream === stream) {
+				buildStream = null;
+				buildStreamBuildId = null;
+			}
+		});
+		stream.onerror = () => {
+			stream.close();
+			if (buildStream === stream) {
+				buildStream = null;
+				buildStreamBuildId = null;
+			}
+		};
+		return () => {
+			stream.close();
+			if (buildStream === stream) {
+				buildStream = null;
+				buildStreamBuildId = null;
+			}
+		};
+	});
+
 	onMount(async () => {
 		await loadAll();
 		schedulePoll();
@@ -350,6 +541,7 @@
 
 	onDestroy(() => {
 		if (pollTimer) clearTimeout(pollTimer);
+		buildStream?.close();
 	});
 </script>
 
@@ -705,6 +897,94 @@
 											<div>Reason: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'reason')}</span></div>
 										{/if}
 									</div>
+								</div>
+
+								<div class="rounded-md border p-3 text-xs space-y-3">
+									<div class="flex items-center justify-between gap-2">
+										<div class="flex items-center gap-1.5 text-muted-foreground">
+											<Hammer class="size-3" /> Environment Activity
+										</div>
+										<Badge class={statusColor(activityStatus(selectedBuildActivity, selectedInstance.inferenceEnvironment))}>
+											{formatStatus(activityStatus(selectedBuildActivity, selectedInstance.inferenceEnvironment))}
+										</Badge>
+									</div>
+
+									{#if selectedBuildActivity?.build}
+										<div class="space-y-1 text-muted-foreground">
+											<div>Key: <span class="font-mono text-foreground">{selectedBuildActivity.build.environmentKey}</span></div>
+											{#if selectedBuildActivity.build.pipelineRunName}
+												<div class="flex items-center gap-1 min-w-0">
+													<span>PipelineRun:</span>
+													{#if selectedBuildActivity.build.pipelineRunUrl}
+														<a
+															class="font-mono text-blue-600 hover:underline truncate inline-flex items-center gap-1 min-w-0"
+															href={selectedBuildActivity.build.pipelineRunUrl}
+															target="_blank"
+															rel="noreferrer"
+														>
+															<span class="truncate">{selectedBuildActivity.build.pipelineRunName}</span>
+															<ExternalLink class="size-3 shrink-0" />
+														</a>
+													{:else}
+														<span class="font-mono break-all text-foreground">{selectedBuildActivity.build.pipelineRunName}</span>
+													{/if}
+												</div>
+											{/if}
+											{#if selectedBuildActivity.build.digest}
+												<div>Digest: <span class="font-mono text-foreground">{shortDigest(selectedBuildActivity.build.digest)}</span></div>
+											{/if}
+											{#if selectedBuildActivity.build.validationLogRef}
+												<div>Validation log: <span class="font-mono break-all text-foreground">{selectedBuildActivity.build.validationLogRef}</span></div>
+											{/if}
+										</div>
+
+										{@const failure = latestFailure(selectedBuildActivity)}
+										{#if failure}
+											<Alert variant="destructive">
+												<AlertDescription>
+													{eventLabel(failure)}{failure.taskRunName ? ` in ${failure.taskRunName}` : ''}: {failure.message ?? failure.reason ?? 'build failed'}
+												</AlertDescription>
+											</Alert>
+										{/if}
+
+										<div class="space-y-2">
+											{#if selectedBuildActivity.events.length === 0}
+												<div class="text-muted-foreground">Waiting for Tekton activity.</div>
+											{:else}
+												{#each selectedBuildActivity.events as event}
+													{@const isFailure = event.eventType.endsWith('_failed') || event.eventType === 'build_failed'}
+													{@const isSuccess = event.eventType.endsWith('_succeeded') || event.eventType === 'image_pushed' || event.eventType === 'digest_captured'}
+													<div class="grid grid-cols-[18px_minmax(0,1fr)] gap-2">
+														<div class="pt-0.5">
+															{#if isFailure}
+																<XCircle class="size-3.5 text-red-600" />
+															{:else if isSuccess}
+																<CheckCircle2 class="size-3.5 text-emerald-600" />
+															{:else}
+																<Clock3 class="size-3.5 text-blue-600" />
+															{/if}
+														</div>
+														<div class="min-w-0">
+															<div class="flex items-center justify-between gap-2">
+																<span class="font-medium">{eventLabel(event)}</span>
+																<span class="text-muted-foreground shrink-0">{formatRelative(event.timestamp)}</span>
+															</div>
+															<div class="text-muted-foreground break-words">
+																{event.phase ?? event.taskRunName ?? event.reason ?? ''}
+																{#if event.message}
+																	<span class="font-mono"> {event.message}</span>
+																{/if}
+															</div>
+														</div>
+													</div>
+												{/each}
+											{/if}
+										</div>
+									{:else}
+										<div class="text-muted-foreground">
+											No build activity has been recorded for this instance yet.
+										</div>
+									{/if}
 								</div>
 
 								{#if selectedInstance.problemStatement}

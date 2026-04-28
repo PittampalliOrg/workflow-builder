@@ -2643,6 +2643,19 @@ export type EnvironmentImageBuildStatus =
 	| "validated"
 	| "failed"
 	| "cancelled";
+export type EnvironmentBuildActivityEventType =
+	| "build_queued"
+	| "pipelinerun_created"
+	| "task_started"
+	| "task_succeeded"
+	| "task_failed"
+	| "validation_started"
+	| "validation_succeeded"
+	| "validation_failed"
+	| "image_pushed"
+	| "digest_captured"
+	| "build_succeeded"
+	| "build_failed";
 export type EnvironmentImageBuildStrategy =
 	| "swebench-harness"
 	| "buildpacks"
@@ -2927,6 +2940,54 @@ export const environmentImageBuilds = pgTable(
 		),
 		repoIdx: index("idx_environment_image_builds_repo").on(table.repo),
 		pipelineRunIdx: index("idx_environment_image_builds_pipeline_run").on(
+			table.pipelineRunNamespace,
+			table.pipelineRunName,
+		),
+	}),
+);
+
+export const environmentBuildActivityEvents = pgTable(
+	"environment_build_activity_events",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		buildId: text("build_id")
+			.notNull()
+			.references(() => environmentImageBuilds.id, { onDelete: "cascade" }),
+		environmentKey: text("environment_key").notNull(),
+		eventKey: text("event_key").notNull(),
+		eventType: text("event_type")
+			.notNull()
+			.$type<EnvironmentBuildActivityEventType>(),
+		pipelineRunName: text("pipeline_run_name"),
+		pipelineRunNamespace: text("pipeline_run_namespace"),
+		taskRunName: text("task_run_name"),
+		phase: text("phase"),
+		reason: text("reason"),
+		message: text("message"),
+		eventTimestamp: timestamp("event_timestamp").notNull(),
+		rawMetadata: jsonb("raw_metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		buildEventUnique: unique("uq_environment_build_activity_build_event").on(
+			table.buildId,
+			table.eventKey,
+		),
+		buildTimelineIdx: index("idx_environment_build_activity_timeline").on(
+			table.buildId,
+			table.eventTimestamp,
+		),
+		buildTypeIdx: index("idx_environment_build_activity_type").on(
+			table.buildId,
+			table.eventType,
+		),
+		pipelineRunIdx: index("idx_environment_build_activity_pipeline_run").on(
 			table.pipelineRunNamespace,
 			table.pipelineRunName,
 		),
@@ -3682,6 +3743,10 @@ export type EnvironmentImageBuild =
 	typeof environmentImageBuilds.$inferSelect;
 export type NewEnvironmentImageBuild =
 	typeof environmentImageBuilds.$inferInsert;
+export type EnvironmentBuildActivityEvent =
+	typeof environmentBuildActivityEvents.$inferSelect;
+export type NewEnvironmentBuildActivityEvent =
+	typeof environmentBuildActivityEvents.$inferInsert;
 export type BenchmarkArtifact = typeof benchmarkArtifacts.$inferSelect;
 export type NewBenchmarkArtifact = typeof benchmarkArtifacts.$inferInsert;
 export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;

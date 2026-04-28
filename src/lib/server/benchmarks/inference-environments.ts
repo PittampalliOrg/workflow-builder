@@ -47,8 +47,10 @@ export type ResolvedSwebenchInferenceEnvironment = {
 	reason?: string;
 	buildStrategy?: string;
 	envSpecHash?: string;
+	buildId?: string;
 	buildLogRef?: string;
 	pipelineRunName?: string;
+	pipelineRunNamespace?: string;
 };
 
 export type ResolveSwebenchInferenceEnvironmentInput = {

@@ -335,6 +335,22 @@
 	let timelineEvents = $derived(
 		mergeTimelineEvents(persistedAgentEvents, executionState.events)
 	);
+	const ENVIRONMENT_BUILD_ACTIVITY_POLL_MS = 2_000;
+	const TERMINAL_ENVIRONMENT_BUILD_STATUSES = new Set(['validated', 'failed', 'cancelled']);
+
+	type ExecutionEnvironmentBuildActivity = {
+		build: Record<string, unknown>;
+		events: Record<string, unknown>[];
+		latestEvent: Record<string, unknown> | null;
+	};
+	type EnvironmentBuildLookup = {
+		key: string;
+		kind: 'build' | 'run';
+		url: string;
+		instanceId: string | null;
+	};
+	let environmentBuildActivity = $state<ExecutionEnvironmentBuildActivity | null>(null);
+	let environmentBuildActivityKey = $state<string | null>(null);
 
 	// Derived stats from timeline events. Counts both legacy (llm_complete /
 	// tool_call_start) and CMA (agent.message / agent.tool_use, etc.)
@@ -478,6 +494,139 @@
 
 	function isRecord(value: unknown): value is Record<string, unknown> {
 		return typeof value === 'object' && value !== null && !Array.isArray(value);
+	}
+
+	function optionalString(value: unknown): string | null {
+		return typeof value === 'string' && value.trim() ? value.trim() : null;
+	}
+
+	function executionEnvironmentBuildSourceData(): Record<string, unknown> | null {
+		const outputRecord = isRecord(output) ? output : null;
+		const inputRecord = isRecord(input) ? input : null;
+		const prepare = outputRecord && isRecord(outputRecord.prepare_environment)
+			? outputRecord.prepare_environment
+			: null;
+		const environment = prepare && isRecord(prepare.environment)
+			? prepare.environment
+			: inputRecord && isRecord(inputRecord.inferenceEnvironment)
+				? inputRecord.inferenceEnvironment
+				: prepare;
+		if (!environment || !isRecord(environment)) return null;
+		const status =
+			optionalString(environment.environmentStatus) ??
+			optionalString(prepare?.environmentStatus) ??
+			optionalString(prepare?.status) ??
+			'building';
+		return {
+			...environment,
+			buildId: optionalString(prepare?.buildId) ?? optionalString(environment.buildId),
+			pipelineRunName:
+				optionalString(prepare?.pipelineRunName) ?? optionalString(environment.pipelineRunName),
+			environmentStatus: status,
+			status,
+		};
+	}
+
+	function environmentStatusFromBuildSnapshot(build: Record<string, unknown>): string {
+		const status = optionalString(build.status);
+		if (status === 'validated') return 'validated';
+		if (status === 'failed' || status === 'cancelled') return 'failed';
+		return status ?? 'building';
+	}
+
+	function executionEnvironmentBuildData(): Record<string, unknown> | null {
+		const source = executionEnvironmentBuildSourceData();
+		if (!source) return null;
+		const activity = environmentBuildActivity;
+		const build = activity?.build;
+		if (!build) return source;
+		const status = environmentStatusFromBuildSnapshot(build);
+		return {
+			...source,
+			buildId: optionalString(build.id) ?? optionalString(source.buildId),
+			environmentKey: optionalString(build.environmentKey) ?? optionalString(source.environmentKey),
+			envSpecHash: optionalString(build.envSpecHash) ?? optionalString(source.envSpecHash),
+			pipelineRunName:
+				optionalString(build.pipelineRunName) ?? optionalString(source.pipelineRunName),
+			pipelineRunNamespace:
+				optionalString(build.pipelineRunNamespace) ?? optionalString(source.pipelineRunNamespace),
+			environmentStatus: status,
+			status: optionalString(build.status) ?? status,
+			latestActivityEvent: activity.latestEvent,
+		};
+	}
+
+	function environmentBuildLookup(): EnvironmentBuildLookup | null {
+		const source = executionEnvironmentBuildSourceData();
+		const inputRecord = isRecord(input) ? input : null;
+		const buildId = optionalString(source?.buildId);
+		if (buildId) {
+			return {
+				key: `build:${buildId}`,
+				kind: 'build',
+				url: `/api/environment-builds/${encodeURIComponent(buildId)}/activity?sync=1`,
+				instanceId: optionalString(inputRecord?.instanceId),
+			};
+		}
+		const runId = optionalString(inputRecord?.runId);
+		if (!runId) return null;
+		const instanceId = optionalString(inputRecord?.instanceId);
+		return {
+			key: `run:${runId}:${instanceId ?? ''}`,
+			kind: 'run',
+			url: `/api/benchmarks/runs/${encodeURIComponent(runId)}/activity?sync=1`,
+			instanceId,
+		};
+	}
+
+	function normalizeEnvironmentBuildActivityPayload(
+		payload: unknown,
+		lookup: EnvironmentBuildLookup,
+	): ExecutionEnvironmentBuildActivity | null {
+		if (!isRecord(payload)) return null;
+		if (lookup.kind === 'build') {
+			if (!isRecord(payload.build)) return null;
+			return {
+				build: payload.build,
+				events: Array.isArray(payload.events) ? payload.events.filter(isRecord) : [],
+				latestEvent: isRecord(payload.latestEvent) ? payload.latestEvent : null,
+			};
+		}
+
+		const instances = Array.isArray(payload.instances) ? payload.instances.filter(isRecord) : [];
+		const group =
+			instances.find((item) =>
+				lookup.instanceId
+					? optionalString(item.instanceId) === lookup.instanceId
+					: isRecord(item.build),
+			) ?? null;
+		if (!group || !isRecord(group.build)) return null;
+		return {
+			build: group.build,
+			events: Array.isArray(group.events) ? group.events.filter(isRecord) : [],
+			latestEvent: isRecord(group.latestEvent) ? group.latestEvent : null,
+		};
+	}
+
+	function withEnvironmentBuildNodeData(nodes: Node[]): Node[] {
+		const build = executionEnvironmentBuildData();
+		if (!build) return nodes;
+		return nodes.map((node) => {
+			const data = (node.data ?? {}) as Record<string, unknown>;
+			const taskConfig = data.taskConfig as Record<string, unknown> | undefined;
+			const isPrepareEnvironment =
+				node.id === 'prepare_environment' ||
+				node.id.endsWith('/prepare_environment') ||
+				taskConfig?.call === 'environment/ensure';
+			if (!isPrepareEnvironment) return node;
+			return {
+				...node,
+				data: {
+					...data,
+					environmentBuild: build,
+				},
+			};
+		});
 	}
 
 	function stringValue(value: unknown): string | null {
@@ -695,7 +844,9 @@
 			null
 	);
 	const runningAgentRun = $derived.by(() => agentRuns.find((run) => run.status === 'running') ?? null);
-	const canvasNodes = $derived.by(() => withAgentNodeMetrics(workflowNodes, agentRuns, timelineEvents));
+	const canvasNodes = $derived.by(() =>
+		withEnvironmentBuildNodeData(withAgentNodeMetrics(workflowNodes, agentRuns, timelineEvents))
+	);
 	const canvasEdges = $derived.by(() => workflowEdges);
 	const workflowNodeIds = $derived.by(() => workflowNodes.map((node) => node.id));
 
@@ -1059,6 +1210,55 @@
 			if (executionStream === stream) {
 				executionStream = null;
 			}
+		};
+	});
+
+	$effect(() => {
+		const lookup = environmentBuildLookup();
+		if (!lookup) {
+			environmentBuildActivity = null;
+			environmentBuildActivityKey = null;
+			return;
+		}
+		if (untrack(() => environmentBuildActivityKey) !== lookup.key) {
+			environmentBuildActivity = null;
+			environmentBuildActivityKey = lookup.key;
+		}
+		const activeLookup = lookup;
+
+		let cancelled = false;
+		let timeout: ReturnType<typeof setTimeout> | null = null;
+		let controller: AbortController | null = null;
+
+		async function pollBuildActivity() {
+			controller?.abort();
+			controller = new AbortController();
+			try {
+				const response = await fetch(activeLookup.url, { signal: controller.signal });
+				if (response.ok) {
+					const activity = normalizeEnvironmentBuildActivityPayload(
+						await response.json(),
+						activeLookup,
+					);
+					if (!cancelled && activity) {
+						environmentBuildActivity = activity;
+						const status = optionalString(activity.build.status);
+						if (status && TERMINAL_ENVIRONMENT_BUILD_STATUSES.has(status)) return;
+					}
+				}
+			} catch {
+				/* Benchmark execution streams should stay usable if activity polling fails. */
+			}
+			if (!cancelled) {
+				timeout = setTimeout(pollBuildActivity, ENVIRONMENT_BUILD_ACTIVITY_POLL_MS);
+			}
+		}
+
+		pollBuildActivity();
+		return () => {
+			cancelled = true;
+			if (timeout) clearTimeout(timeout);
+			controller?.abort();
 		};
 	});
 
@@ -1561,6 +1761,17 @@
 			typeof node === 'string' || !node
 				? undefined
 				: (node.data as Record<string, unknown> | undefined);
+		if (nodeData?.environmentBuild && isRecord(input)) {
+			const runId = optionalString(input.runId);
+			const benchmarkInstanceId = optionalString(input.instanceId);
+			if (runId) {
+				const instanceQuery = benchmarkInstanceId
+					? `&instance=${encodeURIComponent(benchmarkInstanceId)}`
+					: '';
+				goto(`/workspaces/${slug}/benchmarks?run=${encodeURIComponent(runId)}${instanceQuery}`);
+				return;
+			}
+		}
 		const directRunId = typeof nodeData?.agentRunId === 'string' ? nodeData.agentRunId : null;
 		if (directRunId) {
 			selectedAgentRunId = directRunId;
