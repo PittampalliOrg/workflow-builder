@@ -44,6 +44,7 @@ import {
 	resolveSwebenchInferenceEnvironment,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
+import { buildStableWorkspaceRef } from "$lib/server/benchmarks/workspace-ref";
 import {
 	aggregateGraderResults,
 	runGrader,
@@ -1861,6 +1862,8 @@ export async function startEvaluationRunItemWorkflow(params: {
 				row.evaluation.taskConfig.adapter === "swebench"
 					? buildSwebenchEvaluationWorkflowSpec({
 							evaluationName: row.evaluation.name,
+							runId: row.run.id,
+							itemId: row.item.id,
 							agentId: row.run.subjectId,
 							agentVersion: parseOptionalInteger(row.run.subjectVersion),
 							input: row.item.input,
@@ -2686,6 +2689,8 @@ export function buildAgentEvaluationWorkflowSpec(params: {
 
 export function buildSwebenchEvaluationWorkflowSpec(params: {
 	evaluationName: string;
+	runId?: string;
+	itemId?: string;
 	agentId: string;
 	agentVersion: number | null;
 	input: Record<string, unknown>;
@@ -2716,8 +2721,14 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	const timeoutMinutes = Math.max(1, Math.ceil(timeoutSeconds / 60));
 	const ttlSeconds = Math.max(timeoutSeconds + 3600, 7200);
 	const sandboxTemplate = inferenceEnvironment.sandboxTemplate || "dapr-agent";
+	const workspaceRef = buildStableWorkspaceRef("eval-swebench", [
+		params.runId ?? params.evaluationName,
+		params.itemId,
+		instance.instanceId,
+	]);
 	const workspaceProfileWith: Record<string, unknown> = {
 		rootPath: "/sandbox",
+		workspaceRef,
 		sandboxTemplate,
 		ttlSeconds,
 		keepAfterRun: true,

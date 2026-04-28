@@ -51,6 +51,7 @@ import {
 	resolveSwebenchInferenceEnvironment,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "./inference-environments";
+import { buildStableWorkspaceRef } from "./workspace-ref";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -601,6 +602,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		testMetadata: row.instance.testMetadata,
 	});
 	const rawSpec = buildSwebenchInstanceWorkflowSpec({
+		runId: row.run.id,
 		suiteSlug: row.suite.slug as SwebenchSuiteSlug,
 		datasetName: row.suite.datasetName,
 		instanceId: row.runInstance.instanceId,
@@ -970,6 +972,7 @@ async function ensureHiddenBenchmarkWorkflow(params: {
 }
 
 export function buildSwebenchInstanceWorkflowSpec(params: {
+	runId?: string;
 	suiteSlug: SwebenchSuiteSlug;
 	datasetName: string;
 	instanceId: string;
@@ -988,8 +991,13 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	const ttlSeconds = Math.max(params.timeoutSeconds + 3600, 7200);
 	const sandboxTemplate =
 		params.inferenceEnvironment?.sandboxTemplate || "dapr-agent";
+	const workspaceRef = buildStableWorkspaceRef("swebench", [
+		params.runId,
+		params.instanceId,
+	]);
 	const workspaceProfileWith: Record<string, unknown> = {
 		rootPath: "/sandbox",
+		workspaceRef,
 		sandboxTemplate,
 		ttlSeconds,
 		keepAfterRun: true,

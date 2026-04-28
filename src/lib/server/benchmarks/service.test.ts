@@ -10,6 +10,7 @@ import {
 describe("SWE-bench workflow spec", () => {
 	it("uses a POSIX-compatible checkout command", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
 			suiteSlug: "SWE-bench_Lite",
 			datasetName: "princeton-nlp/SWE-bench_Lite",
 			instanceId: "sympy__sympy-20590",
@@ -77,6 +78,7 @@ describe("SWE-bench workflow spec", () => {
 
 	it("uses a validated inference sandbox image when one is resolved", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
 			suiteSlug: "SWE-bench_Lite",
 			datasetName: "princeton-nlp/SWE-bench_Lite",
 			instanceId: "sympy__sympy-20590",
@@ -105,6 +107,9 @@ describe("SWE-bench workflow spec", () => {
 		const workspaceProfile = (
 			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
 		)[0].workspace_profile;
+		expect(workspaceProfile.with.workspaceRef).toBe(
+			"swebench-run-1-sympy-sympy-20590-c97681e47e",
+		);
 		expect(workspaceProfile.with.sandboxTemplate).toBe("dapr-agent");
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
