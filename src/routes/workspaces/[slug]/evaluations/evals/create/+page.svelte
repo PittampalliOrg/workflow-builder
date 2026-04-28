@@ -128,7 +128,7 @@
 				instanceIds: instanceIds.length > 0 ? instanceIds : undefined
 			})
 		});
-		if (!res.ok) throw new Error(`Failed to create SWE-bench template (${res.status})`);
+		if (!res.ok) throw new Error(`Failed to create SWE-bench patch smoke (${res.status})`);
 		const data = (await res.json()) as {
 			evaluation: { id: string };
 			dataset: { id: string };
@@ -161,7 +161,7 @@
 					})
 				});
 				if (!runRes.ok) {
-					errorMessage = `SWE-bench eval created, but run failed (${runRes.status}). Open the eval to retry.`;
+					errorMessage = `SWE-bench patch smoke created, but run failed (${runRes.status}). Open the eval to retry.`;
 					goto(`/workspaces/${slug}/evaluations/evals/${evaluationId}`);
 					return;
 				}

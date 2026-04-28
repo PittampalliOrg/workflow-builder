@@ -6,6 +6,7 @@ import { db } from "$lib/server/db";
 import {
 	benchmarkRunInstances,
 	benchmarkRuns,
+	type BenchmarkEvaluationStatus,
 	type BenchmarkRunInstanceStatus,
 } from "$lib/server/db/schema";
 import {
@@ -34,20 +35,25 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		results?: EvaluationResult[];
 		error?: string;
 	};
-	if (body.error) {
-		await markBenchmarkRunStatus(params.runId, "failed", { error: body.error });
+	const evaluatorError =
+		typeof body.error === "string" && body.error.trim() ? body.error.trim() : null;
+	const results = Array.isArray(body.results) ? body.results : [];
+	if (evaluatorError && results.length === 0) {
+		await markBenchmarkRunStatus(params.runId, "failed", { error: evaluatorError });
 		return json({ success: true });
 	}
-	const results = Array.isArray(body.results) ? body.results : [];
 	for (const result of results) {
 		const instanceId = result.instance_id ?? result.instanceId;
 		if (!instanceId) continue;
-		const status = mapHarnessStatus(result);
+		const { status, evaluationStatus } = mapHarnessStatus(result);
+		const evaluationError = result.error ?? null;
 		await db
 			.update(benchmarkRunInstances)
 			.set({
 				status,
-				error: result.error ?? null,
+				evaluationStatus,
+				error: evaluationError,
+				evaluationError,
 				logsPath: result.logs_path ?? result.logsPath ?? null,
 				testOutputSummary:
 					result.test_output_summary ?? result.testOutputSummary ?? null,
@@ -81,8 +87,13 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		const failed = (summary.failed ?? 0) + (summary.error ?? 0) + (summary.timeout ?? 0);
 		await markBenchmarkRunStatus(params.runId, "completed", {
 			summary,
-			error: failed > 0 ? `${failed} benchmark instances did not resolve` : null,
+			error:
+				failed > 0
+					? `${failed} benchmark instances did not resolve`
+					: evaluatorError,
 		});
+	} else if (evaluatorError) {
+		await markBenchmarkRunStatus(params.runId, "failed", { error: evaluatorError });
 	}
 	const [run] = await db
 		.select()
@@ -92,10 +103,28 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	return json({ success: true, run, summary });
 };
 
-function mapHarnessStatus(result: EvaluationResult): BenchmarkRunInstanceStatus {
-	if (result.status === "timeout") return "timeout";
-	if (result.status === "error") return "error";
-	if (result.resolved === true || result.status === "resolved") return "resolved";
-	if (result.resolved === false || result.status === "failed") return "failed";
-	return "error";
+function mapHarnessStatus(result: EvaluationResult): {
+	status: BenchmarkRunInstanceStatus;
+	evaluationStatus: BenchmarkEvaluationStatus;
+} {
+	if (result.status === "timeout") {
+		return { status: "timeout", evaluationStatus: "timeout" };
+	}
+	if (result.status === "error") {
+		return { status: "error", evaluationStatus: "error" };
+	}
+	if (result.status === "empty_patch") {
+		return { status: "failed", evaluationStatus: "empty_patch" };
+	}
+	if (result.resolved === true || result.status === "resolved") {
+		return { status: "resolved", evaluationStatus: "resolved" };
+	}
+	if (
+		result.resolved === false ||
+		result.status === "failed" ||
+		result.status === "unresolved"
+	) {
+		return { status: "failed", evaluationStatus: "unresolved" };
+	}
+	return { status: "error", evaluationStatus: "error" };
 }

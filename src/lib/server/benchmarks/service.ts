@@ -24,6 +24,8 @@ import {
 	sessions,
 	workflowExecutions,
 	workflows,
+	type BenchmarkEvaluationStatus,
+	type BenchmarkInferenceStatus,
 	type BenchmarkRunInstanceStatus,
 	type BenchmarkRunStatus,
 } from "$lib/server/db/schema";
@@ -49,7 +51,13 @@ import {
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
-type ExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
+type ExecutionStatus =
+	| "pending"
+	| "running"
+	| "success"
+	| "error"
+	| "timeout"
+	| "cancelled";
 type CompletedExecutionStatus = Exclude<ExecutionStatus, "pending" | "running">;
 
 function requireDb() {
@@ -245,6 +253,8 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 				benchmarkInstanceId: instanceRow.id,
 				instanceId: instanceRow.instanceId,
 				status: "queued" as const,
+				inferenceStatus: "queued" as const,
+				evaluationStatus: "pending" as const,
 			})),
 		);
 
@@ -319,6 +329,8 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 			id: runInstance.id,
 			instanceId: runInstance.instanceId,
 			status: runInstance.status,
+			inferenceStatus: runInstance.inferenceStatus,
+			evaluationStatus: runInstance.evaluationStatus,
 			repo,
 			baseCommit,
 			problemStatement,
@@ -331,6 +343,8 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 			modelPatch: runInstance.modelPatch,
 			patchBytes: runInstance.patchBytes,
 			error: runInstance.error,
+			inferenceError: runInstance.inferenceError,
+			evaluationError: runInstance.evaluationError,
 			logsPath: runInstance.logsPath,
 			testOutputSummary: runInstance.testOutputSummary,
 			harnessResult: runInstance.harnessResult,
@@ -410,7 +424,12 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 			.where(eq(benchmarkRuns.id, runId));
 		await tx
 			.update(benchmarkRunInstances)
-			.set({ status: "cancelled", updatedAt: now })
+			.set({
+				status: "cancelled",
+				inferenceStatus: "cancelled",
+				evaluationStatus: "cancelled",
+				updatedAt: now,
+			})
 			.where(
 				and(
 					eq(benchmarkRunInstances.runId, runId),
@@ -457,6 +476,28 @@ export async function markBenchmarkRunStatus(
 		.set(patch)
 		.where(eq(benchmarkRuns.id, runId))
 		.returning();
+	if (status === "evaluating") {
+		await database
+			.update(benchmarkRunInstances)
+			.set({
+				status: "evaluating",
+				evaluationStatus: "evaluating",
+				updatedAt: now,
+			})
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, runId),
+					inArray(benchmarkRunInstances.status, [
+						"queued",
+						"inferencing",
+						"inferred",
+						"failed",
+						"error",
+						"timeout",
+					] satisfies BenchmarkRunInstanceStatus[]),
+				),
+			);
+	}
 	return updated ?? null;
 }
 
@@ -618,6 +659,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		.update(benchmarkRunInstances)
 		.set({
 			status: "inferencing",
+			inferenceStatus: "inferencing",
 			workflowExecutionId: execution.id,
 			daprInstanceId,
 			startedAt: new Date(),
@@ -674,6 +716,15 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 
 	const patch = extractModelPatch(runtimeOutput ?? row.execution.output);
 	const now = new Date();
+	const inferenceError =
+		status === "success" ? null : workflowExecutionError(row.execution, runtimeOutput);
+	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
+		row.runInstance.status,
+		status,
+	);
+	const keepEvaluationOwnedError =
+		row.runInstance.status === "evaluating" ||
+		INSTANCE_TERMINAL_STATUSES.has(row.runInstance.status);
 	const sessionRow = row.runInstance.workflowExecutionId
 		? await database
 				.select({
@@ -706,14 +757,13 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		],
 	});
 	const update: Partial<typeof benchmarkRunInstances.$inferInsert> = {
-		status: resolveBenchmarkInstanceStatusAfterInference(
-			row.runInstance.status,
-			status,
-		),
+		status: nextVisibleStatus,
+		inferenceStatus: resolveBenchmarkInferenceStatus(status),
 		modelPatch: status === "success" ? patch : row.runInstance.modelPatch,
 		patchBytes: status === "success" ? Buffer.byteLength(patch, "utf8") : undefined,
 		patchSha256: status === "success" ? sha256(patch) : undefined,
-		error: status === "success" ? null : workflowExecutionError(row.execution, runtimeOutput),
+		error: keepEvaluationOwnedError ? row.runInstance.error : inferenceError,
+		inferenceError,
 		inferenceCompletedAt: now,
 		sessionId: sessionRow[0]?.id ?? row.runInstance.sessionId,
 		sandboxName: runtimeLinks.sandboxName,
@@ -731,6 +781,48 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		.update(benchmarkRunInstances)
 		.set(update)
 		.where(eq(benchmarkRunInstances.id, row.runInstance.id))
+		.returning();
+	await recomputeRunSummary(params.runId);
+	return updated ?? null;
+}
+
+export async function markBenchmarkInstanceInferenceFailure(params: {
+	runId: string;
+	instanceId: string;
+	status: Extract<BenchmarkInferenceStatus, "error" | "timeout" | "cancelled">;
+	error?: string | null;
+}) {
+	const database = requireDb();
+	const [row] = await database
+		.select()
+		.from(benchmarkRunInstances)
+		.where(
+			and(
+				eq(benchmarkRunInstances.runId, params.runId),
+				eq(benchmarkRunInstances.instanceId, params.instanceId),
+			),
+		)
+		.limit(1);
+	if (!row) return null;
+	const now = new Date();
+	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
+		row.status,
+		params.status,
+	);
+	const keepEvaluationOwnedError =
+		row.status === "evaluating" || INSTANCE_TERMINAL_STATUSES.has(row.status);
+	const inferenceError = params.error?.trim() || null;
+	const [updated] = await database
+		.update(benchmarkRunInstances)
+		.set({
+			status: nextVisibleStatus,
+			inferenceStatus: params.status,
+			inferenceError,
+			error: keepEvaluationOwnedError ? row.error : inferenceError,
+			inferenceCompletedAt: row.inferenceCompletedAt ?? now,
+			updatedAt: now,
+		})
+		.where(eq(benchmarkRunInstances.id, row.id))
 		.returning();
 	await recomputeRunSummary(params.runId);
 	return updated ?? null;
@@ -773,7 +865,8 @@ async function buildPredictionsJsonlForRunById(runId: string): Promise<string> {
 			modelPatch: benchmarkRunInstances.modelPatch,
 		})
 		.from(benchmarkRunInstances)
-		.where(eq(benchmarkRunInstances.runId, runId));
+		.where(eq(benchmarkRunInstances.runId, runId))
+		.orderBy(benchmarkRunInstances.createdAt);
 	return buildPredictionsJsonl(
 		rows.map((row) =>
 			buildSwebenchPrediction({
@@ -1023,10 +1116,12 @@ function buildSwebenchPrompt(params: {
 		params.hintsText ? `\nHints:\n${params.hintsText}` : "",
 		"",
 		"Sandbox notes:",
-		"- The default `python` may be newer than some SWE-bench repositories expect; `python3.12` is available and is often a safer choice for older Python projects.",
-		"- You may install missing repo/test dependencies in the sandbox when needed, but keep source changes limited to the repository fix.",
+		"- Work only in /sandbox/repo.",
+		"- Do not create commits; leave source changes in the working tree.",
+		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
+		"- Running local tests is optional and best-effort. Official grading happens later in a Docker SWE-bench evaluator job.",
 		"",
-		"Work in /sandbox/repo only. Make the smallest source changes needed to resolve the issue. Do not create commits. When finished, leave the working tree with the final patch applied.",
+		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
 	].join("\n");
 }
 
@@ -1221,6 +1316,12 @@ export function resolveBenchmarkInstanceStatusAfterInference(
 	if (currentStatus === "evaluating" || INSTANCE_TERMINAL_STATUSES.has(currentStatus)) {
 		return currentStatus;
 	}
+	return inferenceStatus === "success" ? "inferred" : inferenceStatus;
+}
+
+export function resolveBenchmarkInferenceStatus(
+	inferenceStatus: CompletedExecutionStatus,
+): BenchmarkInferenceStatus {
 	return inferenceStatus === "success" ? "inferred" : inferenceStatus;
 }
 

@@ -657,7 +657,7 @@
 							</Button>
 						</div>
 						<div class="border-t p-4 space-y-4">
-							<h2 class="text-base font-medium">SWE-bench Template</h2>
+							<h2 class="text-base font-medium">SWE-bench Patch Smoke</h2>
 							<div class="grid grid-cols-2 gap-3">
 								<div class="space-y-2">
 									<Label for="swebench-suite">Suite</Label>
@@ -688,7 +688,7 @@
 								<Textarea id="swebench-content" class="min-h-28 font-mono text-xs" bind:value={swebenchContent} />
 							</div>
 							<Button class="w-full" variant="outline" onclick={createSwebenchTemplate} disabled={saving || (!swebenchContent.trim() && !swebenchInstanceIds.trim())}>
-								<FlaskConical class="size-4" /> Create SWE-bench Eval
+								<FlaskConical class="size-4" /> Create Patch Smoke
 							</Button>
 						</div>
 						<div class="border-t divide-y max-h-80 overflow-auto">

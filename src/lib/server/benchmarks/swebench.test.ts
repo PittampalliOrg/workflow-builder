@@ -50,6 +50,19 @@ describe("SWE-bench normalization", () => {
 		);
 	});
 
+	it("keeps empty patches in official JSONL prediction rows", () => {
+		const jsonl = buildPredictionsJsonl([
+			buildSwebenchPrediction({
+				instanceId: "sympy__sympy-20590",
+				modelNameOrPath: "agent-v1",
+				modelPatch: null,
+			}),
+		]);
+		expect(jsonl).toBe(
+			'{"instance_id":"sympy__sympy-20590","model_name_or_path":"agent-v1","model_patch":""}\n',
+		);
+	});
+
 	it("derives repos from canonical instance ids", () => {
 		expect(repoFromInstanceId("django__django-11099")).toBe("django/django");
 		expect(repoFromInstanceId("not-canonical")).toBeNull();

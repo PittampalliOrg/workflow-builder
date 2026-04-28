@@ -66,6 +66,8 @@
 		id: string;
 		instanceId: string;
 		status: string;
+		inferenceStatus: string;
+		evaluationStatus: string;
 		repo: string | null;
 		baseCommit: string | null;
 		problemStatement: string | null;
@@ -77,9 +79,14 @@
 		modelPatch: string | null;
 		patchBytes: number | null;
 		error: string | null;
+		inferenceError: string | null;
+		evaluationError: string | null;
 		logsPath: string | null;
 		testOutputSummary: string | null;
 		harnessResult: Record<string, unknown> | null;
+		traceIds: string[];
+		inferenceCompletedAt: string | null;
+		evaluatedAt: string | null;
 	};
 
 	type RunDetail = RunSummary & {
@@ -127,6 +134,22 @@
 		if (!summary || typeof summary.total !== 'number' || summary.total === 0) return 0;
 		return Math.round(((summary.resolved ?? 0) / summary.total) * 100);
 	});
+	const inferenceCounts = $derived.by(() => countByStatus(selectedRun?.instances ?? [], 'inferenceStatus'));
+	const evaluationCounts = $derived.by(() => countByStatus(selectedRun?.instances ?? [], 'evaluationStatus'));
+	const inferenceDone = $derived.by(() =>
+		(inferenceCounts.inferred ?? 0) +
+		(inferenceCounts.error ?? 0) +
+		(inferenceCounts.timeout ?? 0) +
+		(inferenceCounts.cancelled ?? 0)
+	);
+	const evaluationDone = $derived.by(() =>
+		(evaluationCounts.resolved ?? 0) +
+		(evaluationCounts.unresolved ?? 0) +
+		(evaluationCounts.empty_patch ?? 0) +
+		(evaluationCounts.error ?? 0) +
+		(evaluationCounts.timeout ?? 0) +
+		(evaluationCounts.cancelled ?? 0)
+	);
 	const progressRate = $derived.by(() => {
 		if (!selectedRun) return 0;
 		const summary = selectedRun.summary ?? {};
@@ -245,7 +268,10 @@
 				return 'bg-blue-500/15 text-blue-600';
 			case 'queued':
 			case 'inferred':
+			case 'pending':
 				return 'bg-amber-500/15 text-amber-600';
+			case 'unresolved':
+			case 'empty_patch':
 			case 'failed':
 			case 'error':
 			case 'timeout':
@@ -255,6 +281,19 @@
 			default:
 				return 'bg-muted text-muted-foreground';
 		}
+	}
+
+	function countByStatus(items: RunInstance[], key: 'inferenceStatus' | 'evaluationStatus') {
+		const counts: Record<string, number> = {};
+		for (const item of items) {
+			const status = item[key] || 'pending';
+			counts[status] = (counts[status] ?? 0) + 1;
+		}
+		return counts;
+	}
+
+	function formatStatus(status: string | null | undefined): string {
+		return (status || 'pending').replaceAll('_', ' ');
 	}
 
 	function formatRelative(iso: string | null | undefined): string {
@@ -448,7 +487,7 @@
 						</div>
 					</div>
 
-					<div class="p-4 grid gap-4 md:grid-cols-4">
+					<div class="p-4 grid gap-4 md:grid-cols-5">
 						<div class="space-y-1">
 							<div class="text-xs text-muted-foreground">Progress</div>
 							<div class="text-2xl font-semibold">{progressRate}%</div>
@@ -462,8 +501,25 @@
 							<div class="text-xs text-muted-foreground">{selectedRun.summary?.resolved ?? 0} of {selectedRun.summary?.total ?? selectedRun.instances.length}</div>
 						</div>
 						<div class="space-y-1">
+							<div class="text-xs text-muted-foreground">Inference</div>
+							<div class="text-2xl font-semibold">{inferenceDone}</div>
+							<div class="text-xs text-muted-foreground">of {selectedRun.instances.length} finished</div>
+						</div>
+						<div class="space-y-1">
+							<div class="text-xs text-muted-foreground">Official Harness</div>
+							<div class="text-2xl font-semibold">{evaluationDone}</div>
+							<div class="text-xs text-muted-foreground">of {selectedRun.instances.length} graded</div>
+						</div>
+						<div class="space-y-1">
 							<div class="text-xs text-muted-foreground">Evaluator Job</div>
 							<div class="text-sm font-mono truncate">{selectedRun.evaluatorJobName ?? 'pending'}</div>
+						</div>
+					</div>
+
+					<div class="px-4 pb-4 grid gap-3 md:grid-cols-2 text-xs text-muted-foreground">
+						<div>
+							<div class="mb-1">Predictions Artifact</div>
+							<div class="font-mono break-all text-foreground">{selectedRun.predictionsPath ?? 'pending'}</div>
 						</div>
 						<div class="space-y-1">
 							<div class="text-xs text-muted-foreground">Coordinator</div>
@@ -476,6 +532,20 @@
 							<Alert variant="destructive">
 								<AlertDescription>{selectedRun.error}</AlertDescription>
 							</Alert>
+						</div>
+					{/if}
+
+					{#if selectedRun.artifacts.length > 0}
+						<div class="px-4 pb-4 text-xs">
+							<div class="text-muted-foreground mb-2">Artifacts</div>
+							<div class="rounded-md border divide-y">
+								{#each selectedRun.artifacts as artifact}
+									<div class="px-3 py-2 grid grid-cols-[120px_minmax(0,1fr)] gap-3">
+										<span class="text-muted-foreground">{artifact.kind}</span>
+										<span class="font-mono break-all">{artifact.path}</span>
+									</div>
+								{/each}
+							</div>
 						</div>
 					{/if}
 				</div>
@@ -491,7 +561,9 @@
 									<tr>
 										<th class="text-left font-medium px-4 py-2">Instance</th>
 										<th class="text-left font-medium px-4 py-2">Repo</th>
-										<th class="text-left font-medium px-4 py-2">Status</th>
+										<th class="text-left font-medium px-4 py-2">Inference</th>
+										<th class="text-left font-medium px-4 py-2">Official Harness</th>
+										<th class="text-left font-medium px-4 py-2">Final</th>
 										<th class="text-right font-medium px-4 py-2">Patch</th>
 									</tr>
 								</thead>
@@ -503,7 +575,9 @@
 										>
 											<td class="px-4 py-2 font-mono text-xs">{instance.instanceId}</td>
 											<td class="px-4 py-2">{instance.repo ?? 'pending import'}</td>
-											<td class="px-4 py-2"><Badge class={statusColor(instance.status)}>{instance.status}</Badge></td>
+											<td class="px-4 py-2"><Badge class={statusColor(instance.inferenceStatus)}>{formatStatus(instance.inferenceStatus)}</Badge></td>
+											<td class="px-4 py-2"><Badge class={statusColor(instance.evaluationStatus)}>{formatStatus(instance.evaluationStatus)}</Badge></td>
+											<td class="px-4 py-2"><Badge class={statusColor(instance.status)}>{formatStatus(instance.status)}</Badge></td>
 											<td class="px-4 py-2 text-right text-xs text-muted-foreground">
 												{instance.patchBytes ? `${instance.patchBytes} B` : '—'}
 											</td>
@@ -522,13 +596,26 @@
 							<div class="p-4 space-y-4">
 								<div>
 									<div class="font-mono text-xs break-all">{selectedInstance.instanceId}</div>
-									<div class="flex items-center gap-2 mt-2">
-										<Badge class={statusColor(selectedInstance.status)}>{selectedInstance.status}</Badge>
+									<div class="flex items-center gap-2 mt-2 flex-wrap">
+										<Badge class={statusColor(selectedInstance.status)}>{formatStatus(selectedInstance.status)}</Badge>
 										{#if selectedInstance.sessionId}
 											<a class="text-xs text-blue-600 inline-flex items-center gap-1" href={`/workspaces/${slug}/sessions/${selectedInstance.sessionId}`}>
 												<Bot class="size-3" /> Session <ExternalLink class="size-3" />
 											</a>
 										{/if}
+									</div>
+								</div>
+
+								<div class="grid grid-cols-2 gap-3 text-xs">
+									<div class="rounded-md border p-3">
+										<div class="text-muted-foreground mb-1">Inference</div>
+										<Badge class={statusColor(selectedInstance.inferenceStatus)}>{formatStatus(selectedInstance.inferenceStatus)}</Badge>
+										<div class="text-muted-foreground mt-2">{selectedInstance.inferenceCompletedAt ? formatRelative(selectedInstance.inferenceCompletedAt) : 'not finished'}</div>
+									</div>
+									<div class="rounded-md border p-3">
+										<div class="text-muted-foreground mb-1">Official Harness</div>
+										<Badge class={statusColor(selectedInstance.evaluationStatus)}>{formatStatus(selectedInstance.evaluationStatus)}</Badge>
+										<div class="text-muted-foreground mt-2">{selectedInstance.evaluatedAt ? formatRelative(selectedInstance.evaluatedAt) : 'not graded'}</div>
 									</div>
 								</div>
 
@@ -539,7 +626,17 @@
 									</div>
 								{/if}
 
-								{#if selectedInstance.error}
+								{#if selectedInstance.inferenceError}
+									<Alert variant="destructive">
+										<AlertDescription>Inference: {selectedInstance.inferenceError}</AlertDescription>
+									</Alert>
+								{/if}
+
+								{#if selectedInstance.evaluationError}
+									<Alert variant="destructive">
+										<AlertDescription>Official harness: {selectedInstance.evaluationError}</AlertDescription>
+									</Alert>
+								{:else if selectedInstance.error}
 									<Alert variant="destructive">
 										<AlertDescription>{selectedInstance.error}</AlertDescription>
 									</Alert>
@@ -564,6 +661,9 @@
 									<div>Dapr: <span class="font-mono">{selectedInstance.daprInstanceId ?? 'pending'}</span></div>
 									<div>Sandbox: <span class="font-mono">{selectedInstance.sandboxName ?? 'pending'}</span></div>
 									<div>Logs: <span class="font-mono break-all">{selectedInstance.logsPath ?? 'pending'}</span></div>
+									{#if selectedInstance.traceIds?.length}
+										<div>Trace: <span class="font-mono break-all">{selectedInstance.traceIds.join(', ')}</span></div>
+									{/if}
 								</div>
 							</div>
 						{:else}

@@ -521,10 +521,10 @@ export async function createSwebenchEvaluationTemplate(
 	const dataset = await createEvaluationDataset({
 		projectId: input.projectId,
 		userId: input.userId,
-		name: `${baseName} Dataset`,
+		name: `${baseName} Patch Smoke Dataset`,
 		description:
 			input.description?.trim() ||
-			`${suite.name} rows imported as a generic evaluation dataset.`,
+			`${suite.name} rows imported for the legacy patch-capture smoke path.`,
 		sourceType: "swebench",
 		sourceUrl: suite.sourceUrl,
 		schema: {
@@ -551,10 +551,10 @@ export async function createSwebenchEvaluationTemplate(
 	const evaluation = await createEvaluationDefinition({
 		projectId: input.projectId,
 		userId: input.userId,
-		name: baseName,
+		name: `${baseName} Patch Smoke`,
 		description:
 			input.description?.trim() ||
-			`${suite.name} evaluation template. Agent runs clone each repository, solve the issue, and capture a patch.`,
+			`${suite.name} generic evaluation template. This captures a model patch and checks patch presence; official SWE-bench grading runs from Benchmarks.`,
 		datasetId: dataset.id,
 		taskConfig: {
 			adapter: "swebench",
@@ -571,9 +571,12 @@ export async function createSwebenchEvaluationTemplate(
 			adapter: "external_harness",
 			harness: "swebench",
 			predictionPath: "generatedOutput.modelPatch",
+			mode: "patch_smoke",
 		},
 		metadata: {
 			family: "swebench",
+			official: false,
+			mode: "patch_smoke",
 			suiteSlug,
 			datasetName: suite.datasetName,
 		},
@@ -590,7 +593,7 @@ export async function createSwebenchEvaluationTemplate(
 				weight: 1,
 			},
 			{
-				name: "SWE-bench harness",
+				name: "Official harness placeholder (disabled)",
 				type: "external_harness",
 				config: {
 					harness: "swebench",
@@ -2723,7 +2726,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 			name: "swebench-evaluation-item",
 			version: "1.0.0",
 			title: params.evaluationName,
-			summary: "Run one SWE-bench evaluation row through a published agent.",
+			summary: "Run one SWE-bench patch-smoke row through a published agent.",
 		},
 		do: [
 			{
@@ -3076,10 +3079,12 @@ function buildSwebenchEvaluationPrompt(params: {
 		params.hintsText ? `\nHints:\n${params.hintsText}` : "",
 		"",
 		"Sandbox notes:",
-		"- The default `python` may be newer than some SWE-bench repositories expect; `python3.12` is available and is often a safer choice for older Python projects.",
-		"- You may install missing repo/test dependencies in the sandbox when needed, but keep source changes limited to the repository fix.",
+		"- Work only in /sandbox/repo.",
+		"- Do not create commits; leave source changes in the working tree.",
+		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
+		"- Running local tests is optional and best-effort. This generic eval path only captures the patch; official SWE-bench grading runs from Benchmarks.",
 		"",
-		"Work in /sandbox/repo only. Make the smallest source changes needed to resolve the issue. Do not create commits. When finished, leave the working tree with the final patch applied.",
+		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
 	].join("\n");
 }
 

@@ -265,6 +265,20 @@ def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _mark_instance_inference_failure(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    instance_id = data["instanceId"]
+    return _bff(
+        "POST",
+        f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/inference-failure",
+        json_body={
+            "status": data.get("status") or "error",
+            "error": data.get("error") or "Inference failed before patch extraction",
+        },
+        timeout=60,
+    )
+
+
 def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run = _load_run(data["runId"])
     path = ARTIFACT_ROOT / run["id"] / "predictions.jsonl"
@@ -381,19 +395,48 @@ def _evaluator_resource_profile(resource_class: Any) -> dict[str, dict[str, dict
 def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    yield ctx.call_activity(_start_instance, input={"runId": run_id, "instanceId": instance_id})
-    deadline = ctx.current_utc_datetime + timedelta(seconds=int(data.get("timeoutSeconds") or 7200) + 300)
-    while ctx.current_utc_datetime < deadline:
-        sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
-        instance = sync.get("instance") if isinstance(sync, dict) else {}
-        status = instance.get("status") if isinstance(instance, dict) else None
-        if status in ("inferred", "error", "timeout", "cancelled"):
+    try:
+        yield ctx.call_activity(_start_instance, input={"runId": run_id, "instanceId": instance_id})
+        deadline = ctx.current_utc_datetime + timedelta(seconds=int(data.get("timeoutSeconds") or 7200) + 300)
+        while ctx.current_utc_datetime < deadline:
+            sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
+            instance = sync.get("instance") if isinstance(sync, dict) else {}
+            status = instance.get("status") if isinstance(instance, dict) else None
+            if status in ("inferred", "error", "timeout", "cancelled"):
+                return instance
+            yield ctx.create_timer(timedelta(seconds=30))
+        final_sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
+        if isinstance(final_sync, dict) and isinstance(final_sync.get("instance"), dict):
+            instance = final_sync["instance"]
+            if isinstance(instance, dict) and instance.get("status") in ("queued", "inferencing"):
+                try:
+                    yield ctx.call_activity(
+                        _mark_instance_inference_failure,
+                        input={
+                            "runId": run_id,
+                            "instanceId": instance_id,
+                            "status": "timeout",
+                            "error": "Inference timed out before patch extraction",
+                        },
+                    )
+                except Exception as mark_exc:
+                    logger.warning("Failed to persist inference timeout for %s: %s", instance_id, mark_exc)
+                return {
+                    **instance,
+                    "status": "timeout",
+                    "error": "Inference timed out before patch extraction",
+                }
             return instance
-        yield ctx.create_timer(timedelta(seconds=30))
-    final_sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
-    if isinstance(final_sync, dict) and isinstance(final_sync.get("instance"), dict):
-        return final_sync["instance"]
-    return final_sync
+        return final_sync
+    except Exception as exc:
+        try:
+            yield ctx.call_activity(
+                _mark_instance_inference_failure,
+                input={"runId": run_id, "instanceId": instance_id, "status": "error", "error": str(exc)},
+            )
+        except Exception as mark_exc:
+            logger.warning("Failed to persist inference failure for %s: %s", instance_id, mark_exc)
+        return {"instanceId": instance_id, "status": "error", "error": str(exc)}
 
 
 def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
@@ -429,23 +472,21 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             if not isinstance(result, dict) or result.get("status") != "inferred"
         ]
         if failed_instances:
-            error_message = _format_inference_failures(failed_instances)
-            yield ctx.call_activity(
-                _mark_run_status,
-                input={"runId": run_id, "status": "failed", "error": error_message},
+            logger.warning(
+                "Inference failed or produced no terminal patch for %d SWE-bench instance(s); writing empty predictions and continuing to the official evaluator",
+                len(failed_instances),
             )
-            return {
-                "success": False,
-                "instances": len(results),
-                "failedInstances": len(failed_instances),
-                "error": error_message,
-            }
         predictions = yield ctx.call_activity(_write_predictions, input={"runId": run_id})
         yield ctx.call_activity(
             _start_evaluator_job,
             input={"runId": run_id, "predictionsPath": predictions["path"]},
         )
-        return {"success": True, "instances": len(results), "predictionsPath": predictions["path"]}
+        return {
+            "success": True,
+            "instances": len(results),
+            "failedInferenceInstances": len(failed_instances),
+            "predictionsPath": predictions["path"],
+        }
     except Exception as exc:
         yield ctx.call_activity(_mark_run_status, input={"runId": run_id, "status": "failed", "error": str(exc)})
         raise
@@ -478,6 +519,7 @@ async def lifespan(app: FastAPI):
         _ensure_instance_metadata,
         _start_instance,
         _sync_instance,
+        _mark_instance_inference_failure,
         _write_predictions,
         _start_evaluator_job,
     ):

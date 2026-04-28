@@ -84,6 +84,35 @@ def test_parse_results_marks_aggregate_errors(tmp_path: Path):
     assert results[0]["error"] == "Harness error"
 
 
+def test_parse_results_preserves_unresolved_and_empty_patch_statuses(tmp_path: Path):
+    entrypoint = load_entrypoint()
+    report = {
+        "total_instances": 2,
+        "submitted_instances": 2,
+        "completed_instances": 1,
+        "resolved_instances": 0,
+        "unresolved_instances": 1,
+        "empty_patch_instances": 1,
+        "error_instances": 0,
+        "resolved_ids": [],
+        "unresolved_ids": ["django__django-11099"],
+        "empty_patch_ids": ["sympy__sympy-20590"],
+        "error_ids": [],
+        "schema_version": 2,
+    }
+    (tmp_path / "model.run.json").write_text(json.dumps(report), encoding="utf-8")
+
+    results = entrypoint.parse_results(
+        tmp_path,
+        ["django__django-11099", "sympy__sympy-20590"],
+    )
+
+    by_id = {result["instance_id"]: result for result in results}
+    assert by_id["django__django-11099"]["status"] == "unresolved"
+    assert by_id["sympy__sympy-20590"]["status"] == "empty_patch"
+    assert by_id["sympy__sympy-20590"]["error"] == "Empty patch"
+
+
 def test_main_writes_report_to_artifact_log_dir(monkeypatch, tmp_path: Path):
     entrypoint = load_entrypoint()
     captured = {}

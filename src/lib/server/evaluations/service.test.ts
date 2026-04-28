@@ -133,6 +133,8 @@ describe("evaluation agent workflow", () => {
 		const solve = steps[2].solve as { call: string; with: { body: { agentRef: { version: number } } } };
 		expect(solve.call).toBe("durable/run");
 		expect(solve.with.body.agentRef.version).toBe(3);
+		expect(JSON.stringify(solve.with.body)).toContain("generic eval path only captures the patch");
+		expect(JSON.stringify(solve.with.body)).not.toContain("python3.12");
 		const extractPatch = steps[3].extract_patch as { with: { command: string } };
 		expect(extractPatch.with.command).toContain("rm -rf /sandbox/.cache .cache");
 		expect(JSON.stringify(spec.output)).toContain("modelPatch");

@@ -43,8 +43,8 @@
 		},
 		{
 			kind: 'swebench',
-			title: 'SWE-bench template',
-			desc: 'Princeton/Berkeley coding benchmark. Auto-provisions dataset + harness graders.',
+			title: 'SWE-bench patch smoke',
+			desc: 'Legacy generic eval path that checks patch capture. Use Benchmarks for official grading.',
 			icon: Beaker
 		},
 		{
@@ -164,7 +164,7 @@
 
 	{#if wiz.dataSource === 'swebench'}
 		<section class="flex flex-col gap-3">
-			<h3 class="text-sm font-semibold">SWE-bench template</h3>
+			<h3 class="text-sm font-semibold">SWE-bench patch smoke</h3>
 			<label class="flex flex-col gap-1.5 text-xs">
 				Suite slug
 				<select
@@ -172,9 +172,7 @@
 					class="text-sm border rounded px-2 py-2 bg-background h-9"
 				>
 					<option value="SWE-bench_Lite">SWE-bench_Lite</option>
-					<option value="SWE-bench">SWE-bench</option>
 					<option value="SWE-bench_Verified">SWE-bench_Verified</option>
-					<option value="SWE-bench_Multimodal">SWE-bench_Multimodal</option>
 				</select>
 			</label>
 			<label class="flex flex-col gap-1.5 text-xs">
@@ -187,10 +185,8 @@
 				/>
 			</label>
 			<p class="text-[11px] text-muted-foreground">
-				Leave empty to load every instance. The wizard will provision the dataset
-				(<code>workspace_ref</code> rows + harness wiring) and create the eval with the
-				built-in patch-present + SWE-bench harness graders. You'll pick a coding agent on
-				Step 3.
+				This generic eval template captures a diff and runs patch-presence grading. Official
+				SWE-bench resolved/unresolved grading runs from the Benchmarks page.
 			</p>
 		</section>
 	{/if}

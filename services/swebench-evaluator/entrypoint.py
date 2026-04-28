@@ -175,15 +175,23 @@ def visit_aggregate_report(payload: Any, path: pathlib.Path, out: dict[str, dict
             payload=payload,
             test_output_summary=summary,
         )
-    for instance_id in sorted(unresolved_ids | empty_patch_ids):
-        error = "Empty patch" if instance_id in empty_patch_ids else None
+    for instance_id in sorted(unresolved_ids):
         out[instance_id] = make_result(
             instance_id=instance_id,
             resolved=False,
-            status="failed",
+            status="unresolved",
             path=path,
             payload=payload,
-            error=error,
+            test_output_summary=summary,
+        )
+    for instance_id in sorted(empty_patch_ids):
+        out[instance_id] = make_result(
+            instance_id=instance_id,
+            resolved=False,
+            status="empty_patch",
+            path=path,
+            payload=payload,
+            error="Empty patch",
             test_output_summary=summary,
         )
     for instance_id in sorted(error_ids | incomplete_ids):

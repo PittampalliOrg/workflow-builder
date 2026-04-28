@@ -2621,6 +2621,22 @@ export type BenchmarkRunInstanceStatus =
 	| "error"
 	| "timeout"
 	| "cancelled";
+export type BenchmarkInferenceStatus =
+	| "queued"
+	| "inferencing"
+	| "inferred"
+	| "error"
+	| "timeout"
+	| "cancelled";
+export type BenchmarkEvaluationStatus =
+	| "pending"
+	| "evaluating"
+	| "resolved"
+	| "unresolved"
+	| "empty_patch"
+	| "error"
+	| "timeout"
+	| "cancelled";
 export type BenchmarkArtifactKind =
 	| "predictions_jsonl"
 	| "model_patch"
@@ -2776,6 +2792,14 @@ export const benchmarkRunInstances = pgTable(
 			.notNull()
 			.default("queued")
 			.$type<BenchmarkRunInstanceStatus>(),
+		inferenceStatus: text("inference_status")
+			.notNull()
+			.default("queued")
+			.$type<BenchmarkInferenceStatus>(),
+		evaluationStatus: text("evaluation_status")
+			.notNull()
+			.default("pending")
+			.$type<BenchmarkEvaluationStatus>(),
 		sessionId: text("session_id").references(() => sessions.id, {
 			onDelete: "set null",
 		}),
@@ -2799,6 +2823,8 @@ export const benchmarkRunInstances = pgTable(
 			.default({}),
 		traceIds: jsonb("trace_ids").$type<string[]>().notNull().default([]),
 		error: text("error"),
+		inferenceError: text("inference_error"),
+		evaluationError: text("evaluation_error"),
 		logsPath: text("logs_path"),
 		testOutputSummary: text("test_output_summary"),
 		harnessResult: jsonb("harness_result").$type<Record<string, unknown>>(),
