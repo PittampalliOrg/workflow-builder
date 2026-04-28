@@ -35,8 +35,9 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     "packaging>=20" \
     "pluggy>=0.12,<2" \
     "py>=1.8.2" \
+    "setuptools-scm[toml]>=6.2" \
     tomli \
-    pytest
+    "pytest==7.0.1"
 
 USER sandbox
 WORKDIR /sandbox
