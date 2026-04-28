@@ -306,6 +306,27 @@ def test_legacy_execution_routes_are_not_registered():
     assert not hasattr(APP, "start_ap_workflow")
 
 
+def test_sw_workflow_trace_context_is_isolated_per_execution():
+    parent_trace_id = "0" * 31 + "1"
+    parent_span_id = "0" * 15 + "2"
+    request = types.SimpleNamespace(
+        headers={
+            "traceparent": f"00-{parent_trace_id}-{parent_span_id}-01",
+            "baggage": "caller.id=smoke",
+        }
+    )
+
+    first = APP._merge_otel_context(request, isolate_trace=True)
+    second = APP._merge_otel_context(request, isolate_trace=True)
+
+    assert first["traceId"] != parent_trace_id
+    assert second["traceId"] != parent_trace_id
+    assert first["traceId"] != second["traceId"]
+    assert first["parentTraceId"] == parent_trace_id
+    assert second["parentTraceId"] == parent_trace_id
+    assert first["baggage"] == "caller.id=smoke"
+
+
 def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):
     captured = {}
 
@@ -405,7 +426,7 @@ def test_resolve_native_agent_args_renders_trigger_templates_before_child_workfl
     assert resolved["body"]["input"]["repo"] == "repo-test-1"
 
 
-def test_durable_run_routes_through_function_router():
+def test_durable_run_routes_through_session_bridge():
     workflow = types.SimpleNamespace(
         use=None,
         document=types.SimpleNamespace(name="test-workflow"),
@@ -437,6 +458,15 @@ def test_durable_run_routes_through_function_router():
                 "input": input,
             }
 
+        def call_child_workflow(self, name, input=None, instance_id=None, app_id=None):
+            return {
+                "kind": "call_child_workflow",
+                "name": name,
+                "input": input,
+                "instance_id": instance_id,
+                "app_id": app_id,
+            }
+
     ctx = _FakeCtx()
     workflow_gen = SW_WORKFLOW._handle_call_task(
         ctx,
@@ -459,15 +489,25 @@ def test_durable_run_routes_through_function_router():
 
     yielded = next(workflow_gen)
     assert yielded["kind"] == "call_activity"
-    assert yielded["activity"] == "execute_action"
-    config = yielded["input"]["node"]["config"]
-    assert config["actionType"] == "durable/run"
-    assert config["prompt"] == "Create a validation marker"
-    assert config["workspaceRef"] == "ws_test_123"
-    assert config["sandboxName"] == "ws-test-123"
-    assert config["cwd"] == "/sandbox/repo"
-    assert config["agentRuntime"] == "dapr-agent-py"
-    assert config["maxTurns"] == "8"
+    assert yielded["activity"] == "spawn_session_for_workflow"
+    bridge_payload = yielded["input"]
+    assert bridge_payload["initialMessage"].startswith(
+        "Repository root: /sandbox/repo"
+    )
+    assert bridge_payload["workspaceRef"] == "ws_test_123"
+    assert bridge_payload["sandboxName"] == "ws-test-123"
+    assert bridge_payload["cwd"] == "/sandbox/repo"
+    assert bridge_payload["agentConfig"]["name"] == "durable-validation"
+
+    child_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-runtime-test",
+        }
+    )
+    assert child_yield["kind"] == "call_child_workflow"
+    assert child_yield["name"] == "session_workflow"
+    assert child_yield["app_id"] == "agent-runtime-test"
 
     with pytest.raises(StopIteration) as stop:
         workflow_gen.send(
@@ -560,7 +600,8 @@ def test_durable_run_allows_profile_skill_from_snapshot():
 
     yielded = next(workflow_gen)
     assert yielded["kind"] == "call_activity"
-    agent_config = yielded["input"]["node"]["config"]["agentConfig"]
+    assert yielded["activity"] == "spawn_session_for_workflow"
+    agent_config = yielded["input"]["agentConfig"]
     assert agent_config["skills"][0]["name"] == "answer-yes-no"
 
 
@@ -611,7 +652,8 @@ def test_durable_run_allows_registry_skill_without_profile():
 
     yielded = next(workflow_gen)
     assert yielded["kind"] == "call_activity"
-    agent_config = yielded["input"]["node"]["config"]["agentConfig"]
+    assert yielded["activity"] == "spawn_session_for_workflow"
+    agent_config = yielded["input"]["agentConfig"]
     assert agent_config["skills"][0]["skillName"] == "web-design-guidelines"
 
 

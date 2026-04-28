@@ -35,7 +35,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     "itsdangerous>=2.0,<2.1" \
     "click>=7.1.2,<9" \
     "MarkupSafe>=2.0,<2.1" \
-    pytest
+    pytest \
+ && chown -R sandbox:sandbox /sandbox/.venv
 
 USER sandbox
 WORKDIR /sandbox

@@ -31,7 +31,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
  && /sandbox/.venv/bin/python -m pip install --upgrade --no-compile --disable-pip-version-check pip setuptools wheel \
  && /sandbox/.venv/bin/python -m pip install --no-compile --disable-pip-version-check \
     "certifi>=2024.2.2" \
-    pytest
+    pytest \
+ && chown -R sandbox:sandbox /sandbox/.venv
 
 USER sandbox
 WORKDIR /sandbox

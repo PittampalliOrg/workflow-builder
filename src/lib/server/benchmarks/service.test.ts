@@ -101,6 +101,10 @@ describe("SWE-bench workflow spec", () => {
 				digest:
 					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				validationStatus: "validated",
+				validationCommand: "PYTHONPATH=src python -m pytest --version",
+				environmentNotes: [
+					"Run Python commands with PYTHONPATH=src for source-layout repos.",
+				],
 			},
 		});
 
@@ -117,6 +121,15 @@ describe("SWE-bench workflow spec", () => {
 		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[2]
 			.solve;
 		expect(solve.with.body.prompt).toContain("repo-specific inference image");
+		expect(solve.with.body.prompt).toContain("Environment validation command");
+		expect(solve.with.body.prompt).toContain("PYTHONPATH=src");
+		expect(solve.with.body).toMatchObject({
+			environmentConfig: {
+				swebenchInferenceEnvironment: {
+					environmentKey: "sympy-1.7",
+				},
+			},
+		});
 	});
 
 	it("falls back to the dapr-agent template without sandboxImage", () => {

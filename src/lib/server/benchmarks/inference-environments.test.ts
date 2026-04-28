@@ -18,6 +18,10 @@ const env = {
 					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				validationStatus: "validated",
 				validationLogRef: "tekton://swebench-inference-image-build/validate-image",
+				validationCommand: "PYTHONPATH=src python -m pytest --version",
+				environmentNotes: [
+					"Run Python commands with PYTHONPATH=src for source-layout repos.",
+				],
 				builtAt: "2026-04-28T12:00:00Z",
 			},
 		],
@@ -43,6 +47,10 @@ describe("SWE-bench inference environment resolver", () => {
 			digest:
 				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			validationStatus: "validated",
+			validationCommand: "PYTHONPATH=src python -m pytest --version",
+			environmentNotes: [
+				"Run Python commands with PYTHONPATH=src for source-layout repos.",
+			],
 		});
 		expect(resolved.sandboxImage).toBe(
 			"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc123@sha256:1111111111111111111111111111111111111111111111111111111111111111",

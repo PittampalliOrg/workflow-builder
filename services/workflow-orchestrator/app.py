@@ -115,14 +115,30 @@ def _generate_trace_context() -> dict[str, str]:
     }
 
 
-def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
-    merged = inject_current_context()
-    if not merged.get("traceparent"):
-        merged.update(_current_trace_context())
+def _merge_otel_context(
+    request: Request | None = None,
+    *,
+    isolate_trace: bool = False,
+) -> dict[str, str]:
+    inherited = inject_current_context()
+    if not inherited.get("traceparent"):
+        inherited.update(_current_trace_context())
     if request is not None:
-        merged.update(_otel_context_from_headers(request))
-    if not merged.get("traceparent"):
-        merged.update(_generate_trace_context())
+        inherited.update(_otel_context_from_headers(request))
+
+    if isolate_trace:
+        merged = _generate_trace_context()
+        parent_trace_id = _trace_id_from_traceparent(inherited.get("traceparent"))
+        if parent_trace_id:
+            merged["parentTraceId"] = parent_trace_id
+        for key in ("baggage", "x-workflow-session-id"):
+            if inherited.get(key):
+                merged[key] = inherited[key]
+    else:
+        merged = inherited
+        if not merged.get("traceparent"):
+            merged.update(_generate_trace_context())
+
     if not merged.get("traceId"):
         trace_id = _trace_id_from_traceparent(merged.get("traceparent"))
         if trace_id:
@@ -2207,7 +2223,10 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
                 project_id=workflow_record.get("projectId"),
             )
 
-        otel_ctx = _merge_otel_context(http_request)
+        # Each persisted SW workflow execution is its own analysis unit. Use a
+        # fresh trace root so concurrent benchmark/eval items are not merged
+        # into one trace solely because the start requests shared an HTTP span.
+        otel_ctx = _merge_otel_context(http_request, isolate_trace=True)
         session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
         if session_id:
             otel_ctx["sessionId"] = session_id

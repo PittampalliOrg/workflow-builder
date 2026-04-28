@@ -42,6 +42,7 @@ import {
 } from "$lib/server/benchmarks/swebench";
 import {
 	resolveSwebenchInferenceEnvironment,
+	swebenchInferenceEnvironmentPromptNotes,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
 import { buildStableWorkspaceRef } from "$lib/server/benchmarks/workspace-ref";
@@ -2810,6 +2811,13 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 					with: {
 						body: {
 							agentRef,
+							...(inferenceEnvironment
+								? {
+										environmentConfig: {
+											swebenchInferenceEnvironment: inferenceEnvironment,
+										},
+									}
+								: {}),
 							overrides: {
 								cwd: repoPath,
 								maxTurns: maxTurns ?? undefined,
@@ -3117,15 +3125,9 @@ function buildSwebenchEvaluationPrompt(params: {
 	datasetName: string;
 	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): string {
-	const environmentNotes =
-		params.inferenceEnvironment?.environmentStatus === "validated"
-			? [
-					"- This run is using a repo-specific inference image that passed its validation smoke before being pinned.",
-					params.inferenceEnvironment.validationLogRef
-						? `- Environment validation log: ${params.inferenceEnvironment.validationLogRef}`
-						: "",
-				].filter(Boolean)
-			: [];
+	const environmentNotes = swebenchInferenceEnvironmentPromptNotes(
+		params.inferenceEnvironment,
+	);
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,

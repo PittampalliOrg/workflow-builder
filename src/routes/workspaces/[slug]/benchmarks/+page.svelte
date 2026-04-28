@@ -300,6 +300,13 @@
 		return typeof value === 'string' && value.trim() ? value.trim() : null;
 	}
 
+	function envStringList(env: Record<string, unknown> | null | undefined, key: string) {
+		const value = env?.[key];
+		if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+		if (typeof value === 'string' && value.trim()) return [value.trim()];
+		return [];
+	}
+
 	function inferenceEnvironmentStatus(env: Record<string, unknown> | null | undefined) {
 		return envField(env, 'environmentStatus') ?? 'fallback';
 	}
@@ -655,6 +662,12 @@
 										{#if envField(selectedInstance.inferenceEnvironment, 'validationLogRef')}
 											<div>Validation: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'validationLogRef')}</span></div>
 										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'validationCommand')}
+											<div>Validation command: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'validationCommand')}</span></div>
+										{/if}
+										{#each envStringList(selectedInstance.inferenceEnvironment, 'environmentNotes') as note}
+											<div>Note: <span>{note}</span></div>
+										{/each}
 										{#if envField(selectedInstance.inferenceEnvironment, 'reason')}
 											<div>Reason: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'reason')}</span></div>
 										{/if}

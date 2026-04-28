@@ -21,6 +21,8 @@ export type SwebenchInferenceEnvironmentMapping = {
 	digest?: string | null;
 	validationStatus?: string | null;
 	validationLogRef?: string | null;
+	validationCommand?: string | null;
+	environmentNotes?: string[];
 	builtAt?: string | null;
 	source?: string | null;
 };
@@ -38,6 +40,8 @@ export type ResolvedSwebenchInferenceEnvironment = {
 	digest?: string;
 	validationStatus?: string;
 	validationLogRef?: string;
+	validationCommand?: string;
+	environmentNotes?: string[];
 	builtAt?: string;
 	source?: string;
 	reason?: string;
@@ -125,6 +129,8 @@ export function resolveSwebenchInferenceEnvironment(
 		digest: normalized.digest ?? digestFromImage(sandboxImage) ?? undefined,
 		validationStatus: normalized.validationStatus ?? undefined,
 		validationLogRef: normalized.validationLogRef ?? undefined,
+		validationCommand: normalized.validationCommand ?? undefined,
+		environmentNotes: normalized.environmentNotes,
 		builtAt: normalized.builtAt ?? undefined,
 		source: normalized.source ?? undefined,
 	};
@@ -217,6 +223,15 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 	const validationLogRef =
 		readString(input.validationLogRef) ??
 		readString((input as Record<string, unknown>).validation_log_ref);
+	const validationCommand =
+		readString(input.validationCommand) ??
+		readString((input as Record<string, unknown>).validation_command);
+	const environmentNotes = readStringList(
+		input.environmentNotes ??
+			(input as Record<string, unknown>).environment_notes ??
+			input.agentNotes ??
+			(input as Record<string, unknown>).agent_notes,
+	);
 	const builtAt = readString(input.builtAt) ?? readString((input as Record<string, unknown>).built_at);
 	return {
 		...input,
@@ -231,9 +246,28 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 		digest: readString(input.digest),
 		validationStatus,
 		validationLogRef,
+		validationCommand,
+		environmentNotes,
 		builtAt,
 		source: readString(input.source),
 	};
+}
+
+export function swebenchInferenceEnvironmentPromptNotes(
+	environment: ResolvedSwebenchInferenceEnvironment | null | undefined,
+): string[] {
+	if (environment?.environmentStatus !== "validated") return [];
+	const notes = [
+		"- This run is using a repo-specific inference image that passed its validation smoke before being pinned.",
+		environment.validationCommand
+			? `- Environment validation command: ${environment.validationCommand}`
+			: "",
+		environment.validationLogRef
+			? `- Environment validation log: ${environment.validationLogRef}`
+			: "",
+		...(environment.environmentNotes ?? []).map((note) => `- ${note}`),
+	];
+	return notes.filter(Boolean);
 }
 
 function parseMappingJson(raw: string, source: string): MappingSource[] {
@@ -323,6 +357,29 @@ function normalizeRepo(value: unknown): string | null {
 
 function readString(value: unknown): string | null {
 	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readStringList(value: unknown): string[] | undefined {
+	const raw = Array.isArray(value)
+		? value
+		: typeof value === "string" && value.trim().startsWith("[")
+			? parseStringListJson(value)
+			: typeof value === "string"
+				? value.split(/\r?\n/g)
+				: [];
+	const out = raw
+		.map((item) => (typeof item === "string" ? item.trim() : ""))
+		.filter(Boolean);
+	return out.length ? out : undefined;
+}
+
+function parseStringListJson(value: string): unknown[] {
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

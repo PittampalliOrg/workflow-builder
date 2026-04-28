@@ -37,7 +37,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     "py>=1.8.2" \
     "setuptools-scm[toml]>=6.2" \
     tomli \
-    "pytest==7.0.1"
+    "pytest==7.0.1" \
+ && chown -R sandbox:sandbox /sandbox/.venv
 
 USER sandbox
 WORKDIR /sandbox

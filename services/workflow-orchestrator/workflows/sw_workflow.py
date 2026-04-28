@@ -1181,6 +1181,9 @@ def _run_native_durable_agent_child_workflow(
         "requireFileChanges": require_file_changes,
         "timeoutMinutes": timeout_minutes,
         "agentConfig": agent_config,
+        "environmentConfig": flattened_args.get("environmentConfig")
+        if isinstance(flattened_args.get("environmentConfig"), dict)
+        else None,
         "agentGraph": agent_graph if isinstance(agent_graph, dict) else None,
         "autoTerminateAfterEndTurn": True,
         "loopPolicy": flattened_args.get("loopPolicy")

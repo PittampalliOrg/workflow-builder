@@ -34,7 +34,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     mpmath==1.3.0 \
     flake8 \
     flake8-comprehensions \
-    pytest
+    pytest \
+ && chown -R sandbox:sandbox /sandbox/.venv
 
 USER sandbox
 WORKDIR /sandbox
