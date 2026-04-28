@@ -112,7 +112,7 @@ describe("SWE-bench workflow spec", () => {
 			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
 		)[0].workspace_profile;
 		expect(workspaceProfile.with.workspaceRef).toBe(
-			"swebench-run-1-sympy-sympy-20590-c97681e47e",
+			"swebench-c97681e47e-run-1-sympy-sympy-20590",
 		);
 		expect(workspaceProfile.with.sandboxTemplate).toBe("dapr-agent");
 		expect(workspaceProfile.with.sandboxImage).toBe(

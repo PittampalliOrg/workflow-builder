@@ -137,7 +137,7 @@ describe("evaluation agent workflow", () => {
 		expect(solve.with.body.agentRef.version).toBe(3);
 		const workspaceProfile = steps[0].workspace_profile as { with: { workspaceRef: string } };
 		expect(workspaceProfile.with.workspaceRef).toBe(
-			"eval-swebench-eval-run-item-1-django-django-12345-c2a85f01af",
+			"eval-swebench-c2a85f01af-eval-run-item-1-django-django-12345",
 		);
 		expect(JSON.stringify(solve.with.body)).toContain("generic eval path only captures the patch");
 		expect(JSON.stringify(solve.with.body)).not.toContain("python3.12");

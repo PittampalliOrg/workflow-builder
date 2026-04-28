@@ -12,10 +12,14 @@ export function buildStableWorkspaceRef(
 	const normalizedPrefix = normalizePart(prefix) || "workspace";
 	const slug = normalizePart(raw);
 	const digest = createHash("sha256").update(raw).digest("hex").slice(0, 10);
-	const base = `${normalizedPrefix}-${slug || "run"}`;
-	const maxBaseLength = Math.max(1, 63 - digest.length - 1);
-	const trimmedBase = base.slice(0, maxBaseLength).replace(/-+$/g, "") || normalizedPrefix;
-	return `${trimmedBase}-${digest}`;
+	const maxPrefixLength = Math.max(1, 63 - digest.length - 1);
+	const trimmedPrefix =
+		normalizedPrefix.slice(0, maxPrefixLength).replace(/-+$/g, "") || "workspace";
+	const hashPrefix = `${trimmedPrefix}-${digest}`;
+	const remaining = 63 - hashPrefix.length - 1;
+	if (remaining <= 0) return hashPrefix;
+	const trimmedSlug = (slug || "run").slice(0, remaining).replace(/-+$/g, "");
+	return trimmedSlug ? `${hashPrefix}-${trimmedSlug}` : hashPrefix;
 }
 
 function normalizePart(value: string): string {
