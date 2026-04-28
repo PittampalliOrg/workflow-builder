@@ -49,10 +49,10 @@ import {
 	type SwebenchSuiteSlug,
 } from "./swebench";
 import {
-	resolveSwebenchInferenceEnvironment,
 	swebenchInferenceEnvironmentPromptNotes,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "./inference-environments";
+import { plannedSwebenchInferenceEnvironment } from "$lib/server/environments/environment-image-builds";
 import { buildStableWorkspaceRef } from "./workspace-ref";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
@@ -597,8 +597,8 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		projectId: row.run.projectId,
 		userId: row.run.userId,
 	});
-	const inferenceEnvironment = resolveSwebenchInferenceEnvironment({
-		suiteSlug: row.suite.slug,
+	const inferenceEnvironment = plannedSwebenchInferenceEnvironment({
+		suiteSlug: normalizeSwebenchSuiteSlug(row.suite.slug),
 		repo: row.instance.repo,
 		baseCommit: row.instance.baseCommit,
 		testMetadata: row.instance.testMetadata,
@@ -774,6 +774,9 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 			...sessionEventRows.map((event) => event.data),
 		],
 	});
+	const runtimeInferenceEnvironment = extractInferenceEnvironment(
+		runtimeOutput ?? row.execution.output,
+	);
 	const update: Partial<typeof benchmarkRunInstances.$inferInsert> = {
 		status: nextVisibleStatus,
 		inferenceStatus: resolveBenchmarkInferenceStatus(status),
@@ -787,6 +790,8 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		sandboxName: runtimeLinks.sandboxName,
 		workspaceRef: runtimeLinks.workspaceRef,
 		traceIds: runtimeLinks.traceIds,
+		inferenceEnvironment:
+			runtimeInferenceEnvironment ?? row.runInstance.inferenceEnvironment,
 		updatedAt: now,
 	};
 	if (!row.execution.primaryTraceId && runtimeLinks.traceIds[0]) {
@@ -957,7 +962,12 @@ async function ensureHiddenBenchmarkWorkflow(params: {
 		)
 		.limit(1);
 	if (existing) {
-		if (!Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+		const currentNodes = Array.isArray(existing.nodes) ? existing.nodes : [];
+		const currentEdges = Array.isArray(existing.edges) ? existing.edges : [];
+		if (
+			JSON.stringify(currentNodes) !== JSON.stringify(graph.nodes) ||
+			JSON.stringify(currentEdges) !== JSON.stringify(graph.edges)
+		) {
 			const [updated] = await database
 				.update(workflows)
 				.set({
@@ -992,6 +1002,7 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 	edges: Array<Record<string, unknown>>;
 } {
 	const taskConfigById: Record<string, Record<string, unknown>> = {
+		prepare_environment: { call: "environment/ensure" },
 		workspace_profile: { call: "workspace/profile" },
 		checkout_repo: { call: "workspace/command" },
 		solve: { call: "durable/run" },
@@ -1017,14 +1028,16 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 	});
 	const nodes = [
 		node("__start__", "start", "Start", 50, {}),
-		node("workspace_profile", "call", "Workspace Profile", 200, taskConfigById.workspace_profile),
-		node("checkout_repo", "call", "Checkout Repo", 350, taskConfigById.checkout_repo),
-		node("solve", "agent", "Solve", 500, taskConfigById.solve),
-		node("extract_patch", "call", "Extract Patch", 650, taskConfigById.extract_patch),
-		node("__end__", "end", "End", 800),
+		node("prepare_environment", "call", "Prepare Environment", 180, taskConfigById.prepare_environment),
+		node("workspace_profile", "call", "Workspace Profile", 320, taskConfigById.workspace_profile),
+		node("checkout_repo", "call", "Checkout Repo", 460, taskConfigById.checkout_repo),
+		node("solve", "agent", "Solve", 600, taskConfigById.solve),
+		node("extract_patch", "call", "Extract Patch", 740, taskConfigById.extract_patch),
+		node("__end__", "end", "End", 880),
 	];
 	const edgeIds = [
-		["__start__", "workspace_profile"],
+		["__start__", "prepare_environment"],
+		["prepare_environment", "workspace_profile"],
 		["workspace_profile", "checkout_repo"],
 		["checkout_repo", "solve"],
 		["solve", "extract_patch"],
@@ -1058,16 +1071,32 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	const repoPath = "/sandbox/repo";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
 	const ttlSeconds = Math.max(params.timeoutSeconds + 3600, 7200);
-	const sandboxTemplate =
-		params.inferenceEnvironment?.sandboxTemplate || "dapr-agent";
+	const dynamicSandboxTemplate = "${ .prepare_environment.sandboxTemplate // \"dapr-agent\" }";
 	const workspaceRef = buildStableWorkspaceRef("swebench", [
 		params.runId,
 		params.instanceId,
 	]);
+	const environmentPrepareWith = {
+		dataset: "swebench",
+		datasetName: params.datasetName,
+		suiteSlug: params.suiteSlug,
+		instanceId: params.instanceId,
+		repo: params.repo,
+		baseCommit: params.baseCommit,
+		testMetadata: params.inferenceEnvironment
+			? {
+					version: params.inferenceEnvironment.version,
+					environmentSetupCommit: params.inferenceEnvironment.environmentSetupCommit,
+					validationCommand: params.inferenceEnvironment.validationCommand,
+				}
+			: {},
+		timeoutMs: Math.max(params.timeoutSeconds * 1000, 3_600_000),
+		pollMs: 15_000,
+	};
 	const workspaceProfileWith: Record<string, unknown> = {
 		rootPath: "/sandbox",
 		workspaceRef,
-		sandboxTemplate,
+		sandboxTemplate: dynamicSandboxTemplate,
 		ttlSeconds,
 		keepAfterRun: true,
 		managedBy: "workflow-builder:swebench",
@@ -1084,21 +1113,16 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		sandboxPolicy: {
 			keepAfterRun: true,
 			mode: "per-run",
-			template: sandboxTemplate,
+			template: dynamicSandboxTemplate,
 			ttlSeconds,
 		},
 		commandTimeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
 		timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS + 300_000,
 	};
-	if (
-		params.inferenceEnvironment?.environmentStatus === "validated" &&
-		params.inferenceEnvironment.sandboxImage
-	) {
-		workspaceProfileWith.sandboxImage = params.inferenceEnvironment.sandboxImage;
-		workspaceProfileWith.environmentConfig = {
-			swebenchInferenceEnvironment: params.inferenceEnvironment,
-		};
-	}
+	workspaceProfileWith.sandboxImage = "${ .prepare_environment.sandboxImage }";
+	workspaceProfileWith.environmentConfig = {
+		swebenchInferenceEnvironment: "${ .prepare_environment.environment }",
+	};
 	const extractPatchCommand = [
 		"set -eu",
 		"cd /sandbox/repo",
@@ -1114,7 +1138,10 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		`git checkout ${quoteShell(params.baseCommit)}`,
 		"git status --short",
 	].join("\n");
-	const prompt = buildSwebenchPrompt(params);
+	const prompt = buildSwebenchPromptExpression(buildSwebenchPrompt({
+		...params,
+		inferenceEnvironment: null,
+	}));
 	return {
 		document: {
 			dsl: "1.0.0",
@@ -1125,6 +1152,12 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 			summary: "Run one SWE-bench instance through a published dapr-agent-py agent.",
 		},
 		do: [
+			{
+				prepare_environment: {
+					call: "environment/ensure",
+					with: environmentPrepareWith,
+				},
+			},
 			{
 				workspace_profile: {
 					call: "workspace/profile",
@@ -1150,13 +1183,10 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 								id: params.agentId,
 								version: params.agentVersion,
 							},
-							...(params.inferenceEnvironment
-								? {
-										environmentConfig: {
-											swebenchInferenceEnvironment: params.inferenceEnvironment,
-										},
-									}
-								: {}),
+							environmentConfig: {
+								swebenchInferenceEnvironment:
+									"${ .prepare_environment.environment }",
+							},
 							overrides: {
 								cwd: repoPath,
 								maxTurns: params.maxTurns ?? undefined,
@@ -1172,7 +1202,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 						sandboxPolicy: {
 							keepAfterRun: true,
 							mode: "per-run",
-							template: sandboxTemplate,
+							template: dynamicSandboxTemplate,
 							ttlSeconds,
 						},
 					},
@@ -1204,7 +1234,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 				daprInstanceId: "${ .solve.daprInstanceId // null }",
 				workspaceRef: "${ .workspace_profile.workspaceRef }",
 				sandboxName: "${ .workspace_profile.sandboxName }",
-				inferenceEnvironment: params.inferenceEnvironment ?? null,
+				inferenceEnvironment: "${ .prepare_environment.environment // null }",
 			},
 		},
 	};
@@ -1245,6 +1275,10 @@ function buildSwebenchPrompt(params: {
 	].join("\n");
 }
 
+function buildSwebenchPromptExpression(basePrompt: string): string {
+	return `\${ ${JSON.stringify(basePrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
+}
+
 function extractModelPatch(value: unknown): string {
 	const candidates = collectStringsByKey(value, [
 		"modelPatch",
@@ -1253,6 +1287,13 @@ function extractModelPatch(value: unknown): string {
 		"output",
 	]);
 	return candidates.find((candidate) => candidate.includes("diff --git")) ?? "";
+}
+
+function extractInferenceEnvironment(value: unknown): Record<string, unknown> | null {
+	const direct = firstRecordByKey(value, ["inferenceEnvironment"]);
+	if (direct) return direct;
+	const nested = firstRecordByKey(value, ["swebenchInferenceEnvironment"]);
+	return nested;
 }
 
 export function extractBenchmarkRuntimeLinks(input: {
@@ -1351,6 +1392,27 @@ function collectStringsByKey(value: unknown, keys: string[]): string[] {
 	};
 	visit(value);
 	return out;
+}
+
+function firstRecordByKey(value: unknown, keys: string[]): Record<string, unknown> | null {
+	const wanted = new Set(keys);
+	const visit = (node: unknown): Record<string, unknown> | null => {
+		if (!node || typeof node !== "object") return null;
+		if (Array.isArray(node)) {
+			for (const item of node) {
+				const found = visit(item);
+				if (found) return found;
+			}
+			return null;
+		}
+		for (const [key, child] of Object.entries(node)) {
+			if (wanted.has(key) && isRecord(child)) return child;
+			const found = visit(child);
+			if (found) return found;
+		}
+		return null;
+	};
+	return visit(value);
 }
 
 function firstNonBlank(...values: Array<string | null | undefined>): string | null {

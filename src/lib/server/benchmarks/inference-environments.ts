@@ -28,7 +28,7 @@ export type SwebenchInferenceEnvironmentMapping = {
 };
 
 export type ResolvedSwebenchInferenceEnvironment = {
-	environmentStatus: "validated" | "fallback";
+	environmentStatus: "validated" | "fallback" | "building" | "failed";
 	suite: string;
 	repo: string;
 	environmentKey?: string;
@@ -45,6 +45,10 @@ export type ResolvedSwebenchInferenceEnvironment = {
 	builtAt?: string;
 	source?: string;
 	reason?: string;
+	buildStrategy?: string;
+	envSpecHash?: string;
+	buildLogRef?: string;
+	pipelineRunName?: string;
 };
 
 export type ResolveSwebenchInferenceEnvironmentInput = {

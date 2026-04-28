@@ -2637,6 +2637,17 @@ export type BenchmarkEvaluationStatus =
 	| "error"
 	| "timeout"
 	| "cancelled";
+export type EnvironmentImageBuildStatus =
+	| "queued"
+	| "building"
+	| "validated"
+	| "failed"
+	| "cancelled";
+export type EnvironmentImageBuildStrategy =
+	| "swebench-harness"
+	| "buildpacks"
+	| "dockerfile"
+	| "scripted";
 export type BenchmarkArtifactKind =
 	| "predictions_jsonl"
 	| "model_patch"
@@ -2851,6 +2862,74 @@ export const benchmarkRunInstances = pgTable(
 		workflowExecutionIdx: index(
 			"idx_benchmark_run_instances_workflow_execution",
 		).on(table.workflowExecutionId),
+	}),
+	);
+
+export const environmentImageBuilds = pgTable(
+	"environment_image_builds",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		dataset: text("dataset").notNull(),
+		suite: text("suite"),
+		repo: text("repo").notNull(),
+		version: text("version"),
+		environmentSetupCommit: text("environment_setup_commit"),
+		baseCommit: text("base_commit"),
+		environmentKey: text("environment_key").notNull(),
+		envSpecHash: text("env_spec_hash").notNull(),
+		buildStrategy: text("build_strategy")
+			.notNull()
+			.default("swebench-harness")
+			.$type<EnvironmentImageBuildStrategy>(),
+		status: text("status")
+			.notNull()
+			.default("queued")
+			.$type<EnvironmentImageBuildStatus>(),
+		sandboxTemplate: text("sandbox_template").notNull().default("dapr-agent"),
+		sandboxImage: text("sandbox_image"),
+		digest: text("digest"),
+		imageName: text("image_name"),
+		imageTag: text("image_tag"),
+		dockerfilePath: text("dockerfile_path"),
+		validationCommand: text("validation_command"),
+		validationStatus: text("validation_status"),
+		validationLogRef: text("validation_log_ref"),
+		buildLogRef: text("build_log_ref"),
+		pipelineRunName: text("pipeline_run_name"),
+		pipelineRunNamespace: text("pipeline_run_namespace").default(
+			"tekton-pipelines",
+		),
+		spec: jsonb("spec")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		error: text("error"),
+		requestedAt: timestamp("requested_at").notNull().defaultNow(),
+		startedAt: timestamp("started_at"),
+		completedAt: timestamp("completed_at"),
+		builtAt: timestamp("built_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		envSpecHashUnique: unique("uq_environment_image_builds_spec_hash").on(
+			table.envSpecHash,
+		),
+		statusIdx: index("idx_environment_image_builds_status").on(table.status),
+		environmentKeyIdx: index("idx_environment_image_builds_key").on(
+			table.environmentKey,
+		),
+		repoIdx: index("idx_environment_image_builds_repo").on(table.repo),
+		pipelineRunIdx: index("idx_environment_image_builds_pipeline_run").on(
+			table.pipelineRunNamespace,
+			table.pipelineRunName,
+		),
 	}),
 );
 
@@ -3599,6 +3678,10 @@ export type NewBenchmarkRun = typeof benchmarkRuns.$inferInsert;
 export type BenchmarkRunInstance = typeof benchmarkRunInstances.$inferSelect;
 export type NewBenchmarkRunInstance =
 	typeof benchmarkRunInstances.$inferInsert;
+export type EnvironmentImageBuild =
+	typeof environmentImageBuilds.$inferSelect;
+export type NewEnvironmentImageBuild =
+	typeof environmentImageBuilds.$inferInsert;
 export type BenchmarkArtifact = typeof benchmarkArtifacts.$inferSelect;
 export type NewBenchmarkArtifact = typeof benchmarkArtifacts.$inferInsert;
 export type EvaluationDataset = typeof evaluationDatasets.$inferSelect;

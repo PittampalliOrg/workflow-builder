@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
@@ -6,6 +7,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import { Tabs, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
 	import {
@@ -98,6 +100,14 @@
 	type RunStatus = 'queued' | 'inferencing' | 'evaluating' | 'completed' | 'failed' | 'cancelled';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
+
+	function selectOptimizeTab(tab: string) {
+		if (tab === 'evals') {
+			goto(`/workspaces/${slug}/evaluations?tab=evals`, { keepFocus: true, noScroll: true });
+		} else if (tab === 'datasets') {
+			goto(`/workspaces/${slug}/evaluations?tab=datasets`, { keepFocus: true, noScroll: true });
+		}
+	}
 
 	let suites = $state<Suite[]>([]);
 	let agents = $state<Agent[]>([]);
@@ -267,6 +277,7 @@
 				return 'bg-emerald-500/15 text-emerald-600';
 			case 'inferencing':
 			case 'evaluating':
+			case 'building':
 				return 'bg-blue-500/15 text-blue-600';
 			case 'queued':
 			case 'inferred':
@@ -314,6 +325,8 @@
 	function inferenceEnvironmentLabel(env: Record<string, unknown> | null | undefined) {
 		const status = inferenceEnvironmentStatus(env);
 		if (status === 'validated') return envField(env, 'environmentKey') ?? 'validated image';
+		if (status === 'building' || status === 'queued') return envField(env, 'environmentKey') ?? 'building image';
+		if (status === 'failed') return envField(env, 'environmentKey') ?? 'image build failed';
 		return 'dapr-agent fallback';
 	}
 
@@ -364,6 +377,14 @@
 			<RefreshCw class="size-4" /> Refresh
 		</Button>
 	</header>
+
+	<Tabs value="benchmarks" onValueChange={selectOptimizeTab}>
+		<TabsList class="h-9">
+			<TabsTrigger value="datasets" class="text-xs">Datasets</TabsTrigger>
+			<TabsTrigger value="evals" class="text-xs">Evals</TabsTrigger>
+			<TabsTrigger value="benchmarks" class="text-xs">Benchmarks</TabsTrigger>
+		</TabsList>
+	</Tabs>
 
 	{#if errorMessage}
 		<Alert variant="destructive">
@@ -653,11 +674,23 @@
 									</div>
 									<div class="space-y-1 text-muted-foreground">
 										<div>Template: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'sandboxTemplate') ?? 'dapr-agent'}</span></div>
+										{#if envField(selectedInstance.inferenceEnvironment, 'buildStrategy')}
+											<div>Build strategy: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'buildStrategy')}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'pipelineRunName')}
+											<div>PipelineRun: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'pipelineRunName')}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'envSpecHash')}
+											<div>Spec hash: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'envSpecHash')}</span></div>
+										{/if}
 										{#if envField(selectedInstance.inferenceEnvironment, 'sandboxImage')}
 											<div>Image: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'sandboxImage')}</span></div>
 										{/if}
 										{#if envField(selectedInstance.inferenceEnvironment, 'digest')}
 											<div>Digest: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'digest')}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'buildLogRef')}
+											<div>Build log: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'buildLogRef')}</span></div>
 										{/if}
 										{#if envField(selectedInstance.inferenceEnvironment, 'validationLogRef')}
 											<div>Validation: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'validationLogRef')}</span></div>

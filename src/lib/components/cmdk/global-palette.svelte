@@ -22,7 +22,8 @@
 		Key,
 		Gauge,
 		Users,
-		Settings
+		Settings,
+		Trophy
 	} from 'lucide-svelte';
 	import type { SessionSummary } from '$lib/types/sessions';
 	import type { AgentSummary } from '$lib/types/agents';
@@ -119,6 +120,8 @@
 		{ label: 'Library: Files', path: '/workspaces/default/files', icon: FileText, keywords: 'library uploads' },
 		{ label: 'Library: Batches', path: '/workspaces/default/batches', icon: Layers, keywords: 'library bulk' },
 		{ label: 'Library: Custom code', path: '/code-functions', icon: Folder, keywords: 'library functions typescript python' },
+		{ label: 'Evaluations', path: '/workspaces/default/evaluations', icon: Activity, keywords: 'evals datasets graders' },
+		{ label: 'Benchmarks', path: '/workspaces/default/benchmarks', icon: Trophy, keywords: 'swe-bench swebench grading harness' },
 		{ label: 'Usage', path: '/workspaces/default/usage', icon: BarChart3 },
 		{ label: 'Observability (traces)', path: '/observability', icon: FileText, keywords: 'traces logs telemetry' },
 		{ label: 'Sandboxes', path: '/sandboxes', icon: Container },

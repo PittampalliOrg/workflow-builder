@@ -237,7 +237,7 @@ function httpsRequest(
 	});
 }
 
-async function kubeFetch(path: string, init: KubeRequestInit = {}): Promise<Response> {
+export async function kubeApiFetch(path: string, init: KubeRequestInit = {}): Promise<Response> {
 	const token = await getToken();
 	const agent = await getAgent();
 	const url = `https://${K8S_HOST}:${K8S_PORT}${path}`;
@@ -279,6 +279,8 @@ async function kubeFetch(path: string, init: KubeRequestInit = {}): Promise<Resp
 	}
 	throw new Error("kubeFetch: exhausted retries");
 }
+
+const kubeFetch = kubeApiFetch;
 
 // ---------------------------------------------------------------------------
 // AgentRuntime CR helpers

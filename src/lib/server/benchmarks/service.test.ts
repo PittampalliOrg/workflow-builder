@@ -15,6 +15,7 @@ describe("SWE-bench workflow spec", () => {
 		const edges = graph.edges as Array<{ source: string; target: string }>;
 		expect(nodes.map((node) => node.id)).toEqual([
 			"__start__",
+			"prepare_environment",
 			"workspace_profile",
 			"checkout_repo",
 			"solve",
@@ -23,7 +24,8 @@ describe("SWE-bench workflow spec", () => {
 		]);
 		expect(nodes.find((node) => node.id === "solve")?.type).toBe("agent");
 		expect(edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
-			"__start__->workspace_profile",
+			"__start__->prepare_environment",
+			"prepare_environment->workspace_profile",
 			"workspace_profile->checkout_repo",
 			"checkout_repo->solve",
 			"solve->extract_patch",
@@ -47,10 +49,14 @@ describe("SWE-bench workflow spec", () => {
 			maxTurns: null,
 		});
 
-		const checkout = (spec.do as Array<Record<string, { with: { command: string } }>>)[1]
-			.checkout_repo;
-		expect(checkout.with.command).toContain("set -eu\n");
-		expect(checkout.with.command).not.toContain("pipefail");
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		const workspaceProfile = steps[1].workspace_profile;
+		const checkoutStep = steps[2].checkout_repo;
+		expect(workspaceProfile.with.sandboxImage).toBe(
+			"${ .prepare_environment.sandboxImage }",
+		);
+		expect(String(checkoutStep.with.command)).toContain("set -eu\n");
+		expect(String(checkoutStep.with.command)).not.toContain("pipefail");
 	});
 
 	it("extracts patches against the SWE-bench base commit", () => {
@@ -70,7 +76,7 @@ describe("SWE-bench workflow spec", () => {
 
 		const extractPatch = (
 			spec.do as Array<Record<string, { with: { command: string } }>>
-		)[3].extract_patch;
+		)[4].extract_patch;
 		expect(extractPatch.with.command).toBe(
 			"set -eu\ncd /sandbox/repo\nrm -rf /sandbox/.cache .cache\ngit diff --binary 'cffd4e0f86fefd4802349a9f9b19ed70934ea354' --",
 		);
@@ -95,10 +101,11 @@ describe("SWE-bench workflow spec", () => {
 			spec.do as Array<
 				Record<string, { with: { body: { overrides: { tools: string[] }; prompt: string } } }>
 			>
-		)[2].solve;
+		)[3].solve;
 		expect(solve.with.body.prompt).toContain("Official grading happens later");
 		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
 		expect(solve.with.body.prompt).toContain("Do not use web search");
+		expect(solve.with.body.prompt).toContain(".prepare_environment.promptNotes");
 		expect(solve.with.body.overrides.tools).toEqual([
 			"execute_command",
 			"read_file",
@@ -130,6 +137,7 @@ describe("SWE-bench workflow spec", () => {
 				environmentStatus: "validated",
 				suite: "SWE-bench_Lite",
 				repo: "sympy/sympy",
+				version: "1.7",
 				environmentKey: "sympy-1.7",
 				sandboxTemplate: "dapr-agent",
 				sandboxImage:
@@ -146,29 +154,39 @@ describe("SWE-bench workflow spec", () => {
 
 		const workspaceProfile = (
 			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
-		)[0].workspace_profile;
+		)[1].workspace_profile;
 		expect(workspaceProfile.with.workspaceRef).toBe(
 			"swebench-c97681e47e-run-1-sympy-sympy-20590",
 		);
-		expect(workspaceProfile.with.sandboxTemplate).toBe("dapr-agent");
-		expect(workspaceProfile.with.sandboxImage).toBe(
-			"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		expect(workspaceProfile.with.sandboxTemplate).toBe(
+			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
 		);
-		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[2]
+		expect(workspaceProfile.with.sandboxImage).toBe(
+			"${ .prepare_environment.sandboxImage }",
+		);
+		const prepareEnvironment = (
+			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
+		)[0].prepare_environment;
+		expect(prepareEnvironment.with).toMatchObject({
+			suiteSlug: "SWE-bench_Lite",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			testMetadata: {
+				version: "1.7",
+				validationCommand: "PYTHONPATH=src python -m pytest --version",
+			},
+		});
+		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[3]
 			.solve;
-		expect(solve.with.body.prompt).toContain("repo-specific inference image");
-		expect(solve.with.body.prompt).toContain("Environment validation command");
-		expect(solve.with.body.prompt).toContain("PYTHONPATH=src");
+		expect(solve.with.body.prompt).toContain(".prepare_environment.promptNotes");
 		expect(solve.with.body).toMatchObject({
 			environmentConfig: {
-				swebenchInferenceEnvironment: {
-					environmentKey: "sympy-1.7",
-				},
+				swebenchInferenceEnvironment: "${ .prepare_environment.environment }",
 			},
 		});
 	});
 
-	it("falls back to the dapr-agent template without sandboxImage", () => {
+	it("profiles the workspace after dynamic environment preparation", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
 			suiteSlug: "SWE-bench_Lite",
 			datasetName: "princeton-nlp/SWE-bench_Lite",
@@ -192,9 +210,13 @@ describe("SWE-bench workflow spec", () => {
 
 		const workspaceProfile = (
 			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
-		)[0].workspace_profile;
-		expect(workspaceProfile.with.sandboxTemplate).toBe("dapr-agent");
-		expect(workspaceProfile.with).not.toHaveProperty("sandboxImage");
+		)[1].workspace_profile;
+		expect(workspaceProfile.with.sandboxTemplate).toBe(
+			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
+		);
+		expect(workspaceProfile.with.sandboxImage).toBe(
+			"${ .prepare_environment.sandboxImage }",
+		);
 	});
 
 	it("projects sandbox, workspace, and trace links from workflow/session telemetry", () => {

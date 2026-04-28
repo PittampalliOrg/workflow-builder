@@ -49,6 +49,7 @@ from core.sw_expressions import (
 from core.template_resolver import resolve_templates
 from activities.execute_action import execute_action
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
+from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
 from activities.log_external_event import (
@@ -550,6 +551,7 @@ def _resolve_function_call(
 _AGENT_ACTION_TYPES: set[str] = {"durable/run"}
 _NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run"}
 _DURABLE_CRAWL4AI_ACTION_TYPES = {"web/crawl.async"}
+_ENVIRONMENT_ACTION_TYPES = {"environment/ensure"}
 _REMOVED_AGENT_ACTION_TYPES = {
     "claude/run",
     "openshell/run",
@@ -1554,6 +1556,99 @@ def _run_durable_crawl4ai_job(
         yield ctx.create_timer(timedelta(milliseconds=poll_ms))
 
 
+def _environment_timeout_ms(value: Any, default_ms: int) -> int:
+    parsed = _parse_optional_int(value)
+    if parsed is None:
+        return default_ms
+    return max(60_000, min(parsed, 7_200_000))
+
+
+def _environment_poll_ms(value: Any) -> int:
+    parsed = _parse_optional_int(value)
+    if parsed is None:
+        return 15_000
+    return max(5_000, min(parsed, 120_000))
+
+
+def _run_environment_prepare(
+    ctx: wf.DaprWorkflowContext,
+    task_name: str,
+    task_data: dict[str, Any],
+    tc: "TaskContext",
+    resolved: dict[str, Any],
+    action_type: str,
+) -> Any:
+    task_input, resolved_args, action_input = _resolved_call_args(task_data, tc, resolved)
+    input_payload = action_input or resolved_args
+    timeout_ms = _environment_timeout_ms(input_payload.get("timeoutMs"), 3_600_000)
+    poll_ms = _environment_poll_ms(input_payload.get("pollMs"))
+    start_ms = _now_ms(ctx)
+
+    result = yield ctx.call_activity(
+        ensure_environment,
+        input=_freeze(
+            {
+                "input": input_payload,
+                "workflowId": tc.workflow_id,
+                "executionId": tc.execution_id,
+                "dbExecutionId": tc.db_execution_id,
+                "nodeId": task_name,
+                "_otel": tc.otel_ctx,
+            }
+        ),
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("Environment preparation returned an invalid result")
+
+    while not result.get("complete"):
+        if not result.get("success", True):
+            break
+        if _elapsed_ms(ctx, start_ms) >= timeout_ms:
+            result = {
+                **result,
+                "success": False,
+                "complete": True,
+                "environmentStatus": "failed",
+                "status": "failed",
+                "error": f"Environment build did not complete within {timeout_ms}ms",
+                "duration_ms": _elapsed_ms(ctx, start_ms),
+            }
+            break
+        yield ctx.create_timer(timedelta(milliseconds=poll_ms))
+        result = yield ctx.call_activity(
+            check_environment_build,
+            input=_freeze(
+                {
+                    "input": {
+                        "buildId": result.get("buildId"),
+                        "envSpecHash": result.get("envSpecHash"),
+                        "environmentKey": result.get("environmentKey"),
+                    },
+                    "workflowId": tc.workflow_id,
+                    "executionId": tc.execution_id,
+                    "dbExecutionId": tc.db_execution_id,
+                    "nodeId": task_name,
+                    "_otel": tc.otel_ctx,
+                }
+            ),
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("Environment build status returned an invalid result")
+
+    result["duration_ms"] = result.get("duration_ms") or _elapsed_ms(ctx, start_ms)
+    result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output=result,
+    )
+    _store_task_output(tc, task_name, action_type, result)
+    tc.completed_tasks.add(task_name)
+    if not result.get("success", True) or result.get("environmentStatus") == "failed":
+        raise RuntimeError(result.get("error") or f"Environment preparation failed: {task_name}")
+    return result
+
+
 def _handle_call_task(
     ctx: wf.DaprWorkflowContext,
     task_name: str,
@@ -1582,6 +1677,17 @@ def _handle_call_task(
 
     if action_type in _DURABLE_CRAWL4AI_ACTION_TYPES:
         result = yield from _run_durable_crawl4ai_job(
+            ctx,
+            task_name,
+            task_data,
+            tc,
+            resolved,
+            action_type,
+        )
+        return result
+
+    if action_type in _ENVIRONMENT_ACTION_TYPES:
+        result = yield from _run_environment_prepare(
             ctx,
             task_name,
             task_data,

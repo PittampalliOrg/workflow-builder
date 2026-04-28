@@ -35,6 +35,7 @@ import {
 	Cpu,
 	Settings as SettingsIcon,
 	FlaskConical,
+	Trophy,
 } from "lucide-svelte";
 
 // Lucide icons ship as component constructors — `typeof <Icon>` is the
@@ -203,7 +204,15 @@ export const NAV_GROUPS: NavGroup[] = [
 				label: "Evaluations",
 				icon: FlaskConical,
 				href: ({ slug }) => `/workspaces/${slug}/evaluations`,
-				match: /^\/workspaces\/[^/]+\/(evaluations|benchmarks)(\/|$)/,
+				match: /^\/workspaces\/[^/]+\/evaluations(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
+			{
+				id: "benchmarks",
+				label: "Benchmarks",
+				icon: Trophy,
+				href: ({ slug }) => `/workspaces/${slug}/benchmarks`,
+				match: /^\/workspaces\/[^/]+\/benchmarks(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
 		],

@@ -6,7 +6,7 @@
 	import EvalsList from '$lib/components/evaluations/evals-list.svelte';
 	import { Tabs, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 
-	type Tab = 'datasets' | 'evals';
+	type Tab = 'datasets' | 'evals' | 'benchmarks';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -16,6 +16,10 @@
 	);
 
 	function selectTab(tab: Tab) {
+		if (tab === 'benchmarks') {
+			goto(`/workspaces/${slug}/benchmarks`, { keepFocus: true, noScroll: true });
+			return;
+		}
 		const url = new URL(page.url);
 		url.searchParams.set('tab', tab);
 		goto(url.pathname + url.search, { replaceState: true, keepFocus: true, noScroll: true });
@@ -48,6 +52,7 @@
 				<TabsList class="h-9">
 					<TabsTrigger value="datasets" class="text-xs">Datasets</TabsTrigger>
 					<TabsTrigger value="evals" class="text-xs">Evals</TabsTrigger>
+					<TabsTrigger value="benchmarks" class="text-xs">Benchmarks</TabsTrigger>
 				</TabsList>
 			</Tabs>
 		</div>
