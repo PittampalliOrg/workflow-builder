@@ -72,6 +72,75 @@ describe("SWE-bench workflow spec", () => {
 		expect(solve.with.body.prompt).toContain("Official grading happens later");
 		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
 		expect(solve.with.body.prompt).not.toContain("python3.12");
+		expect(solve.with.body.prompt).not.toContain("repo-specific inference image");
+	});
+
+	it("uses a validated inference sandbox image when one is resolved", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: {
+				environmentStatus: "validated",
+				suite: "SWE-bench_Lite",
+				repo: "sympy/sympy",
+				environmentKey: "sympy-1.7",
+				sandboxTemplate: "dapr-agent",
+				sandboxImage:
+					"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				digest:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				validationStatus: "validated",
+			},
+		});
+
+		const workspaceProfile = (
+			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
+		)[0].workspace_profile;
+		expect(workspaceProfile.with.sandboxTemplate).toBe("dapr-agent");
+		expect(workspaceProfile.with.sandboxImage).toBe(
+			"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		);
+		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[2]
+			.solve;
+		expect(solve.with.body.prompt).toContain("repo-specific inference image");
+	});
+
+	it("falls back to the dapr-agent template without sandboxImage", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "django__django-11099",
+			repo: "django/django",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: {
+				environmentStatus: "fallback",
+				suite: "SWE-bench_Lite",
+				repo: "django/django",
+				sandboxTemplate: "dapr-agent",
+				reason: "no_validated_mapping",
+			},
+		});
+
+		const workspaceProfile = (
+			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
+		)[0].workspace_profile;
+		expect(workspaceProfile.with.sandboxTemplate).toBe("dapr-agent");
+		expect(workspaceProfile.with).not.toHaveProperty("sandboxImage");
 	});
 
 	it("projects sandbox, workspace, and trace links from workflow/session telemetry", () => {

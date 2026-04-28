@@ -47,6 +47,10 @@ import {
 	SWEBENCH_SUITES,
 	type SwebenchSuiteSlug,
 } from "./swebench";
+import {
+	resolveSwebenchInferenceEnvironment,
+	type ResolvedSwebenchInferenceEnvironment,
+} from "./inference-environments";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -348,6 +352,7 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 			logsPath: runInstance.logsPath,
 			testOutputSummary: runInstance.testOutputSummary,
 			harnessResult: runInstance.harnessResult,
+			inferenceEnvironment: runInstance.inferenceEnvironment,
 			startedAt: runInstance.startedAt?.toISOString() ?? null,
 			inferenceCompletedAt:
 				runInstance.inferenceCompletedAt?.toISOString() ?? null,
@@ -589,6 +594,12 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		projectId: row.run.projectId,
 		userId: row.run.userId,
 	});
+	const inferenceEnvironment = resolveSwebenchInferenceEnvironment({
+		suiteSlug: row.suite.slug,
+		repo: row.instance.repo,
+		baseCommit: row.instance.baseCommit,
+		testMetadata: row.instance.testMetadata,
+	});
 	const rawSpec = buildSwebenchInstanceWorkflowSpec({
 		suiteSlug: row.suite.slug as SwebenchSuiteSlug,
 		datasetName: row.suite.datasetName,
@@ -601,11 +612,13 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		agentVersion: row.run.agentVersion,
 		timeoutSeconds: row.run.timeoutSeconds,
 		maxTurns: row.run.maxTurns,
+		inferenceEnvironment,
 	});
 	const spec = await resolveSpecAgentRefs(rawSpec);
 	const triggerData = {
 		runId: row.run.id,
 		instanceId: row.runInstance.instanceId,
+		inferenceEnvironment,
 	};
 
 	const [execution] = await database
@@ -660,6 +673,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		.set({
 			status: "inferencing",
 			inferenceStatus: "inferencing",
+			inferenceEnvironment,
 			workflowExecutionId: execution.id,
 			daprInstanceId,
 			startedAt: new Date(),
@@ -967,9 +981,47 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	agentVersion: number;
 	timeoutSeconds: number;
 	maxTurns: number | null;
+	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): Record<string, unknown> {
 	const repoPath = "/sandbox/repo";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
+	const ttlSeconds = Math.max(params.timeoutSeconds + 3600, 7200);
+	const sandboxTemplate =
+		params.inferenceEnvironment?.sandboxTemplate || "dapr-agent";
+	const workspaceProfileWith: Record<string, unknown> = {
+		rootPath: "/sandbox",
+		sandboxTemplate,
+		ttlSeconds,
+		keepAfterRun: true,
+		managedBy: "workflow-builder:swebench",
+		name: `swebench-${params.instanceId}`,
+		enabledTools: [
+			"execute_command",
+			"read_file",
+			"write_file",
+			"edit_file",
+			"list_files",
+			"mkdir",
+			"file_stat",
+		],
+		sandboxPolicy: {
+			keepAfterRun: true,
+			mode: "per-run",
+			template: sandboxTemplate,
+			ttlSeconds,
+		},
+		commandTimeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+		timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS + 300_000,
+	};
+	if (
+		params.inferenceEnvironment?.environmentStatus === "validated" &&
+		params.inferenceEnvironment.sandboxImage
+	) {
+		workspaceProfileWith.sandboxImage = params.inferenceEnvironment.sandboxImage;
+		workspaceProfileWith.environmentConfig = {
+			swebenchInferenceEnvironment: params.inferenceEnvironment,
+		};
+	}
 	const extractPatchCommand = [
 		"set -eu",
 		"cd /sandbox/repo",
@@ -999,31 +1051,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 			{
 				workspace_profile: {
 					call: "workspace/profile",
-					with: {
-						rootPath: "/sandbox",
-						sandboxTemplate: "dapr-agent",
-						ttlSeconds: Math.max(params.timeoutSeconds + 3600, 7200),
-						keepAfterRun: true,
-						managedBy: "workflow-builder:swebench",
-						name: `swebench-${params.instanceId}`,
-						enabledTools: [
-							"execute_command",
-							"read_file",
-							"write_file",
-							"edit_file",
-							"list_files",
-							"mkdir",
-							"file_stat",
-						],
-						sandboxPolicy: {
-							keepAfterRun: true,
-							mode: "per-run",
-							template: "dapr-agent",
-							ttlSeconds: Math.max(params.timeoutSeconds + 3600, 7200),
-						},
-						commandTimeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
-						timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS + 300_000,
-					},
+					with: workspaceProfileWith,
 				},
 			},
 			{
@@ -1059,8 +1087,8 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 						sandboxPolicy: {
 							keepAfterRun: true,
 							mode: "per-run",
-							template: "dapr-agent",
-							ttlSeconds: Math.max(params.timeoutSeconds + 3600, 7200),
+							template: sandboxTemplate,
+							ttlSeconds,
 						},
 					},
 				},
@@ -1091,6 +1119,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 				daprInstanceId: "${ .solve.daprInstanceId // null }",
 				workspaceRef: "${ .workspace_profile.workspaceRef }",
 				sandboxName: "${ .workspace_profile.sandboxName }",
+				inferenceEnvironment: params.inferenceEnvironment ?? null,
 			},
 		},
 	};
@@ -1104,7 +1133,17 @@ function buildSwebenchPrompt(params: {
 	baseCommit: string;
 	problemStatement: string;
 	hintsText: string | null;
+	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): string {
+	const environmentNotes =
+		params.inferenceEnvironment?.environmentStatus === "validated"
+			? [
+					"- This run is using a repo-specific inference image that passed its validation smoke before being pinned.",
+					params.inferenceEnvironment.validationLogRef
+						? `- Environment validation log: ${params.inferenceEnvironment.validationLogRef}`
+						: "",
+				].filter(Boolean)
+			: [];
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,
@@ -1120,6 +1159,7 @@ function buildSwebenchPrompt(params: {
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
 		"- Running local tests is optional and best-effort. Official grading happens later in a Docker SWE-bench evaluator job.",
+		...environmentNotes,
 		"",
 		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
 	].join("\n");

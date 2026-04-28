@@ -41,6 +41,10 @@ import {
 	type SwebenchSuiteSlug,
 } from "$lib/server/benchmarks/swebench";
 import {
+	resolveSwebenchInferenceEnvironment,
+	type ResolvedSwebenchInferenceEnvironment,
+} from "$lib/server/benchmarks/inference-environments";
+import {
 	aggregateGraderResults,
 	runGrader,
 	runGraderAsync,
@@ -2687,8 +2691,17 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	input: Record<string, unknown>;
 	taskConfig: Record<string, unknown>;
 	executionConfig?: Record<string, unknown>;
+	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): Record<string, unknown> {
 	const instance = readSwebenchInput(params.input, params.taskConfig);
+	const inferenceEnvironment =
+		params.inferenceEnvironment ??
+		resolveSwebenchInferenceEnvironment({
+			suiteSlug: instance.suiteSlug,
+			repo: instance.repo,
+			baseCommit: instance.baseCommit,
+			testMetadata: instance.testMetadata,
+		});
 	const timeoutSeconds = clampInteger(
 		params.executionConfig?.timeoutSeconds,
 		60,
@@ -2702,6 +2715,41 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	const repoPath = "/sandbox/repo";
 	const timeoutMinutes = Math.max(1, Math.ceil(timeoutSeconds / 60));
 	const ttlSeconds = Math.max(timeoutSeconds + 3600, 7200);
+	const sandboxTemplate = inferenceEnvironment.sandboxTemplate || "dapr-agent";
+	const workspaceProfileWith: Record<string, unknown> = {
+		rootPath: "/sandbox",
+		sandboxTemplate,
+		ttlSeconds,
+		keepAfterRun: true,
+		managedBy: "workflow-builder:evaluations:swebench",
+		name: `eval-swebench-${instance.instanceId}`,
+		enabledTools: [
+			"execute_command",
+			"read_file",
+			"write_file",
+			"edit_file",
+			"list_files",
+			"mkdir",
+			"file_stat",
+		],
+		sandboxPolicy: {
+			keepAfterRun: true,
+			mode: "per-run",
+			template: sandboxTemplate,
+			ttlSeconds,
+		},
+		commandTimeoutMs: DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS,
+		timeoutMs: DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS + 300_000,
+	};
+	if (
+		inferenceEnvironment.environmentStatus === "validated" &&
+		inferenceEnvironment.sandboxImage
+	) {
+		workspaceProfileWith.sandboxImage = inferenceEnvironment.sandboxImage;
+		workspaceProfileWith.environmentConfig = {
+			swebenchInferenceEnvironment: inferenceEnvironment,
+		};
+	}
 	const agentRef: Record<string, unknown> = { id: params.agentId };
 	if (params.agentVersion != null) agentRef.version = params.agentVersion;
 	const cloneCommand = [
@@ -2732,31 +2780,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 			{
 				workspace_profile: {
 					call: "workspace/profile",
-					with: {
-						rootPath: "/sandbox",
-						sandboxTemplate: "dapr-agent",
-						ttlSeconds,
-						keepAfterRun: true,
-						managedBy: "workflow-builder:evaluations:swebench",
-						name: `eval-swebench-${instance.instanceId}`,
-						enabledTools: [
-							"execute_command",
-							"read_file",
-							"write_file",
-							"edit_file",
-							"list_files",
-							"mkdir",
-							"file_stat",
-						],
-						sandboxPolicy: {
-							keepAfterRun: true,
-							mode: "per-run",
-							template: "dapr-agent",
-							ttlSeconds,
-						},
-						commandTimeoutMs: DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS,
-						timeoutMs: DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS + 300_000,
-					},
+					with: workspaceProfileWith,
 				},
 			},
 			{
@@ -2780,7 +2804,10 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 								maxTurns: maxTurns ?? undefined,
 								timeoutMinutes,
 							},
-							prompt: buildSwebenchEvaluationPrompt(instance),
+							prompt: buildSwebenchEvaluationPrompt({
+								...instance,
+								inferenceEnvironment,
+							}),
 						},
 						mode: "execute_direct",
 						cwd: repoPath,
@@ -2789,7 +2816,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 						sandboxPolicy: {
 							keepAfterRun: true,
 							mode: "per-run",
-							template: "dapr-agent",
+							template: sandboxTemplate,
 							ttlSeconds,
 						},
 					},
@@ -2823,6 +2850,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 				},
 				workspaceRef: "${ .workspace_profile.workspaceRef }",
 				sandboxName: "${ .workspace_profile.sandboxName }",
+				inferenceEnvironment,
 			},
 		},
 	};
@@ -3039,6 +3067,14 @@ function readSwebenchInput(
 	if (!problemStatement) {
 		throw error(400, `SWE-bench row ${instanceId} is missing problemStatement`);
 	}
+	const testMetadata = {
+		...(isRecord(input.testMetadata) ? input.testMetadata : {}),
+		...(isRecord(input.test_metadata) ? input.test_metadata : {}),
+	};
+	for (const key of ["version", "environmentSetupCommit", "environment_setup_commit"]) {
+		const value = readString(input[key]);
+		if (value) testMetadata[key] = value;
+	}
 	return {
 		instanceId,
 		repo,
@@ -3056,6 +3092,7 @@ function readSwebenchInput(
 			readString(input.datasetName) ??
 			readString(taskConfig.datasetName) ??
 			"princeton-nlp/SWE-bench_Lite",
+		testMetadata,
 	};
 }
 
@@ -3067,7 +3104,17 @@ function buildSwebenchEvaluationPrompt(params: {
 	hintsText: string | null;
 	suiteSlug: string;
 	datasetName: string;
+	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): string {
+	const environmentNotes =
+		params.inferenceEnvironment?.environmentStatus === "validated"
+			? [
+					"- This run is using a repo-specific inference image that passed its validation smoke before being pinned.",
+					params.inferenceEnvironment.validationLogRef
+						? `- Environment validation log: ${params.inferenceEnvironment.validationLogRef}`
+						: "",
+				].filter(Boolean)
+			: [];
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,
@@ -3083,6 +3130,7 @@ function buildSwebenchEvaluationPrompt(params: {
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
 		"- Running local tests is optional and best-effort. This generic eval path only captures the patch; official SWE-bench grading runs from Benchmarks.",
+		...environmentNotes,
 		"",
 		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
 	].join("\n");

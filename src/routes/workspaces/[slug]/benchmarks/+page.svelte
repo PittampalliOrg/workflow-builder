@@ -84,6 +84,7 @@
 		logsPath: string | null;
 		testOutputSummary: string | null;
 		harnessResult: Record<string, unknown> | null;
+		inferenceEnvironment: Record<string, unknown> | null;
 		traceIds: string[];
 		inferenceCompletedAt: string | null;
 		evaluatedAt: string | null;
@@ -262,6 +263,7 @@
 		switch (status) {
 			case 'completed':
 			case 'resolved':
+			case 'validated':
 				return 'bg-emerald-500/15 text-emerald-600';
 			case 'inferencing':
 			case 'evaluating':
@@ -269,6 +271,7 @@
 			case 'queued':
 			case 'inferred':
 			case 'pending':
+			case 'fallback':
 				return 'bg-amber-500/15 text-amber-600';
 			case 'unresolved':
 			case 'empty_patch':
@@ -290,6 +293,21 @@
 			counts[status] = (counts[status] ?? 0) + 1;
 		}
 		return counts;
+	}
+
+	function envField(env: Record<string, unknown> | null | undefined, key: string) {
+		const value = env?.[key];
+		return typeof value === 'string' && value.trim() ? value.trim() : null;
+	}
+
+	function inferenceEnvironmentStatus(env: Record<string, unknown> | null | undefined) {
+		return envField(env, 'environmentStatus') ?? 'fallback';
+	}
+
+	function inferenceEnvironmentLabel(env: Record<string, unknown> | null | undefined) {
+		const status = inferenceEnvironmentStatus(env);
+		if (status === 'validated') return envField(env, 'environmentKey') ?? 'validated image';
+		return 'dapr-agent fallback';
 	}
 
 	function formatStatus(status: string | null | undefined): string {
@@ -561,6 +579,7 @@
 									<tr>
 										<th class="text-left font-medium px-4 py-2">Instance</th>
 										<th class="text-left font-medium px-4 py-2">Repo</th>
+										<th class="text-left font-medium px-4 py-2">Env</th>
 										<th class="text-left font-medium px-4 py-2">Inference</th>
 										<th class="text-left font-medium px-4 py-2">Official Harness</th>
 										<th class="text-left font-medium px-4 py-2">Final</th>
@@ -575,6 +594,7 @@
 										>
 											<td class="px-4 py-2 font-mono text-xs">{instance.instanceId}</td>
 											<td class="px-4 py-2">{instance.repo ?? 'pending import'}</td>
+											<td class="px-4 py-2"><Badge class={statusColor(inferenceEnvironmentStatus(instance.inferenceEnvironment))}>{inferenceEnvironmentLabel(instance.inferenceEnvironment)}</Badge></td>
 											<td class="px-4 py-2"><Badge class={statusColor(instance.inferenceStatus)}>{formatStatus(instance.inferenceStatus)}</Badge></td>
 											<td class="px-4 py-2"><Badge class={statusColor(instance.evaluationStatus)}>{formatStatus(instance.evaluationStatus)}</Badge></td>
 											<td class="px-4 py-2"><Badge class={statusColor(instance.status)}>{formatStatus(instance.status)}</Badge></td>
@@ -616,6 +636,28 @@
 										<div class="text-muted-foreground mb-1">Official Harness</div>
 										<Badge class={statusColor(selectedInstance.evaluationStatus)}>{formatStatus(selectedInstance.evaluationStatus)}</Badge>
 										<div class="text-muted-foreground mt-2">{selectedInstance.evaluatedAt ? formatRelative(selectedInstance.evaluatedAt) : 'not graded'}</div>
+									</div>
+								</div>
+
+								<div class="rounded-md border p-3 text-xs space-y-2">
+									<div class="flex items-center justify-between gap-2">
+										<div class="text-muted-foreground">Inference Environment</div>
+										<Badge class={statusColor(inferenceEnvironmentStatus(selectedInstance.inferenceEnvironment))}>{formatStatus(inferenceEnvironmentStatus(selectedInstance.inferenceEnvironment))}</Badge>
+									</div>
+									<div class="space-y-1 text-muted-foreground">
+										<div>Template: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'sandboxTemplate') ?? 'dapr-agent'}</span></div>
+										{#if envField(selectedInstance.inferenceEnvironment, 'sandboxImage')}
+											<div>Image: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'sandboxImage')}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'digest')}
+											<div>Digest: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'digest')}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'validationLogRef')}
+											<div>Validation: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'validationLogRef')}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'reason')}
+											<div>Reason: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'reason')}</span></div>
+										{/if}
 									</div>
 								</div>
 

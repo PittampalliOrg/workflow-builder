@@ -2828,6 +2828,10 @@ export const benchmarkRunInstances = pgTable(
 		logsPath: text("logs_path"),
 		testOutputSummary: text("test_output_summary"),
 		harnessResult: jsonb("harness_result").$type<Record<string, unknown>>(),
+		inferenceEnvironment: jsonb("inference_environment")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
 		startedAt: timestamp("started_at"),
 		inferenceCompletedAt: timestamp("inference_completed_at"),
 		evaluatedAt: timestamp("evaluated_at"),
