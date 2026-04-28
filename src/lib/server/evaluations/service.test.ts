@@ -132,13 +132,32 @@ describe("evaluation agent workflow", () => {
 			"solve",
 			"extract_patch",
 		]);
-		const solve = steps[2].solve as { call: string; with: { body: { agentRef: { version: number } } } };
+		const solve = steps[2].solve as {
+			call: string;
+			with: {
+				body: {
+					agentRef: { version: number };
+					overrides: { tools: string[] };
+					prompt: string;
+				};
+			};
+		};
 		expect(solve.call).toBe("durable/run");
 		expect(solve.with.body.agentRef.version).toBe(3);
+		expect(solve.with.body.overrides.tools).toEqual([
+			"execute_command",
+			"read_file",
+			"write_file",
+			"edit_file",
+			"list_files",
+			"glob_files",
+			"grep_search",
+		]);
 		const workspaceProfile = steps[0].workspace_profile as { with: { workspaceRef: string } };
 		expect(workspaceProfile.with.workspaceRef).toBe(
 			"eval-swebench-c2a85f01af-eval-run-item-1-django-django-12345",
 		);
+		expect(solve.with.body.prompt).toContain("Do not use web search");
 		expect(JSON.stringify(solve.with.body)).toContain("generic eval path only captures the patch");
 		expect(JSON.stringify(solve.with.body)).not.toContain("python3.12");
 		const extractPatch = steps[3].extract_patch as { with: { command: string } };

@@ -5,6 +5,16 @@ import type {
 
 export type SwebenchSuiteSlug = "SWE-bench_Verified" | "SWE-bench_Lite";
 
+export const SWEBENCH_ALLOWED_AGENT_TOOLS = [
+	"execute_command",
+	"read_file",
+	"write_file",
+	"edit_file",
+	"list_files",
+	"glob_files",
+	"grep_search",
+];
+
 export type SwebenchSuiteDefinition = {
 	id: string;
 	slug: SwebenchSuiteSlug;

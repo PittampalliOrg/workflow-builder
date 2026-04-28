@@ -91,10 +91,23 @@ describe("SWE-bench workflow spec", () => {
 			maxTurns: null,
 		});
 
-		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[2]
-			.solve;
+		const solve = (
+			spec.do as Array<
+				Record<string, { with: { body: { overrides: { tools: string[] }; prompt: string } } }>
+			>
+		)[2].solve;
 		expect(solve.with.body.prompt).toContain("Official grading happens later");
 		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
+		expect(solve.with.body.prompt).toContain("Do not use web search");
+		expect(solve.with.body.overrides.tools).toEqual([
+			"execute_command",
+			"read_file",
+			"write_file",
+			"edit_file",
+			"list_files",
+			"glob_files",
+			"grep_search",
+		]);
 		expect(solve.with.body.prompt).not.toContain("python3.12");
 		expect(solve.with.body.prompt).not.toContain("repo-specific inference image");
 	});

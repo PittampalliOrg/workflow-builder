@@ -67,7 +67,13 @@ from src.tools import all_tools
 from src.tools.skill_tool import get_registry as get_skill_registry, load_skills_from_dir, parse_skill_md
 from src.tools.skill_tool.models import SkillDefinition
 from src.tools.skill_tool.prompt import format_skill_listings
-from src.openshell_runtime import DEFAULT_CWD, bind_runtime, get_runtime, reset_runtime
+from src.openshell_runtime import (
+    DEFAULT_CWD,
+    OpenShellRuntime,
+    bind_runtime,
+    get_runtime,
+    reset_runtime,
+)
 from src.code_checkpoint import (
     capture_code_checkpoint,
     restore_code_checkpoint,
@@ -442,8 +448,8 @@ def _save_agent_state_key(key: str, value: Any) -> None:
     urllib.request.urlopen(req, timeout=5)
 
 
-def _clean_runtime_context(value: dict[str, Any]) -> dict[str, str | None]:
-    context: dict[str, str | None] = {}
+def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
     for key in (
         "executionId",
         "sandboxName",
@@ -459,6 +465,11 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, str | None]:
             continue
         text = str(raw).strip()
         context[key] = text or None
+    allowed_tools = _normalize_allowed_tool_set(
+        value.get("allowedTools") or value.get("allowed_tools")
+    )
+    if allowed_tools:
+        context["allowedTools"] = sorted(allowed_tools)
     context["cwd"] = context.get("cwd") or DEFAULT_CWD
     return context
 
@@ -486,6 +497,57 @@ def _normalize_mcp_server_name(value: Any) -> str:
 
 def _normalize_tool_lookup_name(name: str) -> str:
     return str(name or "").lower().replace(" ", "").replace("_", "")
+
+
+_BUILTIN_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
+    _normalize_tool_lookup_name("execute_command"): ("Bash",),
+    _normalize_tool_lookup_name("bash"): ("Bash",),
+    _normalize_tool_lookup_name("read_file"): ("Read",),
+    _normalize_tool_lookup_name("read"): ("Read",),
+    _normalize_tool_lookup_name("write_file"): ("Write",),
+    _normalize_tool_lookup_name("write"): ("Write",),
+    _normalize_tool_lookup_name("edit_file"): ("Edit",),
+    _normalize_tool_lookup_name("edit"): ("Edit",),
+    _normalize_tool_lookup_name("list_files"): ("Glob",),
+    _normalize_tool_lookup_name("glob_files"): ("Glob",),
+    _normalize_tool_lookup_name("glob"): ("Glob",),
+    _normalize_tool_lookup_name("grep_search"): ("Grep",),
+    _normalize_tool_lookup_name("grep"): ("Grep",),
+    _normalize_tool_lookup_name("web_search"): ("WebSearch",),
+    _normalize_tool_lookup_name("web_fetch"): ("WebFetch",),
+    _normalize_tool_lookup_name("notebook_edit"): ("NotebookEdit",),
+    _normalize_tool_lookup_name("todo_write"): ("TodoWrite",),
+    _normalize_tool_lookup_name("task_output"): ("TaskOutput",),
+    _normalize_tool_lookup_name("task_stop"): ("TaskStop",),
+    _normalize_tool_lookup_name("ask_user"): ("AskUser",),
+    _normalize_tool_lookup_name("send_message"): ("SendMessage",),
+    _normalize_tool_lookup_name("skill"): ("Skill",),
+    _normalize_tool_lookup_name("agent"): ("Agent",),
+    _normalize_tool_lookup_name("call_agent"): ("CallAgent",),
+    _normalize_tool_lookup_name("list_mcp_resources"): ("ListMcpResources",),
+    _normalize_tool_lookup_name("read_mcp_resource"): ("ReadMcpResource",),
+    _normalize_tool_lookup_name("read_session_events"): ("ReadSessionEvents",),
+}
+
+
+def _normalize_allowed_tool_set(raw_tools: Any) -> set[str]:
+    if not isinstance(raw_tools, list):
+        return set()
+    allowed: set[str] = set()
+    for item in raw_tools:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        raw_name = item.strip()
+        raw_lookup = _normalize_tool_lookup_name(raw_name)
+        allowed.add(raw_lookup)
+        for alias in _BUILTIN_TOOL_ALIASES.get(raw_lookup, ()):
+            allowed.add(_normalize_tool_lookup_name(alias))
+    return allowed
+
+
+def _allowed_tools_from_agent_config(agent_config: dict[str, Any]) -> set[str]:
+    raw_tools = agent_config.get("tools") or agent_config.get("allowedTools")
+    return _normalize_allowed_tool_set(raw_tools)
 
 
 def _is_short_k8s_host(hostname: str) -> bool:
@@ -995,6 +1057,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_clients_by_instance: dict[str, MCPClient] = {}
         self._mcp_config_hash_by_instance: dict[str, str] = {}
         self._mcp_tools_by_instance: dict[str, dict[str, Any]] = {}
+        self._allowed_tools_by_instance: dict[str, set[str]] = {}
         # Parallel to _mcp_tools_by_instance — maps the same normalized tool
         # lookup key to {server_name, transport} so run_tool can emit
         # mcp.tool_call events with the source server + transport without
@@ -1057,7 +1120,7 @@ class OpenShellDurableAgent(DurableAgent):
         self,
         instance_id: str,
         context: dict[str, Any],
-    ) -> dict[str, str | None]:
+    ) -> dict[str, Any]:
         if not instance_id:
             return {}
         clean = _clean_runtime_context(context)
@@ -1081,9 +1144,14 @@ class OpenShellDurableAgent(DurableAgent):
                 self._workspace_ref_by_instance[instance_id] = clean["workspaceRef"] or ""
             if clean.get("executionId"):
                 self._execution_id_by_instance[instance_id] = clean["executionId"] or ""
+            allowed_tools = _normalize_allowed_tool_set(clean.get("allowedTools"))
+            if allowed_tools:
+                self._allowed_tools_by_instance[instance_id] = allowed_tools
+            else:
+                self._allowed_tools_by_instance.pop(instance_id, None)
         return clean
 
-    def _runtime_context_for_instance(self, instance_id: str) -> dict[str, str | None]:
+    def _runtime_context_for_instance(self, instance_id: str) -> dict[str, Any]:
         if not instance_id:
             return {}
         with self._agent_context_lock:
@@ -1095,6 +1163,12 @@ class OpenShellDurableAgent(DurableAgent):
         if isinstance(state_value, dict):
             return self._remember_runtime_context(instance_id, state_value)
         return {}
+
+    def _is_tool_allowed_for_instance(self, instance_id: str, tool_name: str) -> bool:
+        allowed_tools = self._allowed_tools_by_instance.get(instance_id)
+        if not allowed_tools:
+            return True
+        return _normalize_tool_lookup_name(tool_name) in allowed_tools
 
     def _bind_openshell_runtime_for_instance(self, instance_id: str):
         context = self._runtime_context_for_instance(instance_id)
@@ -1142,6 +1216,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_tool_sources_by_instance.pop(instance_id, None)
         self._mcp_allowed_tools_by_instance.pop(instance_id, None)
         self._mcp_configs_by_instance.pop(instance_id, None)
+        self._allowed_tools_by_instance.pop(instance_id, None)
         if client is not None:
             await client.close()
 
@@ -1281,6 +1356,22 @@ class OpenShellDurableAgent(DurableAgent):
                     logger.warning("[mcp] Skipping MCP tool name collision: %s", tool.name)
                     continue
                 tools.append(tool)
+
+        allowed_tools = self._allowed_tools_by_instance.get(instance_id)
+        if allowed_tools:
+            before = len(tools)
+            tools = [
+                t
+                for t in tools
+                if _normalize_tool_lookup_name(getattr(t, "name", "")) in allowed_tools
+            ]
+            logger.info(
+                "[tools] AgentConfig tools filter for %s: kept %d/%d tools (%s)",
+                instance_id,
+                len(tools),
+                before,
+                sorted(allowed_tools),
+            )
 
         # Hard allowed-tools enforcement when a skill is active. Mirrors
         # Claude Code's tools/SkillTool/SkillTool.ts:775-806 contextModifier
@@ -1589,6 +1680,34 @@ class OpenShellDurableAgent(DurableAgent):
             tool_args = tool_args["kwargs"]
         if not isinstance(tool_args, dict):
             tool_args = {}
+
+        if not self._is_tool_allowed_for_instance(inst_id, tool_name):
+            reason = f"Tool {tool_name} is disabled by this run's tool policy"
+            try:
+                publish_session_event(
+                    sess_id,
+                    "tool_call_error",
+                    {
+                        "toolName": tool_name,
+                        "success": False,
+                        "error": reason[:200],
+                    },
+                    source_event_id=f"{tool_call_id}:blocked" if tool_call_id else None,
+                    instance_id=inst_id,
+                )
+            except Exception:
+                pass
+            blocked_msg = ToolMessage(
+                content=reason,
+                role="tool",
+                name=tool_name,
+                tool_call_id=tool_call.get("id", "") if isinstance(tool_call, dict) else "",
+            )
+            try:
+                self.text_formatter.print_message(blocked_msg)
+            except Exception:
+                pass
+            return blocked_msg.model_dump()
 
         # Telemetry: start claude_code.tool span for this activity.
         # run_tool runs as its own Dapr activity (different call from the
@@ -2033,11 +2152,14 @@ class OpenShellDurableAgent(DurableAgent):
         cwd = str(message.get("cwd") or metadata.get("cwd") or "").strip()
         session_id_raw = str(message.get("sessionId") or "").strip()
 
-        runtime, runtime_token = bind_runtime(
-            sandbox_name=sandbox_name,
-            cwd=cwd or DEFAULT_CWD,
-            session_id=session_id_raw or None,
-        )
+        # Keep the durable workflow body free of ContextVar binding. Dapr may
+        # replay/resume the generator in a different Python context, while
+        # activities bind their own runtime from the persisted per-instance
+        # context before touching tools.
+        runtime = OpenShellRuntime()
+        runtime.set_sandbox_name(sandbox_name)
+        runtime.set_cwd(cwd or DEFAULT_CWD)
+        runtime.set_session_id(session_id_raw or None)
         code_checkpoint_restore = _extract_code_checkpoint_restore(message, metadata)
 
         if code_checkpoint_restore and not ctx.is_replaying:
@@ -2076,6 +2198,7 @@ class OpenShellDurableAgent(DurableAgent):
         # so the <env> block layers on top of the right role/goal. Mirrors the
         # existing per-run override pattern for system_prompt/model/max_turns.
         agent_config = _coerce_agent_config(message.get("agentConfig")) or {}
+        allowed_tools = _allowed_tools_from_agent_config(agent_config)
         previous_role = self.profile.role
         previous_goal = self.profile.goal
         previous_instructions = list(self.profile.instructions or [])
@@ -2460,6 +2583,7 @@ class OpenShellDurableAgent(DurableAgent):
             "workspaceRef": workspace_ref or None,
             "llmComponent": llm_component,
             "systemPrompt": self.profile.system_prompt,
+            "allowedTools": sorted(allowed_tools),
         }
         self._remember_runtime_context(instance_id, runtime_context)
         yield ctx.call_activity(
@@ -2587,10 +2711,6 @@ class OpenShellDurableAgent(DurableAgent):
             # intact; each replay's install/resolve block rewrites the entries
             # idempotently, so the memory footprint is bounded by the number of
             # concurrently-live workflow instances.
-            try:
-                reset_runtime(runtime_token)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[runtime-context] reset failed after workflow: %s", exc)
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
             self.profile.system_prompt = previous_system_prompt
@@ -3006,6 +3126,7 @@ class OpenShellDurableAgent(DurableAgent):
                     cwd=str(child_input.get("cwd") or DEFAULT_CWD),
                     sandbox_name=str(child_input.get("sandboxName") or "") or None,
                 ),
+                "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
             }
             yield ctx.call_activity(
                 self.seed_runtime_context_for_instance,

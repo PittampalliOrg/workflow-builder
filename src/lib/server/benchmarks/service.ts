@@ -44,6 +44,7 @@ import {
 	normalizeSwebenchSuiteSlug,
 	repoFromInstanceId,
 	summarizeRunInstances,
+	SWEBENCH_ALLOWED_AGENT_TOOLS,
 	SWEBENCH_SUITES,
 	type SwebenchSuiteSlug,
 } from "./swebench";
@@ -1160,6 +1161,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 								cwd: repoPath,
 								maxTurns: params.maxTurns ?? undefined,
 								timeoutMinutes,
+								tools: SWEBENCH_ALLOWED_AGENT_TOOLS,
 							},
 							prompt,
 						},
@@ -1236,6 +1238,7 @@ function buildSwebenchPrompt(params: {
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
 		"- Running local tests is optional and best-effort. Official grading happens later in a Docker SWE-bench evaluator job.",
+		"- Do not use web search, web fetch, external issue pages, PR pages, or solution commits. Use only the repository contents, the problem statement, and local sandbox commands.",
 		...environmentNotes,
 		"",
 		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
