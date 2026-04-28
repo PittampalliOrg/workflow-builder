@@ -2713,7 +2713,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	const extractPatchCommand = [
 		"set -eu",
 		"cd /sandbox/repo",
-		"rm -rf .cache",
+		"rm -rf /sandbox/.cache .cache",
 		`git diff --binary ${quoteShell(instance.baseCommit)} --`,
 	].join("\n");
 	return {

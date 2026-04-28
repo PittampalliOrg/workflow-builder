@@ -880,7 +880,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	const extractPatchCommand = [
 		"set -eu",
 		"cd /sandbox/repo",
-		"rm -rf .cache",
+		"rm -rf /sandbox/.cache .cache",
 		`git diff --binary ${quoteShell(params.baseCommit)} --`,
 	].join("\n");
 	const cloneCommand = [
