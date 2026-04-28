@@ -66,4 +66,24 @@ describe("SWE-bench environment image build planning", () => {
 		expect(planned).toHaveProperty("envSpecHash");
 		expect(planned).not.toHaveProperty("sandboxImage");
 	});
+
+	it("uses repo-aware validation defaults for Flask source-layout images", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "pallets__flask-4992",
+			repo: "pallets/flask",
+			baseCommit: "4c288bc97ea371817199908d0d9b12de9dae327e",
+			testMetadata: { version: "2.3" },
+		});
+
+		expect(spec).toMatchObject({
+			environmentKey: "flask-2.3",
+			dockerfilePath:
+				"services/openshell-sandbox/environments/Dockerfile.swebench-inference-flask-2.3",
+			validationCommand: expect.stringContaining("PYTHONPATH=src"),
+		});
+		expect(spec.environmentNotes).toContain(
+			"For local imports and tests in this source-layout repo, prefix Python commands with PYTHONPATH=src.",
+		);
+	});
 });

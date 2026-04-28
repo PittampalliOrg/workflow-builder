@@ -97,9 +97,10 @@ export function buildSwebenchEnvironmentSpec(
 	const dockerfilePath =
 		readMetadataString(input.testMetadata, ["dockerfilePath", "dockerfile_path"]) ??
 		`services/openshell-sandbox/environments/Dockerfile.swebench-inference-${environmentKey}`;
+	const defaultTuning = defaultSwebenchEnvironmentTuning(repo);
 	const validationCommand =
 		readMetadataString(input.testMetadata, ["validationCommand", "validation_command"]) ??
-		"python --version && python -m pytest --version";
+		defaultTuning.validationCommand;
 	const baseSpec = {
 		dataset,
 		suite: input.suiteSlug,
@@ -120,10 +121,53 @@ export function buildSwebenchEnvironmentSpec(
 		instanceId: readString(input.instanceId) ?? undefined,
 		envSpecHash,
 		imageTag: `env-${envSpecHash.slice(0, 16)}`,
-		environmentNotes: [
-			"This image was selected or built before the agent started and validated with a repository checkout smoke test.",
-		],
+		environmentNotes: defaultTuning.environmentNotes,
 	};
+}
+
+function defaultSwebenchEnvironmentTuning(repo: string): {
+	validationCommand: string;
+	environmentNotes: string[];
+} {
+	const commonNotes = [
+		"This image was selected or built before the agent started and validated with a repository checkout smoke test.",
+		"Dependencies are preinstalled in /sandbox/.venv; avoid reinstalling unless needed.",
+	];
+	switch (repo) {
+		case "pallets/flask":
+			return {
+				validationCommand:
+					"PYTHONPATH=src python -c 'import flask, pytest; print(\"flask\", flask.__version__); print(\"pytest\", pytest.__version__)'",
+				environmentNotes: [
+					"For local imports and tests in this source-layout repo, prefix Python commands with PYTHONPATH=src.",
+					...commonNotes,
+				],
+			};
+		case "psf/requests":
+			return {
+				validationCommand:
+					"python -c 'import requests, pytest; print(\"requests\", requests.__version__); print(\"pytest\", pytest.__version__)'",
+				environmentNotes: commonNotes,
+			};
+		case "pytest-dev/pytest":
+			return {
+				validationCommand:
+					"python -c 'import pytest; print(\"pytest\", pytest.__version__)'",
+				environmentNotes: commonNotes,
+			};
+		case "sympy/sympy":
+			return {
+				validationCommand:
+					"python -c 'import sympy, mpmath; print(\"sympy\", sympy.__version__); print(\"mpmath\", mpmath.__version__)' && python -m pip show flake8-comprehensions >/dev/null && python -c 'import pytest; print(\"pytest\", pytest.__version__)'",
+				environmentNotes: commonNotes,
+			};
+		default:
+			return {
+				validationCommand:
+					"python --version && python -c 'import pytest; print(\"pytest\", pytest.__version__)'",
+				environmentNotes: commonNotes,
+			};
+	}
 }
 
 export function plannedSwebenchInferenceEnvironment(
