@@ -655,6 +655,12 @@ export function normalizeEnvironmentBuildActivityEvents(input: {
 		message?: string | null;
 		rawMetadata?: Record<string, unknown>;
 	}) {
+		const eventPipelineRunName =
+			args.pipelineRunName === undefined ? pipelineRunName : args.pipelineRunName;
+		const eventPipelineRunNamespace =
+			args.pipelineRunNamespace === undefined
+				? pipelineRunNamespace
+				: args.pipelineRunNamespace;
 		const eventTimestamp =
 			coerceDate(args.timestamp) ??
 			build.completedAt ??
@@ -663,8 +669,8 @@ export function normalizeEnvironmentBuildActivityEvents(input: {
 			build.createdAt;
 		const eventKey = buildActivityEventKey({
 			eventType: args.eventType,
-			pipelineRunName: args.pipelineRunName ?? pipelineRunName,
-			pipelineRunNamespace: args.pipelineRunNamespace ?? pipelineRunNamespace,
+			pipelineRunName: eventPipelineRunName,
+			pipelineRunNamespace: eventPipelineRunNamespace,
 			taskRunName: args.taskRunName ?? null,
 			phase: args.phase ?? null,
 			timestamp: eventTimestamp,
@@ -675,8 +681,8 @@ export function normalizeEnvironmentBuildActivityEvents(input: {
 			environmentKey: build.environmentKey,
 			eventKey,
 			eventType: args.eventType,
-			pipelineRunName: args.pipelineRunName ?? pipelineRunName,
-			pipelineRunNamespace: args.pipelineRunNamespace ?? pipelineRunNamespace,
+			pipelineRunName: eventPipelineRunName,
+			pipelineRunNamespace: eventPipelineRunNamespace,
 			taskRunName: args.taskRunName ?? null,
 			phase: args.phase ?? null,
 			reason: args.reason ?? null,
@@ -689,6 +695,8 @@ export function normalizeEnvironmentBuildActivityEvents(input: {
 	pushEvent({
 		eventType: "build_queued",
 		timestamp: build.requestedAt ?? build.createdAt,
+		pipelineRunName: null,
+		pipelineRunNamespace: null,
 		phase: "queued",
 		reason: "requested",
 		message: `Environment build queued for ${build.environmentKey}`,
@@ -702,7 +710,7 @@ export function normalizeEnvironmentBuildActivityEvents(input: {
 	if (pipelineRunName) {
 		pushEvent({
 			eventType: "pipelinerun_created",
-			timestamp: pipelineRun?.metadata?.creationTimestamp ?? build.startedAt ?? build.createdAt,
+			timestamp: build.startedAt ?? pipelineRun?.metadata?.creationTimestamp ?? build.createdAt,
 			phase: "created",
 			reason: "PipelineRunCreated",
 			message: `Tekton PipelineRun ${pipelineRunName} created`,

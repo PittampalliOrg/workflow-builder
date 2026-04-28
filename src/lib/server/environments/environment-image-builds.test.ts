@@ -178,6 +178,65 @@ describe("SWE-bench environment image build planning", () => {
 		).toBe(events.find((event) => event.eventType === "digest_captured")?.id);
 	});
 
+	it("keeps the queued event id stable after a PipelineRun is attached", () => {
+		const queued = normalizeEnvironmentBuildActivityEvents({
+			build: mockBuild({
+				status: "queued",
+				pipelineRunName: null,
+				pipelineRunNamespace: null,
+				startedAt: null,
+			}),
+		});
+		const building = normalizeEnvironmentBuildActivityEvents({
+			build: mockBuild({
+				status: "building",
+				pipelineRunName: "swe-env-abc",
+				pipelineRunNamespace: "tekton-pipelines",
+			}),
+			pipelineRun: {
+				metadata: { name: "swe-env-abc", namespace: "tekton-pipelines" },
+			},
+		});
+
+		const queuedEvent = queued.find((event) => event.eventType === "build_queued");
+		const buildingQueuedEvent = building.find(
+			(event) => event.eventType === "build_queued",
+		);
+		expect(buildingQueuedEvent?.id).toBe(queuedEvent?.id);
+		expect(buildingQueuedEvent?.pipelineRunName).toBeNull();
+	});
+
+	it("keeps the PipelineRun-created event id stable when Tekton metadata is later hydrated", () => {
+		const initial = normalizeEnvironmentBuildActivityEvents({
+			build: mockBuild({
+				startedAt: new Date("2026-04-28T12:00:01.123Z"),
+			}),
+			pipelineRun: {
+				metadata: { name: "swe-env-abc", namespace: "tekton-pipelines" },
+			},
+		});
+		const hydrated = normalizeEnvironmentBuildActivityEvents({
+			build: mockBuild({
+				startedAt: new Date("2026-04-28T12:00:01.123Z"),
+			}),
+			pipelineRun: {
+				metadata: {
+					name: "swe-env-abc",
+					namespace: "tekton-pipelines",
+					creationTimestamp: "2026-04-28T12:00:01.000Z",
+				},
+			},
+		});
+
+		const initialEvent = initial.find(
+			(event) => event.eventType === "pipelinerun_created",
+		);
+		const hydratedEvent = hydrated.find(
+			(event) => event.eventType === "pipelinerun_created",
+		);
+		expect(hydratedEvent?.id).toBe(initialEvent?.id);
+	});
+
 	it("captures failed validation task details", () => {
 		const events = normalizeEnvironmentBuildActivityEvents({
 			build: mockBuild({ status: "building" }),
