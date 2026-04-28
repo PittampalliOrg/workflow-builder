@@ -4,6 +4,7 @@ import {
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
 	extractBenchmarkRuntimeLinks,
+	extractInferenceEnvironment,
 	resolveBenchmarkInferenceStatus,
 	resolveBenchmarkInstanceStatusAfterInference,
 } from "./service";
@@ -257,6 +258,45 @@ describe("SWE-bench workflow spec", () => {
 				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			],
+		});
+	});
+
+	it("prefers the validated inference environment over planned trigger metadata", () => {
+		const environment = extractInferenceEnvironment({
+			input: {
+				inferenceEnvironment: {
+					environmentStatus: "building",
+					environmentKey: "requests-2.4",
+				},
+			},
+			outputs: {
+				prepare_environment: {
+					environment: {
+						environmentStatus: "validated",
+						environmentKey: "requests-2.4",
+						sandboxImage:
+							"ghcr.io/pittampalliorg/swebench-inference-requests-2.4:env-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+						digest:
+							"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+						validationLogRef: "tekton://taskruns/swe-env-abc-validate-image",
+					},
+				},
+				solve: {
+					environmentConfig: {
+						swebenchInferenceEnvironment: {
+							environmentStatus: "building",
+							environmentKey: "requests-2.4",
+						},
+					},
+				},
+			},
+		});
+
+		expect(environment).toMatchObject({
+			environmentStatus: "validated",
+			environmentKey: "requests-2.4",
+			digest:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		});
 	});
 

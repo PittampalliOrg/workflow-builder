@@ -1304,11 +1304,20 @@ function extractModelPatch(value: unknown): string {
 	return candidates.find((candidate) => candidate.includes("diff --git")) ?? "";
 }
 
-function extractInferenceEnvironment(value: unknown): Record<string, unknown> | null {
-	const direct = firstRecordByKey(value, ["inferenceEnvironment"]);
-	if (direct) return direct;
-	const nested = firstRecordByKey(value, ["swebenchInferenceEnvironment"]);
-	return nested;
+export function extractInferenceEnvironment(value: unknown): Record<string, unknown> | null {
+	const candidates = [
+		...collectRecordsByKey(value, ["inferenceEnvironment"]),
+		...collectRecordsByKey(value, ["swebenchInferenceEnvironment"]),
+		...collectRecordsByKey(value, ["environment"]),
+	].filter(isInferenceEnvironmentRecord);
+	if (!candidates.length) return null;
+	return candidates
+		.map((candidate, index) => ({
+			candidate,
+			index,
+			score: inferenceEnvironmentScore(candidate),
+		}))
+		.sort((a, b) => b.score - a.score || b.index - a.index)[0].candidate;
 }
 
 export function extractBenchmarkRuntimeLinks(input: {
@@ -1410,24 +1419,52 @@ function collectStringsByKey(value: unknown, keys: string[]): string[] {
 }
 
 function firstRecordByKey(value: unknown, keys: string[]): Record<string, unknown> | null {
+	return collectRecordsByKey(value, keys)[0] ?? null;
+}
+
+function collectRecordsByKey(value: unknown, keys: string[]): Record<string, unknown>[] {
 	const wanted = new Set(keys);
-	const visit = (node: unknown): Record<string, unknown> | null => {
-		if (!node || typeof node !== "object") return null;
+	const out: Record<string, unknown>[] = [];
+	const visit = (node: unknown) => {
+		if (!node || typeof node !== "object") return;
 		if (Array.isArray(node)) {
-			for (const item of node) {
-				const found = visit(item);
-				if (found) return found;
-			}
-			return null;
+			for (const item of node) visit(item);
+			return;
 		}
 		for (const [key, child] of Object.entries(node)) {
-			if (wanted.has(key) && isRecord(child)) return child;
-			const found = visit(child);
-			if (found) return found;
+			if (wanted.has(key) && isRecord(child)) out.push(child);
+			visit(child);
 		}
-		return null;
 	};
-	return visit(value);
+	visit(value);
+	return out;
+}
+
+function inferenceEnvironmentScore(environment: Record<string, unknown>): number {
+	let score = 0;
+	if (environment.environmentStatus === "validated") score += 100;
+	if (typeof environment.sandboxImage === "string" && environment.sandboxImage.trim()) {
+		score += 40;
+	}
+	if (typeof environment.digest === "string" && environment.digest.trim()) score += 20;
+	if (typeof environment.validationLogRef === "string" && environment.validationLogRef.trim()) {
+		score += 10;
+	}
+	if (typeof environment.pipelineRunName === "string" && environment.pipelineRunName.trim()) {
+		score += 5;
+	}
+	if (environment.environmentStatus === "failed") score += 2;
+	if (environment.environmentStatus === "building") score -= 10;
+	return score;
+}
+
+function isInferenceEnvironmentRecord(environment: Record<string, unknown>): boolean {
+	return (
+		typeof environment.environmentStatus === "string" ||
+		typeof environment.sandboxImage === "string" ||
+		typeof environment.environmentKey === "string" ||
+		typeof environment.validationStatus === "string"
+	);
 }
 
 function firstNonBlank(...values: Array<string | null | undefined>): string | null {
