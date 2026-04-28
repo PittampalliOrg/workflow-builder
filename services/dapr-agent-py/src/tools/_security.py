@@ -124,6 +124,13 @@ def is_binary_file(path: str) -> bool:
 
 def expand_path(file_path: str) -> str:
     """Expand paths relative to the current OpenShell sandbox working directory."""
+    try:
+        from src.openshell_runtime import get_runtime
+
+        return get_runtime().resolve_path(file_path)
+    except Exception:
+        pass
+
     raw = os.path.expanduser(file_path)
     if raw == "~":
         raw = "/sandbox"

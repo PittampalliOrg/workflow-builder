@@ -944,6 +944,7 @@ async function ensureHiddenBenchmarkWorkflow(params: {
 	userId: string;
 }) {
 	const database = requireDb();
+	const graph = buildSwebenchInstanceWorkflowGraph();
 	const [existing] = await database
 		.select()
 		.from(workflows)
@@ -954,7 +955,20 @@ async function ensureHiddenBenchmarkWorkflow(params: {
 			),
 		)
 		.limit(1);
-	if (existing) return existing;
+	if (existing) {
+		if (!Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+			const [updated] = await database
+				.update(workflows)
+				.set({
+					nodes: graph.nodes,
+					edges: graph.edges,
+				})
+				.where(eq(workflows.id, existing.id))
+				.returning();
+			return updated ?? existing;
+		}
+		return existing;
+	}
 	const [created] = await database
 		.insert(workflows)
 		.values({
@@ -962,14 +976,67 @@ async function ensureHiddenBenchmarkWorkflow(params: {
 			description: "Internal generated workflow used by SWE-bench runs.",
 			userId: params.userId,
 			projectId: params.projectId,
-			nodes: [],
-			edges: [],
+			nodes: graph.nodes,
+			edges: graph.edges,
 			spec: null,
 			visibility: "private",
 			engineType: "dapr",
 		})
 		.returning();
 	return created;
+}
+
+export function buildSwebenchInstanceWorkflowGraph(): {
+	nodes: Array<Record<string, unknown>>;
+	edges: Array<Record<string, unknown>>;
+} {
+	const taskConfigById: Record<string, Record<string, unknown>> = {
+		workspace_profile: { call: "workspace/profile" },
+		checkout_repo: { call: "workspace/command" },
+		solve: { call: "durable/run" },
+		extract_patch: { call: "workspace/command" },
+	};
+	const node = (
+		id: string,
+		type: string,
+		label: string,
+		y: number,
+		taskConfig?: Record<string, unknown>,
+	) => ({
+		id,
+		type,
+		position: { x: 250, y },
+		data: {
+			label,
+			type,
+			...(taskConfig ? { taskConfig } : {}),
+			status: "idle",
+			enabled: true,
+		},
+	});
+	const nodes = [
+		node("__start__", "start", "Start", 50, {}),
+		node("workspace_profile", "call", "Workspace Profile", 200, taskConfigById.workspace_profile),
+		node("checkout_repo", "call", "Checkout Repo", 350, taskConfigById.checkout_repo),
+		node("solve", "agent", "Solve", 500, taskConfigById.solve),
+		node("extract_patch", "call", "Extract Patch", 650, taskConfigById.extract_patch),
+		node("__end__", "end", "End", 800),
+	];
+	const edgeIds = [
+		["__start__", "workspace_profile"],
+		["workspace_profile", "checkout_repo"],
+		["checkout_repo", "solve"],
+		["solve", "extract_patch"],
+		["extract_patch", "__end__"],
+	];
+	return {
+		nodes,
+		edges: edgeIds.map(([source, target]) => ({
+			id: `${source}->${target}`,
+			source,
+			target,
+		})),
+	};
 }
 
 export function buildSwebenchInstanceWorkflowSpec(params: {

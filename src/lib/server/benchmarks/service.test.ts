@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
 	extractBenchmarkRuntimeLinks,
@@ -8,6 +9,28 @@ import {
 } from "./service";
 
 describe("SWE-bench workflow spec", () => {
+	it("builds a canvas graph for generated SWE-bench instance runs", () => {
+		const graph = buildSwebenchInstanceWorkflowGraph();
+		const nodes = graph.nodes as Array<{ id: string; type: string }>;
+		const edges = graph.edges as Array<{ source: string; target: string }>;
+		expect(nodes.map((node) => node.id)).toEqual([
+			"__start__",
+			"workspace_profile",
+			"checkout_repo",
+			"solve",
+			"extract_patch",
+			"__end__",
+		]);
+		expect(nodes.find((node) => node.id === "solve")?.type).toBe("agent");
+		expect(edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+			"__start__->workspace_profile",
+			"workspace_profile->checkout_repo",
+			"checkout_repo->solve",
+			"solve->extract_patch",
+			"extract_patch->__end__",
+		]);
+	});
+
 	it("uses a POSIX-compatible checkout command", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
 			runId: "run_1",

@@ -7,6 +7,7 @@ import logging
 import os
 import posixpath
 import shlex
+import contextvars
 import threading
 from textwrap import dedent
 from typing import Any
@@ -52,6 +53,10 @@ class OpenShellRuntime:
         return self._sandbox_name or "unknown"
 
     @property
+    def configured_sandbox_name(self) -> str | None:
+        return self._sandbox_name
+
+    @property
     def session_id(self) -> str | None:
         return self._session_id
 
@@ -71,10 +76,6 @@ class OpenShellRuntime:
             with self._lock:
                 self._session = None
                 self._sandbox_name = normalized or None
-        if normalized:
-            os.environ[SANDBOX_NAME_ENV] = normalized
-        else:
-            os.environ.pop(SANDBOX_NAME_ENV, None)
 
     def set_cwd(self, cwd: str | None) -> None:
         """Set the working directory used for relative paths and commands."""
@@ -83,7 +84,6 @@ class OpenShellRuntime:
         else:
             normalized = self.resolve_path(cwd)
         self._cwd = normalized
-        os.environ[SANDBOX_CWD_ENV] = normalized
 
     def resolve_path(self, path: str | None) -> str:
         raw = (path or ".").strip() or "."
@@ -93,7 +93,7 @@ class OpenShellRuntime:
             raw = posixpath.join(DEFAULT_CWD, raw[2:])
         if posixpath.isabs(raw):
             return posixpath.normpath(raw)
-        base = os.environ.get(SANDBOX_CWD_ENV) or self._cwd or DEFAULT_CWD
+        base = self._cwd or os.environ.get(SANDBOX_CWD_ENV) or DEFAULT_CWD
         return posixpath.normpath(posixpath.join(base, raw))
 
     def _ensure_session(self) -> SandboxSession:
@@ -105,7 +105,9 @@ class OpenShellRuntime:
                 return self._session
 
             client = SandboxClient.from_active_cluster()
-            configured_name = os.environ.get(SANDBOX_NAME_ENV, "").strip()
+            configured_name = (
+                self._sandbox_name or os.environ.get(SANDBOX_NAME_ENV, "")
+            ).strip()
             if not configured_name:
                 raise RuntimeError(
                     "OpenShell sandboxName is required. The workflow must pass "
@@ -480,8 +482,29 @@ class OpenShellRuntime:
         return parsed
 
 
-_RUNTIME = OpenShellRuntime()
+_DEFAULT_RUNTIME = OpenShellRuntime()
+_RUNTIME_CONTEXT: contextvars.ContextVar[OpenShellRuntime | None] = (
+    contextvars.ContextVar("openshell_runtime", default=None)
+)
 
 
 def get_runtime() -> OpenShellRuntime:
-    return _RUNTIME
+    return _RUNTIME_CONTEXT.get() or _DEFAULT_RUNTIME
+
+
+def bind_runtime(
+    *,
+    sandbox_name: str | None = None,
+    cwd: str | None = None,
+    session_id: str | None = None,
+) -> tuple[OpenShellRuntime, contextvars.Token[OpenShellRuntime | None]]:
+    runtime = OpenShellRuntime()
+    runtime.set_sandbox_name(sandbox_name)
+    runtime.set_cwd(cwd or DEFAULT_CWD)
+    runtime.set_session_id(session_id)
+    token = _RUNTIME_CONTEXT.set(runtime)
+    return runtime, token
+
+
+def reset_runtime(token: contextvars.Token[OpenShellRuntime | None]) -> None:
+    _RUNTIME_CONTEXT.reset(token)

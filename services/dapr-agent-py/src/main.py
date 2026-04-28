@@ -9,6 +9,7 @@ import os
 import posixpath
 import re
 import shlex
+import threading
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -66,7 +67,7 @@ from src.tools import all_tools
 from src.tools.skill_tool import get_registry as get_skill_registry, load_skills_from_dir, parse_skill_md
 from src.tools.skill_tool.models import SkillDefinition
 from src.tools.skill_tool.prompt import format_skill_listings
-from src.openshell_runtime import DEFAULT_CWD, get_runtime
+from src.openshell_runtime import DEFAULT_CWD, bind_runtime, get_runtime, reset_runtime
 from src.code_checkpoint import (
     capture_code_checkpoint,
     restore_code_checkpoint,
@@ -416,6 +417,50 @@ def _save_plan_to_state(execution_id: str, plan_content: str) -> None:
         method="POST",
     )
     urllib.request.urlopen(req, timeout=5)
+
+
+def _runtime_context_state_key(instance_id: str) -> str:
+    return f"runtime-context:{instance_id}"
+
+
+def _save_agent_state_key(key: str, value: Any) -> None:
+    sidecar = (
+        f"http://{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
+        f"{os.environ.get('DAPR_HTTP_PORT', '3500')}"
+    )
+    store = AGENT_STATE_STORE
+    encoded_key = urllib.parse.quote(key, safe="")
+    payload = json.dumps(
+        [{"key": key, "value": value, "metadata": {"partitionKey": encoded_key}}]
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{sidecar}/v1.0/state/{store}",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=5)
+
+
+def _clean_runtime_context(value: dict[str, Any]) -> dict[str, str | None]:
+    context: dict[str, str | None] = {}
+    for key in (
+        "executionId",
+        "sandboxName",
+        "cwd",
+        "sessionId",
+        "workspaceRef",
+        "llmComponent",
+        "systemPrompt",
+    ):
+        raw = value.get(key)
+        if raw is None:
+            context[key] = None
+            continue
+        text = str(raw).strip()
+        context[key] = text or None
+    context["cwd"] = context.get("cwd") or DEFAULT_CWD
+    return context
 
 
 def _sandbox_name_from_workspace_ref(workspace_ref: str | None) -> str | None:
@@ -962,6 +1007,10 @@ class OpenShellDurableAgent(DurableAgent):
         # agent_workflow as a child. Activities thread it into
         # publish_session_event so every agent event lands in session_events.
         self._session_id_by_instance: dict[str, str] = {}
+        self._execution_id_by_instance: dict[str, str] = {}
+        self._openshell_context_by_instance: dict[str, dict[str, str | None]] = {}
+        self._agent_context_by_instance: dict[str, dict[str, str | None]] = {}
+        self._agent_context_lock = threading.RLock()
         # Hooks/plugins: populated by plugins.integration.bootstrap(agent) at
         # service boot. Defaults keep the attributes safe to touch even when
         # DAPR_AGENT_PY_HOOKS_ENABLED=false.
@@ -991,6 +1040,93 @@ class OpenShellDurableAgent(DurableAgent):
         # thinking + tools occasionally emits stop_reason=end_turn with an
         # empty text block and no tool_use).
         self._empty_llm_response_count_by_instance: dict[str, int] = {}
+
+    def _activity_instance_id(self, ctx: Any, payload: Any) -> str:
+        if isinstance(payload, dict):
+            for key in ("instance_id", "instanceId"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for attr in ("workflow_id", "instance_id"):
+            value = getattr(ctx, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return self._inst_id or ""
+
+    def _remember_runtime_context(
+        self,
+        instance_id: str,
+        context: dict[str, Any],
+    ) -> dict[str, str | None]:
+        if not instance_id:
+            return {}
+        clean = _clean_runtime_context(context)
+        sandbox_context = {
+            "sandboxName": clean.get("sandboxName"),
+            "cwd": clean.get("cwd") or DEFAULT_CWD,
+            "sessionId": clean.get("sessionId"),
+            "workspaceRef": clean.get("workspaceRef"),
+            "executionId": clean.get("executionId"),
+        }
+        agent_context = {
+            "llmComponent": clean.get("llmComponent"),
+            "systemPrompt": clean.get("systemPrompt"),
+        }
+        with self._agent_context_lock:
+            self._openshell_context_by_instance[instance_id] = sandbox_context
+            self._agent_context_by_instance[instance_id] = agent_context
+            if clean.get("sessionId"):
+                self._session_id_by_instance[instance_id] = clean["sessionId"] or ""
+            if clean.get("workspaceRef"):
+                self._workspace_ref_by_instance[instance_id] = clean["workspaceRef"] or ""
+            if clean.get("executionId"):
+                self._execution_id_by_instance[instance_id] = clean["executionId"] or ""
+        return clean
+
+    def _runtime_context_for_instance(self, instance_id: str) -> dict[str, str | None]:
+        if not instance_id:
+            return {}
+        with self._agent_context_lock:
+            sandbox_context = dict(self._openshell_context_by_instance.get(instance_id) or {})
+            agent_context = dict(self._agent_context_by_instance.get(instance_id) or {})
+        if sandbox_context or agent_context:
+            return {**sandbox_context, **agent_context}
+        state_value = _read_agent_state_key(_runtime_context_state_key(instance_id))
+        if isinstance(state_value, dict):
+            return self._remember_runtime_context(instance_id, state_value)
+        return {}
+
+    def _bind_openshell_runtime_for_instance(self, instance_id: str):
+        context = self._runtime_context_for_instance(instance_id)
+        runtime, token = bind_runtime(
+            sandbox_name=context.get("sandboxName"),
+            cwd=context.get("cwd") or DEFAULT_CWD,
+            session_id=context.get("sessionId")
+            or self._session_id_by_instance.get(instance_id),
+        )
+        return runtime, token
+
+    def seed_runtime_context_for_instance(self, ctx, payload: dict) -> dict:
+        instance_id = str(payload.get("instance_id") or payload.get("instanceId") or "").strip()
+        if not instance_id:
+            return {"ok": False, "reason": "no_instance_id"}
+        raw_context = payload.get("context") if isinstance(payload.get("context"), dict) else payload
+        context = self._remember_runtime_context(instance_id, raw_context)
+        try:
+            _save_agent_state_key(_runtime_context_state_key(instance_id), context)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[runtime-context] Failed to persist context for %s: %s",
+                instance_id,
+                exc,
+            )
+            raise
+        return {
+            "ok": True,
+            "instance_id": instance_id,
+            "sandboxName": context.get("sandboxName"),
+            "cwd": context.get("cwd"),
+        }
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -1128,7 +1264,7 @@ class OpenShellDurableAgent(DurableAgent):
 
     def get_llm_tools(self):
         tools = list(super().get_llm_tools())
-        instance_id = self._active_llm_instance_id or self._inst_id or ""
+        instance_id = self._active_llm_instance_id or ""
         logger.warning(
             "[mcp] get_llm_tools called: super()=%d tools, inst_id=%s",
             len(tools),
@@ -1188,9 +1324,16 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_anthropic(self.llm)
         except Exception:
             pass
-        exec_id = self._exec_id or ""
-        inst_id = self._inst_id or payload.get("instance_id", "")
-        component = getattr(self.llm, "_llm_component", None)
+        inst_id = self._activity_instance_id(ctx, payload)
+        context = self._runtime_context_for_instance(inst_id)
+        exec_id = (
+            context.get("executionId")
+            or self._execution_id_by_instance.get(inst_id)
+            or self._exec_id
+            or ""
+        )
+        component = context.get("llmComponent") or getattr(self.llm, "_llm_component", None)
+        _runtime, runtime_token = self._bind_openshell_runtime_for_instance(inst_id)
         self._activate_instance_skills(inst_id)
         self._ensure_mcp_client(inst_id)
 
@@ -1237,15 +1380,6 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[compaction] inline pass failed (continuing): %s", exc, exc_info=True)
 
-        # Suppress tool_choice for Anthropic components — the Dapr langchaingo
-        # Anthropic adapter passes tool_choice as a string ("auto") but the
-        # Anthropic API expects a dict ({"type": "auto"}), causing HTTP 400.
-        # Workaround: temporarily clear tool_choice for Anthropic calls.
-        saved_tool_choice = None
-        if component and "anthropic" in component:
-            saved_tool_choice = self.execution.tool_choice
-            self.execution.tool_choice = None
-
         sess_id = self._session_id_by_instance.get(inst_id)
         try:
             publish_session_event(
@@ -1257,8 +1391,31 @@ class OpenShellDurableAgent(DurableAgent):
         # reads this contextvar to emit agent.thinking events.
         scope_token = scope_session(sess_id, inst_id)
         try:
-            self._active_llm_instance_id = inst_id
-            result = super().call_llm(ctx, payload)
+            with self._agent_context_lock:
+                previous_active_instance = self._active_llm_instance_id
+                previous_component = getattr(self.llm, "_llm_component", None)
+                previous_system_prompt = self.profile.system_prompt
+                saved_tool_choice = None
+                try:
+                    if component:
+                        self.llm._llm_component = component
+                    if context.get("systemPrompt"):
+                        self.profile.system_prompt = context["systemPrompt"]
+                    active_component = getattr(self.llm, "_llm_component", None)
+                    # Suppress tool_choice for Anthropic components — the
+                    # Dapr langchaingo Anthropic adapter passes tool_choice as
+                    # a string ("auto") but the Anthropic API expects a dict.
+                    if active_component and "anthropic" in active_component:
+                        saved_tool_choice = self.execution.tool_choice
+                        self.execution.tool_choice = None
+                    self._active_llm_instance_id = inst_id
+                    result = super().call_llm(ctx, payload)
+                finally:
+                    self._active_llm_instance_id = previous_active_instance
+                    self.llm._llm_component = previous_component
+                    self.profile.system_prompt = previous_system_prompt
+                    if saved_tool_choice is not None:
+                        self.execution.tool_choice = saved_tool_choice
         except Exception as exc:
             try:
                 publish_session_event(
@@ -1303,11 +1460,11 @@ class OpenShellDurableAgent(DurableAgent):
                 ) from exc
             raise
         finally:
-            self._active_llm_instance_id = None
             unscope_session(scope_token)
-            # Restore tool_choice if it was suppressed for Anthropic
-            if saved_tool_choice is not None:
-                self.execution.tool_choice = saved_tool_choice
+            try:
+                reset_runtime(runtime_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[runtime-context] reset failed after llm: %s", exc)
         # Extract content summary from the assistant message
         content = ""
         tool_calls = []
@@ -1402,8 +1559,15 @@ class OpenShellDurableAgent(DurableAgent):
 
     def run_tool(self, ctx, payload):
         """Publish tool_call_start/end streaming events with content."""
-        exec_id = self._exec_id or ""
-        inst_id = self._inst_id or payload.get("instance_id", "")
+        inst_id = self._activity_instance_id(ctx, payload)
+        context = self._runtime_context_for_instance(inst_id)
+        exec_id = (
+            context.get("executionId")
+            or self._execution_id_by_instance.get(inst_id)
+            or self._exec_id
+            or ""
+        )
+        _runtime, runtime_token = self._bind_openshell_runtime_for_instance(inst_id)
         sess_id = self._session_id_by_instance.get(inst_id)
         tool_call = payload.get("tool_call", {})
         tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
@@ -1838,6 +2002,10 @@ class OpenShellDurableAgent(DurableAgent):
               pass
           return result
         finally:
+            try:
+                reset_runtime(runtime_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[runtime-context] reset failed after tool: %s", exc)
             # End claude_code.tool span + reset session context. Fires on every
             # exit path (successful return, exception, blocked-by-hook return).
             try:
@@ -1863,10 +2031,13 @@ class OpenShellDurableAgent(DurableAgent):
             )
         )
         cwd = str(message.get("cwd") or metadata.get("cwd") or "").strip()
+        session_id_raw = str(message.get("sessionId") or "").strip()
 
-        runtime = get_runtime()
-        runtime.set_sandbox_name(sandbox_name)
-        runtime.set_cwd(cwd or DEFAULT_CWD)
+        runtime, runtime_token = bind_runtime(
+            sandbox_name=sandbox_name,
+            cwd=cwd or DEFAULT_CWD,
+            session_id=session_id_raw or None,
+        )
         code_checkpoint_restore = _extract_code_checkpoint_restore(message, metadata)
 
         if code_checkpoint_restore and not ctx.is_replaying:
@@ -2029,7 +2200,6 @@ class OpenShellDurableAgent(DurableAgent):
         # Phase 4 bridge: when session_workflow spawns agent_workflow, it
         # inlines sessionId into the child's message dict. Stash per-instance
         # so activities can pass it to publish_session_event.
-        session_id_raw = str(message.get("sessionId") or "").strip()
         if session_id_raw:
             self._session_id_by_instance[instance_id] = session_id_raw
 
@@ -2280,6 +2450,23 @@ class OpenShellDurableAgent(DurableAgent):
                     except Exception as exc:
                         logger.warning("[hooks] UserPromptSubmit error: %s", exc)
 
+        effective_cwd = runtime.cwd or cwd or DEFAULT_CWD
+        self._cwd_by_instance[instance_id] = effective_cwd
+        runtime_context = {
+            "executionId": execution_id,
+            "sandboxName": sandbox_name or None,
+            "cwd": effective_cwd,
+            "sessionId": session_id_raw or None,
+            "workspaceRef": workspace_ref or None,
+            "llmComponent": llm_component,
+            "systemPrompt": self.profile.system_prompt,
+        }
+        self._remember_runtime_context(instance_id, runtime_context)
+        yield ctx.call_activity(
+            self.seed_runtime_context_for_instance,
+            input={"instance_id": instance_id, "context": runtime_context},
+        )
+
         agent_workflow_result = None
         try:
             # In dapr-agents 1.0.1 the base agent_workflow generator returns
@@ -2400,6 +2587,10 @@ class OpenShellDurableAgent(DurableAgent):
             # intact; each replay's install/resolve block rewrites the entries
             # idempotently, so the memory footprint is bounded by the number of
             # concurrently-live workflow instances.
+            try:
+                reset_runtime(runtime_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[runtime-context] reset failed after workflow: %s", exc)
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
             self.profile.system_prompt = previous_system_prompt
@@ -2462,6 +2653,7 @@ class OpenShellDurableAgent(DurableAgent):
         # allowed to have side effects (Dapr caches their return value and
         # only re-runs on worker failure).
         runtime.register_activity(self.seed_mcp_for_instance)
+        runtime.register_activity(self.seed_runtime_context_for_instance)
 
     @workflow_entry
     def call_peer_session_workflow(self, ctx, message: dict):
@@ -2715,13 +2907,6 @@ class OpenShellDurableAgent(DurableAgent):
         if not session_id:
             raise RuntimeError("session_workflow requires sessionId")
 
-        # Stamp the process-local runtime with the current session id so
-        # tools like ReadSessionEvents can scope reads to this session
-        # without the agent having to pass the id explicitly. Safe on
-        # replay: this is just in-memory state that gets reset per
-        # workflow entry.
-        get_runtime().set_session_id(session_id)
-
         agent_cfg = _coerce_agent_config(message.get("agentConfig")) or {}
         env_cfg = message.get("environmentConfig") or {}
         vault_ids = message.get("vaultIds") or []
@@ -2807,6 +2992,28 @@ class OpenShellDurableAgent(DurableAgent):
             # via get_llm_tools. Keyed on the CHILD workflow's instance_id so
             # the per-turn call_llm activity picks up the right configs.
             child_instance_id = f"{session_id}:turn-{turn_counter}"
+
+            child_metadata = _parse_metadata(child_input.get("_message_metadata"))
+            child_llm_component = _resolve_llm_component(child_input, child_metadata)
+            child_runtime_context = {
+                "executionId": db_execution_id or child_instance_id,
+                "sandboxName": child_input.get("sandboxName") or None,
+                "cwd": child_input.get("cwd") or DEFAULT_CWD,
+                "sessionId": session_id,
+                "workspaceRef": child_input.get("workspaceRef") or None,
+                "llmComponent": child_llm_component,
+                "systemPrompt": _build_system_prompt(
+                    cwd=str(child_input.get("cwd") or DEFAULT_CWD),
+                    sandbox_name=str(child_input.get("sandboxName") or "") or None,
+                ),
+            }
+            yield ctx.call_activity(
+                self.seed_runtime_context_for_instance,
+                input={
+                    "instance_id": child_instance_id,
+                    "context": child_runtime_context,
+                },
+            )
 
             # Dapr-compliant MCP bridge: yield to the `seed_mcp_for_instance`
             # activity so the side-effect (populating self._mcp_configs_by_instance

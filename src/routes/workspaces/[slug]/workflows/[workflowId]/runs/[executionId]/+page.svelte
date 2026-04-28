@@ -115,6 +115,7 @@
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import { withAgentNodeMetrics } from '$lib/utils/agent-node-metrics';
 	import { fmtTokens, modelContextWindow } from '$lib/utils/format-tokens';
+	import { specToGraph } from '$lib/utils/spec-graph-adapter';
 	import {
 		buildTimelineItems,
 		eventType,
@@ -918,12 +919,32 @@
 	// Load workflow definition for the canvas
 	async function loadWorkflow() {
 		try {
-			const res = await fetch(`/api/workflows/${workflowId}`);
-			if (!res.ok) throw new Error('Failed to load workflow');
-			const data = await res.json();
-			workflowNodes = data.nodes ?? [];
-			workflowEdges = data.edges ?? [];
-			workflowName = data.name ?? '';
+			const [workflowRes, executionRes] = await Promise.all([
+				fetch(`/api/workflows/${workflowId}`),
+				fetch(`/api/workflows/executions/${encodeURIComponent(executionId)}`)
+			]);
+			if (!workflowRes.ok) throw new Error('Failed to load workflow');
+			const workflowData = await workflowRes.json();
+			workflowName = workflowData.name ?? '';
+
+			let renderedFromExecutionSpec = false;
+			if (executionRes.ok) {
+				const executionData = await executionRes.json();
+				const spec = executionData?.executionIr?.spec;
+				if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
+					const graph = specToGraph(spec as Record<string, unknown>, {});
+					if (graph) {
+						workflowNodes = graph.nodes;
+						workflowEdges = graph.edges;
+						renderedFromExecutionSpec = true;
+					}
+				}
+			}
+
+			if (!renderedFromExecutionSpec) {
+				workflowNodes = workflowData.nodes ?? [];
+				workflowEdges = workflowData.edges ?? [];
+			}
 		} catch {
 			// Leave canvas empty on error
 		} finally {
