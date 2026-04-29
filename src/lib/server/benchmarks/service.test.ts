@@ -60,7 +60,7 @@ describe("SWE-bench workflow spec", () => {
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"${ .prepare_environment.sandboxImage }",
 		);
-		expect(String(checkoutStep.with.command)).toContain("set -eu\n");
+		expect(String(checkoutStep.with.command)).toContain("set -eu\\n");
 		expect(String(checkoutStep.with.command)).not.toContain("pipefail");
 	});
 
@@ -182,7 +182,10 @@ describe("SWE-bench workflow spec", () => {
 		expect(workspaceProfile.with.sandboxTemplate).toBe(
 			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
 		);
-		expect(workspaceProfile.with.rootPath).toBe("/testbed");
+		expect(workspaceProfile.with.rootPath).toContain(
+			".prepare_environment.environment.workspaceRoot",
+		);
+		expect(workspaceProfile.with.rootPath).toContain("/sandbox");
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"${ .prepare_environment.sandboxImage }",
 		);
@@ -202,11 +205,17 @@ describe("SWE-bench workflow spec", () => {
 		const checkout = (
 			spec.do as Array<Record<string, { with: { command: string } }>>
 		)[2].checkout_repo;
+		expect(checkout.with.command).toContain(
+			".prepare_environment.environment.workspaceRoot",
+		);
 		expect(checkout.with.command).toContain("cd /testbed");
 		expect(checkout.with.command).toContain("git merge-base --is-ancestor 'abc123' HEAD");
 		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[3]
 			.solve;
 		expect(solve.with.body.prompt).toContain(".prepare_environment.promptNotes");
+		expect(solve.with.body.prompt).toContain(
+			".prepare_environment.environment.workspaceRoot",
+		);
 		expect(solve.with.body).toMatchObject({
 			environmentConfig: {
 				swebenchInferenceEnvironment: "${ .prepare_environment.environment }",
@@ -239,12 +248,68 @@ describe("SWE-bench workflow spec", () => {
 		const workspaceProfile = (
 			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
 		)[1].workspace_profile;
+		expect(workspaceProfile.with.rootPath).toContain(
+			".prepare_environment.environment.workspaceRoot",
+		);
 		expect(workspaceProfile.with.sandboxTemplate).toBe(
 			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
 		);
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"${ .prepare_environment.sandboxImage }",
 		);
+	});
+
+	it("defers repo path selection until environment preparation completes", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: {
+				environmentStatus: "failed",
+				suite: "SWE-bench_Lite",
+				repo: "sympy/sympy",
+				version: "1.7",
+				environmentKey: "sympy-1.7",
+				sandboxTemplate: "dapr-agent",
+				buildStrategy: "swebench-harness",
+				workspaceRoot: "/testbed",
+				reason: "dynamic_build_backend_unavailable",
+			},
+		});
+
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		const workspaceProfile = steps[1].workspace_profile;
+		const checkout = steps[2].checkout_repo;
+		const solve = steps[3].solve as unknown as {
+			with: { cwd: string; body: { overrides: { cwd: string }; prompt: string } };
+		};
+		const extractPatch = steps[4].extract_patch;
+
+		expect(workspaceProfile.with.rootPath).toContain(
+			'.prepare_environment.environment.workspaceRoot // "/sandbox/repo"',
+		);
+		expect(workspaceProfile.with.rootPath).toContain('else "/sandbox"');
+		expect(String(checkout.with.command)).toContain("cd /testbed");
+		expect(String(checkout.with.command)).toContain("git clone 'https://github.com/sympy/sympy.git' repo");
+		expect(solve.with.cwd).toBe(
+			'${ .prepare_environment.environment.workspaceRoot // "/sandbox/repo" }',
+		);
+		expect(solve.with.body.overrides.cwd).toBe(
+			'${ .prepare_environment.environment.workspaceRoot // "/sandbox/repo" }',
+		);
+		expect(solve.with.body.prompt).toContain("Work only in /testbed");
+		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
+		expect(String(extractPatch.with.command)).toContain("cd '/testbed'");
+		expect(String(extractPatch.with.command)).toContain("cd '/sandbox/repo'");
 	});
 
 	it("projects sandbox, workspace, and trace links from workflow/session telemetry", () => {

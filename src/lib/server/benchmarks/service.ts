@@ -58,6 +58,11 @@ import { buildStableWorkspaceRef } from "./workspace-ref";
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+const SWEBENCH_PREPARED_REPO_PATH = "/testbed";
+const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
+const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
+const SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION = `\${ .prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)} }`;
+const SWEBENCH_RUNTIME_WORKSPACE_ROOT_EXPRESSION = `\${ if ((.prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)}) == ${JSON.stringify(SWEBENCH_PREPARED_REPO_PATH)}) then ${JSON.stringify(SWEBENCH_PREPARED_REPO_PATH)} else ${JSON.stringify(SWEBENCH_FALLBACK_WORKSPACE_ROOT)} end }`;
 const SWEBENCH_PATCH_EXCLUDE_PATHS = [
 	":(exclude)**/tests/**",
 	":(exclude)tests/**",
@@ -1080,8 +1085,6 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	maxTurns: number | null;
 	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): Record<string, unknown> {
-	const repoPath = params.inferenceEnvironment?.workspaceRoot ?? "/sandbox/repo";
-	const workspaceRoot = repoPath === "/testbed" ? "/testbed" : "/sandbox";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
 	const ttlSeconds = Math.max(params.timeoutSeconds + 3600, 7200);
 	const dynamicSandboxTemplate = "${ .prepare_environment.sandboxTemplate // \"dapr-agent\" }";
@@ -1111,7 +1114,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		pollMs: 15_000,
 	};
 	const workspaceProfileWith: Record<string, unknown> = {
-		rootPath: workspaceRoot,
+		rootPath: SWEBENCH_RUNTIME_WORKSPACE_ROOT_EXPRESSION,
 		workspaceRef,
 		sandboxTemplate: dynamicSandboxTemplate,
 		ttlSeconds,
@@ -1140,32 +1143,52 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	workspaceProfileWith.environmentConfig = {
 		swebenchInferenceEnvironment: "${ .prepare_environment.environment }",
 	};
-	const extractPatchCommand = [
+	const fallbackExtractPatchCommand = [
 		"set -eu",
-		`cd ${quoteShell(repoPath)}`,
+		`cd ${quoteShell(SWEBENCH_FALLBACK_REPO_PATH)}`,
 		"rm -rf /sandbox/.cache .cache",
 		[
 			`git diff --binary ${quoteShell(params.baseCommit)} -- .`,
 			...SWEBENCH_PATCH_EXCLUDE_PATHS.map((path) => quoteShell(path)),
 		].join(" \\\n  "),
 	].join("\n");
-	const checkoutCommand =
-		repoPath === "/testbed"
-			? buildPreparedTestbedCheckCommand(params.baseCommit)
-			: [
-					"set -eu",
-					"cd /sandbox",
-					"rm -rf repo",
-					`git clone ${quoteShell(`https://github.com/${params.repo}.git`)} repo`,
-					"cd repo",
-					`git checkout ${quoteShell(params.baseCommit)}`,
-					"git status --short",
-				].join("\n");
-	const prompt = buildSwebenchPromptExpression(buildSwebenchPrompt({
+	const preparedExtractPatchCommand = [
+		"set -eu",
+		`cd ${quoteShell(SWEBENCH_PREPARED_REPO_PATH)}`,
+		"rm -rf /sandbox/.cache .cache",
+		[
+			`git diff --binary ${quoteShell(params.baseCommit)} -- .`,
+			...SWEBENCH_PATCH_EXCLUDE_PATHS.map((path) => quoteShell(path)),
+		].join(" \\\n  "),
+	].join("\n");
+	const extractPatchCommand = swebenchRuntimeRepoPathChoiceExpression(
+		preparedExtractPatchCommand,
+		fallbackExtractPatchCommand,
+	);
+	const fallbackCheckoutCommand = [
+		"set -eu",
+		"cd /sandbox",
+		"rm -rf repo",
+		`git clone ${quoteShell(`https://github.com/${params.repo}.git`)} repo`,
+		"cd repo",
+		`git checkout ${quoteShell(params.baseCommit)}`,
+		"git status --short",
+	].join("\n");
+	const checkoutCommand = swebenchRuntimeRepoPathChoiceExpression(
+		buildPreparedTestbedCheckCommand(params.baseCommit),
+		fallbackCheckoutCommand,
+	);
+	const preparedPrompt = buildSwebenchPrompt({
 		...params,
 		inferenceEnvironment: null,
-		workspaceRoot: repoPath,
-	}));
+		workspaceRoot: SWEBENCH_PREPARED_REPO_PATH,
+	});
+	const fallbackPrompt = buildSwebenchPrompt({
+		...params,
+		inferenceEnvironment: null,
+		workspaceRoot: SWEBENCH_FALLBACK_REPO_PATH,
+	});
+	const prompt = buildSwebenchPromptExpression(preparedPrompt, fallbackPrompt);
 	return {
 		document: {
 			dsl: "1.0.0",
@@ -1212,7 +1235,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 									"${ .prepare_environment.environment }",
 							},
 							overrides: {
-								cwd: repoPath,
+								cwd: SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION,
 								maxTurns: params.maxTurns ?? undefined,
 								timeoutMinutes,
 								tools: SWEBENCH_ALLOWED_AGENT_TOOLS,
@@ -1220,7 +1243,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 							prompt,
 						},
 						mode: "execute_direct",
-						cwd: repoPath,
+						cwd: SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION,
 						sandboxName: "${ .workspace_profile.sandboxName }",
 						workspaceRef: "${ .workspace_profile.workspaceRef }",
 						sandboxPolicy: {
@@ -1310,8 +1333,16 @@ function buildSwebenchPrompt(params: {
 	].join("\n");
 }
 
-function buildSwebenchPromptExpression(basePrompt: string): string {
-	return `\${ ${JSON.stringify(basePrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
+function buildSwebenchPromptExpression(preparedPrompt: string, fallbackPrompt: string): string {
+	return `\${ ${swebenchRuntimeRepoPathChoiceProgram(preparedPrompt, fallbackPrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
+}
+
+function swebenchRuntimeRepoPathChoiceExpression(preparedValue: string, fallbackValue: string): string {
+	return `\${ ${swebenchRuntimeRepoPathChoiceProgram(preparedValue, fallbackValue)} }`;
+}
+
+function swebenchRuntimeRepoPathChoiceProgram(preparedValue: string, fallbackValue: string): string {
+	return `if ((.prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)}) == ${JSON.stringify(SWEBENCH_PREPARED_REPO_PATH)}) then ${JSON.stringify(preparedValue)} else ${JSON.stringify(fallbackValue)} end`;
 }
 
 function buildPreparedTestbedCheckCommand(baseCommit: string): string {

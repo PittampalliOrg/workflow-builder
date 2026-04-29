@@ -394,6 +394,16 @@ export async function plannedSwebenchInferenceEnvironmentWithBuild(
 	if (!planned.envSpecHash || planned.environmentStatus === "validated") return planned;
 	const build = await getBuildBySpecHash(planned.envSpecHash).catch(() => null);
 	if (!build) return planned;
+	if (
+		(build.status === "failed" || build.status === "cancelled") &&
+		isTektonBackendUnavailable(build.error)
+	) {
+		return fallbackEnvironment(
+			build,
+			"dynamic_build_backend_unavailable",
+			build,
+		);
+	}
 	return rowToEnvironment(build);
 }
 
@@ -1574,27 +1584,7 @@ function fallbackResult(
 	error?: string,
 	row?: EnvironmentImageBuild | null,
 ): EnvironmentPrepareResult {
-	const sandboxTemplate = input.sandboxTemplate ?? DEFAULT_SANDBOX_TEMPLATE;
-	const environment: ResolvedSwebenchInferenceEnvironment = {
-		environmentStatus: "fallback",
-		suite: input.suite ?? "",
-		repo: input.repo,
-		version: input.version ?? undefined,
-		environmentSetupCommit: input.environmentSetupCommit ?? undefined,
-		baseCommit: input.baseCommit ?? undefined,
-		environmentKey: input.environmentKey ?? undefined,
-		sandboxTemplate,
-		validationCommand: input.validationCommand ?? undefined,
-		source: "dynamic-build",
-		reason,
-		buildStrategy: input.buildStrategy ?? undefined,
-		envSpecHash: input.envSpecHash ?? undefined,
-		buildId: row?.id,
-		buildLogRef: row?.buildLogRef ?? undefined,
-		pipelineRunName: row?.pipelineRunName ?? undefined,
-		pipelineRunNamespace: row?.pipelineRunNamespace ?? undefined,
-		workspaceRoot: input.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT,
-	};
+	const environment = fallbackEnvironment(input, reason, row);
 	return {
 		success: true,
 		complete: true,
@@ -1603,9 +1593,7 @@ function fallbackResult(
 		environmentKey: input.environmentKey ?? undefined,
 		envSpecHash: input.envSpecHash ?? undefined,
 		buildId: row?.id,
-		buildStrategy: input.buildStrategy ?? undefined,
-		sandboxTemplate,
-		validationCommand: input.validationCommand ?? undefined,
+		sandboxTemplate: environment.sandboxTemplate,
 		buildLogRef: row?.buildLogRef ?? undefined,
 		pipelineRunName: row?.pipelineRunName ?? undefined,
 		pipelineRunNamespace: row?.pipelineRunNamespace ?? undefined,
@@ -1617,6 +1605,32 @@ function fallbackResult(
 		error,
 		source: "dynamic-build",
 		reason,
+	};
+}
+
+function fallbackEnvironment(
+	input: FallbackEnvironmentInput,
+	reason: string,
+	row?: EnvironmentImageBuild | null,
+): ResolvedSwebenchInferenceEnvironment {
+	const sandboxTemplate = input.sandboxTemplate ?? DEFAULT_SANDBOX_TEMPLATE;
+	return {
+		environmentStatus: "fallback",
+		suite: input.suite ?? "",
+		repo: input.repo,
+		version: input.version ?? undefined,
+		environmentSetupCommit: input.environmentSetupCommit ?? undefined,
+		baseCommit: input.baseCommit ?? undefined,
+		environmentKey: input.environmentKey ?? undefined,
+		sandboxTemplate,
+		source: "dynamic-build",
+		reason,
+		envSpecHash: input.envSpecHash ?? undefined,
+		buildId: row?.id,
+		buildLogRef: row?.buildLogRef ?? undefined,
+		pipelineRunName: row?.pipelineRunName ?? undefined,
+		pipelineRunNamespace: row?.pipelineRunNamespace ?? undefined,
+		workspaceRoot: FALLBACK_WORKSPACE_ROOT,
 	};
 }
 
