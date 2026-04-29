@@ -66,11 +66,11 @@ function stripFullPayload(
 }
 
 /**
- * Append an event to a session's log. Sequence is computed server-side via
- * a max+1 lookup inside the insert; concurrent inserts on the same session
- * serialize via the unique constraint on (session_id, sequence). This is
- * called both by the user-event send endpoint and by the workflow's event
- * emitter (via an internal endpoint in Phase 3.5).
+ * Append an event to a session's log. Sequence is computed server-side via a
+ * max+1 lookup while holding a per-session advisory transaction lock. The lock
+ * keeps bursts from runtime event emitters from exhausting retries on the
+ * unique (session_id, sequence) constraint while still allowing different
+ * sessions to append concurrently.
  */
 export async function appendEvent(
 	sessionId: string,
@@ -84,32 +84,40 @@ export async function appendEvent(
 	},
 ): Promise<SessionEventEnvelope> {
 	const database = requireDb();
-	// Retry loop for sequence collisions under concurrent writers.
+	// Retry loop is retained as a guard for transaction aborts and source-event
+	// duplicates delivered through more than one ingest path.
 	for (let attempt = 0; attempt < 5; attempt++) {
-		const [{ maxSeq }] = await database
-			.select({
-				maxSeq: sql<number>`coalesce(max(${sessionEvents.sequence}), 0)`,
-			})
-			.from(sessionEvents)
-			.where(eq(sessionEvents.sessionId, sessionId));
-		const nextSeq = Number(maxSeq ?? 0) + 1;
 		try {
-			const [row] = await database
-				.insert(sessionEvents)
-				.values({
-					sessionId,
-					sequence: nextSeq,
-					type: event.type,
-					data: event.data ?? {},
-					processedAt: event.processedAt ?? null,
-					sourceEventId: event.sourceEventId ?? null,
-					producerId: event.producerId ?? null,
-					producerEpoch: event.producerEpoch ?? null,
-				})
-				.returning();
+			const row = await database.transaction(async (tx) => {
+				await tx.execute(
+					sql`select pg_advisory_xact_lock(hashtext(${sessionId})::bigint)`,
+				);
+				const [{ maxSeq }] = await tx
+					.select({
+						maxSeq: sql<number>`coalesce(max(${sessionEvents.sequence}), 0)`,
+					})
+					.from(sessionEvents)
+					.where(eq(sessionEvents.sessionId, sessionId));
+				const nextSeq = Number(maxSeq ?? 0) + 1;
+				const [inserted] = await tx
+					.insert(sessionEvents)
+					.values({
+						sessionId,
+						sequence: nextSeq,
+						type: event.type,
+						data: event.data ?? {},
+						processedAt: event.processedAt ?? null,
+						sourceEventId: event.sourceEventId ?? null,
+						producerId: event.producerId ?? null,
+						producerEpoch: event.producerEpoch ?? null,
+					})
+					.returning();
+				return inserted;
+			});
 			return rowToEnvelope(row);
 		} catch (err) {
-			// Unique violation on sequence — someone else won the race. Retry.
+			// Unique violation on sequence should be rare with the advisory lock,
+			// but keep retrying if the transaction raced with older app versions.
 			// Also: unique violation on (session_id, source_event_id) — same
 			// event delivered twice (e.g. Dapr replay fires publish_event again,
 			// or the direct-ingest + NATS-subscription paths both land). Swallow
