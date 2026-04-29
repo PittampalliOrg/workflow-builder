@@ -34,6 +34,10 @@ import type { SwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 const DEFAULT_SANDBOX_TEMPLATE = "dapr-agent";
 const DEFAULT_TEKTON_NAMESPACE = "tekton-pipelines";
 const DEFAULT_GIT_REVISION = "main";
+const SWEBENCH_PIPELINE_TIMEOUTS = {
+	pipeline: "4h0m0s",
+	tasks: "3h45m0s",
+} as const;
 const SWEBENCH_WORKSPACE_ROOT = "/testbed";
 const FALLBACK_WORKSPACE_ROOT = "/sandbox/repo";
 const SWEBENCH_CONDA_ENV = "testbed";
@@ -697,6 +701,7 @@ async function submitSwebenchPipelineRun(
 		spec: {
 			pipelineRef: { name: "swebench-inference-image-build" },
 			taskRunTemplate: { serviceAccountName: "workflow-builder-build-trigger" },
+			timeouts: SWEBENCH_PIPELINE_TIMEOUTS,
 			params: [
 				{ name: "git_sha", value: env.SWEBENCH_INFERENCE_BUILD_GIT_REVISION ?? DEFAULT_GIT_REVISION },
 				{ name: "suite", value: spec.suite },
