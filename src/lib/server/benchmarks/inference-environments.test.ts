@@ -64,7 +64,8 @@ describe("SWE-bench inference environment resolver", () => {
 			},
 			environmentNotes: expect.arrayContaining([
 				"Run Python commands with PYTHONPATH=src for source-layout repos.",
-				"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+				"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+				"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
 			]),
 		});
 		expect(resolved.sandboxImage).toBe(

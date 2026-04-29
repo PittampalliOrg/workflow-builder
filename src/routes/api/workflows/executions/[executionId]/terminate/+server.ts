@@ -34,6 +34,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const [execution] = await db
 		.select({
 			id: workflowExecutions.id,
+			status: workflowExecutions.status,
 			daprInstanceId: workflowExecutions.daprInstanceId,
 			projectId: workflowExecutions.projectId,
 			userId: workflowExecutions.userId
@@ -58,6 +59,32 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	}
 
 	const instanceId = execution.daprInstanceId || execution.id;
+	const completedAt = new Date();
+
+	if (execution.status !== 'pending' && execution.status !== 'running') {
+		await db
+			.update(workflowAgentRuns)
+			.set({
+				status: 'failed',
+				completedAt,
+				updatedAt: completedAt,
+				error: reason ?? `Parent execution is already ${execution.status}`
+			})
+			.where(
+				and(
+					eq(workflowAgentRuns.workflowExecutionId, executionId),
+					inArray(workflowAgentRuns.status, ['scheduled', 'running'])
+				)
+			);
+
+		return json({
+			success: true,
+			executionId,
+			instanceId,
+			alreadyTerminal: true,
+			status: execution.status
+		});
+	}
 
 	const response = await daprFetch(
 		`${orchestratorUrl}/api/v2/workflows/${instanceId}/terminate`,
@@ -80,7 +107,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			message: errorBody.error ?? errorBody.message ?? 'Failed to terminate execution'
 		});
 	}
-	const completedAt = new Date();
 
 	await db
 		.update(workflowExecutions)

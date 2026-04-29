@@ -1,12 +1,58 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const dbMocks = vi.hoisted(() => {
+	const state: { lastUpdate: Record<string, unknown> | null } = { lastUpdate: null };
+	const updateReturning = vi.fn();
+	const updateSet = vi.fn((value: Record<string, unknown>) => {
+		state.lastUpdate = value;
+		return { where: vi.fn(() => ({ returning: updateReturning })) };
+	});
+	const insertValues = vi.fn(() => ({
+		onConflictDoUpdate: vi.fn(async () => undefined),
+	}));
+	return { state, updateReturning, updateSet, insertValues };
+});
+
+const tektonMocks = vi.hoisted(() => ({
+	getTektonPipelineRun: vi.fn(),
+	listTektonTaskRunsForPipelineRun: vi.fn(),
+}));
+
+vi.mock("$lib/server/db", () => ({
+	db: {
+		insert: vi.fn(() => ({ values: dbMocks.insertValues })),
+		update: vi.fn(() => ({ set: dbMocks.updateSet })),
+	},
+}));
+
+vi.mock("$lib/server/kube/tekton", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("$lib/server/kube/tekton")>();
+	return {
+		...actual,
+		getTektonPipelineRun: tektonMocks.getTektonPipelineRun,
+		listTektonTaskRunsForPipelineRun: tektonMocks.listTektonTaskRunsForPipelineRun,
+	};
+});
+
 import {
 	buildSwebenchEnvironmentSpec,
 	hasUsableValidatedImage,
 	normalizeEnvironmentBuildActivityEvents,
 	plannedSwebenchInferenceEnvironment,
+	syncEnvironmentBuild,
 } from "./environment-image-builds";
 
 describe("SWE-bench environment image build planning", () => {
+	beforeEach(() => {
+		dbMocks.state.lastUpdate = null;
+		dbMocks.insertValues.mockClear();
+		dbMocks.updateSet.mockClear();
+		dbMocks.updateReturning.mockReset();
+		tektonMocks.getTektonPipelineRun.mockReset();
+		tektonMocks.listTektonTaskRunsForPipelineRun.mockReset();
+		tektonMocks.listTektonTaskRunsForPipelineRun.mockResolvedValue([]);
+	});
+
 	afterEach(() => {
 		vi.unstubAllEnvs();
 	});
@@ -81,7 +127,10 @@ describe("SWE-bench environment image build planning", () => {
 			condaEnvironment: "testbed",
 		});
 		expect(planned.environmentNotes).toContain(
-			"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+			"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+		);
+		expect(planned.environmentNotes).toContain(
+			"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
 		);
 		expect(planned).toHaveProperty("envSpecHash");
 		expect(planned).not.toHaveProperty("sandboxImage");
@@ -379,6 +428,63 @@ describe("SWE-bench environment image build planning", () => {
 				digest: null,
 			}),
 		).toBe(false);
+	});
+
+	it("marks a pipeline-managed terminal row failed when the owning PipelineRun failed", async () => {
+		const build = mockBuild({
+			status: "validated",
+			validationStatus: "validated",
+			validationLogRef: "tekton://taskruns/swe-env-failed-validate-image",
+			sandboxImage: "registry/swebench:env-abc@sha256:111",
+			digest: "sha256:111",
+			builtAt: new Date("2026-04-28T12:05:00.000Z"),
+			pipelineRunName: "swe-env-failed",
+		});
+		const failedUpdate = {
+			...(build as Record<string, unknown>),
+			status: "failed",
+			validationStatus: "failed",
+			validationLogRef: null,
+			builtAt: null,
+			error: "Tasks Completed: 2 (Failed: 1)",
+		};
+		dbMocks.updateReturning.mockResolvedValue([failedUpdate]);
+		tektonMocks.getTektonPipelineRun.mockResolvedValue({
+			metadata: { name: "swe-env-failed", namespace: "tekton-pipelines" },
+			status: {
+				completionTime: "2026-04-28T12:10:00.000Z",
+				conditions: [
+					{
+						type: "Succeeded",
+						status: "False",
+						reason: "Failed",
+						message: "Tasks Completed: 2 (Failed: 1)",
+					},
+				],
+			},
+		});
+
+		const synced = await syncEnvironmentBuild(build);
+
+		expect(tektonMocks.getTektonPipelineRun).toHaveBeenCalledWith(
+			"tekton-pipelines",
+			"swe-env-failed",
+		);
+		expect(dbMocks.updateSet).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: "failed",
+				validationStatus: "failed",
+				validationLogRef: null,
+				builtAt: null,
+				error: "Tasks Completed: 2 (Failed: 1)",
+			}),
+		);
+		expect(synced).toMatchObject({
+			status: "failed",
+			validationStatus: "failed",
+			validationLogRef: null,
+			builtAt: null,
+		});
 	});
 });
 

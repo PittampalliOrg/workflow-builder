@@ -10,6 +10,7 @@ type Args = {
 	environmentKey: string | null;
 	status: string | null;
 	allFailed: boolean;
+	manualReconciled: boolean;
 	limit: number;
 	dryRun: boolean;
 	recreate: boolean;
@@ -33,6 +34,7 @@ function parseArgs(argv: string[]): Args {
 		environmentKey: null,
 		status: null,
 		allFailed: false,
+		manualReconciled: false,
 		limit: 100,
 		dryRun: true,
 		recreate: false,
@@ -48,6 +50,8 @@ function parseArgs(argv: string[]): Args {
 		} else if (arg === "--all-failed") {
 			args.allFailed = true;
 			args.status = "failed";
+		} else if (arg === "--manual-reconciled") {
+			args.manualReconciled = true;
 		} else if (arg === "--limit") {
 			args.limit = positiveInteger(requiredArg(argv, ++i, arg), arg);
 		} else if (arg === "--recreate") {
@@ -63,8 +67,8 @@ function parseArgs(argv: string[]): Args {
 			throw new Error(`Unknown argument: ${arg}`);
 		}
 	}
-	if (!args.envSpecHash && !args.environmentKey && !args.status) {
-		throw new Error("Provide --env-spec-hash, --environment-key, --status, or --all-failed");
+	if (!args.envSpecHash && !args.environmentKey && !args.status && !args.manualReconciled) {
+		throw new Error("Provide --env-spec-hash, --environment-key, --status, --all-failed, or --manual-reconciled");
 	}
 	return args;
 }
@@ -76,12 +80,14 @@ function printUsage() {
 			"  DATABASE_URL=... pnpm tsx scripts/reset-swebench-environment-builds.ts --env-spec-hash HASH --apply --recreate",
 			"  DATABASE_URL=... pnpm tsx scripts/reset-swebench-environment-builds.ts --environment-key sympy-1.7 --apply",
 			"  DATABASE_URL=... pnpm tsx scripts/reset-swebench-environment-builds.ts --all-failed --limit 20 --apply --recreate",
+			"  DATABASE_URL=... pnpm tsx scripts/reset-swebench-environment-builds.ts --manual-reconciled --apply --recreate",
 			"",
 			"Options:",
 			"  --env-spec-hash HASH    Select one environment image build spec hash.",
 			"  --environment-key KEY   Select builds for one environment key.",
 			"  --status STATUS         Select builds by status.",
 			"  --all-failed            Alias for --status failed.",
+			"  --manual-reconciled     Select builds with manual_reconcile activity events.",
 			"  --limit N               Maximum selected rows. Default: 100.",
 			"  --recreate              Call the internal environment ensure endpoint after deletion.",
 			"  --apply                 Delete selected rows. Default is dry-run.",
@@ -117,6 +123,18 @@ async function main() {
 		if (args.envSpecHash) where = sql`${where} and env_spec_hash = ${args.envSpecHash}`;
 		if (args.environmentKey) where = sql`${where} and environment_key = ${args.environmentKey}`;
 		if (args.status) where = sql`${where} and status = ${args.status}`;
+		if (args.manualReconciled) {
+			where = sql`${where} and exists (
+				select 1
+				from environment_build_activity_events event
+				where event.build_id = environment_image_builds.id
+					and (
+						event.reason = 'manual_reconcile'
+						or event.raw_metadata->>'reason' = 'manual_reconcile'
+						or event.raw_metadata->>'source' = 'manual_reconcile'
+					)
+			)`;
+		}
 
 		const rows = await sql<BuildRow[]>`
 			select

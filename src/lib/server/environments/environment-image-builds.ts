@@ -309,7 +309,7 @@ function defaultSwebenchEnvironmentTuning(
 		buildStrategy === "swebench-harness"
 			? [
 					"The repository is already prepared under /testbed at the SWE-bench base commit.",
-					"Dependencies are installed from the SWE-bench harness spec in the conda testbed environment.",
+					"Dependencies are installed from the SWE-bench harness spec and exposed through /sandbox/.venv at runtime.",
 					"Use the existing environment and avoid reinstalling project dependencies during the solve phase.",
 				]
 			: [
@@ -394,17 +394,20 @@ export async function plannedSwebenchInferenceEnvironmentWithBuild(
 	if (!planned.envSpecHash || planned.environmentStatus === "validated") return planned;
 	const build = await getBuildBySpecHash(planned.envSpecHash).catch(() => null);
 	if (!build) return planned;
+	const synced = await syncEnvironmentBuild(build, {
+		forceTerminal: isPipelineManagedBuild(build),
+	});
 	if (
-		(build.status === "failed" || build.status === "cancelled") &&
-		isTektonBackendUnavailable(build.error)
+		(synced.status === "failed" || synced.status === "cancelled") &&
+		isTektonBackendUnavailable(synced.error)
 	) {
 		return fallbackEnvironment(
-			build,
+			synced,
 			"dynamic_build_backend_unavailable",
-			build,
+			synced,
 		);
 	}
-	return rowToEnvironment(build);
+	return rowToEnvironment(synced);
 }
 
 export async function ensureSwebenchEnvironment(
@@ -593,7 +596,11 @@ export async function syncEnvironmentBuild(
 		normalizeEnvironmentBuildActivityEvents({ build: row, taskRuns: [] }),
 	);
 	if (!row.pipelineRunName || !row.pipelineRunNamespace) return row;
-	if (TERMINAL_BUILD_STATUSES.has(row.status) && !options.forceTerminal) {
+	if (
+		TERMINAL_BUILD_STATUSES.has(row.status) &&
+		!options.forceTerminal &&
+		!isPipelineManagedBuild(row)
+	) {
 		return row;
 	}
 	const pipelineRun = await getTektonPipelineRun(row.pipelineRunNamespace, row.pipelineRunName);
@@ -620,6 +627,9 @@ export async function syncEnvironmentBuild(
 				.update(environmentImageBuilds)
 				.set({
 					status: "failed",
+					validationStatus: "failed",
+					validationLogRef: null,
+					builtAt: null,
 					error: "Tekton PipelineRun completed without validated image results",
 					completedAt: parseDate(pipelineRun.status?.completionTime) ?? new Date(),
 					updatedAt: new Date(),
@@ -643,6 +653,9 @@ export async function syncEnvironmentBuild(
 				.update(environmentImageBuilds)
 				.set({
 					status: "failed",
+					validationStatus: "failed",
+					validationLogRef: null,
+					builtAt: null,
 					error: "Tekton PipelineRun completed without an image ref and digest",
 					completedAt: parseDate(pipelineRun.status?.completionTime) ?? new Date(),
 					updatedAt: new Date(),
@@ -687,10 +700,16 @@ export async function syncEnvironmentBuild(
 		return updated ?? row;
 	}
 
+	const failedStatus = isTektonCancelled(condition.reason, condition.message)
+		? "cancelled"
+		: "failed";
 	const [updated] = await database
 		.update(environmentImageBuilds)
 		.set({
-			status: "failed",
+			status: failedStatus,
+			validationStatus: failedStatus,
+			validationLogRef: null,
+			builtAt: null,
 			error: condition.message ?? condition.reason ?? "Tekton PipelineRun failed",
 			completedAt: parseDate(pipelineRun.status?.completionTime) ?? new Date(),
 			updatedAt: new Date(),
@@ -1195,9 +1214,11 @@ export async function getBenchmarkRunEnvironmentActivity(
 
 	if (options.syncActive) {
 		for (const [key, build] of Array.from(buildsById.entries())) {
-			if (!ACTIVE_BUILD_STATUSES.has(build.status)) continue;
+			if (!ACTIVE_BUILD_STATUSES.has(build.status) && !isPipelineManagedBuild(build)) continue;
 			try {
-				const synced = await syncEnvironmentBuild(build);
+				const synced = await syncEnvironmentBuild(build, {
+					forceTerminal: isPipelineManagedBuild(build),
+				});
 				buildsById.set(key, synced);
 				buildsByHash.set(synced.envSpecHash, synced);
 				if (!buildsByKey.has(synced.environmentKey)) {
@@ -1406,7 +1427,8 @@ function mergeBuildMetadataIntoInferenceEnvironment(
 	const spec = isRecord(build.spec) ? build.spec : {};
 	const workspaceRoot = readString(spec.workspaceRoot);
 	const condaEnvironment = readString(spec.condaEnvironment);
-	if (workspaceRoot) next.workspaceRoot = workspaceRoot;
+	const runtimeRoot = runtimeWorkspaceRoot(workspaceRoot);
+	if (runtimeRoot) next.workspaceRoot = runtimeRoot;
 	if (condaEnvironment) next.condaEnvironment = condaEnvironment;
 	if (isRecord(spec.swebenchSpec)) next.swebenchSpec = spec.swebenchSpec;
 	return next;
@@ -1469,6 +1491,16 @@ function deterministicActivityId(buildId: string, eventKey: string): string {
 
 function isValidationTask(...values: Array<string | null | undefined>): boolean {
 	return values.some((value) => /validat(e|ion)|smoke[-_ ]?test/i.test(value ?? ""));
+}
+
+function isPipelineManagedBuild(
+	build: Pick<EnvironmentImageBuild, "pipelineRunName" | "pipelineRunNamespace">,
+): boolean {
+	return Boolean(build.pipelineRunName && build.pipelineRunNamespace);
+}
+
+function isTektonCancelled(...values: Array<string | null | undefined>): boolean {
+	return values.some((value) => /cancel/i.test(value ?? ""));
 }
 
 function failedTaskStepMessage(taskRun: TektonTaskRun): string | null {
@@ -1681,7 +1713,8 @@ function runtimeEnvironmentNotes(
 	);
 	return [
 		...filteredNotes,
-		"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+		"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+		"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
 	];
 }
 

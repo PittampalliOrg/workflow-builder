@@ -337,7 +337,8 @@ function normalizeRuntimeEnvironmentNotes(
 	);
 	return [
 		...filteredNotes,
-		"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+		"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+		"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
 	];
 }
 
