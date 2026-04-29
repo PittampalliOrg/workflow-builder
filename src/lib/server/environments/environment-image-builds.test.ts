@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildSwebenchEnvironmentSpec,
+	hasUsableValidatedImage,
 	normalizeEnvironmentBuildActivityEvents,
 	plannedSwebenchInferenceEnvironment,
 } from "./environment-image-builds";
@@ -349,6 +350,25 @@ describe("SWE-bench environment image build planning", () => {
 			reason: "Failed",
 			message: "pytest import smoke test failed",
 		});
+	});
+
+	it("treats a validated image ref as authoritative over stale failed PipelineRun state", () => {
+		expect(
+			hasUsableValidatedImage({
+				validationStatus: "validated",
+				sandboxImage:
+					"ghcr.io/pittampalliorg/swebench-inference-matplotlib-3.5:env-abc@sha256:41ec9d82c6389366facd5576a790bc5937fdfdd1e7fcb1dad8904c76e2719679",
+				digest: null,
+			}),
+		).toBe(true);
+		expect(
+			hasUsableValidatedImage({
+				validationStatus: "failed",
+				sandboxImage:
+					"ghcr.io/pittampalliorg/swebench-inference-matplotlib-3.5:env-abc@sha256:41ec9d82c6389366facd5576a790bc5937fdfdd1e7fcb1dad8904c76e2719679",
+				digest: null,
+			}),
+		).toBe(false);
 	});
 });
 

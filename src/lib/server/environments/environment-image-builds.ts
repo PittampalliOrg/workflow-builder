@@ -667,6 +667,32 @@ export async function syncEnvironmentBuild(
 		return updated ?? row;
 	}
 
+	if (hasUsableValidatedImage(row)) {
+		if (row.status === "validated" && !row.error) return row;
+		const update: Partial<typeof environmentImageBuilds.$inferInsert> = {
+			status: "validated",
+			error: null,
+			updatedAt: new Date(),
+		};
+		if (!row.digest && row.sandboxImage) {
+			const digest = digestFromImage(row.sandboxImage);
+			if (digest) update.digest = digest;
+		}
+		const [updated] = await database
+			.update(environmentImageBuilds)
+			.set(update)
+			.where(eq(environmentImageBuilds.id, row.id))
+			.returning();
+		await persistBuildActivityEvents(
+			normalizeEnvironmentBuildActivityEvents({
+				build: updated ?? row,
+				pipelineRun,
+				taskRuns,
+			}),
+		);
+		return updated ?? row;
+	}
+
 	const [updated] = await database
 		.update(environmentImageBuilds)
 		.set({
@@ -685,6 +711,16 @@ export async function syncEnvironmentBuild(
 		}),
 	);
 	return updated ?? row;
+}
+
+export function hasUsableValidatedImage(
+	row: Pick<EnvironmentImageBuild, "validationStatus" | "sandboxImage" | "digest">,
+): boolean {
+	return (
+		row.validationStatus === "validated" &&
+		Boolean(row.sandboxImage) &&
+		Boolean(row.digest ?? digestFromImage(row.sandboxImage))
+	);
 }
 
 async function submitSwebenchPipelineRun(
