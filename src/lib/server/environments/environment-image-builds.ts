@@ -374,14 +374,14 @@ export function plannedSwebenchInferenceEnvironment(
 		environmentKey: spec.environmentKey,
 		sandboxTemplate: spec.sandboxTemplate,
 		validationCommand: spec.validationCommand,
-		environmentNotes: spec.environmentNotes,
+		environmentNotes: runtimeEnvironmentNotes(spec.environmentNotes, spec.workspaceRoot),
 		source: "dynamic-build",
 		reason: resolved.reason === "no_validated_mapping"
 			? "dynamic_build_required"
 			: resolved.reason,
 		buildStrategy: spec.buildStrategy,
 		envSpecHash: spec.envSpecHash,
-		workspaceRoot: spec.workspaceRoot,
+		workspaceRoot: runtimeWorkspaceRoot(spec.workspaceRoot),
 		condaEnvironment: spec.condaEnvironment,
 		swebenchSpec: spec.swebenchSpec,
 	};
@@ -1634,8 +1634,26 @@ function fallbackEnvironment(
 	};
 }
 
+function runtimeWorkspaceRoot(workspaceRoot: string | null | undefined): string | undefined {
+	const root = readString(workspaceRoot);
+	return root === SWEBENCH_WORKSPACE_ROOT ? FALLBACK_WORKSPACE_ROOT : root ?? undefined;
+}
+
+function runtimeEnvironmentNotes(
+	notes: string[] | undefined,
+	workspaceRoot: string | null | undefined,
+): string[] | undefined {
+	if (workspaceRoot !== SWEBENCH_WORKSPACE_ROOT) return notes;
+	return [
+		...(notes ?? []),
+		"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+	];
+}
+
 function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInferenceEnvironment {
 	const spec = isRecord(row.spec) ? row.spec : {};
+	const workspaceRoot = readString(spec.workspaceRoot);
+	const environmentNotes = readStringList(spec.environmentNotes);
 	return {
 		environmentStatus: buildStatusForInferenceEnvironment(row.status),
 		suite: row.suite ?? "",
@@ -1659,9 +1677,10 @@ function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInference
 		buildLogRef: row.buildLogRef ?? undefined,
 		pipelineRunName: row.pipelineRunName ?? undefined,
 		pipelineRunNamespace: row.pipelineRunNamespace ?? undefined,
-		workspaceRoot: readString(spec.workspaceRoot) ?? undefined,
+		workspaceRoot: runtimeWorkspaceRoot(workspaceRoot),
 		condaEnvironment: readString(spec.condaEnvironment) ?? undefined,
 		swebenchSpec: isRecord(spec.swebenchSpec) ? spec.swebenchSpec : undefined,
+		environmentNotes: runtimeEnvironmentNotes(environmentNotes, workspaceRoot),
 	};
 }
 
@@ -1818,6 +1837,14 @@ function sanitizeSlug(value: string): string {
 
 function readString(value: unknown): string | null {
 	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readStringList(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const parsed = value
+		.map((entry) => readString(entry))
+		.filter((entry): entry is string => Boolean(entry));
+	return parsed.length ? parsed : undefined;
 }
 
 function parseDate(value: unknown): Date | null {

@@ -76,9 +76,12 @@ describe("SWE-bench environment image build planning", () => {
 			buildStrategy: "swebench-harness",
 			source: "dynamic-build",
 			reason: "dynamic_build_required",
-			workspaceRoot: "/testbed",
+			workspaceRoot: "/sandbox/repo",
 			condaEnvironment: "testbed",
 		});
+		expect(planned.environmentNotes).toContain(
+			"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+		);
 		expect(planned).toHaveProperty("envSpecHash");
 		expect(planned).not.toHaveProperty("sandboxImage");
 	});

@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const DEFAULT_SANDBOX_TEMPLATE = "dapr-agent";
+const SWEBENCH_IMAGE_WORKSPACE_ROOT = "/testbed";
+const OPENSHELL_RUNTIME_WORKSPACE_ROOT = "/sandbox/repo";
 
 type MappingSource = {
 	source: string;
@@ -266,6 +268,16 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 	const swebenchSpecValue =
 		input.swebenchSpec ?? (input as Record<string, unknown>).swebench_spec;
 	const builtAt = readString(input.builtAt) ?? readString((input as Record<string, unknown>).built_at);
+	const runtimeWorkspaceRoot = normalizeRuntimeWorkspaceRoot(
+		workspaceRoot,
+		buildStrategy,
+	);
+	const runtimeNotes = normalizeRuntimeEnvironmentNotes(
+		environmentNotes,
+		workspaceRoot,
+		runtimeWorkspaceRoot,
+		buildStrategy,
+	);
 	return {
 		...input,
 		suite,
@@ -280,8 +292,8 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 		validationStatus,
 		validationLogRef,
 		validationCommand,
-		environmentNotes,
-		workspaceRoot,
+		environmentNotes: runtimeNotes,
+		workspaceRoot: runtimeWorkspaceRoot,
 		condaEnvironment,
 		buildStrategy,
 		envSpecHash,
@@ -291,6 +303,38 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 		builtAt,
 		source: readString(input.source),
 	};
+}
+
+function normalizeRuntimeWorkspaceRoot(
+	workspaceRoot: string | null | undefined,
+	buildStrategy: string | null | undefined,
+): string | undefined {
+	if (
+		buildStrategy === "swebench-harness" &&
+		workspaceRoot === SWEBENCH_IMAGE_WORKSPACE_ROOT
+	) {
+		return OPENSHELL_RUNTIME_WORKSPACE_ROOT;
+	}
+	return workspaceRoot ?? undefined;
+}
+
+function normalizeRuntimeEnvironmentNotes(
+	notes: string[] | undefined,
+	originalWorkspaceRoot: string | null | undefined,
+	runtimeWorkspaceRoot: string | undefined,
+	buildStrategy: string | null | undefined,
+): string[] | undefined {
+	if (
+		buildStrategy !== "swebench-harness" ||
+		originalWorkspaceRoot !== SWEBENCH_IMAGE_WORKSPACE_ROOT ||
+		runtimeWorkspaceRoot !== OPENSHELL_RUNTIME_WORKSPACE_ROOT
+	) {
+		return notes;
+	}
+	return [
+		...(notes ?? []),
+		"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+	];
 }
 
 export function swebenchInferenceEnvironmentPromptNotes(

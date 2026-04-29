@@ -57,14 +57,15 @@ describe("SWE-bench inference environment resolver", () => {
 			validationCommand: "PYTHONPATH=src python -m pytest --version",
 			buildStrategy: "swebench-harness",
 			envSpecHash: "a".repeat(64),
-			workspaceRoot: "/testbed",
+			workspaceRoot: "/sandbox/repo",
 			condaEnvironment: "testbed",
 			swebenchSpec: {
 				instanceImageKey: "sweb.eval.x86_64.sympy__sympy-20590:latest",
 			},
-			environmentNotes: [
+			environmentNotes: expect.arrayContaining([
 				"Run Python commands with PYTHONPATH=src for source-layout repos.",
-			],
+				"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+			]),
 		});
 		expect(resolved.sandboxImage).toBe(
 			"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc123@sha256:1111111111111111111111111111111111111111111111111111111111111111",
