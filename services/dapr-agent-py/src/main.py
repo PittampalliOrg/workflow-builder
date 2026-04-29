@@ -3330,7 +3330,23 @@ def _freeze_session_child_input(
     # child agent_workflow can stash them in the call_agent thread-local.
     callable_agents = raw_message.get("callableAgents") or []
     registry_team = raw_message.get("registryTeam") or None
-    return {
+    max_turns = raw_message.get("maxTurns")
+    if max_turns is None:
+        max_turns = agent_cfg.get("maxTurns")
+    max_iterations = raw_message.get("maxIterations")
+    if max_iterations is None:
+        max_iterations = agent_cfg.get("maxIterations") or agent_cfg.get("max_iterations")
+    metadata = {
+        "executionId": db_execution_id,
+        "sessionId": session_id,
+        "turn": turn,
+    }
+    if max_turns is not None:
+        metadata["maxTurns"] = max_turns
+    if max_iterations is not None:
+        metadata["maxIterations"] = max_iterations
+
+    child_input = {
         "task": task,
         "prompt": task,
         "sessionId": session_id,
@@ -3347,12 +3363,13 @@ def _freeze_session_child_input(
         "callableAgents": callable_agents,
         "registryTeam": registry_team,
         "_session_turn": turn,
-        "_message_metadata": {
-            "executionId": db_execution_id,
-            "sessionId": session_id,
-            "turn": turn,
-        },
+        "_message_metadata": metadata,
     }
+    if max_turns is not None:
+        child_input["maxTurns"] = max_turns
+    if max_iterations is not None:
+        child_input["maxIterations"] = max_iterations
+    return child_input
 
 
 def _session_turn_timeout_seconds(message: dict) -> int:

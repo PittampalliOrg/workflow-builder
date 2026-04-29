@@ -13,10 +13,19 @@ from .utils import find_actual_string
 
 def file_edit(
     file_path: str,
-    old_string: str,
-    new_string: str,
+    old_string: str | None = None,
+    new_string: str | None = None,
     replace_all: bool = False,
+    old_str: str | None = None,
+    new_str: str | None = None,
 ) -> str:
+    if old_string is None:
+        old_string = old_str
+    if new_string is None:
+        new_string = new_str
+    if old_string is None or new_string is None:
+        return "Error: old_string and new_string are required."
+
     resolved = expand_path(file_path)
     runtime = get_runtime()
 
