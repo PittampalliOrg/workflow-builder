@@ -3,6 +3,7 @@ import {
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
+	extractAgentStopReason,
 	extractBenchmarkRuntimeLinks,
 	extractInferenceEnvironment,
 	resolveBenchmarkInferenceStatus,
@@ -214,6 +215,27 @@ describe("SWE-bench workflow spec", () => {
 		]);
 		expect(solve.with.body.prompt).not.toContain("python3.12");
 		expect(solve.with.body.prompt).not.toContain("repo-specific inference image");
+	});
+
+	it("surfaces max-iteration agent stops for empty SWE-bench patches", () => {
+		const reason = extractAgentStopReason(
+			{
+				outputs: {
+					solve: {
+						data: {
+							content:
+								"I reached the maximum number of reasoning steps before I could finish. Please rephrase or provide more detail so I can try again.",
+						},
+					},
+				},
+			},
+			1,
+		);
+
+		expect(reason).toBe(
+			"Agent stopped after maxTurns=1 without producing a patch: I reached the maximum number of reasoning steps before I could finish. Please rephrase or provide more detail so I can try again.",
+		);
+		expect(extractAgentStopReason({ content: "Done" }, 80)).toBeNull();
 	});
 
 	it("uses a validated inference sandbox image when one is resolved", () => {

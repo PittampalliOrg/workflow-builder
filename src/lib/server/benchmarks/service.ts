@@ -886,9 +886,11 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	const [row] = await database
 		.select({
 			runInstance: benchmarkRunInstances,
+			run: benchmarkRuns,
 			execution: workflowExecutions,
 		})
 		.from(benchmarkRunInstances)
+		.leftJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.leftJoin(
 			workflowExecutions,
 			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
@@ -925,8 +927,14 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 
 	const patch = extractModelPatch(runtimeOutput ?? row.execution.output);
 	const now = new Date();
+	const successfulEmptyPatchReason =
+		status === "success" && !patch.trim()
+			? extractAgentStopReason(runtimeOutput ?? row.execution.output, row.run?.maxTurns)
+			: null;
 	const inferenceError =
-		status === "success" ? null : workflowExecutionError(row.execution, runtimeOutput);
+		status === "success"
+			? successfulEmptyPatchReason
+			: workflowExecutionError(row.execution, runtimeOutput);
 	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
 		row.runInstance.status,
 		status,
@@ -1602,6 +1610,34 @@ function extractModelPatch(value: unknown): string {
 		"output",
 	]);
 	return candidates.find((candidate) => candidate.includes("diff --git")) ?? "";
+}
+
+export function extractAgentStopReason(
+	value: unknown,
+	maxTurns?: number | null,
+): string | null {
+	const candidates = collectStringsByKey(value, [
+		"content",
+		"message",
+		"error",
+		"reason",
+	]);
+	const match = candidates.find((candidate) => {
+		const normalized = candidate.toLowerCase();
+		return (
+			normalized.includes("maximum number of reasoning steps") ||
+			normalized.includes("hit max iterations") ||
+			normalized.includes("reached max iterations") ||
+			normalized.includes("max iterations without")
+		);
+	});
+	if (!match) return null;
+	const budget =
+		typeof maxTurns === "number" && Number.isFinite(maxTurns)
+			? ` after maxTurns=${maxTurns}`
+			: "";
+	const detail = match.trim().replace(/\s+/g, " ").slice(0, 300);
+	return `Agent stopped${budget} without producing a patch: ${detail}`;
 }
 
 export function extractInferenceEnvironment(value: unknown): Record<string, unknown> | null {
