@@ -446,7 +446,7 @@ describe("SWE-bench environment image build planning", () => {
 			validationStatus: "failed",
 			validationLogRef: null,
 			builtAt: null,
-			error: "Tasks Completed: 2 (Failed: 1)",
+			error: "Tasks Completed: 2 (Failed: 1, Cancelled 0), Skipped: 1",
 		};
 		dbMocks.updateReturning.mockResolvedValue([failedUpdate]);
 		tektonMocks.getTektonPipelineRun.mockResolvedValue({
@@ -458,7 +458,7 @@ describe("SWE-bench environment image build planning", () => {
 						type: "Succeeded",
 						status: "False",
 						reason: "Failed",
-						message: "Tasks Completed: 2 (Failed: 1)",
+						message: "Tasks Completed: 2 (Failed: 1, Cancelled 0), Skipped: 1",
 					},
 				],
 			},
@@ -476,7 +476,7 @@ describe("SWE-bench environment image build planning", () => {
 				validationStatus: "failed",
 				validationLogRef: null,
 				builtAt: null,
-				error: "Tasks Completed: 2 (Failed: 1)",
+				error: "Tasks Completed: 2 (Failed: 1, Cancelled 0), Skipped: 1",
 			}),
 		);
 		expect(synced).toMatchObject({

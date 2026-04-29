@@ -1500,7 +1500,13 @@ function isPipelineManagedBuild(
 }
 
 function isTektonCancelled(...values: Array<string | null | undefined>): boolean {
-	return values.some((value) => /cancel/i.test(value ?? ""));
+	return values.some((value) => {
+		if (!value) return false;
+		const withoutZeroCounts = value
+			.replace(/\b(cancelled|canceled)\s*[:=]?\s*0\b/gi, "")
+			.replace(/\b0\s+(cancelled|canceled)\b/gi, "");
+		return /cancel/i.test(withoutZeroCounts);
+	});
 }
 
 function failedTaskStepMessage(taskRun: TektonTaskRun): string | null {
