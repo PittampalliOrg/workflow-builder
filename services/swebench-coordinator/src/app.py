@@ -305,6 +305,8 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     job_name = f"swebench-eval-{run['id'].lower().replace('_', '-')[:44]}"
     instance_ids = run.get("selectedInstanceIds") or []
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
+    evaluation_timeout_seconds = max(60, int(run.get("timeoutSeconds") or 7200))
+    job_deadline_seconds = max(600, evaluation_timeout_seconds + 600)
     try:
         from kubernetes import client, config
 
@@ -323,6 +325,10 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             client.V1EnvVar(name="INTERNAL_API_TOKEN", value=INTERNAL_API_TOKEN),
             client.V1EnvVar(name="DOCKER_HOST", value="tcp://localhost:2375"),
             client.V1EnvVar(name="SWEBENCH_IMAGE_NAMESPACE", value="swebench"),
+            client.V1EnvVar(
+                name="SWEBENCH_EVALUATION_TIMEOUT_SECONDS",
+                value=str(evaluation_timeout_seconds),
+            ),
         ]
         container = client.V1Container(
             name="evaluator",
@@ -366,7 +372,12 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
         )
         job = client.V1Job(
             metadata=client.V1ObjectMeta(name=job_name, labels={"app": "swebench-evaluator", "benchmark-run-id": run["id"]}),
-            spec=client.V1JobSpec(backoff_limit=0, template=pod),
+            spec=client.V1JobSpec(
+                active_deadline_seconds=job_deadline_seconds,
+                backoff_limit=0,
+                template=pod,
+                ttl_seconds_after_finished=3600,
+            ),
         )
         batch.create_namespaced_job(namespace=EVALUATOR_NAMESPACE, body=job)
         _mark_run_status(ctx, {"runId": run["id"], "status": "evaluating", "evaluatorJobName": job_name})

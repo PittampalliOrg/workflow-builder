@@ -142,3 +142,57 @@ def test_main_writes_report_to_artifact_log_dir(monkeypatch, tmp_path: Path):
     log_dir = str(tmp_path / "harness")
     assert cmd[cmd.index("--report_dir") + 1] == log_dir
     assert captured["kwargs"]["cwd"] == log_dir
+
+
+def test_main_posts_timeout_result_when_harness_hangs(monkeypatch, tmp_path: Path):
+    entrypoint = load_entrypoint()
+    captured = {}
+
+    monkeypatch.setenv("DATASET_NAME", "princeton-nlp/SWE-bench_Lite")
+    monkeypatch.setenv("PREDICTIONS_PATH", "/artifacts/run_1/predictions.jsonl")
+    monkeypatch.setenv("RUN_ID", "run_1")
+    monkeypatch.setenv("INSTANCE_IDS", "psf__requests-2317")
+    monkeypatch.setenv("SWEBENCH_LOG_DIR", str(tmp_path / "harness"))
+    monkeypatch.setenv("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("DOCKER_WAIT_SECONDS", "0")
+    monkeypatch.setenv("SWEBENCH_STOP_DOCKER_SIDECAR", "false")
+
+    def fake_run(cmd, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        raise entrypoint.subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=kwargs["timeout"],
+            output="out",
+            stderr="err",
+        )
+
+    def fake_post(run_id, results, error=None):
+        captured["run_id"] = run_id
+        captured["results"] = results
+        captured["error"] = error
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
+    monkeypatch.setattr(entrypoint, "post_results", fake_post)
+    monkeypatch.setattr(entrypoint, "wait_for_docker", lambda: None)
+    monkeypatch.setattr(entrypoint, "stop_docker_sidecar", lambda: None)
+
+    assert entrypoint.main() == 124
+
+    assert captured["timeout"] == 60
+    assert captured["run_id"] == "run_1"
+    assert captured["error"] == "SWE-bench harness timed out after 60 seconds"
+    assert captured["results"] == [
+        {
+            "instance_id": "psf__requests-2317",
+            "resolved": False,
+            "status": "timeout",
+            "error": "SWE-bench harness timed out after 60 seconds",
+            "logs_path": str(tmp_path / "harness"),
+            "harness_result": {
+                "timeout": True,
+                "message": "SWE-bench harness timed out after 60 seconds",
+            },
+        }
+    ]
+    assert (tmp_path / "harness" / "stdout.log").read_text(encoding="utf-8") == "out"
+    assert "err" in (tmp_path / "harness" / "stderr.log").read_text(encoding="utf-8")

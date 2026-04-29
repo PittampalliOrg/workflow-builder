@@ -48,7 +48,29 @@ def main() -> int:
         if instance_ids:
             cmd.extend(["--instance_ids", *instance_ids])
 
-        result = subprocess.run(cmd, cwd=str(log_dir), text=True, capture_output=True)
+        timeout_seconds = evaluation_timeout_seconds()
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(log_dir),
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            timeout_message = f"SWE-bench harness timed out after {timeout_seconds} seconds"
+            (log_dir / "stdout.log").write_text(output_text(exc.stdout), encoding="utf-8")
+            (log_dir / "stderr.log").write_text(
+                output_text(exc.stderr, suffix=f"\n{timeout_message}\n"),
+                encoding="utf-8",
+            )
+            post_results(
+                run_id,
+                make_timeout_results(instance_ids, log_dir, timeout_message),
+                error=timeout_message,
+            )
+            return 124
+
         (log_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
         (log_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
         parsed_results = parse_results(log_dir, instance_ids)
@@ -95,6 +117,43 @@ def docker_api_ready() -> bool:
             return response.status == 200 and response.read().strip() == b"OK"
     except (OSError, urllib.error.URLError):
         return False
+
+
+def evaluation_timeout_seconds() -> int:
+    raw = os.environ.get("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "7200").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 7200
+    return max(60, value)
+
+
+def output_text(value: Any, *, suffix: str = "") -> str:
+    if value is None:
+        text = ""
+    elif isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    return text + suffix
+
+
+def make_timeout_results(
+    instance_ids: list[str],
+    log_dir: pathlib.Path,
+    message: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "instance_id": instance_id,
+            "resolved": False,
+            "status": "timeout",
+            "error": message,
+            "logs_path": str(log_dir),
+            "harness_result": {"timeout": True, "message": message},
+        }
+        for instance_id in instance_ids
+    ]
 
 
 def stop_docker_sidecar() -> None:
