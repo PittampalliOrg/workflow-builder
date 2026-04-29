@@ -2662,6 +2662,7 @@ export type EnvironmentImageBuildStrategy =
 	| "dockerfile"
 	| "scripted";
 export type BenchmarkArtifactKind =
+	| "dataset_jsonl"
 	| "predictions_jsonl"
 	| "model_patch"
 	| "harness_result"

@@ -5,12 +5,10 @@ import logging
 import os
 import pathlib
 import time
-import uuid
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
-import psycopg2
 import requests
 from dapr.ext import workflow as wf
 from dapr.ext.workflow import DaprWorkflowClient
@@ -29,11 +27,6 @@ try:
 except Exception:  # pragma: no cover - depends on dapr-ext-workflow version
     wf_when_any = None
 
-try:
-    from datasets import load_dataset
-except Exception:  # pragma: no cover - optional until the image is built
-    load_dataset = None
-
 logger = logging.getLogger("swebench-coordinator")
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -45,7 +38,6 @@ WORKFLOW_BUILDER_URL = os.environ.get(
     "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
 ).rstrip("/")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ARTIFACT_ROOT = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
 EVALUATOR_NAMESPACE = os.environ.get("SWEBENCH_EVALUATOR_NAMESPACE", "workflow-builder")
 EVALUATOR_IMAGE = os.environ.get("SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest")
@@ -135,6 +127,20 @@ def _bff(method: str, path: str, *, json_body: dict[str, Any] | None = None, tim
     return res.json()
 
 
+def _bff_text(method: str, path: str, *, timeout: int = 60) -> str:
+    if not INTERNAL_API_TOKEN:
+        raise RuntimeError("INTERNAL_API_TOKEN is required")
+    res = requests.request(
+        method,
+        f"{WORKFLOW_BUILDER_URL}{path}",
+        headers={"X-Internal-Token": INTERNAL_API_TOKEN},
+        timeout=timeout,
+    )
+    if res.status_code >= 400:
+        raise RuntimeError(f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}")
+    return res.text
+
+
 def _bff_with_retry(
     method: str,
     path: str,
@@ -163,12 +169,6 @@ def _bff_with_retry(
             )
             time.sleep(delay_seconds)
     raise last_error or RuntimeError(f"BFF {method} {path} failed")
-
-
-def _connect_db():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is required for SWE-bench metadata import")
-    return psycopg2.connect(DATABASE_URL)
 
 
 def _load_run(run_id: str) -> dict[str, Any]:
@@ -222,77 +222,31 @@ def _mark_run_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
     return _bff("POST", f"/api/internal/benchmarks/runs/{run_id}/status", json_body=payload)
 
 
-def _ensure_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
+def _validate_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run = _load_run(data["runId"])
-    suite = run["suiteSlug"]
-    dataset_name = run["suiteName"]
-    dataset_path = "princeton-nlp/SWE-bench_Verified" if suite == "SWE-bench_Verified" else "princeton-nlp/SWE-bench_Lite"
-    instance_ids = set(run.get("selectedInstanceIds") or [])
+    instance_ids = list(run.get("selectedInstanceIds") or [])
     if not instance_ids:
-        return {"imported": 0}
-    if load_dataset is None:
-        raise RuntimeError("datasets is not installed; cannot load SWE-bench metadata")
-
-    logger.info("Loading %s metadata for %d selected instances", dataset_path, len(instance_ids))
-    dataset = load_dataset(dataset_path, split="test")
-    rows = [item for item in dataset if item.get("instance_id") in instance_ids]
-    if len(rows) != len(instance_ids):
-        found = {row.get("instance_id") for row in rows}
-        missing = sorted(instance_ids - found)
-        raise RuntimeError(f"Missing SWE-bench metadata for instances: {', '.join(missing[:20])}")
-
-    conn = _connect_db()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM benchmark_suites WHERE slug = %s LIMIT 1", (suite,))
-            suite_row = cur.fetchone()
-            if not suite_row:
-                raise RuntimeError(f"benchmark suite {suite} is not seeded")
-            suite_id = suite_row[0]
-            for raw in rows:
-                instance_id = str(raw["instance_id"])
-                repo = raw.get("repo") or _repo_from_instance_id(instance_id)
-                metadata = dict(raw)
-                test_metadata = {
-                    key: raw.get(key)
-                    for key in ("test_patch", "FAIL_TO_PASS", "PASS_TO_PASS", "version")
-                    if raw.get(key) is not None
-                }
-                cur.execute(
-                    """
-                    INSERT INTO benchmark_instances (
-                        id, suite_id, instance_id, repo, base_commit,
-                        problem_statement, hints_text, test_metadata,
-                        gold_patch, metadata, updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, now())
-                    ON CONFLICT (suite_id, instance_id) DO UPDATE SET
-                        repo = EXCLUDED.repo,
-                        base_commit = EXCLUDED.base_commit,
-                        problem_statement = EXCLUDED.problem_statement,
-                        hints_text = EXCLUDED.hints_text,
-                        test_metadata = EXCLUDED.test_metadata,
-                        gold_patch = EXCLUDED.gold_patch,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = now()
-                    """,
-                    (
-                        f"binst_{uuid.uuid4().hex}",
-                        suite_id,
-                        instance_id,
-                        repo,
-                        raw.get("base_commit"),
-                        raw.get("problem_statement"),
-                        raw.get("hints_text") or raw.get("hints"),
-                        json.dumps(test_metadata, default=str),
-                        raw.get("patch"),
-                        json.dumps(metadata, default=str),
-                    ),
-                )
-            conn.commit()
-    finally:
-        conn.close()
-    return {"imported": len(rows), "dataset": dataset_name}
+        return {"validated": 0}
+    instances = run.get("instances") if isinstance(run.get("instances"), list) else []
+    by_instance_id = {
+        instance.get("instanceId"): instance
+        for instance in instances
+        if isinstance(instance, dict) and isinstance(instance.get("instanceId"), str)
+    }
+    missing = []
+    for instance_id in instance_ids:
+        instance = by_instance_id.get(instance_id)
+        if not isinstance(instance, dict):
+            missing.append(instance_id)
+            continue
+        if not instance.get("repo") or not instance.get("baseCommit") or not instance.get("problemStatement"):
+            missing.append(instance_id)
+    if missing:
+        raise RuntimeError(
+            "SWE-bench metadata must be imported before run start. "
+            f"Missing metadata for {len(missing)} instance(s): {', '.join(missing[:20])}"
+        )
+    return {"validated": len(instance_ids), "dataset": run.get("suiteName")}
 
 
 def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -353,9 +307,30 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
     return {"path": str(path), "bytes": path.stat().st_size}
 
 
+def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    path = ARTIFACT_ROOT / run_id / "dataset.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl = _bff_text(
+        "GET",
+        f"/api/internal/benchmarks/runs/{run_id}/dataset.jsonl",
+        timeout=120,
+    )
+    path.write_text(jsonl, encoding="utf-8")
+    _bff(
+        "POST",
+        f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
+        json_body={"path": str(path)},
+    )
+    return {"path": str(path), "bytes": path.stat().st_size}
+
+
 def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run = _load_run(data["runId"])
     predictions_path = data["predictionsPath"]
+    dataset_path = data.get("datasetPath")
+    if not isinstance(dataset_path, str) or not dataset_path.strip():
+        raise RuntimeError("datasetPath is required for DB-backed SWE-bench evaluation")
     job_name = _evaluator_job_name(run["id"])
     instance_ids = run.get("selectedInstanceIds") or []
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
@@ -367,7 +342,7 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
 
         client, batch, _core = _load_kubernetes_clients()
         env = [
-            client.V1EnvVar(name="DATASET_NAME", value=_dataset_path(run["suiteSlug"])),
+            client.V1EnvVar(name="DATASET_NAME", value=dataset_path),
             client.V1EnvVar(name="DATASET_SPLIT", value="test"),
             client.V1EnvVar(name="PREDICTIONS_PATH", value=predictions_path),
             client.V1EnvVar(name="RUN_ID", value=run["id"]),
@@ -557,18 +532,6 @@ def _delete_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "jobName": job_name, "error": str(exc)}
 
 
-def _repo_from_instance_id(instance_id: str) -> str | None:
-    if "__" not in instance_id or "-" not in instance_id:
-        return None
-    owner, rest = instance_id.split("__", 1)
-    repo = rest.split("-", 1)[0]
-    return f"{owner}/{repo}"
-
-
-def _dataset_path(suite_slug: str) -> str:
-    return "princeton-nlp/SWE-bench_Verified" if suite_slug == "SWE-bench_Verified" else "princeton-nlp/SWE-bench_Lite"
-
-
 def _evaluator_resource_profile(resource_class: Any) -> dict[str, dict[str, dict[str, str]]]:
     key = str(resource_class or "standard").strip().lower()
     return EVALUATOR_RESOURCE_PROFILES.get(key, EVALUATOR_RESOURCE_PROFILES["standard"])
@@ -692,7 +655,11 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
     try:
         job = yield ctx.call_activity(
             _ensure_evaluator_job,
-            input={"runId": run_id, "predictionsPath": data["predictionsPath"]},
+            input={
+                "runId": run_id,
+                "predictionsPath": data["predictionsPath"],
+                "datasetPath": data["datasetPath"],
+            },
         )
         job_name = job.get("jobName") or _evaluator_job_name(run_id)
         deadline = ctx.current_utc_datetime + timedelta(seconds=max(600, timeout_seconds + 600))
@@ -762,7 +729,7 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     try:
         yield ctx.call_activity(_mark_run_status, input={"runId": run_id, "status": "inferencing"})
         run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
-        yield ctx.call_activity(_ensure_instance_metadata, input={"runId": run_id})
+        yield ctx.call_activity(_validate_instance_metadata, input={"runId": run_id})
         run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
         instance_ids = list(run.get("selectedInstanceIds") or [])
         concurrency = bounded_swebench_concurrency(run.get("concurrency"))
@@ -795,11 +762,13 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                 len(failed_instances),
             )
         predictions = yield ctx.call_activity(_write_predictions, input={"runId": run_id})
+        dataset = yield ctx.call_activity(_write_evaluation_dataset, input={"runId": run_id})
         evaluation = yield ctx.call_child_workflow(
             "swebench_evaluation_workflow",
             input={
                 "runId": run_id,
                 "predictionsPath": predictions["path"],
+                "datasetPath": dataset["path"],
                 "timeoutSeconds": timeout_seconds,
             },
             instance_id=_evaluator_workflow_id(run_id),
@@ -809,6 +778,7 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             "instances": len(results),
             "failedInferenceInstances": len(failed_instances),
             "predictionsPath": predictions["path"],
+            "datasetPath": dataset["path"],
             "evaluation": evaluation,
         }
     except Exception as exc:
@@ -842,11 +812,12 @@ async def lifespan(app: FastAPI):
         _mark_run_status,
         _load_run_activity,
         _load_evaluation_progress,
-        _ensure_instance_metadata,
+        _validate_instance_metadata,
         _start_instance,
         _sync_instance,
         _mark_instance_inference_failure,
         _write_predictions,
+        _write_evaluation_dataset,
         _ensure_evaluator_job,
         _get_evaluator_job_status,
         _mark_evaluation_timeout,

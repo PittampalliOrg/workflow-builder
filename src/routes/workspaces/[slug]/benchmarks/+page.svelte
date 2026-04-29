@@ -182,6 +182,7 @@
 	const runnableAgents = $derived(
 		agents.filter((a) => a.runtime === 'dapr-agent-py' && a.registryStatus === 'registered' && a.currentVersion)
 	);
+	const selectedSuite = $derived(suites.find((suite) => suite.slug === suiteSlug) ?? null);
 	const selectedInstance = $derived(
 		selectedRun?.instances.find((item) => item.instanceId === selectedInstanceId) ?? selectedRun?.instances[0] ?? null
 	);
@@ -623,6 +624,9 @@
 						<option value={suite.slug}>{suite.name}</option>
 					{/each}
 				</select>
+				<p class="text-xs text-muted-foreground">
+					{selectedSuite?.instanceCount ?? 0} imported instances available
+				</p>
 			</div>
 
 			<div class="space-y-2">

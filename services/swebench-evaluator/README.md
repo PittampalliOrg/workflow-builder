@@ -1,9 +1,14 @@
 # SWE-bench Evaluator
 
 This image is the grading authority for workflow-builder SWE-bench Benchmark runs.
-The coordinator writes an official predictions JSONL artifact with exactly
-`instance_id`, `model_name_or_path`, and `model_patch`, then this job runs
-`python -m swebench.harness.run_evaluation` inside a Docker-in-Docker pod.
+The coordinator writes two artifacts from workflow-builder DB state:
+
+- `dataset.jsonl`: SWE-bench-compatible selected instance metadata.
+- `predictions.jsonl`: official predictions with exactly `instance_id`,
+  `model_name_or_path`, and `model_patch`.
+
+The job points `run_evaluation --dataset_name` at the local `dataset.jsonl`
+path and runs the official harness inside a Docker-in-Docker pod.
 
 ## SWE-bench Pin
 

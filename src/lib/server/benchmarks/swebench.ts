@@ -63,6 +63,17 @@ export type NormalizedSwebenchInstance = {
 	metadata: Record<string, unknown>;
 };
 
+export type SwebenchStoredInstance = NormalizedSwebenchInstance;
+
+export type SwebenchDatasetRecord = Record<string, unknown> & {
+	instance_id: string;
+	repo: string;
+	base_commit: string;
+	problem_statement: string;
+	hints_text: string;
+	patch: string;
+};
+
 export function normalizeSwebenchSuiteSlug(value: string): SwebenchSuiteSlug {
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
 	if (
@@ -141,6 +152,81 @@ export function normalizeSwebenchInstance(
 		goldPatch,
 		metadata,
 	};
+}
+
+export function isCompleteSwebenchInstanceMetadata(
+	instance: Pick<
+		SwebenchStoredInstance,
+		"repo" | "baseCommit" | "problemStatement"
+	> | null | undefined,
+): boolean {
+	return Boolean(
+		instance?.repo?.trim() &&
+			instance.baseCommit?.trim() &&
+			instance.problemStatement?.trim(),
+	);
+}
+
+export function findMissingSwebenchMetadata(
+	instanceIds: string[],
+	rows: Array<
+		Pick<SwebenchStoredInstance, "instanceId" | "repo" | "baseCommit" | "problemStatement">
+	>,
+): string[] {
+	const byInstanceId = new Map(rows.map((row) => [row.instanceId, row]));
+	return instanceIds.filter((instanceId) => {
+		const row = byInstanceId.get(instanceId);
+		return !isCompleteSwebenchInstanceMetadata(row);
+	});
+}
+
+export function buildSwebenchDatasetRecord(
+	instance: SwebenchStoredInstance,
+): SwebenchDatasetRecord {
+	if (!isCompleteSwebenchInstanceMetadata(instance)) {
+		throw new Error(`SWE-bench metadata for ${instance.instanceId} is incomplete`);
+	}
+	const metadata = isRecord(instance.metadata) ? instance.metadata : {};
+	const testMetadata = isRecord(instance.testMetadata) ? instance.testMetadata : {};
+	return {
+		...metadata,
+		...testMetadata,
+		instance_id: instance.instanceId,
+		repo: instance.repo as string,
+		base_commit: instance.baseCommit as string,
+		problem_statement: instance.problemStatement as string,
+		hints_text: instance.hintsText ?? "",
+		patch: instance.goldPatch ?? readRecordString(metadata, "patch") ?? "",
+		test_patch:
+			testMetadata.test_patch ??
+			metadata.test_patch ??
+			readRecordString(metadata, "test_patch") ??
+			"",
+		FAIL_TO_PASS:
+			testMetadata.FAIL_TO_PASS ??
+			testMetadata.fail_to_pass ??
+			metadata.FAIL_TO_PASS ??
+			metadata.fail_to_pass ??
+			[],
+		PASS_TO_PASS:
+			testMetadata.PASS_TO_PASS ??
+			testMetadata.pass_to_pass ??
+			metadata.PASS_TO_PASS ??
+			metadata.pass_to_pass ??
+			[],
+		version: testMetadata.version ?? metadata.version ?? "",
+		environment_setup_commit:
+			testMetadata.environment_setup_commit ??
+			metadata.environment_setup_commit ??
+			"",
+	};
+}
+
+export function buildSwebenchDatasetJsonl(
+	instances: SwebenchStoredInstance[],
+): string {
+	if (instances.length === 0) return "";
+	return instances.map((row) => JSON.stringify(buildSwebenchDatasetRecord(row))).join("\n") + "\n";
 }
 
 export type SwebenchPrediction = {
@@ -231,4 +317,16 @@ export function repoFromInstanceId(instanceId: string): string | null {
 	const match = /^([^_]+)__([^-]+)-/.exec(instanceId);
 	if (!match) return null;
 	return `${match[1]}/${match[2]}`;
+}
+
+function readRecordString(
+	record: Record<string, unknown>,
+	key: string,
+): string | null {
+	const value = record[key];
+	return typeof value === "string" ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

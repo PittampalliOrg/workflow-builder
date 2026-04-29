@@ -43,7 +43,7 @@ spec:
           image: ghcr.io/pittampalliorg/swebench-evaluator:latest
           env:
             - name: DATASET_NAME
-              value: princeton-nlp/SWE-bench_Lite
+              value: /artifacts/REPLACE_RUN_ID/dataset.jsonl
             - name: DATASET_SPLIT
               value: test
             - name: PREDICTIONS_PATH

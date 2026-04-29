@@ -9,8 +9,6 @@ dependencies = [
     "dapr==1.17.1",
     "dapr-ext-workflow==1.17.1",
     "requests>=2.31.0",
-    "psycopg2-binary>=2.9.0",
-    "datasets>=3.0.0",
     "kubernetes>=31.0.0",
 ]
 

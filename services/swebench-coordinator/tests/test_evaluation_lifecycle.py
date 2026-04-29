@@ -46,7 +46,6 @@ def load_app(monkeypatch):
     monkeypatch.setitem(sys.modules, "dapr", dapr_mod)
     monkeypatch.setitem(sys.modules, "dapr.ext", dapr_ext_mod)
     monkeypatch.setitem(sys.modules, "dapr.ext.workflow", workflow_mod)
-    monkeypatch.setitem(sys.modules, "psycopg2", types.SimpleNamespace(connect=lambda *_args, **_kwargs: None))
     monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(request=lambda *_args, **_kwargs: None))
 
     class FakeFastAPI:
@@ -155,7 +154,14 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     marked = {}
     monkeypatch.setattr(app, "_mark_run_status", lambda _ctx, data: marked.update(data) or {"run": data})
 
-    result = app._ensure_evaluator_job(None, {"runId": "Run_ABC", "predictionsPath": "/artifacts/predictions.jsonl"})
+    result = app._ensure_evaluator_job(
+        None,
+        {
+            "runId": "Run_ABC",
+            "predictionsPath": "/artifacts/predictions.jsonl",
+            "datasetPath": "/artifacts/run_abc/dataset.jsonl",
+        },
+    )
 
     assert result == {
         "jobName": "swebench-eval-run-abc",
@@ -166,8 +172,77 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     assert marked["evaluatorJobName"] == "swebench-eval-run-abc"
     evaluator = batch.body.spec.template.spec.containers[1]
     env = {item.name: item.value for item in evaluator.env}
+    assert env["DATASET_NAME"] == "/artifacts/run_abc/dataset.jsonl"
     assert env["SWEBENCH_MAX_WORKERS"] == "3"
     assert env["SWEBENCH_EVALUATOR_JOB_NAME"] == "swebench-eval-run-abc"
+
+
+def test_validate_instance_metadata_rejects_missing_db_rows(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda _run_id: {
+            "id": "run_1",
+            "suiteName": "SWE-bench Lite",
+            "selectedInstanceIds": ["sympy__sympy-20590", "psf__requests-2317"],
+            "instances": [
+                {
+                    "instanceId": "sympy__sympy-20590",
+                    "repo": "sympy/sympy",
+                    "baseCommit": "abc123",
+                    "problemStatement": "Fix it",
+                },
+                {
+                    "instanceId": "psf__requests-2317",
+                    "repo": "psf/requests",
+                    "baseCommit": None,
+                    "problemStatement": "Fix it",
+                },
+            ],
+        },
+    )
+
+    try:
+        app._validate_instance_metadata(None, {"runId": "run_1"})
+    except RuntimeError as exc:
+        assert "psf__requests-2317" in str(exc)
+        assert "must be imported" in str(exc)
+    else:
+        raise AssertionError("expected missing metadata to fail validation")
+
+
+def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(monkeypatch, tmp_path):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
+    requests = []
+
+    monkeypatch.setattr(
+        app,
+        "_bff_text",
+        lambda method, path, timeout=60: requests.append((method, path, timeout))
+        or '{"instance_id":"sympy__sympy-20590"}\n',
+    )
+    posted = {}
+    monkeypatch.setattr(
+        app,
+        "_bff",
+        lambda method, path, json_body=None, timeout=60: posted.update(
+            {"method": method, "path": path, "json": json_body}
+        ) or {"success": True},
+    )
+
+    result = app._write_evaluation_dataset(None, {"runId": "run_1"})
+
+    assert result["path"] == str(tmp_path / "run_1" / "dataset.jsonl")
+    assert (tmp_path / "run_1" / "dataset.jsonl").read_text(encoding="utf-8") == (
+        '{"instance_id":"sympy__sympy-20590"}\n'
+    )
+    assert requests == [
+        ("GET", "/api/internal/benchmarks/runs/run_1/dataset.jsonl", 120)
+    ]
+    assert posted["path"] == "/api/internal/benchmarks/runs/run_1/dataset-artifact"
+    assert posted["json"] == {"path": str(tmp_path / "run_1" / "dataset.jsonl")}
 
 
 def test_mark_evaluation_timeout_only_marks_active_rows(monkeypatch):

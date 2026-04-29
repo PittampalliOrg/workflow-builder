@@ -7,7 +7,6 @@ import {
 	desc,
 	eq,
 	inArray,
-	sql as drizzleSql,
 	type SQL,
 } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
@@ -36,13 +35,15 @@ import {
 	type ValidBenchmarkAgent,
 } from "./agents";
 import {
+	buildSwebenchDatasetJsonl,
 	buildPredictionsJsonl,
 	buildSwebenchPrediction,
 	canTransitionBenchmarkRun,
+	findMissingSwebenchMetadata,
 	INSTANCE_TERMINAL_STATUSES,
+	isCompleteSwebenchInstanceMetadata,
 	normalizeInstanceIds,
 	normalizeSwebenchSuiteSlug,
-	repoFromInstanceId,
 	summarizeRunInstances,
 	SWEBENCH_ALLOWED_AGENT_TOOLS,
 	SWEBENCH_SUITES,
@@ -221,30 +222,29 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		`${agent.slug}@v${agent.version}`;
 
 	const created = await database.transaction(async (tx) => {
-		const instanceRows = [];
-		for (const instanceId of instanceIds) {
-			const repo = repoFromInstanceId(instanceId);
-			const [row] = await tx
-				.insert(benchmarkInstances)
-				.values({
-					suiteId: suite.id,
-					instanceId,
-					repo,
-					metadata: { importStatus: "pending" },
-				})
-				.onConflictDoUpdate({
-					target: [
-						benchmarkInstances.suiteId,
-						benchmarkInstances.instanceId,
-					],
-					set: {
-						repo: drizzleSql`coalesce(${benchmarkInstances.repo}, excluded.repo)`,
-						updatedAt: new Date(),
-					},
-				})
-				.returning();
-			instanceRows.push(row);
+		const existingInstances = await tx
+			.select()
+			.from(benchmarkInstances)
+			.where(
+				and(
+					eq(benchmarkInstances.suiteId, suite.id),
+					inArray(benchmarkInstances.instanceId, instanceIds),
+				),
+			);
+		const missingMetadata = findMissingSwebenchMetadata(
+			instanceIds,
+			existingInstances,
+		);
+		if (missingMetadata.length > 0) {
+			throw error(
+				409,
+				`SWE-bench metadata has not been imported for ${missingMetadata.length} selected instance(s): ${missingMetadata.slice(0, 20).join(", ")}`,
+			);
 		}
+		const instancesById = new Map(
+			existingInstances.map((instance) => [instance.instanceId, instance]),
+		);
+		const instanceRows = instanceIds.map((instanceId) => instancesById.get(instanceId)!);
 
 		const [run] = await tx
 			.insert(benchmarkRuns)
@@ -889,6 +889,28 @@ export async function upsertPredictionsArtifact(
 		.where(eq(benchmarkRuns.id, runId));
 }
 
+export async function buildSwebenchDatasetJsonlForRunById(runId: string): Promise<string> {
+	const rows = await loadSwebenchDatasetRowsForRun(runId);
+	return buildSwebenchDatasetJsonl(rows);
+}
+
+export async function upsertEvaluationDatasetArtifact(
+	runId: string,
+	datasetPath: string,
+) {
+	const database = requireDb();
+	const jsonl = await buildSwebenchDatasetJsonlForRunById(runId);
+	await database.insert(benchmarkArtifacts).values({
+		runId,
+		kind: "dataset_jsonl",
+		path: datasetPath,
+		contentType: "application/jsonl",
+		sizeBytes: Buffer.byteLength(jsonl, "utf8"),
+		sha256: sha256(jsonl),
+		metadata: { source: "workflow-builder-db" },
+	});
+}
+
 async function buildPredictionsJsonlForRunById(runId: string): Promise<string> {
 	const database = requireDb();
 	const [run] = await database
@@ -914,6 +936,47 @@ async function buildPredictionsJsonlForRunById(runId: string): Promise<string> {
 			}),
 		),
 	);
+}
+
+async function loadSwebenchDatasetRowsForRun(runId: string) {
+	const database = requireDb();
+	const rows = await database
+		.select({
+			instanceId: benchmarkRunInstances.instanceId,
+			repo: benchmarkInstances.repo,
+			baseCommit: benchmarkInstances.baseCommit,
+			problemStatement: benchmarkInstances.problemStatement,
+			hintsText: benchmarkInstances.hintsText,
+			testMetadata: benchmarkInstances.testMetadata,
+			goldPatch: benchmarkInstances.goldPatch,
+			metadata: benchmarkInstances.metadata,
+		})
+		.from(benchmarkRunInstances)
+		.leftJoin(
+			benchmarkInstances,
+			eq(benchmarkInstances.id, benchmarkRunInstances.benchmarkInstanceId),
+		)
+		.where(eq(benchmarkRunInstances.runId, runId))
+		.orderBy(benchmarkRunInstances.createdAt);
+	const missing = rows
+		.filter((row) => !isCompleteSwebenchInstanceMetadata(row))
+		.map((row) => row.instanceId);
+	if (missing.length > 0) {
+		throw error(
+			409,
+			`SWE-bench metadata has not been imported for ${missing.length} selected instance(s): ${missing.slice(0, 20).join(", ")}`,
+		);
+	}
+	return rows.map((row) => ({
+		instanceId: row.instanceId,
+		repo: row.repo,
+		baseCommit: row.baseCommit,
+		problemStatement: row.problemStatement,
+		hintsText: row.hintsText,
+		testMetadata: row.testMetadata ?? {},
+		goldPatch: row.goldPatch,
+		metadata: row.metadata ?? {},
+	}));
 }
 
 async function resolveBenchmarkAgent(params: {

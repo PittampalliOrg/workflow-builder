@@ -8,6 +8,89 @@ import {
 	resolveBenchmarkInferenceStatus,
 	resolveBenchmarkInstanceStatusAfterInference,
 } from "./service";
+import {
+	buildSwebenchDatasetJsonl,
+	findMissingSwebenchMetadata,
+	isCompleteSwebenchInstanceMetadata,
+} from "./swebench";
+
+describe("SWE-bench DB metadata", () => {
+	it("detects missing or incomplete imported instance metadata", () => {
+		const rows = [
+			{
+				instanceId: "sympy__sympy-20590",
+				repo: "sympy/sympy",
+				baseCommit: "abc123",
+				problemStatement: "Fix it",
+			},
+			{
+				instanceId: "psf__requests-2317",
+				repo: "psf/requests",
+				baseCommit: null,
+				problemStatement: "Fix it",
+			},
+		];
+
+		expect(isCompleteSwebenchInstanceMetadata(rows[0])).toBe(true);
+		expect(isCompleteSwebenchInstanceMetadata(rows[1])).toBe(false);
+		expect(
+			findMissingSwebenchMetadata(
+				[
+					"sympy__sympy-20590",
+					"psf__requests-2317",
+					"django__django-11099",
+				],
+				rows,
+			),
+		).toEqual(["psf__requests-2317", "django__django-11099"]);
+	});
+
+	it("exports DB rows as SWE-bench-compatible dataset JSONL", () => {
+		const jsonl = buildSwebenchDatasetJsonl([
+			{
+				instanceId: "sympy__sympy-20590",
+				repo: "sympy/sympy",
+				baseCommit: "abc123",
+				problemStatement: "Fix it",
+				hintsText: null,
+				goldPatch: "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+				testMetadata: {
+					test_patch: "diff --git a/sympy/core/tests/test_add.py b/sympy/core/tests/test_add.py\n",
+					FAIL_TO_PASS: ["sympy/core/tests/test_add.py::test_regression"],
+					PASS_TO_PASS: ["sympy/core/tests/test_add.py::test_existing"],
+					version: "1.7",
+				},
+				metadata: {
+					created_at: "2021-01-01T00:00:00Z",
+					environment_setup_commit: "env123",
+				},
+			},
+		]);
+
+		const [record] = jsonl
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(record).toMatchObject({
+			instance_id: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			base_commit: "abc123",
+			problem_statement: "Fix it",
+			hints_text: "",
+			patch: "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+			test_patch: "diff --git a/sympy/core/tests/test_add.py b/sympy/core/tests/test_add.py\n",
+			version: "1.7",
+			environment_setup_commit: "env123",
+		});
+		expect(record.FAIL_TO_PASS).toEqual([
+			"sympy/core/tests/test_add.py::test_regression",
+		]);
+		expect(record.PASS_TO_PASS).toEqual([
+			"sympy/core/tests/test_add.py::test_existing",
+		]);
+		expect(jsonl.endsWith("\n")).toBe(true);
+	});
+});
 
 describe("SWE-bench workflow spec", () => {
 	it("builds a canvas graph for generated SWE-bench instance runs", () => {
