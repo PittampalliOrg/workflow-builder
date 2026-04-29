@@ -62,7 +62,6 @@ const SWEBENCH_PREPARED_REPO_PATH = "/testbed";
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
 const SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION = `\${ .prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)} }`;
-const SWEBENCH_RUNTIME_WORKSPACE_ROOT_EXPRESSION = `\${ if ((.prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)}) == ${JSON.stringify(SWEBENCH_PREPARED_REPO_PATH)}) then ${JSON.stringify(SWEBENCH_PREPARED_REPO_PATH)} else ${JSON.stringify(SWEBENCH_FALLBACK_WORKSPACE_ROOT)} end }`;
 const SWEBENCH_PATCH_EXCLUDE_PATHS = [
 	":(exclude)**/tests/**",
 	":(exclude)tests/**",
@@ -1114,7 +1113,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		pollMs: 15_000,
 	};
 	const workspaceProfileWith: Record<string, unknown> = {
-		rootPath: SWEBENCH_RUNTIME_WORKSPACE_ROOT_EXPRESSION,
+		rootPath: SWEBENCH_FALLBACK_WORKSPACE_ROOT,
 		workspaceRef,
 		sandboxTemplate: dynamicSandboxTemplate,
 		ttlSeconds,

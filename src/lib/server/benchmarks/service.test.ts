@@ -182,10 +182,7 @@ describe("SWE-bench workflow spec", () => {
 		expect(workspaceProfile.with.sandboxTemplate).toBe(
 			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
 		);
-		expect(workspaceProfile.with.rootPath).toContain(
-			".prepare_environment.environment.workspaceRoot",
-		);
-		expect(workspaceProfile.with.rootPath).toContain("/sandbox");
+		expect(workspaceProfile.with.rootPath).toBe("/sandbox");
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"${ .prepare_environment.sandboxImage }",
 		);
@@ -248,9 +245,7 @@ describe("SWE-bench workflow spec", () => {
 		const workspaceProfile = (
 			spec.do as Array<Record<string, { with: Record<string, unknown> }>>
 		)[1].workspace_profile;
-		expect(workspaceProfile.with.rootPath).toContain(
-			".prepare_environment.environment.workspaceRoot",
-		);
+		expect(workspaceProfile.with.rootPath).toBe("/sandbox");
 		expect(workspaceProfile.with.sandboxTemplate).toBe(
 			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
 		);
@@ -294,10 +289,7 @@ describe("SWE-bench workflow spec", () => {
 		};
 		const extractPatch = steps[4].extract_patch;
 
-		expect(workspaceProfile.with.rootPath).toContain(
-			'.prepare_environment.environment.workspaceRoot // "/sandbox/repo"',
-		);
-		expect(workspaceProfile.with.rootPath).toContain('else "/sandbox"');
+		expect(workspaceProfile.with.rootPath).toBe("/sandbox");
 		expect(String(checkout.with.command)).toContain("cd /testbed");
 		expect(String(checkout.with.command)).toContain("git clone 'https://github.com/sympy/sympy.git' repo");
 		expect(solve.with.cwd).toBe(
