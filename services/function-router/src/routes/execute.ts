@@ -505,6 +505,51 @@ function parseMastraToolInput(
   return { toolId, args };
 }
 
+function optionalStringInput(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+type WorkspaceCommandPayloadOptions = {
+  args: Record<string, unknown>;
+  executionId: string;
+  dbExecutionId?: string | null;
+  workflowId: string;
+  nodeId: string;
+  nodeName: string;
+};
+
+export function buildWorkspaceCommandPayload({
+  args,
+  executionId,
+  dbExecutionId,
+  workflowId,
+  nodeId,
+  nodeName,
+}: WorkspaceCommandPayloadOptions): Record<string, unknown> {
+  const cwd =
+    optionalStringInput(args.cwd) ??
+    optionalStringInput(args.workingDir) ??
+    optionalStringInput(args.workingDirectory);
+
+  return {
+    executionId,
+    dbExecutionId: dbExecutionId ?? undefined,
+    workspaceRef: args.workspaceRef,
+    command: args.command ?? args.prompt ?? "",
+    env:
+      args.env && typeof args.env === "object" && !Array.isArray(args.env)
+        ? args.env
+        : undefined,
+    cwd,
+    timeoutMs: args.timeoutMs,
+    workflowId,
+    nodeId,
+    nodeName,
+  };
+}
+
 function parseBooleanInput(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return undefined;
@@ -1472,22 +1517,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               });
             } else if (isWorkspaceCommand || isBrowserCommand) {
               targetUrl = `${isBrowserCommand ? (workspaceRuntimeUrl ?? functionUrl) : functionUrl}/api/workspaces/command`;
-              requestBody = JSON.stringify({
-                executionId: workspaceExecutionId,
-                dbExecutionId: body.db_execution_id ?? undefined,
-                workspaceRef: args.workspaceRef,
-                command: args.command ?? args.prompt ?? "",
-                env:
-                  args.env &&
-                  typeof args.env === "object" &&
-                  !Array.isArray(args.env)
-                    ? args.env
-                    : undefined,
-                timeoutMs: args.timeoutMs,
-                workflowId: body.workflow_id,
-                nodeId: body.node_id,
-                nodeName: body.node_name,
-              });
+              requestBody = JSON.stringify(
+                buildWorkspaceCommandPayload({
+                  args,
+                  executionId: workspaceExecutionId,
+                  dbExecutionId: body.db_execution_id,
+                  workflowId: body.workflow_id,
+                  nodeId: body.node_id,
+                  nodeName: body.node_name,
+                }),
+              );
             } else if (isWorkspaceFile) {
               targetUrl = `${functionUrl}/api/workspaces/file`;
               requestBody = JSON.stringify({
