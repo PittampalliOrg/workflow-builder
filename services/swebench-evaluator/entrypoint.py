@@ -64,9 +64,20 @@ def main() -> int:
                 output_text(exc.stderr, suffix=f"\n{timeout_message}\n"),
                 encoding="utf-8",
             )
+            parsed_results = parse_results(
+                log_dir,
+                instance_ids,
+                include_missing=False,
+                include_incomplete=False,
+            )
+            timeout_results = make_timeout_results(
+                missing_result_instance_ids(instance_ids, parsed_results),
+                log_dir,
+                timeout_message,
+            )
             post_results(
                 run_id,
-                make_timeout_results(instance_ids, log_dir, timeout_message),
+                [*parsed_results, *timeout_results],
                 error=timeout_message,
             )
             return 124
@@ -186,7 +197,13 @@ def stop_docker_sidecar() -> None:
             continue
 
 
-def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[str, Any]]:
+def parse_results(
+    log_dir: pathlib.Path,
+    instance_ids: list[str],
+    *,
+    include_missing: bool = True,
+    include_incomplete: bool = True,
+) -> list[dict[str, Any]]:
     candidates = list(log_dir.rglob("*.json"))
     by_instance: dict[str, dict[str, Any]] = {}
     for path in candidates:
@@ -194,12 +211,14 @@ def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[s
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        visit_aggregate_report(payload, path, by_instance)
+        visit_aggregate_report(payload, path, by_instance, include_incomplete=include_incomplete)
         visit_result_payload(payload, path, by_instance)
     results: list[dict[str, Any]] = []
     for instance_id in instance_ids:
         result = by_instance.get(instance_id)
         if result is None:
+            if not include_missing:
+                continue
             result = {
                 "instance_id": instance_id,
                 "status": "error",
@@ -212,7 +231,25 @@ def parse_results(log_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[s
     return results
 
 
-def visit_aggregate_report(payload: Any, path: pathlib.Path, out: dict[str, dict[str, Any]]) -> None:
+def missing_result_instance_ids(
+    instance_ids: list[str],
+    results: list[dict[str, Any]],
+) -> list[str]:
+    parsed_ids = {
+        result.get("instance_id") or result.get("instanceId")
+        for result in results
+        if isinstance(result.get("instance_id") or result.get("instanceId"), str)
+    }
+    return [instance_id for instance_id in instance_ids if instance_id not in parsed_ids]
+
+
+def visit_aggregate_report(
+    payload: Any,
+    path: pathlib.Path,
+    out: dict[str, dict[str, Any]],
+    *,
+    include_incomplete: bool = True,
+) -> None:
     if not isinstance(payload, dict):
         return
 
@@ -253,8 +290,9 @@ def visit_aggregate_report(payload: Any, path: pathlib.Path, out: dict[str, dict
             error="Empty patch",
             test_output_summary=summary,
         )
-    for instance_id in sorted(error_ids | incomplete_ids):
-        error = "Evaluation did not complete" if instance_id in incomplete_ids else "Harness error"
+    incomplete_status_ids = incomplete_ids if include_incomplete else set()
+    for instance_id in sorted(error_ids | incomplete_status_ids):
+        error = "Evaluation did not complete" if instance_id in incomplete_status_ids else "Harness error"
         out[instance_id] = make_result(
             instance_id=instance_id,
             resolved=False,
@@ -348,6 +386,9 @@ def post_results(run_id: str, results: list[dict[str, Any]], error: str | None =
     if not base or not token:
         return
     body: dict[str, Any] = {"results": results}
+    job_name = os.environ.get("SWEBENCH_EVALUATOR_JOB_NAME", "").strip()
+    if job_name:
+        body["jobName"] = job_name
     if error:
         body["error"] = error
     requests.post(

@@ -20,7 +20,11 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 				`${getSwebenchCoordinatorUrl()}/api/v1/benchmark-runs/${params.runId}/cancel`,
 				{
 					method: "POST",
-					headers: { "X-Internal-Token": env.INTERNAL_API_TOKEN },
+					headers: {
+						"Content-Type": "application/json",
+						"X-Internal-Token": env.INTERNAL_API_TOKEN,
+					},
+					body: JSON.stringify({ reason: "cancelled by user" }),
 					maxRetries: 0,
 				},
 			);

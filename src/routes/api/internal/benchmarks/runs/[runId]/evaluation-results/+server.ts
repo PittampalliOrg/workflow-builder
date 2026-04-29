@@ -10,9 +10,12 @@ import {
 	type BenchmarkRunInstanceStatus,
 } from "$lib/server/db/schema";
 import {
+	getSwebenchCoordinatorUrl,
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
 } from "$lib/server/benchmarks/service";
+import { daprFetch } from "$lib/server/dapr-client";
+import { env } from "$env/dynamic/private";
 
 type EvaluationResult = {
 	instance_id?: string;
@@ -34,12 +37,18 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	const body = (await request.json().catch(() => ({}))) as {
 		results?: EvaluationResult[];
 		error?: string;
+		jobName?: string;
 	};
 	const evaluatorError =
 		typeof body.error === "string" && body.error.trim() ? body.error.trim() : null;
 	const results = Array.isArray(body.results) ? body.results : [];
 	if (evaluatorError && results.length === 0) {
 		await markBenchmarkRunStatus(params.runId, "failed", { error: evaluatorError });
+		await notifyCoordinatorEvaluationEvent(params.runId, {
+			eventType: "failed",
+			jobName: body.jobName,
+			error: evaluatorError,
+		});
 		return json({ success: true });
 	}
 	for (const result of results) {
@@ -92,16 +101,55 @@ export const POST: RequestHandler = async ({ request, params }) => {
 					? `${failed} benchmark instances did not resolve`
 					: evaluatorError,
 		});
-	} else if (evaluatorError) {
-		await markBenchmarkRunStatus(params.runId, "failed", { error: evaluatorError });
 	}
 	const [run] = await db
 		.select()
 		.from(benchmarkRuns)
 		.where(eq(benchmarkRuns.id, params.runId))
 		.limit(1);
+	await notifyCoordinatorEvaluationEvent(params.runId, {
+		eventType: results.length > 0 ? "results" : "failed",
+		jobName: body.jobName,
+		error: evaluatorError,
+	});
 	return json({ success: true, run, summary });
 };
+
+async function notifyCoordinatorEvaluationEvent(
+	runId: string,
+	event: { eventType: "results" | "failed"; jobName?: string; error?: string | null },
+) {
+	if (!env.INTERNAL_API_TOKEN) return;
+	try {
+		const res = await daprFetch(
+			`${getSwebenchCoordinatorUrl()}/api/v1/benchmark-runs/${runId}/evaluation-events`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Internal-Token": env.INTERNAL_API_TOKEN,
+				},
+				body: JSON.stringify({
+					eventType: event.eventType,
+					jobName: event.jobName,
+					error: event.error,
+					postedAt: new Date().toISOString(),
+				}),
+				maxRetries: 0,
+			},
+		);
+		if (!res.ok) {
+			console.warn(
+				`SWE-bench coordinator evaluation event notification failed for ${runId}: ${res.status} ${await res.text()}`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			`SWE-bench coordinator evaluation event notification failed for ${runId}:`,
+			err,
+		);
+	}
+}
 
 function mapHarnessStatus(result: EvaluationResult): {
 	status: BenchmarkRunInstanceStatus;

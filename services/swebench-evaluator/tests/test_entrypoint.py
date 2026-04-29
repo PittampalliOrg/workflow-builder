@@ -196,3 +196,64 @@ def test_main_posts_timeout_result_when_harness_hangs(monkeypatch, tmp_path: Pat
     ]
     assert (tmp_path / "harness" / "stdout.log").read_text(encoding="utf-8") == "out"
     assert "err" in (tmp_path / "harness" / "stderr.log").read_text(encoding="utf-8")
+
+
+def test_main_timeout_preserves_partial_results_and_times_out_only_missing(
+    monkeypatch,
+    tmp_path: Path,
+):
+    entrypoint = load_entrypoint()
+    captured = {}
+    log_dir = tmp_path / "harness"
+
+    monkeypatch.setenv("DATASET_NAME", "princeton-nlp/SWE-bench_Lite")
+    monkeypatch.setenv("PREDICTIONS_PATH", "/artifacts/run_1/predictions.jsonl")
+    monkeypatch.setenv("RUN_ID", "run_1")
+    monkeypatch.setenv("INSTANCE_IDS", "sympy__sympy-20590 psf__requests-2317")
+    monkeypatch.setenv("SWEBENCH_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("DOCKER_WAIT_SECONDS", "0")
+    monkeypatch.setenv("SWEBENCH_STOP_DOCKER_SIDECAR", "false")
+
+    report = {
+        "total_instances": 2,
+        "submitted_instances": 2,
+        "completed_instances": 1,
+        "resolved_instances": 1,
+        "unresolved_instances": 0,
+        "empty_patch_instances": 0,
+        "error_instances": 0,
+        "resolved_ids": ["sympy__sympy-20590"],
+        "unresolved_ids": [],
+        "empty_patch_ids": [],
+        "error_ids": [],
+        "incomplete_ids": ["psf__requests-2317"],
+        "schema_version": 2,
+    }
+
+    def fake_run(cmd, **kwargs):
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "model.run.json").write_text(json.dumps(report), encoding="utf-8")
+        raise entrypoint.subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=kwargs["timeout"],
+            output="out",
+            stderr="err",
+        )
+
+    def fake_post(run_id, results, error=None):
+        captured["run_id"] = run_id
+        captured["results"] = results
+        captured["error"] = error
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
+    monkeypatch.setattr(entrypoint, "post_results", fake_post)
+    monkeypatch.setattr(entrypoint, "wait_for_docker", lambda: None)
+    monkeypatch.setattr(entrypoint, "stop_docker_sidecar", lambda: None)
+
+    assert entrypoint.main() == 124
+
+    by_id = {result["instance_id"]: result for result in captured["results"]}
+    assert by_id["sympy__sympy-20590"]["status"] == "resolved"
+    assert by_id["psf__requests-2317"]["status"] == "timeout"
+    assert len(captured["results"]) == 2
