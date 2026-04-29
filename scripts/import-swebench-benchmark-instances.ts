@@ -25,6 +25,7 @@ type Args = {
 	limit: number | null;
 	pageSize: number;
 	dryRun: boolean;
+	preserveExisting: boolean;
 };
 
 type NormalizedInstance = {
@@ -73,6 +74,7 @@ function parseArgs(argv: string[]): Args {
 		limit: null,
 		pageSize: 100,
 		dryRun: false,
+		preserveExisting: false,
 	};
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
@@ -90,6 +92,8 @@ function parseArgs(argv: string[]): Args {
 			args.dryRun = true;
 		} else if (arg === "--apply") {
 			args.dryRun = false;
+		} else if (arg === "--preserve-existing") {
+			args.preserveExisting = true;
 		} else if (arg === "--help" || arg === "-h") {
 			printUsage();
 			process.exit(0);
@@ -114,6 +118,7 @@ function printUsage() {
 			"  --limit N        Import at most N rows per suite.",
 			"  --page-size N    Hugging Face rows page size. Default: 100.",
 			"  --dry-run        Fetch and validate rows without writing.",
+			"  --preserve-existing  Do not delete existing suite rows absent from the import.",
 		].join("\n"),
 	);
 }
@@ -323,6 +328,20 @@ async function upsertInstance(
 	`;
 }
 
+async function deleteStaleSuiteInstances(
+	sql: Sql,
+	suite: SuiteDefinition,
+	instanceIds: string[],
+): Promise<number> {
+	const rows = await sql<{ id: string }[]>`
+		delete from benchmark_instances
+		where suite_id = ${suite.id}
+			and instance_id != all(${instanceIds})
+		returning id
+	`;
+	return rows.length;
+}
+
 function selectedSuites(args: Args): SuiteDefinition[] {
 	return args.suite === "all"
 		? SUITES
@@ -379,12 +398,21 @@ async function main() {
 					mode: args.dryRun ? "dry-run" : "apply",
 					rows: normalized.length,
 					incomplete: incomplete.length,
+					cutover: !args.preserveExisting,
 				}),
 			);
 			if (!sql) continue;
 			await upsertSuite(sql, suite);
 			for (const instance of normalized) {
 				await upsertInstance(sql, suite, instance);
+			}
+			if (!args.preserveExisting) {
+				const deleted = await deleteStaleSuiteInstances(
+					sql,
+					suite,
+					normalized.map((row) => row.instanceId),
+				);
+				console.log(JSON.stringify({ suite: suite.slug, deletedStaleRows: deleted }));
 			}
 		}
 	} finally {
