@@ -612,7 +612,9 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		userId: row.run.userId,
 	});
 	const inferenceEnvironment = await plannedSwebenchInferenceEnvironmentWithBuild({
+		dataset: row.suite.datasetName,
 		suiteSlug: normalizeSwebenchSuiteSlug(row.suite.slug),
+		instanceId: row.runInstance.instanceId,
 		repo: row.instance.repo,
 		baseCommit: row.instance.baseCommit,
 		testMetadata: row.instance.testMetadata,
