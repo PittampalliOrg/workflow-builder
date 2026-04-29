@@ -72,6 +72,7 @@ export type ResolveSwebenchInferenceEnvironmentInput = {
 
 export type LoadSwebenchInferenceEnvironmentOptions = {
 	env?: Record<string, string | undefined>;
+	mappings?: SwebenchInferenceEnvironmentMapping[];
 };
 
 export function resolveSwebenchInferenceEnvironment(
@@ -99,7 +100,7 @@ export function resolveSwebenchInferenceEnvironment(
 
 	if (!repo) return fallback("missing_repo");
 
-	const mappings = loadSwebenchInferenceEnvironmentMappings(options);
+	const mappings = options.mappings ?? loadSwebenchInferenceEnvironmentMappings(options);
 	const match = selectBestMapping(mappings, {
 		suite,
 		repo,

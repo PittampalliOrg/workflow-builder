@@ -19,6 +19,7 @@ import {
 	benchmarkRunInstances,
 	benchmarkRuns,
 	benchmarkSuites,
+	environmentImageBuilds,
 	sessionEvents,
 	sessions,
 	workflowExecutions,
@@ -50,6 +51,8 @@ import {
 	type SwebenchSuiteSlug,
 } from "./swebench";
 import {
+	loadSwebenchInferenceEnvironmentMappings,
+	resolveSwebenchInferenceEnvironment,
 	swebenchInferenceEnvironmentPromptNotes,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "./inference-environments";
@@ -147,6 +150,9 @@ export async function listBenchmarkSuites(projectId?: string | null) {
 					)
 					.groupBy(benchmarkRuns.suiteId)
 			: [];
+	const environmentCoverage = suiteIds.length
+		? await benchmarkEnvironmentCoverage(suites)
+		: new Map<string, BenchmarkEnvironmentCoverage>();
 	const instancesBySuite = new Map(instanceCounts.map((r) => [r.suiteId, r.total]));
 	const runsBySuite = new Map(runCounts.map((r) => [r.suiteId, r.total]));
 	return suites.map((suite) => ({
@@ -160,7 +166,175 @@ export async function listBenchmarkSuites(projectId?: string | null) {
 		defaultInstanceLimit: suite.defaultInstanceLimit,
 		instanceCount: instancesBySuite.get(suite.id) ?? 0,
 		runCount: runsBySuite.get(suite.id) ?? 0,
+		environmentCoverage: environmentCoverage.get(suite.id) ?? emptyBenchmarkEnvironmentCoverage(),
 	}));
+}
+
+type BenchmarkEnvironmentCoverage = {
+	totalRequired: number;
+	validated: number;
+	building: number;
+	failed: number;
+	notBuilt: number;
+};
+
+type EnvironmentCoverageBucket = {
+	required: Set<string>;
+	validated: Set<string>;
+	building: Set<string>;
+	failed: Set<string>;
+};
+
+async function benchmarkEnvironmentCoverage(
+	suites: Array<typeof benchmarkSuites.$inferSelect>,
+): Promise<Map<string, BenchmarkEnvironmentCoverage>> {
+	const database = requireDb();
+	const suiteIds = suites.map((suite) => suite.id);
+	const suiteById = new Map(suites.map((suite) => [suite.id, suite]));
+	const suiteIdBySlug = new Map(suites.map((suite) => [suite.slug, suite.id]));
+	const staticMappings = loadSwebenchInferenceEnvironmentMappings();
+	const buckets = new Map<string, EnvironmentCoverageBucket>(
+		suites.map((suite) => [
+			suite.id,
+			{
+				required: new Set<string>(),
+				validated: new Set<string>(),
+				building: new Set<string>(),
+				failed: new Set<string>(),
+			},
+		]),
+	);
+
+	const instances = await database
+		.select({
+			suiteId: benchmarkInstances.suiteId,
+			repo: benchmarkInstances.repo,
+			baseCommit: benchmarkInstances.baseCommit,
+			testMetadata: benchmarkInstances.testMetadata,
+		})
+		.from(benchmarkInstances)
+		.where(inArray(benchmarkInstances.suiteId, suiteIds));
+	for (const instance of instances) {
+		const bucket = buckets.get(instance.suiteId);
+		const suite = suiteById.get(instance.suiteId);
+		const key = benchmarkEnvironmentKey({
+			repo: instance.repo,
+			baseCommit: instance.baseCommit,
+			metadata: instance.testMetadata,
+		});
+		if (!bucket || !suite || !key || !instance.repo || !instance.baseCommit) continue;
+		bucket.required.add(key);
+		const resolved = resolveSwebenchInferenceEnvironment(
+			{
+				suiteSlug: normalizeSwebenchSuiteSlug(suite.slug),
+				repo: instance.repo,
+				baseCommit: instance.baseCommit,
+				testMetadata: instance.testMetadata,
+			},
+			{ mappings: staticMappings },
+		);
+		if (resolved.environmentStatus === "validated") bucket.validated.add(key);
+	}
+
+	const builds = await database
+		.select({
+			suite: environmentImageBuilds.suite,
+			repo: environmentImageBuilds.repo,
+			version: environmentImageBuilds.version,
+			environmentSetupCommit: environmentImageBuilds.environmentSetupCommit,
+			baseCommit: environmentImageBuilds.baseCommit,
+			status: environmentImageBuilds.status,
+			validationStatus: environmentImageBuilds.validationStatus,
+			sandboxImage: environmentImageBuilds.sandboxImage,
+			digest: environmentImageBuilds.digest,
+		})
+		.from(environmentImageBuilds)
+		.where(inArray(environmentImageBuilds.suite, suites.map((suite) => suite.slug)));
+	for (const build of builds) {
+		const suiteId = build.suite ? suiteIdBySlug.get(build.suite) : undefined;
+		const bucket = suiteId ? buckets.get(suiteId) : undefined;
+		const key = benchmarkEnvironmentKey({
+			repo: build.repo,
+			baseCommit: build.baseCommit,
+			metadata: {
+				version: build.version,
+				environmentSetupCommit: build.environmentSetupCommit,
+			},
+		});
+		if (!bucket || !key || !bucket.required.has(key)) continue;
+		if (
+			build.status === "validated" &&
+			build.validationStatus === "validated" &&
+			build.sandboxImage &&
+			build.digest
+		) {
+			bucket.validated.add(key);
+			continue;
+		}
+		if (build.status === "queued" || build.status === "building") {
+			bucket.building.add(key);
+		} else if (build.status === "failed" || build.status === "cancelled") {
+			bucket.failed.add(key);
+		}
+	}
+
+	return new Map(
+		Array.from(buckets, ([suiteId, bucket]) => {
+			const validated = bucket.validated.size;
+			const building = differenceSize(bucket.building, bucket.validated);
+			const failed = differenceSize(bucket.failed, new Set([...bucket.validated, ...bucket.building]));
+			const accounted = validated + building + failed;
+			const totalRequired = bucket.required.size;
+			return [
+				suiteId,
+				{
+					totalRequired,
+					validated,
+					building,
+					failed,
+					notBuilt: Math.max(totalRequired - accounted, 0),
+				},
+			];
+		}),
+	);
+}
+
+function emptyBenchmarkEnvironmentCoverage(): BenchmarkEnvironmentCoverage {
+	return {
+		totalRequired: 0,
+		validated: 0,
+		building: 0,
+		failed: 0,
+		notBuilt: 0,
+	};
+}
+
+function benchmarkEnvironmentKey(input: {
+	repo: string | null;
+	baseCommit: string | null;
+	metadata: Record<string, unknown> | null;
+}): string | null {
+	if (!input.repo) return null;
+	const version = metadataString(input.metadata, "version");
+	const environmentSetupCommit =
+		metadataString(input.metadata, "environmentSetupCommit") ??
+		metadataString(input.metadata, "environment_setup_commit");
+	const selector = version ?? environmentSetupCommit?.slice(0, 12) ?? input.baseCommit?.slice(0, 12);
+	if (!selector) return null;
+	return `${input.repo}::${selector}`;
+}
+
+function metadataString(metadata: Record<string, unknown> | null, key: string): string | null {
+	const value = metadata?.[key];
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function differenceSize(values: Set<string>, excluded: Set<string>): number {
+	let size = 0;
+	for (const value of values) {
+		if (!excluded.has(value)) size += 1;
+	}
+	return size;
 }
 
 export type CreateBenchmarkRunInput = {

@@ -10,6 +10,19 @@ The coordinator writes two artifacts from workflow-builder DB state:
 The job points `run_evaluation --dataset_name` at the local `dataset.jsonl`
 path and runs the official harness inside a Docker-in-Docker pod.
 
+## Runtime Security
+
+Evaluator Jobs keep Docker-in-Docker privileged mode so the official SWE-bench
+harness can launch per-instance containers without changing parity behavior.
+That privilege is isolated to short-lived `swebench-eval-*` Jobs; the
+coordinator pod itself does not run privileged.
+
+The coordinator injects `INTERNAL_API_TOKEN` into evaluator Jobs through
+`valueFrom.secretKeyRef` instead of a literal environment value in the Job spec.
+The `swebench-coordinator` service account is namespaced to `workflow-builder`
+and its RBAC is limited to creating/deleting evaluator Jobs plus reading Jobs,
+Pods, and Pod logs needed for lifecycle tracking and cleanup.
+
 ## SWE-bench Pin
 
 `Dockerfile` installs the PittampalliOrg SWE-bench fork at:

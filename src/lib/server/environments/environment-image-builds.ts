@@ -611,6 +611,30 @@ export async function syncEnvironmentBuild(
 	const database = requireDb();
 	if (condition.status === "True") {
 		const results = tektonPipelineRunResults(pipelineRun);
+		const validationStatus = readString(results.validation_status);
+		const validationLogRef = readString(results.validation_log_ref);
+		const builtAtResult = readString(results.built_at);
+		const builtAt = parseDate(builtAtResult);
+		if (validationStatus !== "validated" || !validationLogRef || !builtAt) {
+			const [updated] = await database
+				.update(environmentImageBuilds)
+				.set({
+					status: "failed",
+					error: "Tekton PipelineRun completed without validated image results",
+					completedAt: parseDate(pipelineRun.status?.completionTime) ?? new Date(),
+					updatedAt: new Date(),
+				})
+				.where(eq(environmentImageBuilds.id, row.id))
+				.returning();
+			await persistBuildActivityEvents(
+				normalizeEnvironmentBuildActivityEvents({
+					build: updated ?? row,
+					pipelineRun,
+					taskRuns,
+				}),
+			);
+			return updated ?? row;
+		}
 		const imageRef = readString(results.image_ref) ?? row.sandboxImage;
 		const digest = readString(results.image_digest) ?? digestFromImage(imageRef) ?? row.digest;
 		const sandboxImage = imageWithDigest(imageRef, digest) ?? imageRef ?? undefined;
@@ -634,10 +658,6 @@ export async function syncEnvironmentBuild(
 			);
 			return updated ?? row;
 		}
-		const builtAt =
-			parseDate(readString(results.built_at)) ??
-			parseDate(pipelineRun.status?.completionTime) ??
-			new Date();
 		const spec = mergeSwebenchSpecMetadata(
 			row.spec,
 			parseJsonRecord(results.swebench_spec_metadata),
@@ -648,39 +668,13 @@ export async function syncEnvironmentBuild(
 				status: "validated",
 				sandboxImage,
 				digest,
-				validationStatus: readString(results.validation_status) ?? "validated",
-				validationLogRef: readString(results.validation_log_ref) ?? row.validationLogRef,
+				validationStatus,
+				validationLogRef,
 				spec,
 				builtAt,
 				completedAt: parseDate(pipelineRun.status?.completionTime) ?? new Date(),
 				updatedAt: new Date(),
 			})
-			.where(eq(environmentImageBuilds.id, row.id))
-			.returning();
-		await persistBuildActivityEvents(
-			normalizeEnvironmentBuildActivityEvents({
-				build: updated ?? row,
-				pipelineRun,
-				taskRuns,
-			}),
-		);
-		return updated ?? row;
-	}
-
-	if (hasUsableValidatedImage(row)) {
-		if (row.status === "validated" && !row.error) return row;
-		const update: Partial<typeof environmentImageBuilds.$inferInsert> = {
-			status: "validated",
-			error: null,
-			updatedAt: new Date(),
-		};
-		if (!row.digest && row.sandboxImage) {
-			const digest = digestFromImage(row.sandboxImage);
-			if (digest) update.digest = digest;
-		}
-		const [updated] = await database
-			.update(environmentImageBuilds)
-			.set(update)
 			.where(eq(environmentImageBuilds.id, row.id))
 			.returning();
 		await persistBuildActivityEvents(
@@ -714,8 +708,10 @@ export async function syncEnvironmentBuild(
 }
 
 export function hasUsableValidatedImage(
-	row: Pick<EnvironmentImageBuild, "validationStatus" | "sandboxImage" | "digest">,
+	row: Pick<EnvironmentImageBuild, "validationStatus" | "sandboxImage" | "digest"> &
+		Partial<Pick<EnvironmentImageBuild, "pipelineRunName">>,
 ): boolean {
+	if (row.pipelineRunName) return false;
 	return (
 		row.validationStatus === "validated" &&
 		Boolean(row.sandboxImage) &&
@@ -1856,7 +1852,7 @@ function defaultSwebenchHarnessValidationCommand(workspaceRoot: string): string 
 		`cd ${quoteShell(workspaceRoot)}`,
 		"git rev-parse --is-inside-work-tree >/dev/null",
 		"git status --short",
-		"bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && python --version'",
+		"python --version",
 	].join(" && ");
 }
 

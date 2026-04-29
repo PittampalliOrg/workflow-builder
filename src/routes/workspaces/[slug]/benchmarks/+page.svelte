@@ -34,6 +34,13 @@
 		defaultInstanceLimit: number | null;
 		instanceCount: number;
 		runCount: number;
+		environmentCoverage?: {
+			totalRequired: number;
+			validated: number;
+			building: number;
+			failed: number;
+			notBuilt: number;
+		};
 	};
 
 	type Agent = {
@@ -356,6 +363,7 @@
 			case 'inferred':
 			case 'pending':
 			case 'fallback':
+			case 'not_built':
 				return 'bg-amber-500/15 text-amber-600';
 			case 'unresolved':
 			case 'empty_patch':
@@ -404,6 +412,7 @@
 	}
 
 	function inferenceEnvironmentStatus(env: Record<string, unknown> | null | undefined) {
+		if (!env || Object.keys(env).length === 0) return 'not_built';
 		return envField(env, 'environmentStatus') ?? 'fallback';
 	}
 
@@ -412,7 +421,20 @@
 		if (status === 'validated') return envField(env, 'environmentKey') ?? 'validated image';
 		if (status === 'building' || status === 'queued') return envField(env, 'environmentKey') ?? 'building image';
 		if (status === 'failed') return envField(env, 'environmentKey') ?? 'image build failed';
+		if (status === 'not_built') return envField(env, 'environmentKey') ?? 'not built';
 		return 'dapr-agent fallback';
+	}
+
+	function environmentCoverageLabel(suite: Suite | null) {
+		const coverage = suite?.environmentCoverage;
+		if (!coverage || coverage.totalRequired === 0) return 'no environment coverage yet';
+		const parts = [
+			`${coverage.validated}/${coverage.totalRequired} validated`,
+			coverage.building ? `${coverage.building} building` : null,
+			coverage.failed ? `${coverage.failed} failed` : null,
+			coverage.notBuilt ? `${coverage.notBuilt} not built` : null,
+		].filter(Boolean);
+		return parts.join(' · ');
 	}
 
 	function formatStatus(status: string | null | undefined): string {
@@ -625,7 +647,7 @@
 					{/each}
 				</select>
 				<p class="text-xs text-muted-foreground">
-					{selectedSuite?.instanceCount ?? 0} imported instances available
+					{selectedSuite?.instanceCount ?? 0} imported instances · {environmentCoverageLabel(selectedSuite)}
 				</p>
 			</div>
 

@@ -117,6 +117,8 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
         V1Container = Obj
         V1ResourceRequirements = Obj
         V1VolumeMount = Obj
+        V1EnvVarSource = Obj
+        V1SecretKeySelector = Obj
         V1SecurityContext = Obj
         V1PodTemplateSpec = Obj
         V1ObjectMeta = Obj
@@ -163,18 +165,25 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
         },
     )
 
+    job_name = app._evaluator_job_name("Run_ABC")
     assert result == {
-        "jobName": "swebench-eval-run-abc",
+        "jobName": job_name,
         "alreadyExists": True,
         "maxWorkers": 3,
     }
     assert marked["status"] == "evaluating"
-    assert marked["evaluatorJobName"] == "swebench-eval-run-abc"
+    assert marked["evaluatorJobName"] == job_name
     evaluator = batch.body.spec.template.spec.containers[1]
-    env = {item.name: item.value for item in evaluator.env}
+    env = {item.name: getattr(item, "value", None) for item in evaluator.env}
+    env_sources = {item.name: getattr(item, "value_from", None) for item in evaluator.env}
     assert env["DATASET_NAME"] == "/artifacts/run_abc/dataset.jsonl"
     assert env["SWEBENCH_MAX_WORKERS"] == "3"
-    assert env["SWEBENCH_EVALUATOR_JOB_NAME"] == "swebench-eval-run-abc"
+    assert env["SWEBENCH_EVALUATOR_JOB_NAME"] == job_name
+    assert env["INTERNAL_API_TOKEN"] is None
+    token_source = env_sources["INTERNAL_API_TOKEN"].secret_key_ref
+    assert token_source.name == "workflow-builder-secrets"
+    assert token_source.key == "INTERNAL_API_TOKEN"
+    assert len(job_name) <= 63
 
 
 def test_validate_instance_metadata_rejects_missing_db_rows(monkeypatch):
@@ -276,3 +285,45 @@ def test_mark_evaluation_timeout_only_marks_active_rows(monkeypatch):
     assert posted["path"] == "/api/internal/benchmarks/runs/run_1/evaluation-results"
     assert [row["instance_id"] for row in posted["json"]["results"]] == ["active"]
     assert posted["json"]["results"][0]["status"] == "timeout"
+
+
+def test_hash_suffixed_names_are_stable_and_collision_resistant(monkeypatch):
+    app = load_app(monkeypatch)
+    run_id = "Run_" + ("A" * 120)
+    similar_a = "django__django-12345678901234567890-a"
+    similar_b = "django__django-12345678901234567890-b"
+
+    job_a = app._evaluator_job_name(run_id)
+    job_b = app._evaluator_job_name(run_id)
+    child_a = app._child_instance_workflow_id(run_id, similar_a)
+    child_b = app._child_instance_workflow_id(run_id, similar_b)
+
+    assert job_a == job_b
+    assert job_a.startswith("swebench-eval-run-")
+    assert len(job_a) <= 63
+    assert child_a.startswith("swebench-inst-run-")
+    assert child_a != child_b
+    assert len(child_a) <= 100
+    assert len(child_b) <= 100
+
+
+def test_start_benchmark_run_is_idempotent_when_workflow_exists(monkeypatch):
+    app = load_app(monkeypatch)
+    app.INTERNAL_API_TOKEN = "token"
+
+    class ExistingWorkflowClient:
+        def schedule_new_workflow(self, *_args, **_kwargs):
+            raise RuntimeError("workflow instance already exists")
+
+    monkeypatch.setattr(app, "DaprWorkflowClient", ExistingWorkflowClient)
+
+    response = app.start_benchmark_run(
+        app.StartRunRequest(runId="run_1"),
+        Obj(headers={"x-internal-token": "token"}),
+    )
+
+    assert response == {
+        "success": True,
+        "executionId": "swebench-run-run_1",
+        "alreadyStarted": True,
+    }

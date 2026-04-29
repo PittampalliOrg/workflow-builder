@@ -195,6 +195,7 @@ describe("SWE-bench environment image build planning", () => {
 						{ name: "image_digest", value: "sha256:111" },
 						{ name: "validation_status", value: "validated" },
 						{ name: "validation_log_ref", value: "tekton://taskruns/validate-image" },
+						{ name: "built_at", value: "2026-04-28T12:05:00Z" },
 					],
 				},
 			},
@@ -352,7 +353,7 @@ describe("SWE-bench environment image build planning", () => {
 		});
 	});
 
-	it("treats a validated image ref as authoritative over stale failed PipelineRun state", () => {
+	it("does not treat stale validated fields as usable for pipeline-managed builds", () => {
 		expect(
 			hasUsableValidatedImage({
 				validationStatus: "validated",
@@ -361,6 +362,15 @@ describe("SWE-bench environment image build planning", () => {
 				digest: null,
 			}),
 		).toBe(true);
+		expect(
+			hasUsableValidatedImage({
+				validationStatus: "validated",
+				sandboxImage:
+					"ghcr.io/pittampalliorg/swebench-inference-matplotlib-3.5:env-abc@sha256:41ec9d82c6389366facd5576a790bc5937fdfdd1e7fcb1dad8904c76e2719679",
+				digest: null,
+				pipelineRunName: "swe-env-failed",
+			}),
+		).toBe(false);
 		expect(
 			hasUsableValidatedImage({
 				validationStatus: "failed",

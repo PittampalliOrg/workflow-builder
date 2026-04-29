@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +39,14 @@ WORKFLOW_BUILDER_URL = os.environ.get(
     "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
 ).rstrip("/")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
+INTERNAL_API_SECRET_NAME = os.environ.get(
+    "INTERNAL_API_SECRET_NAME",
+    "workflow-builder-secrets",
+)
+INTERNAL_API_SECRET_KEY = os.environ.get(
+    "INTERNAL_API_SECRET_KEY",
+    "INTERNAL_API_TOKEN",
+)
 ARTIFACT_ROOT = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
 EVALUATOR_NAMESPACE = os.environ.get("SWEBENCH_EVALUATOR_NAMESPACE", "workflow-builder")
 EVALUATOR_IMAGE = os.environ.get("SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest")
@@ -348,7 +357,15 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             client.V1EnvVar(name="RUN_ID", value=run["id"]),
             client.V1EnvVar(name="INSTANCE_IDS", value=" ".join(instance_ids)),
             client.V1EnvVar(name="WORKFLOW_BUILDER_URL", value=WORKFLOW_BUILDER_URL),
-            client.V1EnvVar(name="INTERNAL_API_TOKEN", value=INTERNAL_API_TOKEN),
+            client.V1EnvVar(
+                name="INTERNAL_API_TOKEN",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(
+                        name=INTERNAL_API_SECRET_NAME,
+                        key=INTERNAL_API_SECRET_KEY,
+                    ),
+                ),
+            ),
             client.V1EnvVar(name="SWEBENCH_EVALUATOR_JOB_NAME", value=job_name),
             client.V1EnvVar(name="DOCKER_HOST", value="tcp://localhost:2375"),
             client.V1EnvVar(name="SWEBENCH_IMAGE_NAMESPACE", value="swebench"),
@@ -545,14 +562,57 @@ def _run_workflow_id(run_id: str) -> str:
     return f"swebench-run-{run_id}"
 
 
+def _child_instance_workflow_id(run_id: str, instance_id: str) -> str:
+    return _hash_suffixed_name("swebench-inst-", [run_id, instance_id], max_length=100)
+
+
 def _evaluator_job_name(run_id: str) -> str:
-    normalized = "".join(
-        char if char.isalnum() or char == "-" else "-"
-        for char in run_id.lower().replace("_", "-")
-    ).strip("-")
-    if not normalized:
-        normalized = "run"
-    return f"swebench-eval-{normalized}"[:63].rstrip("-")
+    return _hash_suffixed_name("swebench-eval-", [run_id], max_length=63)
+
+
+def _hash_suffixed_name(
+    prefix: str,
+    parts: list[str],
+    *,
+    max_length: int,
+    hash_length: int = 12,
+) -> str:
+    suffix = _short_hash(parts, length=hash_length)
+    readable_budget = max_length - len(prefix) - len(suffix) - 1
+    readable = _safe_name_prefix("-".join(parts), readable_budget)
+    return f"{prefix}{readable}-{suffix}"[:max_length].rstrip("-")
+
+
+def _safe_name_prefix(value: str, max_length: int) -> str:
+    normalized = "".join(char if char.isalnum() else "-" for char in value.lower())
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
+    normalized = normalized.strip("-") or "run"
+    return normalized[:max_length].rstrip("-") or "run"
+
+
+def _short_hash(value: Any, *, length: int = 12) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:length]
+
+
+def _workflow_already_exists(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "already exists",
+            "already started",
+            "already running",
+            "already_created",
+            "alreadyexists",
+            "already_exists",
+            "duplicate",
+            "status code 409",
+            "status=409",
+            "conflict",
+        )
+    )
 
 
 def _load_kubernetes_clients():
@@ -741,7 +801,7 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                 ctx.call_child_workflow(
                     "swebench_instance_workflow",
                     input={"runId": run_id, "instanceId": instance_id, "timeoutSeconds": timeout_seconds},
-                    instance_id=f"swebench-{run_id}-{instance_id}".replace("/", "-")[:100],
+                    instance_id=_child_instance_workflow_id(run_id, instance_id),
                 )
                 for instance_id in chunk
             ]
@@ -850,6 +910,12 @@ def start_benchmark_run(body: StartRunRequest, request: Request):
             instance_id=instance_id,
         )
     except Exception as exc:
+        if _workflow_already_exists(exc):
+            logger.info(
+                "SWE-bench run workflow %s is already started; treating start as idempotent",
+                instance_id,
+            )
+            return {"success": True, "executionId": instance_id, "alreadyStarted": True}
         logger.exception("Failed to schedule SWE-bench run workflow %s", instance_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"success": True, "executionId": instance_id}
@@ -868,7 +934,7 @@ def cancel_benchmark_run(run_id: str, request: Request, body: CancelRunRequest =
             client.terminate_workflow(instance_id=instance_id, output=reason)
         except Exception as exc:
             if _workflow_event_already_closed(exc):
-                logger.info("Workflow %s already closed during cancellation: %s", instance_id, exc)
+                logger.debug("Workflow %s already closed during cancellation: %s", instance_id, exc)
             else:
                 termination_errors[instance_id] = str(exc)
                 logger.warning("Best-effort terminate failed for %s: %s", instance_id, exc)
@@ -902,7 +968,12 @@ def post_evaluation_event(run_id: str, body: EvaluationEventRequest, request: Re
         )
     except Exception as exc:
         if _workflow_event_already_closed(exc):
-            logger.info("Ignoring event %s for already-closed evaluation workflow %s: %s", event_name, instance_id, exc)
+            logger.debug(
+                "Ignoring event %s for already-closed evaluation workflow %s: %s",
+                event_name,
+                instance_id,
+                exc,
+            )
             return {
                 "success": True,
                 "instanceId": instance_id,
