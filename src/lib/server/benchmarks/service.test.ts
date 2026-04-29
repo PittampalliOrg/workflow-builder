@@ -44,6 +44,10 @@ describe("SWE-bench workflow spec", () => {
 			baseCommit: "abc123",
 			problemStatement: "Fix it",
 			hintsText: null,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+			},
 			agentId: "agent_1",
 			agentVersion: 1,
 			timeoutSeconds: 7200,
@@ -94,6 +98,10 @@ describe("SWE-bench workflow spec", () => {
 			baseCommit: "abc123",
 			problemStatement: "Fix it",
 			hintsText: null,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+			},
 			agentId: "agent_1",
 			agentVersion: 1,
 			timeoutSeconds: 7200,
@@ -135,6 +143,10 @@ describe("SWE-bench workflow spec", () => {
 			baseCommit: "abc123",
 			problemStatement: "Fix it",
 			hintsText: null,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+			},
 			agentId: "agent_1",
 			agentVersion: 1,
 			timeoutSeconds: 7200,
@@ -152,6 +164,9 @@ describe("SWE-bench workflow spec", () => {
 					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				validationStatus: "validated",
 				validationCommand: "PYTHONPATH=src python -m pytest --version",
+				buildStrategy: "swebench-harness",
+				workspaceRoot: "/testbed",
+				condaEnvironment: "testbed",
 				environmentNotes: [
 					"Run Python commands with PYTHONPATH=src for source-layout repos.",
 				],
@@ -167,6 +182,7 @@ describe("SWE-bench workflow spec", () => {
 		expect(workspaceProfile.with.sandboxTemplate).toBe(
 			'${ .prepare_environment.sandboxTemplate // "dapr-agent" }',
 		);
+		expect(workspaceProfile.with.rootPath).toBe("/testbed");
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"${ .prepare_environment.sandboxImage }",
 		);
@@ -179,9 +195,15 @@ describe("SWE-bench workflow spec", () => {
 			baseCommit: "abc123",
 			testMetadata: {
 				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
 				validationCommand: "PYTHONPATH=src python -m pytest --version",
 			},
 		});
+		const checkout = (
+			spec.do as Array<Record<string, { with: { command: string } }>>
+		)[2].checkout_repo;
+		expect(checkout.with.command).toContain("cd /testbed");
+		expect(checkout.with.command).toContain("git merge-base --is-ancestor 'abc123' HEAD");
 		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[3]
 			.solve;
 		expect(solve.with.body.prompt).toContain(".prepare_environment.promptNotes");

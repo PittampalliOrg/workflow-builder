@@ -106,6 +106,11 @@
 	type EnvironmentBuildSnapshot = {
 		id: string;
 		environmentKey: string;
+		envSpecHash: string;
+		buildStrategy: string;
+		workspaceRoot: string | null;
+		condaEnvironment: string | null;
+		swebenchSpec: Record<string, unknown> | null;
 		status: string;
 		pipelineRunName: string | null;
 		pipelineRunNamespace: string | null;
@@ -378,6 +383,18 @@
 		return typeof value === 'string' && value.trim() ? value.trim() : null;
 	}
 
+	function envNestedField(env: Record<string, unknown> | null | undefined, parent: string, key: string) {
+		return nestedStringField(env, parent, key);
+	}
+
+	function nestedStringField(record: unknown, parent: string, key: string) {
+		if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+		const value = (record as Record<string, unknown>)[parent];
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+		const child = (value as Record<string, unknown>)[key];
+		return typeof child === 'string' && child.trim() ? child.trim() : null;
+	}
+
 	function envStringList(env: Record<string, unknown> | null | undefined, key: string) {
 		const value = env?.[key];
 		if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
@@ -399,6 +416,12 @@
 
 	function formatStatus(status: string | null | undefined): string {
 		return (status || 'pending').replaceAll('_', ' ');
+	}
+
+	function formatBuildStrategy(strategy: string | null | undefined): string {
+		if (strategy === 'swebench-harness') return 'SWE-bench harness spec';
+		if (strategy === 'buildpacks') return 'Buildpacks fallback';
+		return formatStatus(strategy);
 	}
 
 	function formatRelative(iso: string | null | undefined): string {
@@ -867,13 +890,19 @@
 									<div class="space-y-1 text-muted-foreground">
 										<div>Template: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'sandboxTemplate') ?? 'dapr-agent'}</span></div>
 										{#if envField(selectedInstance.inferenceEnvironment, 'buildStrategy')}
-											<div>Build strategy: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'buildStrategy')}</span></div>
+											<div>Build strategy: <span class="font-mono">{formatBuildStrategy(envField(selectedInstance.inferenceEnvironment, 'buildStrategy'))}</span></div>
+										{/if}
+										{#if envField(selectedInstance.inferenceEnvironment, 'workspaceRoot')}
+											<div>Workspace root: <span class="font-mono">{envField(selectedInstance.inferenceEnvironment, 'workspaceRoot')}</span></div>
 										{/if}
 										{#if envField(selectedInstance.inferenceEnvironment, 'pipelineRunName')}
 											<div>PipelineRun: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'pipelineRunName')}</span></div>
 										{/if}
 										{#if envField(selectedInstance.inferenceEnvironment, 'envSpecHash')}
 											<div>Spec hash: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'envSpecHash')}</span></div>
+										{/if}
+										{#if envNestedField(selectedInstance.inferenceEnvironment, 'swebenchSpec', 'instanceImageKey')}
+											<div>Harness image key: <span class="font-mono break-all">{envNestedField(selectedInstance.inferenceEnvironment, 'swebenchSpec', 'instanceImageKey')}</span></div>
 										{/if}
 										{#if envField(selectedInstance.inferenceEnvironment, 'sandboxImage')}
 											<div>Image: <span class="font-mono break-all">{envField(selectedInstance.inferenceEnvironment, 'sandboxImage')}</span></div>
@@ -912,6 +941,18 @@
 									{#if selectedBuildActivity?.build}
 										<div class="space-y-1 text-muted-foreground">
 											<div>Key: <span class="font-mono text-foreground">{selectedBuildActivity.build.environmentKey}</span></div>
+											{#if selectedBuildActivity.build.buildStrategy}
+												<div>Build strategy: <span class="font-mono text-foreground">{formatBuildStrategy(selectedBuildActivity.build.buildStrategy)}</span></div>
+											{/if}
+											{#if selectedBuildActivity.build.workspaceRoot}
+												<div>Workspace root: <span class="font-mono text-foreground">{selectedBuildActivity.build.workspaceRoot}</span></div>
+											{/if}
+											{#if selectedBuildActivity.build.envSpecHash}
+												<div>Spec hash: <span class="font-mono break-all text-foreground">{selectedBuildActivity.build.envSpecHash}</span></div>
+											{/if}
+											{#if nestedStringField(selectedBuildActivity.build, 'swebenchSpec', 'instanceImageKey')}
+												<div>Harness image key: <span class="font-mono break-all text-foreground">{nestedStringField(selectedBuildActivity.build, 'swebenchSpec', 'instanceImageKey')}</span></div>
+											{/if}
 											{#if selectedBuildActivity.build.pipelineRunName}
 												<div class="flex items-center gap-1 min-w-0">
 													<span>PipelineRun:</span>

@@ -116,6 +116,11 @@ function sampleActivity(): EnvironmentBuildActivityResponse {
 			environmentKey: "sympy-1.7",
 			envSpecHash: "a".repeat(64),
 			buildStrategy: "swebench-harness",
+			workspaceRoot: "/testbed",
+			condaEnvironment: "testbed",
+			swebenchSpec: {
+				instanceImageKey: "sweb.eval.x86_64.sympy_1776_sympy-1.7",
+			},
 			status: "validated",
 			sandboxTemplate: "dapr-agent",
 			sandboxImage: "registry/swebench@sha256:111",

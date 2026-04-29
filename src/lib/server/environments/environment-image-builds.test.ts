@@ -19,6 +19,9 @@ describe("SWE-bench environment image build planning", () => {
 			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
 			testMetadata: {
 				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
 				validationCommand: "PYTHONPATH=src python -m pytest --version",
 			},
 		});
@@ -34,9 +37,16 @@ describe("SWE-bench environment image build planning", () => {
 			sandboxTemplate: "dapr-agent",
 			imageName: "swebench-inference-sympy-1.7",
 			imageTag: expect.stringMatching(/^env-[0-9a-f]{16}$/),
-			dockerfilePath:
-				"services/openshell-sandbox/environments/Dockerfile.swebench-inference-sympy-1.7",
+			dockerfilePath: "Dockerfile",
 			validationCommand: "PYTHONPATH=src python -m pytest --version",
+			workspaceRoot: "/testbed",
+			condaEnvironment: "testbed",
+		});
+		expect(spec.swebenchSpecInput).toMatchObject({
+			instance_id: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			version: "1.7",
+			base_commit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
 		});
 		expect(spec.envSpecHash).toMatch(/^[0-9a-f]{64}$/);
 	});
@@ -50,7 +60,10 @@ describe("SWE-bench environment image build planning", () => {
 			suiteSlug: "SWE-bench_Lite",
 			repo: "django/django",
 			baseCommit: "abc123",
-			testMetadata: { version: "3.2" },
+			testMetadata: {
+				version: "3.2",
+				test_patch: "diff --git a/tests/test_dummy.py b/tests/test_dummy.py\n",
+			},
 		});
 
 		expect(planned).toMatchObject({
@@ -63,9 +76,47 @@ describe("SWE-bench environment image build planning", () => {
 			buildStrategy: "swebench-harness",
 			source: "dynamic-build",
 			reason: "dynamic_build_required",
+			workspaceRoot: "/testbed",
+			condaEnvironment: "testbed",
 		});
 		expect(planned).toHaveProperty("envSpecHash");
 		expect(planned).not.toHaveProperty("sandboxImage");
+	});
+
+	it("falls back to buildpacks only when harness metadata is missing", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "django__django-11099",
+			repo: "django/django",
+			baseCommit: "abc123",
+			testMetadata: {},
+		});
+
+		expect(spec).toMatchObject({
+			buildStrategy: "buildpacks",
+			workspaceRoot: "/sandbox/repo",
+			fallbackReason: "missing_swebench_version",
+		});
+		expect(spec.dockerfilePath).toContain("Dockerfile.swebench-inference-django-abc123");
+	});
+
+	it("falls back to buildpacks when the repo exists but the version is not in SWE-bench specs", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "django__django-99999",
+			repo: "django/django",
+			baseCommit: "abc123",
+			testMetadata: {
+				version: "9.9",
+				test_patch: "diff --git a/tests/test_dummy.py b/tests/test_dummy.py\n",
+			},
+		});
+
+		expect(spec).toMatchObject({
+			buildStrategy: "buildpacks",
+			workspaceRoot: "/sandbox/repo",
+			fallbackReason: "unsupported_swebench_harness_version",
+		});
 	});
 
 	it("uses repo-aware validation defaults for Flask source-layout images", () => {
@@ -74,18 +125,43 @@ describe("SWE-bench environment image build planning", () => {
 			instanceId: "pallets__flask-4992",
 			repo: "pallets/flask",
 			baseCommit: "4c288bc97ea371817199908d0d9b12de9dae327e",
-			testMetadata: { version: "2.3" },
+			testMetadata: {
+				version: "2.3",
+				test_patch: "diff --git a/tests/test_appctx.py b/tests/test_appctx.py\n",
+			},
 		});
 
 		expect(spec).toMatchObject({
 			environmentKey: "flask-2.3",
-			dockerfilePath:
-				"services/openshell-sandbox/environments/Dockerfile.swebench-inference-flask-2.3",
-			validationCommand: expect.stringContaining("PYTHONPATH=src"),
+			dockerfilePath: "Dockerfile",
+			validationCommand: expect.stringContaining("/testbed"),
 		});
 		expect(spec.environmentNotes).toContain(
 			"For local imports and tests in this source-layout repo, prefix Python commands with PYTHONPATH=src.",
 		);
+	});
+
+	it("carries Xarray harness metadata instead of choosing latest buildpack packages", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "pydata__xarray-3993",
+			repo: "pydata/xarray",
+			baseCommit: "abc123",
+			testMetadata: {
+				version: "2024.05",
+				test_patch: "diff --git a/xarray/tests/test_dataset.py b/xarray/tests/test_dataset.py\n",
+				FAIL_TO_PASS: ["xarray/tests/test_dataset.py::test_regression"],
+				PASS_TO_PASS: ["xarray/tests/test_dataset.py::test_existing"],
+			},
+		});
+
+		expect(spec.buildStrategy).toBe("swebench-harness");
+		expect(spec.swebenchSpecInput).toMatchObject({
+			repo: "pydata/xarray",
+			version: "2024.05",
+			FAIL_TO_PASS: ["xarray/tests/test_dataset.py::test_regression"],
+		});
+		expect(spec.environmentNotes.join("\n")).toContain("SWE-bench harness spec");
 	});
 
 	it("normalizes PipelineRun and TaskRun status into deterministic activity events", () => {

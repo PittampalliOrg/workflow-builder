@@ -622,6 +622,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		baseCommit: row.instance.baseCommit,
 		problemStatement: row.instance.problemStatement,
 		hintsText: row.instance.hintsText,
+		testMetadata: row.instance.testMetadata,
 		agentId: row.run.agentId,
 		agentVersion: row.run.agentVersion,
 		timeoutSeconds: row.run.timeoutSeconds,
@@ -1072,13 +1073,15 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	baseCommit: string;
 	problemStatement: string;
 	hintsText: string | null;
+	testMetadata?: Record<string, unknown> | null;
 	agentId: string;
 	agentVersion: number;
 	timeoutSeconds: number;
 	maxTurns: number | null;
 	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): Record<string, unknown> {
-	const repoPath = "/sandbox/repo";
+	const repoPath = params.inferenceEnvironment?.workspaceRoot ?? "/sandbox/repo";
+	const workspaceRoot = repoPath === "/testbed" ? "/testbed" : "/sandbox";
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
 	const ttlSeconds = Math.max(params.timeoutSeconds + 3600, 7200);
 	const dynamicSandboxTemplate = "${ .prepare_environment.sandboxTemplate // \"dapr-agent\" }";
@@ -1093,18 +1096,22 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		instanceId: params.instanceId,
 		repo: params.repo,
 		baseCommit: params.baseCommit,
-		testMetadata: params.inferenceEnvironment
-			? {
-					version: params.inferenceEnvironment.version,
-					environmentSetupCommit: params.inferenceEnvironment.environmentSetupCommit,
-					validationCommand: params.inferenceEnvironment.validationCommand,
-				}
-			: {},
+		testMetadata: {
+			...(params.testMetadata ?? {}),
+			...(params.inferenceEnvironment
+				? {
+						version: params.inferenceEnvironment.version,
+						environmentSetupCommit:
+							params.inferenceEnvironment.environmentSetupCommit,
+						validationCommand: params.inferenceEnvironment.validationCommand,
+					}
+				: {}),
+		},
 		timeoutMs: Math.max(params.timeoutSeconds * 1000, 3_600_000),
 		pollMs: 15_000,
 	};
 	const workspaceProfileWith: Record<string, unknown> = {
-		rootPath: "/sandbox",
+		rootPath: workspaceRoot,
 		workspaceRef,
 		sandboxTemplate: dynamicSandboxTemplate,
 		ttlSeconds,
@@ -1135,25 +1142,29 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	};
 	const extractPatchCommand = [
 		"set -eu",
-		"cd /sandbox/repo",
+		`cd ${quoteShell(repoPath)}`,
 		"rm -rf /sandbox/.cache .cache",
 		[
 			`git diff --binary ${quoteShell(params.baseCommit)} -- .`,
 			...SWEBENCH_PATCH_EXCLUDE_PATHS.map((path) => quoteShell(path)),
 		].join(" \\\n  "),
 	].join("\n");
-	const cloneCommand = [
-		"set -eu",
-		"cd /sandbox",
-		"rm -rf repo",
-		`git clone ${quoteShell(`https://github.com/${params.repo}.git`)} repo`,
-		"cd repo",
-		`git checkout ${quoteShell(params.baseCommit)}`,
-		"git status --short",
-	].join("\n");
+	const checkoutCommand =
+		repoPath === "/testbed"
+			? buildPreparedTestbedCheckCommand(params.baseCommit)
+			: [
+					"set -eu",
+					"cd /sandbox",
+					"rm -rf repo",
+					`git clone ${quoteShell(`https://github.com/${params.repo}.git`)} repo`,
+					"cd repo",
+					`git checkout ${quoteShell(params.baseCommit)}`,
+					"git status --short",
+				].join("\n");
 	const prompt = buildSwebenchPromptExpression(buildSwebenchPrompt({
 		...params,
 		inferenceEnvironment: null,
+		workspaceRoot: repoPath,
 	}));
 	return {
 		document: {
@@ -1182,7 +1193,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 					call: "workspace/command",
 					with: {
 						workspaceRef: "${ .workspace_profile.workspaceRef }",
-						command: cloneCommand,
+						command: checkoutCommand,
 						timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
 					},
 				},
@@ -1262,10 +1273,12 @@ function buildSwebenchPrompt(params: {
 	problemStatement: string;
 	hintsText: string | null;
 	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
+	workspaceRoot?: string | null;
 }): string {
 	const environmentNotes = swebenchInferenceEnvironmentPromptNotes(
 		params.inferenceEnvironment,
 	);
+	const workspaceRoot = params.workspaceRoot ?? params.inferenceEnvironment?.workspaceRoot ?? "/sandbox/repo";
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,
@@ -1277,9 +1290,16 @@ function buildSwebenchPrompt(params: {
 		params.hintsText ? `\nHints:\n${params.hintsText}` : "",
 		"",
 		"Sandbox notes:",
-		"- Work only in /sandbox/repo.",
+		`- Work only in ${workspaceRoot}.`,
+		workspaceRoot === "/testbed"
+			? "- The repository is already checked out and prepared under /testbed."
+			: "",
+		workspaceRoot === "/testbed"
+			? "- Dependencies are installed according to the SWE-bench harness spec in the conda testbed environment."
+			: "",
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix by editing implementation files only.",
+		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
 		"- Do not edit tests, test fixtures, benchmark metadata, generated artifact files, or files that only make local tests pass.",
 		"- The final benchmark patch excludes test and fixture paths; implementation fixes must be outside those paths.",
 		"- Running local tests is optional and best-effort. Official grading happens later in a Docker SWE-bench evaluator job.",
@@ -1292,6 +1312,17 @@ function buildSwebenchPrompt(params: {
 
 function buildSwebenchPromptExpression(basePrompt: string): string {
 	return `\${ ${JSON.stringify(basePrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
+}
+
+function buildPreparedTestbedCheckCommand(baseCommit: string): string {
+	return [
+		"set -eu",
+		"cd /testbed",
+		"git rev-parse --is-inside-work-tree >/dev/null",
+		`git cat-file -e ${quoteShell(`${baseCommit}^{commit}`)}`,
+		`git merge-base --is-ancestor ${quoteShell(baseCommit)} HEAD`,
+		"git status --short",
+	].join("\n");
 }
 
 function extractModelPatch(value: unknown): string {

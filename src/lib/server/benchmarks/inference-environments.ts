@@ -23,6 +23,11 @@ export type SwebenchInferenceEnvironmentMapping = {
 	validationLogRef?: string | null;
 	validationCommand?: string | null;
 	environmentNotes?: string[];
+	workspaceRoot?: string | null;
+	condaEnvironment?: string | null;
+	buildStrategy?: string | null;
+	envSpecHash?: string | null;
+	swebenchSpec?: Record<string, unknown> | null;
 	builtAt?: string | null;
 	source?: string | null;
 };
@@ -51,6 +56,9 @@ export type ResolvedSwebenchInferenceEnvironment = {
 	buildLogRef?: string;
 	pipelineRunName?: string;
 	pipelineRunNamespace?: string;
+	workspaceRoot?: string;
+	condaEnvironment?: string;
+	swebenchSpec?: Record<string, unknown>;
 };
 
 export type ResolveSwebenchInferenceEnvironmentInput = {
@@ -137,6 +145,11 @@ export function resolveSwebenchInferenceEnvironment(
 		validationLogRef: normalized.validationLogRef ?? undefined,
 		validationCommand: normalized.validationCommand ?? undefined,
 		environmentNotes: normalized.environmentNotes,
+		workspaceRoot: normalized.workspaceRoot ?? undefined,
+		condaEnvironment: normalized.condaEnvironment ?? undefined,
+		buildStrategy: normalized.buildStrategy ?? undefined,
+		envSpecHash: normalized.envSpecHash ?? undefined,
+		swebenchSpec: normalized.swebenchSpec ?? undefined,
 		builtAt: normalized.builtAt ?? undefined,
 		source: normalized.source ?? undefined,
 	};
@@ -238,6 +251,20 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 			input.agentNotes ??
 			(input as Record<string, unknown>).agent_notes,
 	);
+	const workspaceRoot =
+		readString(input.workspaceRoot) ??
+		readString((input as Record<string, unknown>).workspace_root);
+	const condaEnvironment =
+		readString(input.condaEnvironment) ??
+		readString((input as Record<string, unknown>).conda_environment);
+	const buildStrategy =
+		readString(input.buildStrategy) ??
+		readString((input as Record<string, unknown>).build_strategy);
+	const envSpecHash =
+		readString(input.envSpecHash) ??
+		readString((input as Record<string, unknown>).env_spec_hash);
+	const swebenchSpecValue =
+		input.swebenchSpec ?? (input as Record<string, unknown>).swebench_spec;
 	const builtAt = readString(input.builtAt) ?? readString((input as Record<string, unknown>).built_at);
 	return {
 		...input,
@@ -254,6 +281,13 @@ function normalizeMapping(input: Record<string, unknown>): SwebenchInferenceEnvi
 		validationLogRef,
 		validationCommand,
 		environmentNotes,
+		workspaceRoot,
+		condaEnvironment,
+		buildStrategy,
+		envSpecHash,
+		swebenchSpec: isRecord(swebenchSpecValue)
+			? (swebenchSpecValue as Record<string, unknown>)
+			: null,
 		builtAt,
 		source: readString(input.source),
 	};
@@ -264,7 +298,15 @@ export function swebenchInferenceEnvironmentPromptNotes(
 ): string[] {
 	if (environment?.environmentStatus !== "validated") return [];
 	const notes = [
-		"- This run is using a repo-specific inference image that passed its validation smoke before being pinned.",
+		environment.buildStrategy === "swebench-harness"
+			? "- This run is using a SWE-bench harness spec image that passed validation before being pinned."
+			: "- This run is using a repo-specific inference image that passed its validation smoke before being pinned.",
+		environment.workspaceRoot
+			? `- Prepared repository root: ${environment.workspaceRoot}`
+			: "",
+		environment.condaEnvironment
+			? `- Conda environment: ${environment.condaEnvironment}`
+			: "",
 		environment.validationCommand
 			? `- Environment validation command: ${environment.validationCommand}`
 			: "",

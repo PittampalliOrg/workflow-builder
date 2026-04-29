@@ -19,6 +19,13 @@ const env = {
 				validationStatus: "validated",
 				validationLogRef: "tekton://swebench-inference-image-build/validate-image",
 				validationCommand: "PYTHONPATH=src python -m pytest --version",
+				buildStrategy: "swebench-harness",
+				envSpecHash: "a".repeat(64),
+				workspaceRoot: "/testbed",
+				condaEnvironment: "testbed",
+				swebenchSpec: {
+					instanceImageKey: "sweb.eval.x86_64.sympy__sympy-20590:latest",
+				},
 				environmentNotes: [
 					"Run Python commands with PYTHONPATH=src for source-layout repos.",
 				],
@@ -48,6 +55,13 @@ describe("SWE-bench inference environment resolver", () => {
 				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			validationStatus: "validated",
 			validationCommand: "PYTHONPATH=src python -m pytest --version",
+			buildStrategy: "swebench-harness",
+			envSpecHash: "a".repeat(64),
+			workspaceRoot: "/testbed",
+			condaEnvironment: "testbed",
+			swebenchSpec: {
+				instanceImageKey: "sweb.eval.x86_64.sympy__sympy-20590:latest",
+			},
 			environmentNotes: [
 				"Run Python commands with PYTHONPATH=src for source-layout repos.",
 			],

@@ -34,6 +34,30 @@ import type { SwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 const DEFAULT_SANDBOX_TEMPLATE = "dapr-agent";
 const DEFAULT_TEKTON_NAMESPACE = "tekton-pipelines";
 const DEFAULT_GIT_REVISION = "main";
+const SWEBENCH_WORKSPACE_ROOT = "/testbed";
+const FALLBACK_WORKSPACE_ROOT = "/sandbox/repo";
+const SWEBENCH_CONDA_ENV = "testbed";
+const SUPPORTED_SWEBENCH_HARNESS_VERSIONS: Record<string, readonly string[]> = {
+	"astropy/astropy": ["0.1", "0.2", "0.3", "0.4", "1.1", "1.2", "1.3", "3.0", "3.1", "3.2", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2", "v5.3"],
+	"dbt-labs/dbt-core": ["0.13", "0.14", "0.15", "0.16", "0.17", "0.18", "0.19", "0.20", "0.21", "1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"],
+	"django/django": ["1.10", "1.11", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "2.0", "2.1", "2.2", "3.0", "3.1", "3.2", "4.0", "4.1", "4.2", "5.0", "5.1", "5.2"],
+	"matplotlib/matplotlib": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "2.0", "2.1", "2.2", "3.0", "3.1", "3.2", "3.3", "3.4", "3.5", "3.6", "3.7", "3.8", "3.9"],
+	"marshmallow-code/marshmallow": ["2.18", "2.19", "2.20", "3.0", "3.1", "3.10", "3.11", "3.12", "3.13", "3.15", "3.16", "3.19", "3.2", "3.4", "3.8", "3.9"],
+	"mwaskom/seaborn": ["0.11", "0.12", "0.13", "0.14"],
+	"pallets/flask": ["2.0", "2.1", "2.2", "2.3", "3.0", "3.1"],
+	"psf/requests": ["0.11", "0.13", "0.14", "0.7", "0.8", "0.9", "1.1", "1.2", "2.0", "2.10", "2.11", "2.12", "2.17", "2.18", "2.19", "2.2", "2.22", "2.25", "2.26", "2.27", "2.3", "2.31", "2.4", "2.5", "2.7", "2.8", "2.9", "3.0"],
+	"pvlib/pvlib-python": ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"],
+	"pydata/xarray": ["0.12", "0.18", "0.19", "0.20", "2022.03", "2022.06", "2022.09", "2023.07", "2024.05"],
+	"pydicom/pydicom": ["1.0", "1.1", "1.2", "1.3", "1.4", "2.0", "2.1", "2.2", "2.3", "2.4", "3.0"],
+	"pylint-dev/astroid": ["2.10", "2.12", "2.13", "2.14", "2.15", "2.16", "2.5", "2.6", "2.7", "2.8", "2.9", "3.0"],
+	"pylint-dev/pylint": ["2.10", "2.11", "2.13", "2.14", "2.15", "2.16", "2.17", "2.8", "2.9", "3.0", "3.1", "3.2", "3.3", "4.0"],
+	"pytest-dev/pytest": ["4.4", "4.5", "4.6", "5.0", "5.1", "5.2", "5.3", "5.4", "6.0", "6.2", "6.3", "7.0", "7.1", "7.2", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4"],
+	"pyvista/pyvista": ["0.20", "0.21", "0.22", "0.23", "0.24", "0.25", "0.26", "0.27", "0.28", "0.29", "0.30", "0.31", "0.32", "0.33", "0.34", "0.35", "0.36", "0.37", "0.38", "0.39", "0.40", "0.41", "0.42", "0.43"],
+	"scikit-learn/scikit-learn": ["0.20", "0.21", "0.22", "1.3", "1.4", "1.5", "1.6"],
+	"sphinx-doc/sphinx": ["1.5", "1.6", "1.7", "1.8", "2.0", "2.1", "2.2", "2.3", "2.4", "3.0", "3.1", "3.2", "3.3", "3.4", "3.5", "4.0", "4.1", "4.2", "4.3", "4.4", "4.5", "5.0", "5.1", "5.2", "5.3", "6.0", "6.2", "7.0", "7.1", "7.2", "7.3", "7.4", "8.0", "8.1"],
+	"sqlfluff/sqlfluff": ["0.10", "0.11", "0.12", "0.13", "0.4", "0.5", "0.6", "0.8", "0.9", "1.0", "1.1", "1.2", "1.3", "1.4", "2.0", "2.1", "2.2"],
+	"sympy/sympy": ["0.7", "1.0", "1.1", "1.10", "1.11", "1.12", "1.13", "1.14", "1.2", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9"],
+};
 const ACTIVE_BUILD_STATUSES = new Set<EnvironmentImageBuildStatus>([
 	"queued",
 	"building",
@@ -72,6 +96,11 @@ export type SwebenchEnvironmentSpec = {
 	dockerfilePath: string;
 	validationCommand: string;
 	environmentNotes: string[];
+	workspaceRoot: string;
+	condaEnvironment?: string;
+	swebenchSpec?: Record<string, unknown>;
+	swebenchSpecInput?: Record<string, unknown>;
+	fallbackReason?: string;
 };
 
 export type EnvironmentPrepareResult = {
@@ -137,6 +166,9 @@ export type SerializedEnvironmentBuildSnapshot = {
 	environmentKey: string;
 	envSpecHash: string;
 	buildStrategy: EnvironmentImageBuildStrategy;
+	workspaceRoot: string | null;
+	condaEnvironment: string | null;
+	swebenchSpec: Record<string, unknown> | null;
 	status: EnvironmentImageBuildStatus;
 	sandboxTemplate: string;
 	sandboxImage: string | null;
@@ -192,13 +224,43 @@ export function buildSwebenchEnvironmentSpec(
 	const selector = version ?? environmentSetupCommit?.slice(0, 12) ?? input.baseCommit.slice(0, 12);
 	const environmentKey = sanitizeSlug(`${repoName}-${selector}`);
 	const imageName = `swebench-inference-${environmentKey}`;
+	const harnessSpecInput = buildSwebenchHarnessSpecInput({
+		dataset,
+		suite: input.suiteSlug,
+		instanceId: readString(input.instanceId) ?? undefined,
+		repo,
+		version,
+		baseCommit: input.baseCommit,
+		testMetadata: input.testMetadata,
+	});
+	const buildStrategy: EnvironmentImageBuildStrategy = harnessSpecInput
+		? "swebench-harness"
+		: "buildpacks";
+	const workspaceRoot =
+		buildStrategy === "swebench-harness"
+			? SWEBENCH_WORKSPACE_ROOT
+			: FALLBACK_WORKSPACE_ROOT;
 	const dockerfilePath =
-		readMetadataString(input.testMetadata, ["dockerfilePath", "dockerfile_path"]) ??
-		`services/openshell-sandbox/environments/Dockerfile.swebench-inference-${environmentKey}`;
-	const defaultTuning = defaultSwebenchEnvironmentTuning(repo);
+		buildStrategy === "swebench-harness"
+			? "Dockerfile"
+			: readMetadataString(input.testMetadata, ["dockerfilePath", "dockerfile_path"]) ??
+				`services/openshell-sandbox/environments/Dockerfile.swebench-inference-${environmentKey}`;
+	const defaultTuning = defaultSwebenchEnvironmentTuning(repo, buildStrategy);
 	const validationCommand =
 		readMetadataString(input.testMetadata, ["validationCommand", "validation_command"]) ??
-		defaultTuning.validationCommand;
+		(buildStrategy === "swebench-harness"
+			? defaultSwebenchHarnessValidationCommand(workspaceRoot)
+			: defaultTuning.validationCommand);
+	const swebenchSpec =
+		buildStrategy === "swebench-harness"
+			? compactObject({
+					source: "swebench-harness-generator",
+					workspaceRoot,
+					condaEnvironment: SWEBENCH_CONDA_ENV,
+					generatorModule: "swebench.harness.environment_spec",
+					buildContextDockerfile: dockerfilePath,
+				})
+			: undefined;
 	const baseSpec = {
 		dataset,
 		suite: input.suiteSlug,
@@ -207,11 +269,16 @@ export function buildSwebenchEnvironmentSpec(
 		environmentSetupCommit,
 		baseCommit: input.baseCommit,
 		environmentKey,
-		buildStrategy: "swebench-harness" as const,
+		buildStrategy,
 		sandboxTemplate: DEFAULT_SANDBOX_TEMPLATE,
 		imageName,
 		dockerfilePath,
 		validationCommand,
+		workspaceRoot,
+		condaEnvironment:
+			buildStrategy === "swebench-harness" ? SWEBENCH_CONDA_ENV : undefined,
+		swebenchSpecInput: harnessSpecInput ?? undefined,
+		swebenchSpec,
 	};
 	const envSpecHash = sha256Hex(stableJson(baseSpec));
 	return {
@@ -220,17 +287,31 @@ export function buildSwebenchEnvironmentSpec(
 		envSpecHash,
 		imageTag: `env-${envSpecHash.slice(0, 16)}`,
 		environmentNotes: defaultTuning.environmentNotes,
+		fallbackReason:
+			buildStrategy === "buildpacks"
+				? missingHarnessMetadataReason(repo, input.testMetadata)
+				: undefined,
 	};
 }
 
-function defaultSwebenchEnvironmentTuning(repo: string): {
+function defaultSwebenchEnvironmentTuning(
+	repo: string,
+	buildStrategy: EnvironmentImageBuildStrategy,
+): {
 	validationCommand: string;
 	environmentNotes: string[];
 } {
-	const commonNotes = [
-		"This image was selected or built before the agent started and validated with a repository checkout smoke test.",
-		"Dependencies are preinstalled in /sandbox/.venv; avoid reinstalling unless needed.",
-	];
+	const commonNotes =
+		buildStrategy === "swebench-harness"
+			? [
+					"The repository is already prepared under /testbed at the SWE-bench base commit.",
+					"Dependencies are installed from the SWE-bench harness spec in the conda testbed environment.",
+					"Use the existing environment and avoid reinstalling project dependencies during the solve phase.",
+				]
+			: [
+					"This fallback image was selected or built before the agent started and validated with a repository checkout smoke test.",
+					"Dependency setup is best-effort in fallback mode; install only minimal missing packages if local checks require it.",
+				];
 	switch (repo) {
 		case "pallets/flask":
 			return {
@@ -296,6 +377,9 @@ export function plannedSwebenchInferenceEnvironment(
 			: resolved.reason,
 		buildStrategy: spec.buildStrategy,
 		envSpecHash: spec.envSpecHash,
+		workspaceRoot: spec.workspaceRoot,
+		condaEnvironment: spec.condaEnvironment,
+		swebenchSpec: spec.swebenchSpec,
 	};
 }
 
@@ -540,6 +624,10 @@ export async function syncEnvironmentBuild(
 			parseDate(readString(results.built_at)) ??
 			parseDate(pipelineRun.status?.completionTime) ??
 			new Date();
+		const spec = mergeSwebenchSpecMetadata(
+			row.spec,
+			parseJsonRecord(results.swebench_spec_metadata),
+		);
 		const [updated] = await database
 			.update(environmentImageBuilds)
 			.set({
@@ -548,6 +636,7 @@ export async function syncEnvironmentBuild(
 				digest,
 				validationStatus: readString(results.validation_status) ?? "validated",
 				validationLogRef: readString(results.validation_log_ref) ?? row.validationLogRef,
+				spec,
 				builtAt,
 				completedAt: parseDate(pipelineRun.status?.completionTime) ?? new Date(),
 				updatedAt: new Date(),
@@ -614,11 +703,15 @@ async function submitSwebenchPipelineRun(
 				{ name: "repo_slug", value: spec.repo },
 				{ name: "environment_key", value: spec.environmentKey },
 				{ name: "base_commit", value: spec.baseCommit },
+				{ name: "env_spec_hash", value: spec.envSpecHash },
+				{ name: "build_strategy", value: spec.buildStrategy },
+				{ name: "workspace_root", value: spec.workspaceRoot },
 				{ name: "dockerfile_path", value: spec.dockerfilePath },
 				{ name: "image_name", value: spec.imageName },
 				{ name: "image_tag", value: spec.imageTag },
 				{ name: "validation_command", value: spec.validationCommand },
 				{ name: "environment_notes", value: JSON.stringify(spec.environmentNotes) },
+				{ name: "swebench_spec_json", value: JSON.stringify(spec.swebenchSpecInput ?? {}) },
 			],
 			workspaces: [
 				{
@@ -1149,6 +1242,7 @@ function serializeActivityEvent(
 }
 
 function serializeBuildSnapshot(build: EnvironmentImageBuild): SerializedEnvironmentBuildSnapshot {
+	const spec = isRecord(build.spec) ? build.spec : {};
 	return {
 		id: build.id,
 		dataset: build.dataset,
@@ -1160,6 +1254,9 @@ function serializeBuildSnapshot(build: EnvironmentImageBuild): SerializedEnviron
 		environmentKey: build.environmentKey,
 		envSpecHash: build.envSpecHash,
 		buildStrategy: build.buildStrategy,
+		workspaceRoot: readString(spec.workspaceRoot),
+		condaEnvironment: readString(spec.condaEnvironment),
+		swebenchSpec: isRecord(spec.swebenchSpec) ? spec.swebenchSpec : null,
 		status: build.status,
 		sandboxTemplate: build.sandboxTemplate,
 		sandboxImage: build.sandboxImage,
@@ -1259,6 +1356,12 @@ function mergeBuildMetadataIntoInferenceEnvironment(
 	if (build.pipelineRunName) next.pipelineRunName = build.pipelineRunName;
 	if (build.pipelineRunNamespace) next.pipelineRunNamespace = build.pipelineRunNamespace;
 	if (build.builtAt) next.builtAt = build.builtAt.toISOString();
+	const spec = isRecord(build.spec) ? build.spec : {};
+	const workspaceRoot = readString(spec.workspaceRoot);
+	const condaEnvironment = readString(spec.condaEnvironment);
+	if (workspaceRoot) next.workspaceRoot = workspaceRoot;
+	if (condaEnvironment) next.condaEnvironment = condaEnvironment;
+	if (isRecord(spec.swebenchSpec)) next.swebenchSpec = spec.swebenchSpec;
 	return next;
 }
 
@@ -1336,6 +1439,44 @@ function compactObject(value: unknown): Record<string, unknown> {
 	return Object.fromEntries(
 		Object.entries(value as Record<string, unknown>).filter(([, child]) => child !== undefined),
 	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+	const raw = readString(value);
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!isRecord(parsed) || Object.keys(parsed).length === 0) return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function mergeSwebenchSpecMetadata(
+	specValue: unknown,
+	metadata: Record<string, unknown> | null,
+): Record<string, unknown> {
+	const spec = isRecord(specValue) ? specValue : {};
+	if (!metadata) return spec;
+	const currentSwebenchSpec = isRecord(spec.swebenchSpec) ? spec.swebenchSpec : {};
+	const workspaceRoot =
+		readString(metadata.workspaceRoot) ?? readString(spec.workspaceRoot) ?? undefined;
+	const condaEnvironment =
+		readString(metadata.condaEnvironment) ?? readString(spec.condaEnvironment) ?? undefined;
+	return compactObject({
+		...spec,
+		workspaceRoot,
+		condaEnvironment,
+		swebenchSpec: compactObject({
+			...currentSwebenchSpec,
+			...metadata,
+		}),
+	});
 }
 
 function coerceDate(value: unknown): Date | null {
@@ -1419,6 +1560,7 @@ type FallbackEnvironmentInput = {
 	buildStrategy?: string | null;
 	sandboxTemplate?: string | null;
 	validationCommand?: string | null;
+	workspaceRoot?: string | null;
 };
 
 function fallbackResult(
@@ -1446,6 +1588,7 @@ function fallbackResult(
 		buildLogRef: row?.buildLogRef ?? undefined,
 		pipelineRunName: row?.pipelineRunName ?? undefined,
 		pipelineRunNamespace: row?.pipelineRunNamespace ?? undefined,
+		workspaceRoot: input.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT,
 	};
 	return {
 		success: true,
@@ -1473,6 +1616,7 @@ function fallbackResult(
 }
 
 function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInferenceEnvironment {
+	const spec = isRecord(row.spec) ? row.spec : {};
 	return {
 		environmentStatus: buildStatusForInferenceEnvironment(row.status),
 		suite: row.suite ?? "",
@@ -1496,6 +1640,9 @@ function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInference
 		buildLogRef: row.buildLogRef ?? undefined,
 		pipelineRunName: row.pipelineRunName ?? undefined,
 		pipelineRunNamespace: row.pipelineRunNamespace ?? undefined,
+		workspaceRoot: readString(spec.workspaceRoot) ?? undefined,
+		condaEnvironment: readString(spec.condaEnvironment) ?? undefined,
+		swebenchSpec: isRecord(spec.swebenchSpec) ? spec.swebenchSpec : undefined,
 	};
 }
 
@@ -1506,6 +1653,12 @@ function promptNotes(environment: ResolvedSwebenchInferenceEnvironment | null | 
 		environment.digest ? `- Image digest: ${environment.digest}` : "",
 		environment.validationCommand
 			? `- Environment validation command: ${environment.validationCommand}`
+			: "",
+		environment.workspaceRoot
+			? `- Prepared repository root: ${environment.workspaceRoot}`
+			: "",
+		environment.condaEnvironment
+			? `- Conda environment: ${environment.condaEnvironment}`
 			: "",
 		environment.validationLogRef
 			? `- Environment validation log: ${environment.validationLogRef}`
@@ -1551,6 +1704,87 @@ function readMetadataString(
 		if (value) return value;
 	}
 	return null;
+}
+
+function buildSwebenchHarnessSpecInput(input: {
+	dataset: string;
+	suite: SwebenchSuiteSlug;
+	instanceId?: string;
+	repo: string;
+	version?: string;
+	baseCommit: string;
+	testMetadata?: Record<string, unknown> | null;
+}): Record<string, unknown> | null {
+	const testPatch = readMetadataString(input.testMetadata, ["test_patch", "testPatch"]);
+	if (!input.version || !isSupportedSwebenchHarnessSpec(input.repo, input.version) || !testPatch) {
+		return null;
+	}
+	return compactObject({
+		dataset: input.dataset,
+		suite: input.suite,
+		instance_id: input.instanceId,
+		repo: input.repo,
+		version: input.version,
+		base_commit: input.baseCommit,
+		test_patch: testPatch,
+		FAIL_TO_PASS: readMetadataJsonish(input.testMetadata, ["FAIL_TO_PASS", "fail_to_pass"]),
+		PASS_TO_PASS: readMetadataJsonish(input.testMetadata, ["PASS_TO_PASS", "pass_to_pass"]),
+		environment_setup_commit: readMetadataString(input.testMetadata, [
+			"environmentSetupCommit",
+			"environment_setup_commit",
+		]),
+	});
+}
+
+function readMetadataJsonish(
+	metadata: Record<string, unknown> | null | undefined,
+	keys: string[],
+): unknown {
+	if (!metadata) return undefined;
+	for (const key of keys) {
+		const value = metadata[key];
+		if (value === undefined || value === null) continue;
+		if (typeof value === "string") {
+			const raw = value.trim();
+			if (!raw) continue;
+			try {
+				return JSON.parse(raw) as unknown;
+			} catch {
+				return raw;
+			}
+		}
+		return value;
+	}
+	return undefined;
+}
+
+function missingHarnessMetadataReason(
+	repo: string,
+	metadata: Record<string, unknown> | null | undefined,
+): string {
+	const version = readMetadataString(metadata, ["version"]);
+	if (!version) return "missing_swebench_version";
+	if (!SUPPORTED_SWEBENCH_HARNESS_VERSIONS[repo]) return "unsupported_swebench_harness_spec";
+	if (!isSupportedSwebenchHarnessSpec(repo, version)) return "unsupported_swebench_harness_version";
+	if (!readMetadataString(metadata, ["test_patch", "testPatch"])) return "missing_test_patch";
+	return "unsupported_swebench_harness_spec";
+}
+
+function isSupportedSwebenchHarnessSpec(repo: string, version: string): boolean {
+	return SUPPORTED_SWEBENCH_HARNESS_VERSIONS[repo]?.includes(version) ?? false;
+}
+
+function defaultSwebenchHarnessValidationCommand(workspaceRoot: string): string {
+	return [
+		`cd ${quoteShell(workspaceRoot)}`,
+		"git rev-parse --is-inside-work-tree >/dev/null",
+		"git status --short",
+		"bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && python --version'",
+	].join(" && ");
+}
+
+function quoteShell(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function normalizeRepo(value: unknown): string | null {

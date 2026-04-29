@@ -2719,7 +2719,8 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 		typeof params.executionConfig?.maxTurns === "number"
 			? clampInteger(params.executionConfig.maxTurns, 1, 1000, params.executionConfig.maxTurns)
 			: null;
-	const repoPath = "/sandbox/repo";
+	const repoPath = inferenceEnvironment.workspaceRoot ?? "/sandbox/repo";
+	const workspaceRoot = repoPath === "/testbed" ? "/testbed" : "/sandbox";
 	const timeoutMinutes = Math.max(1, Math.ceil(timeoutSeconds / 60));
 	const ttlSeconds = Math.max(timeoutSeconds + 3600, 7200);
 	const sandboxTemplate = inferenceEnvironment.sandboxTemplate || "dapr-agent";
@@ -2729,7 +2730,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 		instance.instanceId,
 	]);
 	const workspaceProfileWith: Record<string, unknown> = {
-		rootPath: "/sandbox",
+		rootPath: workspaceRoot,
 		workspaceRef,
 		sandboxTemplate,
 		ttlSeconds,
@@ -2765,18 +2766,21 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	}
 	const agentRef: Record<string, unknown> = { id: params.agentId };
 	if (params.agentVersion != null) agentRef.version = params.agentVersion;
-	const cloneCommand = [
-		"set -eu",
-		"cd /sandbox",
-		"rm -rf repo",
-		`git clone ${quoteShell(`https://github.com/${instance.repo}.git`)} repo`,
-		"cd repo",
-		`git checkout ${quoteShell(instance.baseCommit)}`,
-		"git status --short",
-	].join("\n");
+	const cloneCommand =
+		repoPath === "/testbed"
+			? buildPreparedTestbedCheckCommand(instance.baseCommit)
+			: [
+					"set -eu",
+					"cd /sandbox",
+					"rm -rf repo",
+					`git clone ${quoteShell(`https://github.com/${instance.repo}.git`)} repo`,
+					"cd repo",
+					`git checkout ${quoteShell(instance.baseCommit)}`,
+					"git status --short",
+				].join("\n");
 	const extractPatchCommand = [
 		"set -eu",
-		"cd /sandbox/repo",
+		`cd ${quoteShell(repoPath)}`,
 		"rm -rf /sandbox/.cache .cache",
 		`git diff --binary ${quoteShell(instance.baseCommit)} --`,
 	].join("\n");
@@ -3130,6 +3134,7 @@ function buildSwebenchEvaluationPrompt(params: {
 	const environmentNotes = swebenchInferenceEnvironmentPromptNotes(
 		params.inferenceEnvironment,
 	);
+	const workspaceRoot = params.inferenceEnvironment?.workspaceRoot ?? "/sandbox/repo";
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,
@@ -3141,14 +3146,32 @@ function buildSwebenchEvaluationPrompt(params: {
 		params.hintsText ? `\nHints:\n${params.hintsText}` : "",
 		"",
 		"Sandbox notes:",
-		"- Work only in /sandbox/repo.",
+		`- Work only in ${workspaceRoot}.`,
+		workspaceRoot === "/testbed"
+			? "- The repository is already checked out and prepared under /testbed."
+			: "",
+		workspaceRoot === "/testbed"
+			? "- Dependencies are installed according to the SWE-bench harness spec in the conda testbed environment."
+			: "",
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
+		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
 		"- Running local tests is optional and best-effort. This generic eval path only captures the patch; official SWE-bench grading runs from Benchmarks.",
 		"- Do not use web search, web fetch, external issue pages, PR pages, or solution commits. Use only the repository contents, the problem statement, and local sandbox commands.",
 		...environmentNotes,
 		"",
 		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
+	].join("\n");
+}
+
+function buildPreparedTestbedCheckCommand(baseCommit: string): string {
+	return [
+		"set -eu",
+		"cd /testbed",
+		"git rev-parse --is-inside-work-tree >/dev/null",
+		`git cat-file -e ${quoteShell(`${baseCommit}^{commit}`)}`,
+		`git merge-base --is-ancestor ${quoteShell(baseCommit)} HEAD`,
+		"git status --short",
 	].join("\n");
 }
 
