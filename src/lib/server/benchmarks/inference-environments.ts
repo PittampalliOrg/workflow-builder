@@ -331,8 +331,11 @@ function normalizeRuntimeEnvironmentNotes(
 	) {
 		return notes;
 	}
+	const filteredNotes = (notes ?? []).filter(
+		(note) => !/prepared under\s+\/testbed/i.test(note),
+	);
 	return [
-		...(notes ?? []),
+		...filteredNotes,
 		"The validated image provides the SWE-bench conda environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
 	];
 }
