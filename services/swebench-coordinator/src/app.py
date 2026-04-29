@@ -17,6 +17,8 @@ from dapr.ext.workflow import DaprWorkflowClient
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
+from src.concurrency import bounded_swebench_concurrency
+
 try:
     from dapr.ext.workflow import when_all as wf_when_all
 except Exception:  # pragma: no cover - depends on dapr-ext-workflow version
@@ -307,6 +309,7 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
     evaluation_timeout_seconds = max(60, int(run.get("timeoutSeconds") or 7200))
     job_deadline_seconds = max(600, evaluation_timeout_seconds + 600)
+    evaluator_max_workers = bounded_swebench_concurrency(run.get("concurrency"))
     try:
         from kubernetes import client, config
 
@@ -325,6 +328,7 @@ def _start_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             client.V1EnvVar(name="INTERNAL_API_TOKEN", value=INTERNAL_API_TOKEN),
             client.V1EnvVar(name="DOCKER_HOST", value="tcp://localhost:2375"),
             client.V1EnvVar(name="SWEBENCH_IMAGE_NAMESPACE", value="swebench"),
+            client.V1EnvVar(name="SWEBENCH_MAX_WORKERS", value=str(evaluator_max_workers)),
             client.V1EnvVar(
                 name="SWEBENCH_EVALUATION_TIMEOUT_SECONDS",
                 value=str(evaluation_timeout_seconds),
@@ -458,7 +462,7 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         yield ctx.call_activity(_ensure_instance_metadata, input={"runId": run_id})
         run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
         instance_ids = list(run.get("selectedInstanceIds") or [])
-        concurrency = max(1, min(int(run.get("concurrency") or 1), 32))
+        concurrency = bounded_swebench_concurrency(run.get("concurrency"))
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
         results: list[Any] = []
         for offset in range(0, len(instance_ids), concurrency):
