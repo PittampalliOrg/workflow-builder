@@ -18,6 +18,9 @@
 	} from '@lucide/svelte';
 	import RunStatusBadge from '$lib/components/benchmarks/run-status-badge.svelte';
 	import RunStatTiles from '$lib/components/benchmarks/run-stat-tiles.svelte';
+	import LifecycleTiles from '$lib/components/benchmarks/lifecycle-tiles.svelte';
+	import TerminationDonut from '$lib/components/benchmarks/termination-donut.svelte';
+	import ToolUsageHistogram from '$lib/components/benchmarks/tool-usage-histogram.svelte';
 	import RepoAccuracyBars from '$lib/components/benchmarks/repo-accuracy-bars.svelte';
 	import StatusDonut from '$lib/components/benchmarks/status-donut.svelte';
 	import CumulativeResolvedSparkline from '$lib/components/benchmarks/cumulative-resolved-sparkline.svelte';
@@ -299,6 +302,21 @@
 				completedAt={run.completedAt}
 			/>
 		</div>
+
+		{#if runStats.byTerminationReason.length > 0 || runStats.byTool.length > 0 || runStats.turnCountP50 !== null}
+			<LifecycleTiles
+				turnCountP50={runStats.turnCountP50}
+				turnCountP90={runStats.turnCountP90}
+				ttftP50={runStats.ttftP50}
+				ttftP90={runStats.ttftP90}
+				toolCallsTotal={runStats.byTool.reduce((a, b) => a + b.count, 0)}
+				distinctTools={runStats.byTool.length}
+			/>
+			<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+				<TerminationDonut data={runStats.byTerminationReason} />
+				<ToolUsageHistogram data={runStats.byTool} />
+			</div>
+		{/if}
 
 		{#if runStats.byDifficulty && runStats.byDifficulty.length > 0}
 			<div class="rounded-md border border-border bg-background p-4">
