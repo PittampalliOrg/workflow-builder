@@ -33,6 +33,13 @@ COPY --from=builder --chown=sveltekit:nodejs /app/package.json ./
 COPY --from=prod-deps --chown=sveltekit:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle.config.ts ./
+# drizzle-kit is a devDependency excluded by the prod-deps stage, but the
+# db-migrate Sync hook runs `npx drizzle-kit migrate`. Without the package
+# in node_modules, npx falls back to fetching it and the unprivileged user
+# (1001) can't write to /.npm. Copy it explicitly from the builder so the
+# binary is local and npx never tries to write a cache.
+COPY --from=builder --chown=sveltekit:nodejs /app/node_modules/drizzle-kit ./node_modules/drizzle-kit
+COPY --from=builder --chown=sveltekit:nodejs /app/node_modules/.bin/drizzle-kit ./node_modules/.bin/drizzle-kit
 USER sveltekit
 EXPOSE 3000
 CMD ["node", "server-prod.js"]
