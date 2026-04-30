@@ -467,8 +467,9 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 client.V1VolumeMount(name="docker-graph", mount_path="/var/lib/docker"),
             ],
         )
+        run_id_label = _safe_label_value(run["id"])
         pod = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(labels={"app": "swebench-evaluator", "benchmark-run-id": run["id"]}),
+            metadata=client.V1ObjectMeta(labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label}),
             spec=client.V1PodSpec(
                 restart_policy="Never",
                 service_account_name="swebench-coordinator",
@@ -482,7 +483,7 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             ),
         )
         job = client.V1Job(
-            metadata=client.V1ObjectMeta(name=job_name, labels={"app": "swebench-evaluator", "benchmark-run-id": run["id"]}),
+            metadata=client.V1ObjectMeta(name=job_name, labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label}),
             spec=client.V1JobSpec(
                 active_deadline_seconds=job_deadline_seconds,
                 backoff_limit=0,
@@ -659,6 +660,16 @@ def _safe_name_prefix(value: str, max_length: int) -> str:
 
 def _safe_artifact_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)[:180] or "artifact"
+
+
+def _safe_label_value(value: str) -> str:
+    # K8s label values must match (([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?
+    # — alphanumeric start/end, length ≤ 63. Nanoid-generated run IDs can
+    # legally end in `_` or `-`, which fails this regex; trim outer
+    # non-alphanumerics and fall back to "unknown" if empty.
+    sanitized = "".join(c if c.isalnum() or c in {"-", "_", "."} else "_" for c in value)
+    sanitized = sanitized.strip("._-")[:63]
+    return sanitized or "unknown"
 
 
 def _short_hash(value: Any, *, length: int = 12) -> str:
