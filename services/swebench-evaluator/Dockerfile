@@ -8,7 +8,7 @@ RUN apt-get update \
 
 # SWE-bench is pinned by commit; see README.md for upstream-base provenance.
 RUN pip install --no-cache-dir \
-	"git+https://github.com/PittampalliOrg/SWE-bench.git@75cc7f9296a1f07b31c5459f1ed2c2da8c5d52da" \
+	"git+https://github.com/PittampalliOrg/SWE-bench.git@75cc7f95d70cee7281da7a5a77107defbdb82bc2" \
 	requests \
 	docker
 
