@@ -11,6 +11,7 @@
 # Usage:
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default observable OpenShell inner loop
 #   bash scripts/devspace-dev-ryzen.sh --profile sw-workflow-dev  # CNCF Serverless Workflow 1.0 development
+#   bash scripts/devspace-dev-ryzen.sh --profile swebench-dev  # SWE-bench benchmark/evaluator coordination loop
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the SvelteKit app only
 #   devspace dev --profile workflow-ui-only  # Raw fastest loop: workflow-builder only
@@ -25,7 +26,10 @@
 #
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
-#     dapr-agent-py, fn-activepieces, and mcp-gateway.
+#     swebench-coordinator, dapr-agent-py, fn-activepieces, and mcp-gateway.
+#   - swebench-evaluator is a Job image launched by swebench-coordinator rather
+#     than a standing Deployment; build it with `devspace run build-swebench-evaluator-dev-image`
+#     and point SWEBENCH_EVALUATOR_IMAGE at that tag when needed.
 #   - openshell-agent-runtime is consumed as a deployed cluster service and is not
 #     replaced by this DevSpace config because its source does not live in this repo.
 #   - Use one profile at a time. If a session is already active, use `devspace enter`,
@@ -64,6 +68,10 @@ vars:
   MCP_GATEWAY_APP_NAME: mcp-gateway
   MCP_GATEWAY_LOCAL_PORT: "3018"
   MCP_GATEWAY_CONTAINER_PORT: "8080"
+  SWEBENCH_COORDINATOR_APP_NAME: swebench-coordinator
+  SWEBENCH_COORDINATOR_LOCAL_PORT: "3019"
+  SWEBENCH_COORDINATOR_CONTAINER_PORT: "8080"
+  SWEBENCH_EVALUATOR_APP_NAME: swebench-evaluator
   OPENSHELL_AGENT_RUNTIME_API_BASE_URL: "http://openshell-agent-runtime.openshell.svc.cluster.local:8083"
 
   # Registry configuration
@@ -71,6 +79,11 @@ vars:
     default: "gitea.cnoe.localtest.me"
   GITEA_USER:
     default: "giteaadmin"
+  DEVSPACE_IMAGE_REGISTRY:
+    # kind-ryzen nodes can pull from the Tailscale-backed registry. The localtest
+    # host resolves inside kind to the in-cluster service IP and fails over HTTPS.
+    noCache: true
+    default: "gitea-ryzen.tail286401.ts.net/giteaadmin"
 
   # kind-ryzen ingress / auth callback URL
   APP_PUBLIC_URL:
@@ -139,54 +152,94 @@ vars:
     default: "gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder:git-75c7ecd71c29f884ab0848b0d2b3e8b5baca9cb5"
 
   DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/nodejs-22-devspace"
   CURRENT_AI_CHATBOT_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}"
   AI_CHATBOT_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/nodejs-22-devspace"
   CURRENT_ORCHESTRATOR_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${ORCHESTRATOR_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${ORCHESTRATOR_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${ORCHESTRATOR_APP_NAME}"
   ORCHESTRATOR_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/python-312-devspace"
   CURRENT_FUNCTION_ROUTER_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${FUNCTION_ROUTER_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}"
   FUNCTION_ROUTER_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/nodejs-22-devspace"
   CURRENT_FN_ACTIVEPIECES_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${FN_ACTIVEPIECES_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FN_ACTIVEPIECES_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FN_ACTIVEPIECES_APP_NAME}"
   FN_ACTIVEPIECES_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/nodejs-22-devspace"
   CURRENT_FN_SYSTEM_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${FN_SYSTEM_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FN_SYSTEM_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FN_SYSTEM_APP_NAME}"
   FN_SYSTEM_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/nodejs-22-devspace"
   CURRENT_MCP_GATEWAY_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${MCP_GATEWAY_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${MCP_GATEWAY_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${MCP_GATEWAY_APP_NAME}"
   MCP_GATEWAY_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/nodejs-22-devspace"
+  CURRENT_SWEBENCH_COORDINATOR_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${SWEBENCH_COORDINATOR_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${SWEBENCH_COORDINATOR_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${SWEBENCH_COORDINATOR_APP_NAME}"
+  SWEBENCH_COORDINATOR_DEV_IMAGE_REPOSITORY:
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/python-312-devspace"
+  CURRENT_SWEBENCH_EVALUATOR_IMAGE:
+    command: |
+      image="$(
+        kubectl get deployment ${SWEBENCH_COORDINATOR_APP_NAME} -n ${APP_NAME} -o json 2>/dev/null |
+        jq -r '.spec.template.spec.containers[]
+          | select(.name == "'${SWEBENCH_COORDINATOR_APP_NAME}'")
+          | .env[]?
+          | select(.name == "SWEBENCH_EVALUATOR_IMAGE")
+          | .value // empty' |
+        head -n1
+      )"
+      if [ -n "${image}" ] && [ "${image}" != "null" ]; then
+        printf '%s\n' "${image}"
+      else
+        printf '%s\n' "${GITEA_HOST}/${GITEA_USER}/${SWEBENCH_EVALUATOR_APP_NAME}:latest"
+      fi
+    default: "${GITEA_HOST}/${GITEA_USER}/${SWEBENCH_EVALUATOR_APP_NAME}:latest"
+  SWEBENCH_EVALUATOR_IMAGE:
+    noCache: true
+    default: "${CURRENT_SWEBENCH_EVALUATOR_IMAGE}"
+  SWEBENCH_EVALUATOR_DEV_IMAGE:
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/${SWEBENCH_EVALUATOR_APP_NAME}:devspace"
   # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
   ARGO_APPS:
+    noCache: true
     default: "workflow-builder workflow-orchestrator function-router"
   # Production deployments to wait for on cleanup (space-separated, profile-patched)
   PRODUCTION_DEPLOYMENTS:
+    noCache: true
     default: "workflow-builder workflow-orchestrator function-router"
 
 # ============================================================================
@@ -962,6 +1015,104 @@ dev:
       - name: NODE_ENV
         value: development
 
+  swebench-coordinator:
+    namespace: ${APP_NAME}
+    labelSelector:
+      app: swebench-coordinator
+      app.kubernetes.io/name: swebench-coordinator
+    container: ${SWEBENCH_COORDINATOR_APP_NAME}
+    devImage: ${SWEBENCH_COORDINATOR_DEV_IMAGE_REPOSITORY}:latest
+    workingDir: /app
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container (SWE-bench Coordinator) ==="
+        cd /app
+
+        python -m venv .venv
+        . .venv/bin/activate
+        pip install --upgrade pip
+        pip install -e .
+
+        exec uvicorn src.app:app --host 0.0.0.0 --port ${SWEBENCH_COORDINATOR_CONTAINER_PORT} --reload --reload-dir /app
+    sync:
+      - path: ./services/swebench-coordinator/:/app
+        initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false
+          exec:
+            - name: install-swebench-coordinator-deps
+              command: sh
+              args:
+                - -lc
+                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+              failOnError: false
+              onChange:
+                - pyproject.toml
+        excludePaths:
+          - .venv/
+          - __pycache__/
+          - .pytest_cache/
+          - "*.pyc"
+          - .claude/
+    patches:
+      - op: remove
+        path: spec.containers.name=${SWEBENCH_COORDINATOR_APP_NAME}.livenessProbe
+      - op: remove
+        path: spec.containers.name=${SWEBENCH_COORDINATOR_APP_NAME}.readinessProbe
+      - op: replace
+        path: spec.containers.name=${SWEBENCH_COORDINATOR_APP_NAME}.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+    ports:
+      - port: "${SWEBENCH_COORDINATOR_LOCAL_PORT}:${SWEBENCH_COORDINATOR_CONTAINER_PORT}"
+    env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - name: OTEL_SERVICE_NAME
+        value: "${SWEBENCH_COORDINATOR_APP_NAME}"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"
+      - name: WORKFLOW_BUILDER_URL
+        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
+      - name: SWEBENCH_ARTIFACT_ROOT
+        value: "/artifacts"
+      - name: SWEBENCH_ARTIFACTS_PVC
+        value: "swebench-artifacts"
+      - name: SWEBENCH_EVALUATOR_NAMESPACE
+        value: "workflow-builder"
+      - name: SWEBENCH_EVALUATOR_IMAGE
+        value: ${SWEBENCH_EVALUATOR_IMAGE}
+
 # ============================================================================
 # Pipelines — override the default `dev` pipeline to manage ArgoCD
 # ============================================================================
@@ -973,7 +1124,8 @@ pipelines:
       SKIP_ANNOTATION="argocd.argoproj.io/skip-reconcile"
       REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
       WORKFLOW_BUILDER_SERVICE="workflow-builder"
-      ORIGINAL_REPLICAS_ANNOTATION="devspace.sh/original-workflow-builder-replicas"
+      ORIGINAL_REPLICAS_ANNOTATION="devspace.sh/original-replicas"
+      LEGACY_WORKFLOW_BUILDER_REPLICAS_ANNOTATION="devspace.sh/original-workflow-builder-replicas"
 
       resolve_active_apps() {
         case "${DEVSPACE_PROFILE:-}" in
@@ -992,8 +1144,11 @@ pipelines:
           sw-workflow-dev|openshell-inner-loop)
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
+          swebench-dev)
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+            ;;
           full-agent-stack)
-            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py"
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
             ;;
           *)
             printf '%s\n' "${ARGO_APPS}"
@@ -1018,8 +1173,11 @@ pipelines:
           sw-workflow-dev|openshell-inner-loop)
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
+          swebench-dev)
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+            ;;
           full-agent-stack)
-            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py"
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
             ;;
           *)
             printf '%s\n' "${PRODUCTION_DEPLOYMENTS}"
@@ -1046,58 +1204,80 @@ pipelines:
           >/dev/null 2>&1 || true
       }
 
-      capture_workflow_builder_replicas() {
-        replicas="$(kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+      capture_deployment_replicas() {
+        dep="$1"
+        if ! kubectl get deployment "$dep" --namespace "$WL_NS" >/dev/null 2>&1; then
+          return
+        fi
+        replicas="$(kubectl get deployment "$dep" --namespace "$WL_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
         if [ -z "${replicas}" ]; then
           replicas="1"
         fi
-        kubectl annotate deployment "$WORKFLOW_BUILDER_SERVICE" \
+        kubectl annotate deployment "$dep" \
           --namespace "$WL_NS" \
           "${ORIGINAL_REPLICAS_ANNOTATION}=${replicas}" \
           --overwrite >/dev/null 2>&1 || true
       }
 
-      scale_workflow_builder_to_dev() {
-        capture_workflow_builder_replicas
-        kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" \
-          --namespace "$WL_NS" \
-          --replicas=0 >/dev/null 2>&1 || true
-      }
-
-      restore_workflow_builder_replicas() {
-        replicas="$(kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${ORIGINAL_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
-        if [ -z "${replicas}" ]; then
-          replicas="1"
-        fi
-        kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" \
-          --namespace "$WL_NS" \
-          --replicas="${replicas}" >/dev/null 2>&1 || true
-        kubectl annotate deployment "$WORKFLOW_BUILDER_SERVICE" \
-          --namespace "$WL_NS" \
-          "${ORIGINAL_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
-      }
-
-      delete_workflow_builder_devspace_state() {
-        kubectl delete deployment \
-          --namespace "$WL_NS" \
-          -l 'app=workflow-builder,devspace.sh/replaced=true' \
-          --ignore-not-found \
-          --wait=true >/dev/null 2>&1 || true
-        kubectl delete replicaset \
-          --namespace "$WL_NS" \
-          -l 'app=workflow-builder,devspace.sh/replaced=true' \
-          --ignore-not-found >/dev/null 2>&1 || true
-        kubectl delete pod \
-          --namespace "$WL_NS" \
-          -l 'app=workflow-builder,devspace.sh/replaced=true' \
-          --ignore-not-found >/dev/null 2>&1 || true
-        for _ in $(seq 1 15); do
-          if ! kubectl get deployment \
+      scale_production_deployments_to_dev() {
+        for dep in ${RECOVERY_DEPLOYMENTS}; do
+          capture_deployment_replicas "$dep"
+          kubectl scale deployment "$dep" \
             --namespace "$WL_NS" \
-            -l 'app=workflow-builder,devspace.sh/replaced=true' \
-            -o name 2>/dev/null | grep -q .; then
-            break
+            --replicas=0 >/dev/null 2>&1 || true
+        done
+      }
+
+      restore_production_deployment_replicas() {
+        for dep in ${RECOVERY_DEPLOYMENTS}; do
+          if ! kubectl get deployment "$dep" --namespace "$WL_NS" >/dev/null 2>&1; then
+            continue
           fi
+          replicas="$(kubectl get deployment "$dep" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${ORIGINAL_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
+          if [ -z "${replicas}" ] && [ "$dep" = "$WORKFLOW_BUILDER_SERVICE" ]; then
+            replicas="$(kubectl get deployment "$dep" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${LEGACY_WORKFLOW_BUILDER_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
+          fi
+          if [ -z "${replicas}" ]; then
+            replicas="1"
+          fi
+          kubectl scale deployment "$dep" \
+            --namespace "$WL_NS" \
+            --replicas="${replicas}" >/dev/null 2>&1 || true
+          kubectl annotate deployment "$dep" \
+            --namespace "$WL_NS" \
+            "${ORIGINAL_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
+          kubectl annotate deployment "$dep" \
+            --namespace "$WL_NS" \
+            "${LEGACY_WORKFLOW_BUILDER_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
+        done
+      }
+
+      delete_devspace_state_for_active_apps() {
+        for app in ${ACTIVE_APPS}; do
+          kubectl delete deployment \
+            --namespace "$WL_NS" \
+            -l "app=${app},devspace.sh/replaced=true" \
+            --ignore-not-found \
+            --wait=true >/dev/null 2>&1 || true
+          kubectl delete replicaset \
+            --namespace "$WL_NS" \
+            -l "app=${app},devspace.sh/replaced=true" \
+            --ignore-not-found >/dev/null 2>&1 || true
+          kubectl delete pod \
+            --namespace "$WL_NS" \
+            -l "app=${app},devspace.sh/replaced=true" \
+            --ignore-not-found >/dev/null 2>&1 || true
+        done
+        for _ in $(seq 1 15); do
+          remaining=""
+          for app in ${ACTIVE_APPS}; do
+            app_remaining="$(kubectl get deployment \
+              --namespace "$WL_NS" \
+              -l "app=${app},devspace.sh/replaced=true" \
+              -o name 2>/dev/null || true)"
+            remaining="${remaining}${app_remaining}"
+          done
+          [ -z "${remaining}" ] && break
           sleep 1
         done
       }
@@ -1119,10 +1299,10 @@ pipelines:
         echo ""
         echo "==> Restoring workflow-builder service selector"
         restore_workflow_builder_service_to_prod
-        echo "==> Restoring workflow-builder deployment replicas"
-        restore_workflow_builder_replicas
-        echo "==> Removing workflow-builder DevSpace replacement resources"
-        delete_workflow_builder_devspace_state
+        echo "==> Restoring production deployment replicas"
+        restore_production_deployment_replicas
+        echo "==> Removing DevSpace replacement resources"
+        delete_devspace_state_for_active_apps
         echo "==> Resuming ArgoCD reconciliation"
         for app in ${ACTIVE_APPS}; do
           kubectl annotate application "$app" \
@@ -1150,8 +1330,8 @@ pipelines:
       create_deployments --all
       echo "==> Routing workflow-builder service to the DevSpace replacement pod"
       route_workflow_builder_service_to_dev
-      echo "==> Scaling down the Argo-managed workflow-builder deployment"
-      scale_workflow_builder_to_dev
+      echo "==> Scaling down Argo-managed production deployments"
+      scale_production_deployments_to_dev
       start_dev --all
       echo "==> Dev session active. Press Ctrl+C to restore production routing."
       while true; do
@@ -1178,44 +1358,57 @@ hooks:
         SKIP="argocd.argoproj.io/skip-reconcile"
         REFRESH="argocd.argoproj.io/refresh"
         WORKFLOW_BUILDER_SERVICE="workflow-builder"
-        ORIGINAL_REPLICAS_ANNOTATION="devspace.sh/original-workflow-builder-replicas"
+        ORIGINAL_REPLICAS_ANNOTATION="devspace.sh/original-replicas"
+        LEGACY_WORKFLOW_BUILDER_REPLICAS_ANNOTATION="devspace.sh/original-workflow-builder-replicas"
         case "${DEVSPACE_PROFILE:-}" in
           workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
           ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
           ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
           function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
           sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-          full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py" ;;
+          swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
+          full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
           *) ACTIVE_APPS="${ARGO_APPS}" ;;
         esac
         for app in ${ACTIVE_APPS}; do
           kubectl annotate application "$app" --namespace "$ARGO_NS" "${SKIP}-" 2>/dev/null || true
           kubectl annotate application "$app" --namespace "$ARGO_NS" "${REFRESH}=hard" --overwrite 2>/dev/null || true
         done
-        replicas="$(kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${ORIGINAL_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
-        if [ -z "${replicas}" ]; then
-          replicas="1"
-        fi
-        kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" --replicas="${replicas}" >/dev/null 2>&1 || true
-        kubectl annotate deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" "${ORIGINAL_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
+        for app in ${ACTIVE_APPS}; do
+          if ! kubectl get deployment "$app" --namespace "$WL_NS" >/dev/null 2>&1; then
+            continue
+          fi
+          replicas="$(kubectl get deployment "$app" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${ORIGINAL_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
+          if [ -z "${replicas}" ] && [ "$app" = "$WORKFLOW_BUILDER_SERVICE" ]; then
+            replicas="$(kubectl get deployment "$app" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${LEGACY_WORKFLOW_BUILDER_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
+          fi
+          if [ -z "${replicas}" ]; then
+            replicas="1"
+          fi
+          kubectl scale deployment "$app" --namespace "$WL_NS" --replicas="${replicas}" >/dev/null 2>&1 || true
+          kubectl annotate deployment "$app" --namespace "$WL_NS" "${ORIGINAL_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
+          kubectl annotate deployment "$app" --namespace "$WL_NS" "${LEGACY_WORKFLOW_BUILDER_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
+        done
         kubectl patch service workflow-builder \
           --namespace workflow-builder \
           --type=merge \
           -p='{"spec":{"selector":{"app":"workflow-builder","traffic":"prod","devspace.sh/replaced":"false"}}}' \
           >/dev/null 2>&1 || true
-        kubectl delete deployment \
-          --namespace workflow-builder \
-          -l 'app=workflow-builder,devspace.sh/replaced=true' \
-          --ignore-not-found \
-          --wait=true >/dev/null 2>&1 || true
-        kubectl delete replicaset \
-          --namespace workflow-builder \
-          -l 'app=workflow-builder,devspace.sh/replaced=true' \
-          --ignore-not-found >/dev/null 2>&1 || true
-        kubectl delete pod \
-          --namespace workflow-builder \
-          -l 'app=workflow-builder,devspace.sh/replaced=true' \
-          --ignore-not-found >/dev/null 2>&1 || true
+        for app in ${ACTIVE_APPS}; do
+          kubectl delete deployment \
+            --namespace workflow-builder \
+            -l "app=${app},devspace.sh/replaced=true" \
+            --ignore-not-found \
+            --wait=true >/dev/null 2>&1 || true
+          kubectl delete replicaset \
+            --namespace workflow-builder \
+            -l "app=${app},devspace.sh/replaced=true" \
+            --ignore-not-found >/dev/null 2>&1 || true
+          kubectl delete pod \
+            --namespace workflow-builder \
+            -l "app=${app},devspace.sh/replaced=true" \
+            --ignore-not-found >/dev/null 2>&1 || true
+        done
 
 # ============================================================================
 # Commands — manual ArgoCD pause/resume
@@ -1228,7 +1421,8 @@ commands:
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py" ;;
+      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
+      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
     for app in ${ACTIVE_APPS}; do
@@ -1242,7 +1436,8 @@ commands:
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py" ;;
+      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
+      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
     for app in ${ACTIVE_APPS}; do
@@ -1292,6 +1487,29 @@ commands:
     kubectl annotate application workflow-builder --namespace argocd \
       "argocd.argoproj.io/refresh=hard" --overwrite 2>/dev/null || true
     echo "==> Done."
+  build-swebench-evaluator-dev-image: |-
+    echo "==> Building SWE-bench evaluator dev image"
+    IMAGE="${SWEBENCH_EVALUATOR_DEV_IMAGE}"
+    if [ -z "${IMAGE}" ]; then
+      echo "SWEBENCH_EVALUATOR_DEV_IMAGE is empty" >&2
+      exit 1
+    fi
+    echo "    image: ${IMAGE}"
+    docker build -t "${IMAGE}" -f services/swebench-evaluator/Dockerfile services/swebench-evaluator
+    context="$(kubectl config current-context 2>/dev/null || true)"
+    case "${context}" in
+      kind-*)
+        cluster="${context#kind-}"
+        echo "==> Loading image into kind cluster ${cluster}"
+        kind load docker-image "${IMAGE}" --name "${cluster}" || docker push "${IMAGE}"
+        ;;
+      *)
+        echo "==> Pushing image for non-kind cluster context ${context:-unknown}"
+        docker push "${IMAGE}"
+        ;;
+    esac
+    echo "==> Done: ${IMAGE}"
+    echo "    Use with: devspace dev --profile swebench-dev --var=SWEBENCH_EVALUATOR_IMAGE=${IMAGE}"
   build-dev-base-images: |-
     echo "==> Triggering Tekton base-image builds for workflow-builder and dapr-agent-py"
     GIT_SHA="${GIT_SHA:-$(git ls-remote https://gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder.git HEAD | awk '{print $1}')}"
@@ -1417,6 +1635,8 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
+      - op: remove
+        path: dev.swebench-coordinator
 
   - name: openshell-inner-loop
     description: >
@@ -1435,6 +1655,8 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
+      - op: remove
+        path: dev.swebench-coordinator
 
   - name: ui-orchestrator
     description: >
@@ -1455,6 +1677,8 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
+      - op: remove
+        path: dev.swebench-coordinator
 
   - name: workflow-ui-only
     description: >
@@ -1477,6 +1701,8 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
+      - op: remove
+        path: dev.swebench-coordinator
 
   - name: function-stack
     description: >
@@ -1491,6 +1717,8 @@ profiles:
         path: dev.ai-chatbot
       - op: remove
         path: dev.mcp-gateway
+      - op: remove
+        path: dev.swebench-coordinator
 
   - name: sw-workflow-dev
     description: >
@@ -1513,6 +1741,31 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
+      - op: remove
+        path: dev.swebench-coordinator
+
+  - name: swebench-dev
+    description: >
+      SWE-bench benchmark execution loop.
+      Starts: workflow-builder (benchmark API + run state), workflow-orchestrator
+              and function-router (agent inference workflow), and swebench-coordinator
+              (parent/child SWE-bench workflows and evaluator Job creation).
+      The evaluator itself is a Kubernetes Job image; use
+      `devspace run build-swebench-evaluator-dev-image` when iterating on that image,
+      then override SWEBENCH_EVALUATOR_IMAGE if the coordinator should launch the dev tag.
+    patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+      - op: remove
+        path: dev.ai-chatbot
+      - op: remove
+        path: dev.fn-activepieces
+      - op: remove
+        path: dev.mcp-gateway
 
   - name: full-agent-stack
     description: >
@@ -1520,7 +1773,7 @@ profiles:
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway dapr-agent-py"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway swebench-coordinator dapr-agent-py"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-py"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
