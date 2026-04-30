@@ -7,7 +7,7 @@
 		CardHeader,
 		CardTitle,
 	} from '$lib/components/ui/card';
-	import { Puzzle, Files, Layers, Code, Library as LibraryIcon, ArrowRight } from 'lucide-svelte';
+	import { Puzzle, Files, Layers, Code, Library as LibraryIcon, ArrowRight } from '@lucide/svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 

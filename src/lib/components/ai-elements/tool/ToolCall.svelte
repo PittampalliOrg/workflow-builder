@@ -2,7 +2,7 @@
 	import { cn } from "$lib/components/ui/utils.js";
 	import { Badge } from "$lib/components/ui/badge";
 	import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "$lib/components/ui/collapsible";
-	import { ChevronDown, Wrench, CheckCircle, XCircle, Clock } from "lucide-svelte";
+	import { ChevronDown, Wrench, CheckCircle, XCircle, Clock } from "@lucide/svelte";
 
 	interface Props {
 		name: string;

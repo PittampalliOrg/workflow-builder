@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Bot, User } from 'lucide-svelte';
+	import { Bot, User } from '@lucide/svelte';
 	import { Message, MessageContent } from '$lib/components/ui/prompt-kit/message';
 	import { ThinkingBar } from '$lib/components/ui/prompt-kit/thinking-bar';
 	import type { UIMessage, createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';

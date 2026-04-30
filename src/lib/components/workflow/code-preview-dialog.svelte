@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Copy, Download, Save, Loader2 } from 'lucide-svelte';
+	import { Copy, Download, Save, Loader2 } from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Button } from '$lib/components/ui/button';

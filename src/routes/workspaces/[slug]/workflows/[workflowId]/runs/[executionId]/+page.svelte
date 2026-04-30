@@ -47,7 +47,7 @@
 		Play,
 		PencilLine,
 		List as ListIcon
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';

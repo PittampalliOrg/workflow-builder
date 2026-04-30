@@ -3,7 +3,7 @@
 		Check, X, Loader2, Circle, ChevronDown, ChevronRight,
 		Brain, MessageSquare, Wrench, CheckCircle2, XCircle, Bot,
 		AlertTriangle, Cable, ShieldCheck, Gauge
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import JsonViewer from './json-viewer.svelte';
 	import CollapsibleSection from './collapsible-section.svelte';

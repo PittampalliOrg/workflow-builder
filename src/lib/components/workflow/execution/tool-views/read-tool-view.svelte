@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
-	import FileText from 'lucide-svelte/icons/file-text';
+	import FileText from '@lucide/svelte/icons/file-text';
 	import { getDisplayPath, countLines } from './tool-utils';
 
 	interface Props {

@@ -9,7 +9,7 @@
 	 */
 	import { Panel, useSvelteFlow } from '@xyflow/svelte';
 	import { getContext } from 'svelte';
-	import { Play, Square } from 'lucide-svelte';
+	import { Play, Square } from '@lucide/svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');

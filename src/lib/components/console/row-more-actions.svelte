@@ -7,7 +7,7 @@
 		DropdownMenuSeparator,
 		DropdownMenuTrigger
 	} from '$lib/components/ui/dropdown-menu';
-	import { MoreHorizontal } from 'lucide-svelte';
+	import { MoreHorizontal } from '@lucide/svelte';
 	import type { Snippet } from 'svelte';
 
 	interface Action {

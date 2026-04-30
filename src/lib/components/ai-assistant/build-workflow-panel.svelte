@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Loader2, Check, X, Play, Square, RotateCcw, Sparkles } from 'lucide-svelte';
+	import { Loader2, Check, X, Play, Square, RotateCcw, Sparkles } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import type { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';

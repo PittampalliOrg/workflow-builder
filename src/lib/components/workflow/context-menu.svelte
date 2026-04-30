@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Trash2, Copy, Unplug, Settings, Replace } from 'lucide-svelte';
+	import { Trash2, Copy, Unplug, Settings, Replace } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 

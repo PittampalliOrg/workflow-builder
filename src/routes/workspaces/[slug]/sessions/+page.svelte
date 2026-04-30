@@ -16,7 +16,7 @@
 		Search,
 		Workflow,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';

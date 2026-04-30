@@ -15,7 +15,7 @@
 		Network,
 		Package,
 		Settings
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { EnvironmentDetail } from '$lib/types/environments';
 
 	interface Props {

@@ -8,7 +8,7 @@
 		GitCommit,
 		RefreshCw,
 		Server
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 
 	import { Badge } from '$lib/components/ui/badge';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';

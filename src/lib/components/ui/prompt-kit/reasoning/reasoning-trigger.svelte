@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { getReasoningContext } from "./reasoning-context.svelte";
 	import { cn } from "$lib/components/ui/utils";
-	import ChevronDown from "lucide-svelte/icons/chevron-down";
-	import BrainCircuit from "lucide-svelte/icons/brain-circuit";
+	import ChevronDown from "@lucide/svelte/icons/chevron-down";
+	import BrainCircuit from "@lucide/svelte/icons/brain-circuit";
 	import type { Snippet } from "svelte";
 
 	interface Props {

@@ -12,7 +12,7 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { ChevronLeft, ChevronRight, Download } from 'lucide-svelte';
+	import { ChevronLeft, ChevronRight, Download } from '@lucide/svelte';
 
 	type UsagePayload = {
 		range: { start: string; end: string };

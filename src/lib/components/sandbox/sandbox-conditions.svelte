@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
-	import { CheckCircle2, XCircle, Clock, AlertTriangle } from 'lucide-svelte';
+	import { CheckCircle2, XCircle, Clock, AlertTriangle } from '@lucide/svelte';
 
 	interface Condition {
 		type?: string;

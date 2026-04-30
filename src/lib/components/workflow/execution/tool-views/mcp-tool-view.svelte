@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
-	import Plug from 'lucide-svelte/icons/plug';
+	import Plug from '@lucide/svelte/icons/plug';
 	import {
 		parseMcpToolName,
 		renderArgsSummary,

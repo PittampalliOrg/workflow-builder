@@ -4,7 +4,7 @@
 	 * Resizable via drag handle on the left edge.
 	 */
 	import { getContext } from 'svelte';
-	import { PanelRightClose } from 'lucide-svelte';
+	import { PanelRightClose } from '@lucide/svelte';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';

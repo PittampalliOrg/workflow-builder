@@ -5,7 +5,7 @@
 	 * Canvas changes are reflected back in the editor.
 	 */
 	import { onMount, getContext } from 'svelte';
-	import { Copy, Wand2, Check } from 'lucide-svelte';
+	import { Copy, Wand2, Check } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { toast } from 'svelte-sonner';
 	import yaml from 'js-yaml';

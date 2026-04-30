@@ -10,7 +10,7 @@
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '$lib/components/ui/dialog';
 	import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '$lib/components/ui/table';
-	import { CircleAlert, Copy, Check, Lock, Trash2, Loader2, Power, PowerOff, Plus } from 'lucide-svelte';
+	import { CircleAlert, Copy, Check, Lock, Trash2, Loader2, Power, PowerOff, Plus } from '@lucide/svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
 	import { env } from '$env/dynamic/public';

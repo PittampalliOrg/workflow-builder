@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
-	import Globe from 'lucide-svelte/icons/globe';
+	import Globe from '@lucide/svelte/icons/globe';
 	import { truncateSummary } from './tool-utils';
 
 	interface Props {

@@ -7,6 +7,7 @@ import {
 	benchmarkRunInstances,
 } from "$lib/server/db/schema";
 import { parseHarnessResult } from "$lib/server/benchmarks/harness-result";
+import { parsePatchStats } from "$lib/server/benchmarks/patch-compare";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -61,6 +62,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!row) return error(404, "Instance not found in this run");
 
 	const parsedHarness = parseHarnessResult(row.run.harnessResult);
+	const goldPatchStats = parsePatchStats(row.goldPatch);
 
 	return json({
 		runInstance: row.run,
@@ -73,6 +75,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			metadata: row.instanceMetadata,
 		},
 		goldPatch: row.goldPatch,
+		goldPatchStats: {
+			addedLines: goldPatchStats.addedLines,
+			removedLines: goldPatchStats.removedLines,
+			filesTouched: goldPatchStats.filesTouched.length,
+		},
 		parsedHarness,
 	});
 };

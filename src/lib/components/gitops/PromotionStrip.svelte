@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Package } from "lucide-svelte";
+	import { Package } from "@lucide/svelte";
 
 	import EnvCard from "$lib/components/gitops/EnvCard.svelte";
 	import GateChip from "$lib/components/gitops/GateChip.svelte";

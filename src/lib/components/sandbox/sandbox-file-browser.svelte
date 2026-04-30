@@ -13,7 +13,7 @@
 		ArrowLeft,
 		Pencil,
 		Lock
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import SandboxCodeViewer from './sandbox-code-viewer.svelte';
 	import SandboxFileEditor from './sandbox-file-editor.svelte';
 

@@ -30,7 +30,7 @@
 		ShieldCheck,
 		Trash2,
 		Unplug
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { PageData } from './$types';
 	import type { VaultCredentialSummary, VaultSummary } from '$lib/types/vaults';
 

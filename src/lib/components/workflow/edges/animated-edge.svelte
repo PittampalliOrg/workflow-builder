@@ -7,7 +7,7 @@
 		EdgeReconnectAnchor,
 		type EdgeProps
 	} from '@xyflow/svelte';
-	import { Plus } from 'lucide-svelte';
+	import { Plus } from '@lucide/svelte';
 
 	let {
 		id,

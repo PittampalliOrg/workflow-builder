@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
-	import { Check, Copy } from 'lucide-svelte';
+	import { Check, Copy } from '@lucide/svelte';
 
 	interface Props {
 		/** Three code blocks: curl, python, typescript — caller renders the exact request. */

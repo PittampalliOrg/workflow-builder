@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Boxes } from 'lucide-svelte';
+	import { Boxes } from '@lucide/svelte';
 	import type { WorkflowNodeData } from '$lib/stores/workflow.svelte';
 
 	interface Props {

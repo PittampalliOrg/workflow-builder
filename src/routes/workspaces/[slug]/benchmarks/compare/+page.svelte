@@ -4,7 +4,7 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Layers, RefreshCw, Tag, X } from 'lucide-svelte';
+	import { Layers, RefreshCw, Tag, X } from '@lucide/svelte';
 	import CompareAxisDiffStrip from '$lib/components/benchmarks/compare-axis-diff-strip.svelte';
 	import CompareHeadlineBar from '$lib/components/benchmarks/compare-headline-bar.svelte';
 	import CompareGrid from '$lib/components/benchmarks/compare-grid.svelte';

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Clock } from 'lucide-svelte';
+	import { Clock } from '@lucide/svelte';
 	import BaseSWNode from '../base-sw-node.svelte';
 	import type { PortConfig } from '$lib/types/workflow-handles';
 

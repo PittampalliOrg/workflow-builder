@@ -5,7 +5,7 @@
 	 * Modeled after the Vercel workflow-builder-template action-grid.
 	 */
 	import { onMount } from 'svelte';
-	import { Search, ChevronDown, ChevronRight, Globe } from 'lucide-svelte';
+	import { Search, ChevronDown, ChevronRight, Globe } from '@lucide/svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 

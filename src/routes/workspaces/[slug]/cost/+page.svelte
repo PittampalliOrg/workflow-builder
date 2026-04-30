@@ -12,7 +12,7 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { DollarSign, Download, Info } from 'lucide-svelte';
+	import { DollarSign, Download, Info } from '@lucide/svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 

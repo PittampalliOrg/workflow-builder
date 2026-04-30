@@ -2,15 +2,15 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-import {
-	Dialog,
-	DialogContent,
-	DialogFooter,
+	import {
+		Dialog,
+		DialogContent,
+		DialogFooter,
 		DialogHeader,
 		DialogTitle,
 	} from '$lib/components/ui/dialog';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import ResourceAwareSchemaConfig from './resource-aware-schema-config.svelte';
+	import ResourceAwareSchemaConfig from './lazy-resource-aware-schema-config.svelte';
 	import type { ActionCatalogDetail } from '$lib/stores/action-catalog.svelte';
 
 	interface Props {

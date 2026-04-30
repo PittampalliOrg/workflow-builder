@@ -7,11 +7,10 @@
 		FileCode,
 		GitBranch,
 		GitCommit,
-		Github,
 		Hammer,
 		Info,
 		Package,
-	} from "lucide-svelte";
+	} from "@lucide/svelte";
 
 	import CopyButton from "$lib/components/gitops/CopyButton.svelte";
 	import EnvCard from "$lib/components/gitops/EnvCard.svelte";
@@ -225,7 +224,6 @@
 		{#if pinCommit}
 			<section class="rounded-lg border bg-muted/30 p-3 text-xs">
 				<div class="mb-1 flex items-center gap-2 text-[0.65rem] uppercase tracking-wide text-muted-foreground">
-					<Github class="size-3" />
 					<GitCommit class="size-3" />
 					Release-pin commit
 				</div>
@@ -373,7 +371,6 @@
 						target="_blank"
 						rel="noreferrer"
 					>
-						<Github class="size-3" />
 						<GitCommit class="size-3 text-muted-foreground/60" />
 						<span class="font-mono">{shortSha(primarySha)}</span>
 						<ExternalLink class="size-3" />
@@ -403,7 +400,6 @@
 					rel="noreferrer"
 					title="Jump to the release-pins YAML on GitHub (highlights this service)"
 				>
-					<Github class="size-3" />
 					<FileCode class="size-3 text-muted-foreground/60" />
 					Release pins
 					<ExternalLink class="size-3" />
@@ -416,9 +412,8 @@
 						class="h-7 gap-1.5 text-xs"
 						target="_blank"
 						rel="noreferrer"
-						title="Browse the hydrated env/spokes-dev branch"
-					>
-						<Github class="size-3" />
+					title="Browse the hydrated env/spokes-dev branch"
+				>
 						<GitBranch class="size-3 text-muted-foreground/60" />
 						env/spokes-dev
 						<ExternalLink class="size-3" />
@@ -432,9 +427,8 @@
 						class="h-7 gap-1.5 text-xs"
 						target="_blank"
 						rel="noreferrer"
-						title="Browse the hydrated env/spokes-staging branch"
-					>
-						<Github class="size-3" />
+					title="Browse the hydrated env/spokes-staging branch"
+				>
 						<GitBranch class="size-3 text-muted-foreground/60" />
 						env/spokes-staging
 						<ExternalLink class="size-3" />
@@ -448,9 +442,8 @@
 						class="h-7 gap-1.5 text-xs"
 						target="_blank"
 						rel="noreferrer"
-						title="View the image on GitHub Container Registry"
-					>
-						<Github class="size-3" />
+					title="View the image on GitHub Container Registry"
+				>
 						<Package class="size-3 text-muted-foreground/60" />
 						GHCR
 						<ExternalLink class="size-3" />

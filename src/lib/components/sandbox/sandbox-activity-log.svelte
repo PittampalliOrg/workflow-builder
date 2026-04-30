@@ -10,7 +10,7 @@
 		ChevronRight,
 		Wrench,
 		Bot
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { SandboxLogEntry } from '$lib/types/sandbox';
 
 	interface Props {

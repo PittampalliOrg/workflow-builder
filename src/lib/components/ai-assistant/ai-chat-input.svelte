@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Send, Square, GitBranch, Zap } from 'lucide-svelte';
+	import { Send, Square, GitBranch, Zap } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
 	import type { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';

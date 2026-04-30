@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Grid2X2, List, RefreshCw, Search, Workflow } from 'lucide-svelte';
+	import { Grid2X2, List, RefreshCw, Search, Workflow } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';

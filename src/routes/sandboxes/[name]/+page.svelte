@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tabs from '$lib/components/ui/tabs';
-	import { ArrowLeft, Trash2, Loader2, Container, RefreshCw, CopyPlus } from 'lucide-svelte';
+	import { ArrowLeft, Trash2, Loader2, Container, RefreshCw, CopyPlus } from '@lucide/svelte';
 	import CreateSandboxDialog from '$lib/components/sandbox/create-sandbox-dialog.svelte';
 	import { createSandboxDetailStream } from '$lib/stores/sandbox-detail-stream.svelte';
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';

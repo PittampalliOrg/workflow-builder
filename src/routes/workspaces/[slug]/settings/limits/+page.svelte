@@ -10,7 +10,7 @@
 	} from '$lib/components/ui/card';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Gauge, ExternalLink, Activity } from 'lucide-svelte';
+	import { Gauge, ExternalLink, Activity } from '@lucide/svelte';
 
 	type LivePayload = {
 		activeSessions: number;

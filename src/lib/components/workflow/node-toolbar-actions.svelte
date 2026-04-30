@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import { NodeToolbar, Position } from '@xyflow/svelte';
-	import { Settings, Copy, Trash2 } from 'lucide-svelte';
+	import { Settings, Copy, Trash2 } from '@lucide/svelte';
 	import { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
 	interface Props {

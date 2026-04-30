@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { Copy, Check } from 'lucide-svelte';
+	import { Copy, Check } from '@lucide/svelte';
 
 	interface Props {
 		code: string;

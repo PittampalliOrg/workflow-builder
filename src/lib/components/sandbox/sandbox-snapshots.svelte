@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { Camera, Trash2, GitCompare } from 'lucide-svelte';
+	import { Camera, Trash2, GitCompare } from '@lucide/svelte';
 
 	interface Props {
 		sandboxName: string;

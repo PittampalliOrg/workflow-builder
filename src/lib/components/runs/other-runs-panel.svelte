@@ -9,7 +9,7 @@
 	 */
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-svelte';
+	import { ChevronLeft, ChevronRight, Loader2 } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 
 	interface Execution {

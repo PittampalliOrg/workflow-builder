@@ -25,7 +25,7 @@
 		ExternalLink,
 		Search,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import { formatDuration, formatTokens } from './run-status-helpers';
 

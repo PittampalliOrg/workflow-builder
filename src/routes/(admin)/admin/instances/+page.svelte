@@ -3,7 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '$lib/components/ui/table';
-	import { Loader2, RefreshCw, ChevronDown, ChevronRight, Activity } from 'lucide-svelte';
+	import { Loader2, RefreshCw, ChevronDown, ChevronRight, Activity } from '@lucide/svelte';
 
 	interface Instance {
 		instanceId: string;

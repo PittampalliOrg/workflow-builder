@@ -20,7 +20,7 @@
 		ChevronLeft,
 		Blocks,
 		Bot
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { Separator } from '$lib/components/ui/separator';
 	import FunctionBrowser from './function-browser.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';

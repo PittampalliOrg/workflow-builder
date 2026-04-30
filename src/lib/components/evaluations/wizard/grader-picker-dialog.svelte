@@ -13,7 +13,7 @@
 		Network,
 		Sparkles,
 		Type
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { GraderType } from './wizard-store.svelte';
 
 	interface Props {

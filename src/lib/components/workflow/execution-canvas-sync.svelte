@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Panel, useNodesInitialized, useSvelteFlow, type Edge } from '@xyflow/svelte';
-	import { CheckCircle2, Loader2, MapPinned, XCircle } from 'lucide-svelte';
+	import { CheckCircle2, Loader2, MapPinned, XCircle } from '@lucide/svelte';
 	import type { ExecutionReadModel, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import {
 		buildExecutionCanvasState,

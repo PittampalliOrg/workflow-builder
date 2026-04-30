@@ -36,7 +36,7 @@ import {
 	Settings as SettingsIcon,
 	FlaskConical,
 	Trophy,
-} from "lucide-svelte";
+} from "@lucide/svelte";
 
 // Lucide icons ship as component constructors — `typeof <Icon>` is the
 // constructor type (matches the original sidebar's `typeof GitBranch` pattern).

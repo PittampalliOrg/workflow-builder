@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
-	import FolderOpen from 'lucide-svelte/icons/folder-open';
+	import FolderOpen from '@lucide/svelte/icons/folder-open';
 	import { getDisplayPath, countListEntries } from './tool-utils';
 
 	interface Props {

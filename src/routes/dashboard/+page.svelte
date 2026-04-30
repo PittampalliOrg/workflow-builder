@@ -23,7 +23,7 @@
 		MessagesSquare,
 		Plus,
 		Sparkles
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 
 	type DashboardPayload = {
 		stats: {

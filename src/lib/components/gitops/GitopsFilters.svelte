@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Eye, EyeOff, Search } from "lucide-svelte";
+	import { Eye, EyeOff, Search } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";

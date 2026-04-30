@@ -16,7 +16,7 @@
 		Save,
 		Trash2,
 		Waypoints,
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 
 	type Language = 'typescript' | 'python';
 

@@ -3,7 +3,7 @@
 	import * as Command from '$lib/components/ui/command';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Check, ChevronsUpDown, X } from 'lucide-svelte';
+	import { Check, ChevronsUpDown, X } from '@lucide/svelte';
 
 	type Option = { value: string; label: string; count?: number };
 

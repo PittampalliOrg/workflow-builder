@@ -4,7 +4,7 @@
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Loader2, KeyRound, Plus, RefreshCw, X } from 'lucide-svelte';
+	import { Loader2, KeyRound, Plus, RefreshCw, X } from '@lucide/svelte';
 	import type { VaultSummary } from '$lib/types/vaults';
 
 	interface Props {

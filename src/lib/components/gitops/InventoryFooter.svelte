@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Clock3, Database } from "lucide-svelte";
+	import { Clock3, Database } from "@lucide/svelte";
 
 	import type { DeploymentMetadataResponse } from "$lib/types/deployment-metadata";
 	import { relativeTime } from "$lib/utils/gitops-display";

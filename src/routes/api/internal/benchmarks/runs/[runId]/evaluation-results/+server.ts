@@ -4,6 +4,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { requireInternal } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
 import {
+	benchmarkInstances,
 	benchmarkRunInstances,
 	benchmarkRuns,
 	type BenchmarkEvaluationStatus,
@@ -14,6 +15,7 @@ import {
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
 } from "$lib/server/benchmarks/service";
+import { compareToGold, parsePatchStats } from "$lib/server/benchmarks/patch-compare";
 import { daprFetch } from "$lib/server/dapr-client";
 import { env } from "$env/dynamic/private";
 
@@ -51,11 +53,15 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		});
 		return json({ success: true });
 	}
+	const patchContext = await loadPatchContextForRun(params.runId);
 	for (const result of results) {
 		const instanceId = result.instance_id ?? result.instanceId;
 		if (!instanceId) continue;
 		const { status, evaluationStatus } = mapHarnessStatus(result);
 		const evaluationError = result.error ?? null;
+		const ctx = patchContext.get(instanceId);
+		const stats = ctx ? parsePatchStats(ctx.modelPatch) : null;
+		const overlap = ctx ? compareToGold(ctx.modelPatch, ctx.goldPatch) : null;
 		await db
 			.update(benchmarkRunInstances)
 			.set({
@@ -67,6 +73,11 @@ export const POST: RequestHandler = async ({ request, params }) => {
 				testOutputSummary:
 					result.test_output_summary ?? result.testOutputSummary ?? null,
 				harnessResult: result.harness_result ?? result.harnessResult ?? null,
+				patchAddedLines: stats?.addedLines ?? null,
+				patchRemovedLines: stats?.removedLines ?? null,
+				patchFilesTouched: stats?.filesTouched.length ?? null,
+				patchFilesOverlapGold: overlap?.filesOverlap ?? null,
+				patchWellFormed: stats?.wellFormed ?? null,
 				evaluatedAt: new Date(),
 				updatedAt: new Date(),
 			})
@@ -114,6 +125,27 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	});
 	return json({ success: true, run, summary });
 };
+
+async function loadPatchContextForRun(runId: string) {
+	if (!db) return new Map<string, { modelPatch: string | null; goldPatch: string | null }>();
+	const rows = await db
+		.select({
+			instanceId: benchmarkRunInstances.instanceId,
+			modelPatch: benchmarkRunInstances.modelPatch,
+			goldPatch: benchmarkInstances.goldPatch,
+		})
+		.from(benchmarkRunInstances)
+		.leftJoin(
+			benchmarkInstances,
+			eq(benchmarkInstances.id, benchmarkRunInstances.benchmarkInstanceId),
+		)
+		.where(eq(benchmarkRunInstances.runId, runId));
+	const map = new Map<string, { modelPatch: string | null; goldPatch: string | null }>();
+	for (const row of rows) {
+		map.set(row.instanceId, { modelPatch: row.modelPatch, goldPatch: row.goldPatch });
+	}
+	return map;
+}
 
 async function notifyCoordinatorEvaluationEvent(
 	runId: string,

@@ -14,7 +14,7 @@
 	} from '$lib/components/ui/sheet';
 	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
-	import { ArrowLeft, Database } from 'lucide-svelte';
+	import { ArrowLeft, Database } from '@lucide/svelte';
 
 	type DatasetRow = {
 		id: string;

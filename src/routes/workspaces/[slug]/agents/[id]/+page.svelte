@@ -67,7 +67,7 @@
 		GitFork,
 		Rocket,
 		Workflow
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type {
 		AgentDetail,
 		AgentConfig,

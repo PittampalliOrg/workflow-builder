@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { cn } from "$lib/components/ui/utils.js";
-	import { User, Bot, Settings, Wrench } from "lucide-svelte";
+	import { User, Bot, Settings, Wrench } from "@lucide/svelte";
 	import type { HTMLAttributes } from "svelte/elements";
 
 	type MessageProps = HTMLAttributes<HTMLDivElement> & {

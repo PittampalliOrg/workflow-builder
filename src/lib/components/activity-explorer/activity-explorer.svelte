@@ -25,7 +25,7 @@
 		Server,
 		Workflow,
 		Activity,
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import ActionTestDialog from '$lib/components/workflow/config/sw-action-test-dialog.svelte';
 	import {
 		createActionCatalogStore,

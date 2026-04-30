@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Sparkles, Zap, GitBranch, Repeat, Shield } from 'lucide-svelte';
+	import { Sparkles, Zap, GitBranch, Repeat, Shield } from '@lucide/svelte';
 	import { ChatContainerRoot, ChatContainerScrollAnchor } from '$lib/components/ui/prompt-kit/chat-container';
 	import { ScrollButton } from '$lib/components/ui/prompt-kit/scroll-button';
 	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';

@@ -3,7 +3,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import { Plus, Trash2 } from 'lucide-svelte';
+	import { Plus, Trash2 } from '@lucide/svelte';
 	import type { WizardGrader } from './wizard-store.svelte';
 
 	interface Props {

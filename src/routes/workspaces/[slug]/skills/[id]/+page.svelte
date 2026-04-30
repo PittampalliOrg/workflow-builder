@@ -23,7 +23,7 @@
 		Save,
 		Trash2,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 	const skillId = $derived(page.params.id as string);

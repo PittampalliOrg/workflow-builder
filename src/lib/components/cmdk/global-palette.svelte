@@ -24,7 +24,7 @@
 		Users,
 		Settings,
 		Trophy
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { SessionSummary } from '$lib/types/sessions';
 	import type { AgentSummary } from '$lib/types/agents';
 

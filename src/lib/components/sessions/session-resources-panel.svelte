@@ -16,7 +16,7 @@
 		Trash2,
 		Upload,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { SessionResource } from '$lib/types/sessions';
 
 	interface Props {

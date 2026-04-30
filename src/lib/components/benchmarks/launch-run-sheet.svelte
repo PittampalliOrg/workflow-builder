@@ -7,7 +7,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Activity, Loader2, Rocket } from 'lucide-svelte';
+	import { Activity, Loader2, Rocket } from '@lucide/svelte';
 	import type { RunnableAgent, SuiteFacet } from '$lib/types/benchmark-instance';
 
 	type Props = {

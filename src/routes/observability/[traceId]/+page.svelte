@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { Loader2, CircleAlert } from 'lucide-svelte';
+	import { Loader2, CircleAlert } from '@lucide/svelte';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';

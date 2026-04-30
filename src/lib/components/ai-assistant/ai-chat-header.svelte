@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { X, Trash2, Sparkles, GitBranch } from 'lucide-svelte';
+	import { X, Trash2, Sparkles, GitBranch } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';

@@ -1,6 +1,6 @@
 <script lang="ts" generics="T extends { id: string }">
 	import { Button } from '$lib/components/ui/button';
-	import { ChevronLeft, ChevronRight } from 'lucide-svelte';
+	import { ChevronLeft, ChevronRight } from '@lucide/svelte';
 	import type { Snippet } from 'svelte';
 
 	interface Props<U extends { id: string }> {

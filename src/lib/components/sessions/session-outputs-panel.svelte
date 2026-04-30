@@ -7,7 +7,7 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { Download, FileText, RefreshCw } from 'lucide-svelte';
+	import { Download, FileText, RefreshCw } from '@lucide/svelte';
 
 	interface Props {
 		sessionId: string;

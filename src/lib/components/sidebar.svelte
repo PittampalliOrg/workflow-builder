@@ -13,7 +13,7 @@
 		ChevronsUpDown,
 		ChevronDown,
 		Home
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Tooltip from '$lib/components/ui/tooltip';

@@ -6,7 +6,7 @@
 	import { getContext } from 'svelte';
 	import type { ObservabilitySelectionStore } from '$lib/stores/observability-selection.svelte';
 	import type { ObservabilityAgentDecisionTurn } from '$lib/types/observability';
-	import { Bot, Wrench, StopCircle, Clock3, AlertTriangle, MessageSquare } from 'lucide-svelte';
+	import { Bot, Wrench, StopCircle, Clock3, AlertTriangle, MessageSquare } from '@lucide/svelte';
 
 	interface Props {
 		decisions: ObservabilityAgentDecisionTurn[];

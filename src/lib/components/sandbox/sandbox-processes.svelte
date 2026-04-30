@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { RefreshCw, Loader2 } from 'lucide-svelte';
+	import { RefreshCw, Loader2 } from '@lucide/svelte';
 
 	interface Props {
 		sandboxName: string;

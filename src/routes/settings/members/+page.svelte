@@ -14,7 +14,7 @@
 	} from '$lib/components/ui/card';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { Users, Plus, Trash2, Shield } from 'lucide-svelte';
+	import { Users, Plus, Trash2, Shield } from '@lucide/svelte';
 
 	type Role = 'ADMIN' | 'EDITOR' | 'OPERATOR' | 'VIEWER';
 	type Member = {

@@ -3,7 +3,7 @@
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
 	import JsonView from './json-view.svelte';
-	import { ChevronDown, ChevronRight, Clock, X } from 'lucide-svelte';
+	import { ChevronDown, ChevronRight, Clock, X } from '@lucide/svelte';
 
 	interface Props {
 		/** Every event collapsed into this batch, in order. */

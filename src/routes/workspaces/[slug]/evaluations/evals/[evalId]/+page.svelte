@@ -11,7 +11,7 @@
 	import RunItemsTable from '$lib/components/evaluations/run-items-table.svelte';
 	import RunInspectDrawer from '$lib/components/evaluations/run-inspect-drawer.svelte';
 	import type { RunDetail, RunItem } from '$lib/components/evaluations/types';
-	import { ArrowLeft, ChevronRight, Database, FlaskConical, Play } from 'lucide-svelte';
+	import { ArrowLeft, ChevronRight, Database, FlaskConical, Play } from '@lucide/svelte';
 
 	type GraderType =
 		| 'string_check'

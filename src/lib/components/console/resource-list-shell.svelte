@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { Search } from 'lucide-svelte';
+	import { Search } from '@lucide/svelte';
 
 	interface Props {
 		title: string;

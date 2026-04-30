@@ -19,7 +19,7 @@
 		RefreshCw,
 		Save,
 		StopCircle,
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 
 	type Dataset = {
 		id: string;

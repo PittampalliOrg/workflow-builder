@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import SandboxCodeViewer from '$lib/components/sandbox/sandbox-code-viewer.svelte';
-	import FileEdit from 'lucide-svelte/icons/file-edit';
+	import FileEdit from '@lucide/svelte/icons/file-edit';
 	import { getDisplayPath, countLines, truncateLines, detectLang, MAX_FILE_WRITE_RENDER_LINES } from './tool-utils';
 
 	interface Props {

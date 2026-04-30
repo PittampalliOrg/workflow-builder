@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Sparkles } from 'lucide-svelte';
+	import { Sparkles } from '@lucide/svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
 	interface Props {

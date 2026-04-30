@@ -32,7 +32,7 @@
 		RefreshCw,
 		Search,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import RunStatusBadge from '$lib/components/benchmarks/run-status-badge.svelte';
 	import MultiSelectCommand from '$lib/components/benchmarks/multi-select-command.svelte';
 	import {

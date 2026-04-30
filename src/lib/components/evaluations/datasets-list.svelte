@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
-	import { Database } from 'lucide-svelte';
+	import { Database } from '@lucide/svelte';
 
 	type Dataset = {
 		id: string;

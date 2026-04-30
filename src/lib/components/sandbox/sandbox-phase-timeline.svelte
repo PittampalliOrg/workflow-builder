@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-svelte';
+	import { CheckCircle2, Circle, Loader2, XCircle } from '@lucide/svelte';
 	import type { SandboxPhase } from '$lib/types/sandbox';
 
 	interface Props {

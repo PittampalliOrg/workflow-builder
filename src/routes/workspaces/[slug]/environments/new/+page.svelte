@@ -11,7 +11,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { ArrowLeft, Sparkles } from 'lucide-svelte';
+	import { ArrowLeft, Sparkles } from '@lucide/svelte';
 	import type { EnvironmentConfig } from '$lib/types/environments';
 	import { page } from '$app/state';
 

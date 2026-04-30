@@ -11,7 +11,7 @@
 	import WorkflowToolbar from '$lib/components/workflow/workflow-toolbar.svelte';
 	import RightPanel from '$lib/components/workflow/right-panel.svelte';
 	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
-	import { ListOrdered, MessagesSquare } from 'lucide-svelte';
+	import { ListOrdered, MessagesSquare } from '@lucide/svelte';
 	import { page } from '$app/state';
 
 	const store = createWorkflowStore();

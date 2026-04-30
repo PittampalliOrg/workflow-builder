@@ -6,7 +6,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Separator } from '$lib/components/ui/separator';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { Loader2, CircleAlert } from 'lucide-svelte';
+	import { Loader2, CircleAlert } from '@lucide/svelte';
 
 	let email = $state('');
 	let password = $state('');

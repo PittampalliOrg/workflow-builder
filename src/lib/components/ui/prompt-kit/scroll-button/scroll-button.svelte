@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button } from "$lib/components/ui/button";
 	import { cn } from "$lib/components/ui/utils";
-	import ArrowDown from "lucide-svelte/icons/arrow-down";
+	import ArrowDown from "@lucide/svelte/icons/arrow-down";
 	import { getChatContainerContext } from "../chat-container/chat-container-context.svelte";
 
 	let {

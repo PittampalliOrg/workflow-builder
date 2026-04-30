@@ -14,7 +14,7 @@
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
-	import { Briefcase, Check, Pencil, Plus } from 'lucide-svelte';
+	import { Briefcase, Check, Pencil, Plus } from '@lucide/svelte';
 
 	type Workspace = {
 		id: string;

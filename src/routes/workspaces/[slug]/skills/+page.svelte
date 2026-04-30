@@ -18,14 +18,14 @@
 		ChevronRight,
 		CircleAlert,
 		FileText,
-		Github,
+		GitBranch,
 		Pencil,
 		Plus,
 		Sparkles,
 		Trash2,
 		Upload,
 		Users
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 
@@ -391,7 +391,7 @@
 						disabled={!canManage}
 						onclick={openGithubImport}
 					>
-						<Github class="size-3" /> Import from GitHub
+						<GitBranch class="size-3" /> Import from GitHub
 					</Button>
 					<Button
 						variant="outline"
@@ -731,7 +731,7 @@
 		<div class="w-full max-w-xl rounded-lg border bg-background p-5 shadow-lg space-y-4">
 			<div>
 				<h3 class="text-base font-semibold flex items-center gap-2">
-					<Github class="size-4" />
+					<GitBranch class="size-4" />
 					Import from GitHub
 				</h3>
 				<p class="text-xs text-muted-foreground mt-1">

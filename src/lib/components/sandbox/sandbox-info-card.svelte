@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import SandboxPhaseBadge from './sandbox-phase-badge.svelte';
 	import SandboxConditions from './sandbox-conditions.svelte';
-	import { Loader2, ExternalLink, Copy, Check, Terminal as TerminalIcon } from 'lucide-svelte';
+	import { Loader2, ExternalLink, Copy, Check, Terminal as TerminalIcon } from '@lucide/svelte';
 	import type { Sandbox } from '$lib/types/sandbox';
 
 	interface Props {

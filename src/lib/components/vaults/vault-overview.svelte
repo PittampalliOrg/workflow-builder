@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Clock, KeyRound, RefreshCw, Shield } from 'lucide-svelte';
+	import { Clock, KeyRound, RefreshCw, Shield } from '@lucide/svelte';
 	import type { VaultCredentialSummary, VaultDetail } from '$lib/types/vaults';
 
 	interface Props {

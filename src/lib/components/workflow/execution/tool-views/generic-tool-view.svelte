@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
-	import Wrench from 'lucide-svelte/icons/wrench';
+	import Wrench from '@lucide/svelte/icons/wrench';
 	import { renderArgsSummary, firstLine, formatOutputForDisplay, summarizeCollapsedOutput } from './tool-utils';
 
 	interface Props {

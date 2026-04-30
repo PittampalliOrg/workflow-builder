@@ -3,7 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Input } from '$lib/components/ui/input';
 	import RegistryStatusBadge from './registry-status-badge.svelte';
-	import { CircleCheck, Search } from 'lucide-svelte';
+	import { CircleCheck, Search } from '@lucide/svelte';
 	import type { AgentSummary } from '$lib/types/agents';
 
 	interface Props {

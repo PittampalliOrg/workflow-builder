@@ -74,7 +74,7 @@
 		Workflow,
 		Wrench,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import {
 		createSessionStream,
 		type InFlightPartial,

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
-	import { Clock, FileText } from 'lucide-svelte';
+	import { Clock, FileText } from '@lucide/svelte';
 
 	interface Props {
 		event: SessionEventEnvelope;

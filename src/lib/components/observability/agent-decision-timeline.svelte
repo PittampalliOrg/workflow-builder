@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import type { ObservabilityAgentDecisionTurn } from '$lib/types/observability';
-	import { Bot, Clock3, StopCircle, TriangleAlert, Wrench } from 'lucide-svelte';
+	import { Bot, Clock3, StopCircle, TriangleAlert, Wrench } from '@lucide/svelte';
 
 	interface Props {
 		decisions: ObservabilityAgentDecisionTurn[];

@@ -9,7 +9,7 @@
 		removeRow,
 		type DataSourceKind
 	} from './wizard-store.svelte';
-	import { Beaker, FileJson, FileText, History, Plus, Trash2, Upload } from 'lucide-svelte';
+	import { Beaker, FileJson, FileText, History, Plus, Trash2, Upload } from '@lucide/svelte';
 
 	const wiz = getWizardState();
 

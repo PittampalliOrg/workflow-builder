@@ -27,7 +27,7 @@
 		ChevronDown,
 		ChevronRight,
 		Search
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import {
 		getSidecarMetadata,
 		getServiceHealth,

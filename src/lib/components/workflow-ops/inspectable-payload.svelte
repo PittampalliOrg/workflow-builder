@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Copy } from 'lucide-svelte';
+	import { Check, Copy } from '@lucide/svelte';
 	import { cn } from '$lib/components/ui/utils';
 
 	interface Props {

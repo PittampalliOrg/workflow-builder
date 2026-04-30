@@ -48,7 +48,7 @@
 		Plus,
 		Hammer,
 		FileCode2
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type {
 		CmaPackages,
 		EnvironmentConfig,

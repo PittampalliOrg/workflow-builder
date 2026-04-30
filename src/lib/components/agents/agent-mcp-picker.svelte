@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { KeyRound, Loader2, Plug, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
+	import { KeyRound, Loader2, Plug, Plus, RefreshCw, Trash2 } from '@lucide/svelte';
 	import type { McpServerProfileConfig } from '$lib/server/agent-profiles';
 	import type { VaultCredentialSummary, VaultSummary } from '$lib/types/vaults';
 

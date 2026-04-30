@@ -5,7 +5,7 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Info, RefreshCw } from 'lucide-svelte';
+	import { Info, RefreshCw } from '@lucide/svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
 

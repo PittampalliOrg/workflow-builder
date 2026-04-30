@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
-	import Search from 'lucide-svelte/icons/search';
+	import Search from '@lucide/svelte/icons/search';
 	import { getDisplayPath, parseGrepOutput } from './tool-utils';
 
 	interface Props {

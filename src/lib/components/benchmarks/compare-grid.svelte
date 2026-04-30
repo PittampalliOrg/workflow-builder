@@ -9,7 +9,7 @@
 		Check,
 		AlertTriangle,
 		Loader2
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import { formatTokens, formatDuration, isActiveRunStatus } from './run-status-helpers';
 	import type { CompareData, InstanceCell, RunConfigSummary } from '$lib/server/benchmarks/comparison';

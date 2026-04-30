@@ -1,10 +1,11 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import { building } from '$app/environment';
 import { env } from '$env/dynamic/private';
 
 const connectionString = env.DATABASE_URL;
 
-if (!connectionString) {
+if (!connectionString && !building) {
 	console.warn('[DB] DATABASE_URL not set — database queries will fail');
 }
 

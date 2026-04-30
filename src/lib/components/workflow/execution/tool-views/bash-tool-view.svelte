@@ -2,7 +2,7 @@
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import SandboxCodeViewer from '$lib/components/sandbox/sandbox-code-viewer.svelte';
 	import { Badge } from '$lib/components/ui/badge';
-	import Terminal from 'lucide-svelte/icons/terminal';
+	import Terminal from '@lucide/svelte/icons/terminal';
 	import { truncateCommand, extractExitCode, truncateLines, MAX_OUTPUT_COLLAPSED_LINES } from './tool-utils';
 
 	interface Props {

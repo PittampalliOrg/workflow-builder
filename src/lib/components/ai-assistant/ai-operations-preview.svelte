@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Check, X, FileCode, AlertTriangle, Wand2 } from 'lucide-svelte';
+	import { Check, X, FileCode, AlertTriangle, Wand2 } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { AiAssistantOperationResult, createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
 

@@ -14,7 +14,7 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { ArrowLeft, PlayCircle } from 'lucide-svelte';
+	import { ArrowLeft, PlayCircle } from '@lucide/svelte';
 	import type { AgentSummary } from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
 	import type { VaultSummary } from '$lib/types/vaults';

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Play } from 'lucide-svelte';
+	import { Play } from '@lucide/svelte';
 	import BaseSWNode from '../base-sw-node.svelte';
 	import type { PortConfig } from '$lib/types/workflow-handles';
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
-	import { GitBranch } from 'lucide-svelte';
+	import { GitBranch } from '@lucide/svelte';
 	import type { WorkflowNodeData } from '$lib/stores/workflow.svelte';
 
 	interface Props {

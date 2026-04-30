@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Plus, Trash2 } from 'lucide-svelte';
+	import { Plus, Trash2 } from '@lucide/svelte';
 	import GraderPickerDialog from './grader-picker-dialog.svelte';
 	import StringCheckForm from './string-check-form.svelte';
 	import TextSimilarityForm from './text-similarity-form.svelte';

@@ -7,7 +7,7 @@
 		X, Check, Loader2, CheckCircle2, XCircle, Clock,
 		ChevronDown, ChevronRight, ExternalLink, RefreshCw,
 		Wrench, MessageSquare, Monitor, Terminal, Brain, Bot, Zap
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Card } from '$lib/components/ui/card';
 	import { formatDistanceToNow } from 'date-fns';

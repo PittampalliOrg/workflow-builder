@@ -16,7 +16,7 @@
 		StopCircle,
 		Trash2,
 		XCircle
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import {

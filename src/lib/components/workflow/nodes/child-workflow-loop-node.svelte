@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Wrench } from 'lucide-svelte';
+	import { Wrench } from '@lucide/svelte';
 	import type { WorkflowNodeData } from '$lib/stores/workflow.svelte';
 
 	interface Props {

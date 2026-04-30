@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { CheckCircle2, CircleAlert, ExternalLink, Hammer } from "lucide-svelte";
+	import { CheckCircle2, CircleAlert, ExternalLink, Hammer } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { ENVIRONMENTS, type EnvCell, type ServiceRow } from "$lib/gitops/service-matrix";

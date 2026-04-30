@@ -36,7 +36,7 @@
 		Search,
 		RefreshCw,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { createSandboxListStream } from '$lib/stores/sandbox-stream.svelte';
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';
 	import SandboxPreviewPopover from '$lib/components/sandbox/sandbox-preview-popover.svelte';

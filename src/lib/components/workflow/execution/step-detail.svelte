@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { CheckCircle2, XCircle, Loader2, Circle } from 'lucide-svelte';
+	import { CheckCircle2, XCircle, Loader2, Circle } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import JsonViewer from './json-viewer.svelte';
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { GitBranch } from 'lucide-svelte';
+	import { GitBranch } from '@lucide/svelte';
 	import BaseSWNode from '../base-sw-node.svelte';
 	import type { PortConfig } from '$lib/types/workflow-handles';
 

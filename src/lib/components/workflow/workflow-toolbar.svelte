@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
-	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked, FilePlus, FileCode2 } from 'lucide-svelte';
+	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked, FilePlus, FileCode2 } from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';

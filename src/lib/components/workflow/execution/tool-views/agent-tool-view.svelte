@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import { cn } from '$lib/components/ui/utils';
-	import Bot from 'lucide-svelte/icons/bot';
+	import Bot from '@lucide/svelte/icons/bot';
 	import { getAgentColor, truncateSummary, firstLine } from './tool-utils';
 
 	interface Props {

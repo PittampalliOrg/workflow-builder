@@ -7,7 +7,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
-	import { ChevronsUpDown, Check, FileText, ArrowRight } from 'lucide-svelte';
+	import { ChevronsUpDown, Check, FileText, ArrowRight } from '@lucide/svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Command from '$lib/components/ui/command';
 	import { Button } from '$lib/components/ui/button';

@@ -16,7 +16,7 @@
 		step3Valid,
 		type WizardPreset
 	} from '$lib/components/evaluations/wizard/wizard-store.svelte';
-	import { ArrowLeft } from 'lucide-svelte';
+	import { ArrowLeft } from '@lucide/svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 	const presetParam = $derived(page.url.searchParams.get('preset') as WizardPreset);

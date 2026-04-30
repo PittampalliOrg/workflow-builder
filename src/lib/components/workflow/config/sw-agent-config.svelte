@@ -13,7 +13,7 @@
 		CollapsibleContent,
 		CollapsibleTrigger
 	} from '$lib/components/ui/collapsible';
-	import { ChevronDown, ChevronRight, ExternalLink, Plus } from 'lucide-svelte';
+	import { ChevronDown, ChevronRight, ExternalLink, Plus } from '@lucide/svelte';
 	import { normalizeAgentTaskConfig } from '$lib/types/agent-graph';
 	import type { AgentSummary } from '$lib/types/agents';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';

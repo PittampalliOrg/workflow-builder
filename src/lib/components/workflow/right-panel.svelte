@@ -5,7 +5,7 @@
 	 */
 	import { getContext } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { PanelRightClose, Settings2, Code2, Sparkles, Play } from 'lucide-svelte';
+	import { PanelRightClose, Settings2, Code2, Sparkles, Play } from '@lucide/svelte';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';

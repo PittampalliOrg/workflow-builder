@@ -12,7 +12,7 @@
 		ObservabilityLlmSpan,
 		ObservabilityLlmMessage
 	} from '$lib/types/observability';
-	import { Bot, User, Wrench, ChevronDown, ChevronRight, Terminal } from 'lucide-svelte';
+	import { Bot, User, Wrench, ChevronDown, ChevronRight, Terminal } from '@lucide/svelte';
 
 	interface Props {
 		decisions: ObservabilityAgentDecisionTurn[];

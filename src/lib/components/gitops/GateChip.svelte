@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ArrowRight, Check, CircleAlert, CircleHelp, Clock3 } from "lucide-svelte";
+	import { ArrowRight, Check, CircleAlert, CircleHelp, Clock3 } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import type { GateState } from "$lib/gitops/gates";

@@ -9,7 +9,7 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { Shield, Lock, Clock, FileCheck2, ExternalLink } from 'lucide-svelte';
+	import { Shield, Lock, Clock, FileCheck2, ExternalLink } from '@lucide/svelte';
 
 	type AuditEvent = {
 		id: string;

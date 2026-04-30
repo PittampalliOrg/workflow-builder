@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Copy, Check, ChevronDown, ChevronRight } from 'lucide-svelte';
+	import { Copy, Check, ChevronDown, ChevronRight } from '@lucide/svelte';
 
 
 	interface Props {

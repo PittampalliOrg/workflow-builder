@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { OctagonAlert } from 'lucide-svelte';
+	import { OctagonAlert } from '@lucide/svelte';
 	import BaseSWNode from '../base-sw-node.svelte';
 	import type { PortConfig } from '$lib/types/workflow-handles';
 

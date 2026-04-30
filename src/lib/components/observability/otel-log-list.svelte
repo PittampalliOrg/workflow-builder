@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { Loader2, CircleAlert, ChevronDown, ChevronRight } from 'lucide-svelte';
+	import { Loader2, CircleAlert, ChevronDown, ChevronRight } from '@lucide/svelte';
 
 	export interface ObservabilityLogEntry {
 		timestamp: string;

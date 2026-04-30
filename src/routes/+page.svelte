@@ -3,7 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
-	import { Rocket, Sparkles, Key, MessageSquare, ExternalLink, LifeBuoy, Activity } from 'lucide-svelte';
+	import { Rocket, Sparkles, Key, MessageSquare, ExternalLink, LifeBuoy, Activity } from '@lucide/svelte';
 
 	type RecentSession = {
 		id: string;

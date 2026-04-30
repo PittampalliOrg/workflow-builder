@@ -24,7 +24,7 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Copy, DollarSign, Key, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
+	import { Copy, DollarSign, Key, Plus, RefreshCw, Trash2 } from '@lucide/svelte';
 
 	type ApiKeyRow = {
 		id: string;

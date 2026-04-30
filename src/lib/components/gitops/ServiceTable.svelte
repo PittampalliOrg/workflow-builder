@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AlertTriangle, CheckCircle2, Circle, CircleSlash } from "lucide-svelte";
+	import { AlertTriangle, CheckCircle2, Circle, CircleSlash } from "@lucide/svelte";
 
 	import { summarizeRow, type ServiceRow } from "$lib/gitops/service-matrix";
 	import { relativeTime } from "$lib/utils/gitops-display";

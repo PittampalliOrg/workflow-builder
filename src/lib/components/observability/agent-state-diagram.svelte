@@ -5,7 +5,7 @@
 		ObservabilityAgentDecisionDiagramEdge,
 		ObservabilityAgentDecisionDiagramNode
 	} from '$lib/types/observability';
-	import { ArrowRight, Circle, Flag, GitBranch, OctagonPause, TriangleAlert, Wrench } from 'lucide-svelte';
+	import { ArrowRight, Circle, Flag, GitBranch, OctagonPause, TriangleAlert, Wrench } from '@lucide/svelte';
 
 	interface Props {
 		diagram: ObservabilityAgentDecisionDiagram | null;

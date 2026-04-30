@@ -24,6 +24,11 @@
 			evaluationStatus: string;
 			modelPatch: string | null;
 			patchBytes: number | null;
+			patchAddedLines: number | null;
+			patchRemovedLines: number | null;
+			patchFilesTouched: number | null;
+			patchFilesOverlapGold: number | null;
+			patchWellFormed: boolean | null;
 			testOutputSummary: string | null;
 			usage: Record<string, unknown> | null;
 			timings: Record<string, unknown> | null;
@@ -50,6 +55,11 @@
 			metadata: Record<string, unknown> | null;
 		};
 		goldPatch: string | null;
+		goldPatchStats: {
+			addedLines: number;
+			removedLines: number;
+			filesTouched: number;
+		};
 		parsedHarness: ParsedHarnessResult;
 	};
 
@@ -419,6 +429,69 @@
 									</div>
 								</div>
 							</div>
+
+							<section>
+								<h4 class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+									Patch vs gold
+								</h4>
+								<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+									<div class="rounded-md border border-border p-3">
+										<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+											Added
+										</div>
+										<div class="mt-1 text-sm font-semibold tabular-nums">
+											<span class="text-emerald-600 dark:text-emerald-400">
+												+{detail.runInstance.patchAddedLines ?? '—'}
+											</span>
+											<span class="ml-1 text-[10px] text-muted-foreground">
+												/ +{detail.goldPatchStats.addedLines} gold
+											</span>
+										</div>
+									</div>
+									<div class="rounded-md border border-border p-3">
+										<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+											Removed
+										</div>
+										<div class="mt-1 text-sm font-semibold tabular-nums">
+											<span class="text-red-600 dark:text-red-400">
+												-{detail.runInstance.patchRemovedLines ?? '—'}
+											</span>
+											<span class="ml-1 text-[10px] text-muted-foreground">
+												/ -{detail.goldPatchStats.removedLines} gold
+											</span>
+										</div>
+									</div>
+									<div class="rounded-md border border-border p-3">
+										<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+											Files touched
+										</div>
+										<div class="mt-1 text-sm font-semibold tabular-nums">
+											{detail.runInstance.patchFilesTouched ?? '—'}
+											<span class="ml-1 text-[10px] text-muted-foreground">
+												{#if detail.runInstance.patchFilesOverlapGold !== null}
+													({detail.runInstance.patchFilesOverlapGold} / {detail.goldPatchStats.filesTouched} overlap)
+												{:else}
+													/ {detail.goldPatchStats.filesTouched} gold
+												{/if}
+											</span>
+										</div>
+									</div>
+									<div class="rounded-md border border-border p-3">
+										<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+											Well-formed
+										</div>
+										<div class="mt-1 text-sm font-semibold tabular-nums">
+											{#if detail.runInstance.patchWellFormed === true}
+												<span class="text-emerald-600 dark:text-emerald-400">✓ yes</span>
+											{:else if detail.runInstance.patchWellFormed === false}
+												<span class="text-red-600 dark:text-red-400">✗ no</span>
+											{:else}
+												<span class="text-muted-foreground">—</span>
+											{/if}
+										</div>
+									</div>
+								</div>
+							</section>
 
 							{#if detail.parsedHarness.failToPass.failure.length > 0}
 								<section>

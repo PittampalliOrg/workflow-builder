@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Loader2, Plus, RefreshCw, X } from 'lucide-svelte';
+	import { Loader2, Plus, RefreshCw, X } from '@lucide/svelte';
 	import type { AgentSkillConfig } from '$lib/agent-skill-presets';
 
 	interface Props {

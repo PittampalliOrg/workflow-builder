@@ -2,8 +2,8 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Avatar from '$lib/components/ui/avatar';
 	import * as Card from '$lib/components/ui/card';
-	import { Blocks } from 'lucide-svelte';
-	import ResourceAwareSchemaConfig from './resource-aware-schema-config.svelte';
+	import { Blocks } from '@lucide/svelte';
+	import ResourceAwareSchemaConfig from './lazy-resource-aware-schema-config.svelte';
 
 	interface Props {
 		catalogFunction: { name: string; displayName: string; pieceName: string; actionName: string };

@@ -17,7 +17,7 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { ArrowRight, Copy, FileUp, Plus, Sparkles, Trash2 } from 'lucide-svelte';
+	import { ArrowRight, Copy, FileUp, Plus, Sparkles, Trash2 } from '@lucide/svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
 	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';

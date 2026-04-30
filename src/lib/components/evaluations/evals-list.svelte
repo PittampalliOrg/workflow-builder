@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import ResourceListShell from '$lib/components/console/resource-list-shell.svelte';
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
-	import { FlaskConical } from 'lucide-svelte';
+	import { FlaskConical } from '@lucide/svelte';
 
 	type RunStatus = 'queued' | 'running' | 'grading' | 'completed' | 'failed' | 'cancelled';
 

@@ -5,7 +5,7 @@
 		CircleSlash,
 		HardDrive,
 		Package,
-	} from "lucide-svelte";
+	} from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import type { EnvCell, EnvName, SpecialCase } from "$lib/gitops/service-matrix";

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Loader2, RefreshCw } from 'lucide-svelte';
+	import { Loader2, RefreshCw } from '@lucide/svelte';
 	import { Label } from '$lib/components/ui/label';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';

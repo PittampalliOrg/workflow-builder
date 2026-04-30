@@ -18,7 +18,7 @@
 	import TraceConsole from '$lib/components/observability/trace-console.svelte';
 	import CorrelatedLogPane from '$lib/components/observability/correlated-log-pane.svelte';
 	import SpanEvidencePanel from '$lib/components/observability/span-evidence-panel.svelte';
-	import { AlertTriangle, Bot, ChevronDown, ChevronRight, ExternalLink, RefreshCcw, Wrench } from 'lucide-svelte';
+	import { AlertTriangle, Bot, ChevronDown, ChevronRight, ExternalLink, RefreshCcw, Wrench } from '@lucide/svelte';
 
 	interface Props {
 		payload: ObservabilityInvestigationPayload | null;

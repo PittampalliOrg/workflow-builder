@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import type { Snippet } from 'svelte';
-	import { Users, Shield, Settings as SettingsIcon } from 'lucide-svelte';
+	import { Users, Shield, Settings as SettingsIcon } from '@lucide/svelte';
 
 	interface Props {
 		children: Snippet;

@@ -3,7 +3,7 @@
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
 	import JsonView from './json-view.svelte';
-	import { Check, Clock, Copy, Download, ExternalLink, Loader2, X } from 'lucide-svelte';
+	import { Check, Clock, Copy, Download, ExternalLink, Loader2, X } from '@lucide/svelte';
 
 	interface Props {
 		event: SessionEventEnvelope;

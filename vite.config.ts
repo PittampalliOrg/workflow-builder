@@ -49,6 +49,6 @@ export default defineConfig({
 		allowedHosts: true
 	},
 	ssr: {
-		noExternal: ['@lucide/svelte', 'nats']
+		noExternal: ['nats']
 	}
 });

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
-	import { GitCompare } from 'lucide-svelte';
+	import { GitCompare } from '@lucide/svelte';
 	import type { AxisDiff, AxisName, RunConfigSummary } from '$lib/server/benchmarks/comparison';
 
 	type Props = {

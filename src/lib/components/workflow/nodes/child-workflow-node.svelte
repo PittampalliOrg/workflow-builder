@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
-	import { Wrench, IterationCcw, CheckCircle2, XCircle, Loader2 } from 'lucide-svelte';
+	import { Wrench, IterationCcw, CheckCircle2, XCircle, Loader2 } from '@lucide/svelte';
 	import type { WorkflowNodeData } from '$lib/stores/workflow.svelte';
 
 	interface Props {

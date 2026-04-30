@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Plus, X } from 'lucide-svelte';
+	import { Plus, X } from '@lucide/svelte';
 	import SandboxTerminal from './sandbox-terminal.svelte';
 
 	interface Props {

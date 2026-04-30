@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { CheckCircle2, Circle, Clock, AlertTriangle } from 'lucide-svelte';
+	import { CheckCircle2, Circle, Clock, AlertTriangle } from '@lucide/svelte';
 	import { page } from '$app/state';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
 

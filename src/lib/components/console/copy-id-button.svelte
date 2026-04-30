@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Copy } from 'lucide-svelte';
+	import { Check, Copy } from '@lucide/svelte';
 
 	interface Props {
 		/** Full id to copy; display is truncated. */

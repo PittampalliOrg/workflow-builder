@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { Button } from '$lib/components/ui/button';
-	import { FlaskConical } from 'lucide-svelte';
+	import { FlaskConical } from '@lucide/svelte';
 	import InstanceTable from '$lib/components/benchmarks/instance-table.svelte';
 	import LaunchRunSheet from '$lib/components/benchmarks/launch-run-sheet.svelte';
 	import InstanceDetailDrawer from '$lib/components/benchmarks/instance-detail-drawer.svelte';

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
-	import { AlertTriangle, CheckCircle2, CircleDashed, Loader2 } from 'lucide-svelte';
+	import { AlertTriangle, CheckCircle2, CircleDashed, Loader2 } from '@lucide/svelte';
 	import type { AgentRegistryStatus } from '$lib/types/agents';
 
 	interface Props {

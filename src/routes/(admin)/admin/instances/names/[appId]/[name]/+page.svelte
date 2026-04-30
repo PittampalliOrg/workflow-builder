@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ArrowLeft, Check, Copy, Filter, Loader2, Play, RefreshCw, RotateCcw } from 'lucide-svelte';
+	import { ArrowLeft, Check, Copy, Filter, Loader2, Play, RefreshCw, RotateCcw } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import {

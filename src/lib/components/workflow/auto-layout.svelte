@@ -8,7 +8,7 @@
 		Loader2,
 		Minus,
 		Plus
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import {
 		LAYOUT_PRESETS,

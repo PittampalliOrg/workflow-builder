@@ -12,7 +12,7 @@ const config = {
 		}
 	},
 	kit: {
-		adapter: adapter(),
+		adapter: adapter({ precompress: false }),
 		experimental: {
 			remoteFunctions: true,
 			tracing: {

@@ -2854,6 +2854,11 @@ export const benchmarkRunInstances = pgTable(
 		logsPath: text("logs_path"),
 		testOutputSummary: text("test_output_summary"),
 		harnessResult: jsonb("harness_result").$type<Record<string, unknown>>(),
+		patchAddedLines: integer("patch_added_lines"),
+		patchRemovedLines: integer("patch_removed_lines"),
+		patchFilesTouched: integer("patch_files_touched"),
+		patchFilesOverlapGold: integer("patch_files_overlap_gold"),
+		patchWellFormed: boolean("patch_well_formed"),
 		inferenceEnvironment: jsonb("inference_environment")
 			.$type<Record<string, unknown>>()
 			.notNull()

@@ -6,7 +6,7 @@
 		CollapsibleContent,
 		CollapsibleTrigger
 	} from '$lib/components/ui/collapsible';
-	import { Check, ChevronDown, ChevronRight, Copy, Package, Puzzle, Shield } from 'lucide-svelte';
+	import { Check, ChevronDown, ChevronRight, Copy, Package, Puzzle, Shield } from '@lucide/svelte';
 	import type { AgentDetail } from '$lib/types/agents';
 
 	interface Props {

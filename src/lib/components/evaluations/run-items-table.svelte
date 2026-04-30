@@ -4,7 +4,7 @@
 		AlertCircle,
 		CheckCircle2,
 		XCircle
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import type { RunDetail, RunItem, GraderResult, ItemStatus } from './types';
 
 	interface Props {

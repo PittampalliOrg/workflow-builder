@@ -2,7 +2,7 @@
 	import { getContext, onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
-	import { Info, ChevronDown, ChevronRight, Plug, Zap, Trash2 } from 'lucide-svelte';
+	import { Info, ChevronDown, ChevronRight, Plug, Zap, Trash2 } from '@lucide/svelte';
 	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';

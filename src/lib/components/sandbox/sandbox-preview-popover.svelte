@@ -2,7 +2,7 @@
 	import * as Popover from '$lib/components/ui/popover';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Terminal, Trash2, ExternalLink, Loader2, Play } from 'lucide-svelte';
+	import { Terminal, Trash2, ExternalLink, Loader2, Play } from '@lucide/svelte';
 	import SandboxPhaseBadge from './sandbox-phase-badge.svelte';
 	import type { Sandbox } from '$lib/types/sandbox';
 

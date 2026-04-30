@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { MessageCircle, X } from 'lucide-svelte';
+	import { MessageCircle, X } from '@lucide/svelte';
 
 	/**
 	 * Bottom-right sticky feedback chip, matches CMA's "Claude is active in this

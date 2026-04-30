@@ -10,7 +10,7 @@
 	import RunItemsTable from '$lib/components/evaluations/run-items-table.svelte';
 	import RunInspectDrawer from '$lib/components/evaluations/run-inspect-drawer.svelte';
 	import type { RunDetail, RunItem } from '$lib/components/evaluations/types';
-	import { ArrowLeft, Download, RefreshCw, StopCircle } from 'lucide-svelte';
+	import { ArrowLeft, Download, RefreshCw, StopCircle } from '@lucide/svelte';
 
 	type RunStatus = RunDetail['status'];
 

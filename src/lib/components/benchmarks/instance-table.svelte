@@ -38,7 +38,7 @@
 		Search,
 		Sparkles,
 		X
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import MultiSelectCommand from './multi-select-command.svelte';
 	import type {
 		BenchmarkInstanceRow,

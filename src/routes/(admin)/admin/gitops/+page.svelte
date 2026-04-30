@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount, untrack } from "svelte";
-	import { AlertTriangle, GitBranch, GitCommit, Github, RefreshCw } from "lucide-svelte";
+	import { AlertTriangle, GitBranch, GitCommit, RefreshCw } from "@lucide/svelte";
 
 	import { browser } from "$app/environment";
 	import { goto } from "$app/navigation";
@@ -217,7 +217,7 @@
 						target="_blank"
 						rel="noreferrer"
 					>
-						<Github class="size-3" />
+						<GitBranch class="size-3" />
 						stacks/main <span class="font-mono">{stacksShortSha}</span>
 					</a>
 				{/if}

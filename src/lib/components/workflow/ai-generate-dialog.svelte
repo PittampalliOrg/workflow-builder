@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { DEFAULT_WORKSPACE_SLUG } from '$lib/utils/workspace-path';
-	import { Loader2 } from 'lucide-svelte';
+	import { Loader2 } from '@lucide/svelte';
 	import {
 		Dialog,
 		DialogContent,

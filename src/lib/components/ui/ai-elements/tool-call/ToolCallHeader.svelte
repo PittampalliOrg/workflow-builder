@@ -2,12 +2,12 @@
 	import { CollapsibleTrigger } from "$lib/components/ui/collapsible/index.js";
 	import { Badge } from "$lib/components/ui/badge/index.js";
 	import { cn } from "$lib/components/ui/utils";
-	import CheckCircle from "lucide-svelte/icons/check-circle-2";
-	import ChevronDown from "lucide-svelte/icons/chevron-down";
-	import Circle from "lucide-svelte/icons/circle";
-	import Clock from "lucide-svelte/icons/clock";
-	import XCircle from "lucide-svelte/icons/x-circle";
-	import Wrench from "lucide-svelte/icons/wrench";
+	import CheckCircle from "@lucide/svelte/icons/check-circle-2";
+	import ChevronDown from "@lucide/svelte/icons/chevron-down";
+	import Circle from "@lucide/svelte/icons/circle";
+	import Clock from "@lucide/svelte/icons/clock";
+	import XCircle from "@lucide/svelte/icons/x-circle";
+	import Wrench from "@lucide/svelte/icons/wrench";
 
 	type ToolCallState = "running" | "completed" | "error" | "pending";
 

@@ -2,7 +2,13 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 RUN npm install -g pnpm@10
 COPY package.json pnpm-lock.yaml .npmrc ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+FROM node:22-alpine AS prod-deps
+WORKDIR /app
+RUN npm install -g pnpm@10
+COPY package.json pnpm-lock.yaml .npmrc ./
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
 FROM node:22-alpine AS builder
 WORKDIR /app
@@ -14,7 +20,7 @@ COPY drizzle ./drizzle
 COPY src ./src
 COPY static ./static
 ENV NODE_ENV=production
-RUN pnpm build
+RUN pnpm build && find build -name '*.map' -type f -delete
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -24,7 +30,7 @@ RUN addgroup -S nodejs && adduser -S sveltekit -G nodejs
 COPY --from=builder --chown=sveltekit:nodejs /app/build ./build
 COPY --from=builder --chown=sveltekit:nodejs /app/server-prod.js ./
 COPY --from=builder --chown=sveltekit:nodejs /app/package.json ./
-COPY --from=builder --chown=sveltekit:nodejs /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=sveltekit:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle.config.ts ./
 USER sveltekit

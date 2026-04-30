@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AlertTriangle } from "lucide-svelte";
+	import { AlertTriangle } from "@lucide/svelte";
 
 	import { Button } from "$lib/components/ui/button";
 	import { ENVIRONMENTS, type ServiceRow } from "$lib/gitops/service-matrix";

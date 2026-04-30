@@ -3,7 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
-	import { Copy, Check, ExternalLink, Loader2 } from 'lucide-svelte';
+	import { Copy, Check, ExternalLink, Loader2 } from '@lucide/svelte';
 
 	type InstanceDetail = {
 		id: string;

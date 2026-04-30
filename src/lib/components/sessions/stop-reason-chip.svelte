@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
-	import { Check, HandIcon, AlertTriangle } from 'lucide-svelte';
+	import { Check, HandIcon, AlertTriangle } from '@lucide/svelte';
 	import type { SessionStopReason } from '$lib/types/sessions';
 
 	interface Props {

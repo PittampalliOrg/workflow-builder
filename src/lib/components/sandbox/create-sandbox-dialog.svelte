@@ -4,7 +4,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Switch } from '$lib/components/ui/switch';
-	import { Loader2, Plus, X } from 'lucide-svelte';
+	import { Loader2, Plus, X } from '@lucide/svelte';
 
 	interface SandboxDefaults {
 		name?: string;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { Badge } from '$lib/components/ui/badge';
-	import { CheckCircle2, XCircle, Loader2, Clock, Copy, Check, ExternalLink } from 'lucide-svelte';
+	import { CheckCircle2, XCircle, Loader2, Clock, Copy, Check, ExternalLink } from '@lucide/svelte';
 
 	interface Props {
 		status: string;

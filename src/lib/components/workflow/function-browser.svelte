@@ -4,7 +4,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Select from '$lib/components/ui/select';
 	import * as Avatar from '$lib/components/ui/avatar';
-	import { Loader2, Search, Blocks, Code2, Workflow, Activity } from 'lucide-svelte';
+	import { Loader2, Search, Blocks, Code2, Workflow, Activity } from '@lucide/svelte';
 	import { createActionCatalogStore, type ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
 
 	interface Props {

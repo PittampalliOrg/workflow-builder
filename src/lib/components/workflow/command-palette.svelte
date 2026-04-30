@@ -7,7 +7,7 @@
 	import {
 		Play, Square, Globe, Variable, GitBranch, Clock, Send, Headphones,
 		Repeat, GitFork, Shield, Zap, OctagonAlert, Layers, Search, Bot
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import { createActionCatalogStore, type ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
 	import type { createWorkflowStore, WorkflowNodeType } from '$lib/stores/workflow.svelte';
 	import {

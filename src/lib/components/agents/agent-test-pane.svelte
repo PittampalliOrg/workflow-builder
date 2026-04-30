@@ -13,7 +13,7 @@
 		Square,
 		Terminal,
 		Wrench
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import {
 		createSessionStream,
 		type SessionStreamStore
