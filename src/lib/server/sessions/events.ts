@@ -131,6 +131,16 @@ export async function appendEvent(
 					(event.data ?? {}) as Record<string, unknown>,
 				);
 			}
+			// Phase B (corrected): the metrics_summary emit from dapr-agent-py
+			// is unreliable because agent_workflow's finally block fires on every
+			// Dapr replay tick — it captures mid-flight counter snapshots and
+			// pops the dict, so peaks are never preserved. The truthful counts
+			// live in session_events itself: each agent.llm_usage = one turn,
+			// each agent.tool_use = one tool call. Aggregate from there at
+			// session-terminal time (single, deterministic).
+			if (event.type === "session.status_terminated") {
+				await aggregateBenchmarkLifecycleFromSessionEvents(sessionId);
+			}
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence should be rare with the advisory lock,
@@ -331,6 +341,74 @@ async function applyInstanceMetricsSummaryToBenchmark(
 	} catch (err) {
 		console.warn(
 			"[bench-metrics] applyInstanceMetricsSummaryToBenchmark failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
+/**
+ * Aggregate Phase B lifecycle metrics from raw session_events at
+ * session-terminal time. This is the source of truth — Python's
+ * in-memory counters are unreliable across Dapr replay ticks, but
+ * the raw events are durable and exact (each agent.llm_usage = 1 turn,
+ * each agent.tool_use = 1 tool call, grouped by name = histogram).
+ *
+ * Termination reason precedence:
+ *   1. agent.circuit_breaker_tripped → specific reason from event payload
+ *   2. session.status_errored → 'agent_error'
+ *   3. session.turn_timeout → 'session_turn_timeout'
+ *   4. session.status_idle.stop_reason.type == 'max_iters' → 'max_iters'
+ *   5. otherwise → 'end_turn'
+ */
+async function aggregateBenchmarkLifecycleFromSessionEvents(
+	sessionId: string,
+): Promise<void> {
+	if (!db) return;
+	try {
+		await db.execute(sql`
+			WITH counts AS (
+				SELECT
+					(SELECT COUNT(*) FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage')::int AS turns,
+					(SELECT COUNT(*) FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.tool_use')::int AS tools,
+					(SELECT (data->>'ttft_ms')::float FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id ASC LIMIT 1) AS ttft_first,
+					(SELECT EXTRACT(EPOCH FROM (e.created_at - (SELECT MIN(created_at) FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage'))) * 1000 FROM session_events e WHERE e.session_id = ${sessionId} AND e.type = 'agent.tool_use' ORDER BY e.id ASC LIMIT 1) AS ttft_first_tool_seconds_ms
+			), histogram AS (
+				SELECT COALESCE(jsonb_object_agg(tool, n), '{}'::jsonb) AS hist
+				FROM (
+					SELECT data->>'name' AS tool, COUNT(*)::int AS n
+					FROM session_events
+					WHERE session_id = ${sessionId} AND type = 'agent.tool_use' AND data->>'name' IS NOT NULL
+					GROUP BY tool
+				) t
+			), reason AS (
+				SELECT CASE
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.circuit_breaker_tripped' AND data->>'reason' = 'empty_response_content')
+						THEN 'circuit_breaker_empty'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.circuit_breaker_tripped' AND data->>'reason' = 'llm_exception')
+						THEN 'circuit_breaker_failure'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.turn_timeout')
+						THEN 'session_turn_timeout'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.status_errored')
+						THEN 'agent_error'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.status_idle' AND data->'stop_reason'->>'type' = 'max_iters')
+						THEN 'max_iters'
+					ELSE 'end_turn'
+				END AS r
+			)
+			UPDATE benchmark_run_instances bri
+			SET turn_count = counts.turns,
+				tool_call_count = counts.tools,
+				tool_histogram = histogram.hist,
+				termination_reason = reason.r,
+				ttft_first_ms = COALESCE(ROUND(counts.ttft_first)::int, bri.ttft_first_ms),
+				ttft_first_tool_ms = COALESCE(ROUND(counts.ttft_first_tool_seconds_ms)::int, bri.ttft_first_tool_ms),
+				updated_at = NOW()
+			FROM counts, histogram, reason
+			WHERE bri.session_id = ${sessionId}
+		`);
+	} catch (err) {
+		console.warn(
+			"[bench-metrics] aggregateBenchmarkLifecycleFromSessionEvents failed",
 			(err as Error)?.message ?? err,
 		);
 	}
