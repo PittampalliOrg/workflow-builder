@@ -4,7 +4,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
-	import { Bot, Check, Copy, ExternalLink, FileDiff, Loader2 } from 'lucide-svelte';
+	import { Bot, Check, Copy, ExternalLink, FileDiff, Loader2 } from '@lucide/svelte';
 	import RenderedPatch from './rendered-patch.svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import {
