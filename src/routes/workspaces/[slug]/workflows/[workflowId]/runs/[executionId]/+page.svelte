@@ -49,6 +49,7 @@
 		List as ListIcon
 	} from '@lucide/svelte';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
+	import RunGauges from '$lib/components/runs/run-gauges.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';
 	import { Button } from '$lib/components/ui/button';
@@ -1887,6 +1888,8 @@
 			{/if}
 		</div>
 	</header>
+
+	<RunGauges state={executionState} />
 
 	<!-- Body: Other Runs panel on the left (collapsible), tabbed content on the right. -->
 	<div class="flex flex-1 overflow-hidden">

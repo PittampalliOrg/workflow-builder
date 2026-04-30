@@ -1497,10 +1497,24 @@ class OpenShellDurableAgent(DurableAgent):
         self._turn_count_by_instance[inst_id] = (
             self._turn_count_by_instance.get(inst_id, 0) + 1
         )
+        turn_count = self._turn_count_by_instance[inst_id]
         if inst_id not in self._first_token_at_by_instance:
             import time as _time
 
             self._first_token_at_by_instance[inst_id] = _time.monotonic()
+        try:
+            max_iters = (
+                self._max_iterations_by_instance.get(inst_id, 0)
+                or DEFAULT_MAX_ITERATIONS
+            )
+            publish_session_event(
+                sess_id,
+                "agent.iteration",
+                {"v": 1, "index": turn_count, "max": max_iters},
+                instance_id=inst_id,
+            )
+        except Exception:
+            pass
         try:
             publish_session_event(
                 sess_id, "llm_start", {"model": component}, instance_id=inst_id

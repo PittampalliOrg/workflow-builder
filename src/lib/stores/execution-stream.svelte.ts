@@ -5,6 +5,18 @@ import type {
 } from '$lib/types/execution-stream';
 import { eventToolName, eventType, mergeTimelineEvents } from '$lib/utils/execution-timeline';
 
+export interface TokenUsageTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheCreation: number;
+}
+
+export interface TokenRateSample {
+	ts: number;
+	totalDelta: number;
+}
+
 export interface ExecutionStreamState {
 	isConnected: boolean;
 	error: string | null;
@@ -14,6 +26,17 @@ export interface ExecutionStreamState {
 	currentPhase: string | null;
 	isLlmStreaming: boolean;
 	llmTokenBuffer: string;
+	/** Cumulative tokens this run, summed across every agent.llm_usage event. */
+	tokenUsage: TokenUsageTotals;
+	/** Last 30 s of (input+output) deltas, for rate gauges. */
+	tokenRateWindow: TokenRateSample[];
+	/** Latest model id reported by an agent.llm_usage event. */
+	currentModel: string | null;
+	/** Latest agent.iteration index/max. -1 = unset. */
+	iterationIndex: number;
+	iterationMax: number;
+	/** Number of agent.tool_use events seen this run. */
+	toolCallTotal: number;
 }
 
 export type ExecutionStreamStore = Readable<ExecutionStreamState> & {
@@ -29,7 +52,13 @@ export function createInitialExecutionStreamState(): ExecutionStreamState {
 		activeToolName: null,
 		currentPhase: null,
 		isLlmStreaming: false,
-		llmTokenBuffer: ''
+		llmTokenBuffer: '',
+		tokenUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+		tokenRateWindow: [],
+		currentModel: null,
+		iterationIndex: -1,
+		iterationMax: 0,
+		toolCallTotal: 0
 	};
 }
 
@@ -73,6 +102,12 @@ export function createExecutionStream(executionId: string) {
 			let activeToolName = state.activeToolName;
 			let isLlmStreaming = state.isLlmStreaming;
 			let llmTokenBuffer = state.llmTokenBuffer;
+			let tokenUsage = state.tokenUsage;
+			let tokenRateWindow = state.tokenRateWindow;
+			let currentModel = state.currentModel;
+			let iterationIndex = state.iterationIndex;
+			let iterationMax = state.iterationMax;
+			let toolCallTotal = state.toolCallTotal;
 			switch (eventType(event)) {
 				// Legacy vocabulary (pre-Tier-1). Kept for any non-dapr-agent-py
 				// path that still emits these.
@@ -105,6 +140,7 @@ export function createExecutionStream(executionId: string) {
 				case 'agent.mcp_tool_use':
 				case 'agent.custom_tool_use':
 					activeToolName = eventToolName(event) || activeToolName;
+					toolCallTotal = state.toolCallTotal + 1;
 					break;
 				case 'agent.tool_result':
 				case 'agent.mcp_tool_result':
@@ -122,10 +158,44 @@ export function createExecutionStream(executionId: string) {
 					break;
 				case 'agent.message':
 				case 'agent.thinking':
-				case 'agent.llm_usage':
 					isLlmStreaming = false;
 					llmTokenBuffer = '';
 					break;
+				case 'agent.llm_usage': {
+					isLlmStreaming = false;
+					llmTokenBuffer = '';
+					const d = event.data as Record<string, unknown>;
+					const inDelta = numericField(d, 'input_tokens');
+					const outDelta = numericField(d, 'output_tokens');
+					const cacheReadDelta = numericField(d, 'cache_read_input_tokens');
+					const cacheCreateDelta = numericField(d, 'cache_creation_input_tokens');
+					tokenUsage = {
+						input: state.tokenUsage.input + inDelta,
+						output: state.tokenUsage.output + outDelta,
+						cacheRead: state.tokenUsage.cacheRead + cacheReadDelta,
+						cacheCreation: state.tokenUsage.cacheCreation + cacheCreateDelta
+					};
+					if (typeof d.model === 'string' && d.model.trim()) {
+						currentModel = d.model;
+					}
+					const totalDelta = inDelta + outDelta;
+					if (totalDelta > 0) {
+						const ts = Date.now();
+						tokenRateWindow = [
+							...state.tokenRateWindow.filter((s) => ts - s.ts <= 30_000),
+							{ ts, totalDelta }
+						];
+					}
+					break;
+				}
+				case 'agent.iteration': {
+					const d = event.data as Record<string, unknown>;
+					const idx = numericField(d, 'index');
+					const max = numericField(d, 'max');
+					if (idx > 0) iterationIndex = idx;
+					if (max > 0) iterationMax = max;
+					break;
+				}
 			}
 
 			const currentPhase =
@@ -139,9 +209,25 @@ export function createExecutionStream(executionId: string) {
 				activeToolName,
 				currentPhase,
 				isLlmStreaming,
-				llmTokenBuffer: llmTokenBuffer.slice(-4000)
+				llmTokenBuffer: llmTokenBuffer.slice(-4000),
+				tokenUsage,
+				tokenRateWindow,
+				currentModel,
+				iterationIndex,
+				iterationMax,
+				toolCallTotal
 			};
 		});
+	}
+
+	function numericField(d: Record<string, unknown>, key: string): number {
+		const v = d[key];
+		if (typeof v === 'number' && Number.isFinite(v)) return v;
+		if (typeof v === 'string') {
+			const n = Number(v);
+			return Number.isFinite(n) ? n : 0;
+		}
+		return 0;
 	}
 
 	function mergeSnapshot(next: Partial<ExecutionReadModel>) {
