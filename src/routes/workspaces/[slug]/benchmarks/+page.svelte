@@ -681,7 +681,7 @@
 				</div>
 				<div class="space-y-2">
 					<Label for="max-turns">Max Turns</Label>
-					<Input id="max-turns" type="number" min="1" bind:value={maxTurns} />
+					<Input id="max-turns" type="number" min="5" bind:value={maxTurns} />
 				</div>
 			</div>
 

@@ -61,6 +61,8 @@ import { buildStableWorkspaceRef } from "./workspace-ref";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
+export const MIN_SWEBENCH_MAX_TURNS = 5;
+export const DEFAULT_SWEBENCH_MAX_TURNS = 80;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_PREPARED_REPO_PATH = "/testbed";
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
@@ -386,8 +388,13 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	);
 	const maxTurns =
 		input.maxTurns == null
-			? null
-			: clampInteger(input.maxTurns, 1, 1000, input.maxTurns);
+			? DEFAULT_SWEBENCH_MAX_TURNS
+			: clampInteger(
+					input.maxTurns,
+					MIN_SWEBENCH_MAX_TURNS,
+					1000,
+					input.maxTurns,
+				);
 	const evaluatorResourceClass =
 		input.evaluatorResourceClass?.trim() || "standard";
 	const modelNameOrPath =
