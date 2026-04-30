@@ -311,19 +311,18 @@ async function applyInstanceMetricsSummaryToBenchmark(
 		// Tool histogram: keep whichever has more entries (proxy for completeness).
 		await db.execute(sql`
 			UPDATE benchmark_run_instances
-			SET turn_count = GREATEST(COALESCE(turn_count, 0), COALESCE(${turnCount}, 0)),
-				tool_call_count = GREATEST(COALESCE(tool_call_count, 0), COALESCE(${toolCallCount}, 0)),
+			SET turn_count = GREATEST(COALESCE(turn_count, 0), COALESCE(${turnCount}, 0)::int),
+				tool_call_count = GREATEST(COALESCE(tool_call_count, 0), COALESCE(${toolCallCount}, 0)::int),
 				termination_reason = CASE
-					WHEN ${terminationReason} IS NULL THEN termination_reason
-					WHEN termination_reason IS NULL THEN ${terminationReason}
-					WHEN termination_reason = 'end_turn' AND ${terminationReason} != 'end_turn' THEN ${terminationReason}
+					WHEN ${terminationReason}::text IS NULL THEN termination_reason
+					WHEN termination_reason IS NULL THEN ${terminationReason}::text
+					WHEN termination_reason = 'end_turn' AND ${terminationReason}::text != 'end_turn' THEN ${terminationReason}::text
 					ELSE termination_reason
 				END,
-				ttft_first_ms = COALESCE(ttft_first_ms, ${ttftFirstMs}),
-				ttft_first_tool_ms = COALESCE(ttft_first_tool_ms, ${ttftFirstToolMs}),
+				ttft_first_ms = COALESCE(ttft_first_ms, ${ttftFirstMs}::int),
+				ttft_first_tool_ms = COALESCE(ttft_first_tool_ms, ${ttftFirstToolMs}::int),
 				tool_histogram = CASE
-					WHEN jsonb_array_length(jsonb_path_query_array(tool_histogram, '$.keyvalue()')) >= jsonb_array_length(jsonb_path_query_array(${JSON.stringify(histogram)}::jsonb, '$.keyvalue()'))
-					THEN tool_histogram
+					WHEN ${JSON.stringify(histogram)}::jsonb = '{}'::jsonb THEN tool_histogram
 					ELSE ${JSON.stringify(histogram)}::jsonb
 				END,
 				updated_at = NOW()
