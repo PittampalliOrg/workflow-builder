@@ -13,8 +13,26 @@
 		total: number;
 	};
 
+	type PodClass =
+		| 'agent-runtime'
+		| 'sandbox'
+		| 'workspace-runtime'
+		| 'workflow-orchestrator'
+		| 'workflow-builder'
+		| 'swebench'
+		| 'other';
+
+	type ResourceBucket = { count: number; cpuMillicores: number; memoryMiB: number };
+	type Resources = {
+		totalCpuMillicores: number;
+		totalMemoryMiB: number;
+		byClass: Record<PodClass, ResourceBucket>;
+		pods: Array<{ name: string; cpuMillicores: number; memoryMiB: number; class: PodClass }>;
+	} | null;
+
 	type Snapshot = {
 		ts: string;
+		resources: Resources;
 		workflows: {
 			running: number;
 			success: number;
@@ -67,6 +85,37 @@
 	});
 
 	const stamp = $derived(snapshot ? new Date(snapshot.ts).toLocaleTimeString() : '—');
+
+	function fmtCores(millicores: number): string {
+		const cores = millicores / 1000;
+		if (cores >= 10) return cores.toFixed(0);
+		return cores.toFixed(2);
+	}
+
+	function fmtMem(mib: number): string {
+		if (mib >= 1024) return `${(mib / 1024).toFixed(1)} GiB`;
+		return `${Math.round(mib)} MiB`;
+	}
+
+	const classOrder: PodClass[] = [
+		'agent-runtime',
+		'sandbox',
+		'workspace-runtime',
+		'workflow-orchestrator',
+		'workflow-builder',
+		'swebench',
+		'other'
+	];
+
+	const classLabels: Record<PodClass, string> = {
+		'agent-runtime': 'Agent runtimes',
+		sandbox: 'Sandboxes',
+		'workspace-runtime': 'Workspace runtime',
+		'workflow-orchestrator': 'Orchestrator',
+		'workflow-builder': 'BFF',
+		swebench: 'SWE-bench',
+		other: 'Other'
+	};
 </script>
 
 <svelte:head>
@@ -148,6 +197,49 @@
 				</CardContent>
 			</Card>
 		</section>
+
+		<!-- Resource usage (metrics-server, populated when RBAC is in place) -->
+		{#if snapshot.resources}
+			<section class="grid grid-cols-1 gap-3 md:grid-cols-3">
+				<Card>
+					<CardContent class="flex flex-col gap-1 p-4">
+						<div class="flex items-center gap-1.5 text-xs text-muted-foreground">
+							<Cpu class="size-3" /> CPU in use
+						</div>
+						<div class="text-2xl font-mono font-semibold">
+							{fmtCores(snapshot.resources.totalCpuMillicores)}<span class="text-sm text-muted-foreground"> cores</span>
+						</div>
+						<div class="text-[10px] text-muted-foreground">
+							across {snapshot.resources.pods.length} pod{snapshot.resources.pods.length === 1 ? '' : 's'}
+						</div>
+					</CardContent>
+				</Card>
+				<Card>
+					<CardContent class="flex flex-col gap-1 p-4">
+						<div class="text-xs text-muted-foreground">Memory in use</div>
+						<div class="text-2xl font-mono font-semibold">
+							{fmtMem(snapshot.resources.totalMemoryMiB)}
+						</div>
+					</CardContent>
+				</Card>
+				<Card>
+					<CardContent class="p-4">
+						<div class="mb-2 text-xs text-muted-foreground">By pod class</div>
+						<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+							{#each classOrder as cls}
+								{@const b = snapshot.resources.byClass[cls]}
+								{#if b.count > 0}
+									<span class="text-muted-foreground">{classLabels[cls]}</span>
+									<span class="text-right font-mono">
+										{b.count} · {fmtCores(b.cpuMillicores)}c · {fmtMem(b.memoryMiB)}
+									</span>
+								{/if}
+							{/each}
+						</div>
+					</CardContent>
+				</Card>
+			</section>
+		{/if}
 
 		<!-- Token usage -->
 		<section class="grid grid-cols-1 gap-3 md:grid-cols-3">

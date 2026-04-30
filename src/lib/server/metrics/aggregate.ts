@@ -14,8 +14,13 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
+import { getResourceUsage, type ResourceUsageSummary } from "./resources";
 
 export interface AggregateMetricsSnapshot {
+	/** Per-pod CPU/memory totals from metrics.k8s.io. Null if metrics-server
+	 *  is unavailable or the BFF lacks RBAC — the rest of the snapshot is
+	 *  still valid in that case. */
+	resources: ResourceUsageSummary | null;
 	ts: string;
 	/** Workflow execution counts in the last hour, keyed by status. */
 	workflows: {
@@ -66,8 +71,14 @@ export async function getAggregateMetrics(): Promise<AggregateMetricsSnapshot> {
 		throw new Error("Database not configured");
 	}
 
-	const [workflowsRow, sessionsRow, tokensHourRow, tokensMinuteRow, toolCallsRow] =
-		await Promise.all([
+	const [
+		workflowsRow,
+		sessionsRow,
+		tokensHourRow,
+		tokensMinuteRow,
+		toolCallsRow,
+		resourcesResult,
+	] = await Promise.all([
 			db.execute(sql`
 				SELECT
 					count(*) FILTER (WHERE status = 'running')                                AS running,
@@ -98,6 +109,13 @@ export async function getAggregateMetrics(): Promise<AggregateMetricsSnapshot> {
 				WHERE type IN ('agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use')
 					AND created_at > now() - interval '1 hour'
 			`),
+			// Best-effort: a missing metrics-server or RBAC failure must not
+			// break the rest of the dashboard. The page falls back gracefully
+			// when resources is null.
+			getResourceUsage().catch((err) => {
+				console.warn("[metrics/aggregate] resource-usage probe failed:", err);
+				return null;
+			}),
 		]);
 
 	const wf = (workflowsRow[0] ?? {}) as Record<string, unknown>;
@@ -109,6 +127,7 @@ export async function getAggregateMetrics(): Promise<AggregateMetricsSnapshot> {
 
 	return {
 		ts: new Date().toISOString(),
+		resources: resourcesResult,
 		workflows: {
 			running: num(wf.running),
 			success: num(wf.success),
