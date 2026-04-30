@@ -147,6 +147,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 			metadata: benchmarkInstances.metadata,
 		})
 		.from(benchmarkRunInstances)
+		// Inner-join benchmarkRuns FIRST so the leftJoin below can reference
+		// benchmarkRuns.suiteId. Postgres rejects the leftJoin condition if a
+		// table referenced inside it isn't already in the FROM-clause graph.
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.leftJoin(
 			benchmarkInstances,
 			and(
@@ -154,7 +158,6 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 				eq(benchmarkRuns.suiteId, benchmarkInstances.suiteId),
 			),
 		)
-		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.where(eq(benchmarkRunInstances.runId, runId));
 
 	const total = rows.length;
