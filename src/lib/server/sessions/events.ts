@@ -232,11 +232,16 @@ async function aggregateLlmUsageIntoBenchmarkInstance(
 	if (data.success === false) {
 		// Failures still consume tokens; record them.
 	}
-	const inputTokens = Number(data.input_tokens ?? 0) || 0;
-	const outputTokens = Number(data.output_tokens ?? 0) || 0;
-	const cacheRead = Number(data.cache_read_input_tokens ?? 0) || 0;
-	const cacheCreate = Number(data.cache_creation_input_tokens ?? 0) || 0;
-	const ttftMs = Number(data.ttft_ms ?? 0) || 0;
+	// Tokens are integers; ttft_ms arrives as a millisecond float and must be
+	// rounded BEFORE binding because Postgres binds JS floats as numeric, and
+	// COALESCE(numeric, bigint) raises a type-mismatch error that fails the
+	// whole UPDATE. Rounding to int + binding integer side-steps the cast.
+	const inputTokens = Math.round(Number(data.input_tokens ?? 0)) || 0;
+	const outputTokens = Math.round(Number(data.output_tokens ?? 0)) || 0;
+	const cacheRead = Math.round(Number(data.cache_read_input_tokens ?? 0)) || 0;
+	const cacheCreate = Math.round(Number(data.cache_creation_input_tokens ?? 0)) || 0;
+	const ttftMsRaw = Number(data.ttft_ms ?? 0);
+	const ttftMs = Number.isFinite(ttftMsRaw) && ttftMsRaw > 0 ? Math.round(ttftMsRaw) : null;
 	const model = typeof data.model === "string" ? data.model : null;
 	if (inputTokens + outputTokens + cacheRead + cacheCreate <= 0) return;
 	try {
@@ -245,17 +250,17 @@ async function aggregateLlmUsageIntoBenchmarkInstance(
 			UPDATE benchmark_run_instances
 			SET usage = jsonb_build_object(
 				'input_tokens',
-					COALESCE((usage->>'input_tokens')::bigint, 0) + ${inputTokens},
+					COALESCE((usage->>'input_tokens')::bigint, 0) + ${inputTokens}::bigint,
 				'output_tokens',
-					COALESCE((usage->>'output_tokens')::bigint, 0) + ${outputTokens},
+					COALESCE((usage->>'output_tokens')::bigint, 0) + ${outputTokens}::bigint,
 				'cache_read_input_tokens',
-					COALESCE((usage->>'cache_read_input_tokens')::bigint, 0) + ${cacheRead},
+					COALESCE((usage->>'cache_read_input_tokens')::bigint, 0) + ${cacheRead}::bigint,
 				'cache_creation_input_tokens',
-					COALESCE((usage->>'cache_creation_input_tokens')::bigint, 0) + ${cacheCreate},
+					COALESCE((usage->>'cache_creation_input_tokens')::bigint, 0) + ${cacheCreate}::bigint,
 				'llm_call_count',
 					COALESCE((usage->>'llm_call_count')::bigint, 0) + 1,
 				'ttft_first_ms',
-					COALESCE((usage->>'ttft_first_ms')::bigint, ${ttftMs > 0 ? ttftMs : null}),
+					COALESCE((usage->>'ttft_first_ms')::bigint, ${ttftMs}::bigint),
 				'model',
 					COALESCE(${model}, usage->>'model'),
 				'cost_usd',
