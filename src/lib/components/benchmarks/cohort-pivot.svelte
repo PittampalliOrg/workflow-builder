@@ -7,7 +7,7 @@
 		type CohortMeasure,
 		type CohortRow,
 		type PivotBucket
-	} from '$lib/server/benchmarks/stats';
+	} from '$lib/benchmarks/cohort';
 
 	type Props = {
 		rows: CohortRow[];
