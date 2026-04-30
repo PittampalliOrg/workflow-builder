@@ -16,6 +16,7 @@ COPY drizzle ./drizzle
 COPY src ./src
 COPY static ./static
 ENV NODE_ENV=production
+ENV NODE_OPTIONS=--max-old-space-size=8192
 RUN pnpm build && find build -name '*.map' -type f -delete
 
 FROM node:22-alpine AS runner
