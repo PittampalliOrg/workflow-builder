@@ -30,14 +30,10 @@ RUN addgroup -S nodejs && adduser -S sveltekit -G nodejs
 COPY --from=builder --chown=sveltekit:nodejs /app/build ./build
 COPY --from=builder --chown=sveltekit:nodejs /app/server-prod.js ./
 COPY --from=builder --chown=sveltekit:nodejs /app/package.json ./
-# Copy node_modules from deps (includes devDependencies) instead of prod-deps
-# because the db-migrate Sync hook runs `npx drizzle-kit migrate` and needs
-# drizzle-kit's full pnpm dependency closure (.pnpm/drizzle-kit-*). The
-# prod-deps optimization adds ~80MB savings but breaks migrations; revisit
-# once we have a way to selectively include drizzle-kit + its transitives.
-COPY --from=deps --chown=sveltekit:nodejs /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=sveltekit:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle.config.ts ./
+COPY --chown=sveltekit:nodejs scripts/db-migrate-runtime.mjs ./scripts/db-migrate-runtime.mjs
 USER sveltekit
 EXPOSE 3000
 CMD ["node", "server-prod.js"]
