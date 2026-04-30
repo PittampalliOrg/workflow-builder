@@ -19,6 +19,8 @@
 	import RunStatusBadge from '$lib/components/benchmarks/run-status-badge.svelte';
 	import RunStatTiles from '$lib/components/benchmarks/run-stat-tiles.svelte';
 	import LifecycleTiles from '$lib/components/benchmarks/lifecycle-tiles.svelte';
+	import ScorerTiles from '$lib/components/benchmarks/scorer-tiles.svelte';
+	import CohortPivot from '$lib/components/benchmarks/cohort-pivot.svelte';
 	import TerminationDonut from '$lib/components/benchmarks/termination-donut.svelte';
 	import ToolUsageHistogram from '$lib/components/benchmarks/tool-usage-histogram.svelte';
 	import RepoAccuracyBars from '$lib/components/benchmarks/repo-accuracy-bars.svelte';
@@ -315,6 +317,10 @@
 			/>
 		</div>
 
+		{#if runStats.byScorer && runStats.byScorer.length > 0}
+			<ScorerTiles data={runStats.byScorer} />
+		{/if}
+
 		{#if runStats.byTerminationReason.length > 0 || runStats.byTool.length > 0 || runStats.turnCountP50 !== null}
 			<LifecycleTiles
 				turnCountP50={runStats.turnCountP50}
@@ -327,6 +333,76 @@
 			<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
 				<TerminationDonut data={runStats.byTerminationReason} />
 				<ToolUsageHistogram data={runStats.byTool} />
+			</div>
+		{/if}
+
+		{#if runStats.cohortRows && runStats.cohortRows.length > 0}
+			<CohortPivot rows={runStats.cohortRows} />
+		{/if}
+
+		{#if runStats.humanAnnotations && runStats.humanAnnotations.totalAnnotated > 0}
+			<div class="rounded-md border border-border bg-background p-4">
+				<h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+					Human annotations
+				</h3>
+				<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+					<div class="rounded-md border border-border p-3">
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+							Annotated
+						</div>
+						<div class="mt-1 text-xl font-semibold tabular-nums">
+							{runStats.humanAnnotations.totalAnnotated}<span
+								class="ml-1 text-xs font-normal text-muted-foreground"
+								>/{runStats.total}</span
+							>
+						</div>
+					</div>
+					<div class="rounded-md border border-border p-3">
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+							Correct
+						</div>
+						<div
+							class="mt-1 text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
+						>
+							{runStats.humanAnnotations.counts.correct}
+						</div>
+					</div>
+					<div class="rounded-md border border-border p-3">
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+							Incorrect
+						</div>
+						<div
+							class="mt-1 text-xl font-semibold tabular-nums text-red-600 dark:text-red-400"
+						>
+							{runStats.humanAnnotations.counts.incorrect}
+						</div>
+					</div>
+					<div class="rounded-md border border-border p-3">
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+							Partial / Unsure
+						</div>
+						<div class="mt-1 text-xl font-semibold tabular-nums">
+							{runStats.humanAnnotations.counts.partial +
+								runStats.humanAnnotations.counts.unsure}
+						</div>
+					</div>
+					<div
+						class="rounded-md border border-border p-3"
+						title="Instances where harness pass/fail disagrees with human verdict (correct/incorrect only)"
+					>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+							Harness disagreement
+						</div>
+						<div
+							class="mt-1 text-xl font-semibold tabular-nums {runStats.humanAnnotations
+								.harnessDisagreement > 0
+								? 'text-amber-600 dark:text-amber-400'
+								: ''}"
+						>
+							{runStats.humanAnnotations.harnessDisagreement}
+						</div>
+					</div>
+				</div>
 			</div>
 		{/if}
 

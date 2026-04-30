@@ -46,6 +46,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 				turnCountP90: null,
 				ttftP50: null,
 				ttftP90: null,
+				byScorer: [],
 				inferenceDurationMs: { count: 0, p50: null, p90: null, max: null, mean: null },
 				failureCategoryCounts: {
 					resolved: 0,
@@ -59,6 +60,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 					unknown: 0,
 				},
 				cumulativeResolved: [],
+				cohortRows: [],
+				humanAnnotations: {
+					counts: { correct: 0, incorrect: 0, partial: 0, unsure: 0 },
+					totalAnnotated: 0,
+					harnessDisagreement: 0,
+				},
 			} as RunStats),
 	};
 };

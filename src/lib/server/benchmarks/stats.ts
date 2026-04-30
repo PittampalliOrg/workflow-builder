@@ -2,12 +2,15 @@
 // the run-detail page. Reads benchmarkRunInstances joined to
 // benchmarkInstances for repo + metadata.difficulty.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	benchmarkInstances,
+	benchmarkRunInstanceAnnotations,
+	benchmarkRunInstanceScores,
 	benchmarkRuns,
 	benchmarkRunInstances,
+	type BenchmarkInstanceAnnotationVerdict,
 } from "$lib/server/db/schema";
 import {
 	parseHarnessResult,
@@ -72,7 +75,191 @@ export type RunStats = {
 	inferenceDurationMs: DurationPercentiles;
 	failureCategoryCounts: Record<FailureCategory, number>;
 	cumulativeResolved: CumulativePoint[];
+	// Phase G: aggregate per-scorer over the run.
+	byScorer: ByScorerStat[];
+	// Phase J: per-instance rows for client-side cohort pivots.
+	cohortRows: CohortRow[];
+	// Phase K: human annotation aggregates + harness disagreement count.
+	humanAnnotations: HumanAnnotationStats;
 };
+
+export type HumanAnnotationStats = {
+	counts: Record<BenchmarkInstanceAnnotationVerdict, number>;
+	totalAnnotated: number;
+	// Number of distinct instances where (human verdict ∈ {correct,incorrect})
+	// disagrees with the harness pass/fail signal. Computed only over instances
+	// that have at least one annotation.
+	harnessDisagreement: number;
+};
+
+export type ByScorerStat = {
+	scorer: string;
+	version: number;
+	count: number;
+	mean: number;
+	p50: number | null;
+	p90: number | null;
+};
+
+// Phase J — minimal per-instance row shape, shipped alongside RunStats for
+// client-side cohort pivoting. The payload is small (1 row per instance) so
+// the UI can switch (dimension, measure) instantly without re-fetching.
+export type CohortRow = {
+	resolved: boolean;
+	repo: string | null;
+	difficulty: string | null;
+	status: string;
+	terminationReason: string | null;
+	primaryTool: string | null;
+	costUsd: number | null;
+	turnCount: number | null;
+	tokens: number | null;
+	ttftMs: number | null;
+	inferenceMs: number | null;
+};
+
+export type CohortDimension =
+	| 'repo'
+	| 'difficulty'
+	| 'status'
+	| 'termination_reason'
+	| 'primary_tool';
+
+export type CohortMeasure =
+	| 'resolved_rate'
+	| 'count'
+	| 'cost_usd_mean'
+	| 'cost_per_resolved'
+	| 'turn_count_p50'
+	| 'tokens_p50'
+	| 'ttft_p50'
+	| 'inference_ms_p50';
+
+export type PivotBucket = {
+	dimension: string;
+	count: number;
+	value: number | null;
+};
+
+export const COHORT_DIMENSIONS: { id: CohortDimension; label: string }[] = [
+	{ id: 'repo', label: 'Repo' },
+	{ id: 'difficulty', label: 'Difficulty' },
+	{ id: 'status', label: 'Status' },
+	{ id: 'termination_reason', label: 'Termination reason' },
+	{ id: 'primary_tool', label: 'Primary tool' },
+];
+
+export const COHORT_MEASURES: { id: CohortMeasure; label: string; format: 'pct' | 'count' | 'usd' | 'tokens' | 'ms' }[] = [
+	{ id: 'resolved_rate', label: 'Resolved rate', format: 'pct' },
+	{ id: 'count', label: 'Count', format: 'count' },
+	{ id: 'cost_usd_mean', label: 'Cost (mean)', format: 'usd' },
+	{ id: 'cost_per_resolved', label: 'Cost / resolved', format: 'usd' },
+	{ id: 'turn_count_p50', label: 'Turns (p50)', format: 'count' },
+	{ id: 'tokens_p50', label: 'Tokens (p50)', format: 'tokens' },
+	{ id: 'ttft_p50', label: 'TTFT (p50, ms)', format: 'ms' },
+	{ id: 'inference_ms_p50', label: 'Inference (p50, ms)', format: 'ms' },
+];
+
+function dimensionValue(row: CohortRow, dim: CohortDimension): string {
+	switch (dim) {
+		case 'repo':
+			return row.repo ?? 'unknown';
+		case 'difficulty':
+			return row.difficulty ?? '(none)';
+		case 'status':
+			return row.status;
+		case 'termination_reason':
+			return row.terminationReason ?? '(none)';
+		case 'primary_tool':
+			return row.primaryTool ?? '(none)';
+	}
+}
+
+function median(values: number[]): number | null {
+	if (values.length === 0) return null;
+	const sorted = [...values].sort((a, b) => a - b);
+	return percentile(sorted, 0.5);
+}
+
+export function pivot(
+	rows: CohortRow[],
+	dimension: CohortDimension,
+	measure: CohortMeasure,
+): PivotBucket[] {
+	const groups = new Map<string, CohortRow[]>();
+	for (const row of rows) {
+		const key = dimensionValue(row, dimension);
+		const arr = groups.get(key);
+		if (arr) arr.push(row);
+		else groups.set(key, [row]);
+	}
+	const result: PivotBucket[] = [];
+	for (const [key, items] of groups.entries()) {
+		const count = items.length;
+		let value: number | null = 0;
+		switch (measure) {
+			case 'resolved_rate': {
+				const r = items.filter((i) => i.resolved).length;
+				value = count > 0 ? r / count : null;
+				break;
+			}
+			case 'count':
+				value = count;
+				break;
+			case 'cost_usd_mean': {
+				const xs = items
+					.map((i) => i.costUsd)
+					.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+				value = xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+				break;
+			}
+			case 'cost_per_resolved': {
+				const totalCost = items
+					.map((i) => i.costUsd ?? 0)
+					.reduce((a, b) => a + b, 0);
+				const resolvedCount = items.filter((i) => i.resolved).length;
+				value = resolvedCount > 0 ? totalCost / resolvedCount : null;
+				break;
+			}
+			case 'turn_count_p50': {
+				const xs = items
+					.map((i) => i.turnCount)
+					.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+				value = median(xs);
+				break;
+			}
+			case 'tokens_p50': {
+				const xs = items
+					.map((i) => i.tokens)
+					.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+				value = median(xs);
+				break;
+			}
+			case 'ttft_p50': {
+				const xs = items
+					.map((i) => i.ttftMs)
+					.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+				value = median(xs);
+				break;
+			}
+			case 'inference_ms_p50': {
+				const xs = items
+					.map((i) => i.inferenceMs)
+					.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+				value = median(xs);
+				break;
+			}
+		}
+		result.push({ dimension: key, count, value });
+	}
+	result.sort((a, b) => {
+		if (a.value === null && b.value === null) return b.count - a.count;
+		if (a.value === null) return 1;
+		if (b.value === null) return -1;
+		return b.value - a.value || b.count - a.count;
+	});
+	return result;
+}
 
 const DIFFICULTY_BUCKETS = ['<15min', '15min-1h', '1h-4h', '>4h'];
 
@@ -214,6 +401,7 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 	const terminationCounts = new Map<string, number>();
 	const turnCounts: number[] = [];
 	const ttfts: number[] = [];
+	const cohortRows: CohortRow[] = [];
 
 	for (const row of rows) {
 		const isResolved = row.status === 'resolved';
@@ -269,10 +457,34 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 			);
 		}
 		const hist = (row.toolHistogram ?? {}) as Record<string, number>;
+		let primaryTool: string | null = null;
+		let primaryToolCount = 0;
 		for (const [tool, count] of Object.entries(hist)) {
 			if (!tool) continue;
-			toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + asNumber(count));
+			const n = asNumber(count);
+			toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + n);
+			if (n > primaryToolCount) {
+				primaryTool = tool;
+				primaryToolCount = n;
+			}
 		}
+
+		cohortRows.push({
+			resolved: isResolved,
+			repo: row.repo ?? null,
+			difficulty: diff ?? null,
+			status: row.status,
+			terminationReason: row.terminationReason ?? null,
+			primaryTool,
+			costUsd: usage.cost > 0 ? usage.cost : null,
+			turnCount: typeof row.turnCount === 'number' && Number.isFinite(row.turnCount) ? row.turnCount : null,
+			tokens: usage.tokens > 0 ? usage.tokens : null,
+			ttftMs:
+				typeof row.ttftFirstMs === 'number' && Number.isFinite(row.ttftFirstMs)
+					? row.ttftFirstMs
+					: null,
+			inferenceMs: dur ?? null,
+		});
 
 		parsedHarness.push(parseHarnessResult(row.harnessResult));
 	}
@@ -351,6 +563,83 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		.map(([reason, count]) => ({ reason, count }))
 		.sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 
+	// Phase G — scorer aggregates. Loaded as a separate query (no per-instance
+	// join in the main loop because most rows have many scores; nested arrays
+	// make the row-list query bloated).
+	const instanceIds = rows.map((r) => r.id);
+	const byScorer: ByScorerStat[] = [];
+	if (instanceIds.length > 0) {
+		const scoreRows = await database
+			.select({
+				scorerName: benchmarkRunInstanceScores.scorerName,
+				scorerVersion: benchmarkRunInstanceScores.scorerVersion,
+				score: benchmarkRunInstanceScores.score,
+			})
+			.from(benchmarkRunInstanceScores)
+			.where(inArray(benchmarkRunInstanceScores.runInstanceId, instanceIds));
+		const scoresByName = new Map<string, { version: number; values: number[] }>();
+		for (const sr of scoreRows) {
+			const key = `${sr.scorerName}:${sr.scorerVersion}`;
+			let bucket = scoresByName.get(key);
+			if (!bucket) {
+				bucket = { version: sr.scorerVersion, values: [] };
+				scoresByName.set(key, bucket);
+			}
+			bucket.values.push(Number(sr.score));
+		}
+		for (const [key, bucket] of scoresByName.entries()) {
+			const [scorer] = key.split(":");
+			const sorted = [...bucket.values].sort((a, b) => a - b);
+			const sum = bucket.values.reduce((a, b) => a + b, 0);
+			byScorer.push({
+				scorer,
+				version: bucket.version,
+				count: bucket.values.length,
+				mean: bucket.values.length > 0 ? sum / bucket.values.length : 0,
+				p50: percentile(sorted, 0.5),
+				p90: percentile(sorted, 0.9),
+			});
+		}
+		byScorer.sort((a, b) => a.scorer.localeCompare(b.scorer));
+	}
+
+	// Phase K — aggregate human annotations + compute harness-vs-human
+	// disagreement. We pull all annotation rows for this run's instances and
+	// fold them into the summary; per-instance rendering happens in the
+	// drawer/trace footer via the dedicated annotations endpoint.
+	const humanCounts: Record<BenchmarkInstanceAnnotationVerdict, number> = {
+		correct: 0,
+		incorrect: 0,
+		partial: 0,
+		unsure: 0,
+	};
+	let harnessDisagreement = 0;
+	const totalAnnotatedSet = new Set<string>();
+	if (instanceIds.length > 0) {
+		const annotationRows = await database
+			.select({
+				runInstanceId: benchmarkRunInstanceAnnotations.runInstanceId,
+				verdict: benchmarkRunInstanceAnnotations.verdict,
+			})
+			.from(benchmarkRunInstanceAnnotations)
+			.where(inArray(benchmarkRunInstanceAnnotations.runInstanceId, instanceIds));
+		const harnessByInstance = new Map<string, boolean>();
+		for (const r of rows) harnessByInstance.set(r.id, r.status === 'resolved');
+		for (const ann of annotationRows) {
+			const verdict = ann.verdict as BenchmarkInstanceAnnotationVerdict;
+			humanCounts[verdict] += 1;
+			totalAnnotatedSet.add(ann.runInstanceId);
+			const passed = harnessByInstance.get(ann.runInstanceId);
+			if (verdict === 'correct' && passed === false) harnessDisagreement += 1;
+			else if (verdict === 'incorrect' && passed === true) harnessDisagreement += 1;
+		}
+	}
+	const humanAnnotations: HumanAnnotationStats = {
+		counts: humanCounts,
+		totalAnnotated: totalAnnotatedSet.size,
+		harnessDisagreement,
+	};
+
 	return {
 		resolved,
 		total,
@@ -376,5 +665,8 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		inferenceDurationMs: inferenceDurationMsStats,
 		failureCategoryCounts: aggregateFailureCategories(parsedHarness),
 		cumulativeResolved,
+		byScorer,
+		cohortRows,
+		humanAnnotations,
 	};
 }

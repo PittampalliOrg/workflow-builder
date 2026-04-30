@@ -17,6 +17,7 @@ import {
 	aggregateBenchmarkLifecycleFromSessionEvents,
 	aggregateLlmUsageFromSessionEvents,
 } from "$lib/server/sessions/events";
+import { runScorersForRun } from "./score-runner";
 import {
 	agentVersions,
 	agents,
@@ -794,6 +795,20 @@ export async function recomputeRunSummary(runId: string) {
 	for (const row of refreshedRows) {
 		await refreshInstanceCost(row.id, row.usage as Record<string, unknown> | null);
 	}
+
+	// Phase G — run scorers (deterministic + LLM-judge) on every instance
+	// in the run. Idempotent: skips per (run_instance_id, scorer_name,
+	// scorer_version) so re-running recompute doesn't double-score.
+	// Wrapped in try/catch so a scorer outage doesn't break the recompute path.
+	try {
+		await runScorersForRun(runId);
+	} catch (err) {
+		console.warn(
+			`[bench-scorer] runScorersForRun(${runId}) failed:`,
+			(err as Error)?.message ?? err,
+		);
+	}
+
 	await syncBenchmarkRunMlflow(runId);
 
 	return summary;

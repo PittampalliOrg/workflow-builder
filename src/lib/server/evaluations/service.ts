@@ -95,6 +95,11 @@ export type DatasetRowInput = {
 	rating?: number | null;
 	feedback?: string | null;
 	metadata?: Record<string, unknown>;
+	// Phase H — bidirectional origin pointers. Set when the row was authored
+	// via "Add to dataset" from a benchmark run (originRunInstanceId) or a
+	// session (originSessionId). NULL for hand-crafted/imported rows.
+	originRunInstanceId?: string | null;
+	originSessionId?: string | null;
 };
 
 export type CreateEvaluationDatasetInput = {
@@ -326,6 +331,8 @@ export async function createEvaluationDatasetRows(
 				rating: row.rating ?? null,
 				feedback: row.feedback ?? null,
 				metadata: row.metadata ?? {},
+				originRunInstanceId: row.originRunInstanceId ?? null,
+				originSessionId: row.originSessionId ?? null,
 			})),
 		)
 		.returning();
@@ -2288,6 +2295,9 @@ function normalizeDatasetRow(value: unknown): DatasetRowInput {
 		rating: typeof raw.rating === "number" ? Math.trunc(raw.rating) : null,
 		feedback: readString(raw.feedback),
 		metadata: isRecord(raw.metadata) ? raw.metadata : {},
+		originRunInstanceId:
+			readString(raw.originRunInstanceId) ?? readString(raw.origin_run_instance_id),
+		originSessionId: readString(raw.originSessionId) ?? readString(raw.origin_session_id),
 	};
 }
 
@@ -3305,6 +3315,8 @@ function serializeDatasetRow(row: typeof evaluationDatasetRows.$inferSelect) {
 		rating: row.rating,
 		feedback: row.feedback,
 		metadata: row.metadata,
+		originRunInstanceId: row.originRunInstanceId,
+		originSessionId: row.originSessionId,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};

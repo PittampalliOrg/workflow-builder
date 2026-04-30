@@ -77,6 +77,10 @@ export type CompareData = {
 	allInstanceIds: string[];
 	sharedInstanceIds: string[];
 	disagreements: string[];
+	// Phase F: pairwise regression test against the first run (treated as
+	// baseline). Length = runs.length - 1; index `i` is the test of runs[i+1]
+	// against runs[0]. Empty when fewer than 2 runs.
+	regression: import("./regression").RegressionTest[][];
 };
 
 const AXES: readonly AxisName[] = [
@@ -367,5 +371,31 @@ export async function loadCompareData(
 
 	const axisDiff = buildAxisDiff(runs);
 
-	return { runs, axisDiff, grid, allInstanceIds, sharedInstanceIds, disagreements };
+	// Phase F: pairwise regression tests vs runs[0] as baseline.
+	const { compareRuns } = await import("./regression");
+	const regression: import("./regression").RegressionTest[][] = [];
+	if (runs.length >= 2) {
+		const baselineRunId = runs[0].runId;
+		for (let i = 1; i < runs.length; i++) {
+			try {
+				regression.push(await compareRuns(baselineRunId, runs[i].runId));
+			} catch (err) {
+				console.warn(
+					`[compare] regression test ${baselineRunId} vs ${runs[i].runId} failed:`,
+					err,
+				);
+				regression.push([]);
+			}
+		}
+	}
+
+	return {
+		runs,
+		axisDiff,
+		grid,
+		allInstanceIds,
+		sharedInstanceIds,
+		disagreements,
+		regression,
+	};
 }

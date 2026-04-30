@@ -7,6 +7,7 @@ import {
 import {
 	boolean,
 	customType,
+	doublePrecision,
 	foreignKey,
 	index,
 	integer,
@@ -2971,6 +2972,80 @@ export const environmentImageBuilds = pgTable(
 	}),
 );
 
+// Phase G — scorer layer. One row per (benchmark_run_instance, scorer_name,
+// scorer_version). Idempotent: score-runner skips if a row already exists.
+export const benchmarkRunInstanceScores = pgTable(
+	"benchmark_run_instance_scores",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runInstanceId: text("run_instance_id")
+			.notNull()
+			.references(() => benchmarkRunInstances.id, { onDelete: "cascade" }),
+		scorerName: text("scorer_name").notNull(),
+		scorerVersion: integer("scorer_version").notNull().default(1),
+		score: doublePrecision("score").notNull(),
+		reasoning: text("reasoning"),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		uniqueScorer: unique("uq_benchmark_run_instance_scores_unique").on(
+			table.runInstanceId,
+			table.scorerName,
+			table.scorerVersion,
+		),
+		scorerIdx: index("idx_benchmark_run_instance_scores_scorer").on(
+			table.scorerName,
+			table.scorerVersion,
+		),
+		runInstanceIdx: index("idx_benchmark_run_instance_scores_run_instance").on(
+			table.runInstanceId,
+		),
+	}),
+);
+
+// Phase K — human annotation layer. One row per (run_instance, user). Single
+// user can revise their own verdict via UPSERT on the unique constraint.
+export type BenchmarkInstanceAnnotationVerdict =
+	| "correct"
+	| "incorrect"
+	| "partial"
+	| "unsure";
+
+export const benchmarkRunInstanceAnnotations = pgTable(
+	"benchmark_run_instance_annotations",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runInstanceId: text("run_instance_id")
+			.notNull()
+			.references(() => benchmarkRunInstances.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		verdict: text("verdict").notNull().$type<BenchmarkInstanceAnnotationVerdict>(),
+		reasoning: text("reasoning"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		userUnique: unique("uq_benchmark_run_instance_annotations_user").on(
+			table.runInstanceId,
+			table.userId,
+		),
+		runInstanceIdx: index(
+			"idx_benchmark_run_instance_annotations_run_instance",
+		).on(table.runInstanceId),
+	}),
+);
+
 export const environmentBuildActivityEvents = pgTable(
 	"environment_build_activity_events",
 	{
@@ -3162,6 +3237,11 @@ export const evaluationDatasetRows = pgTable(
 			.$type<Record<string, unknown>>()
 			.notNull()
 			.default({}),
+		// Phase H — bidirectional link to the benchmark run instance / session
+		// this row was captured from. NULL when the row was authored manually
+		// (CSV import, hand-crafted, etc.).
+		originRunInstanceId: text("origin_run_instance_id"),
+		originSessionId: text("origin_session_id"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -3175,6 +3255,12 @@ export const evaluationDatasetRows = pgTable(
 		datasetExternalUnique: unique(
 			"uq_evaluation_dataset_rows_dataset_external",
 		).on(table.datasetId, table.externalId),
+		originRunInstanceIdx: index("idx_evaluation_dataset_rows_origin_run_instance").on(
+			table.originRunInstanceId,
+		),
+		originSessionIdx: index("idx_evaluation_dataset_rows_origin_session").on(
+			table.originSessionId,
+		),
 	}),
 );
 

@@ -8,6 +8,7 @@
 	import CompareAxisDiffStrip from '$lib/components/benchmarks/compare-axis-diff-strip.svelte';
 	import CompareHeadlineBar from '$lib/components/benchmarks/compare-headline-bar.svelte';
 	import CompareGrid from '$lib/components/benchmarks/compare-grid.svelte';
+	import MetricRegressionStrip from '$lib/components/benchmarks/metric-regression-strip.svelte';
 	import LaunchRunSheet from '$lib/components/benchmarks/launch-run-sheet.svelte';
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
 	import { isActiveRunStatus } from '$lib/components/benchmarks/run-status-helpers';
@@ -336,6 +337,10 @@
 		<CompareHeadlineBar runs={compare.runs} workspaceSlug={slug} onFork={forkRun} />
 
 		<CompareAxisDiffStrip axisDiff={compare.axisDiff} runs={compare.runs} />
+
+		{#if compare.regression && compare.regression.length > 0}
+			<MetricRegressionStrip regression={compare.regression} runs={compare.runs} />
+		{/if}
 
 		{#if statsByAxis && statsByAxis.length > 0}
 			<div class="rounded-md border border-border bg-background p-4">

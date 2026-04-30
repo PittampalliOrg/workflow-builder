@@ -5,9 +5,11 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import { Bot, Check, Copy, ExternalLink, FileDiff, Loader2 } from '@lucide/svelte';
+	import PromoteToDataset from './promote-to-dataset.svelte';
 	import RenderedPatch from './rendered-patch.svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import SpansTimeline from './spans-timeline.svelte';
+	import TraceDetail from './trace-detail.svelte';
 	import {
 		formatDuration,
 		formatRelative,
@@ -102,7 +104,9 @@
 	let detail = $state<DrilldownPayload | null>(null);
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let activeTab = $state<'problem' | 'patch' | 'harness' | 'spans' | 'logs'>('problem');
+	let activeTab = $state<'problem' | 'patch' | 'harness' | 'trace' | 'spans' | 'logs'>(
+		'problem'
+	);
 	let patchView = $state<'model' | 'gold' | 'both'>('both');
 	let patchMode = $state<'rendered' | 'raw'>('rendered');
 	let copied = $state<string | null>(null);
@@ -155,7 +159,7 @@
 	}
 
 	$effect(() => {
-		if (activeTab === 'spans' && runId && instanceId) {
+		if ((activeTab === 'spans' || activeTab === 'trace') && runId && instanceId) {
 			void loadSpans(runId, instanceId);
 		}
 	});
@@ -284,6 +288,12 @@
 								status={detail.parsedHarness.failureCategory}
 								class="ml-2 text-[9px] px-1"
 							/>
+						</TabsTrigger>
+						<TabsTrigger value="trace" class="text-xs">
+							Trace
+							{#if (detail.runInstance.traceIds?.length ?? 0) === 0}
+								<span class="ml-1 text-muted-foreground">—</span>
+							{/if}
 						</TabsTrigger>
 						<TabsTrigger value="spans" class="text-xs">
 							Spans
@@ -446,6 +456,11 @@
 						</TabsContent>
 
 						<TabsContent value="harness" class="m-0 space-y-3">
+							{#if runId && instanceId}
+								<div class="flex items-center justify-end">
+									<PromoteToDataset {runId} {instanceId} />
+								</div>
+							{/if}
 							<div class="grid gap-3 sm:grid-cols-3">
 								<div class="rounded-md border border-border p-3">
 									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -613,6 +628,45 @@
 										</Alert>
 									{/if}
 								</section>
+							{/if}
+						</TabsContent>
+
+						<TabsContent value="trace" class="m-0 space-y-3">
+							{#if spansLoading}
+								<div class="flex items-center gap-2 text-xs text-muted-foreground">
+									<Loader2 class="h-3 w-3 animate-spin" /> Loading trace…
+								</div>
+							{:else if spansError}
+								<Alert variant="destructive">
+									<AlertDescription>{spansError}</AlertDescription>
+								</Alert>
+							{:else if !spans || (detail.runInstance.traceIds?.length ?? 0) === 0}
+								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+									No trace IDs recorded for this instance. The runtime may have completed
+									before OTel spans propagated, or this run predates OTel instrumentation.
+								</div>
+							{:else if runId && instanceId}
+								<TraceDetail
+									{runId}
+									{instanceId}
+									llmSpans={spans.llmSpans}
+									toolSpans={spans.toolSpans}
+									traceCount={spans.traceIds.length}
+									instanceMetrics={{
+										turnCount: detail.runInstance.turnCount,
+										toolCallCount: detail.runInstance.toolCallCount,
+										ttftFirstMs: detail.runInstance.ttftFirstMs,
+										ttftFirstToolMs: detail.runInstance.ttftFirstToolMs,
+										usage: detail.runInstance.usage
+									}}
+								/>
+								{#if spans.error}
+									<Alert variant="destructive">
+										<AlertDescription>
+											ClickHouse query partially failed: {spans.error}
+										</AlertDescription>
+									</Alert>
+								{/if}
 							{/if}
 						</TabsContent>
 
