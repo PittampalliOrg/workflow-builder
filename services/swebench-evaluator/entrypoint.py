@@ -75,6 +75,7 @@ def main() -> int:
                 log_dir,
                 timeout_message,
             )
+            log_mlflow_evaluation(run_id, [*parsed_results, *timeout_results], log_dir, timeout_message)
             post_results(
                 run_id,
                 [*parsed_results, *timeout_results],
@@ -85,6 +86,12 @@ def main() -> int:
         (log_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
         (log_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
         parsed_results = parse_results(log_dir, instance_ids)
+        log_mlflow_evaluation(
+            run_id,
+            parsed_results,
+            log_dir,
+            None if result.returncode == 0 else result.stderr[-4000:],
+        )
         post_results(
             run_id,
             parsed_results if result.returncode == 0 else parsed_results,
@@ -378,6 +385,82 @@ def summarize_aggregate_report(payload: dict[str, Any]) -> str:
     ]
     parts = [f"{label}={payload[key]}" for label, key in fields if key in payload]
     return "SWE-bench report: " + ", ".join(parts) if parts else "SWE-bench report"
+
+
+def mlflow_enabled() -> bool:
+    enabled = os.environ.get("MLFLOW_ENABLED", "").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return False
+    return bool(os.environ.get("MLFLOW_TRACKING_URI", "").strip())
+
+
+def log_mlflow_evaluation(
+    run_id: str,
+    results: list[dict[str, Any]],
+    log_dir: pathlib.Path,
+    error: str | None,
+) -> None:
+    if not mlflow_enabled():
+        return
+    parent_run_id = os.environ.get("MLFLOW_RUN_ID", "").strip()
+    if not parent_run_id:
+        return
+    try:
+        import mlflow
+
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"].strip())
+        with mlflow.start_run(run_id=parent_run_id):
+            mlflow.set_tag("workflow_builder.evaluator_job_name", os.environ.get("SWEBENCH_EVALUATOR_JOB_NAME", ""))
+            mlflow.set_tag("workflow_builder.evaluator_error", error or "")
+            mlflow.log_metric("harness_result_count", len(results))
+            mlflow.log_metric("harness_resolved_count", sum(1 for r in results if r.get("resolved") is True))
+            mlflow.log_metric("harness_unresolved_count", sum(1 for r in results if r.get("status") in {"failed", "unresolved"}))
+            mlflow.log_metric("harness_empty_patch_count", sum(1 for r in results if r.get("status") == "empty_patch"))
+            mlflow.log_metric("harness_error_count", sum(1 for r in results if r.get("status") == "error"))
+            mlflow.log_metric("harness_timeout_count", sum(1 for r in results if r.get("status") == "timeout"))
+            for artifact in sorted(log_dir.glob("*.log")):
+                mlflow.log_artifact(str(artifact), artifact_path="harness")
+            for artifact in sorted(log_dir.rglob("*.json")):
+                mlflow.log_artifact(str(artifact), artifact_path="harness/results")
+        instance_runs = mlflow_instance_run_map()
+        for result in results:
+            instance_id = result.get("instance_id") or result.get("instanceId")
+            if not isinstance(instance_id, str):
+                continue
+            instance_run_id = instance_runs.get(instance_id)
+            if not instance_run_id:
+                continue
+            with mlflow.start_run(run_id=instance_run_id):
+                status = str(result.get("status") or "")
+                mlflow.set_tag("swebench.evaluation_status", status)
+                mlflow.set_tag("workflow_builder.logs_path", result.get("logs_path") or "")
+                mlflow.set_tag("workflow_builder.evaluation_error", result.get("error") or "")
+                mlflow.log_metric("swebench_resolved", 1 if result.get("resolved") is True else 0)
+                mlflow.log_metric("swebench_empty_patch", 1 if status == "empty_patch" else 0)
+                mlflow.log_metric("swebench_timeout", 1 if status == "timeout" else 0)
+                mlflow.log_metric("swebench_error", 1 if status == "error" else 0)
+                harness_result = result.get("harness_result")
+                if isinstance(harness_result, dict):
+                    mlflow.log_dict(harness_result, "harness/result.json")
+    except Exception as exc:
+        print(f"[mlflow] best-effort evaluation logging failed: {exc}", file=sys.stderr)
+
+
+def mlflow_instance_run_map() -> dict[str, str]:
+    raw = os.environ.get("MLFLOW_INSTANCE_RUNS_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in parsed.items()
+        if isinstance(value, str) and value
+    }
 
 
 def post_results(run_id: str, results: list[dict[str, Any]], error: str | None = None) -> None:

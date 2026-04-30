@@ -10,6 +10,7 @@ dependencies = [
     "dapr-ext-workflow==1.17.1",
     "requests>=2.31.0",
     "kubernetes>=31.0.0",
+    "mlflow==3.10.1",
 ]
 
 [build-system]

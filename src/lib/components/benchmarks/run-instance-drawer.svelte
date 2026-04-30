@@ -47,6 +47,8 @@
 			sessionId: string | null;
 			workflowExecutionId: string | null;
 			daprInstanceId: string | null;
+			mlflowRunId: string | null;
+			mlflowUrl: string | null;
 			sandboxName: string | null;
 			workspaceRef: string | null;
 			logsPath: string | null;
@@ -675,6 +677,20 @@
 										{detail.runInstance.logsPath ?? 'pending'}
 									</span>
 								</div>
+								{#if detail.runInstance.mlflowUrl}
+									<div>
+										<span class="text-muted-foreground">MLflow:</span>
+										<a
+											href={detail.runInstance.mlflowUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="ml-2 inline-flex items-center gap-1 break-all text-primary hover:underline"
+										>
+											<span class="font-mono">{detail.runInstance.mlflowRunId}</span>
+											<ExternalLink class="h-3 w-3" />
+										</a>
+									</div>
+								{/if}
 								{#if detail.runInstance.traceIds && detail.runInstance.traceIds.length > 0}
 									<div>
 										<span class="text-muted-foreground">Trace IDs:</span>

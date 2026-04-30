@@ -60,6 +60,13 @@ import {
 } from "./inference-environments";
 import { plannedSwebenchInferenceEnvironmentWithBuild } from "$lib/server/environments/environment-image-builds";
 import { buildStableWorkspaceRef } from "./workspace-ref";
+import {
+	ensureBenchmarkInstanceMlflowRun,
+	ensureBenchmarkMlflowRun,
+	publicMlflowRunUrl,
+	syncBenchmarkInstanceMlflow,
+	syncBenchmarkRunMlflow,
+} from "./mlflow";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -474,6 +481,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		return run;
 	});
 
+	await ensureBenchmarkMlflowRun(created.id);
 	return created;
 }
 
@@ -561,6 +569,8 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 			sessionId: runInstance.sessionId,
 			workflowExecutionId: runInstance.workflowExecutionId,
 			daprInstanceId: runInstance.daprInstanceId,
+			mlflowRunId: runInstance.mlflowRunId,
+			mlflowUrl: publicMlflowRunUrl(row.run.mlflowExperimentId, runInstance.mlflowRunId),
 			sandboxName: runInstance.sandboxName,
 			workspaceRef: runInstance.workspaceRef,
 			traceIds: runInstance.traceIds,
@@ -725,6 +735,11 @@ export async function markBenchmarkRunStatus(
 				),
 			);
 	}
+	if (updated) {
+		await syncBenchmarkRunMlflow(runId, {
+			terminate: status === "completed" || status === "failed" || status === "cancelled",
+		});
+	}
 	return updated ?? null;
 }
 
@@ -751,6 +766,7 @@ export async function recomputeRunSummary(runId: string) {
 	for (const row of rows) {
 		await refreshInstanceCost(row.id, row.usage as Record<string, unknown> | null);
 	}
+	await syncBenchmarkRunMlflow(runId);
 
 	return summary;
 }
@@ -852,6 +868,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			`SWE-bench metadata for ${params.instanceId} has not been imported yet`,
 		);
 	}
+	await ensureBenchmarkInstanceMlflowRun(params);
 
 	const workflow = await ensureHiddenBenchmarkWorkflow({
 		projectId: row.run.projectId,
@@ -1077,6 +1094,12 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		.where(eq(benchmarkRunInstances.id, row.runInstance.id))
 		.returning();
 	await recomputeRunSummary(params.runId);
+	if (updated) {
+		await syncBenchmarkInstanceMlflow({
+			runId: params.runId,
+			instanceId: params.instanceId,
+		});
+	}
 	return updated ?? null;
 }
 
@@ -1119,6 +1142,12 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 		.where(eq(benchmarkRunInstances.id, row.id))
 		.returning();
 	await recomputeRunSummary(params.runId);
+	if (updated) {
+		await syncBenchmarkInstanceMlflow({
+			runId: params.runId,
+			instanceId: params.instanceId,
+		});
+	}
 	return updated ?? null;
 }
 
@@ -1143,6 +1172,7 @@ export async function upsertPredictionsArtifact(
 		.update(benchmarkRuns)
 		.set({ predictionsPath, updatedAt: new Date() })
 		.where(eq(benchmarkRuns.id, runId));
+	await syncBenchmarkRunMlflow(runId);
 }
 
 export async function buildSwebenchDatasetJsonlForRunById(runId: string): Promise<string> {
@@ -1165,6 +1195,7 @@ export async function upsertEvaluationDatasetArtifact(
 		sha256: sha256(jsonl),
 		metadata: { source: "workflow-builder-db" },
 	});
+	await syncBenchmarkRunMlflow(runId);
 }
 
 async function buildPredictionsJsonlForRunById(runId: string): Promise<string> {
@@ -1941,6 +1972,9 @@ function serializeRunSummary(row: {
 		coordinatorExecutionId: row.run.coordinatorExecutionId,
 		evaluatorJobName: row.run.evaluatorJobName,
 		predictionsPath: row.run.predictionsPath,
+		mlflowExperimentId: row.run.mlflowExperimentId,
+		mlflowRunId: row.run.mlflowRunId,
+		mlflowUrl: publicMlflowRunUrl(row.run.mlflowExperimentId, row.run.mlflowRunId),
 		summary: row.run.summary,
 		tags: Array.isArray(row.run.tags) ? row.run.tags : [],
 		error: row.run.error,

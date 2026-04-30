@@ -2777,6 +2777,8 @@ export const benchmarkRuns = pgTable(
 		coordinatorExecutionId: text("coordinator_execution_id"),
 		evaluatorJobName: text("evaluator_job_name"),
 		predictionsPath: text("predictions_path"),
+		mlflowExperimentId: text("mlflow_experiment_id"),
+		mlflowRunId: text("mlflow_run_id"),
 		summary: jsonb("summary")
 			.$type<Record<string, unknown>>()
 			.notNull()
@@ -2797,6 +2799,9 @@ export const benchmarkRuns = pgTable(
 		statusIdx: index("idx_benchmark_runs_status").on(table.status),
 		suiteIdx: index("idx_benchmark_runs_suite").on(table.suiteId),
 		agentIdx: index("idx_benchmark_runs_agent").on(table.agentId),
+		mlflowRunIdx: index("idx_benchmark_runs_mlflow_run").on(
+			table.mlflowRunId,
+		),
 	}),
 );
 
@@ -2834,6 +2839,7 @@ export const benchmarkRunInstances = pgTable(
 			{ onDelete: "set null" },
 		),
 		daprInstanceId: text("dapr_instance_id"),
+		mlflowRunId: text("mlflow_run_id"),
 		sandboxName: text("sandbox_name"),
 		workspaceRef: text("workspace_ref"),
 		modelPatch: text("model_patch"),
@@ -2891,6 +2897,9 @@ export const benchmarkRunInstances = pgTable(
 		workflowExecutionIdx: index(
 			"idx_benchmark_run_instances_workflow_execution",
 		).on(table.workflowExecutionId),
+		mlflowRunIdx: index("idx_benchmark_run_instances_mlflow_run").on(
+			table.mlflowRunId,
+		),
 	}),
 	);
 

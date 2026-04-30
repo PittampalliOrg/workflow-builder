@@ -15,6 +15,7 @@ import {
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
 } from "$lib/server/benchmarks/service";
+import { syncBenchmarkInstanceMlflow } from "$lib/server/benchmarks/mlflow";
 import { compareToGold, parsePatchStats } from "$lib/server/benchmarks/patch-compare";
 import { daprFetch } from "$lib/server/dapr-client";
 import { env } from "$env/dynamic/private";
@@ -87,6 +88,10 @@ export const POST: RequestHandler = async ({ request, params }) => {
 					eq(benchmarkRunInstances.instanceId, instanceId),
 				),
 			);
+		await syncBenchmarkInstanceMlflow({
+			runId: params.runId,
+			instanceId,
+		});
 	}
 	const summary = await recomputeRunSummary(params.runId);
 	const activeRows = await db

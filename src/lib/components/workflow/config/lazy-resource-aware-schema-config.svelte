@@ -9,7 +9,9 @@
 		let cancelled = false;
 		import('./resource-aware-schema-config.svelte')
 			.then((module) => {
-				if (!cancelled) ComponentImpl = module.default as Component<Record<string, unknown>>;
+				if (!cancelled) {
+					ComponentImpl = module.default as unknown as Component<Record<string, unknown>>;
+				}
 			})
 			.catch((error) => {
 				if (!cancelled) {

@@ -6,6 +6,7 @@ import {
 	benchmarkRuns,
 	benchmarkRunInstances,
 } from "$lib/server/db/schema";
+import { publicMlflowRunUrl } from "$lib/server/benchmarks/mlflow";
 import { parseHarnessResult } from "$lib/server/benchmarks/harness-result";
 import { parsePatchStats } from "$lib/server/benchmarks/patch-compare";
 import type { RequestHandler } from "./$types";
@@ -21,7 +22,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!runId || !instanceId) return error(400, "runId and instanceId required");
 
 	const [runRow] = await database
-		.select({ id: benchmarkRuns.id, suiteId: benchmarkRuns.suiteId })
+		.select({
+			id: benchmarkRuns.id,
+			suiteId: benchmarkRuns.suiteId,
+			mlflowExperimentId: benchmarkRuns.mlflowExperimentId,
+		})
 		.from(benchmarkRuns)
 		.where(
 			and(
@@ -65,7 +70,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const goldPatchStats = parsePatchStats(row.goldPatch);
 
 	return json({
-		runInstance: row.run,
+		runInstance: {
+			...row.run,
+			mlflowUrl: publicMlflowRunUrl(runRow.mlflowExperimentId, row.run.mlflowRunId),
+		},
 		instance: {
 			repo: row.repo,
 			baseCommit: row.baseCommit,

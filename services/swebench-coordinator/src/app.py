@@ -51,6 +51,7 @@ ARTIFACT_ROOT = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifact
 EVALUATOR_NAMESPACE = os.environ.get("SWEBENCH_EVALUATOR_NAMESPACE", "workflow-builder")
 EVALUATOR_IMAGE = os.environ.get("SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest")
 DOCKER_DIND_IMAGE = os.environ.get("SWEBENCH_DOCKER_DIND_IMAGE", "docker.io/library/docker:27-dind")
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
 EVALUATION_RESULTS_EVENT = "swebench.evaluation.results"
 EVALUATION_FAILED_EVENT = "swebench.evaluation.failed"
 EVALUATION_POLL_SECONDS = int(os.environ.get("SWEBENCH_EVALUATION_POLL_SECONDS", "60"))
@@ -188,6 +189,46 @@ def _load_run_activity(ctx, data: dict[str, Any]) -> dict[str, Any]:
     return _load_run(data["runId"])
 
 
+def _mlflow_enabled() -> bool:
+    enabled = os.environ.get("MLFLOW_ENABLED", "").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return False
+    return bool(MLFLOW_TRACKING_URI)
+
+
+def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) -> None:
+    if not _mlflow_enabled() or not isinstance(run_id, str) or not run_id or not path.exists():
+        return
+    try:
+        import mlflow
+
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        with mlflow.start_run(run_id=run_id):
+            mlflow.log_artifact(str(path), artifact_path=artifact_path)
+    except Exception as exc:
+        logger.warning("Best-effort MLflow artifact log failed for %s: %s", path, exc)
+
+
+def _mlflow_log_text(run_id: Any, text: Any, file_path: pathlib.Path, artifact_path: str) -> None:
+    if not _mlflow_enabled() or not isinstance(text, str) or not text:
+        return
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(text, encoding="utf-8")
+    _mlflow_log_artifact(run_id, file_path, artifact_path)
+
+
+def _mlflow_instance_run_map(run: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for instance in run.get("instances") or []:
+        if not isinstance(instance, dict):
+            continue
+        instance_id = instance.get("instanceId")
+        mlflow_run_id = instance.get("mlflowRunId")
+        if isinstance(instance_id, str) and isinstance(mlflow_run_id, str) and mlflow_run_id:
+            out[instance_id] = mlflow_run_id
+    return out
+
+
 def _load_evaluation_progress(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run = _load_run(data["runId"])
     instances = run.get("instances") if isinstance(run.get("instances"), list) else []
@@ -274,12 +315,19 @@ def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
 def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _bff(
+    response = _bff(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/sync",
         json_body={},
         timeout=90,
     )
+    instance = response.get("instance") if isinstance(response, dict) else None
+    if isinstance(instance, dict):
+        patch = instance.get("modelPatch")
+        mlflow_run_id = instance.get("mlflowRunId")
+        patch_path = ARTIFACT_ROOT / run_id / "patches" / f"{_safe_artifact_name(instance_id)}.patch"
+        _mlflow_log_text(mlflow_run_id, patch, patch_path, "patches")
+    return response
 
 
 def _mark_instance_inference_failure(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -313,6 +361,7 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
         f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
         json_body={"path": str(path)},
     )
+    _mlflow_log_artifact(run.get("mlflowRunId"), path, "swebench")
     return {"path": str(path), "bytes": path.stat().st_size}
 
 
@@ -331,6 +380,12 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
         f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
         json_body={"path": str(path)},
     )
+    if _mlflow_enabled():
+        try:
+            refreshed_run = _load_run(run_id)
+            _mlflow_log_artifact(refreshed_run.get("mlflowRunId"), path, "swebench")
+        except Exception as exc:
+            logger.warning("Best-effort MLflow dataset artifact lookup failed for %s: %s", run_id, exc)
     return {"path": str(path), "bytes": path.stat().st_size}
 
 
@@ -357,6 +412,17 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             client.V1EnvVar(name="RUN_ID", value=run["id"]),
             client.V1EnvVar(name="INSTANCE_IDS", value=" ".join(instance_ids)),
             client.V1EnvVar(name="WORKFLOW_BUILDER_URL", value=WORKFLOW_BUILDER_URL),
+            client.V1EnvVar(name="MLFLOW_ENABLED", value=os.environ.get("MLFLOW_ENABLED", "true")),
+            client.V1EnvVar(name="MLFLOW_TRACKING_URI", value=MLFLOW_TRACKING_URI),
+            client.V1EnvVar(
+                name="MLFLOW_HTTP_REQUEST_TIMEOUT",
+                value=os.environ.get("MLFLOW_HTTP_REQUEST_TIMEOUT", "10"),
+            ),
+            client.V1EnvVar(name="MLFLOW_RUN_ID", value=str(run.get("mlflowRunId") or "")),
+            client.V1EnvVar(
+                name="MLFLOW_INSTANCE_RUNS_JSON",
+                value=json.dumps(_mlflow_instance_run_map(run), sort_keys=True),
+            ),
             client.V1EnvVar(
                 name="INTERNAL_API_TOKEN",
                 value_from=client.V1EnvVarSource(
@@ -589,6 +655,10 @@ def _safe_name_prefix(value: str, max_length: int) -> str:
         normalized = normalized.replace("--", "-")
     normalized = normalized.strip("-") or "run"
     return normalized[:max_length].rstrip("-") or "run"
+
+
+def _safe_artifact_name(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)[:180] or "artifact"
 
 
 def _short_hash(value: Any, *, length: int = 12) -> str:
