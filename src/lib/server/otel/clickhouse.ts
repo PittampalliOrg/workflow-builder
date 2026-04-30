@@ -337,6 +337,24 @@ export async function getTraceToolSpans(traceId: string): Promise<ObservabilityT
 	);
 }
 
+export async function getMultiTraceLlmSpans(
+	traceIds: string[]
+): Promise<ObservabilityLlmSpan[]> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	if (sanitized.length === 0) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	return queryObservabilityLlmSpans(`WHERE TraceId IN (${inClause})`);
+}
+
+export async function getMultiTraceToolSpans(
+	traceIds: string[]
+): Promise<ObservabilityToolSpan[]> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	if (sanitized.length === 0) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	return queryObservabilityToolSpans(`WHERE TraceId IN (${inClause})`);
+}
+
 export async function getSessionLlmSpans(sessionId: string): Promise<ObservabilityLlmSpan[]> {
 	return queryObservabilityLlmSpans(
 		`WHERE SessionId = '${escapeClickHouseString(sessionId.trim())}'`

@@ -7,12 +7,17 @@
 	import { Bot, Check, Copy, ExternalLink, FileDiff, Loader2 } from '@lucide/svelte';
 	import RenderedPatch from './rendered-patch.svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
+	import SpansTimeline from './spans-timeline.svelte';
 	import {
 		formatDuration,
 		formatRelative,
 		formatTokens
 	} from './run-status-helpers';
 	import type { ParsedHarnessResult } from '$lib/server/benchmarks/harness-result';
+	import type {
+		ObservabilityLlmSpan,
+		ObservabilityToolSpan
+	} from '$lib/types/observability';
 
 	type DrilldownPayload = {
 		runInstance: {
@@ -79,13 +84,23 @@
 		onOpenChange
 	}: Props = $props();
 
+	type SpansPayload = {
+		traceIds: string[];
+		llmSpans: ObservabilityLlmSpan[];
+		toolSpans: ObservabilityToolSpan[];
+		error?: string;
+	};
+
 	let detail = $state<DrilldownPayload | null>(null);
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let activeTab = $state<'problem' | 'patch' | 'harness' | 'logs'>('problem');
+	let activeTab = $state<'problem' | 'patch' | 'harness' | 'spans' | 'logs'>('problem');
 	let patchView = $state<'model' | 'gold' | 'both'>('both');
 	let patchMode = $state<'rendered' | 'raw'>('rendered');
 	let copied = $state<string | null>(null);
+	let spans = $state<SpansPayload | null>(null);
+	let spansLoading = $state(false);
+	let spansError = $state<string | null>(null);
 
 	$effect(() => {
 		if (!open || !runId || !instanceId) {
@@ -98,6 +113,8 @@
 		loading = true;
 		errorMessage = null;
 		detail = null;
+		spans = null;
+		spansError = null;
 		try {
 			const res = await fetch(
 				`/api/benchmarks/runs/${encodeURIComponent(rid)}/instances/${encodeURIComponent(iid)}`
@@ -111,6 +128,29 @@
 			loading = false;
 		}
 	}
+
+	async function loadSpans(rid: string, iid: string) {
+		if (spans || spansLoading) return;
+		spansLoading = true;
+		spansError = null;
+		try {
+			const res = await fetch(
+				`/api/benchmarks/runs/${encodeURIComponent(rid)}/instances/${encodeURIComponent(iid)}/spans`
+			);
+			if (!res.ok) throw new Error(`Failed to load spans (${res.status})`);
+			spans = (await res.json()) as SpansPayload;
+		} catch (err) {
+			spansError = err instanceof Error ? err.message : String(err);
+		} finally {
+			spansLoading = false;
+		}
+	}
+
+	$effect(() => {
+		if (activeTab === 'spans' && runId && instanceId) {
+			void loadSpans(runId, instanceId);
+		}
+	});
 
 	async function copyToClipboard(key: string, text: string) {
 		try {
@@ -226,6 +266,12 @@
 								status={detail.parsedHarness.failureCategory}
 								class="ml-2 text-[9px] px-1"
 							/>
+						</TabsTrigger>
+						<TabsTrigger value="spans" class="text-xs">
+							Spans
+							{#if (detail.runInstance.traceIds?.length ?? 0) === 0}
+								<span class="ml-1 text-muted-foreground">—</span>
+							{/if}
 						</TabsTrigger>
 						<TabsTrigger value="logs" class="text-xs">Logs</TabsTrigger>
 					</TabsList>
@@ -549,6 +595,35 @@
 										</Alert>
 									{/if}
 								</section>
+							{/if}
+						</TabsContent>
+
+						<TabsContent value="spans" class="m-0 space-y-3">
+							{#if spansLoading}
+								<div class="flex items-center gap-2 text-xs text-muted-foreground">
+									<Loader2 class="h-3 w-3 animate-spin" /> Loading spans…
+								</div>
+							{:else if spansError}
+								<Alert variant="destructive">
+									<AlertDescription>{spansError}</AlertDescription>
+								</Alert>
+							{:else if !spans || (detail.runInstance.traceIds?.length ?? 0) === 0}
+								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+									No trace IDs recorded for this instance. The runtime may have completed
+									before OTel spans propagated, or this run predates OTel instrumentation.
+								</div>
+							{:else}
+								<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+									{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'}
+								</div>
+								<SpansTimeline llmSpans={spans.llmSpans} toolSpans={spans.toolSpans} />
+								{#if spans.error}
+									<Alert variant="destructive">
+										<AlertDescription>
+											ClickHouse query partially failed: {spans.error}
+										</AlertDescription>
+									</Alert>
+								{/if}
 							{/if}
 						</TabsContent>
 
