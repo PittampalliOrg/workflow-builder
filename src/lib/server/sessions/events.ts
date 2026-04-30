@@ -300,14 +300,32 @@ async function applyInstanceMetricsSummaryToBenchmark(
 			histogramRaw && typeof histogramRaw === "object" && !Array.isArray(histogramRaw)
 				? (histogramRaw as Record<string, number>)
 				: {};
+		// Phase B Python emits `instance.metrics_summary` from agent_workflow's
+		// finally block, which fires on every Dapr replay tick. Different replay
+		// ticks see different in-memory counter states (0 before call_llm activity
+		// completes write-back, then 1+ after). If we OVERWROTE the row each time,
+		// later 0-emits would clobber a real high-water mark.
+		// Fix: use GREATEST() for monotonic counters; coalesce on string/jsonb.
+		// Termination reason: prefer the latest non-end_turn value (specific
+		// signals like circuit_breaker_* should win over the default end_turn).
+		// Tool histogram: keep whichever has more entries (proxy for completeness).
 		await db.execute(sql`
 			UPDATE benchmark_run_instances
-			SET turn_count = ${turnCount},
-				tool_call_count = ${toolCallCount},
-				termination_reason = ${terminationReason},
-				ttft_first_ms = ${ttftFirstMs},
-				ttft_first_tool_ms = ${ttftFirstToolMs},
-				tool_histogram = ${JSON.stringify(histogram)}::jsonb,
+			SET turn_count = GREATEST(COALESCE(turn_count, 0), COALESCE(${turnCount}, 0)),
+				tool_call_count = GREATEST(COALESCE(tool_call_count, 0), COALESCE(${toolCallCount}, 0)),
+				termination_reason = CASE
+					WHEN ${terminationReason} IS NULL THEN termination_reason
+					WHEN termination_reason IS NULL THEN ${terminationReason}
+					WHEN termination_reason = 'end_turn' AND ${terminationReason} != 'end_turn' THEN ${terminationReason}
+					ELSE termination_reason
+				END,
+				ttft_first_ms = COALESCE(ttft_first_ms, ${ttftFirstMs}),
+				ttft_first_tool_ms = COALESCE(ttft_first_tool_ms, ${ttftFirstToolMs}),
+				tool_histogram = CASE
+					WHEN jsonb_array_length(jsonb_path_query_array(tool_histogram, '$.keyvalue()')) >= jsonb_array_length(jsonb_path_query_array(${JSON.stringify(histogram)}::jsonb, '$.keyvalue()'))
+					THEN tool_histogram
+					ELSE ${JSON.stringify(histogram)}::jsonb
+				END,
 				updated_at = NOW()
 			WHERE session_id = ${sessionId}
 		`);
