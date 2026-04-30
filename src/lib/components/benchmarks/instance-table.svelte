@@ -74,7 +74,8 @@
 	let pageIndex = $state(Number.parseInt(urlState.searchParams.get('page') ?? '0', 10));
 	let sortKey = $state(urlState.searchParams.get('sort') ?? 'instanceId');
 	let sortDesc = $state(urlState.searchParams.get('dir') === 'desc');
-	let randomCount = $state(10);
+	const RANDOM_COUNT_OPTIONS = [1, 3, 5, 10, 25, 50, 100] as const;
+	let randomCount = $state<number>(3);
 
 	// ---- Column visibility ----------------------------------------------------
 	// Owned by TanStack's internal state. Mirroring it in Svelte $state and
@@ -311,18 +312,26 @@
 
 	function launchRandom() {
 		if (!table) return;
-		const filtered = table.getFilteredRowModel().rows;
-		const n = Math.min(Math.max(1, randomCount), filtered.length, MAX_RUN_INSTANCES);
+		// 1) Pick the suite FIRST so cross-suite samples don't get dropped
+		// downstream — coordinator only targets one suite per run. If the user
+		// has a suite pinned in the filter use that; otherwise pick the
+		// most-represented suite across the *visible* (filter-respecting) rows.
+		const filteredRowModel = table.getFilteredRowModel().rows;
+		const allFilteredRows = filteredRowModel.map((r) => r.original);
+		if (allFilteredRows.length === 0) return;
+		const suite = effectiveSuiteSlug(allFilteredRows);
+		// 2) Restrict to that suite, then sample N — guarantees we hit `n`
+		// instances, never fewer.
+		const suiteRows = allFilteredRows.filter((r) => r.suiteSlug === suite);
+		const n = Math.min(Math.max(1, randomCount), suiteRows.length, MAX_RUN_INSTANCES);
 		if (n === 0) return;
 		const indexes = new Set<number>();
 		while (indexes.size < n) {
-			indexes.add(Math.floor(Math.random() * filtered.length));
+			indexes.add(Math.floor(Math.random() * suiteRows.length));
 		}
-		const sampledRows = [...indexes].map((idx) => filtered[idx].original);
-		const suite = effectiveSuiteSlug(sampledRows);
-		const filteredRows = sampledRows.filter((r) => r.suiteSlug === suite);
+		const sampledRows = [...indexes].map((idx) => suiteRows[idx]);
 		onLaunch({
-			instanceIds: filteredRows.map((r) => r.instanceId),
+			instanceIds: sampledRows.map((r) => r.instanceId),
 			suiteSlug: suite
 		});
 	}
@@ -450,21 +459,24 @@
 		<div class="ml-auto flex items-center gap-2">
 			<div class="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 h-8 text-xs">
 				<Dices class="h-3.5 w-3.5 text-muted-foreground" />
-				<input
-					type="number"
-					min="1"
-					max={Math.min(MAX_RUN_INSTANCES, filteredRowCount)}
+				<select
 					bind:value={randomCount}
-					class="h-5 w-12 bg-transparent text-xs outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+					class="h-5 bg-transparent text-xs outline-none cursor-pointer pr-1"
 					aria-label="Random sample size"
-				/>
+				>
+					{#each RANDOM_COUNT_OPTIONS as opt (opt)}
+						{#if opt <= filteredRowCount && opt <= MAX_RUN_INSTANCES}
+							<option value={opt}>{opt}</option>
+						{/if}
+					{/each}
+				</select>
 				<Button
 					variant="ghost"
 					size="sm"
 					class="h-6 px-2 text-xs"
 					onclick={launchRandom}
 					disabled={!canLaunch || filteredRowCount === 0}
-					title="Sample N at random from current filter"
+					title="Sample N at random from current filter (single suite)"
 				>
 					Run Random
 				</Button>
