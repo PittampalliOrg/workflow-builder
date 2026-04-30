@@ -10,11 +10,7 @@ RUN npm install -g pnpm@10
 COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
-FROM node:22-alpine AS builder
-WORKDIR /app
-RUN npm install -g pnpm@10
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json pnpm-lock.yaml .npmrc ./
+FROM deps AS builder
 COPY components.json drizzle.config.ts server-prod.js svelte.config.js tsconfig.json vite.config.ts ./
 COPY drizzle ./drizzle
 COPY src ./src
