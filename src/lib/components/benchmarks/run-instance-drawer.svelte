@@ -34,6 +34,12 @@
 			patchFilesTouched: number | null;
 			patchFilesOverlapGold: number | null;
 			patchWellFormed: boolean | null;
+			turnCount: number | null;
+			toolCallCount: number | null;
+			terminationReason: string | null;
+			ttftFirstMs: number | null;
+			ttftFirstToolMs: number | null;
+			toolHistogram: Record<string, number> | null;
 			testOutputSummary: string | null;
 			usage: Record<string, unknown> | null;
 			timings: Record<string, unknown> | null;
@@ -228,6 +234,16 @@
 					{/if}
 					{#if detail.runInstance.patchBytes}
 						<span>{detail.runInstance.patchBytes} B patch</span>
+					{/if}
+					{#if detail.runInstance.turnCount !== null}
+						<Badge variant="secondary" class="font-normal">
+							{detail.runInstance.turnCount} turn{detail.runInstance.turnCount === 1 ? '' : 's'}
+						</Badge>
+					{/if}
+					{#if detail.runInstance.terminationReason}
+						<Badge variant="outline" class="font-normal">
+							{detail.runInstance.terminationReason}
+						</Badge>
 					{/if}
 				{/if}
 			</Sheet.Description>

@@ -125,6 +125,12 @@ export async function appendEvent(
 					(event.data ?? {}) as Record<string, unknown>,
 				);
 			}
+			if (event.type === "instance.metrics_summary") {
+				await applyInstanceMetricsSummaryToBenchmark(
+					sessionId,
+					(event.data ?? {}) as Record<string, unknown>,
+				);
+			}
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence should be rare with the advisory lock,
@@ -265,6 +271,61 @@ async function aggregateLlmUsageIntoBenchmarkInstance(
 			(err as Error)?.message ?? err,
 		);
 	}
+}
+
+/**
+ * Land a single dapr-agent-py `instance.metrics_summary` event onto the matching
+ * benchmark_run_instances row. Emitted exactly once per agent_workflow run from
+ * the finally-block (gated on non-replay), so this is a non-incremental UPSERT
+ * of the six counters. No-op for non-benchmark sessions.
+ */
+async function applyInstanceMetricsSummaryToBenchmark(
+	sessionId: string,
+	data: Record<string, unknown>,
+): Promise<void> {
+	if (!db) return;
+	try {
+		const turnCount = readNumericOrNull(data, "turn_count");
+		const toolCallCount = readNumericOrNull(data, "tool_call_count");
+		const ttftFirstMs = readNumericOrNull(data, "ttft_first_ms");
+		const ttftFirstToolMs = readNumericOrNull(data, "ttft_first_tool_ms");
+		const terminationReason = readStringOrNull(data, "termination_reason");
+		const histogramRaw = data.tool_histogram;
+		const histogram =
+			histogramRaw && typeof histogramRaw === "object" && !Array.isArray(histogramRaw)
+				? (histogramRaw as Record<string, number>)
+				: {};
+		await db.execute(sql`
+			UPDATE benchmark_run_instances
+			SET turn_count = ${turnCount},
+				tool_call_count = ${toolCallCount},
+				termination_reason = ${terminationReason},
+				ttft_first_ms = ${ttftFirstMs},
+				ttft_first_tool_ms = ${ttftFirstToolMs},
+				tool_histogram = ${JSON.stringify(histogram)}::jsonb,
+				updated_at = NOW()
+			WHERE session_id = ${sessionId}
+		`);
+	} catch (err) {
+		console.warn(
+			"[bench-metrics] applyInstanceMetricsSummaryToBenchmark failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
+function readNumericOrNull(data: Record<string, unknown>, key: string): number | null {
+	const raw = data[key];
+	if (raw === null || raw === undefined) return null;
+	const n = Number(raw);
+	return Number.isFinite(n) ? n : null;
+}
+
+function readStringOrNull(data: Record<string, unknown>, key: string): string | null {
+	const raw = data[key];
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	return trimmed ? trimmed : null;
 }
 
 /**

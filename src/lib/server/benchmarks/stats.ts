@@ -54,6 +54,8 @@ export type RunStats = {
 	byRepo: ByRepoStat[];
 	byDifficulty: ByDifficultyStat[] | null;
 	byStatus: ByStatusStat[];
+	byTool: { tool: string; count: number }[];
+	byTerminationReason: { reason: string; count: number }[];
 	tokensTotal: number;
 	tokensInTotal: number;
 	tokensOutTotal: number;
@@ -63,6 +65,10 @@ export type RunStats = {
 	costUsdTotal: number;
 	costPerResolved: number;
 	llmCallCount: number;
+	turnCountP50: number | null;
+	turnCountP90: number | null;
+	ttftP50: number | null;
+	ttftP90: number | null;
 	inferenceDurationMs: DurationPercentiles;
 	failureCategoryCounts: Record<FailureCategory, number>;
 	cumulativeResolved: CumulativePoint[];
@@ -167,6 +173,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 			usage: benchmarkRunInstances.usage,
 			timings: benchmarkRunInstances.timings,
 			harnessResult: benchmarkRunInstances.harnessResult,
+			turnCount: benchmarkRunInstances.turnCount,
+			terminationReason: benchmarkRunInstances.terminationReason,
+			toolHistogram: benchmarkRunInstances.toolHistogram,
+			ttftFirstMs: benchmarkRunInstances.ttftFirstMs,
 			repo: benchmarkInstances.repo,
 			metadata: benchmarkInstances.metadata,
 		})
@@ -200,6 +210,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 	let tokensCacheCreateTotal = 0;
 	let costUsdTotal = 0;
 	let llmCallCount = 0;
+	const toolCounts = new Map<string, number>();
+	const terminationCounts = new Map<string, number>();
+	const turnCounts: number[] = [];
+	const ttfts: number[] = [];
 
 	for (const row of rows) {
 		const isResolved = row.status === 'resolved';
@@ -238,6 +252,26 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 
 		if (row.evaluatedAt) {
 			cumulative.push({ ts: row.evaluatedAt.getTime(), resolved: isResolved });
+		}
+
+		// Phase B aggregates — turn count P50/P90, termination donut,
+		// per-tool histogram across instances, TTFT distribution.
+		if (typeof row.turnCount === 'number' && Number.isFinite(row.turnCount)) {
+			turnCounts.push(row.turnCount);
+		}
+		if (typeof row.ttftFirstMs === 'number' && Number.isFinite(row.ttftFirstMs)) {
+			ttfts.push(row.ttftFirstMs);
+		}
+		if (row.terminationReason) {
+			terminationCounts.set(
+				row.terminationReason,
+				(terminationCounts.get(row.terminationReason) ?? 0) + 1,
+			);
+		}
+		const hist = (row.toolHistogram ?? {}) as Record<string, number>;
+		for (const [tool, count] of Object.entries(hist)) {
+			if (!tool) continue;
+			toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + asNumber(count));
 		}
 
 		parsedHarness.push(parseHarnessResult(row.harnessResult));
@@ -308,6 +342,15 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 	// to render "—" rather than "$0.00 / 0 resolved".
 	const costPerResolved = resolved > 0 ? costUsdTotal / resolved : 0;
 
+	turnCounts.sort((a, b) => a - b);
+	ttfts.sort((a, b) => a - b);
+	const byTool = [...toolCounts.entries()]
+		.map(([tool, count]) => ({ tool, count }))
+		.sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
+	const byTerminationReason = [...terminationCounts.entries()]
+		.map(([reason, count]) => ({ reason, count }))
+		.sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+
 	return {
 		resolved,
 		total,
@@ -315,6 +358,8 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		byRepo,
 		byDifficulty,
 		byStatus,
+		byTool,
+		byTerminationReason,
 		tokensTotal,
 		tokensInTotal,
 		tokensOutTotal,
@@ -324,6 +369,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		costUsdTotal,
 		costPerResolved,
 		llmCallCount,
+		turnCountP50: percentile(turnCounts, 0.5),
+		turnCountP90: percentile(turnCounts, 0.9),
+		ttftP50: percentile(ttfts, 0.5),
+		ttftP90: percentile(ttfts, 0.9),
 		inferenceDurationMs: inferenceDurationMsStats,
 		failureCategoryCounts: aggregateFailureCategories(parsedHarness),
 		cumulativeResolved,

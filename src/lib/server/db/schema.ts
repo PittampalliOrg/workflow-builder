@@ -2859,6 +2859,15 @@ export const benchmarkRunInstances = pgTable(
 		patchFilesTouched: integer("patch_files_touched"),
 		patchFilesOverlapGold: integer("patch_files_overlap_gold"),
 		patchWellFormed: boolean("patch_well_formed"),
+		turnCount: integer("turn_count"),
+		toolCallCount: integer("tool_call_count"),
+		terminationReason: text("termination_reason"),
+		ttftFirstMs: integer("ttft_first_ms"),
+		ttftFirstToolMs: integer("ttft_first_tool_ms"),
+		toolHistogram: jsonb("tool_histogram")
+			.$type<Record<string, number>>()
+			.notNull()
+			.default({}),
 		inferenceEnvironment: jsonb("inference_environment")
 			.$type<Record<string, unknown>>()
 			.notNull()
