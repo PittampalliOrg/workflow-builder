@@ -1,4 +1,7 @@
 <script lang="ts">
+	import * as Chart from '$lib/components/ui/chart';
+	import { BarChart } from 'layerchart';
+
 	type Row = { tool: string; count: number };
 	type Props = {
 		data: Row[];
@@ -9,8 +12,11 @@
 	const { data, limit = 10, class: className = '' }: Props = $props();
 
 	const top = $derived(data.slice(0, limit));
-	const max = $derived(top.reduce((m, r) => Math.max(m, r.count), 0));
 	const total = $derived(data.reduce((a, b) => a + b.count, 0));
+
+	let chartConfig = {
+		count: { label: 'Calls', color: 'var(--chart-1)' }
+	} satisfies Chart.ChartConfig;
 </script>
 
 <div class="rounded-md border border-border bg-background p-4 {className}">
@@ -25,21 +31,21 @@
 			No tool histogram yet. Phase B emits this from agent_workflow's finally-block.
 		</p>
 	{:else}
-		<ul class="space-y-1.5">
-			{#each top as row (row.tool)}
-				<li class="flex items-center gap-2 text-xs">
-					<span class="w-32 shrink-0 truncate font-mono">{row.tool}</span>
-					<div class="relative h-3 flex-1 overflow-hidden rounded-sm bg-muted/40">
-						<div
-							class="absolute inset-y-0 left-0 bg-blue-500/70 dark:bg-blue-400/70"
-							style:width={`${max > 0 ? (row.count / max) * 100 : 0}%`}
-						></div>
-					</div>
-					<span class="w-10 shrink-0 text-right font-semibold tabular-nums">
-						{row.count}
-					</span>
-				</li>
-			{/each}
-		</ul>
+		<div style:height="{Math.max(120, top.length * 28)}px">
+			<Chart.Container config={chartConfig} class="h-full w-full">
+				<BarChart
+					data={top}
+					orientation="horizontal"
+					x="count"
+					y="tool"
+					bandPadding={0.25}
+					series={[{ key: 'count', value: (d: Row) => d.count, color: 'var(--chart-1)' }]}
+				>
+					{#snippet tooltip()}
+						<Chart.Tooltip />
+					{/snippet}
+				</BarChart>
+			</Chart.Container>
+		</div>
 	{/if}
 </div>

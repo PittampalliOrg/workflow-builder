@@ -1,5 +1,9 @@
 <script lang="ts">
+	import * as Chart from '$lib/components/ui/chart';
+	import { PieChart } from 'layerchart';
+
 	type Slice = { reason: string; count: number };
+	type Datum = { reason: string; count: number; fill: string };
 	type Props = {
 		data: Slice[];
 		class?: string;
@@ -9,60 +13,42 @@
 
 	const total = $derived(data.reduce((a, b) => a + b.count, 0));
 
-	// Termination semantics:
-	//   end_turn — clean exit, agent decided it was done. Green.
-	//   max_iters — ran out of turn budget. Amber.
-	//   circuit_breaker_empty / circuit_breaker_failure — call_llm bailed.
-	//     Red because they almost always indicate an SDK/provider issue.
-	//   session_turn_timeout — session_workflow's turn timer fired. Red.
-	//   agent_error — uncaught exception in agent_workflow. Red.
-	//   cancelled / unknown — gray.
-	function colorFor(reason: string): string {
+	// Termination semantics → CSS variable color (resolved by Chart.Container).
+	// end_turn = green (clean), max_iters = amber, *_breaker / timeout / error = red,
+	// cancelled = gray, anything else = slate.
+	function colorVar(reason: string): string {
 		switch (reason) {
 			case 'end_turn':
-				return 'rgb(16 185 129)';
+				return 'var(--color-end_turn)';
 			case 'max_iters':
-				return 'rgb(245 158 11)';
+				return 'var(--color-max_iters)';
 			case 'circuit_breaker_empty':
 			case 'circuit_breaker_failure':
 			case 'session_turn_timeout':
 			case 'agent_error':
-				return 'rgb(239 68 68)';
+				return 'var(--color-error)';
 			case 'cancelled':
-				return 'rgb(156 163 175)';
+				return 'var(--color-cancelled)';
 			default:
-				return 'rgb(100 116 139)';
+				return 'var(--color-other)';
 		}
 	}
 
-	type Arc = {
-		reason: string;
-		color: string;
-		count: number;
-		pct: number;
-		offset: number;
-		len: number;
-	};
+	let chartConfig = {
+		end_turn: { label: 'end_turn', color: 'rgb(16 185 129)' },
+		max_iters: { label: 'max_iters', color: 'rgb(245 158 11)' },
+		error: { label: 'error', color: 'rgb(239 68 68)' },
+		cancelled: { label: 'cancelled', color: 'rgb(156 163 175)' },
+		other: { label: 'other', color: 'rgb(100 116 139)' }
+	} satisfies Chart.ChartConfig;
 
-	const arcs = $derived.by<Arc[]>(() => {
-		if (total === 0) return [];
-		const circumference = 2 * Math.PI * 40;
-		let offset = 0;
-		return data.map((s) => {
-			const pct = s.count / total;
-			const len = circumference * pct;
-			const a: Arc = {
-				reason: s.reason,
-				color: colorFor(s.reason),
-				count: s.count,
-				pct,
-				offset,
-				len
-			};
-			offset += len;
-			return a;
-		});
-	});
+	let chartData = $derived(
+		data.map((s) => ({
+			reason: s.reason,
+			count: s.count,
+			fill: colorVar(s.reason)
+		}))
+	);
 </script>
 
 <div class="rounded-md border border-border bg-background p-4 {className}">
@@ -78,43 +64,36 @@
 		</p>
 	{:else}
 		<div class="flex items-center gap-4">
-			<svg viewBox="0 0 100 100" class="h-28 w-28 shrink-0 -rotate-90">
-				<circle
-					cx="50"
-					cy="50"
-					r="40"
-					fill="none"
-					stroke="rgb(229 231 235)"
-					stroke-width="14"
-					class="dark:[stroke:rgb(45_55_72)]"
-				/>
-				{#each arcs as a (a.reason)}
-					<circle
-						cx="50"
-						cy="50"
-						r="40"
-						fill="none"
-						stroke={a.color}
-						stroke-width="14"
-						stroke-dasharray={`${a.len} ${2 * Math.PI * 40 - a.len}`}
-						stroke-dashoffset={`${-a.offset}`}
-					/>
-				{/each}
-			</svg>
+			<Chart.Container config={chartConfig} class="h-32 w-32 shrink-0">
+				<PieChart
+					data={chartData}
+					key="reason"
+					value="count"
+					c={(d: Datum) => d.fill}
+					innerRadius={0.55}
+					padAngle={0.02}
+				>
+					{#snippet tooltip()}
+						<Chart.Tooltip hideLabel />
+					{/snippet}
+				</PieChart>
+			</Chart.Container>
 			<ul class="flex-1 space-y-1 text-xs">
-				{#each arcs as a (a.reason)}
+				{#each data as s (s.reason)}
 					<li class="flex items-center justify-between gap-2">
 						<span class="flex min-w-0 items-center gap-2">
 							<span
 								class="block h-2.5 w-2.5 shrink-0 rounded-sm"
-								style:background-color={a.color}
+								style:background-color={colorVar(s.reason)}
 								aria-hidden="true"
 							></span>
-							<span class="truncate font-mono">{a.reason}</span>
+							<span class="truncate font-mono">{s.reason}</span>
 						</span>
 						<span class="shrink-0 tabular-nums">
-							<span class="font-semibold">{a.count}</span>
-							<span class="text-muted-foreground">({Math.round(a.pct * 100)}%)</span>
+							<span class="font-semibold">{s.count}</span>
+							<span class="text-muted-foreground">
+								({Math.round((s.count / total) * 100)}%)
+							</span>
 						</span>
 					</li>
 				{/each}
