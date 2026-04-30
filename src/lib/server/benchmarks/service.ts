@@ -12,6 +12,7 @@ import {
 } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
+import { costFor, type UsageTotals } from "$lib/server/pricing/model-pricing";
 import {
 	agentVersions,
 	agents,
@@ -730,7 +731,11 @@ export async function markBenchmarkRunStatus(
 export async function recomputeRunSummary(runId: string) {
 	const database = requireDb();
 	const rows = await database
-		.select({ status: benchmarkRunInstances.status })
+		.select({
+			id: benchmarkRunInstances.id,
+			status: benchmarkRunInstances.status,
+			usage: benchmarkRunInstances.usage,
+		})
 		.from(benchmarkRunInstances)
 		.where(eq(benchmarkRunInstances.runId, runId));
 	const summary = summarizeRunInstances(rows.map((row) => row.status));
@@ -738,7 +743,44 @@ export async function recomputeRunSummary(runId: string) {
 		.update(benchmarkRuns)
 		.set({ summary, updatedAt: new Date() })
 		.where(eq(benchmarkRuns.id, runId));
+
+	// Refresh per-instance cost_usd from accumulated tokens via the central
+	// pricing table. The events.ts hook keeps token deltas in `usage` but
+	// doesn't compute cost on every event (avoids loading the pricing module
+	// on the hot path). Cost is recomputed at every recompute boundary.
+	for (const row of rows) {
+		await refreshInstanceCost(row.id, row.usage as Record<string, unknown> | null);
+	}
+
 	return summary;
+}
+
+async function refreshInstanceCost(
+	instanceRowId: string,
+	usage: Record<string, unknown> | null,
+): Promise<void> {
+	if (!usage) return;
+	const totals: UsageTotals = {
+		inputTokens: Number(usage.input_tokens ?? 0) || 0,
+		outputTokens: Number(usage.output_tokens ?? 0) || 0,
+		cacheReadTokens: Number(usage.cache_read_input_tokens ?? 0) || 0,
+		cacheCreateTokens: Number(usage.cache_creation_input_tokens ?? 0) || 0,
+	};
+	const totalTokens =
+		totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheCreateTokens;
+	if (totalTokens <= 0) return;
+	const model = typeof usage.model === "string" ? usage.model : null;
+	const newCost = costFor(model, totals);
+	const currentCost = Number(usage.cost_usd ?? 0);
+	// Skip the UPDATE when cost is already accurate (e.g. nothing changed
+	// since the last recompute). Floating-point compare with a tight epsilon.
+	if (Math.abs(currentCost - newCost) < 0.000001) return;
+	const database = requireDb();
+	const nextUsage = { ...usage, cost_usd: newCost };
+	await database
+		.update(benchmarkRunInstances)
+		.set({ usage: nextUsage, updatedAt: new Date() })
+		.where(eq(benchmarkRunInstances.id, instanceRowId));
 }
 
 export function getSwebenchCoordinatorUrl(): string {

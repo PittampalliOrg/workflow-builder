@@ -114,6 +114,17 @@ export async function appendEvent(
 					.returning();
 				return inserted;
 			});
+			// Bench metrics aggregation (fire-and-forget). When dapr-agent-py
+			// emits an `agent.llm_usage` event for a session linked to a
+			// benchmark_run_instances row, atomically roll the call's tokens
+			// into that row's `usage` jsonb. The UPDATE is a no-op for
+			// non-benchmark sessions (no row matches the session_id).
+			if (event.type === "agent.llm_usage") {
+				await aggregateLlmUsageIntoBenchmarkInstance(
+					sessionId,
+					(event.data ?? {}) as Record<string, unknown>,
+				);
+			}
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence should be rare with the advisory lock,
@@ -193,6 +204,67 @@ export async function getEvent(
 		)
 		.limit(1);
 	return row ? rowToEnvelope(row, { preview: false }) : null;
+}
+
+/**
+ * Roll a single dapr-agent-py `agent.llm_usage` event's tokens into the
+ * matching benchmark_run_instances row. No-op when no benchmark instance
+ * is linked to this session (UI-driven sessions, evaluation-driven sessions).
+ *
+ * The atomic SQL UPDATE keeps tokens consistent under the bursty event
+ * stream — every LLM call increments by per-call deltas without read-modify-
+ * write races between concurrent benchmark sessions.
+ */
+async function aggregateLlmUsageIntoBenchmarkInstance(
+	sessionId: string,
+	data: Record<string, unknown>,
+): Promise<void> {
+	// `success: false` events are emitted on circuit-breaker tripping so the UI
+	// can render the partial usage that did get spent. We still want to roll
+	// those tokens into the benchmark row for accurate cost; they were paid
+	// for either way. The agent emits `success` boolean on every call.
+	if (data.success === false) {
+		// Failures still consume tokens; record them.
+	}
+	const inputTokens = Number(data.input_tokens ?? 0) || 0;
+	const outputTokens = Number(data.output_tokens ?? 0) || 0;
+	const cacheRead = Number(data.cache_read_input_tokens ?? 0) || 0;
+	const cacheCreate = Number(data.cache_creation_input_tokens ?? 0) || 0;
+	const ttftMs = Number(data.ttft_ms ?? 0) || 0;
+	const model = typeof data.model === "string" ? data.model : null;
+	if (inputTokens + outputTokens + cacheRead + cacheCreate <= 0) return;
+	try {
+		const database = requireDb();
+		await database.execute(sql`
+			UPDATE benchmark_run_instances
+			SET usage = jsonb_build_object(
+				'input_tokens',
+					COALESCE((usage->>'input_tokens')::bigint, 0) + ${inputTokens},
+				'output_tokens',
+					COALESCE((usage->>'output_tokens')::bigint, 0) + ${outputTokens},
+				'cache_read_input_tokens',
+					COALESCE((usage->>'cache_read_input_tokens')::bigint, 0) + ${cacheRead},
+				'cache_creation_input_tokens',
+					COALESCE((usage->>'cache_creation_input_tokens')::bigint, 0) + ${cacheCreate},
+				'llm_call_count',
+					COALESCE((usage->>'llm_call_count')::bigint, 0) + 1,
+				'ttft_first_ms',
+					COALESCE((usage->>'ttft_first_ms')::bigint, ${ttftMs > 0 ? ttftMs : null}),
+				'model',
+					COALESCE(${model}, usage->>'model'),
+				'cost_usd',
+					(usage->>'cost_usd')::float8
+			),
+			updated_at = NOW()
+			WHERE session_id = ${sessionId}
+		`);
+	} catch (err) {
+		// Don't fail the event ingestion on metric-rollup errors; log and move on.
+		console.warn(
+			"[bench-metrics] aggregateLlmUsageIntoBenchmarkInstance failed",
+			(err as Error)?.message ?? err,
+		);
+	}
 }
 
 /**

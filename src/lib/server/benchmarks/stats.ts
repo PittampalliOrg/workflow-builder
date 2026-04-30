@@ -57,7 +57,12 @@ export type RunStats = {
 	tokensTotal: number;
 	tokensInTotal: number;
 	tokensOutTotal: number;
+	tokensCacheReadTotal: number;
+	tokensCacheCreateTotal: number;
+	cacheHitRate: number;
 	costUsdTotal: number;
+	costPerResolved: number;
+	llmCallCount: number;
 	inferenceDurationMs: DurationPercentiles;
 	failureCategoryCounts: Record<FailureCategory, number>;
 	cumulativeResolved: CumulativePoint[];
@@ -72,17 +77,36 @@ function asNumber(v: unknown): number {
 }
 
 function readUsageNumbers(usage: Record<string, unknown> | null | undefined) {
-	if (!usage) return { tokens: 0, tokensIn: 0, tokensOut: 0, cost: 0 };
+	if (!usage) {
+		return {
+			tokens: 0,
+			tokensIn: 0,
+			tokensOut: 0,
+			cacheRead: 0,
+			cacheCreate: 0,
+			cost: 0,
+			llmCalls: 0,
+		};
+	}
 	const tokensIn = asNumber(
 		usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens ?? usage.promptTokens,
 	);
 	const tokensOut = asNumber(
 		usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens ?? usage.completionTokens,
 	);
+	const cacheRead = asNumber(
+		usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
+	);
+	const cacheCreate = asNumber(
+		usage.cache_creation_input_tokens ??
+			usage.cacheCreationInputTokens ??
+			usage.cacheCreateTokens,
+	);
 	const totalDirect = asNumber(usage.total_tokens ?? usage.totalTokens);
 	const tokens = totalDirect > 0 ? totalDirect : tokensIn + tokensOut;
 	const cost = asNumber(usage.cost_usd ?? usage.costUsd ?? usage.cost);
-	return { tokens, tokensIn, tokensOut, cost };
+	const llmCalls = asNumber(usage.llm_call_count ?? usage.llmCallCount);
+	return { tokens, tokensIn, tokensOut, cacheRead, cacheCreate, cost, llmCalls };
 }
 
 function inferenceDurationMs(row: {
@@ -172,7 +196,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 	let tokensTotal = 0;
 	let tokensInTotal = 0;
 	let tokensOutTotal = 0;
+	let tokensCacheReadTotal = 0;
+	let tokensCacheCreateTotal = 0;
 	let costUsdTotal = 0;
+	let llmCallCount = 0;
 
 	for (const row of rows) {
 		const isResolved = row.status === 'resolved';
@@ -197,7 +224,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		tokensTotal += usage.tokens;
 		tokensInTotal += usage.tokensIn;
 		tokensOutTotal += usage.tokensOut;
+		tokensCacheReadTotal += usage.cacheRead;
+		tokensCacheCreateTotal += usage.cacheCreate;
 		costUsdTotal += usage.cost;
+		llmCallCount += usage.llmCalls;
 
 		const dur = inferenceDurationMs({
 			startedAt: row.startedAt,
@@ -267,6 +297,17 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 			});
 	})();
 
+	// Cache-hit % is "cached input as a fraction of total input touched". The
+	// denominator includes both fresh input AND prior-cached input read this
+	// run (Anthropic's prompt caching meaningfully reduces cost only when
+	// cache_read >> cache_creation; we surface the read-fraction).
+	const totalInputForCache = tokensInTotal + tokensCacheReadTotal;
+	const cacheHitRate = totalInputForCache > 0 ? tokensCacheReadTotal / totalInputForCache : 0;
+	// $ per resolved is the canonical SWE-bench ROI metric (HAL/SWE-rebench).
+	// Fall back to 0 when nothing resolved yet — UI guards on `resolved > 0`
+	// to render "—" rather than "$0.00 / 0 resolved".
+	const costPerResolved = resolved > 0 ? costUsdTotal / resolved : 0;
+
 	return {
 		resolved,
 		total,
@@ -277,7 +318,12 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		tokensTotal,
 		tokensInTotal,
 		tokensOutTotal,
+		tokensCacheReadTotal,
+		tokensCacheCreateTotal,
+		cacheHitRate,
 		costUsdTotal,
+		costPerResolved,
+		llmCallCount,
 		inferenceDurationMs: inferenceDurationMsStats,
 		failureCategoryCounts: aggregateFailureCategories(parsedHarness),
 		cumulativeResolved,

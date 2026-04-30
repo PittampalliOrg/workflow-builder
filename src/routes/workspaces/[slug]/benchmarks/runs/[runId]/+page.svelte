@@ -15,7 +15,7 @@
 		Layers,
 		RefreshCw,
 		StopCircle
-	} from 'lucide-svelte';
+	} from '@lucide/svelte';
 	import RunStatusBadge from '$lib/components/benchmarks/run-status-badge.svelte';
 	import RunStatTiles from '$lib/components/benchmarks/run-stat-tiles.svelte';
 	import RepoAccuracyBars from '$lib/components/benchmarks/repo-accuracy-bars.svelte';
@@ -278,8 +278,13 @@
 			resolvedRate={runStats.resolvedRate}
 			inferenceDone={inferenceDone}
 			evaluationDone={evaluationDone}
-			tokensTotal={runStats.tokensTotal}
+			tokensInTotal={runStats.tokensInTotal}
+			tokensOutTotal={runStats.tokensOutTotal}
+			tokensCacheReadTotal={runStats.tokensCacheReadTotal}
 			costUsdTotal={runStats.costUsdTotal}
+			costPerResolved={runStats.costPerResolved}
+			cacheHitRate={runStats.cacheHitRate}
+			llmCallCount={runStats.llmCallCount}
 			inferenceP50={runStats.inferenceDurationMs.p50}
 			inferenceP90={runStats.inferenceDurationMs.p90}
 		/>

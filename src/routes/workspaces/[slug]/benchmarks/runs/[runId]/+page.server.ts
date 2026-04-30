@@ -34,7 +34,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 				tokensTotal: 0,
 				tokensInTotal: 0,
 				tokensOutTotal: 0,
+				tokensCacheReadTotal: 0,
+				tokensCacheCreateTotal: 0,
+				cacheHitRate: 0,
 				costUsdTotal: 0,
+				costPerResolved: 0,
+				llmCallCount: 0,
 				inferenceDurationMs: { count: 0, p50: null, p90: null, max: null, mean: null },
 				failureCategoryCounts: {
 					resolved: 0,
