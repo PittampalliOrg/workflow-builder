@@ -433,6 +433,56 @@ export async function aggregateBenchmarkLifecycleFromSessionEvents(
 	}
 }
 
+/**
+ * Phase A backfill: aggregate token totals from session_events at run-terminal
+ * time. The in-line aggregateLlmUsageIntoBenchmarkInstance handler races with
+ * row creation — events can arrive before the benchmark row's session_id is
+ * populated. This deterministic pass recomputes from raw events when called
+ * from recomputeRunSummary (after evaluation-results lands, all events durably
+ * committed).
+ */
+export async function aggregateLlmUsageFromSessionEvents(
+	sessionId: string,
+): Promise<void> {
+	if (!db) return;
+	try {
+		await db.execute(sql`
+			WITH usage_totals AS (
+				SELECT
+					COALESCE(SUM((data->>'input_tokens')::bigint), 0)::bigint AS in_tokens,
+					COALESCE(SUM((data->>'output_tokens')::bigint), 0)::bigint AS out_tokens,
+					COALESCE(SUM((data->>'cache_read_input_tokens')::bigint), 0)::bigint AS cache_read,
+					COALESCE(SUM((data->>'cache_creation_input_tokens')::bigint), 0)::bigint AS cache_create,
+					COUNT(*)::bigint AS llm_calls,
+					(SELECT data->>'model' FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id DESC LIMIT 1) AS model,
+					(SELECT ROUND((data->>'ttft_ms')::float)::bigint FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id ASC LIMIT 1) AS ttft_first
+				FROM session_events
+				WHERE session_id = ${sessionId} AND type = 'agent.llm_usage'
+			)
+			UPDATE benchmark_run_instances bri
+			SET usage = jsonb_build_object(
+				'input_tokens', usage_totals.in_tokens,
+				'output_tokens', usage_totals.out_tokens,
+				'cache_read_input_tokens', usage_totals.cache_read,
+				'cache_creation_input_tokens', usage_totals.cache_create,
+				'llm_call_count', usage_totals.llm_calls,
+				'ttft_first_ms', usage_totals.ttft_first,
+				'model', usage_totals.model,
+				'cost_usd', (bri.usage->>'cost_usd')::float8
+			),
+			updated_at = NOW()
+			FROM usage_totals
+			WHERE bri.session_id = ${sessionId}
+				AND usage_totals.llm_calls > 0
+		`);
+	} catch (err) {
+		console.warn(
+			"[bench-metrics] aggregateLlmUsageFromSessionEvents failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
 function readNumericOrNull(data: Record<string, unknown>, key: string): number | null {
 	const raw = data[key];
 	if (raw === null || raw === undefined) return null;

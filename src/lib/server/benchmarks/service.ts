@@ -13,7 +13,10 @@ import {
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import { costFor, type UsageTotals } from "$lib/server/pricing/model-pricing";
-import { aggregateBenchmarkLifecycleFromSessionEvents } from "$lib/server/sessions/events";
+import {
+	aggregateBenchmarkLifecycleFromSessionEvents,
+	aggregateLlmUsageFromSessionEvents,
+} from "$lib/server/sessions/events";
 import {
 	agentVersions,
 	agents,
@@ -761,22 +764,34 @@ export async function recomputeRunSummary(runId: string) {
 		.set({ summary, updatedAt: new Date() })
 		.where(eq(benchmarkRuns.id, runId));
 
-	// Phase B backstop: re-run the session-events aggregator for each instance
-	// so the row reflects the canonical counts even if the in-line trigger on
-	// session.status_terminated raced with concurrent agent.* event ingest
-	// transactions. By the time recomputeRunSummary is called (from the
-	// evaluation-results endpoint), all events are durably committed.
+	// Phase A + B backstop: re-aggregate from session_events for each instance
+	// so rows reflect canonical counts even if the in-line triggers (Phase A's
+	// agent.llm_usage hook, Phase B's session.status_terminated hook) raced
+	// with row creation OR with concurrent transactions. By the time
+	// recomputeRunSummary is called (from the evaluation-results endpoint),
+	// all events are durably committed and the row's session_id is populated.
 	for (const row of rows) {
 		if (row.sessionId) {
+			await aggregateLlmUsageFromSessionEvents(row.sessionId);
 			await aggregateBenchmarkLifecycleFromSessionEvents(row.sessionId);
 		}
 	}
+
+	// Re-fetch usage AFTER the Phase A backfill so refreshInstanceCost sees
+	// the populated tokens.
+	const refreshedRows = await database
+		.select({
+			id: benchmarkRunInstances.id,
+			usage: benchmarkRunInstances.usage,
+		})
+		.from(benchmarkRunInstances)
+		.where(eq(benchmarkRunInstances.runId, runId));
 
 	// Refresh per-instance cost_usd from accumulated tokens via the central
 	// pricing table. The events.ts hook keeps token deltas in `usage` but
 	// doesn't compute cost on every event (avoids loading the pricing module
 	// on the hot path). Cost is recomputed at every recompute boundary.
-	for (const row of rows) {
+	for (const row of refreshedRows) {
 		await refreshInstanceCost(row.id, row.usage as Record<string, unknown> | null);
 	}
 	await syncBenchmarkRunMlflow(runId);
