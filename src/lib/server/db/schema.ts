@@ -2781,6 +2781,7 @@ export const benchmarkRuns = pgTable(
 			.$type<Record<string, unknown>>()
 			.notNull()
 			.default({}),
+		tags: jsonb("tags").$type<string[]>().notNull().default([]),
 		error: text("error"),
 		cancelRequestedAt: timestamp("cancel_requested_at"),
 		startedAt: timestamp("started_at"),

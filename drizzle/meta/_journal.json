@@ -316,6 +316,13 @@
 			"when": 1777390200000,
 			"tag": "0052_environment_build_activity",
 			"breakpoints": true
+		},
+		{
+			"idx": 45,
+			"version": "7",
+			"when": 1777553700000,
+			"tag": "0053_benchmark_run_tags",
+			"breakpoints": true
 		}
 	]
 }

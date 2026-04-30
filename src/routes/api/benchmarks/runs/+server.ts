@@ -13,7 +13,10 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	if (!locals.session.projectId) return json({ runs: [] });
 	const limit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
-	const runs = await listBenchmarkRuns(locals.session.projectId, limit);
+	const tag = url.searchParams.get("tag");
+	const runs = await listBenchmarkRuns(locals.session.projectId, limit, {
+		tag: tag ?? null,
+	});
 	return json({ runs });
 };
 
@@ -59,6 +62,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				typeof body.evaluatorResourceClass === "string"
 					? body.evaluatorResourceClass
 					: null,
+			tags: Array.isArray(body.tags)
+				? body.tags.filter((t): t is string => typeof t === "string")
+				: null,
 		});
 	} catch (err) {
 		if (err instanceof BenchmarkAgentValidationError) {

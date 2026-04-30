@@ -1,3 +1,194 @@
+import { error } from "@sveltejs/kit";
+import { and, asc, count, eq, sql } from "drizzle-orm";
+import { db } from "$lib/server/db";
+import {
+	agents,
+	agentVersions,
+	benchmarkInstances,
+	benchmarkSuites,
+} from "$lib/server/db/schema";
+import { ensureDefaultBenchmarkSuites } from "$lib/server/benchmarks/service";
+import type {
+	BenchmarkInstanceRow,
+	RepoFacet,
+	RunnableAgent,
+	SuiteFacet,
+} from "$lib/types/benchmark-instance";
 import type { PageServerLoad } from "./$types";
 
-export const load: PageServerLoad = async () => ({});
+const PROBLEM_PREVIEW_LEN = 240;
+
+function trimProblem(s: string | null): string {
+	if (!s) return "";
+	const cleaned = s.replace(/\s+/g, " ").trim();
+	return cleaned.length > PROBLEM_PREVIEW_LEN
+		? `${cleaned.slice(0, PROBLEM_PREVIEW_LEN).trimEnd()}…`
+		: cleaned;
+}
+
+export const load: PageServerLoad = async ({ locals }) => {
+	if (!locals.session?.userId) error(401, "Authentication required");
+	const projectId = locals.session.projectId ?? null;
+	if (!db) error(503, "Database not configured");
+	const database = db;
+
+	await ensureDefaultBenchmarkSuites();
+
+	const agentsQuery = projectId
+		? database
+				.select({
+					id: agents.id,
+					slug: agents.slug,
+					name: agents.name,
+					avatar: agents.avatar,
+					runtime: agents.runtime,
+					registryStatus: agents.registryStatus,
+					currentVersionId: agents.currentVersionId,
+					versionNumber: agentVersions.version,
+					config: agentVersions.config,
+				})
+				.from(agents)
+				.leftJoin(
+					agentVersions,
+					eq(agentVersions.id, agents.currentVersionId),
+				)
+				.where(
+					and(
+						eq(agents.projectId, projectId),
+						eq(agents.isArchived, false),
+						eq(agents.runtime, "dapr-agent-py"),
+						eq(agents.registryStatus, "registered"),
+						sql`NOT (${agents.tags} @> '["workflow-ephemeral"]'::jsonb)`,
+					),
+				)
+				.orderBy(asc(agents.name))
+		: Promise.resolve(
+				[] as Array<{
+					id: string;
+					slug: string;
+					name: string;
+					avatar: string | null;
+					runtime: string;
+					registryStatus: string | null;
+					currentVersionId: string | null;
+					versionNumber: number | null;
+					config: Record<string, unknown> | null;
+				}>,
+			);
+
+	const [instanceRows, repoFacetRows, suiteRows, agentRows] = await Promise.all([
+		database
+			.select({
+				id: benchmarkInstances.id,
+				instanceId: benchmarkInstances.instanceId,
+				repo: benchmarkInstances.repo,
+				baseCommit: benchmarkInstances.baseCommit,
+				problemStatement: benchmarkInstances.problemStatement,
+				hintsText: benchmarkInstances.hintsText,
+				testMetadata: benchmarkInstances.testMetadata,
+				hasGoldPatch: sql<boolean>`(${benchmarkInstances.goldPatch} IS NOT NULL AND length(${benchmarkInstances.goldPatch}) > 0)`,
+				suiteSlug: benchmarkSuites.slug,
+				suiteName: benchmarkSuites.name,
+			})
+			.from(benchmarkInstances)
+			.innerJoin(
+				benchmarkSuites,
+				eq(benchmarkInstances.suiteId, benchmarkSuites.id),
+			)
+			.orderBy(asc(benchmarkInstances.instanceId)),
+		database
+			.select({
+				repo: benchmarkInstances.repo,
+				count: count(),
+			})
+			.from(benchmarkInstances)
+			.groupBy(benchmarkInstances.repo),
+		database
+			.select({
+				id: benchmarkSuites.id,
+				slug: benchmarkSuites.slug,
+				name: benchmarkSuites.name,
+			})
+			.from(benchmarkSuites)
+			.orderBy(asc(benchmarkSuites.name)),
+		agentsQuery,
+	]);
+
+	const instances: BenchmarkInstanceRow[] = instanceRows.map((row) => {
+		const md = (row.testMetadata ?? {}) as Record<string, unknown>;
+		const f2pRaw = md.FAIL_TO_PASS ?? md.fail_to_pass;
+		const p2pRaw = md.PASS_TO_PASS ?? md.pass_to_pass;
+		const f2p = Array.isArray(f2pRaw) ? f2pRaw : [];
+		const p2p = Array.isArray(p2pRaw) ? p2pRaw : [];
+		const testPatch = typeof md.test_patch === "string" ? md.test_patch : "";
+		const versionField =
+			typeof md.version === "string"
+				? md.version
+				: typeof md.version === "number"
+					? String(md.version)
+					: null;
+		const hintsLen = row.hintsText ? row.hintsText.length : 0;
+		return {
+			id: row.id,
+			instanceId: row.instanceId,
+			suiteSlug: row.suiteSlug,
+			suiteName: row.suiteName,
+			repo: row.repo,
+			baseCommit: row.baseCommit ? row.baseCommit.slice(0, 12) : null,
+			version: versionField,
+			problemPreview: trimProblem(row.problemStatement),
+			failToPassCount: f2p.length,
+			passToPassCount: p2p.length,
+			hasGoldPatch: Boolean(row.hasGoldPatch),
+			hasHints: hintsLen > 0,
+			hintsLen,
+			testPatchLines: testPatch ? testPatch.split("\n").length : 0,
+		};
+	});
+
+	const repoFacets: RepoFacet[] = repoFacetRows
+		.filter((r): r is { repo: string; count: number } => Boolean(r.repo))
+		.map((r) => ({
+			value: r.repo,
+			label: r.repo,
+			count: Number(r.count),
+		}))
+		.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+	const suiteCounts = new Map<string, number>();
+	for (const i of instances)
+		suiteCounts.set(i.suiteSlug, (suiteCounts.get(i.suiteSlug) ?? 0) + 1);
+	const suiteFacets: SuiteFacet[] = suiteRows.map((s) => ({
+		slug: s.slug,
+		name: s.name,
+		instanceCount: suiteCounts.get(s.slug) ?? 0,
+	}));
+
+	const runnableAgents: RunnableAgent[] = agentRows
+		.filter(
+			(row): row is typeof row & { versionNumber: number } =>
+				row.currentVersionId != null && row.versionNumber != null,
+		)
+		.map((row) => {
+			const cfg = (row.config ?? {}) as Record<string, unknown>;
+			const modelSpec =
+				typeof cfg.modelSpec === "string" ? cfg.modelSpec : null;
+			return {
+				id: row.id,
+				slug: row.slug,
+				name: row.name,
+				avatar: row.avatar,
+				runtime: row.runtime,
+				currentVersion: row.versionNumber,
+				registryStatus: row.registryStatus ?? "unregistered",
+				modelSpec,
+			};
+		});
+
+	return {
+		instances,
+		repoFacets,
+		suiteFacets,
+		runnableAgents,
+	};
+};

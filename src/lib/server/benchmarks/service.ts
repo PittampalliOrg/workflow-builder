@@ -7,6 +7,7 @@ import {
 	desc,
 	eq,
 	inArray,
+	sql,
 	type SQL,
 } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
@@ -350,7 +351,22 @@ export type CreateBenchmarkRunInput = {
 	timeoutSeconds?: number;
 	maxTurns?: number | null;
 	evaluatorResourceClass?: string | null;
+	tags?: string[] | null;
 };
+
+function normalizeTags(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const v of value) {
+		if (typeof v !== "string") continue;
+		const tag = v.trim().toLowerCase().slice(0, 64);
+		if (!tag || seen.has(tag)) continue;
+		seen.add(tag);
+		out.push(tag);
+	}
+	return out;
+}
 
 export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	const database = requireDb();
@@ -439,6 +455,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 				maxTurns,
 				evaluatorResourceClass,
 				summary: { total: instanceIds.length, resolvedRate: 0 },
+				tags: normalizeTags(input.tags),
 			})
 			.returning();
 
@@ -459,9 +476,20 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	return created;
 }
 
-export async function listBenchmarkRuns(projectId: string, limit = 20) {
+export async function listBenchmarkRuns(
+	projectId: string,
+	limit = 20,
+	options: { tag?: string | null } = {},
+) {
 	const database = requireDb();
 	await ensureDefaultBenchmarkSuites();
+	const conditions: SQL[] = [eq(benchmarkRuns.projectId, projectId)];
+	const tag = options.tag?.trim().toLowerCase();
+	if (tag) {
+		conditions.push(
+			sql`${benchmarkRuns.tags} @> ${JSON.stringify([tag])}::jsonb`,
+		);
+	}
 	const rows = await database
 		.select({
 			run: benchmarkRuns,
@@ -473,7 +501,7 @@ export async function listBenchmarkRuns(projectId: string, limit = 20) {
 		.from(benchmarkRuns)
 		.innerJoin(benchmarkSuites, eq(benchmarkSuites.id, benchmarkRuns.suiteId))
 		.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
-		.where(eq(benchmarkRuns.projectId, projectId))
+		.where(conditions.length === 1 ? conditions[0] : and(...conditions))
 		.orderBy(desc(benchmarkRuns.createdAt))
 		.limit(Math.min(Math.max(limit, 1), 100));
 	return rows.map((row) => serializeRunSummary(row));
@@ -535,6 +563,8 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 			sandboxName: runInstance.sandboxName,
 			workspaceRef: runInstance.workspaceRef,
 			traceIds: runInstance.traceIds,
+			usage: runInstance.usage,
+			timings: runInstance.timings,
 			modelPatch: runInstance.modelPatch,
 			patchBytes: runInstance.patchBytes,
 			error: runInstance.error,
@@ -1870,6 +1900,7 @@ function serializeRunSummary(row: {
 		evaluatorJobName: row.run.evaluatorJobName,
 		predictionsPath: row.run.predictionsPath,
 		summary: row.run.summary,
+		tags: Array.isArray(row.run.tags) ? row.run.tags : [],
 		error: row.run.error,
 		cancelRequestedAt: row.run.cancelRequestedAt?.toISOString() ?? null,
 		startedAt: row.run.startedAt?.toISOString() ?? null,
