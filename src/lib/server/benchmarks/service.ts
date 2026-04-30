@@ -13,6 +13,7 @@ import {
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import { costFor, type UsageTotals } from "$lib/server/pricing/model-pricing";
+import { aggregateBenchmarkLifecycleFromSessionEvents } from "$lib/server/sessions/events";
 import {
 	agentVersions,
 	agents,
@@ -750,6 +751,7 @@ export async function recomputeRunSummary(runId: string) {
 			id: benchmarkRunInstances.id,
 			status: benchmarkRunInstances.status,
 			usage: benchmarkRunInstances.usage,
+			sessionId: benchmarkRunInstances.sessionId,
 		})
 		.from(benchmarkRunInstances)
 		.where(eq(benchmarkRunInstances.runId, runId));
@@ -758,6 +760,17 @@ export async function recomputeRunSummary(runId: string) {
 		.update(benchmarkRuns)
 		.set({ summary, updatedAt: new Date() })
 		.where(eq(benchmarkRuns.id, runId));
+
+	// Phase B backstop: re-run the session-events aggregator for each instance
+	// so the row reflects the canonical counts even if the in-line trigger on
+	// session.status_terminated raced with concurrent agent.* event ingest
+	// transactions. By the time recomputeRunSummary is called (from the
+	// evaluation-results endpoint), all events are durably committed.
+	for (const row of rows) {
+		if (row.sessionId) {
+			await aggregateBenchmarkLifecycleFromSessionEvents(row.sessionId);
+		}
+	}
 
 	// Refresh per-instance cost_usd from accumulated tokens via the central
 	// pricing table. The events.ts hook keeps token deltas in `usage` but

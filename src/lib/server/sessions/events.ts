@@ -136,10 +136,29 @@ export async function appendEvent(
 			// Dapr replay tick — it captures mid-flight counter snapshots and
 			// pops the dict, so peaks are never preserved. The truthful counts
 			// live in session_events itself: each agent.llm_usage = one turn,
-			// each agent.tool_use = one tool call. Aggregate from there at
-			// session-terminal time (single, deterministic).
+			// each agent.tool_use = one tool call. Aggregate from there.
+			//
+			// Run on each Phase-A-or-B-relevant event so the row stays current as
+			// events flow in (each call is idempotent — COUNT(*) over session_events).
+			// Also run on session.status_terminated as the canonical final pass,
+			// with a small delay to let concurrent agent.* event ingest transactions
+			// commit (we observed a race where status_terminated arrived first and
+			// my aggregator ran with 0 events visible).
+			if (
+				event.type === "agent.llm_usage" ||
+				event.type === "agent.tool_use"
+			) {
+				// Fire-and-forget — incremental updates while the run progresses.
+				void aggregateBenchmarkLifecycleFromSessionEvents(sessionId);
+			}
 			if (event.type === "session.status_terminated") {
-				await aggregateBenchmarkLifecycleFromSessionEvents(sessionId);
+				// 2s delay lets stragglers from concurrent transactions land before
+				// the canonical aggregation. recomputeRunSummary on evaluation-results
+				// is the deterministic backstop if even this misses anything.
+				setTimeout(
+					() => void aggregateBenchmarkLifecycleFromSessionEvents(sessionId),
+					2000,
+				);
 			}
 			return rowToEnvelope(row);
 		} catch (err) {
@@ -360,7 +379,7 @@ async function applyInstanceMetricsSummaryToBenchmark(
  *   4. session.status_idle.stop_reason.type == 'max_iters' → 'max_iters'
  *   5. otherwise → 'end_turn'
  */
-async function aggregateBenchmarkLifecycleFromSessionEvents(
+export async function aggregateBenchmarkLifecycleFromSessionEvents(
 	sessionId: string,
 ): Promise<void> {
 	if (!db) return;
