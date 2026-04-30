@@ -272,6 +272,13 @@ export const NAV_GROUPS: NavGroup[] = [
 		visibility: { adminOnly: true },
 		items: [
 			{
+				id: "admin-metrics",
+				label: "Metrics",
+				icon: Gauge,
+				href: () => "/admin/metrics",
+				match: prefix("/admin/metrics"),
+			},
+			{
 				id: "admin-runtimes",
 				label: "Agent runtimes",
 				icon: Cpu,
