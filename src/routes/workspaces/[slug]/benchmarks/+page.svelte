@@ -178,7 +178,6 @@
 	let modelConfigLabel = $state('');
 	let concurrency = $state(1);
 	let timeoutSeconds = $state(7200);
-	let maxTurns = $state(80);
 	let evaluatorResourceClass = $state('standard');
 
 	let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -309,7 +308,6 @@
 					modelConfigLabel: modelConfigLabel.trim() || undefined,
 					concurrency,
 					timeoutSeconds,
-					maxTurns,
 					evaluatorResourceClass,
 				}),
 			});
@@ -674,15 +672,9 @@
 				/>
 			</div>
 
-			<div class="grid grid-cols-2 gap-3">
-				<div class="space-y-2">
-					<Label for="concurrency">Concurrency</Label>
-					<Input id="concurrency" type="number" min="1" max="32" bind:value={concurrency} />
-				</div>
-				<div class="space-y-2">
-					<Label for="max-turns">Max Turns</Label>
-					<Input id="max-turns" type="number" min="5" bind:value={maxTurns} />
-				</div>
+			<div class="space-y-2">
+				<Label for="concurrency">Concurrency</Label>
+				<Input id="concurrency" type="number" min="1" max="32" bind:value={concurrency} />
 			</div>
 
 			<div class="grid grid-cols-2 gap-3">
