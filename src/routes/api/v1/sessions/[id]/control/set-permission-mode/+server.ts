@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { raiseSessionEvent } from "$lib/server/sessions/control";
+import { raiseSessionAgentConfigPatch } from "$lib/server/sessions/agent-config-patch";
 
 /**
  * Toggle the session's permission mode. `bypass` skips always_ask gates for
@@ -17,11 +17,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (mode !== "bypass" && mode !== "default") {
 		return error(400, "mode must be 'bypass' or 'default'");
 	}
-	const result = await raiseSessionEvent(
-		params.id,
-		"session.control.set_permission_mode",
-		{ mode },
-	);
+	const result = await raiseSessionAgentConfigPatch(params.id, {
+		permissionMode: mode,
+	});
 	if (!result.ok)
 		return error(result.status, result.error ?? "set-permission-mode failed");
 	return json({ mode });

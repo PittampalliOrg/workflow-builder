@@ -82,6 +82,10 @@ from src.code_checkpoint import (
 from src.event_publisher import publish_session_event, scope_session, unscope_session
 from src.mcp_retry import connect_mcp_client_with_retries
 from src.session_outputs import scan_and_upload as _scan_session_outputs
+from src.session_config import (
+    apply_session_control_events,
+    external_control_event_as_user_event,
+)
 from src.hooks import (
     HooksSnapshot,
     execute_notification_hooks,
@@ -233,10 +237,12 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "anthropic/claude-opus-4-7": "llm-anthropic-opus",
     "anthropic/claude-opus-4-6": "llm-anthropic-opus",
     "anthropic/claude-haiku-4-5-20251001": "llm-anthropic-haiku",
+    "anthropic/claude-haiku-4-5": "llm-anthropic-haiku",
     "claude-sonnet-4-6": "llm-anthropic-sonnet",
     "claude-opus-4-7": "llm-anthropic-opus",
     "claude-opus-4-6": "llm-anthropic-opus",
     "claude-haiku-4-5-20251001": "llm-anthropic-haiku",
+    "claude-haiku-4-5": "llm-anthropic-haiku",
     # OpenAI
     "openai/gpt-5.4": "llm-openai-gpt5",
     "gpt-5.4": "llm-openai-gpt5",
@@ -299,6 +305,8 @@ def _resolve_llm_component(message: dict, metadata: dict | None = None) -> str:
 
 
 def on_config_change(key: str, value):
+    # Operator-level hot reload only. User/session config changes flow through
+    # durable session events so replay has a clear source of truth.
     logger.info("[hot-reload] %s = %s", key, value)
 
 
@@ -458,6 +466,7 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "workspaceRef",
         "llmComponent",
         "systemPrompt",
+        "permissionMode",
     ):
         raw = value.get(key)
         if raw is None:
@@ -1152,6 +1161,7 @@ class OpenShellDurableAgent(DurableAgent):
         agent_context = {
             "llmComponent": clean.get("llmComponent"),
             "systemPrompt": clean.get("systemPrompt"),
+            "permissionMode": clean.get("permissionMode"),
         }
         with self._agent_context_lock:
             self._openshell_context_by_instance[instance_id] = sandbox_context
@@ -1827,6 +1837,7 @@ class OpenShellDurableAgent(DurableAgent):
                     session_id=inst_id,
                     cwd=cwd_for_hooks,
                     project_dir=project_dir_for_hooks,
+                    permission_mode=str(context.get("permissionMode") or "") or None,
                 )
             except Exception as hook_exc:
                 logger.warning("[hooks] PreToolUse error: %s", hook_exc)
@@ -2654,6 +2665,7 @@ class OpenShellDurableAgent(DurableAgent):
             "workspaceRef": workspace_ref or None,
             "llmComponent": llm_component,
             "systemPrompt": self.profile.system_prompt,
+            "permissionMode": agent_config.get("permissionMode"),
             "allowedTools": sorted(allowed_tools),
         }
         self._remember_runtime_context(instance_id, runtime_context)
@@ -3203,6 +3215,23 @@ class OpenShellDurableAgent(DurableAgent):
                 if not pending:
                     continue
 
+            agent_cfg, pending, config_changes = apply_session_control_events(
+                agent_cfg,
+                pending,
+            )
+            if config_changes:
+                if not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.config_updated",
+                        {
+                            "changes": config_changes,
+                            "applies": "next_turn",
+                        },
+                    )
+                if not pending:
+                    continue
+
             if any(ev.get("type") == "session.terminate" for ev in pending):
                 if not ctx.is_replaying:
                     publish_session_event(session_id, "session.status_terminated", {})
@@ -3260,6 +3289,7 @@ class OpenShellDurableAgent(DurableAgent):
                     cwd=str(child_input.get("cwd") or DEFAULT_CWD),
                     sandbox_name=str(child_input.get("sandboxName") or "") or None,
                 ),
+                "permissionMode": agent_cfg.get("permissionMode"),
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
             }
             yield ctx.call_activity(
@@ -4272,6 +4302,7 @@ def raise_session_event_endpoint(request: dict) -> dict:
     payload = request.get("payload") or {}
     if not instance_id or not event_name:
         raise HTTPException(status_code=400, detail="instanceId + eventName required")
+    event_name, payload = external_control_event_as_user_event(event_name, payload)
 
     raise_request = pb.RaiseEventRequest(
         instanceId=instance_id,

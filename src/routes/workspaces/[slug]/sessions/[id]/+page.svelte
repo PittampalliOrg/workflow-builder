@@ -36,6 +36,7 @@
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
+	import { AGENT_MODEL_OPTIONS } from '$lib/agents/model-options';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import {
 		Reasoning,
@@ -713,12 +714,6 @@
 	}
 
 	let bypassEnabled = $state(false);
-	const MODEL_OPTIONS = [
-		'claude-opus-4-7',
-		'claude-opus-4-6',
-		'claude-sonnet-4-6',
-		'claude-haiku-4-5'
-	];
 
 	function formatEvent(event: SessionEventEnvelope) {
 		const { type, data } = event;
@@ -840,7 +835,7 @@
 						</Button>
 					{/snippet}
 				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="w-52">
+				<DropdownMenu.Content align="end" class="w-72">
 					<DropdownMenu.Item
 						onSelect={() => interrupt()}
 						disabled={session?.status !== 'running'}
@@ -854,9 +849,12 @@
 					<DropdownMenu.Label class="text-[10px] uppercase tracking-wide text-muted-foreground">
 						Model
 					</DropdownMenu.Label>
-					{#each MODEL_OPTIONS as m (m)}
-						<DropdownMenu.Item onSelect={() => setModel(m)} class="font-mono text-xs">
-							{m}
+					{#each AGENT_MODEL_OPTIONS as model (model.value)}
+						<DropdownMenu.Item onSelect={() => setModel(model.value)} class="text-xs">
+							<div class="flex min-w-0 flex-col">
+								<span>{model.label}</span>
+								<span class="font-mono text-[11px] text-muted-foreground">{model.value}</span>
+							</div>
 						</DropdownMenu.Item>
 					{/each}
 					<DropdownMenu.Separator />

@@ -40,6 +40,7 @@
 		PopoverContent,
 		PopoverTrigger
 	} from '$lib/components/ui/popover';
+	import * as Select from '$lib/components/ui/select';
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import AgentOverview from '$lib/components/agents/agent-overview.svelte';
@@ -74,6 +75,14 @@
 		AgentVersionSummary
 	} from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
+	import {
+		AGENT_MODEL_OPTIONS,
+		CUSTOM_AGENT_MODEL_SELECT_VALUE,
+		agentModelLabel,
+		agentModelOptionFor,
+		agentModelSelectValue,
+		canonicalAgentModelSpec
+	} from '$lib/agents/model-options';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -81,6 +90,7 @@
 
 	let agent = $state<AgentDetail | null>(null);
 	let config = $state<AgentConfig | null>(null);
+	let unsupportedModelSpec = $derived(unsupportedAgentModelSpec(config?.modelSpec));
 	let loading = $state(true);
 	let saving = $state(false);
 	let errorMessage = $state<string | null>(null);
@@ -281,6 +291,12 @@
 		if (!config) return;
 		config = { ...config, [key]: value };
 		markDirty();
+	}
+
+	function unsupportedAgentModelSpec(value: string | undefined): string | null {
+		const trimmed = typeof value === 'string' ? value.trim() : '';
+		if (!trimmed) return null;
+		return agentModelOptionFor(trimmed) ? null : trimmed;
 	}
 
 	function toggleBuiltinTool(tool: string) {
@@ -658,15 +674,46 @@
 							<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 								<div>
 									<Label>Model spec</Label>
-									<Input
-										value={config.modelSpec ?? ''}
-										placeholder="e.g. anthropic/claude-opus-4-7"
-										oninput={(e) =>
-											updateConfig(
-												'modelSpec',
-												(e.target as HTMLInputElement).value
-											)}
-									/>
+									<Select.Root
+										type="single"
+										value={agentModelSelectValue(config.modelSpec)}
+										onValueChange={(value) => {
+											const canonical = canonicalAgentModelSpec(value);
+											if (canonical) updateConfig('modelSpec', canonical);
+										}}
+									>
+										<Select.Trigger class="mt-1">
+											{agentModelLabel(config.modelSpec)}
+										</Select.Trigger>
+										<Select.Content>
+											{#if unsupportedModelSpec}
+												<Select.Item
+													value={CUSTOM_AGENT_MODEL_SELECT_VALUE}
+													disabled
+													class="font-mono text-xs"
+												>
+													{unsupportedModelSpec}
+												</Select.Item>
+												<Select.Separator />
+											{/if}
+											{#each AGENT_MODEL_OPTIONS as model (model.value)}
+												<Select.Item value={model.value}>
+													<div class="flex min-w-0 flex-col">
+														<span>{model.label}</span>
+														<span class="font-mono text-[11px] text-muted-foreground">
+															{model.value}
+														</span>
+													</div>
+												</Select.Item>
+											{/each}
+										</Select.Content>
+									</Select.Root>
+									{#if unsupportedModelSpec}
+										<p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+											Unsupported runtime model:
+											<code class="font-mono">{unsupportedModelSpec}</code>
+										</p>
+									{/if}
 								</div>
 								<div>
 									<Label>Temperature</Label>
