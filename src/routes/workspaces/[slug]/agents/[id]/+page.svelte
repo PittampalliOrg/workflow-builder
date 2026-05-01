@@ -50,7 +50,7 @@
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
-	import PromptWorkbench from '$lib/components/agents/prompt-workbench.svelte';
+	import PromptStackEditor from '$lib/components/agents/prompt-stack-editor.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
 	import {
@@ -742,7 +742,12 @@
 					</TabsContent>
 
 					<TabsContent value="prompt" class="space-y-4">
-						<PromptWorkbench {agent} {config} onPatch={patchConfig} />
+						<PromptStackEditor
+							{agent}
+							{config}
+							onPatch={patchConfig}
+							workspaceSlug={slug}
+						/>
 					</TabsContent>
 
 					<TabsContent value="capabilities" class="space-y-4">

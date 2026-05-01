@@ -134,6 +134,14 @@ export const NAV_GROUPS: NavGroup[] = [
 					/^\/(workspaces\/[^/]+\/(library|skills|files|batches)|code-functions)(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
+			{
+				id: "prompts",
+				label: "Prompts",
+				icon: FileText,
+				href: ({ slug }) => `/workspaces/${slug}/prompts`,
+				match: /^\/workspaces\/[^/]+\/prompts(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
 		],
 	},
 	{
