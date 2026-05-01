@@ -8,6 +8,7 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Popover from '$lib/components/ui/popover';
 	import {
+		AlertCircle,
 		ExternalLink,
 		GripVertical,
 		Plus,
@@ -128,8 +129,54 @@
 	const tailChars = $derived(renderedParts.dynamicText.length);
 	const cacheEligible = $derived(prefixChars >= CACHE_THRESHOLD_CHARS);
 
-	const personaCharCount = $derived(personaText().length);
+	const customCharCount = $derived((config.customSystemPrompt ?? '').length);
 	const appendCharCount = $derived((config.appendSystemPrompt ?? '').length);
+	const legacyFields = $derived.by(() => {
+		const present: string[] = [];
+		if (cleanString(config.role)) present.push('role');
+		if (cleanString(config.goal)) present.push('goal');
+		if (cleanString(config.systemPrompt)) present.push('systemPrompt');
+		if (Array.isArray(config.instructions) && config.instructions.length > 0)
+			present.push('instructions');
+		if (Array.isArray(config.styleGuidelines) && config.styleGuidelines.length > 0)
+			present.push('styleGuidelines');
+		return present;
+	});
+
+	function cleanString(value: unknown): string | null {
+		return typeof value === 'string' && value.trim() ? value.trim() : null;
+	}
+
+	function migrateLegacyToCustom() {
+		// Render the persona-static section the same way the bundle does so the
+		// merged content keeps section headers (## Role / ## Goal / etc.). The
+		// renderer skips empty inputs, so this is safe regardless of which
+		// legacy fields happen to be populated.
+		const merged = renderInstructionSystemText({
+			persona: {
+				role: config.role,
+				goal: config.goal,
+				systemPrompt: config.systemPrompt,
+				instructions: config.instructions,
+				styleGuidelines: config.styleGuidelines
+			},
+			runtime: {}
+		}).trim();
+		// Append to any existing customSystemPrompt rather than overwriting, so
+		// the migration is non-destructive when both are populated.
+		const existing = (config.customSystemPrompt ?? '').trim();
+		const combined = existing
+			? `${existing}\n\n${merged}`
+			: merged;
+		onPatch({
+			customSystemPrompt: combined,
+			role: '',
+			goal: '',
+			systemPrompt: '',
+			instructions: [],
+			styleGuidelines: []
+		});
+	}
 
 	// Available presets for picker (excludes those already bound on the same side).
 	const availableForStatic = $derived(
@@ -263,22 +310,6 @@
 
 	function textValue(value: unknown): string | null {
 		return typeof value === 'string' && value.trim() ? value.trim() : null;
-	}
-
-	function personaText(): string {
-		// Approximate persona-only render so we can show its char count
-		// without re-running the full pipeline.
-		return renderInstructionSystemText({
-			persona: {
-				role: config.role,
-				goal: config.goal,
-				instructions: config.instructions,
-				styleGuidelines: config.styleGuidelines,
-				systemPrompt: config.systemPrompt,
-				customSystemPrompt: config.customSystemPrompt
-			},
-			runtime: {}
-		});
 	}
 
 	function bindingPreview(ref: PromptPresetRef): {
@@ -457,112 +488,46 @@
 				</Popover.Content>
 			</Popover.Root>
 
-			<!-- Persona block (the agent's voice) -->
+			<!-- Agent voice (the agent's primary system-prompt content) -->
 			<div class="rounded-md border border-amber-300/50 bg-amber-50/40 p-2 dark:border-amber-700/50 dark:bg-amber-950/10">
 				<div class="mb-1.5 flex items-center gap-2 text-xs">
 					<Badge variant="outline" class="text-[10px]">agent</Badge>
-					<span class="font-medium">
-						{config.customSystemPrompt ? 'Custom System Prompt' : 'Persona'}
-					</span>
+					<span class="font-medium">Custom system prompt</span>
 					<span class="ml-auto tabular-nums text-muted-foreground">
-						{personaCharCount}ch
+						{customCharCount}ch
 					</span>
 				</div>
-				{#if config.customSystemPrompt}
-					<Textarea
-						rows={4}
-						value={config.customSystemPrompt}
-						placeholder="Custom system prompt replaces persona-derived sections."
-						oninput={(e) =>
-							onPatch({
-								customSystemPrompt: (e.target as HTMLTextAreaElement).value
-							})}
-					/>
-					<button
-						type="button"
-						class="mt-1 text-[10px] text-muted-foreground hover:text-foreground"
-						onclick={() => onPatch({ customSystemPrompt: '' })}
-					>
-						Switch back to persona fields
-					</button>
-				{:else}
-					<div class="grid gap-2">
-						<div>
-							<Label class="text-[10px] text-muted-foreground">Role</Label>
-							<Input
-								class="h-7 text-xs"
-								value={config.role ?? ''}
-								placeholder="e.g. Senior Engineer"
-								oninput={(e) =>
-									onPatch({ role: (e.target as HTMLInputElement).value })}
-							/>
+
+				{#if legacyFields.length > 0}
+					<div class="mb-2 flex items-start gap-2 rounded-md border border-amber-400/60 bg-amber-100/50 p-2 text-[11px] dark:border-amber-500/40 dark:bg-amber-900/30">
+						<AlertCircle class="mt-0.5 size-3.5 shrink-0 text-amber-700 dark:text-amber-400" />
+						<div class="flex-1 space-y-1">
+							<div class="leading-snug">
+								Legacy persona fields populated:
+								<code class="rounded bg-background px-1 py-px font-mono text-[10px]">{legacyFields.join(', ')}</code>.
+								They still render in the prompt but are no longer editable here. Bind reusable blocks via static/dynamic preset refs above; put per-agent voice in the custom system prompt below.
+							</div>
+							<button
+								type="button"
+								class="rounded bg-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-900 transition-colors hover:bg-amber-300 dark:bg-amber-800 dark:text-amber-100 dark:hover:bg-amber-700"
+								onclick={migrateLegacyToCustom}
+							>
+								Merge legacy fields into custom system prompt
+							</button>
 						</div>
-						<div>
-							<Label class="text-[10px] text-muted-foreground">Goal</Label>
-							<Input
-								class="h-7 text-xs"
-								value={config.goal ?? ''}
-								placeholder="e.g. Help me ship features"
-								oninput={(e) =>
-									onPatch({ goal: (e.target as HTMLInputElement).value })}
-							/>
-						</div>
-						<div>
-							<Label class="text-[10px] text-muted-foreground">System prompt</Label>
-							<Textarea
-								rows={4}
-								class="text-xs"
-								value={config.systemPrompt ?? ''}
-								oninput={(e) =>
-									onPatch({
-										systemPrompt: (e.target as HTMLTextAreaElement).value
-									})}
-							/>
-						</div>
-						<div>
-							<Label class="text-[10px] text-muted-foreground">Instructions (one per line)</Label>
-							<Textarea
-								rows={3}
-								class="text-xs"
-								value={Array.isArray(config.instructions)
-									? config.instructions.join('\n')
-									: ''}
-								oninput={(e) =>
-									onPatch({
-										instructions: (e.target as HTMLTextAreaElement).value
-											.split('\n')
-											.map((line) => line.trim())
-											.filter(Boolean)
-									})}
-							/>
-						</div>
-						<div>
-							<Label class="text-[10px] text-muted-foreground">Style guidelines (one per line)</Label>
-							<Textarea
-								rows={2}
-								class="text-xs"
-								value={Array.isArray(config.styleGuidelines)
-									? config.styleGuidelines.join('\n')
-									: ''}
-								oninput={(e) =>
-									onPatch({
-										styleGuidelines: (e.target as HTMLTextAreaElement).value
-											.split('\n')
-											.map((line) => line.trim())
-											.filter(Boolean)
-									})}
-							/>
-						</div>
-						<button
-							type="button"
-							class="text-left text-[10px] text-muted-foreground hover:text-foreground"
-							onclick={() =>
-								onPatch({ customSystemPrompt: config.systemPrompt ?? '' })}
-						>
-							Use a custom system prompt instead (replaces these fields at runtime)
-						</button>
 					</div>
 				{/if}
+
+				<Textarea
+					rows={6}
+					class="text-xs"
+					value={config.customSystemPrompt ?? ''}
+					placeholder={'The agent\'s voice. Plain text or markdown — no special structure required. Bind reusable blocks via static/dynamic preset refs above for cross-agent content.'}
+					oninput={(e) =>
+						onPatch({
+							customSystemPrompt: (e.target as HTMLTextAreaElement).value
+						})}
+				/>
 			</div>
 		</div>
 
