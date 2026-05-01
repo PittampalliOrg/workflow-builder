@@ -1583,6 +1583,7 @@ function resultFromBuild(row: EnvironmentImageBuild): EnvironmentPrepareResult {
 	const environmentStatus =
 		status === "validated" ? "validated" : status === "failed" || status === "cancelled" ? "failed" : "building";
 	const environment = rowToEnvironment(row);
+	const runtimeEnvironment = runtimeSafeEnvironment(environment);
 	return {
 		success: status !== "failed" && status !== "cancelled",
 		complete: status === "validated" || status === "failed" || status === "cancelled",
@@ -1597,12 +1598,11 @@ function resultFromBuild(row: EnvironmentImageBuild): EnvironmentPrepareResult {
 		digest: row.digest ?? undefined,
 		validationStatus: row.validationStatus ?? undefined,
 		validationLogRef: row.validationLogRef ?? undefined,
-		validationCommand: row.validationCommand ?? undefined,
 		buildLogRef: row.buildLogRef ?? undefined,
 		pipelineRunName: row.pipelineRunName ?? undefined,
 		pipelineRunNamespace: row.pipelineRunNamespace ?? undefined,
 		builtAt: row.builtAt?.toISOString(),
-		environment,
+		environment: runtimeEnvironment,
 		promptNotes: promptNotes(environment),
 		error: row.error ?? undefined,
 		source: "environment_image_builds",
@@ -1613,6 +1613,7 @@ function validatedResult(
 	environment: ResolvedSwebenchInferenceEnvironment,
 	source: string,
 ): EnvironmentPrepareResult {
+	const runtimeEnvironment = runtimeSafeEnvironment({ ...environment, source });
 	return {
 		success: true,
 		complete: true,
@@ -1626,9 +1627,8 @@ function validatedResult(
 		digest: environment.digest,
 		validationStatus: environment.validationStatus,
 		validationLogRef: environment.validationLogRef,
-		validationCommand: environment.validationCommand,
 		builtAt: environment.builtAt,
-		environment: { ...environment, source },
+		environment: runtimeEnvironment,
 		promptNotes: promptNotes(environment),
 		source,
 	};
@@ -1713,15 +1713,43 @@ function runtimeEnvironmentNotes(
 	notes: string[] | undefined,
 	workspaceRoot: string | null | undefined,
 ): string[] | undefined {
-	if (workspaceRoot !== SWEBENCH_WORKSPACE_ROOT) return notes;
+	if (workspaceRoot !== SWEBENCH_WORKSPACE_ROOT) {
+		const safeNotes = (notes ?? []).filter(
+			(note) => !containsSensitiveSwebenchRuntimeTerm(note),
+		);
+		return safeNotes.length ? [...new Set(safeNotes)] : undefined;
+	}
 	const filteredNotes = (notes ?? []).filter(
-		(note) => !/prepared under\s+\/testbed/i.test(note),
+		(note) => !containsSensitiveSwebenchRuntimeTerm(note),
 	);
-	return [
+	const runtimeNotes = [
 		...filteredNotes,
 		"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
 		"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
 	];
+	return [...new Set(runtimeNotes)];
+}
+
+export function runtimeSafeEnvironment(
+	environment: ResolvedSwebenchInferenceEnvironment,
+): ResolvedSwebenchInferenceEnvironment {
+	const { validationCommand: _validationCommand, swebenchSpec: _swebenchSpec, ...safe } = environment;
+	return {
+		...safe,
+		workspaceRoot: FALLBACK_WORKSPACE_ROOT,
+		environmentNotes: runtimeEnvironmentNotes(
+			environment.environmentNotes,
+			environment.buildStrategy === "swebench-harness"
+				? SWEBENCH_WORKSPACE_ROOT
+				: environment.workspaceRoot,
+		),
+	};
+}
+
+function containsSensitiveSwebenchRuntimeTerm(value: string): boolean {
+	return /\/testbed|test[_-]?patch|fail_to_pass|pass_to_pass|goldpatch/i.test(
+		value,
+	);
 }
 
 function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInferenceEnvironment {

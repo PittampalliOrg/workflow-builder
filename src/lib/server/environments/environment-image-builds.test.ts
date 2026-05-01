@@ -39,6 +39,7 @@ import {
 	hasUsableValidatedImage,
 	normalizeEnvironmentBuildActivityEvents,
 	plannedSwebenchInferenceEnvironment,
+	runtimeSafeEnvironment,
 	syncEnvironmentBuild,
 } from "./environment-image-builds";
 
@@ -134,6 +135,49 @@ describe("SWE-bench environment image build planning", () => {
 		);
 		expect(planned).toHaveProperty("envSpecHash");
 		expect(planned).not.toHaveProperty("sandboxImage");
+	});
+
+	it("redacts hidden SWE-bench image metadata from runtime environment output", () => {
+		const runtimeEnvironment = runtimeSafeEnvironment({
+			environmentStatus: "validated",
+			suite: "SWE-bench_Lite",
+			repo: "sympy/sympy",
+			version: "1.7",
+			environmentKey: "sympy-1.7",
+			sandboxTemplate: "dapr-agent",
+			sandboxImage:
+				"ghcr.io/pittampalliorg/swebench-inference-sympy-1.7:env-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			digest:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			validationStatus: "validated",
+			validationCommand: "cd /testbed && python -m pytest --version",
+			workspaceRoot: "/testbed",
+			condaEnvironment: "testbed",
+			buildStrategy: "swebench-harness",
+			swebenchSpec: {
+				workspaceRoot: "/testbed",
+				testPatchHash: "abc123",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+			},
+			environmentNotes: [
+				"The repository is already prepared under /testbed at the SWE-bench base commit.",
+				"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
+			],
+		});
+
+		const serialized = JSON.stringify(runtimeEnvironment);
+		expect(runtimeEnvironment).toMatchObject({
+			workspaceRoot: "/sandbox/repo",
+			environmentStatus: "validated",
+			environmentKey: "sympy-1.7",
+		});
+		expect(runtimeEnvironment).not.toHaveProperty("validationCommand");
+		expect(runtimeEnvironment).not.toHaveProperty("swebenchSpec");
+		expect(serialized).not.toContain("/testbed");
+		expect(serialized).not.toMatch(/test[_-]?patch/i);
+		expect(serialized).not.toContain("FAIL_TO_PASS");
+		expect(serialized).not.toContain("PASS_TO_PASS");
+		expect(serialized).not.toContain("goldPatch");
 	});
 
 	it("falls back to buildpacks only when harness metadata is missing", () => {
