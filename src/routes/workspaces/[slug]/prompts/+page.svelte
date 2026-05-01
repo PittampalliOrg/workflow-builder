@@ -148,7 +148,7 @@
 				{/snippet}
 			</Dialog.Trigger>
 			<Dialog.Content
-				class="flex max-h-[90vh] w-[95vw] max-w-5xl flex-col gap-3 overflow-hidden p-0"
+				class="flex max-h-[90vh] w-[95vw] sm:!max-w-[min(95vw,1400px)] flex-col gap-3 overflow-hidden p-0"
 			>
 				<Dialog.Header class="border-b px-6 pb-3 pt-5">
 					<Dialog.Title>Create prompt preset</Dialog.Title>
