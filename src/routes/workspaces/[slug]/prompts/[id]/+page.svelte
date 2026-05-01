@@ -19,6 +19,7 @@
 		Sparkles,
 		Users
 	} from '@lucide/svelte';
+	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
 	import type { PromptPresetSummary, PromptPresetVersion, PromptTemplateMessage } from '$lib/types/prompt-presets';
 
 	const slug = $derived(page.params.slug);
@@ -180,7 +181,8 @@
 	<title>{preset?.title ?? 'Preset'} · Prompts · {slug}</title>
 </svelte:head>
 
-<div class="container mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
+<div class="h-full overflow-y-auto">
+	<div class="container mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
 	<Breadcrumb.Root>
 		<Breadcrumb.List>
 			<Breadcrumb.Item>
@@ -279,12 +281,11 @@
 							{systemPromptField.length}ch
 						</span>
 					</div>
-					<Textarea
-						id="preset-system"
-						rows={18}
-						bind:value={systemPromptField}
-						placeholder="The reusable text. Mustache placeholders ({"{{variable}}"}) are supported."
-						class="font-mono text-xs"
+					<PromptContentEditor
+						value={systemPromptField}
+						onChange={(v) => (systemPromptField = v)}
+						placeholder={'The reusable text. Mustache placeholders ({{variable}}) are supported.'}
+						minHeight="60vh"
 					/>
 					<p class="mt-2 text-[11px] text-muted-foreground">
 						This text becomes a section in any agent's prompt stack that binds this
@@ -356,6 +357,7 @@
 			</div>
 		</div>
 	{/if}
+	</div>
 </div>
 
 <Dialog.Root bind:open={archiveOpen}>

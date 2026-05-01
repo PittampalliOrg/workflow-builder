@@ -17,6 +17,7 @@
 		Sparkles
 	} from '@lucide/svelte';
 	import type { PromptPresetSummary } from '$lib/types/prompt-presets';
+	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
 
 	const slug = $derived(page.params.slug);
 
@@ -127,7 +128,8 @@
 	<title>Prompts · {slug}</title>
 </svelte:head>
 
-<div class="container mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
+<div class="h-full overflow-y-auto">
+	<div class="container mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
 	<div class="flex items-start justify-between gap-4">
 		<div>
 			<h1 class="text-2xl font-semibold">Prompts</h1>
@@ -145,49 +147,58 @@
 					</Button>
 				{/snippet}
 			</Dialog.Trigger>
-			<Dialog.Content class="max-w-2xl">
-				<Dialog.Header>
+			<Dialog.Content
+				class="flex max-h-[90vh] w-[95vw] max-w-5xl flex-col gap-3 overflow-hidden p-0"
+			>
+				<Dialog.Header class="border-b px-6 pb-3 pt-5">
 					<Dialog.Title>Create prompt preset</Dialog.Title>
 					<Dialog.Description>
 						A reusable system-prompt block. Bind it to one or more agents from their
 						Prompt tab.
 					</Dialog.Description>
 				</Dialog.Header>
-				<div class="space-y-3 py-2">
+				<div class="flex min-h-0 flex-1 flex-col gap-3 px-6">
 					{#if createError}
 						<Alert>
 							<AlertDescription>{createError}</AlertDescription>
 						</Alert>
 					{/if}
-					<div>
-						<Label for="create-name">Name</Label>
-						<Input
-							id="create-name"
-							bind:value={createName}
-							placeholder="e.g. Code Review Style Guide"
-						/>
+					<div class="grid gap-3 sm:grid-cols-[1fr_2fr]">
+						<div>
+							<Label for="create-name">Name</Label>
+							<Input
+								id="create-name"
+								bind:value={createName}
+								placeholder="e.g. Code Review Style Guide"
+							/>
+						</div>
+						<div>
+							<Label for="create-description">Description</Label>
+							<Input
+								id="create-description"
+								bind:value={createDescription}
+								placeholder="Short description (optional)"
+							/>
+						</div>
 					</div>
-					<div>
-						<Label for="create-description">Description</Label>
-						<Textarea
-							id="create-description"
-							rows={2}
-							bind:value={createDescription}
-							placeholder="Short description (optional)"
-						/>
-					</div>
-					<div>
-						<Label for="create-system">System prompt content</Label>
-						<Textarea
-							id="create-system"
-							rows={8}
-							bind:value={createSystemPrompt}
-							placeholder="The reusable text. Mustache placeholders ({"{{variable}}"}) are supported."
-							class="font-mono text-xs"
-						/>
+					<div class="flex min-h-0 flex-1 flex-col">
+						<div class="mb-1 flex items-center justify-between">
+							<Label for="create-system">System prompt content</Label>
+							<span class="text-xs tabular-nums text-muted-foreground">
+								{createSystemPrompt.length}ch
+							</span>
+						</div>
+						<div class="min-h-0 flex-1">
+							<PromptContentEditor
+								value={createSystemPrompt}
+								onChange={(v) => (createSystemPrompt = v)}
+								placeholder={'The reusable text. Mustache placeholders ({{variable}}) are supported.'}
+								minHeight="60vh"
+							/>
+						</div>
 					</div>
 				</div>
-				<Dialog.Footer>
+				<Dialog.Footer class="border-t px-6 pb-5 pt-3">
 					<Button variant="ghost" onclick={() => (createOpen = false)}>Cancel</Button>
 					<Button disabled={creatingPreset} onclick={createPreset}>
 						<Plus class="size-4" />
@@ -290,4 +301,5 @@
 			for Anthropic prompt cache (≥4000ch combined static prefix).
 		</div>
 	{/if}
+	</div>
 </div>
