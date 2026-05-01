@@ -313,3 +313,101 @@ def test_sources_record_custom_and_append_when_set() -> None:
     fields = {s["field"] for s in bundle["sources"]}
     assert "persona.customSystemPrompt" in fields
     assert "persona.appendSystemPrompt" in fields
+
+
+def test_static_presets_render_before_persona() -> None:
+    bundle = _bundle(
+        agent_config={
+            "role": "Reviewer",
+            "compiledStaticPresetSections": [
+                "## Reusable Style Guide\nKeep responses terse.",
+                "## Escalation Policy\nNever escalate without TL approval.",
+            ],
+        }
+    )
+    static_part, _, _ = bundle["rendered"]["system"].partition(
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+    )
+    style_idx = static_part.index("Reusable Style Guide")
+    escalation_idx = static_part.index("Escalation Policy")
+    role_idx = static_part.index("## Role")
+    assert style_idx < escalation_idx < role_idx, (
+        "static presets must precede persona; got order "
+        f"style={style_idx} escalation={escalation_idx} role={role_idx}"
+    )
+
+
+def test_dynamic_presets_render_before_runtime_context() -> None:
+    bundle = _bundle(
+        agent_config={
+            "role": "Reviewer",
+            "compiledDynamicPresetSections": [
+                "## Per-turn Reminder\nMention follow-ups in summary.",
+            ],
+        }
+    )
+    _, _, dynamic_part = bundle["rendered"]["system"].partition(
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+    )
+    reminder_idx = dynamic_part.index("Per-turn Reminder")
+    runtime_idx = dynamic_part.index("Runtime Context")
+    assert reminder_idx < runtime_idx, (
+        f"dynamic preset must precede Runtime Context; got "
+        f"reminder={reminder_idx} runtime={runtime_idx}"
+    )
+
+
+def test_custom_system_prompt_keeps_static_presets() -> None:
+    bundle = _bundle(
+        agent_config={
+            "role": "should-not-appear",
+            "customSystemPrompt": "Bespoke override.",
+            "compiledStaticPresetSections": ["## Preset Block\npreset content"],
+        }
+    )
+    rendered = bundle["rendered"]["system"]
+    assert "Preset Block" in rendered
+    assert "preset content" in rendered
+    assert "Bespoke override." in rendered
+    assert "should-not-appear" not in rendered
+    static_part, _, _ = rendered.partition(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    preset_idx = static_part.index("Preset Block")
+    custom_idx = static_part.index("Bespoke override.")
+    assert preset_idx < custom_idx, (
+        "preset stack still precedes the customSystemPrompt block "
+        "(custom replaces persona only, not presets)"
+    )
+
+
+def test_hash_changes_when_compiled_preset_sections_change() -> None:
+    base = _bundle()
+    with_static = _bundle(
+        agent_config={
+            "role": "Reviewer",
+            "instructions": ["Be thorough"],
+            "compiledStaticPresetSections": ["## A\nbody"],
+        }
+    )
+    with_dynamic = _bundle(
+        agent_config={
+            "role": "Reviewer",
+            "instructions": ["Be thorough"],
+            "compiledDynamicPresetSections": ["## B\nbody"],
+        }
+    )
+    assert base["instructionHash"] != with_static["instructionHash"]
+    assert base["instructionHash"] != with_dynamic["instructionHash"]
+    assert with_static["instructionHash"] != with_dynamic["instructionHash"]
+
+
+def test_sources_record_compiled_preset_sections_when_set() -> None:
+    bundle = _bundle(
+        agent_config={
+            "role": "Reviewer",
+            "compiledStaticPresetSections": ["## A\nx"],
+            "compiledDynamicPresetSections": ["## B\ny"],
+        }
+    )
+    fields = {s["field"] for s in bundle["sources"]}
+    assert "runtime.compiledStaticPresetSections" in fields
+    assert "runtime.compiledDynamicPresetSections" in fields

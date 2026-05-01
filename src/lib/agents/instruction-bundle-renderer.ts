@@ -31,6 +31,8 @@ export type InstructionRuntimePreview = {
 	platformSystemSections?: unknown;
 	currentDate?: unknown;
 	mcpInstructions?: unknown;
+	compiledStaticPresetSections?: unknown;
+	compiledDynamicPresetSections?: unknown;
 };
 
 function cleanString(value: unknown): string | undefined {
@@ -61,6 +63,10 @@ function renderStaticSections(input: {
 	const parts: string[] = [];
 
 	for (const section of cleanStringList(runtime.platformSystemSections)) {
+		parts.push(section);
+	}
+
+	for (const section of cleanStringList(runtime.compiledStaticPresetSections)) {
 		parts.push(section);
 	}
 
@@ -107,6 +113,10 @@ function renderDynamicSections(input: {
 	const persona = input.persona ?? {};
 	const runtime = input.runtime ?? {};
 	const parts: string[] = [];
+
+	for (const section of cleanStringList(runtime.compiledDynamicPresetSections)) {
+		parts.push(section);
+	}
 
 	const runtimeLines: string[] = [];
 	const cwd = cleanString(runtime.cwd);

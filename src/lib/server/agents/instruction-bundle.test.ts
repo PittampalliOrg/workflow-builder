@@ -174,6 +174,87 @@ describe("buildInstructionBundle", () => {
 		expect(dynamic).toContain("server-a: Use read-only tools.");
 	});
 
+	it("static presets render before persona in the static prefix", () => {
+		const bundle = buildInstructionBundle({
+			agentConfig: minimalConfig({
+				role: "Reviewer",
+				compiledStaticPresetSections: [
+					"## Reusable Style Guide\nKeep responses terse.",
+					"## Escalation Policy\nNever escalate without TL approval.",
+				],
+			} as Partial<AgentConfig>),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		const [staticPart] = bundle.rendered.system.split(
+			SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+		);
+		const styleIdx = staticPart.indexOf("Reusable Style Guide");
+		const escalationIdx = staticPart.indexOf("Escalation Policy");
+		const roleIdx = staticPart.indexOf("## Role");
+		expect(styleIdx).toBeGreaterThan(-1);
+		expect(escalationIdx).toBeGreaterThan(-1);
+		expect(roleIdx).toBeGreaterThan(-1);
+		expect(styleIdx).toBeLessThan(escalationIdx);
+		expect(escalationIdx).toBeLessThan(roleIdx);
+	});
+
+	it("dynamic presets render before Runtime Context in the dynamic tail", () => {
+		const bundle = buildInstructionBundle({
+			agentConfig: minimalConfig({
+				role: "Reviewer",
+				compiledDynamicPresetSections: [
+					"## Per-turn Reminder\nMention follow-ups in summary.",
+				],
+			} as Partial<AgentConfig>),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		const [, dynamic] = bundle.rendered.system.split(
+			SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+		);
+		const reminderIdx = dynamic.indexOf("Per-turn Reminder");
+		const runtimeIdx = dynamic.indexOf("Runtime Context");
+		expect(reminderIdx).toBeGreaterThan(-1);
+		expect(runtimeIdx).toBeGreaterThan(-1);
+		expect(reminderIdx).toBeLessThan(runtimeIdx);
+	});
+
+	it("customSystemPrompt does not bypass the preset stack", () => {
+		const bundle = buildInstructionBundle({
+			agentConfig: minimalConfig({
+				role: "should-not-appear",
+				customSystemPrompt: "Bespoke override.",
+				compiledStaticPresetSections: ["## Preset Block\npreset content"],
+			} as Partial<AgentConfig>),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		expect(bundle.rendered.system).toContain("Preset Block");
+		expect(bundle.rendered.system).toContain("preset content");
+		expect(bundle.rendered.system).toContain("Bespoke override.");
+		expect(bundle.rendered.system).not.toContain("should-not-appear");
+	});
+
+	it("sources record runtime preset entries when present", () => {
+		const bundle = buildInstructionBundle({
+			agentConfig: minimalConfig({
+				role: "Reviewer",
+				compiledStaticPresetSections: ["## A\nx"],
+				compiledDynamicPresetSections: ["## B\ny"],
+			} as Partial<AgentConfig>),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		const fields = bundle.sources.map((s) => s.field);
+		expect(fields).toContain("runtime.compiledStaticPresetSections");
+		expect(fields).toContain("runtime.compiledDynamicPresetSections");
+	});
+
 	it("hash changes when customSystemPrompt or appendSystemPrompt is set", () => {
 		const base = buildInstructionBundle({
 			agentConfig: minimalConfig({ role: "Reviewer" }),

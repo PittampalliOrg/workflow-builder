@@ -15,6 +15,7 @@ import type {
 	PromptTemplateMessage,
 	PromptTemplateRole,
 } from "$lib/types/prompt-presets";
+import type { AgentConfig, PromptPresetRef } from "$lib/types/agents";
 import { templateHash } from "$lib/agents/prompt-workbench-renderer";
 
 function requireDb() {
@@ -419,4 +420,117 @@ function legacyVersion(prompt: ResourcePrompt): PromptPresetVersion {
 		createdByUserId: prompt.userId,
 		createdAt: prompt.createdAt.toISOString(),
 	};
+}
+
+export function isValidPresetRef(value: unknown): value is PromptPresetRef {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const record = value as Record<string, unknown>;
+	return (
+		typeof record.id === "string" &&
+		record.id.trim().length > 0 &&
+		typeof record.version === "number" &&
+		Number.isInteger(record.version) &&
+		record.version > 0
+	);
+}
+
+/**
+ * Pure resolution: given the in-memory refs and the DB-fetched
+ * (promptId, version, messages) rows, produce the static + dynamic content
+ * arrays. Exposed for unit testing without needing a live DB.
+ */
+export function resolveCompiledPromptStack(
+	staticRefs: PromptPresetRef[],
+	dynamicRefs: PromptPresetRef[],
+	rows: Array<{
+		promptId: string;
+		version: number;
+		messages: unknown;
+	}>,
+	warnContext?: string,
+): { static: string[]; dynamic: string[] } {
+	const contentByKey = new Map<string, string>();
+	for (const row of rows) {
+		const messages = Array.isArray(row.messages)
+			? (row.messages as PromptTemplateMessage[])
+			: [];
+		const systemContent = messageContentForRole(messages, "system").trim();
+		if (!systemContent) continue;
+		contentByKey.set(`${row.promptId}@${row.version}`, systemContent);
+	}
+
+	function resolve(refs: PromptPresetRef[]): string[] {
+		const out: string[] = [];
+		for (const ref of refs) {
+			const content = contentByKey.get(`${ref.id}@${ref.version}`);
+			if (!content) {
+				console.warn(
+					`[compile-prompt-stack] preset not found or empty: ${ref.id}@${ref.version}${
+						warnContext ? ` (${warnContext})` : ""
+					}`,
+				);
+				continue;
+			}
+			out.push(content);
+		}
+		return out;
+	}
+
+	return { static: resolve(staticRefs), dynamic: resolve(dynamicRefs) };
+}
+
+/**
+ * Resolve `agentConfig.staticPromptPresetRefs` and `dynamicPromptPresetRefs`
+ * against the Prompt Workbench preset table, returning the system-text content
+ * for each pinned version. Bindings are project-scoped: a preset that lives in
+ * a different workspace than the agent silently resolves to nothing (with a
+ * warn log), so a stale or cross-tenant ref never blocks a session spawn.
+ *
+ * Called once per session-spawn from `src/lib/server/sessions/spawn.ts` and
+ * `src/routes/api/internal/sessions/ensure-for-workflow/+server.ts`. Single
+ * SELECT joins versions to prompts so we get the projectId scope check in one
+ * round-trip; client-side filtering matches `(promptId, version)` tuples.
+ */
+export async function compilePromptStack(
+	agentConfig: AgentConfig | Record<string, unknown> | null | undefined,
+	opts: { projectId: string },
+): Promise<{ static: string[]; dynamic: string[] }> {
+	if (!agentConfig) return { static: [], dynamic: [] };
+	const cfg = agentConfig as Record<string, unknown>;
+	const staticRefs = Array.isArray(cfg.staticPromptPresetRefs)
+		? (cfg.staticPromptPresetRefs as unknown[]).filter(isValidPresetRef)
+		: [];
+	const dynamicRefs = Array.isArray(cfg.dynamicPromptPresetRefs)
+		? (cfg.dynamicPromptPresetRefs as unknown[]).filter(isValidPresetRef)
+		: [];
+	if (staticRefs.length === 0 && dynamicRefs.length === 0) {
+		return { static: [], dynamic: [] };
+	}
+
+	const promptIds = [
+		...new Set([...staticRefs, ...dynamicRefs].map((r) => r.id)),
+	];
+
+	const database = requireDb();
+	const rows = await database
+		.select({
+			promptId: resourcePromptVersions.promptId,
+			version: resourcePromptVersions.version,
+			messages: resourcePromptVersions.messages,
+		})
+		.from(resourcePromptVersions)
+		.innerJoin(resourcePrompts, eq(resourcePrompts.id, resourcePromptVersions.promptId))
+		.where(
+			and(
+				inArray(resourcePromptVersions.promptId, promptIds),
+				eq(resourcePrompts.projectId, opts.projectId),
+			),
+		);
+
+	return resolveCompiledPromptStack(
+		staticRefs,
+		dynamicRefs,
+		rows,
+		`projectId=${opts.projectId}`,
+	);
 }

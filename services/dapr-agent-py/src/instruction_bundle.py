@@ -79,7 +79,7 @@ def _push_section(parts: list[str], title: str, body: str | list[str]) -> None:
 
 
 def _render_static_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]:
-    """Cache-eligible prefix: platform sections + persona (or customSystemPrompt override)."""
+    """Cache-eligible prefix: platform sections + static presets + persona (or customSystemPrompt override)."""
     persona = _record(bundle_without_hash.get("persona"))
     runtime = _record(bundle_without_hash.get("runtime"))
     parts: list[str] = []
@@ -87,10 +87,18 @@ def _render_static_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]
     for section in _string_list(runtime.get("platformSystemSections")):
         parts.append(section)
 
+    # Prompt Workbench preset stack content lives BEFORE persona so user-curated
+    # reusable blocks (style guides, escalation policies, …) sit immediately
+    # after the OpenShell platform intro. customSystemPrompt only replaces the
+    # persona block; preset content stays in both code paths.
+    for section in _string_list(runtime.get("compiledStaticPresetSections")):
+        parts.append(section)
+
     custom = _string(persona.get("customSystemPrompt"))
     if custom:
-        # customSystemPrompt fully replaces persona-derived sections
-        # (mirrors Claude Code's customSystemPrompt branch in queryContext.ts).
+        # customSystemPrompt replaces persona-derived sections (role/goal/
+        # instructions/styleGuidelines/systemPrompt) but does NOT bypass the
+        # preset stack — those are a separate user-curated layer.
         _push_section(parts, "Agent System Prompt", custom)
         return parts
 
@@ -113,10 +121,16 @@ def _render_static_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]
 
 
 def _render_dynamic_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]:
-    """Per-turn tail: runtime context + hooks + currentDate + mcpInstructions + appendSystemPrompt."""
+    """Per-turn tail: dynamic presets + runtime context + hooks + currentDate + mcpInstructions + appendSystemPrompt."""
     persona = _record(bundle_without_hash.get("persona"))
     runtime = _record(bundle_without_hash.get("runtime"))
     parts: list[str] = []
+
+    # Dynamic preset content sits at the front of the tail so user-curated
+    # per-turn additions (e.g. tone toggles, ad-hoc instructions) surface
+    # before the ambient runtime context.
+    for section in _string_list(runtime.get("compiledDynamicPresetSections")):
+        parts.append(section)
 
     runtime_lines: list[str] = []
     cwd = _string(runtime.get("cwd"))
@@ -279,6 +293,16 @@ def build_instruction_bundle(
         "platformSystemSections": _string_list(platform_system_sections or []),
         "currentDate": _string(current_date),
         "mcpInstructions": _string_list(mcp_instructions or []),
+        # Resolved by the BFF's compilePromptStack() at session-spawn time;
+        # the agent never hits the DB. Empty arrays for agents that don't
+        # use the preset stack — semantically the same as the field being
+        # absent, but kept consistent with the rest of `runtime`.
+        "compiledStaticPresetSections": _string_list(
+            config.get("compiledStaticPresetSections")
+        ),
+        "compiledDynamicPresetSections": _string_list(
+            config.get("compiledDynamicPresetSections")
+        ),
     }
 
     control_fields = set(control_override_fields or set())
@@ -313,6 +337,24 @@ def build_instruction_bundle(
         sources.append(_source("runtime.currentDate", "runtime", "runtime", "runtime"))
     if runtime["mcpInstructions"]:
         sources.append(_source("runtime.mcpInstructions", "runtime", "mcp-clients", "runtime"))
+    if runtime["compiledStaticPresetSections"]:
+        sources.append(
+            _source(
+                "runtime.compiledStaticPresetSections",
+                "runtime",
+                "prompt-workbench",
+                "runtime",
+            )
+        )
+    if runtime["compiledDynamicPresetSections"]:
+        sources.append(
+            _source(
+                "runtime.compiledDynamicPresetSections",
+                "runtime",
+                "prompt-workbench",
+                "runtime",
+            )
+        )
 
     normalized_source = "workflow-node" if prompt_source == "workflow-node" else "session"
     sources.append(

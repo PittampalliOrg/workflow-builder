@@ -52,6 +52,8 @@ export type InstructionBundle = {
 		platformSystemSections: string[];
 		currentDate?: string;
 		mcpInstructions: string[];
+		compiledStaticPresetSections: string[];
+		compiledDynamicPresetSections: string[];
 	};
 	user: {
 		prompt: string;
@@ -154,6 +156,10 @@ export function buildInstructionBundle(
 		platformSystemSections: cleanStringList(input.platformSystemSections),
 		currentDate: cleanString(input.currentDate),
 		mcpInstructions: cleanStringList(input.mcpInstructions),
+		// Resolved by the BFF's compilePromptStack() before bundle build —
+		// the agent profile carries these as plain strings to dapr-agent-py.
+		compiledStaticPresetSections: cleanStringList(config.compiledStaticPresetSections),
+		compiledDynamicPresetSections: cleanStringList(config.compiledDynamicPresetSections),
 	};
 	const sources: InstructionSource[] = [];
 	if (persona.systemPrompt) sources.push(source("persona.systemPrompt", sourceId));
@@ -181,6 +187,26 @@ export function buildInstructionBundle(
 	}
 	if (runtime.mcpInstructions.length) {
 		sources.push(source("runtime.mcpInstructions", "mcp-clients", "runtime", "runtime"));
+	}
+	if (runtime.compiledStaticPresetSections.length) {
+		sources.push(
+			source(
+				"runtime.compiledStaticPresetSections",
+				"prompt-workbench",
+				"runtime",
+				"runtime",
+			),
+		);
+	}
+	if (runtime.compiledDynamicPresetSections.length) {
+		sources.push(
+			source(
+				"runtime.compiledDynamicPresetSections",
+				"prompt-workbench",
+				"runtime",
+				"runtime",
+			),
+		);
 	}
 	sources.push(
 		source(

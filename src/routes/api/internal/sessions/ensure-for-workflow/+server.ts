@@ -14,6 +14,7 @@ import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
+import { compilePromptStack } from "$lib/server/prompt-presets";
 import type { AgentConfig } from "$lib/types/agents";
 
 /**
@@ -93,7 +94,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const isBrowserUseRuntime =
 		rawAgentConfig != null &&
 		(rawAgentConfig as { runtime?: unknown }).runtime === "browser-use-agent";
-	const agentConfig = rawAgentConfig
+	const agentConfigAfterMcp = rawAgentConfig
 		? ({
 				...rawAgentConfig,
 				mcpServers: isBrowserUseRuntime
@@ -102,6 +103,29 @@ export const POST: RequestHandler = async ({ request }) => {
 							(rawAgentConfig as { mcpServers?: unknown[] })
 								.mcpServers as never,
 						).mcpServers,
+			} as AgentConfig)
+		: null;
+	// Resolve Prompt Workbench preset bindings against the project. Workflow
+	// runs share the same projectId as the agent's workflow row (resolved
+	// above). Fail open: an unresolvable preset must never block a workflow
+	// turn.
+	const compiledPresetStack =
+		agentConfigAfterMcp && projectId
+			? await compilePromptStack(agentConfigAfterMcp, { projectId }).catch(
+					(err) => {
+						console.warn(
+							"[ensure-for-workflow] compilePromptStack failed, continuing with empty stack:",
+							err instanceof Error ? err.message : err,
+						);
+						return { static: [] as string[], dynamic: [] as string[] };
+					},
+				)
+			: { static: [] as string[], dynamic: [] as string[] };
+	const agentConfig = agentConfigAfterMcp
+		? ({
+				...agentConfigAfterMcp,
+				compiledStaticPresetSections: compiledPresetStack.static,
+				compiledDynamicPresetSections: compiledPresetStack.dynamic,
 			} as AgentConfig)
 		: null;
 	const environmentConfig =

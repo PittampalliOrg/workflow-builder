@@ -43,6 +43,8 @@ const ARRAY_OF_STRING_FIELDS = [
 	"styleGuidelines",
 	"builtinTools",
 	"plugins",
+	"compiledStaticPresetSections",
+	"compiledDynamicPresetSections",
 ] as const;
 
 const ARRAY_FIELDS = [
@@ -50,6 +52,8 @@ const ARRAY_FIELDS = [
 	"mcpServers",
 	"callableAgents",
 	"tools",
+	"staticPromptPresetRefs",
+	"dynamicPromptPresetRefs",
 ] as const;
 
 function cleanString(value: unknown): string | undefined {

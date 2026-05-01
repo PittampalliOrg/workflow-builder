@@ -5,6 +5,7 @@ import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
+import { compilePromptStack } from "$lib/server/prompt-presets";
 
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
@@ -99,9 +100,25 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	const { mcpServers: rewrittenMcp } = rewriteMcpForBrowserSidecar(
 		(resolvedAgentConfig as { mcpServers?: unknown[] }).mcpServers as never,
 	);
+	// Resolve Prompt Workbench preset bindings (version-pinned) into raw text
+	// arrays the runtime can stitch into the bundle without DB access. Fail
+	// open: a missing preset must never block a session spawn.
+	const compiledPresetStack = agent.projectId
+		? await compilePromptStack(resolvedAgentConfig, {
+				projectId: agent.projectId,
+			}).catch((err) => {
+				console.warn(
+					"[session-spawn] compilePromptStack failed, continuing with empty stack:",
+					err instanceof Error ? err.message : err,
+				);
+				return { static: [] as string[], dynamic: [] as string[] };
+			})
+		: { static: [] as string[], dynamic: [] as string[] };
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
 		mcpServers: rewrittenMcp,
+		compiledStaticPresetSections: compiledPresetStack.static,
+		compiledDynamicPresetSections: compiledPresetStack.dynamic,
 	};
 
 	const payload = {

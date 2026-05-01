@@ -10,6 +10,15 @@ import type {
  */
 export type SandboxPolicyOverride = Record<string, unknown>;
 
+/**
+ * Version-pinned reference to a Prompt Workbench preset (`resourcePromptVersions` row).
+ * Used in `AgentConfig.staticPromptPresetRefs` and `dynamicPromptPresetRefs`.
+ */
+export type PromptPresetRef = {
+	id: string;
+	version: number;
+};
+
 export type AgentRuntime =
 	| "dapr-agent-py"
 	| "dapr-agent-py-testing"
@@ -78,6 +87,39 @@ export type AgentConfig = {
 	 * `--append-system-prompt` (`QueryEngine.ts:321-325`).
 	 */
 	appendSystemPrompt?: string;
+
+	/**
+	 * Version-pinned references to Prompt Workbench preset versions whose system
+	 * text gets rendered into the static prefix BEFORE persona. Resolved by the
+	 * BFF at session-spawn time via `compilePromptStack()` and stamped onto
+	 * `compiledStaticPresetSections`. Pinning is intentional: republishing the
+	 * agent re-pins to whatever version was current at publish time, so two runs
+	 * of the same agent at different times produce the same prompt.
+	 */
+	staticPromptPresetRefs?: PromptPresetRef[];
+
+	/**
+	 * Version-pinned preset references rendered into the dynamic tail BEFORE
+	 * Runtime Context. Same shape + resolution model as `staticPromptPresetRefs`.
+	 * The same preset can legitimately be a static block for one agent and a
+	 * dynamic block for another — kind lives on the binding (which array), not
+	 * on the preset row.
+	 */
+	dynamicPromptPresetRefs?: PromptPresetRef[];
+
+	/**
+	 * Resolved preset content stamped by the BFF at session-spawn time after
+	 * `compilePromptStack()` resolves `staticPromptPresetRefs`. Runtime-only
+	 * (not persisted on `agentVersions.config`) — agentConfig snapshots take it
+	 * along the wire to dapr-agent-py so the Python side never needs DB access.
+	 */
+	compiledStaticPresetSections?: string[];
+
+	/**
+	 * Resolved preset content stamped by the BFF at session-spawn time after
+	 * `compilePromptStack()` resolves `dynamicPromptPresetRefs`. Runtime-only.
+	 */
+	compiledDynamicPresetSections?: string[];
 
 	modelSpec?: string;
 	temperature?: number;
