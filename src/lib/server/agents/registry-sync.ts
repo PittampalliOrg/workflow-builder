@@ -388,6 +388,7 @@ async function loadAgentForRegistry(agentId: string): Promise<
 		tags,
 		runtime: row.runtime as AgentDetail["runtime"],
 		currentVersion: version.version,
+		currentConfigHash: version.configHash,
 		modelSpec: config?.modelSpec ?? null,
 		environmentId: row.environmentId ?? null,
 		environmentVersion: row.environmentVersion ?? null,

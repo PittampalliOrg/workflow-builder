@@ -338,6 +338,7 @@ def build_effective_agent_config(
     turn: int,
     config_revision: int,
     cwd: str,
+    instruction_bundle: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a compact per-turn effectiveAgentConfig snapshot."""
     config = dict(agent_config or {})
@@ -356,6 +357,26 @@ def build_effective_agent_config(
         "configRevision": int(config_revision),
     }
     snapshot["configHash"] = stable_hash(body)
+    bundle = dict(instruction_bundle or {})
+    instruction_hash = _string(bundle.get("instructionHash"))
+    if instruction_hash:
+        snapshot["instructionHash"] = instruction_hash
+    template_name = _string(bundle.get("templateName"))
+    if template_name:
+        snapshot["templateName"] = template_name
+    template_hash = _string(bundle.get("templateHash"))
+    if template_hash:
+        snapshot["templateHash"] = template_hash
+    schema_version = _string(bundle.get("schemaVersion"))
+    if schema_version:
+        snapshot["instructionBundleSchemaVersion"] = schema_version
+    sources = bundle.get("sources")
+    if isinstance(sources, list):
+        snapshot["instructionSources"] = [
+            dict(item) for item in sources if isinstance(item, Mapping)
+        ]
+    if bundle:
+        snapshot["instructionTextStored"] = True
     return snapshot
 
 
@@ -365,7 +386,14 @@ def effective_audit_fields(snapshot: Mapping[str, Any] | None) -> dict[str, Any]
         return {}
     llm = snapshot.get("llm") if isinstance(snapshot.get("llm"), Mapping) else {}
     out: dict[str, Any] = {}
-    for key in ("turn", "configRevision", "configHash"):
+    for key in (
+        "turn",
+        "configRevision",
+        "configHash",
+        "instructionHash",
+        "templateName",
+        "templateHash",
+    ):
         if snapshot.get(key) is not None:
             out[key] = snapshot.get(key)
     for key in ("modelSpec", "llmComponent", "provider", "providerModel"):
@@ -394,6 +422,9 @@ def runtime_context_audit_cache_fields(context: Mapping[str, Any] | None) -> dic
         "turn",
         "configRevision",
         "configHash",
+        "instructionHash",
+        "templateName",
+        "templateHash",
         "modelSpec",
         "llmComponent",
         "provider",

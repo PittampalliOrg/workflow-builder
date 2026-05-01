@@ -52,6 +52,68 @@ const ARRAY_FIELDS = [
 	"tools",
 ] as const;
 
+function cleanString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function cleanStringArray(value: unknown): string[] | undefined {
+	if (Array.isArray(value)) {
+		return value
+			.map((item) => (typeof item === "string" ? item.trim() : String(item).trim()))
+			.filter(Boolean);
+	}
+	if (typeof value === "string") {
+		return value
+			.split(/\r?\n/)
+			.map((item) => item.trim())
+			.filter(Boolean);
+	}
+	return undefined;
+}
+
+/**
+ * Normalize legacy import/export aliases into the canonical flat AgentConfig
+ * fields before validation and hashing. We keep unknown fields intact for
+ * forward compatibility, but persona/instruction fields have one canonical
+ * spelling in storage.
+ */
+export function normalizeAgentConfig(config: AgentConfig): AgentConfig {
+	const raw = { ...(config as unknown as Record<string, unknown>) };
+	const aliases: Array<[string, keyof AgentConfig]> = [
+		["system_prompt", "systemPrompt"],
+		["style_guidelines", "styleGuidelines"],
+		["max_iterations", "maxTurns"],
+		["mcp_servers", "mcpServers"],
+		["builtin_tools", "builtinTools"],
+		["allowedTools", "tools"],
+		["allowed_tools", "tools"],
+		["model", "modelSpec"],
+	];
+	for (const [legacy, canonical] of aliases) {
+		if (raw[canonical] === undefined && raw[legacy] !== undefined) {
+			raw[canonical] = raw[legacy];
+		}
+		if (legacy in raw) delete raw[legacy];
+	}
+
+	for (const key of ["role", "goal", "systemPrompt", "modelSpec", "cwd"] as const) {
+		const normalized = cleanString(raw[key]);
+		if (normalized !== undefined) raw[key] = normalized;
+		else if (raw[key] !== undefined) delete raw[key];
+	}
+	for (const key of ARRAY_OF_STRING_FIELDS) {
+		const normalized = cleanStringArray(raw[key]);
+		if (normalized !== undefined) raw[key] = normalized;
+		else if (raw[key] !== undefined) delete raw[key];
+	}
+	if (raw.tools !== undefined) {
+		const normalized = cleanStringArray(raw.tools);
+		if (normalized !== undefined) raw.tools = normalized;
+		else delete raw.tools;
+	}
+	return raw as unknown as AgentConfig;
+}
+
 /**
  * Validate array-typed fields on AgentConfig match the runtime's expectations.
  * Throws AgentConfigValidationError on mismatch. Does NOT mutate; callers are
@@ -93,6 +155,7 @@ function rowToSummary(
 	row: Agent,
 	currentVersion: number | null,
 	config: AgentConfig | null,
+	configHash: string | null = null,
 	usedByCount?: number,
 ): AgentSummary {
 	return {
@@ -104,6 +167,7 @@ function rowToSummary(
 		tags: Array.isArray(row.tags) ? row.tags : [],
 		runtime: row.runtime as AgentRuntime,
 		currentVersion,
+		currentConfigHash: configHash,
 		modelSpec: config?.modelSpec ?? null,
 		environmentId: row.environmentId ?? null,
 		environmentVersion: row.environmentVersion ?? null,
@@ -124,7 +188,7 @@ function rowToDetail(
 ): AgentDetail {
 	const config = version.config as unknown as AgentConfig;
 	return {
-		...rowToSummary(row, version.version, config),
+		...rowToSummary(row, version.version, config, version.configHash),
 		config,
 		sourceTemplateSlug: row.sourceTemplateSlug ?? null,
 		sourceTemplateVersion: row.sourceTemplateVersion ?? null,
@@ -203,7 +267,12 @@ export async function listAgents(
 				? versionsById.get(row.currentVersionId)
 				: undefined;
 			const config = version ? (version.config as unknown as AgentConfig) : null;
-			return rowToSummary(row, version?.version ?? null, config);
+			return rowToSummary(
+				row,
+				version?.version ?? null,
+				config,
+				version?.configHash ?? null,
+			);
 		})
 		.filter((summary) => {
 			if (q) {
@@ -287,11 +356,12 @@ function slugify(value: string): string {
 export async function createAgent(
 	input: CreateAgentInput,
 ): Promise<AgentDetail> {
-	validateAgentConfig(input.config);
+	const normalizedConfig = normalizeAgentConfig(input.config);
+	validateAgentConfig(normalizedConfig);
 	const database = requireDb();
 	const desiredSlug = input.slug?.trim() || slugify(input.name) || "agent";
 	const slug = await ensureUniqueSlug(desiredSlug);
-	const configHash = hashAgentConfig(input.config);
+	const configHash = hashAgentConfig(normalizedConfig);
 	const runtime = input.runtime ?? "dapr-agent-py";
 
 	const result = await database.transaction(async (tx) => {
@@ -319,7 +389,7 @@ export async function createAgent(
 			.values({
 				agentId: agent.id,
 				version: 1,
-				config: input.config as unknown as Record<string, unknown>,
+				config: normalizedConfig as unknown as Record<string, unknown>,
 				configHash,
 				publishedAt: new Date(),
 				publishedBy: input.createdBy ?? null,
@@ -373,7 +443,9 @@ export async function updateAgent(
 	id: string,
 	input: UpdateAgentInput,
 ): Promise<AgentDetail | null> {
-	if (input.config !== undefined) validateAgentConfig(input.config);
+	const normalizedInputConfig =
+		input.config !== undefined ? normalizeAgentConfig(input.config) : undefined;
+	if (normalizedInputConfig !== undefined) validateAgentConfig(normalizedInputConfig);
 	const database = requireDb();
 	const [existing] = await database
 		.select()
@@ -385,7 +457,7 @@ export async function updateAgent(
 	const shouldBumpVersion = input.config !== undefined;
 	const result = await database.transaction(async (tx) => {
 		let newVersion: AgentVersion | null = null;
-		if (shouldBumpVersion && input.config) {
+		if (shouldBumpVersion && normalizedInputConfig) {
 			const [{ maxVersion }] = await tx
 				.select({
 					maxVersion: sql<number>`coalesce(max(${agentVersions.version}), 0)`,
@@ -393,13 +465,13 @@ export async function updateAgent(
 				.from(agentVersions)
 				.where(eq(agentVersions.agentId, id));
 			const nextVersionNumber = (Number(maxVersion) || 0) + 1;
-			const configHash = hashAgentConfig(input.config);
+			const configHash = hashAgentConfig(normalizedInputConfig);
 			const [inserted] = await tx
 				.insert(agentVersions)
 				.values({
 					agentId: id,
 					version: nextVersionNumber,
-					config: input.config as unknown as Record<string, unknown>,
+					config: normalizedInputConfig as unknown as Record<string, unknown>,
 					configHash,
 					changelog: input.changelog ?? null,
 					publishedAt: new Date(),
@@ -552,6 +624,7 @@ export type ResolvedAgent = {
 	id: string;
 	slug: string;
 	version: number;
+	configHash: string;
 	config: AgentConfig;
 	environmentId: string | null;
 	environmentVersion: number | null;
@@ -608,6 +681,7 @@ export async function resolveAgentRef(
 		id: agent.id,
 		slug: agent.slug,
 		version: version.version,
+		configHash: version.configHash,
 		config: version.config as unknown as AgentConfig,
 		environmentId: agent.environmentId ?? null,
 		environmentVersion: agent.environmentVersion ?? null,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentConfig } from "$lib/types/agents";
 import { canonicalJson, hashAgentConfig } from "./config-hash";
+import { normalizeAgentConfig } from "./registry";
 
 function minimalConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	return {
@@ -81,5 +82,26 @@ describe("hashAgentConfig", () => {
 		const a = minimalConfig({ builtinTools: ["a", "b"] });
 		const b = minimalConfig({ builtinTools: ["b", "a"] });
 		expect(hashAgentConfig(a)).not.toBe(hashAgentConfig(b));
+	});
+});
+
+describe("normalizeAgentConfig", () => {
+	it("normalizes legacy aliases while preserving flat persona fields", () => {
+		const normalized = normalizeAgentConfig(
+			minimalConfig({
+				role: " Reviewer ",
+				instructions: [" Read carefully "],
+				system_prompt: " Legacy system ",
+				style_guidelines: "Be concise\nBe direct",
+				allowedTools: [" read_file ", "write_file"],
+			} as unknown as Partial<AgentConfig>),
+		);
+
+		expect(normalized.role).toBe("Reviewer");
+		expect(normalized.instructions).toEqual(["Read carefully"]);
+		expect(normalized.systemPrompt).toBe("Legacy system");
+		expect(normalized.styleGuidelines).toEqual(["Be concise", "Be direct"]);
+		expect(normalized.tools).toEqual(["read_file", "write_file"]);
+		expect((normalized as Record<string, unknown>).system_prompt).toBeUndefined();
 	});
 });

@@ -93,6 +93,11 @@ from src.effective_agent_config import (
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
 )
+from src.instruction_bundle import (
+    assign_canonical_bundle_prompt_template,
+    build_instruction_bundle,
+    instruction_bundle_audit_payload,
+)
 from src.hooks import (
     HooksSnapshot,
     execute_notification_hooks,
@@ -161,6 +166,9 @@ SESSION_TURN_TIMEOUT_SECONDS = int(
 # buffer. 256 KB comfortably fits a verbose tool response while still letting
 # the UI keep 500 events hot without OOM.
 _MAX_ENVELOPE_BYTES = int(os.environ.get("DAPR_AGENT_PY_MAX_ENVELOPE_BYTES", "262144"))
+_MAX_INSTRUCTION_AUDIT_BYTES = int(
+    os.environ.get("DAPR_AGENT_PY_MAX_INSTRUCTION_AUDIT_BYTES", "131072")
+)
 
 
 def _json_preview(value: Any, max_chars: int) -> str:
@@ -253,6 +261,159 @@ def _resolve_llm_component(message: dict, metadata: dict | None = None) -> str:
     modelSpec is provided but not found in the supported model map.
     """
     return resolve_llm_metadata(message=message, metadata=metadata or {})["llmComponent"]
+
+
+def _incoming_instruction_bundle(message: dict[str, Any]) -> dict[str, Any]:
+    return _parse_metadata(message.get("instructionBundle"))
+
+
+def _instruction_prompt_source(message: dict[str, Any]) -> str:
+    if message.get("workflowId") or message.get("nodeId") or message.get("autoTerminateAfterEndTurn"):
+        return "workflow-node"
+    return "session"
+
+
+def _compose_turn_instruction_bundle(
+    *,
+    agent_config: dict[str, Any],
+    message: dict[str, Any],
+    prompt: str,
+    cwd: str,
+    sandbox_name: str | None,
+    platform_system_sections: list[str] | None = None,
+    hook_context: str | None = None,
+    control_override_fields: set[str] | None = None,
+) -> dict[str, Any]:
+    incoming = _incoming_instruction_bundle(message)
+    incoming_agent = incoming.get("agent") if isinstance(incoming.get("agent"), dict) else {}
+    config_hash = (
+        str(incoming_agent.get("configHash")).strip()
+        if isinstance(incoming_agent.get("configHash"), str)
+        and incoming_agent.get("configHash").strip()
+        else None
+    )
+    return build_instruction_bundle(
+        agent_config=agent_config,
+        raw_message=message,
+        prompt=prompt,
+        prompt_source=_instruction_prompt_source(message),
+        cwd=cwd,
+        sandbox_name=sandbox_name,
+        platform_system_sections=platform_system_sections
+        if platform_system_sections is not None
+        else [_build_system_prompt(cwd, sandbox_name)],
+        hook_context=hook_context,
+        agent_id=str(message.get("agentId") or incoming_agent.get("id") or "").strip()
+        or None,
+        agent_version=_parse_int(message.get("agentVersion"))
+        or _parse_int(incoming_agent.get("version")),
+        agent_config_hash=config_hash,
+        agent_slug=str(message.get("agentSlug") or incoming_agent.get("slug") or "").strip()
+        or None,
+        control_override_fields=control_override_fields,
+    )
+
+
+def _capture_prompt_state(agent_obj: Any) -> dict[str, Any]:
+    helper = getattr(agent_obj, "prompting_helper", None)
+    llm = getattr(agent_obj, "llm", None)
+    return {
+        "profile_role": getattr(agent_obj.profile, "role", None),
+        "profile_goal": getattr(agent_obj.profile, "goal", None),
+        "profile_instructions": list(getattr(agent_obj.profile, "instructions", None) or []),
+        "profile_style_guidelines": list(
+            getattr(agent_obj.profile, "style_guidelines", None) or []
+        ),
+        "profile_system_prompt": getattr(agent_obj.profile, "system_prompt", None),
+        "helper_role": getattr(helper, "role", None) if helper is not None else None,
+        "helper_goal": getattr(helper, "goal", None) if helper is not None else None,
+        "helper_instructions": list(getattr(helper, "instructions", None) or [])
+        if helper is not None
+        else [],
+        "helper_style_guidelines": list(getattr(helper, "style_guidelines", None) or [])
+        if helper is not None
+        else [],
+        "helper_system_prompt": getattr(helper, "system_prompt", None)
+        if helper is not None
+        else None,
+        "helper_prompt_template": getattr(helper, "prompt_template", None)
+        if helper is not None
+        else None,
+        "agent_prompt_template": getattr(agent_obj, "prompt_template", None),
+        "llm_prompt_template": getattr(llm, "prompt_template", None)
+        if llm is not None
+        else None,
+    }
+
+
+def _apply_instruction_prompt_state(
+    agent_obj: Any,
+    instruction_bundle: dict[str, Any] | None,
+) -> None:
+    if not isinstance(instruction_bundle, dict):
+        return
+    rendered = instruction_bundle.get("rendered")
+    persona = instruction_bundle.get("persona")
+    if not isinstance(rendered, dict) or not isinstance(persona, dict):
+        return
+    system_text = str(rendered.get("system") or "").strip()
+    if not system_text:
+        return
+    role = str(persona.get("role") or getattr(agent_obj.profile, "role", "") or "").strip()
+    goal = str(persona.get("goal") or getattr(agent_obj.profile, "goal", "") or "").strip()
+    instructions = [
+        str(item).strip()
+        for item in (persona.get("instructions") if isinstance(persona.get("instructions"), list) else [])
+        if str(item).strip()
+    ]
+    style_guidelines = [
+        str(item).strip()
+        for item in (
+            persona.get("styleGuidelines")
+            if isinstance(persona.get("styleGuidelines"), list)
+            else []
+        )
+        if str(item).strip()
+    ]
+
+    agent_obj.profile.role = role
+    agent_obj.profile.goal = goal
+    agent_obj.profile.instructions = instructions
+    if hasattr(agent_obj.profile, "style_guidelines"):
+        agent_obj.profile.style_guidelines = style_guidelines
+    agent_obj.profile.system_prompt = system_text
+
+    helper = getattr(agent_obj, "prompting_helper", None)
+    if helper is not None:
+        helper.role = role
+        helper.goal = goal
+        helper.instructions = list(instructions)
+        helper.style_guidelines = list(style_guidelines)
+        helper.system_prompt = system_text
+    assign_canonical_bundle_prompt_template(agent_obj, instruction_bundle)
+
+
+def _restore_prompt_state(agent_obj: Any, state: dict[str, Any]) -> None:
+    agent_obj.profile.role = state.get("profile_role")
+    agent_obj.profile.goal = state.get("profile_goal")
+    agent_obj.profile.instructions = list(state.get("profile_instructions") or [])
+    if hasattr(agent_obj.profile, "style_guidelines"):
+        agent_obj.profile.style_guidelines = list(
+            state.get("profile_style_guidelines") or []
+        )
+    agent_obj.profile.system_prompt = state.get("profile_system_prompt")
+
+    helper = getattr(agent_obj, "prompting_helper", None)
+    if helper is not None:
+        helper.role = state.get("helper_role")
+        helper.goal = state.get("helper_goal")
+        helper.instructions = list(state.get("helper_instructions") or [])
+        helper.style_guidelines = list(state.get("helper_style_guidelines") or [])
+        helper.system_prompt = state.get("helper_system_prompt")
+        helper.prompt_template = state.get("helper_prompt_template")
+    agent_obj.prompt_template = state.get("agent_prompt_template")
+    if getattr(agent_obj, "llm", None) is not None:
+        agent_obj.llm.prompt_template = state.get("llm_prompt_template")
 
 # ---------------------------------------------------------------------------
 # Hot-reload configuration subscription
@@ -424,6 +585,7 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "provider",
         "providerModel",
         "configHash",
+        "instructionHash",
         "systemPrompt",
         "permissionMode",
     ):
@@ -443,6 +605,11 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         for key, audit_value in effective_audit_fields(value["effectiveAgentConfig"]).items():
             if context.get(key) is None:
                 context[key] = audit_value
+    if isinstance(value.get("instructionBundle"), dict):
+        context["instructionBundle"] = value["instructionBundle"]
+        rendered = value["instructionBundle"].get("rendered")
+        if isinstance(rendered, dict) and isinstance(rendered.get("system"), str):
+            context["systemPrompt"] = rendered["system"]
     for int_key in ("turn", "configRevision"):
         raw_int = value.get(int_key)
         if isinstance(raw_int, bool) or raw_int is None:
@@ -462,7 +629,17 @@ def _runtime_context_audit_fields(context: dict[str, Any] | None) -> dict[str, A
     if isinstance(snapshot, dict):
         return effective_audit_fields(snapshot)
     out: dict[str, Any] = {}
-    for key in ("turn", "configRevision", "configHash", "modelSpec", "llmComponent", "providerModel"):
+    for key in (
+        "turn",
+        "configRevision",
+        "configHash",
+        "instructionHash",
+        "templateName",
+        "templateHash",
+        "modelSpec",
+        "llmComponent",
+        "providerModel",
+    ):
         value = context.get(key)
         if value is not None:
             out[key] = value
@@ -475,6 +652,7 @@ def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
         "turn": audit.get("turn"),
         "config_revision": audit.get("configRevision"),
         "config_hash": audit.get("configHash"),
+        "instruction_hash": audit.get("instructionHash"),
         "model_spec": audit.get("modelSpec"),
         "llm_component": audit.get("llmComponent"),
     }
@@ -1161,6 +1339,7 @@ class OpenShellDurableAgent(DurableAgent):
         agent_context.update(
             {
                 "systemPrompt": clean.get("systemPrompt"),
+                "instructionBundle": clean.get("instructionBundle"),
                 "permissionMode": clean.get("permissionMode"),
                 "allowedTools": clean.get("allowedTools"),
             }
@@ -1555,13 +1734,30 @@ class OpenShellDurableAgent(DurableAgent):
             with self._agent_context_lock:
                 previous_active_instance = self._active_llm_instance_id
                 previous_component = getattr(self.llm, "_llm_component", None)
-                previous_system_prompt = self.profile.system_prompt
+                previous_prompt_state = _capture_prompt_state(self)
                 saved_tool_choice = None
                 try:
                     if component:
                         self.llm._llm_component = component
-                    if context.get("systemPrompt"):
-                        self.profile.system_prompt = context["systemPrompt"]
+                    _apply_instruction_prompt_state(
+                        self,
+                        context.get("instructionBundle")
+                        if isinstance(context.get("instructionBundle"), dict)
+                        else None,
+                    )
+                    if context.get("systemPrompt") and not context.get("instructionBundle"):
+                        fallback_bundle = {
+                            "persona": {
+                                "role": self.profile.role,
+                                "goal": self.profile.goal,
+                                "instructions": list(self.profile.instructions or []),
+                                "styleGuidelines": list(
+                                    getattr(self.profile, "style_guidelines", None) or []
+                                ),
+                            },
+                            "rendered": {"system": context["systemPrompt"]},
+                        }
+                        _apply_instruction_prompt_state(self, fallback_bundle)
                     active_component = getattr(self.llm, "_llm_component", None)
                     # Suppress tool_choice for Anthropic components — the
                     # Dapr langchaingo Anthropic adapter passes tool_choice as
@@ -1574,7 +1770,7 @@ class OpenShellDurableAgent(DurableAgent):
                 finally:
                     self._active_llm_instance_id = previous_active_instance
                     self.llm._llm_component = previous_component
-                    self.profile.system_prompt = previous_system_prompt
+                    _restore_prompt_state(self, previous_prompt_state)
                     if saved_tool_choice is not None:
                         self.execution.tool_choice = saved_tool_choice
         except Exception as exc:
@@ -2288,41 +2484,33 @@ class OpenShellDurableAgent(DurableAgent):
             if restored_repo_path:
                 runtime.set_cwd(restored_repo_path)
 
-        # Per-run persona override from agentConfig. Named agents carry the
-        # persona inside agentConfig; apply before building the system prompt
-        # so the <env> block layers on top of the right role/goal. Mirrors the
-        # existing per-run override pattern for system_prompt/model/max_turns.
+        # Per-run instruction bundle from agentConfig + runtime context. Named
+        # agents carry persona inside agentConfig; systemPrompt no longer
+        # suppresses role/goal/instructions because the composer renders all
+        # persona fields into one ordered system message.
         agent_config = _coerce_agent_config(message.get("agentConfig")) or {}
         effective_config = _parse_metadata(message.get("effectiveAgentConfig"))
         effective_fields = effective_audit_fields(effective_config)
         allowed_tools = _allowed_tools_from_agent_config(agent_config)
-        previous_role = self.profile.role
-        previous_goal = self.profile.goal
-        previous_instructions = list(self.profile.instructions or [])
-        previous_style_guidelines = list(
-            getattr(self.profile, "style_guidelines", None) or []
-        )
-        if isinstance(agent_config.get("role"), str) and agent_config["role"].strip():
-            self.profile.role = agent_config["role"].strip()
-        if isinstance(agent_config.get("goal"), str) and agent_config["goal"].strip():
-            self.profile.goal = agent_config["goal"].strip()
-        if isinstance(agent_config.get("instructions"), list):
-            self.profile.instructions = [
-                str(i) for i in agent_config["instructions"] if str(i).strip()
-            ]
-        if isinstance(agent_config.get("styleGuidelines"), list):
-            style_list = [
-                str(s) for s in agent_config["styleGuidelines"] if str(s).strip()
-            ]
-            if hasattr(self.profile, "style_guidelines"):
-                self.profile.style_guidelines = style_list
+        previous_prompt_state = _capture_prompt_state(self)
+        platform_system_sections = [_build_system_prompt(runtime.cwd, sandbox_name or None)]
+        hook_contexts: list[str] = []
+        instruction_bundle: dict[str, Any] = {}
 
-        # Set system prompt dynamically with <env> block (mirrors prompts.ts)
-        previous_system_prompt = self.profile.system_prompt
-        self.profile.system_prompt = _build_system_prompt(
-            cwd=runtime.cwd,
-            sandbox_name=sandbox_name or None,
-        )
+        def refresh_instruction_bundle() -> None:
+            nonlocal instruction_bundle
+            instruction_bundle = _compose_turn_instruction_bundle(
+                agent_config=agent_config,
+                message=message,
+                prompt=str(message.get("task") or message.get("prompt") or ""),
+                cwd=runtime.cwd,
+                sandbox_name=sandbox_name or None,
+                platform_system_sections=platform_system_sections,
+                hook_context="\n\n".join(hook_contexts) if hook_contexts else None,
+            )
+            _apply_instruction_prompt_state(self, instruction_bundle)
+
+        refresh_instruction_bundle()
 
         max_iterations = (
             _parse_int(message.get("maxIterations"))
@@ -2463,6 +2651,7 @@ class OpenShellDurableAgent(DurableAgent):
                     turn=effective_fields.get("turn"),
                     config_revision=effective_fields.get("configRevision"),
                     config_hash=effective_fields.get("configHash"),
+                    instruction_hash=effective_fields.get("instructionHash"),
                     model_spec=effective_fields.get("modelSpec"),
                     llm_component=effective_fields.get("llmComponent"),
                 )
@@ -2600,7 +2789,8 @@ class OpenShellDurableAgent(DurableAgent):
         if available_skills:
             skill_listing_block = format_skill_listings(available_skills)
             if skill_listing_block:
-                self.profile.system_prompt += "\n\n" + skill_listing_block
+                platform_system_sections.append(skill_listing_block)
+                refresh_instruction_bundle()
 
         if not ctx.is_replaying:
             logger.info("[exec-id] execution_id=%s instance_id=%s", execution_id, instance_id)
@@ -2652,14 +2842,14 @@ class OpenShellDurableAgent(DurableAgent):
                         project_dir=project_dir_hook,
                     )
                     if start_agg.additional_contexts:
-                        self.profile.system_prompt += "\n\n" + "\n\n".join(
-                            start_agg.additional_contexts
-                        )
+                        hook_contexts.extend(start_agg.additional_contexts)
+                        refresh_instruction_bundle()
                     if start_agg.initial_user_message and isinstance(message.get("task"), str):
                         message = {
                             **message,
                             "task": start_agg.initial_user_message + "\n\n" + str(message.get("task") or ""),
                         }
+                        refresh_instruction_bundle()
                     if start_agg.any_block():
                         raise RuntimeError(
                             f"SessionStart hook blocked workflow: "
@@ -2687,6 +2877,7 @@ class OpenShellDurableAgent(DurableAgent):
                                 + "\n\n"
                                 + "\n\n".join(submit_agg.additional_contexts),
                             }
+                            refresh_instruction_bundle()
                         if submit_agg.any_block():
                             raise RuntimeError(
                                 f"UserPromptSubmit hook blocked workflow: "
@@ -2699,6 +2890,7 @@ class OpenShellDurableAgent(DurableAgent):
 
         effective_cwd = runtime.cwd or cwd or DEFAULT_CWD
         self._cwd_by_instance[instance_id] = effective_cwd
+        refresh_instruction_bundle()
         runtime_context = {
             "executionId": execution_id,
             "sandboxName": sandbox_name or None,
@@ -2712,6 +2904,10 @@ class OpenShellDurableAgent(DurableAgent):
             "turn": effective_fields.get("turn"),
             "configRevision": effective_fields.get("configRevision"),
             "effectiveAgentConfig": effective_config,
+            "instructionBundle": instruction_bundle,
+            "instructionHash": instruction_bundle.get("instructionHash"),
+            "templateName": instruction_bundle.get("templateName"),
+            "templateHash": instruction_bundle.get("templateHash"),
             "systemPrompt": self.profile.system_prompt,
             "permissionMode": agent_config.get("permissionMode"),
             "allowedTools": sorted(allowed_tools),
@@ -2907,12 +3103,7 @@ class OpenShellDurableAgent(DurableAgent):
                     self._max_iterations_by_instance.pop(instance_id, None)
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
-            self.profile.system_prompt = previous_system_prompt
-            self.profile.role = previous_role
-            self.profile.goal = previous_goal
-            self.profile.instructions = previous_instructions
-            if hasattr(self.profile, "style_guidelines"):
-                self.profile.style_guidelines = previous_style_guidelines
+            _restore_prompt_state(self, previous_prompt_state)
             skill_registry.clear_instance_skills()
             # End the claude_code.interaction span + reset session context.
             # Gated on non-replay to avoid prematurely closing the span every
@@ -3238,6 +3429,7 @@ class OpenShellDurableAgent(DurableAgent):
         auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
         turn_timeout_seconds = _session_turn_timeout_seconds(message)
         config_revision = 1
+        control_override_fields: set[str] = set()
 
         if not ctx.is_replaying:
             publish_session_event(
@@ -3274,6 +3466,13 @@ class OpenShellDurableAgent(DurableAgent):
             )
             if config_changes:
                 config_revision += 1
+                for change in config_changes:
+                    if isinstance(change, dict) and isinstance(change.get("changedKeys"), list):
+                        control_override_fields.update(
+                            str(key)
+                            for key in change.get("changedKeys", [])
+                            if str(key).strip()
+                        )
                 if not ctx.is_replaying:
                     next_cwd = str(
                         message.get("cwd")
@@ -3328,12 +3527,24 @@ class OpenShellDurableAgent(DurableAgent):
                 or agent_cfg.get("cwd")
                 or DEFAULT_CWD
             )
+            child_sandbox_name = (
+                str(message.get("sandboxName") or "").strip() or None
+            )
+            instruction_bundle = _compose_turn_instruction_bundle(
+                agent_config=agent_cfg,
+                message=message,
+                prompt=task_text,
+                cwd=child_cwd,
+                sandbox_name=child_sandbox_name,
+                control_override_fields=control_override_fields,
+            )
             effective_config = build_effective_agent_config(
                 agent_config=agent_cfg,
                 raw_message=message,
                 turn=turn_counter,
                 config_revision=config_revision,
                 cwd=child_cwd,
+                instruction_bundle=instruction_bundle,
             )
 
             if not ctx.is_replaying:
@@ -3341,6 +3552,21 @@ class OpenShellDurableAgent(DurableAgent):
                     session_id,
                     "session.status_running",
                     {"turn": turn_counter},
+                )
+                publish_session_event(
+                    session_id,
+                    "session.instructions_applied",
+                    {
+                        "turn": turn_counter,
+                        "childInstanceId": child_instance_id,
+                        "schemaVersion": instruction_bundle.get("schemaVersion"),
+                        "instructionHash": instruction_bundle.get("instructionHash"),
+                        **instruction_bundle_audit_payload(
+                            instruction_bundle,
+                            max_bytes=_MAX_INSTRUCTION_AUDIT_BYTES,
+                        ),
+                    },
+                    source_event_id=f"{child_instance_id}:instructions",
                 )
                 llm_snapshot = (
                     effective_config.get("llm")
@@ -3352,12 +3578,33 @@ class OpenShellDurableAgent(DurableAgent):
                     if isinstance(effective_config.get("tools"), dict)
                     else {}
                 )
+                instruction_sources = (
+                    effective_config.get("instructionSources")
+                    if isinstance(effective_config.get("instructionSources"), list)
+                    else []
+                )
                 publish_session_event(
                     session_id,
                     "session.turn_started",
                     {
                         "turn": turn_counter,
                         "childInstanceId": child_instance_id,
+                        "instructionHash": effective_config.get("instructionHash"),
+                        "templateName": effective_config.get("templateName"),
+                        "templateHash": effective_config.get("templateHash"),
+                        "instructionBundleSchemaVersion": effective_config.get(
+                            "instructionBundleSchemaVersion"
+                        ),
+                        "instructionSources": instruction_sources,
+                        "instructionOverrides": [
+                            item
+                            for item in instruction_sources
+                            if isinstance(item, dict)
+                            and item.get("overrideKind") != "base"
+                        ],
+                        "instructionTextStored": effective_config.get(
+                            "instructionTextStored"
+                        ),
                         "configRevision": config_revision,
                         "configHash": effective_config.get("configHash"),
                         "modelSpec": llm_snapshot.get("modelSpec"),
@@ -3380,6 +3627,7 @@ class OpenShellDurableAgent(DurableAgent):
                 task=task_text,
                 raw_message=message,
                 effective_agent_config=effective_config,
+                instruction_bundle=instruction_bundle,
             )
 
             # Option-C MCP bridge: the agent_workflow body that would normally
@@ -3413,12 +3661,20 @@ class OpenShellDurableAgent(DurableAgent):
                 "modelSpec": child_audit_fields.get("modelSpec"),
                 "providerModel": child_audit_fields.get("providerModel"),
                 "configHash": child_audit_fields.get("configHash"),
+                "instructionHash": child_audit_fields.get("instructionHash"),
+                "templateName": child_audit_fields.get("templateName"),
+                "templateHash": child_audit_fields.get("templateHash"),
                 "turn": child_audit_fields.get("turn"),
                 "configRevision": child_audit_fields.get("configRevision"),
                 "effectiveAgentConfig": effective_config,
-                "systemPrompt": _build_system_prompt(
-                    cwd=str(child_input.get("cwd") or DEFAULT_CWD),
-                    sandbox_name=str(child_input.get("sandboxName") or "") or None,
+                "instructionBundle": instruction_bundle,
+                "systemPrompt": (
+                    instruction_bundle.get("rendered", {}).get("system")
+                    if isinstance(instruction_bundle.get("rendered"), dict)
+                    else _build_system_prompt(
+                        cwd=str(child_input.get("cwd") or DEFAULT_CWD),
+                        sandbox_name=str(child_input.get("sandboxName") or "") or None,
+                    )
                 ),
                 "permissionMode": agent_cfg.get("permissionMode"),
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
@@ -3605,6 +3861,7 @@ def _freeze_session_child_input(
     task: str,
     raw_message: dict,
     effective_agent_config: dict | None = None,
+    instruction_bundle: dict | None = None,
 ) -> dict:
     """Build the frozen input payload for a per-turn agent_workflow child
     call. Reuses the message shape that sw_workflow already passes through,
@@ -3651,6 +3908,7 @@ def _freeze_session_child_input(
         "workflowExecutionId": db_execution_id,
         "agentConfig": agent_cfg,
         "effectiveAgentConfig": effective_agent_config or {},
+        "instructionBundle": instruction_bundle or {},
         "vaultIds": vault_ids,
         "sandboxPolicy": sandbox_policy,
         "sandboxName": sandbox_name,

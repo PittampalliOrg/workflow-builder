@@ -25,6 +25,7 @@ class SessionContext:
     turn: int | None = None
     config_revision: int | None = None
     config_hash: str = ""
+    instruction_hash: str = ""
     model_spec: str = ""
     llm_component: str = ""
     user_id: str = ""
@@ -66,6 +67,7 @@ def set_session_context(
     turn: int | None = None,
     config_revision: int | None = None,
     config_hash: str | None = "",
+    instruction_hash: str | None = "",
     model_spec: str | None = "",
     llm_component: str | None = "",
     user_id: str = "",
@@ -86,6 +88,7 @@ def set_session_context(
             turn=turn,
             config_revision=config_revision,
             config_hash=config_hash or "",
+            instruction_hash=instruction_hash or "",
             model_spec=model_spec or "",
             llm_component=llm_component or "",
             user_id=user_id,
@@ -124,6 +127,8 @@ def get_telemetry_attributes() -> dict[str, Any]:
         attrs["agent.config_revision"] = ctx.config_revision
     if ctx.config_hash:
         attrs["agent.config_hash"] = ctx.config_hash
+    if ctx.instruction_hash:
+        attrs["agent.instruction_hash"] = ctx.instruction_hash
     if ctx.model_spec:
         attrs["agent.model_spec"] = ctx.model_spec
     if ctx.llm_component:

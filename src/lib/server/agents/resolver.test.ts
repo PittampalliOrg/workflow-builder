@@ -109,7 +109,12 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("inlines resolved agentConfig and strips agentRef", async () => {
-		const config = minimalConfig({ modelSpec: "anthropic/claude-opus-4-7" });
+		const config = minimalConfig({
+			modelSpec: "anthropic/claude-opus-4-7",
+			role: "Sentinel role",
+			goal: "Sentinel goal",
+			instructions: ["Sentinel instruction"],
+		});
 		resolveAgentRefMock.mockResolvedValueOnce(
 			resolvedAgent({ version: 3, config }),
 		);
@@ -138,6 +143,24 @@ describe("resolveSpecAgentRefs", () => {
 		const body = withBlock.body as Record<string, unknown>;
 		expect(body.agentRef).toBeUndefined();
 		expect(body.agentConfig).toEqual(config);
+		expect((body.instructionBundle as Record<string, unknown>).instructionHash).toMatch(
+			/^[a-f0-9]{64}$/,
+		);
+		expect(
+			((body.instructionBundle as Record<string, unknown>).rendered as Record<
+				string,
+				unknown
+			>).system,
+		).toContain("Sentinel role");
+		expect(
+			((body.instructionBundle as Record<string, unknown>).rendered as Record<
+				string,
+				unknown
+			>).system,
+		).toContain("You are dapr-agent-py");
+		expect((body.instructionBundle as Record<string, unknown>).templateName).toBe(
+			"workflow-builder canonical bundle",
+		);
 		expect(body.agentId).toBe("a1");
 		expect(body.agentVersion).toBe(3);
 		expect(body.agentAppId).toBe("agent-runtime-code-agent");
@@ -145,6 +168,7 @@ describe("resolveSpecAgentRefs", () => {
 		expect(body.prompt).toBe("hello");
 		expect(withBlock.agentRef).toBeUndefined();
 		expect(withBlock.agentConfig).toEqual(config);
+		expect(withBlock.instructionBundle).toEqual(body.instructionBundle);
 		expect(withBlock.agentRuntime).toBe("dapr-agent-py");
 		expect(withBlock.agentId).toBe("a1");
 		expect(withBlock.agentVersion).toBe(3);

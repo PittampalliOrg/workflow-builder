@@ -157,12 +157,20 @@ def test_mcp_auth_changes_do_not_change_hash() -> None:
 
 
 def test_effective_audit_fields_are_small_and_flat() -> None:
+    instruction_bundle = {
+        "schemaVersion": "workflow-builder.instruction-bundle.v1",
+        "instructionHash": "i" * 64,
+        "templateName": "workflow-builder canonical bundle",
+        "templateHash": "t" * 64,
+        "sources": [{"field": "persona.role", "sourceType": "agent-profile"}],
+    }
     snapshot = build_effective_agent_config(
         agent_config={"modelSpec": "openai/o3"},
         raw_message={},
         turn=3,
         config_revision=2,
         cwd="/sandbox",
+        instruction_bundle=instruction_bundle,
     )
 
     audit = effective_audit_fields(snapshot)
@@ -170,6 +178,11 @@ def test_effective_audit_fields_are_small_and_flat() -> None:
     assert audit["turn"] == 3
     assert audit["configRevision"] == 2
     assert audit["configHash"] == snapshot["configHash"]
+    assert audit["instructionHash"] == "i" * 64
+    assert audit["templateName"] == "workflow-builder canonical bundle"
+    assert audit["templateHash"] == "t" * 64
+    assert snapshot["instructionBundleSchemaVersion"] == "workflow-builder.instruction-bundle.v1"
+    assert snapshot["instructionTextStored"] is True
     assert audit["modelSpec"] == "openai/o3"
     assert audit["llmComponent"] == "llm-openai-o3"
     assert audit["provider"] == "openai"
@@ -187,6 +200,8 @@ def test_runtime_context_cache_retains_snapshot_audit_fields() -> None:
     cached = runtime_context_audit_cache_fields(
         {
             "llmComponent": "llm-openai-gpt5",
+            "templateName": "workflow-builder canonical bundle",
+            "templateHash": "t" * 64,
             "effectiveAgentConfig": snapshot,
         }
     )
@@ -194,6 +209,8 @@ def test_runtime_context_cache_retains_snapshot_audit_fields() -> None:
     assert cached["turn"] == 2
     assert cached["configRevision"] == 3
     assert cached["configHash"] == snapshot["configHash"]
+    assert cached["templateName"] == "workflow-builder canonical bundle"
+    assert cached["templateHash"] == "t" * 64
     assert cached["modelSpec"] == "openai/gpt-5.4"
     assert cached["llmComponent"] == "llm-openai-gpt5"
     assert cached["provider"] == "openai"

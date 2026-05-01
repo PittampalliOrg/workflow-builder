@@ -24,6 +24,11 @@ import {
 import { db } from "$lib/server/db";
 import { agentSkillRegistry } from "$lib/server/db/schema";
 import { inArray } from "drizzle-orm";
+import { hashAgentConfig } from "./config-hash";
+import {
+	buildInstructionBundle,
+	buildOpenShellSystemPrompt,
+} from "./instruction-bundle";
 
 export class AgentRefResolutionError extends Error {
 	constructor(
@@ -198,6 +203,7 @@ export async function resolveSpecAgentRefs(
 		const sandboxPolicy = environment
 			? deriveSandboxPolicy(environment, overrides?.sandboxPolicy)
 			: undefined;
+		const effectiveCwd = overrides?.cwd ?? config.cwd ?? bodyRecord?.cwd;
 
 		// Resolve peer agents listed in config.callableAgents. Only peers
 		// currently `registered` in the Dapr registry are emitted; unregistered
@@ -238,11 +244,39 @@ export async function resolveSpecAgentRefs(
 		// agent's dedicated pod with its own tool_executor + MCP bootstrap.
 		const agentAppId =
 			resolved.runtimeAppId ?? `agent-runtime-${resolved.slug}`;
+		const profileConfigHash = resolved.configHash ?? hashAgentConfig(resolved.config);
+		const sandboxName =
+			typeof bodyRecord?.sandboxName === "string"
+				? bodyRecord.sandboxName
+				: typeof (withBlock as Record<string, unknown>).sandboxName === "string"
+					? ((withBlock as Record<string, unknown>).sandboxName as string)
+					: undefined;
+		const instructionBundle = buildInstructionBundle({
+			agentConfig: config,
+			prompt,
+			promptSource: "workflow-node",
+			agent: {
+				id: resolved.id,
+				version: resolved.version,
+				configHash: profileConfigHash,
+				slug: resolved.slug,
+			},
+			cwd: typeof effectiveCwd === "string" ? effectiveCwd : undefined,
+			sandboxName,
+			platformSystemSections: [
+				buildOpenShellSystemPrompt(
+					typeof effectiveCwd === "string" ? effectiveCwd : "/sandbox",
+					sandboxName,
+				),
+			],
+			sourceId: resolved.id,
+		});
 
 		const inlinedBody: Record<string, unknown> = {
 			...(bodyRecord ?? {}),
 			prompt,
 			agentConfig: config,
+			instructionBundle,
 			agentRuntime: config.runtime ?? "dapr-agent-py",
 			agentId: resolved.id,
 			agentVersion: resolved.version,
@@ -250,7 +284,7 @@ export async function resolveSpecAgentRefs(
 			agentSlug: resolved.slug,
 			maxTurns: overrides?.maxTurns ?? config.maxTurns,
 			timeoutMinutes: overrides?.timeoutMinutes ?? config.timeoutMinutes,
-			cwd: overrides?.cwd ?? config.cwd ?? bodyRecord?.cwd,
+			cwd: effectiveCwd,
 		};
 		if (callableAgents.length > 0) {
 			inlinedBody.callableAgents = callableAgents;
@@ -269,6 +303,7 @@ export async function resolveSpecAgentRefs(
 			};
 		}
 		if (sandboxPolicy) inlinedBody.sandboxPolicy = sandboxPolicy;
+		for (const key of PERSONA_OVERRIDE_FIELDS) delete inlinedBody[key];
 		delete inlinedBody.agentRef;
 		delete inlinedBody.environmentRef;
 		delete inlinedBody.overrides;
@@ -282,13 +317,26 @@ export async function resolveSpecAgentRefs(
 		withRecord.agentAppId = agentAppId;
 		withRecord.agentSlug = resolved.slug;
 		withRecord.agentConfig = config;
+		withRecord.instructionBundle = instructionBundle;
 		if (sandboxPolicy) withRecord.sandboxPolicy = sandboxPolicy;
+		for (const key of PERSONA_OVERRIDE_FIELDS) delete withRecord[key];
 		delete withRecord.agentRef;
 		delete withRecord.environmentRef;
 	}
 
 	return cloned;
 }
+
+const PERSONA_OVERRIDE_FIELDS = [
+	"role",
+	"goal",
+	"instructions",
+	"styleGuidelines",
+	"style_guidelines",
+	"systemPrompt",
+	"system_prompt",
+	"persona",
+];
 
 /**
  * Backward-compatible sandbox policy shape. dapr-agent-py still reads

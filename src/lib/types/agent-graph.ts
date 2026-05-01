@@ -83,6 +83,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+const PERSONA_OVERRIDE_FIELDS = new Set([
+  "role",
+  "goal",
+  "instructions",
+  "styleGuidelines",
+  "style_guidelines",
+  "systemPrompt",
+  "system_prompt",
+  "persona",
+]);
+
+function stripPersonaFields<T extends Record<string, unknown>>(input: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!PERSONA_OVERRIDE_FIELDS.has(key)) out[key] = value;
+  }
+  return out as T;
+}
+
+function sanitizeAgentOverrides(input: unknown): AgentOverrides | undefined {
+  if (!isRecord(input)) return undefined;
+  const out: AgentOverrides = {};
+  if (isRecord(input.sandboxPolicy)) out.sandboxPolicy = input.sandboxPolicy;
+  if (Array.isArray(input.tools)) {
+    out.tools = input.tools
+      .map((tool) => (typeof tool === "string" ? tool.trim() : String(tool).trim()))
+      .filter(Boolean);
+  }
+  if (typeof input.maxTurns === "number" && Number.isFinite(input.maxTurns)) {
+    out.maxTurns = input.maxTurns;
+  }
+  if (
+    typeof input.timeoutMinutes === "number" &&
+    Number.isFinite(input.timeoutMinutes)
+  ) {
+    out.timeoutMinutes = input.timeoutMinutes;
+  }
+  if (typeof input.cwd === "string" && input.cwd.trim()) out.cwd = input.cwd.trim();
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function normalizeStepType(value: unknown): AgentStepType {
   return typeof value === "string" &&
     AGENT_STEP_TYPES.includes(value as AgentStepType)
@@ -299,11 +340,7 @@ export function getAgentTaskBody(
   const agentRef = isAgentRef(agentRefCandidate)
     ? ({ id: agentRefCandidate.id, version: agentRefCandidate.version } as AgentRef)
     : undefined;
-  const overrides = isRecord(body.overrides)
-    ? (body.overrides as AgentOverrides)
-    : isRecord(withBlock.overrides)
-      ? (withBlock.overrides as AgentOverrides)
-      : undefined;
+  const overrides = sanitizeAgentOverrides(body.overrides ?? withBlock.overrides);
   const environmentRefCandidate =
     body.environmentRef ?? withBlock.environmentRef;
   const environmentRef = isEnvironmentRef(environmentRefCandidate)
@@ -410,8 +447,8 @@ export function normalizeAgentTaskConfig(
   taskConfig: Record<string, unknown> | null | undefined,
   label = "Agent",
 ): Record<string, unknown> {
-  const existing = isRecord(taskConfig) ? taskConfig : {};
-  const withBlock = isRecord(existing.with) ? existing.with : {};
+  const existing = stripPersonaFields(isRecord(taskConfig) ? taskConfig : {});
+  const withBlock = stripPersonaFields(isRecord(existing.with) ? existing.with : {});
   const body = getAgentTaskBody(existing);
   const normalizedBody: AgentTaskBody = {
     ...createDefaultAgentTaskBody(label),

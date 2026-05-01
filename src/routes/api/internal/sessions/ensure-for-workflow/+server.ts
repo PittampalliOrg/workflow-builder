@@ -108,6 +108,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		body.environmentConfig && typeof body.environmentConfig === "object"
 			? (body.environmentConfig as Record<string, unknown>)
 			: null;
+	const instructionBundle =
+		body.instructionBundle && typeof body.instructionBundle === "object"
+			? (body.instructionBundle as Record<string, unknown>)
+			: null;
 	const vaultIds = Array.isArray(body.vaultIds)
 		? (body.vaultIds as unknown[]).filter(
 				(v): v is string => typeof v === "string",
@@ -217,6 +221,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			childInput: buildChildInput({
 				sessionId: existing.id,
 				agentConfig,
+				instructionBundle,
 				environmentConfig,
 				workflowId,
 				nodeId,
@@ -341,6 +346,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		childInput: buildChildInput({
 			sessionId,
 			agentConfig,
+			instructionBundle,
 			environmentConfig,
 			workflowId,
 			nodeId,
@@ -364,6 +370,7 @@ export const POST: RequestHandler = async ({ request }) => {
 function buildChildInput(params: {
 	sessionId: string;
 	agentConfig: AgentConfig;
+	instructionBundle?: Record<string, unknown> | null;
 	environmentConfig: Record<string, unknown> | null;
 	workflowId: string;
 	nodeId: string;
@@ -383,6 +390,7 @@ function buildChildInput(params: {
 		agentId: params.agentId ?? null,
 		agentVersion: params.agentVersion ?? null,
 		agentConfig: params.agentConfig,
+		instructionBundle: params.instructionBundle ?? null,
 		agentSlug: params.agentSlug ?? null,
 		agentAppId: params.agentAppId ?? null,
 		environmentConfig: params.environmentConfig,

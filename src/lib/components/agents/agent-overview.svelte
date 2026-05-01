@@ -6,6 +6,7 @@
 		CollapsibleContent,
 		CollapsibleTrigger
 	} from '$lib/components/ui/collapsible';
+	import { formatAgentPersonaPreview } from '$lib/agents/persona-preview';
 	import { Check, ChevronDown, ChevronRight, Copy, Package, Puzzle, Shield } from '@lucide/svelte';
 	import type { AgentDetail } from '$lib/types/agents';
 
@@ -16,10 +17,7 @@
 
 	const config = $derived(agent.config ?? {});
 	const modelSpec = $derived((config as { modelSpec?: string }).modelSpec ?? null);
-	const systemPrompt = $derived(
-		String((config as { instructions?: string; systemPrompt?: string }).instructions ??
-			(config as { systemPrompt?: string }).systemPrompt ?? '').trim(),
-	);
+	const personaPreview = $derived(formatAgentPersonaPreview(config as Record<string, unknown>));
 	const mcpServers = $derived(
 		(
 			config as {
@@ -51,7 +49,7 @@
 
 	async function copyPrompt() {
 		try {
-			await navigator.clipboard.writeText(systemPrompt);
+			await navigator.clipboard.writeText(personaPreview);
 			promptCopied = true;
 			setTimeout(() => (promptCopied = false), 1400);
 		} catch {
@@ -73,13 +71,13 @@
 		{/if}
 	</section>
 
-	<!-- System prompt -->
+	<!-- Persona preview -->
 	<section class="space-y-2">
 		<div class="flex items-center justify-between">
 			<h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-				System prompt
+				Persona preview
 			</h3>
-			{#if systemPrompt}
+			{#if personaPreview}
 				<Button variant="ghost" size="sm" class="h-6 gap-1 text-[11px]" onclick={copyPrompt}>
 					{#if promptCopied}
 						<Check class="size-3 text-green-500" /> Copied
@@ -89,12 +87,12 @@
 				</Button>
 			{/if}
 		</div>
-		{#if systemPrompt}
+		{#if personaPreview}
 			<pre class="max-h-[320px] overflow-y-auto whitespace-pre-wrap rounded border bg-muted/30 p-3 text-xs font-mono"><code
-					>{systemPrompt}</code
+					>{personaPreview}</code
 				></pre>
 		{:else}
-			<p class="text-xs text-muted-foreground">No system prompt set.</p>
+			<p class="text-xs text-muted-foreground">No persona prompt fields set.</p>
 		{/if}
 	</section>
 

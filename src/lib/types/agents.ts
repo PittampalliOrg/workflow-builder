@@ -133,6 +133,7 @@ export type AgentSummary = {
 	tags: string[];
 	runtime: AgentRuntime;
 	currentVersion: number | null;
+	currentConfigHash: string | null;
 	modelSpec: string | null;
 	environmentId: string | null;
 	environmentVersion: number | null;

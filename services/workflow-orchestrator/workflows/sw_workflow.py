@@ -1183,6 +1183,9 @@ def _run_native_durable_agent_child_workflow(
         "requireFileChanges": require_file_changes,
         "timeoutMinutes": timeout_minutes,
         "agentConfig": agent_config,
+        "instructionBundle": flattened_args.get("instructionBundle")
+        if isinstance(flattened_args.get("instructionBundle"), dict)
+        else None,
         "environmentConfig": flattened_args.get("environmentConfig")
         if isinstance(flattened_args.get("environmentConfig"), dict)
         else None,
@@ -1295,6 +1298,7 @@ def _run_native_durable_agent_child_workflow(
             "workflowExecutionId": tc.db_execution_id or tc.execution_id,
             "parentExecutionId": ctx.instance_id,
             "agentConfig": agent_config,
+            "instructionBundle": child_input.get("instructionBundle"),
             "environmentConfig": child_input.get("environmentConfig"),
             "vaultIds": child_input.get("vaultIds") or [],
             "initialMessage": run_prompt or prompt,

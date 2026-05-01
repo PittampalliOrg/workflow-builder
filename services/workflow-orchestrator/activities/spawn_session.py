@@ -80,6 +80,9 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "userId": input_data.get("userId") or "",
             "projectId": input_data.get("projectId"),
             "agentConfig": input_data.get("agentConfig") or {},
+            "instructionBundle": input_data.get("instructionBundle")
+            if isinstance(input_data.get("instructionBundle"), dict)
+            else None,
             "environmentConfig": input_data.get("environmentConfig"),
             "vaultIds": input_data.get("vaultIds") or [],
             "initialMessage": input_data.get("initialMessage"),
