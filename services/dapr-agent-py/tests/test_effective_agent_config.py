@@ -13,6 +13,7 @@ from src.effective_agent_config import (  # noqa: E402
     build_effective_agent_config,
     effective_audit_fields,
     resolve_llm_metadata,
+    runtime_context_audit_cache_fields,
 )
 
 
@@ -171,3 +172,30 @@ def test_effective_audit_fields_are_small_and_flat() -> None:
     assert audit["configHash"] == snapshot["configHash"]
     assert audit["modelSpec"] == "openai/o3"
     assert audit["llmComponent"] == "llm-openai-o3"
+    assert audit["provider"] == "openai"
+
+
+def test_runtime_context_cache_retains_snapshot_audit_fields() -> None:
+    snapshot = build_effective_agent_config(
+        agent_config={"modelSpec": "openai/gpt-5.4"},
+        raw_message={},
+        turn=2,
+        config_revision=3,
+        cwd="/workspace",
+    )
+
+    cached = runtime_context_audit_cache_fields(
+        {
+            "llmComponent": "llm-openai-gpt5",
+            "effectiveAgentConfig": snapshot,
+        }
+    )
+
+    assert cached["turn"] == 2
+    assert cached["configRevision"] == 3
+    assert cached["configHash"] == snapshot["configHash"]
+    assert cached["modelSpec"] == "openai/gpt-5.4"
+    assert cached["llmComponent"] == "llm-openai-gpt5"
+    assert cached["provider"] == "openai"
+    assert cached["providerModel"] == "gpt-5.4"
+    assert cached["effectiveAgentConfig"] == snapshot

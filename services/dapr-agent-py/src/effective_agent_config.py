@@ -368,7 +368,39 @@ def effective_audit_fields(snapshot: Mapping[str, Any] | None) -> dict[str, Any]
     for key in ("turn", "configRevision", "configHash"):
         if snapshot.get(key) is not None:
             out[key] = snapshot.get(key)
-    for key in ("modelSpec", "llmComponent", "providerModel"):
+    for key in ("modelSpec", "llmComponent", "provider", "providerModel"):
         if llm.get(key) is not None:
             out[key] = llm.get(key)
+    return out
+
+
+def runtime_context_audit_cache_fields(context: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return audit fields that must survive the in-memory runtime cache.
+
+    The durable state copy stores the full effectiveAgentConfig snapshot, but
+    the hot path reads from an in-memory per-instance cache first. Keep this
+    compact set in memory so provider usage events and spans do not lose
+    revision/model provenance after the context is first remembered.
+    """
+    if not isinstance(context, Mapping):
+        return {}
+
+    out: dict[str, Any] = {}
+    snapshot = context.get("effectiveAgentConfig")
+    if isinstance(snapshot, Mapping):
+        out.update(effective_audit_fields(snapshot))
+
+    for key in (
+        "turn",
+        "configRevision",
+        "configHash",
+        "modelSpec",
+        "llmComponent",
+        "provider",
+        "providerModel",
+    ):
+        if context.get(key) is not None:
+            out[key] = context.get(key)
+    if isinstance(snapshot, Mapping):
+        out["effectiveAgentConfig"] = snapshot
     return out

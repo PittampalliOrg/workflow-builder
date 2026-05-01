@@ -91,6 +91,7 @@ from src.effective_agent_config import (
     build_effective_agent_config,
     effective_audit_fields,
     resolve_llm_metadata,
+    runtime_context_audit_cache_fields,
 )
 from src.hooks import (
     HooksSnapshot,
@@ -1076,8 +1077,8 @@ class OpenShellDurableAgent(DurableAgent):
         # publish_session_event so every agent event lands in session_events.
         self._session_id_by_instance: dict[str, str] = {}
         self._execution_id_by_instance: dict[str, str] = {}
-        self._openshell_context_by_instance: dict[str, dict[str, str | None]] = {}
-        self._agent_context_by_instance: dict[str, dict[str, str | None]] = {}
+        self._openshell_context_by_instance: dict[str, dict[str, Any]] = {}
+        self._agent_context_by_instance: dict[str, dict[str, Any]] = {}
         self._agent_context_lock = threading.RLock()
         # Hooks/plugins: populated by plugins.integration.bootstrap(agent) at
         # service boot. Defaults keep the attributes safe to touch even when
@@ -1154,11 +1155,16 @@ class OpenShellDurableAgent(DurableAgent):
             "workspaceRef": clean.get("workspaceRef"),
             "executionId": clean.get("executionId"),
         }
-        agent_context = {
-            "llmComponent": clean.get("llmComponent"),
-            "systemPrompt": clean.get("systemPrompt"),
-            "permissionMode": clean.get("permissionMode"),
-        }
+        agent_context = runtime_context_audit_cache_fields(clean)
+        if clean.get("llmComponent") is not None:
+            agent_context["llmComponent"] = clean.get("llmComponent")
+        agent_context.update(
+            {
+                "systemPrompt": clean.get("systemPrompt"),
+                "permissionMode": clean.get("permissionMode"),
+                "allowedTools": clean.get("allowedTools"),
+            }
+        )
         with self._agent_context_lock:
             self._openshell_context_by_instance[instance_id] = sandbox_context
             self._agent_context_by_instance[instance_id] = agent_context
