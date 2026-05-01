@@ -1,20 +1,30 @@
 <script lang="ts">
-	import * as Sheet from '$lib/components/ui/sheet';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
-	import { Bot, Check, Copy, ExternalLink, FileDiff, Loader2 } from '@lucide/svelte';
+	import {
+		Activity,
+		Bot,
+		Check,
+		Coins,
+		Copy,
+		ExternalLink,
+		FileDiff,
+		FlaskConical,
+		Loader2,
+		Repeat,
+		Scale,
+		Timer,
+		Wrench,
+		X
+	} from '@lucide/svelte';
 	import PromoteToDataset from './promote-to-dataset.svelte';
 	import RenderedPatch from './rendered-patch.svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import SpansTimeline from './spans-timeline.svelte';
 	import TraceDetail from './trace-detail.svelte';
-	import {
-		formatDuration,
-		formatRelative,
-		formatTokens
-	} from './run-status-helpers';
+	import { formatDuration, formatRelative, formatTokens } from './run-status-helpers';
 	import type { ParsedHarnessResult } from '$lib/server/benchmarks/harness-result';
 	import type {
 		ObservabilityLlmSpan,
@@ -102,12 +112,12 @@
 		error?: string;
 	};
 
+	type TabValue = 'overview' | 'patch' | 'scoring' | 'trace' | 'harness' | 'logs';
+
 	let detail = $state<DrilldownPayload | null>(null);
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let activeTab = $state<'problem' | 'patch' | 'harness' | 'trace' | 'spans' | 'logs'>(
-		'problem'
-	);
+	let activeTab = $state<TabValue>('overview');
 	let patchView = $state<'model' | 'gold' | 'both'>('both');
 	let patchMode = $state<'rendered' | 'raw'>('rendered');
 	let copied = $state<string | null>(null);
@@ -115,11 +125,99 @@
 	let spansLoading = $state(false);
 	let spansError = $state<string | null>(null);
 
+	// --- Resizable panel ---
+	const STORAGE_KEY = 'benchmarks.runInstanceDrawer.width';
+	const MIN_WIDTH = 480;
+	const MAX_WIDTH = 1200;
+
+	function defaultWidth() {
+		if (typeof window === 'undefined') return 880;
+		return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(window.innerWidth * 0.55)));
+	}
+
+	function loadStoredWidth(): number {
+		if (typeof window === 'undefined') return defaultWidth();
+		try {
+			const raw = window.localStorage.getItem(STORAGE_KEY);
+			if (!raw) return defaultWidth();
+			const n = Number(raw);
+			if (!Number.isFinite(n)) return defaultWidth();
+			return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, n));
+		} catch {
+			return defaultWidth();
+		}
+	}
+
+	let panelWidth = $state(loadStoredWidth());
+	let isResizing = $state(false);
+	let resizeStartX = 0;
+	let resizeStartWidth = 0;
+
+	function persistWidth(w: number) {
+		if (typeof window === 'undefined') return;
+		try {
+			window.localStorage.setItem(STORAGE_KEY, String(w));
+		} catch {
+			// noop
+		}
+	}
+
+	function onResizeStart(e: MouseEvent) {
+		isResizing = true;
+		resizeStartX = e.clientX;
+		resizeStartWidth = panelWidth;
+		e.preventDefault();
+	}
+
+	function onResizeMove(e: MouseEvent) {
+		if (!isResizing) return;
+		const delta = resizeStartX - e.clientX;
+		const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeStartWidth + delta));
+		panelWidth = next;
+	}
+
+	function onResizeEnd() {
+		if (isResizing) {
+			isResizing = false;
+			persistWidth(panelWidth);
+		}
+	}
+
+	function onResizeHandleDblClick() {
+		const d = defaultWidth();
+		panelWidth = d;
+		persistWidth(d);
+	}
+
+	function close() {
+		onOpenChange(false);
+	}
+
+	function onKeyDown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && open) {
+			e.stopPropagation();
+			close();
+		}
+	}
+
 	$effect(() => {
 		if (!open || !runId || !instanceId) {
 			return;
 		}
 		void load(runId, instanceId);
+	});
+
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		const prev = document.body.style.overflow;
+		if (open) {
+			document.body.style.overflow = 'hidden';
+		} else {
+			document.body.style.overflow = prev === 'hidden' ? '' : prev;
+		}
+		return () => {
+			if (typeof document !== 'undefined') document.body.style.overflow = '';
+		};
 	});
 
 	async function load(rid: string, iid: string) {
@@ -134,7 +232,7 @@
 			);
 			if (!res.ok) throw new Error(`Failed to load (${res.status})`);
 			detail = (await res.json()) as DrilldownPayload;
-			activeTab = 'problem';
+			activeTab = 'overview';
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -160,7 +258,7 @@
 	}
 
 	$effect(() => {
-		if ((activeTab === 'spans' || activeTab === 'trace') && runId && instanceId) {
+		if ((activeTab === 'trace' || activeTab === 'scoring') && runId && instanceId) {
 			void loadSpans(runId, instanceId);
 		}
 	});
@@ -186,6 +284,12 @@
 		return (Number.isFinite(i) ? i : 0) + (Number.isFinite(o) ? o : 0);
 	}
 
+	function costUsd(usage: Record<string, unknown> | null | undefined): number | null {
+		if (!usage || typeof usage !== 'object') return null;
+		const c = (usage as { totalCostUsd?: unknown }).totalCostUsd;
+		return typeof c === 'number' && Number.isFinite(c) ? c : null;
+	}
+
 	function durationMs(ri: DrilldownPayload['runInstance']): number | null {
 		if (ri.startedAt && ri.inferenceCompletedAt) {
 			const a = new Date(ri.startedAt).getTime();
@@ -194,92 +298,211 @@
 		}
 		return null;
 	}
+
+	function formatTtft(ms: number | null): string {
+		if (ms == null || !Number.isFinite(ms)) return '—';
+		if (ms < 1000) return `${Math.round(ms)}ms`;
+		return `${(ms / 1000).toFixed(1)}s`;
+	}
+
+	function formatCost(n: number | null): string {
+		if (n == null) return '—';
+		if (n < 0.01) return '<$0.01';
+		return `$${n.toFixed(2)}`;
+	}
 </script>
 
-<Sheet.Root {open} {onOpenChange}>
-	<Sheet.Content side="right" class="w-full sm:max-w-3xl flex flex-col">
-		<Sheet.Header class="space-y-2">
-			<div class="flex items-center justify-between gap-3">
-				<Sheet.Title class="break-all font-mono text-sm">
-					{instanceId ?? '—'}
-				</Sheet.Title>
-				{#if detail}
-					<div class="flex items-center gap-1.5">
-						<RunStatusBadge status={detail.runInstance.status} />
-						{#if detail.runInstance.sessionId}
-							<a
-								href={`/workspaces/${workspaceSlug}/sessions/${detail.runInstance.sessionId}`}
-								class="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-								title="Open agent session"
-							>
-								<Bot class="h-3 w-3" />
-								<span>Session</span>
-								<ExternalLink class="h-3 w-3" />
-							</a>
+<svelte:window onmousemove={onResizeMove} onmouseup={onResizeEnd} onkeydown={onKeyDown} />
+
+{#if open}
+	<!-- Backdrop -->
+	<button
+		type="button"
+		aria-label="Close drawer"
+		class="fixed inset-0 z-40 bg-black/30 transition-opacity"
+		onclick={close}
+	></button>
+
+	<!-- Drawer -->
+	<div
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="run-instance-drawer-title"
+		class="fixed right-0 top-0 bottom-0 z-50 flex flex-col border-l border-border bg-background shadow-2xl"
+		style:width="{panelWidth}px"
+	>
+		<!-- Resize handle -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="absolute left-0 top-0 bottom-0 z-50 w-1.5 -translate-x-1/2 cursor-col-resize transition-colors hover:bg-primary/40"
+			class:bg-primary={isResizing}
+			onmousedown={onResizeStart}
+			ondblclick={onResizeHandleDblClick}
+			title="Drag to resize · double-click to reset"
+		></div>
+
+		<!-- Header -->
+		<header class="flex-none border-b border-border px-5 pb-3 pt-4">
+			<div class="flex items-start justify-between gap-3">
+				<div class="min-w-0 flex-1 space-y-1">
+					<div class="flex items-center gap-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+						<FlaskConical class="h-3 w-3" />
+						<span>Benchmark instance</span>
+						{#if detail?.instance.repo}
+							<span class="text-foreground/60">·</span>
+							<span class="font-mono normal-case tracking-normal text-foreground/80">
+								{detail.instance.repo}
+							</span>
 						{/if}
 					</div>
-				{/if}
-			</div>
-			<Sheet.Description class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-				{#if detail}
-					{#if detail.instance.repo}
-						<span class="font-mono">{detail.instance.repo}</span>
+					<h2
+						id="run-instance-drawer-title"
+						class="break-all font-mono text-base font-semibold text-foreground"
+					>
+						{instanceId ?? '—'}
+					</h2>
+					{#if detail}
+						<div class="flex flex-wrap items-center gap-1.5 pt-1">
+							<RunStatusBadge status={detail.runInstance.status} />
+							{#if detail.runInstance.terminationReason}
+								<Badge variant="outline" class="font-normal text-[10px]">
+									{detail.runInstance.terminationReason}
+								</Badge>
+							{/if}
+							{#if detail.runInstance.sessionId}
+								<a
+									href={`/workspaces/${workspaceSlug}/sessions/${detail.runInstance.sessionId}`}
+									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+									title="Open agent session"
+								>
+									<Bot class="h-3 w-3" />
+									Session
+									<ExternalLink class="h-2.5 w-2.5" />
+								</a>
+							{/if}
+							{#if detail.runInstance.mlflowUrl}
+								<a
+									href={detail.runInstance.mlflowUrl}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+									title="Open MLflow run"
+								>
+									MLflow
+									<ExternalLink class="h-2.5 w-2.5" />
+								</a>
+							{/if}
+						</div>
 					{/if}
+				</div>
+				<Button variant="ghost" size="icon" class="h-8 w-8 shrink-0" onclick={close}>
+					<X class="h-4 w-4" />
+					<span class="sr-only">Close</span>
+				</Button>
+			</div>
+
+			{#if detail}
+				<!-- Metric strip -->
+				{@const dur = durationMs(detail.runInstance)}
+				{@const toks = tokenSum(detail.runInstance.usage)}
+				{@const cost = costUsd(detail.runInstance.usage)}
+				<div class="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
+					<div class="rounded-md border border-border bg-muted/20 px-2.5 py-2">
+						<div class="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+							<Repeat class="h-2.5 w-2.5" /> Turns
+						</div>
+						<div class="mt-0.5 text-sm font-semibold tabular-nums">
+							{detail.runInstance.turnCount ?? '—'}
+						</div>
+					</div>
+					<div class="rounded-md border border-border bg-muted/20 px-2.5 py-2">
+						<div class="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+							<Wrench class="h-2.5 w-2.5" /> Tools
+						</div>
+						<div class="mt-0.5 text-sm font-semibold tabular-nums">
+							{detail.runInstance.toolCallCount ?? '—'}
+						</div>
+					</div>
+					<div class="rounded-md border border-border bg-muted/20 px-2.5 py-2">
+						<div class="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+							<Activity class="h-2.5 w-2.5" /> TTFT
+						</div>
+						<div class="mt-0.5 text-sm font-semibold tabular-nums">
+							{formatTtft(detail.runInstance.ttftFirstMs)}
+						</div>
+					</div>
+					<div class="rounded-md border border-border bg-muted/20 px-2.5 py-2">
+						<div class="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+							<Coins class="h-2.5 w-2.5" /> Tokens
+						</div>
+						<div class="mt-0.5 text-sm font-semibold tabular-nums">
+							{toks > 0 ? formatTokens(toks) : '—'}
+						</div>
+					</div>
+					<div class="rounded-md border border-border bg-muted/20 px-2.5 py-2">
+						<div class="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+							<Scale class="h-2.5 w-2.5" /> Cost
+						</div>
+						<div class="mt-0.5 text-sm font-semibold tabular-nums">
+							{formatCost(cost)}
+						</div>
+					</div>
+					<div class="rounded-md border border-border bg-muted/20 px-2.5 py-2">
+						<div class="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+							<Timer class="h-2.5 w-2.5" /> Duration
+						</div>
+						<div class="mt-0.5 text-sm font-semibold tabular-nums">
+							{dur != null ? formatDuration(dur) : '—'}
+						</div>
+					</div>
+				</div>
+
+				<div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
 					{#if detail.runInstance.startedAt}
 						<span>started {formatRelative(detail.runInstance.startedAt)}</span>
 					{/if}
 					{#if detail.runInstance.evaluatedAt}
 						<span>graded {formatRelative(detail.runInstance.evaluatedAt)}</span>
 					{/if}
-					{@const dur = durationMs(detail.runInstance)}
-					{#if dur != null}
-						<span>{formatDuration(dur)}</span>
-					{/if}
-					{@const toks = tokenSum(detail.runInstance.usage)}
-					{#if toks > 0}
-						<span>{formatTokens(toks)} tokens</span>
-					{/if}
 					{#if detail.runInstance.patchBytes}
 						<span>{detail.runInstance.patchBytes} B patch</span>
 					{/if}
-					{#if detail.runInstance.turnCount !== null}
-						<Badge variant="secondary" class="font-normal">
-							{detail.runInstance.turnCount} turn{detail.runInstance.turnCount === 1 ? '' : 's'}
-						</Badge>
-					{/if}
-					{#if detail.runInstance.terminationReason}
-						<Badge variant="outline" class="font-normal">
-							{detail.runInstance.terminationReason}
-						</Badge>
-					{/if}
-				{/if}
-			</Sheet.Description>
-		</Sheet.Header>
+				</div>
+			{/if}
+		</header>
 
+		<!-- Body -->
 		<div class="flex flex-1 flex-col overflow-hidden">
 			{#if loading}
 				<div class="flex flex-1 items-center justify-center">
 					<Loader2 class="h-5 w-5 animate-spin text-muted-foreground" />
 				</div>
 			{:else if errorMessage}
-				<div class="px-4 py-6">
+				<div class="px-5 py-6">
 					<Alert variant="destructive">
 						<AlertDescription>{errorMessage}</AlertDescription>
 					</Alert>
 				</div>
 			{:else if !detail}
-				<div class="px-4 py-6 text-sm text-muted-foreground">No instance loaded.</div>
+				<div class="px-5 py-6 text-sm text-muted-foreground">No instance loaded.</div>
 			{:else}
 				<Tabs
 					value={activeTab}
-					onValueChange={(v) => (activeTab = v as typeof activeTab)}
+					onValueChange={(v) => (activeTab = v as TabValue)}
 					class="flex flex-1 flex-col overflow-hidden"
 				>
-					<TabsList class="mx-4 mt-2 h-9">
-						<TabsTrigger value="problem" class="text-xs">Problem</TabsTrigger>
+					<TabsList class="mx-5 mt-3 h-9 self-start">
+						<TabsTrigger value="overview" class="text-xs">Overview</TabsTrigger>
 						<TabsTrigger value="patch" class="text-xs">
 							Patch
 							{#if !detail.runInstance.modelPatch}
+								<span class="ml-1 text-muted-foreground">—</span>
+							{/if}
+						</TabsTrigger>
+						<TabsTrigger value="scoring" class="text-xs">Scoring</TabsTrigger>
+						<TabsTrigger value="trace" class="text-xs">
+							Trace
+							{#if (detail.runInstance.traceIds?.length ?? 0) === 0}
 								<span class="ml-1 text-muted-foreground">—</span>
 							{/if}
 						</TabsTrigger>
@@ -290,30 +513,113 @@
 								class="ml-2 text-[9px] px-1"
 							/>
 						</TabsTrigger>
-						<TabsTrigger value="trace" class="text-xs">
-							Trace
-							{#if (detail.runInstance.traceIds?.length ?? 0) === 0}
-								<span class="ml-1 text-muted-foreground">—</span>
-							{/if}
-						</TabsTrigger>
-						<TabsTrigger value="spans" class="text-xs">
-							Spans
-							{#if (detail.runInstance.traceIds?.length ?? 0) === 0}
-								<span class="ml-1 text-muted-foreground">—</span>
-							{/if}
-						</TabsTrigger>
 						<TabsTrigger value="logs" class="text-xs">Logs</TabsTrigger>
 					</TabsList>
 
-					<div class="flex-1 overflow-y-auto px-4 py-3">
-						<TabsContent value="problem" class="m-0">
-							{#if detail.instance.problemStatement}
-								<pre class="whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-foreground">{detail.instance.problemStatement}</pre>
-							{:else}
-								<p class="text-sm text-muted-foreground">No problem statement available.</p>
+					<div class="flex-1 overflow-y-auto px-5 py-4">
+						<!-- Overview -->
+						<TabsContent value="overview" class="m-0 space-y-4">
+							<section>
+								<h3 class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+									Problem statement
+								</h3>
+								{#if detail.instance.problemStatement}
+									<pre class="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/20 p-3 font-mono text-[12px] leading-relaxed">{detail.instance.problemStatement}</pre>
+								{:else}
+									<p class="text-sm text-muted-foreground">No problem statement available.</p>
+								{/if}
+							</section>
+
+							<section class="grid gap-2 sm:grid-cols-2">
+								<button
+									type="button"
+									class="rounded-md border border-border bg-background p-3 text-left transition-colors hover:bg-muted/40"
+									onclick={() => (activeTab = 'patch')}
+								>
+									<div class="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+										<FileDiff class="h-3 w-3" /> Patch
+									</div>
+									<div class="mt-1 text-sm font-semibold tabular-nums">
+										{#if detail.runInstance.modelPatch}
+											+{detail.runInstance.patchAddedLines ?? 0} / -{detail.runInstance.patchRemovedLines ?? 0}
+											<span class="ml-1 text-[11px] font-normal text-muted-foreground">
+												{detail.runInstance.patchFilesTouched ?? 0} files
+											</span>
+										{:else}
+											<span class="text-muted-foreground">No patch yet</span>
+										{/if}
+									</div>
+								</button>
+								<button
+									type="button"
+									class="rounded-md border border-border bg-background p-3 text-left transition-colors hover:bg-muted/40"
+									onclick={() => (activeTab = 'harness')}
+								>
+									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+										Harness
+									</div>
+									<div class="mt-1 flex items-center gap-2 text-sm font-semibold">
+										<RunStatusBadge status={detail.parsedHarness.failureCategory} />
+										<span class="text-[11px] font-normal tabular-nums text-muted-foreground">
+											F2P {detail.parsedHarness.failToPass.success.length}/{detail.parsedHarness.failToPass.failure.length}
+											· P2P {detail.parsedHarness.passToPass.success.length}/{detail.parsedHarness.passToPass.failure.length}
+										</span>
+									</div>
+								</button>
+								<button
+									type="button"
+									class="rounded-md border border-border bg-background p-3 text-left transition-colors hover:bg-muted/40"
+									onclick={() => (activeTab = 'scoring')}
+								>
+									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+										Scoring
+									</div>
+									<div class="mt-1 text-[11px] text-muted-foreground">
+										LLM-judge scorers + verdict text
+									</div>
+								</button>
+								<button
+									type="button"
+									class="rounded-md border border-border bg-background p-3 text-left transition-colors hover:bg-muted/40"
+									onclick={() => (activeTab = 'trace')}
+								>
+									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+										Trace
+									</div>
+									<div class="mt-1 text-sm font-semibold tabular-nums">
+										{detail.runInstance.traceIds?.length ?? 0}
+										<span class="ml-1 text-[11px] font-normal text-muted-foreground">
+											OTEL trace{(detail.runInstance.traceIds?.length ?? 0) === 1 ? '' : 's'}
+										</span>
+									</div>
+								</button>
+							</section>
+
+							{#if detail.runInstance.error || detail.runInstance.inferenceError || detail.runInstance.evaluationError}
+								<section class="space-y-2">
+									{#if detail.runInstance.inferenceError}
+										<Alert variant="destructive">
+											<AlertDescription>
+												<strong>Inference:</strong> {detail.runInstance.inferenceError}
+											</AlertDescription>
+										</Alert>
+									{/if}
+									{#if detail.runInstance.evaluationError}
+										<Alert variant="destructive">
+											<AlertDescription>
+												<strong>Harness:</strong> {detail.runInstance.evaluationError}
+											</AlertDescription>
+										</Alert>
+									{:else if detail.runInstance.error}
+										<Alert variant="destructive">
+											<AlertDescription>{detail.runInstance.error}</AlertDescription>
+										</Alert>
+									{/if}
+								</section>
 							{/if}
+
 							{#if detail.instance.hintsText}
-								<details class="mt-4 rounded-md border border-border p-3">
+								<details class="rounded-md border border-border p-3">
 									<summary class="cursor-pointer text-xs font-medium uppercase tracking-wider text-muted-foreground">
 										Hints
 									</summary>
@@ -322,6 +628,7 @@
 							{/if}
 						</TabsContent>
 
+						<!-- Patch -->
 						<TabsContent value="patch" class="m-0 space-y-3">
 							<Alert>
 								<AlertDescription>
@@ -380,9 +687,7 @@
 								</div>
 							</div>
 
-							<div
-								class="grid gap-3 {patchView === 'both' ? 'lg:grid-cols-2' : 'grid-cols-1'}"
-							>
+							<div class="grid gap-3 {patchView === 'both' ? 'lg:grid-cols-2' : 'grid-cols-1'}">
 								{#if patchView === 'both' || patchView === 'model'}
 									<div class="rounded-md border border-border bg-background">
 										<div class="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1.5">
@@ -465,6 +770,104 @@
 							</div>
 						</TabsContent>
 
+						<!-- Scoring (LLM-judge scorers — sourced from runInstance + scores API) -->
+						<TabsContent value="scoring" class="m-0 space-y-3">
+							<Alert>
+								<AlertDescription>
+									LLM-judge scorers run after the model patch is submitted. Scores are post-hoc artifacts and are not seen by the agent during inference.
+								</AlertDescription>
+							</Alert>
+							{#if spansLoading}
+								<div class="flex items-center gap-2 text-xs text-muted-foreground">
+									<Loader2 class="h-3 w-3 animate-spin" /> Loading scoring data…
+								</div>
+							{:else if runId && instanceId}
+								<TraceDetail
+									{runId}
+									{instanceId}
+									llmSpans={spans?.llmSpans ?? []}
+									toolSpans={spans?.toolSpans ?? []}
+									traceCount={spans?.traceIds.length ?? 0}
+									instanceMetrics={{
+										turnCount: detail.runInstance.turnCount,
+										toolCallCount: detail.runInstance.toolCallCount,
+										ttftFirstMs: detail.runInstance.ttftFirstMs,
+										ttftFirstToolMs: detail.runInstance.ttftFirstToolMs,
+										usage: detail.runInstance.usage
+									}}
+								/>
+							{/if}
+						</TabsContent>
+
+						<!-- Trace (OTEL waterfall — sourced from ClickHouse spans endpoint) -->
+						<TabsContent value="trace" class="m-0 space-y-3">
+							{#if spansLoading}
+								<div class="flex items-center gap-2 text-xs text-muted-foreground">
+									<Loader2 class="h-3 w-3 animate-spin" /> Loading spans…
+								</div>
+							{:else if (detail.runInstance.traceIds?.length ?? 0) === 0}
+								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+									No trace IDs recorded for this instance. The runtime may have completed before
+									OTel spans propagated, or this run predates OTel instrumentation.
+								</div>
+							{:else if spansError}
+								<Alert variant="destructive">
+									<AlertDescription>
+										Failed to load spans: {spansError}
+									</AlertDescription>
+								</Alert>
+							{:else if spans && spans.llmSpans.length === 0 && spans.toolSpans.length === 0 && spans.error}
+								<!-- ClickHouse-degraded state: trace IDs exist but query failed -->
+								<Alert variant="destructive">
+									<AlertDescription>
+										<div class="font-medium">Trace data is unreachable</div>
+										<div class="mt-1 text-xs">
+											{spans.error}. Trace IDs are recorded on this run instance, but the
+											ClickHouse query failed — usually a cluster-level connectivity issue.
+											The spans exist upstream and can be queried directly.
+										</div>
+									</AlertDescription>
+								</Alert>
+								<div class="rounded-md border border-border p-3">
+									<div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+										Trace IDs ({spans.traceIds.length})
+									</div>
+									<ul class="space-y-1.5">
+										{#each spans.traceIds as tid (tid)}
+											<li class="flex items-center justify-between gap-2 rounded border border-border bg-muted/20 px-2 py-1.5">
+												<code class="break-all font-mono text-[11px]">{tid}</code>
+												<Button
+													variant="ghost"
+													size="sm"
+													class="h-6 shrink-0 px-2 text-[10px]"
+													onclick={() => copyToClipboard(`trace-${tid}`, tid)}
+												>
+													{#if copied === `trace-${tid}`}
+														<Check class="h-3 w-3 text-emerald-500" />
+													{:else}
+														<Copy class="h-3 w-3" />
+													{/if}
+												</Button>
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{:else if spans}
+								<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+									{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'}
+								</div>
+								<SpansTimeline llmSpans={spans.llmSpans} toolSpans={spans.toolSpans} />
+								{#if spans.error}
+									<Alert variant="destructive">
+										<AlertDescription>
+											ClickHouse query partially failed: {spans.error}
+										</AlertDescription>
+									</Alert>
+								{/if}
+							{/if}
+						</TabsContent>
+
+						<!-- Harness -->
 						<TabsContent value="harness" class="m-0 space-y-3">
 							<Alert>
 								<AlertDescription>
@@ -500,9 +903,7 @@
 										<span class="text-red-600 dark:text-red-400">
 											{detail.parsedHarness.failToPass.failure.length}
 										</span>
-										<span class="ml-1 text-[10px] text-muted-foreground">
-											pass / fail
-										</span>
+										<span class="ml-1 text-[10px] text-muted-foreground">pass / fail</span>
 									</div>
 								</div>
 								<div class="rounded-md border border-border p-3">
@@ -517,9 +918,7 @@
 										<span class="text-red-600 dark:text-red-400">
 											{detail.parsedHarness.passToPass.failure.length}
 										</span>
-										<span class="ml-1 text-[10px] text-muted-foreground">
-											pass / fail
-										</span>
+										<span class="ml-1 text-[10px] text-muted-foreground">pass / fail</span>
 									</div>
 								</div>
 							</div>
@@ -592,7 +991,7 @@
 									<h4 class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-red-700 dark:text-red-400">
 										FAIL_TO_PASS failures
 									</h4>
-									<ul class="space-y-0.5 rounded border border-border bg-muted/20 p-2 max-h-32 overflow-y-auto">
+									<ul class="max-h-32 space-y-0.5 overflow-y-auto rounded border border-border bg-muted/20 p-2">
 										{#each detail.parsedHarness.failToPass.failure as t (t)}
 											<li class="font-mono text-[11px]">{t}</li>
 										{/each}
@@ -605,7 +1004,7 @@
 									<h4 class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-red-700 dark:text-red-400">
 										PASS_TO_PASS regressions
 									</h4>
-									<ul class="space-y-0.5 rounded border border-border bg-muted/20 p-2 max-h-32 overflow-y-auto">
+									<ul class="max-h-32 space-y-0.5 overflow-y-auto rounded border border-border bg-muted/20 p-2">
 										{#each detail.parsedHarness.passToPass.failure as t (t)}
 											<li class="font-mono text-[11px]">{t}</li>
 										{/each}
@@ -621,99 +1020,9 @@
 									<pre class="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-border bg-muted/20 p-2 font-mono text-[10px] leading-snug">{detail.runInstance.testOutputSummary}</pre>
 								</section>
 							{/if}
-
-							{#if detail.runInstance.error || detail.runInstance.inferenceError || detail.runInstance.evaluationError}
-								<section class="space-y-2">
-									{#if detail.runInstance.inferenceError}
-										<Alert variant="destructive">
-											<AlertDescription>
-												<strong>Inference:</strong> {detail.runInstance.inferenceError}
-											</AlertDescription>
-										</Alert>
-									{/if}
-									{#if detail.runInstance.evaluationError}
-										<Alert variant="destructive">
-											<AlertDescription>
-												<strong>Harness:</strong> {detail.runInstance.evaluationError}
-											</AlertDescription>
-										</Alert>
-									{:else if detail.runInstance.error}
-										<Alert variant="destructive">
-											<AlertDescription>{detail.runInstance.error}</AlertDescription>
-										</Alert>
-									{/if}
-								</section>
-							{/if}
 						</TabsContent>
 
-						<TabsContent value="trace" class="m-0 space-y-3">
-							{#if spansLoading}
-								<div class="flex items-center gap-2 text-xs text-muted-foreground">
-									<Loader2 class="h-3 w-3 animate-spin" /> Loading trace…
-								</div>
-							{:else if spansError}
-								<Alert variant="destructive">
-									<AlertDescription>{spansError}</AlertDescription>
-								</Alert>
-							{:else if !spans || (detail.runInstance.traceIds?.length ?? 0) === 0}
-								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-									No trace IDs recorded for this instance. The runtime may have completed
-									before OTel spans propagated, or this run predates OTel instrumentation.
-								</div>
-							{:else if runId && instanceId}
-								<TraceDetail
-									{runId}
-									{instanceId}
-									llmSpans={spans.llmSpans}
-									toolSpans={spans.toolSpans}
-									traceCount={spans.traceIds.length}
-									instanceMetrics={{
-										turnCount: detail.runInstance.turnCount,
-										toolCallCount: detail.runInstance.toolCallCount,
-										ttftFirstMs: detail.runInstance.ttftFirstMs,
-										ttftFirstToolMs: detail.runInstance.ttftFirstToolMs,
-										usage: detail.runInstance.usage
-									}}
-								/>
-								{#if spans.error}
-									<Alert variant="destructive">
-										<AlertDescription>
-											ClickHouse query partially failed: {spans.error}
-										</AlertDescription>
-									</Alert>
-								{/if}
-							{/if}
-						</TabsContent>
-
-						<TabsContent value="spans" class="m-0 space-y-3">
-							{#if spansLoading}
-								<div class="flex items-center gap-2 text-xs text-muted-foreground">
-									<Loader2 class="h-3 w-3 animate-spin" /> Loading spans…
-								</div>
-							{:else if spansError}
-								<Alert variant="destructive">
-									<AlertDescription>{spansError}</AlertDescription>
-								</Alert>
-							{:else if !spans || (detail.runInstance.traceIds?.length ?? 0) === 0}
-								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-									No trace IDs recorded for this instance. The runtime may have completed
-									before OTel spans propagated, or this run predates OTel instrumentation.
-								</div>
-							{:else}
-								<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
-									{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'}
-								</div>
-								<SpansTimeline llmSpans={spans.llmSpans} toolSpans={spans.toolSpans} />
-								{#if spans.error}
-									<Alert variant="destructive">
-										<AlertDescription>
-											ClickHouse query partially failed: {spans.error}
-										</AlertDescription>
-									</Alert>
-								{/if}
-							{/if}
-						</TabsContent>
-
+						<!-- Logs -->
 						<TabsContent value="logs" class="m-0">
 							<div class="space-y-2 text-xs">
 								<div>
@@ -776,5 +1085,9 @@
 				</Tabs>
 			{/if}
 		</div>
-	</Sheet.Content>
-</Sheet.Root>
+	</div>
+
+	{#if isResizing}
+		<div class="fixed inset-0 z-[60] cursor-col-resize"></div>
+	{/if}
+{/if}
