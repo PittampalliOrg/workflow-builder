@@ -257,6 +257,111 @@ def _compact_image_tool_results(
     return compacted_msgs
 
 
+def _content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") in {"text", "input_text", "output_text"}:
+                    parts.append(str(item.get("text", "")))
+                elif "content" in item:
+                    parts.append(str(item.get("content", "")))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _normalize_messages_for_anthropic(
+    prompt: Any,
+    raw_messages: list[Any] | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    system_parts: list[str] = []
+    messages: list[dict[str, Any]] = []
+
+    source: list[Any]
+    if raw_messages and isinstance(raw_messages, list):
+        source = raw_messages
+    elif isinstance(prompt, list):
+        source = prompt
+    elif isinstance(prompt, str) and prompt:
+        source = [{"role": "user", "content": prompt}]
+    else:
+        source = []
+
+    for m in source:
+        if isinstance(m, dict):
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "system":
+                text = _content_to_text(content).strip()
+                if text:
+                    system_parts.append(text)
+                continue
+            if role == "tool":
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result",
+                                 "tool_use_id": m.get("tool_call_id", ""),
+                                 "content": str(content)[:5000] if content else "ok"}]
+                })
+            elif role == "assistant" and m.get("tool_calls"):
+                content_blocks = []
+                if content and isinstance(content, str) and content.strip():
+                    content_blocks.append({"type": "text", "text": content})
+                for call in m["tool_calls"]:
+                    fn = call.get("function", {}) if isinstance(call, dict) else {}
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": call.get("id", "") if isinstance(call, dict) else "",
+                        "name": fn.get("name", ""),
+                        "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
+                    })
+                messages.append({"role": "assistant", "content": content_blocks})
+            else:
+                messages.append({"role": role, "content": content})
+        elif hasattr(m, "role"):
+            role = getattr(m, "role", "user")
+            content = getattr(m, "content", "")
+            if role == "system":
+                text = _content_to_text(content).strip()
+                if text:
+                    system_parts.append(text)
+                continue
+            if role == "tool":
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result",
+                                 "tool_use_id": getattr(m, "tool_call_id", ""),
+                                 "content": str(content)[:5000] if content else "ok"}]
+                })
+            else:
+                msg_dict = {"role": role, "content": content}
+                tc = getattr(m, "tool_calls", None)
+                if tc and role == "assistant":
+                    content_blocks = []
+                    if content:
+                        content_blocks.append({"type": "text", "text": content})
+                    for call in tc:
+                        fn = call.get("function", {}) if isinstance(call, dict) else {}
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": call.get("id", "") if isinstance(call, dict) else "",
+                            "name": fn.get("name", ""),
+                            "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
+                        })
+                    msg_dict["content"] = content_blocks
+                messages.append(msg_dict)
+
+    return "\n\n".join(system_parts) if system_parts else None, messages
+
+
 def _extract_response(response: Any) -> tuple[str, list[dict], list[str]]:
     """Extract text content, tool_calls, and thinking blocks from a response."""
     content = ""
@@ -858,69 +963,17 @@ def patch_for_anthropic(llm_client: Any) -> None:
             max_tokens = kwargs.get("max_tokens", CAPPED_DEFAULT_MAX_TOKENS)
             response_format = kwargs.get("response_format")
 
-            messages = []
-            if raw_messages and isinstance(raw_messages, list):
-                for m in raw_messages:
-                    if isinstance(m, dict):
-                        role = m.get("role", "user")
-                        content = m.get("content", "")
-                        if role == "system":
-                            continue
-                        if role == "tool":
-                            messages.append({
-                                "role": "user",
-                                "content": [{"type": "tool_result",
-                                             "tool_use_id": m.get("tool_call_id", ""),
-                                             "content": str(content)[:5000] if content else "ok"}]
-                            })
-                        elif role == "assistant" and m.get("tool_calls"):
-                            content_blocks = []
-                            if content and isinstance(content, str) and content.strip():
-                                content_blocks.append({"type": "text", "text": content})
-                            for call in m["tool_calls"]:
-                                fn = call.get("function", {}) if isinstance(call, dict) else {}
-                                content_blocks.append({
-                                    "type": "tool_use",
-                                    "id": call.get("id", "") if isinstance(call, dict) else "",
-                                    "name": fn.get("name", ""),
-                                    "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
-                                })
-                            messages.append({"role": "assistant", "content": content_blocks})
-                        else:
-                            messages.append({"role": role, "content": content})
-                    elif hasattr(m, "role"):
-                        role = getattr(m, "role", "user")
-                        content = getattr(m, "content", "")
-                        if role == "system":
-                            continue
-                        if role == "tool":
-                            messages.append({
-                                "role": "user",
-                                "content": [{"type": "tool_result",
-                                             "tool_use_id": getattr(m, "tool_call_id", ""),
-                                             "content": str(content)[:5000] if content else "ok"}]
-                            })
-                        else:
-                            msg_dict = {"role": role, "content": content}
-                            tc = getattr(m, "tool_calls", None)
-                            if tc and role == "assistant":
-                                content_blocks = []
-                                if content:
-                                    content_blocks.append({"type": "text", "text": content})
-                                for call in tc:
-                                    fn = call.get("function", {}) if isinstance(call, dict) else {}
-                                    content_blocks.append({
-                                        "type": "tool_use",
-                                        "id": call.get("id", "") if isinstance(call, dict) else "",
-                                        "name": fn.get("name", ""),
-                                        "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
-                                    })
-                                msg_dict["content"] = content_blocks
-                            messages.append(msg_dict)
-            elif isinstance(prompt, str) and prompt:
-                messages = [{"role": "user", "content": prompt}]
-            elif isinstance(prompt, list):
-                messages = prompt
+            system_prompt, messages = _normalize_messages_for_anthropic(
+                prompt,
+                raw_messages if isinstance(raw_messages, list) else None,
+            )
+            explicit_system = kwargs.get("system")
+            if isinstance(explicit_system, str) and explicit_system.strip():
+                system_prompt = (
+                    explicit_system.strip()
+                    if not system_prompt
+                    else explicit_system.strip() + "\n\n" + system_prompt
+                )
 
             # Merge consecutive same-role messages (Anthropic requires alternating roles)
             merged = []
@@ -956,7 +1009,11 @@ def patch_for_anthropic(llm_client: Any) -> None:
 
             try:
                 result = _call_anthropic_sdk(
-                    component, messages, tools=tools, max_tokens=max_tokens
+                    component,
+                    messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
                 )
 
                 # If response_format is set (structured output), parse the
