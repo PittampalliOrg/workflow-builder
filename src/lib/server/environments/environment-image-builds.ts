@@ -38,8 +38,10 @@ const SWEBENCH_PIPELINE_TIMEOUTS = {
 	pipeline: "4h0m0s",
 	tasks: "3h45m0s",
 } as const;
-const SWEBENCH_WORKSPACE_ROOT = "/testbed";
-const FALLBACK_WORKSPACE_ROOT = "/sandbox/repo";
+const LEGACY_SWEBENCH_IMAGE_WORKSPACE_ROOT = "/testbed";
+const OPENSHELL_RUNTIME_WORKSPACE_ROOT = "/sandbox/repo";
+const SWEBENCH_WORKSPACE_ROOT = OPENSHELL_RUNTIME_WORKSPACE_ROOT;
+const FALLBACK_WORKSPACE_ROOT = OPENSHELL_RUNTIME_WORKSPACE_ROOT;
 const SWEBENCH_CONDA_ENV = "testbed";
 const SUPPORTED_SWEBENCH_HARNESS_VERSIONS: Record<string, readonly string[]> = {
 	"astropy/astropy": ["0.1", "0.2", "0.3", "0.4", "1.1", "1.2", "1.3", "3.0", "3.1", "3.2", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2", "v5.3"],
@@ -308,7 +310,7 @@ function defaultSwebenchEnvironmentTuning(
 	const commonNotes =
 		buildStrategy === "swebench-harness"
 			? [
-					"The repository is already prepared under /testbed at the SWE-bench base commit.",
+					"The repository is cloned into /sandbox/repo at the SWE-bench base commit before validation and runtime solve steps.",
 					"Dependencies are installed from the SWE-bench harness spec and exposed through /sandbox/.venv at runtime.",
 					"Use the existing environment and avoid reinstalling project dependencies during the solve phase.",
 				]
@@ -374,7 +376,11 @@ export function plannedSwebenchInferenceEnvironment(
 		environmentKey: spec.environmentKey,
 		sandboxTemplate: spec.sandboxTemplate,
 		validationCommand: spec.validationCommand,
-		environmentNotes: runtimeEnvironmentNotes(spec.environmentNotes, spec.workspaceRoot),
+		environmentNotes: runtimeEnvironmentNotes(
+			spec.environmentNotes,
+			spec.workspaceRoot,
+			spec.buildStrategy,
+		),
 		source: "dynamic-build",
 		reason: resolved.reason === "no_validated_mapping"
 			? "dynamic_build_required"
@@ -1549,8 +1555,9 @@ function mergeSwebenchSpecMetadata(
 	const spec = isRecord(specValue) ? specValue : {};
 	if (!metadata) return spec;
 	const currentSwebenchSpec = isRecord(spec.swebenchSpec) ? spec.swebenchSpec : {};
-	const workspaceRoot =
-		readString(metadata.workspaceRoot) ?? readString(spec.workspaceRoot) ?? undefined;
+	const workspaceRoot = runtimeWorkspaceRoot(
+		readString(metadata.workspaceRoot) ?? readString(spec.workspaceRoot),
+	);
 	const condaEnvironment =
 		readString(metadata.condaEnvironment) ?? readString(spec.condaEnvironment) ?? undefined;
 	return compactObject({
@@ -1706,22 +1713,26 @@ function fallbackEnvironment(
 
 function runtimeWorkspaceRoot(workspaceRoot: string | null | undefined): string | undefined {
 	const root = readString(workspaceRoot);
-	return root === SWEBENCH_WORKSPACE_ROOT ? FALLBACK_WORKSPACE_ROOT : root ?? undefined;
+	if (
+		root === LEGACY_SWEBENCH_IMAGE_WORKSPACE_ROOT ||
+		root === SWEBENCH_WORKSPACE_ROOT
+	) {
+		return OPENSHELL_RUNTIME_WORKSPACE_ROOT;
+	}
+	return root ?? undefined;
 }
 
 function runtimeEnvironmentNotes(
 	notes: string[] | undefined,
 	workspaceRoot: string | null | undefined,
+	buildStrategy?: string | null | undefined,
 ): string[] | undefined {
-	if (workspaceRoot !== SWEBENCH_WORKSPACE_ROOT) {
-		const safeNotes = (notes ?? []).filter(
-			(note) => !containsSensitiveSwebenchRuntimeTerm(note),
-		);
-		return safeNotes.length ? [...new Set(safeNotes)] : undefined;
-	}
 	const filteredNotes = (notes ?? []).filter(
 		(note) => !containsSensitiveSwebenchRuntimeTerm(note),
 	);
+	if (buildStrategy !== "swebench-harness") {
+		return filteredNotes.length ? [...new Set(filteredNotes)] : undefined;
+	}
 	const runtimeNotes = [
 		...filteredNotes,
 		"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
@@ -1739,9 +1750,8 @@ export function runtimeSafeEnvironment(
 		workspaceRoot: FALLBACK_WORKSPACE_ROOT,
 		environmentNotes: runtimeEnvironmentNotes(
 			environment.environmentNotes,
-			environment.buildStrategy === "swebench-harness"
-				? SWEBENCH_WORKSPACE_ROOT
-				: environment.workspaceRoot,
+			environment.workspaceRoot,
+			environment.buildStrategy,
 		),
 	};
 }
@@ -1782,7 +1792,11 @@ function rowToEnvironment(row: EnvironmentImageBuild): ResolvedSwebenchInference
 		workspaceRoot: runtimeWorkspaceRoot(workspaceRoot),
 		condaEnvironment: readString(spec.condaEnvironment) ?? undefined,
 		swebenchSpec: isRecord(spec.swebenchSpec) ? spec.swebenchSpec : undefined,
-		environmentNotes: runtimeEnvironmentNotes(environmentNotes, workspaceRoot),
+		environmentNotes: runtimeEnvironmentNotes(
+			environmentNotes,
+			workspaceRoot,
+			row.buildStrategy,
+		),
 	};
 }
 
