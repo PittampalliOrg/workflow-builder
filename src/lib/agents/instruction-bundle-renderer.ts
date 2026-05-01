@@ -4,12 +4,23 @@ export const INSTRUCTION_BUNDLE_SCHEMA_VERSION =
 export const CANONICAL_BUNDLE_TEMPLATE_NAME =
 	"workflow-builder canonical bundle";
 
+/**
+ * Sentinel marking the split between the static (cacheable) prefix and the
+ * dynamic per-turn tail in `rendered.system`. The Python anthropic adapter
+ * looks for this string and, when found above its size threshold, builds a
+ * sectioned `system: list[TextBlockParam]` with cache_control on the static
+ * block. Mirrors claude-code-src/main/constants/prompts.ts:114-115.
+ */
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
+
 export type InstructionPersonaPreview = {
 	role?: unknown;
 	goal?: unknown;
 	instructions?: unknown;
 	styleGuidelines?: unknown;
 	systemPrompt?: unknown;
+	customSystemPrompt?: unknown;
+	appendSystemPrompt?: unknown;
 };
 
 export type InstructionRuntimePreview = {
@@ -18,6 +29,8 @@ export type InstructionRuntimePreview = {
 	skills?: unknown;
 	hookContext?: unknown;
 	platformSystemSections?: unknown;
+	currentDate?: unknown;
+	mcpInstructions?: unknown;
 };
 
 function cleanString(value: unknown): string | undefined {
@@ -39,15 +52,22 @@ function pushSection(parts: string[], title: string, body: string | string[]): v
 	parts.push(`## ${title}\n${lines.join("\n")}`);
 }
 
-export function renderInstructionSystemText(input: {
+function renderStaticSections(input: {
 	persona?: InstructionPersonaPreview | null;
 	runtime?: InstructionRuntimePreview | null;
-}): string {
+}): string[] {
 	const persona = input.persona ?? {};
 	const runtime = input.runtime ?? {};
 	const parts: string[] = [];
+
 	for (const section of cleanStringList(runtime.platformSystemSections)) {
 		parts.push(section);
+	}
+
+	const custom = cleanString(persona.customSystemPrompt);
+	if (custom) {
+		pushSection(parts, "Agent System Prompt", custom);
+		return parts;
 	}
 
 	const systemPrompt = cleanString(persona.systemPrompt);
@@ -77,6 +97,17 @@ export function renderInstructionSystemText(input: {
 		);
 	}
 
+	return parts;
+}
+
+function renderDynamicSections(input: {
+	persona?: InstructionPersonaPreview | null;
+	runtime?: InstructionRuntimePreview | null;
+}): string[] {
+	const persona = input.persona ?? {};
+	const runtime = input.runtime ?? {};
+	const parts: string[] = [];
+
 	const runtimeLines: string[] = [];
 	const cwd = cleanString(runtime.cwd);
 	if (cwd) runtimeLines.push(`Working directory: ${cwd}`);
@@ -89,7 +120,34 @@ export function renderInstructionSystemText(input: {
 	const hookContext = cleanString(runtime.hookContext);
 	if (hookContext) pushSection(parts, "Hook Context", hookContext);
 
-	return parts.join("\n\n").trim();
+	const currentDate = cleanString(runtime.currentDate);
+	if (currentDate) pushSection(parts, "Current Date", currentDate);
+
+	const mcpInstructions = cleanStringList(runtime.mcpInstructions);
+	if (mcpInstructions.length) {
+		pushSection(parts, "MCP Server Instructions", mcpInstructions);
+	}
+
+	const append = cleanString(persona.appendSystemPrompt);
+	if (append) parts.push(append);
+
+	return parts;
+}
+
+export function renderInstructionSystemText(input: {
+	persona?: InstructionPersonaPreview | null;
+	runtime?: InstructionRuntimePreview | null;
+}): string {
+	const staticParts = renderStaticSections(input);
+	const dynamicParts = renderDynamicSections(input);
+
+	const staticText = staticParts.filter(Boolean).join("\n\n").trim();
+	const dynamicText = dynamicParts.filter(Boolean).join("\n\n").trim();
+
+	if (staticText && dynamicText) {
+		return `${staticText}\n\n${SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n${dynamicText}`;
+	}
+	return staticText || dynamicText;
 }
 
 export function buildOpenShellSystemPrompt(

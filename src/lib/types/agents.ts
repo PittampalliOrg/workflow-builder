@@ -63,6 +63,22 @@ export type AgentConfig = {
 	systemPrompt?: string;
 	styleGuidelines?: string[];
 
+	/**
+	 * Replaces the persona-derived sections (role/goal/instructions/styleGuidelines/systemPrompt)
+	 * entirely when set. Runtime sections (Runtime Context, Hook Context, currentDate,
+	 * mcpInstructions) and `appendSystemPrompt` still apply. Mirrors Claude Code's
+	 * `customSystemPrompt` branch in `utils/queryContext.ts:44-74`. Mid-session patchable
+	 * via `session.control.update_agent_config`.
+	 */
+	customSystemPrompt?: string;
+
+	/**
+	 * Appended verbatim as the last block of the dynamic tail in BOTH the default
+	 * (persona) and `customSystemPrompt` paths. Mirrors Claude Code's
+	 * `--append-system-prompt` (`QueryEngine.ts:321-325`).
+	 */
+	appendSystemPrompt?: string;
+
 	modelSpec?: string;
 	temperature?: number;
 	toolChoice?: AgentToolChoice;

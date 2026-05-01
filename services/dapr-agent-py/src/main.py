@@ -282,6 +282,8 @@ def _compose_turn_instruction_bundle(
     sandbox_name: str | None,
     platform_system_sections: list[str] | None = None,
     hook_context: str | None = None,
+    current_date: str | None = None,
+    mcp_instructions: list[str] | None = None,
     control_override_fields: set[str] | None = None,
 ) -> dict[str, Any]:
     incoming = _incoming_instruction_bundle(message)
@@ -303,6 +305,8 @@ def _compose_turn_instruction_bundle(
         if platform_system_sections is not None
         else [_build_system_prompt(cwd, sandbox_name)],
         hook_context=hook_context,
+        current_date=current_date,
+        mcp_instructions=mcp_instructions,
         agent_id=str(message.get("agentId") or incoming_agent.get("id") or "").strip()
         or None,
         agent_version=_parse_int(message.get("agentVersion"))
@@ -2496,6 +2500,12 @@ class OpenShellDurableAgent(DurableAgent):
         platform_system_sections = [_build_system_prompt(runtime.cwd, sandbox_name or None)]
         hook_contexts: list[str] = []
         instruction_bundle: dict[str, Any] = {}
+        # Replay-safe: ctx.current_utc_datetime is captured at workflow start
+        # and reused across replays, so the bundle hash stays deterministic.
+        try:
+            turn_date = ctx.current_utc_datetime.date().isoformat()
+        except Exception:
+            turn_date = None
 
         def refresh_instruction_bundle() -> None:
             nonlocal instruction_bundle
@@ -2507,6 +2517,7 @@ class OpenShellDurableAgent(DurableAgent):
                 sandbox_name=sandbox_name or None,
                 platform_system_sections=platform_system_sections,
                 hook_context="\n\n".join(hook_contexts) if hook_contexts else None,
+                current_date=turn_date,
             )
             _apply_instruction_prompt_state(self, instruction_bundle)
 
@@ -3530,12 +3541,17 @@ class OpenShellDurableAgent(DurableAgent):
             child_sandbox_name = (
                 str(message.get("sandboxName") or "").strip() or None
             )
+            try:
+                turn_date = ctx.current_utc_datetime.date().isoformat()
+            except Exception:
+                turn_date = None
             instruction_bundle = _compose_turn_instruction_bundle(
                 agent_config=agent_cfg,
                 message=message,
                 prompt=task_text,
                 cwd=child_cwd,
                 sandbox_name=child_sandbox_name,
+                current_date=turn_date,
                 control_override_fields=control_override_fields,
             )
             effective_config = build_effective_agent_config(

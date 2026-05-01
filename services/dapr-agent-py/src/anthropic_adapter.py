@@ -22,6 +22,8 @@ import logging
 import os
 from typing import Any
 
+from src.instruction_bundle import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,14 @@ MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
 # prompt limit (observed on run rea90ZntWG3DdFKTnOOZO: 2,992,291 tokens → HTTP 400).
 MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT = int(
     os.environ.get("DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS", "3")
+)
+
+# Anthropic public-API ephemeral prompt caching needs a cached prefix of at
+# least 1024 tokens (Opus/Sonnet) or 512 (Haiku). 4000 chars is a conservative
+# proxy for ≥1024 tokens of typical English markdown — below this we send the
+# system as a plain string and skip the breakpoint (caching would be a no-op).
+SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS = int(
+    os.environ.get("DAPR_AGENT_PY_PROMPT_CACHE_THRESHOLD_CHARS", "4000")
 )
 
 # Recovery message injected between continuation attempts
@@ -124,7 +134,102 @@ def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
             "input_schema": schema,
         })
 
-    return anthropic_tools if anthropic_tools else None
+    if not anthropic_tools:
+        return None
+    # Deterministic order so the prompt-cache key over (system + tools) stays
+    # stable across turns even when the upstream tool list shuffles (MCP
+    # reconnects, hooks/plugins add or remove tools).
+    anthropic_tools.sort(key=lambda t: t.get("name") or "")
+    return anthropic_tools
+
+
+def _build_system_param(system: Any) -> tuple[Any, dict[str, Any]]:
+    """Convert a system kwarg into the Anthropic SDK shape and emit telemetry.
+
+    When the static prefix (everything before SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    exceeds SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS, returns a
+    `list[TextBlockParam]` with `cache_control={"type":"ephemeral"}` on the
+    static block. Below threshold (or no boundary), returns a plain string
+    with the boundary stripped — caching would be a no-op anyway and a string
+    has lower request overhead.
+
+    Returns (system_param, telemetry_dict). The telemetry dict carries
+    `prefix_chars`, `tail_chars`, `cache_eligible`, `cache_breakpoints`.
+    """
+    empty_tel = {
+        "prefix_chars": 0,
+        "tail_chars": 0,
+        "cache_eligible": False,
+        "cache_breakpoints": 0,
+    }
+    if system is None:
+        return None, empty_tel
+    if isinstance(system, list):
+        # Caller pre-shaped — count breakpoints + characters for telemetry
+        # but do not mutate.
+        prefix_chars = sum(
+            len(b.get("text", ""))
+            for b in system
+            if isinstance(b, dict) and b.get("cache_control")
+        )
+        tail_chars = sum(
+            len(b.get("text", ""))
+            for b in system
+            if isinstance(b, dict) and not b.get("cache_control")
+        )
+        breakpoints = sum(
+            1 for b in system if isinstance(b, dict) and b.get("cache_control")
+        )
+        return system, {
+            "prefix_chars": prefix_chars,
+            "tail_chars": tail_chars,
+            "cache_eligible": prefix_chars >= SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS,
+            "cache_breakpoints": breakpoints,
+        }
+    if not isinstance(system, str) or not system.strip():
+        return system if system else None, empty_tel
+
+    if SYSTEM_PROMPT_DYNAMIC_BOUNDARY not in system:
+        return system, {
+            "prefix_chars": 0,
+            "tail_chars": len(system),
+            "cache_eligible": False,
+            "cache_breakpoints": 0,
+        }
+
+    # Split on the FIRST boundary occurrence — bundle intent wins even if a
+    # defensive merge double-stamped the sentinel further downstream.
+    static_text, _, dynamic_text = system.partition(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    static_text = static_text.strip()
+    dynamic_text = dynamic_text.strip()
+
+    if len(static_text) < SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS:
+        # Below threshold — strip the sentinel and forward as a single string.
+        joined = (
+            f"{static_text}\n\n{dynamic_text}".strip() if dynamic_text else static_text
+        )
+        return joined, {
+            "prefix_chars": len(static_text),
+            "tail_chars": len(dynamic_text),
+            "cache_eligible": False,
+            "cache_breakpoints": 0,
+        }
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": static_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    if dynamic_text:
+        blocks.append({"type": "text", "text": dynamic_text})
+    return blocks, {
+        "prefix_chars": len(static_text),
+        "tail_chars": len(dynamic_text),
+        "cache_eligible": True,
+        "cache_breakpoints": 1,
+    }
 
 
 def _contains_image_block(content: Any) -> bool:
@@ -641,6 +746,20 @@ def _call_anthropic_sdk(
     )
     model = _get_anthropic_model(component)
     anthropic_tools = _convert_tools_for_anthropic(tools)
+    if anthropic_tools:
+        # Cache breakpoint on the last tool — when system + tools are stable
+        # turn-to-turn, breakpoint A (static system) hits even if the tool
+        # tail churns; this breakpoint B then hits when tools are stable too.
+        anthropic_tools[-1] = {
+            **anthropic_tools[-1],
+            "cache_control": {"type": "ephemeral"},
+        }
+
+    # Build the cache-aware system param. The bundle's rendered.system carries
+    # the boundary sentinel between static prefix and dynamic tail; above the
+    # threshold we split into a list[TextBlockParam] with cache_control on the
+    # static block, otherwise we forward as a plain (boundary-stripped) string.
+    system_param, prompt_cache_telemetry = _build_system_param(kwargs.get("system"))
 
     # Patch empty user messages (Anthropic rejects whitespace-only content)
     patched_messages = []
@@ -695,8 +814,8 @@ def _call_anthropic_sdk(
     # directly. `tool_choice={"type":"tool","name":"emit_evaluation"}` is the
     # forced-tool path used by the score_model labeler grader to guarantee a
     # JSON-shaped response (see /api/grader-evaluate).
-    if isinstance(kwargs.get("system"), str) and kwargs["system"].strip():
-        request_kwargs["system"] = kwargs["system"]
+    if system_param is not None and system_param != "":
+        request_kwargs["system"] = system_param
     forced_tool_choice = (
         isinstance(kwargs.get("tool_choice"), dict)
         and kwargs["tool_choice"].get("type") == "tool"
@@ -717,6 +836,49 @@ def _call_anthropic_sdk(
         "[anthropic-sdk] Calling %s with %d messages, %d tools, max_tokens=%d",
         model, len(patched_messages), len(anthropic_tools or []), max_tokens,
     )
+    # Greppable per-turn line so production logs surface whether the cache
+    # path actually fired and how big each half of the prompt was.
+    logger.info(
+        "[instruction-bundle] mode=%s breakpoints=%d prefix_chars=%d tail_chars=%d",
+        "sectioned" if prompt_cache_telemetry["cache_eligible"] else "legacy",
+        prompt_cache_telemetry["cache_breakpoints"]
+        + (1 if anthropic_tools else 0),
+        prompt_cache_telemetry["prefix_chars"],
+        prompt_cache_telemetry["tail_chars"],
+    )
+    # Stamp prompt-cache attributes on the active llm_request span so Phoenix
+    # / Jaeger surface them alongside cache_creation/cache_read tokens.
+    if llm_span is not None:
+        try:
+            llm_span.set_attribute(
+                "prompt.prefix_chars", prompt_cache_telemetry["prefix_chars"]
+            )
+            llm_span.set_attribute(
+                "prompt.tail_chars", prompt_cache_telemetry["tail_chars"]
+            )
+            llm_span.set_attribute(
+                "prompt.cache_eligible", prompt_cache_telemetry["cache_eligible"]
+            )
+            llm_span.set_attribute(
+                "prompt.cache_breakpoints",
+                prompt_cache_telemetry["cache_breakpoints"]
+                + (1 if anthropic_tools else 0),
+            )
+            if anthropic_tools:
+                # Hash of sorted tool names — flips when MCP servers reconnect or
+                # plugins add/remove tools, which is the silent invalidator of
+                # the cache hit.
+                import hashlib as _hashlib
+
+                tools_hash = _hashlib.sha1(
+                    ",".join(t.get("name") or "" for t in anthropic_tools).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                llm_span.set_attribute("prompt.tools_hash", tools_hash)
+                llm_span.set_attribute("prompt.tools_count", len(anthropic_tools))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[telemetry] prompt-cache attrs set failed: %s", exc)
 
     try:
         response = _stream_final_message(client, **request_kwargs)
@@ -926,6 +1088,13 @@ def _call_anthropic_sdk(
                     "ttft_ms": ttft_ms_recorded,
                     "recovery_attempts": recovery_count,
                     "success": True,
+                    "prompt_prefix_chars": prompt_cache_telemetry["prefix_chars"],
+                    "prompt_tail_chars": prompt_cache_telemetry["tail_chars"],
+                    "prompt_cache_eligible": prompt_cache_telemetry["cache_eligible"],
+                    "prompt_cache_breakpoints": prompt_cache_telemetry[
+                        "cache_breakpoints"
+                    ]
+                    + (1 if anthropic_tools else 0),
                 },
                 instance_id=iid,
             )

@@ -4,6 +4,7 @@ import type { AgentConfig } from "$lib/types/agents";
 import {
 	CANONICAL_BUNDLE_TEMPLATE_NAME,
 	INSTRUCTION_BUNDLE_SCHEMA_VERSION,
+	SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 	buildOpenShellSystemPrompt,
 	renderInstructionSystemText,
 } from "$lib/agents/instruction-bundle-renderer";
@@ -11,6 +12,7 @@ import {
 export {
 	CANONICAL_BUNDLE_TEMPLATE_NAME,
 	INSTRUCTION_BUNDLE_SCHEMA_VERSION,
+	SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 	buildOpenShellSystemPrompt,
 	renderInstructionSystemText,
 };
@@ -39,6 +41,8 @@ export type InstructionBundle = {
 		instructions: string[];
 		styleGuidelines: string[];
 		systemPrompt?: string;
+		customSystemPrompt?: string;
+		appendSystemPrompt?: string;
 	};
 	runtime: {
 		cwd?: string;
@@ -46,6 +50,8 @@ export type InstructionBundle = {
 		skills: string[];
 		hookContext?: string;
 		platformSystemSections: string[];
+		currentDate?: string;
+		mcpInstructions: string[];
 	};
 	user: {
 		prompt: string;
@@ -72,6 +78,8 @@ type BuildInstructionBundleInput = {
 	sandboxName?: string | null;
 	platformSystemSections?: string[];
 	hookContext?: string | null;
+	currentDate?: string | null;
+	mcpInstructions?: string[];
 	sourceId?: string;
 };
 
@@ -133,6 +141,8 @@ export function buildInstructionBundle(
 		instructions: cleanStringList(config.instructions),
 		styleGuidelines: cleanStringList(config.styleGuidelines),
 		systemPrompt: cleanString(config.systemPrompt),
+		customSystemPrompt: cleanString(config.customSystemPrompt),
+		appendSystemPrompt: cleanString(config.appendSystemPrompt),
 	};
 	const runtime = {
 		cwd: cleanString(input.cwd),
@@ -142,9 +152,17 @@ export function buildInstructionBundle(
 			: [],
 		hookContext: cleanString(input.hookContext),
 		platformSystemSections: cleanStringList(input.platformSystemSections),
+		currentDate: cleanString(input.currentDate),
+		mcpInstructions: cleanStringList(input.mcpInstructions),
 	};
 	const sources: InstructionSource[] = [];
 	if (persona.systemPrompt) sources.push(source("persona.systemPrompt", sourceId));
+	if (persona.customSystemPrompt) {
+		sources.push(source("persona.customSystemPrompt", sourceId));
+	}
+	if (persona.appendSystemPrompt) {
+		sources.push(source("persona.appendSystemPrompt", sourceId));
+	}
 	if (persona.role) sources.push(source("persona.role", sourceId));
 	if (persona.goal) sources.push(source("persona.goal", sourceId));
 	if (persona.instructions.length) sources.push(source("persona.instructions", sourceId));
@@ -157,6 +175,12 @@ export function buildInstructionBundle(
 	}
 	if (runtime.skills.length) {
 		sources.push(source("runtime.skills", "agentConfig.skills", "runtime", "runtime"));
+	}
+	if (runtime.currentDate) {
+		sources.push(source("runtime.currentDate", "runtime", "runtime", "runtime"));
+	}
+	if (runtime.mcpInstructions.length) {
+		sources.push(source("runtime.mcpInstructions", "mcp-clients", "runtime", "runtime"));
 	}
 	sources.push(
 		source(

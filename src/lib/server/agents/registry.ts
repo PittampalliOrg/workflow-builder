@@ -96,7 +96,15 @@ export function normalizeAgentConfig(config: AgentConfig): AgentConfig {
 		if (legacy in raw) delete raw[legacy];
 	}
 
-	for (const key of ["role", "goal", "systemPrompt", "modelSpec", "cwd"] as const) {
+	for (const key of [
+		"role",
+		"goal",
+		"systemPrompt",
+		"customSystemPrompt",
+		"appendSystemPrompt",
+		"modelSpec",
+		"cwd",
+	] as const) {
 		const normalized = cleanString(raw[key]);
 		if (normalized !== undefined) raw[key] = normalized;
 		else if (raw[key] !== undefined) delete raw[key];

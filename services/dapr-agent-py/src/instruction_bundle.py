@@ -12,6 +12,13 @@ INSTRUCTION_BUNDLE_SCHEMA_VERSION = "workflow-builder.instruction-bundle.v1"
 CANONICAL_BUNDLE_TEMPLATE_NAME = "workflow-builder canonical bundle"
 CANONICAL_BUNDLE_TEMPLATE_FORMAT = "jinja2"
 
+# Sentinel marking the split between the static (cacheable) prefix and the
+# dynamic per-turn tail in `rendered.system`. The Anthropic adapter looks for
+# this string and, when found above its size threshold, builds a sectioned
+# `system: list[TextBlockParam]` with cache_control on the static block.
+# Mirrors claude-code-src/main/constants/prompts.ts:114-115.
+SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
+
 
 def _record(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -71,12 +78,21 @@ def _push_section(parts: list[str], title: str, body: str | list[str]) -> None:
         parts.append(f"## {title}\n" + "\n".join(clean))
 
 
-def render_instruction_system_text(bundle_without_hash: Mapping[str, Any]) -> str:
+def _render_static_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]:
+    """Cache-eligible prefix: platform sections + persona (or customSystemPrompt override)."""
     persona = _record(bundle_without_hash.get("persona"))
     runtime = _record(bundle_without_hash.get("runtime"))
     parts: list[str] = []
+
     for section in _string_list(runtime.get("platformSystemSections")):
         parts.append(section)
+
+    custom = _string(persona.get("customSystemPrompt"))
+    if custom:
+        # customSystemPrompt fully replaces persona-derived sections
+        # (mirrors Claude Code's customSystemPrompt branch in queryContext.ts).
+        _push_section(parts, "Agent System Prompt", custom)
+        return parts
 
     system_prompt = _string(persona.get("systemPrompt"))
     if system_prompt:
@@ -93,6 +109,14 @@ def render_instruction_system_text(bundle_without_hash: Mapping[str, Any]) -> st
     style = _string_list(persona.get("styleGuidelines"))
     if style:
         _push_section(parts, "Communication Style", [f"- {line}" for line in style])
+    return parts
+
+
+def _render_dynamic_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]:
+    """Per-turn tail: runtime context + hooks + currentDate + mcpInstructions + appendSystemPrompt."""
+    persona = _record(bundle_without_hash.get("persona"))
+    runtime = _record(bundle_without_hash.get("runtime"))
+    parts: list[str] = []
 
     runtime_lines: list[str] = []
     cwd = _string(runtime.get("cwd"))
@@ -109,7 +133,32 @@ def render_instruction_system_text(bundle_without_hash: Mapping[str, Any]) -> st
     hook_context = _string(runtime.get("hookContext"))
     if hook_context:
         _push_section(parts, "Hook Context", hook_context)
-    return "\n\n".join(part for part in parts if part).strip()
+
+    current_date = _string(runtime.get("currentDate"))
+    if current_date:
+        _push_section(parts, "Current Date", current_date)
+
+    mcp_instructions = _string_list(runtime.get("mcpInstructions"))
+    if mcp_instructions:
+        _push_section(parts, "MCP Server Instructions", mcp_instructions)
+
+    append = _string(persona.get("appendSystemPrompt"))
+    if append:
+        # No "## " header — appendSystemPrompt is verbatim user-supplied text.
+        parts.append(append)
+    return parts
+
+
+def render_instruction_system_text(bundle_without_hash: Mapping[str, Any]) -> str:
+    static_parts = _render_static_sections(bundle_without_hash)
+    dynamic_parts = _render_dynamic_sections(bundle_without_hash)
+
+    static_text = "\n\n".join(part for part in static_parts if part).strip()
+    dynamic_text = "\n\n".join(part for part in dynamic_parts if part).strip()
+
+    if static_text and dynamic_text:
+        return f"{static_text}\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n{dynamic_text}"
+    return static_text or dynamic_text
 
 
 def bundle_template_hash(system_text: str) -> str:
@@ -177,6 +226,8 @@ def build_instruction_bundle(
     sandbox_name: str | None = None,
     platform_system_sections: list[str] | None = None,
     hook_context: str | None = None,
+    current_date: str | None = None,
+    mcp_instructions: list[str] | None = None,
     agent_id: str | None = None,
     agent_version: int | None = None,
     agent_config_hash: str | None = None,
@@ -212,6 +263,8 @@ def build_instruction_bundle(
         "instructions": _string_list(config.get("instructions")),
         "styleGuidelines": _string_list(config.get("styleGuidelines")),
         "systemPrompt": _string(config.get("systemPrompt")),
+        "customSystemPrompt": _string(config.get("customSystemPrompt")),
+        "appendSystemPrompt": _string(config.get("appendSystemPrompt")),
     }
     skills = [
         name
@@ -224,6 +277,8 @@ def build_instruction_bundle(
         "skills": skills,
         "hookContext": _string(hook_context),
         "platformSystemSections": _string_list(platform_system_sections or []),
+        "currentDate": _string(current_date),
+        "mcpInstructions": _string_list(mcp_instructions or []),
     }
 
     control_fields = set(control_override_fields or set())
@@ -236,6 +291,10 @@ def build_instruction_bundle(
 
     if persona["systemPrompt"]:
         sources.append(persona_source("persona.systemPrompt", "systemPrompt"))
+    if persona["customSystemPrompt"]:
+        sources.append(persona_source("persona.customSystemPrompt", "customSystemPrompt"))
+    if persona["appendSystemPrompt"]:
+        sources.append(persona_source("persona.appendSystemPrompt", "appendSystemPrompt"))
     if persona["role"]:
         sources.append(persona_source("persona.role", "role"))
     if persona["goal"]:
@@ -250,6 +309,10 @@ def build_instruction_bundle(
         sources.append(_source("runtime.sandboxName", "runtime", "runtime", "runtime"))
     if runtime["skills"]:
         sources.append(_source("runtime.skills", "runtime", "agentConfig.skills", "runtime"))
+    if runtime["currentDate"]:
+        sources.append(_source("runtime.currentDate", "runtime", "runtime", "runtime"))
+    if runtime["mcpInstructions"]:
+        sources.append(_source("runtime.mcpInstructions", "runtime", "mcp-clients", "runtime"))
 
     normalized_source = "workflow-node" if prompt_source == "workflow-node" else "session"
     sources.append(
