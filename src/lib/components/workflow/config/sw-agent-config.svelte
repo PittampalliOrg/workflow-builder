@@ -14,14 +14,12 @@
 		CollapsibleTrigger
 	} from '$lib/components/ui/collapsible';
 	import { ChevronDown, ChevronRight, ExternalLink, Plus } from '@lucide/svelte';
-	import {
-		CANONICAL_BUNDLE_TEMPLATE_NAME,
-		buildOpenShellSystemPrompt,
-		renderInstructionSystemText
-	} from '$lib/agents/instruction-bundle-renderer';
+	import { buildOpenShellSystemPrompt } from '$lib/agents/instruction-bundle-renderer';
+	import { buildPromptWorkbenchPreview } from '$lib/agents/prompt-workbench-renderer';
 	import { normalizeAgentTaskConfig } from '$lib/types/agent-graph';
 	import type { AgentDetail, AgentSummary } from '$lib/types/agents';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
+	import PromptPreview from '$lib/components/agents/prompt-preview.svelte';
 
 	interface Props {
 		data: Record<string, unknown>;
@@ -36,7 +34,6 @@
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
 	let overridesOpen = $state(false);
-	let promptPreviewOpen = $state(false);
 	const slug = $derived(
 		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
 	);
@@ -104,20 +101,33 @@
 				? withBlock.sandboxName.trim()
 				: null
 	);
-	const compiledSystemPrompt = $derived(
+	const nodePromptPreview = $derived(
 		selectedAgentDetail
-			? renderInstructionSystemText({
-					persona: selectedAgentDetail.config,
+			? buildPromptWorkbenchPreview({
+					config: selectedAgentDetail.config,
+					agent: {
+						id: selectedAgentDetail.id,
+						name: selectedAgentDetail.name,
+						slug: selectedAgentDetail.slug,
+						version: selectedAgentVersion,
+						configHash: selectedAgent?.currentConfigHash ?? selectedAgentDetail.currentConfigHash
+					},
 					runtime: {
 						cwd: previewCwd,
 						sandboxName: previewSandboxName,
+						environment: selectedAgentDetail.environmentId ?? 'default',
 						skills: skillNames(selectedAgentDetail.config.skills),
 						platformSystemSections: [
 							buildOpenShellSystemPrompt(previewCwd, previewSandboxName)
 						]
-					}
+					},
+					workflow: {
+						id: (page.params.workflowId as string | undefined) ?? null,
+						nodePrompt: prompt
+					},
+					userPrompt: prompt
 				})
-			: ''
+			: null
 	);
 
 	onMount(async () => {
@@ -175,20 +185,6 @@
 		} finally {
 			detailLoading = false;
 		}
-	}
-
-	function textSummary(value: unknown, fallback = 'Not set') {
-		if (typeof value !== 'string' || !value.trim()) return fallback;
-		const text = value.trim().replace(/\s+/g, ' ');
-		return text.length > 180 ? `${text.slice(0, 177)}...` : text;
-	}
-
-	function listSummary(value: unknown, fallback = 'None') {
-		if (!Array.isArray(value)) return fallback;
-		const items = value.map((item) => String(item).trim()).filter(Boolean);
-		if (items.length === 0) return fallback;
-		const joined = items.slice(0, 3).join(' | ');
-		return items.length > 3 ? `${joined} | +${items.length - 3} more` : joined;
 	}
 
 	function recordOrNull(value: unknown): Record<string, unknown> | null {
@@ -313,84 +309,23 @@
 						by name until it's resynced.
 					</p>
 				{/if}
-				<div class="mt-3 rounded-md border bg-muted/20 p-3 text-xs">
-					<div class="flex items-center justify-between gap-2">
-						<div class="font-medium text-foreground">Compiled Prompt</div>
-						<Badge variant="outline" class="font-mono text-[10px]">
-							v{selectedAgentVersion ?? 'current'}
-						</Badge>
-					</div>
-					<div class="mt-2">
-						<Badge variant="secondary" class="text-[10px]">
-							Template: {CANONICAL_BUNDLE_TEMPLATE_NAME}
-						</Badge>
-					</div>
-					<div class="mt-2 grid gap-1.5 text-muted-foreground">
-						<div class="flex gap-2">
-							<span class="w-28 shrink-0 text-foreground/80">Agent version</span>
-							<span class="font-mono">v{selectedAgentVersion ?? 'current'}</span>
+				<div class="mt-3">
+					{#if detailLoading}
+						<div class="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+							Loading compiled prompt...
 						</div>
-						<div class="flex gap-2">
-							<span class="w-28 shrink-0 text-foreground/80">Config hash</span>
-							<span class="font-mono break-all">{selectedAgent.currentConfigHash ?? 'unpublished'}</span>
-						</div>
+					{:else if nodePromptPreview}
+						<PromptPreview preview={nodePromptPreview} compact />
 						{#if instructionHash}
-							<div class="flex gap-2">
-								<span class="w-28 shrink-0 text-foreground/80">Instruction hash</span>
-								<span class="font-mono break-all">{instructionHash}</span>
+							<div class="mt-1 text-[11px] text-muted-foreground">
+								Stored instruction hash: <code>{instructionHash}</code>
 							</div>
 						{/if}
-						{#if detailLoading}
-							<div>Loading instruction fields...</div>
-						{:else if selectedAgentDetail}
-							{@const cfg = selectedAgentDetail.config}
-							<div class="flex gap-2">
-								<span class="w-28 shrink-0 text-foreground/80">Role</span>
-								<span>{textSummary(cfg.role)}</span>
-							</div>
-							<div class="flex gap-2">
-								<span class="w-28 shrink-0 text-foreground/80">Goal</span>
-								<span>{textSummary(cfg.goal)}</span>
-							</div>
-							<div class="flex gap-2">
-								<span class="w-28 shrink-0 text-foreground/80">System</span>
-								<span>{textSummary(cfg.systemPrompt)}</span>
-							</div>
-							<div class="flex gap-2">
-								<span class="w-28 shrink-0 text-foreground/80">Instructions</span>
-								<span>{listSummary(cfg.instructions)}</span>
-							</div>
-							<div class="flex gap-2">
-								<span class="w-28 shrink-0 text-foreground/80">Style</span>
-								<span>{listSummary(cfg.styleGuidelines)}</span>
-							</div>
-							<Collapsible bind:open={promptPreviewOpen}>
-								<div class="border-t pt-2 mt-1">
-									<CollapsibleTrigger>
-										{#snippet child({ props })}
-											<Button {...props} variant="ghost" size="sm" class="h-7 gap-1 px-0 text-[11px]">
-												{#if promptPreviewOpen}
-													<ChevronDown class="size-3" />
-												{:else}
-													<ChevronRight class="size-3" />
-												{/if}
-												Full system preview
-											</Button>
-										{/snippet}
-									</CollapsibleTrigger>
-									<CollapsibleContent>
-										<pre class="max-h-72 overflow-y-auto whitespace-pre-wrap rounded border bg-background p-2 text-[11px] text-foreground"><code>{compiledSystemPrompt}</code></pre>
-									</CollapsibleContent>
-								</div>
-							</Collapsible>
-						{:else}
-							<div>Instruction fields unavailable.</div>
-						{/if}
-						<div class="flex gap-2 border-t pt-2 mt-1">
-							<span class="w-28 shrink-0 text-foreground/80">Appended user message</span>
-							<span>{textSummary(prompt, 'Empty prompt')}</span>
+					{:else}
+						<div class="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+							Instruction fields unavailable.
 						</div>
-					</div>
+					{/if}
 				</div>
 			{/if}
 		{/if}

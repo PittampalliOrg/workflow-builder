@@ -50,6 +50,7 @@
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
+	import PromptWorkbench from '$lib/components/agents/prompt-workbench.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
 	import {
@@ -102,9 +103,9 @@
 	let forkName = $state('');
 	let forkDescription = $state('');
 	let forking = $state(false);
-	let tab = $state<'overview' | 'basics' | 'capabilities' | 'sandbox' | 'advanced' | 'sessions'>(
-		'overview'
-	);
+	let tab = $state<
+		'overview' | 'basics' | 'prompt' | 'capabilities' | 'sandbox' | 'advanced' | 'sessions'
+	>('overview');
 	let usages = $state<Array<{ workflowId: string; workflowName: string; nodeIds: string[] }>>([]);
 	let registryView = $state<{
 		status: 'unregistered' | 'registered' | 'failed' | 'archiving' | 'archived';
@@ -290,6 +291,12 @@
 	function updateConfig<K extends keyof AgentConfig>(key: K, value: AgentConfig[K]) {
 		if (!config) return;
 		config = { ...config, [key]: value };
+		markDirty();
+	}
+
+	function patchConfig(patch: Partial<AgentConfig>) {
+		if (!config) return;
+		config = { ...config, ...patch };
 		markDirty();
 	}
 
@@ -556,6 +563,7 @@
 					<TabsList class="mb-4">
 						<TabsTrigger value="overview">Overview</TabsTrigger>
 						<TabsTrigger value="basics">Basics</TabsTrigger>
+						<TabsTrigger value="prompt">Prompt Workbench</TabsTrigger>
 						<TabsTrigger value="capabilities">Capabilities</TabsTrigger>
 						<TabsTrigger value="sandbox">Sandbox</TabsTrigger>
 						<TabsTrigger value="advanced">Advanced</TabsTrigger>
@@ -731,77 +739,10 @@
 								</div>
 							</div>
 						</div>
+					</TabsContent>
 
-						<div class="space-y-3">
-							<h3 class="font-semibold text-sm">Persona</h3>
-							<div>
-								<Label>Role</Label>
-								<Input
-									value={config.role ?? ''}
-									placeholder="e.g. Senior Engineer"
-									oninput={(e) =>
-										updateConfig('role', (e.target as HTMLInputElement).value)}
-								/>
-							</div>
-							<div>
-								<Label>Goal</Label>
-								<Input
-									value={config.goal ?? ''}
-									placeholder="e.g. Help me ship features"
-									oninput={(e) =>
-										updateConfig('goal', (e.target as HTMLInputElement).value)}
-								/>
-							</div>
-							<div>
-								<Label>System prompt</Label>
-								<Textarea
-									rows={6}
-									value={config.systemPrompt ?? ''}
-									oninput={(e) =>
-										updateConfig(
-											'systemPrompt',
-											(e.target as HTMLTextAreaElement).value
-										)}
-								/>
-							</div>
-							<div>
-								<Label>Instructions (one per line)</Label>
-								<Textarea
-									rows={4}
-									value={Array.isArray(config.instructions)
-										? config.instructions.join('\n')
-										: typeof config.instructions === 'string'
-										? config.instructions
-										: ''}
-									oninput={(e) => {
-										const lines = (e.target as HTMLTextAreaElement).value
-											.split('\n')
-											.map((l) => l.trim())
-											.filter(Boolean);
-										updateConfig('instructions', lines);
-									}}
-								/>
-							</div>
-							<div>
-								<Label>Style guidelines (one per line)</Label>
-								<Textarea
-									rows={3}
-									placeholder="e.g. Use Markdown, cite file paths as file_path:line_number"
-									value={Array.isArray(config.styleGuidelines)
-										? config.styleGuidelines.join('\n')
-										: typeof config.styleGuidelines === 'string'
-										? config.styleGuidelines
-										: ''}
-									oninput={(e) => {
-										const lines = (e.target as HTMLTextAreaElement).value
-											.split('\n')
-											.map((l) => l.trim())
-											.filter(Boolean);
-										updateConfig('styleGuidelines', lines);
-									}}
-								/>
-							</div>
-						</div>
+					<TabsContent value="prompt" class="space-y-4">
+						<PromptWorkbench {agent} {config} onPatch={patchConfig} />
 					</TabsContent>
 
 					<TabsContent value="capabilities" class="space-y-4">

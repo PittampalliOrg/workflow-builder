@@ -1771,6 +1771,16 @@ export const agentSkillRegistry = pgTable(
 );
 
 export type PromptMode = "system" | "system+user";
+export type PromptTemplateFormat = "mustache";
+export type ResourcePromptMessage = {
+	role: "system" | "user" | "assistant";
+	content: string;
+};
+export type ResourcePromptArgument = {
+	name: string;
+	description?: string;
+	required?: boolean;
+};
 
 export const resourcePrompts = pgTable(
 	"resource_prompts",
@@ -1808,6 +1818,44 @@ export const resourcePrompts = pgTable(
 			table.userId,
 			table.projectId,
 			table.name,
+		),
+	}),
+);
+
+export const resourcePromptVersions = pgTable(
+	"resource_prompt_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		promptId: text("prompt_id")
+			.notNull()
+			.references(() => resourcePrompts.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		messages: jsonb("messages").notNull().$type<ResourcePromptMessage[]>(),
+		templateArguments: jsonb("arguments")
+			.notNull()
+			.default([])
+			.$type<ResourcePromptArgument[]>(),
+		templateFormat: text("template_format")
+			.notNull()
+			.default("mustache")
+			.$type<PromptTemplateFormat>(),
+		templateHash: text("template_hash").notNull(),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		createdByUserId: text("created_by_user_id").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		promptVersionUnique: unique("uq_resource_prompt_versions_prompt_version").on(
+			table.promptId,
+			table.version,
+		),
+		promptIdx: index("idx_resource_prompt_versions_prompt").on(table.promptId),
+		templateHashIdx: index("idx_resource_prompt_versions_template_hash").on(
+			table.templateHash,
 		),
 	}),
 );
@@ -2109,6 +2157,8 @@ export type AgentSkillRegistry = typeof agentSkillRegistry.$inferSelect;
 export type NewAgentSkillRegistry = typeof agentSkillRegistry.$inferInsert;
 export type ResourcePrompt = typeof resourcePrompts.$inferSelect;
 export type NewResourcePrompt = typeof resourcePrompts.$inferInsert;
+export type ResourcePromptVersion = typeof resourcePromptVersions.$inferSelect;
+export type NewResourcePromptVersion = typeof resourcePromptVersions.$inferInsert;
 export type ResourceSchema = typeof resourceSchemas.$inferSelect;
 export type NewResourceSchema = typeof resourceSchemas.$inferInsert;
 export type ResourceModelProfile = typeof resourceModelProfiles.$inferSelect;
