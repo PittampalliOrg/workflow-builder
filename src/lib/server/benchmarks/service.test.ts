@@ -144,7 +144,7 @@ describe("SWE-bench workflow spec", () => {
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			"${ .prepare_environment.sandboxImage }",
 		);
-		expect(String(checkoutStep.with.command)).toContain("set -eu\\n");
+		expect(String(checkoutStep.with.command)).toContain("set -eu\n");
 		expect(String(checkoutStep.with.command)).not.toContain("pipefail");
 	});
 
@@ -245,6 +245,7 @@ describe("SWE-bench workflow spec", () => {
 		expect(serialized).not.toContain("FAIL_TO_PASS");
 		expect(serialized).not.toContain("PASS_TO_PASS");
 		expect(serialized).not.toContain("goldPatch");
+		expect(serialized).not.toContain("/testbed");
 		expect(serialized).not.toContain("sympy/tests/test_fix.py::test_regression");
 		expect(serialized).not.toContain("sympy/tests/test_fix.py");
 
@@ -342,17 +343,14 @@ describe("SWE-bench workflow spec", () => {
 		const checkout = (
 			spec.do as Array<Record<string, { with: { command: string } }>>
 		)[2].checkout_repo;
-		expect(checkout.with.command).toContain(
-			".prepare_environment.environment.workspaceRoot",
-		);
-		expect(checkout.with.command).toContain("cd /testbed");
-		expect(checkout.with.command).toContain("git merge-base --is-ancestor 'abc123' HEAD");
+		expect(checkout.with.command).toContain("cd /sandbox");
+		expect(checkout.with.command).toContain("git clone 'https://github.com/sympy/sympy.git' repo");
+		expect(checkout.with.command).not.toContain("/testbed");
 		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[3]
 			.solve;
 		expect(solve.with.body.prompt).toContain(".prepare_environment.promptNotes");
-		expect(solve.with.body.prompt).toContain(
-			".prepare_environment.environment.workspaceRoot",
-		);
+		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
+		expect(solve.with.body.prompt).not.toContain("/testbed");
 		expect(solve.with.body).toMatchObject({
 			environmentConfig: {
 				swebenchInferenceEnvironment: {
@@ -360,9 +358,11 @@ describe("SWE-bench workflow spec", () => {
 						"${ .prepare_environment.environment.environmentStatus // null }",
 					environmentKey:
 						"${ .prepare_environment.environment.environmentKey // null }",
+					workspaceRoot: "/sandbox/repo",
 				},
 			},
 		});
+		expect(JSON.stringify(spec)).not.toContain("/testbed");
 	});
 
 	it("profiles the workspace after dynamic environment preparation", () => {
@@ -399,7 +399,7 @@ describe("SWE-bench workflow spec", () => {
 		);
 	});
 
-	it("defers repo path selection until environment preparation completes", () => {
+	it("uses the sandbox repo path even if environment preparation reports a testbed root", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
 			runId: "run_1",
 			suiteSlug: "SWE-bench_Lite",
@@ -435,18 +435,15 @@ describe("SWE-bench workflow spec", () => {
 		const extractPatch = steps[4].extract_patch;
 
 		expect(workspaceProfile.with.rootPath).toBe("/sandbox");
-		expect(String(checkout.with.command)).toContain("cd /testbed");
+		expect(String(checkout.with.command)).not.toContain("/testbed");
 		expect(String(checkout.with.command)).toContain("git clone 'https://github.com/sympy/sympy.git' repo");
-		expect(solve.with.cwd).toBe(
-			'${ .prepare_environment.environment.workspaceRoot // "/sandbox/repo" }',
-		);
-		expect(solve.with.body.overrides.cwd).toBe(
-			'${ .prepare_environment.environment.workspaceRoot // "/sandbox/repo" }',
-		);
-		expect(solve.with.body.prompt).toContain("Work only in /testbed");
+		expect(solve.with.cwd).toBe("/sandbox/repo");
+		expect(solve.with.body.overrides.cwd).toBe("/sandbox/repo");
+		expect(solve.with.body.prompt).not.toContain("Work only in /testbed");
 		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
-		expect(String(extractPatch.with.command)).toContain("cd '/testbed'");
+		expect(String(extractPatch.with.command)).not.toContain("/testbed");
 		expect(String(extractPatch.with.command)).toContain("cd '/sandbox/repo'");
+		expect(JSON.stringify(spec)).not.toContain("/testbed");
 	});
 
 	it("projects sandbox, workspace, and trace links from workflow/session telemetry", () => {

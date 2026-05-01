@@ -77,10 +77,8 @@ import {
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
-const SWEBENCH_PREPARED_REPO_PATH = "/testbed";
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
-const SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION = `\${ .prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)} }`;
 const SWEBENCH_PATCH_EXCLUDE_PATHS = [
 	":(exclude)**/tests/**",
 	":(exclude)tests/**",
@@ -1535,7 +1533,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	};
 	workspaceProfileWith.sandboxImage = "${ .prepare_environment.sandboxImage }";
 	workspaceProfileWith.environmentConfig = agentVisibleEnvironmentConfig;
-	const fallbackExtractPatchCommand = [
+	const extractPatchCommand = [
 		"set -eu",
 		`cd ${quoteShell(SWEBENCH_FALLBACK_REPO_PATH)}`,
 		"rm -rf /sandbox/.cache .cache",
@@ -1544,20 +1542,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 			...SWEBENCH_PATCH_EXCLUDE_PATHS.map((path) => quoteShell(path)),
 		].join(" \\\n  "),
 	].join("\n");
-	const preparedExtractPatchCommand = [
-		"set -eu",
-		`cd ${quoteShell(SWEBENCH_PREPARED_REPO_PATH)}`,
-		"rm -rf /sandbox/.cache .cache",
-		[
-			`git diff --binary ${quoteShell(params.baseCommit)} -- .`,
-			...SWEBENCH_PATCH_EXCLUDE_PATHS.map((path) => quoteShell(path)),
-		].join(" \\\n  "),
-	].join("\n");
-	const extractPatchCommand = swebenchRuntimeRepoPathChoiceExpression(
-		preparedExtractPatchCommand,
-		fallbackExtractPatchCommand,
-	);
-	const fallbackCheckoutCommand = [
+	const checkoutCommand = [
 		"set -eu",
 		"cd /sandbox",
 		"rm -rf repo",
@@ -1566,21 +1551,11 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		`git checkout ${quoteShell(params.baseCommit)}`,
 		"git status --short",
 	].join("\n");
-	const checkoutCommand = swebenchRuntimeRepoPathChoiceExpression(
-		buildPreparedTestbedCheckCommand(params.baseCommit),
-		fallbackCheckoutCommand,
-	);
-	const preparedPrompt = buildSwebenchPrompt({
+	const basePrompt = buildSwebenchPrompt({
 		...params,
 		inferenceEnvironment: null,
-		workspaceRoot: SWEBENCH_PREPARED_REPO_PATH,
 	});
-	const fallbackPrompt = buildSwebenchPrompt({
-		...params,
-		inferenceEnvironment: null,
-		workspaceRoot: SWEBENCH_FALLBACK_REPO_PATH,
-	});
-	const prompt = buildSwebenchPromptExpression(preparedPrompt, fallbackPrompt);
+	const prompt = buildSwebenchPromptExpression(basePrompt);
 	return {
 		document: {
 			dsl: "1.0.0",
@@ -1624,7 +1599,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 							},
 							environmentConfig: agentVisibleEnvironmentConfig,
 							overrides: {
-								cwd: SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION,
+								cwd: SWEBENCH_FALLBACK_REPO_PATH,
 								maxTurns: params.maxTurns ?? undefined,
 								timeoutMinutes,
 								tools: SWEBENCH_ALLOWED_AGENT_TOOLS,
@@ -1632,7 +1607,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 							prompt,
 						},
 						mode: "execute_direct",
-						cwd: SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION,
+						cwd: SWEBENCH_FALLBACK_REPO_PATH,
 						sandboxName: "${ .workspace_profile.sandboxName }",
 						workspaceRef: "${ .workspace_profile.workspaceRef }",
 						sandboxPolicy: {
@@ -1685,12 +1660,11 @@ function buildSwebenchPrompt(params: {
 	problemStatement: string;
 	hintsText: string | null;
 	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
-	workspaceRoot?: string | null;
 }): string {
 	const environmentNotes = swebenchInferenceEnvironmentPromptNotes(
 		params.inferenceEnvironment,
 	);
-	const workspaceRoot = params.workspaceRoot ?? params.inferenceEnvironment?.workspaceRoot ?? "/sandbox/repo";
+	const workspaceRoot = SWEBENCH_FALLBACK_REPO_PATH;
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,
@@ -1703,12 +1677,6 @@ function buildSwebenchPrompt(params: {
 		"",
 		"Sandbox notes:",
 		`- Work only in ${workspaceRoot}.`,
-		workspaceRoot === "/testbed"
-			? "- The repository is already checked out and prepared under /testbed."
-			: "",
-		workspaceRoot === "/testbed"
-			? "- Dependencies are installed according to the SWE-bench harness spec in the conda testbed environment."
-			: "",
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix by editing implementation files only.",
 		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
@@ -1722,8 +1690,8 @@ function buildSwebenchPrompt(params: {
 	].join("\n");
 }
 
-function buildSwebenchPromptExpression(preparedPrompt: string, fallbackPrompt: string): string {
-	return `\${ ${swebenchRuntimeRepoPathChoiceProgram(preparedPrompt, fallbackPrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
+function buildSwebenchPromptExpression(basePrompt: string): string {
+	return `\${ ${JSON.stringify(basePrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
 }
 
 function buildAgentVisibleSwebenchEnvironmentConfig(): Record<string, string> {
@@ -1738,7 +1706,7 @@ function buildAgentVisibleSwebenchEnvironmentConfig(): Record<string, string> {
 		baseCommit: field("baseCommit"),
 		environmentKey: field("environmentKey"),
 		buildStrategy: field("buildStrategy"),
-		workspaceRoot: field("workspaceRoot"),
+		workspaceRoot: SWEBENCH_FALLBACK_REPO_PATH,
 		condaEnvironment: field("condaEnvironment"),
 		sandboxTemplate: field("sandboxTemplate"),
 		sandboxImage: field("sandboxImage"),
@@ -1748,25 +1716,6 @@ function buildAgentVisibleSwebenchEnvironmentConfig(): Record<string, string> {
 		source: field("source"),
 		reason: field("reason"),
 	};
-}
-
-function swebenchRuntimeRepoPathChoiceExpression(preparedValue: string, fallbackValue: string): string {
-	return `\${ ${swebenchRuntimeRepoPathChoiceProgram(preparedValue, fallbackValue)} }`;
-}
-
-function swebenchRuntimeRepoPathChoiceProgram(preparedValue: string, fallbackValue: string): string {
-	return `if ((.prepare_environment.environment.workspaceRoot // ${JSON.stringify(SWEBENCH_FALLBACK_REPO_PATH)}) == ${JSON.stringify(SWEBENCH_PREPARED_REPO_PATH)}) then ${JSON.stringify(preparedValue)} else ${JSON.stringify(fallbackValue)} end`;
-}
-
-function buildPreparedTestbedCheckCommand(baseCommit: string): string {
-	return [
-		"set -eu",
-		"cd /testbed",
-		"git rev-parse --is-inside-work-tree >/dev/null",
-		`git cat-file -e ${quoteShell(`${baseCommit}^{commit}`)}`,
-		`git merge-base --is-ancestor ${quoteShell(baseCommit)} HEAD`,
-		"git status --short",
-	].join("\n");
 }
 
 function extractModelPatch(value: unknown): string {

@@ -118,12 +118,37 @@ describe("evaluation agent workflow", () => {
 				repo: "django/django",
 				baseCommit: "abc123",
 				problemStatement: "Fix the failing test.",
+				testMetadata: {
+					version: "3.2",
+					test_patch: "diff --git a/tests/test_fix.py b/tests/test_fix.py\n",
+					FAIL_TO_PASS: ["tests/test_fix.py::test_regression"],
+					PASS_TO_PASS: ["tests/test_existing.py::test_existing"],
+				},
 			},
 			taskConfig: {
 				adapter: "swebench",
 				datasetName: "princeton-nlp/SWE-bench_Lite",
 			},
 			executionConfig: { timeoutSeconds: 3600, maxTurns: 25 },
+			inferenceEnvironment: {
+				environmentStatus: "validated",
+				suite: "SWE-bench_Lite",
+				repo: "django/django",
+				version: "3.2",
+				environmentKey: "django-3.2",
+				sandboxTemplate: "dapr-agent",
+				sandboxImage:
+					"ghcr.io/pittampalliorg/swebench-inference-django-3.2:git-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				buildStrategy: "swebench-harness",
+				workspaceRoot: "/testbed",
+				validationCommand: "cd /testbed && python --version",
+				environmentNotes: [
+					"The repository is already prepared under /testbed at the SWE-bench base commit.",
+				],
+				swebenchSpec: {
+					workspaceRoot: "/testbed",
+				},
+			},
 		});
 		const steps = spec.do as Array<Record<string, Record<string, unknown>>>;
 		expect(steps.map((step) => Object.keys(step)[0])).toEqual([
@@ -158,11 +183,18 @@ describe("evaluation agent workflow", () => {
 			"eval-swebench-c2a85f01af-eval-run-item-1-django-django-12345",
 		);
 		expect(solve.with.body.prompt).toContain("Do not use web search");
+		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
 		expect(JSON.stringify(solve.with.body)).toContain("generic eval path only captures the patch");
 		expect(JSON.stringify(solve.with.body)).not.toContain("python3.12");
 		const extractPatch = steps[3].extract_patch as { with: { command: string } };
 		expect(extractPatch.with.command).toContain("rm -rf /sandbox/.cache .cache");
+		expect(extractPatch.with.command).toContain("cd '/sandbox/repo'");
 		expect(JSON.stringify(spec.output)).toContain("modelPatch");
+		const serialized = JSON.stringify(spec);
+		expect(serialized).not.toContain("/testbed");
+		expect(serialized).not.toContain("test_patch");
+		expect(serialized).not.toContain("FAIL_TO_PASS");
+		expect(serialized).not.toContain("PASS_TO_PASS");
 	});
 });
 

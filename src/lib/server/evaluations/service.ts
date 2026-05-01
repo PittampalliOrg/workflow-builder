@@ -58,6 +58,8 @@ import {
 
 const HIDDEN_EVALUATION_WORKFLOW_NAME = "Evaluation item runner";
 const DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS = 900_000;
+const SWEBENCH_EVALUATION_WORKSPACE_ROOT = "/sandbox";
+const SWEBENCH_EVALUATION_REPO_PATH = "/sandbox/repo";
 const CODE_EVAL_PROTOCOL_MODE = "internal-agent-visible-tests";
 const CODE_EVAL_BENCHMARK_COMPARABLE = false;
 const CODE_EVAL_PYTEST_COMMAND =
@@ -2719,6 +2721,8 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 			baseCommit: instance.baseCommit,
 			testMetadata: instance.testMetadata,
 		});
+	const agentInferenceEnvironment =
+		sanitizeSwebenchInferenceEnvironmentForAgent(inferenceEnvironment);
 	const timeoutSeconds = clampInteger(
 		params.executionConfig?.timeoutSeconds,
 		60,
@@ -2729,8 +2733,8 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 		typeof params.executionConfig?.maxTurns === "number"
 			? clampInteger(params.executionConfig.maxTurns, 1, 1000, params.executionConfig.maxTurns)
 			: null;
-	const repoPath = inferenceEnvironment.workspaceRoot ?? "/sandbox/repo";
-	const workspaceRoot = repoPath === "/testbed" ? "/testbed" : "/sandbox";
+	const repoPath = SWEBENCH_EVALUATION_REPO_PATH;
+	const workspaceRoot = SWEBENCH_EVALUATION_WORKSPACE_ROOT;
 	const timeoutMinutes = Math.max(1, Math.ceil(timeoutSeconds / 60));
 	const ttlSeconds = Math.max(timeoutSeconds + 3600, 7200);
 	const sandboxTemplate = inferenceEnvironment.sandboxTemplate || "dapr-agent";
@@ -2771,23 +2775,20 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	) {
 		workspaceProfileWith.sandboxImage = inferenceEnvironment.sandboxImage;
 		workspaceProfileWith.environmentConfig = {
-			swebenchInferenceEnvironment: inferenceEnvironment,
+			swebenchInferenceEnvironment: agentInferenceEnvironment,
 		};
 	}
 	const agentRef: Record<string, unknown> = { id: params.agentId };
 	if (params.agentVersion != null) agentRef.version = params.agentVersion;
-	const cloneCommand =
-		repoPath === "/testbed"
-			? buildPreparedTestbedCheckCommand(instance.baseCommit)
-			: [
-					"set -eu",
-					"cd /sandbox",
-					"rm -rf repo",
-					`git clone ${quoteShell(`https://github.com/${instance.repo}.git`)} repo`,
-					"cd repo",
-					`git checkout ${quoteShell(instance.baseCommit)}`,
-					"git status --short",
-				].join("\n");
+	const cloneCommand = [
+		"set -eu",
+		"cd /sandbox",
+		"rm -rf repo",
+		`git clone ${quoteShell(`https://github.com/${instance.repo}.git`)} repo`,
+		"cd repo",
+		`git checkout ${quoteShell(instance.baseCommit)}`,
+		"git status --short",
+	].join("\n");
 	const extractPatchCommand = [
 		"set -eu",
 		`cd ${quoteShell(repoPath)}`,
@@ -2829,7 +2830,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 							...(inferenceEnvironment
 								? {
 										environmentConfig: {
-											swebenchInferenceEnvironment: inferenceEnvironment,
+											swebenchInferenceEnvironment: agentInferenceEnvironment,
 										},
 									}
 								: {}),
@@ -2841,7 +2842,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 							},
 							prompt: buildSwebenchEvaluationPrompt({
 								...instance,
-								inferenceEnvironment,
+								inferenceEnvironment: agentInferenceEnvironment,
 							}),
 						},
 						mode: "execute_direct",
@@ -2885,9 +2886,36 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 				},
 				workspaceRef: "${ .workspace_profile.workspaceRef }",
 				sandboxName: "${ .workspace_profile.sandboxName }",
-				inferenceEnvironment,
+				inferenceEnvironment: agentInferenceEnvironment,
 			},
 		},
+	};
+}
+
+function sanitizeSwebenchInferenceEnvironmentForAgent(
+	environment: ResolvedSwebenchInferenceEnvironment,
+): ResolvedSwebenchInferenceEnvironment {
+	const environmentNotes = [
+		...(environment.environmentNotes ?? []).filter(
+			(note) =>
+				!/\/testbed/i.test(note) &&
+				!/test_patch|FAIL_TO_PASS|PASS_TO_PASS|goldPatch/i.test(note),
+		),
+	];
+	if (environment.buildStrategy === "swebench-harness") {
+		for (const note of [
+			"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+			"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
+		]) {
+			if (!environmentNotes.includes(note)) environmentNotes.push(note);
+		}
+	}
+	return {
+		...environment,
+		workspaceRoot: SWEBENCH_EVALUATION_REPO_PATH,
+		environmentNotes: environmentNotes.length ? environmentNotes : undefined,
+		validationCommand: undefined,
+		swebenchSpec: undefined,
 	};
 }
 
@@ -3144,7 +3172,7 @@ function buildSwebenchEvaluationPrompt(params: {
 	const environmentNotes = swebenchInferenceEnvironmentPromptNotes(
 		params.inferenceEnvironment,
 	);
-	const workspaceRoot = params.inferenceEnvironment?.workspaceRoot ?? "/sandbox/repo";
+	const workspaceRoot = SWEBENCH_EVALUATION_REPO_PATH;
 	return [
 		`You are solving SWE-bench instance ${params.instanceId}.`,
 		`Dataset: ${params.datasetName}`,
@@ -3157,12 +3185,6 @@ function buildSwebenchEvaluationPrompt(params: {
 		"",
 		"Sandbox notes:",
 		`- Work only in ${workspaceRoot}.`,
-		workspaceRoot === "/testbed"
-			? "- The repository is already checked out and prepared under /testbed."
-			: "",
-		workspaceRoot === "/testbed"
-			? "- Dependencies are installed according to the SWE-bench harness spec in the conda testbed environment."
-			: "",
 		"- Do not create commits; leave source changes in the working tree.",
 		"- Produce the repository fix as source changes only. Do not edit benchmark metadata or generated artifact files.",
 		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
@@ -3171,17 +3193,6 @@ function buildSwebenchEvaluationPrompt(params: {
 		...environmentNotes,
 		"",
 		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
-	].join("\n");
-}
-
-function buildPreparedTestbedCheckCommand(baseCommit: string): string {
-	return [
-		"set -eu",
-		"cd /testbed",
-		"git rev-parse --is-inside-work-tree >/dev/null",
-		`git cat-file -e ${quoteShell(`${baseCommit}^{commit}`)}`,
-		`git merge-base --is-ancestor ${quoteShell(baseCommit)} HEAD`,
-		"git status --short",
 	].join("\n");
 }
 
