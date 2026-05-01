@@ -106,6 +106,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 
 	const payload = {
 		sessionId,
+		agentId: agent.id,
+		agentVersion: session.agentVersion ?? agent.version ?? null,
+		agentSlug: agent.slug,
+		agentAppId: agent.runtimeAppId ?? `agent-runtime-${agent.slug}`,
 		agentConfig: agentConfigForDispatch,
 		// Flat metadata the call_agent tool needs to dispatch peers by name.
 		callableAgents,

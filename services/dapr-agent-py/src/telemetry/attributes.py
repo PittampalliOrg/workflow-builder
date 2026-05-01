@@ -22,6 +22,11 @@ from typing import Any
 class SessionContext:
     instance_id: str = ""
     execution_id: str = ""
+    turn: int | None = None
+    config_revision: int | None = None
+    config_hash: str = ""
+    model_spec: str = ""
+    llm_component: str = ""
     user_id: str = ""
     organization_id: str = ""
     user_email: str = ""
@@ -58,6 +63,11 @@ def set_session_context(
     *,
     instance_id: str = "",
     execution_id: str = "",
+    turn: int | None = None,
+    config_revision: int | None = None,
+    config_hash: str | None = "",
+    model_spec: str | None = "",
+    llm_component: str | None = "",
     user_id: str = "",
     organization_id: str = "",
     user_email: str = "",
@@ -73,6 +83,11 @@ def set_session_context(
         SessionContext(
             instance_id=instance_id,
             execution_id=execution_id,
+            turn=turn,
+            config_revision=config_revision,
+            config_hash=config_hash or "",
+            model_spec=model_spec or "",
+            llm_component=llm_component or "",
             user_id=user_id,
             organization_id=organization_id,
             user_email=user_email,
@@ -103,6 +118,16 @@ def get_telemetry_attributes() -> dict[str, Any]:
             attrs["session.id"] = ctx.instance_id
     if ctx.execution_id:
         attrs["workflow.execution.id"] = ctx.execution_id
+    if ctx.turn is not None:
+        attrs["agent.turn"] = ctx.turn
+    if ctx.config_revision is not None:
+        attrs["agent.config_revision"] = ctx.config_revision
+    if ctx.config_hash:
+        attrs["agent.config_hash"] = ctx.config_hash
+    if ctx.model_spec:
+        attrs["agent.model_spec"] = ctx.model_spec
+    if ctx.llm_component:
+        attrs["agent.llm_component"] = ctx.llm_component
 
     if _should_include("OTEL_METRICS_INCLUDE_VERSION"):
         version = os.environ.get("DAPR_AGENT_PY_VERSION") or os.environ.get(

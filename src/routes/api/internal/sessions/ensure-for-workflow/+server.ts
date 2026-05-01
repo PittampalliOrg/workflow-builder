@@ -350,6 +350,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			workspaceRef: bridgeWorkspaceRef,
 			sandboxName: incomingSandboxName,
 			cwd: bridgeCwd,
+			agentId,
+			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? wakeSlug,
 			agentAppId:
 				runtimeIdentity?.appId ??
@@ -371,11 +373,15 @@ function buildChildInput(params: {
 	workspaceRef?: string | null;
 	sandboxName?: string | null;
 	cwd?: string | null;
+	agentId?: string | null;
+	agentVersion?: number | null;
 	agentSlug?: string | null;
 	agentAppId?: string | null;
 }): Record<string, unknown> {
 	return {
 		sessionId: params.sessionId,
+		agentId: params.agentId ?? null,
+		agentVersion: params.agentVersion ?? null,
 		agentConfig: params.agentConfig,
 		agentSlug: params.agentSlug ?? null,
 		agentAppId: params.agentAppId ?? null,

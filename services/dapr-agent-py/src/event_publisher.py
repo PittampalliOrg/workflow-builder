@@ -77,18 +77,31 @@ def _default_source_event_id() -> str:
 _session_scope = contextvars.ContextVar[tuple[str | None, str | None]](
     "session_scope", default=(None, None)
 )
+_audit_scope = contextvars.ContextVar[dict[str, Any]](
+    "session_audit_scope", default={}
+)
 
 
-def scope_session(session_id: str | None, instance_id: str | None):
+def scope_session(
+    session_id: str | None,
+    instance_id: str | None,
+    audit_fields: dict[str, Any] | None = None,
+):
     """Push a session_id/instance_id scope for the current task. Returns a
     Token that must be passed back to `unscope_session` in a finally block.
     """
-    return _session_scope.set((session_id, instance_id))
+    session_token = _session_scope.set((session_id, instance_id))
+    audit_token = _audit_scope.set(dict(audit_fields or {}))
+    return session_token, audit_token
 
 
 def unscope_session(token) -> None:
     try:
-        _session_scope.reset(token)
+        if isinstance(token, tuple) and len(token) == 2:
+            _session_scope.reset(token[0])
+            _audit_scope.reset(token[1])
+        else:
+            _session_scope.reset(token)
     except Exception:
         pass
 
@@ -96,6 +109,10 @@ def unscope_session(token) -> None:
 def get_scoped_session() -> tuple[str | None, str | None]:
     """Returns (session_id, instance_id) for the active call, or (None, None)."""
     return _session_scope.get()
+
+
+def get_scoped_audit_fields() -> dict[str, Any]:
+    return dict(_audit_scope.get() or {})
 
 PUBLISH_ENABLED = os.environ.get("ENABLE_WORKFLOW_EVENTS", "true").strip().lower() in (
     "1",
@@ -177,6 +194,7 @@ def _cma_shape(
 #     (event_type: str, data: dict, session_id: str | None, instance_id: str | None) -> None
 # Always invoked on a daemon thread so it can use asyncio freely.
 _notification_dispatcher = None
+_audit_field_provider = None
 
 
 def set_notification_dispatcher(fn) -> None:
@@ -186,6 +204,27 @@ def set_notification_dispatcher(fn) -> None:
     """
     global _notification_dispatcher
     _notification_dispatcher = fn
+
+
+def set_audit_field_provider(fn) -> None:
+    """Register a callable that returns audit fields for a workflow instance."""
+    global _audit_field_provider
+    _audit_field_provider = fn
+
+
+def _effective_audit_fields(instance_id: str | None) -> dict[str, Any]:
+    fields = get_scoped_audit_fields()
+    if fields:
+        return fields
+    provider = _audit_field_provider
+    if provider is None or not instance_id:
+        return {}
+    try:
+        result = provider(instance_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-ingest] audit-field provider failed: %s", exc)
+        return {}
+    return dict(result or {}) if isinstance(result, dict) else {}
 
 
 _WORKFLOW_BUILDER_URL = os.environ.get(
@@ -273,6 +312,10 @@ def publish_session_event(
     cma_type, cma_data = _cma_shape(event_type, data)
     if cma_type is None:
         return  # suppressed — session_workflow emits the canonical equivalent
+
+    for key, value in _effective_audit_fields(instance_id).items():
+        if value is not None:
+            cma_data.setdefault(key, value)
 
     # Stamp trace_id + span_id of the currently-active OTEL span onto the
     # envelope so the UI can deep-link any event row into Phoenix / ClickHouse

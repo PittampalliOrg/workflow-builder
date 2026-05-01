@@ -261,6 +261,57 @@ def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return strict_schema
 
 
+def _publish_llm_usage(
+    *,
+    model: str,
+    usage: dict[str, Any] | None,
+    ttft_ms: float | None,
+    success: bool,
+    error: str | None = None,
+) -> None:
+    try:
+        from src.event_publisher import (
+            get_scoped_audit_fields,
+            get_scoped_session,
+            publish_session_event,
+        )
+
+        sid, iid = get_scoped_session()
+        if not sid:
+            return
+        usage = usage or {}
+        input_tokens = int(
+            usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+        )
+        output_tokens = int(
+            usage.get("output_tokens") or usage.get("completion_tokens") or 0
+        )
+        cache_read = int(
+            (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
+        )
+        payload: dict[str, Any] = {
+            "model": model,
+            **get_scoped_audit_fields(),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": 0,
+            "ttft_ms": ttft_ms,
+            "recovery_attempts": 0,
+            "success": success,
+        }
+        if error:
+            payload["error"] = error[:200]
+        publish_session_event(
+            sid,
+            "agent.llm_usage",
+            payload,
+            instance_id=iid,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-event] openai llm_usage emit failed: %s", exc)
+
+
 def _call_openai_responses(
     component: str,
     messages: list[dict[str, Any]],
@@ -345,6 +396,13 @@ def _call_openai_responses(
             data = json.loads(resp.read() or b"{}")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        _publish_llm_usage(
+            model=model,
+            usage=None,
+            ttft_ms=(_time.monotonic() - llm_start) * 1000.0,
+            success=False,
+            error=detail,
+        )
         raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
 
     content, tool_calls, thinking_blocks = _extract_openai_response(data)
@@ -396,6 +454,12 @@ def _call_openai_responses(
                 record_tokens(type_="cacheRead", count=cache_read, model=model)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[telemetry] llm_request (openai) end failed: %s", exc)
+    _publish_llm_usage(
+        model=model,
+        usage=data.get("usage") or {},
+        ttft_ms=(_time.monotonic() - llm_start) * 1000.0,
+        success=True,
+    )
     return result
 
 

@@ -520,11 +520,10 @@ def _call_anthropic_sdk(
          re-call API (up to MAX_OUTPUT_TOKENS_RECOVERY_LIMIT times)
       3. Merge all partial responses into a single complete response
     """
-    import anthropic
-
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("No Anthropic authentication configured. Set ANTHROPIC_API_KEY.")
+    import anthropic
 
     # max_retries enables SDK-internal retry for 5xx, 429, and transient
     # connection errors (via httpx). Short sidecar-churn blips get absorbed
@@ -650,6 +649,7 @@ def _call_anthropic_sdk(
         try:
             from src.event_publisher import (
                 get_scoped_session,
+                get_scoped_audit_fields,
                 publish_session_event,
             )
 
@@ -660,6 +660,7 @@ def _call_anthropic_sdk(
                     "agent.llm_usage",
                     {
                         "model": model,
+                        **get_scoped_audit_fields(),
                         "input_tokens": agg_input_tokens,
                         "output_tokens": agg_output_tokens,
                         "cache_read_input_tokens": agg_cache_read,
@@ -803,6 +804,7 @@ def _call_anthropic_sdk(
     # prompt-cache efficiency per turn without cross-referencing Phoenix.
     try:
         from src.event_publisher import get_scoped_session, publish_session_event
+        from src.event_publisher import get_scoped_audit_fields
 
         sid, iid = get_scoped_session()
         if sid:
@@ -811,6 +813,7 @@ def _call_anthropic_sdk(
                 "agent.llm_usage",
                 {
                     "model": model,
+                    **get_scoped_audit_fields(),
                     "input_tokens": agg_input_tokens,
                     "output_tokens": agg_output_tokens,
                     "cache_read_input_tokens": agg_cache_read,

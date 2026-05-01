@@ -138,3 +138,58 @@ def test_response_format_schema_is_sent_as_strict_json_schema(monkeypatch) -> No
     assert schema["required"] == ["summary", "items"]
     assert nested_schema["additionalProperties"] is False
     assert nested_schema["required"] == ["name"]
+
+
+def test_openai_llm_usage_event_includes_effective_config_audit_fields(monkeypatch) -> None:
+    events: list[tuple[str, str, dict, str | None]] = []
+    publisher = importlib.import_module("src.event_publisher")
+
+    monkeypatch.setattr(publisher, "get_scoped_session", lambda: ("sesn_1", "turn_1"))
+    monkeypatch.setattr(
+        publisher,
+        "get_scoped_audit_fields",
+        lambda: {
+            "modelSpec": "openai/o3",
+            "llmComponent": "llm-openai-o3",
+            "configRevision": 2,
+            "configHash": "abc123",
+        },
+    )
+
+    def capture(session_id: str, event_type: str, data: dict, *, instance_id=None, **_):
+        events.append((session_id, event_type, data, instance_id))
+
+    monkeypatch.setattr(publisher, "publish_session_event", capture)
+
+    adapter._publish_llm_usage(
+        model="o3",
+        usage={
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "input_tokens_details": {"cached_tokens": 3},
+        },
+        ttft_ms=42.5,
+        success=True,
+    )
+
+    assert events == [
+        (
+            "sesn_1",
+            "agent.llm_usage",
+            {
+                "model": "o3",
+                "modelSpec": "openai/o3",
+                "llmComponent": "llm-openai-o3",
+                "configRevision": 2,
+                "configHash": "abc123",
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "cache_read_input_tokens": 3,
+                "cache_creation_input_tokens": 0,
+                "ttft_ms": 42.5,
+                "recovery_attempts": 0,
+                "success": True,
+            },
+            "turn_1",
+        )
+    ]

@@ -86,6 +86,12 @@ from src.session_config import (
     apply_session_control_events,
     external_control_event_as_user_event,
 )
+from src.effective_agent_config import (
+    DEFAULT_LLM_COMPONENT,
+    build_effective_agent_config,
+    effective_audit_fields,
+    resolve_llm_metadata,
+)
 from src.hooks import (
     HooksSnapshot,
     execute_notification_hooks,
@@ -227,33 +233,6 @@ The sandbox is policy-governed, so filesystem and network access may be restrict
 # Default system prompt used when no cwd is available yet
 OPENSHELL_SYSTEM_PROMPT = _build_system_prompt("/sandbox")
 
-# ---------------------------------------------------------------------------
-# Model-to-component mapping for per-request model selection
-# ---------------------------------------------------------------------------
-
-MODEL_COMPONENT_MAP: dict[str, str] = {
-    # Anthropic
-    "anthropic/claude-sonnet-4-6": "llm-anthropic-sonnet",
-    "anthropic/claude-opus-4-7": "llm-anthropic-opus",
-    "anthropic/claude-opus-4-6": "llm-anthropic-opus",
-    "anthropic/claude-haiku-4-5-20251001": "llm-anthropic-haiku",
-    "anthropic/claude-haiku-4-5": "llm-anthropic-haiku",
-    "claude-sonnet-4-6": "llm-anthropic-sonnet",
-    "claude-opus-4-7": "llm-anthropic-opus",
-    "claude-opus-4-6": "llm-anthropic-opus",
-    "claude-haiku-4-5-20251001": "llm-anthropic-haiku",
-    "claude-haiku-4-5": "llm-anthropic-haiku",
-    # OpenAI
-    "openai/gpt-5.4": "llm-openai-gpt5",
-    "gpt-5.4": "llm-openai-gpt5",
-    "openai/o3": "llm-openai-o3",
-    "o3": "llm-openai-o3",
-}
-DEFAULT_LLM_COMPONENT = os.environ.get(
-    "DAPR_LLM_COMPONENT_DEFAULT", "llm-anthropic-opus"
-)
-
-
 def _coerce_agent_config(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return value
@@ -270,34 +249,9 @@ def _resolve_llm_component(message: dict, metadata: dict | None = None) -> str:
     """Extract modelSpec from agentConfig, metadata, or message and map to a Dapr component.
 
     Always returns a deterministic component name. Raises if an explicit
-    modelSpec is provided but not found in MODEL_COMPONENT_MAP.
+    modelSpec is provided but not found in the supported model map.
     """
-    model_spec = ""
-
-    # Priority 1: agentConfig.modelSpec
-    agent_config = _coerce_agent_config(message.get("agentConfig"))
-    if isinstance(agent_config, dict):
-        model_spec = agent_config.get("modelSpec", "")
-
-    # Priority 2: metadata.model (passed via workflow metadata field)
-    if not model_spec and metadata:
-        model_spec = metadata.get("model", "")
-
-    # Priority 3: top-level message.model
-    if not model_spec:
-        model_spec = message.get("model", "")
-
-    if not isinstance(model_spec, str) or not model_spec.strip():
-        return DEFAULT_LLM_COMPONENT
-
-    model_spec = model_spec.strip()
-    component = MODEL_COMPONENT_MAP.get(model_spec)
-    if component is None:
-        raise ValueError(
-            f"Unknown modelSpec {model_spec!r}. "
-            f"Available models: {', '.join(sorted(MODEL_COMPONENT_MAP.keys()))}"
-        )
-    return component
+    return resolve_llm_metadata(message=message, metadata=metadata or {})["llmComponent"]
 
 # ---------------------------------------------------------------------------
 # Hot-reload configuration subscription
@@ -465,6 +419,10 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "sessionId",
         "workspaceRef",
         "llmComponent",
+        "modelSpec",
+        "provider",
+        "providerModel",
+        "configHash",
         "systemPrompt",
         "permissionMode",
     ):
@@ -479,8 +437,46 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
     )
     if allowed_tools:
         context["allowedTools"] = sorted(allowed_tools)
+    if isinstance(value.get("effectiveAgentConfig"), dict):
+        context["effectiveAgentConfig"] = value["effectiveAgentConfig"]
+        for key, audit_value in effective_audit_fields(value["effectiveAgentConfig"]).items():
+            if context.get(key) is None:
+                context[key] = audit_value
+    for int_key in ("turn", "configRevision"):
+        raw_int = value.get(int_key)
+        if isinstance(raw_int, bool) or raw_int is None:
+            continue
+        try:
+            context[int_key] = int(raw_int)
+        except (TypeError, ValueError):
+            continue
     context["cwd"] = context.get("cwd") or DEFAULT_CWD
     return context
+
+
+def _runtime_context_audit_fields(context: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    snapshot = context.get("effectiveAgentConfig")
+    if isinstance(snapshot, dict):
+        return effective_audit_fields(snapshot)
+    out: dict[str, Any] = {}
+    for key in ("turn", "configRevision", "configHash", "modelSpec", "llmComponent", "providerModel"):
+        value = context.get(key)
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
+    audit = _runtime_context_audit_fields(context)
+    return {
+        "turn": audit.get("turn"),
+        "config_revision": audit.get("configRevision"),
+        "config_hash": audit.get("configHash"),
+        "model_spec": audit.get("modelSpec"),
+        "llm_component": audit.get("llmComponent"),
+    }
 
 
 def _sandbox_name_from_workspace_ref(workspace_ref: str | None) -> str | None:
@@ -1531,9 +1527,24 @@ class OpenShellDurableAgent(DurableAgent):
             )
         except Exception:
             pass
-        # Scope session for the inner call chain — the Anthropic adapter
-        # reads this contextvar to emit agent.thinking events.
-        scope_token = scope_session(sess_id, inst_id)
+        # Scope session for the inner call chain — the provider adapters read
+        # this contextvar to emit thinking/usage events with config audit fields.
+        scope_token = scope_session(
+            sess_id,
+            inst_id,
+            _runtime_context_audit_fields(context),
+        )
+        tel_session_token = None
+        try:
+            from src.telemetry import set_session_context
+
+            tel_session_token = set_session_context(
+                instance_id=inst_id,
+                execution_id=exec_id,
+                **_telemetry_context_kwargs(context),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[telemetry] llm session context failed: %s", exc)
         try:
             with self._agent_context_lock:
                 previous_active_instance = self._active_llm_instance_id
@@ -1606,6 +1617,13 @@ class OpenShellDurableAgent(DurableAgent):
             raise
         finally:
             unscope_session(scope_token)
+            if tel_session_token is not None:
+                try:
+                    from src.telemetry.attributes import reset_session_context
+
+                    reset_session_context(tel_session_token)
+                except Exception:
+                    pass
             try:
                 reset_runtime(runtime_token)
             except Exception as exc:  # noqa: BLE001
@@ -1795,6 +1813,7 @@ class OpenShellDurableAgent(DurableAgent):
             _tel_session_token = set_session_context(
                 instance_id=inst_id,
                 execution_id=exec_id,
+                **_telemetry_context_kwargs(context),
             )
             _tool_input_json = ""
             try:
@@ -2268,6 +2287,8 @@ class OpenShellDurableAgent(DurableAgent):
         # so the <env> block layers on top of the right role/goal. Mirrors the
         # existing per-run override pattern for system_prompt/model/max_turns.
         agent_config = _coerce_agent_config(message.get("agentConfig")) or {}
+        effective_config = _parse_metadata(message.get("effectiveAgentConfig"))
+        effective_fields = effective_audit_fields(effective_config)
         allowed_tools = _allowed_tools_from_agent_config(agent_config)
         previous_role = self.profile.role
         previous_goal = self.profile.goal
@@ -2357,8 +2378,18 @@ class OpenShellDurableAgent(DurableAgent):
             except Exception:
                 pass  # No PLAN.md = first phase or no plan written
 
-        # Select LLM component based on agentConfig.modelSpec or metadata.model
-        llm_component = _resolve_llm_component(message, metadata)
+        # Select LLM component from the per-turn snapshot when present; fall
+        # back to agentConfig.modelSpec or metadata.model for legacy callers.
+        snapshot_llm = (
+            effective_config.get("llm")
+            if isinstance(effective_config, dict)
+            and isinstance(effective_config.get("llm"), dict)
+            else {}
+        )
+        llm_component = (
+            str(snapshot_llm.get("llmComponent") or "").strip()
+            or _resolve_llm_component(message, metadata)
+        )
         previous_component = self.llm._llm_component
         self.llm._llm_component = llm_component
         if not ctx.is_replaying:
@@ -2423,6 +2454,11 @@ class OpenShellDurableAgent(DurableAgent):
                 tok = set_session_context(
                     instance_id=instance_id,
                     execution_id=execution_id,
+                    turn=effective_fields.get("turn"),
+                    config_revision=effective_fields.get("configRevision"),
+                    config_hash=effective_fields.get("configHash"),
+                    model_spec=effective_fields.get("modelSpec"),
+                    llm_component=effective_fields.get("llmComponent"),
                 )
                 self._interaction_ctx_token_by_instance[instance_id] = tok
                 task_text = str(message.get("task") or message.get("prompt") or "")
@@ -2664,6 +2700,12 @@ class OpenShellDurableAgent(DurableAgent):
             "sessionId": session_id_raw or None,
             "workspaceRef": workspace_ref or None,
             "llmComponent": llm_component,
+            "modelSpec": effective_fields.get("modelSpec"),
+            "providerModel": effective_fields.get("providerModel"),
+            "configHash": effective_fields.get("configHash"),
+            "turn": effective_fields.get("turn"),
+            "configRevision": effective_fields.get("configRevision"),
+            "effectiveAgentConfig": effective_config,
             "systemPrompt": self.profile.system_prompt,
             "permissionMode": agent_config.get("permissionMode"),
             "allowedTools": sorted(allowed_tools),
@@ -2972,6 +3014,10 @@ class OpenShellDurableAgent(DurableAgent):
             "session_workflow",
             input={
                 "sessionId": session_id,
+                "agentId": row.get("agentId") or message.get("peerAgentId"),
+                "agentVersion": row.get("agentVersion"),
+                "agentSlug": message.get("peerSlug"),
+                "agentAppId": message.get("peerAppId"),
                 "agentConfig": row.get("agentConfig") or {},
                 "environmentConfig": row.get("environmentConfig") or {},
                 "vaultIds": row.get("vaultIds") or [],
@@ -3185,6 +3231,7 @@ class OpenShellDurableAgent(DurableAgent):
         # so the multi-turn loop continues across user events.
         auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
         turn_timeout_seconds = _session_turn_timeout_seconds(message)
+        config_revision = 1
 
         if not ctx.is_replaying:
             publish_session_event(
@@ -3220,13 +3267,38 @@ class OpenShellDurableAgent(DurableAgent):
                 pending,
             )
             if config_changes:
+                config_revision += 1
                 if not ctx.is_replaying:
+                    next_cwd = str(
+                        message.get("cwd")
+                        or agent_cfg.get("cwd")
+                        or DEFAULT_CWD
+                    )
+                    next_snapshot = build_effective_agent_config(
+                        agent_config=agent_cfg,
+                        raw_message=message,
+                        turn=turn_counter + 1,
+                        config_revision=config_revision,
+                        cwd=next_cwd,
+                    )
                     publish_session_event(
                         session_id,
                         "session.config_updated",
                         {
                             "changes": config_changes,
                             "applies": "next_turn",
+                            "configRevision": config_revision,
+                            "configHash": next_snapshot.get("configHash"),
+                            "modelSpec": (
+                                next_snapshot.get("llm", {}).get("modelSpec")
+                                if isinstance(next_snapshot.get("llm"), dict)
+                                else None
+                            ),
+                            "llmComponent": (
+                                next_snapshot.get("llm", {}).get("llmComponent")
+                                if isinstance(next_snapshot.get("llm"), dict)
+                                else None
+                            ),
                         },
                     )
                 if not pending:
@@ -3244,12 +3316,51 @@ class OpenShellDurableAgent(DurableAgent):
             task_text = _compose_turn_task(pending)
             pending = []
             turn_counter += 1
+            child_instance_id = f"{session_id}:turn-{turn_counter}"
+            child_cwd = str(
+                message.get("cwd")
+                or agent_cfg.get("cwd")
+                or DEFAULT_CWD
+            )
+            effective_config = build_effective_agent_config(
+                agent_config=agent_cfg,
+                raw_message=message,
+                turn=turn_counter,
+                config_revision=config_revision,
+                cwd=child_cwd,
+            )
 
             if not ctx.is_replaying:
                 publish_session_event(
                     session_id,
                     "session.status_running",
                     {"turn": turn_counter},
+                )
+                llm_snapshot = (
+                    effective_config.get("llm")
+                    if isinstance(effective_config.get("llm"), dict)
+                    else {}
+                )
+                tools_snapshot = (
+                    effective_config.get("tools")
+                    if isinstance(effective_config.get("tools"), dict)
+                    else {}
+                )
+                publish_session_event(
+                    session_id,
+                    "session.turn_started",
+                    {
+                        "turn": turn_counter,
+                        "childInstanceId": child_instance_id,
+                        "configRevision": config_revision,
+                        "configHash": effective_config.get("configHash"),
+                        "modelSpec": llm_snapshot.get("modelSpec"),
+                        "llmComponent": llm_snapshot.get("llmComponent"),
+                        "providerModel": llm_snapshot.get("providerModel"),
+                        "allowedTools": tools_snapshot.get("allowedTools") or [],
+                        "mcpConfigHash": tools_snapshot.get("mcpConfigHash"),
+                        "cwd": child_cwd,
+                    },
                 )
 
             # Build the child workflow input — same shape agent_workflow accepts.
@@ -3262,6 +3373,7 @@ class OpenShellDurableAgent(DurableAgent):
                 turn=turn_counter,
                 task=task_text,
                 raw_message=message,
+                effective_agent_config=effective_config,
             )
 
             # Option-C MCP bridge: the agent_workflow body that would normally
@@ -3274,10 +3386,17 @@ class OpenShellDurableAgent(DurableAgent):
             # path can still connect the MCP servers and surface their tools
             # via get_llm_tools. Keyed on the CHILD workflow's instance_id so
             # the per-turn call_llm activity picks up the right configs.
-            child_instance_id = f"{session_id}:turn-{turn_counter}"
-
             child_metadata = _parse_metadata(child_input.get("_message_metadata"))
-            child_llm_component = _resolve_llm_component(child_input, child_metadata)
+            child_llm = (
+                effective_config.get("llm")
+                if isinstance(effective_config.get("llm"), dict)
+                else {}
+            )
+            child_llm_component = (
+                str(child_llm.get("llmComponent") or "").strip()
+                or _resolve_llm_component(child_input, child_metadata)
+            )
+            child_audit_fields = effective_audit_fields(effective_config)
             child_runtime_context = {
                 "executionId": db_execution_id or child_instance_id,
                 "sandboxName": child_input.get("sandboxName") or None,
@@ -3285,6 +3404,12 @@ class OpenShellDurableAgent(DurableAgent):
                 "sessionId": session_id,
                 "workspaceRef": child_input.get("workspaceRef") or None,
                 "llmComponent": child_llm_component,
+                "modelSpec": child_audit_fields.get("modelSpec"),
+                "providerModel": child_audit_fields.get("providerModel"),
+                "configHash": child_audit_fields.get("configHash"),
+                "turn": child_audit_fields.get("turn"),
+                "configRevision": child_audit_fields.get("configRevision"),
+                "effectiveAgentConfig": effective_config,
                 "systemPrompt": _build_system_prompt(
                     cwd=str(child_input.get("cwd") or DEFAULT_CWD),
                     sandbox_name=str(child_input.get("sandboxName") or "") or None,
@@ -3350,7 +3475,7 @@ class OpenShellDurableAgent(DurableAgent):
                 child_task = ctx.call_child_workflow(
                     self.agent_workflow_name,
                     input=child_input,
-                    instance_id=f"{session_id}:turn-{turn_counter}",
+                    instance_id=child_instance_id,
                     retry_policy=self._retry_policy,
                 )
                 timer_task = ctx.create_timer(timedelta(seconds=turn_timeout_seconds))
@@ -3473,6 +3598,7 @@ def _freeze_session_child_input(
     turn: int,
     task: str,
     raw_message: dict,
+    effective_agent_config: dict | None = None,
 ) -> dict:
     """Build the frozen input payload for a per-turn agent_workflow child
     call. Reuses the message shape that sw_workflow already passes through,
@@ -3485,7 +3611,7 @@ def _freeze_session_child_input(
     )
     sandbox_name = raw_message.get("sandboxName") or ""
     workspace_ref = raw_message.get("workspaceRef") or ""
-    cwd = raw_message.get("cwd") or "/sandbox"
+    cwd = raw_message.get("cwd") or agent_cfg.get("cwd") or "/sandbox"
 
     # call_agent plumbing: spawn.ts (SvelteKit BFF) enriches the raw
     # session-start payload with `callableAgents` (full {slug, agentId,
@@ -3518,6 +3644,7 @@ def _freeze_session_child_input(
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,
         "agentConfig": agent_cfg,
+        "effectiveAgentConfig": effective_agent_config or {},
         "vaultIds": vault_ids,
         "sandboxPolicy": sandbox_policy,
         "sandboxName": sandbox_name,
@@ -3653,10 +3780,24 @@ def _notification_hook_dispatcher(
     )
 
 
+def _session_event_audit_field_provider(instance_id: str | None) -> dict[str, Any]:
+    if not instance_id:
+        return {}
+    try:
+        return _runtime_context_audit_fields(agent._runtime_context_for_instance(instance_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[session-audit] failed for %s: %s", instance_id, exc)
+        return {}
+
+
 try:
-    from src.event_publisher import set_notification_dispatcher
+    from src.event_publisher import (
+        set_audit_field_provider,
+        set_notification_dispatcher,
+    )
 
     set_notification_dispatcher(_notification_hook_dispatcher)
+    set_audit_field_provider(_session_event_audit_field_provider)
 except Exception as exc:
     logger.warning("Notification dispatcher wiring failed: %s", exc)
 
