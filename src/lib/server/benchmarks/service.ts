@@ -924,6 +924,8 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		baseCommit: row.instance.baseCommit,
 		testMetadata: row.instance.testMetadata,
 	});
+	const runtimeInferenceEnvironment =
+		sanitizeSwebenchInferenceEnvironmentForRuntime(inferenceEnvironment);
 	const rawSpec = buildSwebenchInstanceWorkflowSpec({
 		runId: row.run.id,
 		suiteSlug: row.suite.slug as SwebenchSuiteSlug,
@@ -944,7 +946,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 	const triggerData = {
 		runId: row.run.id,
 		instanceId: row.runInstance.instanceId,
-		inferenceEnvironment,
+		inferenceEnvironment: runtimeInferenceEnvironment,
 	};
 
 	const [execution] = await database
@@ -999,7 +1001,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		.set({
 			status: "inferencing",
 			inferenceStatus: "inferencing",
-			inferenceEnvironment,
+			inferenceEnvironment: runtimeInferenceEnvironment ?? {},
 			workflowExecutionId: execution.id,
 			daprInstanceId,
 			startedAt: new Date(),
@@ -1491,8 +1493,10 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		environmentTestMetadata.environmentSetupCommit =
 			params.inferenceEnvironment.environmentSetupCommit;
 	}
+	const agentVisibleInferenceEnvironment =
+		buildAgentVisibleSwebenchEnvironmentConfig();
 	const agentVisibleEnvironmentConfig = {
-		swebenchInferenceEnvironment: buildAgentVisibleSwebenchEnvironmentConfig(),
+		swebenchInferenceEnvironment: agentVisibleInferenceEnvironment,
 	};
 	const environmentPrepareWith = {
 		dataset: "swebench",
@@ -1645,7 +1649,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 				daprInstanceId: "${ .solve.daprInstanceId // null }",
 				workspaceRef: "${ .workspace_profile.workspaceRef }",
 				sandboxName: "${ .workspace_profile.sandboxName }",
-				inferenceEnvironment: "${ .prepare_environment.environment // null }",
+				inferenceEnvironment: agentVisibleInferenceEnvironment,
 			},
 		},
 	};
@@ -1763,13 +1767,65 @@ export function extractInferenceEnvironment(value: unknown): Record<string, unkn
 		...collectRecordsByKey(value, ["environment"]),
 	].filter(isInferenceEnvironmentRecord);
 	if (!candidates.length) return null;
-	return candidates
+	const selected = candidates
 		.map((candidate, index) => ({
 			candidate,
 			index,
 			score: inferenceEnvironmentScore(candidate),
 		}))
 		.sort((a, b) => b.score - a.score || b.index - a.index)[0].candidate;
+	return sanitizeSwebenchInferenceEnvironmentForRuntime(selected) ?? selected;
+}
+
+export function sanitizeSwebenchInferenceEnvironmentForRuntime(
+	environment: Record<string, unknown> | ResolvedSwebenchInferenceEnvironment | null | undefined,
+): Record<string, unknown> | null {
+	if (!isRecord(environment)) return null;
+	const sanitized: Record<string, unknown> = {};
+	for (const key of [
+		"environmentStatus",
+		"suite",
+		"repo",
+		"version",
+		"environmentSetupCommit",
+		"baseCommit",
+		"environmentKey",
+		"sandboxTemplate",
+		"sandboxImage",
+		"digest",
+		"validationStatus",
+		"validationLogRef",
+		"builtAt",
+		"source",
+		"reason",
+		"buildStrategy",
+		"envSpecHash",
+		"buildId",
+		"buildLogRef",
+		"pipelineRunName",
+		"pipelineRunNamespace",
+		"condaEnvironment",
+	] as const) {
+		const value = environment[key];
+		if (value != null) sanitized[key] = value;
+	}
+	sanitized.workspaceRoot = SWEBENCH_FALLBACK_REPO_PATH;
+	const notes = Array.isArray(environment.environmentNotes)
+		? environment.environmentNotes.filter(
+				(note): note is string =>
+					typeof note === "string" && !containsSensitiveSwebenchRuntimeTerm(note),
+			)
+		: [];
+	if (environment.buildStrategy === "swebench-harness") {
+		for (const note of [
+			"The validated image provides the SWE-bench Python environment; the repository is cloned into /sandbox/repo for OpenShell runtime access.",
+			"Use python or /sandbox/.venv/bin/python for local checks; avoid conda activation inside the solve phase.",
+		]) {
+			if (!notes.includes(note)) notes.push(note);
+		}
+	}
+	if (notes.length) sanitized.environmentNotes = notes;
+	return sanitized;
 }
 
 export function extractBenchmarkRuntimeLinks(input: {
@@ -2062,6 +2118,12 @@ function sha256(value: string): string {
 
 function quoteShell(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function containsSensitiveSwebenchRuntimeTerm(value: string): boolean {
+	return /\/testbed|test[_-]?patch|fail_to_pass|pass_to_pass|goldpatch/i.test(
+		value,
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

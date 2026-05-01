@@ -8,6 +8,7 @@ import {
 	extractInferenceEnvironment,
 	resolveBenchmarkInferenceStatus,
 	resolveBenchmarkInstanceStatusAfterInference,
+	sanitizeSwebenchInferenceEnvironmentForRuntime,
 } from "./service";
 import {
 	buildSwebenchDatasetJsonl,
@@ -363,6 +364,55 @@ describe("SWE-bench workflow spec", () => {
 			},
 		});
 		expect(JSON.stringify(spec)).not.toContain("/testbed");
+	});
+
+	it("keeps hidden SWE-bench environment metadata out of runtime payloads", () => {
+		const runtimeEnvironment = sanitizeSwebenchInferenceEnvironmentForRuntime({
+			environmentStatus: "validated",
+			suite: "SWE-bench_Verified",
+			repo: "pytest-dev/pytest",
+			version: "4.6",
+			environmentKey: "pytest-4.6",
+			sandboxTemplate: "dapr-agent",
+			sandboxImage:
+				"ghcr.io/pittampalliorg/swebench-inference-pytest-4.6:env-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			digest:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			validationStatus: "validated",
+			validationCommand: "cd /testbed && python --version",
+			buildStrategy: "swebench-harness",
+			workspaceRoot: "/testbed",
+			condaEnvironment: "testbed",
+			swebenchSpec: {
+				workspaceRoot: "/testbed",
+				testPatchHash: "abc",
+				FAIL_TO_PASS: ["tests/test_fix.py::test_fix"],
+			},
+			environmentNotes: [
+				"Prepared under /testbed by the SWE-bench harness.",
+				"Use /sandbox/.venv/bin/python for local checks.",
+			],
+		});
+
+		const serialized = JSON.stringify({
+			triggerData: {
+				runId: "run_1",
+				instanceId: "pytest-dev__pytest-5809",
+				inferenceEnvironment: runtimeEnvironment,
+			},
+		});
+		expect(runtimeEnvironment).toMatchObject({
+			workspaceRoot: "/sandbox/repo",
+			environmentStatus: "validated",
+			environmentKey: "pytest-4.6",
+		});
+		expect(runtimeEnvironment).not.toHaveProperty("validationCommand");
+		expect(runtimeEnvironment).not.toHaveProperty("swebenchSpec");
+		expect(serialized).not.toContain("/testbed");
+		expect(serialized).not.toMatch(/test[_-]?patch/i);
+		expect(serialized).not.toContain("FAIL_TO_PASS");
+		expect(serialized).not.toContain("PASS_TO_PASS");
+		expect(serialized).not.toContain("goldPatch");
 	});
 
 	it("profiles the workspace after dynamic environment preparation", () => {
