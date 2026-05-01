@@ -77,7 +77,7 @@ test("phoenix session redirect requires session id", async ({ request }) => {
 		"/api/observability/phoenix/sessions/nonexistent",
 		{ maxRedirects: 0 },
 	);
-	// Either 302 (redirect with empty target) or 404 (session not in phoenix).
-	// 500 would mean the handler crashed — regression.
-	expect([302, 303, 307, 308, 404]).toContain(res.status());
+	// Either 302 (redirect), 404 (session not in Phoenix), or 502 (Phoenix
+	// upstream unavailable). 500 would mean the handler crashed — regression.
+	expect([302, 303, 307, 308, 404, 502]).toContain(res.status());
 });

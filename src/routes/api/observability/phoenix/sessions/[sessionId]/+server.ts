@@ -22,10 +22,19 @@ export const GET: RequestHandler = async (event) => {
 		headers.Authorization = `Bearer ${env.PHOENIX_API_KEY}`;
 	}
 
-	const response = await fetch(`${apiBaseUrl()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
-		method: 'GET',
-		headers
-	});
+	let response: Response;
+	try {
+		response = await fetch(`${apiBaseUrl()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+			method: 'GET',
+			headers
+		});
+	} catch (err) {
+		console.warn(
+			`[phoenix] session lookup failed for ${sessionId}:`,
+			err instanceof Error ? err.message : err
+		);
+		return error(502, `Phoenix session lookup failed for ${sessionId}`);
+	}
 
 	if (!response.ok) {
 		return error(response.status === 404 ? 404 : 502, `Phoenix session lookup failed for ${sessionId}`);
