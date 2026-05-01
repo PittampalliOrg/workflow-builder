@@ -217,6 +217,43 @@ describe("SWE-bench workflow spec", () => {
 		expect(solve.with.body.prompt).not.toContain("repo-specific inference image");
 	});
 
+	it("keeps contamination-risk metadata out of the generated inference workflow", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: "Try the parser",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+				goldPatch: "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+			},
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+		});
+
+		const serialized = JSON.stringify(spec);
+		expect(serialized).not.toContain("test_patch");
+		expect(serialized).not.toContain("FAIL_TO_PASS");
+		expect(serialized).not.toContain("PASS_TO_PASS");
+		expect(serialized).not.toContain("goldPatch");
+		expect(serialized).not.toContain("sympy/tests/test_fix.py::test_regression");
+		expect(serialized).not.toContain("sympy/tests/test_fix.py");
+
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		expect(steps[0].prepare_environment.with.testMetadata).toEqual({
+			version: "1.7",
+		});
+	});
+
 	it("surfaces max-iteration agent stops for empty SWE-bench patches", () => {
 		const reason = extractAgentStopReason(
 			{
@@ -300,8 +337,6 @@ describe("SWE-bench workflow spec", () => {
 			baseCommit: "abc123",
 			testMetadata: {
 				version: "1.7",
-				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
-				validationCommand: "PYTHONPATH=src python -m pytest --version",
 			},
 		});
 		const checkout = (
@@ -320,7 +355,12 @@ describe("SWE-bench workflow spec", () => {
 		);
 		expect(solve.with.body).toMatchObject({
 			environmentConfig: {
-				swebenchInferenceEnvironment: "${ .prepare_environment.environment }",
+				swebenchInferenceEnvironment: {
+					environmentStatus:
+						"${ .prepare_environment.environment.environmentStatus // null }",
+					environmentKey:
+						"${ .prepare_environment.environment.environmentKey // null }",
+				},
 			},
 		});
 	});

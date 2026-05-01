@@ -10,12 +10,8 @@ export type BenchmarkInstanceRow = {
 	baseCommit: string | null;
 	version: string | null;
 	problemPreview: string;
-	failToPassCount: number;
-	passToPassCount: number;
-	hasGoldPatch: boolean;
 	hasHints: boolean;
 	hintsLen: number;
-	testPatchLines: number;
 };
 
 export type SuiteFacet = {

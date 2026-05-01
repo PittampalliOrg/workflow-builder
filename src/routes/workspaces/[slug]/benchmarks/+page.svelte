@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { Button } from '$lib/components/ui/button';
-	import { FlaskConical } from '@lucide/svelte';
+	import { AlertTriangle, FlaskConical } from '@lucide/svelte';
 	import InstanceTable from '$lib/components/benchmarks/instance-table.svelte';
 	import LaunchRunSheet from '$lib/components/benchmarks/launch-run-sheet.svelte';
 	import InstanceDetailDrawer from '$lib/components/benchmarks/instance-detail-drawer.svelte';
@@ -67,6 +67,15 @@
 			View runs →
 		</Button>
 	</header>
+
+	<div class="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+		<AlertTriangle class="mt-0.5 size-3.5 shrink-0" />
+		<p>
+			SWE-bench Lite and Verified are useful for internal regression and harness debugging.
+			Treat them as contaminated for frontier capability claims; OpenAI recommends SWE-bench
+			Pro for current public reporting.
+		</p>
+	</div>
 
 	{#if data.runnableAgents.length === 0}
 		<div class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">

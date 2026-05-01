@@ -65,6 +65,7 @@ import {
 } from "./inference-environments";
 import { plannedSwebenchInferenceEnvironmentWithBuild } from "$lib/server/environments/environment-image-builds";
 import { buildStableWorkspaceRef } from "./workspace-ref";
+import { publicSwebenchTestMetadata } from "./contamination";
 import {
 	ensureBenchmarkInstanceMlflowRun,
 	ensureBenchmarkMlflowRun,
@@ -1484,6 +1485,17 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		params.runId,
 		params.instanceId,
 	]);
+	const environmentTestMetadata = publicSwebenchTestMetadata(params.testMetadata);
+	if (params.inferenceEnvironment?.version) {
+		environmentTestMetadata.version = params.inferenceEnvironment.version;
+	}
+	if (params.inferenceEnvironment?.environmentSetupCommit) {
+		environmentTestMetadata.environmentSetupCommit =
+			params.inferenceEnvironment.environmentSetupCommit;
+	}
+	const agentVisibleEnvironmentConfig = {
+		swebenchInferenceEnvironment: buildAgentVisibleSwebenchEnvironmentConfig(),
+	};
 	const environmentPrepareWith = {
 		dataset: "swebench",
 		datasetName: params.datasetName,
@@ -1491,17 +1503,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		instanceId: params.instanceId,
 		repo: params.repo,
 		baseCommit: params.baseCommit,
-		testMetadata: {
-			...(params.testMetadata ?? {}),
-			...(params.inferenceEnvironment
-				? {
-						version: params.inferenceEnvironment.version,
-						environmentSetupCommit:
-							params.inferenceEnvironment.environmentSetupCommit,
-						validationCommand: params.inferenceEnvironment.validationCommand,
-					}
-				: {}),
-		},
+		testMetadata: environmentTestMetadata,
 		timeoutMs: Math.max(params.timeoutSeconds * 1000, 3_600_000),
 		pollMs: 15_000,
 	};
@@ -1532,9 +1534,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS + 300_000,
 	};
 	workspaceProfileWith.sandboxImage = "${ .prepare_environment.sandboxImage }";
-	workspaceProfileWith.environmentConfig = {
-		swebenchInferenceEnvironment: "${ .prepare_environment.environment }",
-	};
+	workspaceProfileWith.environmentConfig = agentVisibleEnvironmentConfig;
 	const fallbackExtractPatchCommand = [
 		"set -eu",
 		`cd ${quoteShell(SWEBENCH_FALLBACK_REPO_PATH)}`,
@@ -1622,10 +1622,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 								id: params.agentId,
 								version: params.agentVersion,
 							},
-							environmentConfig: {
-								swebenchInferenceEnvironment:
-									"${ .prepare_environment.environment }",
-							},
+							environmentConfig: agentVisibleEnvironmentConfig,
 							overrides: {
 								cwd: SWEBENCH_RUNTIME_REPO_PATH_EXPRESSION,
 								maxTurns: params.maxTurns ?? undefined,
@@ -1727,6 +1724,30 @@ function buildSwebenchPrompt(params: {
 
 function buildSwebenchPromptExpression(preparedPrompt: string, fallbackPrompt: string): string {
 	return `\${ ${swebenchRuntimeRepoPathChoiceProgram(preparedPrompt, fallbackPrompt)} + "\\n\\nInference environment:\\n" + (.prepare_environment.promptNotes // "Environment metadata is attached to this run.") }`;
+}
+
+function buildAgentVisibleSwebenchEnvironmentConfig(): Record<string, string> {
+	const field = (name: string) =>
+		`\${ .prepare_environment.environment.${name} // null }`;
+	return {
+		environmentStatus: field("environmentStatus"),
+		suite: field("suite"),
+		repo: field("repo"),
+		version: field("version"),
+		environmentSetupCommit: field("environmentSetupCommit"),
+		baseCommit: field("baseCommit"),
+		environmentKey: field("environmentKey"),
+		buildStrategy: field("buildStrategy"),
+		workspaceRoot: field("workspaceRoot"),
+		condaEnvironment: field("condaEnvironment"),
+		sandboxTemplate: field("sandboxTemplate"),
+		sandboxImage: field("sandboxImage"),
+		digest: field("digest"),
+		validationStatus: field("validationStatus"),
+		buildId: field("buildId"),
+		source: field("source"),
+		reason: field("reason"),
+	};
 }
 
 function swebenchRuntimeRepoPathChoiceExpression(preparedValue: string, fallbackValue: string): string {

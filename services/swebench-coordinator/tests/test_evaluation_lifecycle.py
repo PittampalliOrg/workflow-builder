@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -252,6 +253,56 @@ def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(monkeypatc
     ]
     assert posted["path"] == "/api/internal/benchmarks/runs/run_1/dataset-artifact"
     assert posted["json"] == {"path": str(tmp_path / "run_1" / "dataset.jsonl")}
+
+
+def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tmp_path):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
+    monkeypatch.setattr(app, "_mlflow_log_artifact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda _run_id: {
+            "id": "run_1",
+            "modelNameOrPath": "agent-v1",
+            "mlflowRunId": "mlflow_1",
+            "instances": [
+                {
+                    "instanceId": "sympy__sympy-20590",
+                    "modelPatch": "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+                    "testMetadata": {
+                        "test_patch": "diff --git a/sympy/tests/test_add.py b/sympy/tests/test_add.py\n",
+                        "FAIL_TO_PASS": ["sympy/tests/test_add.py::test_regression"],
+                        "PASS_TO_PASS": ["sympy/tests/test_add.py::test_existing"],
+                    },
+                    "goldPatch": "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+                }
+            ],
+        },
+    )
+    posted = {}
+    monkeypatch.setattr(
+        app,
+        "_bff",
+        lambda method, path, json_body=None, timeout=60: posted.update(
+            {"method": method, "path": path, "json": json_body}
+        ) or {"success": True},
+    )
+
+    result = app._write_predictions(None, {"runId": "run_1"})
+
+    record = json.loads((tmp_path / "run_1" / "predictions.jsonl").read_text(encoding="utf-8"))
+    assert record == {
+        "instance_id": "sympy__sympy-20590",
+        "model_name_or_path": "agent-v1",
+        "model_patch": "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+    }
+    assert "test_patch" not in json.dumps(record)
+    assert "FAIL_TO_PASS" not in json.dumps(record)
+    assert "goldPatch" not in json.dumps(record)
+    assert posted["path"] == "/api/internal/benchmarks/runs/run_1/predictions-artifact"
+    assert posted["json"] == {"path": str(tmp_path / "run_1" / "predictions.jsonl")}
+    assert result["bytes"] > 0
 
 
 def test_mark_evaluation_timeout_only_marks_active_rows(monkeypatch):

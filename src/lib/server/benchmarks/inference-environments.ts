@@ -356,9 +356,6 @@ export function swebenchInferenceEnvironmentPromptNotes(
 		environment.condaEnvironment
 			? `- Conda environment: ${environment.condaEnvironment}`
 			: "",
-		environment.validationCommand
-			? `- Environment validation command: ${environment.validationCommand}`
-			: "",
 		environment.validationLogRef
 			? `- Environment validation log: ${environment.validationLogRef}`
 			: "",

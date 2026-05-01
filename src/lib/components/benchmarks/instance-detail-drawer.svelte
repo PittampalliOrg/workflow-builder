@@ -17,6 +17,17 @@
 		metadata: Record<string, unknown> | null;
 		suiteSlug: string;
 		suiteName: string;
+		environment?: {
+			environmentStatus: string;
+			environmentKey: string | null;
+			buildStrategy: string | null;
+			version: string | null;
+		};
+		contaminationRiskMetadata?: {
+			included: boolean;
+			redacted: boolean;
+			mode: 'agent_visible' | 'operator_audit';
+		};
 	};
 
 	type Props = {
@@ -101,14 +112,17 @@
 	});
 	const versionField = $derived.by(() => {
 		const md = detail?.testMetadata ?? {};
-		const v = (md as Record<string, unknown>).version;
+		const v = (md as Record<string, unknown>).version ?? detail?.environment?.version;
 		return v != null ? String(v) : null;
 	});
 	const envSetupCommit = $derived.by(() => {
 		const md = detail?.testMetadata ?? {};
-		const v = (md as Record<string, unknown>).environment_setup_commit;
+		const v =
+			(md as Record<string, unknown>).environment_setup_commit ??
+			(md as Record<string, unknown>).environmentSetupCommit;
 		return typeof v === 'string' ? v : null;
 	});
+	const showAuditMetadata = $derived(detail?.contaminationRiskMetadata?.included === true);
 </script>
 
 <Sheet.Root {open} {onOpenChange}>
@@ -159,6 +173,11 @@
 					{#if versionField}
 						<span>v{versionField}</span>
 					{/if}
+					{#if detail.environment?.environmentStatus}
+						<Badge variant="outline" class="font-normal">
+							env {detail.environment.environmentStatus}
+						</Badge>
+					{/if}
 				{/if}
 			</Sheet.Description>
 		</Sheet.Header>
@@ -176,20 +195,22 @@
 				<Tabs value={activeTab} onValueChange={(v) => (activeTab = v as typeof activeTab)} class="flex-1 flex flex-col overflow-hidden">
 					<TabsList class="mx-4 mt-2 h-9">
 						<TabsTrigger value="problem" class="text-xs">Problem</TabsTrigger>
-						<TabsTrigger value="tests" class="text-xs">
-							Tests
-							<span class="ml-1 text-muted-foreground tabular-nums">
-								{failToPass.length}/{passToPass.length}
-							</span>
-						</TabsTrigger>
-						<TabsTrigger value="gold" class="text-xs">
-							Gold patch
-							{#if !detail.goldPatch}
-								<span class="ml-1 text-muted-foreground">—</span>
-							{/if}
-						</TabsTrigger>
 						{#if detail.hintsText}
 							<TabsTrigger value="hints" class="text-xs">Hints</TabsTrigger>
+						{/if}
+						{#if showAuditMetadata}
+							<TabsTrigger value="tests" class="text-xs">
+								Tests
+								<span class="ml-1 text-muted-foreground tabular-nums">
+									{failToPass.length}/{passToPass.length}
+								</span>
+							</TabsTrigger>
+							<TabsTrigger value="gold" class="text-xs">
+								Gold patch
+								{#if !detail.goldPatch}
+									<span class="ml-1 text-muted-foreground">—</span>
+								{/if}
+							</TabsTrigger>
 						{/if}
 					</TabsList>
 
@@ -200,9 +221,15 @@
 							{:else}
 								<p class="text-sm text-muted-foreground">No problem statement available.</p>
 							{/if}
+							{#if detail.contaminationRiskMetadata?.redacted}
+								<p class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+									Hidden evaluator tests and reference patch are redacted from launch-time views.
+								</p>
+							{/if}
 						</TabsContent>
 
-						<TabsContent value="tests" class="m-0 space-y-4">
+						{#if showAuditMetadata}
+							<TabsContent value="tests" class="m-0 space-y-4">
 							<section>
 								<div class="flex items-center justify-between mb-1.5">
 									<h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -287,9 +314,9 @@
 									<pre class="whitespace-pre-wrap rounded border border-border bg-muted/30 p-2 font-mono text-[11px] leading-snug max-h-72 overflow-y-auto">{testPatch}</pre>
 								</section>
 							{/if}
-						</TabsContent>
+							</TabsContent>
 
-						<TabsContent value="gold" class="m-0">
+							<TabsContent value="gold" class="m-0">
 							{#if detail.goldPatch}
 								<div class="flex items-center justify-end mb-1.5">
 									<Button
@@ -310,7 +337,8 @@
 							{:else}
 								<p class="text-sm text-muted-foreground">No gold patch recorded for this instance.</p>
 							{/if}
-						</TabsContent>
+							</TabsContent>
+						{/if}
 
 						{#if detail.hintsText}
 							<TabsContent value="hints" class="m-0">

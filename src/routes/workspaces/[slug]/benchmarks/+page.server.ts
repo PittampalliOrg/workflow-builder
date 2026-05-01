@@ -86,7 +86,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 				problemStatement: benchmarkInstances.problemStatement,
 				hintsText: benchmarkInstances.hintsText,
 				testMetadata: benchmarkInstances.testMetadata,
-				hasGoldPatch: sql<boolean>`(${benchmarkInstances.goldPatch} IS NOT NULL AND length(${benchmarkInstances.goldPatch}) > 0)`,
 				suiteSlug: benchmarkSuites.slug,
 				suiteName: benchmarkSuites.name,
 			})
@@ -116,11 +115,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	const instances: BenchmarkInstanceRow[] = instanceRows.map((row) => {
 		const md = (row.testMetadata ?? {}) as Record<string, unknown>;
-		const f2pRaw = md.FAIL_TO_PASS ?? md.fail_to_pass;
-		const p2pRaw = md.PASS_TO_PASS ?? md.pass_to_pass;
-		const f2p = Array.isArray(f2pRaw) ? f2pRaw : [];
-		const p2p = Array.isArray(p2pRaw) ? p2pRaw : [];
-		const testPatch = typeof md.test_patch === "string" ? md.test_patch : "";
 		const versionField =
 			typeof md.version === "string"
 				? md.version
@@ -137,12 +131,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			baseCommit: row.baseCommit ? row.baseCommit.slice(0, 12) : null,
 			version: versionField,
 			problemPreview: trimProblem(row.problemStatement),
-			failToPassCount: f2p.length,
-			passToPassCount: p2p.length,
-			hasGoldPatch: Boolean(row.hasGoldPatch),
 			hasHints: hintsLen > 0,
 			hintsLen,
-			testPatchLines: testPatch ? testPatch.split("\n").length : 0,
 		};
 	});
 

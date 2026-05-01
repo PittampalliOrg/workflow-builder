@@ -1763,9 +1763,6 @@ function promptNotes(environment: ResolvedSwebenchInferenceEnvironment | null | 
 	const lines = [
 		`- Inference image: ${environment.sandboxImage ?? "validated sandbox image"}`,
 		environment.digest ? `- Image digest: ${environment.digest}` : "",
-		environment.validationCommand
-			? `- Environment validation command: ${environment.validationCommand}`
-			: "",
 		environment.workspaceRoot
 			? `- Prepared repository root: ${environment.workspaceRoot}`
 			: "",

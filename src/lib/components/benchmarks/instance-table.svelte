@@ -26,7 +26,6 @@
 		ArrowUpDown,
 		ArrowUp,
 		ArrowDown,
-		Check,
 		ChevronLeft,
 		ChevronRight,
 		ChevronsLeft,
@@ -87,8 +86,7 @@
 	const DEFAULT_COLUMN_VISIBILITY: Record<string, boolean> = {
 		baseCommit: false,
 		version: false,
-		hintsLen: false,
-		testPatchLines: false
+		hintsLen: false
 	};
 
 	// ---- TanStack setup -------------------------------------------------------
@@ -135,18 +133,6 @@
 			enableSorting: false,
 			enableGlobalFilter: true
 		}),
-		columnHelper.accessor('failToPassCount', {
-			header: 'F2P',
-			enableSorting: true
-		}),
-		columnHelper.accessor('passToPassCount', {
-			header: 'P2P',
-			enableSorting: true
-		}),
-		columnHelper.accessor('hasGoldPatch', {
-			header: 'Gold',
-			enableSorting: true
-		}),
 		// Toggleable columns
 		columnHelper.accessor('baseCommit', {
 			header: 'Base commit',
@@ -158,10 +144,6 @@
 		}),
 		columnHelper.accessor('hintsLen', {
 			header: 'Hints',
-			enableSorting: true
-		}),
-		columnHelper.accessor('testPatchLines', {
-			header: 'Test Δ',
 			enableSorting: true
 		})
 	]);
@@ -440,13 +422,6 @@
 				>
 					Hints length
 				</DropdownMenu.CheckboxItem>
-				<DropdownMenu.CheckboxItem
-					checked={visibility.testPatchLines !== false}
-					onCheckedChange={(v) =>
-						table.setColumnVisibility({ ...visibility, testPatchLines: v })}
-				>
-					Test patch lines
-				</DropdownMenu.CheckboxItem>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
 
@@ -621,16 +596,6 @@
 										<span class="font-mono text-xs text-muted-foreground">{row.original.repo ?? '—'}</span>
 									{:else if cell.column.id === 'problemPreview'}
 										<span class="text-xs text-muted-foreground line-clamp-1">{row.original.problemPreview}</span>
-									{:else if cell.column.id === 'failToPassCount'}
-										<span class="font-mono text-xs tabular-nums">{row.original.failToPassCount}</span>
-									{:else if cell.column.id === 'passToPassCount'}
-										<span class="font-mono text-xs tabular-nums text-muted-foreground">{row.original.passToPassCount}</span>
-									{:else if cell.column.id === 'hasGoldPatch'}
-										{#if row.original.hasGoldPatch}
-											<Check class="h-3.5 w-3.5 text-emerald-500" aria-label="Has gold patch" />
-										{:else}
-											<span class="text-xs text-muted-foreground">—</span>
-										{/if}
 									{:else if cell.column.id === 'baseCommit'}
 										<span class="font-mono text-[11px] text-muted-foreground">{row.original.baseCommit ?? '—'}</span>
 									{:else if cell.column.id === 'version'}
@@ -638,10 +603,6 @@
 									{:else if cell.column.id === 'hintsLen'}
 										<span class="font-mono text-xs tabular-nums text-muted-foreground">
 											{row.original.hintsLen > 0 ? row.original.hintsLen : '—'}
-										</span>
-									{:else if cell.column.id === 'testPatchLines'}
-										<span class="font-mono text-xs tabular-nums text-muted-foreground">
-											{row.original.testPatchLines > 0 ? row.original.testPatchLines : '—'}
 										</span>
 									{:else}
 										<FlexRender {cell} />

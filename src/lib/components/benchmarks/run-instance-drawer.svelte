@@ -76,6 +76,7 @@
 			filesTouched: number;
 		};
 		parsedHarness: ParsedHarnessResult;
+		postHocEvaluationArtifactsAvailable: boolean;
 	};
 
 	type Props = {
@@ -322,6 +323,15 @@
 						</TabsContent>
 
 						<TabsContent value="patch" class="m-0 space-y-3">
+							<Alert>
+								<AlertDescription>
+									{#if detail.postHocEvaluationArtifactsAvailable}
+										Gold patch comparison is a post-hoc evaluation artifact shown after the submitted model patch is finalized.
+									{:else}
+										Gold patch comparison appears after official evaluation completes.
+									{/if}
+								</AlertDescription>
+							</Alert>
 							<div class="flex flex-wrap items-center justify-between gap-2">
 								<div class="flex items-center gap-2 text-xs">
 									<FileDiff class="h-3.5 w-3.5 text-muted-foreground" />
@@ -456,6 +466,11 @@
 						</TabsContent>
 
 						<TabsContent value="harness" class="m-0 space-y-3">
+							<Alert>
+								<AlertDescription>
+									Harness results are post-hoc SWE-bench evaluator artifacts recorded after model_patch submission; they are not sent to agent inference.
+								</AlertDescription>
+							</Alert>
 							{#if runId && instanceId}
 								<div class="flex items-center justify-end">
 									<PromoteToDataset {runId} {instanceId} />

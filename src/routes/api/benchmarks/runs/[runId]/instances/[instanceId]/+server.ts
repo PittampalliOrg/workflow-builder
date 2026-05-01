@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
+import { publicSwebenchTestMetadata } from "$lib/server/benchmarks/contamination";
 import {
 	benchmarkInstances,
 	benchmarkRuns,
@@ -67,7 +68,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!row) return error(404, "Instance not found in this run");
 
 	const parsedHarness = parseHarnessResult(row.run.harnessResult);
-	const goldPatchStats = parsePatchStats(row.goldPatch);
+	const postHocEvaluationArtifactsAvailable =
+		row.run.evaluatedAt != null ||
+		["resolved", "unresolved", "empty_patch", "error", "timeout", "cancelled"].includes(
+			row.run.evaluationStatus,
+		);
+	const goldPatch = postHocEvaluationArtifactsAvailable ? row.goldPatch : null;
+	const goldPatchStats = parsePatchStats(goldPatch);
 
 	return json({
 		runInstance: {
@@ -79,15 +86,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			baseCommit: row.baseCommit,
 			problemStatement: row.problemStatement,
 			hintsText: row.hintsText,
-			testMetadata: row.testMetadata,
+			testMetadata: publicSwebenchTestMetadata(row.testMetadata),
 			metadata: row.instanceMetadata,
 		},
-		goldPatch: row.goldPatch,
+		goldPatch,
 		goldPatchStats: {
 			addedLines: goldPatchStats.addedLines,
 			removedLines: goldPatchStats.removedLines,
 			filesTouched: goldPatchStats.filesTouched.length,
 		},
 		parsedHarness,
+		postHocEvaluationArtifactsAvailable,
 	});
 };
