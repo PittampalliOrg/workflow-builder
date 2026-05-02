@@ -498,6 +498,8 @@ def test_durable_run_routes_through_session_bridge():
     assert bridge_payload["sandboxName"] == "ws-test-123"
     assert bridge_payload["cwd"] == "/sandbox/repo"
     assert bridge_payload["agentConfig"]["name"] == "durable-validation"
+    assert bridge_payload["timeoutMinutes"] == 15
+    assert bridge_payload["maxIterations"] == 8
 
     child_yield = workflow_gen.send(
         {

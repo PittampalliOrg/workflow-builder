@@ -166,6 +166,13 @@ export const POST: RequestHandler = async ({ request }) => {
 			: null;
 	const bridgeCwd =
 		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
+	const bridgeTimeoutMinutes =
+		parsePositiveInteger(body.timeoutMinutes) ??
+		parsePositiveInteger(agentConfig?.timeoutMinutes);
+	const bridgeMaxIterations =
+		parsePositiveInteger(body.maxIterations) ??
+		parsePositiveInteger(body.maxTurns) ??
+		parsePositiveInteger(agentConfig?.maxTurns);
 
 	// Per-agent runtime target identity — used to wake the target pod
 	// before responding. The orchestrator's resolver stamps these at
@@ -261,6 +268,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				workspaceRef: bridgeWorkspaceRef,
 				sandboxName: bridgeSandboxName ?? existing.sandboxName,
 				cwd: bridgeCwd,
+				timeoutMinutes: bridgeTimeoutMinutes,
+				maxIterations: bridgeMaxIterations,
 				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 				agentAppId: reuseAgentAppId,
 			}),
@@ -386,6 +395,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			workspaceRef: bridgeWorkspaceRef,
 			sandboxName: incomingSandboxName,
 			cwd: bridgeCwd,
+			timeoutMinutes: bridgeTimeoutMinutes,
+			maxIterations: bridgeMaxIterations,
 			agentId,
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
@@ -408,6 +419,8 @@ function buildChildInput(params: {
 	workspaceRef?: string | null;
 	sandboxName?: string | null;
 	cwd?: string | null;
+	timeoutMinutes?: number | null;
+	maxIterations?: number | null;
 	agentId?: string | null;
 	agentVersion?: number | null;
 	agentSlug?: string | null;
@@ -435,6 +448,8 @@ function buildChildInput(params: {
 		workspaceRef: params.workspaceRef ?? null,
 		sandboxName: params.sandboxName ?? null,
 		cwd: params.cwd ?? null,
+		timeoutMinutes: params.timeoutMinutes ?? null,
+		maxIterations: params.maxIterations ?? null,
 		initialEvents: params.initialMessage
 			? [
 					{
@@ -444,6 +459,17 @@ function buildChildInput(params: {
 				]
 			: [],
 	};
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+	const numeric =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim()
+				? Number(value)
+				: Number.NaN;
+	if (!Number.isFinite(numeric) || numeric <= 0) return null;
+	return Math.trunc(numeric);
 }
 
 // Silence "unused import" linter — createSession is reserved for future

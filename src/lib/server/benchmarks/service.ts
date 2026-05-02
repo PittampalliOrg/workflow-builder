@@ -1615,6 +1615,8 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 								timeoutMinutes,
 								tools: SWEBENCH_ALLOWED_AGENT_TOOLS,
 							},
+							maxTurns: params.maxTurns ?? undefined,
+							timeoutMinutes,
 							prompt,
 						},
 						mode: "execute_direct",

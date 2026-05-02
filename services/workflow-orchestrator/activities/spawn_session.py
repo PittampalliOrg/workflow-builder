@@ -101,6 +101,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "workspaceRef": input_data.get("workspaceRef"),
             "sandboxName": input_data.get("sandboxName"),
             "cwd": input_data.get("cwd"),
+            "timeoutMinutes": input_data.get("timeoutMinutes"),
+            "maxIterations": input_data.get("maxIterations"),
         }
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"

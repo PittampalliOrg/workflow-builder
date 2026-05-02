@@ -952,6 +952,7 @@ def _run_native_durable_agent_child_workflow(
         1,
         _parse_optional_int(flattened_args.get("timeoutMinutes")) or 30,
     )
+    max_iterations = _parse_optional_int(flattened_args.get("maxTurns"))
     stop_condition = (
         flattened_args.get("stopCondition").strip()
         if isinstance(flattened_args.get("stopCondition"), str)
@@ -1196,7 +1197,7 @@ def _run_native_durable_agent_child_workflow(
         if isinstance(flattened_args.get("loopPolicy"), dict)
         else None,
         "loopStrategyName": loop_strategy_name,
-        "maxIterations": _parse_optional_int(flattened_args.get("maxTurns")),
+        "maxIterations": max_iterations,
         "_message_metadata": {
             "source": action_type,
             "triggering_workflow_instance_id": ctx.instance_id,
@@ -1324,6 +1325,11 @@ def _run_native_durable_agent_child_workflow(
             "workspaceRef": workspace_ref,
             "sandboxName": flattened_args.get("sandboxName"),
             "cwd": cwd,
+            # Preserve durable/run execution guards across the workflow↔session
+            # bridge. session_workflow uses timeoutMinutes to raise its own
+            # per-turn timer above the runtime default for long benchmark tasks.
+            "timeoutMinutes": timeout_minutes,
+            "maxIterations": max_iterations,
             "_otel": tc.otel_ctx,
         }
         bridge_result = yield ctx.call_activity(
