@@ -16,6 +16,10 @@ import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { compilePromptStack } from "$lib/server/prompt-presets";
 import type { AgentConfig } from "$lib/types/agents";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeSlugFromAppId,
+} from "$lib/server/agents/runtime-routing";
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -217,19 +221,23 @@ export const POST: RequestHandler = async ({ request }) => {
 		// Also wake on replay/idempotent hits — the orchestrator's
 		// `ctx.call_child_workflow` still needs the target pod live.
 		const reuseRuntime = await resolveRuntimeIdentity(existing.agentId);
-		const reuseSlug = reuseRuntime?.slug ?? await resolveWakeSlug({
+		const reuseAgentAppId =
+			reuseRuntime?.appId ??
+			bodyAgentAppId ??
+			(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
+		const reuseWakeSlug = await resolveWakeSlug({
 			bodyAgentSlug,
-			bodyAgentAppId,
+			bodyAgentAppId: reuseAgentAppId,
 			agentConfig,
 			agentId: existing.agentId,
 		});
-		if (reuseSlug) {
+		if (reuseWakeSlug) {
 			try {
 				const { wakeAgentRuntime } = await import("$lib/server/kube/client");
-				await wakeAgentRuntime(reuseSlug, 20_000);
+				await wakeAgentRuntime(reuseWakeSlug, 20_000);
 			} catch (err) {
 				console.warn(
-					`[ensure-for-workflow] reuse wake ${reuseSlug} failed, continuing anyway:`,
+					`[ensure-for-workflow] reuse wake ${reuseWakeSlug} failed, continuing anyway:`,
 					err instanceof Error ? err.message : err,
 				);
 			}
@@ -238,10 +246,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			sessionId: existing.id,
 			agentId: existing.agentId,
 			agentVersion: existing.agentVersion,
-			agentSlug: reuseRuntime?.slug ?? reuseSlug,
-			agentAppId:
-				reuseRuntime?.appId ??
-				(reuseSlug ? `agent-runtime-${reuseSlug}` : bodyAgentAppId),
+			agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
+			agentAppId: reuseAgentAppId,
 			childInput: buildChildInput({
 				sessionId: existing.id,
 				agentConfig,
@@ -255,10 +261,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				workspaceRef: bridgeWorkspaceRef,
 				sandboxName: bridgeSandboxName ?? existing.sandboxName,
 				cwd: bridgeCwd,
-				agentSlug: reuseRuntime?.slug ?? reuseSlug,
-				agentAppId:
-					reuseRuntime?.appId ??
-					(reuseSlug ? `agent-runtime-${reuseSlug}` : bodyAgentAppId),
+				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
+				agentAppId: reuseAgentAppId,
 			}),
 			reused: true,
 		});
@@ -319,8 +323,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 	}
 
-	// Wake the target per-agent runtime before responding. The parent workflow
-	// will yield `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>")`
+	// Wake the target runtime before responding. The parent workflow
+	// will yield `ctx.call_child_workflow("session_workflow", app_id=<agentAppId>)`
 	// immediately after this activity returns. Dapr's CreateWorkflowInstance
 	// RPC requires the target app to be registered with placement — if the
 	// pod is scaled to 0 the call times out with
@@ -329,9 +333,13 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Mirrors the wake call in `src/lib/server/sessions/spawn.ts` for direct
 	// (UI-initiated) sessions. Non-blocking: if wake fails we still respond
 	// so the orchestrator can surface a proper error on the next yield.
-	const wakeSlug = runtimeIdentity?.slug ?? await resolveWakeSlug({
+	const targetAgentAppId =
+		runtimeIdentity?.appId ??
+		bodyAgentAppId ??
+		(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
+	const wakeSlug = await resolveWakeSlug({
 		bodyAgentSlug,
-		bodyAgentAppId,
+		bodyAgentAppId: targetAgentAppId,
 		agentConfig,
 		agentId,
 	});
@@ -363,10 +371,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		sessionId,
 		agentId,
 		agentVersion,
-		agentSlug: runtimeIdentity?.slug ?? wakeSlug,
-		agentAppId:
-			runtimeIdentity?.appId ??
-			(wakeSlug ? `agent-runtime-${wakeSlug}` : bodyAgentAppId),
+		agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
+		agentAppId: targetAgentAppId,
 		childInput: buildChildInput({
 			sessionId,
 			agentConfig,
@@ -382,10 +388,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			cwd: bridgeCwd,
 			agentId,
 			agentVersion,
-			agentSlug: runtimeIdentity?.slug ?? wakeSlug,
-			agentAppId:
-				runtimeIdentity?.appId ??
-				(wakeSlug ? `agent-runtime-${wakeSlug}` : bodyAgentAppId),
+			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
+			agentAppId: targetAgentAppId,
 		}),
 		reused: false,
 	});
@@ -458,7 +462,7 @@ async function resolveRuntimeIdentity(
 	if (!row?.slug) return null;
 	return {
 		slug: row.slug,
-		appId: row.runtimeAppId ?? `agent-runtime-${row.slug}`,
+		appId: row.runtimeAppId ?? agentRuntimeDedicatedAppId(row.slug),
 	};
 }
 
@@ -528,12 +532,10 @@ async function resolvePublishedWorkflowAgent(params: {
  * AgentRuntime CR name.
  *
  * Resolution order (first non-null wins):
- *  1. `body.agentSlug` — stamped by the orchestrator's resolver at workflow
- *     execute time (resolver.ts → inlinedBody.agentSlug) and forwarded here
- *     by spawn_session.py. This is the authoritative source for workflow-
- *     driven sessions.
- *  2. `body.agentAppId` (strip `agent-runtime-` prefix) — same source,
- *     different key.
+ *  1. `body.agentAppId` (strip `agent-runtime-` prefix) — this is the
+ *     physical runtime target. For shared pools it differs from agentSlug.
+ *  2. `body.agentSlug` — published agent identity, useful for dedicated
+ *     runtimes whose app id was not supplied.
  *  3. `agentConfig.agentAppId` / `agentConfig.slug` — legacy fields, some
  *     older orchestrator paths embed them in the config.
  *  4. `agents.slug` lookup by `agentId` — covers ephemeral workflow agents
@@ -547,13 +549,9 @@ async function resolveWakeSlug(params: {
 	agentConfig: AgentConfig | null;
 	agentId: string | null;
 }): Promise<string | null> {
+	const appSlug = agentRuntimeSlugFromAppId(params.bodyAgentAppId);
+	if (appSlug) return appSlug;
 	if (params.bodyAgentSlug) return params.bodyAgentSlug;
-	if (
-		params.bodyAgentAppId &&
-		params.bodyAgentAppId.startsWith("agent-runtime-")
-	) {
-		return params.bodyAgentAppId.slice("agent-runtime-".length);
-	}
 	const cfg = params.agentConfig as
 		| (AgentConfig & { agentAppId?: unknown; slug?: unknown })
 		| null;
@@ -561,9 +559,8 @@ async function resolveWakeSlug(params: {
 		typeof cfg?.agentAppId === "string" && cfg.agentAppId.trim()
 			? cfg.agentAppId.trim()
 			: null;
-	if (cfgAppId && cfgAppId.startsWith("agent-runtime-")) {
-		return cfgAppId.slice("agent-runtime-".length);
-	}
+	const cfgAppSlug = agentRuntimeSlugFromAppId(cfgAppId);
+	if (cfgAppSlug) return cfgAppSlug;
 	const inlineSlug =
 		typeof cfg?.slug === "string" && cfg.slug.trim() ? cfg.slug.trim() : null;
 	if (inlineSlug) return inlineSlug;

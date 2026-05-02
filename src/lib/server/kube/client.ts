@@ -314,6 +314,8 @@ export type AgentRuntimeSpec = {
 	agentSlug: string;
 	projectId?: string | null;
 	appId: string;
+	runtimeClass?: string;
+	runtimeIsolation?: "shared" | "dedicated";
 	// modelSpec drives the per-pod DAPR_LLM_COMPONENT_DEFAULT in the
 	// agent-runtime-controller. Without it, the controller falls back to
 	// llm-anthropic-opus, which silently mismatches the agent's model when
@@ -328,6 +330,7 @@ export type AgentRuntimeSpec = {
 	mcpServers?: AgentRuntimeMcpServer[];
 	lifecycle?: {
 		idleTtlSeconds?: number;
+		minReplicas?: number;
 		maxReplicas?: number;
 	};
 	browserSidecar?: AgentRuntimeBrowserSidecar;

@@ -9,6 +9,10 @@ import {
 import { db } from "$lib/server/db";
 import { agents } from "$lib/server/db/schema";
 import { and, eq } from "drizzle-orm";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeSlugFromAppId,
+} from "$lib/server/agents/runtime-routing";
 
 /**
  * Workspace-scoped AgentRuntime status read. Unlike the
@@ -24,7 +28,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const slug = params.slug!;
 	const rows = await db
-		.select({ id: agents.id, projectId: agents.projectId, slug: agents.slug })
+		.select({
+			id: agents.id,
+			projectId: agents.projectId,
+			slug: agents.slug,
+			runtimeAppId: agents.runtimeAppId,
+		})
 		.from(agents)
 		.where(
 			and(
@@ -37,10 +46,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		.limit(1);
 	if (rows.length === 0) return error(404, `Agent ${slug} not found in workspace`);
 
-	const cr = await getAgentRuntime(slug);
+	const runtimeAppId = rows[0].runtimeAppId ?? agentRuntimeDedicatedAppId(slug);
+	const runtimeSlug = agentRuntimeSlugFromAppId(runtimeAppId) ?? slug;
+	const cr = await getAgentRuntime(runtimeSlug);
 	if (!cr) {
 		return json({
-			name: agentRuntimeName(slug),
+			name: agentRuntimeName(runtimeSlug),
 			exists: false,
 			phase: "Unknown",
 			replicas: 0,
@@ -59,7 +70,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	let podContainers: Array<{ name: string; ready: boolean }> = [];
 	let podName: string | null = null;
 	if (cr.status?.phase === "Active") {
-		const pod = await getAgentRuntimePod(slug);
+		const pod = await getAgentRuntimePod(runtimeSlug);
 		if (pod) {
 			podContainers = pod.containers;
 			podName = pod.name;

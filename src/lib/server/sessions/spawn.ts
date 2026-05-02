@@ -6,6 +6,11 @@ import { listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
 import { compilePromptStack } from "$lib/server/prompt-presets";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeInvokeTarget,
+	resolveAgentRuntimeRoute,
+} from "$lib/server/agents/runtime-routing";
 
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
@@ -63,9 +68,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			slug: p.slug,
 			agentId: p.agentId,
 			version: p.version,
-			// Per-agent-runtime plan: peer dispatch targets agent-runtime-<slug>,
-			// not the legacy shared-pod enum (p.runtime).
-			appId: p.runtimeAppId ?? `agent-runtime-${p.slug}`,
+			appId: p.runtimeAppId ?? agentRuntimeDedicatedAppId(p.slug),
 			team: agent.projectId as string,
 			registryKey: agentRegistryKey(agent.projectId as string, p.slug),
 		}));
@@ -97,9 +100,23 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		agent.config,
 		agent.projectId,
 	);
-	const { mcpServers: rewrittenMcp } = rewriteMcpForBrowserSidecar(
-		(resolvedAgentConfig as { mcpServers?: unknown[] }).mcpServers as never,
-	);
+	const { mcpServers: rewrittenMcp, useBrowserSidecar } =
+		resolvedAgentConfig.runtime === "browser-use-agent"
+			? {
+					mcpServers:
+						((resolvedAgentConfig as { mcpServers?: unknown[] })
+							.mcpServers as never) ?? [],
+					useBrowserSidecar: false,
+				}
+			: rewriteMcpForBrowserSidecar(
+					(resolvedAgentConfig as { mcpServers?: unknown[] }).mcpServers as never,
+				);
+	const runtimeRoute = resolveAgentRuntimeRoute({
+		agentSlug: agent.slug,
+		runtimeAppId: agent.runtimeAppId,
+		config: resolvedAgentConfig,
+		useBrowserSidecar,
+	});
 	// Resolve Prompt Workbench preset bindings (version-pinned) into raw text
 	// arrays the runtime can stitch into the bundle without DB access. Fail
 	// open: a missing preset must never block a session spawn.
@@ -126,7 +143,9 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		agentId: agent.id,
 		agentVersion: session.agentVersion ?? agent.version ?? null,
 		agentSlug: agent.slug,
-		agentAppId: agent.runtimeAppId ?? `agent-runtime-${agent.slug}`,
+		agentAppId: runtimeRoute.appId,
+		agentRuntimeClass: runtimeRoute.runtimeClass,
+		agentRuntimeIsolation: runtimeRoute.isolation,
 		agentConfig: agentConfigForDispatch,
 		// Flat metadata the call_agent tool needs to dispatch peers by name.
 		callableAgents,
@@ -144,17 +163,16 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		initialEvents,
 	};
 
-	// Per-agent-runtime plan: dispatch to the agent's dedicated pod
-	// (agent-runtime-<slug>) instead of the shared dapr-agent-py pod. Wake
-	// the runtime first so Dapr placement + the agent-workflow runtime are
-	// live before we call StartInstance on the sidecar.
-	const targetAppId = agent.runtimeAppId ?? `agent-runtime-${agent.slug}`;
+	// Dispatch to the physical Dapr runtime selected for this session. For
+	// pool-backed agents, multiple published agents share the app id while
+	// their instructions/tools/MCP stay pinned in the payload above.
+	const targetAppId = runtimeRoute.appId;
 	try {
 		const { wakeAgentRuntime } = await import("$lib/server/kube/client");
-		await wakeAgentRuntime(agent.slug, 30_000);
+		await wakeAgentRuntime(runtimeRoute.slug, 30_000);
 	} catch (err) {
 		console.warn(
-			`[session-spawn] wake ${agent.slug} failed, continuing anyway:`,
+			`[session-spawn] wake ${runtimeRoute.slug} failed, continuing anyway:`,
 			err instanceof Error ? err.message : err,
 		);
 	}
@@ -167,15 +185,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// suffix (`<app-id>.<ns>`) is only appended when
 	// AGENT_RUNTIME_NAMESPACE is overridden away from the BFF's own
 	// namespace — supports the rollback path back to openshell.
-	const bffNamespace = (process.env.POD_NAMESPACE || "workflow-builder").trim();
-	const targetNamespace = (
-		process.env.AGENT_RUNTIME_NAMESPACE ?? "workflow-builder"
-	).trim();
-	const isPerAgent = targetAppId.startsWith("agent-runtime-");
-	const invokeTarget =
-		isPerAgent && targetNamespace && targetNamespace !== bffNamespace
-			? `${targetAppId}.${targetNamespace}`
-			: targetAppId;
+	const invokeTarget = agentRuntimeInvokeTarget(targetAppId);
 	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/spawn`;
 	const res = await daprFetch(url, {
 		method: "POST",
@@ -219,17 +229,10 @@ export async function raiseSessionUserEvents(
 		id: session.agentId,
 		version: session.agentVersion ?? undefined,
 	});
-	const targetAppId = agent?.runtimeAppId ?? (agent ? `agent-runtime-${agent.slug}` : "dapr-agent-py");
+	const targetAppId =
+		agent?.runtimeAppId ?? (agent ? agentRuntimeDedicatedAppId(agent.slug) : "dapr-agent-py");
 	const daprEndpoint = getDaprSidecarUrl();
-	const isPerAgent = targetAppId.startsWith("agent-runtime-");
-	const bffNamespace = (process.env.POD_NAMESPACE || "workflow-builder").trim();
-	const targetNamespace = (
-		process.env.AGENT_RUNTIME_NAMESPACE ?? "workflow-builder"
-	).trim();
-	const invokeTarget =
-		isPerAgent && targetNamespace && targetNamespace !== bffNamespace
-			? `${targetAppId}.${targetNamespace}`
-			: targetAppId;
+	const invokeTarget = agentRuntimeInvokeTarget(targetAppId);
 	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`;
 	const res = await daprFetch(url, {
 		method: "POST",

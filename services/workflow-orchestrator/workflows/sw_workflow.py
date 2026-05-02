@@ -588,8 +588,9 @@ def _resolve_native_agent_runtime(
 ) -> tuple[str, dict[str, str]]:
     """Resolve the Dapr app-id + child workflow name to dispatch a durable/run.
 
-    Per-agent-runtime plan: the resolver stamps `agentAppId` (e.g.
-    `agent-runtime-<slug>`) into the body, derived from agents.runtime_app_id.
+    Runtime routing plan: the resolver stamps `agentAppId` (e.g.
+    `agent-runtime-<slug>` or `agent-runtime-pool-<class>`) into the body,
+    derived from agents.runtime_app_id and runtime-class pool settings.
     When present, it takes precedence over the legacy `agentRuntime` enum
     (`dapr-agent-py` | `dapr-agent-py-testing`). Legacy enum stays supported
     through the rollout window; unrecognized runtimes default to
@@ -634,7 +635,7 @@ def _resolve_native_agent_runtime(
     if runtime in _NATIVE_DURABLE_AGENT_TARGETS:
         return runtime, _NATIVE_DURABLE_AGENT_TARGETS[runtime]
 
-    # Per-agent-runtime plan: if the resolver didn't stamp agentAppId but
+    # Dedicated-runtime fallback: if the resolver didn't stamp agentAppId but
     # agentSlug is present, derive the per-agent runtime on the fly. This
     # keeps older workflow specs working without re-publishing.
     agent_slug = (
@@ -1345,9 +1346,9 @@ def _run_native_durable_agent_child_workflow(
             "session_workflow",
             input=_freeze(bridge_child_input),
             instance_id=child_instance_id,
-            # Per-agent-runtime plan: dispatch session_workflow to the
-            # agent's dedicated pod (target["app_id"] == "agent-runtime-<slug>"
-            # or legacy "dapr-agent-py" / "dapr-agent-py-testing").
+            # Runtime routing plan: dispatch session_workflow to the selected
+            # Dapr app id, which may be a dedicated agent runtime, a shared
+            # runtime pool, or a legacy shared app id.
             app_id=bridge_app_id,
         )
     else:

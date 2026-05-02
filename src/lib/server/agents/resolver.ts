@@ -29,6 +29,10 @@ import {
 	buildInstructionBundle,
 	buildOpenShellSystemPrompt,
 } from "./instruction-bundle";
+import {
+	agentRuntimeDedicatedAppId,
+	resolveAgentRuntimeRoute,
+} from "./runtime-routing";
 
 export class AgentRefResolutionError extends Error {
 	constructor(
@@ -226,24 +230,25 @@ export async function resolveSpecAgentRefs(
 				agentId: p.agentId,
 				version: p.version,
 				// Per-agent-runtime routing: peer workflows dispatch to
-				// agent-runtime-<slug>, not the shared dapr-agent-py pod.
-				// `p.runtime` ("dapr-agent-py" | "dapr-agent-py-testing") is
-				// the legacy shared-pod selector and still lands in the body
-				// for the hybrid-rollout window, but orchestrator + CallAgent
-				// prefer `appId` when present.
-				appId: p.runtimeAppId ?? `agent-runtime-${p.slug}`,
+				// the peer's materialized runtime app id. For pool-backed
+				// agents this may be agent-runtime-pool-<class>; otherwise it
+				// stays agent-runtime-<slug>.
+				appId: p.runtimeAppId ?? agentRuntimeDedicatedAppId(p.slug),
 				team,
 				registryKey: agentRegistryKey(team, p.slug),
 			}));
 		}
 
-		// Per-agent-runtime plan: stamp the target Dapr app-id derived from
-		// the agent's runtimeAppId column (set at publish time by
-		// registry-sync). Orchestrator passes this into
-		// ctx.call_child_workflow(app_id=...) so every session lands in the
-		// agent's dedicated pod with its own tool_executor + MCP bootstrap.
-		const agentAppId =
-			resolved.runtimeAppId ?? `agent-runtime-${resolved.slug}`;
+		const runtimeRoute = resolveAgentRuntimeRoute({
+			agentSlug: resolved.slug,
+			runtimeAppId: resolved.runtimeAppId,
+			config,
+		});
+		// The physical runtime app id is intentionally separate from the
+		// published agent slug. Shared-pool routes keep agent-specific
+		// instructions/tools/MCP in childInput while dispatching multiple
+		// agents to the same Dapr app id.
+		const agentAppId = runtimeRoute.appId;
 		const profileConfigHash = resolved.configHash ?? hashAgentConfig(resolved.config);
 		const sandboxName =
 			typeof bodyRecord?.sandboxName === "string"
@@ -282,6 +287,9 @@ export async function resolveSpecAgentRefs(
 			agentVersion: resolved.version,
 			agentAppId,
 			agentSlug: resolved.slug,
+			agentRuntimeClass: runtimeRoute.runtimeClass,
+			agentRuntimeIsolation: runtimeRoute.isolation,
+			agentRuntimeRouteReason: runtimeRoute.reason,
 			maxTurns: overrides?.maxTurns ?? config.maxTurns,
 			timeoutMinutes: overrides?.timeoutMinutes ?? config.timeoutMinutes,
 			cwd: effectiveCwd,
@@ -316,6 +324,9 @@ export async function resolveSpecAgentRefs(
 		withRecord.agentVersion = resolved.version;
 		withRecord.agentAppId = agentAppId;
 		withRecord.agentSlug = resolved.slug;
+		withRecord.agentRuntimeClass = runtimeRoute.runtimeClass;
+		withRecord.agentRuntimeIsolation = runtimeRoute.isolation;
+		withRecord.agentRuntimeRouteReason = runtimeRoute.reason;
 		withRecord.agentConfig = config;
 		withRecord.instructionBundle = instructionBundle;
 		if (sandboxPolicy) withRecord.sandboxPolicy = sandboxPolicy;

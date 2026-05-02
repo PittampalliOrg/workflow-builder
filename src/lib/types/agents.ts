@@ -24,6 +24,15 @@ export type AgentRuntime =
 	| "dapr-agent-py-testing"
 	| "browser-use-agent";
 
+export type AgentRuntimeIsolation = "auto" | "shared" | "dedicated";
+
+export type AgentRuntimePoolBinding = {
+	appId?: string;
+	runtimeClass?: string;
+	minReplicas?: number;
+	maxReplicas?: number;
+};
+
 export type AgentMemoryConfig = {
 	backend?: "dapr_state" | "conversation_list" | "none";
 	sessionId?: string;
@@ -158,6 +167,14 @@ export type AgentConfig = {
 	callableAgents?: string[];
 
 	runtime: AgentRuntime;
+	/**
+	 * Runtime-class placement metadata. The default class is derived from
+	 * `runtime`; non-browser `dapr-agent-py` agents can share a class pool
+	 * because per-session childInput carries the agent-specific config.
+	 */
+	runtimeClass?: string;
+	runtimeIsolation?: AgentRuntimeIsolation;
+	runtimePool?: AgentRuntimePoolBinding;
 	runtimeOverridePolicy: AgentRuntimeOverridePolicy;
 
 	configuration?: AgentHotReloadConfig;

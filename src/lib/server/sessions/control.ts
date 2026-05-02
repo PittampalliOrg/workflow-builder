@@ -1,6 +1,10 @@
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { getSession } from "$lib/server/sessions/registry";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeInvokeTarget,
+} from "$lib/server/agents/runtime-routing";
 
 /**
  * Raise a Dapr workflow external event against the session's workflow
@@ -30,16 +34,8 @@ export async function raiseSessionEvent(
 	});
 	if (!agent) return { ok: false, status: 404, error: "Agent not found" };
 
-	const targetAppId = agent.runtimeAppId ?? `agent-runtime-${agent.slug}`;
-	const isPerAgent = targetAppId.startsWith("agent-runtime-");
-	const bffNamespace = (process.env.POD_NAMESPACE || "workflow-builder").trim();
-	const targetNamespace = (
-		process.env.AGENT_RUNTIME_NAMESPACE ?? "workflow-builder"
-	).trim();
-	const invokeTarget =
-		isPerAgent && targetNamespace && targetNamespace !== bffNamespace
-			? `${targetAppId}.${targetNamespace}`
-			: targetAppId;
+	const targetAppId = agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug);
+	const invokeTarget = agentRuntimeInvokeTarget(targetAppId);
 	const daprEndpoint = getDaprSidecarUrl();
 	const res = await daprFetch(
 		`${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`,

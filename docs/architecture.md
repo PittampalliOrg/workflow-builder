@@ -9,8 +9,8 @@ The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 - `workflow-builder`: SvelteKit UI and BFF (Dapr app-id: `workflow-builder`, `workflow-builder` namespace)
 - `workflow-orchestrator`: Python Dapr durable workflow owner (`workflow-builder` namespace)
 - `function-router`: action router (Dapr service invoke target for non-agent slugs)
-- `agent-runtime-controller`: Kopf operator in `workflow-builder` namespace; reconciles `AgentRuntime` CRs → one `Deployment/agent-runtime-<slug>` per published agent
-- `agent-runtime-<slug>`: dynamic per-agent pods (app-id `agent-runtime-<slug>`), one per published agent, scale 0↔1 on demand via wake/idle TTL. Contain `dapr-agent-py` main container + `seed-openshell-config` init + `daprd` sidecar + optional `chromium` + `playwright-mcp` browser sidecars.
+- `agent-runtime-controller`: Kopf operator in `workflow-builder` namespace; reconciles `AgentRuntime` CRs into Dapr agent runtime Deployments. CRs may be dedicated per-agent runtimes or shared runtime-class pools.
+- `agent-runtime-<slug>` / `agent-runtime-pool-<class>`: dynamic Dapr agent runtime pods. Dedicated runtimes scale 0↔1 on demand; shared pools can keep warm minReplicas and wake to maxReplicas. Both contain `dapr-agent-py` main container + `seed-openshell-config` init + `daprd` sidecar; dedicated browser-sidecar runtimes can also include `chromium` + `playwright-mcp`.
 - `dapr-agent-py` (legacy shared pod): kept for backwards compat; new workflows address agents by `agentRef` → `agent-runtime-<slug>` instead.
 - `openshell-agent-runtime`: consolidated action handler for `workspace/* + browser/* + openshell/*` (per 2026-04-19 cutover). Also the OpenShell control-plane for per-session sandboxes — sandboxes live in the `openshell` namespace and are reached via mTLS from agent-runtime pods.
 - `fn-activepieces`: default SaaS action backend
@@ -22,9 +22,9 @@ Per-agent runtime pods run in the **same namespace as the orchestrator**
 child's workflow actor in the parent's namespace, so cross-namespace
 placement is not supported at the workflow-SDK layer.
 
-See `docs/per-agent-runtime.md` for the full per-agent model:
-controller lifecycle, pod shape, Dapr Component scoping, wake/idle TTL,
-dispatch paths (direct session vs workflow bridge), and troubleshooting
+See `docs/per-agent-runtime.md` for the full agent runtime model: controller
+lifecycle, runtime-class pools, pod shape, Dapr Component scoping, wake/idle
+TTL, dispatch paths (direct session vs workflow bridge), and troubleshooting
 cheatsheet.
 
 Model selection for `durable/run` is data-driven. `dapr-agent-py` reads
@@ -172,21 +172,22 @@ through `activities/execute_action.py` which calls function-router via
    - draft -> `dynamic_workflow`
    - published -> registered workflow name/version
 4. Action nodes dispatch by slug:
-   - `durable/run` → `ctx.call_child_workflow(..., app_id="dapr-agent-py")`
+   - `durable/run` → resolver stamps `agentAppId`; orchestrator calls `ctx.call_child_workflow(..., app_id=<agent runtime app id>)`
    - everything else → `activities/execute_action.py` → Dapr service invoke → `function-router`
 5. The parent workflow persists status and review data as the run progresses.
 
 ### Standard durable agent coding run
 
 1. A workflow node uses `durable/run`.
-2. `workflow-orchestrator`'s `_run_native_durable_agent_child_workflow` helper builds the child input (prompt, workspaceRef, cwd, agentConfig, maxTurns, metadata) and calls `ctx.call_child_workflow("agent_workflow", input=..., instance_id="{parent}__durable__{task}__run__0", app_id=DAPR_AGENT_PY_APP_ID)`.
-3. `dapr-agent-py`'s `@workflow_entry def agent_workflow(self, ctx, message)` receives the input directly — no function-router hop, no HTTP polling.
-4. `WorkflowRetryPolicy(max_attempts=8, initial_backoff_seconds=4, ...)` on the callee side absorbs pod restarts, sidecar churn, and transient failures across the orchestrator→agent boundary.
-5. `dapr-agent-py` resolves the model component from `agentConfig.modelSpec`, metadata, or top-level `model`.
-6. `dapr-agent-py` runs the agent loop, binding to the OpenShell workspace created or resolved earlier in the workflow.
-7. Built-in workspace tools run against that OpenShell workspace.
-8. MCP tools are added from `agentConfig.mcpServers` or, when the deployed orchestrator image includes the resolver, from enabled project `mcp_connection` rows.
-9. Review artifacts are persisted to Postgres.
+2. The BFF resolver inlines the published agent config and stamps `agentAppId`. With pooling enabled this can be a shared pool such as `agent-runtime-pool-coding`; otherwise it is usually `agent-runtime-<slug>`.
+3. `workflow-orchestrator`'s `_run_native_durable_agent_child_workflow` helper builds the child input (prompt, workspaceRef, cwd, agentConfig, instructionBundle, maxTurns, metadata) and calls `ctx.call_child_workflow("session_workflow", input=..., instance_id="{parent}__durable__{task}__run__0", app_id=<agentAppId>)`.
+4. `dapr-agent-py` receives the per-session child input directly — no function-router hop, no HTTP polling.
+5. `WorkflowRetryPolicy(max_attempts=8, initial_backoff_seconds=4, ...)` on the callee side absorbs pod restarts, sidecar churn, and transient failures across the orchestrator→agent boundary.
+6. `dapr-agent-py` resolves the model component from `agentConfig.modelSpec`, metadata, or top-level `model`.
+7. `dapr-agent-py` runs the agent loop, binding to the OpenShell workspace created or resolved earlier in the workflow.
+8. Built-in workspace tools run against that OpenShell workspace.
+9. MCP tools are added from per-session `agentConfig.mcpServers` or, when the deployed orchestrator image includes the resolver, from enabled project `mcp_connection` rows.
+10. Review artifacts are persisted to Postgres.
 
 See `docs/mcp-agent-workflows.md` for the current UI-runnable MCP configuration method.
 
@@ -260,10 +261,11 @@ Provides:
 Non-responsibilities (deliberately removed):
 
 - `durable/run` dispatch is owned by workflow-orchestrator via
-  `ctx.call_child_workflow(..., app_id="dapr-agent-py")`. No HTTP polling, no
-  workflow-status shim, no transient-retry loop in function-router. Retry
-  resilience lives on the callee (`WorkflowRetryPolicy` in
-  `dapr-agent-py/src/main.py`).
+  `ctx.call_child_workflow(..., app_id=<agent runtime app id>)`. No HTTP
+  polling, no workflow-status shim, no transient-retry loop in function-router.
+  Retry resilience lives on the callee (`WorkflowRetryPolicy` in
+  `dapr-agent-py/src/main.py`). The app id may be a dedicated
+  `agent-runtime-<slug>` runtime or a shared runtime-class pool.
 - `dapr-agent-py/*` and `dapr-agent-py-testing/*` slugs are removed from the
   registry. The orchestrator rejects them via `_REMOVED_AGENT_ACTION_TYPES`
   before any dispatch happens.

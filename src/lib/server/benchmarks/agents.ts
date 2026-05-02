@@ -38,7 +38,8 @@ function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
 
 /**
  * SWE-bench V1 intentionally runs inference only through published
- * dapr-agent-py agents using durable/run and agent-runtime-<slug> pods.
+ * dapr-agent-py agents using durable/run and an agent-runtime Dapr app id
+ * (either a dedicated agent-runtime-<slug> pod or a shared runtime pool).
  * This guard is pure so the API and unit tests can share exactly the same
  * rejection behavior.
  */
@@ -56,7 +57,7 @@ export function assertDaprAgentPyBenchmarkAgent(
 	const runtimeAppId = resolveRuntimeAppId(agent);
 	if (!runtimeAppId?.startsWith("agent-runtime-")) {
 		validationError(
-			"Selected agent must be published to an agent-runtime-<slug> runtime",
+			"Selected agent must be published to an agent-runtime app id",
 		);
 	}
 	if (!agent.currentVersionId || !agent.version) {

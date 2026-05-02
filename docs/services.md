@@ -78,7 +78,7 @@ Current route contract (merged registry — ConfigMap + BUILTIN):
 
 Not routed here (by design):
 
-- `durable/run` — dispatched by workflow-orchestrator via `ctx.call_child_workflow(app_id="dapr-agent-py")`. Retry resilience is handled by `WorkflowRetryPolicy(max_attempts=8)` on the callee side in `dapr-agent-py`.
+- `durable/run` — dispatched by workflow-orchestrator via `ctx.call_child_workflow(app_id=<agent runtime app id>)`, where the app id is stamped by the BFF resolver and may be a dedicated `agent-runtime-<slug>` runtime or a shared class pool. Retry resilience is handled by `WorkflowRetryPolicy(max_attempts=8)` on the callee side in `dapr-agent-py`.
 - `dapr-agent-py/*`, `dapr-agent-py-testing/*`, `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph*/run`, `dapr-swe/run`, `durable/plan`, `mastra/*`, `agent/*` — rejected at the orchestrator via `_REMOVED_AGENT_ACTION_TYPES` with a clear error; never reach function-router.
 
 The image can also receive a mounted registry override from the cluster. The merge is `{ ...loadedConfigMap, ...BUILTIN_FALLBACK_REGISTRY }` — BUILTIN keys win, so core cross-cutting routes stay stable. Check the live ConfigMap + `src/core/registry.ts` when runtime routing and expectations disagree.

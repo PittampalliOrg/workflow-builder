@@ -106,6 +106,8 @@ describe("resolveSpecAgentRefs", () => {
 	beforeEach(() => {
 		resolveAgentRefMock.mockReset();
 		resolveEnvironmentRefMock.mockReset();
+		delete process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED;
+		delete process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON;
 	});
 
 	it("inlines resolved agentConfig and strips agentRef", async () => {
@@ -172,6 +174,45 @@ describe("resolveSpecAgentRefs", () => {
 		expect(withBlock.agentVersion).toBe(3);
 		expect(withBlock.agentAppId).toBe("agent-runtime-code-agent");
 		expect(withBlock.agentSlug).toBe("code-agent");
+	});
+
+	it("stamps a shared runtime-pool app id when pool routing is enabled", async () => {
+		process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED = "true";
+		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({
+			coding: "agent-runtime-pool-coding",
+		});
+		resolveAgentRefMock.mockResolvedValueOnce(
+			resolvedAgent({ slug: "code-agent", config: minimalConfig() }),
+		);
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: { id: "a1" },
+						},
+					},
+				},
+			},
+		]);
+
+		const resolved = await resolveSpecAgentRefs(spec);
+		const task = (resolved.document as Record<string, unknown>).do as Array<
+			Record<string, unknown>
+		>;
+		const withBlock = (task[0].Run as Record<string, unknown>).with as Record<
+			string,
+			unknown
+		>;
+		const body = withBlock.body as Record<string, unknown>;
+
+		expect(body.agentAppId).toBe("agent-runtime-pool-coding");
+		expect(body.agentSlug).toBe("code-agent");
+		expect(body.agentRuntimeClass).toBe("coding");
+		expect(body.agentRuntimeIsolation).toBe("shared");
+		expect(withBlock.agentAppId).toBe("agent-runtime-pool-coding");
 	});
 
 	it("throws AgentRefResolutionError when agentRef is missing on a durable/run task", async () => {

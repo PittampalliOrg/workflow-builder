@@ -2364,10 +2364,9 @@ export const agents = pgTable(
 		avatar: text("avatar"),
 		tags: jsonb("tags").$type<string[]>().notNull().default([]),
 		runtime: text("runtime").notNull().default("dapr-agent-py"),
-		// Per-agent-runtime plan: every published agent maps to a unique
-		// Dapr app-id materialized by the agent-runtime-controller. Default
-		// derived by a publish-time trigger / BFF write as
-		// `agent-runtime-<slug>`. Stays null for archived / unpublished rows.
+		// Physical Dapr app-id materialized by the agent-runtime-controller.
+		// Usually `agent-runtime-<slug>`; with shared pools enabled this can be
+		// `agent-runtime-pool-<class>`. Stays null for archived / unpublished rows.
 		runtimeAppId: text("runtime_app_id"),
 		// Mirror of AgentRuntime.status.phase so the agent detail page can
 		// render Sleeping / Starting / Active / Failed without a live Kubernetes

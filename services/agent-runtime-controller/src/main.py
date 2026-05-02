@@ -1,14 +1,15 @@
 """agent-runtime-controller — kopf operator that reconciles AgentRuntime CRs
-into Deployments running the dapr-agent-py-sandbox image with per-agent MCP
-bootstrap config. One AgentRuntime = one Deployment = one Pod (replicas
-scale 0 <-> 1 on idle/wake).
+into Deployments running the dapr-agent-py-sandbox image. The CR can describe
+either a dedicated per-agent runtime or a shared runtime-class pool. Dedicated
+runtimes usually scale 0 <-> 1; pools may keep minReplicas warm and wake to
+maxReplicas for capacity.
 
 Lifecycle:
-  - CR create  -> Deployment at replicas=0, status.phase=Sleeping
-  - annotation agents.x-k8s.io/wake=<ts> -> scale to 1, wait ready,
-    status.phase=Active
+  - CR create  -> Deployment at minReplicas, status.phase=Sleeping/Starting
+  - annotation agents.x-k8s.io/wake=<ts> -> scale to wake capacity, wait
+    ready, status.phase=Active
   - idle check (every 60s): if lastActiveAt older than spec.lifecycle.
-    idleTtlSeconds and replicas=1, scale to 0, status.phase=Sleeping
+    idleTtlSeconds, scale back to minReplicas, status.phase=Sleeping/Starting
 
 Pod annotations dapr.io/enabled / dapr.io/app-id are injected by the
 openshell-sandbox-dapr-webhook (extended in this same change) — we only
@@ -37,6 +38,8 @@ DAPR_COMPONENT_PLURAL = "components"
 
 LABEL_ROLE = "agents.x-k8s.io/role"
 LABEL_SLUG = "agents.x-k8s.io/slug"
+LABEL_RUNTIME_CLASS = "agents.x-k8s.io/runtime-class"
+LABEL_RUNTIME_ISOLATION = "agents.x-k8s.io/runtime-isolation"
 ANNO_WAKE = "agents.x-k8s.io/wake"
 ANNO_SLEEP = "agents.x-k8s.io/sleep"
 ANNO_LAST_ACTIVE = "agents.x-k8s.io/last-active"
@@ -139,6 +142,38 @@ def _app_id(spec: dict[str, Any]) -> str:
     return str(spec.get("appId") or _deployment_name(spec["agentSlug"]))
 
 
+def _runtime_class(spec: dict[str, Any]) -> str:
+    raw = str(spec.get("runtimeClass") or "").strip()
+    if raw:
+        return raw
+    runtime = str(spec.get("runtime") or "").strip()
+    return "browser" if runtime == "browser-use-agent" else "coding"
+
+
+def _runtime_isolation(spec: dict[str, Any]) -> str:
+    raw = str(spec.get("runtimeIsolation") or "").strip()
+    return raw if raw in {"shared", "dedicated"} else "dedicated"
+
+
+def _lifecycle_int(spec: dict[str, Any], key: str, default: int) -> int:
+    value = (spec.get("lifecycle") or {}).get(key)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _min_replicas(spec: dict[str, Any]) -> int:
+    return _lifecycle_int(spec, "minReplicas", 0)
+
+
+def _wake_replicas(spec: dict[str, Any]) -> int:
+    if _runtime_isolation(spec) == "shared":
+        return max(1, _lifecycle_int(spec, "maxReplicas", 1))
+    return 1
+
+
 def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
     """Enroll the per-agent Dapr app id in the shared actor state store.
 
@@ -182,6 +217,47 @@ def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.L
     )
     logger.info(
         "enrolled app id %s in Dapr Component %s scopes",
+        app_id,
+        AGENT_STATESTORE_COMPONENT,
+    )
+
+
+def remove_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
+    """Remove a deleted runtime app id from the shared actor state store scopes."""
+    if not app_id:
+        return
+    try:
+        component = CUSTOM.get_namespaced_custom_object(
+            group=DAPR_GROUP,
+            version=DAPR_VERSION,
+            namespace=namespace,
+            plural=DAPR_COMPONENT_PLURAL,
+            name=AGENT_STATESTORE_COMPONENT,
+        )
+    except client.ApiException as exc:
+        if exc.status == 404:
+            logger.warning(
+                "Dapr Component %s missing while removing scope for app id %s",
+                AGENT_STATESTORE_COMPONENT,
+                app_id,
+            )
+            return
+        raise
+
+    scopes = component.get("scopes")
+    if not isinstance(scopes, list) or app_id not in scopes:
+        return
+
+    CUSTOM.patch_namespaced_custom_object(
+        group=DAPR_GROUP,
+        version=DAPR_VERSION,
+        namespace=namespace,
+        plural=DAPR_COMPONENT_PLURAL,
+        name=AGENT_STATESTORE_COMPONENT,
+        body={"scopes": [scope for scope in scopes if scope != app_id]},
+    )
+    logger.info(
+        "removed app id %s from Dapr Component %s scopes",
         app_id,
         AGENT_STATESTORE_COMPONENT,
     )
@@ -260,6 +336,8 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     image = spec["environment"]["imageTag"]
     slug = spec["agentSlug"]
     app_id = spec.get("appId") or _deployment_name(slug)
+    runtime_class = _runtime_class(spec)
+    runtime_isolation = _runtime_isolation(spec)
     bootstrap = json.dumps(spec.get("mcpServers") or [])
     llm_component = _resolve_llm_component(spec.get("modelSpec"))
     # browser-use runtime pods OOMKill on the 1Gi default: browser-use's
@@ -382,10 +460,12 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                 "app": name,
                 LABEL_ROLE: "agent-runtime",
                 LABEL_SLUG: slug,
+                LABEL_RUNTIME_CLASS: runtime_class,
+                LABEL_RUNTIME_ISOLATION: runtime_isolation,
             },
         },
         "spec": {
-            "replicas": 0,
+            "replicas": _min_replicas(spec),
             "selector": {"matchLabels": {"app": name}},
             "template": {
                 "metadata": {
@@ -393,6 +473,8 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                         "app": name,
                         LABEL_ROLE: "agent-runtime",
                         LABEL_SLUG: slug,
+                        LABEL_RUNTIME_CLASS: runtime_class,
+                        LABEL_RUNTIME_ISOLATION: runtime_isolation,
                     },
                     # dapr.io/enabled + dapr.io/app-id are injected by the
                     # openshell-sandbox-dapr-webhook; we only declare the
@@ -599,10 +681,11 @@ def reconcile_mcp_service(spec: dict[str, Any], namespace: str, logger: logging.
 
 @kopf.on.create(GROUP, VERSION, PLURAL)
 def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> dict:
-    """Materialize Deployment at replicas=0."""
+    """Materialize Deployment at the runtime's configured warm capacity."""
     dep_name = _deployment_name(spec["agentSlug"])
     ensure_agent_statestore_scope(_app_id(spec), namespace, logger)
     dep = _build_deployment(dep_name, namespace, dict(spec))
+    replicas = _min_replicas(spec)
 
     try:
         APPS_V1.create_namespaced_deployment(namespace=namespace, body=dep)
@@ -616,11 +699,11 @@ def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
     reconcile_mcp_service(dict(spec), namespace, logger)
 
     _patch_status(name, namespace, {
-        "phase": "Sleeping",
-        "replicas": 0,
+        "phase": "Starting" if replicas >= 1 else "Sleeping",
+        "replicas": replicas,
         "deploymentRef": dep_name,
         "lastTransitionTime": _now_iso(),
-        "message": "Deployment created; scaled to 0",
+        "message": f"Deployment created; replicas={replicas}",
     })
     return {"deploymentRef": dep_name}
 
@@ -670,6 +753,7 @@ def on_delete(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
     except client.ApiException as exc:
         if exc.status != 404:
             raise
+    remove_agent_statestore_scope(_app_id(spec), namespace, logger)
 
 
 @kopf.on.field(GROUP, VERSION, PLURAL, field=("metadata", "annotations", ANNO_WAKE))
@@ -678,14 +762,20 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
         return
     dep_name = _deployment_name(spec["agentSlug"])
     ensure_agent_statestore_scope(_app_id(spec), namespace, logger)
-    logger.info("wake signal %s -> scaling Deployment %s to 1", new, dep_name)
-    _scale_deployment(dep_name, namespace, 1)
+    desired_replicas = _wake_replicas(spec)
+    logger.info(
+        "wake signal %s -> scaling Deployment %s to %d",
+        new,
+        dep_name,
+        desired_replicas,
+    )
+    _scale_deployment(dep_name, namespace, desired_replicas)
     # Read the live Deployment to decide phase — on_deployment_event may
     # have already set phase=Active (if the pod was already running for
     # another reason), and we'd otherwise stomp that to Starting. Pick
     # Active when readyReplicas≥1 so the wake handler is idempotent.
     phase = "Starting"
-    ready = 1
+    ready = 0
     try:
         live = APPS_V1.read_namespaced_deployment(name=dep_name, namespace=namespace)
         ready = int((live.status.ready_replicas or 0))
@@ -696,7 +786,7 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
             logger.warning("on_wake live deployment read failed: %s", exc)
     _patch_status(name, namespace, {
         "phase": phase,
-        "replicas": 1,
+        "replicas": desired_replicas,
         "readyReplicas": ready,
         "lastActiveAt": _now_iso(),
         "lastTransitionTime": _now_iso(),
@@ -709,11 +799,12 @@ def on_sleep(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: 
     if old == new or not new:
         return
     dep_name = _deployment_name(spec["agentSlug"])
-    logger.info("sleep signal %s -> scaling Deployment %s to 0", new, dep_name)
-    _scale_deployment(dep_name, namespace, 0)
+    replicas = _min_replicas(spec)
+    logger.info("sleep signal %s -> scaling Deployment %s to %d", new, dep_name, replicas)
+    _scale_deployment(dep_name, namespace, replicas)
     _patch_status(name, namespace, {
-        "phase": "Sleeping",
-        "replicas": 0,
+        "phase": "Starting" if replicas >= 1 else "Sleeping",
+        "replicas": replicas,
         "lastTransitionTime": _now_iso(),
         "message": f"Sleep requested at {new}",
     })
@@ -729,9 +820,10 @@ def on_last_active(old: Any, new: Any, name: str, namespace: str, **_: Any) -> N
 
 @kopf.timer(GROUP, VERSION, PLURAL, interval=IDLE_CHECK_INTERVAL)
 def idle_reaper(spec: dict, status: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> None:
-    """Scale to 0 when idle > idleTtlSeconds."""
+    """Scale back to minReplicas when idle > idleTtlSeconds."""
     replicas = (status or {}).get("replicas") or 0
-    if replicas < 1:
+    min_replicas = _min_replicas(spec)
+    if replicas <= min_replicas:
         return
     last_active = (status or {}).get("lastActiveAt")
     if not last_active:
@@ -745,11 +837,17 @@ def idle_reaper(spec: dict, status: dict, name: str, namespace: str, logger: log
     if age < ttl:
         return
     dep_name = _deployment_name(spec["agentSlug"])
-    logger.info("idle reaper: %s idle %ds (>ttl %ds) -> scaling to 0", dep_name, int(age), ttl)
-    _scale_deployment(dep_name, namespace, 0)
+    logger.info(
+        "idle reaper: %s idle %ds (>ttl %ds) -> scaling to %d",
+        dep_name,
+        int(age),
+        ttl,
+        min_replicas,
+    )
+    _scale_deployment(dep_name, namespace, min_replicas)
     _patch_status(name, namespace, {
-        "phase": "Sleeping",
-        "replicas": 0,
+        "phase": "Starting" if min_replicas >= 1 else "Sleeping",
+        "replicas": min_replicas,
         "lastTransitionTime": _now_iso(),
         "message": f"Idle > {ttl}s",
     })

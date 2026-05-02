@@ -20,19 +20,36 @@ export const GET: RequestHandler = async ({ locals }) => {
 	const projectId = locals.session.projectId;
 	const agentRows = projectId
 		? await db
-				.select({ slug: agents.slug, id: agents.id, isArchived: agents.isArchived })
+				.select({
+					slug: agents.slug,
+					id: agents.id,
+					runtimeAppId: agents.runtimeAppId,
+					isArchived: agents.isArchived,
+				})
 				.from(agents)
 				.where(eq(agents.projectId, projectId))
 		: [];
 	const slugSet = new Set(agentRows.filter((r) => !r.isArchived).map((r) => r.slug));
+	const runtimeAppIdSet = new Set(
+		agentRows
+			.filter((r) => !r.isArchived && r.runtimeAppId)
+			.map((r) => r.runtimeAppId as string),
+	);
 
 	const crs = await listAgentRuntimes();
 	const rows = crs
-		.filter((cr) => !projectId || slugSet.has(cr.spec.agentSlug))
+		.filter(
+			(cr) =>
+				!projectId ||
+				slugSet.has(cr.spec.agentSlug) ||
+				runtimeAppIdSet.has(cr.spec.appId),
+		)
 		.map((cr) => ({
 			name: cr.metadata.name,
 			slug: cr.spec.agentSlug,
 			appId: cr.spec.appId,
+			runtimeClass: cr.spec.runtimeClass ?? null,
+			runtimeIsolation: cr.spec.runtimeIsolation ?? null,
 			phase: cr.status?.phase ?? "Unknown",
 			replicas: cr.status?.replicas ?? 0,
 			readyReplicas: cr.status?.readyReplicas ?? 0,

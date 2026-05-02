@@ -1,12 +1,23 @@
-# Per-Agent Runtime Model
+# Agent Runtime Model
 
-Every published agent gets its own Kubernetes Pod. The `AgentRuntime`
-CRD (`agents.x-k8s.io/v1alpha1`) is the source of truth; the
-`agent-runtime-controller` Kopf operator reconciles one `Deployment`
-per CR. Pods scale 0 ↔ 1 on demand and share the `workflow-builder`
-namespace with the orchestrator so Dapr workflow sub-orchestration can
-resolve placement (Dapr workflow does not support cross-namespace
-child-workflow routing).
+The runtime model is split:
+
+- Dapr owns durable `session_workflow` / `agent_workflow` execution and
+  parent-to-child routing.
+- OpenShell owns isolated workspace sandboxes.
+- The `AgentRuntime` CRD (`agents.x-k8s.io/v1alpha1`) materializes only the
+  Dapr application hosts we still need.
+
+By default a published agent still gets a dedicated `agent-runtime-<slug>` app
+id. When `AGENT_RUNTIME_SHARED_POOLS_ENABLED=true` (or an agent explicitly sets
+`runtimeIsolation: "shared"` with `runtimePool.appId`), eligible non-browser
+agents route to a runtime-class pool such as `agent-runtime-pool-coding`.
+Agent-specific instructions, tools, MCP servers, skills, hooks/plugins,
+workspace binding, cwd, and model metadata remain per-session in childInput.
+
+Runtime pods share the `workflow-builder` namespace with the orchestrator so
+Dapr workflow sub-orchestration can resolve placement (Dapr workflow does not
+support cross-namespace child-workflow routing).
 
 ## Lifecycle
 
@@ -14,24 +25,55 @@ child-workflow routing).
   Publish or version-bump an agent in the UI
                │
                ▼
-  registry-sync.ts → upsertAgentRuntime(slug, config, ...)
+  registry-sync.ts → resolveAgentRuntimeRoute(...)
+               │
+               ├─ dedicated: upsertAgentRuntime(agent slug, bootstrap MCP, sidecars)
+               │
+               └─ shared:    upsertAgentRuntime(pool slug, no per-agent bootstrap MCP)
                │
                ▼
   AgentRuntime CR in workflow-builder ns
                │
                ▼
   agent-runtime-controller (Kopf)
-     · on_create → build Deployment (replicas=0)
+     · on_create → build Deployment (replicas=minReplicas)
      · on_spec_update → replace Deployment spec
-     · on_wake (annotation) → scale to 1
-     · idle_reaper timer → scale to 0 after idleTtlSeconds since lastActiveAt
+     · on_wake (annotation) → scale to 1, or maxReplicas for shared pools
+     · idle_reaper timer → scale to minReplicas after idleTtlSeconds since lastActiveAt
 
                 ▼
-  Pod: agent-runtime-<slug>-<hash>
+  Pod: agent-runtime-<slug-or-pool>-<hash>
      init:  seed-openshell-config
      ctrs:  dapr-agent-py (main) · daprd (sidecar)
             [+ chromium · playwright-mcp if browserSidecar.enabled]
 ```
+
+## Runtime Classes And Pools
+
+Runtime routing is centralized in
+`src/lib/server/agents/runtime-routing.ts`:
+
+- default class for `dapr-agent-py` is `coding`;
+- `browser-use-agent` maps to `browser` and stays dedicated;
+- `dapr-agent-py-testing` stays dedicated unless the agent explicitly asks for
+  shared isolation;
+- Playwright MCP sidecar agents stay dedicated because `localhost:3100/mcp`
+  must be pod-local;
+- non-browser agents can share a pool when the global feature gate is enabled.
+
+Pool app ids can be supplied with `AGENT_RUNTIME_POOL_APP_IDS_JSON`, for
+example:
+
+```json
+{
+  "coding": { "appId": "agent-runtime-pool-coding", "minReplicas": 1, "maxReplicas": 4 },
+  "office": "agent-runtime-pool-office"
+}
+```
+
+If the feature gate is enabled and a class is not listed, the router derives
+`agent-runtime-pool-<class>` and uses `AGENT_RUNTIME_POOL_MIN_REPLICAS` /
+`AGENT_RUNTIME_POOL_MAX_REPLICAS` for capacity metadata.
 
 ## Pod shape
 
@@ -60,13 +102,14 @@ partition access so each pod sees exactly one:
 | Component | `actorStateStore` | Scopes (allowlist) |
 |---|---|---|
 | `workflowstatestore` | true | `workflow-orchestrator`, `workspace-runtime` |
-| `dapr-agent-py-statestore` | true | `dapr-agent-py`, `dapr-agent-py-testing`, `workflow-builder`, controller-enrolled `agent-runtime-<slug>` app ids |
+| `dapr-agent-py-statestore` | true | `dapr-agent-py`, `dapr-agent-py-testing`, `workflow-builder`, controller-enrolled `agent-runtime-<slug>` and `agent-runtime-pool-<class>` app ids |
 | `agent-workflow` | true | legacy slugs only; no active consumer |
 
-**Adding a new agent**: create or update its `AgentRuntime` CR. The
+**Adding a new agent or pool**: create or update its `AgentRuntime` CR. The
 `agent-runtime-controller` patches `dapr-agent-py-statestore.scopes` with
-the runtime app id before creating or waking the pod, preserving the single
-centralized actor state store required by Dapr durable workflows.
+the runtime app id before creating or waking the pod, and removes that scope
+when the CR is deleted. This preserves the single centralized actor state
+store required by Dapr durable workflows without leaking stale app ids.
 
 Non-actor components (`agent-registry`, `agent-memory`,
 `runtime-config`, `pubsub`, `llm-*`, `kubernetes-secrets`) are
@@ -106,10 +149,10 @@ and resolve to the pod's own playwright-mcp sidecar.
 ```
 UI /sessions/new            src/lib/server/sessions/spawn.ts
   ↓                            ↓
-POST /api/v1/sessions      wakeAgentRuntime(slug, 30_000)
+POST /api/v1/sessions      wakeAgentRuntime(runtimeRoute.slug, 30_000)
   ↓                            ↓
 session row (DB)           Dapr invoke:
-  ↓                            /v1.0/invoke/agent-runtime-<slug>/method/internal/sessions/spawn
+  ↓                            /v1.0/invoke/<agentAppId-or-pool>/method/internal/sessions/spawn
 attachRuntime(...)             ↓
                             dapr-agent-py → session_workflow
 ```
@@ -128,16 +171,16 @@ BFF handler:
    · rewriteMcpForBrowserSidecar on agentConfig.mcpServers
    · find/create sessions row (deterministic id)
    · findOrCreateEphemeralAgent if agentConfig is inline
-   · wakeAgentRuntime(slug, 20_000)   ← wait for phase=Active, but don't block response
+   · wakeAgentRuntime(runtimeRoute.slug, 20_000)   ← wait for phase=Active, but don't block response
    · return {sessionId, agentId, agentVersion, childInput, reused}
    ↓
 orchestrator:
    yield ctx.call_child_workflow("session_workflow",
                                   input=childInput,
                                   instance_id=<deterministic>,
-                                  app_id="agent-runtime-<slug>")
+                                  app_id=<agentAppId or pool app id>)
    ↓
-session_workflow on per-agent pod (autoTerminateAfterEndTurn=true)
+session_workflow on selected runtime app id (autoTerminateAfterEndTurn=true)
    one turn → agent_workflow → status_idle{end_turn} → status_terminated
    ↓
 parent resumes, durable/run returns
@@ -145,13 +188,14 @@ parent resumes, durable/run returns
 
 ## Scaling + idle TTL
 
-- `replicas: 0` at CR creation. Controller never scales proactively —
-  pods only wake on demand.
+- Dedicated runtimes default to `replicas: 0` at CR creation. Shared pools may
+  set `lifecycle.minReplicas` to keep warm capacity.
 - **Wake signal**: annotation `agents.x-k8s.io/wake=<unix-timestamp>`
-  on the CR. The controller's `on_wake` handler scales the Deployment
-  to 1 and stamps `lastActiveAt = now`.
+  on the CR. The controller's `on_wake` handler scales dedicated runtimes to
+  1 and shared pools to `lifecycle.maxReplicas` (default 1), then stamps
+  `lastActiveAt = now`.
 - **Idle reaper**: a Kopf timer checks each CR every
-  `IDLE_CHECK_INTERVAL` (60 s) and scales back to 0 if
+  `IDLE_CHECK_INTERVAL` (60 s) and scales back to `minReplicas` if
   `now - lastActiveAt > idleTtlSeconds`. Default 1800 s; overridable
   per agent via environment config's `agentRuntimeIdleTtlSeconds`.
 - **`lastActiveAt`** is bumped by the BFF on every dispatch

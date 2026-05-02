@@ -7,6 +7,10 @@ import type { AgentConfig, AgentDetail } from "$lib/types/agents";
 import { lookupBuiltinTool } from "./builtin-tool-catalog";
 import { rewriteMcpForBrowserSidecar } from "./mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "./mcp-resolution";
+import {
+	agentRuntimeDedicatedAppId,
+	resolveAgentRuntimeRoute,
+} from "./runtime-routing";
 
 /**
  * Dual-write: Postgres remains the source of truth for agent CRUD/versioning/
@@ -142,12 +146,10 @@ export function buildAgentMetadata(
 	team: string,
 ): AgentMetadataBlob {
 	const config: AgentConfig = agent.config;
-	const runtimeAppId =
-		agent.runtime === "dapr-agent-py-testing"
-			? "dapr-agent-py-testing"
-			: agent.runtime === "browser-use-agent"
-				? "browser-use-agent"
-				: "dapr-agent-py";
+	const runtimeRoute = resolveAgentRuntimeRoute({
+		agentSlug: agent.slug,
+		config,
+	});
 
 	const builtin = (config.builtinTools || []).map((name) => {
 		const spec = lookupBuiltinTool(name);
@@ -168,7 +170,7 @@ export function buildAgentMetadata(
 		name: agent.slug,
 		registered_at: new Date().toISOString(),
 		agent: {
-			appid: runtimeAppId,
+			appid: runtimeRoute.appId,
 			type: "durable",
 			orchestrator: false,
 			system_prompt: config.systemPrompt ?? "",
@@ -751,6 +753,12 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		resolvedConfig?.runtime === "browser-use-agent"
 			? { mcpServers: rawMcpServers, useBrowserSidecar: false }
 			: rewriteMcpForBrowserSidecar(rawMcpServers);
+	const runtimeRoute = resolveAgentRuntimeRoute({
+		agentSlug: row.slug,
+		runtimeAppId: row.runtimeAppId,
+		config: resolvedConfig ?? config,
+		useBrowserSidecar,
+	});
 
 	// Read agent-runtime idle TTL from the environment config if present.
 	// Null/undefined leaves the CR default (1800s) in place.
@@ -777,31 +785,68 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		}
 	}
 
+	await requireDb()
+		.update(agents)
+		.set({
+			runtimeAppId: runtimeRoute.appId,
+		})
+		.where(eq(agents.id, agentId));
+
 	await kubeClient.upsertAgentRuntime({
-		agentSlug: row.slug,
-		projectId: row.projectId,
-		appId: row.runtimeAppId ?? `agent-runtime-${row.slug}`,
-		modelSpec: typeof config?.modelSpec === "string" ? config.modelSpec : null,
+		agentSlug: runtimeRoute.slug,
+		projectId: runtimeRoute.isolation === "shared" ? null : row.projectId,
+		appId: runtimeRoute.appId,
+		runtimeClass: runtimeRoute.runtimeClass,
+		runtimeIsolation: runtimeRoute.isolation,
+		modelSpec:
+			runtimeRoute.isolation === "shared"
+				? null
+				: typeof config?.modelSpec === "string"
+					? config.modelSpec
+					: null,
 		environment: {
 			id: environmentRecord?.id,
 			slug: environmentRecord?.slug,
 			version: environmentRecord?.version,
 			imageTag,
 		},
-		mcpServers,
-		lifecycle: idleTtlSeconds ? { idleTtlSeconds } : undefined,
-		browserSidecar: useBrowserSidecar ? { enabled: true } : undefined,
+		// Shared pools rely on per-session agentConfig for MCP/tools/skills.
+		// Bootstrap MCP remains only for dedicated runtimes that still need
+		// startup sidecars or compatibility behaviour.
+		mcpServers: runtimeRoute.isolation === "shared" ? [] : mcpServers,
+		lifecycle:
+			idleTtlSeconds ||
+			runtimeRoute.pool?.minReplicas ||
+			runtimeRoute.pool?.maxReplicas
+				? {
+						...(idleTtlSeconds ? { idleTtlSeconds } : {}),
+						...(runtimeRoute.pool?.minReplicas
+							? { minReplicas: runtimeRoute.pool.minReplicas }
+							: {}),
+						...(runtimeRoute.pool?.maxReplicas
+							? { maxReplicas: runtimeRoute.pool.maxReplicas }
+							: {}),
+					}
+				: undefined,
+		browserSidecar:
+			runtimeRoute.isolation === "shared"
+				? undefined
+				: useBrowserSidecar
+					? { enabled: true }
+					: undefined,
 	});
 }
 
 async function deleteAgentRuntimeCR(agentId: string): Promise<void> {
 	const rows = await requireDb()
-		.select({ slug: agents.slug })
+		.select({ slug: agents.slug, runtimeAppId: agents.runtimeAppId })
 		.from(agents)
 		.where(eq(agents.id, agentId))
 		.limit(1);
 	const slug = rows[0]?.slug;
 	if (!slug) return;
+	const runtimeAppId = rows[0]?.runtimeAppId;
+	if (runtimeAppId && runtimeAppId !== agentRuntimeDedicatedAppId(slug)) return;
 	const kubeClient = await import("$lib/server/kube/client");
 	await kubeClient.deleteAgentRuntime(slug);
 }
