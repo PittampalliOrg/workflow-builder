@@ -10,9 +10,9 @@ from typing import Any
 import requests
 
 
-PIPELINERUN_GROUP = "tekton.dev"
-PIPELINERUN_VERSION = "v1"
-PIPELINERUN_PLURAL = "pipelineruns"
+TEKTON_GROUP = "tekton.dev"
+TEKTON_VERSION = "v1"
+TASKRUN_PLURAL = "taskruns"
 
 
 def main() -> int:
@@ -29,46 +29,103 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     namespace = os.environ.get("SWEBENCH_PIPELINE_NAMESPACE", "workflow-builder")
-    pipeline_ref = os.environ.get("SWEBENCH_PIPELINE_REF", "swebench-eval")
     pvc_name = os.environ.get("SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts")
     swebench_pkg = os.environ.get(
         "SWEBENCH_PACKAGE_REF",
         "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
     )
     timeout_seconds = evaluation_timeout_seconds()
-    pipelinerun_name = pipelinerun_name_for(run_id)
-
-    pipelinerun = build_pipelinerun(
-        name=pipelinerun_name,
-        namespace=namespace,
-        pipeline_ref=pipeline_ref,
-        pvc_name=pvc_name,
-        run_id=run_id,
-        dataset_name=dataset_name,
-        dataset_split=split,
-        predictions_path=predictions_path,
-        instance_ids=instance_ids,
-        instance_image_map=image_map,
-        swebench_package_ref=swebench_pkg,
-        timeout_seconds=timeout_seconds,
-        workflow_builder_url=os.environ.get("WORKFLOW_BUILDER_URL", ""),
-    )
+    workflow_builder_url = os.environ.get("WORKFLOW_BUILDER_URL", "")
 
     api = load_custom_objects_api()
-    create_pipelinerun(api, namespace, pipelinerun)
-    print(f"[swebench-evaluator] dispatched PipelineRun {namespace}/{pipelinerun_name}")
 
-    overall_deadline = max(timeout_seconds + 1200, 1800)
-    final = wait_for_pipelinerun(api, namespace, pipelinerun_name, overall_deadline)
-    succeeded = pipelinerun_succeeded(final)
-    failure_message = pipelinerun_failure_reason(final) if not succeeded else None
+    # Phase 1: prepare — single TaskRun fans patches out per-instance.
+    prep_name = taskrun_name(run_id, "prepare")
+    prep_body = build_prepare_taskrun(
+        name=prep_name,
+        namespace=namespace,
+        pvc_name=pvc_name,
+        run_id=run_id,
+        predictions_path=predictions_path,
+        instance_ids=instance_ids,
+        swebench_package_ref=swebench_pkg,
+    )
+    create_taskrun(api, namespace, prep_body)
+    print(f"[swebench-evaluator] dispatched prepare TaskRun {namespace}/{prep_name}")
+    prep_final = wait_for_taskruns(api, namespace, [prep_name], deadline_seconds=600)
+    if not all(taskrun_succeeded(tr) for tr in prep_final.values()):
+        msg = taskrun_failure_reason(prep_final[prep_name])
+        print(f"[swebench-evaluator] prepare failed: {msg}")
+        return _post_terminal_results(run_id, instance_ids, artifacts_root, log_dir, error=msg, succeeded=False)
+
+    # Phase 2: run-instance — N parallel TaskRuns, one per instance, each pinned
+    # to its own pre-built env image.
+    run_names: list[str] = []
+    for iid in instance_ids:
+        name = taskrun_name(run_id, "run", iid)
+        body = build_run_instance_taskrun(
+            name=name,
+            namespace=namespace,
+            pvc_name=pvc_name,
+            run_id=run_id,
+            instance_id=iid,
+            instance_image=image_map[iid],
+            dataset_name=dataset_name,
+            dataset_split=split,
+            predictions_path=predictions_path,
+            swebench_package_ref=swebench_pkg,
+            timeout_seconds=timeout_seconds,
+        )
+        create_taskrun(api, namespace, body)
+        run_names.append(name)
+    print(f"[swebench-evaluator] dispatched {len(run_names)} run-instance TaskRuns")
+    run_deadline = max(timeout_seconds + 600, 1800)
+    run_final = wait_for_taskruns(api, namespace, run_names, deadline_seconds=run_deadline)
+
+    # Phase 3: finalize — aggregate per-instance reports and POST to BFF.
+    fin_name = taskrun_name(run_id, "finalize")
+    fin_body = build_finalize_taskrun(
+        name=fin_name,
+        namespace=namespace,
+        pvc_name=pvc_name,
+        run_id=run_id,
+        instance_ids=instance_ids,
+        swebench_package_ref=swebench_pkg,
+        workflow_builder_url=workflow_builder_url,
+    )
+    create_taskrun(api, namespace, fin_body)
+    print(f"[swebench-evaluator] dispatched finalize TaskRun {namespace}/{fin_name}")
+    fin_final = wait_for_taskruns(api, namespace, [fin_name], deadline_seconds=600)
+
+    failure_messages: list[str] = []
+    for name, tr in run_final.items():
+        if not taskrun_succeeded(tr):
+            failure_messages.append(f"{name}: {taskrun_failure_reason(tr)}")
+    if not taskrun_succeeded(fin_final[fin_name]):
+        failure_messages.append(f"{fin_name}: {taskrun_failure_reason(fin_final[fin_name])}")
+    succeeded = not failure_messages
+    failure_message = "; ".join(failure_messages)[:500] if failure_messages else None
 
     run_dir = artifacts_root / run_id
-    run_report = read_json(run_dir / "run-report.json")
     results = collect_results(run_dir, instance_ids)
-
     log_mlflow_evaluation(run_id, results, log_dir, failure_message)
     post_results(run_id, results, error=failure_message)
+    return 0 if succeeded else 1
+
+
+def _post_terminal_results(
+    run_id: str,
+    instance_ids: list[str],
+    artifacts_root: pathlib.Path,
+    log_dir: pathlib.Path,
+    *,
+    error: str,
+    succeeded: bool,
+) -> int:
+    run_dir = artifacts_root / run_id
+    results = collect_results(run_dir, instance_ids)
+    log_mlflow_evaluation(run_id, results, log_dir, error)
+    post_results(run_id, results, error=error)
     return 0 if succeeded else 1
 
 
@@ -90,68 +147,130 @@ def parse_instance_image_map(raw: str, instance_ids: list[str]) -> dict[str, str
     return {iid: parsed[iid] for iid in instance_ids}
 
 
-def pipelinerun_name_for(run_id: str) -> str:
-    safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in run_id).strip("-")[:40] or "run"
-    suffix = format(int(time.time()) % 100000, "05d")
-    return f"swebench-eval-{safe}-{suffix}"
+def taskrun_name(run_id: str, phase: str, instance_id: str | None = None) -> str:
+    safe_run = "".join(ch.lower() if ch.isalnum() else "-" for ch in run_id).strip("-")[:30] or "run"
+    suffix = format(int(time.time() * 100) % 100000, "05d")
+    if instance_id:
+        safe_inst = "".join(ch.lower() if ch.isalnum() else "-" for ch in instance_id).strip("-")[:25]
+        return f"swebench-{phase}-{safe_run}-{safe_inst}-{suffix}"[:63].rstrip("-") or "tr"
+    return f"swebench-{phase}-{safe_run}-{suffix}"[:63].rstrip("-") or "tr"
 
 
-def build_pipelinerun(
+def _common_metadata(name: str, namespace: str, run_id: str, phase: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "namespace": namespace,
+        "labels": {
+            "app.kubernetes.io/part-of": "swebench-evaluator",
+            "swebench.benchmark-run-id": safe_label_value(run_id),
+            "swebench.phase": phase,
+        },
+    }
+
+
+def _artifacts_workspace(pvc_name: str) -> dict[str, Any]:
+    return {
+        "name": "artifacts",
+        "persistentVolumeClaim": {"claimName": pvc_name},
+    }
+
+
+def build_prepare_taskrun(
     *,
     name: str,
     namespace: str,
-    pipeline_ref: str,
     pvc_name: str,
     run_id: str,
+    predictions_path: str,
+    instance_ids: list[str],
+    swebench_package_ref: str,
+) -> dict[str, Any]:
+    return {
+        "apiVersion": f"{TEKTON_GROUP}/{TEKTON_VERSION}",
+        "kind": "TaskRun",
+        "metadata": _common_metadata(name, namespace, run_id, "prepare"),
+        "spec": {
+            "taskRef": {"name": "swebench-eval-prepare"},
+            "params": [
+                {"name": "run_id", "value": run_id},
+                {"name": "predictions_path", "value": predictions_path},
+                {"name": "instance_ids", "value": list(instance_ids)},
+                {"name": "swebench_package_ref", "value": swebench_package_ref},
+            ],
+            "workspaces": [_artifacts_workspace(pvc_name)],
+            "timeout": "10m",
+        },
+    }
+
+
+def build_run_instance_taskrun(
+    *,
+    name: str,
+    namespace: str,
+    pvc_name: str,
+    run_id: str,
+    instance_id: str,
+    instance_image: str,
     dataset_name: str,
     dataset_split: str,
     predictions_path: str,
-    instance_ids: list[str],
-    instance_image_map: dict[str, str],
     swebench_package_ref: str,
     timeout_seconds: int,
-    workflow_builder_url: str,
 ) -> dict[str, Any]:
-    output_dir = f"/workspace/artifacts/{run_id}"
-    params: list[dict[str, Any]] = [
-        {"name": "run_id", "value": run_id},
-        {"name": "dataset_name", "value": dataset_name},
-        {"name": "dataset_split", "value": dataset_split},
-        {"name": "predictions_path", "value": predictions_path},
-        {"name": "output_dir", "value": output_dir},
-        {"name": "instance_ids", "value": list(instance_ids)},
-        {
-            "name": "instance_image_map_json",
-            "value": json.dumps(instance_image_map, sort_keys=True),
-        },
-        {"name": "swebench_package_ref", "value": swebench_package_ref},
-        {"name": "timeout_seconds", "value": str(timeout_seconds)},
-    ]
-    if workflow_builder_url:
-        params.append({"name": "workflow_builder_url", "value": workflow_builder_url})
-
-    pipeline_budget = max(timeout_seconds * 2 + 600, 1800)
     return {
-        "apiVersion": f"{PIPELINERUN_GROUP}/{PIPELINERUN_VERSION}",
-        "kind": "PipelineRun",
+        "apiVersion": f"{TEKTON_GROUP}/{TEKTON_VERSION}",
+        "kind": "TaskRun",
         "metadata": {
-            "name": name,
-            "namespace": namespace,
+            **_common_metadata(name, namespace, run_id, "run-instance"),
             "labels": {
-                "app.kubernetes.io/part-of": "swebench-evaluator",
-                "swebench.benchmark-run-id": safe_label_value(run_id),
+                **_common_metadata(name, namespace, run_id, "run-instance")["labels"],
+                "swebench.instance-id": safe_label_value(instance_id),
             },
         },
         "spec": {
-            "pipelineRef": {"name": pipeline_ref},
-            "params": params,
-            "workspaces": [
-                {
-                    "name": "artifacts",
-                    "persistentVolumeClaim": {"claimName": pvc_name},
-                },
+            "taskRef": {"name": "swebench-eval-run-instance"},
+            "params": [
+                {"name": "run_id", "value": run_id},
+                {"name": "instance_id", "value": instance_id},
+                {"name": "instance_image", "value": instance_image},
+                {"name": "dataset_name", "value": dataset_name},
+                {"name": "dataset_split", "value": dataset_split},
+                {"name": "predictions_path", "value": predictions_path},
+                {"name": "swebench_package_ref", "value": swebench_package_ref},
+                {"name": "timeout_seconds", "value": str(timeout_seconds)},
             ],
-            "timeouts": {"pipeline": f"{pipeline_budget}s"},
+            "workspaces": [_artifacts_workspace(pvc_name)],
+            "timeout": f"{max(timeout_seconds + 300, 1800)}s",
+        },
+    }
+
+
+def build_finalize_taskrun(
+    *,
+    name: str,
+    namespace: str,
+    pvc_name: str,
+    run_id: str,
+    instance_ids: list[str],
+    swebench_package_ref: str,
+    workflow_builder_url: str,
+) -> dict[str, Any]:
+    params: list[dict[str, Any]] = [
+        {"name": "run_id", "value": run_id},
+        {"name": "instance_ids", "value": list(instance_ids)},
+        {"name": "swebench_package_ref", "value": swebench_package_ref},
+    ]
+    if workflow_builder_url:
+        params.append({"name": "workflow_builder_url", "value": workflow_builder_url})
+    return {
+        "apiVersion": f"{TEKTON_GROUP}/{TEKTON_VERSION}",
+        "kind": "TaskRun",
+        "metadata": _common_metadata(name, namespace, run_id, "finalize"),
+        "spec": {
+            "taskRef": {"name": "swebench-eval-finalize"},
+            "params": params,
+            "workspaces": [_artifacts_workspace(pvc_name)],
+            "timeout": "10m",
         },
     }
 
@@ -172,15 +291,15 @@ def load_custom_objects_api():
     return client.CustomObjectsApi()
 
 
-def create_pipelinerun(api, namespace: str, body: dict[str, Any]) -> None:
+def create_taskrun(api, namespace: str, body: dict[str, Any]) -> None:
     from kubernetes.client.rest import ApiException
 
     try:
         api.create_namespaced_custom_object(
-            group=PIPELINERUN_GROUP,
-            version=PIPELINERUN_VERSION,
+            group=TEKTON_GROUP,
+            version=TEKTON_VERSION,
             namespace=namespace,
-            plural=PIPELINERUN_PLURAL,
+            plural=TASKRUN_PLURAL,
             body=body,
         )
     except ApiException as exc:
@@ -189,43 +308,61 @@ def create_pipelinerun(api, namespace: str, body: dict[str, Any]) -> None:
         raise
 
 
-def wait_for_pipelinerun(api, namespace: str, name: str, deadline_seconds: int) -> dict[str, Any]:
+def wait_for_taskruns(
+    api,
+    namespace: str,
+    names: list[str],
+    deadline_seconds: int,
+) -> dict[str, dict[str, Any]]:
     poll_interval = max(2, int(os.environ.get("SWEBENCH_POLL_INTERVAL_SECONDS", "10")))
     start = time.monotonic()
-    while True:
-        pr = api.get_namespaced_custom_object(
-            group=PIPELINERUN_GROUP,
-            version=PIPELINERUN_VERSION,
+    pending = set(names)
+    final: dict[str, dict[str, Any]] = {}
+    while pending and (time.monotonic() - start) < deadline_seconds:
+        for name in list(pending):
+            tr = api.get_namespaced_custom_object(
+                group=TEKTON_GROUP,
+                version=TEKTON_VERSION,
+                namespace=namespace,
+                plural=TASKRUN_PLURAL,
+                name=name,
+            )
+            cond = succeeded_condition(tr)
+            if cond and cond.get("status") in {"True", "False"}:
+                final[name] = tr
+                pending.discard(name)
+        if pending:
+            time.sleep(poll_interval)
+    # Anything still pending after the deadline gets recorded as-is for caller logging.
+    for name in pending:
+        final[name] = api.get_namespaced_custom_object(
+            group=TEKTON_GROUP,
+            version=TEKTON_VERSION,
             namespace=namespace,
-            plural=PIPELINERUN_PLURAL,
+            plural=TASKRUN_PLURAL,
             name=name,
         )
-        cond = succeeded_condition(pr)
-        if cond and cond.get("status") in {"True", "False"}:
-            return pr
-        if time.monotonic() - start >= deadline_seconds:
-            return pr
-        time.sleep(poll_interval)
+    return final
 
 
-def succeeded_condition(pr: dict[str, Any]) -> dict[str, Any] | None:
-    for cond in (pr.get("status") or {}).get("conditions") or []:
+def succeeded_condition(obj: dict[str, Any]) -> dict[str, Any] | None:
+    for cond in (obj.get("status") or {}).get("conditions") or []:
         if isinstance(cond, dict) and cond.get("type") == "Succeeded":
             return cond
     return None
 
 
-def pipelinerun_succeeded(pr: dict[str, Any]) -> bool:
-    cond = succeeded_condition(pr)
+def taskrun_succeeded(tr: dict[str, Any]) -> bool:
+    cond = succeeded_condition(tr)
     return bool(cond and cond.get("status") == "True")
 
 
-def pipelinerun_failure_reason(pr: dict[str, Any]) -> str:
-    cond = succeeded_condition(pr) or {}
+def taskrun_failure_reason(tr: dict[str, Any]) -> str:
+    cond = succeeded_condition(tr) or {}
     reason = str(cond.get("reason") or "")
     message = str(cond.get("message") or "")
     parts = [p for p in (reason, message) if p]
-    return ": ".join(parts) or "PipelineRun did not complete successfully"
+    return ": ".join(parts) or "TaskRun did not complete successfully"
 
 
 def collect_results(run_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[str, Any]]:
