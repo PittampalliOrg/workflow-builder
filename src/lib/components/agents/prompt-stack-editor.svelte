@@ -7,6 +7,9 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Popover from '$lib/components/ui/popover';
+	import * as Tabs from '$lib/components/ui/tabs';
+	import yaml from 'js-yaml';
+	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
 	import {
 		ExternalLink,
 		GripVertical,
@@ -123,6 +126,92 @@
 	const cacheEligible = $derived(prefixChars >= CACHE_THRESHOLD_CHARS);
 
 	const systemPromptCharCount = $derived((config.systemPrompt ?? '').length);
+
+	// Stack | YAML | JSON view toggle (mirrors CMA's edit-agent surface).
+	type View = 'stack' | 'yaml' | 'json';
+	let activeView = $state<View>('stack');
+	let serializeError = $state<string | null>(null);
+
+	type PromptSlice = {
+		systemPrompt: string;
+		staticPromptPresetRefs: PromptPresetRef[];
+		dynamicPromptPresetRefs: PromptPresetRef[];
+	};
+	const promptSlice = $derived<PromptSlice>({
+		systemPrompt: config.systemPrompt ?? '',
+		staticPromptPresetRefs: staticBindings,
+		dynamicPromptPresetRefs: dynamicBindings
+	});
+	const yamlSrc = $derived(yaml.dump(promptSlice, { lineWidth: 100, noRefs: true }));
+	const jsonSrc = $derived(JSON.stringify(promptSlice, null, 2));
+
+	function applyParsed(parsed: unknown) {
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			serializeError = 'Top-level value must be an object.';
+			return;
+		}
+		const obj = parsed as Record<string, unknown>;
+		const patch: Partial<AgentConfig> = {};
+		// systemPrompt — string or null/undefined
+		if (obj.systemPrompt === undefined || obj.systemPrompt === null) {
+			patch.systemPrompt = '';
+		} else if (typeof obj.systemPrompt === 'string') {
+			patch.systemPrompt = obj.systemPrompt;
+		} else {
+			serializeError = 'systemPrompt must be a string.';
+			return;
+		}
+		// preset ref arrays — must be [{id: string, version: number}]
+		for (const key of [
+			'staticPromptPresetRefs',
+			'dynamicPromptPresetRefs'
+		] as const) {
+			if (obj[key] === undefined || obj[key] === null) {
+				patch[key] = [];
+				continue;
+			}
+			if (!Array.isArray(obj[key])) {
+				serializeError = `${key} must be an array.`;
+				return;
+			}
+			const refs: PromptPresetRef[] = [];
+			for (const [idx, entry] of (obj[key] as unknown[]).entries()) {
+				if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+					serializeError = `${key}[${idx}] must be an object {id, version}.`;
+					return;
+				}
+				const e = entry as Record<string, unknown>;
+				if (typeof e.id !== 'string' || !e.id.trim()) {
+					serializeError = `${key}[${idx}].id must be a non-empty string.`;
+					return;
+				}
+				if (typeof e.version !== 'number' || !Number.isInteger(e.version) || e.version <= 0) {
+					serializeError = `${key}[${idx}].version must be a positive integer.`;
+					return;
+				}
+				refs.push({ id: e.id, version: e.version });
+			}
+			patch[key] = refs;
+		}
+		serializeError = null;
+		onPatch(patch);
+	}
+
+	function onYamlChange(text: string) {
+		try {
+			applyParsed(yaml.load(text));
+		} catch (err) {
+			serializeError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function onJsonChange(text: string) {
+		try {
+			applyParsed(JSON.parse(text));
+		} catch (err) {
+			serializeError = err instanceof Error ? err.message : String(err);
+		}
+	}
 
 	// Available presets for picker (excludes those already bound on the same side).
 	const availableForStatic = $derived(
@@ -279,9 +368,27 @@
 	}
 </script>
 
+<div class="space-y-3">
+	<div class="flex items-center justify-between gap-3">
+		<Tabs.Root bind:value={activeView} class="w-auto">
+			<Tabs.List>
+				<Tabs.Trigger value="stack">Stack</Tabs.Trigger>
+				<Tabs.Trigger value="yaml">YAML</Tabs.Trigger>
+				<Tabs.Trigger value="json">JSON</Tabs.Trigger>
+			</Tabs.List>
+		</Tabs.Root>
+		<a
+			href="/workspaces/{workspaceSlug}/prompts"
+			class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+		>
+			Manage presets <ExternalLink class="size-3" />
+		</a>
+	</div>
+
 <div class="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-	<!-- Left: Stack editor -->
+	<!-- Left: Stack editor / YAML / JSON -->
 	<div class="min-w-0 space-y-3">
+		{#if activeView === 'stack'}
 		<div class="flex items-center justify-between">
 			<div>
 				<h3 class="text-sm font-semibold">Prompt Stack</h3>
@@ -289,12 +396,6 @@
 					Static prefix is cacheable; dynamic tail recomputes per turn.
 				</p>
 			</div>
-			<a
-				href="/workspaces/{workspaceSlug}/prompts"
-				class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-			>
-				Manage presets <ExternalLink class="size-3" />
-			</a>
 		</div>
 
 		{#if presetError}
@@ -619,6 +720,58 @@
 			</div>
 
 		</div>
+		{:else if activeView === 'yaml'}
+			<div class="space-y-2">
+				<div class="flex items-baseline justify-between">
+					<h3 class="text-sm font-semibold">YAML view</h3>
+					<span class="text-[10px] text-muted-foreground">
+						scoped to prompt fields · CMA-style · edits flow back into the agent
+					</span>
+				</div>
+				{#if serializeError}
+					<Alert>
+						<AlertDescription>
+							<span class="font-mono text-[11px]">{serializeError}</span>
+						</AlertDescription>
+					</Alert>
+				{/if}
+				<PromptContentEditor
+					value={yamlSrc}
+					onChange={onYamlChange}
+					language="yaml"
+					minHeight="65vh"
+				/>
+				<p class="text-[10px] text-muted-foreground">
+					Edits to <code class="rounded bg-muted px-1">systemPrompt</code>,
+					<code class="rounded bg-muted px-1">staticPromptPresetRefs</code>, and
+					<code class="rounded bg-muted px-1">dynamicPromptPresetRefs</code> persist
+					into the agent config. Other agent fields (mcpServers, tools, skills) live
+					in their own tabs.
+				</p>
+			</div>
+		{:else if activeView === 'json'}
+			<div class="space-y-2">
+				<div class="flex items-baseline justify-between">
+					<h3 class="text-sm font-semibold">JSON view</h3>
+					<span class="text-[10px] text-muted-foreground">
+						scoped to prompt fields · edits flow back into the agent
+					</span>
+				</div>
+				{#if serializeError}
+					<Alert>
+						<AlertDescription>
+							<span class="font-mono text-[11px]">{serializeError}</span>
+						</AlertDescription>
+					</Alert>
+				{/if}
+				<PromptContentEditor
+					value={jsonSrc}
+					onChange={onJsonChange}
+					language="yaml"
+					minHeight="65vh"
+				/>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Right: Live preview -->
@@ -644,4 +797,5 @@
 			</div>
 		</div>
 	</div>
+</div>
 </div>

@@ -7,6 +7,13 @@
 		placeholder?: string;
 		minHeight?: string;
 		readonly?: boolean;
+		/**
+		 * `plain` (default): no language extension — best for free-form prompt text.
+		 * `yaml`: load @codemirror/lang-yaml — also acceptable for JSON since YAML is
+		 *        a strict superset of JSON syntax (string/array/object/number tokens
+		 *        all highlight correctly).
+		 */
+		language?: 'plain' | 'yaml';
 	}
 
 	let {
@@ -14,7 +21,8 @@
 		onChange,
 		placeholder: placeholderText = '',
 		minHeight = '60vh',
-		readonly = false
+		readonly = false,
+		language = 'plain'
 	}: Props = $props();
 
 	let container: HTMLDivElement;
@@ -60,14 +68,24 @@
 		const { defaultKeymap, history, historyKeymap, indentWithTab } = await import(
 			'@codemirror/commands'
 		);
-		const { syntaxHighlighting, defaultHighlightStyle, bracketMatching } = await import(
+		const { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput } = await import(
 			'@codemirror/language'
 		);
+		const { closeBrackets } = await import('@codemirror/autocomplete');
 
 		const updateListener = EditorView.updateListener.of((update) => {
 			if (isInternalUpdate || !update.docChanged) return;
 			onChange(update.state.doc.toString());
 		});
+
+		const langExtensions: unknown[] = [];
+		if (language === 'yaml') {
+			const { yaml } = await import('@codemirror/lang-yaml');
+			langExtensions.push(yaml());
+			langExtensions.push(foldGutter());
+			langExtensions.push(indentOnInput());
+			langExtensions.push(closeBrackets());
+		}
 
 		const extensions = [
 			lineNumbers(),
@@ -80,6 +98,7 @@
 			EditorView.lineWrapping,
 			EditorState.allowMultipleSelections.of(true),
 			keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+			...langExtensions,
 			oneDark,
 			EditorState.readOnly.of(readonly),
 			placeholder(placeholderText),
@@ -108,7 +127,7 @@
 		editorView = new EditorView({
 			doc: value,
 			parent: container,
-			extensions
+			extensions: extensions as never
 		}) as unknown as typeof editorView;
 	}
 </script>
