@@ -50,7 +50,12 @@ INTERNAL_API_SECRET_KEY = os.environ.get(
 ARTIFACT_ROOT = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
 EVALUATOR_NAMESPACE = os.environ.get("SWEBENCH_EVALUATOR_NAMESPACE", "workflow-builder")
 EVALUATOR_IMAGE = os.environ.get("SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest")
-DOCKER_DIND_IMAGE = os.environ.get("SWEBENCH_DOCKER_DIND_IMAGE", "docker.io/library/docker:27-dind")
+SWEBENCH_PIPELINE_NAMESPACE = os.environ.get("SWEBENCH_PIPELINE_NAMESPACE", "workflow-builder")
+SWEBENCH_PIPELINE_REF = os.environ.get("SWEBENCH_PIPELINE_REF", "swebench-eval")
+SWEBENCH_PACKAGE_REF = os.environ.get(
+    "SWEBENCH_PACKAGE_REF",
+    "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
+)
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
 EVALUATION_RESULTS_EVENT = "swebench.evaluation.results"
 EVALUATION_FAILED_EVENT = "swebench.evaluation.failed"
@@ -63,37 +68,26 @@ wfr = wf.WorkflowRuntime()
 
 
 EVALUATOR_RESOURCE_PROFILES: dict[str, dict[str, dict[str, dict[str, str]]]] = {
+    # The evaluator is a thin PipelineRun dispatcher (no docker-in-docker
+    # anymore) — per-instance grading happens in dedicated TaskRun pods. The
+    # dispatcher container only needs enough headroom for the kubernetes
+    # client + watch loop + a handful of MLflow logs.
     "standard": {
-        # Set explicit zero requests so Kubernetes does not default requests
-        # from limits. This lets small/dev clusters with PVC node affinity
-        # schedule one-off evaluator jobs while retaining bounded limits.
         "evaluator": {
             "requests": {"cpu": "0", "memory": "0"},
-            "limits": {"cpu": "4", "memory": "8Gi"},
-        },
-        "docker": {
-            "requests": {"cpu": "0", "memory": "0"},
-            "limits": {"cpu": "2", "memory": "4Gi"},
+            "limits": {"cpu": "1", "memory": "512Mi"},
         },
     },
     "large": {
         "evaluator": {
-            "requests": {"cpu": "2", "memory": "4Gi"},
-            "limits": {"cpu": "8", "memory": "16Gi"},
-        },
-        "docker": {
-            "requests": {"cpu": "500m", "memory": "1Gi"},
-            "limits": {"cpu": "4", "memory": "8Gi"},
+            "requests": {"cpu": "100m", "memory": "256Mi"},
+            "limits": {"cpu": "1", "memory": "1Gi"},
         },
     },
     "xlarge": {
         "evaluator": {
-            "requests": {"cpu": "4", "memory": "8Gi"},
-            "limits": {"cpu": "12", "memory": "24Gi"},
-        },
-        "docker": {
-            "requests": {"cpu": "1", "memory": "2Gi"},
-            "limits": {"cpu": "4", "memory": "8Gi"},
+            "requests": {"cpu": "250m", "memory": "512Mi"},
+            "limits": {"cpu": "2", "memory": "2Gi"},
         },
     },
 }
@@ -400,7 +394,7 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
     evaluation_timeout_seconds = max(60, int(run.get("timeoutSeconds") or 7200))
     job_deadline_seconds = max(600, evaluation_timeout_seconds + 600)
-    evaluator_max_workers = bounded_swebench_concurrency(run.get("concurrency"))
+    instance_image_map = _instance_image_map_for_run(run, instance_ids)
     try:
         from kubernetes.client.rest import ApiException
 
@@ -411,6 +405,10 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             client.V1EnvVar(name="PREDICTIONS_PATH", value=predictions_path),
             client.V1EnvVar(name="RUN_ID", value=run["id"]),
             client.V1EnvVar(name="INSTANCE_IDS", value=" ".join(instance_ids)),
+            client.V1EnvVar(
+                name="INSTANCE_IMAGE_MAP_JSON",
+                value=json.dumps(instance_image_map, sort_keys=True),
+            ),
             client.V1EnvVar(name="WORKFLOW_BUILDER_URL", value=WORKFLOW_BUILDER_URL),
             client.V1EnvVar(name="MLFLOW_ENABLED", value=os.environ.get("MLFLOW_ENABLED", "true")),
             client.V1EnvVar(name="MLFLOW_TRACKING_URI", value=MLFLOW_TRACKING_URI),
@@ -433,9 +431,9 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 ),
             ),
             client.V1EnvVar(name="SWEBENCH_EVALUATOR_JOB_NAME", value=job_name),
-            client.V1EnvVar(name="DOCKER_HOST", value="tcp://localhost:2375"),
-            client.V1EnvVar(name="SWEBENCH_IMAGE_NAMESPACE", value="swebench"),
-            client.V1EnvVar(name="SWEBENCH_MAX_WORKERS", value=str(evaluator_max_workers)),
+            client.V1EnvVar(name="SWEBENCH_PIPELINE_NAMESPACE", value=SWEBENCH_PIPELINE_NAMESPACE),
+            client.V1EnvVar(name="SWEBENCH_PIPELINE_REF", value=SWEBENCH_PIPELINE_REF),
+            client.V1EnvVar(name="SWEBENCH_PACKAGE_REF", value=SWEBENCH_PACKAGE_REF),
             client.V1EnvVar(
                 name="SWEBENCH_EVALUATION_TIMEOUT_SECONDS",
                 value=str(evaluation_timeout_seconds),
@@ -453,32 +451,16 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 client.V1VolumeMount(name="artifacts", mount_path=str(ARTIFACT_ROOT)),
             ],
         )
-        docker_daemon = client.V1Container(
-            name="docker-daemon",
-            image=DOCKER_DIND_IMAGE,
-            env=[client.V1EnvVar(name="DOCKER_TLS_CERTDIR", value="")],
-            args=["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"],
-            security_context=client.V1SecurityContext(privileged=True),
-            resources=client.V1ResourceRequirements(
-                requests=resource_profile["docker"]["requests"],
-                limits=resource_profile["docker"]["limits"],
-            ),
-            volume_mounts=[
-                client.V1VolumeMount(name="docker-graph", mount_path="/var/lib/docker"),
-            ],
-        )
         run_id_label = _safe_label_value(run["id"])
         pod = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label}),
             spec=client.V1PodSpec(
                 restart_policy="Never",
                 service_account_name="swebench-coordinator",
-                share_process_namespace=True,
                 image_pull_secrets=[client.V1LocalObjectReference(name="ghcr-pull-credentials")],
-                containers=[docker_daemon, container],
+                containers=[container],
                 volumes=[
                     client.V1Volume(name="artifacts", persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=os.environ.get("SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts"))),
-                    client.V1Volume(name="docker-graph", empty_dir=client.V1EmptyDirVolumeSource()),
                 ],
             ),
         )
@@ -500,7 +482,7 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             already_exists = True
             logger.info("Evaluator job %s already exists; treating ensure as success", job_name)
         _mark_run_status(ctx, {"runId": run["id"], "status": "evaluating", "evaluatorJobName": job_name})
-        return {"jobName": job_name, "alreadyExists": already_exists, "maxWorkers": evaluator_max_workers}
+        return {"jobName": job_name, "alreadyExists": already_exists}
     except Exception as exc:
         raise RuntimeError(f"failed to ensure evaluator job: {exc}") from exc
 
@@ -635,6 +617,37 @@ def _child_instance_workflow_id(run_id: str, instance_id: str) -> str:
 
 def _evaluator_job_name(run_id: str) -> str:
     return _hash_suffixed_name("swebench-eval-", [run_id], max_length=63)
+
+
+def _instance_image_map_for_run(
+    run: dict[str, Any],
+    instance_ids: list[str],
+) -> dict[str, str]:
+    instances = run.get("instances") or []
+    by_id: dict[str, dict[str, Any]] = {}
+    for inst in instances:
+        if isinstance(inst, dict):
+            iid = inst.get("instanceId") or inst.get("instance_id")
+            if isinstance(iid, str):
+                by_id[iid] = inst
+    image_map: dict[str, str] = {}
+    missing: list[str] = []
+    for iid in instance_ids:
+        inst = by_id.get(iid) or {}
+        env = inst.get("inferenceEnvironment") if isinstance(inst, dict) else None
+        sandbox_image = (
+            env.get("sandboxImage") if isinstance(env, dict) else None
+        )
+        if isinstance(sandbox_image, str) and sandbox_image.strip():
+            image_map[iid] = sandbox_image.strip()
+        else:
+            missing.append(iid)
+    if missing:
+        raise RuntimeError(
+            "swebench evaluator: missing inferenceEnvironment.sandboxImage for "
+            f"instances: {missing}. Inference image build must complete before grading."
+        )
+    return image_map
 
 
 def _hash_suffixed_name(

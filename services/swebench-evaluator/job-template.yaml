@@ -6,8 +6,14 @@ metadata:
   labels:
     app: swebench-evaluator
     benchmark.workflow-builder.io/run-id: REPLACE_RUN_ID
+# Reference shape only — the coordinator builds the real Job programmatically
+# in services/swebench-coordinator/src/app.py:_ensure_evaluator_job. This file
+# is kept so reviewers can see the current single-container shape without
+# reading Python. Docker-in-docker has been removed; per-instance grading
+# happens in dedicated Tekton TaskRun pods (PipelineRef: swebench-eval).
 spec:
   backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
   template:
     metadata:
       labels:
@@ -19,26 +25,6 @@ spec:
       imagePullSecrets:
         - name: ghcr-pull-credentials
       containers:
-        - name: docker-daemon
-          image: docker.io/library/docker:27-dind
-          args:
-            - --host=tcp://0.0.0.0:2375
-            - --host=unix:///var/run/docker.sock
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: ""
-          securityContext:
-            privileged: true
-          resources:
-            requests:
-              cpu: 500m
-              memory: 1Gi
-            limits:
-              cpu: "4"
-              memory: 8Gi
-          volumeMounts:
-            - name: docker-graph
-              mountPath: /var/lib/docker
         - name: evaluator
           image: ghcr.io/pittampalliorg/swebench-evaluator:latest
           env:
@@ -52,24 +38,25 @@ spec:
               value: REPLACE_RUN_ID
             - name: INSTANCE_IDS
               value: ""
+            - name: INSTANCE_IMAGE_MAP_JSON
+              value: "{}"
             - name: WORKFLOW_BUILDER_URL
               value: http://workflow-builder.workflow-builder.svc.cluster.local:3000
-            - name: DOCKER_HOST
-              value: tcp://localhost:2375
-            - name: SWEBENCH_IMAGE_NAMESPACE
-              value: swebench
+            - name: SWEBENCH_PIPELINE_NAMESPACE
+              value: workflow-builder
+            - name: SWEBENCH_PIPELINE_REF
+              value: swebench-eval
+            - name: SWEBENCH_PACKAGE_REF
+              value: git+https://github.com/PittampalliOrg/SWE-bench.git@main
             - name: INTERNAL_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: workflow-builder-secrets
                   key: INTERNAL_API_TOKEN
           resources:
-            requests:
-              cpu: "2"
-              memory: 4Gi
             limits:
-              cpu: "8"
-              memory: 16Gi
+              cpu: "1"
+              memory: 512Mi
           volumeMounts:
             - name: artifacts
               mountPath: /artifacts
@@ -77,5 +64,3 @@ spec:
         - name: artifacts
           persistentVolumeClaim:
             claimName: swebench-artifacts
-        - name: docker-graph
-          emptyDir: {}

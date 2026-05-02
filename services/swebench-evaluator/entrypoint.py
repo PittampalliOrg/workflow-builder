@@ -3,388 +3,281 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import signal
-import subprocess
 import sys
-import urllib.error
-import urllib.request
+import time
 from typing import Any
 
 import requests
+
+
+PIPELINERUN_GROUP = "tekton.dev"
+PIPELINERUN_VERSION = "v1"
+PIPELINERUN_PLURAL = "pipelineruns"
 
 
 def main() -> int:
     dataset_name = required_env("DATASET_NAME")
     predictions_path = required_env("PREDICTIONS_PATH")
     run_id = required_env("RUN_ID")
-    instance_ids = os.environ.get("INSTANCE_IDS", "").split()
+    instance_ids = [s for s in os.environ.get("INSTANCE_IDS", "").split() if s]
+    if not instance_ids:
+        raise RuntimeError("INSTANCE_IDS env var is required (space-separated)")
     split = os.environ.get("DATASET_SPLIT", "test")
-    max_workers = os.environ.get("SWEBENCH_MAX_WORKERS", "1")
-    image_namespace = os.environ.get("SWEBENCH_IMAGE_NAMESPACE", "swebench")
-    log_dir = pathlib.Path(os.environ.get("SWEBENCH_LOG_DIR", f"/artifacts/{run_id}/harness"))
+    image_map = parse_instance_image_map(os.environ.get("INSTANCE_IMAGE_MAP_JSON", ""), instance_ids)
+    artifacts_root = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
+    log_dir = artifacts_root / run_id / "harness"
     log_dir.mkdir(parents=True, exist_ok=True)
-    wait_for_docker()
+
+    namespace = os.environ.get("SWEBENCH_PIPELINE_NAMESPACE", "workflow-builder")
+    pipeline_ref = os.environ.get("SWEBENCH_PIPELINE_REF", "swebench-eval")
+    pvc_name = os.environ.get("SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts")
+    swebench_pkg = os.environ.get(
+        "SWEBENCH_PACKAGE_REF",
+        "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
+    )
+    timeout_seconds = evaluation_timeout_seconds()
+    pipelinerun_name = pipelinerun_name_for(run_id)
+
+    pipelinerun = build_pipelinerun(
+        name=pipelinerun_name,
+        namespace=namespace,
+        pipeline_ref=pipeline_ref,
+        pvc_name=pvc_name,
+        run_id=run_id,
+        dataset_name=dataset_name,
+        dataset_split=split,
+        predictions_path=predictions_path,
+        instance_ids=instance_ids,
+        instance_image_map=image_map,
+        swebench_package_ref=swebench_pkg,
+        timeout_seconds=timeout_seconds,
+        workflow_builder_url=os.environ.get("WORKFLOW_BUILDER_URL", ""),
+    )
+
+    api = load_custom_objects_api()
+    create_pipelinerun(api, namespace, pipelinerun)
+    print(f"[swebench-evaluator] dispatched PipelineRun {namespace}/{pipelinerun_name}")
+
+    overall_deadline = max(timeout_seconds + 1200, 1800)
+    final = wait_for_pipelinerun(api, namespace, pipelinerun_name, overall_deadline)
+    succeeded = pipelinerun_succeeded(final)
+    failure_message = pipelinerun_failure_reason(final) if not succeeded else None
+
+    run_dir = artifacts_root / run_id
+    run_report = read_json(run_dir / "run-report.json")
+    results = collect_results(run_dir, instance_ids)
+
+    log_mlflow_evaluation(run_id, results, log_dir, failure_message)
+    post_results(run_id, results, error=failure_message)
+    return 0 if succeeded else 1
+
+
+def parse_instance_image_map(raw: str, instance_ids: list[str]) -> dict[str, str]:
+    if not raw.strip():
+        raise RuntimeError(
+            "INSTANCE_IMAGE_MAP_JSON env var is required: a JSON object mapping "
+            "instance_id -> instance image ref"
+        )
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"INSTANCE_IMAGE_MAP_JSON is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("INSTANCE_IMAGE_MAP_JSON must decode to an object")
+    missing = [iid for iid in instance_ids if not isinstance(parsed.get(iid), str) or not parsed[iid]]
+    if missing:
+        raise RuntimeError(f"INSTANCE_IMAGE_MAP_JSON missing image refs for: {missing}")
+    return {iid: parsed[iid] for iid in instance_ids}
+
+
+def pipelinerun_name_for(run_id: str) -> str:
+    safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in run_id).strip("-")[:40] or "run"
+    suffix = format(int(time.time()) % 100000, "05d")
+    return f"swebench-eval-{safe}-{suffix}"
+
+
+def build_pipelinerun(
+    *,
+    name: str,
+    namespace: str,
+    pipeline_ref: str,
+    pvc_name: str,
+    run_id: str,
+    dataset_name: str,
+    dataset_split: str,
+    predictions_path: str,
+    instance_ids: list[str],
+    instance_image_map: dict[str, str],
+    swebench_package_ref: str,
+    timeout_seconds: int,
+    workflow_builder_url: str,
+) -> dict[str, Any]:
+    output_dir = f"/workspace/artifacts/{run_id}"
+    params: list[dict[str, Any]] = [
+        {"name": "run_id", "value": run_id},
+        {"name": "dataset_name", "value": dataset_name},
+        {"name": "dataset_split", "value": dataset_split},
+        {"name": "predictions_path", "value": predictions_path},
+        {"name": "output_dir", "value": output_dir},
+        {"name": "instance_ids", "value": list(instance_ids)},
+        {
+            "name": "instance_image_map_json",
+            "value": json.dumps(instance_image_map, sort_keys=True),
+        },
+        {"name": "swebench_package_ref", "value": swebench_package_ref},
+        {"name": "timeout_seconds", "value": str(timeout_seconds)},
+    ]
+    if workflow_builder_url:
+        params.append({"name": "workflow_builder_url", "value": workflow_builder_url})
+
+    pipeline_budget = max(timeout_seconds * 2 + 600, 1800)
+    return {
+        "apiVersion": f"{PIPELINERUN_GROUP}/{PIPELINERUN_VERSION}",
+        "kind": "PipelineRun",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/part-of": "swebench-evaluator",
+                "swebench.benchmark-run-id": safe_label_value(run_id),
+            },
+        },
+        "spec": {
+            "pipelineRef": {"name": pipeline_ref},
+            "params": params,
+            "workspaces": [
+                {
+                    "name": "artifacts",
+                    "persistentVolumeClaim": {"claimName": pvc_name},
+                },
+            ],
+            "timeouts": {"pipeline": f"{pipeline_budget}s"},
+        },
+    }
+
+
+def safe_label_value(value: str) -> str:
+    sanitized = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value)
+    sanitized = sanitized.strip("-_.")
+    return sanitized[:63] or "run"
+
+
+def load_custom_objects_api():
+    from kubernetes import client, config
 
     try:
-        cmd = [
-            sys.executable,
-            "-m",
-            "swebench.harness.run_evaluation",
-            "--dataset_name",
-            dataset_name,
-            "--split",
-            split,
-            "--predictions_path",
-            predictions_path,
-            "--run_id",
-            run_id,
-            "--report_dir",
-            str(log_dir),
-            "--max_workers",
-            max_workers,
-            "--namespace",
-            image_namespace,
-        ]
-        if instance_ids:
-            cmd.extend(["--instance_ids", *instance_ids])
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+    return client.CustomObjectsApi()
 
-        timeout_seconds = evaluation_timeout_seconds()
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=str(log_dir),
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            timeout_message = f"SWE-bench harness timed out after {timeout_seconds} seconds"
-            (log_dir / "stdout.log").write_text(output_text(exc.stdout), encoding="utf-8")
-            (log_dir / "stderr.log").write_text(
-                output_text(exc.stderr, suffix=f"\n{timeout_message}\n"),
-                encoding="utf-8",
-            )
-            parsed_results = parse_results(
-                log_dir,
-                instance_ids,
-                include_missing=False,
-                include_incomplete=False,
-            )
-            timeout_results = make_timeout_results(
-                missing_result_instance_ids(instance_ids, parsed_results),
-                log_dir,
-                timeout_message,
-            )
-            log_mlflow_evaluation(run_id, [*parsed_results, *timeout_results], log_dir, timeout_message)
-            post_results(
-                run_id,
-                [*parsed_results, *timeout_results],
-                error=timeout_message,
-            )
-            return 124
 
-        (log_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
-        (log_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
-        parsed_results = parse_results(log_dir, instance_ids)
-        log_mlflow_evaluation(
-            run_id,
-            parsed_results,
-            log_dir,
-            None if result.returncode == 0 else result.stderr[-4000:],
+def create_pipelinerun(api, namespace: str, body: dict[str, Any]) -> None:
+    from kubernetes.client.rest import ApiException
+
+    try:
+        api.create_namespaced_custom_object(
+            group=PIPELINERUN_GROUP,
+            version=PIPELINERUN_VERSION,
+            namespace=namespace,
+            plural=PIPELINERUN_PLURAL,
+            body=body,
         )
-        post_results(
-            run_id,
-            parsed_results if result.returncode == 0 else parsed_results,
-            error=None if result.returncode == 0 else result.stderr[-4000:],
-        )
-        return result.returncode
-    finally:
-        stop_docker_sidecar()
+    except ApiException as exc:
+        if getattr(exc, "status", None) == 409:
+            return
+        raise
 
 
-def wait_for_docker() -> None:
-    deadline = int(os.environ.get("DOCKER_WAIT_SECONDS", "180"))
-    if deadline <= 0:
-        return
-    import time
-
+def wait_for_pipelinerun(api, namespace: str, name: str, deadline_seconds: int) -> dict[str, Any]:
+    poll_interval = max(2, int(os.environ.get("SWEBENCH_POLL_INTERVAL_SECONDS", "10")))
     start = time.monotonic()
     while True:
-        if docker_api_ready():
-            return
-        if time.monotonic() - start >= deadline:
-            raise RuntimeError("Docker daemon did not become ready")
-        time.sleep(2)
+        pr = api.get_namespaced_custom_object(
+            group=PIPELINERUN_GROUP,
+            version=PIPELINERUN_VERSION,
+            namespace=namespace,
+            plural=PIPELINERUN_PLURAL,
+            name=name,
+        )
+        cond = succeeded_condition(pr)
+        if cond and cond.get("status") in {"True", "False"}:
+            return pr
+        if time.monotonic() - start >= deadline_seconds:
+            return pr
+        time.sleep(poll_interval)
 
 
-def docker_api_ready() -> bool:
-    docker_host = os.environ.get("DOCKER_HOST", "tcp://localhost:2375").strip()
-    if docker_host.startswith("tcp://"):
-        url = "http://" + docker_host.removeprefix("tcp://").rstrip("/") + "/_ping"
-    elif docker_host.startswith("http://") or docker_host.startswith("https://"):
-        url = docker_host.rstrip("/") + "/_ping"
-    else:
-        return subprocess.run(
-            ["docker", "info"],
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode == 0
-    try:
-        with urllib.request.urlopen(url, timeout=2) as response:
-            return response.status == 200 and response.read().strip() == b"OK"
-    except (OSError, urllib.error.URLError):
-        return False
+def succeeded_condition(pr: dict[str, Any]) -> dict[str, Any] | None:
+    for cond in (pr.get("status") or {}).get("conditions") or []:
+        if isinstance(cond, dict) and cond.get("type") == "Succeeded":
+            return cond
+    return None
 
 
-def evaluation_timeout_seconds() -> int:
-    raw = os.environ.get("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "7200").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 7200
-    return max(60, value)
+def pipelinerun_succeeded(pr: dict[str, Any]) -> bool:
+    cond = succeeded_condition(pr)
+    return bool(cond and cond.get("status") == "True")
 
 
-def output_text(value: Any, *, suffix: str = "") -> str:
-    if value is None:
-        text = ""
-    elif isinstance(value, bytes):
-        text = value.decode("utf-8", errors="replace")
-    else:
-        text = str(value)
-    return text + suffix
+def pipelinerun_failure_reason(pr: dict[str, Any]) -> str:
+    cond = succeeded_condition(pr) or {}
+    reason = str(cond.get("reason") or "")
+    message = str(cond.get("message") or "")
+    parts = [p for p in (reason, message) if p]
+    return ": ".join(parts) or "PipelineRun did not complete successfully"
 
 
-def make_timeout_results(
-    instance_ids: list[str],
-    log_dir: pathlib.Path,
-    message: str,
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "instance_id": instance_id,
-            "resolved": False,
-            "status": "timeout",
-            "error": message,
-            "logs_path": str(log_dir),
-            "harness_result": {"timeout": True, "message": message},
-        }
-        for instance_id in instance_ids
-    ]
-
-
-def stop_docker_sidecar() -> None:
-    enabled = os.environ.get("SWEBENCH_STOP_DOCKER_SIDECAR", "true").lower()
-    if enabled in {"0", "false", "no", "off"}:
-        return
-
-    current_pid = os.getpid()
-    for proc in pathlib.Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
-        pid = int(proc.name)
-        if pid == current_pid:
-            continue
-        try:
-            comm = (proc / "comm").read_text(encoding="utf-8", errors="ignore").strip()
-            cmdline = (
-                (proc / "cmdline")
-                .read_bytes()
-                .replace(b"\x00", b" ")
-                .decode("utf-8", errors="ignore")
-            )
-        except OSError:
-            continue
-        if "dockerd" not in f"{comm} {cmdline}":
-            continue
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            continue
-
-
-def parse_results(
-    log_dir: pathlib.Path,
-    instance_ids: list[str],
-    *,
-    include_missing: bool = True,
-    include_incomplete: bool = True,
-) -> list[dict[str, Any]]:
-    candidates = list(log_dir.rglob("*.json"))
-    by_instance: dict[str, dict[str, Any]] = {}
-    for path in candidates:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        visit_aggregate_report(payload, path, by_instance, include_incomplete=include_incomplete)
-        visit_result_payload(payload, path, by_instance)
+def collect_results(run_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for instance_id in instance_ids:
-        result = by_instance.get(instance_id)
-        if result is None:
-            if not include_missing:
-                continue
-            result = {
-                "instance_id": instance_id,
-                "status": "error",
-                "error": "No harness result JSON found for instance",
-                "logs_path": str(log_dir),
-            }
-        results.append(result)
-    if not instance_ids:
-        results.extend(by_instance.values())
+    for iid in instance_ids:
+        report_path = run_dir / iid / "report.json"
+        if not report_path.exists():
+            results.append(
+                {
+                    "instance_id": iid,
+                    "resolved": False,
+                    "status": "error",
+                    "error": "No report.json produced by Tekton run-instance Task",
+                    "logs_path": str(run_dir / iid),
+                }
+            )
+            continue
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            results.append(
+                {
+                    "instance_id": iid,
+                    "resolved": False,
+                    "status": "error",
+                    "error": f"Failed to parse report.json: {exc}",
+                    "logs_path": str(run_dir / iid),
+                }
+            )
+            continue
+        payload.setdefault("instance_id", iid)
+        payload.setdefault("logs_path", str(run_dir / iid))
+        results.append(payload)
     return results
 
 
-def missing_result_instance_ids(
-    instance_ids: list[str],
-    results: list[dict[str, Any]],
-) -> list[str]:
-    parsed_ids = {
-        result.get("instance_id") or result.get("instanceId")
-        for result in results
-        if isinstance(result.get("instance_id") or result.get("instanceId"), str)
-    }
-    return [instance_id for instance_id in instance_ids if instance_id not in parsed_ids]
+def read_json(path: pathlib.Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
-def visit_aggregate_report(
-    payload: Any,
-    path: pathlib.Path,
-    out: dict[str, dict[str, Any]],
-    *,
-    include_incomplete: bool = True,
-) -> None:
-    if not isinstance(payload, dict):
-        return
-
-    resolved_ids = string_set(payload.get("resolved_ids"))
-    unresolved_ids = string_set(payload.get("unresolved_ids"))
-    error_ids = string_set(payload.get("error_ids"))
-    empty_patch_ids = string_set(payload.get("empty_patch_ids"))
-    incomplete_ids = string_set(payload.get("incomplete_ids"))
-    if not any((resolved_ids, unresolved_ids, error_ids, empty_patch_ids, incomplete_ids)):
-        return
-
-    summary = summarize_aggregate_report(payload)
-    for instance_id in sorted(resolved_ids):
-        out[instance_id] = make_result(
-            instance_id=instance_id,
-            resolved=True,
-            status="resolved",
-            path=path,
-            payload=payload,
-            test_output_summary=summary,
-        )
-    for instance_id in sorted(unresolved_ids):
-        out[instance_id] = make_result(
-            instance_id=instance_id,
-            resolved=False,
-            status="unresolved",
-            path=path,
-            payload=payload,
-            test_output_summary=summary,
-        )
-    for instance_id in sorted(empty_patch_ids):
-        out[instance_id] = make_result(
-            instance_id=instance_id,
-            resolved=False,
-            status="empty_patch",
-            path=path,
-            payload=payload,
-            error="Empty patch",
-            test_output_summary=summary,
-        )
-    incomplete_status_ids = incomplete_ids if include_incomplete else set()
-    for instance_id in sorted(error_ids | incomplete_status_ids):
-        error = "Evaluation did not complete" if instance_id in incomplete_status_ids else "Harness error"
-        out[instance_id] = make_result(
-            instance_id=instance_id,
-            resolved=False,
-            status="error",
-            path=path,
-            payload=payload,
-            error=error,
-            test_output_summary=summary,
-        )
-
-
-def visit_result_payload(payload: Any, path: pathlib.Path, out: dict[str, dict[str, Any]]) -> None:
-    if isinstance(payload, dict):
-        instance_id = payload.get("instance_id") or payload.get("instanceId")
-        if isinstance(instance_id, str):
-            resolved = payload.get("resolved")
-            if resolved is None and isinstance(payload.get(instance_id), dict):
-                resolved = payload[instance_id].get("resolved")
-            out[instance_id] = make_result(
-                instance_id=instance_id,
-                resolved=bool(resolved),
-                status="resolved" if resolved else "failed",
-                path=path,
-                payload=payload,
-            )
-        for key, value in payload.items():
-            if isinstance(key, str) and "__" in key and isinstance(value, dict):
-                resolved = value.get("resolved")
-                if resolved is not None:
-                    out[key] = make_result(
-                        instance_id=key,
-                        resolved=bool(resolved),
-                        status="resolved" if resolved else "failed",
-                        path=path,
-                        payload=value,
-                    )
-        for value in payload.values():
-            visit_result_payload(value, path, out)
-    elif isinstance(payload, list):
-        for value in payload:
-            visit_result_payload(value, path, out)
-
-
-def make_result(
-    *,
-    instance_id: str,
-    resolved: bool,
-    status: str,
-    path: pathlib.Path,
-    payload: dict[str, Any],
-    error: str | None = None,
-    test_output_summary: str | None = None,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "instance_id": instance_id,
-        "resolved": resolved,
-        "status": status,
-        "logs_path": str(path),
-        "harness_result": payload,
-    }
-    if error:
-        result["error"] = error
-    if test_output_summary:
-        result["test_output_summary"] = test_output_summary
-    return result
-
-
-def string_set(value: Any) -> set[str]:
-    if not isinstance(value, list):
-        return set()
-    return {item for item in value if isinstance(item, str)}
-
-
-def summarize_aggregate_report(payload: dict[str, Any]) -> str:
-    fields = [
-        ("total", "total_instances"),
-        ("submitted", "submitted_instances"),
-        ("completed", "completed_instances"),
-        ("resolved", "resolved_instances"),
-        ("unresolved", "unresolved_instances"),
-        ("empty_patches", "empty_patch_instances"),
-        ("errors", "error_instances"),
-    ]
-    parts = [f"{label}={payload[key]}" for label, key in fields if key in payload]
-    return "SWE-bench report: " + ", ".join(parts) if parts else "SWE-bench report"
+def evaluation_timeout_seconds() -> int:
+    raw = os.environ.get("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "1800").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 1800
+    return max(60, value)
 
 
 def mlflow_enabled() -> bool:
@@ -410,16 +303,32 @@ def log_mlflow_evaluation(
 
         mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"].strip())
         with mlflow.start_run(run_id=parent_run_id):
-            mlflow.set_tag("workflow_builder.evaluator_job_name", os.environ.get("SWEBENCH_EVALUATOR_JOB_NAME", ""))
+            mlflow.set_tag(
+                "workflow_builder.evaluator_job_name",
+                os.environ.get("SWEBENCH_EVALUATOR_JOB_NAME", ""),
+            )
             mlflow.set_tag("workflow_builder.evaluator_error", error or "")
             mlflow.log_metric("harness_result_count", len(results))
-            mlflow.log_metric("harness_resolved_count", sum(1 for r in results if r.get("resolved") is True))
-            mlflow.log_metric("harness_unresolved_count", sum(1 for r in results if r.get("status") in {"failed", "unresolved"}))
-            mlflow.log_metric("harness_empty_patch_count", sum(1 for r in results if r.get("status") == "empty_patch"))
-            mlflow.log_metric("harness_error_count", sum(1 for r in results if r.get("status") == "error"))
-            mlflow.log_metric("harness_timeout_count", sum(1 for r in results if r.get("status") == "timeout"))
-            for artifact in sorted(log_dir.glob("*.log")):
-                mlflow.log_artifact(str(artifact), artifact_path="harness")
+            mlflow.log_metric(
+                "harness_resolved_count",
+                sum(1 for r in results if r.get("resolved") is True),
+            )
+            mlflow.log_metric(
+                "harness_unresolved_count",
+                sum(1 for r in results if r.get("status") in {"failed", "unresolved"}),
+            )
+            mlflow.log_metric(
+                "harness_empty_patch_count",
+                sum(1 for r in results if r.get("status") == "empty_patch"),
+            )
+            mlflow.log_metric(
+                "harness_error_count",
+                sum(1 for r in results if r.get("status") == "error"),
+            )
+            mlflow.log_metric(
+                "harness_timeout_count",
+                sum(1 for r in results if r.get("status") == "timeout"),
+            )
             for artifact in sorted(log_dir.rglob("*.json")):
                 mlflow.log_artifact(str(artifact), artifact_path="harness/results")
         instance_runs = mlflow_instance_run_map()
@@ -439,7 +348,7 @@ def log_mlflow_evaluation(
                 mlflow.log_metric("swebench_empty_patch", 1 if status == "empty_patch" else 0)
                 mlflow.log_metric("swebench_timeout", 1 if status == "timeout" else 0)
                 mlflow.log_metric("swebench_error", 1 if status == "error" else 0)
-                harness_result = result.get("harness_result")
+                harness_result = result.get("harness_result") or result.get("harnessResult")
                 if isinstance(harness_result, dict):
                     mlflow.log_dict(harness_result, "harness/result.json")
     except Exception as exc:
