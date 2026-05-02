@@ -187,8 +187,9 @@
 	onMount(() => void load());
 </script>
 
-<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
-	<header class="flex items-start justify-between gap-4 flex-wrap">
+<div class="h-full overflow-y-auto">
+	<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
+		<header class="flex items-start justify-between gap-4 flex-wrap">
 		<div>
 			<h1 class="text-2xl font-semibold">Agents</h1>
 			<p class="text-sm text-muted-foreground mt-1">Create and manage autonomous agents.</p>
@@ -387,6 +388,7 @@
 			</div>
 		{/snippet}
 	</ResourceTable>
+	</div>
 </div>
 
 <AlertDialog
