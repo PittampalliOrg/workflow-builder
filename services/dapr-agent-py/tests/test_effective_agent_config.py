@@ -4,6 +4,8 @@ import json
 import os
 import sys
 
+import pytest
+
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -102,16 +104,41 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
     ]
 
 
-def test_model_mapping_records_spec_component_provider_and_provider_model() -> None:
-    llm = resolve_llm_metadata(
-        message={"agentConfig": {"modelSpec": "openai/gpt-5.4"}}
-    )
+@pytest.mark.parametrize(
+    ("model_spec", "llm_component", "provider", "provider_model"),
+    [
+        ("openai/gpt-5.4", "llm-openai-gpt5", "openai", "gpt-5.4"),
+        ("openai/o3", "llm-openai-o3", "openai", "o3"),
+        (
+            "googleai/gemini-3.1-pro-preview",
+            "llm-google-gemini",
+            "googleai",
+            "gemini-3.1-pro-preview",
+        ),
+        ("deepseek/default", "llm-deepseek", "deepseek", "default"),
+        (
+            "huggingface/meta-llama/Meta-Llama-3-8B",
+            "llm-huggingface-llama3",
+            "huggingface",
+            "meta-llama/Meta-Llama-3-8B",
+        ),
+        ("mistral/open-mistral-7b", "llm-mistral-open", "mistral", "open-mistral-7b"),
+        ("echo/local", "llm-echo", "echo", "local"),
+    ],
+)
+def test_model_mapping_records_spec_component_provider_and_provider_model(
+    model_spec: str,
+    llm_component: str,
+    provider: str,
+    provider_model: str,
+) -> None:
+    llm = resolve_llm_metadata(message={"agentConfig": {"modelSpec": model_spec}})
 
     assert llm == {
-        "modelSpec": "openai/gpt-5.4",
-        "llmComponent": "llm-openai-gpt5",
-        "provider": "openai",
-        "providerModel": "gpt-5.4",
+        "modelSpec": model_spec,
+        "llmComponent": llm_component,
+        "provider": provider,
+        "providerModel": provider_model,
     }
 
 

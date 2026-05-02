@@ -1,4 +1,11 @@
-export type AgentModelProvider = 'anthropic' | 'openai';
+export type AgentModelProvider =
+	| 'anthropic'
+	| 'openai'
+	| 'googleai'
+	| 'deepseek'
+	| 'huggingface'
+	| 'mistral'
+	| 'echo';
 
 export type AgentModelOption = {
 	value: string;
@@ -37,6 +44,36 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
 		label: 'o3',
 		provider: 'openai',
 		component: 'llm-openai-o3'
+	},
+	{
+		value: 'googleai/gemini-3.1-pro-preview',
+		label: 'Gemini 3.1 Pro Preview',
+		provider: 'googleai',
+		component: 'llm-google-gemini'
+	},
+	{
+		value: 'deepseek/default',
+		label: 'DeepSeek Default',
+		provider: 'deepseek',
+		component: 'llm-deepseek'
+	},
+	{
+		value: 'huggingface/meta-llama/Meta-Llama-3-8B',
+		label: 'Meta Llama 3 8B',
+		provider: 'huggingface',
+		component: 'llm-huggingface-llama3'
+	},
+	{
+		value: 'mistral/open-mistral-7b',
+		label: 'Open Mistral 7B',
+		provider: 'mistral',
+		component: 'llm-mistral-open'
+	},
+	{
+		value: 'echo/local',
+		label: 'Local Echo',
+		provider: 'echo',
+		component: 'llm-echo'
 	}
 ];
 
@@ -57,7 +94,17 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
 	'openai/gpt-5.4': 'openai/gpt-5.4',
 	'gpt-5.4': 'openai/gpt-5.4',
 	'openai/o3': 'openai/o3',
-	o3: 'openai/o3'
+	o3: 'openai/o3',
+	'googleai/gemini-3.1-pro-preview': 'googleai/gemini-3.1-pro-preview',
+	'google/gemini-3.1-pro-preview': 'googleai/gemini-3.1-pro-preview',
+	'gemini-3.1-pro-preview': 'googleai/gemini-3.1-pro-preview',
+	'deepseek/default': 'deepseek/default',
+	'huggingface/meta-llama/Meta-Llama-3-8B':
+		'huggingface/meta-llama/Meta-Llama-3-8B',
+	'meta-llama/Meta-Llama-3-8B': 'huggingface/meta-llama/Meta-Llama-3-8B',
+	'mistral/open-mistral-7b': 'mistral/open-mistral-7b',
+	'open-mistral-7b': 'mistral/open-mistral-7b',
+	'echo/local': 'echo/local'
 };
 
 export function canonicalAgentModelSpec(

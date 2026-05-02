@@ -35,6 +35,20 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "gpt-5.4": "llm-openai-gpt5",
     "openai/o3": "llm-openai-o3",
     "o3": "llm-openai-o3",
+    # GoogleAI
+    "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
+    "google/gemini-3.1-pro-preview": "llm-google-gemini",
+    "gemini-3.1-pro-preview": "llm-google-gemini",
+    # DeepSeek
+    "deepseek/default": "llm-deepseek",
+    # Hugging Face
+    "huggingface/meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
+    "meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
+    # Mistral
+    "mistral/open-mistral-7b": "llm-mistral-open",
+    "open-mistral-7b": "llm-mistral-open",
+    # Local echo
+    "echo/local": "llm-echo",
 }
 
 
@@ -49,6 +63,11 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-anthropic-haiku": ("anthropic", "claude-haiku-4-5-20251001"),
     "llm-openai-gpt5": ("openai", "gpt-5.4"),
     "llm-openai-o3": ("openai", "o3"),
+    "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
+    "llm-deepseek": ("deepseek", "default"),
+    "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
+    "llm-mistral-open": ("mistral", "open-mistral-7b"),
+    "llm-echo": ("echo", "local"),
 }
 
 
@@ -151,6 +170,16 @@ def provider_metadata_for_component(
         provider = "anthropic"
     elif "openai" in lowered:
         provider = "openai"
+    elif "google" in lowered:
+        provider = "googleai"
+    elif "deepseek" in lowered:
+        provider = "deepseek"
+    elif "huggingface" in lowered:
+        provider = "huggingface"
+    elif "mistral" in lowered:
+        provider = "mistral"
+    elif "echo" in lowered:
+        provider = "echo"
     else:
         provider = "unknown"
     out = {"provider": provider}
