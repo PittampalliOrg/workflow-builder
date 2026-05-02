@@ -54,6 +54,44 @@ AGENT_STATESTORE_COMPONENT = os.environ.get(
     "AGENT_RUNTIME_STATESTORE_COMPONENT",
     "dapr-agent-py-statestore",
 )
+
+# modelSpec -> Dapr conversation component. Mirrors
+# services/dapr-agent-py/src/effective_agent_config.py:MODEL_COMPONENT_MAP so
+# DAPR_LLM_COMPONENT_DEFAULT lines up with the agent's model when the workflow
+# omits modelSpec at session-spawn. Default falls back to llm-anthropic-opus
+# only when the AgentRuntime CR has no modelSpec.
+MODEL_COMPONENT_MAP: dict[str, str] = {
+    "anthropic/claude-sonnet-4-6": "llm-anthropic-sonnet",
+    "anthropic/claude-opus-4-7": "llm-anthropic-opus",
+    "anthropic/claude-opus-4-6": "llm-anthropic-opus",
+    "anthropic/claude-haiku-4-5-20251001": "llm-anthropic-haiku",
+    "anthropic/claude-haiku-4-5": "llm-anthropic-haiku",
+    "claude-sonnet-4-6": "llm-anthropic-sonnet",
+    "claude-opus-4-7": "llm-anthropic-opus",
+    "claude-opus-4-6": "llm-anthropic-opus",
+    "claude-haiku-4-5-20251001": "llm-anthropic-haiku",
+    "claude-haiku-4-5": "llm-anthropic-haiku",
+    "openai/gpt-5.4": "llm-openai-gpt5",
+    "gpt-5.4": "llm-openai-gpt5",
+    "openai/o3": "llm-openai-o3",
+    "o3": "llm-openai-o3",
+    "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
+    "google/gemini-3.1-pro-preview": "llm-google-gemini",
+    "gemini-3.1-pro-preview": "llm-google-gemini",
+    "deepseek/default": "llm-deepseek",
+    "huggingface/meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
+    "meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
+    "mistral/open-mistral-7b": "llm-mistral-open",
+    "open-mistral-7b": "llm-mistral-open",
+    "echo/local": "llm-echo",
+}
+DEFAULT_LLM_COMPONENT = "llm-anthropic-opus"
+
+
+def _resolve_llm_component(model_spec: str | None) -> str:
+    if not model_spec or not str(model_spec).strip():
+        return DEFAULT_LLM_COMPONENT
+    return MODEL_COMPONENT_MAP.get(str(model_spec).strip(), DEFAULT_LLM_COMPONENT)
 # Image pull secrets reused from dapr-agent-py Deployment pattern.
 DEFAULT_PULL_SECRETS = [
     s.strip()
@@ -223,6 +261,7 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     slug = spec["agentSlug"]
     app_id = spec.get("appId") or _deployment_name(slug)
     bootstrap = json.dumps(spec.get("mcpServers") or [])
+    llm_component = _resolve_llm_component(spec.get("modelSpec"))
     # browser-use runtime pods OOMKill on the 1Gi default: browser-use's
     # AgentHistoryList keeps the full screenshot bytes in-memory per step,
     # the Anthropic client batches images for context, and OTEL span/metric
@@ -395,7 +434,7 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
                                 # init container. Without this, every OpenShell-backed tool
                                 # (write_file, bash_run, etc.) fails with ENOENT on active_gateway.
                                 {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
-                                {"name": "DAPR_LLM_COMPONENT_DEFAULT", "value": "llm-anthropic-opus"},
+                                {"name": "DAPR_LLM_COMPONENT_DEFAULT", "value": llm_component},
                                 {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "true"},
                                 {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "true"},
                                 {"name": "DAPR_AGENT_PY_PLUGIN_PATHS", "value": "/etc/dapr-agent-py/plugins"},

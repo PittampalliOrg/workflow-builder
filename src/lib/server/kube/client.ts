@@ -314,6 +314,11 @@ export type AgentRuntimeSpec = {
 	agentSlug: string;
 	projectId?: string | null;
 	appId: string;
+	// modelSpec drives the per-pod DAPR_LLM_COMPONENT_DEFAULT in the
+	// agent-runtime-controller. Without it, the controller falls back to
+	// llm-anthropic-opus, which silently mismatches the agent's model when
+	// a workflow omits modelSpec at session-spawn.
+	modelSpec?: string | null;
 	environment: {
 		id?: string;
 		slug?: string;

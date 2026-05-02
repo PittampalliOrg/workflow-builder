@@ -781,6 +781,7 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		agentSlug: row.slug,
 		projectId: row.projectId,
 		appId: row.runtimeAppId ?? `agent-runtime-${row.slug}`,
+		modelSpec: typeof config?.modelSpec === "string" ? config.modelSpec : null,
 		environment: {
 			id: environmentRecord?.id,
 			slug: environmentRecord?.slug,
