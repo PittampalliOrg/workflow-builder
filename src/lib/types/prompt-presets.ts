@@ -28,12 +28,7 @@ export type PromptPresetVersion = {
 };
 
 export type PromptPresetMetadata = Record<string, unknown> & {
-	agentConfigPatch?: Partial<
-		Pick<
-			AgentConfig,
-			"role" | "goal" | "systemPrompt" | "instructions" | "styleGuidelines"
-		>
-	>;
+	agentConfigPatch?: Partial<Pick<AgentConfig, "systemPrompt">>;
 };
 
 export type PromptPresetSummary = {

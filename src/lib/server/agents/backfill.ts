@@ -87,16 +87,12 @@ function normalizeInlineToAgentConfig(
 		? (inline.runtimeOverridePolicy as typeof defaults.runtimeOverridePolicy)
 		: defaults.runtimeOverridePolicy;
 	const config: AgentConfig = {
-		role: typeof inline.role === "string" ? inline.role : undefined,
-		goal: typeof inline.goal === "string" ? inline.goal : undefined,
-		instructions: toStringArray(inline.instructions),
 		systemPrompt:
 			typeof inline.systemPrompt === "string"
 				? inline.systemPrompt
 				: typeof inline.instructions === "string"
 					? inline.instructions
 					: undefined,
-		styleGuidelines: toStringArray(inline.styleGuidelines),
 		modelSpec: typeof inline.modelSpec === "string" ? inline.modelSpec : undefined,
 		temperature:
 			typeof inline.temperature === "number" ? inline.temperature : undefined,

@@ -25,14 +25,10 @@ function minimalConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 describe("buildInstructionBundle", () => {
-	it("renders systemPrompt, role, goal, instructions, and style together", () => {
+	it("renders systemPrompt as the only persona block", () => {
 		const bundle = buildInstructionBundle({
 			agentConfig: minimalConfig({
 				systemPrompt: "Sentinel system",
-				role: "Sentinel role",
-				goal: "Sentinel goal",
-				instructions: ["Sentinel instruction"],
-				styleGuidelines: ["Sentinel style"],
 			}),
 			prompt: "Do the work",
 			promptSource: "workflow-node",
@@ -42,31 +38,21 @@ describe("buildInstructionBundle", () => {
 		});
 
 		expect(bundle.rendered.system).toContain("Sentinel system");
-		expect(bundle.rendered.system).toContain("Sentinel role");
-		expect(bundle.rendered.system).toContain("Sentinel goal");
-		expect(bundle.rendered.system).toContain("Sentinel instruction");
-		expect(bundle.rendered.system).toContain("Sentinel style");
 		expect(bundle.rendered.user).toBe("Do the work");
 		expect(bundle.instructionHash).toMatch(/^[a-f0-9]{64}$/);
 		expect(bundle.templateName).toBe(CANONICAL_BUNDLE_TEMPLATE_NAME);
 		expect(bundle.templateHash).toMatch(/^[a-f0-9]{64}$/);
 	});
 
-	it("has a stable hash for semantically identical persona inputs", () => {
+	it("trims whitespace and produces stable hash for semantically identical input", () => {
 		const first = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				role: " role ",
-				instructions: [" keep order ", ""],
-			}),
+			agentConfig: minimalConfig({ systemPrompt: " sentinel " }),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
 		});
 		const second = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				instructions: ["keep order"],
-				role: "role",
-			}),
+			agentConfig: minimalConfig({ systemPrompt: "sentinel" }),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
@@ -78,7 +64,7 @@ describe("buildInstructionBundle", () => {
 	it("uses the shared renderer for platform and runtime fields", () => {
 		const bundle = buildInstructionBundle({
 			agentConfig: minimalConfig({
-				role: "Runtime role",
+				systemPrompt: "Reviewer voice",
 				skills: [{ name: "reviewer", registryId: "skill_1" }] as AgentConfig["skills"],
 			}),
 			prompt: "Prompt",
@@ -88,7 +74,7 @@ describe("buildInstructionBundle", () => {
 		});
 
 		expect(bundle.rendered.system).toContain("Platform section");
-		expect(bundle.rendered.system).toContain("Runtime role");
+		expect(bundle.rendered.system).toContain("Reviewer voice");
 		expect(bundle.rendered.system).toContain("Working directory: /sandbox/repo");
 		expect(bundle.rendered.system).toContain("Configured skills: reviewer");
 		expect(bundle.sources).toContainEqual({
@@ -101,7 +87,7 @@ describe("buildInstructionBundle", () => {
 
 	it("emits the static/dynamic boundary when both halves have content", () => {
 		const bundle = buildInstructionBundle({
-			agentConfig: minimalConfig({ role: "Reviewer" }),
+			agentConfig: minimalConfig({ systemPrompt: "Reviewer voice" }),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
@@ -109,58 +95,13 @@ describe("buildInstructionBundle", () => {
 		});
 		expect(bundle.rendered.system).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
 		const [pre, post] = bundle.rendered.system.split(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
-		expect(pre).toContain("Reviewer");
+		expect(pre).toContain("Reviewer voice");
 		expect(post).toContain("Working directory");
-	});
-
-	it("customSystemPrompt replaces persona-derived sections", () => {
-		const bundle = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				role: "should-not-appear",
-				goal: "should-not-appear",
-				instructions: ["should-not-appear"],
-				styleGuidelines: ["should-not-appear"],
-				systemPrompt: "should-not-appear",
-				customSystemPrompt: "Bespoke override prose.",
-			}),
-			prompt: "Prompt",
-			promptSource: "session",
-			cwd: "/sandbox",
-		});
-		expect(bundle.rendered.system).toContain("Bespoke override prose.");
-		expect(bundle.rendered.system).not.toContain("should-not-appear");
-		expect(bundle.sources.map((s) => s.field)).toContain(
-			"persona.customSystemPrompt",
-		);
-	});
-
-	it("appendSystemPrompt always lands at the very end", () => {
-		const defaultPath = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				role: "Reviewer",
-				appendSystemPrompt: "FINAL_APPEND_MARKER",
-			}),
-			prompt: "Prompt",
-			promptSource: "session",
-			cwd: "/sandbox",
-		});
-		expect(defaultPath.rendered.system.endsWith("FINAL_APPEND_MARKER")).toBe(true);
-
-		const customPath = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				customSystemPrompt: "Custom prefix.",
-				appendSystemPrompt: "FINAL_APPEND_MARKER_2",
-			}),
-			prompt: "Prompt",
-			promptSource: "session",
-			cwd: "/sandbox",
-		});
-		expect(customPath.rendered.system.endsWith("FINAL_APPEND_MARKER_2")).toBe(true);
 	});
 
 	it("currentDate and mcpInstructions land in the dynamic tail", () => {
 		const bundle = buildInstructionBundle({
-			agentConfig: minimalConfig({ role: "Reviewer" }),
+			agentConfig: minimalConfig({ systemPrompt: "Reviewer voice" }),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
@@ -174,10 +115,10 @@ describe("buildInstructionBundle", () => {
 		expect(dynamic).toContain("server-a: Use read-only tools.");
 	});
 
-	it("static presets render before persona in the static prefix", () => {
+	it("static presets render before systemPrompt in the static prefix", () => {
 		const bundle = buildInstructionBundle({
 			agentConfig: minimalConfig({
-				role: "Reviewer",
+				systemPrompt: "Agent voice",
 				compiledStaticPresetSections: [
 					"## Reusable Style Guide\nKeep responses terse.",
 					"## Escalation Policy\nNever escalate without TL approval.",
@@ -192,18 +133,18 @@ describe("buildInstructionBundle", () => {
 		);
 		const styleIdx = staticPart.indexOf("Reusable Style Guide");
 		const escalationIdx = staticPart.indexOf("Escalation Policy");
-		const roleIdx = staticPart.indexOf("## Role");
+		const voiceIdx = staticPart.indexOf("Agent voice");
 		expect(styleIdx).toBeGreaterThan(-1);
 		expect(escalationIdx).toBeGreaterThan(-1);
-		expect(roleIdx).toBeGreaterThan(-1);
+		expect(voiceIdx).toBeGreaterThan(-1);
 		expect(styleIdx).toBeLessThan(escalationIdx);
-		expect(escalationIdx).toBeLessThan(roleIdx);
+		expect(escalationIdx).toBeLessThan(voiceIdx);
 	});
 
 	it("dynamic presets render before Runtime Context in the dynamic tail", () => {
 		const bundle = buildInstructionBundle({
 			agentConfig: minimalConfig({
-				role: "Reviewer",
+				systemPrompt: "Reviewer voice",
 				compiledDynamicPresetSections: [
 					"## Per-turn Reminder\nMention follow-ups in summary.",
 				],
@@ -222,27 +163,31 @@ describe("buildInstructionBundle", () => {
 		expect(reminderIdx).toBeLessThan(runtimeIdx);
 	});
 
-	it("customSystemPrompt does not bypass the preset stack", () => {
+	it("retired persona fields (role/goal/instructions/styleGuidelines/customSystemPrompt/appendSystemPrompt) are NOT rendered even when smuggled in", () => {
 		const bundle = buildInstructionBundle({
 			agentConfig: minimalConfig({
+				systemPrompt: "Live voice",
+				// Smuggle every retired field in via the loose record cast — none
+				// should reach the rendered prompt.
 				role: "should-not-appear",
-				customSystemPrompt: "Bespoke override.",
-				compiledStaticPresetSections: ["## Preset Block\npreset content"],
-			} as Partial<AgentConfig>),
+				goal: "should-not-appear",
+				instructions: ["should-not-appear"],
+				styleGuidelines: ["should-not-appear"],
+				customSystemPrompt: "should-not-appear",
+				appendSystemPrompt: "should-not-appear",
+			} as unknown as Partial<AgentConfig>),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
 		});
-		expect(bundle.rendered.system).toContain("Preset Block");
-		expect(bundle.rendered.system).toContain("preset content");
-		expect(bundle.rendered.system).toContain("Bespoke override.");
+		expect(bundle.rendered.system).toContain("Live voice");
 		expect(bundle.rendered.system).not.toContain("should-not-appear");
 	});
 
 	it("sources record runtime preset entries when present", () => {
 		const bundle = buildInstructionBundle({
 			agentConfig: minimalConfig({
-				role: "Reviewer",
+				systemPrompt: "Voice",
 				compiledStaticPresetSections: ["## A\nx"],
 				compiledDynamicPresetSections: ["## B\ny"],
 			} as Partial<AgentConfig>),
@@ -255,32 +200,19 @@ describe("buildInstructionBundle", () => {
 		expect(fields).toContain("runtime.compiledDynamicPresetSections");
 	});
 
-	it("hash changes when customSystemPrompt or appendSystemPrompt is set", () => {
+	it("hash changes when systemPrompt changes", () => {
 		const base = buildInstructionBundle({
-			agentConfig: minimalConfig({ role: "Reviewer" }),
+			agentConfig: minimalConfig({ systemPrompt: "Voice 1" }),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
 		});
-		const withCustom = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				role: "Reviewer",
-				customSystemPrompt: "Override.",
-			}),
+		const updated = buildInstructionBundle({
+			agentConfig: minimalConfig({ systemPrompt: "Voice 2" }),
 			prompt: "Prompt",
 			promptSource: "session",
 			cwd: "/sandbox",
 		});
-		const withAppend = buildInstructionBundle({
-			agentConfig: minimalConfig({
-				role: "Reviewer",
-				appendSystemPrompt: "Tail.",
-			}),
-			prompt: "Prompt",
-			promptSource: "session",
-			cwd: "/sandbox",
-		});
-		expect(base.instructionHash).not.toBe(withCustom.instructionHash);
-		expect(base.instructionHash).not.toBe(withAppend.instructionHash);
+		expect(base.instructionHash).not.toBe(updated.instructionHash);
 	});
 });

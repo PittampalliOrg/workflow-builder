@@ -276,8 +276,15 @@ export function agentConfigPatchFromPreset(
 	const firstSystem = messages.find((message) => message.role === "system");
 	const firstUser = messages.find((message) => message.role === "user");
 	const fallback: Partial<AgentConfig> = {};
-	if (firstSystem?.content.trim()) fallback.systemPrompt = firstSystem.content.trim();
-	if (firstUser?.content.trim()) fallback.instructions = [firstUser.content.trim()];
+	const systemText = firstSystem?.content.trim();
+	const userText = firstUser?.content.trim();
+	if (systemText && userText) {
+		fallback.systemPrompt = `${systemText}\n\n${userText}`;
+	} else if (systemText) {
+		fallback.systemPrompt = systemText;
+	} else if (userText) {
+		fallback.systemPrompt = userText;
+	}
 	return fallback;
 }
 
@@ -328,14 +335,8 @@ function cleanPersonaPatch(
 	value: Record<string, unknown>,
 ): Partial<AgentConfig> {
 	const patch: Partial<AgentConfig> = {};
-	for (const key of ["role", "goal", "systemPrompt"] as const) {
-		const text = textValue(value[key]);
-		if (text) patch[key] = text;
-	}
-	for (const key of ["instructions", "styleGuidelines"] as const) {
-		const lines = stringList(value[key]);
-		if (lines.length) patch[key] = lines;
-	}
+	const text = textValue(value.systemPrompt);
+	if (text) patch.systemPrompt = text;
 	return patch;
 }
 
@@ -343,14 +344,6 @@ function sourceFieldsForConfig(config: AgentConfig | Record<string, unknown>): s
 	const fields: string[] = [];
 	if (textValue((config as Record<string, unknown>).systemPrompt)) {
 		fields.push("persona.systemPrompt");
-	}
-	if (textValue((config as Record<string, unknown>).role)) fields.push("persona.role");
-	if (textValue((config as Record<string, unknown>).goal)) fields.push("persona.goal");
-	if (stringList((config as Record<string, unknown>).instructions).length) {
-		fields.push("persona.instructions");
-	}
-	if (stringList((config as Record<string, unknown>).styleGuidelines).length) {
-		fields.push("persona.styleGuidelines");
 	}
 	return fields;
 }

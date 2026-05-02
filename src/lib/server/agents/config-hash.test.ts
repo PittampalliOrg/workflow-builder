@@ -86,22 +86,35 @@ describe("hashAgentConfig", () => {
 });
 
 describe("normalizeAgentConfig", () => {
-	it("normalizes legacy aliases while preserving flat persona fields", () => {
+	it("normalizes legacy aliases and strips retired persona fields", () => {
 		const normalized = normalizeAgentConfig(
 			minimalConfig({
-				role: " Reviewer ",
-				instructions: [" Read carefully "],
 				system_prompt: " Legacy system ",
-				style_guidelines: "Be concise\nBe direct",
+				role: " Old Reviewer ",
+				goal: " Old goal ",
+				instructions: [" Old instruction "],
+				styleGuidelines: ["Old style"],
+				customSystemPrompt: "Old custom",
+				appendSystemPrompt: "Old append",
 				allowedTools: [" read_file ", "write_file"],
 			} as unknown as Partial<AgentConfig>),
 		);
 
-		expect(normalized.role).toBe("Reviewer");
-		expect(normalized.instructions).toEqual(["Read carefully"]);
+		// system_prompt → systemPrompt alias still works
 		expect(normalized.systemPrompt).toBe("Legacy system");
-		expect(normalized.styleGuidelines).toEqual(["Be concise", "Be direct"]);
+		// allowedTools → tools alias still works
 		expect(normalized.tools).toEqual(["read_file", "write_file"]);
+		// All retired persona fields are stripped
+		expect((normalized as Record<string, unknown>).role).toBeUndefined();
+		expect((normalized as Record<string, unknown>).goal).toBeUndefined();
+		expect((normalized as Record<string, unknown>).instructions).toBeUndefined();
+		expect((normalized as Record<string, unknown>).styleGuidelines).toBeUndefined();
+		expect(
+			(normalized as Record<string, unknown>).customSystemPrompt,
+		).toBeUndefined();
+		expect(
+			(normalized as Record<string, unknown>).appendSystemPrompt,
+		).toBeUndefined();
 		expect((normalized as Record<string, unknown>).system_prompt).toBeUndefined();
 	});
 });

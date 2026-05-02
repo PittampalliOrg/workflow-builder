@@ -66,27 +66,15 @@ export type AgentHotReloadConfig = {
 };
 
 export type AgentConfig = {
-	role?: string;
-	goal?: string;
-	instructions?: string[];
+	/**
+	 * The agent's voice — one canonical persona block. Plain text or markdown,
+	 * no special structure required. Mirrors CMA's `system` field exactly. For
+	 * cross-agent reusable content, bind Prompt Workbench presets via
+	 * `staticPromptPresetRefs` / `dynamicPromptPresetRefs` instead of
+	 * duplicating here. Mid-session patchable via
+	 * `session.control.update_agent_config`.
+	 */
 	systemPrompt?: string;
-	styleGuidelines?: string[];
-
-	/**
-	 * Replaces the persona-derived sections (role/goal/instructions/styleGuidelines/systemPrompt)
-	 * entirely when set. Runtime sections (Runtime Context, Hook Context, currentDate,
-	 * mcpInstructions) and `appendSystemPrompt` still apply. Mirrors Claude Code's
-	 * `customSystemPrompt` branch in `utils/queryContext.ts:44-74`. Mid-session patchable
-	 * via `session.control.update_agent_config`.
-	 */
-	customSystemPrompt?: string;
-
-	/**
-	 * Appended verbatim as the last block of the dynamic tail in BOTH the default
-	 * (persona) and `customSystemPrompt` paths. Mirrors Claude Code's
-	 * `--append-system-prompt` (`QueryEngine.ts:321-325`).
-	 */
-	appendSystemPrompt?: string;
 
 	/**
 	 * Version-pinned references to Prompt Workbench preset versions whose system

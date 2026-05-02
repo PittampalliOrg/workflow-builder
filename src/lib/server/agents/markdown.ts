@@ -113,11 +113,7 @@ export function parseAgentMarkdown(source: string): ParsedAgentMarkdown {
 
 	const config: AgentConfig = {
 		...defaults,
-		role: typeof parsed.role === "string" ? parsed.role : undefined,
-		goal: typeof parsed.goal === "string" ? parsed.goal : undefined,
-		instructions: strArray(parsed.instructions),
 		systemPrompt,
-		styleGuidelines: strArray(parsed.style_guidelines),
 		modelSpec: typeof parsed.model === "string" ? parsed.model : undefined,
 		temperature:
 			typeof parsed.temperature === "number" ? parsed.temperature : undefined,
@@ -169,14 +165,6 @@ export function serializeAgentMarkdown(input: SerializeInput): string {
 	};
 	if (input.description) frontmatter.description = input.description;
 	if (c.modelSpec) frontmatter.model = c.modelSpec;
-	if (c.role) frontmatter.role = c.role;
-	if (c.goal) frontmatter.goal = c.goal;
-	if (c.instructions && c.instructions.length > 0) {
-		frontmatter.instructions = c.instructions;
-	}
-	if (c.styleGuidelines && c.styleGuidelines.length > 0) {
-		frontmatter.style_guidelines = c.styleGuidelines;
-	}
 	if (c.temperature !== undefined) frontmatter.temperature = c.temperature;
 	if (c.toolChoice) frontmatter.tool_choice = c.toolChoice;
 	if (c.maxTurns) frontmatter.max_turns = c.maxTurns;

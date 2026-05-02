@@ -14,13 +14,7 @@ export const CANONICAL_BUNDLE_TEMPLATE_NAME =
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 
 export type InstructionPersonaPreview = {
-	role?: unknown;
-	goal?: unknown;
-	instructions?: unknown;
-	styleGuidelines?: unknown;
 	systemPrompt?: unknown;
-	customSystemPrompt?: unknown;
-	appendSystemPrompt?: unknown;
 };
 
 export type InstructionRuntimePreview = {
@@ -70,38 +64,8 @@ function renderStaticSections(input: {
 		parts.push(section);
 	}
 
-	const custom = cleanString(persona.customSystemPrompt);
-	if (custom) {
-		pushSection(parts, "Agent System Prompt", custom);
-		return parts;
-	}
-
 	const systemPrompt = cleanString(persona.systemPrompt);
-	if (systemPrompt) pushSection(parts, "Agent System Prompt", systemPrompt);
-
-	const role = cleanString(persona.role);
-	if (role) pushSection(parts, "Role", role);
-
-	const goal = cleanString(persona.goal);
-	if (goal) pushSection(parts, "Goal", goal);
-
-	const instructions = cleanStringList(persona.instructions);
-	if (instructions.length) {
-		pushSection(
-			parts,
-			"Primary Instructions",
-			instructions.map((line) => `- ${line}`),
-		);
-	}
-
-	const style = cleanStringList(persona.styleGuidelines);
-	if (style.length) {
-		pushSection(
-			parts,
-			"Communication Style",
-			style.map((line) => `- ${line}`),
-		);
-	}
+	if (systemPrompt) parts.push(systemPrompt);
 
 	return parts;
 }
@@ -110,7 +74,6 @@ function renderDynamicSections(input: {
 	persona?: InstructionPersonaPreview | null;
 	runtime?: InstructionRuntimePreview | null;
 }): string[] {
-	const persona = input.persona ?? {};
 	const runtime = input.runtime ?? {};
 	const parts: string[] = [];
 
@@ -137,9 +100,6 @@ function renderDynamicSections(input: {
 	if (mcpInstructions.length) {
 		pushSection(parts, "MCP Server Instructions", mcpInstructions);
 	}
-
-	const append = cleanString(persona.appendSystemPrompt);
-	if (append) parts.push(append);
 
 	return parts;
 }

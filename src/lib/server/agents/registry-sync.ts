@@ -117,9 +117,6 @@ export type AgentMetadataBlob = {
 		appid: string;
 		type: string;
 		orchestrator: boolean;
-		role: string;
-		goal: string;
-		instructions: string[];
 		system_prompt: string;
 		framework: string;
 		max_iterations: number;
@@ -174,9 +171,6 @@ export function buildAgentMetadata(
 			appid: runtimeAppId,
 			type: "durable",
 			orchestrator: false,
-			role: config.role ?? "",
-			goal: config.goal ?? "",
-			instructions: Array.isArray(config.instructions) ? config.instructions : [],
 			system_prompt: config.systemPrompt ?? "",
 			framework: "Dapr Agents",
 			max_iterations: typeof config.maxTurns === "number" ? config.maxTurns : 120,

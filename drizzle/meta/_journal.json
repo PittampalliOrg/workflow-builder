@@ -372,6 +372,13 @@
 			"when": 1777640400000,
 			"tag": "0060_resource_prompt_versions",
 			"breakpoints": true
+		},
+		{
+			"idx": 53,
+			"version": "7",
+			"when": 1777680000000,
+			"tag": "0061_drop_legacy_persona_fields",
+			"breakpoints": true
 		}
 	]
 }

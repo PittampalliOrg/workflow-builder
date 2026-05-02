@@ -39,8 +39,6 @@ export class AgentConfigValidationError extends Error {
 }
 
 const ARRAY_OF_STRING_FIELDS = [
-	"instructions",
-	"styleGuidelines",
 	"builtinTools",
 	"plugins",
 	"compiledStaticPresetSections",
@@ -85,7 +83,6 @@ export function normalizeAgentConfig(config: AgentConfig): AgentConfig {
 	const raw = { ...(config as unknown as Record<string, unknown>) };
 	const aliases: Array<[string, keyof AgentConfig]> = [
 		["system_prompt", "systemPrompt"],
-		["style_guidelines", "styleGuidelines"],
 		["max_iterations", "maxTurns"],
 		["mcp_servers", "mcpServers"],
 		["builtin_tools", "builtinTools"],
@@ -100,12 +97,23 @@ export function normalizeAgentConfig(config: AgentConfig): AgentConfig {
 		if (legacy in raw) delete raw[legacy];
 	}
 
-	for (const key of [
+	// Strip retired persona fields (role/goal/instructions/styleGuidelines/
+	// customSystemPrompt/appendSystemPrompt) — drizzle migration 0061
+	// coalesced them into `systemPrompt` for existing rows; this guard keeps
+	// them out of any future config writes that smuggle them in.
+	for (const legacyKey of [
 		"role",
 		"goal",
-		"systemPrompt",
+		"instructions",
+		"styleGuidelines",
 		"customSystemPrompt",
 		"appendSystemPrompt",
+	]) {
+		if (legacyKey in raw) delete raw[legacyKey];
+	}
+
+	for (const key of [
+		"systemPrompt",
 		"modelSpec",
 		"cwd",
 	] as const) {

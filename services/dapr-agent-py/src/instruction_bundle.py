@@ -79,7 +79,13 @@ def _push_section(parts: list[str], title: str, body: str | list[str]) -> None:
 
 
 def _render_static_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]:
-    """Cache-eligible prefix: platform sections + static presets + persona (or customSystemPrompt override)."""
+    """Cache-eligible prefix: platform sections + static preset bindings + persona systemPrompt.
+
+    Persona shape mirrors CMA's agent schema: a single `systemPrompt` string
+    (CMA calls it `system`). Reusable cross-agent content lives in
+    `compiledStaticPresetSections` (resolved by the BFF from version-pinned
+    Prompt Workbench preset bindings).
+    """
     persona = _record(bundle_without_hash.get("persona"))
     runtime = _record(bundle_without_hash.get("runtime"))
     parts: list[str] = []
@@ -87,42 +93,17 @@ def _render_static_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]
     for section in _string_list(runtime.get("platformSystemSections")):
         parts.append(section)
 
-    # Prompt Workbench preset stack content lives BEFORE persona so user-curated
-    # reusable blocks (style guides, escalation policies, …) sit immediately
-    # after the OpenShell platform intro. customSystemPrompt only replaces the
-    # persona block; preset content stays in both code paths.
     for section in _string_list(runtime.get("compiledStaticPresetSections")):
         parts.append(section)
 
-    custom = _string(persona.get("customSystemPrompt"))
-    if custom:
-        # customSystemPrompt replaces persona-derived sections (role/goal/
-        # instructions/styleGuidelines/systemPrompt) but does NOT bypass the
-        # preset stack — those are a separate user-curated layer.
-        _push_section(parts, "Agent System Prompt", custom)
-        return parts
-
     system_prompt = _string(persona.get("systemPrompt"))
     if system_prompt:
-        _push_section(parts, "Agent System Prompt", system_prompt)
-    role = _string(persona.get("role"))
-    if role:
-        _push_section(parts, "Role", role)
-    goal = _string(persona.get("goal"))
-    if goal:
-        _push_section(parts, "Goal", goal)
-    instructions = _string_list(persona.get("instructions"))
-    if instructions:
-        _push_section(parts, "Primary Instructions", [f"- {line}" for line in instructions])
-    style = _string_list(persona.get("styleGuidelines"))
-    if style:
-        _push_section(parts, "Communication Style", [f"- {line}" for line in style])
+        parts.append(system_prompt)
     return parts
 
 
 def _render_dynamic_sections(bundle_without_hash: Mapping[str, Any]) -> list[str]:
-    """Per-turn tail: dynamic presets + runtime context + hooks + currentDate + mcpInstructions + appendSystemPrompt."""
-    persona = _record(bundle_without_hash.get("persona"))
+    """Per-turn tail: dynamic presets + runtime context + hooks + currentDate + mcpInstructions."""
     runtime = _record(bundle_without_hash.get("runtime"))
     parts: list[str] = []
 
@@ -156,10 +137,6 @@ def _render_dynamic_sections(bundle_without_hash: Mapping[str, Any]) -> list[str
     if mcp_instructions:
         _push_section(parts, "MCP Server Instructions", mcp_instructions)
 
-    append = _string(persona.get("appendSystemPrompt"))
-    if append:
-        # No "## " header — appendSystemPrompt is verbatim user-supplied text.
-        parts.append(append)
     return parts
 
 
@@ -272,13 +249,7 @@ def build_instruction_bundle(
     source_id = effective_agent_id or effective_agent_slug or "agent-profile"
 
     persona = {
-        "role": _string(config.get("role")),
-        "goal": _string(config.get("goal")),
-        "instructions": _string_list(config.get("instructions")),
-        "styleGuidelines": _string_list(config.get("styleGuidelines")),
         "systemPrompt": _string(config.get("systemPrompt")),
-        "customSystemPrompt": _string(config.get("customSystemPrompt")),
-        "appendSystemPrompt": _string(config.get("appendSystemPrompt")),
     }
     skills = [
         name
@@ -315,18 +286,6 @@ def build_instruction_bundle(
 
     if persona["systemPrompt"]:
         sources.append(persona_source("persona.systemPrompt", "systemPrompt"))
-    if persona["customSystemPrompt"]:
-        sources.append(persona_source("persona.customSystemPrompt", "customSystemPrompt"))
-    if persona["appendSystemPrompt"]:
-        sources.append(persona_source("persona.appendSystemPrompt", "appendSystemPrompt"))
-    if persona["role"]:
-        sources.append(persona_source("persona.role", "role"))
-    if persona["goal"]:
-        sources.append(persona_source("persona.goal", "goal"))
-    if persona["instructions"]:
-        sources.append(persona_source("persona.instructions", "instructions"))
-    if persona["styleGuidelines"]:
-        sources.append(persona_source("persona.styleGuidelines", "styleGuidelines"))
     if runtime["cwd"]:
         sources.append(_source("runtime.cwd", "runtime", "runtime", "runtime"))
     if runtime["sandboxName"]:

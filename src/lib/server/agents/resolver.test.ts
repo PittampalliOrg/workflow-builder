@@ -111,9 +111,7 @@ describe("resolveSpecAgentRefs", () => {
 	it("inlines resolved agentConfig and strips agentRef", async () => {
 		const config = minimalConfig({
 			modelSpec: "anthropic/claude-opus-4-7",
-			role: "Sentinel role",
-			goal: "Sentinel goal",
-			instructions: ["Sentinel instruction"],
+			systemPrompt: "Sentinel system prompt",
 		});
 		resolveAgentRefMock.mockResolvedValueOnce(
 			resolvedAgent({ version: 3, config }),
@@ -151,7 +149,7 @@ describe("resolveSpecAgentRefs", () => {
 				string,
 				unknown
 			>).system,
-		).toContain("Sentinel role");
+		).toContain("Sentinel system prompt");
 		expect(
 			((body.instructionBundle as Record<string, unknown>).rendered as Record<
 				string,

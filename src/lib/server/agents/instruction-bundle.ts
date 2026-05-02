@@ -36,13 +36,7 @@ export type InstructionBundle = {
 		slug?: string;
 	};
 	persona: {
-		role?: string;
-		goal?: string;
-		instructions: string[];
-		styleGuidelines: string[];
 		systemPrompt?: string;
-		customSystemPrompt?: string;
-		appendSystemPrompt?: string;
 	};
 	runtime: {
 		cwd?: string;
@@ -138,13 +132,7 @@ export function buildInstructionBundle(
 	const config = (input.agentConfig ?? {}) as Record<string, unknown>;
 	const sourceId = input.sourceId ?? input.agent?.id ?? "agent-profile";
 	const persona = {
-		role: cleanString(config.role),
-		goal: cleanString(config.goal),
-		instructions: cleanStringList(config.instructions),
-		styleGuidelines: cleanStringList(config.styleGuidelines),
 		systemPrompt: cleanString(config.systemPrompt),
-		customSystemPrompt: cleanString(config.customSystemPrompt),
-		appendSystemPrompt: cleanString(config.appendSystemPrompt),
 	};
 	const runtime = {
 		cwd: cleanString(input.cwd),
@@ -163,18 +151,6 @@ export function buildInstructionBundle(
 	};
 	const sources: InstructionSource[] = [];
 	if (persona.systemPrompt) sources.push(source("persona.systemPrompt", sourceId));
-	if (persona.customSystemPrompt) {
-		sources.push(source("persona.customSystemPrompt", sourceId));
-	}
-	if (persona.appendSystemPrompt) {
-		sources.push(source("persona.appendSystemPrompt", sourceId));
-	}
-	if (persona.role) sources.push(source("persona.role", sourceId));
-	if (persona.goal) sources.push(source("persona.goal", sourceId));
-	if (persona.instructions.length) sources.push(source("persona.instructions", sourceId));
-	if (persona.styleGuidelines.length) {
-		sources.push(source("persona.styleGuidelines", sourceId));
-	}
 	if (runtime.cwd) sources.push(source("runtime.cwd", "runtime", "runtime", "runtime"));
 	if (runtime.sandboxName) {
 		sources.push(source("runtime.sandboxName", "runtime", "runtime", "runtime"));
@@ -230,11 +206,7 @@ export function buildInstructionBundle(
 			...(input.agent?.configHash ? { configHash: input.agent.configHash } : {}),
 			...(input.agent?.slug ? { slug: input.agent.slug } : {}),
 		},
-		persona: {
-			...persona,
-			instructions: persona.instructions,
-			styleGuidelines: persona.styleGuidelines,
-		},
+		persona,
 		runtime,
 		user: {
 			prompt: input.prompt,

@@ -40,8 +40,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		providerIcons: [],
 		highlights: ["Workspace tools", "No MCP servers", "Default sandbox"],
 		config: base({
-			role: "Autonomous assistant",
-			goal: "Help the user accomplish arbitrary tasks.",
 			systemPrompt:
 				"You are a helpful autonomous agent. Break work into steps, take safe actions, and explain trade-offs.",
 		}),
@@ -58,8 +56,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			"Long-form synthesis",
 		],
 		config: base({
-			role: "Research analyst",
-			goal: "Plan queries, gather diverse sources, synthesize findings with citations.",
 			systemPrompt:
 				"You are a deep research assistant. Plan queries, gather diverse sources, synthesize key findings, and deliver a structured report with citations and assumptions.",
 			maxTurns: 150,
@@ -84,8 +80,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			"Short-horizon turns",
 		],
 		config: base({
-			role: "Structured extraction assistant",
-			goal: "Parse unstructured input and emit typed JSON output.",
 			systemPrompt:
 				"You extract structured data from unstructured input. Follow the schema exactly; never invent fields.",
 			temperature: 0.1,
@@ -109,8 +103,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Technical field monitor",
-			goal: "Weekly what-changed briefs posted to Notion.",
 			systemPrompt:
 				"You monitor a specific technical field. Weekly: read sources, cluster themes, write a concise brief to Notion with links.",
 			maxTurns: 80,
@@ -146,8 +138,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Customer support agent",
-			goal: "Answer questions from your knowledge base; escalate to Slack when unsure.",
 			systemPrompt:
 				"You answer customer questions using Notion as your source of truth. If confidence is low, post to Slack and tag an on-call engineer.",
 		}),
@@ -190,8 +180,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Incident commander",
-			goal: "Turn an alert into a triaged, assigned, and documented incident.",
 			systemPrompt:
 				"You run incident response. Read the alert, find the owner via CODEOWNERS, open a Linear ticket, start the Slack war room, and draft a post-mortem outline.",
 			maxTurns: 120,
@@ -225,8 +213,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Feedback analyst",
-			goal: "Synthesize raw user feedback into themes + tasks.",
 			systemPrompt:
 				"You cluster feedback from Slack channels and Notion pages into themes, rank them by frequency + severity, and draft Asana tasks for the top asks.",
 		}),
@@ -253,8 +239,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Sprint retro facilitator",
-			goal: "Prepare retro before the team meeting.",
 			systemPrompt:
 				"You pull the closed sprint from Linear, synthesize recurring themes, and draft a retro doc: what went well, what didn't, follow-ups.",
 		}),
@@ -287,8 +271,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Support-to-eng escalator",
-			goal: "Convert a support conversation into an eng-ready Jira issue.",
 			systemPrompt:
 				"You turn Intercom conversations into Jira issues. Reproduce the bug inside the sandbox when you can, attach repro steps, and ping the owner in Slack.",
 		}),
@@ -309,8 +291,6 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 			},
 		],
 		config: base({
-			role: "Data analyst",
-			goal: "Load, explore, and summarize data from attached sources.",
 			systemPrompt:
 				"You are a data analyst. Load CSV/Parquet/Amplitude data, write Python to explore it, generate charts, and answer the user's question with specific numbers.",
 			maxTurns: 80,

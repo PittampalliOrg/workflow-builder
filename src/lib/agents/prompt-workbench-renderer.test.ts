@@ -51,8 +51,7 @@ function preset(): PromptPresetSummary {
 			arguments: [{ name: "ticket", required: true }],
 			metadata: {
 				agentConfigPatch: {
-					systemPrompt: "Review {{args.ticket}}",
-					instructions: ["Preserve behavior"],
+					systemPrompt: "Review {{args.ticket}} — preserve behavior",
 				},
 			},
 			messages: [
@@ -75,7 +74,7 @@ describe("prompt workbench renderer", () => {
 
 	it("preserves preset message role ordering and reports unresolved variables", () => {
 		const preview = buildPromptWorkbenchPreview({
-			config: config({ role: "Reviewer" }),
+			config: config({ systemPrompt: "Reviewer agent" }),
 			preset: preset(),
 			runtime: { cwd: "/sandbox/repo" },
 			userPrompt: "Run {{runtime.cwd}}",
@@ -123,11 +122,12 @@ describe("prompt workbench renderer", () => {
 		).toBe(createHash("sha256").update(canonical).digest("hex"));
 	});
 
-	it("applies preset metadata back to persona fields", () => {
-		const next = applyPromptPresetToConfig(config({ role: "Old" }), preset());
+	it("applies preset metadata back to systemPrompt", () => {
+		const next = applyPromptPresetToConfig(
+			config({ systemPrompt: "Old voice" }),
+			preset(),
+		);
 
-		expect(next.role).toBe("Old");
-		expect(next.systemPrompt).toBe("Review {{args.ticket}}");
-		expect(next.instructions).toEqual(["Preserve behavior"]);
+		expect(next.systemPrompt).toBe("Review {{args.ticket}} — preserve behavior");
 	});
 });
