@@ -348,6 +348,7 @@ def _capture_prompt_state(agent_obj: Any) -> dict[str, Any]:
         if llm is not None
         else None,
         "llm_cache_ttl": getattr(llm, "_cache_ttl", None) if llm is not None else None,
+        "llm_cache_key": getattr(llm, "_cache_key", None) if llm is not None else None,
     }
 
 
@@ -408,8 +409,16 @@ def _apply_instruction_prompt_state(
     )
     raw_cache_ttl = runtime_block.get("cacheTtl")
     cache_ttl = "1h" if raw_cache_ttl == "1h" else "5m"
+    # OpenAI prompt_cache_key — pins requests for the same agent profile to
+    # the same cache shard. Granularity is per-agent-version. None for
+    # ephemeral inline agents; the OpenAI adapter falls back to default
+    # routing when the field is absent.
+    from src.openai_adapter import derive_openai_cache_key
+
+    openai_cache_key = derive_openai_cache_key(instruction_bundle)
     if getattr(agent_obj, "llm", None) is not None:
         agent_obj.llm._cache_ttl = cache_ttl
+        agent_obj.llm._cache_key = openai_cache_key
 
     assign_canonical_bundle_prompt_template(agent_obj, instruction_bundle)
 
@@ -446,6 +455,16 @@ def _restore_prompt_state(agent_obj: Any, state: dict[str, Any]) -> None:
                     agent_obj.llm._cache_ttl = None
         else:
             agent_obj.llm._cache_ttl = prior_ttl
+        # Same restore dance for the OpenAI cache_key.
+        prior_key = state.get("llm_cache_key")
+        if prior_key is None:
+            if hasattr(agent_obj.llm, "_cache_key"):
+                try:
+                    delattr(agent_obj.llm, "_cache_key")
+                except Exception:  # noqa: BLE001
+                    agent_obj.llm._cache_key = None
+        else:
+            agent_obj.llm._cache_key = prior_key
 
 # ---------------------------------------------------------------------------
 # Hot-reload configuration subscription

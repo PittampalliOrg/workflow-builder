@@ -9,7 +9,16 @@ from typing import Any
 from urllib.error import HTTPError
 import urllib.request
 
+from src.instruction_bundle import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+
 logger = logging.getLogger(__name__)
+
+# Mirror the Anthropic adapter's threshold so cross-provider telemetry uses
+# the same eligibility cut. OpenAI's automatic prefix cache requires ≥1024
+# tokens (≈4000 chars), same minimum as Anthropic's manual cache_control.
+SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS = int(
+    os.environ.get("DAPR_AGENT_PY_SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS", "4000")
+)
 
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-openai-gpt5": "gpt-5.4",
@@ -40,11 +49,101 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
     }
 
 
+def derive_openai_cache_key(bundle: dict[str, Any] | None) -> str | None:
+    """Build a stable `prompt_cache_key` from an instruction bundle.
+
+    OpenAI hashes `(org_id, prompt_prefix)` to pick a cache shard by default,
+    which means different pods can land on different backends and cold-start
+    each one. Passing a stable key pins all requests for the same agent
+    profile to the same shard.
+
+    Granularity is per-agent-version: bumping the agent (a republish) creates
+    a new key, which is correct because the underlying content changed
+    anyway. We don't include configHash directly — agent_version already
+    captures content identity.
+
+    Returns None when we can't derive a stable key (ephemeral inline
+    workflow agents without an id+version pair). Callers should treat None
+    as "don't pass the field" so OpenAI's default routing applies.
+    """
+    if not isinstance(bundle, dict):
+        return None
+    agent = bundle.get("agent") or {}
+    agent_id = agent.get("id")
+    version = agent.get("version")
+    if isinstance(agent_id, str) and agent_id and isinstance(version, int):
+        return f"{agent_id}:{version}"
+    slug = agent.get("slug")
+    if isinstance(slug, str) and slug and isinstance(version, int):
+        return f"{slug}:{version}"
+    config_hash = agent.get("configHash")
+    if isinstance(config_hash, str) and config_hash:
+        return f"cfg:{config_hash[:16]}"
+    return None
+
+
+def _measure_openai_prompt(system: str | None) -> tuple[str | None, dict[str, Any]]:
+    """Split a bundle-rendered system string at SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    return the sentinel-stripped text plus telemetry mirroring the Anthropic
+    adapter's shape.
+
+    OpenAI doesn't expose `cache_control`; the server caches any prefix
+    ≥1024 tokens automatically. The sentinel is meaningless to the OpenAI
+    API, so we strip it before sending. The telemetry still captures the
+    bundle's intended static/dynamic split so cross-provider dashboards
+    can compare prefix sizes apples-to-apples.
+
+    `cache_ttl` is always `'auto'` for OpenAI — the server picks 5–10 min
+    (sometimes longer off-peak) and there's no API knob. `cache_breakpoints`
+    is `1` when eligible (the implicit prefix-match breakpoint) else `0`.
+    """
+    empty = {
+        "prefix_chars": 0,
+        "tail_chars": 0,
+        "cache_eligible": False,
+        "cache_breakpoints": 0,
+        "cache_ttl": "auto",
+    }
+    if not system or not isinstance(system, str) or not system.strip():
+        return system if system else None, empty
+    if SYSTEM_PROMPT_DYNAMIC_BOUNDARY not in system:
+        prefix_chars = len(system)
+        return system, {
+            "prefix_chars": prefix_chars,
+            "tail_chars": 0,
+            "cache_eligible": prefix_chars >= SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS,
+            "cache_breakpoints": 1
+            if prefix_chars >= SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS
+            else 0,
+            "cache_ttl": "auto",
+        }
+    static_text, _, dynamic_text = system.partition(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    static_text = static_text.strip()
+    dynamic_text = dynamic_text.strip()
+    eligible = len(static_text) >= SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS
+    joined = (
+        f"{static_text}\n\n{dynamic_text}".strip() if dynamic_text else static_text
+    )
+    return joined, {
+        "prefix_chars": len(static_text),
+        "tail_chars": len(dynamic_text),
+        "cache_eligible": eligible,
+        "cache_breakpoints": 1 if eligible else 0,
+        "cache_ttl": "auto",
+    }
+
+
 def _convert_tools_for_openai(tools: list[Any] | None) -> list[dict[str, Any]] | None:
     if not tools:
         return None
     converted = [_tool_schema(tool) for tool in tools]
-    return converted or None
+    if not converted:
+        return None
+    # Deterministic order matters for OpenAI's prefix-match cache: any
+    # reshuffle (MCP reconnect, plugin add/remove) breaks the prefix and
+    # silently drops the hit rate. Mirror anthropic_adapter._convert_tools_for_anthropic.
+    converted.sort(key=lambda t: t.get("name") or "")
+    return converted
 
 
 def _message_attr(message: Any, name: str, default: Any = None) -> Any:
@@ -268,6 +367,7 @@ def _publish_llm_usage(
     ttft_ms: float | None,
     success: bool,
     error: str | None = None,
+    prompt_cache_telemetry: dict[str, Any] | None = None,
 ) -> None:
     try:
         from src.event_publisher import (
@@ -295,11 +395,29 @@ def _publish_llm_usage(
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cache_read_input_tokens": cache_read,
+            # OpenAI doesn't break out cache writes — the server pays for them
+            # implicitly at the same per-token rate as normal input. Always 0
+            # on OpenAI events so the dashboard's apples-to-apples comparison
+            # vs Anthropic stays meaningful.
             "cache_creation_input_tokens": 0,
             "ttft_ms": ttft_ms,
             "recovery_attempts": 0,
             "success": success,
         }
+        if prompt_cache_telemetry:
+            payload["prompt_prefix_chars"] = prompt_cache_telemetry.get(
+                "prefix_chars", 0
+            )
+            payload["prompt_tail_chars"] = prompt_cache_telemetry.get("tail_chars", 0)
+            payload["prompt_cache_eligible"] = bool(
+                prompt_cache_telemetry.get("cache_eligible", False)
+            )
+            payload["prompt_cache_breakpoints"] = int(
+                prompt_cache_telemetry.get("cache_breakpoints", 0) or 0
+            )
+            payload["prompt_cache_ttl"] = prompt_cache_telemetry.get(
+                "cache_ttl", "auto"
+            )
         if error:
             payload["error"] = error[:200]
         publish_session_event(
@@ -319,8 +437,14 @@ def _call_openai_responses(
     tools: list[Any] | None = None,
     max_tokens: int | None = None,
     response_format: Any = None,
+    cache_key: str | None = None,
 ) -> dict[str, Any]:
     model = _get_openai_model(component)
+    # Strip the bundle's static/dynamic boundary sentinel before sending —
+    # OpenAI doesn't recognize it and would treat it as literal text. The
+    # measurement gives us the same prefix/tail telemetry the Anthropic
+    # adapter emits so cross-provider dashboards line up.
+    instructions, prompt_cache_telemetry = _measure_openai_prompt(instructions)
     # claude_code.llm_request span wraps the whole OpenAI Responses call.
     import time as _time
 
@@ -354,10 +478,65 @@ def _call_openai_responses(
     }
     if instructions:
         request_body["instructions"] = instructions
+    # `prompt_cache_key` is OpenAI's routing hint that pins requests for the
+    # same logical workload to the same cache shard. Without it, requests
+    # from different pods can hash to different backends and each pays its
+    # own cold-start. With it, the cluster behaves as one cache consumer.
+    # Empty / None means defer to default routing — safer than sending an
+    # unstable key.
+    if cache_key:
+        request_body["prompt_cache_key"] = cache_key
     converted_tools = _convert_tools_for_openai(tools)
     if converted_tools:
         request_body["tools"] = converted_tools
         request_body["parallel_tool_calls"] = True
+    # Greppable per-turn line that mirrors the Anthropic adapter's. `mode=prefix`
+    # and `cache_ttl=auto` distinguish the OpenAI side; production logs grep the
+    # same way for both providers. `breakpoints` is 1 (implicit prefix-match)
+    # when the static prefix crosses the threshold, plus 1 for the tool list
+    # if any tools are present — same accounting as the Anthropic side.
+    logger.info(
+        "[instruction-bundle] mode=%s breakpoints=%d prefix_chars=%d tail_chars=%d cache_ttl=%s provider=openai",
+        "prefix" if prompt_cache_telemetry["cache_eligible"] else "legacy",
+        prompt_cache_telemetry["cache_breakpoints"]
+        + (1 if converted_tools else 0),
+        prompt_cache_telemetry["prefix_chars"],
+        prompt_cache_telemetry["tail_chars"],
+        prompt_cache_telemetry["cache_ttl"],
+    )
+    if llm_span is not None:
+        try:
+            llm_span.set_attribute(
+                "prompt.prefix_chars", prompt_cache_telemetry["prefix_chars"]
+            )
+            llm_span.set_attribute(
+                "prompt.tail_chars", prompt_cache_telemetry["tail_chars"]
+            )
+            llm_span.set_attribute(
+                "prompt.cache_eligible", prompt_cache_telemetry["cache_eligible"]
+            )
+            llm_span.set_attribute(
+                "prompt.cache_breakpoints",
+                prompt_cache_telemetry["cache_breakpoints"]
+                + (1 if converted_tools else 0),
+            )
+            llm_span.set_attribute(
+                "prompt.cache_ttl", prompt_cache_telemetry["cache_ttl"]
+            )
+            if cache_key:
+                llm_span.set_attribute("prompt.cache_key", cache_key)
+            if converted_tools:
+                import hashlib as _hashlib
+
+                tools_hash = _hashlib.sha1(
+                    ",".join(t.get("name") or "" for t in converted_tools).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                llm_span.set_attribute("prompt.tools_hash", tools_hash)
+                llm_span.set_attribute("prompt.tools_count", len(converted_tools))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[telemetry] openai prompt-cache attrs set failed: %s", exc)
     if max_tokens:
         request_body["max_output_tokens"] = max_tokens
     if model.startswith("gpt-5") or model.startswith("o"):
@@ -402,6 +581,7 @@ def _call_openai_responses(
             ttft_ms=(_time.monotonic() - llm_start) * 1000.0,
             success=False,
             error=detail,
+            prompt_cache_telemetry=prompt_cache_telemetry,
         )
         raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
 
@@ -459,6 +639,7 @@ def _call_openai_responses(
         usage=data.get("usage") or {},
         ttft_ms=(_time.monotonic() - llm_start) * 1000.0,
         success=True,
+        prompt_cache_telemetry=prompt_cache_telemetry,
     )
     return result
 
@@ -489,6 +670,11 @@ def patch_for_openai(llm_client: Any) -> None:
             response_format = kwargs.get("response_format")
 
             instructions, messages = _normalize_messages(prompt, raw_messages)
+            # `_cache_key` is stashed by main.py's _apply_instruction_prompt_state
+            # at activity entry, derived from the bundle's agent identity. None
+            # for ephemeral inline workflow agents — falls back to OpenAI's
+            # default routing.
+            cache_key = getattr(self, "_cache_key", None)
             result = _call_openai_responses(
                 component,
                 messages,
@@ -496,6 +682,7 @@ def patch_for_openai(llm_client: Any) -> None:
                 tools=tools,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                cache_key=cache_key,
             )
 
             if response_format is not None and result.get("content"):
