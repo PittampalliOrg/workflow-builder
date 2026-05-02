@@ -3,6 +3,7 @@ import {
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
+	effectiveBenchmarkConcurrency,
 	extractAgentStopReason,
 	extractBenchmarkRuntimeLinks,
 	extractInferenceEnvironment,
@@ -95,6 +96,23 @@ describe("SWE-bench DB metadata", () => {
 });
 
 describe("SWE-bench workflow spec", () => {
+	it("caps stored benchmark concurrency to the selected instance count", () => {
+		expect(
+			effectiveBenchmarkConcurrency({
+				instanceCount: 3,
+				concurrency: 32,
+				evaluationConcurrency: 128,
+			}),
+		).toEqual({ concurrency: 3, evaluationConcurrency: 3 });
+		expect(
+			effectiveBenchmarkConcurrency({
+				instanceCount: 100,
+				concurrency: 0,
+				evaluationConcurrency: undefined,
+			}),
+		).toEqual({ concurrency: 1, evaluationConcurrency: 5 });
+	});
+
 	it("builds a canvas graph for generated SWE-bench instance runs", () => {
 		const graph = buildSwebenchInstanceWorkflowGraph();
 		const nodes = graph.nodes as Array<{ id: string; type: string }>;

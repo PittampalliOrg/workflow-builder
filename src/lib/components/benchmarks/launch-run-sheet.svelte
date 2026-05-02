@@ -41,8 +41,8 @@
 	let agentId = $state('');
 	let modelNameOrPath = $state('');
 	let modelConfigLabel = $state('');
-	let concurrency = $state(8);
-	let evaluationConcurrency = $state(24);
+	let concurrency = $state(5);
+	let evaluationConcurrency = $state(5);
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
 	let tagsInput = $state('');

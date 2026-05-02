@@ -76,7 +76,7 @@ import {
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
-const DEFAULT_EVALUATION_CONCURRENCY = 24;
+const DEFAULT_EVALUATION_CONCURRENCY = 5;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
@@ -407,13 +407,11 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	if (instanceIds.length > 500) {
 		throw error(400, "A benchmark run may include at most 500 instances");
 	}
-	const concurrency = clampInteger(input.concurrency, 1, 32, 1);
-	const evaluationConcurrency = clampInteger(
-		input.evaluationConcurrency,
-		1,
-		128,
-		DEFAULT_EVALUATION_CONCURRENCY,
-	);
+	const { concurrency, evaluationConcurrency } = effectiveBenchmarkConcurrency({
+		instanceCount: instanceIds.length,
+		concurrency: input.concurrency,
+		evaluationConcurrency: input.evaluationConcurrency,
+	});
 	const timeoutSeconds = clampInteger(
 		input.timeoutSeconds,
 		60,
@@ -2120,6 +2118,29 @@ function clampInteger(
 	const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
 	if (!Number.isFinite(parsed)) return fallback;
 	return Math.min(Math.max(Math.floor(parsed), min), max);
+}
+
+export function effectiveBenchmarkConcurrency(input: {
+	instanceCount: number;
+	concurrency?: unknown;
+	evaluationConcurrency?: unknown;
+}): { concurrency: number; evaluationConcurrency: number } {
+	const instanceLimit = Math.max(1, Math.floor(input.instanceCount));
+	return {
+		concurrency: Math.min(
+			clampInteger(input.concurrency, 1, 32, 1),
+			instanceLimit,
+		),
+		evaluationConcurrency: Math.min(
+			clampInteger(
+				input.evaluationConcurrency,
+				1,
+				128,
+				DEFAULT_EVALUATION_CONCURRENCY,
+			),
+			instanceLimit,
+		),
+	};
 }
 
 function sha256(value: string): string {
