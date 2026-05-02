@@ -70,10 +70,6 @@ def main() -> int:
             run_id=run_id,
             instance_id=iid,
             instance_image=image_map[iid],
-            dataset_name=dataset_name,
-            dataset_split=split,
-            predictions_path=predictions_path,
-            swebench_package_ref=swebench_pkg,
             timeout_seconds=timeout_seconds,
         )
         create_taskrun(api, namespace, body)
@@ -211,10 +207,6 @@ def build_run_instance_taskrun(
     run_id: str,
     instance_id: str,
     instance_image: str,
-    dataset_name: str,
-    dataset_split: str,
-    predictions_path: str,
-    swebench_package_ref: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
     return {
@@ -233,10 +225,6 @@ def build_run_instance_taskrun(
                 {"name": "run_id", "value": run_id},
                 {"name": "instance_id", "value": instance_id},
                 {"name": "instance_image", "value": instance_image},
-                {"name": "dataset_name", "value": dataset_name},
-                {"name": "dataset_split", "value": dataset_split},
-                {"name": "predictions_path", "value": predictions_path},
-                {"name": "swebench_package_ref", "value": swebench_package_ref},
                 {"name": "timeout_seconds", "value": str(timeout_seconds)},
             ],
             "workspaces": [_artifacts_workspace(pvc_name)],
