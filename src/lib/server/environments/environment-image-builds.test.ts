@@ -99,6 +99,39 @@ describe("SWE-bench environment image build planning", () => {
 		expect(spec.envSpecHash).toMatch(/^[0-9a-f]{64}$/);
 	});
 
+	it("preserves trailing whitespace in test_patch (unidiff context-line marker)", () => {
+		// django__django-13128 in SWE-bench_Verified ends with ` \n\n` —
+		// the single-space-on-its-own-line is the empty-source-line context
+		// marker, counted by the hunk header. Trimming desyncs the hunk count
+		// and breaks `unidiff.PatchSet(...)` inside the harness.
+		const patchWithTrailingMarker =
+			"diff --git a/tests/x.py b/tests/x.py\n" +
+			"--- a/tests/x.py\n" +
+			"+++ b/tests/x.py\n" +
+			"@@ -1,3 +1,2 @@\n" +
+			" first_line\n" +
+			"-second_line\n" +
+			" \n\n";
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "django__django-13128",
+			repo: "django/django",
+			baseCommit: "2d67222472f80f251607ae1b720527afceba06ad",
+			testMetadata: {
+				version: "3.2",
+				test_patch: patchWithTrailingMarker,
+				FAIL_TO_PASS: [],
+				PASS_TO_PASS: [],
+			},
+		});
+		expect(spec.swebenchSpecInput?.test_patch).toBe(patchWithTrailingMarker);
+		// Defensive: also verify the trailing 3 bytes survived (most likely-to-be-stripped slice).
+		expect(
+			(spec.swebenchSpecInput?.test_patch as string).endsWith(" \n\n"),
+		).toBe(true);
+	});
+
 	it("plans a dynamic build instead of returning a template fallback", () => {
 		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_JSON", "");
 		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");

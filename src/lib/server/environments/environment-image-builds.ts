@@ -1857,6 +1857,30 @@ function readMetadataString(
 	return null;
 }
 
+/**
+ * Read a metadata field that contains structured text (unified-diff bodies,
+ * shell scripts, etc.) where trailing whitespace is semantically significant.
+ *
+ * Plain `readMetadataString` calls `readString().trim()` which strips trailing
+ * ` \n\n` from a unified diff — that sequence represents the empty-source-line
+ * context marker plus the diff's final newline, and the hunk header's line
+ * count assumes both are present. Trimming desynchronizes the hunk count and
+ * makes `unidiff.PatchSet(...)` raise `Hunk is shorter than expected` inside
+ * the SWE-bench harness's `make_eval_script_list_py`. See
+ * `services/swebench-coordinator` env-build failures on `django__django-13128`.
+ */
+function readMetadataRawString(
+	metadata: Record<string, unknown> | null | undefined,
+	keys: string[],
+): string | null {
+	if (!metadata) return null;
+	for (const key of keys) {
+		const value = metadata[key];
+		if (typeof value === "string" && value.length > 0) return value;
+	}
+	return null;
+}
+
 function buildSwebenchHarnessSpecInput(input: {
 	dataset: string;
 	suite: SwebenchSuiteSlug;
@@ -1866,7 +1890,12 @@ function buildSwebenchHarnessSpecInput(input: {
 	baseCommit: string;
 	testMetadata?: Record<string, unknown> | null;
 }): Record<string, unknown> | null {
-	const testPatch = readMetadataString(input.testMetadata, ["test_patch", "testPatch"]);
+	// test_patch must NOT be trimmed — trailing ` \n\n` is the unidiff context
+	// marker for an empty source line. See readMetadataRawString docstring.
+	const testPatch = readMetadataRawString(input.testMetadata, [
+		"test_patch",
+		"testPatch",
+	]);
 	if (!input.version || !isSupportedSwebenchHarnessSpec(input.repo, input.version) || !testPatch) {
 		return null;
 	}
