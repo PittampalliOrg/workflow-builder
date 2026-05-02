@@ -24,7 +24,9 @@
 		payload: ObservabilityInvestigationPayload | null;
 		isLoading?: boolean;
 		error?: string | null;
+		mlflowHref?: string | null;
 		phoenixHref?: string | null;
+		legacyTraceHref?: string | null;
 		fullTraceHref?: string | null;
 		onRefresh?: () => void;
 	}
@@ -33,7 +35,9 @@
 		payload,
 		isLoading = false,
 		error = null,
+		mlflowHref = null,
 		phoenixHref = null,
+		legacyTraceHref = null,
 		fullTraceHref = null,
 		onRefresh = () => {}
 	}: Props = $props();
@@ -170,6 +174,7 @@
 	const activeServiceFilter = $derived(store.serviceFilter);
 	const activeTraceFilter = $derived(store.traceFilter);
 	const activeSelectedDecision = $derived(store.selectedDecision);
+	const legacyExternalTraceHref = $derived(legacyTraceHref ?? phoenixHref);
 
 	const selectedSpan = $derived.by(() => {
 		if (!store.selectedSpanRef) return null;
@@ -353,10 +358,16 @@
 				{/if}
 
 				<div class="ml-auto flex items-center gap-2">
-					{#if phoenixHref}
-						<a href={phoenixHref} target="_blank" rel="noopener noreferrer"
+					{#if mlflowHref}
+						<a href={mlflowHref} target="_blank" rel="noopener noreferrer"
+							class="text-[10px] font-medium text-sky-300 hover:text-sky-200">
+							<ExternalLink size={10} class="mr-0.5 inline" /> MLflow
+						</a>
+					{/if}
+					{#if legacyExternalTraceHref}
+						<a href={legacyExternalTraceHref} target="_blank" rel="noopener noreferrer"
 							class="text-[10px] text-orange-400 hover:text-orange-300">
-							<ExternalLink size={10} class="mr-0.5 inline" /> Phoenix
+							<ExternalLink size={10} class="mr-0.5 inline" /> Legacy Phoenix
 						</a>
 					{/if}
 					<button class="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"

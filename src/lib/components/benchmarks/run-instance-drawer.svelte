@@ -61,6 +61,7 @@
 			daprInstanceId: string | null;
 			mlflowRunId: string | null;
 			mlflowUrl: string | null;
+			mlflowTracesUrl: string | null;
 			sandboxName: string | null;
 			workspaceRef: string | null;
 			logsPath: string | null;
@@ -107,6 +108,7 @@
 
 	type SpansPayload = {
 		traceIds: string[];
+		mlflowTracesUrl: string | null;
 		llmSpans: ObservabilityLlmSpan[];
 		toolSpans: ObservabilityToolSpan[];
 		error?: string;
@@ -389,6 +391,18 @@
 									title="Open MLflow run"
 								>
 									MLflow
+									<ExternalLink class="h-2.5 w-2.5" />
+								</a>
+							{/if}
+							{#if detail.runInstance.mlflowTracesUrl}
+								<a
+									href={detail.runInstance.mlflowTracesUrl}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+									title="Open MLflow traces"
+								>
+									Traces
 									<ExternalLink class="h-2.5 w-2.5" />
 								</a>
 							{/if}
@@ -816,6 +830,16 @@
 										Failed to load spans: {spansError}
 									</AlertDescription>
 								</Alert>
+								{#if detail.runInstance.mlflowTracesUrl}
+									<a
+										href={detail.runInstance.mlflowTracesUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary hover:bg-muted"
+									>
+										Open in MLflow <ExternalLink class="h-3 w-3" />
+									</a>
+								{/if}
 							{:else if spans && spans.llmSpans.length === 0 && spans.toolSpans.length === 0 && spans.error}
 								<!-- ClickHouse-degraded state: trace IDs exist but query failed -->
 								<Alert variant="destructive">
@@ -828,6 +852,16 @@
 										</div>
 									</AlertDescription>
 								</Alert>
+								{#if spans.mlflowTracesUrl}
+									<a
+										href={spans.mlflowTracesUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary hover:bg-muted"
+									>
+										Open in MLflow <ExternalLink class="h-3 w-3" />
+									</a>
+								{/if}
 								<div class="rounded-md border border-border p-3">
 									<div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
 										Trace IDs ({spans.traceIds.length})
@@ -853,8 +887,20 @@
 									</ul>
 								</div>
 							{:else if spans}
-								<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
-									{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'}
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+										{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'}
+									</div>
+									{#if spans.mlflowTracesUrl}
+										<a
+											href={spans.mlflowTracesUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary hover:bg-muted"
+										>
+											Open in MLflow <ExternalLink class="h-3 w-3" />
+										</a>
+									{/if}
 								</div>
 								<SpansTimeline llmSpans={spans.llmSpans} toolSpans={spans.toolSpans} />
 								{#if spans.error}
@@ -1066,6 +1112,19 @@
 										>
 											<span class="font-mono">{detail.runInstance.mlflowRunId}</span>
 											<ExternalLink class="h-3 w-3" />
+										</a>
+									</div>
+								{/if}
+								{#if detail.runInstance.mlflowTracesUrl}
+									<div>
+										<span class="text-muted-foreground">MLflow traces:</span>
+										<a
+											href={detail.runInstance.mlflowTracesUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="ml-2 inline-flex items-center gap-1 text-primary hover:underline"
+										>
+											Open traces <ExternalLink class="h-3 w-3" />
 										</a>
 									</div>
 								{/if}

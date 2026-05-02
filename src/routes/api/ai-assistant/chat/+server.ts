@@ -2,9 +2,12 @@ import { type RequestHandler } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { generateText, stepCountIs } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
-import { openai } from '@ai-sdk/openai';
 import { buildSystemPrompt } from '$lib/server/ai-assistant/system-prompt';
 import { createWorkflowTools } from '$lib/server/ai-assistant/tools';
+import {
+	openAICompatibleTrafficAvailable,
+	workflowOpenAIModel
+} from '$lib/server/ai/openai-gateway';
 import {
 	applyWorkflowSpecOperations,
 	parseWorkflowSpecOperationPlan,
@@ -107,9 +110,9 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 	}
 
 	const anthropicKey = env.ANTHROPIC_API_KEY;
-	const openaiKey = env.OPENAI_API_KEY;
+	const openaiAvailable = openAICompatibleTrafficAvailable();
 
-	if (!anthropicKey && !openaiKey) {
+	if (!anthropicKey && !openaiAvailable) {
 		return new Response('No AI API key configured', { status: 503 });
 	}
 
@@ -175,7 +178,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 
 	const model = anthropicKey
 		? anthropic(env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514')
-		: openai(env.OPENAI_MODEL || 'gpt-4o');
+		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.4');
 
 	const modelMessages = messages.map((m) => {
 		const content = typeof m.content === 'string'

@@ -117,14 +117,26 @@
 			</button>
 		{/if}
 		<a
+			href={traceId
+				? `/api/observability/mlflow/traces/${encodeURIComponent(traceId)}`
+				: `/api/observability/mlflow/sessions/${encodeURIComponent(executionId)}`}
+			target="_blank"
+			rel="noopener noreferrer"
+			class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-sky-600 transition-colors hover:bg-muted dark:text-sky-300"
+			title="View trace in MLflow"
+		>
+			<ExternalLink size={12} />
+			MLflow
+		</a>
+		<a
 			href={`/api/observability/phoenix/sessions/${encodeURIComponent(executionId)}`}
 			target="_blank"
 			rel="noopener noreferrer"
 			class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors text-orange-400"
-			title="View workflow session in Arize Phoenix"
+			title="View workflow session in the legacy Phoenix UI"
 		>
 			<ExternalLink size={12} />
-			Phoenix
+			Legacy Phoenix
 		</a>
 	</div>
 </div>

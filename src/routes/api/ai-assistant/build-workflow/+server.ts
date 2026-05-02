@@ -9,13 +9,16 @@ import { type RequestHandler } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
-import { openai } from '@ai-sdk/openai';
 import yaml from 'js-yaml';
 import { db } from '$lib/server/db';
 import { workflows } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
 import { buildBuildPrompt, buildFixPrompt } from '$lib/server/ai-assistant/build-prompt';
+import {
+	openAICompatibleTrafficAvailable,
+	workflowOpenAIModel
+} from '$lib/server/ai/openai-gateway';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 // Tools available for future ReAct-style planning (not yet wired to generateText)
@@ -48,14 +51,14 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 	}
 
 	const anthropicKey = env.ANTHROPIC_API_KEY;
-	const openaiKey = env.OPENAI_API_KEY;
-	if (!anthropicKey && !openaiKey) {
+	const openaiAvailable = openAICompatibleTrafficAvailable();
+	if (!anthropicKey && !openaiAvailable) {
 		return new Response('No AI API key configured', { status: 503 });
 	}
 
 	const model = anthropicKey
 		? anthropic(env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514')
-		: openai(env.OPENAI_MODEL || 'gpt-4o');
+		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.4');
 
 	const userId = locals.session?.userId;
 	const encoder = new TextEncoder();

@@ -1355,12 +1355,20 @@
 					</CardHeader>
 					<CardContent class="text-xs space-y-1.5">
 						<a
-							href="/api/observability/phoenix/sessions/{session.id}"
+							href={`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}`}
 							target="_blank"
 							rel="noreferrer"
 							class="text-primary hover:underline flex items-center gap-1"
 						>
-							Open in Phoenix <ExternalLink class="size-3" />
+							Open in MLflow <ExternalLink class="size-3" />
+						</a>
+						<a
+							href={`/api/observability/phoenix/sessions/${encodeURIComponent(session.id)}`}
+							target="_blank"
+							rel="noreferrer"
+							class="text-primary hover:underline flex items-center gap-1"
+						>
+							Legacy Phoenix <ExternalLink class="size-3" />
 						</a>
 						<a
 							href="/observability?sessionId={session.id}"

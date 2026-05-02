@@ -7,7 +7,7 @@ import {
 	benchmarkRuns,
 	benchmarkRunInstances,
 } from "$lib/server/db/schema";
-import { publicMlflowRunUrl } from "$lib/server/benchmarks/mlflow";
+import { publicMlflowRunUrl, publicMlflowTracesUrl } from "$lib/server/benchmarks/mlflow";
 import { parseHarnessResult } from "$lib/server/benchmarks/harness-result";
 import { parsePatchStats } from "$lib/server/benchmarks/patch-compare";
 import type { RequestHandler } from "./$types";
@@ -80,6 +80,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		runInstance: {
 			...row.run,
 			mlflowUrl: publicMlflowRunUrl(runRow.mlflowExperimentId, row.run.mlflowRunId),
+			mlflowTracesUrl: publicMlflowTracesUrl(
+				runRow.mlflowExperimentId,
+				(row.run.traceIds ?? [])[0],
+			),
 		},
 		instance: {
 			repo: row.repo,

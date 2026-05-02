@@ -1,4 +1,8 @@
 import { env } from '$env/dynamic/private';
+import {
+	callOpenAICompatibleChatCompletion,
+	openAICompatibleTrafficAvailable
+} from '$lib/server/ai/openai-gateway';
 import { getPromptExpansionConfig } from '$lib/utils/workflow-input-config';
 
 type PromptExpansionResult = Record<string, string> & {
@@ -54,36 +58,20 @@ async function callAnthropic(prompt: string, model: string, apiKey: string): Pro
 	return content;
 }
 
-async function callOpenAI(prompt: string, model: string, apiKey: string): Promise<string> {
-	const response = await fetch('https://api.openai.com/v1/chat/completions', {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`
-		},
-		body: JSON.stringify({
-			model,
-			max_tokens: 800,
-			response_format: { type: 'json_object' },
-			messages: [
-				{
-					role: 'system',
-					content:
-						'You turn a single product idea into concise structured fields for a greenfield SvelteKit demo app. Respond with JSON only.'
-				},
-				{ role: 'user', content: prompt }
-			]
-		})
+async function callOpenAI(prompt: string, model: string): Promise<string> {
+	return callOpenAICompatibleChatCompletion({
+		model,
+		maxTokens: 800,
+		responseFormat: { type: 'json_object' },
+		messages: [
+			{
+				role: 'system',
+				content:
+					'You turn a single product idea into concise structured fields for a greenfield SvelteKit demo app. Respond with JSON only.'
+			},
+			{ role: 'user', content: prompt }
+		]
 	});
-
-	if (!response.ok) {
-		throw new Error(`OpenAI API error ${response.status}: ${await response.text()}`);
-	}
-
-	const data = await response.json();
-	const content = data.choices?.[0]?.message?.content;
-	if (!content) throw new Error('No content in OpenAI response');
-	return content;
 }
 
 function buildDerivationPrompt(userPrompt: string, existingRepo?: string): string {
@@ -163,15 +151,15 @@ async function deriveFromPrompt(
 	selectedModel?: string
 ): Promise<PromptExpansionResult> {
 	const anthropicKey = env.ANTHROPIC_API_KEY;
-	const openaiKey = env.OPENAI_API_KEY;
-	if (!anthropicKey && !openaiKey) {
+	const openaiAvailable = openAICompatibleTrafficAvailable();
+	if (!anthropicKey && !openaiAvailable) {
 		throw new Error('No AI API key configured for greenfield prompt expansion');
 	}
 
 	const prompt = buildDerivationPrompt(userPrompt, existingRepo);
 	const requestedAnthropicModel = normalizeAnthropicModel(selectedModel);
-	const responseText = openaiKey
-		? await callOpenAI(prompt, env.OPENAI_MODEL || 'gpt-4o', openaiKey)
+	const responseText = openaiAvailable
+		? await callOpenAI(prompt, env.OPENAI_MODEL || 'gpt-5.4')
 		: await callAnthropic(
 				prompt,
 				requestedAnthropicModel || env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',

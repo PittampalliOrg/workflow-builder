@@ -460,6 +460,7 @@
 	const instanceId = $derived(snapshot?.instanceId ?? null);
 	const traceId = $derived(snapshot?.traceId ?? null);
 	const allTraceIds = $derived(Array.isArray(snapshot?.traceIds) ? snapshot.traceIds : []);
+	const primaryInvestigationTraceId = $derived(traceId ?? allTraceIds[0] ?? null);
 	const logs = $derived((snapshot?.steps as StepLog[] | undefined) ?? []);
 	const browserArtifacts = $derived(
 		(snapshot?.browserArtifacts as BrowserArtifact[] | undefined) ?? []
@@ -2947,8 +2948,11 @@
 					payload={investigationPayload}
 					isLoading={isLoadingInvestigation}
 					error={investigationError}
-					fullTraceHref={traceId ? `/observability/${traceId}` : null}
-					phoenixHref={`/api/observability/phoenix/sessions/${encodeURIComponent(executionId)}`}
+					fullTraceHref={primaryInvestigationTraceId ? `/observability/${primaryInvestigationTraceId}` : null}
+					mlflowHref={primaryInvestigationTraceId
+						? `/api/observability/mlflow/traces/${encodeURIComponent(primaryInvestigationTraceId)}`
+						: `/api/observability/mlflow/sessions/${encodeURIComponent(executionId)}`}
+					legacyTraceHref={`/api/observability/phoenix/sessions/${encodeURIComponent(executionId)}`}
 					onRefresh={() => {
 						investigationFetched = false;
 						fetchInvestigation();

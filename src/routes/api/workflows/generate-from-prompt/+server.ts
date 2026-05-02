@@ -1,6 +1,10 @@
 import { json, error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { env } from "$env/dynamic/private";
+import {
+  callOpenAICompatibleChatCompletion,
+  openAICompatibleTrafficAvailable,
+} from "$lib/server/ai/openai-gateway";
 
 const SYSTEM_PROMPT = `You are a workflow generator. Given a user's description, generate a CNCF Serverless Workflow 1.0 definition with nodes and edges for a visual workflow builder.
 
@@ -87,32 +91,15 @@ async function callAnthropic(prompt: string, model: string, apiKey: string) {
   return content;
 }
 
-async function callOpenAI(prompt: string, model: string, apiKey: string) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-    }),
+async function callOpenAI(prompt: string, model: string) {
+  return callOpenAICompatibleChatCompletion({
+    model,
+    maxTokens: 4096,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: prompt },
+    ],
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${text}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("No content in OpenAI response");
-  return content;
 }
 
 function extractJson(text: string): Record<string, unknown> {
@@ -143,9 +130,9 @@ export const POST: RequestHandler = async ({ request }) => {
   }
 
   const anthropicKey = env.ANTHROPIC_API_KEY;
-  const openaiKey = env.OPENAI_API_KEY;
+  const openaiAvailable = openAICompatibleTrafficAvailable();
 
-  if (!anthropicKey && !openaiKey) {
+  if (!anthropicKey && !openaiAvailable) {
     return error(
       503,
       "No AI API key configured (ANTHROPIC_API_KEY or OPENAI_API_KEY)",
@@ -167,8 +154,8 @@ export const POST: RequestHandler = async ({ request }) => {
       const model = env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
       responseText = await callAnthropic(enrichedPrompt, model, anthropicKey);
     } else {
-      const model = env.OPENAI_MODEL || "gpt-4o";
-      responseText = await callOpenAI(enrichedPrompt, model, openaiKey!);
+      const model = env.OPENAI_MODEL || "gpt-5.4";
+      responseText = await callOpenAI(enrichedPrompt, model);
     }
 
     const result = extractJson(responseText);

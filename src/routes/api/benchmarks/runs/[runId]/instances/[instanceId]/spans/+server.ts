@@ -6,6 +6,7 @@ import {
 	getMultiTraceLlmSpans,
 	getMultiTraceToolSpans,
 } from "$lib/server/otel/clickhouse";
+import { publicMlflowTracesUrl } from "$lib/server/benchmarks/mlflow";
 import type { RequestHandler } from "./$types";
 
 // Phase D — span drilldown for the run-instance drawer Spans tab.
@@ -22,7 +23,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!runId || !instanceId) return error(400, "runId and instanceId required");
 
 	const [runRow] = await database
-		.select({ id: benchmarkRuns.id })
+		.select({
+			id: benchmarkRuns.id,
+			mlflowExperimentId: benchmarkRuns.mlflowExperimentId,
+		})
 		.from(benchmarkRuns)
 		.where(
 			and(
@@ -50,8 +54,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	);
 
 	if (traceIds.length === 0) {
-		return json({ traceIds: [], llmSpans: [], toolSpans: [] });
+		return json({ traceIds: [], mlflowTracesUrl: null, llmSpans: [], toolSpans: [] });
 	}
+
+	const mlflowTracesUrl = publicMlflowTracesUrl(runRow.mlflowExperimentId, traceIds[0]);
 
 	try {
 		const [llmSpans, toolSpans] = await Promise.all([
@@ -60,12 +66,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		]);
 		llmSpans.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 		toolSpans.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-		return json({ traceIds, llmSpans, toolSpans });
+		return json({ traceIds, mlflowTracesUrl, llmSpans, toolSpans });
 	} catch (err) {
 		console.warn(`spans drilldown failed for ${runId}/${instanceId}:`, err);
 		return json(
 			{
 				traceIds,
+				mlflowTracesUrl,
 				llmSpans: [],
 				toolSpans: [],
 				error: err instanceof Error ? err.message : String(err),
