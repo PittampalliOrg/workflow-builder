@@ -42,6 +42,7 @@
 	let modelNameOrPath = $state('');
 	let modelConfigLabel = $state('');
 	let concurrency = $state(8);
+	let evaluationConcurrency = $state(24);
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
 	let tagsInput = $state('');
@@ -142,6 +143,7 @@
 					modelNameOrPath: modelNameOrPath.trim() || undefined,
 					modelConfigLabel: modelConfigLabel.trim() || undefined,
 					concurrency,
+					evaluationConcurrency,
 					timeoutSeconds,
 					evaluatorResourceClass,
 					tags: parseTags(tagsInput)
@@ -289,9 +291,9 @@
 				</p>
 			</div>
 
-			<!-- Concurrency -->
+			<!-- Inference concurrency -->
 			<div class="space-y-1.5">
-				<Label for="launch-concurrency">Concurrency</Label>
+				<Label for="launch-concurrency">Inference concurrency</Label>
 				<div class="flex items-center gap-3">
 					<input
 						id="launch-concurrency"
@@ -305,6 +307,25 @@
 				</div>
 				<p class="text-[10px] text-muted-foreground">
 					Will dispatch up to {concurrency} parallel <code>swebench_instance_workflow</code> children. Capped at 32 by the coordinator.
+				</p>
+			</div>
+
+			<!-- Evaluation concurrency -->
+			<div class="space-y-1.5">
+				<Label for="launch-eval-concurrency">Evaluation concurrency</Label>
+				<div class="flex items-center gap-3">
+					<input
+						id="launch-eval-concurrency"
+						type="range"
+						min="1"
+						max="64"
+						bind:value={evaluationConcurrency}
+						class="flex-1 accent-primary"
+					/>
+					<span class="font-mono text-sm tabular-nums w-8 text-right">{evaluationConcurrency}</span>
+				</div>
+				<p class="text-[10px] text-muted-foreground">
+					Will keep up to {evaluationConcurrency} Kubernetes-native SWE-bench run-instance TaskRuns active during official grading.
 				</p>
 			</div>
 

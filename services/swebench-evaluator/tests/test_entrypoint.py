@@ -11,11 +11,15 @@ def load_entrypoint():
     sys.modules.setdefault(
         "requests",
         types.SimpleNamespace(
-            post=lambda *args, **kwargs: types.SimpleNamespace(raise_for_status=lambda: None)
+            post=lambda *args, **kwargs: types.SimpleNamespace(
+                raise_for_status=lambda: None
+            )
         ),
     )
     module_path = Path(__file__).resolve().parents[1] / "entrypoint.py"
-    spec = importlib.util.spec_from_file_location("swebench_evaluator_entrypoint", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "swebench_evaluator_entrypoint", module_path
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -23,237 +27,97 @@ def load_entrypoint():
     return module
 
 
-def test_parse_results_handles_swebench_aggregate_report(tmp_path: Path):
+def test_evaluation_max_parallel_defaults_and_bounds(monkeypatch):
     entrypoint = load_entrypoint()
-    report = {
-        "total_instances": 1,
-        "submitted_instances": 1,
-        "completed_instances": 1,
-        "resolved_instances": 1,
-        "unresolved_instances": 0,
-        "empty_patch_instances": 0,
-        "error_instances": 0,
-        "completed_ids": ["sympy__sympy-20590"],
-        "resolved_ids": ["sympy__sympy-20590"],
-        "unresolved_ids": [],
-        "empty_patch_ids": [],
-        "error_ids": [],
-        "schema_version": 2,
-    }
-    (tmp_path / "model.run.json").write_text(json.dumps(report), encoding="utf-8")
 
-    results = entrypoint.parse_results(tmp_path, ["sympy__sympy-20590"])
+    monkeypatch.delenv("SWEBENCH_EVAL_MAX_PARALLEL", raising=False)
+    monkeypatch.delenv("SWEBENCH_MAX_WORKERS", raising=False)
+    assert entrypoint.evaluation_max_parallel() == 24
 
-    assert results == [
-        {
-            "instance_id": "sympy__sympy-20590",
-            "resolved": True,
-            "status": "resolved",
-            "logs_path": str(tmp_path / "model.run.json"),
-            "harness_result": report,
-            "test_output_summary": (
-                "SWE-bench report: total=1, submitted=1, completed=1, "
-                "resolved=1, unresolved=0, empty_patches=0, errors=0"
-            ),
-        }
-    ]
+    monkeypatch.setenv("SWEBENCH_EVAL_MAX_PARALLEL", "64")
+    assert entrypoint.evaluation_max_parallel() == 64
+
+    monkeypatch.setenv("SWEBENCH_EVAL_MAX_PARALLEL", "999")
+    assert entrypoint.evaluation_max_parallel() == 128
+
+    monkeypatch.setenv("SWEBENCH_EVAL_MAX_PARALLEL", "not-a-number")
+    assert entrypoint.evaluation_max_parallel() == 24
 
 
-def test_parse_results_marks_aggregate_errors(tmp_path: Path):
+def test_evaluation_max_parallel_accepts_legacy_max_workers(monkeypatch):
     entrypoint = load_entrypoint()
-    report = {
-        "total_instances": 1,
-        "submitted_instances": 1,
-        "completed_instances": 0,
-        "resolved_instances": 0,
-        "unresolved_instances": 0,
-        "empty_patch_instances": 0,
-        "error_instances": 1,
-        "resolved_ids": [],
-        "unresolved_ids": [],
-        "empty_patch_ids": [],
-        "error_ids": ["sympy__sympy-20590"],
-        "schema_version": 2,
-    }
-    (tmp_path / "model.run.json").write_text(json.dumps(report), encoding="utf-8")
 
-    results = entrypoint.parse_results(tmp_path, ["sympy__sympy-20590"])
+    monkeypatch.delenv("SWEBENCH_EVAL_MAX_PARALLEL", raising=False)
+    monkeypatch.setenv("SWEBENCH_MAX_WORKERS", "8")
 
-    assert results[0]["status"] == "error"
-    assert results[0]["resolved"] is False
-    assert results[0]["error"] == "Harness error"
+    assert entrypoint.evaluation_max_parallel() == 8
 
 
-def test_parse_results_preserves_unresolved_and_empty_patch_statuses(tmp_path: Path):
+def test_parse_instance_image_map_requires_every_selected_instance():
     entrypoint = load_entrypoint()
-    report = {
-        "total_instances": 2,
-        "submitted_instances": 2,
-        "completed_instances": 1,
-        "resolved_instances": 0,
-        "unresolved_instances": 1,
-        "empty_patch_instances": 1,
-        "error_instances": 0,
-        "resolved_ids": [],
-        "unresolved_ids": ["django__django-11099"],
-        "empty_patch_ids": ["sympy__sympy-20590"],
-        "error_ids": [],
-        "schema_version": 2,
-    }
-    (tmp_path / "model.run.json").write_text(json.dumps(report), encoding="utf-8")
 
-    results = entrypoint.parse_results(
-        tmp_path,
-        ["django__django-11099", "sympy__sympy-20590"],
+    image_map = entrypoint.parse_instance_image_map(
+        json.dumps({"a": "image-a", "b": "image-b"}),
+        ["a", "b"],
     )
 
-    by_id = {result["instance_id"]: result for result in results}
-    assert by_id["django__django-11099"]["status"] == "unresolved"
-    assert by_id["sympy__sympy-20590"]["status"] == "empty_patch"
-    assert by_id["sympy__sympy-20590"]["error"] == "Empty patch"
+    assert image_map == {"a": "image-a", "b": "image-b"}
+
+    try:
+        entrypoint.parse_instance_image_map(json.dumps({"a": "image-a"}), ["a", "b"])
+    except RuntimeError as exc:
+        assert "missing image refs" in str(exc)
+        assert "b" in str(exc)
+    else:
+        raise AssertionError("expected missing image refs to fail")
 
 
-def test_main_writes_report_to_artifact_log_dir(monkeypatch, tmp_path: Path):
+def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch):
     entrypoint = load_entrypoint()
-    captured = {}
+    created: list[tuple[str, str]] = []
+    waited: list[list[str]] = []
 
-    monkeypatch.setenv("DATASET_NAME", "princeton-nlp/SWE-bench_Lite")
-    monkeypatch.setenv("PREDICTIONS_PATH", "/artifacts/run_1/predictions.jsonl")
-    monkeypatch.setenv("RUN_ID", "run_1")
-    monkeypatch.setenv("INSTANCE_IDS", "sympy__sympy-20590")
-    monkeypatch.setenv("SWEBENCH_LOG_DIR", str(tmp_path / "harness"))
-    monkeypatch.setenv("DOCKER_WAIT_SECONDS", "0")
-    monkeypatch.setenv("SWEBENCH_STOP_DOCKER_SIDECAR", "false")
+    def fake_name(run_id: str, phase: str, instance_id: str | None = None) -> str:
+        return f"{phase}-{instance_id or run_id}"
 
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["kwargs"] = kwargs
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    def fake_create(_api, _namespace, body):
+        labels = body["metadata"]["labels"]
+        name = body["metadata"]["name"]
+        created.append((labels["swebench.phase"], name))
 
-    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
-    monkeypatch.setattr(entrypoint, "post_results", lambda *args, **kwargs: None)
-    monkeypatch.setattr(entrypoint, "wait_for_docker", lambda: None)
-    monkeypatch.setattr(entrypoint, "stop_docker_sidecar", lambda: None)
-    monkeypatch.setattr(entrypoint, "parse_results", lambda *args, **kwargs: [])
-
-    assert entrypoint.main() == 0
-
-    cmd = captured["cmd"]
-    log_dir = str(tmp_path / "harness")
-    assert cmd[cmd.index("--report_dir") + 1] == log_dir
-    assert captured["kwargs"]["cwd"] == log_dir
-
-
-def test_main_posts_timeout_result_when_harness_hangs(monkeypatch, tmp_path: Path):
-    entrypoint = load_entrypoint()
-    captured = {}
-
-    monkeypatch.setenv("DATASET_NAME", "princeton-nlp/SWE-bench_Lite")
-    monkeypatch.setenv("PREDICTIONS_PATH", "/artifacts/run_1/predictions.jsonl")
-    monkeypatch.setenv("RUN_ID", "run_1")
-    monkeypatch.setenv("INSTANCE_IDS", "psf__requests-2317")
-    monkeypatch.setenv("SWEBENCH_LOG_DIR", str(tmp_path / "harness"))
-    monkeypatch.setenv("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "60")
-    monkeypatch.setenv("DOCKER_WAIT_SECONDS", "0")
-    monkeypatch.setenv("SWEBENCH_STOP_DOCKER_SIDECAR", "false")
-
-    def fake_run(cmd, **kwargs):
-        captured["timeout"] = kwargs["timeout"]
-        raise entrypoint.subprocess.TimeoutExpired(
-            cmd=cmd,
-            timeout=kwargs["timeout"],
-            output="out",
-            stderr="err",
-        )
-
-    def fake_post(run_id, results, error=None):
-        captured["run_id"] = run_id
-        captured["results"] = results
-        captured["error"] = error
-
-    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
-    monkeypatch.setattr(entrypoint, "post_results", fake_post)
-    monkeypatch.setattr(entrypoint, "wait_for_docker", lambda: None)
-    monkeypatch.setattr(entrypoint, "stop_docker_sidecar", lambda: None)
-
-    assert entrypoint.main() == 124
-
-    assert captured["timeout"] == 60
-    assert captured["run_id"] == "run_1"
-    assert captured["error"] == "SWE-bench harness timed out after 60 seconds"
-    assert captured["results"] == [
-        {
-            "instance_id": "psf__requests-2317",
-            "resolved": False,
-            "status": "timeout",
-            "error": "SWE-bench harness timed out after 60 seconds",
-            "logs_path": str(tmp_path / "harness"),
-            "harness_result": {
-                "timeout": True,
-                "message": "SWE-bench harness timed out after 60 seconds",
-            },
+    def fake_wait(_api, _namespace, names, deadline_seconds):
+        waited.append(list(names))
+        return {
+            name: {
+                "metadata": {"name": name},
+                "status": {"conditions": [{"type": "Succeeded", "status": "True"}]},
+            }
+            for name in names
         }
+
+    monkeypatch.setattr(entrypoint, "taskrun_name", fake_name)
+    monkeypatch.setattr(entrypoint, "create_taskrun", fake_create)
+    monkeypatch.setattr(entrypoint, "wait_for_taskruns", fake_wait)
+
+    result = entrypoint.dispatch_run_instance_taskruns(
+        api=object(),
+        namespace="workflow-builder",
+        pvc_name="swebench-artifacts",
+        run_id="run_1",
+        instance_ids=["a", "b", "c", "d", "e"],
+        image_map={iid: f"image-{iid}" for iid in ["a", "b", "c", "d", "e"]},
+        timeout_seconds=120,
+        max_parallel=2,
+        deadline_seconds=1800,
+    )
+
+    assert [name for _phase, name in created] == [
+        "run-a",
+        "run-b",
+        "run-c",
+        "run-d",
+        "run-e",
     ]
-    assert (tmp_path / "harness" / "stdout.log").read_text(encoding="utf-8") == "out"
-    assert "err" in (tmp_path / "harness" / "stderr.log").read_text(encoding="utf-8")
-
-
-def test_main_timeout_preserves_partial_results_and_times_out_only_missing(
-    monkeypatch,
-    tmp_path: Path,
-):
-    entrypoint = load_entrypoint()
-    captured = {}
-    log_dir = tmp_path / "harness"
-
-    monkeypatch.setenv("DATASET_NAME", "princeton-nlp/SWE-bench_Lite")
-    monkeypatch.setenv("PREDICTIONS_PATH", "/artifacts/run_1/predictions.jsonl")
-    monkeypatch.setenv("RUN_ID", "run_1")
-    monkeypatch.setenv("INSTANCE_IDS", "sympy__sympy-20590 psf__requests-2317")
-    monkeypatch.setenv("SWEBENCH_LOG_DIR", str(log_dir))
-    monkeypatch.setenv("SWEBENCH_EVALUATION_TIMEOUT_SECONDS", "60")
-    monkeypatch.setenv("DOCKER_WAIT_SECONDS", "0")
-    monkeypatch.setenv("SWEBENCH_STOP_DOCKER_SIDECAR", "false")
-
-    report = {
-        "total_instances": 2,
-        "submitted_instances": 2,
-        "completed_instances": 1,
-        "resolved_instances": 1,
-        "unresolved_instances": 0,
-        "empty_patch_instances": 0,
-        "error_instances": 0,
-        "resolved_ids": ["sympy__sympy-20590"],
-        "unresolved_ids": [],
-        "empty_patch_ids": [],
-        "error_ids": [],
-        "incomplete_ids": ["psf__requests-2317"],
-        "schema_version": 2,
-    }
-
-    def fake_run(cmd, **kwargs):
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "model.run.json").write_text(json.dumps(report), encoding="utf-8")
-        raise entrypoint.subprocess.TimeoutExpired(
-            cmd=cmd,
-            timeout=kwargs["timeout"],
-            output="out",
-            stderr="err",
-        )
-
-    def fake_post(run_id, results, error=None):
-        captured["run_id"] = run_id
-        captured["results"] = results
-        captured["error"] = error
-
-    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
-    monkeypatch.setattr(entrypoint, "post_results", fake_post)
-    monkeypatch.setattr(entrypoint, "wait_for_docker", lambda: None)
-    monkeypatch.setattr(entrypoint, "stop_docker_sidecar", lambda: None)
-
-    assert entrypoint.main() == 124
-
-    by_id = {result["instance_id"]: result for result in captured["results"]}
-    assert by_id["sympy__sympy-20590"]["status"] == "resolved"
-    assert by_id["psf__requests-2317"]["status"] == "timeout"
-    assert len(captured["results"]) == 2
+    assert all(phase == "run-instance" for phase, _name in created)
+    assert waited == [["run-a", "run-b"], ["run-c", "run-d"], ["run-e"]]
+    assert sorted(result) == ["run-a", "run-b", "run-c", "run-d", "run-e"]

@@ -20,6 +20,7 @@
 		hookNames: 'Hooks',
 		pluginNames: 'Plugins',
 		concurrency: 'Concurrency',
+		evaluationConcurrency: 'Eval concurrency',
 		evaluatorResourceClass: 'Evaluator class'
 	};
 

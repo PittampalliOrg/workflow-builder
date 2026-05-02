@@ -47,7 +47,11 @@ def load_app(monkeypatch):
     monkeypatch.setitem(sys.modules, "dapr", dapr_mod)
     monkeypatch.setitem(sys.modules, "dapr.ext", dapr_ext_mod)
     monkeypatch.setitem(sys.modules, "dapr.ext.workflow", workflow_mod)
-    monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(request=lambda *_args, **_kwargs: None))
+    monkeypatch.setitem(
+        sys.modules,
+        "requests",
+        types.SimpleNamespace(request=lambda *_args, **_kwargs: None),
+    )
 
     class FakeFastAPI:
         def __init__(self, *_args, **_kwargs):
@@ -79,12 +83,18 @@ def load_app(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "fastapi",
-        types.SimpleNamespace(FastAPI=FakeFastAPI, HTTPException=FakeHTTPException, Request=object),
+        types.SimpleNamespace(
+            FastAPI=FakeFastAPI, HTTPException=FakeHTTPException, Request=object
+        ),
     )
-    monkeypatch.setitem(sys.modules, "pydantic", types.SimpleNamespace(BaseModel=FakeBaseModel))
+    monkeypatch.setitem(
+        sys.modules, "pydantic", types.SimpleNamespace(BaseModel=FakeBaseModel)
+    )
 
     module_path = SERVICE_ROOT / "src" / "app.py"
-    spec = importlib.util.spec_from_file_location("swebench_coordinator_app_test", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "swebench_coordinator_app_test", module_path
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -106,7 +116,9 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
             self.status = status
 
     monkeypatch.setitem(sys.modules, "kubernetes", types.ModuleType("kubernetes"))
-    monkeypatch.setitem(sys.modules, "kubernetes.client", types.ModuleType("kubernetes.client"))
+    monkeypatch.setitem(
+        sys.modules, "kubernetes.client", types.ModuleType("kubernetes.client")
+    )
     monkeypatch.setitem(
         sys.modules,
         "kubernetes.client.rest",
@@ -141,7 +153,9 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
             raise ApiException(409)
 
     batch = FakeBatch()
-    monkeypatch.setattr(app, "_load_kubernetes_clients", lambda: (FakeClient, batch, None))
+    monkeypatch.setattr(
+        app, "_load_kubernetes_clients", lambda: (FakeClient, batch, None)
+    )
     monkeypatch.setattr(
         app,
         "_load_run",
@@ -152,10 +166,21 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
             "evaluatorResourceClass": "standard",
             "timeoutSeconds": 120,
             "concurrency": 3,
+            "evaluationConcurrency": 7,
+            "instances": [
+                {
+                    "instanceId": "sympy__sympy-20590",
+                    "inferenceEnvironment": {
+                        "sandboxImage": "ghcr.io/example/swebench:env",
+                    },
+                }
+            ],
         },
     )
     marked = {}
-    monkeypatch.setattr(app, "_mark_run_status", lambda _ctx, data: marked.update(data) or {"run": data})
+    monkeypatch.setattr(
+        app, "_mark_run_status", lambda _ctx, data: marked.update(data) or {"run": data}
+    )
 
     result = app._ensure_evaluator_job(
         None,
@@ -170,15 +195,19 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     assert result == {
         "jobName": job_name,
         "alreadyExists": True,
-        "maxWorkers": 3,
+        "evaluationMaxParallel": 7,
+        "activeDeadlineSeconds": 1320,
     }
     assert marked["status"] == "evaluating"
     assert marked["evaluatorJobName"] == job_name
-    evaluator = batch.body.spec.template.spec.containers[1]
+    assert batch.body.spec.active_deadline_seconds == 1320
+    evaluator = batch.body.spec.template.spec.containers[0]
     env = {item.name: getattr(item, "value", None) for item in evaluator.env}
-    env_sources = {item.name: getattr(item, "value_from", None) for item in evaluator.env}
+    env_sources = {
+        item.name: getattr(item, "value_from", None) for item in evaluator.env
+    }
     assert env["DATASET_NAME"] == "/artifacts/run_abc/dataset.jsonl"
-    assert env["SWEBENCH_MAX_WORKERS"] == "3"
+    assert env["SWEBENCH_EVAL_MAX_PARALLEL"] == "7"
     assert env["SWEBENCH_EVALUATOR_JOB_NAME"] == job_name
     assert env["INTERNAL_API_TOKEN"] is None
     token_source = env_sources["INTERNAL_API_TOKEN"].secret_key_ref
@@ -222,7 +251,9 @@ def test_validate_instance_metadata_rejects_missing_db_rows(monkeypatch):
         raise AssertionError("expected missing metadata to fail validation")
 
 
-def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(monkeypatch, tmp_path):
+def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(
+    monkeypatch, tmp_path
+):
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
     requests = []
@@ -239,7 +270,8 @@ def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(monkeypatc
         "_bff",
         lambda method, path, json_body=None, timeout=60: posted.update(
             {"method": method, "path": path, "json": json_body}
-        ) or {"success": True},
+        )
+        or {"success": True},
     )
 
     result = app._write_evaluation_dataset(None, {"runId": "run_1"})
@@ -286,12 +318,15 @@ def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tm
         "_bff",
         lambda method, path, json_body=None, timeout=60: posted.update(
             {"method": method, "path": path, "json": json_body}
-        ) or {"success": True},
+        )
+        or {"success": True},
     )
 
     result = app._write_predictions(None, {"runId": "run_1"})
 
-    record = json.loads((tmp_path / "run_1" / "predictions.jsonl").read_text(encoding="utf-8"))
+    record = json.loads(
+        (tmp_path / "run_1" / "predictions.jsonl").read_text(encoding="utf-8")
+    )
     assert record == {
         "instance_id": "sympy__sympy-20590",
         "model_name_or_path": "agent-v1",
@@ -327,7 +362,8 @@ def test_mark_evaluation_timeout_only_marks_active_rows(monkeypatch):
         "_bff",
         lambda method, path, json_body=None, timeout=60: posted.update(
             {"method": method, "path": path, "json": json_body, "timeout": timeout}
-        ) or {"success": True},
+        )
+        or {"success": True},
     )
 
     result = app._mark_evaluation_timeout(None, {"runId": "run_1", "jobName": "job-1"})

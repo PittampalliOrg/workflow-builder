@@ -30,6 +30,7 @@ export type AxisName =
 	| "hookNames"
 	| "pluginNames"
 	| "concurrency"
+	| "evaluationConcurrency"
 	| "evaluatorResourceClass";
 
 export type RunConfigSummary = {
@@ -46,6 +47,7 @@ export type RunConfigSummary = {
 	hookNames: string[];
 	pluginNames: string[];
 	concurrency: number;
+	evaluationConcurrency: number;
 	evaluatorResourceClass: string;
 	resolved: number;
 	total: number;
@@ -93,6 +95,7 @@ const AXES: readonly AxisName[] = [
 	"hookNames",
 	"pluginNames",
 	"concurrency",
+	"evaluationConcurrency",
 	"evaluatorResourceClass",
 ];
 
@@ -165,6 +168,7 @@ export function summarizeRunConfig(input: {
 	model: string;
 	modelLabel: string | null;
 	concurrency: number;
+	evaluationConcurrency: number;
 	evaluatorResourceClass: string;
 	resolved: number;
 	total: number;
@@ -185,6 +189,7 @@ export function summarizeRunConfig(input: {
 		hookNames: namesFromHooks(cfg.hooks),
 		pluginNames: namesFromPlugins(cfg.plugins),
 		concurrency: input.concurrency,
+		evaluationConcurrency: input.evaluationConcurrency,
 		evaluatorResourceClass: input.evaluatorResourceClass,
 		resolved: input.resolved,
 		total: input.total,
@@ -226,6 +231,8 @@ function readAxis(r: RunConfigSummary, axis: AxisName): unknown {
 			return r.pluginNames;
 		case "concurrency":
 			return r.concurrency;
+		case "evaluationConcurrency":
+			return r.evaluationConcurrency;
 		case "evaluatorResourceClass":
 			return r.evaluatorResourceClass;
 	}
@@ -324,6 +331,7 @@ export async function loadCompareData(
 				model: row.run.modelNameOrPath,
 				modelLabel: row.run.modelConfigLabel,
 				concurrency: row.run.concurrency,
+				evaluationConcurrency: row.run.evaluationConcurrency,
 				evaluatorResourceClass: row.run.evaluatorResourceClass,
 				resolved,
 				total,

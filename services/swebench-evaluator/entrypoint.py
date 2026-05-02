@@ -13,18 +13,23 @@ import requests
 TEKTON_GROUP = "tekton.dev"
 TEKTON_VERSION = "v1"
 TASKRUN_PLURAL = "taskruns"
+DEFAULT_EVAL_MAX_PARALLEL = 24
+MAX_EVAL_MAX_PARALLEL = 128
 
 
 def main() -> int:
-    dataset_name = required_env("DATASET_NAME")
+    required_env("DATASET_NAME")
     predictions_path = required_env("PREDICTIONS_PATH")
     run_id = required_env("RUN_ID")
     instance_ids = [s for s in os.environ.get("INSTANCE_IDS", "").split() if s]
     if not instance_ids:
         raise RuntimeError("INSTANCE_IDS env var is required (space-separated)")
-    split = os.environ.get("DATASET_SPLIT", "test")
-    image_map = parse_instance_image_map(os.environ.get("INSTANCE_IMAGE_MAP_JSON", ""), instance_ids)
-    artifacts_root = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
+    image_map = parse_instance_image_map(
+        os.environ.get("INSTANCE_IMAGE_MAP_JSON", ""), instance_ids
+    )
+    artifacts_root = pathlib.Path(
+        os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts")
+    )
     log_dir = artifacts_root / run_id / "harness"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -35,6 +40,7 @@ def main() -> int:
         "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
     )
     timeout_seconds = evaluation_timeout_seconds()
+    max_parallel = evaluation_max_parallel()
     workflow_builder_url = os.environ.get("WORKFLOW_BUILDER_URL", "")
 
     api = load_custom_objects_api()
@@ -56,27 +62,24 @@ def main() -> int:
     if not all(taskrun_succeeded(tr) for tr in prep_final.values()):
         msg = taskrun_failure_reason(prep_final[prep_name])
         print(f"[swebench-evaluator] prepare failed: {msg}")
-        return _post_terminal_results(run_id, instance_ids, artifacts_root, log_dir, error=msg, succeeded=False)
-
-    # Phase 2: run-instance — N parallel TaskRuns, one per instance, each pinned
-    # to its own pre-built env image.
-    run_names: list[str] = []
-    for iid in instance_ids:
-        name = taskrun_name(run_id, "run", iid)
-        body = build_run_instance_taskrun(
-            name=name,
-            namespace=namespace,
-            pvc_name=pvc_name,
-            run_id=run_id,
-            instance_id=iid,
-            instance_image=image_map[iid],
-            timeout_seconds=timeout_seconds,
+        return _post_terminal_results(
+            run_id, instance_ids, artifacts_root, log_dir, error=msg, succeeded=False
         )
-        create_taskrun(api, namespace, body)
-        run_names.append(name)
-    print(f"[swebench-evaluator] dispatched {len(run_names)} run-instance TaskRuns")
+
+    # Phase 2: run-instance — one TaskRun per instance, launched in bounded
+    # batches so evaluation has its own Kubernetes-native concurrency cap.
     run_deadline = max(timeout_seconds + 600, 1800)
-    run_final = wait_for_taskruns(api, namespace, run_names, deadline_seconds=run_deadline)
+    run_final = dispatch_run_instance_taskruns(
+        api=api,
+        namespace=namespace,
+        pvc_name=pvc_name,
+        run_id=run_id,
+        instance_ids=instance_ids,
+        image_map=image_map,
+        timeout_seconds=timeout_seconds,
+        max_parallel=max_parallel,
+        deadline_seconds=run_deadline,
+    )
 
     # Phase 3: finalize — aggregate per-instance reports and POST to BFF.
     fin_name = taskrun_name(run_id, "finalize")
@@ -98,7 +101,9 @@ def main() -> int:
         if not taskrun_succeeded(tr):
             failure_messages.append(f"{name}: {taskrun_failure_reason(tr)}")
     if not taskrun_succeeded(fin_final[fin_name]):
-        failure_messages.append(f"{fin_name}: {taskrun_failure_reason(fin_final[fin_name])}")
+        failure_messages.append(
+            f"{fin_name}: {taskrun_failure_reason(fin_final[fin_name])}"
+        )
     succeeded = not failure_messages
     failure_message = "; ".join(failure_messages)[:500] if failure_messages else None
 
@@ -128,6 +133,64 @@ def _post_terminal_results(
     return 0 if succeeded else 1
 
 
+def evaluation_max_parallel() -> int:
+    raw = os.environ.get("SWEBENCH_EVAL_MAX_PARALLEL") or os.environ.get(
+        "SWEBENCH_MAX_WORKERS"
+    )
+    try:
+        parsed = int(raw or DEFAULT_EVAL_MAX_PARALLEL)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_EVAL_MAX_PARALLEL
+    return max(1, min(parsed, MAX_EVAL_MAX_PARALLEL))
+
+
+def dispatch_run_instance_taskruns(
+    *,
+    api: Any,
+    namespace: str,
+    pvc_name: str,
+    run_id: str,
+    instance_ids: list[str],
+    image_map: dict[str, str],
+    timeout_seconds: int,
+    max_parallel: int,
+    deadline_seconds: int,
+) -> dict[str, dict[str, Any]]:
+    final: dict[str, dict[str, Any]] = {}
+    total = len(instance_ids)
+    max_parallel = max(1, max_parallel)
+    for offset in range(0, total, max_parallel):
+        chunk = instance_ids[offset : offset + max_parallel]
+        run_names: list[str] = []
+        for iid in chunk:
+            name = taskrun_name(run_id, "run", iid)
+            body = build_run_instance_taskrun(
+                name=name,
+                namespace=namespace,
+                pvc_name=pvc_name,
+                run_id=run_id,
+                instance_id=iid,
+                instance_image=image_map[iid],
+                timeout_seconds=timeout_seconds,
+            )
+            create_taskrun(api, namespace, body)
+            run_names.append(name)
+        print(
+            "[swebench-evaluator] dispatched run-instance TaskRuns "
+            f"{offset + 1}-{offset + len(chunk)} of {total} "
+            f"(batch size={len(chunk)}, max_parallel={max_parallel})"
+        )
+        final.update(
+            wait_for_taskruns(
+                api,
+                namespace,
+                run_names,
+                deadline_seconds=deadline_seconds,
+            )
+        )
+    return final
+
+
 def parse_instance_image_map(raw: str, instance_ids: list[str]) -> dict[str, str]:
     if not raw.strip():
         raise RuntimeError(
@@ -140,22 +203,35 @@ def parse_instance_image_map(raw: str, instance_ids: list[str]) -> dict[str, str
         raise RuntimeError(f"INSTANCE_IMAGE_MAP_JSON is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("INSTANCE_IMAGE_MAP_JSON must decode to an object")
-    missing = [iid for iid in instance_ids if not isinstance(parsed.get(iid), str) or not parsed[iid]]
+    missing = [
+        iid
+        for iid in instance_ids
+        if not isinstance(parsed.get(iid), str) or not parsed[iid]
+    ]
     if missing:
         raise RuntimeError(f"INSTANCE_IMAGE_MAP_JSON missing image refs for: {missing}")
     return {iid: parsed[iid] for iid in instance_ids}
 
 
 def taskrun_name(run_id: str, phase: str, instance_id: str | None = None) -> str:
-    safe_run = "".join(ch.lower() if ch.isalnum() else "-" for ch in run_id).strip("-")[:30] or "run"
+    safe_run = (
+        "".join(ch.lower() if ch.isalnum() else "-" for ch in run_id).strip("-")[:30]
+        or "run"
+    )
     suffix = format(int(time.time() * 100) % 100000, "05d")
     if instance_id:
-        safe_inst = "".join(ch.lower() if ch.isalnum() else "-" for ch in instance_id).strip("-")[:25]
-        return f"swebench-{phase}-{safe_run}-{safe_inst}-{suffix}"[:63].rstrip("-") or "tr"
+        safe_inst = "".join(
+            ch.lower() if ch.isalnum() else "-" for ch in instance_id
+        ).strip("-")[:25]
+        return (
+            f"swebench-{phase}-{safe_run}-{safe_inst}-{suffix}"[:63].rstrip("-") or "tr"
+        )
     return f"swebench-{phase}-{safe_run}-{suffix}"[:63].rstrip("-") or "tr"
 
 
-def _common_metadata(name: str, namespace: str, run_id: str, phase: str) -> dict[str, Any]:
+def _common_metadata(
+    name: str, namespace: str, run_id: str, phase: str
+) -> dict[str, Any]:
     return {
         "name": name,
         "namespace": namespace,
@@ -356,7 +432,9 @@ def taskrun_failure_reason(tr: dict[str, Any]) -> str:
     return ": ".join(parts) or "TaskRun did not complete successfully"
 
 
-def collect_results(run_dir: pathlib.Path, instance_ids: list[str]) -> list[dict[str, Any]]:
+def collect_results(
+    run_dir: pathlib.Path, instance_ids: list[str]
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for iid in instance_ids:
         report_path = run_dir / iid / "report.json"
@@ -470,13 +548,23 @@ def log_mlflow_evaluation(
             with mlflow.start_run(run_id=instance_run_id):
                 status = str(result.get("status") or "")
                 mlflow.set_tag("swebench.evaluation_status", status)
-                mlflow.set_tag("workflow_builder.logs_path", result.get("logs_path") or "")
-                mlflow.set_tag("workflow_builder.evaluation_error", result.get("error") or "")
-                mlflow.log_metric("swebench_resolved", 1 if result.get("resolved") is True else 0)
-                mlflow.log_metric("swebench_empty_patch", 1 if status == "empty_patch" else 0)
+                mlflow.set_tag(
+                    "workflow_builder.logs_path", result.get("logs_path") or ""
+                )
+                mlflow.set_tag(
+                    "workflow_builder.evaluation_error", result.get("error") or ""
+                )
+                mlflow.log_metric(
+                    "swebench_resolved", 1 if result.get("resolved") is True else 0
+                )
+                mlflow.log_metric(
+                    "swebench_empty_patch", 1 if status == "empty_patch" else 0
+                )
                 mlflow.log_metric("swebench_timeout", 1 if status == "timeout" else 0)
                 mlflow.log_metric("swebench_error", 1 if status == "error" else 0)
-                harness_result = result.get("harness_result") or result.get("harnessResult")
+                harness_result = result.get("harness_result") or result.get(
+                    "harnessResult"
+                )
                 if isinstance(harness_result, dict):
                     mlflow.log_dict(harness_result, "harness/result.json")
     except Exception as exc:
@@ -500,7 +588,9 @@ def mlflow_instance_run_map() -> dict[str, str]:
     }
 
 
-def post_results(run_id: str, results: list[dict[str, Any]], error: str | None = None) -> None:
+def post_results(
+    run_id: str, results: list[dict[str, Any]], error: str | None = None
+) -> None:
     base = os.environ.get("WORKFLOW_BUILDER_URL", "").rstrip("/")
     token = os.environ.get("INTERNAL_API_TOKEN", "")
     if not base or not token:

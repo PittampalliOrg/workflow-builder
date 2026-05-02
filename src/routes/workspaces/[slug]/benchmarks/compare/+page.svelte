@@ -147,7 +147,12 @@
 		if (differing.length !== 1) return null;
 		// Skip uninteresting axes for stats-by-axis
 		const axis = differing[0][0];
-		if (axis === 'modelLabel' || axis === 'concurrency' || axis === 'evaluatorResourceClass') {
+		if (
+			axis === 'modelLabel' ||
+			axis === 'concurrency' ||
+			axis === 'evaluationConcurrency' ||
+			axis === 'evaluatorResourceClass'
+		) {
 			return null;
 		}
 		return axis;
@@ -186,6 +191,8 @@
 				return r.pluginNames.join(', ') || '∅';
 			case 'concurrency':
 				return r.concurrency;
+			case 'evaluationConcurrency':
+				return r.evaluationConcurrency;
 			case 'evaluatorResourceClass':
 				return r.evaluatorResourceClass;
 		}

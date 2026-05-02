@@ -265,6 +265,7 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 				param("model_name_or_path", row.run.modelNameOrPath),
 				param("model_config_label", row.run.modelConfigLabel),
 				param("concurrency", row.run.concurrency),
+				param("evaluation_concurrency", row.run.evaluationConcurrency),
 				param("timeout_seconds", row.run.timeoutSeconds),
 				param("max_turns", row.run.maxTurns),
 				param("evaluator_resource_class", row.run.evaluatorResourceClass),

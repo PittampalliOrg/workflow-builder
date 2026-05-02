@@ -76,6 +76,7 @@ import {
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
+const DEFAULT_EVALUATION_CONCURRENCY = 24;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
@@ -360,6 +361,7 @@ export type CreateBenchmarkRunInput = {
 	modelNameOrPath?: string;
 	modelConfigLabel?: string | null;
 	concurrency?: number;
+	evaluationConcurrency?: number;
 	timeoutSeconds?: number;
 	maxTurns?: number | null;
 	evaluatorResourceClass?: string | null;
@@ -406,6 +408,12 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		throw error(400, "A benchmark run may include at most 500 instances");
 	}
 	const concurrency = clampInteger(input.concurrency, 1, 32, 1);
+	const evaluationConcurrency = clampInteger(
+		input.evaluationConcurrency,
+		1,
+		128,
+		DEFAULT_EVALUATION_CONCURRENCY,
+	);
 	const timeoutSeconds = clampInteger(
 		input.timeoutSeconds,
 		60,
@@ -463,6 +471,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 				modelConfigLabel: input.modelConfigLabel?.trim() || null,
 				selectedInstanceIds: instanceIds,
 				concurrency,
+				evaluationConcurrency,
 				timeoutSeconds,
 				maxTurns,
 				evaluatorResourceClass,
@@ -1686,7 +1695,7 @@ function buildSwebenchPrompt(params: {
 		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
 		"- Do not edit tests, test fixtures, benchmark metadata, generated artifact files, or files that only make local tests pass.",
 		"- The final benchmark patch excludes test and fixture paths; implementation fixes must be outside those paths.",
-		"- Running local tests is optional and best-effort. Official grading happens later in a Docker SWE-bench evaluator job.",
+		"- Running local tests is optional and best-effort. Official grading happens later in Kubernetes-native SWE-bench evaluator TaskRuns.",
 		"- Do not use web search, web fetch, external issue pages, PR pages, or solution commits. Use only the repository contents, the problem statement, and local sandbox commands.",
 		...environmentNotes,
 		"",
@@ -2035,6 +2044,7 @@ function serializeRunSummary(row: {
 		modelConfigLabel: row.run.modelConfigLabel,
 		selectedInstanceIds: row.run.selectedInstanceIds,
 		concurrency: row.run.concurrency,
+		evaluationConcurrency: row.run.evaluationConcurrency,
 		timeoutSeconds: row.run.timeoutSeconds,
 		maxTurns: row.run.maxTurns,
 		evaluatorResourceClass: row.run.evaluatorResourceClass,

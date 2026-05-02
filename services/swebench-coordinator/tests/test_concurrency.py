@@ -7,7 +7,10 @@ from pathlib import Path
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE_ROOT))
 
-from src.concurrency import bounded_swebench_concurrency  # noqa: E402
+from src.concurrency import (  # noqa: E402
+    bounded_swebench_concurrency,
+    bounded_swebench_evaluation_concurrency,
+)
 
 
 def test_bounded_swebench_concurrency_uses_one_as_default_floor():
@@ -29,3 +32,15 @@ def test_bounded_swebench_concurrency_caps_worker_count():
 
 def test_bounded_swebench_concurrency_falls_back_for_invalid_values():
     assert bounded_swebench_concurrency("many") == 1
+
+
+def test_bounded_swebench_evaluation_concurrency_defaults_to_taskrun_cap():
+    assert bounded_swebench_evaluation_concurrency(None) == 24
+    assert bounded_swebench_evaluation_concurrency("") == 24
+    assert bounded_swebench_evaluation_concurrency(0) == 24
+
+
+def test_bounded_swebench_evaluation_concurrency_accepts_larger_eval_batches():
+    assert bounded_swebench_evaluation_concurrency(32) == 32
+    assert bounded_swebench_evaluation_concurrency("64") == 64
+    assert bounded_swebench_evaluation_concurrency(999) == 128

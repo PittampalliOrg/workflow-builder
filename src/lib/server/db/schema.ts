@@ -2820,6 +2820,9 @@ export const benchmarkRuns = pgTable(
 			.notNull()
 			.default([]),
 		concurrency: integer("concurrency").notNull().default(1),
+		evaluationConcurrency: integer("evaluation_concurrency")
+			.notNull()
+			.default(24),
 		timeoutSeconds: integer("timeout_seconds").notNull().default(7200),
 		maxTurns: integer("max_turns"),
 		evaluatorResourceClass: text("evaluator_resource_class")

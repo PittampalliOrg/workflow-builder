@@ -52,6 +52,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					: body.concurrency
 						? Number.parseInt(String(body.concurrency), 10)
 						: undefined,
+			evaluationConcurrency:
+				typeof body.evaluationConcurrency === "number"
+					? body.evaluationConcurrency
+					: body.evaluationConcurrency
+						? Number.parseInt(String(body.evaluationConcurrency), 10)
+						: undefined,
 			timeoutSeconds:
 				typeof body.timeoutSeconds === "number"
 					? body.timeoutSeconds

@@ -16,7 +16,10 @@ from dapr.ext.workflow import DaprWorkflowClient
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
-from src.concurrency import bounded_swebench_concurrency
+from src.concurrency import (
+    bounded_swebench_concurrency,
+    bounded_swebench_evaluation_concurrency,
+)
 
 try:
     from dapr.ext.workflow import when_all as wf_when_all
@@ -49,8 +52,12 @@ INTERNAL_API_SECRET_KEY = os.environ.get(
 )
 ARTIFACT_ROOT = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
 EVALUATOR_NAMESPACE = os.environ.get("SWEBENCH_EVALUATOR_NAMESPACE", "workflow-builder")
-EVALUATOR_IMAGE = os.environ.get("SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest")
-SWEBENCH_PIPELINE_NAMESPACE = os.environ.get("SWEBENCH_PIPELINE_NAMESPACE", "workflow-builder")
+EVALUATOR_IMAGE = os.environ.get(
+    "SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest"
+)
+SWEBENCH_PIPELINE_NAMESPACE = os.environ.get(
+    "SWEBENCH_PIPELINE_NAMESPACE", "workflow-builder"
+)
 SWEBENCH_PIPELINE_REF = os.environ.get("SWEBENCH_PIPELINE_REF", "swebench-eval")
 SWEBENCH_PACKAGE_REF = os.environ.get(
     "SWEBENCH_PACKAGE_REF",
@@ -109,23 +116,36 @@ class EvaluationEventRequest(BaseModel):
 
 
 def _require_internal(request: Request) -> None:
-    token = request.headers.get("x-internal-token") or request.headers.get("authorization", "").removeprefix("Bearer ")
+    token = request.headers.get("x-internal-token") or request.headers.get(
+        "authorization", ""
+    ).removeprefix("Bearer ")
     if not INTERNAL_API_TOKEN or token != INTERNAL_API_TOKEN:
         raise HTTPException(status_code=401, detail="invalid or missing internal token")
 
 
-def _bff(method: str, path: str, *, json_body: dict[str, Any] | None = None, timeout: int = 60) -> Any:
+def _bff(
+    method: str,
+    path: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout: int = 60,
+) -> Any:
     if not INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN is required")
     res = requests.request(
         method,
         f"{WORKFLOW_BUILDER_URL}{path}",
-        headers={"X-Internal-Token": INTERNAL_API_TOKEN, "Content-Type": "application/json"},
+        headers={
+            "X-Internal-Token": INTERNAL_API_TOKEN,
+            "Content-Type": "application/json",
+        },
         json=json_body,
         timeout=timeout,
     )
     if res.status_code >= 400:
-        raise RuntimeError(f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}")
+        raise RuntimeError(
+            f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+        )
     if not res.text:
         return {}
     return res.json()
@@ -141,7 +161,9 @@ def _bff_text(method: str, path: str, *, timeout: int = 60) -> str:
         timeout=timeout,
     )
     if res.status_code >= 400:
-        raise RuntimeError(f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}")
+        raise RuntimeError(
+            f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+        )
     return res.text
 
 
@@ -191,7 +213,12 @@ def _mlflow_enabled() -> bool:
 
 
 def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) -> None:
-    if not _mlflow_enabled() or not isinstance(run_id, str) or not run_id or not path.exists():
+    if (
+        not _mlflow_enabled()
+        or not isinstance(run_id, str)
+        or not run_id
+        or not path.exists()
+    ):
         return
     try:
         import mlflow
@@ -203,7 +230,9 @@ def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) ->
         logger.warning("Best-effort MLflow artifact log failed for %s: %s", path, exc)
 
 
-def _mlflow_log_text(run_id: Any, text: Any, file_path: pathlib.Path, artifact_path: str) -> None:
+def _mlflow_log_text(
+    run_id: Any, text: Any, file_path: pathlib.Path, artifact_path: str
+) -> None:
     if not _mlflow_enabled() or not isinstance(text, str) or not text:
         return
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +247,11 @@ def _mlflow_instance_run_map(run: dict[str, Any]) -> dict[str, str]:
             continue
         instance_id = instance.get("instanceId")
         mlflow_run_id = instance.get("mlflowRunId")
-        if isinstance(instance_id, str) and isinstance(mlflow_run_id, str) and mlflow_run_id:
+        if (
+            isinstance(instance_id, str)
+            and isinstance(mlflow_run_id, str)
+            and mlflow_run_id
+        ):
             out[instance_id] = mlflow_run_id
     return out
 
@@ -229,12 +262,14 @@ def _load_evaluation_progress(ctx, data: dict[str, Any]) -> dict[str, Any]:
     active_instances = [
         instance
         for instance in instances
-        if isinstance(instance, dict) and instance.get("status") in ACTIVE_EVALUATION_STATUSES
+        if isinstance(instance, dict)
+        and instance.get("status") in ACTIVE_EVALUATION_STATUSES
     ]
     terminal_instances = [
         instance
         for instance in instances
-        if isinstance(instance, dict) and instance.get("status") in INSTANCE_TERMINAL_STATUSES
+        if isinstance(instance, dict)
+        and instance.get("status") in INSTANCE_TERMINAL_STATUSES
     ]
     return {
         "run": run,
@@ -263,7 +298,9 @@ def _mark_run_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
     for key in ("error", "evaluatorJobName", "predictionsPath"):
         if data.get(key) is not None:
             payload[key] = data[key]
-    return _bff("POST", f"/api/internal/benchmarks/runs/{run_id}/status", json_body=payload)
+    return _bff(
+        "POST", f"/api/internal/benchmarks/runs/{run_id}/status", json_body=payload
+    )
 
 
 def _validate_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -283,7 +320,11 @@ def _validate_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(instance, dict):
             missing.append(instance_id)
             continue
-        if not instance.get("repo") or not instance.get("baseCommit") or not instance.get("problemStatement"):
+        if (
+            not instance.get("repo")
+            or not instance.get("baseCommit")
+            or not instance.get("problemStatement")
+        ):
             missing.append(instance_id)
     if missing:
         raise RuntimeError(
@@ -319,7 +360,12 @@ def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(instance, dict):
         patch = instance.get("modelPatch")
         mlflow_run_id = instance.get("mlflowRunId")
-        patch_path = ARTIFACT_ROOT / run_id / "patches" / f"{_safe_artifact_name(instance_id)}.patch"
+        patch_path = (
+            ARTIFACT_ROOT
+            / run_id
+            / "patches"
+            / f"{_safe_artifact_name(instance_id)}.patch"
+        )
         _mlflow_log_text(mlflow_run_id, patch, patch_path, "patches")
     return response
 
@@ -345,11 +391,16 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
     model_name = run["modelNameOrPath"]
     with path.open("w", encoding="utf-8") as f:
         for instance in run.get("instances") or []:
-            f.write(json.dumps({
-                "instance_id": instance["instanceId"],
-                "model_name_or_path": model_name,
-                "model_patch": instance.get("modelPatch") or "",
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "instance_id": instance["instanceId"],
+                        "model_name_or_path": model_name,
+                        "model_patch": instance.get("modelPatch") or "",
+                    }
+                )
+                + "\n"
+            )
     _bff(
         "POST",
         f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
@@ -379,8 +430,46 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
             refreshed_run = _load_run(run_id)
             _mlflow_log_artifact(refreshed_run.get("mlflowRunId"), path, "swebench")
         except Exception as exc:
-            logger.warning("Best-effort MLflow dataset artifact lookup failed for %s: %s", run_id, exc)
+            logger.warning(
+                "Best-effort MLflow dataset artifact lookup failed for %s: %s",
+                run_id,
+                exc,
+            )
     return {"path": str(path), "bytes": path.stat().st_size}
+
+
+def _evaluation_max_parallel(run: dict[str, Any]) -> int:
+    return bounded_swebench_evaluation_concurrency(
+        run.get("evaluationConcurrency")
+        or os.environ.get("SWEBENCH_EVAL_MAX_PARALLEL")
+        or os.environ.get("SWEBENCH_MAX_WORKERS")
+    )
+
+
+def _evaluation_batch_count(
+    *, instance_count: int, evaluation_max_parallel: int
+) -> int:
+    if instance_count <= 0:
+        return 1
+    return max(
+        1, (instance_count + evaluation_max_parallel - 1) // evaluation_max_parallel
+    )
+
+
+def _evaluation_deadline_seconds(
+    *,
+    instance_count: int,
+    evaluation_max_parallel: int,
+    timeout_seconds: int,
+) -> int:
+    batch_count = _evaluation_batch_count(
+        instance_count=instance_count,
+        evaluation_max_parallel=evaluation_max_parallel,
+    )
+    # The dispatcher now launches run-instance TaskRuns in bounded batches.
+    # The per-instance timeout still applies inside each TaskRun, so the Job
+    # and workflow deadline must cover the worst-case number of batches.
+    return max(600, (timeout_seconds + 600) * batch_count + 600)
 
 
 def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -393,7 +482,12 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     instance_ids = run.get("selectedInstanceIds") or []
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
     evaluation_timeout_seconds = max(60, int(run.get("timeoutSeconds") or 7200))
-    job_deadline_seconds = max(600, evaluation_timeout_seconds + 600)
+    evaluation_max_parallel = _evaluation_max_parallel(run)
+    job_deadline_seconds = _evaluation_deadline_seconds(
+        instance_count=len(instance_ids),
+        evaluation_max_parallel=evaluation_max_parallel,
+        timeout_seconds=evaluation_timeout_seconds,
+    )
     instance_image_map = _instance_image_map_for_run(run, instance_ids)
     try:
         from kubernetes.client.rest import ApiException
@@ -410,13 +504,17 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 value=json.dumps(instance_image_map, sort_keys=True),
             ),
             client.V1EnvVar(name="WORKFLOW_BUILDER_URL", value=WORKFLOW_BUILDER_URL),
-            client.V1EnvVar(name="MLFLOW_ENABLED", value=os.environ.get("MLFLOW_ENABLED", "true")),
+            client.V1EnvVar(
+                name="MLFLOW_ENABLED", value=os.environ.get("MLFLOW_ENABLED", "true")
+            ),
             client.V1EnvVar(name="MLFLOW_TRACKING_URI", value=MLFLOW_TRACKING_URI),
             client.V1EnvVar(
                 name="MLFLOW_HTTP_REQUEST_TIMEOUT",
                 value=os.environ.get("MLFLOW_HTTP_REQUEST_TIMEOUT", "10"),
             ),
-            client.V1EnvVar(name="MLFLOW_RUN_ID", value=str(run.get("mlflowRunId") or "")),
+            client.V1EnvVar(
+                name="MLFLOW_RUN_ID", value=str(run.get("mlflowRunId") or "")
+            ),
             client.V1EnvVar(
                 name="MLFLOW_INSTANCE_RUNS_JSON",
                 value=json.dumps(_mlflow_instance_run_map(run), sort_keys=True),
@@ -431,12 +529,18 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 ),
             ),
             client.V1EnvVar(name="SWEBENCH_EVALUATOR_JOB_NAME", value=job_name),
-            client.V1EnvVar(name="SWEBENCH_PIPELINE_NAMESPACE", value=SWEBENCH_PIPELINE_NAMESPACE),
+            client.V1EnvVar(
+                name="SWEBENCH_PIPELINE_NAMESPACE", value=SWEBENCH_PIPELINE_NAMESPACE
+            ),
             client.V1EnvVar(name="SWEBENCH_PIPELINE_REF", value=SWEBENCH_PIPELINE_REF),
             client.V1EnvVar(name="SWEBENCH_PACKAGE_REF", value=SWEBENCH_PACKAGE_REF),
             client.V1EnvVar(
                 name="SWEBENCH_EVALUATION_TIMEOUT_SECONDS",
                 value=str(evaluation_timeout_seconds),
+            ),
+            client.V1EnvVar(
+                name="SWEBENCH_EVAL_MAX_PARALLEL",
+                value=str(evaluation_max_parallel),
             ),
         ]
         container = client.V1Container(
@@ -453,19 +557,33 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
         )
         run_id_label = _safe_label_value(run["id"])
         pod = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label}),
+            metadata=client.V1ObjectMeta(
+                labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label}
+            ),
             spec=client.V1PodSpec(
                 restart_policy="Never",
                 service_account_name="swebench-coordinator",
-                image_pull_secrets=[client.V1LocalObjectReference(name="ghcr-pull-credentials")],
+                image_pull_secrets=[
+                    client.V1LocalObjectReference(name="ghcr-pull-credentials")
+                ],
                 containers=[container],
                 volumes=[
-                    client.V1Volume(name="artifacts", persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=os.environ.get("SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts"))),
+                    client.V1Volume(
+                        name="artifacts",
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name=os.environ.get(
+                                "SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts"
+                            )
+                        ),
+                    ),
                 ],
             ),
         )
         job = client.V1Job(
-            metadata=client.V1ObjectMeta(name=job_name, labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label}),
+            metadata=client.V1ObjectMeta(
+                name=job_name,
+                labels={"app": "swebench-evaluator", "benchmark-run-id": run_id_label},
+            ),
             spec=client.V1JobSpec(
                 active_deadline_seconds=job_deadline_seconds,
                 backoff_limit=0,
@@ -480,9 +598,19 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             if getattr(exc, "status", None) != 409:
                 raise
             already_exists = True
-            logger.info("Evaluator job %s already exists; treating ensure as success", job_name)
-        _mark_run_status(ctx, {"runId": run["id"], "status": "evaluating", "evaluatorJobName": job_name})
-        return {"jobName": job_name, "alreadyExists": already_exists}
+            logger.info(
+                "Evaluator job %s already exists; treating ensure as success", job_name
+            )
+        _mark_run_status(
+            ctx,
+            {"runId": run["id"], "status": "evaluating", "evaluatorJobName": job_name},
+        )
+        return {
+            "jobName": job_name,
+            "alreadyExists": already_exists,
+            "evaluationMaxParallel": evaluation_max_parallel,
+            "activeDeadlineSeconds": job_deadline_seconds,
+        }
     except Exception as exc:
         raise RuntimeError(f"failed to ensure evaluator job: {exc}") from exc
 
@@ -495,7 +623,9 @@ def _get_evaluator_job_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
 
         _client, batch, core = _load_kubernetes_clients()
         try:
-            job = batch.read_namespaced_job_status(name=job_name, namespace=EVALUATOR_NAMESPACE)
+            job = batch.read_namespaced_job_status(
+                name=job_name, namespace=EVALUATOR_NAMESPACE
+            )
         except ApiException as exc:
             if getattr(exc, "status", None) == 404:
                 return {"jobName": job_name, "exists": False, "notFound": True}
@@ -514,7 +644,9 @@ def _get_evaluator_job_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 phase = str(getattr(pod.status, "phase", None) or "Unknown")
                 pod_phases[phase] = pod_phases.get(phase, 0) + 1
         except Exception as pod_exc:
-            logger.warning("Failed to list evaluator pods for %s: %s", job_name, pod_exc)
+            logger.warning(
+                "Failed to list evaluator pods for %s: %s", job_name, pod_exc
+            )
         return {
             "jobName": job_name,
             "exists": True,
@@ -538,7 +670,10 @@ def _mark_evaluation_timeout(ctx, data: dict[str, Any]) -> dict[str, Any]:
     active_instance_ids = progress.get("activeInstanceIds") or []
     if not active_instance_ids:
         return {"success": True, "timedOut": 0, "progress": progress}
-    message = data.get("error") or "SWE-bench evaluation timed out before all active rows completed"
+    message = (
+        data.get("error")
+        or "SWE-bench evaluation timed out before all active rows completed"
+    )
     results = [
         {
             "instance_id": instance_id,
@@ -567,10 +702,23 @@ def _mark_evaluation_failure(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     progress = _load_evaluation_progress(ctx, {"runId": run_id})
     if progress.get("runStatus") in RUN_TERMINAL_STATUSES:
-        return {"success": True, "skipped": True, "reason": "run-terminal", "progress": progress}
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "run-terminal",
+            "progress": progress,
+        }
     if int(progress.get("terminalEvaluationRows") or 0) > 0:
-        return {"success": True, "skipped": True, "reason": "partial-terminal-results", "progress": progress}
-    message = data.get("error") or "SWE-bench evaluator job failed before any terminal results were persisted"
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "partial-terminal-results",
+            "progress": progress,
+        }
+    message = (
+        data.get("error")
+        or "SWE-bench evaluator job failed before any terminal results were persisted"
+    )
     run = _mark_run_status(ctx, {"runId": run_id, "status": "failed", "error": message})
     return {"success": True, "failed": True, "run": run, "progress": progress}
 
@@ -590,15 +738,24 @@ def _delete_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             )
         except ApiException as exc:
             if getattr(exc, "status", None) == 404:
-                return {"success": True, "jobName": job_name, "deleted": False, "notFound": True}
+                return {
+                    "success": True,
+                    "jobName": job_name,
+                    "deleted": False,
+                    "notFound": True,
+                }
             raise
         return {"success": True, "jobName": job_name, "deleted": True}
     except Exception as exc:
-        logger.warning("Best-effort evaluator job delete failed for %s: %s", job_name, exc)
+        logger.warning(
+            "Best-effort evaluator job delete failed for %s: %s", job_name, exc
+        )
         return {"success": False, "jobName": job_name, "error": str(exc)}
 
 
-def _evaluator_resource_profile(resource_class: Any) -> dict[str, dict[str, dict[str, str]]]:
+def _evaluator_resource_profile(
+    resource_class: Any,
+) -> dict[str, dict[str, dict[str, str]]]:
     key = str(resource_class or "standard").strip().lower()
     return EVALUATOR_RESOURCE_PROFILES.get(key, EVALUATOR_RESOURCE_PROFILES["standard"])
 
@@ -635,9 +792,7 @@ def _instance_image_map_for_run(
     for iid in instance_ids:
         inst = by_id.get(iid) or {}
         env = inst.get("inferenceEnvironment") if isinstance(inst, dict) else None
-        sandbox_image = (
-            env.get("sandboxImage") if isinstance(env, dict) else None
-        )
+        sandbox_image = env.get("sandboxImage") if isinstance(env, dict) else None
         if isinstance(sandbox_image, str) and sandbox_image.strip():
             image_map[iid] = sandbox_image.strip()
         else:
@@ -672,7 +827,12 @@ def _safe_name_prefix(value: str, max_length: int) -> str:
 
 
 def _safe_artifact_name(value: str) -> str:
-    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)[:180] or "artifact"
+    return (
+        "".join(
+            char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value
+        )[:180]
+        or "artifact"
+    )
 
 
 def _safe_label_value(value: str) -> str:
@@ -680,7 +840,9 @@ def _safe_label_value(value: str) -> str:
     # — alphanumeric start/end, length ≤ 63. Nanoid-generated run IDs can
     # legally end in `_` or `-`, which fails this regex; trim outer
     # non-alphanumerics and fall back to "unknown" if empty.
-    sanitized = "".join(c if c.isalnum() or c in {"-", "_", "."} else "_" for c in value)
+    sanitized = "".join(
+        c if c.isalnum() or c in {"-", "_", "."} else "_" for c in value
+    )
     sanitized = sanitized.strip("._-")[:63]
     return sanitized or "unknown"
 
@@ -721,7 +883,10 @@ def _load_kubernetes_clients():
 
 def _job_condition(conditions: list[Any], condition_type: str) -> Any | None:
     for condition in conditions:
-        if getattr(condition, "type", None) == condition_type and str(getattr(condition, "status", "")).lower() == "true":
+        if (
+            getattr(condition, "type", None) == condition_type
+            and str(getattr(condition, "status", "")).lower() == "true"
+        ):
             return condition
     return None
 
@@ -759,19 +924,32 @@ def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]
     run_id = data["runId"]
     instance_id = data["instanceId"]
     try:
-        yield ctx.call_activity(_start_instance, input={"runId": run_id, "instanceId": instance_id})
-        deadline = ctx.current_utc_datetime + timedelta(seconds=int(data.get("timeoutSeconds") or 7200) + 300)
+        yield ctx.call_activity(
+            _start_instance, input={"runId": run_id, "instanceId": instance_id}
+        )
+        deadline = ctx.current_utc_datetime + timedelta(
+            seconds=int(data.get("timeoutSeconds") or 7200) + 300
+        )
         while ctx.current_utc_datetime < deadline:
-            sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
+            sync = yield ctx.call_activity(
+                _sync_instance, input={"runId": run_id, "instanceId": instance_id}
+            )
             instance = sync.get("instance") if isinstance(sync, dict) else {}
             status = instance.get("status") if isinstance(instance, dict) else None
             if status in ("inferred", "error", "timeout", "cancelled"):
                 return instance
             yield ctx.create_timer(timedelta(seconds=30))
-        final_sync = yield ctx.call_activity(_sync_instance, input={"runId": run_id, "instanceId": instance_id})
-        if isinstance(final_sync, dict) and isinstance(final_sync.get("instance"), dict):
+        final_sync = yield ctx.call_activity(
+            _sync_instance, input={"runId": run_id, "instanceId": instance_id}
+        )
+        if isinstance(final_sync, dict) and isinstance(
+            final_sync.get("instance"), dict
+        ):
             instance = final_sync["instance"]
-            if isinstance(instance, dict) and instance.get("status") in ("queued", "inferencing"):
+            if isinstance(instance, dict) and instance.get("status") in (
+                "queued",
+                "inferencing",
+            ):
                 try:
                     yield ctx.call_activity(
                         _mark_instance_inference_failure,
@@ -783,7 +961,11 @@ def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]
                         },
                     )
                 except Exception as mark_exc:
-                    logger.warning("Failed to persist inference timeout for %s: %s", instance_id, mark_exc)
+                    logger.warning(
+                        "Failed to persist inference timeout for %s: %s",
+                        instance_id,
+                        mark_exc,
+                    )
                 return {
                     **instance,
                     "status": "timeout",
@@ -795,16 +977,27 @@ def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]
         try:
             yield ctx.call_activity(
                 _mark_instance_inference_failure,
-                input={"runId": run_id, "instanceId": instance_id, "status": "error", "error": str(exc)},
+                input={
+                    "runId": run_id,
+                    "instanceId": instance_id,
+                    "status": "error",
+                    "error": str(exc),
+                },
             )
         except Exception as mark_exc:
-            logger.warning("Failed to persist inference failure for %s: %s", instance_id, mark_exc)
+            logger.warning(
+                "Failed to persist inference failure for %s: %s", instance_id, mark_exc
+            )
         return {"instanceId": instance_id, "status": "error", "error": str(exc)}
 
 
 def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     run_id = data["runId"]
     timeout_seconds = max(60, int(data.get("timeoutSeconds") or 7200))
+    evaluation_max_parallel = bounded_swebench_evaluation_concurrency(
+        data.get("evaluationMaxParallel")
+    )
+    instance_count = max(0, int(data.get("instanceCount") or 0))
     job: dict[str, Any] | None = None
     try:
         job = yield ctx.call_activity(
@@ -816,9 +1009,17 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
             },
         )
         job_name = job.get("jobName") or _evaluator_job_name(run_id)
-        deadline = ctx.current_utc_datetime + timedelta(seconds=max(600, timeout_seconds + 600))
+        deadline = ctx.current_utc_datetime + timedelta(
+            seconds=_evaluation_deadline_seconds(
+                instance_count=instance_count,
+                evaluation_max_parallel=evaluation_max_parallel,
+                timeout_seconds=timeout_seconds,
+            )
+        )
         while ctx.current_utc_datetime < deadline:
-            progress = yield ctx.call_activity(_load_evaluation_progress, input={"runId": run_id})
+            progress = yield ctx.call_activity(
+                _load_evaluation_progress, input={"runId": run_id}
+            )
             if _evaluation_progress_is_terminal(progress):
                 return {"success": True, "jobName": job_name, "progress": progress}
 
@@ -827,28 +1028,43 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                 input={"runId": run_id, "jobName": job_name},
             )
             if isinstance(job_status, dict) and job_status.get("failed"):
-                message = job_status.get("message") or job_status.get("reason") or "SWE-bench evaluator job failed"
+                message = (
+                    job_status.get("message")
+                    or job_status.get("reason")
+                    or "SWE-bench evaluator job failed"
+                )
                 failure = yield ctx.call_activity(
                     _mark_evaluation_failure,
                     input={"runId": run_id, "jobName": job_name, "error": message},
                 )
                 if isinstance(failure, dict) and failure.get("failed"):
                     return failure
-                progress_after_failure = yield ctx.call_activity(_load_evaluation_progress, input={"runId": run_id})
+                progress_after_failure = yield ctx.call_activity(
+                    _load_evaluation_progress, input={"runId": run_id}
+                )
                 if _evaluation_progress_is_terminal(progress_after_failure):
-                    return {"success": True, "jobName": job_name, "progress": progress_after_failure}
-                return (yield ctx.call_activity(
-                    _mark_evaluation_timeout,
-                    input={
-                        "runId": run_id,
+                    return {
+                        "success": True,
                         "jobName": job_name,
-                        "error": "SWE-bench evaluator job failed before all active rows completed",
-                    },
-                ))
+                        "progress": progress_after_failure,
+                    }
+                return (
+                    yield ctx.call_activity(
+                        _mark_evaluation_timeout,
+                        input={
+                            "runId": run_id,
+                            "jobName": job_name,
+                            "error": "SWE-bench evaluator job failed before all active rows completed",
+                        },
+                    )
+                )
 
             wait_seconds = max(
                 1,
-                min(EVALUATION_POLL_SECONDS, int((deadline - ctx.current_utc_datetime).total_seconds())),
+                min(
+                    EVALUATION_POLL_SECONDS,
+                    int((deadline - ctx.current_utc_datetime).total_seconds()),
+                ),
             )
             wait_delta = timedelta(seconds=wait_seconds)
             if wf_when_any is not None:
@@ -858,18 +1074,23 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                 yield wf_when_any([results_event, failed_event, timer])
             else:
                 try:
-                    yield ctx.wait_for_external_event(EVALUATION_RESULTS_EVENT, timeout=wait_delta)
+                    yield ctx.wait_for_external_event(
+                        EVALUATION_RESULTS_EVENT, timeout=wait_delta
+                    )
                 except TimeoutError:
                     pass
 
-        return (yield ctx.call_activity(
-            _mark_evaluation_timeout,
-            input={
-                "runId": run_id,
-                "jobName": (job or {}).get("jobName") or _evaluator_job_name(run_id),
-                "error": "SWE-bench evaluation workflow timed out waiting for terminal results",
-            },
-        ))
+        return (
+            yield ctx.call_activity(
+                _mark_evaluation_timeout,
+                input={
+                    "runId": run_id,
+                    "jobName": (job or {}).get("jobName")
+                    or _evaluator_job_name(run_id),
+                    "error": "SWE-bench evaluation workflow timed out waiting for terminal results",
+                },
+            )
+        )
     except Exception as exc:
         yield ctx.call_activity(
             _mark_run_status,
@@ -881,7 +1102,9 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
 def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     run_id = data["runId"]
     try:
-        yield ctx.call_activity(_mark_run_status, input={"runId": run_id, "status": "inferencing"})
+        yield ctx.call_activity(
+            _mark_run_status, input={"runId": run_id, "status": "inferencing"}
+        )
         run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
         yield ctx.call_activity(_validate_instance_metadata, input={"runId": run_id})
         run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
@@ -890,11 +1113,15 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
         results: list[Any] = []
         for offset in range(0, len(instance_ids), concurrency):
-            chunk = instance_ids[offset: offset + concurrency]
+            chunk = instance_ids[offset : offset + concurrency]
             tasks = [
                 ctx.call_child_workflow(
                     "swebench_instance_workflow",
-                    input={"runId": run_id, "instanceId": instance_id, "timeoutSeconds": timeout_seconds},
+                    input={
+                        "runId": run_id,
+                        "instanceId": instance_id,
+                        "timeoutSeconds": timeout_seconds,
+                    },
                     instance_id=_child_instance_workflow_id(run_id, instance_id),
                 )
                 for instance_id in chunk
@@ -915,8 +1142,13 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                 "Inference failed or produced no terminal patch for %d SWE-bench instance(s); writing empty predictions and continuing to the official evaluator",
                 len(failed_instances),
             )
-        predictions = yield ctx.call_activity(_write_predictions, input={"runId": run_id})
-        dataset = yield ctx.call_activity(_write_evaluation_dataset, input={"runId": run_id})
+        predictions = yield ctx.call_activity(
+            _write_predictions, input={"runId": run_id}
+        )
+        dataset = yield ctx.call_activity(
+            _write_evaluation_dataset, input={"runId": run_id}
+        )
+        evaluation_max_parallel = _evaluation_max_parallel(run)
         evaluation = yield ctx.call_child_workflow(
             "swebench_evaluation_workflow",
             input={
@@ -924,6 +1156,8 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                 "predictionsPath": predictions["path"],
                 "datasetPath": dataset["path"],
                 "timeoutSeconds": timeout_seconds,
+                "evaluationMaxParallel": evaluation_max_parallel,
+                "instanceCount": len(instance_ids),
             },
             instance_id=_evaluator_workflow_id(run_id),
         )
@@ -936,7 +1170,10 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             "evaluation": evaluation,
         }
     except Exception as exc:
-        yield ctx.call_activity(_mark_run_status, input={"runId": run_id, "status": "failed", "error": str(exc)})
+        yield ctx.call_activity(
+            _mark_run_status,
+            input={"runId": run_id, "status": "failed", "error": str(exc)},
+        )
         raise
 
 
@@ -1016,7 +1253,9 @@ def start_benchmark_run(body: StartRunRequest, request: Request):
 
 
 @app.post("/api/v1/benchmark-runs/{run_id}/cancel")
-def cancel_benchmark_run(run_id: str, request: Request, body: CancelRunRequest = CancelRunRequest()):
+def cancel_benchmark_run(
+    run_id: str, request: Request, body: CancelRunRequest = CancelRunRequest()
+):
     _require_internal(request)
     run_instance_id = _run_workflow_id(run_id)
     evaluation_instance_id = _evaluator_workflow_id(run_id)
@@ -1028,10 +1267,16 @@ def cancel_benchmark_run(run_id: str, request: Request, body: CancelRunRequest =
             client.terminate_workflow(instance_id=instance_id, output=reason)
         except Exception as exc:
             if _workflow_event_already_closed(exc):
-                logger.debug("Workflow %s already closed during cancellation: %s", instance_id, exc)
+                logger.debug(
+                    "Workflow %s already closed during cancellation: %s",
+                    instance_id,
+                    exc,
+                )
             else:
                 termination_errors[instance_id] = str(exc)
-                logger.warning("Best-effort terminate failed for %s: %s", instance_id, exc)
+                logger.warning(
+                    "Best-effort terminate failed for %s: %s", instance_id, exc
+                )
     delete_result = _delete_evaluator_job(None, {"runId": run_id})
     return {
         "success": True,
@@ -1046,8 +1291,14 @@ def cancel_benchmark_run(run_id: str, request: Request, body: CancelRunRequest =
 def post_evaluation_event(run_id: str, body: EvaluationEventRequest, request: Request):
     _require_internal(request)
     if body.eventType not in {"results", "failed"}:
-        raise HTTPException(status_code=400, detail="eventType must be results or failed")
-    event_name = EVALUATION_RESULTS_EVENT if body.eventType == "results" else EVALUATION_FAILED_EVENT
+        raise HTTPException(
+            status_code=400, detail="eventType must be results or failed"
+        )
+    event_name = (
+        EVALUATION_RESULTS_EVENT
+        if body.eventType == "results"
+        else EVALUATION_FAILED_EVENT
+    )
     instance_id = _evaluator_workflow_id(run_id)
     if hasattr(body, "model_dump"):
         payload = body.model_dump(exclude_none=True)
@@ -1074,6 +1325,8 @@ def post_evaluation_event(run_id: str, body: EvaluationEventRequest, request: Re
                 "eventName": event_name,
                 "ignored": True,
             }
-        logger.exception("Failed to raise evaluation event %s for %s", event_name, instance_id)
+        logger.exception(
+            "Failed to raise evaluation event %s for %s", event_name, instance_id
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"success": True, "instanceId": instance_id, "eventName": event_name}

@@ -379,6 +379,13 @@
 			"when": 1777680000000,
 			"tag": "0061_drop_legacy_persona_fields",
 			"breakpoints": true
+		},
+		{
+			"idx": 54,
+			"version": "7",
+			"when": 1777723200000,
+			"tag": "0062_benchmark_evaluation_concurrency",
+			"breakpoints": true
 		}
 	]
 }

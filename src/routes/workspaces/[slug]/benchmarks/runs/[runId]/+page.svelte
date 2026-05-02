@@ -212,7 +212,8 @@
 							<Bot class="h-3 w-3" /> {run.agentName} v{run.agentVersion}
 						</span>
 						<span class="font-mono">{run.modelNameOrPath}</span>
-						<span>concurrency {run.concurrency}</span>
+						<span>inference concurrency {run.concurrency}</span>
+						<span>eval concurrency {run.evaluationConcurrency}</span>
 						<span>{run.evaluatorResourceClass}</span>
 						<span>started {formatRelative(run.createdAt)}</span>
 						{#if run.completedAt}
