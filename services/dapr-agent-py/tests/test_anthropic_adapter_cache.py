@@ -23,6 +23,7 @@ def test_build_system_param_returns_none_for_empty():
     assert out is None
     assert tel["cache_eligible"] is False
     assert tel["cache_breakpoints"] == 0
+    assert tel["cache_ttl"] == "5m"
 
 
 def test_build_system_param_returns_string_when_no_boundary():
@@ -113,3 +114,44 @@ def test_convert_tools_for_anthropic_sorts_by_name():
 def test_convert_tools_for_anthropic_handles_empty_or_none():
     assert adapter._convert_tools_for_anthropic(None) is None
     assert adapter._convert_tools_for_anthropic([]) is None
+
+
+def test_cache_control_default_omits_ttl():
+    assert adapter._cache_control() == {"type": "ephemeral"}
+    assert adapter._cache_control("5m") == {"type": "ephemeral"}
+    # Anything that isn't '1h' falls back to the default 5m shape.
+    assert adapter._cache_control("garbage") == {"type": "ephemeral"}
+
+
+def test_cache_control_one_hour_includes_ttl():
+    assert adapter._cache_control("1h") == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_build_system_param_above_threshold_emits_one_hour_cache_control():
+    threshold = adapter.SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS
+    s = _build_with_boundary(prefix_chars=threshold + 10, dynamic="dynamic part")
+    out, tel = adapter._build_system_param(s, cache_ttl="1h")
+    assert isinstance(out, list)
+    assert out[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert tel["cache_eligible"] is True
+    assert tel["cache_breakpoints"] == 1
+    assert tel["cache_ttl"] == "1h"
+
+
+def test_build_system_param_unknown_ttl_normalizes_to_five_minutes():
+    threshold = adapter.SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS
+    s = _build_with_boundary(prefix_chars=threshold + 10, dynamic="dyn")
+    out, tel = adapter._build_system_param(s, cache_ttl="42min")
+    assert isinstance(out, list)
+    assert out[0]["cache_control"] == {"type": "ephemeral"}
+    assert tel["cache_ttl"] == "5m"
+
+
+def test_build_system_param_below_threshold_carries_ttl_in_telemetry():
+    s = _build_with_boundary(prefix_chars=100, dynamic="dyn")
+    _, tel = adapter._build_system_param(s, cache_ttl="1h")
+    # No breakpoint emitted when below threshold, but the TTL still surfaces
+    # so audit / cost analysis can see the configured intent.
+    assert tel["cache_eligible"] is False
+    assert tel["cache_breakpoints"] == 0
+    assert tel["cache_ttl"] == "1h"

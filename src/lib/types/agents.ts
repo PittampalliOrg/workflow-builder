@@ -113,6 +113,18 @@ export type AgentConfig = {
 	temperature?: number;
 	toolChoice?: AgentToolChoice;
 
+	/**
+	 * Anthropic ephemeral prompt cache TTL applied to the static prefix +
+	 * tools cache breakpoints. Default `'5m'` matches the SDK default; `'1h'`
+	 * is opt-in via Anthropic's extended-cache beta and is the right choice
+	 * for long-running Dapr durable agents whose sessions span >5 min between
+	 * turns (benchmark loops, multi-step workflows, agents that yield on
+	 * `ctx.create_timer`). When `'5m'` (or absent), the cached prefix expires
+	 * between long pauses and the next call re-pays full input tokens; `'1h'`
+	 * keeps the prefix warm across pod scale events and turn gaps.
+	 */
+	cacheTtl?: "5m" | "1h";
+
 	maxTurns?: number;
 	timeoutMinutes?: number;
 	cwd?: string;

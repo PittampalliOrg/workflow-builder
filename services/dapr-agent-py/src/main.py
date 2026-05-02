@@ -347,6 +347,7 @@ def _capture_prompt_state(agent_obj: Any) -> dict[str, Any]:
         "llm_prompt_template": getattr(llm, "prompt_template", None)
         if llm is not None
         else None,
+        "llm_cache_ttl": getattr(llm, "_cache_ttl", None) if llm is not None else None,
     }
 
 
@@ -394,6 +395,22 @@ def _apply_instruction_prompt_state(
         helper.instructions = list(instructions)
         helper.style_guidelines = list(style_guidelines)
         helper.system_prompt = system_text
+
+    # Stash cacheTtl on the LLM client so the Anthropic adapter's
+    # patched_generate reads it without us having to plumb the bundle
+    # through Dapr's chat-client API. Only '5m' / '1h' survive normalization;
+    # default in build_instruction_bundle is '5m' so the field is always
+    # present even when the agent profile doesn't set it.
+    runtime_block = (
+        instruction_bundle.get("runtime")
+        if isinstance(instruction_bundle.get("runtime"), dict)
+        else {}
+    )
+    raw_cache_ttl = runtime_block.get("cacheTtl")
+    cache_ttl = "1h" if raw_cache_ttl == "1h" else "5m"
+    if getattr(agent_obj, "llm", None) is not None:
+        agent_obj.llm._cache_ttl = cache_ttl
+
     assign_canonical_bundle_prompt_template(agent_obj, instruction_bundle)
 
 
@@ -418,6 +435,17 @@ def _restore_prompt_state(agent_obj: Any, state: dict[str, Any]) -> None:
     agent_obj.prompt_template = state.get("agent_prompt_template")
     if getattr(agent_obj, "llm", None) is not None:
         agent_obj.llm.prompt_template = state.get("llm_prompt_template")
+        # Restore cache_ttl alongside the prompt template so we never leak a
+        # previous instance's TTL into the next call_llm activity.
+        prior_ttl = state.get("llm_cache_ttl")
+        if prior_ttl is None:
+            if hasattr(agent_obj.llm, "_cache_ttl"):
+                try:
+                    delattr(agent_obj.llm, "_cache_ttl")
+                except Exception:  # noqa: BLE001
+                    agent_obj.llm._cache_ttl = None
+        else:
+            agent_obj.llm._cache_ttl = prior_ttl
 
 # ---------------------------------------------------------------------------
 # Hot-reload configuration subscription

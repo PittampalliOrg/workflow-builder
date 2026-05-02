@@ -143,30 +143,53 @@ def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
     return anthropic_tools
 
 
-def _build_system_param(system: Any) -> tuple[Any, dict[str, Any]]:
+def _cache_control(cache_ttl: str = "5m") -> dict[str, Any]:
+    """Return the Anthropic `cache_control` value for the requested TTL.
+
+    `'5m'` is the SDK default and omits the `ttl` field; `'1h'` is opt-in via
+    Anthropic's extended-cache beta and is the right choice for long-running
+    Dapr durable agents that span >5min between turns. Anything else falls
+    back to `'5m'`.
+    """
+    if cache_ttl == "1h":
+        return {"type": "ephemeral", "ttl": "1h"}
+    return {"type": "ephemeral"}
+
+
+def _build_system_param(
+    system: Any,
+    cache_ttl: str = "5m",
+) -> tuple[Any, dict[str, Any]]:
     """Convert a system kwarg into the Anthropic SDK shape and emit telemetry.
 
     When the static prefix (everything before SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
     exceeds SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS, returns a
-    `list[TextBlockParam]` with `cache_control={"type":"ephemeral"}` on the
-    static block. Below threshold (or no boundary), returns a plain string
-    with the boundary stripped — caching would be a no-op anyway and a string
-    has lower request overhead.
+    `list[TextBlockParam]` with `cache_control={"type":"ephemeral"[, "ttl":"1h"]}`
+    on the static block. Below threshold (or no boundary), returns a plain
+    string with the boundary stripped — caching would be a no-op anyway and a
+    string has lower request overhead.
+
+    `cache_ttl` is `'5m'` (default) or `'1h'`; the TTL is part of the cache
+    key, so flipping it between turns invalidates the prefix cache. Sourced
+    from the agent profile's `cacheTtl` and threaded through unchanged.
 
     Returns (system_param, telemetry_dict). The telemetry dict carries
-    `prefix_chars`, `tail_chars`, `cache_eligible`, `cache_breakpoints`.
+    `prefix_chars`, `tail_chars`, `cache_eligible`, `cache_breakpoints`,
+    `cache_ttl`.
     """
+    normalized_ttl = "1h" if cache_ttl == "1h" else "5m"
     empty_tel = {
         "prefix_chars": 0,
         "tail_chars": 0,
         "cache_eligible": False,
         "cache_breakpoints": 0,
+        "cache_ttl": normalized_ttl,
     }
     if system is None:
         return None, empty_tel
     if isinstance(system, list):
         # Caller pre-shaped — count breakpoints + characters for telemetry
-        # but do not mutate.
+        # but do not mutate. Trust the caller's existing cache_control TTL.
         prefix_chars = sum(
             len(b.get("text", ""))
             for b in system
@@ -185,6 +208,7 @@ def _build_system_param(system: Any) -> tuple[Any, dict[str, Any]]:
             "tail_chars": tail_chars,
             "cache_eligible": prefix_chars >= SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS,
             "cache_breakpoints": breakpoints,
+            "cache_ttl": normalized_ttl,
         }
     if not isinstance(system, str) or not system.strip():
         return system if system else None, empty_tel
@@ -195,6 +219,7 @@ def _build_system_param(system: Any) -> tuple[Any, dict[str, Any]]:
             "tail_chars": len(system),
             "cache_eligible": False,
             "cache_breakpoints": 0,
+            "cache_ttl": normalized_ttl,
         }
 
     # Split on the FIRST boundary occurrence — bundle intent wins even if a
@@ -213,13 +238,14 @@ def _build_system_param(system: Any) -> tuple[Any, dict[str, Any]]:
             "tail_chars": len(dynamic_text),
             "cache_eligible": False,
             "cache_breakpoints": 0,
+            "cache_ttl": normalized_ttl,
         }
 
     blocks: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": static_text,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": _cache_control(normalized_ttl),
         }
     ]
     if dynamic_text:
@@ -229,6 +255,7 @@ def _build_system_param(system: Any) -> tuple[Any, dict[str, Any]]:
         "tail_chars": len(dynamic_text),
         "cache_eligible": True,
         "cache_breakpoints": 1,
+        "cache_ttl": normalized_ttl,
     }
 
 
@@ -745,21 +772,31 @@ def _call_anthropic_sdk(
         max_retries=4,
     )
     model = _get_anthropic_model(component)
+    # cache_ttl '5m' (default) or '1h'. '1h' requires Anthropic's
+    # extended-cache beta header. Sourced from the agent profile's
+    # cacheTtl field via patched_generate; defaults to '5m' if absent.
+    raw_cache_ttl = kwargs.get("cache_ttl")
+    cache_ttl = "1h" if raw_cache_ttl == "1h" else "5m"
     anthropic_tools = _convert_tools_for_anthropic(tools)
     if anthropic_tools:
         # Cache breakpoint on the last tool — when system + tools are stable
         # turn-to-turn, breakpoint A (static system) hits even if the tool
         # tail churns; this breakpoint B then hits when tools are stable too.
+        # TTL must match the system block's TTL — Anthropic treats the
+        # `ttl` value as part of the cache key, so a mismatched pair would
+        # silently halve the hit rate.
         anthropic_tools[-1] = {
             **anthropic_tools[-1],
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": _cache_control(cache_ttl),
         }
 
     # Build the cache-aware system param. The bundle's rendered.system carries
     # the boundary sentinel between static prefix and dynamic tail; above the
     # threshold we split into a list[TextBlockParam] with cache_control on the
     # static block, otherwise we forward as a plain (boundary-stripped) string.
-    system_param, prompt_cache_telemetry = _build_system_param(kwargs.get("system"))
+    system_param, prompt_cache_telemetry = _build_system_param(
+        kwargs.get("system"), cache_ttl=cache_ttl,
+    )
 
     # Patch empty user messages (Anthropic rejects whitespace-only content)
     patched_messages = []
@@ -809,6 +846,13 @@ def _call_anthropic_sdk(
     }
     if anthropic_tools:
         request_kwargs["tools"] = anthropic_tools
+    # 1h cache TTL is opt-in via Anthropic's `extended-cache-ttl-2025-04-11`
+    # beta header. Skip when ttl is '5m' (default) so we don't gratuitously
+    # opt agents into an unstable beta.
+    if cache_ttl == "1h":
+        request_kwargs["extra_headers"] = {
+            "anthropic-beta": "extended-cache-ttl-2025-04-11",
+        }
     # Forward optional pass-through kwargs to the SDK. `system` and
     # `tool_choice` are accepted by `messages.create`/`messages.stream`
     # directly. `tool_choice={"type":"tool","name":"emit_evaluation"}` is the
@@ -837,14 +881,16 @@ def _call_anthropic_sdk(
         model, len(patched_messages), len(anthropic_tools or []), max_tokens,
     )
     # Greppable per-turn line so production logs surface whether the cache
-    # path actually fired and how big each half of the prompt was.
+    # path actually fired, how big each half of the prompt was, and which
+    # TTL was applied.
     logger.info(
-        "[instruction-bundle] mode=%s breakpoints=%d prefix_chars=%d tail_chars=%d",
+        "[instruction-bundle] mode=%s breakpoints=%d prefix_chars=%d tail_chars=%d cache_ttl=%s",
         "sectioned" if prompt_cache_telemetry["cache_eligible"] else "legacy",
         prompt_cache_telemetry["cache_breakpoints"]
         + (1 if anthropic_tools else 0),
         prompt_cache_telemetry["prefix_chars"],
         prompt_cache_telemetry["tail_chars"],
+        prompt_cache_telemetry["cache_ttl"],
     )
     # Stamp prompt-cache attributes on the active llm_request span so Phoenix
     # / Jaeger surface them alongside cache_creation/cache_read tokens.
@@ -863,6 +909,9 @@ def _call_anthropic_sdk(
                 "prompt.cache_breakpoints",
                 prompt_cache_telemetry["cache_breakpoints"]
                 + (1 if anthropic_tools else 0),
+            )
+            llm_span.set_attribute(
+                "prompt.cache_ttl", prompt_cache_telemetry["cache_ttl"]
             )
             if anthropic_tools:
                 # Hash of sorted tool names — flips when MCP servers reconnect or
@@ -1095,6 +1144,7 @@ def _call_anthropic_sdk(
                         "cache_breakpoints"
                     ]
                     + (1 if anthropic_tools else 0),
+                    "prompt_cache_ttl": prompt_cache_telemetry["cache_ttl"],
                 },
                 instance_id=iid,
             )
@@ -1176,6 +1226,12 @@ def patch_for_anthropic(llm_client: Any) -> None:
                 keep_last=MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT,
             )
 
+            # Read cache_ttl off the LLM client — main.py's
+            # `_apply_instruction_prompt_state` stashes it from the bundle's
+            # runtime.cacheTtl so each call reflects the active agent's
+            # config. Defaults to '5m' if unset.
+            cache_ttl = getattr(self, "_cache_ttl", None) or "5m"
+
             try:
                 result = _call_anthropic_sdk(
                     component,
@@ -1183,6 +1239,7 @@ def patch_for_anthropic(llm_client: Any) -> None:
                     tools=tools,
                     max_tokens=max_tokens,
                     system=system_prompt,
+                    cache_ttl=cache_ttl,
                 )
 
                 # If response_format is set (structured output), parse the

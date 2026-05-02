@@ -27,6 +27,7 @@ export type InstructionRuntimePreview = {
 	mcpInstructions?: unknown;
 	compiledStaticPresetSections?: unknown;
 	compiledDynamicPresetSections?: unknown;
+	cacheTtl?: unknown;
 };
 
 function cleanString(value: unknown): string | undefined {

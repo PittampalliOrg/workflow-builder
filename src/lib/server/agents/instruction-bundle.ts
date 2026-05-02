@@ -48,6 +48,7 @@ export type InstructionBundle = {
 		mcpInstructions: string[];
 		compiledStaticPresetSections: string[];
 		compiledDynamicPresetSections: string[];
+		cacheTtl: "5m" | "1h";
 	};
 	user: {
 		prompt: string;
@@ -134,6 +135,8 @@ export function buildInstructionBundle(
 	const persona = {
 		systemPrompt: cleanString(config.systemPrompt),
 	};
+	const cacheTtl: "5m" | "1h" =
+		config.cacheTtl === "1h" ? "1h" : "5m";
 	const runtime = {
 		cwd: cleanString(input.cwd),
 		sandboxName: cleanString(input.sandboxName),
@@ -148,6 +151,9 @@ export function buildInstructionBundle(
 		// the agent profile carries these as plain strings to dapr-agent-py.
 		compiledStaticPresetSections: cleanStringList(config.compiledStaticPresetSections),
 		compiledDynamicPresetSections: cleanStringList(config.compiledDynamicPresetSections),
+		// Anthropic ephemeral cache TTL — defaults to '5m'. '1h' is meaningful
+		// for long-running Dapr durable agents that span >5min between turns.
+		cacheTtl,
 	};
 	const sources: InstructionSource[] = [];
 	if (persona.systemPrompt) sources.push(source("persona.systemPrompt", sourceId));
@@ -184,6 +190,16 @@ export function buildInstructionBundle(
 			),
 		);
 	}
+	// cacheTtl always emits a source — default '5m' is just as significant
+	// as an explicit '1h' for cost-analysis audit.
+	sources.push(
+		source(
+			"runtime.cacheTtl",
+			config.cacheTtl === "5m" || config.cacheTtl === "1h" ? sourceId : "default",
+			"runtime",
+			"runtime",
+		),
+	);
 	sources.push(
 		source(
 			"user.prompt",

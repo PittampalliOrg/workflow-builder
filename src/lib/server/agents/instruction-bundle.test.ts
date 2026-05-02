@@ -215,4 +215,53 @@ describe("buildInstructionBundle", () => {
 		});
 		expect(base.instructionHash).not.toBe(updated.instructionHash);
 	});
+
+	it("defaults cacheTtl to 5m and emits a 'default' source", () => {
+		const bundle = buildInstructionBundle({
+			agentConfig: minimalConfig({ systemPrompt: "Voice" }),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		expect(bundle.runtime.cacheTtl).toBe("5m");
+		const cacheSource = bundle.sources.find((s) => s.field === "runtime.cacheTtl");
+		expect(cacheSource).toEqual({
+			field: "runtime.cacheTtl",
+			sourceType: "runtime",
+			sourceId: "default",
+			overrideKind: "runtime",
+		});
+	});
+
+	it("propagates cacheTtl=1h from agentConfig and credits the agent profile", () => {
+		const bundle = buildInstructionBundle({
+			agentConfig: minimalConfig({
+				systemPrompt: "Voice",
+				cacheTtl: "1h",
+			}),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+			agent: { id: "a1", version: 1, configHash: "cfg", slug: "s" },
+		});
+		expect(bundle.runtime.cacheTtl).toBe("1h");
+		const cacheSource = bundle.sources.find((s) => s.field === "runtime.cacheTtl");
+		expect(cacheSource?.sourceId).toBe("a1");
+	});
+
+	it("flipping cacheTtl changes instructionHash so the cache key differs", () => {
+		const a = buildInstructionBundle({
+			agentConfig: minimalConfig({ systemPrompt: "Voice", cacheTtl: "5m" }),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		const b = buildInstructionBundle({
+			agentConfig: minimalConfig({ systemPrompt: "Voice", cacheTtl: "1h" }),
+			prompt: "Prompt",
+			promptSource: "session",
+			cwd: "/sandbox",
+		});
+		expect(a.instructionHash).not.toBe(b.instructionHash);
+	});
 });

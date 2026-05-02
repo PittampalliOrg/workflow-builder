@@ -256,6 +256,8 @@ def build_instruction_bundle(
         for name in (_skill_name(item) for item in config.get("skills") or [])
         if name
     ] if isinstance(config.get("skills"), list) else []
+    raw_cache_ttl = config.get("cacheTtl")
+    cache_ttl = raw_cache_ttl if raw_cache_ttl in ("5m", "1h") else "5m"
     runtime = {
         "cwd": _string(cwd) or "/sandbox",
         "sandboxName": _string(sandbox_name),
@@ -274,6 +276,11 @@ def build_instruction_bundle(
         "compiledDynamicPresetSections": _string_list(
             config.get("compiledDynamicPresetSections")
         ),
+        # Anthropic ephemeral prompt cache TTL applied to the static-prefix +
+        # last-tool cache breakpoints. Default `'5m'`; `'1h'` opts into the
+        # extended-cache-ttl beta and is the right pick for long-running Dapr
+        # durable agents whose sessions span >5 min between turns.
+        "cacheTtl": cache_ttl,
     }
 
     control_fields = set(control_override_fields or set())
@@ -314,6 +321,14 @@ def build_instruction_bundle(
                 "runtime",
             )
         )
+    # Always emit cacheTtl source so its origin is auditable on every bundle
+    # (default '5m' is just as significant as an explicit '1h' for cost analysis).
+    if "cacheTtl" in control_fields:
+        sources.append(_source("runtime.cacheTtl", "user", "session.control", "control"))
+    elif raw_cache_ttl in ("5m", "1h"):
+        sources.append(_source("runtime.cacheTtl", "agent-profile", source_id, "base"))
+    else:
+        sources.append(_source("runtime.cacheTtl", "runtime", "default", "runtime"))
 
     normalized_source = "workflow-node" if prompt_source == "workflow-node" else "session"
     sources.append(

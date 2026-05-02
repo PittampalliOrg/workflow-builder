@@ -737,6 +737,44 @@
 										}}
 									/>
 								</div>
+								<div>
+									<Label>Prompt cache TTL</Label>
+									<Select.Root
+										type="single"
+										value={config.cacheTtl ?? '5m'}
+										onValueChange={(value) => {
+											const ttl = value === '1h' ? '1h' : '5m';
+											updateConfig('cacheTtl', ttl);
+										}}
+									>
+										<Select.Trigger class="mt-1">
+											{config.cacheTtl === '1h'
+												? '1 hour (extended cache beta)'
+												: '5 minutes (default)'}
+										</Select.Trigger>
+										<Select.Content>
+											<Select.Item value="5m">
+												<div class="flex min-w-0 flex-col">
+													<span>5 minutes (default)</span>
+													<span class="text-[11px] text-muted-foreground">
+														Anthropic ephemeral prompt cache, refreshed each turn
+													</span>
+												</div>
+											</Select.Item>
+											<Select.Item value="1h">
+												<div class="flex min-w-0 flex-col">
+													<span>1 hour (extended cache beta)</span>
+													<span class="text-[11px] text-muted-foreground">
+														Right for Dapr durable agents that pause &gt;5 min between turns
+													</span>
+												</div>
+											</Select.Item>
+										</Select.Content>
+									</Select.Root>
+									<p class="mt-1 text-xs text-muted-foreground">
+										Cache key includes the TTL — flipping it invalidates the prefix cache once.
+									</p>
+								</div>
 							</div>
 						</div>
 					</TabsContent>

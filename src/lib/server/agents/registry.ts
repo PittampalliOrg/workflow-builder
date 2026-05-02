@@ -131,6 +131,10 @@ export function normalizeAgentConfig(config: AgentConfig): AgentConfig {
 		if (normalized !== undefined) raw.tools = normalized;
 		else delete raw.tools;
 	}
+	// cacheTtl: accept the two Anthropic-supported values; drop anything else.
+	if (raw.cacheTtl !== undefined && raw.cacheTtl !== "5m" && raw.cacheTtl !== "1h") {
+		delete raw.cacheTtl;
+	}
 	return raw as unknown as AgentConfig;
 }
 
