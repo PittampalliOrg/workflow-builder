@@ -17,6 +17,14 @@ describe("benchmark run state transitions", () => {
 		expect(canTransitionBenchmarkRun("cancelled", "inferencing")).toBe(false);
 	});
 
+	it("allows redrives from failed back into evaluating + completed", () => {
+		expect(canTransitionBenchmarkRun("failed", "evaluating")).toBe(true);
+		expect(canTransitionBenchmarkRun("failed", "completed")).toBe(true);
+		// completed and cancelled remain hard-terminal.
+		expect(canTransitionBenchmarkRun("completed", "evaluating")).toBe(false);
+		expect(canTransitionBenchmarkRun("cancelled", "completed")).toBe(false);
+	});
+
 	it("computes resolved-rate summaries", () => {
 		expect(summarizeRunInstances(["resolved", "failed", "resolved"])).toMatchObject({
 			total: 3,

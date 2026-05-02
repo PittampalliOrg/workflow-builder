@@ -267,7 +267,12 @@ const RUN_TRANSITIONS: Record<BenchmarkRunStatus, BenchmarkRunStatus[]> = {
 	inferencing: ["evaluating", "failed", "cancelled"],
 	evaluating: ["completed", "failed", "cancelled"],
 	completed: [],
-	failed: [],
+	// `failed` is recoverable — a redrive resets the run to `evaluating` first
+	// (legitimate transition during the dispatcher's pre-flight) and finalize
+	// closes the run with `completed` once grading lands. Without this, the
+	// post-redrive markBenchmarkRunStatus throws and the BFF returns 500 even
+	// though per-row evaluation_status writes have already committed.
+	failed: ["evaluating", "completed"],
 	cancelled: [],
 };
 
