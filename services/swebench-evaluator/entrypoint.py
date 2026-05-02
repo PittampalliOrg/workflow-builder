@@ -102,10 +102,13 @@ def main() -> int:
     succeeded = not failure_messages
     failure_message = "; ".join(failure_messages)[:500] if failure_messages else None
 
+    # finalize already POSTed graded results to the BFF in the proper shape;
+    # the dispatcher's collect_results would re-POST raw harness reports that
+    # the BFF can't decode without a flatten step. Skip the dispatcher POST
+    # and only do MLflow logging here (which lives outside the TaskRun).
     run_dir = artifacts_root / run_id
     results = collect_results(run_dir, instance_ids)
     log_mlflow_evaluation(run_id, results, log_dir, failure_message)
-    post_results(run_id, results, error=failure_message)
     return 0 if succeeded else 1
 
 
