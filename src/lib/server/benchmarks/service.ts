@@ -99,6 +99,7 @@ const DEFAULT_EVALUATION_CONCURRENCY = 5;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
+const SWEBENCH_SANDBOX_TTL_SECONDS_FALLBACK = 2 * 60 * 60;
 const SWEBENCH_PATCH_EXCLUDE_PATHS = [
 	":(exclude)**/tests/**",
 	":(exclude)tests/**",
@@ -1877,6 +1878,14 @@ function benchmarkInferenceStallSeconds(): number {
 	);
 }
 
+function shouldKeepSwebenchSandboxAfterRun(): boolean {
+	return parseBooleanFlag(
+		env.SWEBENCH_KEEP_SANDBOX_AFTER_RUN ??
+			process.env.SWEBENCH_KEEP_SANDBOX_AFTER_RUN,
+		false,
+	);
+}
+
 export function latestBenchmarkInferenceProgressAt(input: {
 	startedAt?: Date | null;
 	sessionUpdatedAt?: Date | null;
@@ -2342,7 +2351,11 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		params.instanceId,
 	);
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
-	const ttlSeconds = Math.max(params.timeoutSeconds + 3600, 7200);
+	const ttlSeconds = Math.max(
+		params.timeoutSeconds + 3600,
+		SWEBENCH_SANDBOX_TTL_SECONDS_FALLBACK,
+	);
+	const keepSandboxAfterRun = shouldKeepSwebenchSandboxAfterRun();
 	const workspaceRef = buildStableWorkspaceRef("swebench", [
 		params.runId,
 		params.instanceId,
@@ -2357,7 +2370,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		workspaceRef,
 		sandboxTemplate: inferenceEnvironment.sandboxTemplate || "dapr-agent",
 		ttlSeconds,
-		keepAfterRun: true,
+		keepAfterRun: keepSandboxAfterRun,
 		managedBy: "workflow-builder:swebench",
 		name: `swebench-${params.instanceId}`,
 		enabledTools: [
@@ -2370,7 +2383,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 			"file_stat",
 		],
 		sandboxPolicy: {
-			keepAfterRun: true,
+			keepAfterRun: keepSandboxAfterRun,
 			mode: "per-run",
 			template: inferenceEnvironment.sandboxTemplate || "dapr-agent",
 			ttlSeconds,
@@ -2462,7 +2475,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 						sandboxName: "${ .workspace_profile.sandboxName }",
 						workspaceRef: "${ .workspace_profile.workspaceRef }",
 						sandboxPolicy: {
-							keepAfterRun: true,
+							keepAfterRun: keepSandboxAfterRun,
 							mode: "per-run",
 							template: inferenceEnvironment.sandboxTemplate || "dapr-agent",
 							ttlSeconds,
@@ -2982,6 +2995,16 @@ function clampInteger(
 	const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
 	if (!Number.isFinite(parsed)) return fallback;
 	return Math.min(Math.max(Math.floor(parsed), min), max);
+}
+
+function parseBooleanFlag(value: unknown, fallback: boolean): boolean {
+	if (typeof value === "boolean") return value;
+	if (typeof value !== "string") return fallback;
+	const normalized = value.trim().toLowerCase();
+	if (!normalized) return fallback;
+	if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+	if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+	return fallback;
 }
 
 export function effectiveBenchmarkConcurrency(input: {

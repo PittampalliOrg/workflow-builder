@@ -277,6 +277,65 @@ describe("SWE-bench workflow spec", () => {
 		);
 	});
 
+	it("does not retain SWE-bench sandboxes after inference by default", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: validatedInferenceEnvironment(),
+		});
+
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		const workspaceProfile = steps[0].workspace_profile;
+		const solve = steps[2].solve as unknown as {
+			with: { sandboxPolicy: { keepAfterRun: boolean } };
+		};
+		expect(workspaceProfile.with.keepAfterRun).toBe(false);
+		expect(workspaceProfile.with.sandboxPolicy).toMatchObject({
+			keepAfterRun: false,
+		});
+		expect(solve.with.sandboxPolicy.keepAfterRun).toBe(false);
+	});
+
+	it("can retain SWE-bench sandboxes when explicitly enabled", () => {
+		vi.stubEnv("SWEBENCH_KEEP_SANDBOX_AFTER_RUN", "true");
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: validatedInferenceEnvironment(),
+		});
+
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		const workspaceProfile = steps[0].workspace_profile;
+		const solve = steps[2].solve as unknown as {
+			with: { sandboxPolicy: { keepAfterRun: boolean } };
+		};
+		expect(workspaceProfile.with.keepAfterRun).toBe(true);
+		expect(workspaceProfile.with.sandboxPolicy).toMatchObject({
+			keepAfterRun: true,
+		});
+		expect(solve.with.sandboxPolicy.keepAfterRun).toBe(true);
+	});
+
 	it("extracts patches against the SWE-bench base commit", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
 			suiteSlug: "SWE-bench_Lite",
