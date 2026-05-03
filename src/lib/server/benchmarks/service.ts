@@ -36,7 +36,11 @@ import {
 	type BenchmarkRunInstanceStatus,
 	type BenchmarkRunStatus,
 } from "$lib/server/db/schema";
-import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
+import {
+	daprFetch,
+	getDaprSidecarUrl,
+	getOrchestratorUrl,
+} from "$lib/server/dapr-client";
 import { resolveSpecAgentRefs } from "$lib/server/agents/resolver";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import type { AgentConfig } from "$lib/types/agents";
@@ -896,20 +900,28 @@ async function finalizeBenchmarkWorkflowExecutions(
 	const database = requireDb();
 	const rows = await database
 		.select({
+			runtimeAppId: benchmarkRuns.agentRuntimeAppId,
 			runInstanceDaprId: benchmarkRunInstances.daprInstanceId,
+			runInstanceSessionId: benchmarkRunInstances.sessionId,
+			runInstanceTurnCount: benchmarkRunInstances.turnCount,
+			sessionId: sessions.id,
 			executionId: workflowExecutions.id,
 			executionStatus: workflowExecutions.status,
 			executionPhase: workflowExecutions.phase,
 			executionDaprId: workflowExecutions.daprInstanceId,
 		})
 		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.leftJoin(
 			workflowExecutions,
 			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
 		)
+		.leftJoin(sessions, eq(sessions.workflowExecutionId, benchmarkRunInstances.workflowExecutionId))
 		.where(eq(benchmarkRunInstances.runId, runId));
 	const activeExecutionIds = new Set<string>();
 	const daprInstanceIds = new Set<string>();
+	const agentRuntimeInstances = new Map<string, Set<string>>();
+	const sessionIds = new Set<string>();
 	for (const row of rows) {
 		const hasActiveExecution =
 			row.executionStatus === "pending" ||
@@ -922,12 +934,47 @@ async function finalizeBenchmarkWorkflowExecutions(
 		if ((hasActiveExecution || !row.executionId) && daprInstanceId) {
 			daprInstanceIds.add(daprInstanceId);
 		}
+		const sessionId = row.runInstanceSessionId ?? row.sessionId;
+		if (sessionId && row.runtimeAppId) {
+			sessionIds.add(sessionId);
+			const instances = agentRuntimeInstances.get(row.runtimeAppId) ?? new Set<string>();
+			instances.add(sessionId);
+			const turnCount =
+				typeof row.runInstanceTurnCount === "number" && row.runInstanceTurnCount > 0
+					? Math.min(row.runInstanceTurnCount, 25)
+					: 1;
+			for (let turn = 1; turn <= turnCount; turn += 1) {
+				instances.add(`${sessionId}:turn-${turn}`);
+			}
+			agentRuntimeInstances.set(row.runtimeAppId, instances);
+		}
 	}
 	await Promise.all(
 		[...daprInstanceIds].map((instanceId) =>
 			terminateBenchmarkWorkflowInstance(instanceId, reason),
 		),
 	);
+	await Promise.all(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) =>
+				terminateBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason),
+			),
+		),
+	);
+	if (sessionIds.size > 0) {
+		await database
+			.update(sessions)
+			.set({
+				status: "terminated",
+				updatedAt: now,
+			})
+			.where(
+				and(
+					inArray(sessions.id, [...sessionIds]),
+					inArray(sessions.status, ["pending", "running", "rescheduling"]),
+				),
+			);
+	}
 	if (activeExecutionIds.size === 0) return;
 	await database
 		.update(workflowExecutions)
@@ -971,6 +1018,36 @@ async function terminateBenchmarkWorkflowInstance(
 		);
 	} finally {
 		clearTimeout(timeout);
+	}
+}
+
+async function terminateBenchmarkAgentRuntimeInstance(
+	runtimeAppId: string,
+	instanceId: string,
+	reason: string,
+) {
+	try {
+		const res = await daprFetch(
+			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/terminate`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ reason }),
+				signal: AbortSignal.timeout(10_000),
+			},
+		);
+		if (!res.ok && res.status !== 404) {
+			console.warn(
+				`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${await res
+					.text()
+					.catch(() => "")}`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
+			err,
+		);
 	}
 }
 
