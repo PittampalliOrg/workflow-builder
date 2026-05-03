@@ -762,6 +762,7 @@ export async function markBenchmarkRunStatus(
 		const reason = benchmarkRunTerminalReason(status, extra);
 		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
 		await finalizeBenchmarkWorkflowExecutions(runId, status, reason, now);
+		await recomputeRunSummary(runId);
 	}
 	if (status === "evaluating") {
 		await database
@@ -800,6 +801,14 @@ function benchmarkRunTerminalReason(
 	return status === "cancelled" ? "benchmark run cancelled" : "benchmark run failed";
 }
 
+function benchmarkRunInstanceTerminalReason(
+	existingReason: string | null,
+	terminalReason: string,
+): string {
+	if (!existingReason || existingReason === "end_turn") return terminalReason;
+	return existingReason;
+}
+
 export function benchmarkRunInstanceTerminalPatch(
 	row: BenchmarkRunInstanceTerminalInput,
 	outcome: BenchmarkRunTerminalOutcome,
@@ -812,7 +821,10 @@ export function benchmarkRunInstanceTerminalPatch(
 	const patch: Partial<typeof benchmarkRunInstances.$inferInsert> = {
 		status: outcome === "cancelled" ? "cancelled" : "error",
 		error: row.error ?? reason,
-		terminationReason: row.terminationReason ?? terminalReason,
+		terminationReason: benchmarkRunInstanceTerminalReason(
+			row.terminationReason,
+			terminalReason,
+		),
 		updatedAt: now,
 	};
 	if (
@@ -1389,13 +1401,11 @@ function benchmarkInferenceStallSeconds(): number {
 
 export function latestBenchmarkInferenceProgressAt(input: {
 	startedAt?: Date | null;
-	rowUpdatedAt?: Date | null;
 	sessionUpdatedAt?: Date | null;
 	latestEventCreatedAt?: Date | null;
 }): Date | null {
 	const timestamps = [
 		input.startedAt,
-		input.rowUpdatedAt,
 		input.sessionUpdatedAt,
 		input.latestEventCreatedAt,
 	].filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()));
@@ -1409,7 +1419,6 @@ export function benchmarkInferenceStallState(input: {
 	now: Date;
 	stallSeconds: number;
 	startedAt?: Date | null;
-	rowUpdatedAt?: Date | null;
 	sessionUpdatedAt?: Date | null;
 	latestEventCreatedAt?: Date | null;
 }): { stalled: boolean; lastProgressAt: Date | null; stalledSeconds: number } {
@@ -1479,7 +1488,6 @@ async function timeoutBenchmarkInstanceIfStalled(
 		now: new Date(),
 		stallSeconds,
 		startedAt: runInstance.startedAt,
-		rowUpdatedAt: runInstance.updatedAt,
 		sessionUpdatedAt: session?.updatedAt,
 		latestEventCreatedAt: latestEventRows[0]?.createdAt,
 	});

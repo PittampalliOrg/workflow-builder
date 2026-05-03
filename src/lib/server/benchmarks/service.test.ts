@@ -157,6 +157,16 @@ describe("SWE-bench workflow spec", () => {
 				latestEventCreatedAt: new Date("2026-05-02T12:06:00Z"),
 			}).stalled,
 		).toBe(false);
+
+		const recentBenchmarkRowTouch = {
+			now,
+			stallSeconds: 480,
+			startedAt: new Date("2026-05-02T12:00:00Z"),
+			sessionUpdatedAt: new Date("2026-05-02T12:01:00Z"),
+			latestEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
+			rowUpdatedAt: new Date("2026-05-02T12:09:59Z"),
+		} as Parameters<typeof benchmarkInferenceStallState>[0] & { rowUpdatedAt: Date };
+		expect(benchmarkInferenceStallState(recentBenchmarkRowTouch).stalled).toBe(true);
 	});
 
 	it("builds a canvas graph for generated SWE-bench instance runs", () => {
@@ -734,6 +744,31 @@ describe("SWE-bench terminal run cleanup", () => {
 		});
 		expect(patch).not.toHaveProperty("inferenceStatus");
 		expect(patch).not.toHaveProperty("inferenceCompletedAt");
+	});
+
+	it("overrides weak end-turn reasons during terminal run cleanup", () => {
+		const patch = benchmarkRunInstanceTerminalPatch(
+			{
+				status: "inferencing",
+				inferenceStatus: "inferencing",
+				evaluationStatus: "pending",
+				error: null,
+				inferenceError: null,
+				evaluationError: null,
+				terminationReason: "end_turn",
+				inferenceCompletedAt: null,
+				evaluatedAt: null,
+			},
+			"failed",
+			"run failed",
+			now,
+		);
+
+		expect(patch).toMatchObject({
+			status: "error",
+			inferenceStatus: "error",
+			terminationReason: "benchmark_run_failed",
+		});
 	});
 
 	it("leaves already-terminal rows untouched", () => {
