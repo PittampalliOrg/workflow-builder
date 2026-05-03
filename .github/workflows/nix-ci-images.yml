@@ -192,9 +192,9 @@ jobs:
           image_store_path="$1"
           image_ref="$2"
 
-          skopeo login ghcr.io --username "${GHCR_USERNAME}" --password "${GHCR_TOKEN}" >&2
-          skopeo copy "docker-archive:${image_store_path}" "docker://${image_ref}" >&2
-          skopeo inspect --no-tags "docker://${image_ref}" | jq -r '.Digest'
+          crane auth login ghcr.io --username "${GHCR_USERNAME}" --password-stdin <<<"${GHCR_TOKEN}" >&2
+          crane push "${image_store_path}" "${image_ref}" >&2
+          crane digest "${image_ref}"
           SCRIPT
 
           digest="$(nix develop --command bash /tmp/push-image.sh '${{ steps.build.outputs.image_store_path }}' "${image_ref}")"
