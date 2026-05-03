@@ -1,0 +1,193 @@
+{
+  "images": [
+    {
+      "name": "mcp-gateway",
+      "enabled": true,
+      "registryRepository": "ghcr.io/pittampalliorg/mcp-gateway",
+      "nixPackage": "mcp-gateway-image",
+      "digestPackage": "mcp-gateway-image-digest",
+      "dockerfile": "services/mcp-gateway/Dockerfile",
+      "context": "."
+    },
+    {
+      "name": "workflow-builder",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/workflow-builder",
+      "nixPackage": "workflow-builder-image",
+      "digestPackage": "workflow-builder-image-digest",
+      "dockerfile": "Dockerfile",
+      "context": "."
+    },
+    {
+      "name": "workflow-mcp-server",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/workflow-mcp-server",
+      "nixPackage": "workflow-mcp-server-image",
+      "digestPackage": "workflow-mcp-server-image-digest",
+      "dockerfile": "services/workflow-mcp-server/Dockerfile",
+      "context": "services/workflow-mcp-server"
+    },
+    {
+      "name": "function-router",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/function-router",
+      "nixPackage": "function-router-image",
+      "digestPackage": "function-router-image-digest",
+      "dockerfile": "services/function-router/Dockerfile",
+      "context": "."
+    },
+    {
+      "name": "workflow-orchestrator",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/workflow-orchestrator",
+      "nixPackage": "workflow-orchestrator-image",
+      "digestPackage": "workflow-orchestrator-image-digest",
+      "dockerfile": "services/workflow-orchestrator/Dockerfile",
+      "context": "services/workflow-orchestrator"
+    },
+    {
+      "name": "code-parser",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/code-parser",
+      "nixPackage": "code-parser-image",
+      "digestPackage": "code-parser-image-digest",
+      "dockerfile": "services/code-parser/Dockerfile",
+      "context": "services/code-parser"
+    },
+    {
+      "name": "code-runtime",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/code-runtime",
+      "nixPackage": "code-runtime-image",
+      "digestPackage": "code-runtime-image-digest",
+      "dockerfile": "services/code-runtime/Dockerfile",
+      "context": "."
+    },
+    {
+      "name": "openshell-agent-runtime",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/openshell-agent-runtime",
+      "nixPackage": "openshell-agent-runtime-image",
+      "digestPackage": "openshell-agent-runtime-image-digest",
+      "dockerfile": "",
+      "context": ""
+    },
+    {
+      "name": "openshell-sandbox",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/openshell-sandbox",
+      "nixPackage": "openshell-sandbox-image",
+      "digestPackage": "openshell-sandbox-image-digest",
+      "dockerfile": "services/openshell-sandbox/Dockerfile",
+      "context": "services/openshell-sandbox"
+    },
+    {
+      "name": "openshell-sandbox-xlsx",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/openshell-sandbox-xlsx",
+      "nixPackage": "openshell-sandbox-xlsx-image",
+      "digestPackage": "openshell-sandbox-xlsx-image-digest",
+      "dockerfile": "services/openshell-sandbox/Dockerfile.xlsx",
+      "context": "services/openshell-sandbox"
+    },
+    {
+      "name": "dapr-agent-py-sandbox",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/dapr-agent-py-sandbox",
+      "nixPackage": "dapr-agent-py-sandbox-image",
+      "digestPackage": "dapr-agent-py-sandbox-image-digest",
+      "dockerfile": "services/dapr-agent-py/Dockerfile.sandbox",
+      "context": "services/dapr-agent-py"
+    },
+    {
+      "name": "dapr-agent-py-testing-sandbox",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/dapr-agent-py-testing-sandbox",
+      "nixPackage": "dapr-agent-py-testing-sandbox-image",
+      "digestPackage": "dapr-agent-py-testing-sandbox-image-digest",
+      "dockerfile": "services/dapr-agent-py/Dockerfile.sandbox-testing",
+      "context": "services/dapr-agent-py"
+    },
+    {
+      "name": "browser-use-agent-sandbox",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/browser-use-agent-sandbox",
+      "nixPackage": "browser-use-agent-sandbox-image",
+      "digestPackage": "browser-use-agent-sandbox-image-digest",
+      "dockerfile": "",
+      "context": ""
+    },
+    {
+      "name": "browserstation",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/browserstation",
+      "nixPackage": "browserstation-image",
+      "digestPackage": "browserstation-image-digest",
+      "dockerfile": "services/browserstation/Dockerfile",
+      "context": "services/browserstation"
+    },
+    {
+      "name": "chrome-sandbox",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/chrome-sandbox",
+      "nixPackage": "chrome-sandbox-image",
+      "digestPackage": "chrome-sandbox-image-digest",
+      "dockerfile": "services/chrome-sandbox/Dockerfile",
+      "context": "services/chrome-sandbox"
+    },
+    {
+      "name": "workspace-runtime",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/opencode-durable-agent",
+      "nixPackage": "workspace-runtime-image",
+      "digestPackage": "workspace-runtime-image-digest",
+      "dockerfile": "",
+      "context": ""
+    },
+    {
+      "name": "evaluation-coordinator",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/evaluation-coordinator",
+      "nixPackage": "evaluation-coordinator-image",
+      "digestPackage": "evaluation-coordinator-image-digest",
+      "dockerfile": "services/evaluation-coordinator/Dockerfile",
+      "context": "services/evaluation-coordinator"
+    },
+    {
+      "name": "swebench-coordinator",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/swebench-coordinator",
+      "nixPackage": "swebench-coordinator-image",
+      "digestPackage": "swebench-coordinator-image-digest",
+      "dockerfile": "services/swebench-coordinator/Dockerfile",
+      "context": "services/swebench-coordinator"
+    },
+    {
+      "name": "swebench-evaluator",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/swebench-evaluator",
+      "nixPackage": "swebench-evaluator-image",
+      "digestPackage": "swebench-evaluator-image-digest",
+      "dockerfile": "services/swebench-evaluator/Dockerfile",
+      "context": "services/swebench-evaluator"
+    },
+    {
+      "name": "fn-system",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/fn-system",
+      "nixPackage": "fn-system-image",
+      "digestPackage": "fn-system-image-digest",
+      "dockerfile": "services/fn-system/Dockerfile",
+      "context": "."
+    },
+    {
+      "name": "fn-activepieces",
+      "enabled": false,
+      "registryRepository": "ghcr.io/pittampalliorg/fn-activepieces",
+      "nixPackage": "fn-activepieces-image",
+      "digestPackage": "fn-activepieces-image-digest",
+      "dockerfile": "services/fn-activepieces/Dockerfile",
+      "context": "."
+    }
+  ]
+}

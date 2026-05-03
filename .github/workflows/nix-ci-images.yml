@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image name from .github/nix-ci-images.json, or all-enabled.
+        required: false
+        default: all-enabled
 
 concurrency:
   group: nix-ci-images-${{ github.ref }}
@@ -15,17 +20,58 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: mcp-gateway
-  IMAGE_REPOSITORY: ghcr.io/pittampalliorg/mcp-gateway
+  IMAGE_CONFIG_PATH: .github/nix-ci-images.json
   STACKS_REPOSITORY: PittampalliOrg/stacks
   CANDIDATE_PATH: packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-nix-ci-candidates.yaml
 
 jobs:
-  mcp-gateway:
-    name: mcp-gateway candidate
+  image-matrix:
+    name: Select images
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout workflow-builder
+        uses: actions/checkout@v6
+
+      - name: Generate image matrix
+        id: matrix
+        env:
+          REQUESTED_IMAGE: ${{ github.event.inputs.image || 'all-enabled' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${REQUESTED_IMAGE}" = "all-enabled" ] || [ -z "${REQUESTED_IMAGE}" ]; then
+            matrix="$(jq -c '{include: [.images[] | select(.enabled == true)]}' "${IMAGE_CONFIG_PATH}")"
+          else
+            matrix="$(jq -c --arg image "${REQUESTED_IMAGE}" '{include: [.images[] | select(.name == $image)]}' "${IMAGE_CONFIG_PATH}")"
+          fi
+
+          count="$(jq '.include | length' <<<"${matrix}")"
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::No Nix CI image matched '${REQUESTED_IMAGE}'."
+            exit 1
+          fi
+
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+          jq -r '.include[] | "- " + .name + " -> " + .nixPackage' <<<"${matrix}"
+
+  candidate:
+    name: ${{ matrix.name }} candidate
+    needs: image-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJson(needs.image-matrix.outputs.matrix) }}
     env:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      IMAGE_NAME: ${{ matrix.name }}
+      IMAGE_REPOSITORY: ${{ matrix.registryRepository }}
+      NIX_IMAGE_PACKAGE: ${{ matrix.nixPackage }}
+      NIX_DIGEST_PACKAGE: ${{ matrix.digestPackage }}
 
     steps:
       - name: Checkout workflow-builder
@@ -61,15 +107,15 @@ jobs:
           set -euo pipefail
 
           start="$(date +%s)"
-          nix build .#mcp-gateway-image --print-build-logs --out-link result-mcp-gateway-image
+          nix build ".#${NIX_IMAGE_PACKAGE}" --print-build-logs --out-link "result-${NIX_IMAGE_PACKAGE}"
           end="$(date +%s)"
 
-          image_store_path="$(readlink -f result-mcp-gateway-image)"
+          image_store_path="$(readlink -f "result-${NIX_IMAGE_PACKAGE}")"
           closure_size_bytes="$(nix path-info -S "${image_store_path}" | awk '{ print $2 }')"
           build_duration_seconds="$((end - start))"
 
-          nix build .#mcp-gateway-image-digest --print-build-logs --out-link result-mcp-gateway-image-digest
-          local_image_digest="$(cat result-mcp-gateway-image-digest/digest.txt)"
+          nix build ".#${NIX_DIGEST_PACKAGE}" --print-build-logs --out-link "result-${NIX_DIGEST_PACKAGE}"
+          local_image_digest="$(cat "result-${NIX_DIGEST_PACKAGE}/digest.txt")"
 
           {
             echo "image_store_path=${image_store_path}"
@@ -84,6 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           artifact_name="${IMAGE_NAME}-nix-ci-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          sbom_path="${PWD}/artifacts/sbom/${IMAGE_NAME}.spdx.json"
           mkdir -p artifacts/sbom
 
           cat > /tmp/generate-sbom.sh <<'SCRIPT'
@@ -94,15 +141,16 @@ jobs:
           test -s "${sbom_path}"
           SCRIPT
 
-          nix develop --command bash /tmp/generate-sbom.sh '${{ steps.build.outputs.image_store_path }}' "${PWD}/artifacts/sbom/mcp-gateway.spdx.json"
+          nix develop --command bash /tmp/generate-sbom.sh '${{ steps.build.outputs.image_store_path }}' "${sbom_path}"
           echo "artifact_name=${artifact_name}" >> "${GITHUB_OUTPUT}"
-          echo "sbom_path=${PWD}/artifacts/sbom/mcp-gateway.spdx.json" >> "${GITHUB_OUTPUT}"
+          echo "sbom_path=${sbom_path}" >> "${GITHUB_OUTPUT}"
 
       - name: Scan image
         id: scan
         shell: bash
         run: |
           set -euo pipefail
+          scan_path="${PWD}/artifacts/scan/${IMAGE_NAME}-grype.json"
           mkdir -p artifacts/scan
 
           cat > /tmp/scan-image.sh <<'SCRIPT'
@@ -120,7 +168,6 @@ jobs:
           fi
           SCRIPT
 
-          scan_path="${PWD}/artifacts/scan/mcp-gateway-grype.json"
           scan_status="$(nix develop --command bash /tmp/scan-image.sh '${{ steps.build.outputs.image_store_path }}' "${scan_path}")"
           echo "scan_status=${scan_status}" >> "${GITHUB_OUTPUT}"
           echo "scan_path=${scan_path}" >> "${GITHUB_OUTPUT}"
@@ -160,8 +207,8 @@ jobs:
         with:
           name: ${{ steps.sbom.outputs.artifact_name }}
           path: |
-            artifacts/sbom/mcp-gateway.spdx.json
-            artifacts/scan/mcp-gateway-grype.json
+            artifacts/sbom/${{ matrix.name }}.spdx.json
+            artifacts/scan/${{ matrix.name }}-grype.json
           if-no-files-found: error
 
       - name: Checkout stacks
@@ -182,7 +229,7 @@ jobs:
           CLOSURE_SIZE_BYTES: ${{ steps.build.outputs.closure_size_bytes }}
           SBOM_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}
           SCAN_STATUS: ${{ steps.scan.outputs.scan_status }}
-          SCAN_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}:mcp-gateway-grype.json
+          SCAN_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}:${{ matrix.name }}-grype.json
           PIPELINE_RUN: ${{ github.workflow }}#${{ github.run_id }}
         shell: bash
         run: |
@@ -192,6 +239,7 @@ jobs:
           python3 - <<'PY'
           import os
           from collections import OrderedDict
+          from datetime import datetime, timezone
           from pathlib import Path
 
           candidate_path = Path(os.environ["CANDIDATE_PATH"])
@@ -258,7 +306,7 @@ jobs:
               "digests": os.environ["IMAGE_DIGEST"],
               "sourceShas": os.environ["GITHUB_SHA"],
               "pipelineRuns": os.environ["PIPELINE_RUN"],
-              "updatedAts": os.popen("date -u +%Y-%m-%dT%H:%M:%SZ").read().strip(),
+              "updatedAts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "builder": "github-actions-nix",
               "nixStorePath": os.environ["IMAGE_STORE_PATH"],
               "sbomRef": os.environ["SBOM_REF"],
