@@ -68,6 +68,9 @@ EVALUATION_RESULTS_EVENT = "swebench.evaluation.results"
 EVALUATION_FAILED_EVENT = "swebench.evaluation.failed"
 EVALUATION_POLL_SECONDS = int(os.environ.get("SWEBENCH_EVALUATION_POLL_SECONDS", "60"))
 PREFLIGHT_POLL_SECONDS = int(os.environ.get("SWEBENCH_PREFLIGHT_POLL_SECONDS", "30"))
+PREFLIGHT_TIMEOUT_SECONDS = int(
+    os.environ.get("SWEBENCH_PREFLIGHT_TIMEOUT_SECONDS", "14400")
+)
 RUN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 INSTANCE_TERMINAL_STATUSES = {"resolved", "failed", "error", "timeout", "cancelled"}
 ACTIVE_EVALUATION_STATUSES = {"queued", "inferencing", "inferred", "evaluating"}
@@ -313,6 +316,17 @@ def _mark_run_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _status_from_mark_result(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    run = result.get("run")
+    if isinstance(run, dict) and isinstance(run.get("status"), str):
+        return run["status"]
+    if isinstance(result.get("status"), str):
+        return result["status"]
+    return None
+
+
 def _validate_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run = _load_run(data["runId"])
     instance_ids = list(run.get("selectedInstanceIds") or [])
@@ -353,6 +367,7 @@ def _prepare_instance_environment(ctx, data: dict[str, Any]) -> dict[str, Any]:
         "repo": data["repo"],
         "baseCommit": data["baseCommit"],
         "testMetadata": data.get("testMetadata") or {},
+        "allowBuild": True,
     }
     return _bff_with_retry(
         "POST",
@@ -1180,8 +1195,38 @@ def swebench_environment_preflight_workflow(
         )
         group["instanceIds"].append(instance_id)
 
+    preflight_deadline = (
+        ctx.current_utc_datetime + timedelta(seconds=PREFLIGHT_TIMEOUT_SECONDS)
+        if pending_groups
+        else None
+    )
     while pending_groups:
-        yield ctx.create_timer(timedelta(seconds=PREFLIGHT_POLL_SECONDS))
+        if (
+            preflight_deadline is not None
+            and ctx.current_utc_datetime >= preflight_deadline
+        ):
+            pending_instances = sorted(
+                {
+                    instance_id
+                    for group in pending_groups.values()
+                    for instance_id in group["instanceIds"]
+                }
+            )
+            raise RuntimeError(
+                "SWE-bench preflight timed out waiting for validated inference "
+                f"images for {len(pending_instances)} instance(s): "
+                f"{', '.join(pending_instances[:20])}"
+            )
+        wait_seconds = PREFLIGHT_POLL_SECONDS
+        if preflight_deadline is not None:
+            wait_seconds = max(
+                1,
+                min(
+                    PREFLIGHT_POLL_SECONDS,
+                    int((preflight_deadline - ctx.current_utc_datetime).total_seconds()),
+                ),
+            )
+        yield ctx.create_timer(timedelta(seconds=wait_seconds))
         next_pending: dict[str, dict[str, Any]] = {}
         for group_key, group in pending_groups.items():
             status = yield ctx.call_activity(
@@ -1404,9 +1449,22 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             instance_id=_preflight_workflow_id(run_id),
         )
         run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
-        yield ctx.call_activity(
+        mark_result = yield ctx.call_activity(
             _mark_run_status, input={"runId": run_id, "status": "inferencing"}
         )
+        marked_status = _status_from_mark_result(mark_result)
+        if marked_status in RUN_TERMINAL_STATUSES:
+            return {
+                "success": False,
+                "skipped": True,
+                "reason": "run-terminal",
+                "runStatus": marked_status,
+            }
+        if marked_status and marked_status != "inferencing":
+            raise RuntimeError(
+                "SWE-bench run did not enter inferencing state; "
+                f"current status is {marked_status}"
+            )
         instance_ids = list(run.get("selectedInstanceIds") or [])
         concurrency = bounded_swebench_concurrency(run.get("concurrency"))
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)

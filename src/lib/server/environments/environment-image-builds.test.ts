@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => {
 	const state: { lastUpdate: Record<string, unknown> | null } = { lastUpdate: null };
+	const selectLimit = vi.fn(async () => []);
+	const selectWhere = vi.fn(() => ({ limit: selectLimit }));
+	const selectFrom = vi.fn(() => ({ where: selectWhere }));
+	const select = vi.fn(() => ({ from: selectFrom }));
 	const updateReturning = vi.fn();
 	const updateSet = vi.fn((value: Record<string, unknown>) => {
 		state.lastUpdate = value;
@@ -10,16 +14,18 @@ const dbMocks = vi.hoisted(() => {
 	const insertValues = vi.fn(() => ({
 		onConflictDoUpdate: vi.fn(async () => undefined),
 	}));
-	return { state, updateReturning, updateSet, insertValues };
+	return { state, select, selectFrom, selectWhere, selectLimit, updateReturning, updateSet, insertValues };
 });
 
 const tektonMocks = vi.hoisted(() => ({
+	createTektonPipelineRun: vi.fn(),
 	getTektonPipelineRun: vi.fn(),
 	listTektonTaskRunsForPipelineRun: vi.fn(),
 }));
 
 vi.mock("$lib/server/db", () => ({
 	db: {
+		select: dbMocks.select,
 		insert: vi.fn(() => ({ values: dbMocks.insertValues })),
 		update: vi.fn(() => ({ set: dbMocks.updateSet })),
 	},
@@ -29,6 +35,7 @@ vi.mock("$lib/server/kube/tekton", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("$lib/server/kube/tekton")>();
 	return {
 		...actual,
+		createTektonPipelineRun: tektonMocks.createTektonPipelineRun,
 		getTektonPipelineRun: tektonMocks.getTektonPipelineRun,
 		listTektonTaskRunsForPipelineRun: tektonMocks.listTektonTaskRunsForPipelineRun,
 	};
@@ -36,6 +43,8 @@ vi.mock("$lib/server/kube/tekton", async (importOriginal) => {
 
 import {
 	buildSwebenchEnvironmentSpec,
+	buildSwebenchPipelineRunManifest,
+	ensureSwebenchEnvironment,
 	hasUsableValidatedImage,
 	normalizeEnvironmentBuildActivityEvents,
 	plannedSwebenchInferenceEnvironment,
@@ -46,9 +55,15 @@ import {
 describe("SWE-bench environment image build planning", () => {
 	beforeEach(() => {
 		dbMocks.state.lastUpdate = null;
+		dbMocks.select.mockClear();
+		dbMocks.selectFrom.mockClear();
+		dbMocks.selectWhere.mockClear();
+		dbMocks.selectLimit.mockReset();
+		dbMocks.selectLimit.mockResolvedValue([]);
 		dbMocks.insertValues.mockClear();
 		dbMocks.updateSet.mockClear();
 		dbMocks.updateReturning.mockReset();
+		tektonMocks.createTektonPipelineRun.mockReset();
 		tektonMocks.getTektonPipelineRun.mockReset();
 		tektonMocks.listTektonTaskRunsForPipelineRun.mockReset();
 		tektonMocks.listTektonTaskRunsForPipelineRun.mockResolvedValue([]);
@@ -246,6 +261,70 @@ describe("SWE-bench environment image build planning", () => {
 			buildStrategy: "buildpacks",
 			workspaceRoot: "/sandbox/repo",
 			fallbackReason: "unsupported_swebench_harness_version",
+		});
+	});
+
+	it("does not submit dynamic SWE-bench image builds without explicit permission", async () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_JSON", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_DIR", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE", "local");
+
+		const result = await ensureSwebenchEnvironment({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			complete: true,
+			status: "failed",
+			reason: "dynamic_build_not_allowed",
+		});
+		expect(tektonMocks.createTektonPipelineRun).not.toHaveBeenCalled();
+		expect(dbMocks.insertValues).not.toHaveBeenCalled();
+	});
+
+	it("pins generated SWE-bench image PipelineRuns to hub build nodes", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+
+		expect(runSpec.podTemplate).toMatchObject({
+			nodeSelector: { "stacks.io/build-pool": "hub" },
+			tolerations: [
+				{
+					key: "stacks.io/build-pool",
+					operator: "Equal",
+					value: "hub",
+					effect: "NoSchedule",
+				},
+			],
 		});
 	});
 

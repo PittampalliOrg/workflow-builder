@@ -114,6 +114,11 @@ const ACTIVE_BENCHMARK_INSTANCE_STATUSES = [
 	"inferred",
 	"evaluating",
 ] satisfies BenchmarkRunInstanceStatus[];
+const BENCHMARK_RUN_TERMINAL_STATUSES = new Set<BenchmarkRunStatus>([
+	"completed",
+	"failed",
+	"cancelled",
+]);
 const BENCHMARK_RUN_SUMMARY_STATUS_KEYS = [
 	"queued",
 	"inferencing",
@@ -850,20 +855,37 @@ export async function markBenchmarkRunStatus(
 		throw new Error(`Invalid benchmark run transition ${run.status} -> ${status}`);
 	}
 	const now = new Date();
-	const patch: Partial<typeof benchmarkRuns.$inferInsert> = {
-		status,
-		updatedAt: now,
-		...extra,
-	};
-	if (status === "inferencing" && !run.startedAt) patch.startedAt = now;
-	if (status === "completed" || status === "failed" || status === "cancelled") {
-		patch.completedAt = now;
-	}
-	const [updated] = await database
+	let [updated] = await database
 		.update(benchmarkRuns)
-		.set(patch)
-		.where(eq(benchmarkRuns.id, runId))
+		.set(benchmarkRunStatusPatch(run, status, extra, now))
+		.where(and(eq(benchmarkRuns.id, runId), eq(benchmarkRuns.status, run.status)))
 		.returning();
+	if (!updated) {
+		const [current] = await database
+			.select()
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, runId))
+			.limit(1);
+		if (!current) return null;
+		if (current.status === status || BENCHMARK_RUN_TERMINAL_STATUSES.has(current.status)) {
+			return current;
+		}
+		if (!canTransitionBenchmarkRun(current.status, status)) {
+			throw new Error(
+				`Invalid benchmark run transition after concurrent update ${current.status} -> ${status}`,
+			);
+		}
+		[updated] = await database
+			.update(benchmarkRuns)
+			.set(benchmarkRunStatusPatch(current, status, extra, now))
+			.where(and(eq(benchmarkRuns.id, runId), eq(benchmarkRuns.status, current.status)))
+			.returning();
+		if (!updated) {
+			throw new Error(
+				`Benchmark run ${runId} changed concurrently while marking ${status}; retry required`,
+			);
+		}
+	}
 	if (status === "failed" || status === "cancelled") {
 		const reason = benchmarkRunTerminalReason(status, extra);
 		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
@@ -898,6 +920,22 @@ export async function markBenchmarkRunStatus(
 	return updated ?? null;
 }
 
+function benchmarkRunStatusPatch(
+	run: typeof benchmarkRuns.$inferSelect,
+	status: BenchmarkRunStatus,
+	extra: Record<string, unknown>,
+	now: Date,
+): Partial<typeof benchmarkRuns.$inferInsert> {
+	const patch: Partial<typeof benchmarkRuns.$inferInsert> = {
+		status,
+		updatedAt: now,
+		...extra,
+	};
+	if (status === "inferencing" && !run.startedAt) patch.startedAt = now;
+	if (BENCHMARK_RUN_TERMINAL_STATUSES.has(status)) patch.completedAt = now;
+	return patch;
+}
+
 export async function applyBenchmarkRunPreflight(params: {
 	runId: string;
 	inferenceEnvironmentsByInstanceId: Record<string, unknown>;
@@ -921,7 +959,9 @@ export async function applyBenchmarkRunPreflight(params: {
 	for (const [instanceId, value] of Object.entries(
 		params.inferenceEnvironmentsByInstanceId ?? {},
 	)) {
-		const environment = prevalidatedBenchmarkInferenceEnvironment(value);
+		const environment = prevalidatedBenchmarkInferenceEnvironment(
+			isRecord(value) ? value : null,
+		);
 		if (!environment) {
 			throw error(
 				400,

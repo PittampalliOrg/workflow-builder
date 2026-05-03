@@ -510,6 +510,52 @@ def test_preflight_workflow_persists_validated_environment_map(monkeypatch):
         raise AssertionError("workflow should have completed")
 
 
+def test_prepare_instance_environment_requests_explicit_build_permission(monkeypatch):
+    app = load_app(monkeypatch)
+    captured = {}
+
+    def fake_bff_with_retry(
+        method,
+        path,
+        json_body=None,
+        timeout=60,
+        attempts=1,
+        delay_seconds=1,
+    ):
+        captured.update(
+            {
+                "method": method,
+                "path": path,
+                "json": json_body,
+                "timeout": timeout,
+                "attempts": attempts,
+                "delaySeconds": delay_seconds,
+            }
+        )
+        return {"success": True}
+
+    monkeypatch.setattr(app, "_bff_with_retry", fake_bff_with_retry)
+
+    result = app._prepare_instance_environment(
+        None,
+        {
+            "suiteSlug": "SWE-bench_Verified",
+            "datasetName": "princeton-nlp/SWE-bench_Verified",
+            "instanceId": "django__django-12754",
+            "repo": "django/django",
+            "baseCommit": "abc123",
+            "testMetadata": {"version": "3.2"},
+        },
+    )
+
+    assert result == {"success": True}
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/internal/environments/ensure"
+    assert captured["json"]["allowBuild"] is True
+    assert captured["json"]["suiteSlug"] == "SWE-bench_Verified"
+    assert captured["json"]["instanceId"] == "django__django-12754"
+
+
 def test_run_workflow_starts_preflight_before_marking_inferencing(monkeypatch):
     app = load_app(monkeypatch)
     ctx = FakeWorkflowCtx()
@@ -540,6 +586,41 @@ def test_run_workflow_starts_preflight_before_marking_inferencing(monkeypatch):
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
+
+
+def test_run_workflow_stops_when_status_mark_returns_terminal(monkeypatch):
+    app = load_app(monkeypatch)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754"],
+        "concurrency": 1,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    try:
+        workflow.send({"success": True, "run": {"status": "cancelled"}})
+    except StopIteration as stop:
+        assert stop.value == {
+            "success": False,
+            "skipped": True,
+            "reason": "run-terminal",
+            "runStatus": "cancelled",
+        }
+    else:
+        raise AssertionError("workflow should stop after terminal status")
 
 
 def test_registered_child_workflow_target_validation(monkeypatch):

@@ -83,6 +83,7 @@ export type EnsureSwebenchEnvironmentInput = {
 	testMetadata?: Record<string, unknown> | null;
 	timeoutMs?: number | null;
 	pollMs?: number | null;
+	allowBuild?: boolean | null;
 };
 
 export type SwebenchEnvironmentSpec = {
@@ -444,6 +445,11 @@ export async function ensureSwebenchEnvironment(
 		if (synced.pipelineRunName) return resultFromBuild(synced);
 	}
 
+	const submission = dynamicBuildSubmissionGuard(input);
+	if (!submission.allowed) {
+		return buildNotSubmittedResult(spec, submission.reason, submission.message);
+	}
+
 	const row = existing ?? (await insertBuild(spec, input));
 	const pipelineRunName = row.pipelineRunName || stablePipelineRunName(spec);
 	const pipelineRunNamespace = row.pipelineRunNamespace ?? DEFAULT_TEKTON_NAMESPACE;
@@ -749,7 +755,15 @@ async function submitSwebenchPipelineRun(
 	pipelineRunName: string,
 	namespace: string,
 ) {
-	return createTektonPipelineRun(namespace, {
+	return createTektonPipelineRun(namespace, buildSwebenchPipelineRunManifest(spec, pipelineRunName, namespace));
+}
+
+export function buildSwebenchPipelineRunManifest(
+	spec: SwebenchEnvironmentSpec,
+	pipelineRunName: string,
+	namespace: string,
+): TektonPipelineRun {
+	return {
 		apiVersion: "tekton.dev/v1",
 		kind: "PipelineRun",
 		metadata: {
@@ -768,6 +782,17 @@ async function submitSwebenchPipelineRun(
 		spec: {
 			pipelineRef: { name: "swebench-inference-image-build" },
 			taskRunTemplate: { serviceAccountName: "workflow-builder-build-trigger" },
+			podTemplate: {
+				nodeSelector: { "stacks.io/build-pool": "hub" },
+				tolerations: [
+					{
+						key: "stacks.io/build-pool",
+						operator: "Equal",
+						value: "hub",
+						effect: "NoSchedule",
+					},
+				],
+			},
 			timeouts: SWEBENCH_PIPELINE_TIMEOUTS,
 			params: [
 				{ name: "git_sha", value: env.SWEBENCH_INFERENCE_BUILD_GIT_REVISION ?? DEFAULT_GIT_REVISION },
@@ -794,7 +819,7 @@ async function submitSwebenchPipelineRun(
 				{ name: "stacks-source", emptyDir: {} },
 			],
 		},
-	});
+	};
 }
 
 export function normalizeEnvironmentBuildActivityEvents(input: {
@@ -1638,6 +1663,79 @@ function validatedResult(
 		environment: runtimeEnvironment,
 		promptNotes: promptNotes(environment),
 		source,
+	};
+}
+
+function buildNotSubmittedResult(
+	input: SwebenchEnvironmentSpec,
+	reason: string,
+	message: string,
+): EnvironmentPrepareResult {
+	const environment: ResolvedSwebenchInferenceEnvironment = {
+		environmentStatus: "failed",
+		suite: input.suite,
+		repo: input.repo,
+		version: input.version,
+		environmentSetupCommit: input.environmentSetupCommit,
+		baseCommit: input.baseCommit,
+		environmentKey: input.environmentKey,
+		envSpecHash: input.envSpecHash,
+		sandboxTemplate: input.sandboxTemplate,
+		validationStatus: "failed",
+		reason,
+		source: "dynamic-build",
+		buildStrategy: input.buildStrategy,
+		workspaceRoot: runtimeWorkspaceRoot(input.workspaceRoot),
+		condaEnvironment: input.condaEnvironment,
+		environmentNotes: runtimeEnvironmentNotes(
+			input.environmentNotes,
+			input.workspaceRoot,
+			input.buildStrategy,
+		),
+	};
+	return {
+		success: false,
+		complete: true,
+		environmentStatus: "failed",
+		status: "failed",
+		environmentKey: input.environmentKey,
+		envSpecHash: input.envSpecHash,
+		buildStrategy: input.buildStrategy,
+		sandboxTemplate: input.sandboxTemplate,
+		validationStatus: "failed",
+		environment,
+		error: message,
+		source: "dynamic-build",
+		reason,
+	};
+}
+
+function dynamicBuildSubmissionGuard(
+	input: EnsureSwebenchEnvironmentInput,
+): { allowed: true } | { allowed: false; reason: string; message: string } {
+	if (input.allowBuild !== true) {
+		return {
+			allowed: false,
+			reason: "dynamic_build_not_allowed",
+			message:
+				"Dynamic SWE-bench inference image builds require allowBuild=true; returning without creating a PipelineRun.",
+		};
+	}
+	const mode = readString(env.SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE)?.toLowerCase() ?? "disabled";
+	if (mode === "local") return { allowed: true };
+	if (mode === "hub") {
+		return {
+			allowed: false,
+			reason: "dynamic_build_hub_target_not_configured",
+			message:
+				"Hub SWE-bench inference image build submission is not configured in this runtime; refusing to create a local PipelineRun.",
+		};
+	}
+	return {
+		allowed: false,
+		reason: "dynamic_build_submission_disabled",
+		message:
+			"Dynamic SWE-bench inference image build submission is disabled; refusing to create a PipelineRun.",
 	};
 }
 
