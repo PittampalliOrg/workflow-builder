@@ -184,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          image_tag="nix-ci-git-${GITHUB_SHA}"
+          image_tag="nix-ci-${IMAGE_NAME}-git-${GITHUB_SHA}"
           image_ref="${IMAGE_REPOSITORY}:${image_tag}"
 
           cat > /tmp/push-image.sh <<'SCRIPT'

@@ -28,6 +28,7 @@ let
       name;
 
   ghcrRepositoryFor = name: "ghcr.io/pittampalliorg/${repositoryFor name}";
+  candidateRepository = "ghcr.io/pittampalliorg/workflow-builder";
 
   mkArchive = name: layeredImage:
     pkgs.runCommand "${name}-docker-archive.tar" { nativeBuildInputs = [ pkgs.gzip ]; } ''
@@ -391,10 +392,11 @@ let
 
   configFor = entry:
     let
-      repo = ghcrRepositoryFor entry.name;
+      productionRepo = ghcrRepositoryFor entry.name;
     in
     entry // {
-      registryRepository = repo;
+      registryRepository = candidateRepository;
+      productionRegistryRepository = productionRepo;
       nixPackage = "${entry.name}-image";
       digestPackage = "${entry.name}-image-digest";
       sbomPackage = "${entry.name}-sbom";
