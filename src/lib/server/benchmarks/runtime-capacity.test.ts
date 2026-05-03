@@ -22,6 +22,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			runtimeClass: "coding",
 			runtimeAppId: "agent-runtime-pool-coding",
 			runtimeReplicas: 2,
+			perSidecarWorkflowLimit: 5,
 			slotsPerReplica: 5,
 			maxActiveSessions: 10,
 			maxActiveSandboxes: null,
@@ -63,6 +64,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 12,
 			runtimeReplicas: 5,
+			perSidecarWorkflowLimit: 3,
 			slotsPerReplica: 3,
 			maxActiveSessions: 12,
 			capReason: "global_max",
@@ -83,6 +85,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 6,
+			perSidecarWorkflowLimit: 5,
 			maxActiveSessions: 6,
 			capReason: "runtime_capacity",
 		});
@@ -103,9 +106,32 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 8,
+			perSidecarWorkflowLimit: 5,
 			maxActiveSessions: 8,
 			maxActiveSandboxes: 8,
 			capReason: "sandbox_capacity",
+		});
+	});
+
+	it("multiplies per-sidecar Dapr workflow limits by pool replicas", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "50");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			slotsPerReplica: 3,
+			requestedInstanceCount: 20,
+			requestedConcurrency: 20,
+		});
+
+		expect(capacity).toMatchObject({
+			runtimeReplicas: 4,
+			perSidecarWorkflowLimit: 3,
+			effectiveConcurrency: 12,
+			maxActiveSessions: 12,
+			capReason: "runtime_capacity",
 		});
 	});
 });

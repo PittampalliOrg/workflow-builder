@@ -4,6 +4,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	runtimeClass: string;
 	runtimeAppId: string;
 	runtimeReplicas: number;
+	perSidecarWorkflowLimit: number;
 	slotsPerReplica: number;
 	maxActiveSessions: number;
 	maxActiveSandboxes: number | null;
@@ -72,6 +73,12 @@ function slotsByRuntimeClass(): Record<string, number> {
 	}
 }
 
+function configuredPerSidecarWorkflowLimit(runtimeClass: string): number | null {
+	const perClass = slotsByRuntimeClass()[runtimeClass];
+	if (perClass) return perClass;
+	return positiveInt(process.env.DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS);
+}
+
 function requestedConcurrency(value: unknown): number {
 	return (
 		positiveInt(value) ??
@@ -100,11 +107,11 @@ export function estimateBenchmarkRuntimeCapacity(
 	const requested = requestedConcurrency(input.requestedConcurrency);
 	const selectedCount = Math.max(1, Math.floor(input.requestedInstanceCount));
 	const replicas = runtimeReplicas(input);
-	const slots =
+	const perSidecarWorkflowLimit =
 		positiveInt(input.slotsPerReplica) ??
-		slotsByRuntimeClass()[runtimeClass] ??
+		configuredPerSidecarWorkflowLimit(runtimeClass) ??
 		1;
-	const runtimeSlots = Math.max(1, replicas * slots);
+	const runtimeSlots = Math.max(1, replicas * perSidecarWorkflowLimit);
 	const configuredMaxActiveSessions = positiveInt(input.maxActiveSessions);
 	const runtimeMax = configuredMaxActiveSessions
 		? Math.min(runtimeSlots, configuredMaxActiveSessions)
@@ -138,7 +145,8 @@ export function estimateBenchmarkRuntimeCapacity(
 		runtimeClass,
 		runtimeAppId,
 		runtimeReplicas: replicas,
-		slotsPerReplica: slots,
+		perSidecarWorkflowLimit,
+		slotsPerReplica: perSidecarWorkflowLimit,
 		maxActiveSessions: Math.min(
 			runtimeMax,
 			globalMax,

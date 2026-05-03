@@ -196,6 +196,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					runtimeClass: capacity.runtimeClass,
 					runtimeAppId: capacity.runtimeAppId,
 					runtimeReplicas: capacity.runtimeReplicas,
+					perSidecarWorkflowLimit: capacity.perSidecarWorkflowLimit,
 					slotsPerReplica: capacity.slotsPerReplica,
 					maxActiveSessions: capacity.maxActiveSessions,
 					maxActiveSandboxes: capacity.maxActiveSandboxes,

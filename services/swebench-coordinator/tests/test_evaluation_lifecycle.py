@@ -107,6 +107,26 @@ class Obj:
         self.__dict__.update(kwargs)
 
 
+class FakeWorkflowCtx:
+    def __init__(self):
+        self.calls = []
+
+    def call_activity(self, fn, *, input=None):
+        marker = ("activity", fn.__name__, input)
+        self.calls.append(marker)
+        return marker
+
+    def call_child_workflow(self, name, *, input=None, instance_id=None, app_id=None):
+        marker = ("child", name, input, instance_id, app_id)
+        self.calls.append(marker)
+        return marker
+
+    def create_timer(self, delta):
+        marker = ("timer", int(delta.total_seconds()))
+        self.calls.append(marker)
+        return marker
+
+
 def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     app = load_app(monkeypatch)
 
@@ -392,6 +412,159 @@ def test_hash_suffixed_names_are_stable_and_collision_resistant(monkeypatch):
     assert child_a != child_b
     assert len(child_a) <= 100
     assert len(child_b) <= 100
+
+
+def test_preflight_workflow_persists_validated_environment_map(monkeypatch):
+    app = load_app(monkeypatch)
+    ctx = FakeWorkflowCtx()
+    run = {
+        "id": "run_1",
+        "suiteSlug": "SWE-bench_Lite",
+        "datasetName": "princeton-nlp/SWE-bench_Lite",
+        "selectedInstanceIds": ["sympy__sympy-20590"],
+        "summary": {"capacity": {"effectiveConcurrency": 5}},
+        "instances": [
+            {
+                "instanceId": "sympy__sympy-20590",
+                "repo": "sympy/sympy",
+                "baseCommit": "abc123",
+                "problemStatement": "Fix it",
+                "testMetadata": {"version": "1.7"},
+            }
+        ],
+    }
+    environment = {
+        "environmentStatus": "validated",
+        "environmentKey": "sympy-1.7",
+        "envSpecHash": "a" * 64,
+        "sandboxTemplate": "dapr-agent",
+        "sandboxImage": "ghcr.io/example/swebench:env@sha256:" + ("1" * 64),
+        "validationStatus": "validated",
+    }
+    workflow = app.swebench_environment_preflight_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow) == ("activity", "_load_run_activity", {"runId": "run_1"})
+    assert workflow.send(run) == (
+        "activity",
+        "_validate_instance_metadata",
+        {"runId": "run_1"},
+    )
+    assert workflow.send({"validated": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    assert workflow.send(run) == (
+        "activity",
+        "_prepare_instance_environment",
+        {
+            "suiteSlug": "SWE-bench_Lite",
+            "datasetName": "princeton-nlp/SWE-bench_Lite",
+            "instanceId": "sympy__sympy-20590",
+            "repo": "sympy/sympy",
+            "baseCommit": "abc123",
+            "testMetadata": {"version": "1.7"},
+        },
+    )
+    assert workflow.send(
+        {
+            "environmentStatus": "validated",
+            "environment": environment,
+        }
+    ) == (
+        "activity",
+        "_persist_preflight_results",
+        {
+            "runId": "run_1",
+            "inferenceEnvironmentsByInstanceId": {
+                "sympy__sympy-20590": environment
+            },
+            "preflightSummary": {
+                "status": "validated",
+                "instanceCount": 1,
+                "groupCount": 1,
+                "groups": [
+                    {
+                        "environmentKey": "sympy-1.7",
+                        "envSpecHash": "a" * 64,
+                        "buildId": None,
+                        "sandboxImage": "ghcr.io/example/swebench:env@sha256:"
+                        + ("1" * 64),
+                        "validationStatus": "validated",
+                        "pipelineRunName": None,
+                        "pipelineRunNamespace": None,
+                        "instanceIds": ["sympy__sympy-20590"],
+                    }
+                ],
+                "capacitySnapshot": {"effectiveConcurrency": 5},
+            },
+            "capacitySnapshot": {"effectiveConcurrency": 5},
+        },
+    )
+    try:
+        workflow.send({"success": True})
+    except StopIteration as stop:
+        assert stop.value["validatedInstances"] == 1
+        assert stop.value["persisted"] == {"success": True}
+    else:
+        raise AssertionError("workflow should have completed")
+
+
+def test_run_workflow_starts_preflight_before_marking_inferencing(monkeypatch):
+    app = load_app(monkeypatch)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    first = next(workflow)
+    assert first == (
+        "child",
+        "swebench_environment_preflight_workflow",
+        {"runId": "run_1"},
+        app._preflight_workflow_id("run_1"),
+        app.SWEBENCH_COORDINATOR_APP_ID,
+    )
+    assert workflow.send({"validatedInstances": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": [],
+        "concurrency": 1,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+
+
+def test_registered_child_workflow_target_validation(monkeypatch):
+    app = load_app(monkeypatch)
+    assert (
+        app._registered_child_workflow_name("swebench_instance_workflow")
+        == "swebench_instance_workflow"
+    )
+    assert app._registered_child_workflow_app_id("swebench-coordinator") == (
+        "swebench-coordinator"
+    )
+
+    try:
+        app._registered_child_workflow_name("missing_workflow")
+    except RuntimeError as exc:
+        assert "unregistered SWE-bench child workflow target" in str(exc)
+    else:
+        raise AssertionError("expected missing workflow name to fail")
+
+    try:
+        app._registered_child_workflow_app_id("")
+    except RuntimeError as exc:
+        assert "missing Dapr app id" in str(exc)
+    else:
+        raise AssertionError("expected missing app id to fail")
 
 
 def test_start_benchmark_run_is_idempotent_when_workflow_exists(monkeypatch):

@@ -233,7 +233,7 @@
 							<span>
 								· active cap {selectedCapacity.maxActiveSessions}
 								· {selectedCapacity.runtimeClass} pool
-								({selectedCapacity.runtimeReplicas}×{selectedCapacity.slotsPerReplica})
+								({selectedCapacity.runtimeReplicas}×{selectedCapacity.perSidecarWorkflowLimit} per-sidecar Dapr workflow slots)
 							</span>
 							{#if selectedCapacity.maxActiveSandboxes}
 								<span>· sandbox cap {selectedCapacity.maxActiveSandboxes}</span>
@@ -331,7 +331,7 @@
 				</div>
 				<p class="text-[10px] text-muted-foreground">
 					Will dispatch up to {effectiveInferenceConcurrency} active
-					<code>swebench_instance_workflow</code> children after runtime admission.
+					<code>swebench_instance_workflow</code> children after runtime admission and per-sidecar Dapr workflow caps.
 				</p>
 			</div>
 

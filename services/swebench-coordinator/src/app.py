@@ -67,9 +67,19 @@ MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
 EVALUATION_RESULTS_EVENT = "swebench.evaluation.results"
 EVALUATION_FAILED_EVENT = "swebench.evaluation.failed"
 EVALUATION_POLL_SECONDS = int(os.environ.get("SWEBENCH_EVALUATION_POLL_SECONDS", "60"))
+PREFLIGHT_POLL_SECONDS = int(os.environ.get("SWEBENCH_PREFLIGHT_POLL_SECONDS", "30"))
 RUN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 INSTANCE_TERMINAL_STATUSES = {"resolved", "failed", "error", "timeout", "cancelled"}
 ACTIVE_EVALUATION_STATUSES = {"queued", "inferencing", "inferred", "evaluating"}
+SWEBENCH_COORDINATOR_APP_ID = (
+    os.environ.get("APP_ID", "swebench-coordinator").strip()
+    or "swebench-coordinator"
+)
+REGISTERED_COORDINATOR_WORKFLOWS = {
+    "swebench_environment_preflight_workflow",
+    "swebench_instance_workflow",
+    "swebench_evaluation_workflow",
+}
 
 wfr = wf.WorkflowRuntime()
 
@@ -332,6 +342,54 @@ def _validate_instance_metadata(ctx, data: dict[str, Any]) -> dict[str, Any]:
             f"Missing metadata for {len(missing)} instance(s): {', '.join(missing[:20])}"
         )
     return {"validated": len(instance_ids), "dataset": run.get("suiteName")}
+
+
+def _prepare_instance_environment(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "dataset": "swebench",
+        "datasetName": data["datasetName"],
+        "suiteSlug": data["suiteSlug"],
+        "instanceId": data["instanceId"],
+        "repo": data["repo"],
+        "baseCommit": data["baseCommit"],
+        "testMetadata": data.get("testMetadata") or {},
+    }
+    return _bff_with_retry(
+        "POST",
+        "/api/internal/environments/ensure",
+        json_body=payload,
+        timeout=120,
+        attempts=3,
+        delay_seconds=10,
+    )
+
+
+def _load_environment_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "buildId": data.get("buildId"),
+        "envSpecHash": data.get("envSpecHash"),
+        "environmentKey": data.get("environmentKey"),
+    }
+    return _bff(
+        "POST",
+        "/api/internal/environments/status",
+        json_body=payload,
+        timeout=120,
+    )
+
+
+def _persist_preflight_results(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    return _bff(
+        "POST",
+        f"/api/internal/benchmarks/runs/{run_id}/preflight",
+        json_body={
+            "inferenceEnvironmentsByInstanceId": data["inferenceEnvironmentsByInstanceId"],
+            "preflightSummary": data.get("preflightSummary") or {},
+            "capacitySnapshot": data.get("capacitySnapshot") or {},
+        },
+        timeout=120,
+    )
 
 
 def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -920,6 +978,243 @@ def _workflow_event_already_closed(exc: Exception) -> bool:
     )
 
 
+def _preflight_workflow_id(run_id: str) -> str:
+    return _hash_suffixed_name("swebench-preflight-", [run_id], max_length=100)
+
+
+def _registered_child_workflow_name(name: str) -> str:
+    if name not in REGISTERED_COORDINATOR_WORKFLOWS:
+        raise RuntimeError(
+            f"unregistered SWE-bench child workflow target: {name}"
+        )
+    return name
+
+
+def _registered_child_workflow_app_id(app_id: str | None) -> str:
+    cleaned = str(app_id or "").strip()
+    if not cleaned:
+        raise RuntimeError("missing Dapr app id for SWE-bench child workflow target")
+    return cleaned
+
+
+def _call_registered_child_workflow(
+    ctx: wf.DaprWorkflowContext,
+    workflow_name: str,
+    *,
+    input: dict[str, Any],
+    instance_id: str,
+    app_id: str | None = SWEBENCH_COORDINATOR_APP_ID,
+):
+    return ctx.call_child_workflow(
+        _registered_child_workflow_name(workflow_name),
+        input=input,
+        instance_id=instance_id,
+        app_id=_registered_child_workflow_app_id(app_id),
+    )
+
+
+def _selected_run_instances(run: dict[str, Any]) -> list[dict[str, Any]]:
+    suite_slug = run.get("suiteSlug")
+    dataset_name = run.get("datasetName")
+    if not isinstance(suite_slug, str) or not suite_slug:
+        raise RuntimeError("SWE-bench run is missing suiteSlug for preflight")
+    if not isinstance(dataset_name, str) or not dataset_name:
+        raise RuntimeError("SWE-bench run is missing datasetName for preflight")
+    selected_ids = list(run.get("selectedInstanceIds") or [])
+    instances = run.get("instances") if isinstance(run.get("instances"), list) else []
+    by_id = {
+        instance.get("instanceId"): instance
+        for instance in instances
+        if isinstance(instance, dict) and isinstance(instance.get("instanceId"), str)
+    }
+    missing: list[str] = []
+    selected: list[dict[str, Any]] = []
+    for instance_id in selected_ids:
+        instance = by_id.get(instance_id)
+        if not isinstance(instance, dict):
+            missing.append(str(instance_id))
+            continue
+        repo = instance.get("repo")
+        base_commit = instance.get("baseCommit")
+        if not isinstance(repo, str) or not repo or not isinstance(base_commit, str) or not base_commit:
+            missing.append(str(instance_id))
+            continue
+        selected.append(
+            {
+                "suiteSlug": suite_slug,
+                "datasetName": dataset_name,
+                "instanceId": instance_id,
+                "repo": repo,
+                "baseCommit": base_commit,
+                "testMetadata": instance.get("testMetadata")
+                if isinstance(instance.get("testMetadata"), dict)
+                else {},
+            }
+        )
+    if missing:
+        raise RuntimeError(
+            "SWE-bench preflight could not resolve metadata for "
+            f"{len(missing)} instance(s): {', '.join(missing[:20])}"
+        )
+    return selected
+
+
+def _environment_status_request(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "buildId": result.get("buildId"),
+        "envSpecHash": result.get("envSpecHash"),
+        "environmentKey": result.get("environmentKey"),
+    }
+
+
+def _environment_group_key(result: dict[str, Any]) -> str:
+    build_id = result.get("buildId")
+    env_spec_hash = result.get("envSpecHash")
+    environment_key = result.get("environmentKey")
+    if isinstance(build_id, str) and build_id:
+        return f"build:{build_id}"
+    if isinstance(env_spec_hash, str) and env_spec_hash:
+        return f"spec:{env_spec_hash}"
+    if isinstance(environment_key, str) and environment_key:
+        return f"env:{environment_key}"
+    raise RuntimeError(f"environment result is missing a durable identity: {result}")
+
+
+def _validated_environment(
+    result: dict[str, Any], *, instance_id: str
+) -> dict[str, Any] | None:
+    status = result.get("environmentStatus")
+    if status == "validated":
+        environment = result.get("environment")
+        sandbox_image = (
+            environment.get("sandboxImage") if isinstance(environment, dict) else None
+        )
+        if isinstance(environment, dict) and isinstance(sandbox_image, str) and sandbox_image:
+            return environment
+        raise RuntimeError(
+            f"SWE-bench preflight validated {instance_id} without a sandbox image"
+        )
+    if status == "building":
+        return None
+    reason = result.get("reason") or result.get("error") or status or "unknown"
+    raise RuntimeError(
+        f"SWE-bench preflight requires a validated inference image for {instance_id}; got {reason}"
+    )
+
+
+def _capacity_snapshot(run: dict[str, Any]) -> dict[str, Any]:
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    capacity = summary.get("capacity") if isinstance(summary, dict) else None
+    return capacity if isinstance(capacity, dict) else {}
+
+
+def _preflight_summary(
+    *,
+    run: dict[str, Any],
+    prepared: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    groups: dict[str, dict[str, Any]] = {}
+    for instance_id, environment in prepared.items():
+        key = (
+            str(environment.get("buildId") or "")
+            or str(environment.get("envSpecHash") or "")
+            or str(environment.get("environmentKey") or "")
+            or instance_id
+        )
+        group = groups.setdefault(
+            key,
+            {
+                "environmentKey": environment.get("environmentKey"),
+                "envSpecHash": environment.get("envSpecHash"),
+                "buildId": environment.get("buildId"),
+                "sandboxImage": environment.get("sandboxImage"),
+                "validationStatus": environment.get("validationStatus"),
+                "pipelineRunName": environment.get("pipelineRunName"),
+                "pipelineRunNamespace": environment.get("pipelineRunNamespace"),
+                "instanceIds": [],
+            },
+        )
+        group["instanceIds"].append(instance_id)
+    return {
+        "status": "validated",
+        "instanceCount": len(prepared),
+        "groupCount": len(groups),
+        "groups": sorted(
+            groups.values(),
+            key=lambda group: (
+                str(group.get("environmentKey") or ""),
+                str(group.get("envSpecHash") or ""),
+            ),
+        ),
+        "capacitySnapshot": _capacity_snapshot(run),
+    }
+
+
+def swebench_environment_preflight_workflow(
+    ctx: wf.DaprWorkflowContext, data: dict[str, Any]
+):
+    run_id = data["runId"]
+    run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
+    yield ctx.call_activity(_validate_instance_metadata, input={"runId": run_id})
+    run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
+    instance_inputs = _selected_run_instances(run)
+    prepared: dict[str, dict[str, Any]] = {}
+    pending_groups: dict[str, dict[str, Any]] = {}
+
+    for instance_input in instance_inputs:
+        result = yield ctx.call_activity(
+            _prepare_instance_environment, input=instance_input
+        )
+        instance_id = instance_input["instanceId"]
+        validated = _validated_environment(result, instance_id=instance_id)
+        if validated is not None:
+            prepared[instance_id] = validated
+            continue
+        group_key = _environment_group_key(result)
+        group = pending_groups.setdefault(
+            group_key,
+            {
+                "statusRequest": _environment_status_request(result),
+                "instanceIds": [],
+            },
+        )
+        group["instanceIds"].append(instance_id)
+
+    while pending_groups:
+        yield ctx.create_timer(timedelta(seconds=PREFLIGHT_POLL_SECONDS))
+        next_pending: dict[str, dict[str, Any]] = {}
+        for group_key, group in pending_groups.items():
+            status = yield ctx.call_activity(
+                _load_environment_status, input=group["statusRequest"]
+            )
+            validated = _validated_environment(
+                status, instance_id=",".join(group["instanceIds"])
+            )
+            if validated is not None:
+                for instance_id in group["instanceIds"]:
+                    prepared[instance_id] = validated
+                continue
+            next_pending[group_key] = group
+        pending_groups = next_pending
+
+    preflight_summary = _preflight_summary(run=run, prepared=prepared)
+    persisted = yield ctx.call_activity(
+        _persist_preflight_results,
+        input={
+            "runId": run_id,
+            "inferenceEnvironmentsByInstanceId": prepared,
+            "preflightSummary": preflight_summary,
+            "capacitySnapshot": _capacity_snapshot(run),
+        },
+    )
+    return {
+        "runId": run_id,
+        "validatedInstances": len(prepared),
+        "preflightSummary": preflight_summary,
+        "persisted": persisted,
+    }
+
+
 def swebench_instance_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     run_id = data["runId"]
     instance_id = data["instanceId"]
@@ -1102,12 +1397,16 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
 def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
     run_id = data["runId"]
     try:
+        yield _call_registered_child_workflow(
+            ctx,
+            "swebench_environment_preflight_workflow",
+            input={"runId": run_id},
+            instance_id=_preflight_workflow_id(run_id),
+        )
+        run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
         yield ctx.call_activity(
             _mark_run_status, input={"runId": run_id, "status": "inferencing"}
         )
-        run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
-        yield ctx.call_activity(_validate_instance_metadata, input={"runId": run_id})
-        run = yield ctx.call_activity(_load_run_activity, input={"runId": run_id})
         instance_ids = list(run.get("selectedInstanceIds") or [])
         concurrency = bounded_swebench_concurrency(run.get("concurrency"))
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
@@ -1115,7 +1414,8 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         for offset in range(0, len(instance_ids), concurrency):
             chunk = instance_ids[offset : offset + concurrency]
             tasks = [
-                ctx.call_child_workflow(
+                _call_registered_child_workflow(
+                    ctx,
                     "swebench_instance_workflow",
                     input={
                         "runId": run_id,
@@ -1149,7 +1449,8 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             _write_evaluation_dataset, input={"runId": run_id}
         )
         evaluation_max_parallel = _evaluation_max_parallel(run)
-        evaluation = yield ctx.call_child_workflow(
+        evaluation = yield _call_registered_child_workflow(
+            ctx,
             "swebench_evaluation_workflow",
             input={
                 "runId": run_id,
@@ -1196,6 +1497,7 @@ def _format_inference_failures(results: list[Any]) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    wfr.register_workflow(swebench_environment_preflight_workflow)
     wfr.register_workflow(swebench_run_workflow)
     wfr.register_workflow(swebench_instance_workflow)
     wfr.register_workflow(swebench_evaluation_workflow)
@@ -1204,6 +1506,9 @@ async def lifespan(app: FastAPI):
         _load_run_activity,
         _load_evaluation_progress,
         _validate_instance_metadata,
+        _prepare_instance_environment,
+        _load_environment_status,
+        _persist_preflight_results,
         _start_instance,
         _sync_instance,
         _mark_instance_inference_failure,
@@ -1258,11 +1563,12 @@ def cancel_benchmark_run(
 ):
     _require_internal(request)
     run_instance_id = _run_workflow_id(run_id)
+    preflight_instance_id = _preflight_workflow_id(run_id)
     evaluation_instance_id = _evaluator_workflow_id(run_id)
     reason = body.reason if body else "cancelled"
     client = DaprWorkflowClient()
     termination_errors: dict[str, str] = {}
-    for instance_id in (run_instance_id, evaluation_instance_id):
+    for instance_id in (run_instance_id, preflight_instance_id, evaluation_instance_id):
         try:
             client.terminate_workflow(instance_id=instance_id, output=reason)
         except Exception as exc:
@@ -1281,6 +1587,7 @@ def cancel_benchmark_run(
     return {
         "success": True,
         "executionId": run_instance_id,
+        "preflightExecutionId": preflight_instance_id,
         "evaluationExecutionId": evaluation_instance_id,
         "terminationErrors": termination_errors,
         "deleteEvaluatorJob": delete_result,

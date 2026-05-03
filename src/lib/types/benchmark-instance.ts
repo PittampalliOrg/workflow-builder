@@ -39,6 +39,7 @@ export type RunnableAgent = {
 		runtimeClass: string;
 		runtimeAppId: string;
 		runtimeReplicas: number;
+		perSidecarWorkflowLimit: number;
 		slotsPerReplica: number;
 		maxActiveSessions: number;
 		maxActiveSandboxes: number | null;
