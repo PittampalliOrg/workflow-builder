@@ -1,0 +1,12 @@
+{
+  "name": "playwright-mcp-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "playwright-mcp --port 3100 --host 0.0.0.0 --allowed-hosts '*' --output-dir /tmp/playwright-mcp-output --cdp-endpoint http://chrome-sandbox-service.workflow-builder.svc.cluster.local:9222"
+  },
+  "dependencies": {
+    "@playwright/mcp": "0.0.73"
+  }
+}
