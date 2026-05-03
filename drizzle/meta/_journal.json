@@ -386,6 +386,13 @@
 			"when": 1777723200000,
 			"tag": "0062_benchmark_evaluation_concurrency",
 			"breakpoints": true
+		},
+		{
+			"idx": 55,
+			"version": "7",
+			"when": 1777842000000,
+			"tag": "0063_benchmark_resource_leases",
+			"breakpoints": true
 		}
 	]
 }

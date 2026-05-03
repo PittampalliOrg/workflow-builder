@@ -623,6 +623,66 @@ def test_run_workflow_stops_when_status_mark_returns_terminal(monkeypatch):
         raise AssertionError("workflow should stop after terminal status")
 
 
+def test_run_workflow_acquires_and_releases_instance_leases(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754"],
+        "concurrency": 1,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"admitted": True, "holderId": "lease-holder"}) == (
+        "child",
+        "swebench_instance_workflow",
+        {
+            "runId": "run_1",
+            "instanceId": "django__django-12754",
+            "timeoutSeconds": 60,
+        },
+        app._child_instance_workflow_id("run_1", "django__django-12754"),
+        app.SWEBENCH_COORDINATOR_APP_ID,
+    )
+    assert workflow.send(
+        {"instanceId": "django__django-12754", "status": "inferred"}
+    ) == (
+        "activity",
+        "_release_instance_leases",
+        {
+            "runId": "run_1",
+            "instanceId": "django__django-12754",
+            "holderId": "lease-holder",
+            "phase": "inference",
+            "reason": "instance workflow completed",
+        },
+    )
+    assert workflow.send({"released": 5}) == (
+        "activity",
+        "_release_run_leases",
+        {"runId": "run_1", "reason": "inference fan-out completed"},
+    )
+
+
 def test_registered_child_workflow_target_validation(monkeypatch):
     app = load_app(monkeypatch)
     assert (

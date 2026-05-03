@@ -23,6 +23,9 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			runtimeAppId: "agent-runtime-pool-coding",
 			runtimeReplicas: 2,
 			perSidecarWorkflowLimit: 5,
+			daprWorkflowLimitPerSidecar: 5,
+			daprWorkflowEffectiveCapacity: 10,
+			runtimeSlots: 10,
 			slotsPerReplica: 5,
 			maxActiveSessions: 10,
 			maxActiveSandboxes: null,
@@ -65,6 +68,8 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			effectiveConcurrency: 12,
 			runtimeReplicas: 5,
 			perSidecarWorkflowLimit: 3,
+			daprWorkflowEffectiveCapacity: 15,
+			runtimeSlots: 15,
 			slotsPerReplica: 3,
 			maxActiveSessions: 12,
 			capReason: "global_max",
@@ -86,6 +91,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 6,
 			perSidecarWorkflowLimit: 5,
+			runtimeSlots: 10,
 			maxActiveSessions: 6,
 			capReason: "runtime_capacity",
 		});
@@ -107,6 +113,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 8,
 			perSidecarWorkflowLimit: 5,
+			runtimeSlots: 15,
 			maxActiveSessions: 8,
 			maxActiveSandboxes: 8,
 			capReason: "sandbox_capacity",
@@ -131,7 +138,31 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			perSidecarWorkflowLimit: 3,
 			effectiveConcurrency: 12,
 			maxActiveSessions: 12,
-			capReason: "runtime_capacity",
 		});
+		expect(capacity.capReason).toContain("runtime_capacity");
+		expect(capacity.capReason).toContain("dapr_workflow_capacity");
+	});
+
+	it("accounts for Dapr workflow capacity independently from app slots", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "50");
+		vi.stubEnv("AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR", "2");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			slotsPerReplica: 5,
+			requestedInstanceCount: 20,
+			requestedConcurrency: 20,
+		});
+
+		expect(capacity).toMatchObject({
+			runtimeSlots: 20,
+			daprWorkflowLimitPerSidecar: 2,
+			daprWorkflowEffectiveCapacity: 8,
+			effectiveConcurrency: 8,
+		});
+		expect(capacity.capReason).toContain("dapr_workflow_capacity");
 	});
 });

@@ -44,10 +44,10 @@ def test_bounded_swebench_concurrency_falls_back_for_invalid_values():
     assert bounded_swebench_concurrency("many") == 1
 
 
-def test_bounded_swebench_evaluation_concurrency_defaults_to_taskrun_cap():
-    assert bounded_swebench_evaluation_concurrency(None) == 24
-    assert bounded_swebench_evaluation_concurrency("") == 24
-    assert bounded_swebench_evaluation_concurrency(0) == 24
+def test_bounded_swebench_evaluation_concurrency_defaults_to_dev_safe_cap():
+    assert bounded_swebench_evaluation_concurrency(None) == 4
+    assert bounded_swebench_evaluation_concurrency("") == 4
+    assert bounded_swebench_evaluation_concurrency(0) == 4
 
 
 def test_bounded_swebench_evaluation_concurrency_accepts_larger_eval_batches():

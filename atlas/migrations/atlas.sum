@@ -1,4 +1,4 @@
-h1:8c3KU1BWzNZhx3VTu/GXLPftkZTMCHMv4EaLbYpYTLQ=
+h1:ygeuzEZc5s1UkPWFi+4NxOufVKOiGmW0RdQFZg2OFyM=
 20260210204758_baseline.sql h1:i0a3DxoyU0gEdXV1ecWYZSJ3pr9ZPS7PdMchjQiQNTA=
 20260212120000_add_workflow_ai_messages.sql h1:MKA9YzLVEh8qXhjuZesrAndI3UvekoOSzTUKLLY07Ms=
 20260217110505_add_resource_library_resources.sql h1:nDoJ/rUulmB6koBi6xI9zEwo3x0Q3JZ56na21UhMFDM=
@@ -40,3 +40,4 @@ h1:8c3KU1BWzNZhx3VTu/GXLPftkZTMCHMv4EaLbYpYTLQ=
 20260428190000_environment_build_activity.sql h1:eWLanENLMGzoXAMPqT8v9/X04O7CQjDVp4e7v4sJhDU=
 20260501090000_add_resource_prompt_versions.sql h1:nrZ1VrCAgX4+9e9FU7H7DyErV3gy3mA4goRWvRxevNg=
 20260502120000_benchmark_evaluation_concurrency.sql h1:uLj3fWZ/a25dxotp5kDcwGtLY1ia1jHXg6rrxzHqfe8=
+20260503170000_benchmark_resource_leases.sql h1:zRryoGuXRhZSQHJfpu048v+ILcUsSEUQOXcQT+SYtw0=

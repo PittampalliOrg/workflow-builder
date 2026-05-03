@@ -293,6 +293,66 @@ describe("SWE-bench environment image build planning", () => {
 		expect(dbMocks.insertValues).not.toHaveBeenCalled();
 	});
 
+	it("refuses local SWE-bench image PipelineRuns unless local submission is explicitly enabled", async () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_JSON", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_DIR", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE", "local");
+
+		const result = await ensureSwebenchEnvironment({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			allowBuild: true,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			complete: true,
+			status: "failed",
+			reason: "dynamic_build_local_target_not_allowed",
+		});
+		expect(tektonMocks.createTektonPipelineRun).not.toHaveBeenCalled();
+		expect(dbMocks.insertValues).not.toHaveBeenCalled();
+	});
+
+	it("refuses hub SWE-bench image PipelineRuns without a hub kubeconfig", async () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_JSON", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_DIR", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE", "hub");
+
+		const result = await ensureSwebenchEnvironment({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			allowBuild: true,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			complete: true,
+			status: "failed",
+			reason: "dynamic_build_hub_target_not_configured",
+		});
+		expect(tektonMocks.createTektonPipelineRun).not.toHaveBeenCalled();
+		expect(dbMocks.insertValues).not.toHaveBeenCalled();
+	});
+
 	it("pins generated SWE-bench image PipelineRuns to hub build nodes", () => {
 		const spec = buildSwebenchEnvironmentSpec({
 			dataset: "princeton-nlp/SWE-bench_Verified",
@@ -625,6 +685,7 @@ describe("SWE-bench environment image build planning", () => {
 		expect(tektonMocks.getTektonPipelineRun).toHaveBeenCalledWith(
 			"tekton-pipelines",
 			"swe-env-failed",
+			{ targetCluster: "local" },
 		);
 		expect(dbMocks.updateSet).toHaveBeenCalledWith(
 			expect.objectContaining({

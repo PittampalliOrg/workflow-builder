@@ -178,6 +178,48 @@ def _wake_replicas(spec: dict[str, Any]) -> int:
     return 1
 
 
+def _slots_per_replica(spec: dict[str, Any]) -> int:
+    explicit = _lifecycle_int(spec, "slotsPerReplica", 0)
+    if explicit > 0:
+        return explicit
+    defaults = {"coding": 5, "office": 2, "browser": 1, "testing": 2}
+    return defaults.get(_runtime_class(spec), 1)
+
+
+def _dapr_workflow_limit_per_sidecar(spec: dict[str, Any]) -> int:
+    lifecycle = spec.get("lifecycle") or {}
+    for key in ("daprWorkflowLimitPerSidecar", "maxConcurrentWorkflowInvocations"):
+        try:
+            parsed = int(lifecycle.get(key))
+        except (TypeError, ValueError):
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    try:
+        parsed = int(os.environ.get("AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR", "0"))
+    except ValueError:
+        parsed = 0
+    return parsed if parsed > 0 else _slots_per_replica(spec)
+
+
+def _capacity_status(
+    spec: dict[str, Any],
+    *,
+    desired_replicas: int,
+    ready_replicas: int = 0,
+) -> dict[str, Any]:
+    slots_per_replica = _slots_per_replica(spec)
+    workflow_limit = _dapr_workflow_limit_per_sidecar(spec)
+    return {
+        "desiredReplicas": desired_replicas,
+        "slotsPerReplica": slots_per_replica,
+        "effectiveSlots": max(0, ready_replicas) * slots_per_replica,
+        "daprWorkflowLimitPerSidecar": workflow_limit,
+        "daprWorkflowEffectiveCapacity": max(0, ready_replicas) * workflow_limit,
+        "admissionReady": ready_replicas > 0,
+    }
+
+
 def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
     """Enroll the per-agent Dapr app id in the shared actor state store.
 
@@ -725,6 +767,7 @@ def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
     _patch_status(name, namespace, {
         "phase": "Starting" if replicas >= 1 else "Sleeping",
         "replicas": replicas,
+        **_capacity_status(spec, desired_replicas=replicas, ready_replicas=0),
         "deploymentRef": dep_name,
         "lastTransitionTime": _now_iso(),
         "message": f"Deployment created; replicas={replicas}",
@@ -812,6 +855,11 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
         "phase": phase,
         "replicas": desired_replicas,
         "readyReplicas": ready,
+        **_capacity_status(
+            spec,
+            desired_replicas=desired_replicas,
+            ready_replicas=ready,
+        ),
         "lastActiveAt": _now_iso(),
         "lastTransitionTime": _now_iso(),
         "message": f"Wake requested at {new}",
@@ -829,6 +877,8 @@ def on_sleep(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: 
     _patch_status(name, namespace, {
         "phase": "Starting" if replicas >= 1 else "Sleeping",
         "replicas": replicas,
+        "readyReplicas": 0,
+        **_capacity_status(spec, desired_replicas=replicas, ready_replicas=0),
         "lastTransitionTime": _now_iso(),
         "message": f"Sleep requested at {new}",
     })
@@ -872,6 +922,8 @@ def idle_reaper(spec: dict, status: dict, name: str, namespace: str, logger: log
     _patch_status(name, namespace, {
         "phase": "Starting" if min_replicas >= 1 else "Sleeping",
         "replicas": min_replicas,
+        "readyReplicas": 0,
+        **_capacity_status(spec, desired_replicas=min_replicas, ready_replicas=0),
         "lastTransitionTime": _now_iso(),
         "message": f"Idle > {ttl}s",
     })
@@ -893,9 +945,22 @@ def on_deployment_event(event: dict, logger: logging.Logger, **_: Any) -> None:
     replicas = int(status_obj.get("replicas") or 0)
     phase = "Active" if ready >= 1 else ("Starting" if replicas >= 1 else "Sleeping")
     try:
+        runtime = CUSTOM.get_namespaced_custom_object(
+            group=GROUP,
+            version=VERSION,
+            namespace=namespace,
+            plural=PLURAL,
+            name=ar_name,
+        )
+        spec = runtime.get("spec") or {}
         _patch_status(ar_name, namespace, {
             "readyReplicas": ready,
             "replicas": replicas,
+            **_capacity_status(
+                spec,
+                desired_replicas=replicas,
+                ready_replicas=ready,
+            ),
             "phase": phase,
             "lastTransitionTime": _now_iso(),
         })

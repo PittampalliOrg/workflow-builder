@@ -29,7 +29,7 @@ def bounded_swebench_concurrency(
 def bounded_swebench_evaluation_concurrency(
     value: Any,
     *,
-    default: int = 24,
+    default: int = 4,
     maximum: int = 128,
 ) -> int:
     try:

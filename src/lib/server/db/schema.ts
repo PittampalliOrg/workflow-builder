@@ -2718,6 +2718,17 @@ export type BenchmarkArtifactKind =
 	| "harness_result"
 	| "logs"
 	| "test_output";
+export type BenchmarkResourceLeaseType =
+	| "inference_slot"
+	| "openshell_sandbox"
+	| "agent_runtime_slot"
+	| "dapr_workflow_slot"
+	| "evaluator_slot"
+	| "model_slot";
+export type BenchmarkResourceLeaseStatus =
+	| "active"
+	| "released"
+	| "expired";
 
 export const benchmarkSuites = pgTable(
 	"benchmark_suites",
@@ -2955,6 +2966,59 @@ export const benchmarkRunInstances = pgTable(
 		),
 	}),
 	);
+
+export const benchmarkResourceLeases = pgTable(
+	"benchmark_resource_leases",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		runId: text("run_id")
+			.notNull()
+			.references(() => benchmarkRuns.id, { onDelete: "cascade" }),
+		instanceId: text("instance_id"),
+		phase: text("phase").notNull().default("inference"),
+		resourceType: text("resource_type")
+			.notNull()
+			.$type<BenchmarkResourceLeaseType>(),
+		capacityKey: text("capacity_key").notNull().default("default"),
+		holderId: text("holder_id").notNull(),
+		leaseCount: integer("lease_count").notNull().default(1),
+		status: text("status")
+			.notNull()
+			.default("active")
+			.$type<BenchmarkResourceLeaseStatus>(),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		acquiredAt: timestamp("acquired_at").notNull().defaultNow(),
+		heartbeatAt: timestamp("heartbeat_at").notNull().defaultNow(),
+		expiresAt: timestamp("expires_at").notNull(),
+		releasedAt: timestamp("released_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		runIdx: index("idx_benchmark_resource_leases_run").on(table.runId),
+		instanceIdx: index("idx_benchmark_resource_leases_instance").on(
+			table.runId,
+			table.instanceId,
+		),
+		resourceIdx: index("idx_benchmark_resource_leases_resource").on(
+			table.resourceType,
+			table.capacityKey,
+			table.status,
+		),
+		holderIdx: index("idx_benchmark_resource_leases_holder").on(
+			table.holderId,
+			table.resourceType,
+		),
+		expiresIdx: index("idx_benchmark_resource_leases_expires").on(
+			table.expiresAt,
+		),
+	}),
+);
 
 export const environmentImageBuilds = pgTable(
 	"environment_image_builds",

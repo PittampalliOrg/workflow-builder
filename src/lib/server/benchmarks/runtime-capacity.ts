@@ -5,6 +5,9 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	runtimeAppId: string;
 	runtimeReplicas: number;
 	perSidecarWorkflowLimit: number;
+	daprWorkflowLimitPerSidecar: number;
+	daprWorkflowEffectiveCapacity: number;
+	runtimeSlots: number;
 	slotsPerReplica: number;
 	maxActiveSessions: number;
 	maxActiveSandboxes: number | null;
@@ -73,10 +76,13 @@ function slotsByRuntimeClass(): Record<string, number> {
 	}
 }
 
-function configuredPerSidecarWorkflowLimit(runtimeClass: string): number | null {
-	const perClass = slotsByRuntimeClass()[runtimeClass];
-	if (perClass) return perClass;
-	return positiveInt(process.env.DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS);
+function configuredDaprWorkflowLimitPerSidecar(runtimeClass: string): number | null {
+	const explicit =
+		positiveInt(process.env.DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS) ??
+		positiveInt(process.env.AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR);
+	if (explicit) return explicit;
+	void runtimeClass;
+	return null;
 }
 
 function requestedConcurrency(value: unknown): number {
@@ -107,15 +113,23 @@ export function estimateBenchmarkRuntimeCapacity(
 	const requested = requestedConcurrency(input.requestedConcurrency);
 	const selectedCount = Math.max(1, Math.floor(input.requestedInstanceCount));
 	const replicas = runtimeReplicas(input);
-	const perSidecarWorkflowLimit =
+	const slotsPerReplica =
 		positiveInt(input.slotsPerReplica) ??
-		configuredPerSidecarWorkflowLimit(runtimeClass) ??
+		slotsByRuntimeClass()[runtimeClass] ??
 		1;
-	const runtimeSlots = Math.max(1, replicas * perSidecarWorkflowLimit);
+	const daprWorkflowLimitPerSidecar =
+		configuredDaprWorkflowLimitPerSidecar(runtimeClass) ?? slotsPerReplica;
+	const runtimeSlots = Math.max(1, replicas * slotsPerReplica);
+	const daprWorkflowEffectiveCapacity = Math.max(
+		1,
+		replicas * daprWorkflowLimitPerSidecar,
+	);
 	const configuredMaxActiveSessions = positiveInt(input.maxActiveSessions);
-	const runtimeMax = configuredMaxActiveSessions
-		? Math.min(runtimeSlots, configuredMaxActiveSessions)
-		: runtimeSlots;
+	const runtimeMax = Math.min(
+		runtimeSlots,
+		daprWorkflowEffectiveCapacity,
+		configuredMaxActiveSessions ?? Number.POSITIVE_INFINITY,
+	);
 	const globalMax = envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", 10);
 	const sandboxMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_SANDBOXES);
 	const effective = Math.min(
@@ -132,6 +146,12 @@ export function estimateBenchmarkRuntimeCapacity(
 	if (requested > runtimeMax && effective === runtimeMax) {
 		reasons.push("runtime_capacity");
 	}
+	if (
+		requested > daprWorkflowEffectiveCapacity &&
+		effective === daprWorkflowEffectiveCapacity
+	) {
+		reasons.push("dapr_workflow_capacity");
+	}
 	if (requested > globalMax && effective === globalMax) {
 		reasons.push("global_max");
 	}
@@ -145,8 +165,11 @@ export function estimateBenchmarkRuntimeCapacity(
 		runtimeClass,
 		runtimeAppId,
 		runtimeReplicas: replicas,
-		perSidecarWorkflowLimit,
-		slotsPerReplica: perSidecarWorkflowLimit,
+		perSidecarWorkflowLimit: daprWorkflowLimitPerSidecar,
+		daprWorkflowLimitPerSidecar,
+		daprWorkflowEffectiveCapacity,
+		runtimeSlots,
+		slotsPerReplica,
 		maxActiveSessions: Math.min(
 			runtimeMax,
 			globalMax,

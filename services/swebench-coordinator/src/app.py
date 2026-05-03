@@ -71,6 +71,7 @@ PREFLIGHT_POLL_SECONDS = int(os.environ.get("SWEBENCH_PREFLIGHT_POLL_SECONDS", "
 PREFLIGHT_TIMEOUT_SECONDS = int(
     os.environ.get("SWEBENCH_PREFLIGHT_TIMEOUT_SECONDS", "14400")
 )
+LEASE_RETRY_SECONDS = int(os.environ.get("SWEBENCH_LEASE_RETRY_SECONDS", "15"))
 RUN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 INSTANCE_TERMINAL_STATUSES = {"resolved", "failed", "error", "timeout", "cancelled"}
 ACTIVE_EVALUATION_STATUSES = {"queued", "inferencing", "inferred", "evaluating"}
@@ -404,6 +405,58 @@ def _persist_preflight_results(ctx, data: dict[str, Any]) -> dict[str, Any]:
             "capacitySnapshot": data.get("capacitySnapshot") or {},
         },
         timeout=120,
+    )
+
+
+def _acquire_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    instance_id = data["instanceId"]
+    return _bff(
+        "POST",
+        f"/api/internal/benchmarks/runs/{run_id}/leases",
+        json_body={
+            "action": "acquire",
+            "instanceId": instance_id,
+            "phase": "inference",
+            "resources": [
+                "inference_slot",
+                "openshell_sandbox",
+                "agent_runtime_slot",
+                "dapr_workflow_slot",
+                "model_slot",
+            ],
+            "metadata": {"source": "swebench-coordinator"},
+        },
+        timeout=60,
+    )
+
+
+def _release_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    return _bff(
+        "POST",
+        f"/api/internal/benchmarks/runs/{run_id}/leases",
+        json_body={
+            "action": "release",
+            "instanceId": data.get("instanceId"),
+            "holderId": data.get("holderId"),
+            "phase": data.get("phase") or "inference",
+            "reason": data.get("reason") or "instance workflow completed",
+        },
+        timeout=60,
+    )
+
+
+def _release_run_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    return _bff(
+        "POST",
+        f"/api/internal/benchmarks/runs/{run_id}/leases",
+        json_body={
+            "action": "release",
+            "reason": data.get("reason") or "benchmark phase completed",
+        },
+        timeout=60,
     )
 
 
@@ -1469,10 +1522,39 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         concurrency = bounded_swebench_concurrency(run.get("concurrency"))
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
         results: list[Any] = []
-        for offset in range(0, len(instance_ids), concurrency):
-            chunk = instance_ids[offset : offset + concurrency]
-            tasks = [
-                _call_registered_child_workflow(
+        pending_instance_ids = list(instance_ids)
+        active_tasks: list[dict[str, Any]] = []
+        while pending_instance_ids or active_tasks:
+            while pending_instance_ids and len(active_tasks) < concurrency:
+                instance_id = pending_instance_ids[0]
+                admission = yield ctx.call_activity(
+                    _acquire_instance_leases,
+                    input={"runId": run_id, "instanceId": instance_id},
+                )
+                if not isinstance(admission, dict) or not admission.get("admitted"):
+                    reason = (
+                        admission.get("reason")
+                        if isinstance(admission, dict)
+                        else "admission_failed"
+                    )
+                    if isinstance(reason, str) and reason.startswith("benchmark_run_"):
+                        raise RuntimeError(
+                            f"SWE-bench run stopped before admitting {instance_id}: {reason}"
+                        )
+                    retry_after = LEASE_RETRY_SECONDS
+                    if isinstance(admission, dict):
+                        try:
+                            retry_after = max(
+                                1,
+                                int(admission.get("retryAfterSeconds") or retry_after),
+                            )
+                        except (TypeError, ValueError):
+                            retry_after = LEASE_RETRY_SECONDS
+                    yield ctx.create_timer(timedelta(seconds=retry_after))
+                    continue
+
+                pending_instance_ids.pop(0)
+                task = _call_registered_child_workflow(
                     ctx,
                     "swebench_instance_workflow",
                     input={
@@ -1482,14 +1564,41 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                     },
                     instance_id=_child_instance_workflow_id(run_id, instance_id),
                 )
-                for instance_id in chunk
-            ]
-            if wf_when_all is not None:
-                chunk_results = yield wf_when_all(tasks)
-                results.extend(chunk_results)
+                active_tasks.append(
+                    {
+                        "instanceId": instance_id,
+                        "task": task,
+                        "holderId": admission.get("holderId"),
+                    }
+                )
+
+            if not active_tasks:
+                continue
+
+            if wf_when_any is not None:
+                winner = yield wf_when_any([entry["task"] for entry in active_tasks])
+                winner_index = next(
+                    index
+                    for index, entry in enumerate(active_tasks)
+                    if entry["task"] is winner
+                )
+                entry = active_tasks.pop(winner_index)
+                result = winner.get_result()
             else:
-                for task in tasks:
-                    results.append((yield task))
+                entry = active_tasks.pop(0)
+                result = yield entry["task"]
+
+            results.append(result)
+            yield ctx.call_activity(
+                _release_instance_leases,
+                input={
+                    "runId": run_id,
+                    "instanceId": entry["instanceId"],
+                    "holderId": entry.get("holderId"),
+                    "phase": "inference",
+                    "reason": "instance workflow completed",
+                },
+            )
         failed_instances = [
             result
             for result in results
@@ -1500,6 +1609,10 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                 "Inference failed or produced no terminal patch for %d SWE-bench instance(s); writing empty predictions and continuing to the official evaluator",
                 len(failed_instances),
             )
+        yield ctx.call_activity(
+            _release_run_leases,
+            input={"runId": run_id, "reason": "inference fan-out completed"},
+        )
         predictions = yield ctx.call_activity(
             _write_predictions, input={"runId": run_id}
         )
@@ -1567,6 +1680,9 @@ async def lifespan(app: FastAPI):
         _prepare_instance_environment,
         _load_environment_status,
         _persist_preflight_results,
+        _acquire_instance_leases,
+        _release_instance_leases,
+        _release_run_leases,
         _start_instance,
         _sync_instance,
         _mark_instance_inference_failure,

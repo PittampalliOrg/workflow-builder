@@ -1,4 +1,5 @@
-import { kubeApiFetch } from "./client";
+import { env } from "$env/dynamic/private";
+import { kubeApiFetch, kubeApiFetchFromKubeconfig } from "./client";
 
 export type TektonPipelineRun = {
 	apiVersion?: string;
@@ -62,17 +63,70 @@ type TektonList<T> = {
 	items?: T[];
 };
 
+export type TektonTargetCluster = "local" | "hub";
+
+type TektonRequestOptions = {
+	targetCluster?: TektonTargetCluster;
+};
+
+function readString(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readEnvString(name: string): string | null {
+	return readString(env[name]) ?? readString(process.env[name]);
+}
+
+export function configuredHubTektonKubeconfig() {
+	return {
+		path:
+			readEnvString("SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG") ??
+			readEnvString("SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG_PATH") ??
+			readEnvString("HUB_KUBECONFIG"),
+		content:
+			readEnvString("SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG_CONTENT") ??
+			readEnvString("SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG_YAML"),
+		context: readEnvString("SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG_CONTEXT"),
+	};
+}
+
+export function hasConfiguredHubTektonKubeconfig(): boolean {
+	const config = configuredHubTektonKubeconfig();
+	return Boolean(config.path || config.content);
+}
+
+function tektonFetch(
+	path: string,
+	init: RequestInit & { retries?: number } = {},
+	options: TektonRequestOptions = {},
+): Promise<Response> {
+	if (options.targetCluster !== "hub") return kubeApiFetch(path, init);
+	const config = configuredHubTektonKubeconfig();
+	if (!config.path && !config.content) {
+		throw new Error(
+			"hub Tekton kubeconfig is not configured; set SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG",
+		);
+	}
+	return kubeApiFetchFromKubeconfig(path, init, {
+		kubeconfigPath: config.path,
+		kubeconfigContent: config.content,
+		context: config.context,
+	});
+}
+
 export async function createTektonPipelineRun(
 	namespace: string,
 	body: TektonPipelineRun,
+	options: TektonRequestOptions = {},
 ): Promise<{ created: boolean; pipelineRun: TektonPipelineRun | null }> {
-	const res = await kubeApiFetch(
+	const res = await tektonFetch(
 		`/apis/tekton.dev/v1/namespaces/${encodeURIComponent(namespace)}/pipelineruns`,
 		{
 			method: "POST",
 			body: JSON.stringify(body),
 			retries: 1,
 		},
+		options,
 	);
 	if (res.status === 409) return { created: false, pipelineRun: null };
 	if (!res.ok) {
@@ -87,10 +141,12 @@ export async function createTektonPipelineRun(
 export async function getTektonPipelineRun(
 	namespace: string,
 	name: string,
+	options: TektonRequestOptions = {},
 ): Promise<TektonPipelineRun | null> {
-	const res = await kubeApiFetch(
+	const res = await tektonFetch(
 		`/apis/tekton.dev/v1/namespaces/${encodeURIComponent(namespace)}/pipelineruns/${encodeURIComponent(name)}`,
 		{ retries: 1 },
+		options,
 	);
 	if (res.status === 404) return null;
 	if (!res.ok) {
@@ -102,13 +158,15 @@ export async function getTektonPipelineRun(
 export async function listTektonTaskRunsForPipelineRun(
 	namespace: string,
 	pipelineRunName: string,
+	options: TektonRequestOptions = {},
 ): Promise<TektonTaskRun[]> {
 	const labelSelector = new URLSearchParams({
 		labelSelector: `tekton.dev/pipelineRun=${pipelineRunName}`,
 	});
-	const res = await kubeApiFetch(
+	const res = await tektonFetch(
 		`/apis/tekton.dev/v1/namespaces/${encodeURIComponent(namespace)}/taskruns?${labelSelector}`,
 		{ retries: 1 },
+		options,
 	);
 	if (res.status === 404) return [];
 	if (!res.ok) {

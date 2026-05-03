@@ -78,6 +78,7 @@ import {
 	syncBenchmarkInstanceMlflow,
 	syncBenchmarkRunMlflow,
 } from "./mlflow";
+import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -811,6 +812,7 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 		const now = new Date();
 		await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
 		await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
+		await releaseBenchmarkResourceLeasesForRun(runId, reason);
 		await recomputeRunSummary(runId);
 		return getBenchmarkRun(projectId, runId);
 	}
@@ -835,6 +837,7 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 	});
 	await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
 	await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
+	await releaseBenchmarkResourceLeasesForRun(runId, reason);
 	await recomputeRunSummary(runId);
 	return getBenchmarkRun(projectId, runId);
 }
@@ -890,7 +893,11 @@ export async function markBenchmarkRunStatus(
 		const reason = benchmarkRunTerminalReason(status, extra);
 		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
 		await finalizeBenchmarkWorkflowExecutions(runId, status, reason, now);
+		await releaseBenchmarkResourceLeasesForRun(runId, reason);
 		await recomputeRunSummary(runId);
+	}
+	if (status === "completed") {
+		await releaseBenchmarkResourceLeasesForRun(runId, "benchmark run completed");
 	}
 	if (status === "evaluating") {
 		await database

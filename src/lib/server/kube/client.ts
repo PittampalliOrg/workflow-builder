@@ -15,7 +15,9 @@
 
 import fs from "node:fs/promises";
 import https from "node:https";
+import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import yaml from "js-yaml";
 
 const TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 const CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
@@ -187,6 +189,34 @@ export async function listPods(namespace?: string): Promise<KubePod[]> {
 
 type KubeRequestInit = RequestInit & { retries?: number };
 
+type KubeconfigNamedCluster = {
+	name?: string;
+	cluster?: Record<string, unknown>;
+};
+
+type KubeconfigNamedContext = {
+	name?: string;
+	context?: Record<string, unknown>;
+};
+
+type KubeconfigNamedUser = {
+	name?: string;
+	user?: Record<string, unknown>;
+};
+
+type KubeconfigDocument = {
+	"current-context"?: string;
+	clusters?: KubeconfigNamedCluster[];
+	contexts?: KubeconfigNamedContext[];
+	users?: KubeconfigNamedUser[];
+};
+
+type KubeconfigFetchOptions = {
+	kubeconfigPath?: string | null;
+	kubeconfigContent?: string | null;
+	context?: string | null;
+};
+
 /**
  * One-shot https.request wrapped in a Response-compatible interface.
  * We avoid the global fetch() because undici's fetch ignores the
@@ -280,6 +310,138 @@ export async function kubeApiFetch(path: string, init: KubeRequestInit = {}): Pr
 	throw new Error("kubeFetch: exhausted retries");
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: {};
+}
+
+function readString(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function findNamed<T extends { name?: string }>(
+	items: T[] | undefined,
+	name: string,
+	kind: string,
+): T {
+	const item = items?.find((entry) => entry.name === name);
+	if (!item) throw new Error(`kubeconfig ${kind} ${name} not found`);
+	return item;
+}
+
+async function kubeconfigFileValue(
+	value: unknown,
+	baseDir: string | null,
+): Promise<Buffer | undefined> {
+	const path = readString(value);
+	if (!path) return undefined;
+	return fs.readFile(baseDir ? resolve(baseDir, path) : path);
+}
+
+function kubeconfigDataValue(value: unknown): Buffer | undefined {
+	const encoded = readString(value);
+	return encoded ? Buffer.from(encoded, "base64") : undefined;
+}
+
+async function loadKubeconfigAuth(options: KubeconfigFetchOptions) {
+	const raw =
+		readString(options.kubeconfigContent) ??
+		(options.kubeconfigPath ? await fs.readFile(options.kubeconfigPath, "utf-8") : null);
+	if (!raw) throw new Error("kubeconfig content or path is required");
+	const baseDir = options.kubeconfigPath ? dirname(options.kubeconfigPath) : null;
+	const doc = yaml.load(raw) as KubeconfigDocument | null;
+	const contextName =
+		readString(options.context) ?? readString(doc?.["current-context"]);
+	if (!contextName) throw new Error("kubeconfig current-context is required");
+	const context = asRecord(
+		findNamed(doc?.contexts, contextName, "context").context,
+	);
+	const clusterName = readString(context.cluster);
+	const userName = readString(context.user);
+	if (!clusterName) throw new Error(`kubeconfig context ${contextName} is missing cluster`);
+	if (!userName) throw new Error(`kubeconfig context ${contextName} is missing user`);
+
+	const cluster = asRecord(findNamed(doc?.clusters, clusterName, "cluster").cluster);
+	const user = asRecord(findNamed(doc?.users, userName, "user").user);
+	const server = readString(cluster.server);
+	if (!server) throw new Error(`kubeconfig cluster ${clusterName} is missing server`);
+
+	const ca =
+		kubeconfigDataValue(cluster["certificate-authority-data"]) ??
+		(await kubeconfigFileValue(cluster["certificate-authority"], baseDir));
+	const cert =
+		kubeconfigDataValue(user["client-certificate-data"]) ??
+		(await kubeconfigFileValue(user["client-certificate"], baseDir));
+	const key =
+		kubeconfigDataValue(user["client-key-data"]) ??
+		(await kubeconfigFileValue(user["client-key"], baseDir));
+	const token = readString(user.token) ?? readString(user["id-token"]);
+	const username = readString(user.username);
+	const password = readString(user.password);
+	const rejectUnauthorized =
+		cluster["insecure-skip-tls-verify"] === true ? false : undefined;
+	if (!token && !(cert && key) && !(username && password)) {
+		throw new Error(
+			`kubeconfig user ${userName} must use token, basic auth, or client certificate auth`,
+		);
+	}
+
+	const headers: Record<string, string> = {};
+	if (token) headers.authorization = `Bearer ${token}`;
+	if (!token && username && password) {
+		headers.authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+	}
+
+	return {
+		server,
+		headers,
+		agent: new https.Agent({ ca, cert, key, rejectUnauthorized, keepAlive: true }),
+	};
+}
+
+export async function kubeApiFetchFromKubeconfig(
+	path: string,
+	init: KubeRequestInit = {},
+	options: KubeconfigFetchOptions = {},
+): Promise<Response> {
+	const auth = await loadKubeconfigAuth(options);
+	const retries = init.retries ?? 2;
+	const hdrs: Record<string, string> = {
+		authorization: auth.headers.authorization ?? "",
+		accept: "application/json",
+	};
+	if (!hdrs.authorization) delete hdrs.authorization;
+	if (init.headers) {
+		for (const [k, v] of new Headers(init.headers)) hdrs[k.toLowerCase()] = v;
+	}
+	const bodyStr =
+		init.body === undefined || init.body === null
+			? undefined
+			: typeof init.body === "string"
+				? init.body
+				: String(init.body);
+	if (bodyStr !== undefined && !hdrs["content-type"]) {
+		hdrs["content-type"] = "application/json";
+	}
+	const method = (init.method ?? "GET").toUpperCase();
+	const url = `${auth.server.replace(/\/+$/, "")}${path}`;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			const res = await httpsRequest(url, method, hdrs, bodyStr, auth.agent);
+			if (res.status >= 500 && attempt < retries) {
+				await sleep(200 * (attempt + 1));
+				continue;
+			}
+			return res;
+		} catch (err) {
+			if (attempt >= retries) throw err;
+			await sleep(200 * (attempt + 1));
+		}
+	}
+	throw new Error("kubeconfig fetch: exhausted retries");
+}
+
 const kubeFetch = kubeApiFetch;
 
 // ---------------------------------------------------------------------------
@@ -341,6 +503,12 @@ export type AgentRuntimeStatus = {
 	phase?: "Pending" | "Sleeping" | "Starting" | "Active" | "Failed";
 	replicas?: number;
 	readyReplicas?: number;
+	desiredReplicas?: number;
+	slotsPerReplica?: number;
+	effectiveSlots?: number;
+	daprWorkflowLimitPerSidecar?: number;
+	daprWorkflowEffectiveCapacity?: number;
+	admissionReady?: boolean;
 	deploymentRef?: string;
 	lastActiveAt?: string;
 	lastTransitionTime?: string;

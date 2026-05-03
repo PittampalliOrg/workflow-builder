@@ -106,3 +106,26 @@ def test_wake_replicas_uses_shared_pool_max_replicas():
         )
         == 1
     )
+
+
+def test_capacity_status_reports_slots_and_dapr_workflow_capacity():
+    status = main._capacity_status(
+        _spec(
+            lifecycle={
+                "maxReplicas": 5,
+                "slotsPerReplica": 4,
+                "daprWorkflowLimitPerSidecar": 6,
+            }
+        ),
+        desired_replicas=5,
+        ready_replicas=3,
+    )
+
+    assert status == {
+        "desiredReplicas": 5,
+        "slotsPerReplica": 4,
+        "effectiveSlots": 12,
+        "daprWorkflowLimitPerSidecar": 6,
+        "daprWorkflowEffectiveCapacity": 18,
+        "admissionReady": True,
+    }

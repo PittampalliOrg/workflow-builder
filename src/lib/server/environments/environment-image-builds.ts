@@ -17,6 +17,7 @@ import {
 import {
 	createTektonPipelineRun,
 	getTektonPipelineRun,
+	hasConfiguredHubTektonKubeconfig,
 	listTektonTaskRunsForPipelineRun,
 	tektonPipelineRunResults,
 	tektonSucceededCondition,
@@ -24,6 +25,7 @@ import {
 	tektonTaskRunSucceededCondition,
 	type TektonPipelineRun,
 	type TektonTaskRun,
+	type TektonTargetCluster,
 } from "$lib/server/kube/tekton";
 import {
 	resolveSwebenchInferenceEnvironment,
@@ -455,7 +457,12 @@ export async function ensureSwebenchEnvironment(
 	const pipelineRunNamespace = row.pipelineRunNamespace ?? DEFAULT_TEKTON_NAMESPACE;
 	if (!row.pipelineRunName) {
 		try {
-			const submitted = await submitSwebenchPipelineRun(spec, pipelineRunName, pipelineRunNamespace);
+			const submitted = await submitSwebenchPipelineRun(
+				spec,
+				pipelineRunName,
+				pipelineRunNamespace,
+				submission.targetCluster,
+			);
 			const [updated] = await database
 				.update(environmentImageBuilds)
 				.set({
@@ -615,11 +622,17 @@ export async function syncEnvironmentBuild(
 	) {
 		return row;
 	}
-	const pipelineRun = await getTektonPipelineRun(row.pipelineRunNamespace, row.pipelineRunName);
+	const targetCluster = dynamicBuildTargetFromEnv();
+	const pipelineRun = await getTektonPipelineRun(
+		row.pipelineRunNamespace,
+		row.pipelineRunName,
+		{ targetCluster },
+	);
 	if (!pipelineRun) return row;
 	const taskRuns = await listTektonTaskRunsForPipelineRun(
 		row.pipelineRunNamespace,
 		row.pipelineRunName,
+		{ targetCluster },
 	);
 	await persistBuildActivityEvents(
 		normalizeEnvironmentBuildActivityEvents({ build: row, pipelineRun, taskRuns }),
@@ -754,8 +767,13 @@ async function submitSwebenchPipelineRun(
 	spec: SwebenchEnvironmentSpec,
 	pipelineRunName: string,
 	namespace: string,
+	targetCluster: TektonTargetCluster,
 ) {
-	return createTektonPipelineRun(namespace, buildSwebenchPipelineRunManifest(spec, pipelineRunName, namespace));
+	return createTektonPipelineRun(
+		namespace,
+		buildSwebenchPipelineRunManifest(spec, pipelineRunName, namespace),
+		{ targetCluster },
+	);
 }
 
 export function buildSwebenchPipelineRunManifest(
@@ -1712,7 +1730,9 @@ function buildNotSubmittedResult(
 
 function dynamicBuildSubmissionGuard(
 	input: EnsureSwebenchEnvironmentInput,
-): { allowed: true } | { allowed: false; reason: string; message: string } {
+):
+	| { allowed: true; targetCluster: TektonTargetCluster }
+	| { allowed: false; reason: string; message: string } {
 	if (input.allowBuild !== true) {
 		return {
 			allowed: false,
@@ -1721,9 +1741,22 @@ function dynamicBuildSubmissionGuard(
 				"Dynamic SWE-bench inference image builds require allowBuild=true; returning without creating a PipelineRun.",
 		};
 	}
-	const mode = readString(env.SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE)?.toLowerCase() ?? "disabled";
-	if (mode === "local") return { allowed: true };
+	const mode = runtimeEnvString("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE")?.toLowerCase() ?? "disabled";
+	if (mode === "local") {
+		if (runtimeEnvString("SWEBENCH_INFERENCE_BUILD_ALLOW_LOCAL_PIPELINERUNS") === "true") {
+			return { allowed: true, targetCluster: "local" };
+		}
+		return {
+			allowed: false,
+			reason: "dynamic_build_local_target_not_allowed",
+			message:
+				"Local SWE-bench inference image PipelineRuns are disabled; set SWEBENCH_INFERENCE_BUILD_ALLOW_LOCAL_PIPELINERUNS=true only for intentional local testing.",
+		};
+	}
 	if (mode === "hub") {
+		if (hasConfiguredHubTektonKubeconfig()) {
+			return { allowed: true, targetCluster: "hub" };
+		}
 		return {
 			allowed: false,
 			reason: "dynamic_build_hub_target_not_configured",
@@ -1737,6 +1770,15 @@ function dynamicBuildSubmissionGuard(
 		message:
 			"Dynamic SWE-bench inference image build submission is disabled; refusing to create a PipelineRun.",
 	};
+}
+
+function dynamicBuildTargetFromEnv(): TektonTargetCluster {
+	const mode = runtimeEnvString("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE")?.toLowerCase() ?? "disabled";
+	return mode === "hub" ? "hub" : "local";
+}
+
+function runtimeEnvString(name: string): string | null {
+	return readString(env[name]) ?? readString(process.env[name]);
 }
 
 type FallbackEnvironmentInput = {
