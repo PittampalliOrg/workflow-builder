@@ -159,6 +159,9 @@ EMPTY_RESPONSE_THRESHOLD = int(
 SESSION_TURN_TIMEOUT_SECONDS = int(
     os.environ.get("DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS", "600")
 )
+SESSION_TURN_HEARTBEAT_SECONDS = int(
+    os.environ.get("DAPR_AGENT_PY_SESSION_TURN_HEARTBEAT_SECONDS", "60")
+)
 
 # Absolute cap on a single session event envelope's serialized size. Postgres
 # jsonb has no hard limit other than TOAST (~1 GB), but bigger blobs fan out
@@ -3803,28 +3806,57 @@ class OpenShellDurableAgent(DurableAgent):
                     instance_id=child_instance_id,
                     retry_policy=self._retry_policy,
                 )
-                timer_task = ctx.create_timer(timedelta(seconds=turn_timeout_seconds))
-                winner = yield wf_when_any([child_task, timer_task])
-                if winner is timer_task:
-                    if not ctx.is_replaying:
+                heartbeat_seconds = _session_turn_heartbeat_seconds()
+                elapsed_seconds = 0
+                while True:
+                    remaining_seconds = max(turn_timeout_seconds - elapsed_seconds, 0)
+                    if remaining_seconds <= 0:
+                        if not ctx.is_replaying:
+                            try:
+                                publish_session_event(
+                                    session_id,
+                                    "session.turn_timeout",
+                                    {
+                                        "turn": turn_counter,
+                                        "timeout_seconds": turn_timeout_seconds,
+                                        "childInstanceId": child_instance_id,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        from dapr_agents.types.exceptions import AgentError
+                        raise AgentError(
+                            f"Session turn {turn_counter} exceeded "
+                            f"{turn_timeout_seconds}s timeout; "
+                            "terminating session to prevent indefinite hang. "
+                            "Check agent_workflow state for stuck LLM or tool calls."
+                        )
+                    wait_seconds = (
+                        min(heartbeat_seconds, remaining_seconds)
+                        if heartbeat_seconds > 0
+                        else remaining_seconds
+                    )
+                    timer_task = ctx.create_timer(timedelta(seconds=wait_seconds))
+                    winner = yield wf_when_any([child_task, timer_task])
+                    if winner is child_task:
+                        break
+                    elapsed_seconds += wait_seconds
+                    if elapsed_seconds >= turn_timeout_seconds:
+                        continue
+                    if heartbeat_seconds > 0 and not ctx.is_replaying:
                         try:
                             publish_session_event(
                                 session_id,
-                                "session.turn_timeout",
+                                "session.turn_heartbeat",
                                 {
                                     "turn": turn_counter,
+                                    "elapsed_seconds": elapsed_seconds,
                                     "timeout_seconds": turn_timeout_seconds,
+                                    "childInstanceId": child_instance_id,
                                 },
                             )
                         except Exception:
                             pass
-                    from dapr_agents.types.exceptions import AgentError
-                    raise AgentError(
-                        f"Session turn {turn_counter} exceeded "
-                        f"{turn_timeout_seconds}s timeout; "
-                        "terminating session to prevent indefinite hang. "
-                        "Check agent_workflow state for stuck LLM or tool calls."
-                    )
                 turn_result = child_task.get_result()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -4005,6 +4037,26 @@ def _session_turn_timeout_seconds(message: dict) -> int:
     if minutes <= 0:
         return SESSION_TURN_TIMEOUT_SECONDS
     return max(SESSION_TURN_TIMEOUT_SECONDS, minutes * 60)
+
+
+def _session_turn_heartbeat_seconds() -> int:
+    """Periodically prove the session wrapper is alive while a turn is quiet."""
+    try:
+        seconds = int(SESSION_TURN_HEARTBEAT_SECONDS)
+    except (TypeError, ValueError):
+        return 60
+    if seconds <= 0:
+        return 0
+    return max(15, seconds)
+
+
+def _is_workflow_instance_missing_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "no such instance exists" in message
+        or "agent run not found" in message
+        or "workflow instance not found" in message
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4647,6 +4699,9 @@ def terminate_agent_run(
         )
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:
+        if _is_workflow_instance_missing_error(exc):
+            logger.info("[agent-runs] Terminate skipped for %s: already gone", instance_id)
+            return {"success": True, "instanceId": instance_id, "alreadyGone": True}
         logger.error("[agent-runs] Failed to terminate %s: %s", instance_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

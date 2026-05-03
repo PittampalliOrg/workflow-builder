@@ -83,6 +83,19 @@ import {
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
+const BENCHMARK_TERMINATION_CONCURRENCY = 8;
+
+type BenchmarkAgentRuntimeCleanupInput = {
+	runtimeAppId: string | null;
+	sessionId: string | null;
+	turnCount: number | null;
+};
+
+type BenchmarkSessionTurnInput = {
+	sessionId: string;
+	childInstanceId: string | null;
+	turn: number | null;
+};
 const DEFAULT_EVALUATION_CONCURRENCY = 5;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
@@ -130,6 +143,67 @@ type BenchmarkRunInstanceTerminalInput = {
 function requireDb() {
 	if (!db) throw error(503, "Database not configured");
 	return db;
+}
+
+export function isBenignDaprTerminationMiss(input: unknown): boolean {
+	let text = "";
+	if (typeof input === "string") {
+		text = input;
+	} else if (input instanceof Error) {
+		text = `${input.name} ${input.message}`;
+	} else if (input != null) {
+		try {
+			text = JSON.stringify(input) ?? String(input);
+		} catch {
+			text = String(input);
+		}
+	}
+	const normalized = text.toLowerCase();
+	return (
+		normalized.includes("no such instance exists") ||
+		normalized.includes("agent run not found") ||
+		normalized.includes("workflow instance not found")
+	);
+}
+
+export function benchmarkAgentRuntimeCleanupInstanceIds(
+	row: BenchmarkAgentRuntimeCleanupInput,
+	latestTurn?: BenchmarkSessionTurnInput | null,
+): string[] {
+	const sessionId = row.sessionId?.trim();
+	if (!row.runtimeAppId || !sessionId) return [];
+	const ids = new Set<string>([sessionId]);
+	const latestChild = latestTurn?.childInstanceId?.trim();
+	if (latestChild) {
+		ids.add(latestChild);
+		return [...ids];
+	}
+	const turn =
+		typeof latestTurn?.turn === "number" && latestTurn.turn > 0
+			? latestTurn.turn
+			: typeof row.turnCount === "number" && row.turnCount > 0
+				? row.turnCount
+				: 1;
+	ids.add(`${sessionId}:turn-${Math.min(Math.floor(turn), 1000)}`);
+	return [...ids];
+}
+
+async function runWithConcurrency<T>(
+	items: T[],
+	limit: number,
+	worker: (item: T) => Promise<void>,
+) {
+	const pending = [...items];
+	const concurrency = Math.max(1, Math.min(limit, pending.length));
+	await Promise.all(
+		Array.from({ length: concurrency }, async () => {
+			while (pending.length > 0) {
+				const item = pending.shift();
+				if (item === undefined) return;
+				await worker(item);
+			}
+		}),
+	);
 }
 
 export async function ensureDefaultBenchmarkSuites() {
@@ -920,7 +994,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		.where(eq(benchmarkRunInstances.runId, runId));
 	const activeExecutionIds = new Set<string>();
 	const daprInstanceIds = new Set<string>();
-	const agentRuntimeInstances = new Map<string, Set<string>>();
+	const agentRuntimeCleanupRows: BenchmarkAgentRuntimeCleanupInput[] = [];
 	const sessionIds = new Set<string>();
 	for (const row of rows) {
 		const hasActiveExecution =
@@ -937,29 +1011,75 @@ async function finalizeBenchmarkWorkflowExecutions(
 		const sessionId = row.runInstanceSessionId ?? row.sessionId;
 		if (sessionId && row.runtimeAppId) {
 			sessionIds.add(sessionId);
-			const instances = agentRuntimeInstances.get(row.runtimeAppId) ?? new Set<string>();
-			instances.add(sessionId);
-			const turnCount =
-				typeof row.runInstanceTurnCount === "number" && row.runInstanceTurnCount > 0
-					? Math.min(row.runInstanceTurnCount, 25)
-					: 1;
-			for (let turn = 1; turn <= turnCount; turn += 1) {
-				instances.add(`${sessionId}:turn-${turn}`);
-			}
-			agentRuntimeInstances.set(row.runtimeAppId, instances);
+			agentRuntimeCleanupRows.push({
+				runtimeAppId: row.runtimeAppId,
+				sessionId,
+				turnCount: row.runInstanceTurnCount,
+			});
 		}
 	}
-	await Promise.all(
-		[...daprInstanceIds].map((instanceId) =>
-			terminateBenchmarkWorkflowInstance(instanceId, reason),
-		),
+	const latestTurnBySession = new Map<string, BenchmarkSessionTurnInput>();
+	if (sessionIds.size > 0) {
+		const turnRows = await database
+			.select({
+				sessionId: sessionEvents.sessionId,
+				data: sessionEvents.data,
+				sequence: sessionEvents.sequence,
+			})
+			.from(sessionEvents)
+			.where(
+				and(
+					inArray(sessionEvents.sessionId, [...sessionIds]),
+					eq(sessionEvents.type, "session.turn_started"),
+				),
+			)
+			.orderBy(asc(sessionEvents.sequence));
+		for (const turnRow of turnRows) {
+			const data =
+				turnRow.data && typeof turnRow.data === "object" && !Array.isArray(turnRow.data)
+					? (turnRow.data as Record<string, unknown>)
+					: {};
+			const childInstanceId =
+				typeof data.childInstanceId === "string"
+					? data.childInstanceId
+					: typeof data.child_instance_id === "string"
+						? data.child_instance_id
+						: null;
+			const rawTurn = Number(data.turn);
+			latestTurnBySession.set(turnRow.sessionId, {
+				sessionId: turnRow.sessionId,
+				childInstanceId,
+				turn: Number.isFinite(rawTurn) ? rawTurn : null,
+			});
+		}
+	}
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		(instanceId) => terminateBenchmarkWorkflowInstance(instanceId, reason),
 	);
-	await Promise.all(
+	const agentRuntimeInstances = new Map<string, Set<string>>();
+	for (const cleanupRow of agentRuntimeCleanupRows) {
+		const runtimeAppId = cleanupRow.runtimeAppId;
+		if (!runtimeAppId) continue;
+		const instances = agentRuntimeInstances.get(runtimeAppId) ?? new Set<string>();
+		for (const instanceId of benchmarkAgentRuntimeCleanupInstanceIds(
+			cleanupRow,
+			cleanupRow.sessionId
+				? latestTurnBySession.get(cleanupRow.sessionId)
+				: null,
+		)) {
+			instances.add(instanceId);
+		}
+		agentRuntimeInstances.set(runtimeAppId, instances);
+	}
+	await runWithConcurrency(
 		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
-			[...instanceIds].map((instanceId) =>
-				terminateBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason),
-			),
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
 		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		({ runtimeAppId, instanceId }) =>
+			terminateBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason),
 	);
 	if (sessionIds.size > 0) {
 		await database
@@ -1005,13 +1125,14 @@ async function terminateBenchmarkWorkflowInstance(
 			},
 		);
 		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
 			console.warn(
-				`Failed to terminate benchmark workflow ${instanceId}: ${res.status} ${await res
-					.text()
-					.catch(() => "")}`,
+				`Failed to terminate benchmark workflow ${instanceId}: ${res.status} ${detail}`,
 			);
 		}
 	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return;
 		console.warn(
 			`Failed to terminate benchmark workflow ${instanceId}:`,
 			err instanceof Error ? err.message : err,
@@ -1034,16 +1155,18 @@ async function terminateBenchmarkAgentRuntimeInstance(
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ reason }),
 				signal: AbortSignal.timeout(10_000),
+				maxRetries: 0,
 			},
 		);
-		if (!res.ok && res.status !== 404) {
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
 			console.warn(
-				`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${await res
-					.text()
-					.catch(() => "")}`,
+				`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
 			);
 		}
 	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return;
 		console.warn(
 			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
 			err,

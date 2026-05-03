@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	benchmarkInferenceStallState,
+	benchmarkAgentRuntimeCleanupInstanceIds,
 	benchmarkRunInstanceTerminalPatch,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
@@ -9,6 +10,7 @@ import {
 	extractAgentStopReason,
 	extractBenchmarkRuntimeLinks,
 	extractInferenceEnvironment,
+	isBenignDaprTerminationMiss,
 	resolveBenchmarkInferenceStatus,
 	resolveBenchmarkInstanceStatusAfterInference,
 	sanitizeSwebenchInferenceEnvironmentForRuntime,
@@ -681,6 +683,38 @@ describe("SWE-bench workflow spec", () => {
 
 describe("SWE-bench terminal run cleanup", () => {
 	const now = new Date("2026-05-02T12:00:00Z");
+
+	it("terminates only the session workflow and latest turn workflow", () => {
+		expect(
+			benchmarkAgentRuntimeCleanupInstanceIds(
+				{
+					runtimeAppId: "agent-runtime-pool-coding",
+					sessionId: "session-1",
+					turnCount: 12,
+				},
+				{
+					sessionId: "session-1",
+					childInstanceId: "session-1:turn-12",
+					turn: 12,
+				},
+			),
+		).toEqual(["session-1", "session-1:turn-12"]);
+
+		expect(
+			benchmarkAgentRuntimeCleanupInstanceIds({
+				runtimeAppId: "agent-runtime-pool-coding",
+				sessionId: "session-2",
+				turnCount: 7,
+			}),
+		).toEqual(["session-2", "session-2:turn-7"]);
+	});
+
+	it("classifies already-gone Dapr workflow instances as benign", () => {
+		expect(isBenignDaprTerminationMiss("failed: no such instance exists")).toBe(true);
+		expect(isBenignDaprTerminationMiss("Agent run not found")).toBe(true);
+		expect(isBenignDaprTerminationMiss(new Error("workflow instance not found"))).toBe(true);
+		expect(isBenignDaprTerminationMiss(new Error("context deadline exceeded"))).toBe(false);
+	});
 
 	it("cancels active inference rows without marking pending evaluation as evaluated", () => {
 		const patch = benchmarkRunInstanceTerminalPatch(
