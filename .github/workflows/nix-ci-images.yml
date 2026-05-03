@@ -1,0 +1,323 @@
+name: Nix CI Images
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: nix-ci-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: mcp-gateway
+  IMAGE_REPOSITORY: ghcr.io/pittampalliorg/mcp-gateway
+  STACKS_REPOSITORY: PittampalliOrg/stacks
+  CANDIDATE_PATH: packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-nix-ci-candidates.yaml
+
+jobs:
+  mcp-gateway:
+    name: mcp-gateway candidate
+    runs-on: ubuntu-latest
+    env:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+    steps:
+      - name: Checkout workflow-builder
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Configure Cachix
+        if: ${{ env.CACHIX_AUTH_TOKEN != '' }}
+        uses: cachix/cachix-action@v17
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        with:
+          name: ${{ vars.CACHIX_CACHE_NAME || 'pittampalli-workflow-builder' }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Require stacks write token
+        env:
+          STACKS_NIX_CI_TOKEN: ${{ secrets.STACKS_NIX_CI_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${STACKS_NIX_CI_TOKEN}" ]; then
+            echo "::error::STACKS_NIX_CI_TOKEN is required to record Nix CI candidate metadata in ${STACKS_REPOSITORY}."
+            exit 1
+          fi
+
+      - name: Build Nix image
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          start="$(date +%s)"
+          nix build .#mcp-gateway-image --print-build-logs --out-link result-mcp-gateway-image
+          end="$(date +%s)"
+
+          image_store_path="$(readlink -f result-mcp-gateway-image)"
+          closure_size_bytes="$(nix path-info -S "${image_store_path}" | awk '{ print $2 }')"
+          build_duration_seconds="$((end - start))"
+
+          nix build .#mcp-gateway-image-digest --print-build-logs --out-link result-mcp-gateway-image-digest
+          local_image_digest="$(cat result-mcp-gateway-image-digest/digest.txt)"
+
+          {
+            echo "image_store_path=${image_store_path}"
+            echo "closure_size_bytes=${closure_size_bytes}"
+            echo "build_duration_seconds=${build_duration_seconds}"
+            echo "local_image_digest=${local_image_digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate SBOM
+        id: sbom
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_name="${IMAGE_NAME}-nix-ci-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          mkdir -p artifacts/sbom
+
+          cat > /tmp/generate-sbom.sh <<'SCRIPT'
+          set -euo pipefail
+          image_store_path="$1"
+          sbom_path="$2"
+          syft "docker-archive:${image_store_path}" -o spdx-json="${sbom_path}"
+          test -s "${sbom_path}"
+          SCRIPT
+
+          nix develop --command bash /tmp/generate-sbom.sh '${{ steps.build.outputs.image_store_path }}' "${PWD}/artifacts/sbom/mcp-gateway.spdx.json"
+          echo "artifact_name=${artifact_name}" >> "${GITHUB_OUTPUT}"
+          echo "sbom_path=${PWD}/artifacts/sbom/mcp-gateway.spdx.json" >> "${GITHUB_OUTPUT}"
+
+      - name: Scan image
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/scan
+
+          cat > /tmp/scan-image.sh <<'SCRIPT'
+          set -euo pipefail
+          image_store_path="$1"
+          scan_path="$2"
+          set +e
+          grype "docker-archive:${image_store_path}" --fail-on critical -o json > "${scan_path}"
+          scan_exit="$?"
+          set -e
+          if [ "${scan_exit}" -eq 0 ]; then
+            echo passed
+          else
+            echo failed
+          fi
+          SCRIPT
+
+          scan_path="${PWD}/artifacts/scan/mcp-gateway-grype.json"
+          scan_status="$(nix develop --command bash /tmp/scan-image.sh '${{ steps.build.outputs.image_store_path }}' "${scan_path}")"
+          echo "scan_status=${scan_status}" >> "${GITHUB_OUTPUT}"
+          echo "scan_path=${scan_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Push candidate image
+        id: push
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_tag="nix-ci-git-${GITHUB_SHA}"
+          image_ref="${IMAGE_REPOSITORY}:${image_tag}"
+
+          cat > /tmp/push-image.sh <<'SCRIPT'
+          set -euo pipefail
+          image_store_path="$1"
+          image_ref="$2"
+
+          skopeo login ghcr.io --username "${GHCR_USERNAME}" --password "${GHCR_TOKEN}" >&2
+          skopeo copy "docker-archive:${image_store_path}" "docker://${image_ref}" >&2
+          skopeo inspect --no-tags "docker://${image_ref}" | jq -r '.Digest'
+          SCRIPT
+
+          digest="$(nix develop --command bash /tmp/push-image.sh '${{ steps.build.outputs.image_store_path }}' "${image_ref}")"
+
+          {
+            echo "image_tag=${image_tag}"
+            echo "image_ref=${image_ref}"
+            echo "digest=${digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload image metadata artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.sbom.outputs.artifact_name }}
+          path: |
+            artifacts/sbom/mcp-gateway.spdx.json
+            artifacts/scan/mcp-gateway-grype.json
+          if-no-files-found: error
+
+      - name: Checkout stacks
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.STACKS_REPOSITORY }}
+          path: stacks
+          token: ${{ secrets.STACKS_NIX_CI_TOKEN }}
+          ref: main
+
+      - name: Record candidate metadata
+        env:
+          IMAGE_TAG: ${{ steps.push.outputs.image_tag }}
+          IMAGE_REF: ${{ steps.push.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE_STORE_PATH: ${{ steps.build.outputs.image_store_path }}
+          BUILD_DURATION_SECONDS: ${{ steps.build.outputs.build_duration_seconds }}
+          CLOSURE_SIZE_BYTES: ${{ steps.build.outputs.closure_size_bytes }}
+          SBOM_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}
+          SCAN_STATUS: ${{ steps.scan.outputs.scan_status }}
+          SCAN_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}:mcp-gateway-grype.json
+          PIPELINE_RUN: ${{ github.workflow }}#${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd stacks
+
+          python3 - <<'PY'
+          import os
+          from collections import OrderedDict
+          from pathlib import Path
+
+          candidate_path = Path(os.environ["CANDIDATE_PATH"])
+          production_path = Path("packages/components/hub-spoke-appsets/release-pins/workflow-builder-images.yaml")
+          image_name = os.environ["IMAGE_NAME"]
+
+          sections_order = [
+              "images",
+              "imageRefs",
+              "digests",
+              "sourceShas",
+              "pipelineRuns",
+              "updatedAts",
+              "builder",
+              "nixStorePath",
+              "sbomRef",
+              "scanStatus",
+              "scanRef",
+              "comparisonBase",
+              "buildDurationSeconds",
+              "closureSizeBytes",
+          ]
+
+          def parse_maps(path):
+              sections = OrderedDict((name, OrderedDict()) for name in sections_order)
+              current = None
+              if not path.exists():
+                  return sections
+              for raw in path.read_text(encoding="utf-8").splitlines():
+                  if raw and not raw.startswith(" ") and raw.endswith(":"):
+                      current = raw[:-1]
+                      sections.setdefault(current, OrderedDict())
+                      continue
+                  if current not in sections or not raw.startswith("  "):
+                      continue
+                  key, sep, value = raw.strip().partition(":")
+                  if not sep:
+                      continue
+                  value = value.strip()
+                  if value in {'""', "''"}:
+                      value = ""
+                  sections[current][key] = value.strip('"').strip("'")
+              return sections
+
+          def yaml_scalar(value):
+              value = str(value)
+              if value == "":
+                  return '""'
+              if any(ch in value for ch in [":", "#", "{", "}", "[", "]", ",", "&", "*", "!", "|", ">", "'", '"', "%", "@", "`"]) or value.strip() != value:
+                  return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+              return value
+
+          sections = parse_maps(candidate_path)
+          production = parse_maps(production_path)
+          production_ref = production.get("imageRefs", {}).get(image_name, "")
+          production_digest = production.get("digests", {}).get(image_name, "")
+          comparison_base = production_ref
+          if production_digest:
+              comparison_base = f"{production_ref}@{production_digest}"
+
+          values = {
+              "images": os.environ["IMAGE_TAG"],
+              "imageRefs": os.environ["IMAGE_REF"],
+              "digests": os.environ["IMAGE_DIGEST"],
+              "sourceShas": os.environ["GITHUB_SHA"],
+              "pipelineRuns": os.environ["PIPELINE_RUN"],
+              "updatedAts": os.popen("date -u +%Y-%m-%dT%H:%M:%SZ").read().strip(),
+              "builder": "github-actions-nix",
+              "nixStorePath": os.environ["IMAGE_STORE_PATH"],
+              "sbomRef": os.environ["SBOM_REF"],
+              "scanStatus": os.environ["SCAN_STATUS"],
+              "scanRef": os.environ["SCAN_REF"],
+              "comparisonBase": comparison_base,
+              "buildDurationSeconds": os.environ["BUILD_DURATION_SECONDS"],
+              "closureSizeBytes": os.environ["CLOSURE_SIZE_BYTES"],
+          }
+
+          for section, value in values.items():
+              sections.setdefault(section, OrderedDict())
+              sections[section][image_name] = value
+
+          lines = [
+              "# Shadow candidate metadata for external Nix CI image builds.",
+              "# This file is not consumed by Source Hydrator, GitOps Promoter, or ArgoCD.",
+          ]
+          for section in sections_order:
+              lines.append(f"{section}:")
+              for key, value in sections.get(section, {}).items():
+                  lines.append(f"  {key}: {yaml_scalar(value)}")
+          candidate_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Validate candidate metadata
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          NIX_CI_SBOM_PATH: ${{ steps.sbom.outputs.sbom_path }}
+          NIX_CI_SCAN_PATH: ${{ steps.scan.outputs.scan_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix develop --command bash -lc 'cd stacks && scripts/gitops/validate-workflow-builder-nix-ci-candidates.sh'
+
+      - name: Commit candidate metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd stacks
+
+          git config user.email "nix-ci@pittampalliorg.github.io"
+          git config user.name "GitHub Actions Nix CI"
+          git add "${CANDIDATE_PATH}"
+
+          if git diff --cached --quiet; then
+            echo "Candidate metadata already up to date."
+            exit 0
+          fi
+
+          git commit -m "chore(nix-ci): record ${IMAGE_NAME} candidate ${GITHUB_SHA}"
+
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            git pull --rebase origin main
+          done
+
+          echo "::error::Failed to push candidate metadata after retries."
+          exit 1
