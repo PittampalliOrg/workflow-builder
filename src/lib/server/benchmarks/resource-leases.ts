@@ -226,11 +226,11 @@ export async function acquireBenchmarkResourceLeases(
 
 		await tx
 			.update(benchmarkResourceLeases)
-			.set({ status: "expired", updatedAt: now })
+			.set({ status: "expired", updatedAt: sql`now()` })
 			.where(
 				and(
 					eq(benchmarkResourceLeases.status, "active"),
-					sql`${benchmarkResourceLeases.expiresAt} <= ${now}`,
+					sql`${benchmarkResourceLeases.expiresAt} <= now()`,
 				),
 			);
 
