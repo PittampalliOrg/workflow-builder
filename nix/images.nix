@@ -219,7 +219,7 @@ let
       dockerfile = "services/workflow-mcp-server/Dockerfile";
       context = "services/workflow-mcp-server";
       buildable = true;
-      enabled = false;
+      enabled = true;
     }
     {
       name = "mcp-gateway";
@@ -235,7 +235,7 @@ let
       dockerfile = "services/function-router/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = false;
+      enabled = true;
     }
     {
       name = "workflow-orchestrator";
@@ -261,7 +261,7 @@ let
       dockerfile = "services/code-runtime/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = false;
+      enabled = true;
     }
     {
       name = "openshell-agent-runtime";
@@ -377,7 +377,7 @@ let
       dockerfile = "services/fn-system/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = false;
+      enabled = true;
     }
     {
       name = "fn-activepieces";
@@ -385,7 +385,7 @@ let
       dockerfile = "services/fn-activepieces/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = false;
+      enabled = true;
     }
   ];
 
