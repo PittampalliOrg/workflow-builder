@@ -41,5 +41,6 @@ export type RunnableAgent = {
 		runtimeReplicas: number;
 		slotsPerReplica: number;
 		maxActiveSessions: number;
+		maxActiveSandboxes: number | null;
 	};
 };

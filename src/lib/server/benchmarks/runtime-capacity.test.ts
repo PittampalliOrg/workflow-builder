@@ -24,6 +24,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			runtimeReplicas: 2,
 			slotsPerReplica: 5,
 			maxActiveSessions: 10,
+			maxActiveSandboxes: null,
 		});
 		expect(capacity.capReason).toContain("runtime_capacity");
 		expect(capacity.capReason).toContain("global_max");
@@ -84,6 +85,27 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			effectiveConcurrency: 6,
 			maxActiveSessions: 6,
 			capReason: "runtime_capacity",
+		});
+	});
+
+	it("honors an optional sandbox admission cap", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "20");
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_SANDBOXES", "8");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 3,
+			requestedInstanceCount: 15,
+			requestedConcurrency: 15,
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 8,
+			maxActiveSessions: 8,
+			maxActiveSandboxes: 8,
+			capReason: "sandbox_capacity",
 		});
 	});
 });

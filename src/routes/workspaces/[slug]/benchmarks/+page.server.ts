@@ -198,6 +198,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					runtimeReplicas: capacity.runtimeReplicas,
 					slotsPerReplica: capacity.slotsPerReplica,
 					maxActiveSessions: capacity.maxActiveSessions,
+					maxActiveSandboxes: capacity.maxActiveSandboxes,
 				},
 			};
 		});

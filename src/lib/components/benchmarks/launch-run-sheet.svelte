@@ -231,9 +231,13 @@
 						<span class="font-mono text-foreground">{effectiveInferenceConcurrency}</span>
 						{#if selectedCapacity}
 							<span>
-								· {selectedCapacity.runtimeClass} pool cap {selectedCapacity.maxActiveSessions}
+								· active cap {selectedCapacity.maxActiveSessions}
+								· {selectedCapacity.runtimeClass} pool
 								({selectedCapacity.runtimeReplicas}×{selectedCapacity.slotsPerReplica})
 							</span>
+							{#if selectedCapacity.maxActiveSandboxes}
+								<span>· sandbox cap {selectedCapacity.maxActiveSandboxes}</span>
+							{/if}
 						{/if}
 					</div>
 				{/if}

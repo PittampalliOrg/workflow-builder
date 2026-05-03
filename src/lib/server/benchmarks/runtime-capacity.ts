@@ -6,6 +6,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	runtimeReplicas: number;
 	slotsPerReplica: number;
 	maxActiveSessions: number;
+	maxActiveSandboxes: number | null;
 	capReason: string | null;
 };
 
@@ -109,7 +110,14 @@ export function estimateBenchmarkRuntimeCapacity(
 		? Math.min(runtimeSlots, configuredMaxActiveSessions)
 		: runtimeSlots;
 	const globalMax = envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", 10);
-	const effective = Math.min(requested, selectedCount, runtimeMax, globalMax);
+	const sandboxMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_SANDBOXES);
+	const effective = Math.min(
+		requested,
+		selectedCount,
+		runtimeMax,
+		globalMax,
+		sandboxMax ?? Number.POSITIVE_INFINITY,
+	);
 	const reasons: string[] = [];
 	if (requested > selectedCount && effective === selectedCount) {
 		reasons.push("selected_instance_count");
@@ -120,6 +128,9 @@ export function estimateBenchmarkRuntimeCapacity(
 	if (requested > globalMax && effective === globalMax) {
 		reasons.push("global_max");
 	}
+	if (sandboxMax && requested > sandboxMax && effective === sandboxMax) {
+		reasons.push("sandbox_capacity");
+	}
 
 	return {
 		requestedConcurrency: requested,
@@ -128,7 +139,12 @@ export function estimateBenchmarkRuntimeCapacity(
 		runtimeAppId,
 		runtimeReplicas: replicas,
 		slotsPerReplica: slots,
-		maxActiveSessions: Math.min(runtimeMax, globalMax),
+		maxActiveSessions: Math.min(
+			runtimeMax,
+			globalMax,
+			sandboxMax ?? Number.POSITIVE_INFINITY,
+		),
+		maxActiveSandboxes: sandboxMax,
 		capReason: reasons.length > 0 ? reasons.join("+") : null,
 	};
 }

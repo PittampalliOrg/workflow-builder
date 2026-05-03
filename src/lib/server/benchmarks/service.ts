@@ -1077,7 +1077,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 	await runWithConcurrency(
 		[...daprInstanceIds],
 		BENCHMARK_TERMINATION_CONCURRENCY,
-		(instanceId) => terminateBenchmarkWorkflowInstance(instanceId, reason),
+		(instanceId) => terminateAndPurgeBenchmarkWorkflowInstance(instanceId, reason),
 	);
 	const agentRuntimeInstances = new Map<string, Set<string>>();
 	for (const cleanupRow of agentRuntimeCleanupRows) {
@@ -1100,7 +1100,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		),
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		({ runtimeAppId, instanceId }) =>
-			terminateBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason),
+			terminateAndPurgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason),
 	);
 	if (sessionIds.size > 0) {
 		await database
@@ -1126,6 +1126,14 @@ async function finalizeBenchmarkWorkflowExecutions(
 			completedAt: now,
 		})
 		.where(inArray(workflowExecutions.id, [...activeExecutionIds]));
+}
+
+async function terminateAndPurgeBenchmarkWorkflowInstance(
+	instanceId: string,
+	reason: string,
+) {
+	await terminateBenchmarkWorkflowInstance(instanceId, reason);
+	await purgeBenchmarkWorkflowInstance(instanceId);
 }
 
 async function terminateBenchmarkWorkflowInstance(
@@ -1163,6 +1171,41 @@ async function terminateBenchmarkWorkflowInstance(
 	}
 }
 
+async function purgeBenchmarkWorkflowInstance(instanceId: string) {
+	try {
+		const res = await daprFetch(
+			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}?force=true&recursive=true`,
+			{
+				method: "DELETE",
+				signal: AbortSignal.timeout(5_000),
+				maxRetries: 0,
+			},
+		);
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
+			console.warn(
+				`Failed to purge benchmark workflow ${instanceId}: ${res.status} ${detail}`,
+			);
+		}
+	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return;
+		console.warn(
+			`Failed to purge benchmark workflow ${instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
+
+async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
+	runtimeAppId: string,
+	instanceId: string,
+	reason: string,
+) {
+	await terminateBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason);
+	await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
+}
+
 async function terminateBenchmarkAgentRuntimeInstance(
 	runtimeAppId: string,
 	instanceId: string,
@@ -1191,6 +1234,35 @@ async function terminateBenchmarkAgentRuntimeInstance(
 		console.warn(
 			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
 			err,
+		);
+	}
+}
+
+async function purgeBenchmarkAgentRuntimeInstance(
+	runtimeAppId: string,
+	instanceId: string,
+) {
+	try {
+		const res = await daprFetch(
+			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}?force=true&recursive=true`,
+			{
+				method: "DELETE",
+				signal: AbortSignal.timeout(5_000),
+				maxRetries: 0,
+			},
+		);
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
+			console.warn(
+				`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
+			);
+		}
+	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return;
+		console.warn(
+			`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
+			err instanceof Error ? err.message : err,
 		);
 	}
 }
