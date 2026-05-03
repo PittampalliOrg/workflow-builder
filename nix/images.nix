@@ -158,6 +158,101 @@ let
       digest = mkDigest name image;
     };
 
+  mkNodeCliImage =
+    {
+      name,
+      src,
+      pnpmDepsHash,
+      cliEntry,
+      cliArgs,
+      port ? 3100,
+      extraEnv ? [ ],
+    }:
+    let
+      app = pkgs.stdenv.mkDerivation (finalAttrs: {
+        pname = name;
+        version = "1.0.0";
+
+        src = cleanSource src;
+
+        pnpmDeps = pkgs.fetchPnpmDeps {
+          inherit (finalAttrs) pname version src;
+          fetcherVersion = 2;
+          hash = pnpmDepsHash;
+        };
+
+        nativeBuildInputs = [
+          nodejs
+          pkgs.pnpm
+          pkgs.pnpmConfigHook
+        ];
+
+        dontBuild = true;
+
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          test -s node_modules/${cliEntry}
+          node --check node_modules/${cliEntry}
+          runHook postCheck
+        '';
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out/app"
+          cp -R package.json node_modules "$out/app/"
+          runHook postInstall
+        '';
+      });
+
+      layeredImage = pkgs.dockerTools.buildLayeredImage {
+        name = ghcrRepositoryFor name;
+        tag = "nix-ci";
+        created = "1970-01-01T00:00:01Z";
+        contents = [
+          nodejs
+          pkgs.cacert
+          app
+        ];
+        config = {
+          Entrypoint = [
+            "${nodejs}/bin/node"
+            "${app}/app/node_modules/${cliEntry}"
+          ];
+          Cmd = cliArgs;
+          WorkingDir = "${app}/app";
+          Env = [
+            "NODE_ENV=production"
+            "PORT=${toString port}"
+            "HOST=0.0.0.0"
+            "HOME=/tmp"
+            "npm_config_cache=/tmp/npm-cache"
+            "XDG_CACHE_HOME=/tmp/cache"
+            "XDG_CONFIG_HOME=/tmp/config"
+            "XDG_DATA_HOME=/tmp/data"
+            "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          ] ++ extraEnv;
+          ExposedPorts = {
+            "${toString port}/tcp" = { };
+          };
+          User = "1000:1000";
+          Labels = {
+            "org.opencontainers.image.source" = "https://github.com/PittampalliOrg/workflow-builder";
+            "org.opencontainers.image.title" = name;
+            "org.opencontainers.image.created" = "1970-01-01T00:00:01Z";
+          };
+        };
+      };
+
+      image = mkArchive name layeredImage;
+    in
+    {
+      package = app;
+      inherit image;
+      sbom = mkSbom name app;
+      digest = mkDigest name image;
+    };
+
   nodeServices = {
     mcp-gateway = mkNodeService {
       name = "mcp-gateway";
@@ -193,6 +288,34 @@ let
       copyNodeModules = true;
     };
 
+    piece-mcp-server = mkNodeService {
+      name = "piece-mcp-server";
+      src = ../services/piece-mcp-server;
+      pnpmDepsHash = "sha256-mjBUjhzIkJBFJBzSsyp6t6ayujOOCXCV+xiBynW1A8Q=";
+      port = 3100;
+      copyNodeModules = true;
+    };
+
+    playwright-mcp-gateway = mkNodeCliImage {
+      name = "playwright-mcp-gateway";
+      src = ../services/playwright-mcp-gateway;
+      pnpmDepsHash = "sha256-sNUQ/y1PD09nxv8mpE54idZurwVCtlfmhCV1RuRpuFU=";
+      cliEntry = "@playwright/mcp/cli.js";
+      cliArgs = [
+        "--port"
+        "3100"
+        "--host"
+        "0.0.0.0"
+        "--allowed-hosts"
+        "*"
+        "--output-dir"
+        "/tmp/playwright-mcp-output"
+        "--cdp-endpoint"
+        "http://chrome-sandbox-service.workflow-builder.svc.cluster.local:9222"
+      ];
+      port = 3100;
+    };
+
     workflow-mcp-server = mkNodeService {
       name = "workflow-mcp-server";
       src = ../services/workflow-mcp-server;
@@ -202,6 +325,8 @@ let
       buildScript = "build:all";
     };
   };
+
+  buildableServices = nodeServices;
 
   imageCatalog = [
     {
@@ -336,6 +461,24 @@ let
       blocker = "Depends on openshell-sandbox base plus VNC/Chromium runtime contract.";
     }
     {
+      name = "agent-runtime-controller";
+      kind = "python-kopf-controller";
+      dockerfile = "services/agent-runtime-controller/Dockerfile";
+      context = "services/agent-runtime-controller";
+      buildable = false;
+      enabled = false;
+      blocker = "Dockerfile pins kopf==1.37.2 and kubernetes==29.0.0; add an exact Python wheel lock before enabling the Nix image.";
+    }
+    {
+      name = "playwright-mcp-gateway";
+      kind = "node-cli-service";
+      dockerfile = "services/playwright-mcp-gateway/Dockerfile";
+      context = ".";
+      buildable = true;
+      enabled = false;
+      comparisonBase = "ghcr.io/pittampalliorg/playwright-mcp-gateway:latest";
+    }
+    {
       name = "workspace-runtime";
       kind = "durable-agent";
       dockerfile = "";
@@ -387,6 +530,15 @@ let
       buildable = true;
       enabled = true;
     }
+    {
+      name = "piece-mcp-server";
+      kind = "node-service";
+      dockerfile = "services/piece-mcp-server/Dockerfile";
+      context = ".";
+      buildable = true;
+      enabled = false;
+      comparisonBase = "ghcr.io/pittampalliorg/piece-mcp-server:git-7ad5a255b3f886f769d7ee0b2429f8cee3440a82";
+    }
   ];
 
   configFor = entry:
@@ -402,7 +554,7 @@ let
 
   imageConfigurations = map configFor imageCatalog;
 
-  nodePackages = lib.concatMapAttrs (
+  servicePackages = lib.concatMapAttrs (
     name: outputs:
     {
       "${name}" = outputs.package;
@@ -410,17 +562,17 @@ let
       "${name}-sbom" = outputs.sbom;
       "${name}-image-digest" = outputs.digest;
     }
-  ) nodeServices;
+  ) buildableServices;
 
-  imageNamespace = lib.mapAttrs (_: outputs: outputs.image) nodeServices;
+  imageNamespace = lib.mapAttrs (_: outputs: outputs.image) buildableServices;
 
   catalogCheck = pkgs.runCommand "workflow-builder-image-catalog-check" { } ''
-    test ${toString (builtins.length imageConfigurations)} -eq 21
+    test ${toString (builtins.length imageConfigurations)} -eq 24
     touch "$out"
   '';
 in
 {
-  packages = nodePackages // {
+  packages = servicePackages // {
     default = nodeServices.mcp-gateway.package;
   };
 
@@ -435,5 +587,5 @@ in
   } // lib.mapAttrs' (name: outputs: {
     name = "${name}-image";
     value = outputs.image;
-  }) nodeServices;
+  }) buildableServices;
 }

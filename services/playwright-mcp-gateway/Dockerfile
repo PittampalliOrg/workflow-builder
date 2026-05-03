@@ -27,15 +27,19 @@ WORKDIR /app
 
 # Install ONLY @playwright/mcp — no browser needed since we use an
 # external Chrome via CDP.
-RUN npm install -g @playwright/mcp@latest \
- && rm -rf /tmp/npm-cache /root/.npm \
+COPY services/playwright-mcp-gateway/package.json ./
+COPY services/playwright-mcp-gateway/pnpm-lock.yaml ./
+RUN corepack enable \
+ && pnpm install --prod --frozen-lockfile \
+ && pnpm store prune \
+ && rm -rf /tmp/npm-cache /root/.npm /root/.local/share/pnpm/store \
  && mkdir -p /tmp/cache /tmp/config /tmp/data \
  && chown -R 1000:1000 /app /tmp/cache /tmp/config /tmp/data
 
 USER 1000
 EXPOSE 3100
 
-ENTRYPOINT ["playwright-mcp"]
+ENTRYPOINT ["node", "/app/node_modules/@playwright/mcp/cli.js"]
 # --cdp-endpoint: connect to the external chrome-sandbox pod via its
 # CDP URL. The agent-sandbox chrome-sandbox image exposes Chromium
 # debugging on port 9222.

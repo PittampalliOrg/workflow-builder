@@ -233,6 +233,7 @@ jobs:
           SBOM_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}
           SCAN_STATUS: ${{ steps.scan.outputs.scan_status }}
           SCAN_REF: github-actions-artifact:${{ steps.sbom.outputs.artifact_name }}:${{ matrix.name }}-grype.json
+          COMPARISON_BASE_FALLBACK: ${{ matrix.comparisonBase || '' }}
           PIPELINE_RUN: ${{ github.workflow }}#${{ github.run_id }}
         shell: bash
         run: |
@@ -302,6 +303,8 @@ jobs:
           comparison_base = production_ref
           if production_digest:
               comparison_base = f"{production_ref}@{production_digest}"
+          if not comparison_base:
+              comparison_base = os.environ.get("COMPARISON_BASE_FALLBACK", "")
 
           values = {
               "images": os.environ["IMAGE_TAG"],
