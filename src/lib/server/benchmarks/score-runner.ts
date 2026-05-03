@@ -16,7 +16,7 @@
 // Idempotent: skips per (run_instance_id, scorer_name, scorer_version) if
 // already in benchmark_run_instance_scores.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import {
@@ -60,8 +60,8 @@ const SCORER_VERSION_BY_NAME: Record<ScorerName, number> = {
 };
 
 /**
- * Run all scorers for every instance in the run. Skips instances that
- * already have a score for the given (scorer_name, scorer_version) pair.
+ * Run all scorers for harness-evaluated instances in the run. Skips instances
+ * that already have a score for the given (scorer_name, scorer_version) pair.
  * Failures on individual scorers are logged + skipped (don't block other
  * scorers or other instances).
  */
@@ -102,7 +102,12 @@ async function loadRunContext(runId: string): Promise<RunInstanceContext[]> {
 				eq(benchmarkInstances.instanceId, benchmarkRunInstances.instanceId),
 			),
 		)
-		.where(eq(benchmarkRunInstances.runId, runId));
+		.where(
+			and(
+				eq(benchmarkRunInstances.runId, runId),
+				isNotNull(benchmarkRunInstances.evaluatedAt),
+			),
+		);
 	return rows;
 }
 
@@ -140,14 +145,23 @@ async function tryScorer(
 	if (!result) return;
 
 	try {
-		await db.insert(benchmarkRunInstanceScores).values({
-			runInstanceId: row.id,
-			scorerName: name,
-			scorerVersion: version,
-			score: result.score,
-			reasoning: result.reasoning ?? null,
-			metadata: result.metadata ?? {},
-		});
+		await db
+			.insert(benchmarkRunInstanceScores)
+			.values({
+				runInstanceId: row.id,
+				scorerName: name,
+				scorerVersion: version,
+				score: result.score,
+				reasoning: result.reasoning ?? null,
+				metadata: result.metadata ?? {},
+			})
+			.onConflictDoNothing({
+				target: [
+					benchmarkRunInstanceScores.runInstanceId,
+					benchmarkRunInstanceScores.scorerName,
+					benchmarkRunInstanceScores.scorerVersion,
+				],
+			});
 	} catch (err) {
 		console.warn(
 			`[bench-scorer] insert ${name} for ${row.instanceId} failed:`,

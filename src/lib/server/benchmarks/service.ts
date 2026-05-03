@@ -116,6 +116,17 @@ const ACTIVE_BENCHMARK_INSTANCE_STATUSES = [
 	"inferred",
 	"evaluating",
 ] satisfies BenchmarkRunInstanceStatus[];
+const BENCHMARK_RUN_SUMMARY_STATUS_KEYS = [
+	"queued",
+	"inferencing",
+	"inferred",
+	"evaluating",
+	"resolved",
+	"failed",
+	"error",
+	"timeout",
+	"cancelled",
+] satisfies BenchmarkRunInstanceStatus[];
 type ExecutionStatus =
 	| "pending"
 	| "running"
@@ -143,6 +154,16 @@ type BenchmarkRunInstanceTerminalInput = {
 function requireDb() {
 	if (!db) throw error(503, "Database not configured");
 	return db;
+}
+
+export function shouldFinalizeBenchmarkLifecycle(row: {
+	status: BenchmarkRunInstanceStatus;
+	inferenceStatus: BenchmarkInferenceStatus;
+}): boolean {
+	return (
+		INSTANCE_TERMINAL_STATUSES.has(row.status) ||
+		(row.inferenceStatus !== "queued" && row.inferenceStatus !== "inferencing")
+	);
 }
 
 export function isBenignDaprTerminationMiss(input: unknown): boolean {
@@ -1186,6 +1207,7 @@ export async function recomputeRunSummary(runId: string) {
 			.select({
 				id: benchmarkRunInstances.id,
 				status: benchmarkRunInstances.status,
+				inferenceStatus: benchmarkRunInstances.inferenceStatus,
 				usage: benchmarkRunInstances.usage,
 				sessionId: benchmarkRunInstances.sessionId,
 			})
@@ -1193,8 +1215,12 @@ export async function recomputeRunSummary(runId: string) {
 			.where(eq(benchmarkRunInstances.runId, runId)),
 	]);
 	const existingSummary = isRecord(run[0]?.summary) ? run[0].summary : {};
+	const zeroedStatusBuckets = Object.fromEntries(
+		BENCHMARK_RUN_SUMMARY_STATUS_KEYS.map((status) => [status, 0]),
+	);
 	const summary = {
 		...existingSummary,
+		...zeroedStatusBuckets,
 		...summarizeRunInstances(rows.map((row) => row.status)),
 	};
 	await database
@@ -1211,7 +1237,9 @@ export async function recomputeRunSummary(runId: string) {
 	for (const row of rows) {
 		if (row.sessionId) {
 			await aggregateLlmUsageFromSessionEvents(row.sessionId);
-			await aggregateBenchmarkLifecycleFromSessionEvents(row.sessionId);
+			await aggregateBenchmarkLifecycleFromSessionEvents(row.sessionId, {
+				finalize: shouldFinalizeBenchmarkLifecycle(row),
+			});
 		}
 	}
 
@@ -1348,6 +1376,25 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			`SWE-bench metadata for ${params.instanceId} has not been imported yet`,
 		);
 	}
+	if (row.run.status !== "queued" && row.run.status !== "inferencing") {
+		return {
+			executionId: row.runInstance.workflowExecutionId,
+			daprInstanceId: row.runInstance.daprInstanceId,
+			skipped: true,
+			reason: `benchmark_run_${row.run.status}`,
+		};
+	}
+	if (
+		row.runInstance.status !== "queued" ||
+		row.runInstance.inferenceStatus !== "queued"
+	) {
+		return {
+			executionId: row.runInstance.workflowExecutionId,
+			daprInstanceId: row.runInstance.daprInstanceId,
+			skipped: true,
+			reason: `benchmark_instance_${row.runInstance.status}`,
+		};
+	}
 	await ensureBenchmarkInstanceMlflowRun(params);
 
 	const workflow = await ensureHiddenBenchmarkWorkflow({
@@ -1434,7 +1481,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			workflowSessionId: execution.id,
 		})
 		.where(eq(workflowExecutions.id, execution.id));
-	await database
+	const [updatedRunInstance] = await database
 		.update(benchmarkRunInstances)
 		.set({
 			status: "inferencing",
@@ -1445,7 +1492,42 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			startedAt: new Date(),
 			updatedAt: new Date(),
 		})
-		.where(eq(benchmarkRunInstances.id, row.runInstance.id));
+		.where(
+			and(
+				eq(benchmarkRunInstances.id, row.runInstance.id),
+				eq(benchmarkRunInstances.status, "queued"),
+				eq(benchmarkRunInstances.inferenceStatus, "queued"),
+				sql`EXISTS (
+					SELECT 1 FROM benchmark_runs
+					WHERE benchmark_runs.id = ${row.run.id}
+						AND benchmark_runs.status IN ('queued', 'inferencing')
+				)`,
+			),
+		)
+		.returning({ id: benchmarkRunInstances.id });
+	if (!updatedRunInstance) {
+		if (daprInstanceId) {
+			await terminateBenchmarkWorkflowInstance(
+				daprInstanceId,
+				"benchmark instance start superseded",
+			);
+		}
+		await database
+			.update(workflowExecutions)
+			.set({
+				status: "cancelled",
+				phase: "cancelled",
+				error: "benchmark instance start superseded",
+				completedAt: new Date(),
+			})
+			.where(eq(workflowExecutions.id, execution.id));
+		return {
+			executionId: execution.id,
+			daprInstanceId,
+			skipped: true,
+			reason: "benchmark_instance_start_superseded",
+		};
+	}
 	return { executionId: execution.id, daprInstanceId };
 }
 
@@ -1742,6 +1824,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 		)
 		.limit(1);
 	if (!row) return null;
+	if (INSTANCE_TERMINAL_STATUSES.has(row.status)) return row;
 	const now = new Date();
 	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
 		row.status,

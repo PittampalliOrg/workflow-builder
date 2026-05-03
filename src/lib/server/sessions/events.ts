@@ -156,7 +156,10 @@ export async function appendEvent(
 				// the canonical aggregation. recomputeRunSummary on evaluation-results
 				// is the deterministic backstop if even this misses anything.
 				setTimeout(
-					() => void aggregateBenchmarkLifecycleFromSessionEvents(sessionId),
+					() =>
+						void aggregateBenchmarkLifecycleFromSessionEvents(sessionId, {
+							finalize: true,
+						}),
 					2000,
 				);
 			}
@@ -324,6 +327,11 @@ async function applyInstanceMetricsSummaryToBenchmark(
 		const ttftFirstMs = readNumericOrNull(data, "ttft_first_ms");
 		const ttftFirstToolMs = readNumericOrNull(data, "ttft_first_tool_ms");
 		const terminationReason = readStringOrNull(data, "termination_reason");
+		// dapr-agent-py can emit replay-time summaries before the session is
+		// terminal. Treat generic `end_turn` as final-only so active benchmark
+		// rows do not look complete while a turn is still running.
+		const specificTerminationReason =
+			terminationReason === "end_turn" ? null : terminationReason;
 		const histogramRaw = data.tool_histogram;
 		const histogram =
 			histogramRaw && typeof histogramRaw === "object" && !Array.isArray(histogramRaw)
@@ -335,17 +343,18 @@ async function applyInstanceMetricsSummaryToBenchmark(
 		// completes write-back, then 1+ after). If we OVERWROTE the row each time,
 		// later 0-emits would clobber a real high-water mark.
 		// Fix: use GREATEST() for monotonic counters; coalesce on string/jsonb.
-		// Termination reason: prefer the latest non-end_turn value (specific
-		// signals like circuit_breaker_* should win over the default end_turn).
+		// Termination reason: accept only specific signals here. Generic
+		// `end_turn` is assigned by aggregateBenchmarkLifecycleFromSessionEvents
+		// once the session has actually finalized.
 		// Tool histogram: keep whichever has more entries (proxy for completeness).
 		await db.execute(sql`
 			UPDATE benchmark_run_instances
 			SET turn_count = GREATEST(COALESCE(turn_count, 0), COALESCE(${turnCount}, 0)::int),
 				tool_call_count = GREATEST(COALESCE(tool_call_count, 0), COALESCE(${toolCallCount}, 0)::int),
 				termination_reason = CASE
-					WHEN ${terminationReason}::text IS NULL THEN termination_reason
-					WHEN termination_reason IS NULL THEN ${terminationReason}::text
-					WHEN termination_reason = 'end_turn' AND ${terminationReason}::text != 'end_turn' THEN ${terminationReason}::text
+					WHEN ${specificTerminationReason}::text IS NULL THEN termination_reason
+					WHEN termination_reason IS NULL THEN ${specificTerminationReason}::text
+					WHEN termination_reason = 'end_turn' AND ${specificTerminationReason}::text != 'end_turn' THEN ${specificTerminationReason}::text
 					ELSE termination_reason
 				END,
 				ttft_first_ms = COALESCE(ttft_first_ms, ${ttftFirstMs}::int),
@@ -377,12 +386,14 @@ async function applyInstanceMetricsSummaryToBenchmark(
  *   2. session.status_errored → 'agent_error'
  *   3. session.turn_timeout → 'session_turn_timeout'
  *   4. session.status_idle.stop_reason.type == 'max_iters' → 'max_iters'
- *   5. otherwise → 'end_turn'
+ *   5. otherwise → 'end_turn' only when opts.finalize is true
  */
 export async function aggregateBenchmarkLifecycleFromSessionEvents(
 	sessionId: string,
+	opts: { finalize?: boolean } = {},
 ): Promise<void> {
 	if (!db) return;
+	const finalize = opts.finalize === true;
 	try {
 		await db.execute(sql`
 			WITH counts AS (
@@ -411,14 +422,20 @@ export async function aggregateBenchmarkLifecycleFromSessionEvents(
 						THEN 'agent_error'
 					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.status_idle' AND data->'stop_reason'->>'type' = 'max_iters')
 						THEN 'max_iters'
-					ELSE 'end_turn'
+					WHEN ${finalize}::boolean THEN 'end_turn'
+					ELSE NULL
 				END AS r
 			)
 			UPDATE benchmark_run_instances bri
 			SET turn_count = counts.turns,
 				tool_call_count = counts.tools,
 				tool_histogram = histogram.hist,
-				termination_reason = reason.r,
+				termination_reason = CASE
+					WHEN reason.r IS NULL THEN bri.termination_reason
+					WHEN bri.termination_reason IS NULL THEN reason.r
+					WHEN bri.termination_reason = 'end_turn' AND reason.r != 'end_turn' THEN reason.r
+					ELSE bri.termination_reason
+				END,
 				ttft_first_ms = COALESCE(ROUND(counts.ttft_first)::int, bri.ttft_first_ms),
 				ttft_first_tool_ms = COALESCE(ROUND(counts.ttft_first_tool_seconds_ms)::int, bri.ttft_first_tool_ms),
 				updated_at = NOW()

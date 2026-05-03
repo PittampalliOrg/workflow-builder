@@ -14,6 +14,7 @@ import {
 	resolveBenchmarkInferenceStatus,
 	resolveBenchmarkInstanceStatusAfterInference,
 	sanitizeSwebenchInferenceEnvironmentForRuntime,
+	shouldFinalizeBenchmarkLifecycle,
 } from "./service";
 import {
 	buildSwebenchDatasetJsonl,
@@ -169,6 +170,27 @@ describe("SWE-bench workflow spec", () => {
 			rowUpdatedAt: new Date("2026-05-02T12:09:59Z"),
 		} as Parameters<typeof benchmarkInferenceStallState>[0] & { rowUpdatedAt: Date };
 		expect(benchmarkInferenceStallState(recentBenchmarkRowTouch).stalled).toBe(true);
+	});
+
+	it("finalizes lifecycle aggregation after inference leaves active states", () => {
+		expect(
+			shouldFinalizeBenchmarkLifecycle({
+				status: "inferencing",
+				inferenceStatus: "inferencing",
+			}),
+		).toBe(false);
+		expect(
+			shouldFinalizeBenchmarkLifecycle({
+				status: "inferred",
+				inferenceStatus: "inferred",
+			}),
+		).toBe(true);
+		expect(
+			shouldFinalizeBenchmarkLifecycle({
+				status: "timeout",
+				inferenceStatus: "timeout",
+			}),
+		).toBe(true);
 	});
 
 	it("builds a canvas graph for generated SWE-bench instance runs", () => {
