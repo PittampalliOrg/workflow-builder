@@ -93,6 +93,12 @@ const SWEBENCH_PATCH_EXCLUDE_PATHS = [
 	":(exclude)**/conftest.py",
 	":(exclude)**/fixtures/**",
 ];
+const ACTIVE_BENCHMARK_INSTANCE_STATUSES = [
+	"queued",
+	"inferencing",
+	"inferred",
+	"evaluating",
+] satisfies BenchmarkRunInstanceStatus[];
 type ExecutionStatus =
 	| "pending"
 	| "running"
@@ -101,6 +107,21 @@ type ExecutionStatus =
 	| "timeout"
 	| "cancelled";
 type CompletedExecutionStatus = Exclude<ExecutionStatus, "pending" | "running">;
+type BenchmarkRunTerminalOutcome = Extract<
+	BenchmarkRunStatus,
+	"failed" | "cancelled"
+>;
+type BenchmarkRunInstanceTerminalInput = {
+	status: BenchmarkRunInstanceStatus;
+	inferenceStatus: BenchmarkInferenceStatus;
+	evaluationStatus: BenchmarkEvaluationStatus;
+	error: string | null;
+	inferenceError: string | null;
+	evaluationError: string | null;
+	terminationReason: string | null;
+	inferenceCompletedAt: Date | null;
+	evaluatedAt: Date | null;
+};
 
 function requireDb() {
 	if (!db) throw error(503, "Database not configured");
@@ -674,7 +695,14 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 		.where(and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)))
 		.limit(1);
 	if (!run) return null;
-	if (run.status === "cancelled") return run;
+	const reason = "benchmark run cancelled";
+	if (run.status === "cancelled") {
+		const now = new Date();
+		await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
+		await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
+		await recomputeRunSummary(runId);
+		return getBenchmarkRun(projectId, runId);
+	}
 	if (run.status === "completed" || run.status === "failed") {
 		throw error(409, `Cannot cancel a ${run.status} benchmark run`);
 	}
@@ -693,26 +721,9 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 				},
 			})
 			.where(eq(benchmarkRuns.id, runId));
-		await tx
-			.update(benchmarkRunInstances)
-			.set({
-				status: "cancelled",
-				inferenceStatus: "cancelled",
-				evaluationStatus: "cancelled",
-				updatedAt: now,
-			})
-			.where(
-				and(
-					eq(benchmarkRunInstances.runId, runId),
-					inArray(benchmarkRunInstances.status, [
-						"queued",
-						"inferencing",
-						"inferred",
-						"evaluating",
-					] satisfies BenchmarkRunInstanceStatus[]),
-				),
-			);
 	});
+	await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
+	await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
 	await recomputeRunSummary(runId);
 	return getBenchmarkRun(projectId, runId);
 }
@@ -747,6 +758,11 @@ export async function markBenchmarkRunStatus(
 		.set(patch)
 		.where(eq(benchmarkRuns.id, runId))
 		.returning();
+	if (status === "failed" || status === "cancelled") {
+		const reason = benchmarkRunTerminalReason(status, extra);
+		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
+		await finalizeBenchmarkWorkflowExecutions(runId, status, reason, now);
+	}
 	if (status === "evaluating") {
 		await database
 			.update(benchmarkRunInstances)
@@ -759,9 +775,7 @@ export async function markBenchmarkRunStatus(
 				and(
 					eq(benchmarkRunInstances.runId, runId),
 					inArray(benchmarkRunInstances.status, [
-						"queued",
-						"inferencing",
-						"inferred",
+						...ACTIVE_BENCHMARK_INSTANCE_STATUSES,
 						"failed",
 						"error",
 						"timeout",
@@ -775,6 +789,177 @@ export async function markBenchmarkRunStatus(
 		});
 	}
 	return updated ?? null;
+}
+
+function benchmarkRunTerminalReason(
+	status: BenchmarkRunTerminalOutcome,
+	extra: Record<string, unknown>,
+): string {
+	const error = typeof extra.error === "string" ? extra.error.trim() : "";
+	if (error) return error;
+	return status === "cancelled" ? "benchmark run cancelled" : "benchmark run failed";
+}
+
+export function benchmarkRunInstanceTerminalPatch(
+	row: BenchmarkRunInstanceTerminalInput,
+	outcome: BenchmarkRunTerminalOutcome,
+	reason: string,
+	now = new Date(),
+): Partial<typeof benchmarkRunInstances.$inferInsert> | null {
+	if (INSTANCE_TERMINAL_STATUSES.has(row.status)) return null;
+	const terminalReason =
+		outcome === "cancelled" ? "benchmark_run_cancelled" : "benchmark_run_failed";
+	const patch: Partial<typeof benchmarkRunInstances.$inferInsert> = {
+		status: outcome === "cancelled" ? "cancelled" : "error",
+		error: row.error ?? reason,
+		terminationReason: row.terminationReason ?? terminalReason,
+		updatedAt: now,
+	};
+	if (
+		row.inferenceStatus === "queued" ||
+		row.inferenceStatus === "inferencing"
+	) {
+		patch.inferenceStatus = outcome === "cancelled" ? "cancelled" : "error";
+		patch.inferenceError = row.inferenceError ?? reason;
+		if (row.inferenceStatus === "inferencing") {
+			patch.inferenceCompletedAt = row.inferenceCompletedAt ?? now;
+		}
+	}
+	if (
+		row.evaluationStatus === "pending" ||
+		row.evaluationStatus === "evaluating"
+	) {
+		patch.evaluationStatus = outcome === "cancelled" ? "cancelled" : "error";
+		patch.evaluationError = row.evaluationError ?? reason;
+		if (row.evaluationStatus === "evaluating") {
+			patch.evaluatedAt = row.evaluatedAt ?? now;
+		}
+	}
+	return patch;
+}
+
+async function finalizeActiveBenchmarkRunInstances(
+	runId: string,
+	outcome: BenchmarkRunTerminalOutcome,
+	reason: string,
+	now = new Date(),
+) {
+	const database = requireDb();
+	const rows = await database
+		.select({
+			id: benchmarkRunInstances.id,
+			status: benchmarkRunInstances.status,
+			inferenceStatus: benchmarkRunInstances.inferenceStatus,
+			evaluationStatus: benchmarkRunInstances.evaluationStatus,
+			error: benchmarkRunInstances.error,
+			inferenceError: benchmarkRunInstances.inferenceError,
+			evaluationError: benchmarkRunInstances.evaluationError,
+			terminationReason: benchmarkRunInstances.terminationReason,
+			inferenceCompletedAt: benchmarkRunInstances.inferenceCompletedAt,
+			evaluatedAt: benchmarkRunInstances.evaluatedAt,
+		})
+		.from(benchmarkRunInstances)
+		.where(
+			and(
+				eq(benchmarkRunInstances.runId, runId),
+				inArray(benchmarkRunInstances.status, ACTIVE_BENCHMARK_INSTANCE_STATUSES),
+			),
+		);
+	for (const row of rows) {
+		const patch = benchmarkRunInstanceTerminalPatch(row, outcome, reason, now);
+		if (!patch) continue;
+		await database
+			.update(benchmarkRunInstances)
+			.set(patch)
+			.where(eq(benchmarkRunInstances.id, row.id));
+	}
+}
+
+async function finalizeBenchmarkWorkflowExecutions(
+	runId: string,
+	outcome: BenchmarkRunTerminalOutcome,
+	reason: string,
+	now = new Date(),
+) {
+	const database = requireDb();
+	const rows = await database
+		.select({
+			runInstanceDaprId: benchmarkRunInstances.daprInstanceId,
+			executionId: workflowExecutions.id,
+			executionStatus: workflowExecutions.status,
+			executionPhase: workflowExecutions.phase,
+			executionDaprId: workflowExecutions.daprInstanceId,
+		})
+		.from(benchmarkRunInstances)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+		)
+		.where(eq(benchmarkRunInstances.runId, runId));
+	const activeExecutionIds = new Set<string>();
+	const daprInstanceIds = new Set<string>();
+	for (const row of rows) {
+		const hasActiveExecution =
+			row.executionStatus === "pending" ||
+			row.executionStatus === "running" ||
+			row.executionPhase === "running";
+		if (hasActiveExecution && row.executionId) {
+			activeExecutionIds.add(row.executionId);
+		}
+		const daprInstanceId = row.executionDaprId ?? row.runInstanceDaprId;
+		if ((hasActiveExecution || !row.executionId) && daprInstanceId) {
+			daprInstanceIds.add(daprInstanceId);
+		}
+	}
+	await Promise.all(
+		[...daprInstanceIds].map((instanceId) =>
+			terminateBenchmarkWorkflowInstance(instanceId, reason),
+		),
+	);
+	if (activeExecutionIds.size === 0) return;
+	await database
+		.update(workflowExecutions)
+		.set({
+			status: outcome === "cancelled" ? "cancelled" : "error",
+			phase: outcome === "cancelled" ? "cancelled" : "failed",
+			error: reason,
+			completedAt: now,
+		})
+		.where(inArray(workflowExecutions.id, [...activeExecutionIds]));
+}
+
+async function terminateBenchmarkWorkflowInstance(
+	instanceId: string,
+	reason: string,
+) {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 2_000);
+	try {
+		const res = await daprFetch(
+			`${getOrchestratorUrl()}/api/v2/workflows/${instanceId}/terminate`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ reason }),
+				maxRetries: 0,
+				signal: controller.signal,
+			},
+		);
+		if (!res.ok) {
+			console.warn(
+				`Failed to terminate benchmark workflow ${instanceId}: ${res.status} ${await res
+					.text()
+					.catch(() => "")}`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			`Failed to terminate benchmark workflow ${instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 export async function recomputeRunSummary(runId: string) {

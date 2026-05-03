@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	benchmarkInferenceStallState,
+	benchmarkRunInstanceTerminalPatch,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
@@ -665,5 +666,94 @@ describe("SWE-bench workflow spec", () => {
 		expect(resolveBenchmarkInstanceStatusAfterInference("evaluating", "error")).toBe(
 			"evaluating",
 		);
+	});
+});
+
+describe("SWE-bench terminal run cleanup", () => {
+	const now = new Date("2026-05-02T12:00:00Z");
+
+	it("cancels active inference rows without marking pending evaluation as evaluated", () => {
+		const patch = benchmarkRunInstanceTerminalPatch(
+			{
+				status: "inferencing",
+				inferenceStatus: "inferencing",
+				evaluationStatus: "pending",
+				error: null,
+				inferenceError: null,
+				evaluationError: null,
+				terminationReason: null,
+				inferenceCompletedAt: null,
+				evaluatedAt: null,
+			},
+			"cancelled",
+			"cancelled by user",
+			now,
+		);
+
+		expect(patch).toMatchObject({
+			status: "cancelled",
+			inferenceStatus: "cancelled",
+			evaluationStatus: "cancelled",
+			error: "cancelled by user",
+			inferenceError: "cancelled by user",
+			evaluationError: "cancelled by user",
+			terminationReason: "benchmark_run_cancelled",
+			inferenceCompletedAt: now,
+			updatedAt: now,
+		});
+		expect(patch).not.toHaveProperty("evaluatedAt");
+	});
+
+	it("marks failed evaluating rows as evaluation errors while preserving inferred state", () => {
+		const inferenceCompletedAt = new Date("2026-05-02T11:58:00Z");
+		const patch = benchmarkRunInstanceTerminalPatch(
+			{
+				status: "evaluating",
+				inferenceStatus: "inferred",
+				evaluationStatus: "evaluating",
+				error: null,
+				inferenceError: null,
+				evaluationError: null,
+				terminationReason: null,
+				inferenceCompletedAt,
+				evaluatedAt: null,
+			},
+			"failed",
+			"coordinator failed",
+			now,
+		);
+
+		expect(patch).toMatchObject({
+			status: "error",
+			evaluationStatus: "error",
+			error: "coordinator failed",
+			evaluationError: "coordinator failed",
+			terminationReason: "benchmark_run_failed",
+			evaluatedAt: now,
+			updatedAt: now,
+		});
+		expect(patch).not.toHaveProperty("inferenceStatus");
+		expect(patch).not.toHaveProperty("inferenceCompletedAt");
+	});
+
+	it("leaves already-terminal rows untouched", () => {
+		expect(
+			benchmarkRunInstanceTerminalPatch(
+				{
+					status: "resolved",
+					inferenceStatus: "inferred",
+					evaluationStatus: "resolved",
+					error: null,
+					inferenceError: null,
+					evaluationError: null,
+					terminationReason: null,
+					inferenceCompletedAt: now,
+					evaluatedAt: now,
+				},
+				"failed",
+				"late coordinator failure",
+				now,
+			),
+		).toBeNull();
 	});
 });
