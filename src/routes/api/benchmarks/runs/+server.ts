@@ -83,7 +83,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	try {
 		const coordinator = await startSwebenchCoordinator(run.id);
 		if (typeof coordinator.executionId === "string") {
-			await markBenchmarkRunStatus(run.id, "inferencing", {
+			await markBenchmarkRunStatus(run.id, "queued", {
 				coordinatorExecutionId: coordinator.executionId,
 			});
 		}
