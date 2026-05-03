@@ -245,6 +245,12 @@ describe("SWE-bench workflow spec", () => {
 		);
 		expect(String(checkoutStep.with.command)).toContain("set -eu\n");
 		expect(String(checkoutStep.with.command)).not.toContain("pipefail");
+		expect(String(checkoutStep.with.command)).toContain(
+			"git -c protocol.version=2 fetch --depth=1 origin 'abc123'",
+		);
+		expect(String(checkoutStep.with.command)).toContain(
+			"git clone --filter=blob:none --no-checkout 'https://github.com/sympy/sympy.git' repo",
+		);
 	});
 
 	it("extracts patches against the SWE-bench base commit", () => {
@@ -443,7 +449,8 @@ describe("SWE-bench workflow spec", () => {
 			spec.do as Array<Record<string, { with: { command: string } }>>
 		)[2].checkout_repo;
 		expect(checkout.with.command).toContain("cd /sandbox");
-		expect(checkout.with.command).toContain("git clone 'https://github.com/sympy/sympy.git' repo");
+		expect(checkout.with.command).toContain("git remote add origin 'https://github.com/sympy/sympy.git'");
+		expect(checkout.with.command).toContain("git checkout --force FETCH_HEAD");
 		expect(checkout.with.command).not.toContain("/testbed");
 		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[3]
 			.solve;
@@ -584,7 +591,9 @@ describe("SWE-bench workflow spec", () => {
 
 		expect(workspaceProfile.with.rootPath).toBe("/sandbox");
 		expect(String(checkout.with.command)).not.toContain("/testbed");
-		expect(String(checkout.with.command)).toContain("git clone 'https://github.com/sympy/sympy.git' repo");
+		expect(String(checkout.with.command)).toContain(
+			"git -c protocol.version=2 fetch --depth=1 origin 'abc123'",
+		);
 		expect(solve.with.cwd).toBe("/sandbox/repo");
 		expect(solve.with.body.overrides.cwd).toBe("/sandbox/repo");
 		expect(solve.with.body.prompt).not.toContain("Work only in /testbed");
