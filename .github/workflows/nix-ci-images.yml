@@ -178,8 +178,8 @@ jobs:
       - name: Push candidate image
         id: push
         env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -337,8 +337,8 @@ jobs:
 
       - name: Validate candidate metadata
         env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
           NIX_CI_SBOM_PATH: ${{ steps.sbom.outputs.sbom_path }}
           NIX_CI_SCAN_PATH: ${{ steps.scan.outputs.scan_path }}
         shell: bash
