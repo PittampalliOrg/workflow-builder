@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: Image name from .github/nix-ci-images.json, or all-enabled.
+        description: Image name from the Nix image catalog, or all-enabled.
         required: false
         default: all-enabled
 
@@ -20,7 +20,6 @@ permissions:
   packages: write
 
 env:
-  IMAGE_CONFIG_PATH: .github/nix-ci-images.json
   STACKS_REPOSITORY: PittampalliOrg/stacks
   CANDIDATE_PATH: packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-nix-ci-candidates.yaml
 
@@ -35,6 +34,9 @@ jobs:
       - name: Checkout workflow-builder
         uses: actions/checkout@v6
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
       - name: Generate image matrix
         id: matrix
         env:
@@ -42,16 +44,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          nix eval --json .#legacyPackages.x86_64-linux.nixCiImages > /tmp/nix-ci-images.json
 
           if [ "${REQUESTED_IMAGE}" = "all-enabled" ] || [ -z "${REQUESTED_IMAGE}" ]; then
-            matrix="$(jq -c '{include: [.images[] | select(.enabled == true)]}' "${IMAGE_CONFIG_PATH}")"
+            matrix="$(jq -c '{include: [.[] | select(.enabled == true)]}' /tmp/nix-ci-images.json)"
           else
-            matrix="$(jq -c --arg image "${REQUESTED_IMAGE}" '{include: [.images[] | select(.name == $image)]}' "${IMAGE_CONFIG_PATH}")"
+            matrix="$(jq -c --arg image "${REQUESTED_IMAGE}" '{include: [.[] | select(.name == $image and .buildable == true)]}' /tmp/nix-ci-images.json)"
           fi
 
           count="$(jq '.include | length' <<<"${matrix}")"
           if [ "${count}" -eq 0 ]; then
-            echo "::error::No Nix CI image matched '${REQUESTED_IMAGE}'."
+            echo "::error::No buildable Nix CI image matched '${REQUESTED_IMAGE}'. Check .#legacyPackages.x86_64-linux.nixCiImages for blocker details."
             exit 1
           fi
 
@@ -64,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 1
       matrix: ${{ fromJson(needs.image-matrix.outputs.matrix) }}
     env:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
