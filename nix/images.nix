@@ -28,7 +28,6 @@ let
       name;
 
   ghcrRepositoryFor = name: "ghcr.io/pittampalliorg/${repositoryFor name}";
-  candidateRepository = "ghcr.io/pittampalliorg/workflow-builder";
 
   mkArchive = name: layeredImage:
     pkgs.runCommand "${name}-docker-archive.tar" { nativeBuildInputs = [ pkgs.gzip ]; } ''
@@ -220,7 +219,7 @@ let
       dockerfile = "services/workflow-mcp-server/Dockerfile";
       context = "services/workflow-mcp-server";
       buildable = true;
-      enabled = true;
+      enabled = false;
     }
     {
       name = "mcp-gateway";
@@ -236,7 +235,7 @@ let
       dockerfile = "services/function-router/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = true;
+      enabled = false;
     }
     {
       name = "workflow-orchestrator";
@@ -262,7 +261,7 @@ let
       dockerfile = "services/code-runtime/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = true;
+      enabled = false;
     }
     {
       name = "openshell-agent-runtime";
@@ -378,7 +377,7 @@ let
       dockerfile = "services/fn-system/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = true;
+      enabled = false;
     }
     {
       name = "fn-activepieces";
@@ -386,17 +385,16 @@ let
       dockerfile = "services/fn-activepieces/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = true;
+      enabled = false;
     }
   ];
 
   configFor = entry:
     let
-      productionRepo = ghcrRepositoryFor entry.name;
+      repo = ghcrRepositoryFor entry.name;
     in
     entry // {
-      registryRepository = candidateRepository;
-      productionRegistryRepository = productionRepo;
+      registryRepository = repo;
       nixPackage = "${entry.name}-image";
       digestPackage = "${entry.name}-image-digest";
       sbomPackage = "${entry.name}-sbom";
