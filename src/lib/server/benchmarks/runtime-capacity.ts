@@ -1,3 +1,5 @@
+import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
+
 export type BenchmarkRuntimeCapacitySnapshot = {
 	requestedConcurrency: number;
 	effectiveConcurrency: number;
@@ -10,7 +12,11 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	runtimeSlots: number;
 	slotsPerReplica: number;
 	maxActiveSessions: number;
+	configuredMaxActiveSandboxes: number | null;
 	maxActiveSandboxes: number | null;
+	schedulableSandboxCapacity: number | null;
+	sandboxCapacity: BenchmarkSandboxCapacitySnapshot | null;
+	modelMaxActiveRequests: number | null;
 	capReason: string | null;
 };
 
@@ -23,6 +29,9 @@ export type BenchmarkRuntimeCapacityInput = {
 	requestedConcurrency?: unknown;
 	slotsPerReplica?: number | null;
 	maxActiveSessions?: number | null;
+	schedulableSandboxCapacity?: number | null;
+	sandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
+	modelMaxActiveRequests?: number | null;
 };
 
 const DEFAULT_RUNTIME_CLASS = "coding";
@@ -41,6 +50,16 @@ function positiveInt(value: unknown): number | null {
 				? Number.parseInt(value, 10)
 				: Number.NaN;
 	return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function nonNegativeInt(value: unknown): number | null {
+	const parsed =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim()
+				? Number.parseInt(value, 10)
+				: Number.NaN;
+	return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function normalizeRuntimeClass(value: string | null | undefined): string {
@@ -132,12 +151,30 @@ export function estimateBenchmarkRuntimeCapacity(
 	);
 	const globalMax = envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", 10);
 	const sandboxMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_SANDBOXES);
+	const schedulableSandboxCapacity = nonNegativeInt(
+		input.schedulableSandboxCapacity ??
+			(input.sandboxCapacity?.error
+				? undefined
+				: input.sandboxCapacity?.schedulableSandboxCapacity),
+	);
+	const sandboxCapacityLimit =
+		sandboxMax == null && schedulableSandboxCapacity == null
+			? null
+			: Math.min(
+					sandboxMax ?? Number.POSITIVE_INFINITY,
+					schedulableSandboxCapacity ?? Number.POSITIVE_INFINITY,
+				);
+	const modelMax =
+		positiveInt(input.modelMaxActiveRequests) ??
+		positiveInt(process.env.BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS) ??
+		positiveInt(process.env.BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS);
 	const effective = Math.min(
 		requested,
 		selectedCount,
 		runtimeMax,
 		globalMax,
-		sandboxMax ?? Number.POSITIVE_INFINITY,
+		sandboxCapacityLimit ?? Number.POSITIVE_INFINITY,
+		modelMax ?? Number.POSITIVE_INFINITY,
 	);
 	const reasons: string[] = [];
 	if (requested > selectedCount && effective === selectedCount) {
@@ -158,6 +195,16 @@ export function estimateBenchmarkRuntimeCapacity(
 	if (sandboxMax && requested > sandboxMax && effective === sandboxMax) {
 		reasons.push("sandbox_capacity");
 	}
+	if (
+		schedulableSandboxCapacity != null &&
+		requested > schedulableSandboxCapacity &&
+		effective === schedulableSandboxCapacity
+	) {
+		reasons.push("sandbox_schedulable_capacity");
+	}
+	if (modelMax && requested > modelMax && effective === modelMax) {
+		reasons.push("model_capacity");
+	}
 
 	return {
 		requestedConcurrency: requested,
@@ -173,9 +220,13 @@ export function estimateBenchmarkRuntimeCapacity(
 		maxActiveSessions: Math.min(
 			runtimeMax,
 			globalMax,
-			sandboxMax ?? Number.POSITIVE_INFINITY,
+			modelMax ?? Number.POSITIVE_INFINITY,
 		),
-		maxActiveSandboxes: sandboxMax,
+		configuredMaxActiveSandboxes: sandboxMax,
+		maxActiveSandboxes: sandboxCapacityLimit,
+		schedulableSandboxCapacity,
+		sandboxCapacity: input.sandboxCapacity ?? null,
+		modelMaxActiveRequests: modelMax,
 		capReason: reasons.length > 0 ? reasons.join("+") : null,
 	};
 }

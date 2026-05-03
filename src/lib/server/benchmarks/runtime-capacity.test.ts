@@ -114,9 +114,96 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			effectiveConcurrency: 8,
 			perSidecarWorkflowLimit: 5,
 			runtimeSlots: 15,
-			maxActiveSessions: 8,
+			maxActiveSessions: 15,
+			configuredMaxActiveSandboxes: 8,
 			maxActiveSandboxes: 8,
 			capReason: "sandbox_capacity",
+		});
+	});
+
+	it("caps run concurrency by schedulable sandbox headroom", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "20");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			requestedInstanceCount: 20,
+			requestedConcurrency: 20,
+			schedulableSandboxCapacity: 6,
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 6,
+			runtimeSlots: 20,
+			schedulableSandboxCapacity: 6,
+			maxActiveSandboxes: 6,
+			capReason: "sandbox_schedulable_capacity",
+		});
+	});
+
+	it("allows zero effective concurrency when no sandbox can schedule", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "20");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			requestedInstanceCount: 20,
+			requestedConcurrency: 10,
+			schedulableSandboxCapacity: 0,
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 0,
+			maxActiveSandboxes: 0,
+			schedulableSandboxCapacity: 0,
+			capReason: "sandbox_schedulable_capacity",
+		});
+	});
+
+	it("keeps configured sandbox caps as a hard safety cap", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "50");
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_SANDBOXES", "8");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			requestedInstanceCount: 20,
+			requestedConcurrency: 20,
+			schedulableSandboxCapacity: 12,
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 8,
+			configuredMaxActiveSandboxes: 8,
+			maxActiveSandboxes: 8,
+			schedulableSandboxCapacity: 12,
+			capReason: "sandbox_capacity",
+		});
+	});
+
+	it("accounts for a model request cap independently", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "50");
+		vi.stubEnv("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS", "7");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			requestedInstanceCount: 20,
+			requestedConcurrency: 20,
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 7,
+			modelMaxActiveRequests: 7,
+			capReason: "model_capacity",
 		});
 	});
 

@@ -7,6 +7,10 @@ import {
 	benchmarkRuns,
 	type BenchmarkResourceLeaseType,
 } from "$lib/server/db/schema";
+import {
+	loadSchedulableSandboxCapacitySnapshot,
+	type BenchmarkSandboxCapacitySnapshot,
+} from "./sandbox-capacity";
 
 const INFERENCE_RESOURCES = [
 	"inference_slot",
@@ -61,6 +65,16 @@ function positiveInt(value: unknown): number | null {
 	return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function nonNegativeInt(value: unknown): number | null {
+	const parsed =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim()
+				? Number.parseInt(value, 10)
+				: Number.NaN;
+	return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function envPositiveInt(name: string): number | null {
 	return positiveInt(env[name]);
 }
@@ -108,9 +122,45 @@ function capacityNumber(
 	return positiveInt(capacity[key]);
 }
 
+function capacityNonNegativeNumber(
+	capacity: Record<string, unknown>,
+	key: string,
+): number | null {
+	return nonNegativeInt(capacity[key]);
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+	return isRecord(value) ? value : null;
+}
+
+function sandboxCapacityLimit(
+	capacity: Record<string, unknown>,
+	liveSandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null,
+): number | null {
+	const configured = envPositiveInt("BENCHMARK_MAX_ACTIVE_SANDBOXES");
+	const liveTotal = liveSandboxCapacity?.error
+		? null
+		: nonNegativeInt(liveSandboxCapacity?.totalSchedulableSandboxCapacity);
+	const storedSandboxCapacity = recordValue(capacity.sandboxCapacity);
+	const storedTotal =
+		typeof storedSandboxCapacity?.error === "string"
+			? null
+			: capacityNonNegativeNumber(
+					storedSandboxCapacity ?? {},
+					"totalSchedulableSandboxCapacity",
+				);
+	const storedMaxActive = capacityNonNegativeNumber(capacity, "maxActiveSandboxes");
+	const candidates = [configured, liveTotal, storedTotal, storedMaxActive].filter(
+		(value): value is number => value != null,
+	);
+	if (candidates.length === 0) return null;
+	return Math.min(...candidates);
+}
+
 function resourceCapacity(
 	run: BenchmarkRunForLease,
 	resourceType: BenchmarkResourceLeaseType,
+	liveSandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null,
 ): { capacityKey: string; limit: number } {
 	const capacity = capacitySummary(run);
 	const runConcurrency = Math.max(1, positiveInt(run.concurrency) ?? 1);
@@ -130,8 +180,7 @@ function resourceCapacity(
 			return {
 				capacityKey: "openshell",
 				limit:
-					envPositiveInt("BENCHMARK_MAX_ACTIVE_SANDBOXES") ??
-					capacityNumber(capacity, "maxActiveSandboxes") ??
+					sandboxCapacityLimit(capacity, liveSandboxCapacity) ??
 					effective,
 			};
 		case "agent_runtime_slot":
@@ -169,6 +218,36 @@ function resourceCapacity(
 	}
 }
 
+export const __benchmarkResourceLeasesForTest = {
+	admissionLimit,
+	resourceCapacity,
+	sandboxCapacityLimit,
+};
+
+function admissionLimit(params: {
+	resourceType: BenchmarkResourceLeaseType;
+	limit: number;
+	active: number;
+	liveSandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
+}): number {
+	if (
+		params.resourceType !== "openshell_sandbox" ||
+		!params.liveSandboxCapacity ||
+		params.liveSandboxCapacity.error
+	) {
+		return params.limit;
+	}
+	const available = nonNegativeInt(
+		params.liveSandboxCapacity.availableSandboxSlots,
+	);
+	if (available == null) return params.limit;
+	const currentSwebenchPods =
+		(nonNegativeInt(params.liveSandboxCapacity.activeSwebenchPods) ?? 0) +
+		(nonNegativeInt(params.liveSandboxCapacity.pendingSwebenchPods) ?? 0);
+	const schedulerLimit = available + Math.min(params.active, currentSwebenchPods);
+	return Math.min(params.limit, schedulerLimit);
+}
+
 function defaultLeaseSeconds(run: BenchmarkRunForLease): number {
 	return (
 		envPositiveInt("BENCHMARK_RESOURCE_LEASE_SECONDS") ??
@@ -199,6 +278,9 @@ export async function acquireBenchmarkResourceLeases(
 			: null;
 	const holderId = leaseHolderId({ runId: params.runId, instanceId, phase });
 	const resources = leaseResources(params.resources);
+	const liveSandboxCapacity = resources.includes("openshell_sandbox")
+		? await loadSchedulableSandboxCapacitySnapshot()
+		: null;
 
 	return database.transaction(async (tx) => {
 		const [run] = await tx
@@ -236,7 +318,7 @@ export async function acquireBenchmarkResourceLeases(
 
 		const requested = resources.map((resourceType) => ({
 			resourceType,
-			...resourceCapacity(run, resourceType),
+			...resourceCapacity(run, resourceType, liveSandboxCapacity),
 		}));
 
 		for (const resource of requested) {
@@ -275,9 +357,15 @@ export async function acquireBenchmarkResourceLeases(
 						eq(benchmarkResourceLeases.capacityKey, resource.capacityKey),
 						eq(benchmarkResourceLeases.status, "active"),
 					),
-				);
+			);
 			const active = Number(activeRows[0]?.count ?? 0);
-			if (active + 1 > resource.limit) {
+			const limit = admissionLimit({
+				resourceType: resource.resourceType,
+				limit: resource.limit,
+				active,
+				liveSandboxCapacity,
+			});
+			if (active + 1 > limit) {
 				return {
 					admitted: false,
 					runId: params.runId,
@@ -293,7 +381,7 @@ export async function acquireBenchmarkResourceLeases(
 					blockedBy: resource.resourceType,
 					reason: "capacity_exhausted",
 					active,
-					limit: resource.limit,
+					limit,
 					retryAfterSeconds: envPositiveInt("BENCHMARK_LEASE_RETRY_SECONDS") ?? 15,
 				};
 			}

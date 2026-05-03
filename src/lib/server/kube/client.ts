@@ -85,6 +85,10 @@ export type KubeContainerSpec = {
 	name?: string;
 	image?: string;
 	imagePullPolicy?: string;
+	resources?: {
+		requests?: Record<string, string | number>;
+		limits?: Record<string, string | number>;
+	};
 };
 
 export type KubeDeployment = {
@@ -136,6 +140,7 @@ export type KubePod = {
 		creationTimestamp?: string;
 	};
 	spec?: {
+		nodeName?: string;
 		containers?: KubeContainerSpec[];
 		initContainers?: KubeContainerSpec[];
 	};
@@ -167,6 +172,31 @@ export type KubePod = {
 	};
 };
 
+export type KubeNode = {
+	metadata?: {
+		name?: string;
+		labels?: Record<string, string>;
+	};
+	spec?: {
+		unschedulable?: boolean;
+		taints?: Array<{
+			key?: string;
+			value?: string;
+			effect?: string;
+		}>;
+	};
+	status?: {
+		allocatable?: Record<string, string | number>;
+		conditions?: Array<{
+			type?: string;
+			status?: string;
+			reason?: string;
+			message?: string;
+			lastTransitionTime?: string;
+		}>;
+	};
+};
+
 export async function listDeployments(namespace?: string): Promise<KubeDeployment[]> {
 	const ns = namespace ?? (await getOwnNamespace());
 	const res = await kubeFetch(`/apis/apps/v1/namespaces/${encodeURIComponent(ns)}/deployments`);
@@ -184,6 +214,24 @@ export async function listPods(namespace?: string): Promise<KubePod[]> {
 		throw new Error(`listPods ${ns} failed: ${res.status} ${await res.text()}`);
 	}
 	const body = (await res.json()) as { items?: KubePod[] };
+	return body.items ?? [];
+}
+
+export async function listPodsAllNamespaces(): Promise<KubePod[]> {
+	const res = await kubeFetch("/api/v1/pods");
+	if (!res.ok) {
+		throw new Error(`listPods all namespaces failed: ${res.status} ${await res.text()}`);
+	}
+	const body = (await res.json()) as { items?: KubePod[] };
+	return body.items ?? [];
+}
+
+export async function listNodes(): Promise<KubeNode[]> {
+	const res = await kubeFetch("/api/v1/nodes");
+	if (!res.ok) {
+		throw new Error(`listNodes failed: ${res.status} ${await res.text()}`);
+	}
+	const body = (await res.json()) as { items?: KubeNode[] };
 	return body.items ?? [];
 }
 

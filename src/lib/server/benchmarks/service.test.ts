@@ -317,6 +317,38 @@ describe("SWE-bench workflow spec", () => {
 		});
 	});
 
+	it("does not generate per-instance environment build or ensure steps", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: validatedInferenceEnvironment(),
+		});
+
+		const steps = spec.do as Array<Record<string, { call: string }>>;
+		const taskEntries = steps.flatMap((step) => Object.entries(step));
+		expect(taskEntries.map(([name]) => name)).toEqual([
+			"workspace_profile",
+			"checkout_repo",
+			"solve",
+			"extract_patch",
+			"cleanup_workspace",
+		]);
+		for (const [name, task] of taskEntries) {
+			expect(name).not.toMatch(/build|ensure|environment/i);
+			expect(task.call).not.toMatch(/build|ensure|environment/i);
+		}
+	});
+
 	it("can retain SWE-bench sandboxes when explicitly enabled", () => {
 		vi.stubEnv("SWEBENCH_KEEP_SANDBOX_AFTER_RUN", "true");
 		const spec = buildSwebenchInstanceWorkflowSpec({

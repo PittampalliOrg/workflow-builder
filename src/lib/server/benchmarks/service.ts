@@ -49,6 +49,7 @@ import {
 	type ValidBenchmarkAgent,
 } from "./agents";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
+import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
 import {
 	buildSwebenchDatasetJsonl,
 	buildPredictionsJsonl,
@@ -540,6 +541,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		runtimeAppId: agent.runtimeAppId,
 		config: agent.config,
 	});
+	const sandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
 	const capacity = estimateBenchmarkRuntimeCapacity({
 		runtimeClass: runtimeRoute.runtimeClass,
 		runtimeIsolation: runtimeRoute.isolation,
@@ -547,6 +549,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		poolMaxReplicas: runtimeRoute.pool?.maxReplicas,
 		slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
 		maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
+		sandboxCapacity,
 		requestedInstanceCount: instanceIds.length,
 		requestedConcurrency: input.concurrency,
 	});
