@@ -51,6 +51,14 @@
 	let errorMessage = $state<string | null>(null);
 
 	const selectedAgent = $derived(runnableAgents.find((a) => a.id === agentId) ?? null);
+	const selectedCapacity = $derived(selectedAgent?.benchmarkCapacity ?? null);
+	const maxActiveInference = $derived(Math.max(1, selectedCapacity?.maxActiveSessions ?? 10));
+	const effectiveInferenceConcurrency = $derived(
+		Math.max(1, Math.min(instanceIds.length || 1, concurrency, maxActiveInference))
+	);
+	const inferenceConcurrencyCapped = $derived(
+		instanceIds.length > 0 && effectiveInferenceConcurrency < instanceIds.length
+	);
 
 	// When the sheet opens with `defaults` (e.g. fork from compare page),
 	// pre-fill the form. Reset whenever `defaults` changes between opens.
@@ -95,9 +103,9 @@
 		// Rough wall-clock estimate. Assumes ~7 minutes per instance with bounded
 		// concurrency. Real runs vary widely; this is a rough prior so the user
 		// has a sense of magnitude before submitting.
-		if (instanceIds.length === 0 || concurrency <= 0) return 0;
+		if (instanceIds.length === 0 || effectiveInferenceConcurrency <= 0) return 0;
 		const perInstanceMinutes = 7;
-		return Math.ceil((instanceIds.length / concurrency) * perInstanceMinutes);
+		return Math.ceil((instanceIds.length / effectiveInferenceConcurrency) * perInstanceMinutes);
 	});
 
 	function formatEstimate(mins: number): string {
@@ -217,6 +225,18 @@
 						<Badge variant="outline" class="text-[10px]">+{remainingCount} more</Badge>
 					{/if}
 				</div>
+				{#if inferenceConcurrencyCapped}
+					<div class="rounded border border-border bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">
+						Effective active inference concurrency:
+						<span class="font-mono text-foreground">{effectiveInferenceConcurrency}</span>
+						{#if selectedCapacity}
+							<span>
+								· {selectedCapacity.runtimeClass} pool cap {selectedCapacity.maxActiveSessions}
+								({selectedCapacity.runtimeReplicas}×{selectedCapacity.slotsPerReplica})
+							</span>
+						{/if}
+					</div>
+				{/if}
 			</div>
 
 			<!-- Agent -->
@@ -306,7 +326,8 @@
 					<span class="font-mono text-sm tabular-nums w-8 text-right">{concurrency}</span>
 				</div>
 				<p class="text-[10px] text-muted-foreground">
-					Will dispatch up to {concurrency} parallel <code>swebench_instance_workflow</code> children. Capped at 32 by the coordinator.
+					Will dispatch up to {effectiveInferenceConcurrency} active
+					<code>swebench_instance_workflow</code> children after runtime admission.
 				</p>
 			</div>
 

@@ -38,8 +38,10 @@ DAPR_COMPONENT_PLURAL = "components"
 
 LABEL_ROLE = "agents.x-k8s.io/role"
 LABEL_SLUG = "agents.x-k8s.io/slug"
+LABEL_APP_ID = "agents.x-k8s.io/app-id"
 LABEL_RUNTIME_CLASS = "agents.x-k8s.io/runtime-class"
 LABEL_RUNTIME_ISOLATION = "agents.x-k8s.io/runtime-isolation"
+ANNO_APP_ID = LABEL_APP_ID
 ANNO_WAKE = "agents.x-k8s.io/wake"
 ANNO_SLEEP = "agents.x-k8s.io/sleep"
 ANNO_LAST_ACTIVE = "agents.x-k8s.io/last-active"
@@ -117,6 +119,8 @@ DEFAULT_PW_MCP_IMAGE = os.environ.get(
 
 
 def _load_kube() -> None:
+    if os.environ.get("AGENT_RUNTIME_CONTROLLER_SKIP_KUBE_LOAD") == "1":
+        return
     try:
         config.load_incluster_config()
     except config.ConfigException:
@@ -335,7 +339,7 @@ def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str
 def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[str, Any]:
     image = spec["environment"]["imageTag"]
     slug = spec["agentSlug"]
-    app_id = spec.get("appId") or _deployment_name(slug)
+    app_id = _app_id(spec)
     runtime_class = _runtime_class(spec)
     runtime_isolation = _runtime_isolation(spec)
     bootstrap = json.dumps(spec.get("mcpServers") or [])
@@ -348,10 +352,18 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     # then trigger a WorkflowRetryPolicy loop that leaks Browserstation
     # browsers).
     is_browser_use = "browser-use-agent" in image
-    default_limits = {"memory": "2Gi" if is_browser_use else "1Gi", "cpu": "1000m"}
+    if is_browser_use:
+        default_resources = {
+            "requests": {"memory": "128Mi", "cpu": "75m"},
+            "limits": {"memory": "2Gi", "cpu": "1000m"},
+        }
+    else:
+        default_resources = {
+            "requests": {"memory": "512Mi", "cpu": "250m"},
+            "limits": {"memory": "2Gi", "cpu": "1500m"},
+        }
     resources = spec.get("resources") or {
-        "requests": {"memory": "128Mi", "cpu": "75m"},
-        "limits": default_limits,
+        **default_resources,
     }
     pull_secrets = spec.get("imagePullSecrets") or [{"name": n} for n in DEFAULT_PULL_SECRETS]
     service_account = spec.get("serviceAccountName") or DEFAULT_SA
@@ -448,6 +460,29 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
         "initContainers": [openshell_init],
         "containers": [],  # filled below
         "volumes": [*openshell_volumes, *extra_volumes],
+        "topologySpreadConstraints": [
+            {
+                "maxSkew": 1,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {
+                    "matchLabels": {
+                        LABEL_ROLE: "agent-runtime",
+                    },
+                },
+            },
+        ],
+    }
+    runtime_labels = {
+        "app": name,
+        LABEL_ROLE: "agent-runtime",
+        LABEL_SLUG: slug,
+        LABEL_APP_ID: app_id,
+        LABEL_RUNTIME_CLASS: runtime_class,
+        LABEL_RUNTIME_ISOLATION: runtime_isolation,
+    }
+    runtime_annotations = {
+        ANNO_APP_ID: app_id,
     }
 
     return {
@@ -456,30 +491,19 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
         "metadata": {
             "name": name,
             "namespace": namespace,
-            "labels": {
-                "app": name,
-                LABEL_ROLE: "agent-runtime",
-                LABEL_SLUG: slug,
-                LABEL_RUNTIME_CLASS: runtime_class,
-                LABEL_RUNTIME_ISOLATION: runtime_isolation,
-            },
+            "labels": runtime_labels,
+            "annotations": runtime_annotations,
         },
         "spec": {
             "replicas": _min_replicas(spec),
             "selector": {"matchLabels": {"app": name}},
             "template": {
                 "metadata": {
-                    "labels": {
-                        "app": name,
-                        LABEL_ROLE: "agent-runtime",
-                        LABEL_SLUG: slug,
-                        LABEL_RUNTIME_CLASS: runtime_class,
-                        LABEL_RUNTIME_ISOLATION: runtime_isolation,
-                    },
+                    "labels": runtime_labels,
                     # dapr.io/enabled + dapr.io/app-id are injected by the
                     # openshell-sandbox-dapr-webhook; we only declare the
                     # label so the webhook matches this Pod.
-                    "annotations": {},
+                    "annotations": runtime_annotations,
                 },
                 "spec": {
                     **pod_spec,

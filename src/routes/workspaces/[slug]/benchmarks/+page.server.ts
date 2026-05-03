@@ -8,6 +8,9 @@ import {
 	benchmarkSuites,
 } from "$lib/server/db/schema";
 import { ensureDefaultBenchmarkSuites } from "$lib/server/benchmarks/service";
+import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
+import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
+import type { AgentConfig } from "$lib/types/agents";
 import type {
 	BenchmarkInstanceRow,
 	RepoFacet,
@@ -44,6 +47,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					runtime: agents.runtime,
 					registryStatus: agents.registryStatus,
 					currentVersionId: agents.currentVersionId,
+					runtimeAppId: agents.runtimeAppId,
 					versionNumber: agentVersions.version,
 					config: agentVersions.config,
 				})
@@ -71,6 +75,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					runtime: string;
 					registryStatus: string | null;
 					currentVersionId: string | null;
+					runtimeAppId: string | null;
 					versionNumber: number | null;
 					config: Record<string, unknown> | null;
 				}>,
@@ -163,6 +168,21 @@ export const load: PageServerLoad = async ({ locals }) => {
 			const cfg = (row.config ?? {}) as Record<string, unknown>;
 			const modelSpec =
 				typeof cfg.modelSpec === "string" ? cfg.modelSpec : null;
+			const runtimeRoute = resolveAgentRuntimeRoute({
+				agentSlug: row.slug,
+				runtimeAppId: row.runtimeAppId,
+				config: cfg as AgentConfig,
+			});
+			const capacity = estimateBenchmarkRuntimeCapacity({
+				runtimeClass: runtimeRoute.runtimeClass,
+				runtimeIsolation: runtimeRoute.isolation,
+				runtimeAppId: runtimeRoute.appId,
+				poolMaxReplicas: runtimeRoute.pool?.maxReplicas,
+				slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
+				maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
+				requestedInstanceCount: 500,
+				requestedConcurrency: 500,
+			});
 			return {
 				id: row.id,
 				slug: row.slug,
@@ -172,6 +192,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 				currentVersion: row.versionNumber,
 				registryStatus: row.registryStatus ?? "unregistered",
 				modelSpec,
+				benchmarkCapacity: {
+					runtimeClass: capacity.runtimeClass,
+					runtimeAppId: capacity.runtimeAppId,
+					runtimeReplicas: capacity.runtimeReplicas,
+					slotsPerReplica: capacity.slotsPerReplica,
+					maxActiveSessions: capacity.maxActiveSessions,
+				},
 			};
 		});
 

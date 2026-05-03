@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	benchmarkInferenceStallState,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
@@ -16,6 +17,10 @@ import {
 	findMissingSwebenchMetadata,
 	isCompleteSwebenchInstanceMetadata,
 } from "./swebench";
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("SWE-bench DB metadata", () => {
 	it("detects missing or incomplete imported instance metadata", () => {
@@ -97,6 +102,12 @@ describe("SWE-bench DB metadata", () => {
 
 describe("SWE-bench workflow spec", () => {
 	it("caps stored benchmark concurrency to the selected instance count", () => {
+		vi.stubEnv("BENCHMARK_DEFAULT_CONCURRENCY", "5");
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "10");
+		vi.stubEnv(
+			"AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON",
+			JSON.stringify({ coding: 5, office: 2, browser: 1, testing: 2 }),
+		);
 		expect(
 			effectiveBenchmarkConcurrency({
 				instanceCount: 3,
@@ -110,7 +121,41 @@ describe("SWE-bench workflow spec", () => {
 				concurrency: 0,
 				evaluationConcurrency: undefined,
 			}),
-		).toEqual({ concurrency: 1, evaluationConcurrency: 5 });
+		).toEqual({ concurrency: 5, evaluationConcurrency: 5 });
+		expect(
+			effectiveBenchmarkConcurrency({
+				instanceCount: 25,
+				concurrency: 25,
+				runtimeClass: "coding",
+				runtimeIsolation: "shared",
+				runtimeAppId: "agent-runtime-pool-coding",
+				poolMaxReplicas: 2,
+			}).concurrency,
+		).toBe(10);
+	});
+
+	it("detects inferencing stalls from session/event progress", () => {
+		const now = new Date("2026-05-02T12:10:00Z");
+		expect(
+			benchmarkInferenceStallState({
+				now,
+				stallSeconds: 480,
+				startedAt: new Date("2026-05-02T12:00:00Z"),
+				sessionUpdatedAt: new Date("2026-05-02T12:01:00Z"),
+				latestEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
+			}),
+		).toMatchObject({
+			stalled: true,
+			stalledSeconds: 510,
+		});
+		expect(
+			benchmarkInferenceStallState({
+				now,
+				stallSeconds: 480,
+				startedAt: new Date("2026-05-02T12:00:00Z"),
+				latestEventCreatedAt: new Date("2026-05-02T12:06:00Z"),
+			}).stalled,
+		).toBe(false);
 	});
 
 	it("builds a canvas graph for generated SWE-bench instance runs", () => {

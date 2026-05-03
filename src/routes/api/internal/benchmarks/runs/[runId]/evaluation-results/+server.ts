@@ -107,9 +107,12 @@ export const POST: RequestHandler = async ({ request, params }) => {
 					"evaluating",
 				] satisfies BenchmarkRunInstanceStatus[]),
 			),
-		);
+	);
 	if (activeRows.length === 0) {
-		const failed = (summary.failed ?? 0) + (summary.error ?? 0) + (summary.timeout ?? 0);
+		const failed =
+			Number(summary.failed ?? 0) +
+			Number(summary.error ?? 0) +
+			Number(summary.timeout ?? 0);
 		await markBenchmarkRunStatus(params.runId, "completed", {
 			summary,
 			error:

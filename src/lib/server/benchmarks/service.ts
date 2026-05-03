@@ -38,10 +38,13 @@ import {
 } from "$lib/server/db/schema";
 import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
 import { resolveSpecAgentRefs } from "$lib/server/agents/resolver";
+import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
+import type { AgentConfig } from "$lib/types/agents";
 import {
 	assertDaprAgentPyBenchmarkAgent,
 	type ValidBenchmarkAgent,
 } from "./agents";
+import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
 import {
 	buildSwebenchDatasetJsonl,
 	buildPredictionsJsonl,
@@ -407,11 +410,27 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	if (instanceIds.length > 500) {
 		throw error(400, "A benchmark run may include at most 500 instances");
 	}
-	const { concurrency, evaluationConcurrency } = effectiveBenchmarkConcurrency({
+	const runtimeRoute = resolveAgentRuntimeRoute({
+		agentSlug: agent.slug,
+		runtimeAppId: agent.runtimeAppId,
+		config: agent.config,
+	});
+	const capacity = estimateBenchmarkRuntimeCapacity({
+		runtimeClass: runtimeRoute.runtimeClass,
+		runtimeIsolation: runtimeRoute.isolation,
+		runtimeAppId: runtimeRoute.appId,
+		poolMaxReplicas: runtimeRoute.pool?.maxReplicas,
+		slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
+		maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
+		requestedInstanceCount: instanceIds.length,
+		requestedConcurrency: input.concurrency,
+	});
+	const { evaluationConcurrency } = effectiveBenchmarkConcurrency({
 		instanceCount: instanceIds.length,
-		concurrency: input.concurrency,
+		concurrency: capacity.effectiveConcurrency,
 		evaluationConcurrency: input.evaluationConcurrency,
 	});
+	const concurrency = capacity.effectiveConcurrency;
 	const timeoutSeconds = clampInteger(
 		input.timeoutSeconds,
 		60,
@@ -463,7 +482,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 				agentId: agent.id,
 				agentVersion: agent.version,
 				agentRuntime: agent.runtime,
-				agentRuntimeAppId: agent.runtimeAppId,
+				agentRuntimeAppId: runtimeRoute.appId,
 				status: "queued",
 				modelNameOrPath,
 				modelConfigLabel: input.modelConfigLabel?.trim() || null,
@@ -473,7 +492,11 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 				timeoutSeconds,
 				maxTurns,
 				evaluatorResourceClass,
-				summary: { total: instanceIds.length, resolvedRate: 0 },
+				summary: {
+					total: instanceIds.length,
+					resolvedRate: 0,
+					capacity,
+				},
 				tags: normalizeTags(input.tags),
 			})
 			.returning();
@@ -756,16 +779,27 @@ export async function markBenchmarkRunStatus(
 
 export async function recomputeRunSummary(runId: string) {
 	const database = requireDb();
-	const rows = await database
-		.select({
-			id: benchmarkRunInstances.id,
-			status: benchmarkRunInstances.status,
-			usage: benchmarkRunInstances.usage,
-			sessionId: benchmarkRunInstances.sessionId,
-		})
-		.from(benchmarkRunInstances)
-		.where(eq(benchmarkRunInstances.runId, runId));
-	const summary = summarizeRunInstances(rows.map((row) => row.status));
+	const [run, rows] = await Promise.all([
+		database
+			.select({ summary: benchmarkRuns.summary })
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, runId))
+			.limit(1),
+		database
+			.select({
+				id: benchmarkRunInstances.id,
+				status: benchmarkRunInstances.status,
+				usage: benchmarkRunInstances.usage,
+				sessionId: benchmarkRunInstances.sessionId,
+			})
+			.from(benchmarkRunInstances)
+			.where(eq(benchmarkRunInstances.runId, runId)),
+	]);
+	const existingSummary = isRecord(run[0]?.summary) ? run[0].summary : {};
+	const summary = {
+		...existingSummary,
+		...summarizeRunInstances(rows.map((row) => row.status)),
+	};
 	await database
 		.update(benchmarkRuns)
 		.set({ summary, updatedAt: new Date() })
@@ -1063,7 +1097,12 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	const status = executionFailed
 		? "error"
 		: mapExecutionStatus(row.execution.status, runtimeStatus);
-	if (status === "running" || status === "pending") return row.runInstance;
+	if (status === "running" || status === "pending") {
+		return (
+			(await timeoutBenchmarkInstanceIfStalled(row.runInstance)) ??
+			row.runInstance
+		);
+	}
 
 	const patch = extractModelPatch(runtimeOutput ?? row.execution.output);
 	const now = new Date();
@@ -1154,11 +1193,149 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	return updated ?? null;
 }
 
+function benchmarkInferenceStallSeconds(): number {
+	return clampInteger(
+		env.BENCHMARK_INFERENCE_STALL_SECONDS,
+		60,
+		24 * 60 * 60,
+		480,
+	);
+}
+
+export function latestBenchmarkInferenceProgressAt(input: {
+	startedAt?: Date | null;
+	rowUpdatedAt?: Date | null;
+	sessionUpdatedAt?: Date | null;
+	latestEventCreatedAt?: Date | null;
+}): Date | null {
+	const timestamps = [
+		input.startedAt,
+		input.rowUpdatedAt,
+		input.sessionUpdatedAt,
+		input.latestEventCreatedAt,
+	].filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()));
+	if (timestamps.length === 0) return null;
+	return timestamps.reduce((latest, value) =>
+		value.getTime() > latest.getTime() ? value : latest,
+	);
+}
+
+export function benchmarkInferenceStallState(input: {
+	now: Date;
+	stallSeconds: number;
+	startedAt?: Date | null;
+	rowUpdatedAt?: Date | null;
+	sessionUpdatedAt?: Date | null;
+	latestEventCreatedAt?: Date | null;
+}): { stalled: boolean; lastProgressAt: Date | null; stalledSeconds: number } {
+	const lastProgressAt = latestBenchmarkInferenceProgressAt(input);
+	if (!lastProgressAt) {
+		return { stalled: false, lastProgressAt: null, stalledSeconds: 0 };
+	}
+	const stalledSeconds = Math.max(
+		0,
+		Math.floor((input.now.getTime() - lastProgressAt.getTime()) / 1000),
+	);
+	return {
+		stalled: stalledSeconds >= input.stallSeconds,
+		lastProgressAt,
+		stalledSeconds,
+	};
+}
+
+async function timeoutBenchmarkInstanceIfStalled(
+	runInstance: typeof benchmarkRunInstances.$inferSelect,
+) {
+	if (
+		runInstance.status !== "inferencing" ||
+		runInstance.inferenceStatus !== "inferencing"
+	) {
+		return null;
+	}
+	const database = requireDb();
+	const sessionRows = runInstance.sessionId
+		? await database
+				.select({
+					id: sessions.id,
+					updatedAt: sessions.updatedAt,
+				})
+				.from(sessions)
+				.where(eq(sessions.id, runInstance.sessionId))
+				.limit(1)
+		: runInstance.workflowExecutionId
+			? await database
+					.select({
+						id: sessions.id,
+						updatedAt: sessions.updatedAt,
+					})
+					.from(sessions)
+					.where(eq(sessions.workflowExecutionId, runInstance.workflowExecutionId))
+					.limit(1)
+			: [];
+	const session = sessionRows[0] ?? null;
+	const latestEventRows = session
+		? await database
+				.select({ createdAt: sessionEvents.createdAt })
+				.from(sessionEvents)
+				.where(eq(sessionEvents.sessionId, session.id))
+				.orderBy(desc(sessionEvents.createdAt))
+				.limit(1)
+		: [];
+
+	if (session?.id && session.id !== runInstance.sessionId) {
+		await database
+			.update(benchmarkRunInstances)
+			.set({ sessionId: session.id })
+			.where(eq(benchmarkRunInstances.id, runInstance.id));
+	}
+
+	const stallSeconds = benchmarkInferenceStallSeconds();
+	const state = benchmarkInferenceStallState({
+		now: new Date(),
+		stallSeconds,
+		startedAt: runInstance.startedAt,
+		rowUpdatedAt: runInstance.updatedAt,
+		sessionUpdatedAt: session?.updatedAt,
+		latestEventCreatedAt: latestEventRows[0]?.createdAt,
+	});
+	if (!state.stalled) {
+		return session?.id && session.id !== runInstance.sessionId
+			? { ...runInstance, sessionId: session.id }
+			: null;
+	}
+
+	const message = `Inference stalled: no session progress for ${stallSeconds}s`;
+	const now = new Date();
+	const [updated] = await database
+		.update(benchmarkRunInstances)
+		.set({
+			status: "timeout",
+			inferenceStatus: "timeout",
+			terminationReason: "no_session_progress",
+			error: message,
+			inferenceError: message,
+			inferenceCompletedAt: runInstance.inferenceCompletedAt ?? now,
+			sessionId: session?.id ?? runInstance.sessionId,
+			updatedAt: now,
+		})
+		.where(eq(benchmarkRunInstances.id, runInstance.id))
+		.returning();
+	await recomputeRunSummary(runInstance.runId);
+	if (updated) {
+		await syncBenchmarkInstanceMlflow({
+			runId: runInstance.runId,
+			instanceId: runInstance.instanceId,
+		});
+	}
+	return updated ?? null;
+}
+
 export async function markBenchmarkInstanceInferenceFailure(params: {
 	runId: string;
 	instanceId: string;
 	status: Extract<BenchmarkInferenceStatus, "error" | "timeout" | "cancelled">;
 	error?: string | null;
+	terminationReason?: string | null;
 }) {
 	const database = requireDb();
 	const [row] = await database
@@ -1187,6 +1364,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 			inferenceStatus: params.status,
 			inferenceError,
 			error: keepEvaluationOwnedError ? row.error : inferenceError,
+			terminationReason: params.terminationReason ?? row.terminationReason,
 			inferenceCompletedAt: row.inferenceCompletedAt ?? now,
 			updatedAt: now,
 		})
@@ -1321,7 +1499,7 @@ async function resolveBenchmarkAgent(params: {
 	projectId: string;
 	agentId: string;
 	version?: number;
-}): Promise<ValidBenchmarkAgent> {
+}): Promise<ValidBenchmarkAgent & { config: AgentConfig }> {
 	const database = requireDb();
 	const versionCond: SQL | undefined =
 		typeof params.version === "number"
@@ -1339,6 +1517,7 @@ async function resolveBenchmarkAgent(params: {
 			isArchived: agents.isArchived,
 			projectId: agents.projectId,
 			version: agentVersions.version,
+			config: agentVersions.config,
 		})
 		.from(agents)
 		.innerJoin(
@@ -1358,7 +1537,11 @@ async function resolveBenchmarkAgent(params: {
 			),
 		)
 		.limit(1);
-	return assertDaprAgentPyBenchmarkAgent(rows[0]);
+	const valid = assertDaprAgentPyBenchmarkAgent(rows[0]);
+	return {
+		...valid,
+		config: (rows[0]?.config ?? {}) as AgentConfig,
+	};
 }
 
 async function ensureHiddenBenchmarkWorkflow(params: {
@@ -2126,13 +2309,26 @@ export function effectiveBenchmarkConcurrency(input: {
 	instanceCount: number;
 	concurrency?: unknown;
 	evaluationConcurrency?: unknown;
+	runtimeClass?: string | null;
+	runtimeIsolation?: string | null;
+	runtimeAppId?: string | null;
+	poolMaxReplicas?: number | null;
+	slotsPerReplica?: number | null;
+	maxActiveSessions?: number | null;
 }): { concurrency: number; evaluationConcurrency: number } {
 	const instanceLimit = Math.max(1, Math.floor(input.instanceCount));
+	const capacity = estimateBenchmarkRuntimeCapacity({
+		runtimeClass: input.runtimeClass,
+		runtimeIsolation: input.runtimeIsolation,
+		runtimeAppId: input.runtimeAppId,
+		poolMaxReplicas: input.poolMaxReplicas,
+		slotsPerReplica: input.slotsPerReplica,
+		maxActiveSessions: input.maxActiveSessions,
+		requestedInstanceCount: instanceLimit,
+		requestedConcurrency: input.concurrency,
+	});
 	return {
-		concurrency: Math.min(
-			clampInteger(input.concurrency, 1, 32, 1),
-			instanceLimit,
-		),
+		concurrency: capacity.effectiveConcurrency,
 		evaluationConcurrency: Math.min(
 			clampInteger(
 				input.evaluationConcurrency,

@@ -12,6 +12,8 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		instanceId: params.instanceId,
 		status,
 		error: typeof body.error === "string" ? body.error : null,
+		terminationReason:
+			typeof body.terminationReason === "string" ? body.terminationReason : null,
 	});
 	if (!instance) return error(404, "Benchmark instance not found");
 	return json({ success: true, instance });

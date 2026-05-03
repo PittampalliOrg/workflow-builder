@@ -35,4 +35,11 @@ export type RunnableAgent = {
 	currentVersion: number;
 	registryStatus: string;
 	modelSpec: string | null;
+	benchmarkCapacity?: {
+		runtimeClass: string;
+		runtimeAppId: string;
+		runtimeReplicas: number;
+		slotsPerReplica: number;
+		maxActiveSessions: number;
+	};
 };

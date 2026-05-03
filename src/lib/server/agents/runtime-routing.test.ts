@@ -69,7 +69,12 @@ describe("resolveAgentRuntimeRoute", () => {
 			config: config({
 				runtimeClass: "office",
 				runtimeIsolation: "shared",
-				runtimePool: { appId: "agent-runtime-pool-office", minReplicas: 1 },
+				runtimePool: {
+					appId: "agent-runtime-pool-office",
+					minReplicas: 1,
+					slotsPerReplica: 2,
+					maxActiveSessions: 4,
+				},
 			}),
 		});
 
@@ -78,7 +83,7 @@ describe("resolveAgentRuntimeRoute", () => {
 			slug: "pool-office",
 			runtimeClass: "office",
 			isolation: "shared",
-			pool: { minReplicas: 1 },
+			pool: { minReplicas: 1, slotsPerReplica: 2, maxActiveSessions: 4 },
 		});
 	});
 

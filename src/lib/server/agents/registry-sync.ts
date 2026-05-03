@@ -817,7 +817,8 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		lifecycle:
 			idleTtlSeconds ||
 			runtimeRoute.pool?.minReplicas ||
-			runtimeRoute.pool?.maxReplicas
+			runtimeRoute.pool?.maxReplicas ||
+			runtimeRoute.pool?.slotsPerReplica
 				? {
 						...(idleTtlSeconds ? { idleTtlSeconds } : {}),
 						...(runtimeRoute.pool?.minReplicas
@@ -825,6 +826,9 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 							: {}),
 						...(runtimeRoute.pool?.maxReplicas
 							? { maxReplicas: runtimeRoute.pool.maxReplicas }
+							: {}),
+						...(runtimeRoute.pool?.slotsPerReplica
+							? { slotsPerReplica: runtimeRoute.pool.slotsPerReplica }
 							: {}),
 					}
 				: undefined,

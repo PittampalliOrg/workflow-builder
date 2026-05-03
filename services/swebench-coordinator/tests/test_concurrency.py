@@ -10,6 +10,7 @@ sys.path.insert(0, str(SERVICE_ROOT))
 from src.concurrency import (  # noqa: E402
     bounded_swebench_concurrency,
     bounded_swebench_evaluation_concurrency,
+    max_inference_concurrency,
 )
 
 
@@ -25,9 +26,18 @@ def test_bounded_swebench_concurrency_accepts_numeric_values():
     assert bounded_swebench_concurrency("4") == 4
 
 
-def test_bounded_swebench_concurrency_caps_worker_count():
-    assert bounded_swebench_concurrency(99) == 32
-    assert bounded_swebench_concurrency("128") == 32
+def test_bounded_swebench_concurrency_caps_worker_count(monkeypatch):
+    monkeypatch.delenv("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY", raising=False)
+    assert max_inference_concurrency() == 10
+    assert bounded_swebench_concurrency(99) == 10
+    assert bounded_swebench_concurrency("128") == 10
+    assert bounded_swebench_concurrency("128", maximum=32) == 32
+
+
+def test_bounded_swebench_concurrency_honors_env_backstop(monkeypatch):
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY", "7")
+    assert max_inference_concurrency() == 7
+    assert bounded_swebench_concurrency(9) == 7
 
 
 def test_bounded_swebench_concurrency_falls_back_for_invalid_values():

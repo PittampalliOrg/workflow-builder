@@ -15,6 +15,8 @@ export type AgentRuntimePool = {
 	slug: string;
 	minReplicas?: number;
 	maxReplicas?: number;
+	slotsPerReplica?: number;
+	maxActiveSessions?: number;
 };
 
 export type AgentRuntimeRoute = {
@@ -144,6 +146,8 @@ function explicitPoolFromConfig(
 		slug,
 		minReplicas: cleanPositiveInt(raw.minReplicas),
 		maxReplicas: cleanPositiveInt(raw.maxReplicas),
+		slotsPerReplica: cleanPositiveInt(raw.slotsPerReplica),
+		maxActiveSessions: cleanPositiveInt(raw.maxActiveSessions),
 	};
 }
 
@@ -180,6 +184,8 @@ export function resolveAgentRuntimePool(
 			slug,
 			minReplicas: cleanPositiveInt(configured.minReplicas) ?? defaultMinReplicas,
 			maxReplicas: cleanPositiveInt(configured.maxReplicas) ?? defaultMaxReplicas,
+			slotsPerReplica: cleanPositiveInt(configured.slotsPerReplica),
+			maxActiveSessions: cleanPositiveInt(configured.maxActiveSessions),
 		};
 	}
 

@@ -332,6 +332,7 @@ export type AgentRuntimeSpec = {
 		idleTtlSeconds?: number;
 		minReplicas?: number;
 		maxReplicas?: number;
+		slotsPerReplica?: number;
 	};
 	browserSidecar?: AgentRuntimeBrowserSidecar;
 };

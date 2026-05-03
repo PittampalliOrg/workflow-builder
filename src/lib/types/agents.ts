@@ -31,6 +31,8 @@ export type AgentRuntimePoolBinding = {
 	runtimeClass?: string;
 	minReplicas?: number;
 	maxReplicas?: number;
+	slotsPerReplica?: number;
+	maxActiveSessions?: number;
 };
 
 export type AgentMemoryConfig = {
