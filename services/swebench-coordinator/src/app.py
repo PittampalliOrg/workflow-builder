@@ -1814,6 +1814,8 @@ def cancel_benchmark_run(
     reason = body.reason if body else "cancelled"
     client = DaprWorkflowClient()
     termination_errors: dict[str, str] = {}
+    status_result: dict[str, Any] = {"success": False}
+    lease_release: dict[str, Any] = {"success": False}
     for instance_id in (run_instance_id, preflight_instance_id, evaluation_instance_id):
         try:
             client.terminate_workflow(instance_id=instance_id, output=reason)
@@ -1836,6 +1838,28 @@ def cancel_benchmark_run(
         getattr(body, "instanceIds", None) if body else None,
     )
     delete_result = _delete_evaluator_job(None, {"runId": run_id})
+    try:
+        status_result = _mark_run_status(
+            None,
+            {
+                "runId": run_id,
+                "status": "cancelled",
+                "error": reason,
+            },
+        )
+    except Exception as exc:
+        status_result = {"success": False, "error": str(exc)}
+        logger.warning(
+            "Best-effort cancelled status update failed for %s: %s", run_id, exc
+        )
+    try:
+        lease_release = _release_run_leases(
+            None,
+            {"runId": run_id, "reason": reason},
+        )
+    except Exception as exc:
+        lease_release = {"success": False, "error": str(exc)}
+        logger.warning("Best-effort lease release failed for %s: %s", run_id, exc)
     return {
         "success": True,
         "executionId": run_instance_id,
@@ -1844,6 +1868,8 @@ def cancel_benchmark_run(
         "terminationErrors": termination_errors,
         "childTermination": child_termination,
         "deleteEvaluatorJob": delete_result,
+        "statusUpdate": status_result,
+        "leaseRelease": lease_release,
     }
 
 

@@ -106,6 +106,8 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     app = load_app(monkeypatch)
     app.INTERNAL_API_TOKEN = "token"
     terminated: list[tuple[str, str | None]] = []
+    status_updates: list[dict[str, str]] = []
+    lease_releases: list[dict[str, str]] = []
 
     class RecordingWorkflowClient:
         def terminate_workflow(self, *, instance_id, output=None):
@@ -113,6 +115,16 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
 
     monkeypatch.setattr(app, "DaprWorkflowClient", RecordingWorkflowClient)
     monkeypatch.setattr(app, "_delete_evaluator_job", lambda *_args, **_kwargs: {"success": True})
+    monkeypatch.setattr(
+        app,
+        "_mark_run_status",
+        lambda _ctx, data: status_updates.append(data) or {"success": True},
+    )
+    monkeypatch.setattr(
+        app,
+        "_release_run_leases",
+        lambda _ctx, data: lease_releases.append(data) or {"released": 5},
+    )
     monkeypatch.setattr(
         app,
         "_load_run",
@@ -138,6 +150,15 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     assert result["childTermination"]["selectedInstanceCount"] == 2
     assert result["childTermination"]["terminated"] == 2
     assert result["childTermination"]["terminationErrors"] == {}
+    assert status_updates == [
+        {
+            "runId": "run_1",
+            "status": "cancelled",
+            "error": "operator stop",
+        }
+    ]
+    assert lease_releases == [{"runId": "run_1", "reason": "operator stop"}]
+    assert result["leaseRelease"] == {"released": 5}
 
 
 class Obj:

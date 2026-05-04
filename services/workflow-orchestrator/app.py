@@ -247,6 +247,8 @@ def _get_workflow_runtime_status(
     timeout_seconds: float = 2.0,
     *,
     include_taskhub: bool = True,
+    require_metadata: bool = False,
+    require_workflow_workers: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     """
     Probe the local Dapr sidecar and workflow task hub before serving traffic.
@@ -257,6 +259,7 @@ def _get_workflow_runtime_status(
         "daprGrpcPort": config.DAPR_GRPC_PORT,
     }
     errors: list[str] = []
+    warnings: list[str] = []
 
     try:
         health_response = requests.get(
@@ -288,15 +291,24 @@ def _get_workflow_runtime_status(
         if isinstance(workflows_metadata, dict):
             raw_workers = workflows_metadata.get("connectedWorkers")
             try:
-                connected_workers = int(raw_workers or 0)
+                connected_workers = (
+                    int(raw_workers) if raw_workers is not None else 0
+                )
             except (TypeError, ValueError):
                 connected_workers = 0
         details["workflowConnectedWorkers"] = connected_workers
-        if connected_workers < 1:
+        if require_workflow_workers and connected_workers < 1:
             errors.append("workflow runtime has no connected Dapr workflow workers")
+        elif connected_workers < 1:
+            warnings.append(
+                "workflow metadata did not report connected Dapr workflow workers"
+            )
     except Exception as exc:
         details["metadataError"] = str(exc)
-        errors.append(f"metadata probe failed: {exc}")
+        if require_metadata:
+            errors.append(f"metadata probe failed: {exc}")
+        else:
+            warnings.append(f"metadata probe failed: {exc}")
 
     if include_taskhub:
         try:
@@ -315,6 +327,7 @@ def _get_workflow_runtime_status(
             errors.append(f"taskhub probe failed: {exc}")
 
     details["errors"] = errors
+    details["warnings"] = warnings
     return (len(errors) == 0, details)
 
 
