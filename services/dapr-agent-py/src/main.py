@@ -2009,6 +2009,12 @@ class OpenShellDurableAgent(DurableAgent):
             tool_args = tool_args["kwargs"]
         if not isinstance(tool_args, dict):
             tool_args = {}
+        import time as _time_tool
+
+        tool_started_at = _time_tool.monotonic()
+
+        def _tool_elapsed_ms() -> int:
+            return int((_time_tool.monotonic() - tool_started_at) * 1000)
 
         # Phase B — tool call count + histogram + first-tool timestamp.
         # Increment unconditionally (before the allow-list check) because we
@@ -2034,6 +2040,7 @@ class OpenShellDurableAgent(DurableAgent):
                         "toolName": tool_name,
                         "success": False,
                         "error": reason[:200],
+                        "duration_ms": _tool_elapsed_ms(),
                     },
                     source_event_id=f"{tool_call_id}:blocked" if tool_call_id else None,
                     instance_id=inst_id,
@@ -2134,6 +2141,7 @@ class OpenShellDurableAgent(DurableAgent):
                                 "toolName": tool_name,
                                 "success": False,
                                 "error": f"blocked by hook: {reason}"[:200],
+                                "duration_ms": _tool_elapsed_ms(),
                             },
                             source_event_id=f"{tool_call_id}:blocked" if tool_call_id else None,
                             instance_id=inst_id,
@@ -2298,6 +2306,7 @@ class OpenShellDurableAgent(DurableAgent):
                                   "toolName": tool_name,
                                   "success": False,
                                   "error": error[:200],
+                                  "duration_ms": _tool_elapsed_ms(),
                               },
                               source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
                               instance_id=inst_id,
@@ -2361,6 +2370,7 @@ class OpenShellDurableAgent(DurableAgent):
                           "toolName": tool_name,
                           "success": False,
                           "error": str(exc)[:200],
+                          "duration_ms": _tool_elapsed_ms(),
                       },
                       source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
                       instance_id=inst_id,
@@ -2449,6 +2459,7 @@ class OpenShellDurableAgent(DurableAgent):
                   "success": True,
                   "output": output_data,
                   "output_preview": (full_output[:500] if isinstance(full_output, str) else ""),
+                  "duration_ms": _tool_elapsed_ms(),
               }
               if output_oversized:
                   payload["oversized"] = True

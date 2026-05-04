@@ -9,6 +9,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	perSidecarWorkflowLimit: number;
 	daprWorkflowLimitPerSidecar: number;
 	daprWorkflowEffectiveCapacity: number;
+	agentWorkflowMaxActiveTurns: number | null;
 	runtimeSlots: number;
 	slotsPerReplica: number;
 	maxActiveSessions: number;
@@ -29,6 +30,7 @@ export type BenchmarkRuntimeCapacityInput = {
 	requestedConcurrency?: unknown;
 	slotsPerReplica?: number | null;
 	maxActiveSessions?: number | null;
+	agentWorkflowMaxActiveTurns?: number | null;
 	schedulableSandboxCapacity?: number | null;
 	sandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
 	modelMaxActiveRequests?: number | null;
@@ -73,6 +75,14 @@ function normalizeRuntimeClass(value: string | null | undefined): string {
 
 function envPositiveInt(name: string, fallback: number): number {
 	return positiveInt(process.env[name]) ?? fallback;
+}
+
+function envOptionalPositiveInt(...names: string[]): number | null {
+	for (const name of names) {
+		const value = positiveInt(process.env[name]);
+		if (value) return value;
+	}
+	return null;
 }
 
 function slotsByRuntimeClass(): Record<string, number> {
@@ -144,6 +154,12 @@ export function estimateBenchmarkRuntimeCapacity(
 		replicas * daprWorkflowLimitPerSidecar,
 	);
 	const configuredMaxActiveSessions = positiveInt(input.maxActiveSessions);
+	const agentWorkflowMaxActiveTurns =
+		positiveInt(input.agentWorkflowMaxActiveTurns) ??
+		envOptionalPositiveInt(
+			"BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS",
+			"BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS",
+		);
 	const runtimeMax = Math.min(
 		runtimeSlots,
 		daprWorkflowEffectiveCapacity,
@@ -173,6 +189,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		selectedCount,
 		runtimeMax,
 		globalMax,
+		agentWorkflowMaxActiveTurns ?? Number.POSITIVE_INFINITY,
 		sandboxCapacityLimit ?? Number.POSITIVE_INFINITY,
 		modelMax ?? Number.POSITIVE_INFINITY,
 	);
@@ -191,6 +208,13 @@ export function estimateBenchmarkRuntimeCapacity(
 	}
 	if (requested > globalMax && effective === globalMax) {
 		reasons.push("global_max");
+	}
+	if (
+		agentWorkflowMaxActiveTurns &&
+		requested > agentWorkflowMaxActiveTurns &&
+		effective === agentWorkflowMaxActiveTurns
+	) {
+		reasons.push("agent_workflow_capacity");
 	}
 	if (sandboxMax && requested > sandboxMax && effective === sandboxMax) {
 		reasons.push("sandbox_capacity");
@@ -215,6 +239,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		perSidecarWorkflowLimit: daprWorkflowLimitPerSidecar,
 		daprWorkflowLimitPerSidecar,
 		daprWorkflowEffectiveCapacity,
+		agentWorkflowMaxActiveTurns,
 		runtimeSlots,
 		slotsPerReplica,
 		maxActiveSessions: Math.min(

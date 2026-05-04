@@ -76,7 +76,15 @@ function nonNegativeInt(value: unknown): number | null {
 }
 
 function envPositiveInt(name: string): number | null {
-	return positiveInt(env[name]);
+	return positiveInt(env[name] ?? process.env[name]);
+}
+
+function envOptionalPositiveInt(...names: string[]): number | null {
+	for (const name of names) {
+		const value = envPositiveInt(name);
+		if (value) return value;
+	}
+	return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -157,6 +165,23 @@ function sandboxCapacityLimit(
 	return Math.min(...candidates);
 }
 
+function daprWorkflowCapacityLimit(
+	capacity: Record<string, unknown>,
+	effective: number,
+): number {
+	const candidates = [
+		envOptionalPositiveInt(
+			"BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS",
+			"BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS",
+		),
+		capacityNumber(capacity, "agentWorkflowMaxActiveTurns"),
+		capacityNumber(capacity, "daprWorkflowEffectiveCapacity"),
+		capacityNumber(capacity, "runtimeSlots"),
+		effective,
+	].filter((value): value is number => value != null);
+	return Math.min(...candidates);
+}
+
 function resourceCapacity(
 	run: BenchmarkRunForLease,
 	resourceType: BenchmarkResourceLeaseType,
@@ -194,10 +219,7 @@ function resourceCapacity(
 		case "dapr_workflow_slot":
 			return {
 				capacityKey: run.agentRuntimeAppId || "agent-runtime",
-				limit:
-					capacityNumber(capacity, "daprWorkflowEffectiveCapacity") ??
-					capacityNumber(capacity, "runtimeSlots") ??
-					effective,
+				limit: daprWorkflowCapacityLimit(capacity, effective),
 			};
 		case "evaluator_slot":
 			return {

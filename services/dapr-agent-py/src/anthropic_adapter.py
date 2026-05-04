@@ -813,16 +813,16 @@ def _call_anthropic_sdk(
     # SDK-internal retries, escalation, and multi-turn recovery. Token
     # counts are summed across retries at end_llm_request_span. Matches
     # TS behavior where endLLMRequestSpan reports aggregate usage.
+    import time as _time
+
     llm_span = None
     agg_input_tokens = 0
     agg_output_tokens = 0
     agg_cache_read = 0
     agg_cache_create = 0
-    llm_start_monotonic = 0.0
+    llm_start_monotonic = _time.monotonic()
     ttft_ms_recorded: float | None = None
     try:
-        import time as _time
-
         from src.telemetry import start_llm_request_span
 
         llm_span = start_llm_request_span(
@@ -833,7 +833,6 @@ def _call_anthropic_sdk(
             tools_json=json.dumps(anthropic_tools) if anthropic_tools else None,
             messages_for_api=list(patched_messages),
         )
-        llm_start_monotonic = _time.monotonic()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[telemetry] llm_request start failed: %s", exc)
 
@@ -982,6 +981,10 @@ def _call_anthropic_sdk(
                         "cache_read_input_tokens": agg_cache_read,
                         "cache_creation_input_tokens": agg_cache_create,
                         "ttft_ms": ttft_ms_recorded,
+                        "duration_ms": (
+                            _time.monotonic() - llm_start_monotonic
+                        )
+                        * 1000.0,
                         "recovery_attempts": 0,
                         "success": False,
                         "error": str(exc)[:200],
@@ -1135,6 +1138,8 @@ def _call_anthropic_sdk(
                     "cache_read_input_tokens": agg_cache_read,
                     "cache_creation_input_tokens": agg_cache_create,
                     "ttft_ms": ttft_ms_recorded,
+                    "duration_ms": (_time.monotonic() - llm_start_monotonic)
+                    * 1000.0,
                     "recovery_attempts": recovery_count,
                     "success": True,
                     "prompt_prefix_chars": prompt_cache_telemetry["prefix_chars"],

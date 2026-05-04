@@ -4,6 +4,7 @@ import {
 	sessionEvents,
 	type SessionEvent as SessionEventRow,
 } from "$lib/server/db/schema";
+import { aggregateBenchmarkSessionTimings } from "$lib/server/benchmarks/timings";
 import type {
 	SessionEventEnvelope,
 	UserEvent,
@@ -151,6 +152,15 @@ export async function appendEvent(
 				// Fire-and-forget — incremental updates while the run progresses.
 				void aggregateBenchmarkLifecycleFromSessionEvents(sessionId);
 			}
+			if (
+				event.type === "agent.llm_usage" ||
+				event.type === "agent.tool_result" ||
+				event.type === "session.turn_heartbeat"
+			) {
+				// Fire-and-forget — timing rollups are advisory while the run is
+				// active and recomputeRunSummary performs the deterministic backstop.
+				void aggregateBenchmarkSessionTimings(sessionId);
+			}
 			if (event.type === "session.status_terminated") {
 				// 2s delay lets stragglers from concurrent transactions land before
 				// the canonical aggregation. recomputeRunSummary on evaluation-results
@@ -158,6 +168,13 @@ export async function appendEvent(
 				setTimeout(
 					() =>
 						void aggregateBenchmarkLifecycleFromSessionEvents(sessionId, {
+							finalize: true,
+						}),
+					2000,
+				);
+				setTimeout(
+					() =>
+						void aggregateBenchmarkSessionTimings(sessionId, {
 							finalize: true,
 						}),
 					2000,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { __benchmarkResourceLeasesForTest } from "./resource-leases";
 
 const run = {
@@ -25,6 +25,10 @@ const run = {
 } as never;
 
 describe("benchmark resource lease capacity", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("blocks openshell_sandbox before child workflow launch when scheduler capacity is exhausted", () => {
 		expect(
 			__benchmarkResourceLeasesForTest.resourceCapacity(
@@ -59,6 +63,20 @@ describe("benchmark resource lease capacity", () => {
 		).toMatchObject({
 			capacityKey: "openshell",
 			limit: 0,
+		});
+	});
+
+	it("caps Dapr workflow admission with the active agent workflow env guard", () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS", "6");
+
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				run,
+				"dapr_workflow_slot",
+			),
+		).toMatchObject({
+			capacityKey: "agent-runtime-pool-coding",
+			limit: 6,
 		});
 	});
 

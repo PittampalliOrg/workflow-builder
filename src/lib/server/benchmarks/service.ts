@@ -50,6 +50,7 @@ import {
 } from "./agents";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
+import { aggregateBenchmarkInstanceTimings } from "./timings";
 import {
 	buildSwebenchDatasetJsonl,
 	buildPredictionsJsonl,
@@ -1447,6 +1448,7 @@ export async function recomputeRunSummary(runId: string) {
 				finalize: shouldFinalizeBenchmarkLifecycle(row),
 			});
 		}
+		await aggregateBenchmarkInstanceTimings(row.id);
 	}
 
 	// Re-fetch usage AFTER the Phase A backfill so refreshInstanceCost sees
@@ -1862,6 +1864,9 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		.set(update)
 		.where(eq(benchmarkRunInstances.id, row.runInstance.id))
 		.returning();
+	if (updated) {
+		await aggregateBenchmarkInstanceTimings(updated.id);
+	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
 		await syncBenchmarkInstanceMlflow({
@@ -2054,6 +2059,9 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 		})
 		.where(eq(benchmarkRunInstances.id, row.id))
 		.returning();
+	if (updated) {
+		await aggregateBenchmarkInstanceTimings(updated.id);
+	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
 		await syncBenchmarkInstanceMlflow({

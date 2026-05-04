@@ -365,6 +365,7 @@ def _publish_llm_usage(
     model: str,
     usage: dict[str, Any] | None,
     ttft_ms: float | None,
+    duration_ms: float | None,
     success: bool,
     error: str | None = None,
     prompt_cache_telemetry: dict[str, Any] | None = None,
@@ -401,6 +402,7 @@ def _publish_llm_usage(
             # vs Anthropic stays meaningful.
             "cache_creation_input_tokens": 0,
             "ttft_ms": ttft_ms,
+            "duration_ms": duration_ms,
             "recovery_attempts": 0,
             "success": success,
         }
@@ -579,6 +581,7 @@ def _call_openai_responses(
             model=model,
             usage=None,
             ttft_ms=(_time.monotonic() - llm_start) * 1000.0,
+            duration_ms=(_time.monotonic() - llm_start) * 1000.0,
             success=False,
             error=detail,
             prompt_cache_telemetry=prompt_cache_telemetry,
@@ -638,6 +641,7 @@ def _call_openai_responses(
         model=model,
         usage=data.get("usage") or {},
         ttft_ms=(_time.monotonic() - llm_start) * 1000.0,
+        duration_ms=(_time.monotonic() - llm_start) * 1000.0,
         success=True,
         prompt_cache_telemetry=prompt_cache_telemetry,
     )

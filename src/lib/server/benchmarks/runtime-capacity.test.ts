@@ -252,4 +252,28 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		});
 		expect(capacity.capReason).toContain("dapr_workflow_capacity");
 	});
+
+	it("honors an active agent workflow cap independently from scheduler capacity", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "50");
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS", "18");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 6,
+			slotsPerReplica: 5,
+			requestedInstanceCount: 30,
+			requestedConcurrency: 30,
+			schedulableSandboxCapacity: 30,
+		});
+
+		expect(capacity).toMatchObject({
+			runtimeSlots: 30,
+			daprWorkflowEffectiveCapacity: 30,
+			agentWorkflowMaxActiveTurns: 18,
+			effectiveConcurrency: 18,
+		});
+		expect(capacity.capReason).toBe("agent_workflow_capacity");
+	});
 });
