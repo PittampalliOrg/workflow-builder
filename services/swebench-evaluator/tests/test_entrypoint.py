@@ -72,6 +72,58 @@ def test_parse_instance_image_map_requires_every_selected_instance():
         raise AssertionError("expected missing image refs to fail")
 
 
+def test_taskrun_execution_spec_defaults_to_ghcr_pull_secret(monkeypatch):
+    entrypoint = load_entrypoint()
+
+    monkeypatch.delenv("SWEBENCH_TEKTON_SERVICE_ACCOUNT", raising=False)
+    monkeypatch.delenv("SWEBENCH_TEKTON_IMAGE_PULL_SECRETS", raising=False)
+
+    assert entrypoint.taskrun_execution_spec() == {
+        "podTemplate": {"imagePullSecrets": [{"name": "ghcr-pull-credentials"}]}
+    }
+
+
+def test_taskrun_execution_spec_accepts_service_account_and_secret_list(monkeypatch):
+    entrypoint = load_entrypoint()
+
+    monkeypatch.setenv("SWEBENCH_TEKTON_SERVICE_ACCOUNT", "swebench-runner")
+    monkeypatch.setenv(
+        "SWEBENCH_TEKTON_IMAGE_PULL_SECRETS",
+        "workflow-builder-ghcr-pull-credentials, ghcr-pull-credentials",
+    )
+
+    assert entrypoint.taskrun_execution_spec() == {
+        "serviceAccountName": "swebench-runner",
+        "podTemplate": {
+            "imagePullSecrets": [
+                {"name": "workflow-builder-ghcr-pull-credentials"},
+                {"name": "ghcr-pull-credentials"},
+            ]
+        },
+    }
+
+
+def test_run_instance_taskrun_includes_pull_secret(monkeypatch):
+    entrypoint = load_entrypoint()
+
+    monkeypatch.delenv("SWEBENCH_TEKTON_SERVICE_ACCOUNT", raising=False)
+    monkeypatch.setenv("SWEBENCH_TEKTON_IMAGE_PULL_SECRETS", "ghcr-pull-credentials")
+
+    body = entrypoint.build_run_instance_taskrun(
+        name="run-a",
+        namespace="workflow-builder",
+        pvc_name="swebench-artifacts",
+        run_id="run_1",
+        instance_id="django__django-11133",
+        instance_image="ghcr.io/example/private:tag",
+        timeout_seconds=120,
+    )
+
+    assert body["spec"]["podTemplate"] == {
+        "imagePullSecrets": [{"name": "ghcr-pull-credentials"}]
+    }
+
+
 def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch):
     entrypoint = load_entrypoint()
     created: list[tuple[str, str]] = []

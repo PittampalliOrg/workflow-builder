@@ -15,6 +15,7 @@ TEKTON_VERSION = "v1"
 TASKRUN_PLURAL = "taskruns"
 DEFAULT_EVAL_MAX_PARALLEL = 24
 MAX_EVAL_MAX_PARALLEL = 128
+DEFAULT_TEKTON_IMAGE_PULL_SECRETS = "ghcr-pull-credentials"
 
 
 def main() -> int:
@@ -250,6 +251,26 @@ def _artifacts_workspace(pvc_name: str) -> dict[str, Any]:
     }
 
 
+def taskrun_execution_spec() -> dict[str, Any]:
+    spec: dict[str, Any] = {}
+    service_account = os.environ.get("SWEBENCH_TEKTON_SERVICE_ACCOUNT", "").strip()
+    if service_account:
+        spec["serviceAccountName"] = service_account
+
+    raw_pull_secrets = os.environ.get(
+        "SWEBENCH_TEKTON_IMAGE_PULL_SECRETS",
+        DEFAULT_TEKTON_IMAGE_PULL_SECRETS,
+    )
+    pull_secret_names = [
+        name.strip() for name in raw_pull_secrets.split(",") if name.strip()
+    ]
+    if pull_secret_names:
+        spec["podTemplate"] = {
+            "imagePullSecrets": [{"name": name} for name in pull_secret_names]
+        }
+    return spec
+
+
 def build_prepare_taskrun(
     *,
     name: str,
@@ -265,6 +286,7 @@ def build_prepare_taskrun(
         "kind": "TaskRun",
         "metadata": _common_metadata(name, namespace, run_id, "prepare"),
         "spec": {
+            **taskrun_execution_spec(),
             "taskRef": {"name": "swebench-eval-prepare"},
             "params": [
                 {"name": "run_id", "value": run_id},
@@ -299,6 +321,7 @@ def build_run_instance_taskrun(
             },
         },
         "spec": {
+            **taskrun_execution_spec(),
             "taskRef": {"name": "swebench-eval-run-instance"},
             "params": [
                 {"name": "run_id", "value": run_id},
@@ -334,6 +357,7 @@ def build_finalize_taskrun(
         "kind": "TaskRun",
         "metadata": _common_metadata(name, namespace, run_id, "finalize"),
         "spec": {
+            **taskrun_execution_spec(),
             "taskRef": {"name": "swebench-eval-finalize"},
             "params": params,
             "workspaces": [_artifacts_workspace(pvc_name)],
