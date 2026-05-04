@@ -116,6 +116,42 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "meta/llama-3.1-8b-instruct",
         ),
         (
+            "nvidia/mistralai/mistral-medium-3.5-128b",
+            "llm-nvidia-mistral-medium-35-128b",
+            "nvidia",
+            "mistralai/mistral-medium-3.5-128b",
+        ),
+        (
+            "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
+            "llm-nvidia-qwen3-coder-480b",
+            "nvidia",
+            "qwen/qwen3-coder-480b-a35b-instruct",
+        ),
+        (
+            "nvidia/mistralai/devstral-2-123b-instruct-2512",
+            "llm-nvidia-devstral-2-123b",
+            "nvidia",
+            "mistralai/devstral-2-123b-instruct-2512",
+        ),
+        (
+            "nvidia/moonshotai/kimi-k2-thinking",
+            "llm-nvidia-kimi-k2-thinking",
+            "nvidia",
+            "moonshotai/kimi-k2-thinking",
+        ),
+        (
+            "nvidia/moonshotai/kimi-k2-instruct-0905",
+            "llm-nvidia-kimi-k2-0905",
+            "nvidia",
+            "moonshotai/kimi-k2-instruct-0905",
+        ),
+        (
+            "nvidia/z-ai/glm4.7",
+            "llm-nvidia-glm47",
+            "nvidia",
+            "z-ai/glm4.7",
+        ),
+        (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",

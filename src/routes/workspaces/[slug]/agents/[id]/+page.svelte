@@ -50,6 +50,7 @@
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
+	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import PromptStackEditor from '$lib/components/agents/prompt-stack-editor.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
@@ -76,14 +77,7 @@
 		AgentVersionSummary
 	} from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
-	import {
-		AGENT_MODEL_OPTIONS,
-		CUSTOM_AGENT_MODEL_SELECT_VALUE,
-		agentModelLabel,
-		agentModelOptionFor,
-		agentModelSelectValue,
-		canonicalAgentModelSpec
-	} from '$lib/agents/model-options';
+	import { agentModelOptionFor } from '$lib/agents/model-options';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -682,40 +676,12 @@
 							<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 								<div>
 									<Label>Model spec</Label>
-									<Select.Root
-										type="single"
-										value={agentModelSelectValue(config.modelSpec)}
-										onValueChange={(value) => {
-											const canonical = canonicalAgentModelSpec(value);
-											if (canonical) updateConfig('modelSpec', canonical);
-										}}
-									>
-										<Select.Trigger class="mt-1">
-											{agentModelLabel(config.modelSpec)}
-										</Select.Trigger>
-										<Select.Content>
-											{#if unsupportedModelSpec}
-												<Select.Item
-													value={CUSTOM_AGENT_MODEL_SELECT_VALUE}
-													disabled
-													class="font-mono text-xs"
-												>
-													{unsupportedModelSpec}
-												</Select.Item>
-												<Select.Separator />
-											{/if}
-											{#each AGENT_MODEL_OPTIONS as model (model.value)}
-												<Select.Item value={model.value}>
-													<div class="flex min-w-0 flex-col">
-														<span>{model.label}</span>
-														<span class="font-mono text-[11px] text-muted-foreground">
-															{model.value}
-														</span>
-													</div>
-												</Select.Item>
-											{/each}
-										</Select.Content>
-									</Select.Root>
+									<AgentModelSelector
+										value={config.modelSpec}
+										unsupportedValue={unsupportedModelSpec}
+										triggerClass="mt-1"
+										onSelect={(modelSpec) => updateConfig('modelSpec', modelSpec)}
+									/>
 									{#if unsupportedModelSpec}
 										<p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
 											Unsupported runtime model:

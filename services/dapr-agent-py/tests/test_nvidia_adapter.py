@@ -73,6 +73,25 @@ def test_nvidia_chat_uses_openai_compatible_endpoint_and_key(monkeypatch) -> Non
     assert result["metadata"]["provider"] == "nvidia-chat"
 
 
+def test_nvidia_component_model_map_includes_coding_models() -> None:
+    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-mistral-medium-35-128b"] == (
+        "mistralai/mistral-medium-3.5-128b"
+    )
+    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-qwen3-coder-480b"] == (
+        "qwen/qwen3-coder-480b-a35b-instruct"
+    )
+    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-devstral-2-123b"] == (
+        "mistralai/devstral-2-123b-instruct-2512"
+    )
+    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-kimi-k2-thinking"] == (
+        "moonshotai/kimi-k2-thinking"
+    )
+    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-kimi-k2-0905"] == (
+        "moonshotai/kimi-k2-instruct-0905"
+    )
+    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-glm47"] == "z-ai/glm4.7"
+
+
 def test_nvidia_tool_schema_uses_chat_completions_shape() -> None:
     class ArgsModel:
         @staticmethod

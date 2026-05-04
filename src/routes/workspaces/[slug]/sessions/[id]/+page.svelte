@@ -26,6 +26,7 @@
 	import ApiSnippet from '$lib/components/console/api-snippet.svelte';
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
+	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
 	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
@@ -36,7 +37,6 @@
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
-	import { AGENT_MODEL_OPTIONS } from '$lib/agents/model-options';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import {
 		Reasoning,
@@ -827,6 +827,12 @@
 			<Badge variant={isConnected ? 'secondary' : 'outline'} class="text-[10px]">
 				{isConsolidating ? 'catching up…' : isConnected ? 'streaming' : 'connecting…'}
 			</Badge>
+			<AgentModelSelector
+				value={null}
+				placeholder="Switch model"
+				triggerClass="h-7 w-[210px] text-xs"
+				onSelect={(modelSpec) => setModel(modelSpec)}
+			/>
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>
 					{#snippet child({ props })}
@@ -845,18 +851,6 @@
 					<DropdownMenu.Item onSelect={() => downloadEvents()}>
 						<Download class="size-3.5" /> Download events…
 					</DropdownMenu.Item>
-					<DropdownMenu.Separator />
-					<DropdownMenu.Label class="text-[10px] uppercase tracking-wide text-muted-foreground">
-						Model
-					</DropdownMenu.Label>
-					{#each AGENT_MODEL_OPTIONS as model (model.value)}
-						<DropdownMenu.Item onSelect={() => setModel(model.value)} class="text-xs">
-							<div class="flex min-w-0 flex-col">
-								<span>{model.label}</span>
-								<span class="font-mono text-[11px] text-muted-foreground">{model.value}</span>
-							</div>
-						</DropdownMenu.Item>
-					{/each}
 					<DropdownMenu.Separator />
 					<div class="px-2 py-1.5 flex items-center justify-between text-xs">
 						<Label for="bypass-toggle" class="text-xs">Bypass permissions</Label>

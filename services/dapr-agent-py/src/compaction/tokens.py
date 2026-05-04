@@ -36,6 +36,18 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-5": 400_000,
     "meta/llama-3.1-8b-instruct": 128_000,
     "llm-nvidia-llama31-8b": 128_000,
+    "mistralai/mistral-medium-3.5-128b": 262_144,
+    "llm-nvidia-mistral-medium-35-128b": 262_144,
+    "qwen/qwen3-coder-480b-a35b-instruct": 262_144,
+    "llm-nvidia-qwen3-coder-480b": 262_144,
+    "mistralai/devstral-2-123b-instruct-2512": 262_144,
+    "llm-nvidia-devstral-2-123b": 262_144,
+    "moonshotai/kimi-k2-thinking": 256_000,
+    "llm-nvidia-kimi-k2-thinking": 256_000,
+    "moonshotai/kimi-k2-instruct-0905": 256_000,
+    "llm-nvidia-kimi-k2-0905": 256_000,
+    "z-ai/glm4.7": 131_072,
+    "llm-nvidia-glm47": 131_072,
 }
 DEFAULT_WINDOW = 200_000
 

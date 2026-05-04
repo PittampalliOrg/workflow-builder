@@ -16,6 +16,12 @@ def test_context_window_known_model():
     assert get_context_window("claude-sonnet-4-6") == 200_000
     assert get_context_window("claude-opus-4-7") == 1_000_000
     assert get_context_window("llm-nvidia-llama31-8b") == 128_000
+    assert get_context_window("llm-nvidia-mistral-medium-35-128b") == 262_144
+    assert get_context_window("llm-nvidia-qwen3-coder-480b") == 262_144
+    assert get_context_window("llm-nvidia-devstral-2-123b") == 262_144
+    assert get_context_window("llm-nvidia-kimi-k2-thinking") == 256_000
+    assert get_context_window("llm-nvidia-kimi-k2-0905") == 256_000
+    assert get_context_window("llm-nvidia-glm47") == 131_072
 
 
 def test_context_window_unknown_model_falls_back_to_default():
