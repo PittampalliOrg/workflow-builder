@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-ARG SWEBENCH_PACKAGE_REF=git+https://github.com/PittampalliOrg/SWE-bench.git@main
+ARG SWEBENCH_PACKAGE_REF=git+https://github.com/PittampalliOrg/SWE-bench.git@783813773be04dd76dcab12946006f827612f28f
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends git \
