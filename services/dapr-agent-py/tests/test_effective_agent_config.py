@@ -152,6 +152,12 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "z-ai/glm4.7",
         ),
         (
+            "foundry/DeepSeek-V4-Flash",
+            "llm-foundry-deepseek-v4-flash",
+            "foundry",
+            "DeepSeek-V4-Flash",
+        ),
+        (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",

@@ -21,6 +21,15 @@ describe("benchmark agent validation", () => {
 		expect(valid.effectiveLlmComponent).toBe("llm-nvidia-qwen3-coder-480b");
 	});
 
+	it("accepts the tool-capable Foundry DeepSeek deployment", () => {
+		const valid = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			modelSpec: "foundry/DeepSeek-V4-Flash",
+		});
+		expect(valid.effectiveProvider).toBe("foundry");
+		expect(valid.effectiveLlmComponent).toBe("llm-foundry-deepseek-v4-flash");
+	});
+
 	it("derives the per-agent runtime app id for legacy registered rows", () => {
 		expect(
 			assertDaprAgentPyBenchmarkAgent({

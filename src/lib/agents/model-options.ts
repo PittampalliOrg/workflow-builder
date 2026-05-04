@@ -1,6 +1,7 @@
 export type AgentModelProvider =
   | "anthropic"
   | "openai"
+  | "foundry"
   | "nvidia"
   | "googleai"
   | "deepseek"
@@ -102,6 +103,13 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-nvidia-glm47",
   },
   {
+    value: "foundry/DeepSeek-V4-Flash",
+    label: "Foundry DeepSeek V4 Flash",
+    provider: "foundry",
+    iconProvider: "deepseek",
+    component: "llm-foundry-deepseek-v4-flash",
+  },
+  {
     value: "googleai/gemini-3.1-pro-preview",
     label: "Gemini 3.1 Pro Preview",
     provider: "googleai",
@@ -177,6 +185,9 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "nvidia/z-ai/glm4.7": "nvidia/z-ai/glm4.7",
   "z-ai/glm4.7": "nvidia/z-ai/glm4.7",
   "glm4.7": "nvidia/z-ai/glm4.7",
+  "foundry/DeepSeek-V4-Flash": "foundry/DeepSeek-V4-Flash",
+  "DeepSeek-V4-Flash": "foundry/DeepSeek-V4-Flash",
+  "deepseek-v4-flash": "foundry/DeepSeek-V4-Flash",
   "googleai/gemini-3.1-pro-preview": "googleai/gemini-3.1-pro-preview",
   "google/gemini-3.1-pro-preview": "googleai/gemini-3.1-pro-preview",
   "gemini-3.1-pro-preview": "googleai/gemini-3.1-pro-preview",

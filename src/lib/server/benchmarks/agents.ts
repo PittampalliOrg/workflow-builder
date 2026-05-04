@@ -48,6 +48,7 @@ function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
 const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"anthropic",
 	"openai",
+	"foundry",
 	"nvidia",
 ]);
 

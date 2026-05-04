@@ -50,6 +50,11 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "moonshotai/kimi-k2-instruct-0905": "llm-nvidia-kimi-k2-0905",
     "nvidia/z-ai/glm4.7": "llm-nvidia-glm47",
     "z-ai/glm4.7": "llm-nvidia-glm47",
+    # Azure AI Foundry direct models
+    "foundry/DeepSeek-V4-Flash": "llm-foundry-deepseek-v4-flash",
+    "DeepSeek-V4-Flash": "llm-foundry-deepseek-v4-flash",
+    "foundry/Kimi-K2.6": "llm-foundry-kimi-k26",
+    "Kimi-K2.6": "llm-foundry-kimi-k26",
     # GoogleAI
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
@@ -94,6 +99,8 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-nvidia-kimi-k2-thinking": ("nvidia", "moonshotai/kimi-k2-thinking"),
     "llm-nvidia-kimi-k2-0905": ("nvidia", "moonshotai/kimi-k2-instruct-0905"),
     "llm-nvidia-glm47": ("nvidia", "z-ai/glm4.7"),
+    "llm-foundry-deepseek-v4-flash": ("foundry", "DeepSeek-V4-Flash"),
+    "llm-foundry-kimi-k26": ("foundry", "Kimi-K2.6"),
     "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
     "llm-deepseek": ("deepseek", "default"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
@@ -203,6 +210,8 @@ def provider_metadata_for_component(
         provider = "openai"
     elif "nvidia" in lowered:
         provider = "nvidia"
+    elif "foundry" in lowered:
+        provider = "foundry"
     elif "google" in lowered:
         provider = "googleai"
     elif "deepseek" in lowered:

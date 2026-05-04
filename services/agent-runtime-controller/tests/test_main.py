@@ -150,6 +150,19 @@ def test_effective_model_status_exposes_provider_component_and_model():
     }
 
 
+def test_effective_model_status_supports_foundry_deepseek():
+    status = main._effective_model_status(
+        _spec(modelSpec="foundry/DeepSeek-V4-Flash")
+    )
+
+    assert status == {
+        "effectiveModelSpec": "foundry/DeepSeek-V4-Flash",
+        "effectiveLlmComponent": "llm-foundry-deepseek-v4-flash",
+        "provider": "foundry",
+        "providerModel": "DeepSeek-V4-Flash",
+    }
+
+
 def test_unknown_model_spec_is_rejected_instead_of_defaulting_to_anthropic():
     try:
         main._resolve_llm_component("nvidia/unknown-model")

@@ -21,6 +21,7 @@ describe("agent model options", () => {
       "nvidia/moonshotai/kimi-k2-instruct-0905",
       "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
       "nvidia/z-ai/glm4.7",
+      "foundry/DeepSeek-V4-Flash",
       "googleai/gemini-3.1-pro-preview",
       "deepseek/default",
       "huggingface/meta-llama/Meta-Llama-3-8B",
@@ -56,6 +57,9 @@ describe("agent model options", () => {
       "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
     );
     expect(canonicalAgentModelSpec("glm4.7")).toBe("nvidia/z-ai/glm4.7");
+    expect(canonicalAgentModelSpec("DeepSeek-V4-Flash")).toBe(
+      "foundry/DeepSeek-V4-Flash",
+    );
     expect(canonicalAgentModelSpec("google/gemini-3.1-pro-preview")).toBe(
       "googleai/gemini-3.1-pro-preview",
     );
@@ -69,6 +73,7 @@ describe("agent model options", () => {
     expect(isSupportedAgentModelSpec("openai/gpt-5.3-codex")).toBe(false);
     expect(isSupportedAgentModelSpec("ollama/llama3.2")).toBe(false);
     expect(isSupportedAgentModelSpec("mistral/open-mistral-7b")).toBe(false);
+    expect(isSupportedAgentModelSpec("foundry/Kimi-K2.6")).toBe(false);
   });
 
   it("formats known aliases with their canonical label", () => {
@@ -81,6 +86,9 @@ describe("agent model options", () => {
       "NVIDIA Mistral Medium 3.5",
     );
     expect(agentModelLabel("kimi-k2-thinking")).toBe("NVIDIA Kimi K2 Thinking");
+    expect(agentModelLabel("DeepSeek-V4-Flash")).toBe(
+      "Foundry DeepSeek V4 Flash",
+    );
     expect(agentModelLabel("google/gemini-3.1-pro-preview")).toBe(
       "Gemini 3.1 Pro Preview",
     );

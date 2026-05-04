@@ -1688,6 +1688,11 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_nvidia(self.llm)
         except Exception:
             pass
+        try:
+            from src.foundry_adapter import patch_for_foundry
+            patch_for_foundry(self.llm)
+        except Exception:
+            pass
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
         exec_id = (
@@ -4225,6 +4230,12 @@ try:
     patch_for_nvidia(agent.llm)
 except Exception as exc:
     logger.warning("NVIDIA adapter patch failed: %s", exc)
+
+try:
+    from src.foundry_adapter import patch_for_foundry
+    patch_for_foundry(agent.llm)
+except Exception as exc:
+    logger.warning("Azure AI Foundry adapter patch failed: %s", exc)
 
 runner = AgentRunner()
 
