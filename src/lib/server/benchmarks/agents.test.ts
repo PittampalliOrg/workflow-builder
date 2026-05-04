@@ -55,6 +55,31 @@ describe("benchmark agent validation", () => {
 		).toThrow(/tool-capable/);
 	});
 
+	it("accepts direct DeepSeek V4 models after conformance passes", () => {
+		const pro = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			modelSpec: "deepseek/deepseek-v4-pro",
+		});
+		expect(pro.effectiveProvider).toBe("deepseek");
+		expect(pro.effectiveLlmComponent).toBe("llm-deepseek-v4-pro");
+
+		const flash = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			modelSpec: "deepseek-v4-flash",
+		});
+		expect(flash.effectiveProvider).toBe("deepseek");
+		expect(flash.effectiveLlmComponent).toBe("llm-deepseek-v4-flash");
+	});
+
+	it("keeps legacy DeepSeek default out of SWE-bench", () => {
+		expect(() =>
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				modelSpec: "deepseek/default",
+			}),
+		).toThrow(/tool-capable/);
+	});
+
 	it("derives the per-agent runtime app id for legacy registered rows", () => {
 		expect(
 			assertDaprAgentPyBenchmarkAgent({

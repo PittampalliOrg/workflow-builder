@@ -26,6 +26,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"openai",
 	"together",
 	"nvidia",
+	"deepseek",
 ]);
 
 function trimProblem(s: string | null): string {

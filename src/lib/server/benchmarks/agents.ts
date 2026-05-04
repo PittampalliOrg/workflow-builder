@@ -51,6 +51,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"foundry",
 	"together",
 	"nvidia",
+	"deepseek",
 ]);
 
 export function assertBenchmarkModelMatchesRuntime(params: {

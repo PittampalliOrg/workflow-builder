@@ -64,6 +64,28 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 	"gpt-4o": { inputPerMillion: 2.5, outputPerMillion: 10.0 },
 	"gpt-4o-mini": { inputPerMillion: 0.15, outputPerMillion: 0.6 },
 	"gemini-1.5-pro": { inputPerMillion: 1.25, outputPerMillion: 5.0 },
+	// DeepSeek V4 direct API. Pro pricing reflects the 75% discount listed
+	// through 2026-05-31 15:59 UTC on DeepSeek's pricing page.
+	"deepseek/deepseek-v4-flash": {
+		inputPerMillion: 0.14,
+		outputPerMillion: 0.28,
+		cacheReadPerMillion: 0.0028,
+	},
+	"deepseek-v4-flash": {
+		inputPerMillion: 0.14,
+		outputPerMillion: 0.28,
+		cacheReadPerMillion: 0.0028,
+	},
+	"deepseek/deepseek-v4-pro": {
+		inputPerMillion: 0.435,
+		outputPerMillion: 0.87,
+		cacheReadPerMillion: 0.003625,
+	},
+	"deepseek-v4-pro": {
+		inputPerMillion: 0.435,
+		outputPerMillion: 0.87,
+		cacheReadPerMillion: 0.003625,
+	},
 };
 
 export const FALLBACK_PRICING: ModelPricing = {
