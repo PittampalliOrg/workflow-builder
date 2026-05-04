@@ -14,6 +14,13 @@ from typing import Any
 from urllib.error import HTTPError
 import urllib.request
 
+from src.provider_conformance import (
+    build_llm_chat_response,
+    ensure_chat_completions_history,
+    parse_structured_response,
+    strict_json_schema,
+)
+
 logger = logging.getLogger(__name__)
 
 COMPONENT_MODEL_MAP: dict[str, str] = {
@@ -126,7 +133,7 @@ def _normalize_messages_for_nvidia(
 
     if not messages:
         messages.append({"role": "user", "content": "Continue."})
-    return messages
+    return ensure_chat_completions_history(messages, provider="nvidia")
 
 
 def _tool_parameters(tool: Any) -> dict[str, Any]:
@@ -306,6 +313,8 @@ def _call_nvidia_chat(
     messages: list[dict[str, Any]],
     tools: list[Any] | None = None,
     max_tokens: int | None = None,
+    response_format: Any = None,
+    tool_choice: Any = None,
 ) -> dict[str, Any]:
     model = _get_nvidia_model(component)
     converted_tools = _convert_tools_for_nvidia_chat(tools)
@@ -348,7 +357,33 @@ def _call_nvidia_chat(
     }
     if converted_tools:
         request_body["tools"] = converted_tools
-        request_body["tool_choice"] = "auto"
+        if tool_choice in (None, "", "auto"):
+            request_body["tool_choice"] = "auto"
+        elif tool_choice == "none":
+            request_body["tool_choice"] = "none"
+        else:
+            # NVIDIA NIM compatibility varies for forced tool choices. Forced
+            # choices are a provider-specific feature, not part of the Dapr
+            # DurableAgent contract, so degrade to auto instead of shipping a
+            # shape that may 400 before the model can answer.
+            logger.warning(
+                "[nvidia-chat] ignoring unsupported forced tool_choice=%r",
+                tool_choice,
+            )
+            request_body["tool_choice"] = "auto"
+    if response_format is not None:
+        try:
+            schema = strict_json_schema(response_format.model_json_schema())
+            request_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_format.__name__,
+                    "schema": schema,
+                    "strict": True,
+                },
+            }
+        except Exception:
+            request_body["response_format"] = {"type": "json_object"}
 
     req = _make_nvidia_request(url, request_body, headers)
     logger.info(
@@ -448,17 +483,12 @@ def patch_for_nvidia(llm_client: Any) -> None:
     def patched_generate(self: Any, *args: Any, **kwargs: Any) -> Any:
         component = getattr(self, "_llm_component", None)
         if component and _is_nvidia_component(component):
-            from dapr_agents.types.message import (
-                AssistantMessage,
-                LLMChatCandidate,
-                LLMChatResponse,
-            )
-
             prompt = args[0] if args else kwargs.get("prompt", "")
             raw_messages = kwargs.get("messages")
             tools = kwargs.get("tools")
             max_tokens = kwargs.get("max_tokens")
             response_format = kwargs.get("response_format")
+            tool_choice = kwargs.get("tool_choice")
 
             messages = _normalize_messages_for_nvidia(
                 prompt,
@@ -469,27 +499,19 @@ def patch_for_nvidia(llm_client: Any) -> None:
                 messages,
                 tools=tools,
                 max_tokens=max_tokens,
+                response_format=response_format,
+                tool_choice=tool_choice,
             )
 
-            if response_format is not None and result.get("content"):
-                content_text = str(result["content"])
-                try:
-                    return response_format.model_validate_json(content_text)
-                except Exception:
-                    try:
-                        return response_format.model_validate(json.loads(content_text))
-                    except Exception:
-                        pass
+            if response_format is not None:
+                return parse_structured_response(
+                    response_format,
+                    result.get("content", "") or "",
+                )
 
-            msg = AssistantMessage(
+            return build_llm_chat_response(
                 content=result.get("content", "") or "",
-                role="assistant",
-            )
-            if result.get("tool_calls"):
-                msg.tool_calls = result["tool_calls"]
-            finish_reason = "tool_use" if result.get("tool_calls") else "end_turn"
-            return LLMChatResponse(
-                results=[LLMChatCandidate(message=msg, finish_reason=finish_reason)],
+                tool_calls=result.get("tool_calls") or None,
                 metadata=result.get("metadata") or {},
             )
 

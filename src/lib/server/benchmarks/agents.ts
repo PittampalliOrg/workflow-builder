@@ -1,3 +1,8 @@
+import {
+	agentModelOptionFor,
+	canonicalAgentModelSpec,
+} from "$lib/agents/model-options";
+
 export type BenchmarkAgentCandidate = {
 	id: string;
 	name: string;
@@ -9,6 +14,7 @@ export type BenchmarkAgentCandidate = {
 	isArchived?: boolean | null;
 	version?: number | null;
 	projectId?: string | null;
+	modelSpec?: string | null;
 };
 
 export type ValidBenchmarkAgent = BenchmarkAgentCandidate & {
@@ -17,6 +23,9 @@ export type ValidBenchmarkAgent = BenchmarkAgentCandidate & {
 	runtimeAppId: string;
 	currentVersionId: string;
 	version: number;
+	modelSpec: string;
+	effectiveLlmComponent: string;
+	effectiveProvider: string;
 };
 
 export class BenchmarkAgentValidationError extends Error {
@@ -36,6 +45,46 @@ function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
 	return agent.runtimeAppId ?? null;
 }
 
+const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
+	"anthropic",
+	"openai",
+	"nvidia",
+]);
+
+export function assertBenchmarkModelMatchesRuntime(params: {
+	agentModelSpec?: string | null;
+	requestedModelNameOrPath?: string | null;
+}): { modelSpec: string; component: string; provider: string } {
+	const modelSpec = canonicalAgentModelSpec(params.agentModelSpec);
+	if (!modelSpec) {
+		validationError(
+			`SWE-bench agents must use a supported durable coding model; got ${params.agentModelSpec ?? "unknown"}`,
+		);
+	}
+	const option = agentModelOptionFor(modelSpec);
+	if (!option) {
+		validationError(`SWE-bench model ${modelSpec} is not configured`);
+	}
+	if (!TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider)) {
+		validationError(
+			`SWE-bench model ${modelSpec} is not tool-capable for durable coding agents`,
+		);
+	}
+
+	const requested = canonicalAgentModelSpec(params.requestedModelNameOrPath);
+	if (requested && requested !== modelSpec) {
+		validationError(
+			`Requested SWE-bench model ${requested} does not match the selected agent runtime model ${modelSpec}`,
+		);
+	}
+
+	return {
+		modelSpec,
+		component: option.component,
+		provider: option.provider,
+	};
+}
+
 /**
  * SWE-bench V1 intentionally runs inference only through published
  * dapr-agent-py agents using durable/run and an agent-runtime Dapr app id
@@ -45,6 +94,7 @@ function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
  */
 export function assertDaprAgentPyBenchmarkAgent(
 	agent: BenchmarkAgentCandidate | null | undefined,
+	options: { requestedModelNameOrPath?: string | null } = {},
 ): ValidBenchmarkAgent {
 	if (!agent) validationError("Selected agent was not found");
 	if (agent.isArchived) validationError("Selected agent is archived");
@@ -68,5 +118,15 @@ export function assertDaprAgentPyBenchmarkAgent(
 			`Selected agent must be registered before benchmarking; current status is ${agent.registryStatus ?? "unknown"}`,
 		);
 	}
-	return { ...agent, runtimeAppId } as ValidBenchmarkAgent;
+	const model = assertBenchmarkModelMatchesRuntime({
+		agentModelSpec: agent.modelSpec,
+		requestedModelNameOrPath: options.requestedModelNameOrPath,
+	});
+	return {
+		...agent,
+		runtimeAppId,
+		modelSpec: model.modelSpec,
+		effectiveLlmComponent: model.component,
+		effectiveProvider: model.provider,
+	} as ValidBenchmarkAgent;
 }

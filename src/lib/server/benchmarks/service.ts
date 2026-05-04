@@ -201,23 +201,28 @@ export function isBenignDaprTerminationMiss(input: unknown): boolean {
 
 export function benchmarkAgentRuntimeCleanupInstanceIds(
 	row: BenchmarkAgentRuntimeCleanupInput,
-	latestTurn?: BenchmarkSessionTurnInput | null,
+	turns?: BenchmarkSessionTurnInput | BenchmarkSessionTurnInput[] | null,
 ): string[] {
 	const sessionId = row.sessionId?.trim();
 	if (!row.runtimeAppId || !sessionId) return [];
 	const ids = new Set<string>([sessionId]);
-	const latestChild = latestTurn?.childInstanceId?.trim();
-	if (latestChild) {
-		ids.add(latestChild);
-		return [...ids];
-	}
-	const turn =
-		typeof latestTurn?.turn === "number" && latestTurn.turn > 0
-			? latestTurn.turn
+	const knownTurns = Array.isArray(turns) ? turns : turns ? [turns] : [];
+	const maxKnownTurn = knownTurns.reduce((max, turn) => {
+		return typeof turn.turn === "number" && turn.turn > max ? turn.turn : max;
+	}, 0);
+	const turnCount =
+		maxKnownTurn > 0
+			? maxKnownTurn
 			: typeof row.turnCount === "number" && row.turnCount > 0
 				? row.turnCount
 				: 1;
-	ids.add(`${sessionId}:turn-${Math.min(Math.floor(turn), 1000)}`);
+	for (let turn = 1; turn <= Math.min(Math.floor(turnCount), 1000); turn += 1) {
+		ids.add(`${sessionId}:turn-${turn}`);
+	}
+	for (const turn of knownTurns) {
+		const child = turn.childInstanceId?.trim();
+		if (child) ids.add(child);
+	}
 	return [...ids];
 }
 
@@ -533,6 +538,8 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		projectId: input.projectId,
 		agentId: input.agentId,
 		version: input.agentVersion,
+		requestedModelNameOrPath:
+			input.modelNameOrPath ?? input.modelConfigLabel ?? null,
 	});
 
 	const instanceIds = normalizeInstanceIds(input.instanceIds);
@@ -580,6 +587,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	const modelNameOrPath =
 		input.modelNameOrPath?.trim() ||
 		input.modelConfigLabel?.trim() ||
+		agent.modelSpec ||
 		`${agent.slug}@v${agent.version}`;
 
 	const created = await database.transaction(async (tx) => {
@@ -1182,7 +1190,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 			});
 		}
 	}
-	const latestTurnBySession = new Map<string, BenchmarkSessionTurnInput>();
+	const turnsBySession = new Map<string, BenchmarkSessionTurnInput[]>();
 	if (sessionIds.size > 0) {
 		const turnRows = await database
 			.select({
@@ -1210,11 +1218,13 @@ async function finalizeBenchmarkWorkflowExecutions(
 						? data.child_instance_id
 						: null;
 			const rawTurn = Number(data.turn);
-			latestTurnBySession.set(turnRow.sessionId, {
+			const turns = turnsBySession.get(turnRow.sessionId) ?? [];
+			turns.push({
 				sessionId: turnRow.sessionId,
 				childInstanceId,
 				turn: Number.isFinite(rawTurn) ? rawTurn : null,
 			});
+			turnsBySession.set(turnRow.sessionId, turns);
 		}
 	}
 	await runWithConcurrency(
@@ -1230,7 +1240,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		for (const instanceId of benchmarkAgentRuntimeCleanupInstanceIds(
 			cleanupRow,
 			cleanupRow.sessionId
-				? latestTurnBySession.get(cleanupRow.sessionId)
+				? turnsBySession.get(cleanupRow.sessionId)
 				: null,
 		)) {
 			instances.add(instanceId);
@@ -1275,14 +1285,16 @@ async function terminateAndPurgeBenchmarkWorkflowInstance(
 	instanceId: string,
 	reason: string,
 ) {
-	await terminateBenchmarkWorkflowInstance(instanceId, reason);
-	await purgeBenchmarkWorkflowInstance(instanceId);
+	const termination = await terminateBenchmarkWorkflowInstance(instanceId, reason);
+	await purgeBenchmarkWorkflowInstance(instanceId, termination);
 }
+
+type DurableTerminationResult = "terminated" | "alreadyGone" | "failed";
 
 async function terminateBenchmarkWorkflowInstance(
 	instanceId: string,
 	reason: string,
-) {
+): Promise<DurableTerminationResult> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 2_000);
 	try {
@@ -1298,26 +1310,36 @@ async function terminateBenchmarkWorkflowInstance(
 		);
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
-			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
+				return "alreadyGone";
+			}
 			console.warn(
 				`Failed to terminate benchmark workflow ${instanceId}: ${res.status} ${detail}`,
 			);
+			return "failed";
 		}
+		return "terminated";
 	} catch (err) {
-		if (isBenignDaprTerminationMiss(err)) return;
+		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
 		console.warn(
 			`Failed to terminate benchmark workflow ${instanceId}:`,
 			err instanceof Error ? err.message : err,
 		);
+		return "failed";
 	} finally {
 		clearTimeout(timeout);
 	}
 }
 
-async function purgeBenchmarkWorkflowInstance(instanceId: string) {
+async function purgeBenchmarkWorkflowInstance(
+	instanceId: string,
+	termination: DurableTerminationResult,
+) {
+	const purgeUrl = (force: boolean) =>
+		`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}?force=${force ? "true" : "false"}&recursive=true`;
 	try {
 		const res = await daprFetch(
-			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}?force=true&recursive=true`,
+			purgeUrl(false),
 			{
 				method: "DELETE",
 				signal: AbortSignal.timeout(5_000),
@@ -1327,6 +1349,25 @@ async function purgeBenchmarkWorkflowInstance(instanceId: string) {
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
+			if (termination === "terminated" || termination === "alreadyGone") {
+				const forceRes = await daprFetch(purgeUrl(true), {
+					method: "DELETE",
+					signal: AbortSignal.timeout(5_000),
+					maxRetries: 0,
+				});
+				if (forceRes.ok) return;
+				const forceDetail = await forceRes.text().catch(() => "");
+				if (
+					forceRes.status === 404 ||
+					isBenignDaprTerminationMiss(forceDetail)
+				) {
+					return;
+				}
+				console.warn(
+					`Failed to purge benchmark workflow ${instanceId}: ${forceRes.status} ${forceDetail}`,
+				);
+				return;
+			}
 			console.warn(
 				`Failed to purge benchmark workflow ${instanceId}: ${res.status} ${detail}`,
 			);
@@ -1345,15 +1386,19 @@ async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
 	instanceId: string,
 	reason: string,
 ) {
-	await terminateBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason);
-	await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
+	const termination = await terminateBenchmarkAgentRuntimeInstance(
+		runtimeAppId,
+		instanceId,
+		reason,
+	);
+	await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, termination);
 }
 
 async function terminateBenchmarkAgentRuntimeInstance(
 	runtimeAppId: string,
 	instanceId: string,
 	reason: string,
-) {
+): Promise<DurableTerminationResult> {
 	try {
 		const res = await daprFetch(
 			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/terminate`,
@@ -1367,27 +1412,35 @@ async function terminateBenchmarkAgentRuntimeInstance(
 		);
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
-			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
+				return "alreadyGone";
+			}
 			console.warn(
 				`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
 			);
+			return "failed";
 		}
+		return "terminated";
 	} catch (err) {
-		if (isBenignDaprTerminationMiss(err)) return;
+		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
 		console.warn(
 			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
 			err,
 		);
+		return "failed";
 	}
 }
 
 async function purgeBenchmarkAgentRuntimeInstance(
 	runtimeAppId: string,
 	instanceId: string,
+	termination: DurableTerminationResult,
 ) {
+	const purgeUrl = (force: boolean) =>
+		`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}?force=${force ? "true" : "false"}&recursive=true`;
 	try {
 		const res = await daprFetch(
-			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}?force=true&recursive=true`,
+			purgeUrl(false),
 			{
 				method: "DELETE",
 				signal: AbortSignal.timeout(5_000),
@@ -1397,6 +1450,25 @@ async function purgeBenchmarkAgentRuntimeInstance(
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
+			if (termination === "terminated" || termination === "alreadyGone") {
+				const forceRes = await daprFetch(purgeUrl(true), {
+					method: "DELETE",
+					signal: AbortSignal.timeout(5_000),
+					maxRetries: 0,
+				});
+				if (forceRes.ok) return;
+				const forceDetail = await forceRes.text().catch(() => "");
+				if (
+					forceRes.status === 404 ||
+					isBenignDaprTerminationMiss(forceDetail)
+				) {
+					return;
+				}
+				console.warn(
+					`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}: ${forceRes.status} ${forceDetail}`,
+				);
+				return;
+			}
 			console.warn(
 				`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
 			);
@@ -2471,6 +2543,7 @@ async function resolveBenchmarkAgent(params: {
 	projectId: string;
 	agentId: string;
 	version?: number;
+	requestedModelNameOrPath?: string | null;
 }): Promise<ValidBenchmarkAgent & { config: AgentConfig }> {
 	const database = requireDb();
 	const versionCond: SQL | undefined =
@@ -2509,10 +2582,17 @@ async function resolveBenchmarkAgent(params: {
 			),
 		)
 		.limit(1);
-	const valid = assertDaprAgentPyBenchmarkAgent(rows[0]);
+	const candidate = rows[0];
+	const config = (candidate?.config ?? {}) as AgentConfig;
+	const modelSpec =
+		typeof config.modelSpec === "string" ? config.modelSpec : null;
+	const valid = assertDaprAgentPyBenchmarkAgent(
+		candidate ? { ...candidate, modelSpec } : null,
+		{ requestedModelNameOrPath: params.requestedModelNameOrPath },
+	);
 	return {
 		...valid,
-		config: (rows[0]?.config ?? {}) as AgentConfig,
+		config,
 	};
 }
 

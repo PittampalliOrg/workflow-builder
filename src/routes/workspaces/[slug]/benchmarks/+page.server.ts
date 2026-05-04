@@ -10,6 +10,7 @@ import {
 import { ensureDefaultBenchmarkSuites } from "$lib/server/benchmarks/service";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
+import { agentModelOptionFor } from "$lib/agents/model-options";
 import type { AgentConfig } from "$lib/types/agents";
 import type {
 	BenchmarkInstanceRow,
@@ -20,6 +21,11 @@ import type {
 import type { PageServerLoad } from "./$types";
 
 const PROBLEM_PREVIEW_LEN = 240;
+const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
+	"anthropic",
+	"openai",
+	"nvidia",
+]);
 
 function trimProblem(s: string | null): string {
 	if (!s) return "";
@@ -164,6 +170,15 @@ export const load: PageServerLoad = async ({ locals }) => {
 			(row): row is typeof row & { versionNumber: number } =>
 				row.currentVersionId != null && row.versionNumber != null,
 		)
+		.filter((row) => {
+			const cfg = (row.config ?? {}) as Record<string, unknown>;
+			const modelSpec =
+				typeof cfg.modelSpec === "string" ? cfg.modelSpec : null;
+			const option = agentModelOptionFor(modelSpec);
+			return Boolean(
+				option && TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider),
+			);
+		})
 		.map((row) => {
 			const cfg = (row.config ?? {}) as Record<string, unknown>;
 			const modelSpec =

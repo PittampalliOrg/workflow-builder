@@ -123,13 +123,6 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-huggingface-llama3",
   },
   {
-    value: "mistral/open-mistral-7b",
-    label: "Open Mistral 7B",
-    provider: "mistral",
-    iconProvider: "mistral",
-    component: "llm-mistral-open",
-  },
-  {
     value: "echo/local",
     label: "Local Echo",
     provider: "echo",
@@ -191,8 +184,6 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "huggingface/meta-llama/Meta-Llama-3-8B":
     "huggingface/meta-llama/Meta-Llama-3-8B",
   "meta-llama/Meta-Llama-3-8B": "huggingface/meta-llama/Meta-Llama-3-8B",
-  "mistral/open-mistral-7b": "mistral/open-mistral-7b",
-  "open-mistral-7b": "mistral/open-mistral-7b",
   "echo/local": "echo/local",
 };
 

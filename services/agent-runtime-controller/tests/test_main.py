@@ -68,6 +68,7 @@ def _spec(**overrides):
         "runtimeIsolation": "shared",
         "environment": {"imageTag": "ghcr.io/example/dapr-agent-py-sandbox:latest"},
         "lifecycle": {"maxReplicas": 2},
+        "modelSpec": "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
     }
     spec.update(overrides)
     return spec
@@ -89,6 +90,11 @@ def test_build_deployment_stamps_runtime_app_id_labels_annotations_and_resources
     assert labels[main.LABEL_APP_ID] == "agent-runtime-pool-coding"
     assert template_labels[main.LABEL_APP_ID] == "agent-runtime-pool-coding"
     assert template_annotations[main.ANNO_APP_ID] == "agent-runtime-pool-coding"
+    assert (
+        template_annotations["agents.x-k8s.io/effective-llm-component"]
+        == "llm-nvidia-qwen3-coder-480b"
+    )
+    assert template_annotations["agents.x-k8s.io/provider"] == "nvidia"
     assert container["resources"] == {
         "requests": {"memory": "512Mi", "cpu": "250m"},
         "limits": {"memory": "2Gi", "cpu": "1500m"},
@@ -129,3 +135,25 @@ def test_capacity_status_reports_slots_and_dapr_workflow_capacity():
         "daprWorkflowEffectiveCapacity": 18,
         "admissionReady": True,
     }
+
+
+def test_effective_model_status_exposes_provider_component_and_model():
+    status = main._effective_model_status(
+        _spec(modelSpec="nvidia/mistralai/devstral-2-123b-instruct-2512")
+    )
+
+    assert status == {
+        "effectiveModelSpec": "nvidia/mistralai/devstral-2-123b-instruct-2512",
+        "effectiveLlmComponent": "llm-nvidia-devstral-2-123b",
+        "provider": "nvidia",
+        "providerModel": "mistralai/devstral-2-123b-instruct-2512",
+    }
+
+
+def test_unknown_model_spec_is_rejected_instead_of_defaulting_to_anthropic():
+    try:
+        main._resolve_llm_component("nvidia/unknown-model")
+    except ValueError as exc:
+        assert "Unknown AgentRuntime modelSpec" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

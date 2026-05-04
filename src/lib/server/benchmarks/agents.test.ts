@@ -10,13 +10,15 @@ const baseAgent = {
 	currentVersionId: "ver_1",
 	registryStatus: "registered",
 	version: 1,
+	modelSpec: "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
 };
 
 describe("benchmark agent validation", () => {
 	it("accepts a published dapr-agent-py agent runtime", () => {
-		expect(assertDaprAgentPyBenchmarkAgent(baseAgent).runtimeAppId).toBe(
-			"agent-runtime-solver",
-		);
+		const valid = assertDaprAgentPyBenchmarkAgent(baseAgent);
+		expect(valid.runtimeAppId).toBe("agent-runtime-solver");
+		expect(valid.effectiveProvider).toBe("nvidia");
+		expect(valid.effectiveLlmComponent).toBe("llm-nvidia-qwen3-coder-480b");
 	});
 
 	it("derives the per-agent runtime app id for legacy registered rows", () => {
@@ -56,5 +58,28 @@ describe("benchmark agent validation", () => {
 				registryStatus: "failed",
 			}),
 		).toThrow(/registered/);
+	});
+
+	it("rejects non-tool-capable model specs for SWE-bench", () => {
+		expect(() =>
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				modelSpec: "mistral/open-mistral-7b",
+			}),
+		).toThrow(/supported durable coding model|tool-capable/);
+	});
+
+	it("rejects requested model mismatches when the request names a known model", () => {
+		expect(() =>
+			assertDaprAgentPyBenchmarkAgent(baseAgent, {
+				requestedModelNameOrPath: "anthropic/claude-opus-4-7",
+			}),
+		).toThrow(/does not match/);
+
+		expect(
+			assertDaprAgentPyBenchmarkAgent(baseAgent, {
+				requestedModelNameOrPath: "qwen3-coder-480b-a35b-instruct",
+			}).modelSpec,
+		).toBe("nvidia/qwen/qwen3-coder-480b-a35b-instruct");
 	});
 });

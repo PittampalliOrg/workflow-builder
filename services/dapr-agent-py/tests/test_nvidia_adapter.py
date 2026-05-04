@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import sys
+from pydantic import BaseModel
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -71,6 +72,56 @@ def test_nvidia_chat_uses_openai_compatible_endpoint_and_key(monkeypatch) -> Non
     assert bodies[0]["stream"] is False
     assert result["content"] == "ok"
     assert result["metadata"]["provider"] == "nvidia-chat"
+
+
+def test_nvidia_chat_sends_strict_response_format(monkeypatch) -> None:
+    bodies: list[dict] = []
+
+    class ConversationSummary(BaseModel):
+        summary: str
+        items: list[dict]
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-test")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "chatcmpl_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"summary\":\"ok\",\"items\":[]}",
+                },
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_nvidia_chat(
+        "llm-nvidia-llama31-8b",
+        [{"role": "user", "content": "summarize"}],
+        response_format=ConversationSummary,
+    )
+
+    fmt = bodies[0]["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["name"] == "ConversationSummary"
+    assert fmt["json_schema"]["strict"] is True
+    assert fmt["json_schema"]["schema"]["additionalProperties"] is False
+    assert fmt["json_schema"]["schema"]["required"] == ["summary", "items"]
+
+
+def test_structured_response_falls_back_to_first_field_for_summary() -> None:
+    class ConversationSummary(BaseModel):
+        summary: str
+
+    parsed = adapter.parse_structured_response(
+        ConversationSummary,
+        "No JSON, just a concise summary.",
+    )
+
+    assert parsed.summary == "No JSON, just a concise summary."
 
 
 def test_nvidia_component_model_map_includes_coding_models() -> None:
@@ -155,12 +206,20 @@ def test_nvidia_tool_call_response_is_normalized() -> None:
     ]
 
 
-def test_nvidia_normalizer_preserves_tool_result_messages() -> None:
+def test_nvidia_normalizer_preserves_valid_tool_result_messages() -> None:
     messages = adapter._normalize_messages_for_nvidia(
         None,
         [
             {"role": "system", "content": "System"},
             {"role": "user", "content": "Read file"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            },
             {
                 "role": "tool",
                 "tool_call_id": "call_1",
@@ -173,8 +232,38 @@ def test_nvidia_normalizer_preserves_tool_result_messages() -> None:
         {"role": "system", "content": "System"},
         {"role": "user", "content": "Read file"},
         {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        {
             "role": "tool",
             "tool_call_id": "call_1",
             "content": "file contents",
         },
     ]
+
+
+def test_nvidia_normalizer_collapses_invalid_tool_history() -> None:
+    messages = adapter._normalize_messages_for_nvidia(
+        None,
+        [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Read file"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "file contents",
+            },
+            {"role": "user", "content": "continue"},
+        ],
+    )
+
+    assert messages[0] == {"role": "system", "content": "System"}
+    assert messages[1]["role"] == "user"
+    assert "tool-call ordering was invalid" in messages[1]["content"]
+    assert "[tool] file contents" in messages[1]["content"]

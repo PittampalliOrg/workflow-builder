@@ -106,11 +106,75 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
 }
 DEFAULT_LLM_COMPONENT = "llm-anthropic-opus"
 
+COMPONENT_PROVIDER_MAP: dict[str, tuple[str, str]] = {
+    "llm-anthropic-sonnet": ("anthropic", "claude-sonnet-4-6"),
+    "llm-anthropic-opus": ("anthropic", "claude-opus-4-7"),
+    "llm-anthropic-haiku": ("anthropic", "claude-haiku-4-5-20251001"),
+    "llm-openai-gpt5": ("openai", "gpt-5.4"),
+    "llm-openai-o3": ("openai", "o3"),
+    "llm-nvidia-llama31-8b": ("nvidia", "meta/llama-3.1-8b-instruct"),
+    "llm-nvidia-mistral-medium-35-128b": (
+        "nvidia",
+        "mistralai/mistral-medium-3.5-128b",
+    ),
+    "llm-nvidia-qwen3-coder-480b": (
+        "nvidia",
+        "qwen/qwen3-coder-480b-a35b-instruct",
+    ),
+    "llm-nvidia-devstral-2-123b": (
+        "nvidia",
+        "mistralai/devstral-2-123b-instruct-2512",
+    ),
+    "llm-nvidia-kimi-k2-thinking": ("nvidia", "moonshotai/kimi-k2-thinking"),
+    "llm-nvidia-kimi-k2-0905": ("nvidia", "moonshotai/kimi-k2-instruct-0905"),
+    "llm-nvidia-glm47": ("nvidia", "z-ai/glm4.7"),
+    "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
+    "llm-deepseek": ("deepseek", "default"),
+    "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
+    "llm-mistral-open": ("mistral", "open-mistral-7b"),
+    "llm-echo": ("echo", "local"),
+}
+
 
 def _resolve_llm_component(model_spec: str | None) -> str:
     if not model_spec or not str(model_spec).strip():
         return DEFAULT_LLM_COMPONENT
-    return MODEL_COMPONENT_MAP.get(str(model_spec).strip(), DEFAULT_LLM_COMPONENT)
+    normalized = str(model_spec).strip()
+    component = MODEL_COMPONENT_MAP.get(normalized)
+    if component is None:
+        raise ValueError(f"Unknown AgentRuntime modelSpec {normalized!r}")
+    return component
+
+
+def _provider_for_component(component: str) -> dict[str, str]:
+    mapped = COMPONENT_PROVIDER_MAP.get(component)
+    if mapped:
+        return {"provider": mapped[0], "providerModel": mapped[1]}
+    lowered = component.lower()
+    if "anthropic" in lowered:
+        provider = "anthropic"
+    elif "openai" in lowered:
+        provider = "openai"
+    elif "nvidia" in lowered:
+        provider = "nvidia"
+    elif "mistral" in lowered:
+        provider = "mistral"
+    else:
+        provider = "unknown"
+    return {"provider": provider}
+
+
+def _effective_model_status(spec: dict[str, Any]) -> dict[str, Any]:
+    raw_model_spec = spec.get("modelSpec")
+    model_spec = str(raw_model_spec).strip() if raw_model_spec else ""
+    component = _resolve_llm_component(model_spec or None)
+    provider = _provider_for_component(component)
+    return {
+        "effectiveModelSpec": model_spec or provider.get("providerModel") or component,
+        "effectiveLlmComponent": component,
+        "provider": provider.get("provider", "unknown"),
+        "providerModel": provider.get("providerModel"),
+    }
 # Image pull secrets reused from dapr-agent-py Deployment pattern.
 DEFAULT_PULL_SECRETS = [
     s.strip()
@@ -400,6 +464,7 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     runtime_isolation = _runtime_isolation(spec)
     bootstrap = json.dumps(spec.get("mcpServers") or [])
     llm_component = _resolve_llm_component(spec.get("modelSpec"))
+    model_status = _effective_model_status(spec)
     # browser-use runtime pods OOMKill on the 1Gi default: browser-use's
     # AgentHistoryList keeps the full screenshot bytes in-memory per step,
     # the Anthropic client batches images for context, and OTEL span/metric
@@ -539,6 +604,9 @@ def _build_deployment(name: str, namespace: str, spec: dict[str, Any]) -> dict[s
     }
     runtime_annotations = {
         ANNO_APP_ID: app_id,
+        "agents.x-k8s.io/effective-model-spec": str(model_status["effectiveModelSpec"]),
+        "agents.x-k8s.io/effective-llm-component": str(model_status["effectiveLlmComponent"]),
+        "agents.x-k8s.io/provider": str(model_status["provider"]),
     }
 
     return {
@@ -782,6 +850,7 @@ def on_create(spec: dict, name: str, namespace: str, logger: logging.Logger, **_
         "phase": "Starting" if replicas >= 1 else "Sleeping",
         "replicas": replicas,
         **_capacity_status(spec, desired_replicas=replicas, ready_replicas=0),
+        **_effective_model_status(spec),
         "deploymentRef": dep_name,
         "lastTransitionTime": _now_iso(),
         "message": f"Deployment created; replicas={replicas}",
@@ -815,6 +884,22 @@ def on_spec_update(spec: dict, name: str, namespace: str, logger: logging.Logger
         # Deployment was deleted out-of-band — re-create cleanly.
         APPS_V1.create_namespaced_deployment(namespace=namespace, body=dep)
     reconcile_mcp_service(dict(spec), namespace, logger)
+    try:
+        live = APPS_V1.read_namespaced_deployment(name=dep_name, namespace=namespace)
+        ready = int((live.status.ready_replicas or 0))
+        replicas = int((live.status.replicas or 0))
+    except client.ApiException as exc:
+        if exc.status != 404:
+            logger.warning("on_spec_update live deployment read failed: %s", exc)
+        ready = 0
+        replicas = _min_replicas(spec)
+    _patch_status(name, namespace, {
+        **_effective_model_status(spec),
+        "readyReplicas": ready,
+        "replicas": replicas,
+        **_capacity_status(spec, desired_replicas=replicas, ready_replicas=ready),
+        "lastTransitionTime": _now_iso(),
+    })
     logger.info("spec update applied to Deployment %s", dep_name)
 
 
@@ -869,6 +954,7 @@ def on_wake(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: l
         "phase": phase,
         "replicas": desired_replicas,
         "readyReplicas": ready,
+        **_effective_model_status(spec),
         **_capacity_status(
             spec,
             desired_replicas=desired_replicas,
@@ -892,6 +978,7 @@ def on_sleep(old: Any, new: Any, spec: dict, name: str, namespace: str, logger: 
         "phase": "Starting" if replicas >= 1 else "Sleeping",
         "replicas": replicas,
         "readyReplicas": 0,
+        **_effective_model_status(spec),
         **_capacity_status(spec, desired_replicas=replicas, ready_replicas=0),
         "lastTransitionTime": _now_iso(),
         "message": f"Sleep requested at {new}",
@@ -937,6 +1024,7 @@ def idle_reaper(spec: dict, status: dict, name: str, namespace: str, logger: log
         "phase": "Starting" if min_replicas >= 1 else "Sleeping",
         "replicas": min_replicas,
         "readyReplicas": 0,
+        **_effective_model_status(spec),
         **_capacity_status(spec, desired_replicas=min_replicas, ready_replicas=0),
         "lastTransitionTime": _now_iso(),
         "message": f"Idle > {ttl}s",
@@ -970,6 +1058,7 @@ def on_deployment_event(event: dict, logger: logging.Logger, **_: Any) -> None:
         _patch_status(ar_name, namespace, {
             "readyReplicas": ready,
             "replicas": replicas,
+            **_effective_model_status(spec),
             **_capacity_status(
                 spec,
                 desired_replicas=replicas,

@@ -24,7 +24,6 @@ describe("agent model options", () => {
       "googleai/gemini-3.1-pro-preview",
       "deepseek/default",
       "huggingface/meta-llama/Meta-Llama-3-8B",
-      "mistral/open-mistral-7b",
       "echo/local",
     ]);
   });
@@ -63,15 +62,13 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("meta-llama/Meta-Llama-3-8B")).toBe(
       "huggingface/meta-llama/Meta-Llama-3-8B",
     );
-    expect(canonicalAgentModelSpec("open-mistral-7b")).toBe(
-      "mistral/open-mistral-7b",
-    );
   });
 
   it("does not bless models without a mapped Dapr runtime component", () => {
     expect(isSupportedAgentModelSpec("gpt-5-mini")).toBe(false);
     expect(isSupportedAgentModelSpec("openai/gpt-5.3-codex")).toBe(false);
     expect(isSupportedAgentModelSpec("ollama/llama3.2")).toBe(false);
+    expect(isSupportedAgentModelSpec("mistral/open-mistral-7b")).toBe(false);
   });
 
   it("formats known aliases with their canonical label", () => {

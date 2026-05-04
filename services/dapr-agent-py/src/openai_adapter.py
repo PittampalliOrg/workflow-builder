@@ -10,6 +10,11 @@ from urllib.error import HTTPError
 import urllib.request
 
 from src.instruction_bundle import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+from src.provider_conformance import (
+    build_llm_chat_response,
+    parse_structured_response,
+    strict_json_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -327,46 +332,13 @@ def _make_openai_request(
     )
 
 
-def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    strict_schema = json.loads(json.dumps(schema))
-
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            properties = node.get("properties")
-            if isinstance(properties, dict):
-                node["additionalProperties"] = False
-                existing_required = node.get("required")
-                required = existing_required if isinstance(existing_required, list) else []
-                node["required"] = list(dict.fromkeys([*required, *properties.keys()]))
-                for value in properties.values():
-                    visit(value)
-            for key in ("$defs", "definitions"):
-                defs = node.get(key)
-                if isinstance(defs, dict):
-                    for value in defs.values():
-                        visit(value)
-            for key in ("items", "anyOf", "oneOf", "allOf"):
-                value = node.get(key)
-                if isinstance(value, list):
-                    for item in value:
-                        visit(item)
-                else:
-                    visit(value)
-        elif isinstance(node, list):
-            for item in node:
-                visit(item)
-
-    visit(strict_schema)
-    return strict_schema
-
-
 def _publish_llm_usage(
     *,
     model: str,
     usage: dict[str, Any] | None,
     ttft_ms: float | None,
-    duration_ms: float | None,
     success: bool,
+    duration_ms: float | None = None,
     error: str | None = None,
     prompt_cache_telemetry: dict[str, Any] | None = None,
 ) -> None:
@@ -402,10 +374,11 @@ def _publish_llm_usage(
             # vs Anthropic stays meaningful.
             "cache_creation_input_tokens": 0,
             "ttft_ms": ttft_ms,
-            "duration_ms": duration_ms,
             "recovery_attempts": 0,
             "success": success,
         }
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
         if prompt_cache_telemetry:
             payload["prompt_prefix_chars"] = prompt_cache_telemetry.get(
                 "prefix_chars", 0
@@ -550,7 +523,7 @@ def _call_openai_responses(
         request_body["reasoning"] = {"effort": effort, "summary": summary}
     if response_format is not None:
         try:
-            schema = _strict_json_schema(response_format.model_json_schema())
+            schema = strict_json_schema(response_format.model_json_schema())
             request_body["text"] = {
                 "format": {
                     "type": "json_schema",
@@ -661,12 +634,6 @@ def patch_for_openai(llm_client: Any) -> None:
     def patched_generate(self: Any, *args: Any, **kwargs: Any) -> Any:
         component = getattr(self, "_llm_component", None)
         if component and _is_openai_component(component):
-            from dapr_agents.types.message import (
-                AssistantMessage,
-                LLMChatCandidate,
-                LLMChatResponse,
-            )
-
             prompt = args[0] if args else kwargs.get("prompt", "")
             raw_messages = kwargs.get("messages")
             tools = kwargs.get("tools")
@@ -689,25 +656,15 @@ def patch_for_openai(llm_client: Any) -> None:
                 cache_key=cache_key,
             )
 
-            if response_format is not None and result.get("content"):
-                content_text = str(result["content"])
-                try:
-                    return response_format.model_validate_json(content_text)
-                except Exception:
-                    try:
-                        return response_format.model_validate(json.loads(content_text))
-                    except Exception:
-                        pass
+            if response_format is not None:
+                return parse_structured_response(
+                    response_format,
+                    result.get("content", "") or "",
+                )
 
-            msg = AssistantMessage(
+            return build_llm_chat_response(
                 content=result.get("content", "") or "",
-                role="assistant",
-            )
-            if result.get("tool_calls"):
-                msg.tool_calls = result["tool_calls"]
-            finish_reason = "tool_use" if result.get("tool_calls") else "end_turn"
-            return LLMChatResponse(
-                results=[LLMChatCandidate(message=msg, finish_reason=finish_reason)],
+                tool_calls=result.get("tool_calls") or None,
                 metadata=result.get("metadata") or {},
             )
 

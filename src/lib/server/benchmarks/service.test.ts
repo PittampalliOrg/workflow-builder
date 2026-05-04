@@ -800,7 +800,7 @@ describe("SWE-bench workflow spec", () => {
 describe("SWE-bench terminal run cleanup", () => {
 	const now = new Date("2026-05-02T12:00:00Z");
 
-	it("terminates only the session workflow and latest turn workflow", () => {
+	it("terminates the session workflow and every known turn workflow", () => {
 		expect(
 			benchmarkAgentRuntimeCleanupInstanceIds(
 				{
@@ -814,7 +814,21 @@ describe("SWE-bench terminal run cleanup", () => {
 					turn: 12,
 				},
 			),
-		).toEqual(["session-1", "session-1:turn-12"]);
+		).toEqual([
+			"session-1",
+			"session-1:turn-1",
+			"session-1:turn-2",
+			"session-1:turn-3",
+			"session-1:turn-4",
+			"session-1:turn-5",
+			"session-1:turn-6",
+			"session-1:turn-7",
+			"session-1:turn-8",
+			"session-1:turn-9",
+			"session-1:turn-10",
+			"session-1:turn-11",
+			"session-1:turn-12",
+		]);
 
 		expect(
 			benchmarkAgentRuntimeCleanupInstanceIds({
@@ -822,7 +836,44 @@ describe("SWE-bench terminal run cleanup", () => {
 				sessionId: "session-2",
 				turnCount: 7,
 			}),
-		).toEqual(["session-2", "session-2:turn-7"]);
+		).toEqual([
+			"session-2",
+			"session-2:turn-1",
+			"session-2:turn-2",
+			"session-2:turn-3",
+			"session-2:turn-4",
+			"session-2:turn-5",
+			"session-2:turn-6",
+			"session-2:turn-7",
+		]);
+
+		expect(
+			benchmarkAgentRuntimeCleanupInstanceIds(
+				{
+					runtimeAppId: "agent-runtime-pool-coding",
+					sessionId: "session-3",
+					turnCount: 2,
+				},
+				[
+					{
+						sessionId: "session-3",
+						childInstanceId: "custom-child-a",
+						turn: 1,
+					},
+					{
+						sessionId: "session-3",
+						childInstanceId: "custom-child-b",
+						turn: 2,
+					},
+				],
+			),
+		).toEqual([
+			"session-3",
+			"session-3:turn-1",
+			"session-3:turn-2",
+			"custom-child-a",
+			"custom-child-b",
+		]);
 	});
 
 	it("classifies already-gone Dapr workflow instances as benign", () => {

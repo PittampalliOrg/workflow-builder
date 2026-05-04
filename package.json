@@ -17,6 +17,7 @@
 		"db:push": "drizzle-kit push",
 		"db:studio": "drizzle-kit studio",
 		"db:seed-samples": "tsx scripts/seed-sample-workflows.ts",
+		"dev:purge-stale-workflows": "tsx scripts/dev-purge-stale-workflows.ts",
 		"sync-oauth-apps": "tsx scripts/sync-oauth-apps.ts"
 	},
 	"devDependencies": {
