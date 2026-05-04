@@ -244,6 +244,13 @@ def _auth_headers() -> tuple[dict[str, str], str]:
     return {"Authorization": f"Bearer {api_key}"}, "together-api-key"
 
 
+def _user_agent() -> str:
+    configured = os.environ.get("TOGETHER_USER_AGENT", "").strip()
+    if configured:
+        return configured
+    return "workflow-builder-dapr-agent-py/1.0"
+
+
 def _make_together_request(
     url: str,
     body: dict[str, Any],
@@ -256,6 +263,7 @@ def _make_together_request(
             **auth_headers,
             "Accept": "application/json",
             "Content-Type": "application/json",
+            "User-Agent": _user_agent(),
         },
         method="POST",
     )

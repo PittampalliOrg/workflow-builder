@@ -44,6 +44,7 @@ def test_together_auth_headers_require_api_key(monkeypatch) -> None:
 def test_together_chat_uses_openai_compatible_endpoint_and_key(monkeypatch) -> None:
     bodies: list[dict] = []
     auth_headers: list[str] = []
+    user_agents: list[str | None] = []
     urls: list[str] = []
 
     monkeypatch.setenv("TOGETHER_API_KEY", "together-test")
@@ -51,6 +52,7 @@ def test_together_chat_uses_openai_compatible_endpoint_and_key(monkeypatch) -> N
     def urlopen(req, timeout: int):
         urls.append(req.full_url)
         auth_headers.append(req.headers["Authorization"])
+        user_agents.append(req.get_header("User-agent"))
         bodies.append(json.loads(req.data.decode()))
         return _Response({
             "id": "chatcmpl_test",
@@ -70,6 +72,7 @@ def test_together_chat_uses_openai_compatible_endpoint_and_key(monkeypatch) -> N
 
     assert urls == ["https://api.together.ai/v1/chat/completions"]
     assert auth_headers == ["Bearer together-test"]
+    assert user_agents == ["workflow-builder-dapr-agent-py/1.0"]
     assert bodies[0]["model"] == "zai-org/GLM-5.1"
     assert bodies[0]["messages"] == [{"role": "user", "content": "hello"}]
     assert bodies[0]["stream"] is False
