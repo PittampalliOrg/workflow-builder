@@ -2,6 +2,7 @@ export type AgentModelProvider =
   | "anthropic"
   | "openai"
   | "foundry"
+  | "together"
   | "nvidia"
   | "googleai"
   | "deepseek"
@@ -15,6 +16,7 @@ export type AgentModelOption = {
   provider: AgentModelProvider;
   iconProvider: string;
   component: string;
+  sweBenchCapable?: boolean;
 };
 
 export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
@@ -110,6 +112,28 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-foundry-deepseek-v4-flash",
   },
   {
+    value: "together/zai-org/GLM-5.1",
+    label: "Together GLM-5.1",
+    provider: "together",
+    iconProvider: "zai",
+    component: "llm-together-glm-51",
+  },
+  {
+    value: "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+    label: "Together Qwen3-Coder 480B",
+    provider: "together",
+    iconProvider: "qwen",
+    component: "llm-together-qwen3-coder-480b",
+  },
+  {
+    value: "together/deepseek-ai/DeepSeek-V4-Pro",
+    label: "Together DeepSeek V4 Pro",
+    provider: "together",
+    iconProvider: "deepseek",
+    component: "llm-together-deepseek-v4-pro",
+    sweBenchCapable: false,
+  },
+  {
     value: "googleai/gemini-3.1-pro-preview",
     label: "Gemini 3.1 Pro Preview",
     provider: "googleai",
@@ -188,6 +212,21 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "foundry/DeepSeek-V4-Flash": "foundry/DeepSeek-V4-Flash",
   "DeepSeek-V4-Flash": "foundry/DeepSeek-V4-Flash",
   "deepseek-v4-flash": "foundry/DeepSeek-V4-Flash",
+  "together/zai-org/GLM-5.1": "together/zai-org/GLM-5.1",
+  "zai-org/GLM-5.1": "together/zai-org/GLM-5.1",
+  "GLM-5.1": "together/zai-org/GLM-5.1",
+  "glm-5.1": "together/zai-org/GLM-5.1",
+  "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":
+    "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+  "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":
+    "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+  "qwen3-coder-480b-a35b-instruct-fp8":
+    "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+  "together/deepseek-ai/DeepSeek-V4-Pro":
+    "together/deepseek-ai/DeepSeek-V4-Pro",
+  "deepseek-ai/DeepSeek-V4-Pro": "together/deepseek-ai/DeepSeek-V4-Pro",
+  "DeepSeek-V4-Pro": "together/deepseek-ai/DeepSeek-V4-Pro",
+  "deepseek-v4-pro": "together/deepseek-ai/DeepSeek-V4-Pro",
   "googleai/gemini-3.1-pro-preview": "googleai/gemini-3.1-pro-preview",
   "google/gemini-3.1-pro-preview": "googleai/gemini-3.1-pro-preview",
   "gemini-3.1-pro-preview": "googleai/gemini-3.1-pro-preview",

@@ -1693,6 +1693,11 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_foundry(self.llm)
         except Exception:
             pass
+        try:
+            from src.together_adapter import patch_for_together
+            patch_for_together(self.llm)
+        except Exception:
+            pass
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
         exec_id = (
@@ -4236,6 +4241,12 @@ try:
     patch_for_foundry(agent.llm)
 except Exception as exc:
     logger.warning("Azure AI Foundry adapter patch failed: %s", exc)
+
+try:
+    from src.together_adapter import patch_for_together
+    patch_for_together(agent.llm)
+except Exception as exc:
+    logger.warning("Together AI adapter patch failed: %s", exc)
 
 runner = AgentRunner()
 

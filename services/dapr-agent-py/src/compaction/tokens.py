@@ -48,6 +48,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "llm-nvidia-kimi-k2-0905": 256_000,
     "z-ai/glm4.7": 131_072,
     "llm-nvidia-glm47": 131_072,
+    "zai-org/GLM-5.1": 128_000,
+    "llm-together-glm-51": 128_000,
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": 262_144,
+    "llm-together-qwen3-coder-480b": 262_144,
+    "deepseek-ai/DeepSeek-V4-Pro": 512_000,
+    "llm-together-deepseek-v4-pro": 512_000,
 }
 DEFAULT_WINDOW = 200_000
 

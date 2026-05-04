@@ -557,6 +557,10 @@ export type AgentRuntimeStatus = {
 	daprWorkflowLimitPerSidecar?: number;
 	daprWorkflowEffectiveCapacity?: number;
 	admissionReady?: boolean;
+	effectiveModelSpec?: string;
+	effectiveLlmComponent?: string;
+	provider?: string;
+	providerModel?: string;
 	deploymentRef?: string;
 	lastActiveAt?: string;
 	lastTransitionTime?: string;

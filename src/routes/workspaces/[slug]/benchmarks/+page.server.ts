@@ -24,6 +24,7 @@ const PROBLEM_PREVIEW_LEN = 240;
 const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"anthropic",
 	"openai",
+	"together",
 	"nvidia",
 ]);
 
@@ -176,7 +177,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 				typeof cfg.modelSpec === "string" ? cfg.modelSpec : null;
 			const option = agentModelOptionFor(modelSpec);
 			return Boolean(
-				option && TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider),
+				option &&
+					option.sweBenchCapable !== false &&
+					TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider),
 			);
 		})
 		.map((row) => {

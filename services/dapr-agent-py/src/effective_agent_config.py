@@ -55,6 +55,18 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "DeepSeek-V4-Flash": "llm-foundry-deepseek-v4-flash",
     "foundry/Kimi-K2.6": "llm-foundry-kimi-k26",
     "Kimi-K2.6": "llm-foundry-kimi-k26",
+    # Together AI OpenAI-compatible serverless models
+    "together/zai-org/GLM-5.1": "llm-together-glm-51",
+    "zai-org/GLM-5.1": "llm-together-glm-51",
+    "GLM-5.1": "llm-together-glm-51",
+    "glm-5.1": "llm-together-glm-51",
+    "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "llm-together-qwen3-coder-480b",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "llm-together-qwen3-coder-480b",
+    "qwen3-coder-480b-a35b-instruct-fp8": "llm-together-qwen3-coder-480b",
+    "together/deepseek-ai/DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
+    "deepseek-ai/DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
+    "DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
+    "deepseek-v4-pro": "llm-together-deepseek-v4-pro",
     # GoogleAI
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
@@ -101,6 +113,12 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-nvidia-glm47": ("nvidia", "z-ai/glm4.7"),
     "llm-foundry-deepseek-v4-flash": ("foundry", "DeepSeek-V4-Flash"),
     "llm-foundry-kimi-k26": ("foundry", "Kimi-K2.6"),
+    "llm-together-glm-51": ("together", "zai-org/GLM-5.1"),
+    "llm-together-qwen3-coder-480b": (
+        "together",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+    ),
+    "llm-together-deepseek-v4-pro": ("together", "deepseek-ai/DeepSeek-V4-Pro"),
     "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
     "llm-deepseek": ("deepseek", "default"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
@@ -212,6 +230,8 @@ def provider_metadata_for_component(
         provider = "nvidia"
     elif "foundry" in lowered:
         provider = "foundry"
+    elif "together" in lowered:
+        provider = "together"
     elif "google" in lowered:
         provider = "googleai"
     elif "deepseek" in lowered:

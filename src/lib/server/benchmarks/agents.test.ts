@@ -30,6 +30,31 @@ describe("benchmark agent validation", () => {
 		expect(valid.effectiveLlmComponent).toBe("llm-foundry-deepseek-v4-flash");
 	});
 
+	it("accepts Together coding models that have passed provider gating", () => {
+		const glm = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			modelSpec: "together/zai-org/GLM-5.1",
+		});
+		expect(glm.effectiveProvider).toBe("together");
+		expect(glm.effectiveLlmComponent).toBe("llm-together-glm-51");
+
+		const qwen = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			modelSpec: "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+		});
+		expect(qwen.effectiveProvider).toBe("together");
+		expect(qwen.effectiveLlmComponent).toBe("llm-together-qwen3-coder-480b");
+	});
+
+	it("keeps Together DeepSeek V4 Pro out of SWE-bench until conformance passes", () => {
+		expect(() =>
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				modelSpec: "together/deepseek-ai/DeepSeek-V4-Pro",
+			}),
+		).toThrow(/tool-capable/);
+	});
+
 	it("derives the per-agent runtime app id for legacy registered rows", () => {
 		expect(
 			assertDaprAgentPyBenchmarkAgent({

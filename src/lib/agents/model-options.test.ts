@@ -22,6 +22,9 @@ describe("agent model options", () => {
       "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
       "nvidia/z-ai/glm4.7",
       "foundry/DeepSeek-V4-Flash",
+      "together/zai-org/GLM-5.1",
+      "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+      "together/deepseek-ai/DeepSeek-V4-Pro",
       "googleai/gemini-3.1-pro-preview",
       "deepseek/default",
       "huggingface/meta-llama/Meta-Llama-3-8B",
@@ -60,6 +63,15 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("DeepSeek-V4-Flash")).toBe(
       "foundry/DeepSeek-V4-Flash",
     );
+    expect(canonicalAgentModelSpec("GLM-5.1")).toBe(
+      "together/zai-org/GLM-5.1",
+    );
+    expect(
+      canonicalAgentModelSpec("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"),
+    ).toBe("together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8");
+    expect(canonicalAgentModelSpec("DeepSeek-V4-Pro")).toBe(
+      "together/deepseek-ai/DeepSeek-V4-Pro",
+    );
     expect(canonicalAgentModelSpec("google/gemini-3.1-pro-preview")).toBe(
       "googleai/gemini-3.1-pro-preview",
     );
@@ -88,6 +100,10 @@ describe("agent model options", () => {
     expect(agentModelLabel("kimi-k2-thinking")).toBe("NVIDIA Kimi K2 Thinking");
     expect(agentModelLabel("DeepSeek-V4-Flash")).toBe(
       "Foundry DeepSeek V4 Flash",
+    );
+    expect(agentModelLabel("GLM-5.1")).toBe("Together GLM-5.1");
+    expect(agentModelLabel("DeepSeek-V4-Pro")).toBe(
+      "Together DeepSeek V4 Pro",
     );
     expect(agentModelLabel("google/gemini-3.1-pro-preview")).toBe(
       "Gemini 3.1 Pro Preview",

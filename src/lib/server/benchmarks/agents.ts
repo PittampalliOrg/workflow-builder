@@ -49,6 +49,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"anthropic",
 	"openai",
 	"foundry",
+	"together",
 	"nvidia",
 ]);
 
@@ -66,7 +67,10 @@ export function assertBenchmarkModelMatchesRuntime(params: {
 	if (!option) {
 		validationError(`SWE-bench model ${modelSpec} is not configured`);
 	}
-	if (!TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider)) {
+	if (
+		option.sweBenchCapable === false ||
+		!TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider)
+	) {
 		validationError(
 			`SWE-bench model ${modelSpec} is not tool-capable for durable coding agents`,
 		);

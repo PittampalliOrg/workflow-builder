@@ -14,6 +14,7 @@
 		{ heading: 'Anthropic', providers: ['anthropic'] },
 		{ heading: 'OpenAI', providers: ['openai'] },
 		{ heading: 'Microsoft Foundry', providers: ['foundry'] },
+		{ heading: 'Together AI', providers: ['together'] },
 		{ heading: 'NVIDIA NIM', providers: ['nvidia'] },
 		{ heading: 'Google AI', providers: ['googleai'] },
 		{ heading: 'DeepSeek', providers: ['deepseek'] },

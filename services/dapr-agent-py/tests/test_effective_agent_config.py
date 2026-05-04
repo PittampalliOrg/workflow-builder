@@ -158,6 +158,24 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "DeepSeek-V4-Flash",
         ),
         (
+            "together/zai-org/GLM-5.1",
+            "llm-together-glm-51",
+            "together",
+            "zai-org/GLM-5.1",
+        ),
+        (
+            "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+            "llm-together-qwen3-coder-480b",
+            "together",
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+        ),
+        (
+            "together/deepseek-ai/DeepSeek-V4-Pro",
+            "llm-together-deepseek-v4-pro",
+            "together",
+            "deepseek-ai/DeepSeek-V4-Pro",
+        ),
+        (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",

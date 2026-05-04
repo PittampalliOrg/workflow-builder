@@ -22,6 +22,9 @@ def test_context_window_known_model():
     assert get_context_window("llm-nvidia-kimi-k2-thinking") == 256_000
     assert get_context_window("llm-nvidia-kimi-k2-0905") == 256_000
     assert get_context_window("llm-nvidia-glm47") == 131_072
+    assert get_context_window("llm-together-glm-51") == 128_000
+    assert get_context_window("llm-together-qwen3-coder-480b") == 262_144
+    assert get_context_window("llm-together-deepseek-v4-pro") == 512_000
 
 
 def test_context_window_unknown_model_falls_back_to_default():
