@@ -34,6 +34,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4o": 128_000,
     "gpt-4.1": 1_000_000,
     "gpt-5": 400_000,
+    "meta/llama-3.1-8b-instruct": 128_000,
+    "llm-nvidia-llama31-8b": 128_000,
 }
 DEFAULT_WINDOW = 200_000
 

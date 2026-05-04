@@ -1678,6 +1678,16 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_anthropic(self.llm)
         except Exception:
             pass
+        try:
+            from src.openai_adapter import patch_for_openai
+            patch_for_openai(self.llm)
+        except Exception:
+            pass
+        try:
+            from src.nvidia_adapter import patch_for_nvidia
+            patch_for_nvidia(self.llm)
+        except Exception:
+            pass
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
         exec_id = (
@@ -4209,6 +4219,12 @@ try:
     patch_for_openai(agent.llm)
 except Exception as exc:
     logger.warning("OpenAI adapter patch failed: %s", exc)
+
+try:
+    from src.nvidia_adapter import patch_for_nvidia
+    patch_for_nvidia(agent.llm)
+except Exception as exc:
+    logger.warning("NVIDIA adapter patch failed: %s", exc)
 
 runner = AgentRunner()
 

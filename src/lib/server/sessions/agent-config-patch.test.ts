@@ -62,6 +62,17 @@ describe("session agent config patch", () => {
 		expect(result.status).toBe(400);
 	});
 
+	it("canonicalizes NVIDIA model aliases", () => {
+		const result = normalizeSessionAgentConfigPatch({
+			modelSpec: "meta/llama-3.1-8b-instruct",
+		});
+
+		expect(result).toEqual({
+			ok: true,
+			patch: { modelSpec: "nvidia/meta/llama-3.1-8b-instruct" },
+		});
+	});
+
 	it("raises one canonical config patch event", async () => {
 		raiseSessionEventMock.mockResolvedValueOnce({ ok: true, status: 200 });
 

@@ -80,6 +80,8 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "gpt-5.4": "llm-openai-gpt5",
     "openai/o3": "llm-openai-o3",
     "o3": "llm-openai-o3",
+    "nvidia/meta/llama-3.1-8b-instruct": "llm-nvidia-llama31-8b",
+    "meta/llama-3.1-8b-instruct": "llm-nvidia-llama31-8b",
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
     "gemini-3.1-pro-preview": "llm-google-gemini",

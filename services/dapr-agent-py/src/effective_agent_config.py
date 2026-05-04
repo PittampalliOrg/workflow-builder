@@ -35,6 +35,9 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "gpt-5.4": "llm-openai-gpt5",
     "openai/o3": "llm-openai-o3",
     "o3": "llm-openai-o3",
+    # NVIDIA NIM / build API
+    "nvidia/meta/llama-3.1-8b-instruct": "llm-nvidia-llama31-8b",
+    "meta/llama-3.1-8b-instruct": "llm-nvidia-llama31-8b",
     # GoogleAI
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
@@ -63,6 +66,7 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-anthropic-haiku": ("anthropic", "claude-haiku-4-5-20251001"),
     "llm-openai-gpt5": ("openai", "gpt-5.4"),
     "llm-openai-o3": ("openai", "o3"),
+    "llm-nvidia-llama31-8b": ("nvidia", "meta/llama-3.1-8b-instruct"),
     "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
     "llm-deepseek": ("deepseek", "default"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
@@ -170,6 +174,8 @@ def provider_metadata_for_component(
         provider = "anthropic"
     elif "openai" in lowered:
         provider = "openai"
+    elif "nvidia" in lowered:
+        provider = "nvidia"
     elif "google" in lowered:
         provider = "googleai"
     elif "deepseek" in lowered:

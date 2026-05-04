@@ -1,6 +1,7 @@
 export type AgentModelProvider =
 	| 'anthropic'
 	| 'openai'
+	| 'nvidia'
 	| 'googleai'
 	| 'deepseek'
 	| 'huggingface'
@@ -44,6 +45,12 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
 		label: 'o3',
 		provider: 'openai',
 		component: 'llm-openai-o3'
+	},
+	{
+		value: 'nvidia/meta/llama-3.1-8b-instruct',
+		label: 'NVIDIA Llama 3.1 8B',
+		provider: 'nvidia',
+		component: 'llm-nvidia-llama31-8b'
 	},
 	{
 		value: 'googleai/gemini-3.1-pro-preview',
@@ -95,6 +102,8 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
 	'gpt-5.4': 'openai/gpt-5.4',
 	'openai/o3': 'openai/o3',
 	o3: 'openai/o3',
+	'nvidia/meta/llama-3.1-8b-instruct': 'nvidia/meta/llama-3.1-8b-instruct',
+	'meta/llama-3.1-8b-instruct': 'nvidia/meta/llama-3.1-8b-instruct',
 	'googleai/gemini-3.1-pro-preview': 'googleai/gemini-3.1-pro-preview',
 	'google/gemini-3.1-pro-preview': 'googleai/gemini-3.1-pro-preview',
 	'gemini-3.1-pro-preview': 'googleai/gemini-3.1-pro-preview',

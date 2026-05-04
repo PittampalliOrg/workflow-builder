@@ -110,6 +110,12 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
         ("openai/gpt-5.4", "llm-openai-gpt5", "openai", "gpt-5.4"),
         ("openai/o3", "llm-openai-o3", "openai", "o3"),
         (
+            "nvidia/meta/llama-3.1-8b-instruct",
+            "llm-nvidia-llama31-8b",
+            "nvidia",
+            "meta/llama-3.1-8b-instruct",
+        ),
+        (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",

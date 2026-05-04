@@ -14,6 +14,7 @@ describe('agent model options', () => {
 			'anthropic/claude-haiku-4-5-20251001',
 			'openai/gpt-5.4',
 			'openai/o3',
+			'nvidia/meta/llama-3.1-8b-instruct',
 			'googleai/gemini-3.1-pro-preview',
 			'deepseek/default',
 			'huggingface/meta-llama/Meta-Llama-3-8B',
@@ -34,6 +35,9 @@ describe('agent model options', () => {
 		);
 		expect(canonicalAgentModelSpec('gpt-5.4')).toBe('openai/gpt-5.4');
 		expect(canonicalAgentModelSpec('o3')).toBe('openai/o3');
+		expect(canonicalAgentModelSpec('meta/llama-3.1-8b-instruct')).toBe(
+			'nvidia/meta/llama-3.1-8b-instruct'
+		);
 		expect(canonicalAgentModelSpec('google/gemini-3.1-pro-preview')).toBe(
 			'googleai/gemini-3.1-pro-preview'
 		);
@@ -54,6 +58,9 @@ describe('agent model options', () => {
 	it('formats known aliases with their canonical label', () => {
 		expect(agentModelLabel('claude-opus-4-6')).toBe('Claude Opus 4.7');
 		expect(agentModelLabel('openai/o3')).toBe('o3');
+		expect(agentModelLabel('meta/llama-3.1-8b-instruct')).toBe(
+			'NVIDIA Llama 3.1 8B'
+		);
 		expect(agentModelLabel('google/gemini-3.1-pro-preview')).toBe(
 			'Gemini 3.1 Pro Preview'
 		);
