@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib
+from io import BytesIO
 import json
 import os
 import sys
+from urllib.error import HTTPError
 
 from pydantic import BaseModel
 
@@ -116,6 +118,45 @@ def test_foundry_chat_sends_strict_response_format(monkeypatch) -> None:
     assert fmt["json_schema"]["strict"] is True
     assert fmt["json_schema"]["schema"]["additionalProperties"] is False
     assert fmt["json_schema"]["schema"]["required"] == ["summary", "items"]
+
+
+def test_foundry_chat_retries_429_with_retry_after(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    monkeypatch.setenv("AZURE_AI_FOUNDRY_API_KEY", "foundry-test")
+    monkeypatch.setenv("AZURE_AI_FOUNDRY_RATE_LIMIT_MAX_RETRIES", "1")
+    monkeypatch.setattr(adapter.time, "sleep", lambda value: sleeps.append(value))
+
+    def urlopen(req, timeout: int):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                req.full_url,
+                429,
+                "rate limited",
+                {"Retry-After": "0.25"},
+                BytesIO(b'{"error":{"code":"RateLimitReached"}}'),
+            )
+        return _Response({
+            "id": "chatcmpl_test",
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    result = adapter._call_foundry_chat(
+        "llm-foundry-deepseek-v4-flash",
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert calls == 2
+    assert sleeps == [0.25]
+    assert result["content"] == "ok"
 
 
 def test_foundry_tool_call_response_is_normalized() -> None:

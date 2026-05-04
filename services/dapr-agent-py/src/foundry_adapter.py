@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any
 from urllib.error import HTTPError
 import urllib.request
@@ -262,6 +263,23 @@ def _make_foundry_request(
     )
 
 
+def _retry_after_seconds(exc: HTTPError) -> float:
+    header = exc.headers.get("Retry-After") if exc.headers else None
+    if header:
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            pass
+    return max(
+        0.0,
+        float(os.environ.get("AZURE_AI_FOUNDRY_RATE_LIMIT_BACKOFF_SECONDS", "65")),
+    )
+
+
+def _rate_limit_max_retries() -> int:
+    return max(0, int(os.environ.get("AZURE_AI_FOUNDRY_RATE_LIMIT_MAX_RETRIES", "3")))
+
+
 def _publish_llm_usage(
     *,
     model: str,
@@ -315,10 +333,9 @@ def _call_foundry_chat(
 ) -> dict[str, Any]:
     model = _get_foundry_model(component)
     converted_tools = _convert_tools_for_foundry_chat(tools)
-    import time as _time
 
     llm_span = None
-    llm_start = _time.monotonic()
+    llm_start = time.monotonic()
     try:
         from src.telemetry import start_llm_request_span
 
@@ -381,7 +398,6 @@ def _call_foundry_chat(
         except Exception:
             request_body["response_format"] = {"type": "json_object"}
 
-    req = _make_foundry_request(url, request_body, headers)
     logger.info(
         "[foundry-chat] Calling %s with %d messages, %d tools, auth=%s",
         model,
@@ -389,23 +405,37 @@ def _call_foundry_chat(
         len(converted_tools or []),
         auth_mode,
     )
+    data: dict[str, Any]
+    rate_limit_retries = _rate_limit_max_retries()
+    attempt = 0
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read() or b"{}")
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        elapsed = (_time.monotonic() - llm_start) * 1000.0
-        _publish_llm_usage(
-            model=model,
-            usage=None,
-            ttft_ms=elapsed,
-            duration_ms=elapsed,
-            success=False,
-            error=detail,
-        )
-        raise RuntimeError(f"Azure AI Foundry Chat API failed ({exc.code}): {detail}") from exc
+        while True:
+            req = _make_foundry_request(url, request_body, headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read() or b"{}")
+                break
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 429 and attempt < rate_limit_retries:
+                    delay = _retry_after_seconds(exc)
+                    attempt += 1
+                    logger.warning(
+                        "[foundry-chat] 429 rate limit from %s; retrying in %.1fs "
+                        "(attempt %d/%d): %s",
+                        model,
+                        delay,
+                        attempt,
+                        rate_limit_retries,
+                        detail[:300],
+                    )
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(
+                    f"Azure AI Foundry Chat API failed ({exc.code}): {detail}"
+                ) from exc
     except Exception as exc:
-        elapsed = (_time.monotonic() - llm_start) * 1000.0
+        elapsed = (time.monotonic() - llm_start) * 1000.0
         _publish_llm_usage(
             model=model,
             usage=None,
@@ -418,7 +448,7 @@ def _call_foundry_chat(
 
     content, tool_calls, finish_reason, reasoning_content = _extract_foundry_response(data)
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    duration_ms = (_time.monotonic() - llm_start) * 1000.0
+    duration_ms = (time.monotonic() - llm_start) * 1000.0
     if response_format is not None and not content.strip():
         error = (
             "Azure AI Foundry Chat API returned empty assistant content for "
