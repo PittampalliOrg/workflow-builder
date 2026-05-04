@@ -732,6 +732,70 @@ def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypa
     )
 
 
+def test_run_workflow_batches_instance_child_starts(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE", "1")
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS", "7")
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 2}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754", "django__django-13012"],
+        "concurrency": 2,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+
+    assert workflow.send({"admitted": True, "holderId": "lease-1"}) == ("timer", 7)
+    assert any(
+        call[0] == "child"
+        and call[1] == "swebench_instance_workflow"
+        and call[2]["instanceId"] == "django__django-12754"
+        for call in ctx.calls
+    )
+    assert not any(
+        call[0] == "child"
+        and call[1] == "swebench_instance_workflow"
+        and call[2]["instanceId"] == "django__django-13012"
+        for call in ctx.calls
+    )
+
+    assert workflow.send(None) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-13012"},
+    )
+    assert workflow.send({"admitted": True, "holderId": "lease-2"}) == (
+        "child",
+        "swebench_instance_workflow",
+        {
+            "runId": "run_1",
+            "instanceId": "django__django-12754",
+            "timeoutSeconds": 60,
+        },
+        app._child_instance_workflow_id("run_1", "django__django-12754"),
+        app.SWEBENCH_COORDINATOR_APP_ID,
+    )
+
+
 def test_registered_child_workflow_target_validation(monkeypatch):
     app = load_app(monkeypatch)
     assert (

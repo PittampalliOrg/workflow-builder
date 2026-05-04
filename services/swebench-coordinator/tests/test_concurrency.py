@@ -10,6 +10,8 @@ sys.path.insert(0, str(SERVICE_ROOT))
 from src.concurrency import (  # noqa: E402
     bounded_swebench_concurrency,
     bounded_swebench_evaluation_concurrency,
+    instance_start_batch_delay_seconds,
+    instance_start_batch_size,
     max_inference_concurrency,
 )
 
@@ -38,6 +40,22 @@ def test_bounded_swebench_concurrency_honors_env_backstop(monkeypatch):
     monkeypatch.setenv("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY", "7")
     assert max_inference_concurrency() == 7
     assert bounded_swebench_concurrency(9) == 7
+
+
+def test_instance_start_batch_defaults(monkeypatch):
+    monkeypatch.delenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE", raising=False)
+    monkeypatch.delenv(
+        "SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS", raising=False
+    )
+    assert instance_start_batch_size() == 10
+    assert instance_start_batch_delay_seconds() == 5
+
+
+def test_instance_start_batch_honors_env(monkeypatch):
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE", "4")
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS", "0")
+    assert instance_start_batch_size() == 4
+    assert instance_start_batch_delay_seconds() == 0
 
 
 def test_bounded_swebench_concurrency_falls_back_for_invalid_values():

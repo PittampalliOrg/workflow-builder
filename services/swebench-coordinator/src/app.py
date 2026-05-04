@@ -19,6 +19,8 @@ from pydantic import BaseModel
 from src.concurrency import (
     bounded_swebench_concurrency,
     bounded_swebench_evaluation_concurrency,
+    instance_start_batch_delay_seconds,
+    instance_start_batch_size,
 )
 
 try:
@@ -1520,10 +1522,13 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             )
         instance_ids = list(run.get("selectedInstanceIds") or [])
         concurrency = bounded_swebench_concurrency(run.get("concurrency"))
+        start_batch_size = instance_start_batch_size()
+        start_batch_delay_seconds = instance_start_batch_delay_seconds()
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
         results: list[Any] = []
         pending_instance_ids = list(instance_ids)
         active_tasks: list[dict[str, Any]] = []
+        starts_in_batch = 0
         while pending_instance_ids or active_tasks:
             while pending_instance_ids and len(active_tasks) < concurrency:
                 instance_id = pending_instance_ids[0]
@@ -1571,6 +1576,17 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                         "holderId": admission.get("holderId"),
                     }
                 )
+                starts_in_batch += 1
+                if (
+                    pending_instance_ids
+                    and len(active_tasks) < concurrency
+                    and starts_in_batch >= start_batch_size
+                ):
+                    starts_in_batch = 0
+                    if start_batch_delay_seconds > 0:
+                        yield ctx.create_timer(
+                            timedelta(seconds=start_batch_delay_seconds)
+                        )
 
             if not active_tasks:
                 continue
