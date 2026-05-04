@@ -122,6 +122,7 @@ class StartRunRequest(BaseModel):
 
 class CancelRunRequest(BaseModel):
     reason: str | None = None
+    instanceIds: list[str] | None = None
 
 
 class EvaluationEventRequest(BaseModel):
@@ -898,6 +899,61 @@ def _run_workflow_id(run_id: str) -> str:
 
 def _child_instance_workflow_id(run_id: str, instance_id: str) -> str:
     return _hash_suffixed_name("swebench-inst-", [run_id, instance_id], max_length=100)
+
+
+def _cancel_child_instance_workflows(
+    client: DaprWorkflowClient,
+    run_id: str,
+    reason: str,
+    instance_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    selected_ids = [
+        value.strip()
+        for value in (instance_ids or [])
+        if isinstance(value, str) and value.strip()
+    ]
+    load_error: str | None = None
+    if not selected_ids:
+        try:
+            run = _load_run(run_id)
+            selected_ids = [
+                value.strip()
+                for value in (run.get("selectedInstanceIds") or [])
+                if isinstance(value, str) and value.strip()
+            ]
+            if not selected_ids and isinstance(run.get("instances"), list):
+                selected_ids = [
+                    instance.get("instanceId", "").strip()
+                    for instance in run["instances"]
+                    if isinstance(instance, dict)
+                    and isinstance(instance.get("instanceId"), str)
+                    and instance.get("instanceId", "").strip()
+                ]
+        except Exception as exc:
+            load_error = str(exc)
+
+    termination_errors: dict[str, str] = {}
+    terminated: list[str] = []
+    for instance_id in dict.fromkeys(selected_ids):
+        workflow_id = _child_instance_workflow_id(run_id, instance_id)
+        try:
+            client.terminate_workflow(instance_id=workflow_id, output=reason)
+            terminated.append(workflow_id)
+        except Exception as exc:
+            if _workflow_event_already_closed(exc):
+                continue
+            termination_errors[workflow_id] = str(exc)
+            logger.warning(
+                "Best-effort child terminate failed for %s: %s", workflow_id, exc
+            )
+
+    return {
+        "selectedInstanceCount": len(selected_ids),
+        "terminated": len(terminated),
+        "executionIds": terminated,
+        "terminationErrors": termination_errors,
+        "loadError": load_error,
+    }
 
 
 def _evaluator_job_name(run_id: str) -> str:
@@ -1773,6 +1829,12 @@ def cancel_benchmark_run(
                 logger.warning(
                     "Best-effort terminate failed for %s: %s", instance_id, exc
                 )
+    child_termination = _cancel_child_instance_workflows(
+        client,
+        run_id,
+        reason,
+        getattr(body, "instanceIds", None) if body else None,
+    )
     delete_result = _delete_evaluator_job(None, {"runId": run_id})
     return {
         "success": True,
@@ -1780,6 +1842,7 @@ def cancel_benchmark_run(
         "preflightExecutionId": preflight_instance_id,
         "evaluationExecutionId": evaluation_instance_id,
         "terminationErrors": termination_errors,
+        "childTermination": child_termination,
         "deleteEvaluatorJob": delete_result,
     }
 

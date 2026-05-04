@@ -102,6 +102,44 @@ def load_app(monkeypatch):
     return module
 
 
+def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
+    app = load_app(monkeypatch)
+    app.INTERNAL_API_TOKEN = "token"
+    terminated: list[tuple[str, str | None]] = []
+
+    class RecordingWorkflowClient:
+        def terminate_workflow(self, *, instance_id, output=None):
+            terminated.append((instance_id, output))
+
+    monkeypatch.setattr(app, "DaprWorkflowClient", RecordingWorkflowClient)
+    monkeypatch.setattr(app, "_delete_evaluator_job", lambda *_args, **_kwargs: {"success": True})
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda run_id: {
+            "id": run_id,
+            "selectedInstanceIds": ["django__django-12754", "django__django-12965"],
+            "instances": [],
+        },
+    )
+
+    request = types.SimpleNamespace(headers={"x-internal-token": "token"})
+    result = app.cancel_benchmark_run(
+        "run_1",
+        request,
+        app.CancelRunRequest(reason="operator stop"),
+    )
+
+    terminated_ids = [item[0] for item in terminated]
+    assert "swebench-run-run_1" in terminated_ids
+    assert "swebench-eval-run_1" in terminated_ids
+    assert app._child_instance_workflow_id("run_1", "django__django-12754") in terminated_ids
+    assert app._child_instance_workflow_id("run_1", "django__django-12965") in terminated_ids
+    assert result["childTermination"]["selectedInstanceCount"] == 2
+    assert result["childTermination"]["terminated"] == 2
+    assert result["childTermination"]["terminationErrors"] == {}
+
+
 class Obj:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
