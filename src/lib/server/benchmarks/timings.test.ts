@@ -68,8 +68,8 @@ describe("benchmark timing rollups", () => {
 			turn_started_at: "2026-05-03T12:00:00.000Z",
 			turn_completed_at: "2026-05-03T12:03:15.000Z",
 			turn_duration_ms: 195_000,
+			active_turn_elapsed_ms: null,
 		});
-		expect(patch).not.toHaveProperty("active_turn_elapsed_ms");
 	});
 
 	it("maps SWE-bench workflow step logs into phase timings", () => {

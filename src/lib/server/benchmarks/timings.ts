@@ -151,6 +151,7 @@ function buildSessionTimingPatch(
 		if (completedElapsed != null) {
 			patch.turn_completed_at = turnEnd?.toISOString() ?? null;
 			patch.turn_duration_ms = completedElapsed;
+			patch.active_turn_elapsed_ms = null;
 		} else {
 			const activeElapsed = elapsedMs(
 				turnStart.createdAt,
