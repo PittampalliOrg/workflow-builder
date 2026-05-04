@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	__benchmarkSandboxCleanupForTest,
 	benchmarkInferenceStallState,
 	benchmarkAgentRuntimeCleanupInstanceIds,
 	benchmarkRunInstanceTerminalPatch,
@@ -829,6 +830,52 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(isBenignDaprTerminationMiss("Agent run not found")).toBe(true);
 		expect(isBenignDaprTerminationMiss(new Error("workflow instance not found"))).toBe(true);
 		expect(isBenignDaprTerminationMiss(new Error("context deadline exceeded"))).toBe(false);
+	});
+
+	it("keeps cancellation sandbox cleanup scoped to benchmark-owned OpenShell names", () => {
+		const runId = "codexcap20x20260504014703";
+		const names =
+			__benchmarkSandboxCleanupForTest.collectBenchmarkSandboxNamesFromValues([
+				{
+					outputs: {
+						workspace_profile: {
+							workspaceRef:
+								"swebench-1234567890-codexcap20x20260504014703",
+							sandboxName:
+								"swebench-1234567890-codexcap20x20260504014703",
+						},
+					},
+				},
+				{ sandboxName: "dapr-agent-py" },
+				{ sandbox_name: "agent-runtime-pool-coding" },
+				{ workspaceSandboxName: "manual-debug-sandbox" },
+			]);
+
+		expect(names).toContain("swebench-1234567890-codexcap20x20260504014703");
+		expect(
+			__benchmarkSandboxCleanupForTest.shouldDeleteBenchmarkSandboxName(
+				runId,
+				"swebench-1234567890-codexcap20x20260504014703",
+			),
+		).toBe(true);
+		expect(
+			__benchmarkSandboxCleanupForTest.shouldDeleteBenchmarkSandboxName(
+				runId,
+				"dapr-agent-py",
+			),
+		).toBe(false);
+		expect(
+			__benchmarkSandboxCleanupForTest.shouldDeleteBenchmarkSandboxName(
+				runId,
+				"agent-runtime-pool-coding",
+			),
+		).toBe(false);
+		expect(
+			__benchmarkSandboxCleanupForTest.shouldDeleteBenchmarkSandboxName(
+				runId,
+				"manual-debug-sandbox",
+			),
+		).toBe(false);
 	});
 
 	it("cancels active inference rows without marking pending evaluation as evaluated", () => {

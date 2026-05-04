@@ -7,6 +7,7 @@ import {
 	desc,
 	eq,
 	inArray,
+	or,
 	sql,
 	type SQL,
 } from "drizzle-orm";
@@ -29,6 +30,7 @@ import {
 	environmentImageBuilds,
 	sessionEvents,
 	sessions,
+	workflowExecutionLogs,
 	workflowExecutions,
 	workflows,
 	type BenchmarkEvaluationStatus,
@@ -41,6 +43,8 @@ import {
 	getDaprSidecarUrl,
 	getOrchestratorUrl,
 } from "$lib/server/dapr-client";
+import { isAgentRuntimeSandboxName } from "$lib/server/agent-runtime-sandboxes";
+import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
 import { resolveSpecAgentRefs } from "$lib/server/agents/resolver";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import type { AgentConfig } from "$lib/types/agents";
@@ -85,6 +89,7 @@ import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const BENCHMARK_TERMINATION_CONCURRENCY = 8;
+const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = 8;
 
 type BenchmarkAgentRuntimeCleanupInput = {
 	runtimeAppId: string | null;
@@ -817,6 +822,7 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 		const now = new Date();
 		await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
 		await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
+		await cleanupBenchmarkRunSandboxes(runId, reason);
 		await releaseBenchmarkResourceLeasesForRun(runId, reason);
 		await recomputeRunSummary(runId);
 		return getBenchmarkRun(projectId, runId);
@@ -842,6 +848,7 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 	});
 	await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
 	await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
+	await cleanupBenchmarkRunSandboxes(runId, reason);
 	await releaseBenchmarkResourceLeasesForRun(runId, reason);
 	await recomputeRunSummary(runId);
 	return getBenchmarkRun(projectId, runId);
@@ -898,6 +905,7 @@ export async function markBenchmarkRunStatus(
 		const reason = benchmarkRunTerminalReason(status, extra);
 		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
 		await finalizeBenchmarkWorkflowExecutions(runId, status, reason, now);
+		await cleanupBenchmarkRunSandboxes(runId, reason);
 		await releaseBenchmarkResourceLeasesForRun(runId, reason);
 		await recomputeRunSummary(runId);
 	}
@@ -1400,6 +1408,269 @@ async function purgeBenchmarkAgentRuntimeInstance(
 			err instanceof Error ? err.message : err,
 		);
 	}
+}
+
+type BenchmarkSandboxCleanupResult = {
+	reason: string;
+	retainRequested: boolean;
+	attempted: string[];
+	deleted: string[];
+	notFound: string[];
+	skipped: string[];
+	errors: Array<{ sandboxName: string; status?: number; error: string }>;
+};
+
+export const __benchmarkSandboxCleanupForTest = {
+	collectBenchmarkSandboxNamesFromValues,
+	shouldDeleteBenchmarkSandboxName,
+};
+
+async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {
+	const retainRequested = shouldKeepSwebenchSandboxAfterRun();
+	const cleanup: BenchmarkSandboxCleanupResult = {
+		reason,
+		retainRequested,
+		attempted: [],
+		deleted: [],
+		notFound: [],
+		skipped: [],
+		errors: [],
+	};
+	const sandboxNames = await loadBenchmarkRunSandboxNames(runId);
+	if (retainRequested) {
+		cleanup.skipped = sandboxNames;
+		await recordBenchmarkSandboxCleanup(runId, cleanup);
+		return cleanup;
+	}
+	const candidates = sandboxNames.filter((sandboxName) =>
+		shouldDeleteBenchmarkSandboxName(runId, sandboxName),
+	);
+	const skipped = sandboxNames.filter(
+		(sandboxName) => !shouldDeleteBenchmarkSandboxName(runId, sandboxName),
+	);
+	cleanup.skipped = skipped;
+	cleanup.attempted = candidates;
+	await runWithConcurrency(
+		candidates,
+		BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY,
+		async (sandboxName) => {
+			await deleteOpenShellSandboxForBenchmark(sandboxName, cleanup);
+		},
+	);
+	await recordBenchmarkSandboxCleanup(runId, cleanup);
+	return cleanup;
+}
+
+async function loadBenchmarkRunSandboxNames(runId: string): Promise<string[]> {
+	const database = requireDb();
+	const instanceRows = await database
+		.select({
+			instanceId: benchmarkRunInstances.instanceId,
+			sandboxName: benchmarkRunInstances.sandboxName,
+			workspaceRef: benchmarkRunInstances.workspaceRef,
+			sessionId: benchmarkRunInstances.sessionId,
+			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			executionOutput: workflowExecutions.output,
+		})
+		.from(benchmarkRunInstances)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+		)
+		.where(eq(benchmarkRunInstances.runId, runId));
+
+	const values: unknown[] = [];
+	const sessionIds = new Set<string>();
+	const executionIds = new Set<string>();
+	for (const row of instanceRows) {
+		values.push({
+			sandboxName: row.sandboxName,
+			workspaceRef: row.workspaceRef,
+		});
+		values.push(row.executionOutput);
+		if (
+			row.sandboxName ||
+			row.workspaceRef ||
+			row.sessionId ||
+			row.workflowExecutionId ||
+			row.executionOutput
+		) {
+			values.push({
+				workspaceRef: buildStableWorkspaceRef("swebench", [
+					runId,
+					row.instanceId,
+				]),
+			});
+		}
+		if (row.sessionId) sessionIds.add(row.sessionId);
+		if (row.workflowExecutionId) executionIds.add(row.workflowExecutionId);
+	}
+
+	const sessionPredicates: SQL[] = [];
+	if (sessionIds.size > 0) {
+		sessionPredicates.push(inArray(sessions.id, [...sessionIds]));
+	}
+	if (executionIds.size > 0) {
+		sessionPredicates.push(
+			inArray(sessions.workflowExecutionId, [...executionIds]),
+		);
+	}
+	if (sessionPredicates.length > 0) {
+		const sessionRows = await database
+			.select({
+				sandboxName: sessions.sandboxName,
+				workspaceSandboxName: sessions.workspaceSandboxName,
+			})
+			.from(sessions)
+			.where(
+				sessionPredicates.length === 1
+					? sessionPredicates[0]
+					: or(...sessionPredicates),
+			);
+		for (const row of sessionRows) {
+			values.push({
+				sandboxName: row.sandboxName,
+				workspaceSandboxName: row.workspaceSandboxName,
+			});
+		}
+	}
+
+	if (executionIds.size > 0) {
+		const logRows = await database
+			.select({
+				nodeId: workflowExecutionLogs.nodeId,
+				activityName: workflowExecutionLogs.activityName,
+				input: workflowExecutionLogs.input,
+				output: workflowExecutionLogs.output,
+			})
+			.from(workflowExecutionLogs)
+			.where(
+				and(
+					inArray(workflowExecutionLogs.executionId, [...executionIds]),
+					inArray(workflowExecutionLogs.nodeId, [
+						"workspace_profile",
+						"solve",
+						"cleanup_workspace",
+					]),
+				),
+			);
+		for (const row of logRows) {
+			values.push({
+				nodeId: row.nodeId,
+				activityName: row.activityName,
+				input: row.input,
+				output: row.output,
+			});
+		}
+	}
+
+	return collectBenchmarkSandboxNamesFromValues(values);
+}
+
+function collectBenchmarkSandboxNamesFromValues(values: unknown[]): string[] {
+	const names = new Set<string>();
+	for (const value of values) {
+		for (const candidate of collectStringsByKey(value, [
+			"sandboxName",
+			"sandbox_name",
+			"workspaceSandboxName",
+			"workspace_sandbox_name",
+			"workspaceRef",
+			"workspace_ref",
+		])) {
+			const normalized = candidate.trim();
+			if (normalized) names.add(normalized);
+		}
+	}
+	return [...names];
+}
+
+function shouldDeleteBenchmarkSandboxName(runId: string, sandboxName: string): boolean {
+	const name = sandboxName.trim();
+	if (!name) return false;
+	if (isAgentRuntimeSandboxName(name)) return false;
+	if (name.startsWith("agent-runtime-")) return false;
+	const normalizedName = normalizeSandboxNamePart(name);
+	const normalizedRunId = normalizeSandboxNamePart(runId);
+	if (!normalizedName) return false;
+	return (
+		normalizedName.startsWith("swebench-") ||
+		(Boolean(normalizedRunId) && normalizedName.includes(normalizedRunId))
+	);
+}
+
+function normalizeSandboxNamePart(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+}
+
+async function deleteOpenShellSandboxForBenchmark(
+	sandboxName: string,
+	cleanup: BenchmarkSandboxCleanupResult,
+) {
+	try {
+		const res = await openshellRuntimeFetch(
+			`/api/v1/sandboxes/${encodeURIComponent(sandboxName)}`,
+			{
+				method: "DELETE",
+				signal: AbortSignal.timeout(10_000),
+			},
+		);
+		if (res.ok) {
+			cleanup.deleted.push(sandboxName);
+			return;
+		}
+		const detail = await res.text().catch(() => "");
+		if (res.status === 404) {
+			cleanup.notFound.push(sandboxName);
+			return;
+		}
+		cleanup.errors.push({
+			sandboxName,
+			status: res.status,
+			error: detail.slice(0, 500) || res.statusText || "delete failed",
+		});
+	} catch (err) {
+		cleanup.errors.push({
+			sandboxName,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+async function recordBenchmarkSandboxCleanup(
+	runId: string,
+	cleanup: BenchmarkSandboxCleanupResult,
+) {
+	const database = requireDb();
+	const [run] = await database
+		.select({ summary: benchmarkRuns.summary })
+		.from(benchmarkRuns)
+		.where(eq(benchmarkRuns.id, runId))
+		.limit(1);
+	const summary = isRecord(run?.summary) ? run.summary : {};
+	await database
+		.update(benchmarkRuns)
+		.set({
+			summary: {
+				...summary,
+				sandboxCleanup: {
+					reason: cleanup.reason,
+					retainRequested: cleanup.retainRequested,
+					attempted: cleanup.attempted.length,
+					deleted: cleanup.deleted.length,
+					notFound: cleanup.notFound.length,
+					skipped: cleanup.skipped.length,
+					errors: cleanup.errors,
+					sandboxNames: cleanup.attempted,
+					cleanedAt: new Date().toISOString(),
+				},
+			},
+			updatedAt: new Date(),
+		})
+		.where(eq(benchmarkRuns.id, runId));
 }
 
 export async function recomputeRunSummary(runId: string) {
