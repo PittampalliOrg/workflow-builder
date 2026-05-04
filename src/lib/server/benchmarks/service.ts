@@ -1422,6 +1422,7 @@ type BenchmarkSandboxCleanupResult = {
 
 export const __benchmarkSandboxCleanupForTest = {
 	collectBenchmarkSandboxNamesFromValues,
+	isOpenShellSandboxNotFound,
 	shouldDeleteBenchmarkSandboxName,
 };
 
@@ -1623,7 +1624,7 @@ async function deleteOpenShellSandboxForBenchmark(
 			return;
 		}
 		const detail = await res.text().catch(() => "");
-		if (res.status === 404) {
+		if (res.status === 404 || isOpenShellSandboxNotFound(detail)) {
 			cleanup.notFound.push(sandboxName);
 			return;
 		}
@@ -1638,6 +1639,14 @@ async function deleteOpenShellSandboxForBenchmark(
 			error: err instanceof Error ? err.message : String(err),
 		});
 	}
+}
+
+function isOpenShellSandboxNotFound(detail: string): boolean {
+	const normalized = detail.toLowerCase();
+	return (
+		normalized.includes("sandbox not found") ||
+		normalized.includes("status: notfound")
+	);
 }
 
 async function recordBenchmarkSandboxCleanup(

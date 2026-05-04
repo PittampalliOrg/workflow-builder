@@ -876,6 +876,11 @@ describe("SWE-bench terminal run cleanup", () => {
 				"manual-debug-sandbox",
 			),
 		).toBe(false);
+		expect(
+			__benchmarkSandboxCleanupForTest.isOpenShellSandboxNotFound(
+				'Error: status: NotFound, message: "sandbox not found"',
+			),
+		).toBe(true);
 	});
 
 	it("cancels active inference rows without marking pending evaluation as evaluated", () => {
