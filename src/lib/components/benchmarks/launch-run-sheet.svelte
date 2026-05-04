@@ -7,7 +7,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Activity, Loader2, Rocket } from '@lucide/svelte';
+	import { Activity, Bot, Check, Loader2, Rocket, Search } from '@lucide/svelte';
 	import type { RunnableAgent, SuiteFacet } from '$lib/types/benchmark-instance';
 
 	type Props = {
@@ -46,11 +46,21 @@
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
 	let tagsInput = $state('');
+	let agentQuery = $state('');
 
 	let submitting = $state(false);
 	let errorMessage = $state<string | null>(null);
 
 	const selectedAgent = $derived(runnableAgents.find((a) => a.id === agentId) ?? null);
+	const visibleAgents = $derived.by(() => {
+		const query = agentQuery.trim().toLowerCase();
+		if (!query) return runnableAgents;
+		return runnableAgents.filter((agent) =>
+			[agent.name, agent.slug, agent.modelSpec ?? ''].some((value) =>
+				value.toLowerCase().includes(query)
+			)
+		);
+	});
 	const selectedCapacity = $derived(selectedAgent?.benchmarkCapacity ?? null);
 	const maxActiveInference = $derived(Math.max(1, selectedCapacity?.maxActiveSessions ?? 10));
 	const effectiveInferenceConcurrency = $derived(
@@ -75,7 +85,7 @@
 	// (only if the user hasn't already chosen one).
 	$effect(() => {
 		if (open && !agentId && runnableAgents.length > 0) {
-			agentId = runnableAgents[0].id;
+			selectAgent(runnableAgents[0]);
 		}
 	});
 
@@ -90,6 +100,11 @@
 		// Common shapes: "anthropic:claude-opus-4-7", "claude-opus-4-7", "openai:gpt-4"
 		const colonIdx = modelSpec.indexOf(':');
 		return colonIdx >= 0 ? modelSpec.slice(colonIdx + 1) : modelSpec;
+	}
+
+	function selectAgent(agent: RunnableAgent) {
+		agentId = agent.id;
+		modelNameOrPath = parseModelDefault(agent.modelSpec);
 	}
 
 	function suiteName(slug: string): string {
@@ -133,6 +148,7 @@
 		errorMessage = null;
 		modelConfigLabel = '';
 		tagsInput = '';
+		agentQuery = '';
 		// keep agent + model for repeat launches
 	}
 
@@ -192,7 +208,7 @@
 		if (!next) reset();
 	}}
 >
-	<Sheet.Content side="right" class="w-full sm:max-w-lg flex flex-col">
+	<Sheet.Content side="right" class="w-full sm:max-w-lg flex min-h-0 flex-col">
 		<Sheet.Header class="space-y-1">
 			<Sheet.Title class="flex items-center gap-2">
 				<Rocket class="size-4" /> Launch benchmark run
@@ -203,7 +219,7 @@
 			</Sheet.Description>
 		</Sheet.Header>
 
-		<div class="flex-1 overflow-y-auto px-4 py-3 space-y-5">
+		<div class="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-3">
 			<!-- Target summary -->
 			<div class="rounded-md border border-border bg-muted/30 p-3 space-y-2">
 				<div class="flex items-center justify-between gap-2">
@@ -254,17 +270,47 @@
 						</AlertDescription>
 					</Alert>
 				{:else}
-					<select
-						id="launch-agent"
-						bind:value={agentId}
-						class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm"
-					>
-						{#each runnableAgents as agent (agent.id)}
-							<option value={agent.id}>
-								{agent.name} v{agent.currentVersion}{agent.modelSpec ? ` · ${agent.modelSpec}` : ''}
-							</option>
-						{/each}
-					</select>
+					<div class="relative">
+						<Search class="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+						<Input
+							id="launch-agent"
+							bind:value={agentQuery}
+							placeholder="Search agents…"
+							class="h-9 pl-8"
+						/>
+					</div>
+					<div class="max-h-64 min-h-24 overflow-y-auto overscroll-contain rounded-md border border-border bg-background">
+						{#if visibleAgents.length === 0}
+							<div class="px-3 py-6 text-center text-xs text-muted-foreground">
+								No matching agents
+							</div>
+						{:else}
+							{#each visibleAgents as agent (agent.id)}
+								<button
+									type="button"
+									class={[
+										'flex w-full items-center gap-2 border-b border-border/70 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+										agent.id === agentId ? 'bg-primary/10' : ''
+									].join(' ')}
+									aria-pressed={agent.id === agentId}
+									onclick={() => selectAgent(agent)}
+								>
+									<span class="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+										<Bot class="size-3.5" />
+									</span>
+									<span class="min-w-0 flex-1">
+										<span class="block truncate font-medium">{agent.name}</span>
+										<span class="block truncate text-[11px] text-muted-foreground">
+											v{agent.currentVersion}{agent.modelSpec ? ` · ${agent.modelSpec}` : ''}
+										</span>
+									</span>
+									{#if agent.id === agentId}
+										<Check class="size-4 shrink-0 text-primary" />
+									{/if}
+								</button>
+							{/each}
+						{/if}
+					</div>
 				{/if}
 			</div>
 
