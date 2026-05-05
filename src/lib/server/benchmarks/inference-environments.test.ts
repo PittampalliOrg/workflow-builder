@@ -103,6 +103,23 @@ describe("SWE-bench inference environment resolver", () => {
 		).toBe(false);
 	});
 
+	it("accepts exact static pins that omit environment setup commit", () => {
+		expect(
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug: "SWE-bench_Lite",
+					repo: "sympy/sympy",
+					baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+					testMetadata: {
+						version: "1.7",
+						environment_setup_commit: "metadata-only-env-setup",
+					},
+				},
+				{ env },
+			),
+		).toBe(true);
+	});
+
 	it("falls back to dapr-agent when no validated mapping exists", () => {
 		const resolved = resolveSwebenchInferenceEnvironment(
 			{

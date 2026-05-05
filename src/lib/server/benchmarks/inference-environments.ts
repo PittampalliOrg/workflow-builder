@@ -190,6 +190,7 @@ export function isExactValidatedSwebenchInferenceEnvironment(
 	if (version && normalized.version !== version) return false;
 	if (
 		environmentSetupCommit &&
+		normalized.environmentSetupCommit &&
 		normalized.environmentSetupCommit !== environmentSetupCommit
 	) {
 		return false;
