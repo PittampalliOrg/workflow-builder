@@ -71,6 +71,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			tags: Array.isArray(body.tags)
 				? body.tags.filter((t): t is string => typeof t === "string")
 				: null,
+			requirePrevalidatedEnvironments:
+				body.requirePrevalidatedEnvironments === true,
 		});
 	} catch (err) {
 		if (err instanceof BenchmarkAgentValidationError) {

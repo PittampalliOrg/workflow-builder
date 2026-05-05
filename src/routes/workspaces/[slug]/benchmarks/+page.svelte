@@ -17,15 +17,21 @@
 	let launchOpen = $state(false);
 	let launchInstanceIds = $state<string[]>([]);
 	let launchSuiteSlug = $state<string>('SWE-bench_Verified');
+	let launchRequirePrevalidatedEnvironments = $state(false);
 
 	// Instance detail drawer state
 	let drawerOpen = $state(false);
 	let drawerInstanceId = $state<string | null>(null);
 	let drawerSuiteSlug = $state<string | null>(null);
 
-	function handleLaunch(args: { instanceIds: string[]; suiteSlug: string }) {
+	function handleLaunch(args: {
+		instanceIds: string[];
+		suiteSlug: string;
+		requirePrevalidatedEnvironments?: boolean;
+	}) {
 		launchInstanceIds = args.instanceIds;
 		launchSuiteSlug = args.suiteSlug;
+		launchRequirePrevalidatedEnvironments = args.requirePrevalidatedEnvironments === true;
 		launchOpen = true;
 	}
 
@@ -98,6 +104,7 @@
 	bind:open={launchOpen}
 	instanceIds={launchInstanceIds}
 	suiteSlug={launchSuiteSlug}
+	requirePrevalidatedEnvironments={launchRequirePrevalidatedEnvironments}
 	runnableAgents={data.runnableAgents}
 	suiteFacets={data.suiteFacets}
 	onOpenChange={(next) => (launchOpen = next)}

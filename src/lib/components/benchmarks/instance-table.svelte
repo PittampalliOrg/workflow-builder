@@ -49,7 +49,11 @@
 		instances: BenchmarkInstanceRow[];
 		repoFacets: RepoFacet[];
 		suiteFacets: SuiteFacet[];
-		onLaunch: (args: { instanceIds: string[]; suiteSlug: string }) => void;
+		onLaunch: (args: {
+			instanceIds: string[];
+			suiteSlug: string;
+			requirePrevalidatedEnvironments?: boolean;
+		}) => void;
 		onInstanceClick: (args: { instanceId: string; suiteSlug: string }) => void;
 		canLaunch?: boolean;
 	};
@@ -327,7 +331,8 @@
 		const sampledRows = [...indexes].map((idx) => suiteRows[idx]);
 		onLaunch({
 			instanceIds: sampledRows.map((r) => r.instanceId),
-			suiteSlug: suite
+			suiteSlug: suite,
+			requirePrevalidatedEnvironments: true
 		});
 	}
 

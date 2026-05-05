@@ -24,6 +24,7 @@
 			modelConfigLabel?: string;
 			tags?: string[];
 		} | null;
+		requirePrevalidatedEnvironments?: boolean;
 	};
 
 	let {
@@ -33,7 +34,8 @@
 		runnableAgents,
 		suiteFacets,
 		onOpenChange,
-		defaults = null
+		defaults = null,
+		requirePrevalidatedEnvironments = false
 	}: Props = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
@@ -177,7 +179,8 @@
 					evaluationConcurrency,
 					timeoutSeconds,
 					evaluatorResourceClass,
-					tags: parseTags(tagsInput)
+					tags: parseTags(tagsInput),
+					requirePrevalidatedEnvironments
 				})
 			});
 			const body = await res.json().catch(() => ({}) as Record<string, unknown>);

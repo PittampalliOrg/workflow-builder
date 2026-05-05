@@ -610,7 +610,156 @@ export type CreateBenchmarkRunInput = {
 	maxTurns?: number | null;
 	evaluatorResourceClass?: string | null;
 	tags?: string[] | null;
+	requirePrevalidatedEnvironments?: boolean;
 };
+
+function strictEnvironmentBuildKey(input: {
+	suiteSlug: string;
+	repo: string | null;
+	baseCommit: string | null;
+	metadata: Record<string, unknown> | null;
+}): string | null {
+	if (!input.repo?.trim() || !input.baseCommit?.trim()) return null;
+	const version = metadataString(input.metadata, "version");
+	const environmentSetupCommit =
+		metadataString(input.metadata, "environmentSetupCommit") ??
+		metadataString(input.metadata, "environment_setup_commit");
+	return [
+		input.suiteSlug.trim(),
+		input.repo.trim(),
+		input.baseCommit.trim(),
+		version ?? "",
+		environmentSetupCommit ?? "",
+	].join("\u0000");
+}
+
+function isStrictStaticEnvironmentValidated(input: {
+	suiteSlug: SwebenchSuiteSlug;
+	repo: string | null;
+	baseCommit: string | null;
+	metadata: Record<string, unknown> | null;
+	staticMappings: ReturnType<typeof loadSwebenchInferenceEnvironmentMappings>;
+}): boolean {
+	if (!input.repo || !input.baseCommit) return false;
+	const version = metadataString(input.metadata, "version");
+	const environmentSetupCommit =
+		metadataString(input.metadata, "environmentSetupCommit") ??
+		metadataString(input.metadata, "environment_setup_commit");
+	const resolved = resolveSwebenchInferenceEnvironment(
+		{
+			suiteSlug: input.suiteSlug,
+			repo: input.repo,
+			baseCommit: input.baseCommit,
+			testMetadata: input.metadata,
+		},
+		{ mappings: input.staticMappings },
+	);
+	if (resolved.environmentStatus !== "validated") return false;
+	if (resolved.suite !== input.suiteSlug) return false;
+	if (resolved.repo !== input.repo) return false;
+	if (resolved.baseCommit !== input.baseCommit) return false;
+	if (version && resolved.version !== version) return false;
+	if (
+		environmentSetupCommit &&
+		resolved.environmentSetupCommit !== environmentSetupCommit
+	) {
+		return false;
+	}
+	return true;
+}
+
+async function assertPrevalidatedBenchmarkEnvironments(input: {
+	suiteSlug: SwebenchSuiteSlug;
+	instances: Array<typeof benchmarkInstances.$inferSelect>;
+}) {
+	const database = requireDb();
+	const staticMappings = loadSwebenchInferenceEnvironmentMappings();
+	const missingKeys = new Map<string, string>();
+	const requiredKeys = new Set<string>();
+	for (const instance of input.instances) {
+		if (
+			isStrictStaticEnvironmentValidated({
+				suiteSlug: input.suiteSlug,
+				repo: instance.repo,
+				baseCommit: instance.baseCommit,
+				metadata: instance.testMetadata,
+				staticMappings,
+			})
+		) {
+			continue;
+		}
+		const key = strictEnvironmentBuildKey({
+			suiteSlug: input.suiteSlug,
+			repo: instance.repo,
+			baseCommit: instance.baseCommit,
+			metadata: instance.testMetadata,
+		});
+		if (!key) {
+			missingKeys.set(instance.instanceId, "missing environment identity");
+			continue;
+		}
+		requiredKeys.add(key);
+		missingKeys.set(instance.instanceId, key);
+	}
+	if (missingKeys.size === 0) return;
+	const repos = Array.from(
+		new Set(
+			input.instances
+				.map((instance) => instance.repo)
+				.filter((repo): repo is string => Boolean(repo)),
+		),
+	);
+	const builds = repos.length
+		? await database
+				.select({
+					suite: environmentImageBuilds.suite,
+					repo: environmentImageBuilds.repo,
+					baseCommit: environmentImageBuilds.baseCommit,
+					version: environmentImageBuilds.version,
+					environmentSetupCommit:
+						environmentImageBuilds.environmentSetupCommit,
+					status: environmentImageBuilds.status,
+					validationStatus: environmentImageBuilds.validationStatus,
+					sandboxImage: environmentImageBuilds.sandboxImage,
+					digest: environmentImageBuilds.digest,
+				})
+				.from(environmentImageBuilds)
+				.where(
+					and(
+						eq(environmentImageBuilds.suite, input.suiteSlug),
+						inArray(environmentImageBuilds.repo, repos),
+					),
+				)
+		: [];
+	const validatedKeys = new Set<string>();
+	for (const build of builds) {
+		if (
+			build.status !== "validated" ||
+			build.validationStatus !== "validated" ||
+			!build.sandboxImage ||
+			!build.digest
+		) {
+			continue;
+		}
+		const key = [
+			build.suite?.trim() ?? "",
+			build.repo.trim(),
+			build.baseCommit?.trim() ?? "",
+			build.version?.trim() ?? "",
+			build.environmentSetupCommit?.trim() ?? "",
+		].join("\u0000");
+		if (requiredKeys.has(key)) validatedKeys.add(key);
+	}
+	const missingInstances = Array.from(missingKeys)
+		.filter(([, key]) => !validatedKeys.has(key))
+		.map(([instanceId]) => instanceId);
+	if (missingInstances.length > 0) {
+		throw error(
+			409,
+			`Random SWE-bench runs require prevalidated inference environments; ${missingInstances.length} selected instance(s) are not ready: ${missingInstances.slice(0, 20).join(", ")}`,
+		);
+	}
+}
 
 function normalizeTags(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
@@ -693,32 +842,37 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		input.modelConfigLabel?.trim() ||
 		agent.modelSpec ||
 		`${agent.slug}@v${agent.version}`;
+	const existingInstances = await database
+		.select()
+		.from(benchmarkInstances)
+		.where(
+			and(
+				eq(benchmarkInstances.suiteId, suite.id),
+				inArray(benchmarkInstances.instanceId, instanceIds),
+			),
+		);
+	const missingMetadata = findMissingSwebenchMetadata(
+		instanceIds,
+		existingInstances,
+	);
+	if (missingMetadata.length > 0) {
+		throw error(
+			409,
+			`SWE-bench metadata has not been imported for ${missingMetadata.length} selected instance(s): ${missingMetadata.slice(0, 20).join(", ")}`,
+		);
+	}
+	const instancesById = new Map(
+		existingInstances.map((instance) => [instance.instanceId, instance]),
+	);
+	const instanceRows = instanceIds.map((instanceId) => instancesById.get(instanceId)!);
+	if (input.requirePrevalidatedEnvironments) {
+		await assertPrevalidatedBenchmarkEnvironments({
+			suiteSlug,
+			instances: instanceRows,
+		});
+	}
 
 	const created = await database.transaction(async (tx) => {
-		const existingInstances = await tx
-			.select()
-			.from(benchmarkInstances)
-			.where(
-				and(
-					eq(benchmarkInstances.suiteId, suite.id),
-					inArray(benchmarkInstances.instanceId, instanceIds),
-				),
-			);
-		const missingMetadata = findMissingSwebenchMetadata(
-			instanceIds,
-			existingInstances,
-		);
-		if (missingMetadata.length > 0) {
-			throw error(
-				409,
-				`SWE-bench metadata has not been imported for ${missingMetadata.length} selected instance(s): ${missingMetadata.slice(0, 20).join(", ")}`,
-			);
-		}
-		const instancesById = new Map(
-			existingInstances.map((instance) => [instance.instanceId, instance]),
-		);
-		const instanceRows = instanceIds.map((instanceId) => instancesById.get(instanceId)!);
-
 		const [run] = await tx
 			.insert(benchmarkRuns)
 			.values({
