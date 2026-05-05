@@ -275,8 +275,105 @@ def _load_run(run_id: str) -> dict[str, Any]:
     )["run"]
 
 
+def _compact_run_for_workflow(run: dict[str, Any]) -> dict[str, Any]:
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    capacity = summary.get("capacity") if isinstance(summary, dict) else None
+    compact: dict[str, Any] = {
+        "id": run.get("id"),
+        "status": run.get("status"),
+        "suiteSlug": run.get("suiteSlug"),
+        "suiteName": run.get("suiteName"),
+        "datasetName": run.get("datasetName"),
+        "selectedInstanceIds": run.get("selectedInstanceIds") or [],
+        "concurrency": run.get("concurrency"),
+        "evaluationConcurrency": run.get("evaluationConcurrency"),
+        "timeoutSeconds": run.get("timeoutSeconds"),
+        "modelNameOrPath": run.get("modelNameOrPath"),
+        "mlflowRunId": run.get("mlflowRunId"),
+        "evaluatorResourceClass": run.get("evaluatorResourceClass"),
+        "summary": {"capacity": capacity} if isinstance(capacity, dict) else {},
+    }
+    instances = run.get("instances") if isinstance(run.get("instances"), list) else []
+    compact["instances"] = [
+        _compact_instance_for_workflow(instance, include_preflight_metadata=True)
+        for instance in instances
+        if isinstance(instance, dict)
+    ]
+    return compact
+
+
+def _compact_instance_for_workflow(
+    instance: dict[str, Any], *, include_preflight_metadata: bool = False
+) -> dict[str, Any]:
+    compact = {
+        "id": instance.get("id"),
+        "instanceId": instance.get("instanceId"),
+        "status": instance.get("status"),
+        "inferenceStatus": instance.get("inferenceStatus"),
+        "evaluationStatus": instance.get("evaluationStatus"),
+        "sessionId": instance.get("sessionId"),
+        "workflowExecutionId": instance.get("workflowExecutionId"),
+        "daprInstanceId": instance.get("daprInstanceId"),
+        "mlflowRunId": instance.get("mlflowRunId"),
+        "sandboxName": instance.get("sandboxName"),
+        "workspaceRef": instance.get("workspaceRef"),
+        "patchBytes": instance.get("patchBytes"),
+        "error": instance.get("error"),
+        "inferenceError": instance.get("inferenceError"),
+        "evaluationError": instance.get("evaluationError"),
+    }
+    if include_preflight_metadata:
+        compact.update(
+            {
+                "repo": instance.get("repo"),
+                "baseCommit": instance.get("baseCommit"),
+                "testMetadata": instance.get("testMetadata")
+                if isinstance(instance.get("testMetadata"), dict)
+                else {},
+                "inferenceEnvironment": instance.get("inferenceEnvironment")
+                if isinstance(instance.get("inferenceEnvironment"), dict)
+                else {},
+            }
+        )
+    return compact
+
+
+def _compact_bff_response(response: Any) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {"success": True}
+    compact: dict[str, Any] = {
+        "success": response.get("success", True),
+    }
+    for key in (
+        "runId",
+        "status",
+        "appliedInstances",
+        "executionId",
+        "daprInstanceId",
+        "skipped",
+        "reason",
+        "admitted",
+        "holderId",
+        "retryAfterSeconds",
+        "blockedBy",
+        "released",
+        "releasedCount",
+        "timedOut",
+    ):
+        if key in response:
+            compact[key] = response[key]
+    run = response.get("run")
+    if isinstance(run, dict):
+        compact["run"] = {
+            "id": run.get("id"),
+            "status": run.get("status"),
+            "error": run.get("error"),
+        }
+    return compact
+
+
 def _load_run_activity(ctx, data: dict[str, Any]) -> dict[str, Any]:
-    return _load_run(data["runId"])
+    return _compact_run_for_workflow(_load_run(data["runId"]))
 
 
 def _mlflow_enabled() -> bool:
@@ -333,6 +430,8 @@ def _mlflow_instance_run_map(run: dict[str, Any]) -> dict[str, str]:
 def _load_evaluation_progress(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run = _load_run(data["runId"])
     instances = run.get("instances") if isinstance(run.get("instances"), list) else []
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    capacity = summary.get("capacity") if isinstance(summary, dict) else None
     active_instances = [
         instance
         for instance in instances
@@ -346,10 +445,9 @@ def _load_evaluation_progress(ctx, data: dict[str, Any]) -> dict[str, Any]:
         and instance.get("status") in INSTANCE_TERMINAL_STATUSES
     ]
     return {
-        "run": run,
         "runId": run.get("id") or data["runId"],
         "runStatus": run.get("status"),
-        "summary": run.get("summary") or {},
+        "summary": {"capacity": capacity} if isinstance(capacity, dict) else {},
         "activeEvaluationRows": len(active_instances),
         "activeInstanceIds": [
             instance.get("instanceId")
@@ -372,8 +470,12 @@ def _mark_run_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
     for key in ("error", "evaluatorJobName", "predictionsPath"):
         if data.get(key) is not None:
             payload[key] = data[key]
-    return _bff_with_retry(
-        "POST", f"/api/internal/benchmarks/runs/{run_id}/status", json_body=payload
+    return _compact_bff_response(
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/status",
+            json_body=payload,
+        )
     )
 
 
@@ -456,80 +558,95 @@ def _load_environment_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
 
 def _persist_preflight_results(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
-    return _bff(
+    response = _bff(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/preflight",
         json_body={
-            "inferenceEnvironmentsByInstanceId": data["inferenceEnvironmentsByInstanceId"],
+            "inferenceEnvironmentsByInstanceId": data[
+                "inferenceEnvironmentsByInstanceId"
+            ],
             "preflightSummary": data.get("preflightSummary") or {},
             "capacitySnapshot": data.get("capacitySnapshot") or {},
         },
         timeout=120,
     )
+    compact = _compact_bff_response(response)
+    compact["appliedInstances"] = len(
+        data.get("inferenceEnvironmentsByInstanceId") or {}
+    )
+    return compact
 
 
 def _acquire_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _bff(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run_id}/leases",
-        json_body={
-            "action": "acquire",
-            "instanceId": instance_id,
-            "phase": "inference",
-            "resources": [
-                "inference_slot",
-                "openshell_sandbox",
-                "agent_runtime_slot",
-                "dapr_workflow_slot",
-                "model_slot",
-            ],
-            "metadata": {"source": "swebench-coordinator"},
-        },
-        timeout=60,
+    return _compact_bff_response(
+        _bff(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/leases",
+            json_body={
+                "action": "acquire",
+                "instanceId": instance_id,
+                "phase": "inference",
+                "resources": [
+                    "inference_slot",
+                    "openshell_sandbox",
+                    "agent_runtime_slot",
+                    "dapr_workflow_slot",
+                    "model_slot",
+                ],
+                "metadata": {"source": "swebench-coordinator"},
+            },
+            timeout=60,
+        )
     )
 
 
 def _release_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
-    return _bff_with_retry(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run_id}/leases",
-        json_body={
-            "action": "release",
-            "instanceId": data.get("instanceId"),
-            "holderId": data.get("holderId"),
-            "phase": data.get("phase") or "inference",
-            "reason": data.get("reason") or "instance workflow completed",
-        },
-        timeout=60,
+    return _compact_bff_response(
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/leases",
+            json_body={
+                "action": "release",
+                "instanceId": data.get("instanceId"),
+                "holderId": data.get("holderId"),
+                "phase": data.get("phase") or "inference",
+                "reason": data.get("reason") or "instance workflow completed",
+            },
+            timeout=60,
+        )
     )
 
 
 def _release_run_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
-    return _bff_with_retry(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run_id}/leases",
-        json_body={
-            "action": "release",
-            "reason": data.get("reason") or "benchmark phase completed",
-        },
-        timeout=60,
+    return _compact_bff_response(
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/leases",
+            json_body={
+                "action": "release",
+                "reason": data.get("reason") or "benchmark phase completed",
+            },
+            timeout=60,
+        )
     )
 
 
 def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _bff_with_retry(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/start",
-        json_body={},
-        timeout=90,
-        attempts=3,
-        delay_seconds=20,
+    return _compact_bff_response(
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/start",
+            json_body={},
+            timeout=90,
+            attempts=3,
+            delay_seconds=20,
+        )
     )
 
 
@@ -553,20 +670,24 @@ def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
             / f"{_safe_artifact_name(instance_id)}.patch"
         )
         _mlflow_log_text(mlflow_run_id, patch, patch_path, "patches")
-    return response
+    if isinstance(instance, dict):
+        return {"success": True, "instance": _compact_instance_for_workflow(instance)}
+    return _compact_bff_response(response)
 
 
 def _mark_instance_inference_failure(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _bff_with_retry(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/inference-failure",
-        json_body={
-            "status": data.get("status") or "error",
-            "error": data.get("error") or "Inference failed before patch extraction",
-        },
-        timeout=60,
+    return _compact_bff_response(
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/inference-failure",
+            json_body={
+                "status": data.get("status") or "error",
+                "error": data.get("error") or "Inference failed before patch extraction",
+            },
+            timeout=60,
+        )
     )
 
 
@@ -918,7 +1039,11 @@ def _mark_evaluation_timeout(ctx, data: dict[str, Any]) -> dict[str, Any]:
         json_body={"results": results, "error": message},
         timeout=90,
     )
-    return {"success": True, "timedOut": len(results), "response": response}
+    return {
+        "success": True,
+        "timedOut": len(results),
+        "response": _compact_bff_response(response),
+    }
 
 
 def _mark_evaluation_failure(ctx, data: dict[str, Any]) -> dict[str, Any]:

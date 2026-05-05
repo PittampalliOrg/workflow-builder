@@ -355,7 +355,10 @@ def test_mark_run_status_retries_bff_updates(monkeypatch):
         },
     )
 
-    assert result == {"run": {"status": "evaluating"}}
+    assert result == {
+        "success": True,
+        "run": {"id": None, "status": "evaluating", "error": None},
+    }
     assert captured == {
         "method": "POST",
         "path": "/api/internal/benchmarks/runs/run_1/status",
@@ -486,6 +489,133 @@ def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tm
     assert posted["path"] == "/api/internal/benchmarks/runs/run_1/predictions-artifact"
     assert posted["json"] == {"path": str(tmp_path / "run_1" / "predictions.jsonl")}
     assert result["bytes"] > 0
+
+
+def test_load_run_activity_returns_compact_workflow_payload(monkeypatch):
+    app = load_app(monkeypatch)
+    large_patch = "diff --git a/file.py b/file.py\n" + ("+" * 100_000)
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda _run_id: {
+            "id": "run_1",
+            "status": "inferencing",
+            "suiteSlug": "SWE-bench_Lite",
+            "datasetName": "princeton-nlp/SWE-bench_Lite",
+            "selectedInstanceIds": ["sympy__sympy-20590"],
+            "concurrency": 5,
+            "evaluationConcurrency": 5,
+            "summary": {
+                "capacity": {"effectiveConcurrency": 5},
+                "preflight": {"groups": [{"large": "x" * 100_000}]},
+            },
+            "instances": [
+                {
+                    "id": "bri_1",
+                    "instanceId": "sympy__sympy-20590",
+                    "status": "inferred",
+                    "repo": "sympy/sympy",
+                    "baseCommit": "abc123",
+                    "problemStatement": "Fix it" * 10_000,
+                    "testMetadata": {"version": "1.7"},
+                    "modelPatch": large_patch,
+                    "goldPatch": large_patch,
+                    "harnessResult": {"stdout": "x" * 100_000},
+                }
+            ],
+            "artifacts": [{"path": "/tmp/large", "payload": "x" * 100_000}],
+        },
+    )
+
+    result = app._load_run_activity(None, {"runId": "run_1"})
+    encoded = json.dumps(result)
+
+    assert result["summary"] == {"capacity": {"effectiveConcurrency": 5}}
+    assert result["instances"][0]["repo"] == "sympy/sympy"
+    assert result["instances"][0]["testMetadata"] == {"version": "1.7"}
+    assert "problemStatement" not in result["instances"][0]
+    assert "modelPatch" not in result["instances"][0]
+    assert "goldPatch" not in result["instances"][0]
+    assert "harnessResult" not in result["instances"][0]
+    assert "artifacts" not in result
+    assert len(encoded) < 5_000
+
+
+def test_sync_instance_logs_patch_but_returns_compact_payload(monkeypatch, tmp_path):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
+    logged = {}
+    monkeypatch.setattr(
+        app,
+        "_mlflow_log_text",
+        lambda run_id, text, file_path, artifact_path: logged.update(
+            {
+                "runId": run_id,
+                "text": text,
+                "filePath": file_path,
+                "artifactPath": artifact_path,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "_bff_with_retry",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "instance": {
+                "instanceId": "sympy__sympy-20590",
+                "status": "inferred",
+                "mlflowRunId": "mlflow_1",
+                "modelPatch": "diff --git a/file.py b/file.py\n" + ("+" * 100_000),
+                "harnessResult": {"stdout": "x" * 100_000},
+            },
+        },
+    )
+
+    result = app._sync_instance(
+        None, {"runId": "run_1", "instanceId": "sympy__sympy-20590"}
+    )
+
+    assert logged["runId"] == "mlflow_1"
+    assert logged["artifactPath"] == "patches"
+    assert result["instance"]["status"] == "inferred"
+    assert "modelPatch" not in result["instance"]
+    assert "harnessResult" not in result["instance"]
+    assert len(json.dumps(result)) < 1_000
+
+
+def test_load_evaluation_progress_does_not_return_full_run(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda _run_id: {
+            "id": "run_1",
+            "status": "evaluating",
+            "selectedInstanceIds": ["resolved", "active"],
+            "summary": {"capacity": {"effectiveConcurrency": 5}},
+            "instances": [
+                {
+                    "instanceId": "resolved",
+                    "status": "resolved",
+                    "modelPatch": "x" * 100_000,
+                },
+                {
+                    "instanceId": "active",
+                    "status": "evaluating",
+                    "problemStatement": "x" * 100_000,
+                },
+            ],
+        },
+    )
+
+    progress = app._load_evaluation_progress(None, {"runId": "run_1"})
+
+    assert progress["runStatus"] == "evaluating"
+    assert progress["activeInstanceIds"] == ["active"]
+    assert progress["terminalInstanceIds"] == ["resolved"]
+    assert "run" not in progress
+    assert "modelPatch" not in json.dumps(progress)
 
 
 def test_mark_evaluation_timeout_only_marks_active_rows(monkeypatch):
