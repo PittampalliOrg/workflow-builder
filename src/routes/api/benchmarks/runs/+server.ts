@@ -26,6 +26,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return error(400, "No active workspace — cannot create benchmark run");
 	}
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+	if (typeof body.requirePrevalidatedEnvironments !== "boolean") {
+		return error(
+			400,
+			"Benchmark launch requests must declare requirePrevalidatedEnvironments; refresh the Benchmarks page and try again.",
+		);
+	}
 	let run;
 	try {
 		run = await createBenchmarkRun({
@@ -71,8 +77,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			tags: Array.isArray(body.tags)
 				? body.tags.filter((t): t is string => typeof t === "string")
 				: null,
-			requirePrevalidatedEnvironments:
-				body.requirePrevalidatedEnvironments === true,
+			requirePrevalidatedEnvironments: body.requirePrevalidatedEnvironments,
 		});
 	} catch (err) {
 		if (err instanceof BenchmarkAgentValidationError) {
