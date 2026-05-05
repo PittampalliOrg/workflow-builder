@@ -75,6 +75,14 @@ If the feature gate is enabled and a class is not listed, the router derives
 `agent-runtime-pool-<class>` and uses `AGENT_RUNTIME_POOL_MIN_REPLICAS` /
 `AGENT_RUNTIME_POOL_MAX_REPLICAS` for capacity metadata.
 
+Capacity-sensitive benchmark runs also read
+`AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON`,
+`AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`, and any explicit
+`runtimePool.maxActiveSessions` to decide how many agent child workflows can be
+active at once. See `docs/swebench-concurrency.md` for the full precedence
+chain across UI defaults, BFF admission, Dapr workflow limits, sandbox
+headroom, and evaluator parallelism.
+
 ## Pod shape
 
 `_build_deployment` in `services/agent-runtime-controller/src/main.py`
