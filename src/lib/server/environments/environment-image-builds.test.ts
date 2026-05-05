@@ -293,6 +293,103 @@ describe("SWE-bench environment image build planning", () => {
 		expect(dbMocks.insertValues).not.toHaveBeenCalled();
 	});
 
+	it("keeps current static SWE-bench mappings even when legacy refresh is requested", async () => {
+		vi.stubEnv(
+			"SWEBENCH_INFERENCE_ENVIRONMENTS_JSON",
+			JSON.stringify([
+				{
+					suite: "SWE-bench_Verified",
+					repo: "sympy/sympy",
+					version: "1.7",
+					environmentKey: "sympy-1.7",
+					baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+					sandboxTemplate: "dapr-agent",
+					sandboxImage:
+						"ghcr.io/pittampalliorg/swebench-inference-sympy-1.7:env-abc",
+					digest:
+						"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+					validationStatus: "validated",
+					buildStrategy: "swebench-harness",
+					workspaceRoot: "/testbed",
+					condaEnvironment: "testbed",
+					envSpecHash: "a".repeat(64),
+				},
+			]),
+		);
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_DIR", "");
+
+		const result = await ensureSwebenchEnvironment({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			allowBuild: true,
+			forceRefreshLegacyStatic: true,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+			},
+		});
+
+		expect(result).toMatchObject({
+			success: true,
+			status: "validated",
+			source: "static_mapping",
+			environmentKey: "sympy-1.7",
+		});
+		expect(tektonMocks.createTektonPipelineRun).not.toHaveBeenCalled();
+		expect(dbMocks.insertValues).not.toHaveBeenCalled();
+	});
+
+	it("bypasses legacy static SWE-bench mappings when refresh is requested", async () => {
+		vi.stubEnv(
+			"SWEBENCH_INFERENCE_ENVIRONMENTS_JSON",
+			JSON.stringify([
+				{
+					suite: "SWE-bench_Verified",
+					repo: "sympy/sympy",
+					version: "1.7",
+					environmentKey: "sympy-1.7",
+					baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+					sandboxTemplate: "dapr-agent",
+					sandboxImage:
+						"ghcr.io/pittampalliorg/swebench-inference-sympy-1.7:legacy",
+					digest:
+						"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+					validationStatus: "validated",
+				},
+			]),
+		);
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_DIR", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE", "local");
+
+		const result = await ensureSwebenchEnvironment({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			allowBuild: true,
+			forceRefreshLegacyStatic: true,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			status: "failed",
+			reason: "dynamic_build_local_target_not_allowed",
+			environmentKey: "sympy-1.7",
+		});
+		expect(tektonMocks.createTektonPipelineRun).not.toHaveBeenCalled();
+		expect(dbMocks.insertValues).not.toHaveBeenCalled();
+	});
+
 	it("refuses local SWE-bench image PipelineRuns unless local submission is explicitly enabled", async () => {
 		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_JSON", "");
 		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
@@ -394,6 +491,18 @@ describe("SWE-bench environment image build planning", () => {
 				],
 			},
 		});
+		expect(runSpec.params).toEqual(
+			expect.arrayContaining([
+				{
+					name: "git_url",
+					value: "https://github.com/PittampalliOrg/workflow-builder.git",
+				},
+				{
+					name: "stacks_repo",
+					value: "https://github.com/PittampalliOrg/stacks.git",
+				},
+			]),
+		);
 	});
 
 	it("uses repo-aware validation defaults for Flask source-layout images", () => {

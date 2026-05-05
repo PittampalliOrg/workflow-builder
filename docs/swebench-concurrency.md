@@ -15,6 +15,12 @@ Local PipelineRun submission is blocked by default. It is only available for int
 - `SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE=local`
 - `SWEBENCH_INFERENCE_BUILD_ALLOW_LOCAL_PIPELINERUNS=true`
 
+For routine direct-Kimi canaries, prefer a small validated pair such as
+`sympy__sympy-20590` and `django__django-11099`. Avoid
+`psf__requests-2317` unless the Requests environment is the thing under test:
+the image now avoids JIT setup fallback, but the Requests suite still takes
+materially longer than the faster Lite smoke instances.
+
 ## Rollout Rules
 
 Do not roll `workflow-builder`, `swebench-coordinator`, `workflow-orchestrator`, or agent runtime pool images during an active SWE-bench benchmark run. Dapr replay/versioning is safest when old workflow registrations remain available until all in-flight instances complete.

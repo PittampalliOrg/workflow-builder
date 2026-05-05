@@ -810,6 +810,7 @@ def test_prepare_instance_environment_requests_explicit_build_permission(monkeyp
     assert captured["method"] == "POST"
     assert captured["path"] == "/api/internal/environments/ensure"
     assert captured["json"]["allowBuild"] is True
+    assert captured["json"]["forceRefreshLegacyStatic"] is True
     assert captured["json"]["suiteSlug"] == "SWE-bench_Verified"
     assert captured["json"]["instanceId"] == "django__django-12754"
 

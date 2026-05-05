@@ -531,6 +531,7 @@ def _prepare_instance_environment(ctx, data: dict[str, Any]) -> dict[str, Any]:
         "baseCommit": data["baseCommit"],
         "testMetadata": data.get("testMetadata") or {},
         "allowBuild": True,
+        "forceRefreshLegacyStatic": True,
     }
     return _bff_with_retry(
         "POST",

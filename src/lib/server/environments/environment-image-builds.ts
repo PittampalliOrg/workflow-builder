@@ -36,6 +36,8 @@ import type { SwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 const DEFAULT_SANDBOX_TEMPLATE = "dapr-agent";
 const DEFAULT_TEKTON_NAMESPACE = "tekton-pipelines";
 const DEFAULT_GIT_REVISION = "main";
+const DEFAULT_SWEBENCH_BUILD_GIT_URL = "https://github.com/PittampalliOrg/workflow-builder.git";
+const DEFAULT_SWEBENCH_STACKS_REPO = "https://github.com/PittampalliOrg/stacks.git";
 const SWEBENCH_PIPELINE_TIMEOUTS = {
 	pipeline: "6h0m0s",
 	tasks: "5h45m0s",
@@ -87,6 +89,7 @@ export type EnsureSwebenchEnvironmentInput = {
 	timeoutMs?: number | null;
 	pollMs?: number | null;
 	allowBuild?: boolean | null;
+	forceRefreshLegacyStatic?: boolean | null;
 };
 
 export type SwebenchEnvironmentSpec = {
@@ -429,7 +432,13 @@ export async function ensureSwebenchEnvironment(
 		baseCommit: input.baseCommit,
 		testMetadata: input.testMetadata,
 	});
-	if (staticResolved.environmentStatus === "validated") {
+	if (
+		staticResolved.environmentStatus === "validated" &&
+		!(
+			input.forceRefreshLegacyStatic === true &&
+			isLegacyStaticSwebenchEnvironment(staticResolved)
+		)
+	) {
 		return validatedResult(staticResolved, "static_mapping");
 	}
 
@@ -816,6 +825,10 @@ export function buildSwebenchPipelineRunManifest(
 			},
 			timeouts: SWEBENCH_PIPELINE_TIMEOUTS,
 			params: [
+				{
+					name: "git_url",
+					value: env.SWEBENCH_INFERENCE_BUILD_GIT_URL ?? DEFAULT_SWEBENCH_BUILD_GIT_URL,
+				},
 				{ name: "git_sha", value: env.SWEBENCH_INFERENCE_BUILD_GIT_REVISION ?? DEFAULT_GIT_REVISION },
 				{ name: "suite", value: spec.suite },
 				{ name: "repo_slug", value: spec.repo },
@@ -830,6 +843,12 @@ export function buildSwebenchPipelineRunManifest(
 				{ name: "validation_command", value: spec.validationCommand },
 				{ name: "environment_notes", value: JSON.stringify(spec.environmentNotes) },
 				{ name: "swebench_spec_json", value: JSON.stringify(spec.swebenchSpecInput ?? {}) },
+				{
+					name: "stacks_repo",
+					value:
+						env.SWEBENCH_INFERENCE_BUILD_STACKS_REPO ??
+						DEFAULT_SWEBENCH_STACKS_REPO,
+				},
 			],
 			workspaces: [
 				{
@@ -1660,6 +1679,20 @@ function resultFromBuild(row: EnvironmentImageBuild): EnvironmentPrepareResult {
 		error: row.error ?? undefined,
 		source: "environment_image_builds",
 	};
+}
+
+function isLegacyStaticSwebenchEnvironment(
+	environment: ResolvedSwebenchInferenceEnvironment,
+): boolean {
+	if (environment.buildStrategy !== "swebench-harness") return true;
+	if (!environment.envSpecHash) return true;
+	if (
+		environment.condaEnvironment &&
+		environment.condaEnvironment !== SWEBENCH_CONDA_ENV
+	) {
+		return true;
+	}
+	return false;
 }
 
 function validatedResult(

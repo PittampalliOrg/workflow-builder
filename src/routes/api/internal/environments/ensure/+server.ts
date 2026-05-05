@@ -75,6 +75,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : null,
 		pollMs: typeof body.pollMs === "number" ? body.pollMs : null,
 		allowBuild: body.allowBuild === true,
+		forceRefreshLegacyStatic:
+			body.forceRefreshLegacyStatic === true ||
+			body.forceRefreshLegacy === true ||
+			body.forceRefresh === true,
 	});
 	return json(result);
 };
