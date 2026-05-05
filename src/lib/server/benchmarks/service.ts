@@ -84,6 +84,10 @@ import {
 	syncBenchmarkInstanceMlflow,
 	syncBenchmarkRunMlflow,
 } from "./mlflow";
+import {
+	logBenchmarkTraceSummaryArtifact,
+	materializeSwebenchTraceBundle,
+} from "./trace-bundle";
 import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
@@ -99,6 +103,21 @@ const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"FAILED",
 	"TERMINATED",
 ]);
+
+async function syncBenchmarkInstanceMlflowAndTraceBundle(params: {
+	runId: string;
+	instanceId: string;
+}): Promise<void> {
+	await syncBenchmarkInstanceMlflow(params);
+	try {
+		await materializeSwebenchTraceBundle(params);
+	} catch (err) {
+		console.warn(
+			`[trace-bundle] failed to materialize ${params.runId}/${params.instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
 const DURABLE_RUNTIME_MISSING_STATUS = "__missing__";
 const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = 8;
 
@@ -1065,6 +1084,9 @@ export async function markBenchmarkRunStatus(
 		await syncBenchmarkRunMlflow(runId, {
 			terminate: status === "completed" || status === "failed" || status === "cancelled",
 		});
+		if (status === "completed" || status === "failed" || status === "cancelled") {
+			await logBenchmarkTraceSummaryArtifact(runId);
+		}
 	}
 	return updated ?? null;
 }
@@ -1984,7 +2006,7 @@ export async function recomputeRunSummary(runId: string) {
 	const database = requireDb();
 	const [run, rows] = await Promise.all([
 		database
-			.select({ summary: benchmarkRuns.summary })
+			.select({ summary: benchmarkRuns.summary, status: benchmarkRuns.status })
 			.from(benchmarkRuns)
 			.where(eq(benchmarkRuns.id, runId))
 			.limit(1),
@@ -2061,6 +2083,9 @@ export async function recomputeRunSummary(runId: string) {
 	}
 
 	await syncBenchmarkRunMlflow(runId);
+	if (run[0]?.status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run[0].status)) {
+		await logBenchmarkTraceSummaryArtifact(runId);
+	}
 
 	return summary;
 }
@@ -2447,7 +2472,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
-		await syncBenchmarkInstanceMlflow({
+		await syncBenchmarkInstanceMlflowAndTraceBundle({
 			runId: params.runId,
 			instanceId: params.instanceId,
 		});
@@ -2632,7 +2657,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 	}
 	await recomputeRunSummary(runInstance.runId);
 	if (updated) {
-		await syncBenchmarkInstanceMlflow({
+		await syncBenchmarkInstanceMlflowAndTraceBundle({
 			runId: runInstance.runId,
 			instanceId: runInstance.instanceId,
 		});
@@ -2828,7 +2853,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
-		await syncBenchmarkInstanceMlflow({
+		await syncBenchmarkInstanceMlflowAndTraceBundle({
 			runId: params.runId,
 			instanceId: params.instanceId,
 		});

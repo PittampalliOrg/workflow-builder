@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_MODEL_OPTIONS,
+  agentModelOptionFor,
   agentModelLabel,
   canonicalAgentModelSpec,
   isSupportedAgentModelSpec,
@@ -99,6 +100,13 @@ describe("agent model options", () => {
     expect(isSupportedAgentModelSpec("mistral/open-mistral-7b")).toBe(false);
     expect(isSupportedAgentModelSpec("foundry/Kimi-K2.6")).toBe(false);
     expect(isSupportedAgentModelSpec("kimi-k2.6")).toBe(true);
+  });
+
+  it("marks direct Kimi models as SWE-bench capable", () => {
+    expect(agentModelOptionFor("kimi/kimi-k2.6")?.sweBenchCapable).not.toBe(
+      false,
+    );
+    expect(agentModelOptionFor("kimi-k2.5")?.sweBenchCapable).not.toBe(false);
   });
 
   it("formats known aliases with their canonical label", () => {

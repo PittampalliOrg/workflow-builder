@@ -9,13 +9,18 @@ import {
 	benchmarkSuites,
 } from "$lib/server/db/schema";
 
-type MlflowTag = { key: string; value: string };
+export type MlflowTag = { key: string; value: string };
 type MlflowParam = { key: string; value: string };
 type MlflowMetric = {
 	key: string;
 	value: number;
 	timestamp: number;
 	step?: number;
+};
+export type MlflowArtifactInfo = {
+	path: string;
+	isDir: boolean;
+	fileSize: number | null;
 };
 
 const terminalRunStatuses = new Set(["completed", "failed", "cancelled"]);
@@ -85,8 +90,135 @@ async function mlflowRequest<T>(
 	return (await res.json().catch(() => ({}))) as T;
 }
 
+async function mlflowTextRequest(
+	path: string,
+	init: RequestInit = {},
+): Promise<string> {
+	const base = trackingUri();
+	if (!base) throw new Error("MLFLOW_TRACKING_URI is not configured");
+	const rawTimeoutMs = Number(env.MLFLOW_REQUEST_TIMEOUT_MS ?? 3000);
+	const timeoutMs = Number.isFinite(rawTimeoutMs) ? Math.max(500, rawTimeoutMs) : 3000;
+	const res = await fetch(`${base}${path}`, {
+		...init,
+		signal: AbortSignal.timeout(timeoutMs),
+		headers: {
+			Accept: "application/json, text/plain, */*",
+			...(init.headers ?? {}),
+		},
+	});
+	if (!res.ok) {
+		const text = await res.text().catch(() => "");
+		throw new Error(`MLflow ${path} returned ${res.status}: ${text.slice(0, 500)}`);
+	}
+	return await res.text();
+}
+
 function warnMlflow(message: string, err: unknown) {
 	console.warn(`[mlflow] ${message}:`, err instanceof Error ? err.message : err);
+}
+
+function encodeArtifactPath(path: string): string {
+	return path
+		.split("/")
+		.filter((part) => part.length > 0)
+		.map((part) => encodeURIComponent(part))
+		.join("/");
+}
+
+export async function listMlflowArtifacts(
+	runId: string,
+	path = "",
+): Promise<MlflowArtifactInfo[]> {
+	const qs = new URLSearchParams({ run_id: runId });
+	if (path) qs.set("path", path);
+	const payload = await mlflowRequest<{
+		files?: Array<{ path?: string; is_dir?: boolean; file_size?: number | string }>;
+	}>(`/api/2.0/mlflow/artifacts/list?${qs.toString()}`, { method: "GET" });
+	return (payload.files ?? []).map((file) => ({
+		path: String(file.path ?? ""),
+		isDir: Boolean(file.is_dir),
+		fileSize:
+			typeof file.file_size === "number"
+				? file.file_size
+				: typeof file.file_size === "string" && Number.isFinite(Number(file.file_size))
+					? Number(file.file_size)
+					: null,
+	}));
+}
+
+export async function downloadMlflowTextArtifact(
+	runId: string,
+	artifactPath: string,
+): Promise<string | null> {
+	const listed = await listMlflowArtifacts(runId, artifactPath);
+	if (
+		!listed.some(
+			(file) => !file.isDir && file.path.replace(/^\/+/, "") === artifactPath.replace(/^\/+/, ""),
+		)
+	) {
+		return null;
+	}
+	const encodedPath = encodeArtifactPath(artifactPath);
+	const runQuery = new URLSearchParams({ run_id: runId });
+	const attempts = [
+		`/api/2.0/mlflow-artifacts/artifacts/${encodedPath}?${runQuery.toString()}`,
+		`/get-artifact?${new URLSearchParams({ run_id: runId, path: artifactPath }).toString()}`,
+		`/get-artifact?${new URLSearchParams({ run_uuid: runId, path: artifactPath }).toString()}`,
+	];
+	let lastErr: unknown = null;
+	for (const path of attempts) {
+		try {
+			return await mlflowTextRequest(path, { method: "GET" });
+		} catch (err) {
+			lastErr = err;
+		}
+	}
+	throw lastErr instanceof Error
+		? lastErr
+		: new Error(`Failed to download MLflow artifact ${artifactPath}`);
+}
+
+export async function downloadMlflowJsonArtifact<T>(
+	runId: string,
+	artifactPath: string,
+): Promise<T | null> {
+	const text = await downloadMlflowTextArtifact(runId, artifactPath);
+	if (text == null) return null;
+	return JSON.parse(text) as T;
+}
+
+export async function logMlflowTextArtifact(params: {
+	runId: string;
+	artifactPath: string;
+	text: string;
+	contentType?: string;
+}): Promise<void> {
+	const encodedPath = encodeArtifactPath(params.artifactPath);
+	await mlflowTextRequest(
+		`/api/2.0/mlflow-artifacts/artifacts/${encodedPath}?${new URLSearchParams({
+			run_id: params.runId,
+		}).toString()}`,
+		{
+			method: "PUT",
+			body: params.text,
+			headers: {
+				"Content-Type": params.contentType ?? "text/plain; charset=utf-8",
+			},
+		},
+	);
+}
+
+export async function logMlflowJsonArtifact(params: {
+	runId: string;
+	artifactPath: string;
+	value: unknown;
+}): Promise<void> {
+	await logMlflowTextArtifact({
+		runId: params.runId,
+		artifactPath: params.artifactPath,
+		text: `${JSON.stringify(params.value, null, 2)}\n`,
+		contentType: "application/json; charset=utf-8",
+	});
 }
 
 async function getOrCreateExperimentId(): Promise<string> {
@@ -155,7 +287,7 @@ async function createRun(params: {
 	return runId;
 }
 
-async function logBatch(
+export async function logBatch(
 	runId: string,
 	payload: {
 		params?: MlflowParam[];

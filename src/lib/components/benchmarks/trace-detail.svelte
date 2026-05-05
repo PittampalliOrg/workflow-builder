@@ -15,7 +15,8 @@
 	import { formatDuration, formatTokens } from './run-status-helpers';
 	import type {
 		ObservabilityLlmSpan,
-		ObservabilityToolSpan
+		ObservabilityToolSpan,
+		ObservabilityTraceSpan
 	} from '$lib/types/observability';
 
 	type Verdict = 'correct' | 'incorrect' | 'partial' | 'unsure';
@@ -39,7 +40,19 @@
 		instanceId: string;
 		llmSpans: ObservabilityLlmSpan[];
 		toolSpans: ObservabilityToolSpan[];
+		traceSpans?: ObservabilityTraceSpan[];
 		traceCount: number;
+		backend?: string | null;
+		artifactPath?: string | null;
+		summary?: {
+			traceCount: number;
+			traceSpanCount: number;
+			llmSpanCount: number;
+			toolSpanCount: number;
+			errorSpanCount: number;
+			source: string;
+		} | null;
+		warnings?: string[];
 		instanceMetrics: {
 			turnCount: number | null;
 			toolCallCount: number | null;
@@ -49,24 +62,39 @@
 		};
 	};
 
-	const { runId, instanceId, llmSpans, toolSpans, traceCount, instanceMetrics }: Props =
-		$props();
+	const {
+		runId,
+		instanceId,
+		llmSpans,
+		toolSpans,
+		traceSpans = [],
+		traceCount,
+		backend = null,
+		artifactPath = null,
+		summary = null,
+		warnings = [],
+		instanceMetrics
+	}: Props = $props();
 
 	type WaterfallRow =
 		| { kind: 'llm'; span: ObservabilityLlmSpan; offsetMs: number }
-		| { kind: 'tool'; span: ObservabilityToolSpan; offsetMs: number };
+		| { kind: 'tool'; span: ObservabilityToolSpan; offsetMs: number }
+		| { kind: 'raw'; span: ObservabilityTraceSpan; offsetMs: number };
 
 	let waterfall = $derived.by<WaterfallRow[]>(() => {
 		const rows: WaterfallRow[] = [];
 		for (const s of llmSpans) rows.push({ kind: 'llm', span: s, offsetMs: 0 });
 		for (const s of toolSpans) rows.push({ kind: 'tool', span: s, offsetMs: 0 });
-		rows.sort((a, b) => a.span.timestamp.localeCompare(b.span.timestamp));
+		if (rows.length === 0) {
+			for (const s of traceSpans) rows.push({ kind: 'raw', span: s, offsetMs: 0 });
+		}
+		rows.sort((a, b) => spanTimestamp(a).localeCompare(spanTimestamp(b)));
 		if (rows.length === 0) return rows;
-		const t0 = new Date(rows[0].span.timestamp).getTime();
+		const t0 = new Date(spanTimestamp(rows[0])).getTime();
 		return rows.map((r) => ({
 			...r,
 			offsetMs: Number.isFinite(t0)
-				? Math.max(0, new Date(r.span.timestamp).getTime() - t0)
+				? Math.max(0, new Date(spanTimestamp(r)).getTime() - t0)
 				: 0
 		}));
 	});
@@ -228,6 +256,18 @@
 		return s.toolName || '(unknown tool)';
 	}
 
+	function rawSummary(s: ObservabilityTraceSpan): string {
+		return `${s.serviceName || 'service'} · ${s.operationName || '(span)'}`;
+	}
+
+	function spanTimestamp(row: WaterfallRow): string {
+		return row.kind === 'raw' ? row.span.startTime : row.span.timestamp;
+	}
+
+	function rowStatusCode(row: WaterfallRow): string | undefined {
+		return row.span.statusCode;
+	}
+
 	function previewText(value: unknown, max = 800): string {
 		if (value === null || value === undefined) return '';
 		if (typeof value === 'string') return value.length > max ? value.slice(0, max) + '…' : value;
@@ -271,7 +311,7 @@
 		return Math.min(100, (ms / totalSpanMs) * 100);
 	}
 
-	function relevantScoresFor(_kind: 'llm' | 'tool', _spanId: string): ScoreRow[] {
+	function relevantScoresFor(_kind: 'llm' | 'tool' | 'raw', _spanId: string): ScoreRow[] {
 		// Scorers are instance-level today (not per-span). When we add span-level
 		// scorers in the future, this will filter by spanId or evidence.
 		return [];
@@ -306,6 +346,31 @@
 				<div class="mt-0.5 text-[10px] text-muted-foreground">${totalCostUsd.toFixed(2)}</div>
 			{/if}
 		</div>
+	</div>
+
+	<div class="rounded-md border border-border bg-background px-3 py-2">
+		<div class="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+			<Badge class="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[10px]">
+				{backend === 'mlflow_artifact' ? 'mlflow artifact' : backend ?? 'trace'}
+			</Badge>
+			{#if artifactPath}
+				<code class="break-all font-mono text-[10px]">{artifactPath}</code>
+			{/if}
+			{#if summary}
+				<span class="tabular-nums">
+					{summary.traceSpanCount} raw · {summary.llmSpanCount} llm · {summary.toolSpanCount} tool
+				</span>
+			{/if}
+		</div>
+		{#if warnings.length > 0}
+			<div class="mt-2 space-y-1">
+				{#each warnings as warning}
+					<div class="rounded border border-amber-500/25 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-300">
+						{warning}
+					</div>
+				{/each}
+			</div>
+		{/if}
 	</div>
 
 	<!-- Scorers panel -->
@@ -409,23 +474,31 @@
 										>
 											llm
 										</Badge>
-									{:else}
+									{:else if row.kind === 'tool'}
 										<Badge
 											class="bg-cyan-500/15 text-cyan-700 dark:text-cyan-400 text-[10px]"
 										>
 											tool
 										</Badge>
+									{:else}
+										<Badge
+											class="bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 text-[10px]"
+										>
+											raw
+										</Badge>
 									{/if}
 									<span class="truncate text-xs">
 										{#if row.kind === 'llm'}
 											{llmSummary(row.span)}
-										{:else}
+										{:else if row.kind === 'tool'}
 											{toolSummary(row.span)}
+										{:else}
+											{rawSummary(row.span)}
 										{/if}
 									</span>
-									{#if row.span.statusCode && row.span.statusCode !== 'OK' && row.span.statusCode !== 'STATUS_CODE_OK'}
+									{#if rowStatusCode(row) && rowStatusCode(row) !== 'OK' && rowStatusCode(row) !== 'STATUS_CODE_OK'}
 										<span class="text-[10px] text-red-600 dark:text-red-400">
-											{row.span.statusCode}
+											{rowStatusCode(row)}
 										</span>
 									{/if}
 								</span>
@@ -436,7 +509,9 @@
 									<span
 										class="block h-full {row.kind === 'llm'
 											? 'bg-indigo-500/60'
-											: 'bg-cyan-500/60'}"
+											: row.kind === 'tool'
+												? 'bg-cyan-500/60'
+												: 'bg-zinc-500/60'}"
 										style="margin-left: {pct}%; width: 4px;"
 									></span>
 								</span>
@@ -478,7 +553,7 @@
 												)}</pre>
 										</details>
 									{/if}
-								{:else}
+								{:else if row.kind === 'tool'}
 									<div>
 										<div
 											class="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground"
@@ -501,6 +576,28 @@
 												1500
 											)}</pre>
 									</div>
+								{:else}
+									<div>
+										<div
+											class="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground"
+										>
+											Raw span attributes
+										</div>
+										<pre class="whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground">{previewText(
+												row.span.attributes ?? {},
+												2000
+											)}</pre>
+									</div>
+									{#if row.span.statusMessage}
+										<div>
+											<div
+												class="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground"
+											>
+												Status message
+											</div>
+											<pre class="whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground">{row.span.statusMessage}</pre>
+										</div>
+									{/if}
 								{/if}
 								{#each relevantScoresFor(row.kind, row.span.spanId) as score (score.id)}
 									<div class="flex items-center gap-2 text-[11px]">

@@ -132,7 +132,7 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     provider: "kimi",
     iconProvider: "moonshotai",
     component: "llm-kimi-k26",
-    sweBenchCapable: false,
+    sweBenchCapable: true,
   },
   {
     value: "kimi/kimi-k2.5",
@@ -140,7 +140,7 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     provider: "kimi",
     iconProvider: "moonshotai",
     component: "llm-kimi-k25",
-    sweBenchCapable: false,
+    sweBenchCapable: true,
   },
   {
     value: "together/zai-org/GLM-5.1",

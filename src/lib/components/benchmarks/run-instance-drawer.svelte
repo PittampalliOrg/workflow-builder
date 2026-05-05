@@ -22,13 +22,13 @@
 	import PromoteToDataset from './promote-to-dataset.svelte';
 	import RenderedPatch from './rendered-patch.svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
-	import SpansTimeline from './spans-timeline.svelte';
 	import TraceDetail from './trace-detail.svelte';
 	import { formatDuration, formatRelative, formatTokens } from './run-status-helpers';
 	import type { ParsedHarnessResult } from '$lib/server/benchmarks/harness-result';
 	import type {
 		ObservabilityLlmSpan,
-		ObservabilityToolSpan
+		ObservabilityToolSpan,
+		ObservabilityTraceSpan
 	} from '$lib/types/observability';
 
 	type DrilldownPayload = {
@@ -109,9 +109,20 @@
 	type SpansPayload = {
 		traceIds: string[];
 		mlflowTracesUrl: string | null;
+		backend?: string;
+		artifactPath?: string | null;
+		traceSpans?: ObservabilityTraceSpan[];
 		llmSpans: ObservabilityLlmSpan[];
 		toolSpans: ObservabilityToolSpan[];
-		error?: string;
+		summary?: {
+			traceCount: number;
+			traceSpanCount: number;
+			llmSpanCount: number;
+			toolSpanCount: number;
+			errorSpanCount: number;
+			source: string;
+		};
+		warnings?: string[];
 	};
 
 	type TabValue = 'overview' | 'patch' | 'scoring' | 'trace' | 'harness' | 'logs';
@@ -801,7 +812,12 @@
 									{instanceId}
 									llmSpans={spans?.llmSpans ?? []}
 									toolSpans={spans?.toolSpans ?? []}
+									traceSpans={spans?.traceSpans ?? []}
 									traceCount={spans?.traceIds.length ?? 0}
+									backend={spans?.backend ?? null}
+									artifactPath={spans?.artifactPath ?? null}
+									summary={spans?.summary ?? null}
+									warnings={spans?.warnings ?? []}
 									instanceMetrics={{
 										turnCount: detail.runInstance.turnCount,
 										toolCallCount: detail.runInstance.toolCallCount,
@@ -813,7 +829,7 @@
 							{/if}
 						</TabsContent>
 
-						<!-- Trace (OTEL waterfall — sourced from ClickHouse spans endpoint) -->
+						<!-- Trace (MLflow-backed trace detail) -->
 						<TabsContent value="trace" class="m-0 space-y-3">
 							{#if spansLoading}
 								<div class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -840,56 +856,10 @@
 										Open in MLflow <ExternalLink class="h-3 w-3" />
 									</a>
 								{/if}
-							{:else if spans && spans.llmSpans.length === 0 && spans.toolSpans.length === 0 && spans.error}
-								<!-- ClickHouse-degraded state: trace IDs exist but query failed -->
-								<Alert variant="destructive">
-									<AlertDescription>
-										<div class="font-medium">Trace data is unreachable</div>
-										<div class="mt-1 text-xs">
-											{spans.error}. Trace IDs are recorded on this run instance, but the
-											ClickHouse query failed — usually a cluster-level connectivity issue.
-											The spans exist upstream and can be queried directly.
-										</div>
-									</AlertDescription>
-								</Alert>
-								{#if spans.mlflowTracesUrl}
-									<a
-										href={spans.mlflowTracesUrl}
-										target="_blank"
-										rel="noopener noreferrer"
-										class="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary hover:bg-muted"
-									>
-										Open in MLflow <ExternalLink class="h-3 w-3" />
-									</a>
-								{/if}
-								<div class="rounded-md border border-border p-3">
-									<div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-										Trace IDs ({spans.traceIds.length})
-									</div>
-									<ul class="space-y-1.5">
-										{#each spans.traceIds as tid (tid)}
-											<li class="flex items-center justify-between gap-2 rounded border border-border bg-muted/20 px-2 py-1.5">
-												<code class="break-all font-mono text-[11px]">{tid}</code>
-												<Button
-													variant="ghost"
-													size="sm"
-													class="h-6 shrink-0 px-2 text-[10px]"
-													onclick={() => copyToClipboard(`trace-${tid}`, tid)}
-												>
-													{#if copied === `trace-${tid}`}
-														<Check class="h-3 w-3 text-emerald-500" />
-													{:else}
-														<Copy class="h-3 w-3" />
-													{/if}
-												</Button>
-											</li>
-										{/each}
-									</ul>
-								</div>
-							{:else if spans}
+							{:else if spans && runId && instanceId}
 								<div class="flex flex-wrap items-center justify-between gap-2">
 									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
-										{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'}
+										{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'} · {spans.backend ?? 'mlflow'} backend
 									</div>
 									{#if spans.mlflowTracesUrl}
 										<a
@@ -902,14 +872,25 @@
 										</a>
 									{/if}
 								</div>
-								<SpansTimeline llmSpans={spans.llmSpans} toolSpans={spans.toolSpans} />
-								{#if spans.error}
-									<Alert variant="destructive">
-										<AlertDescription>
-											ClickHouse query partially failed: {spans.error}
-										</AlertDescription>
-									</Alert>
-								{/if}
+								<TraceDetail
+									{runId}
+									{instanceId}
+									llmSpans={spans.llmSpans}
+									toolSpans={spans.toolSpans}
+									traceSpans={spans.traceSpans ?? []}
+									traceCount={spans.traceIds.length}
+									backend={spans.backend ?? null}
+									artifactPath={spans.artifactPath ?? null}
+									summary={spans.summary ?? null}
+									warnings={spans.warnings ?? []}
+									instanceMetrics={{
+										turnCount: detail.runInstance.turnCount,
+										toolCallCount: detail.runInstance.toolCallCount,
+										ttftFirstMs: detail.runInstance.ttftFirstMs,
+										ttftFirstToolMs: detail.runInstance.ttftFirstToolMs,
+										usage: detail.runInstance.usage
+									}}
+								/>
 							{/if}
 						</TabsContent>
 

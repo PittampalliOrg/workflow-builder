@@ -52,6 +52,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"together",
 	"nvidia",
 	"deepseek",
+	"kimi",
 ]);
 
 export function assertBenchmarkModelMatchesRuntime(params: {
