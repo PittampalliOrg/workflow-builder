@@ -30,9 +30,9 @@ def test_bounded_swebench_concurrency_accepts_numeric_values():
 
 def test_bounded_swebench_concurrency_caps_worker_count(monkeypatch):
     monkeypatch.delenv("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY", raising=False)
-    assert max_inference_concurrency() == 10
-    assert bounded_swebench_concurrency(99) == 10
-    assert bounded_swebench_concurrency("128") == 10
+    assert max_inference_concurrency() == 56
+    assert bounded_swebench_concurrency(99) == 56
+    assert bounded_swebench_concurrency("128") == 56
     assert bounded_swebench_concurrency("128", maximum=32) == 32
 
 
@@ -63,9 +63,9 @@ def test_bounded_swebench_concurrency_falls_back_for_invalid_values():
 
 
 def test_bounded_swebench_evaluation_concurrency_defaults_to_dev_safe_cap():
-    assert bounded_swebench_evaluation_concurrency(None) == 4
-    assert bounded_swebench_evaluation_concurrency("") == 4
-    assert bounded_swebench_evaluation_concurrency(0) == 4
+    assert bounded_swebench_evaluation_concurrency(None) == 24
+    assert bounded_swebench_evaluation_concurrency("") == 24
+    assert bounded_swebench_evaluation_concurrency(0) == 24
 
 
 def test_bounded_swebench_evaluation_concurrency_accepts_larger_eval_batches():

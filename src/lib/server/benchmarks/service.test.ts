@@ -151,7 +151,7 @@ describe("SWE-bench workflow spec", () => {
 				concurrency: 0,
 				evaluationConcurrency: undefined,
 			}),
-		).toEqual({ concurrency: 5, evaluationConcurrency: 5 });
+		).toEqual({ concurrency: 5, evaluationConcurrency: 24 });
 		expect(
 			effectiveBenchmarkConcurrency({
 				instanceCount: 25,

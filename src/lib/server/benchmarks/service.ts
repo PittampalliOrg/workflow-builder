@@ -113,7 +113,7 @@ type BenchmarkSessionTurnInput = {
 	childInstanceId: string | null;
 	turn: number | null;
 };
-const DEFAULT_EVALUATION_CONCURRENCY = 5;
+const DEFAULT_EVALUATION_CONCURRENCY = 24;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";

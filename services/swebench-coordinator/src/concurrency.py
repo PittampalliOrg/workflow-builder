@@ -4,6 +4,10 @@ import os
 from typing import Any
 
 
+DEFAULT_MAX_INFERENCE_CONCURRENCY = 56
+DEFAULT_EVALUATION_CONCURRENCY = 24
+
+
 def _positive_int(value: Any) -> int | None:
     try:
         parsed = int(value)
@@ -23,7 +27,7 @@ def _non_negative_int(value: Any) -> int | None:
 def max_inference_concurrency() -> int:
     return _positive_int(
         os.environ.get("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY")
-    ) or 10
+    ) or DEFAULT_MAX_INFERENCE_CONCURRENCY
 
 
 def instance_start_batch_size() -> int:
@@ -51,7 +55,7 @@ def bounded_swebench_concurrency(
 def bounded_swebench_evaluation_concurrency(
     value: Any,
     *,
-    default: int = 4,
+    default: int = DEFAULT_EVALUATION_CONCURRENCY,
     maximum: int = 128,
 ) -> int:
     try:

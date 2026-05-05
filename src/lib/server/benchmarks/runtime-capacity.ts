@@ -37,6 +37,8 @@ export type BenchmarkRuntimeCapacityInput = {
 };
 
 const DEFAULT_RUNTIME_CLASS = "coding";
+const DEFAULT_REQUESTED_CONCURRENCY = 10;
+const DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES = 56;
 const DEFAULT_SLOTS_PER_REPLICA: Record<string, number> = {
 	coding: 5,
 	office: 2,
@@ -117,7 +119,7 @@ function configuredDaprWorkflowLimitPerSidecar(runtimeClass: string): number | n
 function requestedConcurrency(value: unknown): number {
 	return (
 		positiveInt(value) ??
-		envPositiveInt("BENCHMARK_DEFAULT_CONCURRENCY", 5)
+		envPositiveInt("BENCHMARK_DEFAULT_CONCURRENCY", DEFAULT_REQUESTED_CONCURRENCY)
 	);
 }
 
@@ -165,7 +167,10 @@ export function estimateBenchmarkRuntimeCapacity(
 		daprWorkflowEffectiveCapacity,
 		configuredMaxActiveSessions ?? Number.POSITIVE_INFINITY,
 	);
-	const globalMax = envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", 10);
+	const globalMax = envPositiveInt(
+		"BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES",
+		DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES,
+	);
 	const sandboxMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_SANDBOXES);
 	const schedulableSandboxCapacity = nonNegativeInt(
 		input.schedulableSandboxCapacity ??

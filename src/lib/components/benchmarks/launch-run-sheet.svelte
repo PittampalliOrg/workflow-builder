@@ -37,12 +37,17 @@
 	}: Props = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
+	const DEFAULT_INFERENCE_CONCURRENCY = 10;
+	const DEFAULT_EVALUATION_CONCURRENCY = 24;
+	const MAX_INFERENCE_CONCURRENCY = 128;
+	const MAX_EVALUATION_CONCURRENCY = 128;
+	const DEFAULT_MAX_ACTIVE_INFERENCE = 56;
 
 	let agentId = $state('');
 	let modelNameOrPath = $state('');
 	let modelConfigLabel = $state('');
-	let concurrency = $state(5);
-	let evaluationConcurrency = $state(5);
+	let concurrency = $state(DEFAULT_INFERENCE_CONCURRENCY);
+	let evaluationConcurrency = $state(DEFAULT_EVALUATION_CONCURRENCY);
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
 	let tagsInput = $state('');
@@ -62,7 +67,9 @@
 		);
 	});
 	const selectedCapacity = $derived(selectedAgent?.benchmarkCapacity ?? null);
-	const maxActiveInference = $derived(Math.max(1, selectedCapacity?.maxActiveSessions ?? 10));
+	const maxActiveInference = $derived(
+		Math.max(1, selectedCapacity?.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_INFERENCE)
+	);
 	const effectiveInferenceConcurrency = $derived(
 		Math.max(1, Math.min(instanceIds.length || 1, concurrency, maxActiveInference))
 	);
@@ -369,11 +376,11 @@
 						id="launch-concurrency"
 						type="range"
 						min="1"
-						max="32"
+						max={MAX_INFERENCE_CONCURRENCY}
 						bind:value={concurrency}
 						class="flex-1 accent-primary"
 					/>
-					<span class="font-mono text-sm tabular-nums w-8 text-right">{concurrency}</span>
+					<span class="font-mono text-sm tabular-nums w-10 text-right">{concurrency}</span>
 				</div>
 				<p class="text-[10px] text-muted-foreground">
 					Will dispatch up to {effectiveInferenceConcurrency} active
@@ -389,11 +396,11 @@
 						id="launch-eval-concurrency"
 						type="range"
 						min="1"
-						max="64"
+						max={MAX_EVALUATION_CONCURRENCY}
 						bind:value={evaluationConcurrency}
 						class="flex-1 accent-primary"
 					/>
-					<span class="font-mono text-sm tabular-nums w-8 text-right">{evaluationConcurrency}</span>
+					<span class="font-mono text-sm tabular-nums w-10 text-right">{evaluationConcurrency}</span>
 				</div>
 				<p class="text-[10px] text-muted-foreground">
 					Will keep up to {evaluationConcurrency} Kubernetes-native SWE-bench run-instance TaskRuns active during official grading.

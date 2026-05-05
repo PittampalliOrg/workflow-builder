@@ -6,7 +6,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("caps shared coding pools by replicas, slots, and global max", () => {
+	it("caps shared coding pools by replicas and slots", () => {
 		const capacity = estimateBenchmarkRuntimeCapacity({
 			runtimeClass: "coding",
 			runtimeIsolation: "shared",
@@ -31,7 +31,8 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			maxActiveSandboxes: null,
 		});
 		expect(capacity.capReason).toContain("runtime_capacity");
-		expect(capacity.capReason).toContain("global_max");
+		expect(capacity.capReason).toContain("dapr_workflow_capacity");
+		expect(capacity.capReason).not.toContain("global_max");
 	});
 
 	it("caps to selected instance count before dispatch", () => {
