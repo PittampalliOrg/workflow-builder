@@ -71,6 +71,7 @@ import {
 	type SwebenchSuiteSlug,
 } from "./swebench";
 import {
+	isExactValidatedSwebenchInferenceEnvironment,
 	loadSwebenchInferenceEnvironmentMappings,
 	resolveSwebenchInferenceEnvironment,
 	swebenchInferenceEnvironmentPromptNotes,
@@ -633,41 +634,6 @@ function strictEnvironmentBuildKey(input: {
 	].join("\u0000");
 }
 
-function isStrictStaticEnvironmentValidated(input: {
-	suiteSlug: SwebenchSuiteSlug;
-	repo: string | null;
-	baseCommit: string | null;
-	metadata: Record<string, unknown> | null;
-	staticMappings: ReturnType<typeof loadSwebenchInferenceEnvironmentMappings>;
-}): boolean {
-	if (!input.repo || !input.baseCommit) return false;
-	const version = metadataString(input.metadata, "version");
-	const environmentSetupCommit =
-		metadataString(input.metadata, "environmentSetupCommit") ??
-		metadataString(input.metadata, "environment_setup_commit");
-	const resolved = resolveSwebenchInferenceEnvironment(
-		{
-			suiteSlug: input.suiteSlug,
-			repo: input.repo,
-			baseCommit: input.baseCommit,
-			testMetadata: input.metadata,
-		},
-		{ mappings: input.staticMappings },
-	);
-	if (resolved.environmentStatus !== "validated") return false;
-	if (resolved.suite !== input.suiteSlug) return false;
-	if (resolved.repo !== input.repo) return false;
-	if (resolved.baseCommit !== input.baseCommit) return false;
-	if (version && resolved.version !== version) return false;
-	if (
-		environmentSetupCommit &&
-		resolved.environmentSetupCommit !== environmentSetupCommit
-	) {
-		return false;
-	}
-	return true;
-}
-
 async function assertPrevalidatedBenchmarkEnvironments(input: {
 	suiteSlug: SwebenchSuiteSlug;
 	instances: Array<typeof benchmarkInstances.$inferSelect>;
@@ -678,13 +644,15 @@ async function assertPrevalidatedBenchmarkEnvironments(input: {
 	const requiredKeys = new Set<string>();
 	for (const instance of input.instances) {
 		if (
-			isStrictStaticEnvironmentValidated({
-				suiteSlug: input.suiteSlug,
-				repo: instance.repo,
-				baseCommit: instance.baseCommit,
-				metadata: instance.testMetadata,
-				staticMappings,
-			})
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug: input.suiteSlug,
+					repo: instance.repo,
+					baseCommit: instance.baseCommit,
+					testMetadata: instance.testMetadata,
+				},
+				{ mappings: staticMappings },
+			)
 		) {
 			continue;
 		}

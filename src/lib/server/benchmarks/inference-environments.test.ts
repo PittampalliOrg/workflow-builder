@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveSwebenchInferenceEnvironment } from "./inference-environments";
+import {
+	isExactValidatedSwebenchInferenceEnvironment,
+	resolveSwebenchInferenceEnvironment,
+} from "./inference-environments";
 
 const env = {
 	SWEBENCH_INFERENCE_ENVIRONMENTS_JSON: JSON.stringify({
@@ -11,6 +14,7 @@ const env = {
 				suite: "SWE-bench_Lite",
 				repo: "sympy/sympy",
 				version: "1.7",
+				baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
 				environmentKey: "sympy-1.7",
 				sandboxImage:
 					"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc123",
@@ -71,6 +75,32 @@ describe("SWE-bench inference environment resolver", () => {
 		expect(resolved.sandboxImage).toBe(
 			"gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-inference-sympy-1.7:git-abc123@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		);
+	});
+
+	it("requires exact identity before marking a mapping random-launch ready", () => {
+		expect(
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug: "SWE-bench_Lite",
+					repo: "sympy/sympy",
+					baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+					testMetadata: { version: "1.7" },
+				},
+				{ env },
+			),
+		).toBe(true);
+
+		expect(
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug: "SWE-bench_Lite",
+					repo: "sympy/sympy",
+					baseCommit: "different-base-commit",
+					testMetadata: { version: "1.7" },
+				},
+				{ env },
+			),
+		).toBe(false);
 	});
 
 	it("falls back to dapr-agent when no validated mapping exists", () => {

@@ -158,6 +158,45 @@ export function resolveSwebenchInferenceEnvironment(
 	};
 }
 
+export function isExactValidatedSwebenchInferenceEnvironment(
+	input: ResolveSwebenchInferenceEnvironmentInput,
+	options: LoadSwebenchInferenceEnvironmentOptions = {},
+): boolean {
+	const suite = input.suiteSlug.trim();
+	const repo = normalizeRepo(input.repo);
+	const baseCommit = readString(input.baseCommit);
+	if (!suite || !repo || !baseCommit) return false;
+	const version = readMetadataString(input.testMetadata, ["version"]);
+	const environmentSetupCommit = readMetadataString(input.testMetadata, [
+		"environmentSetupCommit",
+		"environment_setup_commit",
+	]);
+	const mappings =
+		options.mappings ?? loadSwebenchInferenceEnvironmentMappings(options);
+	const match = selectBestMapping(mappings, {
+		suite,
+		repo,
+		baseCommit,
+		version,
+		environmentSetupCommit,
+	});
+	if (!match) return false;
+	const normalized = normalizeMapping(match);
+	if (!isValidatedStatus(normalized.validationStatus)) return false;
+	if (!imageWithDigest(normalized.sandboxImage, normalized.digest)) return false;
+	if (normalized.suite !== suite) return false;
+	if (normalizeRepo(normalized.repo) !== repo) return false;
+	if (normalized.baseCommit !== baseCommit) return false;
+	if (version && normalized.version !== version) return false;
+	if (
+		environmentSetupCommit &&
+		normalized.environmentSetupCommit !== environmentSetupCommit
+	) {
+		return false;
+	}
+	return true;
+}
+
 export function loadSwebenchInferenceEnvironmentMappings(
 	options: LoadSwebenchInferenceEnvironmentOptions = {},
 ): SwebenchInferenceEnvironmentMapping[] {

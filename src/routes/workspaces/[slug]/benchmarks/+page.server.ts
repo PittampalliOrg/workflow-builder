@@ -10,6 +10,7 @@ import {
 } from "$lib/server/db/schema";
 import { ensureDefaultBenchmarkSuites } from "$lib/server/benchmarks/service";
 import {
+	isExactValidatedSwebenchInferenceEnvironment,
 	loadSwebenchInferenceEnvironmentMappings,
 	resolveSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
@@ -262,6 +263,15 @@ export const load: PageServerLoad = async ({ locals }) => {
 			},
 			{ mappings: staticEnvironmentMappings },
 		);
+		const exactStaticEnvironment = isExactValidatedSwebenchInferenceEnvironment(
+			{
+				suiteSlug: row.suiteSlug,
+				repo: row.repo,
+				baseCommit: row.baseCommit,
+				testMetadata: md,
+			},
+			{ mappings: staticEnvironmentMappings },
+		);
 		const buildKey = environmentBuildKey({
 			suiteSlug: row.suiteSlug,
 			repo: row.repo,
@@ -271,11 +281,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		});
 		const buildStatus = buildKey ? buildStatusByKey.get(buildKey) : null;
 		const environmentStatus: BenchmarkInstanceEnvironmentStatus =
-			staticEnvironment.environmentStatus === "validated"
+			exactStaticEnvironment
 				? "validated"
 				: (buildStatus?.status ?? "not_built");
 		const environmentKey =
-			staticEnvironment.environmentStatus === "validated"
+			exactStaticEnvironment
 				? (staticEnvironment.environmentKey ?? null)
 				: (buildStatus?.environmentKey ?? null);
 		const hintsLen = row.hintsText ? row.hintsText.length : 0;
