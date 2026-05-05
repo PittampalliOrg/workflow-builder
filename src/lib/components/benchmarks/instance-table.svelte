@@ -142,6 +142,10 @@
 			header: 'Version',
 			enableSorting: true
 		}),
+		columnHelper.accessor('environmentStatus', {
+			header: 'Env',
+			enableSorting: true
+		}),
 		columnHelper.accessor('hintsLen', {
 			header: 'Hints',
 			enableSorting: true
@@ -243,6 +247,10 @@
 	// ---- Selection helpers ----------------------------------------------------
 	const selectedCount = $derived(table ? Object.keys(table.state?.rowSelection ?? {}).length : 0);
 	const filteredRowCount = $derived(table?.getFilteredRowModel().rows.length ?? 0);
+	const randomLaunchableRowCount = $derived(
+		(table?.getFilteredRowModel().rows ?? []).filter((row) => isRandomLaunchable(row.original))
+			.length
+	);
 	const pageRowCount = $derived(table?.getRowModel().rows.length ?? 0);
 	const allFilteredSelected = $derived(
 		filteredRowCount > 0 && selectedCount >= filteredRowCount
@@ -252,6 +260,10 @@
 			selectedCount < filteredRowCount &&
 			table?.getIsAllPageRowsSelected() === true
 	);
+
+	function isRandomLaunchable(row: BenchmarkInstanceRow): boolean {
+		return row.environmentStatus === 'validated';
+	}
 
 	function selectAllFiltered() {
 		if (!table) return;
@@ -299,12 +311,13 @@
 		// has a suite pinned in the filter use that; otherwise pick the
 		// most-represented suite across the *visible* (filter-respecting) rows.
 		const filteredRowModel = table.getFilteredRowModel().rows;
-		const allFilteredRows = filteredRowModel.map((r) => r.original);
-		if (allFilteredRows.length === 0) return;
-		const suite = effectiveSuiteSlug(allFilteredRows);
-		// 2) Restrict to that suite, then sample N — guarantees we hit `n`
-		// instances, never fewer.
-		const suiteRows = allFilteredRows.filter((r) => r.suiteSlug === suite);
+		const launchableRows = filteredRowModel.map((r) => r.original).filter(isRandomLaunchable);
+		if (launchableRows.length === 0) return;
+		const suite = effectiveSuiteSlug(launchableRows);
+		// 2) Restrict to that suite, then sample N from rows that already have
+		// validated inference environments. Missing environments can still be
+		// built explicitly, but random canaries should not silently wait on them.
+		const suiteRows = launchableRows.filter((r) => r.suiteSlug === suite);
 		const n = Math.min(Math.max(1, randomCount), suiteRows.length, MAX_RUN_INSTANCES);
 		if (n === 0) return;
 		const indexes = new Set<number>();
@@ -440,7 +453,7 @@
 					aria-label="Random sample size"
 				>
 					{#each RANDOM_COUNT_OPTIONS as opt (opt)}
-						{#if opt <= filteredRowCount && opt <= MAX_RUN_INSTANCES}
+						{#if opt <= randomLaunchableRowCount && opt <= MAX_RUN_INSTANCES}
 							<option value={opt}>{opt}</option>
 						{/if}
 					{/each}
@@ -450,8 +463,8 @@
 					size="sm"
 					class="h-6 px-2 text-xs"
 					onclick={launchRandom}
-					disabled={!canLaunch || filteredRowCount === 0}
-					title="Sample N at random from current filter (single suite)"
+					disabled={!canLaunch || randomLaunchableRowCount === 0}
+					title="Sample N validated instances at random from current filter (single suite)"
 				>
 					Run Random
 				</Button>
@@ -600,6 +613,20 @@
 										<span class="font-mono text-[11px] text-muted-foreground">{row.original.baseCommit ?? '—'}</span>
 									{:else if cell.column.id === 'version'}
 										<span class="font-mono text-[11px] text-muted-foreground">{row.original.version ?? '—'}</span>
+									{:else if cell.column.id === 'environmentStatus'}
+										<Badge
+											variant={row.original.environmentStatus === 'validated'
+												? 'default'
+												: row.original.environmentStatus === 'building'
+													? 'secondary'
+													: 'outline'}
+											class="text-[10px]"
+											title={row.original.environmentKey ?? undefined}
+										>
+											{row.original.environmentStatus === 'not_built'
+												? 'not built'
+												: row.original.environmentStatus}
+										</Badge>
 									{:else if cell.column.id === 'hintsLen'}
 										<span class="font-mono text-xs tabular-nums text-muted-foreground">
 											{row.original.hintsLen > 0 ? row.original.hintsLen : '—'}

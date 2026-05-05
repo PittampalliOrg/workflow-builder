@@ -9,6 +9,8 @@ export type BenchmarkInstanceRow = {
 	repo: string | null;
 	baseCommit: string | null;
 	version: string | null;
+	environmentStatus: "validated" | "building" | "failed" | "not_built";
+	environmentKey: string | null;
 	problemPreview: string;
 	hasHints: boolean;
 	hintsLen: number;

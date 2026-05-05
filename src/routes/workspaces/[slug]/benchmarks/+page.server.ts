@@ -1,13 +1,18 @@
 import { error } from "@sveltejs/kit";
-import { and, asc, count, eq, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
 	agentVersions,
+	environmentImageBuilds,
 	benchmarkInstances,
 	benchmarkSuites,
 } from "$lib/server/db/schema";
 import { ensureDefaultBenchmarkSuites } from "$lib/server/benchmarks/service";
+import {
+	loadSwebenchInferenceEnvironmentMappings,
+	resolveSwebenchInferenceEnvironment,
+} from "$lib/server/benchmarks/inference-environments";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
 import { agentModelOptionFor } from "$lib/agents/model-options";
@@ -30,6 +35,9 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"kimi",
 ]);
 
+type BenchmarkInstanceEnvironmentStatus =
+	BenchmarkInstanceRow["environmentStatus"];
+
 function trimProblem(s: string | null): string {
 	if (!s) return "";
 	const cleaned = s.replace(/\s+/g, " ").trim();
@@ -37,6 +45,64 @@ function trimProblem(s: string | null): string {
 		? `${cleaned.slice(0, PROBLEM_PREVIEW_LEN).trimEnd()}…`
 		: cleaned;
 }
+
+function metadataString(
+	metadata: Record<string, unknown> | null | undefined,
+	keys: string[],
+): string | null {
+	for (const key of keys) {
+		const value = metadata?.[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
+		if (typeof value === "number") return String(value);
+	}
+	return null;
+}
+
+function environmentBuildKey(input: {
+	suiteSlug: string | null | undefined;
+	repo: string | null | undefined;
+	baseCommit: string | null | undefined;
+	version: string | null | undefined;
+	environmentSetupCommit: string | null | undefined;
+}): string | null {
+	if (!input.repo?.trim()) return null;
+	return [
+		input.suiteSlug?.trim() ?? "",
+		input.repo.trim(),
+		input.baseCommit?.trim() ?? "",
+		input.version?.trim() ?? "",
+		input.environmentSetupCommit?.trim() ?? "",
+	].join("\u0000");
+}
+
+function classifyEnvironmentBuild(build: {
+	status: "queued" | "building" | "validated" | "failed" | "cancelled";
+	validationStatus: string | null;
+	sandboxImage: string | null;
+	digest: string | null;
+}): BenchmarkInstanceEnvironmentStatus {
+	if (
+		build.status === "validated" &&
+		build.validationStatus === "validated" &&
+		build.sandboxImage &&
+		build.digest
+	) {
+		return "validated";
+	}
+	if (build.status === "queued" || build.status === "building")
+		return "building";
+	return "failed";
+}
+
+const ENVIRONMENT_STATUS_RANK: Record<
+	BenchmarkInstanceEnvironmentStatus,
+	number
+> = {
+	validated: 4,
+	building: 3,
+	failed: 2,
+	not_built: 1,
+};
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.session?.userId) error(401, "Authentication required");
@@ -90,7 +156,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 				}>,
 			);
 
-	const [instanceRows, repoFacetRows, suiteRows, agentRows] = await Promise.all([
+	const [
+		instanceRows,
+		repoFacetRows,
+		suiteRows,
+		agentRows,
+		environmentBuildRows,
+	] = await Promise.all([
 		database
 			.select({
 				id: benchmarkInstances.id,
@@ -125,16 +197,87 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.from(benchmarkSuites)
 			.orderBy(asc(benchmarkSuites.name)),
 		agentsQuery,
+		database
+			.select({
+				suite: environmentImageBuilds.suite,
+				repo: environmentImageBuilds.repo,
+				baseCommit: environmentImageBuilds.baseCommit,
+				version: environmentImageBuilds.version,
+				environmentSetupCommit: environmentImageBuilds.environmentSetupCommit,
+				environmentKey: environmentImageBuilds.environmentKey,
+				status: environmentImageBuilds.status,
+				validationStatus: environmentImageBuilds.validationStatus,
+				sandboxImage: environmentImageBuilds.sandboxImage,
+				digest: environmentImageBuilds.digest,
+			})
+			.from(environmentImageBuilds)
+			.orderBy(desc(environmentImageBuilds.updatedAt)),
 	]);
+
+	const staticEnvironmentMappings = loadSwebenchInferenceEnvironmentMappings();
+	const buildStatusByKey = new Map<
+		string,
+		{
+			status: BenchmarkInstanceEnvironmentStatus;
+			environmentKey: string | null;
+		}
+	>();
+	for (const build of environmentBuildRows) {
+		const key = environmentBuildKey({
+			suiteSlug: build.suite,
+			repo: build.repo,
+			baseCommit: build.baseCommit,
+			version: build.version,
+			environmentSetupCommit: build.environmentSetupCommit,
+		});
+		if (!key) continue;
+		const status = classifyEnvironmentBuild(build);
+		const existing = buildStatusByKey.get(key);
+		if (
+			existing &&
+			ENVIRONMENT_STATUS_RANK[existing.status] >=
+				ENVIRONMENT_STATUS_RANK[status]
+		) {
+			continue;
+		}
+		buildStatusByKey.set(key, {
+			status,
+			environmentKey: build.environmentKey ?? null,
+		});
+	}
 
 	const instances: BenchmarkInstanceRow[] = instanceRows.map((row) => {
 		const md = (row.testMetadata ?? {}) as Record<string, unknown>;
-		const versionField =
-			typeof md.version === "string"
-				? md.version
-				: typeof md.version === "number"
-					? String(md.version)
-					: null;
+		const versionField = metadataString(md, ["version"]);
+		const environmentSetupCommit = metadataString(md, [
+			"environmentSetupCommit",
+			"environment_setup_commit",
+		]);
+		const staticEnvironment = resolveSwebenchInferenceEnvironment(
+			{
+				suiteSlug: row.suiteSlug,
+				repo: row.repo,
+				baseCommit: row.baseCommit,
+				testMetadata: md,
+			},
+			{ mappings: staticEnvironmentMappings },
+		);
+		const buildKey = environmentBuildKey({
+			suiteSlug: row.suiteSlug,
+			repo: row.repo,
+			baseCommit: row.baseCommit,
+			version: versionField,
+			environmentSetupCommit,
+		});
+		const buildStatus = buildKey ? buildStatusByKey.get(buildKey) : null;
+		const environmentStatus: BenchmarkInstanceEnvironmentStatus =
+			staticEnvironment.environmentStatus === "validated"
+				? "validated"
+				: (buildStatus?.status ?? "not_built");
+		const environmentKey =
+			staticEnvironment.environmentStatus === "validated"
+				? (staticEnvironment.environmentKey ?? null)
+				: (buildStatus?.environmentKey ?? null);
 		const hintsLen = row.hintsText ? row.hintsText.length : 0;
 		return {
 			id: row.id,
@@ -144,6 +287,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			repo: row.repo,
 			baseCommit: row.baseCommit ? row.baseCommit.slice(0, 12) : null,
 			version: versionField,
+			environmentStatus,
+			environmentKey,
 			problemPreview: trimProblem(row.problemStatement),
 			hasHints: hintsLen > 0,
 			hintsLen,
