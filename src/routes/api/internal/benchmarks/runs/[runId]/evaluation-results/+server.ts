@@ -34,6 +34,8 @@ type EvaluationResult = {
 	harnessResult?: Record<string, unknown>;
 };
 
+const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
 export const POST: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
 	if (!db) return error(503, "Database not configured");
@@ -45,6 +47,33 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	const evaluatorError =
 		typeof body.error === "string" && body.error.trim() ? body.error.trim() : null;
 	const results = Array.isArray(body.results) ? body.results : [];
+	const [currentRun] = await db
+		.select()
+		.from(benchmarkRuns)
+		.where(eq(benchmarkRuns.id, params.runId))
+		.limit(1);
+	if (!currentRun) return error(404, "Benchmark run not found");
+	if (TERMINAL_RUN_STATUSES.has(currentRun.status)) {
+		await notifyCoordinatorEvaluationEvent(params.runId, {
+			eventType: results.length > 0 ? "results" : "failed",
+			jobName: body.jobName,
+			error: evaluatorError ?? `ignored callback for terminal ${currentRun.status} run`,
+		});
+		return json({ success: true, skipped: true, run: currentRun });
+	}
+	if (currentRun.status === "inferencing") {
+		const marked = await markBenchmarkRunStatus(params.runId, "evaluating", {
+			...(typeof body.jobName === "string" ? { evaluatorJobName: body.jobName } : {}),
+		});
+		if (marked && TERMINAL_RUN_STATUSES.has(marked.status)) {
+			await notifyCoordinatorEvaluationEvent(params.runId, {
+				eventType: results.length > 0 ? "results" : "failed",
+				jobName: body.jobName,
+				error: evaluatorError ?? `ignored callback for terminal ${marked.status} run`,
+			});
+			return json({ success: true, skipped: true, run: marked });
+		}
+	}
 	if (evaluatorError && results.length === 0) {
 		await markBenchmarkRunStatus(params.runId, "failed", { error: evaluatorError });
 		await notifyCoordinatorEvaluationEvent(params.runId, {

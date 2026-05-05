@@ -273,7 +273,7 @@ CHECKPOINT_SCRIPT = dedent(
         proc = subprocess.run(
             args,
             cwd=str(repo),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
@@ -783,7 +783,7 @@ RESTORE_SCRIPT = dedent(
         return subprocess.run(
             args,
             cwd=str(repo),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,

@@ -53,6 +53,37 @@ def test_evaluation_max_parallel_accepts_legacy_max_workers(monkeypatch):
     assert entrypoint.evaluation_max_parallel() == 8
 
 
+def test_post_results_retries_transient_bff_failure(monkeypatch):
+    entrypoint = load_entrypoint()
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        def __init__(self, ok: bool):
+            self.ok = ok
+
+        def raise_for_status(self):
+            if not self.ok:
+                raise RuntimeError("temporary BFF outage")
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return Response(ok=len(calls) > 1)
+
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder")
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "token")
+    monkeypatch.setenv("SWEBENCH_BFF_MAX_RETRIES", "2")
+    monkeypatch.setenv("SWEBENCH_BFF_RETRY_DELAY_SECONDS", "0.1")
+    monkeypatch.setattr(entrypoint.requests, "post", fake_post)
+    monkeypatch.setattr(entrypoint.time, "sleep", lambda _seconds: None)
+
+    entrypoint.post_results("run_1", [{"instance_id": "i1", "resolved": True}])
+
+    assert len(calls) == 2
+    assert calls[0]["json"] == {
+        "results": [{"instance_id": "i1", "resolved": True}]
+    }
+
+
 def test_parse_instance_image_map_requires_every_selected_instance():
     entrypoint = load_entrypoint()
 

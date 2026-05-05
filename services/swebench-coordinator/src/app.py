@@ -184,38 +184,95 @@ def _bff_text(method: str, path: str, *, timeout: int = 60) -> str:
     return res.text
 
 
+def _bff_retry_settings(
+    *, attempts: int | None = None, delay_seconds: float | None = None
+) -> tuple[int, float]:
+    raw_attempts = os.environ.get("SWEBENCH_BFF_MAX_RETRIES", "").strip()
+    raw_delay = os.environ.get("SWEBENCH_BFF_RETRY_DELAY_SECONDS", "").strip()
+    resolved_attempts = attempts if attempts is not None else 6
+    resolved_delay = delay_seconds if delay_seconds is not None else 10.0
+    if raw_attempts:
+        try:
+            resolved_attempts = max(1, min(20, int(raw_attempts)))
+        except ValueError:
+            pass
+    if raw_delay:
+        try:
+            resolved_delay = max(0.1, min(120.0, float(raw_delay)))
+        except ValueError:
+            pass
+    return resolved_attempts, resolved_delay
+
+
 def _bff_with_retry(
     method: str,
     path: str,
     *,
     json_body: dict[str, Any] | None = None,
     timeout: int = 60,
-    attempts: int = 3,
-    delay_seconds: float = 15,
+    attempts: int | None = None,
+    delay_seconds: float | None = None,
 ) -> Any:
+    resolved_attempts, resolved_delay = _bff_retry_settings(
+        attempts=attempts, delay_seconds=delay_seconds
+    )
     last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
+    for attempt in range(1, resolved_attempts + 1):
         try:
             return _bff(method, path, json_body=json_body, timeout=timeout)
         except Exception as exc:
             last_error = exc
-            if attempt >= attempts:
+            if attempt >= resolved_attempts:
                 break
             logger.warning(
                 "BFF %s %s failed on attempt %s/%s; retrying in %.1fs: %s",
                 method,
                 path,
                 attempt,
-                attempts,
-                delay_seconds,
+                resolved_attempts,
+                resolved_delay,
                 exc,
             )
-            time.sleep(delay_seconds)
+            time.sleep(resolved_delay)
+    raise last_error or RuntimeError(f"BFF {method} {path} failed")
+
+
+def _bff_text_with_retry(
+    method: str,
+    path: str,
+    *,
+    timeout: int = 60,
+    attempts: int | None = None,
+    delay_seconds: float | None = None,
+) -> str:
+    resolved_attempts, resolved_delay = _bff_retry_settings(
+        attempts=attempts, delay_seconds=delay_seconds
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, resolved_attempts + 1):
+        try:
+            return _bff_text(method, path, timeout=timeout)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= resolved_attempts:
+                break
+            logger.warning(
+                "BFF %s %s failed on attempt %s/%s; retrying in %.1fs: %s",
+                method,
+                path,
+                attempt,
+                resolved_attempts,
+                resolved_delay,
+                exc,
+            )
+            time.sleep(resolved_delay)
     raise last_error or RuntimeError(f"BFF {method} {path} failed")
 
 
 def _load_run(run_id: str) -> dict[str, Any]:
-    return _bff("GET", f"/api/internal/benchmarks/runs/{run_id}/status")["run"]
+    return _bff_with_retry(
+        "GET", f"/api/internal/benchmarks/runs/{run_id}/status", timeout=60
+    )["run"]
 
 
 def _load_run_activity(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -315,7 +372,7 @@ def _mark_run_status(ctx, data: dict[str, Any]) -> dict[str, Any]:
     for key in ("error", "evaluatorJobName", "predictionsPath"):
         if data.get(key) is not None:
             payload[key] = data[key]
-    return _bff(
+    return _bff_with_retry(
         "POST", f"/api/internal/benchmarks/runs/{run_id}/status", json_body=payload
     )
 
@@ -436,7 +493,7 @@ def _acquire_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
 
 def _release_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
-    return _bff(
+    return _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/leases",
         json_body={
@@ -452,7 +509,7 @@ def _release_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
 
 def _release_run_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
-    return _bff(
+    return _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/leases",
         json_body={
@@ -479,7 +536,7 @@ def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
 def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    response = _bff(
+    response = _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/sync",
         json_body={},
@@ -502,7 +559,7 @@ def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
 def _mark_instance_inference_failure(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _bff(
+    return _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/inference-failure",
         json_body={
@@ -530,7 +587,7 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 )
                 + "\n"
             )
-    _bff(
+    _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
         json_body={"path": str(path)},
@@ -543,13 +600,13 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     path = ARTIFACT_ROOT / run_id / "dataset.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
-    jsonl = _bff_text(
+    jsonl = _bff_text_with_retry(
         "GET",
         f"/api/internal/benchmarks/runs/{run_id}/dataset.jsonl",
         timeout=120,
     )
     path.write_text(jsonl, encoding="utf-8")
-    _bff(
+    _bff_with_retry(
         "POST",
         f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
         json_body={"path": str(path)},
@@ -608,6 +665,19 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(dataset_path, str) or not dataset_path.strip():
         raise RuntimeError("datasetPath is required for DB-backed SWE-bench evaluation")
     job_name = _evaluator_job_name(run["id"])
+    if run.get("status") in RUN_TERMINAL_STATUSES:
+        logger.info(
+            "Skipping evaluator job %s because run %s is already %s",
+            job_name,
+            run["id"],
+            run.get("status"),
+        )
+        return {
+            "jobName": job_name,
+            "skipped": True,
+            "reason": "run-terminal",
+            "runStatus": run.get("status"),
+        }
     instance_ids = run.get("selectedInstanceIds") or []
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
     evaluation_timeout_seconds = max(60, int(run.get("timeoutSeconds") or 7200))
@@ -730,10 +800,34 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             logger.info(
                 "Evaluator job %s already exists; treating ensure as success", job_name
             )
-        _mark_run_status(
+        marked = _mark_run_status(
             ctx,
             {"runId": run["id"], "status": "evaluating", "evaluatorJobName": job_name},
         )
+        marked_status = _status_from_mark_result(marked)
+        if marked_status and marked_status != "evaluating":
+            if marked_status in RUN_TERMINAL_STATUSES:
+                delete_result = _delete_evaluator_job(
+                    ctx, {"runId": run["id"], "jobName": job_name}
+                )
+                logger.info(
+                    "Deleted evaluator job %s after run %s remained terminal (%s): %s",
+                    job_name,
+                    run["id"],
+                    marked_status,
+                    delete_result,
+                )
+                return {
+                    "jobName": job_name,
+                    "skipped": True,
+                    "reason": "run-terminal-after-job-create",
+                    "runStatus": marked_status,
+                    "deleteResult": delete_result,
+                    "alreadyExists": already_exists,
+                }
+            raise RuntimeError(
+                f"mark evaluating returned unexpected run status {marked_status}"
+            )
         return {
             "jobName": job_name,
             "alreadyExists": already_exists,
@@ -1685,6 +1779,22 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             _release_run_leases,
             input={"runId": run_id, "reason": "inference fan-out completed"},
         )
+        run_after_inference = yield ctx.call_activity(
+            _load_run_activity, input={"runId": run_id}
+        )
+        if run_after_inference.get("status") in RUN_TERMINAL_STATUSES:
+            logger.info(
+                "Skipping SWE-bench evaluation for %s because run is already %s",
+                run_id,
+                run_after_inference.get("status"),
+            )
+            return {
+                "success": False,
+                "instances": len(results),
+                "failedInferenceInstances": len(failed_instances),
+                "skippedEvaluation": True,
+                "runStatus": run_after_inference.get("status"),
+            }
         predictions = yield ctx.call_activity(
             _write_predictions, input={"runId": run_id}
         )

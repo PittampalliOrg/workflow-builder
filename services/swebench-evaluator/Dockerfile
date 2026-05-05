@@ -1,5 +1,7 @@
 FROM python:3.12-slim
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 ARG SWEBENCH_PACKAGE_REF=git+https://github.com/PittampalliOrg/SWE-bench.git@783813773be04dd76dcab12946006f827612f28f

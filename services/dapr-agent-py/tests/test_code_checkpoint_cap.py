@@ -8,8 +8,7 @@ import types
 from textwrap import dedent
 
 
-def _load_cap_files():
-    """Extract cap_files + CHANGED_FILES_CAP from CHECKPOINT_SCRIPT and exec in a fresh namespace."""
+def _load_code_checkpoint_module():
     # Stub openshell_runtime so we can import code_checkpoint without Dapr deps.
     # Build a `src` package pointing at the real services/dapr-agent-py/src dir
     # so that `from src.openshell_runtime import ...` resolves to our stub.
@@ -37,6 +36,12 @@ def _load_cap_files():
     )
     code_checkpoint = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(code_checkpoint)
+    return code_checkpoint
+
+
+def _load_cap_files():
+    """Extract cap_files + CHANGED_FILES_CAP from CHECKPOINT_SCRIPT and exec in a fresh namespace."""
+    code_checkpoint = _load_code_checkpoint_module()
 
     # cap_files + the CAP constant live inside the heredoc script. Extract and
     # exec only those definitions into an isolated namespace.
@@ -50,6 +55,13 @@ def _load_cap_files():
     ns: dict = {}
     exec(dedent(match.group(0)), ns)
     return ns["cap_files"], ns["CHANGED_FILES_CAP"]
+
+
+def test_checkpoint_scripts_use_python36_subprocess_keywords():
+    code_checkpoint = _load_code_checkpoint_module()
+    scripts = [code_checkpoint.CHECKPOINT_SCRIPT, code_checkpoint.RESTORE_SCRIPT]
+    assert all("universal_newlines=True" in script for script in scripts)
+    assert all("text=True" not in script for script in scripts)
 
 
 def test_cap_files_noop_below_threshold():

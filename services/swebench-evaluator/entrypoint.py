@@ -145,6 +145,17 @@ def evaluation_max_parallel() -> int:
     return max(1, min(parsed, MAX_EVAL_MAX_PARALLEL))
 
 
+def bounded_int_env(name: str, *, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, value))
+
+
 def dispatch_run_instance_taskruns(
     *,
     api: Any,
@@ -625,12 +636,45 @@ def post_results(
         body["jobName"] = job_name
     if error:
         body["error"] = error
-    requests.post(
-        f"{base}/api/internal/benchmarks/runs/{run_id}/evaluation-results",
-        headers={"X-Internal-Token": token, "Content-Type": "application/json"},
-        json=body,
-        timeout=60,
-    ).raise_for_status()
+    attempts = bounded_int_env("SWEBENCH_BFF_MAX_RETRIES", default=6, minimum=1, maximum=20)
+    delay_seconds = bounded_float_env(
+        "SWEBENCH_BFF_RETRY_DELAY_SECONDS", default=10.0, minimum=0.1, maximum=120.0
+    )
+    url = f"{base}/api/internal/benchmarks/runs/{run_id}/evaluation-results"
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(
+                url,
+                headers={"X-Internal-Token": token, "Content-Type": "application/json"},
+                json=body,
+                timeout=60,
+            )
+            response.raise_for_status()
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            print(
+                f"[swebench-evaluator] BFF result POST failed on attempt {attempt}/{attempts}; retrying in {delay_seconds:.1f}s: {exc}",
+                file=sys.stderr,
+            )
+            time.sleep(delay_seconds)
+    raise last_exc or RuntimeError("BFF result POST failed")
+
+
+def bounded_float_env(
+    name: str, *, default: float, minimum: float, maximum: float
+) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, value))
 
 
 def required_env(name: str) -> str:

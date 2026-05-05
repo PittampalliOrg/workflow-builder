@@ -976,6 +976,9 @@ export async function markBenchmarkRunStatus(
 		.where(eq(benchmarkRuns.id, runId))
 		.limit(1);
 	if (!run) return null;
+	if (run.status !== status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status)) {
+		return run;
+	}
 	if (run.status !== status && !canTransitionBenchmarkRun(run.status, status)) {
 		throw new Error(`Invalid benchmark run transition ${run.status} -> ${status}`);
 	}

@@ -295,6 +295,75 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     assert len(job_name) <= 63
 
 
+def test_ensure_evaluator_job_skips_terminal_run(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda run_id: {
+            "id": run_id,
+            "status": "cancelled",
+            "selectedInstanceIds": ["sympy__sympy-20590"],
+        },
+    )
+    monkeypatch.setattr(
+        app,
+        "_load_kubernetes_clients",
+        lambda: (_ for _ in ()).throw(AssertionError("should not create a Job")),
+    )
+
+    result = app._ensure_evaluator_job(
+        None,
+        {
+            "runId": "Run_ABC",
+            "predictionsPath": "/artifacts/predictions.jsonl",
+            "datasetPath": "/artifacts/run_abc/dataset.jsonl",
+        },
+    )
+
+    assert result == {
+        "jobName": app._evaluator_job_name("Run_ABC"),
+        "skipped": True,
+        "reason": "run-terminal",
+        "runStatus": "cancelled",
+    }
+
+
+def test_mark_run_status_retries_bff_updates(monkeypatch):
+    app = load_app(monkeypatch)
+    captured = {}
+
+    def fake_bff_with_retry(method, path, json_body=None, timeout=60, **_kwargs):
+        captured.update(
+            {
+                "method": method,
+                "path": path,
+                "json": json_body,
+                "timeout": timeout,
+            }
+        )
+        return {"run": {"status": json_body["status"]}}
+
+    monkeypatch.setattr(app, "_bff_with_retry", fake_bff_with_retry)
+
+    result = app._mark_run_status(
+        None,
+        {
+            "runId": "run_1",
+            "status": "evaluating",
+            "evaluatorJobName": "job-1",
+        },
+    )
+
+    assert result == {"run": {"status": "evaluating"}}
+    assert captured == {
+        "method": "POST",
+        "path": "/api/internal/benchmarks/runs/run_1/status",
+        "json": {"status": "evaluating", "evaluatorJobName": "job-1"},
+        "timeout": 60,
+    }
+
+
 def test_validate_instance_metadata_rejects_missing_db_rows(monkeypatch):
     app = load_app(monkeypatch)
     monkeypatch.setattr(

@@ -47,6 +47,13 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	}
 	const run = await markBenchmarkRunStatus(params.runId, status, extra);
 	if (!run) return error(404, "Benchmark run not found");
-	await recomputeRunSummary(params.runId);
+	try {
+		await recomputeRunSummary(params.runId);
+	} catch (err) {
+		console.warn(
+			`Benchmark run ${params.runId} status ${status} committed, but summary recompute failed:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
 	return json({ success: true, run });
 };

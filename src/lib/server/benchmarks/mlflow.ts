@@ -356,20 +356,20 @@ export async function syncBenchmarkInstanceMlflow(params: {
 	instanceId: string;
 }): Promise<void> {
 	if (!mlflowEnabled() || !db) return;
-	const mlflowRunId = await ensureBenchmarkInstanceMlflowRun(params);
-	if (!mlflowRunId) return;
-	const [row] = await db
-		.select()
-		.from(benchmarkRunInstances)
-		.where(
-			and(
-				eq(benchmarkRunInstances.runId, params.runId),
-				eq(benchmarkRunInstances.instanceId, params.instanceId),
-			),
-		)
-		.limit(1);
-	if (!row) return;
 	try {
+		const mlflowRunId = await ensureBenchmarkInstanceMlflowRun(params);
+		if (!mlflowRunId) return;
+		const [row] = await db
+			.select()
+			.from(benchmarkRunInstances)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, params.runId),
+					eq(benchmarkRunInstances.instanceId, params.instanceId),
+				),
+			)
+			.limit(1);
+		if (!row) return;
 		const usage = isRecord(row.usage) ? row.usage : {};
 		const timings = isRecord(row.timings) ? row.timings : {};
 		await logBatch(mlflowRunId, {
@@ -424,7 +424,10 @@ export async function syncBenchmarkInstanceMlflow(params: {
 			],
 		});
 	} catch (err) {
-		warnMlflow(`failed to sync instance MLflow metrics ${row.id}`, err);
+		warnMlflow(
+			`failed to sync instance MLflow metrics ${params.runId}/${params.instanceId}`,
+			err,
+		);
 	}
 }
 
@@ -433,15 +436,15 @@ export async function syncBenchmarkRunMlflow(
 	options: { terminate?: boolean } = {},
 ): Promise<void> {
 	if (!mlflowEnabled() || !db) return;
-	const mlflowRunId = await ensureBenchmarkMlflowRun(runId);
-	if (!mlflowRunId) return;
-	const [run] = await db
-		.select()
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, runId))
-		.limit(1);
-	if (!run) return;
 	try {
+		const mlflowRunId = await ensureBenchmarkMlflowRun(runId);
+		if (!mlflowRunId) return;
+		const [run] = await db
+			.select()
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, runId))
+			.limit(1);
+		if (!run) return;
 		const summary = isRecord(run.summary) ? run.summary : {};
 		await logBatch(mlflowRunId, {
 			metrics: compactMetrics([
