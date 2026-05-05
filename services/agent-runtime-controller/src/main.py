@@ -48,6 +48,7 @@ ANNO_LAST_ACTIVE = "agents.x-k8s.io/last-active"
 
 DEFAULT_IDLE_TTL = 1800
 IDLE_CHECK_INTERVAL = 60
+DEFAULT_SLOTS_PER_REPLICA = {"coding": 5, "office": 2, "browser": 1, "testing": 2}
 
 DEFAULT_NAMESPACE = os.environ.get("CONTROLLER_NAMESPACE", "workflow-builder")
 DEFAULT_SA = os.environ.get("AGENT_RUNTIME_SERVICE_ACCOUNT", "agent-runtime")
@@ -280,6 +281,30 @@ def _lifecycle_int(spec: dict[str, Any], key: str, default: int) -> int:
     return max(0, parsed)
 
 
+def _slots_by_runtime_class() -> dict[str, int]:
+    raw = os.environ.get("AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON", "").strip()
+    if not raw:
+        return DEFAULT_SLOTS_PER_REPLICA
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return DEFAULT_SLOTS_PER_REPLICA
+    if not isinstance(parsed, dict):
+        return DEFAULT_SLOTS_PER_REPLICA
+    out = dict(DEFAULT_SLOTS_PER_REPLICA)
+    for key, value in parsed.items():
+        runtime_class = str(key or "").strip().lower()
+        if not runtime_class:
+            continue
+        try:
+            slots = int(value)
+        except (TypeError, ValueError):
+            continue
+        if slots > 0:
+            out[runtime_class] = slots
+    return out
+
+
 def _min_replicas(spec: dict[str, Any]) -> int:
     return _lifecycle_int(spec, "minReplicas", 0)
 
@@ -294,8 +319,7 @@ def _slots_per_replica(spec: dict[str, Any]) -> int:
     explicit = _lifecycle_int(spec, "slotsPerReplica", 0)
     if explicit > 0:
         return explicit
-    defaults = {"coding": 5, "office": 2, "browser": 1, "testing": 2}
-    return defaults.get(_runtime_class(spec), 1)
+    return _slots_by_runtime_class().get(_runtime_class(spec), 1)
 
 
 def _dapr_workflow_limit_per_sidecar(spec: dict[str, Any]) -> int:

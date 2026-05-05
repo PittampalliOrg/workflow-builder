@@ -137,6 +137,21 @@ def test_capacity_status_reports_slots_and_dapr_workflow_capacity():
     }
 
 
+def test_capacity_status_uses_runtime_class_slot_env(monkeypatch):
+    monkeypatch.setenv(
+        "AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON",
+        '{"coding": 12, "office": 3}',
+    )
+    status = main._capacity_status(
+        _spec(lifecycle={"maxReplicas": 1}),
+        desired_replicas=1,
+        ready_replicas=1,
+    )
+
+    assert status["slotsPerReplica"] == 12
+    assert status["effectiveSlots"] == 12
+
+
 def test_effective_model_status_exposes_provider_component_and_model():
     status = main._effective_model_status(
         _spec(modelSpec="nvidia/mistralai/devstral-2-123b-instruct-2512")
