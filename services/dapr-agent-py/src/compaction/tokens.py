@@ -58,6 +58,10 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "llm-deepseek-v4-pro": 1_000_000,
     "deepseek-v4-flash": 1_000_000,
     "llm-deepseek-v4-flash": 1_000_000,
+    "kimi-k2.6": 256_000,
+    "llm-kimi-k26": 256_000,
+    "kimi-k2.5": 256_000,
+    "llm-kimi-k25": 256_000,
 }
 DEFAULT_WINDOW = 200_000
 

@@ -7,7 +7,9 @@ function trackingUri(): string | null {
 }
 
 function publicMlflowUrl(): string | null {
-	const value = (publicEnv.PUBLIC_MLFLOW_URL ?? '').trim().replace(/\/+$/, '');
+	const value = (publicEnv.PUBLIC_MLFLOW_URL ?? env.PUBLIC_MLFLOW_URL ?? '')
+		.trim()
+		.replace(/\/+$/, '');
 	return value || null;
 }
 
@@ -19,6 +21,11 @@ function configuredTraceExperimentId(): string | null {
 	const value = (env.MLFLOW_TRACE_EXPERIMENT_ID ?? publicEnv.PUBLIC_MLFLOW_TRACE_EXPERIMENT_ID ?? '')
 		.trim();
 	return value || null;
+}
+
+function mlflowTraceRequestId(traceId: string): string {
+	const value = traceId.trim();
+	return value.startsWith('tr-') ? value : `tr-${value}`;
 }
 
 async function mlflowRequest<T>(path: string): Promise<T> {
@@ -50,7 +57,7 @@ export function publicMlflowTraceSearchUrl(
 	const sessionId = filter?.sessionId?.trim();
 	const encodedExperimentId = encodeURIComponent(experimentId);
 	if (traceId) {
-		const query = new URLSearchParams({ selectedEvaluationId: traceId });
+		const query = new URLSearchParams({ selectedEvaluationId: mlflowTraceRequestId(traceId) });
 		return `${base}/#/experiments/${encodedExperimentId}/traces?${query.toString()}`;
 	}
 	if (sessionId) {

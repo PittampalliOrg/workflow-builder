@@ -6,6 +6,7 @@ export type AgentModelProvider =
   | "nvidia"
   | "googleai"
   | "deepseek"
+  | "kimi"
   | "huggingface"
   | "mistral"
   | "echo";
@@ -126,6 +127,22 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-deepseek-v4-flash",
   },
   {
+    value: "kimi/kimi-k2.6",
+    label: "Kimi K2.6",
+    provider: "kimi",
+    iconProvider: "moonshotai",
+    component: "llm-kimi-k26",
+    sweBenchCapable: false,
+  },
+  {
+    value: "kimi/kimi-k2.5",
+    label: "Kimi K2.5",
+    provider: "kimi",
+    iconProvider: "moonshotai",
+    component: "llm-kimi-k25",
+    sweBenchCapable: false,
+  },
+  {
     value: "together/zai-org/GLM-5.1",
     label: "Together GLM-5.1",
     provider: "together",
@@ -230,6 +247,12 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+  "kimi/kimi-k2.6": "kimi/kimi-k2.6",
+  "kimi-k2.6": "kimi/kimi-k2.6",
+  "moonshot/kimi-k2.6": "kimi/kimi-k2.6",
+  "kimi/kimi-k2.5": "kimi/kimi-k2.5",
+  "kimi-k2.5": "kimi/kimi-k2.5",
+  "moonshot/kimi-k2.5": "kimi/kimi-k2.5",
   "together/zai-org/GLM-5.1": "together/zai-org/GLM-5.1",
   "zai-org/GLM-5.1": "together/zai-org/GLM-5.1",
   "GLM-5.1": "together/zai-org/GLM-5.1",

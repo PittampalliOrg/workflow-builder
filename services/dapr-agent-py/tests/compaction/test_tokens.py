@@ -27,6 +27,8 @@ def test_context_window_known_model():
     assert get_context_window("llm-together-deepseek-v4-pro") == 512_000
     assert get_context_window("llm-deepseek-v4-pro") == 1_000_000
     assert get_context_window("deepseek-v4-flash") == 1_000_000
+    assert get_context_window("llm-kimi-k26") == 256_000
+    assert get_context_window("kimi-k2.5") == 256_000
 
 
 def test_context_window_unknown_model_falls_back_to_default():

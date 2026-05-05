@@ -206,7 +206,12 @@ export function isBenignDaprTerminationMiss(input: unknown): boolean {
 	return (
 		normalized.includes("no such instance exists") ||
 		normalized.includes("agent run not found") ||
-		normalized.includes("workflow instance not found")
+		normalized.includes("workflow instance not found") ||
+		(normalized.includes("failed to resolve address") &&
+			normalized.includes("no such host")) ||
+		(normalized.includes("failed to invoke") &&
+			normalized.includes("-dapr") &&
+			normalized.includes("no such host"))
 	);
 }
 
@@ -2520,6 +2525,8 @@ async function timeoutBenchmarkInstanceIfStalled(
 				.select({
 					id: sessions.id,
 					updatedAt: sessions.updatedAt,
+					sandboxName: sessions.sandboxName,
+					workspaceSandboxName: sessions.workspaceSandboxName,
 				})
 				.from(sessions)
 				.where(eq(sessions.id, runInstance.sessionId))
@@ -2529,6 +2536,8 @@ async function timeoutBenchmarkInstanceIfStalled(
 					.select({
 						id: sessions.id,
 						updatedAt: sessions.updatedAt,
+						sandboxName: sessions.sandboxName,
+						workspaceSandboxName: sessions.workspaceSandboxName,
 					})
 					.from(sessions)
 					.where(eq(sessions.workflowExecutionId, runInstance.workflowExecutionId))
@@ -2567,6 +2576,35 @@ async function timeoutBenchmarkInstanceIfStalled(
 
 	const message = `Inference stalled: no session progress for ${stallSeconds}s`;
 	const now = new Date();
+	const executionRows = runInstance.workflowExecutionId
+		? await database
+				.select({
+					primaryTraceId: workflowExecutions.primaryTraceId,
+					output: workflowExecutions.output,
+				})
+				.from(workflowExecutions)
+				.where(eq(workflowExecutions.id, runInstance.workflowExecutionId))
+				.limit(1)
+		: [];
+	const sessionEventRows = session?.id
+		? await database
+				.select({ data: sessionEvents.data })
+				.from(sessionEvents)
+				.where(eq(sessionEvents.sessionId, session.id))
+				.orderBy(asc(sessionEvents.sequence))
+		: [];
+	const runtimeLinks = extractBenchmarkRuntimeLinks({
+		currentSandboxName: runInstance.sandboxName,
+		currentWorkspaceRef: runInstance.workspaceRef,
+		currentTraceIds: runInstance.traceIds,
+		sessionSandboxName: session?.sandboxName,
+		sessionWorkspaceSandboxName: session?.workspaceSandboxName,
+		values: [
+			{ primaryTraceId: executionRows[0]?.primaryTraceId },
+			executionRows[0]?.output,
+			...sessionEventRows.map((event) => event.data),
+		],
+	});
 	const [updated] = await database
 		.update(benchmarkRunInstances)
 		.set({
@@ -2577,6 +2615,9 @@ async function timeoutBenchmarkInstanceIfStalled(
 			inferenceError: message,
 			inferenceCompletedAt: runInstance.inferenceCompletedAt ?? now,
 			sessionId: session?.id ?? runInstance.sessionId,
+			sandboxName: runtimeLinks.sandboxName,
+			workspaceRef: runtimeLinks.workspaceRef,
+			traceIds: runtimeLinks.traceIds,
 			updatedAt: now,
 		})
 		.where(eq(benchmarkRunInstances.id, runInstance.id))
@@ -3295,7 +3336,8 @@ function buildSwebenchPrompt(params: {
 		"",
 		"Sandbox notes:",
 		`- Work only in ${workspaceRoot}.`,
-		"- Do not create commits; leave source changes in the working tree.",
+		"- Do not create your own commits. The runtime may create internal checkpoint commits after Edit, Write, or Bash changes; do not revert them.",
+		`- Because checkpoint commits can make plain git diff/status look clean, inspect your final patch with git diff --binary ${params.baseCommit} -- . instead of plain git diff.`,
 		"- Produce the repository fix by editing implementation files only.",
 		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
 		"- Do not edit tests, test fixtures, benchmark metadata, generated artifact files, or files that only make local tests pass.",

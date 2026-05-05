@@ -436,6 +436,12 @@ describe("SWE-bench workflow spec", () => {
 		expect(solve.with.body.prompt).toContain("Official grading happens later");
 		expect(solve.with.body.prompt).toContain("Work only in /sandbox/repo");
 		expect(solve.with.body.prompt).toContain("editing implementation files only");
+		expect(solve.with.body.prompt).toContain(
+			"The runtime may create internal checkpoint commits",
+		);
+		expect(solve.with.body.prompt).toContain(
+			"git diff --binary abc123 -- .",
+		);
 		expect(solve.with.body.prompt).toContain("Do not edit tests");
 		expect(solve.with.body.prompt).toContain("final benchmark patch excludes");
 		expect(solve.with.body.prompt).toContain("Do not use web search");
@@ -880,6 +886,11 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(isBenignDaprTerminationMiss("failed: no such instance exists")).toBe(true);
 		expect(isBenignDaprTerminationMiss("Agent run not found")).toBe(true);
 		expect(isBenignDaprTerminationMiss(new Error("workflow instance not found"))).toBe(true);
+		expect(
+			isBenignDaprTerminationMiss(
+				"failed to invoke, id: agent-runtime-deepseek-v4-pro-swebench, err: failed to resolve address for 'agent-runtime-deepseek-v4-pro-swebench-dapr.workflow-builder.svc.cluster.local': no such host",
+			),
+		).toBe(true);
 		expect(isBenignDaprTerminationMiss(new Error("context deadline exceeded"))).toBe(false);
 	});
 

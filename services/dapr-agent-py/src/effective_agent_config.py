@@ -76,6 +76,13 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "deepseek/deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek/default": "llm-deepseek",
+    # Kimi direct API
+    "kimi/kimi-k2.6": "llm-kimi-k26",
+    "kimi-k2.6": "llm-kimi-k26",
+    "moonshot/kimi-k2.6": "llm-kimi-k26",
+    "kimi/kimi-k2.5": "llm-kimi-k25",
+    "kimi-k2.5": "llm-kimi-k25",
+    "moonshot/kimi-k2.5": "llm-kimi-k25",
     # Hugging Face
     "huggingface/meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
     "meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
@@ -126,6 +133,8 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-deepseek-v4-pro": ("deepseek", "deepseek-v4-pro"),
     "llm-deepseek-v4-flash": ("deepseek", "deepseek-v4-flash"),
     "llm-deepseek": ("deepseek", "default"),
+    "llm-kimi-k26": ("kimi", "kimi-k2.6"),
+    "llm-kimi-k25": ("kimi", "kimi-k2.5"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
     "llm-mistral-open": ("mistral", "open-mistral-7b"),
     "llm-echo": ("echo", "local"),
@@ -241,6 +250,8 @@ def provider_metadata_for_component(
         provider = "googleai"
     elif "deepseek" in lowered:
         provider = "deepseek"
+    elif "kimi" in lowered:
+        provider = "kimi"
     elif "huggingface" in lowered:
         provider = "huggingface"
     elif "mistral" in lowered:

@@ -1703,6 +1703,11 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_deepseek(self.llm)
         except Exception:
             pass
+        try:
+            from src.kimi_adapter import patch_for_kimi
+            patch_for_kimi(self.llm)
+        except Exception:
+            pass
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
         exec_id = (
@@ -4258,6 +4263,12 @@ try:
     patch_for_deepseek(agent.llm)
 except Exception as exc:
     logger.warning("DeepSeek adapter patch failed: %s", exc)
+
+try:
+    from src.kimi_adapter import patch_for_kimi
+    patch_for_kimi(agent.llm)
+except Exception as exc:
+    logger.warning("Kimi adapter patch failed: %s", exc)
 
 runner = AgentRunner()
 

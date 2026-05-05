@@ -2,7 +2,6 @@ import { env } from "$env/dynamic/private";
 import { env as publicEnv } from "$env/dynamic/public";
 import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { publicMlflowTraceSearchUrl } from "$lib/server/observability/mlflow";
 import {
 	agents,
 	benchmarkRunInstances,
@@ -45,16 +44,20 @@ export function publicMlflowRunUrl(
 	experimentId: string | null | undefined,
 	runId: string | null | undefined,
 ): string | null {
-	const base = (publicEnv.PUBLIC_MLFLOW_URL ?? "").trim().replace(/\/+$/, "");
+	const base = (publicEnv.PUBLIC_MLFLOW_URL ?? env.PUBLIC_MLFLOW_URL ?? "")
+		.trim()
+		.replace(/\/+$/, "");
 	if (!base || !experimentId || !runId) return null;
 	return `${base}/#/experiments/${encodeURIComponent(experimentId)}/runs/${encodeURIComponent(runId)}`;
 }
 
 export function publicMlflowTracesUrl(
-	experimentId: string | null | undefined,
+	_experimentId: string | null | undefined,
 	traceId: string | null | undefined,
 ): string | null {
-	return publicMlflowTraceSearchUrl(experimentId, { traceId });
+	const trimmed = traceId?.trim();
+	if (!trimmed) return null;
+	return `/api/observability/mlflow/traces/${encodeURIComponent(trimmed)}`;
 }
 
 async function mlflowRequest<T>(

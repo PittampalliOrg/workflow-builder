@@ -188,6 +188,18 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "deepseek-v4-flash",
         ),
         (
+            "kimi/kimi-k2.6",
+            "llm-kimi-k26",
+            "kimi",
+            "kimi-k2.6",
+        ),
+        (
+            "kimi-k2.5",
+            "llm-kimi-k25",
+            "kimi",
+            "kimi-k2.5",
+        ),
+        (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",

@@ -217,6 +217,17 @@ def test_effective_model_status_supports_direct_deepseek():
     }
 
 
+def test_effective_model_status_supports_direct_kimi():
+    status = main._effective_model_status(_spec(modelSpec="kimi/kimi-k2.6"))
+
+    assert status == {
+        "effectiveModelSpec": "kimi/kimi-k2.6",
+        "effectiveLlmComponent": "llm-kimi-k26",
+        "provider": "kimi",
+        "providerModel": "kimi-k2.6",
+    }
+
+
 def test_unknown_model_spec_is_rejected_instead_of_defaulting_to_anthropic():
     try:
         main._resolve_llm_component("nvidia/unknown-model")

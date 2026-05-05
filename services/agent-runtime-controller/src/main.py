@@ -117,6 +117,12 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "deepseek/deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek/default": "llm-deepseek",
+    "kimi/kimi-k2.6": "llm-kimi-k26",
+    "kimi-k2.6": "llm-kimi-k26",
+    "moonshot/kimi-k2.6": "llm-kimi-k26",
+    "kimi/kimi-k2.5": "llm-kimi-k25",
+    "kimi-k2.5": "llm-kimi-k25",
+    "moonshot/kimi-k2.5": "llm-kimi-k25",
     "huggingface/meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
     "meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
     "mistral/open-mistral-7b": "llm-mistral-open",
@@ -159,6 +165,8 @@ COMPONENT_PROVIDER_MAP: dict[str, tuple[str, str]] = {
     "llm-deepseek-v4-pro": ("deepseek", "deepseek-v4-pro"),
     "llm-deepseek-v4-flash": ("deepseek", "deepseek-v4-flash"),
     "llm-deepseek": ("deepseek", "default"),
+    "llm-kimi-k26": ("kimi", "kimi-k2.6"),
+    "llm-kimi-k25": ("kimi", "kimi-k2.5"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
     "llm-mistral-open": ("mistral", "open-mistral-7b"),
     "llm-echo": ("echo", "local"),
@@ -192,6 +200,8 @@ def _provider_for_component(component: str) -> dict[str, str]:
         provider = "together"
     elif "deepseek" in lowered:
         provider = "deepseek"
+    elif "kimi" in lowered:
+        provider = "kimi"
     elif "mistral" in lowered:
         provider = "mistral"
     else:

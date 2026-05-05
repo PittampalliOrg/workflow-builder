@@ -24,6 +24,8 @@ describe("agent model options", () => {
       "foundry/DeepSeek-V4-Flash",
       "deepseek/deepseek-v4-pro",
       "deepseek/deepseek-v4-flash",
+      "kimi/kimi-k2.6",
+      "kimi/kimi-k2.5",
       "together/zai-org/GLM-5.1",
       "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
       "together/deepseek-ai/DeepSeek-V4-Pro",
@@ -71,6 +73,10 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("deepseek-v4-flash")).toBe(
       "deepseek/deepseek-v4-flash",
     );
+    expect(canonicalAgentModelSpec("kimi-k2.6")).toBe("kimi/kimi-k2.6");
+    expect(canonicalAgentModelSpec("moonshot/kimi-k2.5")).toBe(
+      "kimi/kimi-k2.5",
+    );
     expect(canonicalAgentModelSpec("GLM-5.1")).toBe("together/zai-org/GLM-5.1");
     expect(
       canonicalAgentModelSpec("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"),
@@ -92,6 +98,7 @@ describe("agent model options", () => {
     expect(isSupportedAgentModelSpec("ollama/llama3.2")).toBe(false);
     expect(isSupportedAgentModelSpec("mistral/open-mistral-7b")).toBe(false);
     expect(isSupportedAgentModelSpec("foundry/Kimi-K2.6")).toBe(false);
+    expect(isSupportedAgentModelSpec("kimi-k2.6")).toBe(true);
   });
 
   it("formats known aliases with their canonical label", () => {
@@ -109,6 +116,7 @@ describe("agent model options", () => {
     );
     expect(agentModelLabel("deepseek-v4-pro")).toBe("DeepSeek V4 Pro");
     expect(agentModelLabel("deepseek-v4-flash")).toBe("DeepSeek V4 Flash");
+    expect(agentModelLabel("kimi-k2.6")).toBe("Kimi K2.6");
     expect(agentModelLabel("GLM-5.1")).toBe("Together GLM-5.1");
     expect(agentModelLabel("DeepSeek-V4-Pro")).toBe("Together DeepSeek V4 Pro");
     expect(agentModelLabel("google/gemini-3.1-pro-preview")).toBe(
