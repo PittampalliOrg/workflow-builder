@@ -151,11 +151,10 @@ export async function downloadMlflowTextArtifact(
 	artifactPath: string,
 ): Promise<string | null> {
 	const listed = await listMlflowArtifacts(runId, artifactPath);
-	if (
-		!listed.some(
-			(file) => !file.isDir && file.path.replace(/^\/+/, "") === artifactPath.replace(/^\/+/, ""),
-		)
-	) {
+	const listedExact = listed.some(
+		(file) => !file.isDir && file.path.replace(/^\/+/, "") === artifactPath.replace(/^\/+/, ""),
+	);
+	if (listed.length > 0 && !listedExact) {
 		return null;
 	}
 	const encodedPath = encodeArtifactPath(artifactPath);
@@ -173,9 +172,17 @@ export async function downloadMlflowTextArtifact(
 			lastErr = err;
 		}
 	}
+	if (listed.length === 0 && isMlflowMissingArtifactError(lastErr)) {
+		return null;
+	}
 	throw lastErr instanceof Error
 		? lastErr
 		: new Error(`Failed to download MLflow artifact ${artifactPath}`);
+}
+
+function isMlflowMissingArtifactError(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return message.includes(" returned 404") || message.includes("RESOURCE_DOES_NOT_EXIST");
 }
 
 export async function downloadMlflowJsonArtifact<T>(

@@ -102,7 +102,7 @@ describe("SWE-bench environment image build planning", () => {
 			imageTag: expect.stringMatching(/^env-[0-9a-f]{16}$/),
 			dockerfilePath: "Dockerfile",
 			validationCommand: "PYTHONPATH=src python -m pytest --version",
-			workspaceRoot: "/sandbox/repo",
+			workspaceRoot: "/testbed",
 			condaEnvironment: "testbed",
 		});
 		expect(spec.swebenchSpecInput).toMatchObject({
@@ -411,7 +411,7 @@ describe("SWE-bench environment image build planning", () => {
 		expect(spec).toMatchObject({
 			environmentKey: "flask-2.3",
 			dockerfilePath: "Dockerfile",
-			validationCommand: expect.stringContaining("/sandbox/repo"),
+			validationCommand: expect.stringContaining("/testbed"),
 		});
 		expect(spec.environmentNotes).toContain(
 			"For local imports and tests in this source-layout repo, prefix Python commands with PYTHONPATH=src.",

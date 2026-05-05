@@ -74,6 +74,19 @@ describe("MLflow artifact helpers", () => {
 		);
 	});
 
+	it("downloads JSON artifacts directly when MLflow list omits files", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ root_uri: "/artifacts" }), { status: 200 }))
+			.mockResolvedValueOnce(new Response("{\"ok\":true}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			downloadMlflowJsonArtifact("run-1", "traces/django/trace-bundle.json"),
+		).resolves.toEqual({ ok: true });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("uploads JSON artifacts through the MLflow artifact API", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
@@ -96,7 +109,10 @@ describe("MLflow artifact helpers", () => {
 	it("returns null when a JSON artifact is absent", async () => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn().mockResolvedValue(new Response(JSON.stringify({ files: [] }), { status: 200 })),
+			vi
+				.fn()
+				.mockResolvedValueOnce(new Response(JSON.stringify({ files: [] }), { status: 200 }))
+				.mockResolvedValue(new Response("missing", { status: 404 })),
 		);
 
 		await expect(
