@@ -799,17 +799,19 @@ export function buildSwebenchPipelineRunManifest(
 		},
 		spec: {
 			pipelineRef: { name: "swebench-inference-image-build" },
-			taskRunTemplate: { serviceAccountName: "workflow-builder-build-trigger" },
-			podTemplate: {
-				nodeSelector: { "stacks.io/build-pool": "hub" },
-				tolerations: [
-					{
-						key: "stacks.io/build-pool",
-						operator: "Equal",
-						value: "hub",
-						effect: "NoSchedule",
-					},
-				],
+			taskRunTemplate: {
+				serviceAccountName: "workflow-builder-build-trigger",
+				podTemplate: {
+					nodeSelector: { "stacks.io/build-pool": "hub" },
+					tolerations: [
+						{
+							key: "stacks.io/build-pool",
+							operator: "Equal",
+							value: "hub",
+							effect: "NoSchedule",
+						},
+					],
+				},
 			},
 			timeouts: SWEBENCH_PIPELINE_TIMEOUTS,
 			params: [

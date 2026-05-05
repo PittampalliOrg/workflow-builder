@@ -375,16 +375,19 @@ describe("SWE-bench environment image build planning", () => {
 		);
 		const runSpec = manifest.spec as Record<string, unknown>;
 
-		expect(runSpec.podTemplate).toMatchObject({
-			nodeSelector: { "stacks.io/build-pool": "hub" },
-			tolerations: [
-				{
-					key: "stacks.io/build-pool",
-					operator: "Equal",
-					value: "hub",
-					effect: "NoSchedule",
-				},
-			],
+		expect(runSpec.taskRunTemplate).toMatchObject({
+			serviceAccountName: "workflow-builder-build-trigger",
+			podTemplate: {
+				nodeSelector: { "stacks.io/build-pool": "hub" },
+				tolerations: [
+					{
+						key: "stacks.io/build-pool",
+						operator: "Equal",
+						value: "hub",
+						effect: "NoSchedule",
+					},
+				],
+			},
 		});
 	});
 
