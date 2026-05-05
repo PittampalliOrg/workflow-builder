@@ -90,6 +90,7 @@ import {
 	materializeSwebenchTraceBundle,
 } from "./trace-bundle";
 import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -467,6 +468,7 @@ async function benchmarkEnvironmentCoverage(
 	const instances = await database
 		.select({
 			suiteId: benchmarkInstances.suiteId,
+			instanceId: benchmarkInstances.instanceId,
 			repo: benchmarkInstances.repo,
 			baseCommit: benchmarkInstances.baseCommit,
 			testMetadata: benchmarkInstances.testMetadata,
@@ -476,14 +478,17 @@ async function benchmarkEnvironmentCoverage(
 	for (const instance of instances) {
 		const bucket = buckets.get(instance.suiteId);
 		const suite = suiteById.get(instance.suiteId);
-		const key = benchmarkEnvironmentKey({
+		if (!bucket || !suite || !instance.repo || !instance.baseCommit) continue;
+		const key = buildSwebenchEnvironmentSpec({
+			dataset: suite.datasetName,
+			suiteSlug: normalizeSwebenchSuiteSlug(suite.slug),
+			instanceId: instance.instanceId,
 			repo: instance.repo,
 			baseCommit: instance.baseCommit,
-			metadata: instance.testMetadata,
-		});
-		if (!bucket || !suite || !key || !instance.repo || !instance.baseCommit) continue;
+			testMetadata: instance.testMetadata,
+		}).envSpecHash;
 		bucket.required.add(key);
-		const resolved = resolveSwebenchInferenceEnvironment(
+		const exactStaticEnvironment = isExactValidatedSwebenchInferenceEnvironment(
 			{
 				suiteSlug: normalizeSwebenchSuiteSlug(suite.slug),
 				repo: instance.repo,
@@ -492,16 +497,13 @@ async function benchmarkEnvironmentCoverage(
 			},
 			{ mappings: staticMappings },
 		);
-		if (resolved.environmentStatus === "validated") bucket.validated.add(key);
+		if (exactStaticEnvironment) bucket.validated.add(key);
 	}
 
 	const builds = await database
 		.select({
 			suite: environmentImageBuilds.suite,
-			repo: environmentImageBuilds.repo,
-			version: environmentImageBuilds.version,
-			environmentSetupCommit: environmentImageBuilds.environmentSetupCommit,
-			baseCommit: environmentImageBuilds.baseCommit,
+			envSpecHash: environmentImageBuilds.envSpecHash,
 			status: environmentImageBuilds.status,
 			validationStatus: environmentImageBuilds.validationStatus,
 			sandboxImage: environmentImageBuilds.sandboxImage,
@@ -512,14 +514,7 @@ async function benchmarkEnvironmentCoverage(
 	for (const build of builds) {
 		const suiteId = build.suite ? suiteIdBySlug.get(build.suite) : undefined;
 		const bucket = suiteId ? buckets.get(suiteId) : undefined;
-		const key = benchmarkEnvironmentKey({
-			repo: build.repo,
-			baseCommit: build.baseCommit,
-			metadata: {
-				version: build.version,
-				environmentSetupCommit: build.environmentSetupCommit,
-			},
-		});
+		const key = build.envSpecHash;
 		if (!bucket || !key || !bucket.required.has(key)) continue;
 		if (
 			build.status === "validated" &&
@@ -568,26 +563,6 @@ function emptyBenchmarkEnvironmentCoverage(): BenchmarkEnvironmentCoverage {
 	};
 }
 
-function benchmarkEnvironmentKey(input: {
-	repo: string | null;
-	baseCommit: string | null;
-	metadata: Record<string, unknown> | null;
-}): string | null {
-	if (!input.repo) return null;
-	const version = metadataString(input.metadata, "version");
-	const environmentSetupCommit =
-		metadataString(input.metadata, "environmentSetupCommit") ??
-		metadataString(input.metadata, "environment_setup_commit");
-	const selector = version ?? environmentSetupCommit?.slice(0, 12) ?? input.baseCommit?.slice(0, 12);
-	if (!selector) return null;
-	return `${input.repo}::${selector}`;
-}
-
-function metadataString(metadata: Record<string, unknown> | null, key: string): string | null {
-	const value = metadata?.[key];
-	return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function differenceSize(values: Set<string>, excluded: Set<string>): number {
 	let size = 0;
 	for (const value of values) {
@@ -614,34 +589,15 @@ export type CreateBenchmarkRunInput = {
 	requirePrevalidatedEnvironments?: boolean;
 };
 
-function strictEnvironmentBuildKey(input: {
-	suiteSlug: string;
-	repo: string | null;
-	baseCommit: string | null;
-	metadata: Record<string, unknown> | null;
-}): string | null {
-	if (!input.repo?.trim() || !input.baseCommit?.trim()) return null;
-	const version = metadataString(input.metadata, "version");
-	const environmentSetupCommit =
-		metadataString(input.metadata, "environmentSetupCommit") ??
-		metadataString(input.metadata, "environment_setup_commit");
-	return [
-		input.suiteSlug.trim(),
-		input.repo.trim(),
-		input.baseCommit.trim(),
-		version ?? "",
-		environmentSetupCommit ?? "",
-	].join("\u0000");
-}
-
 async function assertPrevalidatedBenchmarkEnvironments(input: {
 	suiteSlug: SwebenchSuiteSlug;
+	datasetName: string;
 	instances: Array<typeof benchmarkInstances.$inferSelect>;
 }) {
 	const database = requireDb();
 	const staticMappings = loadSwebenchInferenceEnvironmentMappings();
-	const missingKeys = new Map<string, string>();
-	const requiredKeys = new Set<string>();
+	const missingHashes = new Map<string, string>();
+	const requiredHashes = new Set<string>();
 	for (const instance of input.instances) {
 		if (
 			isExactValidatedSwebenchInferenceEnvironment(
@@ -656,36 +612,26 @@ async function assertPrevalidatedBenchmarkEnvironments(input: {
 		) {
 			continue;
 		}
-		const key = strictEnvironmentBuildKey({
-			suiteSlug: input.suiteSlug,
-			repo: instance.repo,
-			baseCommit: instance.baseCommit,
-			metadata: instance.testMetadata,
-		});
-		if (!key) {
-			missingKeys.set(instance.instanceId, "missing environment identity");
+		if (!instance.repo?.trim() || !instance.baseCommit?.trim()) {
+			missingHashes.set(instance.instanceId, "missing environment identity");
 			continue;
 		}
-		requiredKeys.add(key);
-		missingKeys.set(instance.instanceId, key);
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: input.datasetName,
+			suiteSlug: input.suiteSlug,
+			instanceId: instance.instanceId,
+			repo: instance.repo,
+			baseCommit: instance.baseCommit,
+			testMetadata: instance.testMetadata,
+		});
+		requiredHashes.add(spec.envSpecHash);
+		missingHashes.set(instance.instanceId, spec.envSpecHash);
 	}
-	if (missingKeys.size === 0) return;
-	const repos = Array.from(
-		new Set(
-			input.instances
-				.map((instance) => instance.repo)
-				.filter((repo): repo is string => Boolean(repo)),
-		),
-	);
-	const builds = repos.length
+	if (missingHashes.size === 0) return;
+	const builds = requiredHashes.size
 		? await database
 				.select({
-					suite: environmentImageBuilds.suite,
-					repo: environmentImageBuilds.repo,
-					baseCommit: environmentImageBuilds.baseCommit,
-					version: environmentImageBuilds.version,
-					environmentSetupCommit:
-						environmentImageBuilds.environmentSetupCommit,
+					envSpecHash: environmentImageBuilds.envSpecHash,
 					status: environmentImageBuilds.status,
 					validationStatus: environmentImageBuilds.validationStatus,
 					sandboxImage: environmentImageBuilds.sandboxImage,
@@ -693,13 +639,10 @@ async function assertPrevalidatedBenchmarkEnvironments(input: {
 				})
 				.from(environmentImageBuilds)
 				.where(
-					and(
-						eq(environmentImageBuilds.suite, input.suiteSlug),
-						inArray(environmentImageBuilds.repo, repos),
-					),
+					inArray(environmentImageBuilds.envSpecHash, Array.from(requiredHashes)),
 				)
 		: [];
-	const validatedKeys = new Set<string>();
+	const validatedHashes = new Set<string>();
 	for (const build of builds) {
 		if (
 			build.status !== "validated" ||
@@ -709,17 +652,10 @@ async function assertPrevalidatedBenchmarkEnvironments(input: {
 		) {
 			continue;
 		}
-		const key = [
-			build.suite?.trim() ?? "",
-			build.repo.trim(),
-			build.baseCommit?.trim() ?? "",
-			build.version?.trim() ?? "",
-			build.environmentSetupCommit?.trim() ?? "",
-		].join("\u0000");
-		if (requiredKeys.has(key)) validatedKeys.add(key);
+		if (requiredHashes.has(build.envSpecHash)) validatedHashes.add(build.envSpecHash);
 	}
-	const missingInstances = Array.from(missingKeys)
-		.filter(([, key]) => !validatedKeys.has(key))
+	const missingInstances = Array.from(missingHashes)
+		.filter(([, hash]) => !validatedHashes.has(hash))
 		.map(([instanceId]) => instanceId);
 	if (missingInstances.length > 0) {
 		throw error(
@@ -836,6 +772,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	if (input.requirePrevalidatedEnvironments) {
 		await assertPrevalidatedBenchmarkEnvironments({
 			suiteSlug,
+			datasetName: suite.datasetName,
 			instances: instanceRows,
 		});
 	}

@@ -14,6 +14,8 @@ import {
 	loadSwebenchInferenceEnvironmentMappings,
 	resolveSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
 import { agentModelOptionFor } from "$lib/agents/model-options";
@@ -57,23 +59,6 @@ function metadataString(
 		if (typeof value === "number") return String(value);
 	}
 	return null;
-}
-
-function environmentBuildKey(input: {
-	suiteSlug: string | null | undefined;
-	repo: string | null | undefined;
-	baseCommit: string | null | undefined;
-	version: string | null | undefined;
-	environmentSetupCommit: string | null | undefined;
-}): string | null {
-	if (!input.repo?.trim()) return null;
-	return [
-		input.suiteSlug?.trim() ?? "",
-		input.repo.trim(),
-		input.baseCommit?.trim() ?? "",
-		input.version?.trim() ?? "",
-		input.environmentSetupCommit?.trim() ?? "",
-	].join("\u0000");
 }
 
 function classifyEnvironmentBuild(build: {
@@ -175,6 +160,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				testMetadata: benchmarkInstances.testMetadata,
 				suiteSlug: benchmarkSuites.slug,
 				suiteName: benchmarkSuites.name,
+				datasetName: benchmarkSuites.datasetName,
 			})
 			.from(benchmarkInstances)
 			.innerJoin(
@@ -206,6 +192,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				version: environmentImageBuilds.version,
 				environmentSetupCommit: environmentImageBuilds.environmentSetupCommit,
 				environmentKey: environmentImageBuilds.environmentKey,
+				envSpecHash: environmentImageBuilds.envSpecHash,
 				status: environmentImageBuilds.status,
 				validationStatus: environmentImageBuilds.validationStatus,
 				sandboxImage: environmentImageBuilds.sandboxImage,
@@ -216,7 +203,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	]);
 
 	const staticEnvironmentMappings = loadSwebenchInferenceEnvironmentMappings();
-	const buildStatusByKey = new Map<
+	const buildStatusByHash = new Map<
 		string,
 		{
 			status: BenchmarkInstanceEnvironmentStatus;
@@ -224,16 +211,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 	>();
 	for (const build of environmentBuildRows) {
-		const key = environmentBuildKey({
-			suiteSlug: build.suite,
-			repo: build.repo,
-			baseCommit: build.baseCommit,
-			version: build.version,
-			environmentSetupCommit: build.environmentSetupCommit,
-		});
-		if (!key) continue;
+		const hash = build.envSpecHash?.trim();
+		if (!hash) continue;
 		const status = classifyEnvironmentBuild(build);
-		const existing = buildStatusByKey.get(key);
+		const existing = buildStatusByHash.get(hash);
 		if (
 			existing &&
 			ENVIRONMENT_STATUS_RANK[existing.status] >=
@@ -241,7 +222,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		) {
 			continue;
 		}
-		buildStatusByKey.set(key, {
+		buildStatusByHash.set(hash, {
 			status,
 			environmentKey: build.environmentKey ?? null,
 		});
@@ -250,10 +231,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const instances: BenchmarkInstanceRow[] = instanceRows.map((row) => {
 		const md = (row.testMetadata ?? {}) as Record<string, unknown>;
 		const versionField = metadataString(md, ["version"]);
-		const environmentSetupCommit = metadataString(md, [
-			"environmentSetupCommit",
-			"environment_setup_commit",
-		]);
 		const staticEnvironment = resolveSwebenchInferenceEnvironment(
 			{
 				suiteSlug: row.suiteSlug,
@@ -272,14 +249,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 			},
 			{ mappings: staticEnvironmentMappings },
 		);
-		const buildKey = environmentBuildKey({
-			suiteSlug: row.suiteSlug,
-			repo: row.repo,
-			baseCommit: row.baseCommit,
-			version: versionField,
-			environmentSetupCommit,
-		});
-		const buildStatus = buildKey ? buildStatusByKey.get(buildKey) : null;
+		const dynamicEnvironmentSpecHash =
+			row.repo && row.baseCommit
+				? buildSwebenchEnvironmentSpec({
+						dataset: row.datasetName,
+						suiteSlug: normalizeSwebenchSuiteSlug(row.suiteSlug),
+						instanceId: row.instanceId,
+						repo: row.repo,
+						baseCommit: row.baseCommit,
+						testMetadata: md,
+					}).envSpecHash
+				: null;
+		const buildStatus = dynamicEnvironmentSpecHash
+			? buildStatusByHash.get(dynamicEnvironmentSpecHash)
+			: null;
 		const environmentStatus: BenchmarkInstanceEnvironmentStatus =
 			exactStaticEnvironment
 				? "validated"
