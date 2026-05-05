@@ -37,8 +37,9 @@ const DEFAULT_SANDBOX_TEMPLATE = "dapr-agent";
 const DEFAULT_TEKTON_NAMESPACE = "tekton-pipelines";
 const DEFAULT_GIT_REVISION = "main";
 const SWEBENCH_PIPELINE_TIMEOUTS = {
-	pipeline: "4h0m0s",
-	tasks: "3h45m0s",
+	pipeline: "6h0m0s",
+	tasks: "5h45m0s",
+	finally: "15m0s",
 } as const;
 const LEGACY_SWEBENCH_IMAGE_WORKSPACE_ROOT = "/testbed";
 const OPENSHELL_RUNTIME_WORKSPACE_ROOT = "/sandbox/repo";

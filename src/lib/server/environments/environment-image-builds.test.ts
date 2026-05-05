@@ -375,6 +375,11 @@ describe("SWE-bench environment image build planning", () => {
 		);
 		const runSpec = manifest.spec as Record<string, unknown>;
 
+		expect(runSpec.timeouts).toEqual({
+			pipeline: "6h0m0s",
+			tasks: "5h45m0s",
+			finally: "15m0s",
+		});
 		expect(runSpec.taskRunTemplate).toMatchObject({
 			serviceAccountName: "workflow-builder-build-trigger",
 			podTemplate: {
