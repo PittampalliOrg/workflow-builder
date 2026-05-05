@@ -89,6 +89,17 @@ import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const BENCHMARK_TERMINATION_CONCURRENCY = 8;
+const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
+const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
+const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
+const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
+	"CANCELED",
+	"CANCELLED",
+	"COMPLETED",
+	"FAILED",
+	"TERMINATED",
+]);
+const DURABLE_RUNTIME_MISSING_STATUS = "__missing__";
 const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = 8;
 
 type BenchmarkAgentRuntimeCleanupInput = {
@@ -197,6 +208,75 @@ export function isBenignDaprTerminationMiss(input: unknown): boolean {
 		normalized.includes("agent run not found") ||
 		normalized.includes("workflow instance not found")
 	);
+}
+
+function isTerminalDurableRuntimeStatus(status: unknown): boolean {
+	return TERMINAL_DURABLE_RUNTIME_STATUSES.has(String(status ?? "").toUpperCase());
+}
+
+function durableRuntimeStatusFromBody(body: unknown): unknown {
+	if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+	const record = body as Record<string, unknown>;
+	return (
+		record.runtimeStatus ??
+		record.runtime_status ??
+		record.status ??
+		record.workflowStatus ??
+		null
+	);
+}
+
+function benchmarkTerminationWaitMs(): number {
+	return (
+		clampInteger(
+			env.BENCHMARK_TERMINATION_WAIT_SECONDS,
+			0,
+			10 * 60,
+			BENCHMARK_TERMINATION_WAIT_SECONDS,
+		) * 1000
+	);
+}
+
+async function sleep(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForDurableRuntimeClosed(
+	label: string,
+	fetchStatus: () => Promise<unknown>,
+): Promise<boolean> {
+	const waitMs = benchmarkTerminationWaitMs();
+	if (waitMs <= 0) return false;
+	const deadline = Date.now() + waitMs;
+	let lastStatus: unknown = null;
+	while (Date.now() < deadline) {
+		const status = await fetchStatus().catch((err) => {
+			if (isBenignDaprTerminationMiss(err)) {
+				return DURABLE_RUNTIME_MISSING_STATUS;
+			}
+			console.warn(
+				`Failed to poll ${label} shutdown status:`,
+				err instanceof Error ? err.message : err,
+			);
+			return null;
+		});
+		if (
+			status === DURABLE_RUNTIME_MISSING_STATUS ||
+			isTerminalDurableRuntimeStatus(status)
+		) {
+			return true;
+		}
+		lastStatus = status;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) break;
+		await sleep(Math.min(BENCHMARK_TERMINATION_WAIT_POLL_MS, remaining));
+	}
+	console.warn(
+		`Timed out waiting for ${label} to stop before purge${
+			lastStatus ? ` (last status: ${String(lastStatus)})` : ""
+		}`,
+	);
+	return false;
 }
 
 export function benchmarkAgentRuntimeCleanupInstanceIds(
@@ -829,9 +909,20 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 	if (run.status === "cancelled") {
 		const now = new Date();
 		await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
-		await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
-		await cleanupBenchmarkRunSandboxes(runId, reason);
-		await releaseBenchmarkResourceLeasesForRun(runId, reason);
+		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
+			runId,
+			"cancelled",
+			reason,
+			now,
+		);
+		if (workflowsClosed) {
+			await cleanupBenchmarkRunSandboxes(runId, reason);
+			await releaseBenchmarkResourceLeasesForRun(runId, reason);
+		} else {
+			console.warn(
+				`Benchmark run ${runId} cancellation left durable instances active; retaining sandboxes and leases`,
+			);
+		}
 		await recomputeRunSummary(runId);
 		return getBenchmarkRun(projectId, runId);
 	}
@@ -855,9 +946,20 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 			.where(eq(benchmarkRuns.id, runId));
 	});
 	await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
-	await finalizeBenchmarkWorkflowExecutions(runId, "cancelled", reason, now);
-	await cleanupBenchmarkRunSandboxes(runId, reason);
-	await releaseBenchmarkResourceLeasesForRun(runId, reason);
+	const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
+		runId,
+		"cancelled",
+		reason,
+		now,
+	);
+	if (workflowsClosed) {
+		await cleanupBenchmarkRunSandboxes(runId, reason);
+		await releaseBenchmarkResourceLeasesForRun(runId, reason);
+	} else {
+		console.warn(
+			`Benchmark run ${runId} cancellation left durable instances active; retaining sandboxes and leases`,
+		);
+	}
 	await recomputeRunSummary(runId);
 	return getBenchmarkRun(projectId, runId);
 }
@@ -912,9 +1014,20 @@ export async function markBenchmarkRunStatus(
 	if (status === "failed" || status === "cancelled") {
 		const reason = benchmarkRunTerminalReason(status, extra);
 		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
-		await finalizeBenchmarkWorkflowExecutions(runId, status, reason, now);
-		await cleanupBenchmarkRunSandboxes(runId, reason);
-		await releaseBenchmarkResourceLeasesForRun(runId, reason);
+		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
+			runId,
+			status,
+			reason,
+			now,
+		);
+		if (workflowsClosed) {
+			await cleanupBenchmarkRunSandboxes(runId, reason);
+			await releaseBenchmarkResourceLeasesForRun(runId, reason);
+		} else {
+			console.warn(
+				`Benchmark run ${runId} terminal transition left durable instances active; retaining sandboxes and leases`,
+			);
+		}
 		await recomputeRunSummary(runId);
 	}
 	if (status === "completed") {
@@ -1142,7 +1255,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 	outcome: BenchmarkRunTerminalOutcome,
 	reason: string,
 	now = new Date(),
-) {
+): Promise<boolean> {
 	const database = requireDb();
 	const rows = await database
 		.select({
@@ -1177,7 +1290,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 			activeExecutionIds.add(row.executionId);
 		}
 		const daprInstanceId = row.executionDaprId ?? row.runInstanceDaprId;
-		if ((hasActiveExecution || !row.executionId) && daprInstanceId) {
+		if (daprInstanceId) {
 			daprInstanceIds.add(daprInstanceId);
 		}
 		const sessionId = row.runInstanceSessionId ?? row.sessionId;
@@ -1227,11 +1340,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 			turnsBySession.set(turnRow.sessionId, turns);
 		}
 	}
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		(instanceId) => terminateAndPurgeBenchmarkWorkflowInstance(instanceId, reason),
-	);
+	let allDurableInstancesClosed = true;
 	const agentRuntimeInstances = new Map<string, Set<string>>();
 	for (const cleanupRow of agentRuntimeCleanupRows) {
 		const runtimeAppId = cleanupRow.runtimeAppId;
@@ -1252,9 +1361,32 @@ async function finalizeBenchmarkWorkflowExecutions(
 			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
 		),
 		BENCHMARK_TERMINATION_CONCURRENCY,
-		({ runtimeAppId, instanceId }) =>
-			terminateAndPurgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, reason),
+		async ({ runtimeAppId, instanceId }) => {
+			const closed = await terminateAndPurgeBenchmarkAgentRuntimeInstance(
+				runtimeAppId,
+				instanceId,
+				reason,
+			);
+			if (!closed) allDurableInstancesClosed = false;
+		},
 	);
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			const closed = await terminateAndPurgeBenchmarkWorkflowInstance(
+				instanceId,
+				reason,
+			);
+			if (!closed) allDurableInstancesClosed = false;
+		},
+	);
+	if (!allDurableInstancesClosed) {
+		console.warn(
+			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
+		);
+		return false;
+	}
 	if (sessionIds.size > 0) {
 		await database
 			.update(sessions)
@@ -1269,7 +1401,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 				),
 			);
 	}
-	if (activeExecutionIds.size === 0) return;
+	if (activeExecutionIds.size === 0) return true;
 	await database
 		.update(workflowExecutions)
 		.set({
@@ -1279,14 +1411,27 @@ async function finalizeBenchmarkWorkflowExecutions(
 			completedAt: now,
 		})
 		.where(inArray(workflowExecutions.id, [...activeExecutionIds]));
+	return true;
 }
 
 async function terminateAndPurgeBenchmarkWorkflowInstance(
 	instanceId: string,
 	reason: string,
-) {
+): Promise<boolean> {
 	const termination = await terminateBenchmarkWorkflowInstance(instanceId, reason);
-	await purgeBenchmarkWorkflowInstance(instanceId, termination);
+	const closed =
+		termination === "alreadyGone" ||
+		(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
+	const effectiveTermination =
+		termination === "alreadyGone"
+			? termination
+			: closed
+				? "terminated"
+				: termination;
+	if (closed) {
+		await purgeBenchmarkWorkflowInstance(instanceId, effectiveTermination);
+	}
+	return closed;
 }
 
 type DurableTerminationResult = "terminated" | "alreadyGone" | "failed";
@@ -1295,17 +1440,15 @@ async function terminateBenchmarkWorkflowInstance(
 	instanceId: string,
 	reason: string,
 ): Promise<DurableTerminationResult> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), 2_000);
 	try {
 		const res = await daprFetch(
-			`${getOrchestratorUrl()}/api/v2/workflows/${instanceId}/terminate`,
+			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}/terminate`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ reason }),
 				maxRetries: 0,
-				signal: controller.signal,
+				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
 			},
 		);
 		if (!res.ok) {
@@ -1326,9 +1469,37 @@ async function terminateBenchmarkWorkflowInstance(
 			err instanceof Error ? err.message : err,
 		);
 		return "failed";
-	} finally {
-		clearTimeout(timeout);
 	}
+}
+
+async function waitForBenchmarkWorkflowInstanceClosed(
+	instanceId: string,
+): Promise<boolean> {
+	return waitForDurableRuntimeClosed(
+		`benchmark workflow ${instanceId}`,
+		async () => {
+			const res = await daprFetch(
+				`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}/status`,
+				{
+					method: "GET",
+					signal: AbortSignal.timeout(5_000),
+					maxRetries: 0,
+				},
+			);
+			if (res.status === 404) return DURABLE_RUNTIME_MISSING_STATUS;
+			if (!res.ok) {
+				const detail = await res.text().catch(() => "");
+				if (isBenignDaprTerminationMiss(detail)) {
+					return DURABLE_RUNTIME_MISSING_STATUS;
+				}
+				throw new Error(
+					`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
+				);
+			}
+			const body = await res.json().catch(() => null);
+			return durableRuntimeStatusFromBody(body);
+		},
+	);
 }
 
 async function purgeBenchmarkWorkflowInstance(
@@ -1342,7 +1513,7 @@ async function purgeBenchmarkWorkflowInstance(
 			purgeUrl(false),
 			{
 				method: "DELETE",
-				signal: AbortSignal.timeout(5_000),
+				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
 				maxRetries: 0,
 			},
 		);
@@ -1352,7 +1523,7 @@ async function purgeBenchmarkWorkflowInstance(
 			if (termination === "terminated" || termination === "alreadyGone") {
 				const forceRes = await daprFetch(purgeUrl(true), {
 					method: "DELETE",
-					signal: AbortSignal.timeout(5_000),
+					signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
 					maxRetries: 0,
 				});
 				if (forceRes.ok) return;
@@ -1385,13 +1556,29 @@ async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
 	runtimeAppId: string,
 	instanceId: string,
 	reason: string,
-) {
+): Promise<boolean> {
 	const termination = await terminateBenchmarkAgentRuntimeInstance(
 		runtimeAppId,
 		instanceId,
 		reason,
 	);
-	await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId, termination);
+	const closed =
+		termination === "alreadyGone" ||
+		(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
+	const effectiveTermination =
+		termination === "alreadyGone"
+			? termination
+			: closed
+				? "terminated"
+				: termination;
+	if (closed) {
+		await purgeBenchmarkAgentRuntimeInstance(
+			runtimeAppId,
+			instanceId,
+			effectiveTermination,
+		);
+	}
+	return closed;
 }
 
 async function terminateBenchmarkAgentRuntimeInstance(
@@ -1406,7 +1593,7 @@ async function terminateBenchmarkAgentRuntimeInstance(
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ reason }),
-				signal: AbortSignal.timeout(10_000),
+				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
 				maxRetries: 0,
 			},
 		);
@@ -1431,6 +1618,37 @@ async function terminateBenchmarkAgentRuntimeInstance(
 	}
 }
 
+async function waitForBenchmarkAgentRuntimeInstanceClosed(
+	runtimeAppId: string,
+	instanceId: string,
+): Promise<boolean> {
+	return waitForDurableRuntimeClosed(
+		`benchmark agent runtime ${runtimeAppId}/${instanceId}`,
+		async () => {
+			const res = await daprFetch(
+				`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/status`,
+				{
+					method: "GET",
+					signal: AbortSignal.timeout(5_000),
+					maxRetries: 0,
+				},
+			);
+			if (res.status === 404) return DURABLE_RUNTIME_MISSING_STATUS;
+			if (!res.ok) {
+				const detail = await res.text().catch(() => "");
+				if (isBenignDaprTerminationMiss(detail)) {
+					return DURABLE_RUNTIME_MISSING_STATUS;
+				}
+				throw new Error(
+					`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
+				);
+			}
+			const body = await res.json().catch(() => null);
+			return durableRuntimeStatusFromBody(body);
+		},
+	);
+}
+
 async function purgeBenchmarkAgentRuntimeInstance(
 	runtimeAppId: string,
 	instanceId: string,
@@ -1443,7 +1661,7 @@ async function purgeBenchmarkAgentRuntimeInstance(
 			purgeUrl(false),
 			{
 				method: "DELETE",
-				signal: AbortSignal.timeout(5_000),
+				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
 				maxRetries: 0,
 			},
 		);
@@ -1453,7 +1671,7 @@ async function purgeBenchmarkAgentRuntimeInstance(
 			if (termination === "terminated" || termination === "alreadyGone") {
 				const forceRes = await daprFetch(purgeUrl(true), {
 					method: "DELETE",
-					signal: AbortSignal.timeout(5_000),
+					signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
 					maxRetries: 0,
 				});
 				if (forceRes.ok) return;
@@ -2061,7 +2279,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		.returning({ id: benchmarkRunInstances.id });
 	if (!updatedRunInstance) {
 		if (daprInstanceId) {
-			await terminateBenchmarkWorkflowInstance(
+			await terminateAndPurgeBenchmarkWorkflowInstance(
 				daprInstanceId,
 				"benchmark instance start superseded",
 			);
@@ -2360,6 +2578,14 @@ async function timeoutBenchmarkInstanceIfStalled(
 		})
 		.where(eq(benchmarkRunInstances.id, runInstance.id))
 		.returning();
+	if (updated) {
+		await cleanupStalledBenchmarkInstanceWorkflows(
+			updated,
+			session?.id ?? runInstance.sessionId,
+			message,
+			now,
+		);
+	}
 	await recomputeRunSummary(runInstance.runId);
 	if (updated) {
 		await syncBenchmarkInstanceMlflow({
@@ -2368,6 +2594,148 @@ async function timeoutBenchmarkInstanceIfStalled(
 		});
 	}
 	return updated ?? null;
+}
+
+async function cleanupStalledBenchmarkInstanceWorkflows(
+	runInstance: typeof benchmarkRunInstances.$inferSelect,
+	sessionId: string | null,
+	reason: string,
+	now = new Date(),
+) {
+	const database = requireDb();
+	try {
+		const runRows = await database
+			.select({ runtimeAppId: benchmarkRuns.agentRuntimeAppId })
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, runInstance.runId))
+			.limit(1);
+		const executionRows = runInstance.workflowExecutionId
+			? await database
+					.select({
+						id: workflowExecutions.id,
+						daprInstanceId: workflowExecutions.daprInstanceId,
+						status: workflowExecutions.status,
+						phase: workflowExecutions.phase,
+					})
+					.from(workflowExecutions)
+					.where(eq(workflowExecutions.id, runInstance.workflowExecutionId))
+					.limit(1)
+			: [];
+		const execution = executionRows[0] ?? null;
+		const parentDaprInstanceId =
+			execution?.daprInstanceId ?? runInstance.daprInstanceId;
+
+		const runtimeAppId = runRows[0]?.runtimeAppId ?? null;
+		let allDurableInstancesClosed = true;
+		if (runtimeAppId && sessionId) {
+			const turnRows = await database
+				.select({
+					sessionId: sessionEvents.sessionId,
+					data: sessionEvents.data,
+					sequence: sessionEvents.sequence,
+				})
+				.from(sessionEvents)
+				.where(
+					and(
+						eq(sessionEvents.sessionId, sessionId),
+						eq(sessionEvents.type, "session.turn_started"),
+					),
+				)
+				.orderBy(asc(sessionEvents.sequence));
+			const turns = turnRows.map((turnRow) => {
+				const data =
+					turnRow.data &&
+					typeof turnRow.data === "object" &&
+					!Array.isArray(turnRow.data)
+						? (turnRow.data as Record<string, unknown>)
+						: {};
+				const rawTurn = Number(data.turn);
+				return {
+					sessionId: turnRow.sessionId,
+					childInstanceId:
+						typeof data.childInstanceId === "string"
+							? data.childInstanceId
+							: typeof data.child_instance_id === "string"
+								? data.child_instance_id
+								: null,
+					turn: Number.isFinite(rawTurn) ? rawTurn : null,
+				};
+			});
+			const runtimeInstanceIds = benchmarkAgentRuntimeCleanupInstanceIds(
+				{
+					runtimeAppId,
+					sessionId,
+					turnCount: runInstance.turnCount,
+				},
+				turns,
+			);
+			await runWithConcurrency(
+				runtimeInstanceIds,
+				BENCHMARK_TERMINATION_CONCURRENCY,
+				async (instanceId) => {
+					const closed = await terminateAndPurgeBenchmarkAgentRuntimeInstance(
+						runtimeAppId,
+						instanceId,
+						reason,
+					);
+					if (!closed) allDurableInstancesClosed = false;
+				},
+			);
+		}
+
+		if (parentDaprInstanceId) {
+			const closed = await terminateAndPurgeBenchmarkWorkflowInstance(
+				parentDaprInstanceId,
+				reason,
+			);
+			if (!closed) allDurableInstancesClosed = false;
+		}
+
+		if (!allDurableInstancesClosed) {
+			console.warn(
+				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
+			);
+			return;
+		}
+
+		if (sessionId) {
+			await database
+				.update(sessions)
+				.set({ status: "terminated", updatedAt: now })
+				.where(
+					and(
+						eq(sessions.id, sessionId),
+						inArray(sessions.status, ["pending", "running", "rescheduling"]),
+					),
+				);
+		}
+
+		if (execution?.id) {
+			await database
+				.update(workflowExecutions)
+				.set({
+					status: "error",
+					phase: "failed",
+					error: reason,
+					completedAt: now,
+				})
+				.where(
+					and(
+						eq(workflowExecutions.id, execution.id),
+						or(
+							eq(workflowExecutions.status, "pending"),
+							eq(workflowExecutions.status, "running"),
+							eq(workflowExecutions.phase, "running"),
+						),
+					),
+				);
+		}
+	} catch (err) {
+		console.warn(
+			`Failed to clean up stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
 }
 
 export async function markBenchmarkInstanceInferenceFailure(params: {

@@ -22,6 +22,18 @@ DEFAULT_TIMEOUT_SECONDS = 30 * 60
 logger = logging.getLogger(__name__)
 
 
+def _sandbox_bash_prelude() -> str:
+    return (
+        'if [ -d /sandbox/.venv/bin ]; then\n'
+        '  export VIRTUAL_ENV=/sandbox/.venv\n'
+        '  case ":$PATH:" in\n'
+        '    *":/sandbox/.venv/bin:"*) ;;\n'
+        '    *) export PATH="/sandbox/.venv/bin:$PATH" ;;\n'
+        '  esac\n'
+        'fi\n'
+    )
+
+
 def _merge_output(stdout: str, stderr: str) -> str:
     if stdout and stderr:
         return f"{stdout.rstrip()}\n{stderr.rstrip()}"
@@ -150,7 +162,7 @@ class OpenShellRuntime:
         content via stdin.
         """
         cwd = shlex.quote(self._cwd)
-        full_script = f"cd {cwd} && {command}"
+        full_script = f"{_sandbox_bash_prelude()}cd {cwd} && {command}"
         return self._exec(
             ["bash", "-l"],
             stdin=full_script.encode("utf-8"),

@@ -1698,6 +1698,11 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_together(self.llm)
         except Exception:
             pass
+        try:
+            from src.deepseek_adapter import patch_for_deepseek
+            patch_for_deepseek(self.llm)
+        except Exception:
+            pass
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
         exec_id = (
@@ -4247,6 +4252,12 @@ try:
     patch_for_together(agent.llm)
 except Exception as exc:
     logger.warning("Together AI adapter patch failed: %s", exc)
+
+try:
+    from src.deepseek_adapter import patch_for_deepseek
+    patch_for_deepseek(agent.llm)
+except Exception as exc:
+    logger.warning("DeepSeek adapter patch failed: %s", exc)
 
 runner = AgentRunner()
 

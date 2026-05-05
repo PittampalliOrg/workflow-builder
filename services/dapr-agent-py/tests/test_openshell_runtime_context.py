@@ -100,3 +100,50 @@ def test_security_expand_path_uses_bound_runtime(monkeypatch):
         assert security.expand_path("src/app.py") == "/sandbox/repo/src/app.py"
     finally:
         runtime_mod.reset_runtime(token)
+
+
+def test_execute_restores_sandbox_venv_after_login_shell(monkeypatch):
+    runtime_mod = _load_runtime(monkeypatch)
+
+    calls: list[dict[str, object]] = []
+
+    class Result:
+        exit_code = 0
+        stdout = "ok"
+        stderr = ""
+
+    class Session:
+        def exec(self, argv, *, stdin=None, timeout_seconds=None):
+            calls.append(
+                {
+                    "argv": argv,
+                    "stdin": stdin.decode("utf-8"),
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            return Result()
+
+    runtime = runtime_mod.OpenShellRuntime()
+    runtime._sandbox_name = "sandbox-a"
+    runtime._session = Session()
+    runtime.set_cwd("/sandbox/repo")
+
+    result = runtime.execute("python -m pytest -q", timeout_seconds=123)
+
+    assert result["ok"] is True
+    assert calls == [
+        {
+            "argv": ["bash", "-l"],
+            "stdin": (
+                "if [ -d /sandbox/.venv/bin ]; then\n"
+                "  export VIRTUAL_ENV=/sandbox/.venv\n"
+                '  case ":$PATH:" in\n'
+                '    *":/sandbox/.venv/bin:"*) ;;\n'
+                '    *) export PATH="/sandbox/.venv/bin:$PATH" ;;\n'
+                "  esac\n"
+                "fi\n"
+                "cd /sandbox/repo && python -m pytest -q"
+            ),
+            "timeout_seconds": 123,
+        }
+    ]

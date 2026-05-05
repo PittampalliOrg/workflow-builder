@@ -66,12 +66,15 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "together/deepseek-ai/DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
     "deepseek-ai/DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
     "DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
-    "deepseek-v4-pro": "llm-together-deepseek-v4-pro",
     # GoogleAI
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
     "gemini-3.1-pro-preview": "llm-google-gemini",
     # DeepSeek
+    "deepseek/deepseek-v4-pro": "llm-deepseek-v4-pro",
+    "deepseek-v4-pro": "llm-deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash": "llm-deepseek-v4-flash",
+    "deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek/default": "llm-deepseek",
     # Hugging Face
     "huggingface/meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
@@ -120,6 +123,8 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     ),
     "llm-together-deepseek-v4-pro": ("together", "deepseek-ai/DeepSeek-V4-Pro"),
     "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
+    "llm-deepseek-v4-pro": ("deepseek", "deepseek-v4-pro"),
+    "llm-deepseek-v4-flash": ("deepseek", "deepseek-v4-flash"),
     "llm-deepseek": ("deepseek", "default"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
     "llm-mistral-open": ("mistral", "open-mistral-7b"),

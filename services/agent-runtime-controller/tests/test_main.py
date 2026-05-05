@@ -189,6 +189,19 @@ def test_effective_model_status_supports_together_deepseek_canary():
     }
 
 
+def test_effective_model_status_supports_direct_deepseek():
+    status = main._effective_model_status(
+        _spec(modelSpec="deepseek/deepseek-v4-pro")
+    )
+
+    assert status == {
+        "effectiveModelSpec": "deepseek/deepseek-v4-pro",
+        "effectiveLlmComponent": "llm-deepseek-v4-pro",
+        "provider": "deepseek",
+        "providerModel": "deepseek-v4-pro",
+    }
+
+
 def test_unknown_model_spec_is_rejected_instead_of_defaulting_to_anthropic():
     try:
         main._resolve_llm_component("nvidia/unknown-model")

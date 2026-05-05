@@ -176,6 +176,18 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "deepseek-ai/DeepSeek-V4-Pro",
         ),
         (
+            "deepseek/deepseek-v4-pro",
+            "llm-deepseek-v4-pro",
+            "deepseek",
+            "deepseek-v4-pro",
+        ),
+        (
+            "deepseek-v4-flash",
+            "llm-deepseek-v4-flash",
+            "deepseek",
+            "deepseek-v4-flash",
+        ),
+        (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",

@@ -54,6 +54,10 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "llm-together-qwen3-coder-480b": 262_144,
     "deepseek-ai/DeepSeek-V4-Pro": 512_000,
     "llm-together-deepseek-v4-pro": 512_000,
+    "deepseek-v4-pro": 1_000_000,
+    "llm-deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    "llm-deepseek-v4-flash": 1_000_000,
 }
 DEFAULT_WINDOW = 200_000
 
