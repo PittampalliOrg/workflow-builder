@@ -98,6 +98,7 @@ const BENCHMARK_TERMINATION_CONCURRENCY = 8;
 const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
 const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
+const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
 	"CANCELLED",
@@ -236,6 +237,27 @@ export function isBenignDaprTerminationMiss(input: unknown): boolean {
 	);
 }
 
+function isRecoverableDaprWorkflowTerminateError(input: unknown): boolean {
+	let text = "";
+	if (typeof input === "string") {
+		text = input;
+	} else if (input instanceof Error) {
+		text = `${input.name} ${input.message}`;
+	} else if (input != null) {
+		try {
+			text = JSON.stringify(input) ?? String(input);
+		} catch {
+			text = String(input);
+		}
+	}
+	const normalized = text.toLowerCase();
+	return (
+		normalized.includes("dapr workflow terminate failed with http 500") ||
+		normalized.includes("dapr workflow terminate failed with http 503") ||
+		normalized.includes("dapr workflow terminate failed with http 504")
+	);
+}
+
 function isTerminalDurableRuntimeStatus(status: unknown): boolean {
 	return TERMINAL_DURABLE_RUNTIME_STATUSES.has(String(status ?? "").toUpperCase());
 }
@@ -259,6 +281,17 @@ function benchmarkTerminationWaitMs(): number {
 			0,
 			10 * 60,
 			BENCHMARK_TERMINATION_WAIT_SECONDS,
+		) * 1000
+	);
+}
+
+function benchmarkTerminalPurgeGraceMs(): number {
+	return (
+		clampInteger(
+			env.BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS,
+			0,
+			60,
+			BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS,
 		) * 1000
 	);
 }
@@ -1476,6 +1509,10 @@ async function finalizeBenchmarkWorkflowExecutions(
 		);
 		return false;
 	}
+	const purgeGraceMs = benchmarkTerminalPurgeGraceMs();
+	if (purgeGraceMs > 0) {
+		await sleep(purgeGraceMs);
+	}
 	await runWithConcurrency(
 		[...daprInstanceIds],
 		BENCHMARK_TERMINATION_CONCURRENCY,
@@ -1567,6 +1604,9 @@ async function terminateBenchmarkWorkflowInstance(
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
 				return "alreadyGone";
 			}
+			if (res.status >= 500 && isRecoverableDaprWorkflowTerminateError(detail)) {
+				return "terminated";
+			}
 			console.warn(
 				`Failed to terminate benchmark workflow ${instanceId}: ${res.status} ${detail}`,
 			);
@@ -1575,6 +1615,7 @@ async function terminateBenchmarkWorkflowInstance(
 		return "terminated";
 	} catch (err) {
 		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
+		if (isRecoverableDaprWorkflowTerminateError(err)) return "terminated";
 		console.warn(
 			`Failed to terminate benchmark workflow ${instanceId}:`,
 			err instanceof Error ? err.message : err,
@@ -1720,6 +1761,9 @@ async function terminateBenchmarkAgentRuntimeInstance(
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
 				return "alreadyGone";
 			}
+			if (res.status >= 500 && isRecoverableDaprWorkflowTerminateError(detail)) {
+				return "terminated";
+			}
 			console.warn(
 				`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
 			);
@@ -1728,6 +1772,7 @@ async function terminateBenchmarkAgentRuntimeInstance(
 		return "terminated";
 	} catch (err) {
 		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
+		if (isRecoverableDaprWorkflowTerminateError(err)) return "terminated";
 		console.warn(
 			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
 			err,
@@ -1744,10 +1789,10 @@ async function waitForBenchmarkAgentRuntimeInstanceClosed(
 		`benchmark agent runtime ${runtimeAppId}/${instanceId}`,
 		async () => {
 			const res = await daprFetch(
-				`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/status`,
+				`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/status?summary=true`,
 				{
 					method: "GET",
-					signal: AbortSignal.timeout(5_000),
+					signal: AbortSignal.timeout(10_000),
 					maxRetries: 0,
 				},
 			);

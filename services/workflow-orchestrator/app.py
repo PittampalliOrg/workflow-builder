@@ -324,6 +324,15 @@ def _workflow_http_post(instance_id: str, suffix: str) -> None:
     )
 
 
+def _is_workflow_terminate_status_unknown_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "dapr workflow terminate failed with http 500" in message
+        or "dapr workflow terminate failed with http 503" in message
+        or "dapr workflow terminate failed with http 504" in message
+    )
+
+
 def _workflow_dict_value(payload: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in payload:
@@ -2820,6 +2829,20 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
                 "alreadyGone": True,
                 "childTermination": child_termination,
             }
+        except Exception as terminate_err:
+            if _is_workflow_terminate_status_unknown_error(terminate_err):
+                logger.warning(
+                    "[Workflow Routes] Terminate returned a transient workflow error for %s; polling status will confirm closure: %s",
+                    instance_id,
+                    terminate_err,
+                )
+                return {
+                    "success": True,
+                    "instanceId": instance_id,
+                    "terminationStatusUnknown": True,
+                    "childTermination": child_termination,
+                }
+            raise
 
         return {
             "success": True,

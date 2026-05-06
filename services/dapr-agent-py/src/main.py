@@ -4100,6 +4100,15 @@ def _is_workflow_instance_missing_error(exc: Exception) -> bool:
     )
 
 
+def _is_workflow_terminate_status_unknown_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "dapr workflow terminate failed with http 500" in message
+        or "dapr workflow terminate failed with http 503" in message
+        or "dapr workflow terminate failed with http 504" in message
+    )
+
+
 # ---------------------------------------------------------------------------
 # Load disk-based skills at startup
 # ---------------------------------------------------------------------------
@@ -4710,7 +4719,11 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
     return [_normalize_history_event(event) for event in response.events]
 
 
-def _build_agent_run_status_payload(instance_id: str) -> dict[str, Any] | None:
+def _build_agent_run_status_payload(
+    instance_id: str,
+    *,
+    summary: bool = False,
+) -> dict[str, Any] | None:
     workflow_payload = _workflow_http_get_instance(instance_id)
     if not isinstance(workflow_payload, dict):
         return None
@@ -4738,6 +4751,19 @@ def _build_agent_run_status_payload(instance_id: str) -> dict[str, Any] | None:
         "completedAt",
         "completed_at",
     )
+    if summary:
+        return {
+            "instanceId": instance_id,
+            "appId": AGENT_SERVICE_NAME,
+            "runtimeStatus": runtime_status,
+            "phase": runtime_status.lower(),
+            "startedAt": started_at if isinstance(started_at, str) else None,
+            "completedAt": (
+                completed_at
+                or (last_updated_at if _terminal_status(runtime_status) else None)
+            ),
+        }
+
     input_payload = _parse_json(
         _workflow_dict_value(
             workflow_payload,
@@ -4821,9 +4847,9 @@ async def list_agent_instances(limit: int = 100) -> dict[str, Any]:
 
 
 @app.get("/api/v2/agent-runs/{instance_id}/status")
-def get_agent_run_status(instance_id: str) -> dict[str, Any]:
+def get_agent_run_status(instance_id: str, summary: bool = False) -> dict[str, Any]:
     try:
-        payload = _build_agent_run_status_payload(instance_id)
+        payload = _build_agent_run_status_payload(instance_id, summary=summary)
         if payload is None:
             raise HTTPException(status_code=404, detail="Agent run not found")
         return payload
@@ -4936,6 +4962,17 @@ def terminate_agent_run(
         if isinstance(exc, FileNotFoundError) or _is_workflow_instance_missing_error(exc):
             logger.info("[agent-runs] Terminate skipped for %s: already gone", instance_id)
             return {"success": True, "instanceId": instance_id, "alreadyGone": True}
+        if _is_workflow_terminate_status_unknown_error(exc):
+            logger.warning(
+                "[agent-runs] Terminate returned a transient workflow error for %s; polling status will confirm closure: %s",
+                instance_id,
+                exc,
+            )
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "terminationStatusUnknown": True,
+            }
         logger.error("[agent-runs] Failed to terminate %s: %s", instance_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
