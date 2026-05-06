@@ -10,6 +10,10 @@ import {
 	environmentImageBuilds,
 } from "$lib/server/db/schema";
 import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import {
+	isExactValidatedSwebenchInferenceEnvironment,
+	loadSwebenchInferenceEnvironmentMappings,
+} from "$lib/server/benchmarks/inference-environments";
 import { BenchmarkAgentValidationError } from "$lib/server/benchmarks/agents";
 import {
 	createBenchmarkRun,
@@ -184,9 +188,25 @@ async function selectPrevalidatedInstanceIds(
 		.where(eq(benchmarkInstances.suiteId, suite.id))
 		.orderBy(asc(benchmarkInstances.instanceId))
 		.limit(500);
+	const staticMappings = loadSwebenchInferenceEnvironmentMappings();
 	const hashByInstance = new Map<string, string>();
+	const staticReady = new Set<string>();
 	for (const candidate of candidates) {
 		if (!candidate.repo || !candidate.baseCommit) continue;
+		if (
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug,
+					repo: candidate.repo,
+					baseCommit: candidate.baseCommit,
+					testMetadata: candidate.testMetadata,
+				},
+				{ mappings: staticMappings },
+			)
+		) {
+			staticReady.add(candidate.instanceId);
+			continue;
+		}
 		const spec = buildSwebenchEnvironmentSpec({
 			dataset: suite.datasetName,
 			suiteSlug,
@@ -215,6 +235,11 @@ async function selectPrevalidatedInstanceIds(
 	);
 	const selected: string[] = [];
 	for (const candidate of candidates) {
+		if (staticReady.has(candidate.instanceId)) {
+			selected.push(candidate.instanceId);
+			if (selected.length >= limit) break;
+			continue;
+		}
 		const hash = hashByInstance.get(candidate.instanceId);
 		if (!hash || !validatedHashes.has(hash)) continue;
 		selected.push(candidate.instanceId);
