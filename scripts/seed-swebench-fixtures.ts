@@ -303,9 +303,88 @@ function pick(sql: postgres.Sql, row: Row, columns: readonly string[]): Row {
 	return out;
 }
 
-function retarget(row: Row, userId: string, projectId: string): Row {
+type EnvironmentIdMaps = {
+	environmentIds: Map<string, string>;
+	environmentVersionIds: Map<string, string>;
+};
+
+async function buildEnvironmentIdMaps(
+	sql: postgres.Sql,
+	fixtures: Fixtures,
+): Promise<EnvironmentIdMaps> {
+	const environmentIds = new Map<string, string>();
+	const environmentVersionIds = new Map<string, string>();
+	const slugToEnvironmentId = new Map<string, string>();
+
+	for (const environment of fixtures.environments) {
+		const fixtureId = String(environment.id);
+		const slug = String(environment.slug);
+		const existing = await sql<{ id: string }[]>`
+			SELECT id FROM environments WHERE slug = ${slug} LIMIT 1
+		`;
+		const targetId = existing[0]?.id ?? fixtureId;
+		environmentIds.set(fixtureId, targetId);
+		slugToEnvironmentId.set(slug, targetId);
+	}
+
+	for (const version of fixtures.environment_versions) {
+		const fixtureId = String(version.id);
+		const fixtureEnvironmentId = String(version.environment_id);
+		const targetEnvironmentId =
+			environmentIds.get(fixtureEnvironmentId) ?? fixtureEnvironmentId;
+		const existing = await sql<{ id: string }[]>`
+			SELECT id
+			FROM environment_versions
+			WHERE environment_id = ${targetEnvironmentId}
+				AND version = ${Number(version.version)}
+			LIMIT 1
+		`;
+		environmentVersionIds.set(fixtureId, existing[0]?.id ?? fixtureId);
+	}
+
+	for (const environment of fixtures.environments) {
+		const currentVersionId = environment.current_version_id;
+		if (typeof currentVersionId === "string") {
+			environmentVersionIds.set(
+				currentVersionId,
+				environmentVersionIds.get(currentVersionId) ?? currentVersionId,
+			);
+		}
+		const slug = String(environment.slug);
+		const targetId = slugToEnvironmentId.get(slug);
+		if (targetId) environmentIds.set(String(environment.id), targetId);
+	}
+
+	return { environmentIds, environmentVersionIds };
+}
+
+function retarget(
+	row: Row,
+	userId: string,
+	projectId: string,
+	environmentMaps?: EnvironmentIdMaps,
+): Row {
+	const environmentId =
+		typeof row.environment_id === "string"
+			? (environmentMaps?.environmentIds.get(row.environment_id) ??
+				row.environment_id)
+			: row.environment_id;
+	const currentVersionId =
+		typeof row.current_version_id === "string"
+			? (environmentMaps?.environmentVersionIds.get(row.current_version_id) ??
+				row.current_version_id)
+			: row.current_version_id;
+	const id =
+		typeof row.id === "string"
+			? (environmentMaps?.environmentIds.get(row.id) ??
+				environmentMaps?.environmentVersionIds.get(row.id) ??
+				row.id)
+			: row.id;
 	return {
 		...row,
+		id,
+		environment_id: environmentId,
+		current_version_id: currentVersionId,
 		created_by: row.created_by === undefined ? row.created_by : userId,
 		published_by: row.published_by === undefined ? row.published_by : userId,
 		user_id: row.user_id === undefined ? row.user_id : userId,
@@ -435,16 +514,22 @@ async function main() {
 			`[seed-swebench-fixtures] target user=${user.id} (${user.email ?? "no-email"}) project=${project.id} (${project.displayName ?? "no-name"})`,
 		);
 
+		const environmentMaps = await buildEnvironmentIdMaps(sql, fixtures);
 		const target = (rows: Row[]) =>
-			rows.map((row) => retarget(row, user.id, project.id));
+			rows.map((row) => retarget(row, user.id, project.id, environmentMaps));
 
 		const applySeed = async (tx: postgres.Sql) => {
-			await upsertRows(tx, "environments", target(fixtures.environments), "(id)");
+			await upsertRows(
+				tx,
+				"environments",
+				target(fixtures.environments),
+				"(slug)",
+			);
 			await upsertRows(
 				tx,
 				"environment_versions",
 				target(fixtures.environment_versions),
-				"(id)",
+				"(environment_id, version)",
 			);
 			await upsertRows(tx, "agents", target(fixtures.agents), "(id)");
 			await upsertRows(
