@@ -1527,6 +1527,23 @@ async function finalizeBenchmarkWorkflowExecutions(
 		},
 	);
 
+	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
+	await runWithConcurrency(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
+		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async ({ runtimeAppId, instanceId }) => {
+			const termination = await terminateBenchmarkAgentRuntimeInstance(
+				runtimeAppId,
+				instanceId,
+				reason,
+			);
+			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
+			if (termination === "failed") allDurableInstancesClosed = false;
+		},
+	);
+
 	let parentDurableInstancesClosed = true;
 	await runWithConcurrency(
 		[...daprInstanceIds],
@@ -1552,23 +1569,6 @@ async function finalizeBenchmarkWorkflowExecutions(
 		);
 		return false;
 	}
-
-	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
-	await runWithConcurrency(
-		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
-			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
-		),
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			const termination = await terminateBenchmarkAgentRuntimeInstance(
-				runtimeAppId,
-				instanceId,
-				reason,
-			);
-			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
-			if (termination === "failed") allDurableInstancesClosed = false;
-		},
-	);
 
 	let agentRuntimeDurableInstancesClosed = true;
 	await runWithConcurrency(
