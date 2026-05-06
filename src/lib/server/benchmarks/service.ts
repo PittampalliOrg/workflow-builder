@@ -258,6 +258,32 @@ function isRecoverableDaprWorkflowTerminateError(input: unknown): boolean {
 	);
 }
 
+function isTransientDaprServiceInvokeError(input: unknown): boolean {
+	let text = "";
+	if (typeof input === "string") {
+		text = input;
+	} else if (input instanceof Error) {
+		text = `${input.name} ${input.message}`;
+	} else if (input != null) {
+		try {
+			text = JSON.stringify(input) ?? String(input);
+		} catch {
+			text = String(input);
+		}
+	}
+	const normalized = text.toLowerCase();
+	return (
+		normalized.includes("err_direct_invoke") ||
+		(normalized.includes("failed to invoke") &&
+			(normalized.includes("connection reset by peer") ||
+				normalized.includes("eof") ||
+				normalized.includes("context deadline exceeded") ||
+				normalized.includes("deadline exceeded"))) ||
+		normalized.includes("app channel") ||
+		normalized.includes("connection reset by peer")
+	);
+}
+
 function isTerminalDurableRuntimeStatus(status: unknown): boolean {
 	return TERMINAL_DURABLE_RUNTIME_STATUSES.has(String(status ?? "").toUpperCase());
 }
@@ -1604,7 +1630,11 @@ async function terminateBenchmarkWorkflowInstance(
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
 				return "alreadyGone";
 			}
-			if (res.status >= 500 && isRecoverableDaprWorkflowTerminateError(detail)) {
+			if (
+				res.status >= 500 &&
+				(isRecoverableDaprWorkflowTerminateError(detail) ||
+					isTransientDaprServiceInvokeError(detail))
+			) {
 				return "terminated";
 			}
 			console.warn(
@@ -1615,7 +1645,12 @@ async function terminateBenchmarkWorkflowInstance(
 		return "terminated";
 	} catch (err) {
 		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
-		if (isRecoverableDaprWorkflowTerminateError(err)) return "terminated";
+		if (
+			isRecoverableDaprWorkflowTerminateError(err) ||
+			isTransientDaprServiceInvokeError(err)
+		) {
+			return "terminated";
+		}
 		console.warn(
 			`Failed to terminate benchmark workflow ${instanceId}:`,
 			err instanceof Error ? err.message : err,
@@ -1644,6 +1679,7 @@ async function waitForBenchmarkWorkflowInstanceClosed(
 				if (isBenignDaprTerminationMiss(detail)) {
 					return DURABLE_RUNTIME_MISSING_STATUS;
 				}
+				if (isTransientDaprServiceInvokeError(detail)) return null;
 				throw new Error(
 					`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
 				);
@@ -1761,7 +1797,11 @@ async function terminateBenchmarkAgentRuntimeInstance(
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
 				return "alreadyGone";
 			}
-			if (res.status >= 500 && isRecoverableDaprWorkflowTerminateError(detail)) {
+			if (
+				res.status >= 500 &&
+				(isRecoverableDaprWorkflowTerminateError(detail) ||
+					isTransientDaprServiceInvokeError(detail))
+			) {
 				return "terminated";
 			}
 			console.warn(
@@ -1772,7 +1812,12 @@ async function terminateBenchmarkAgentRuntimeInstance(
 		return "terminated";
 	} catch (err) {
 		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
-		if (isRecoverableDaprWorkflowTerminateError(err)) return "terminated";
+		if (
+			isRecoverableDaprWorkflowTerminateError(err) ||
+			isTransientDaprServiceInvokeError(err)
+		) {
+			return "terminated";
+		}
 		console.warn(
 			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
 			err,
@@ -1802,6 +1847,7 @@ async function waitForBenchmarkAgentRuntimeInstanceClosed(
 				if (isBenignDaprTerminationMiss(detail)) {
 					return DURABLE_RUNTIME_MISSING_STATUS;
 				}
+				if (isTransientDaprServiceInvokeError(detail)) return null;
 				throw new Error(
 					`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
 				);
