@@ -144,6 +144,7 @@ def test_run_instance_taskrun_includes_pull_secret(monkeypatch):
         name="run-a",
         namespace="workflow-builder",
         pvc_name="swebench-artifacts",
+        artifact_mode="pvc",
         run_id="run_1",
         instance_id="django__django-11133",
         instance_image="ghcr.io/example/private:tag",
@@ -153,6 +154,27 @@ def test_run_instance_taskrun_includes_pull_secret(monkeypatch):
     assert body["spec"]["podTemplate"] == {
         "imagePullSecrets": [{"name": "ghcr-pull-credentials"}]
     }
+
+
+def test_object_mode_taskruns_use_emptydir_instead_of_pvc(monkeypatch):
+    entrypoint = load_entrypoint()
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder")
+
+    body = entrypoint.build_run_instance_taskrun(
+        name="run-a",
+        namespace="workflow-builder",
+        pvc_name="swebench-artifacts",
+        artifact_mode="object",
+        run_id="run_1",
+        instance_id="django__django-11133",
+        instance_image="ghcr.io/example/private:tag",
+        timeout_seconds=120,
+    )
+
+    assert body["spec"]["workspaces"] == [{"name": "artifacts", "emptyDir": {}}]
+    params = {param["name"]: param["value"] for param in body["spec"]["params"]}
+    assert params["artifact_mode"] == "object"
+    assert params["workflow_builder_url"] == "http://workflow-builder"
 
 
 def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch):
@@ -186,6 +208,7 @@ def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch)
         api=object(),
         namespace="workflow-builder",
         pvc_name="swebench-artifacts",
+        artifact_mode="pvc",
         run_id="run_1",
         instance_ids=["a", "b", "c", "d", "e"],
         image_map={iid: f"image-{iid}" for iid in ["a", "b", "c", "d", "e"]},

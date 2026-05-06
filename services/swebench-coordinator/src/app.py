@@ -9,6 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
+from urllib.parse import quote
 
 import requests
 from dapr.ext import workflow as wf
@@ -53,6 +54,9 @@ INTERNAL_API_SECRET_KEY = os.environ.get(
     "INTERNAL_API_TOKEN",
 )
 ARTIFACT_ROOT = pathlib.Path(os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts"))
+EVALUATOR_ARTIFACT_MODE = (
+    os.environ.get("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc").strip().lower() or "pvc"
+)
 EVALUATOR_NAMESPACE = os.environ.get("SWEBENCH_EVALUATOR_NAMESPACE", "workflow-builder")
 EVALUATOR_IMAGE = os.environ.get(
     "SWEBENCH_EVALUATOR_IMAGE", "ghcr.io/pittampalliorg/swebench-evaluator:latest"
@@ -714,8 +718,20 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
         f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
         json_body={"path": str(path)},
     )
+    if _object_artifact_mode():
+        _put_bff_artifact(
+            run["id"],
+            "predictions.jsonl",
+            path.read_bytes(),
+            kind="predictions_jsonl",
+            content_type="application/jsonl; charset=utf-8",
+        )
     _mlflow_log_artifact(run.get("mlflowRunId"), path, "swebench")
-    return {"path": str(path), "bytes": path.stat().st_size}
+    return {
+        "path": str(path),
+        "artifactPath": "predictions.jsonl",
+        "bytes": path.stat().st_size,
+    }
 
 
 def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -733,6 +749,14 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
         f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
         json_body={"path": str(path)},
     )
+    if _object_artifact_mode():
+        _put_bff_artifact(
+            run_id,
+            "dataset.jsonl",
+            path.read_bytes(),
+            kind="dataset_jsonl",
+            content_type="application/jsonl; charset=utf-8",
+        )
     if _mlflow_enabled():
         try:
             refreshed_run = _load_run(run_id)
@@ -743,7 +767,46 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 run_id,
                 exc,
             )
-    return {"path": str(path), "bytes": path.stat().st_size}
+    return {
+        "path": str(path),
+        "artifactPath": "dataset.jsonl",
+        "bytes": path.stat().st_size,
+    }
+
+
+def _object_artifact_mode() -> bool:
+    return EVALUATOR_ARTIFACT_MODE in {"object", "object-api", "api", "blob"}
+
+
+def _put_bff_artifact(
+    run_id: str,
+    artifact_path: str,
+    body: bytes,
+    *,
+    kind: str | None = None,
+    instance_id: str | None = None,
+    content_type: str = "application/octet-stream",
+) -> dict[str, Any]:
+    encoded_path = quote(artifact_path.strip("/"), safe="/")
+    headers = {
+        "X-Internal-Token": INTERNAL_API_TOKEN,
+        "Content-Type": content_type,
+    }
+    if kind:
+        headers["X-Benchmark-Artifact-Kind"] = kind
+    if instance_id:
+        headers["X-Benchmark-Instance-Id"] = instance_id
+    response = requests.put(
+        f"{WORKFLOW_BUILDER_URL}/api/internal/benchmarks/runs/{run_id}/artifacts/{encoded_path}",
+        headers=headers,
+        data=body,
+        timeout=120,
+    )
+    response.raise_for_status()
+    try:
+        return response.json()
+    except Exception:
+        return {"success": True}
 
 
 def _evaluation_max_parallel(run: dict[str, Any]) -> int:
@@ -863,6 +926,10 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 name="SWEBENCH_EVAL_MAX_PARALLEL",
                 value=str(evaluation_max_parallel),
             ),
+            client.V1EnvVar(
+                name="SWEBENCH_EVALUATOR_ARTIFACT_MODE",
+                value=EVALUATOR_ARTIFACT_MODE,
+            ),
         ]
         container = client.V1Container(
             name="evaluator",
@@ -872,10 +939,22 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 requests=resource_profile["evaluator"]["requests"],
                 limits=resource_profile["evaluator"]["limits"],
             ),
-            volume_mounts=[
-                client.V1VolumeMount(name="artifacts", mount_path=str(ARTIFACT_ROOT)),
-            ],
         )
+        volumes = None
+        if not _object_artifact_mode():
+            container.volume_mounts = [
+                client.V1VolumeMount(name="artifacts", mount_path=str(ARTIFACT_ROOT)),
+            ]
+            volumes = [
+                client.V1Volume(
+                    name="artifacts",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=os.environ.get(
+                            "SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts"
+                        )
+                    ),
+                ),
+            ]
         run_id_label = _safe_label_value(run["id"])
         pod = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(
@@ -888,16 +967,7 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                     client.V1LocalObjectReference(name="ghcr-pull-credentials")
                 ],
                 containers=[container],
-                volumes=[
-                    client.V1Volume(
-                        name="artifacts",
-                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                            claim_name=os.environ.get(
-                                "SWEBENCH_ARTIFACTS_PVC", "swebench-artifacts"
-                            )
-                        ),
-                    ),
-                ],
+                volumes=volumes,
             ),
         )
         job = client.V1Job(

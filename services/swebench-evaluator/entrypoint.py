@@ -6,6 +6,7 @@ import pathlib
 import sys
 import time
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -43,6 +44,7 @@ def main() -> int:
     timeout_seconds = evaluation_timeout_seconds()
     max_parallel = evaluation_max_parallel()
     workflow_builder_url = os.environ.get("WORKFLOW_BUILDER_URL", "")
+    artifact_mode = evaluator_artifact_mode()
 
     api = load_custom_objects_api()
 
@@ -52,10 +54,12 @@ def main() -> int:
         name=prep_name,
         namespace=namespace,
         pvc_name=pvc_name,
+        artifact_mode=artifact_mode,
         run_id=run_id,
         predictions_path=predictions_path,
         instance_ids=instance_ids,
         swebench_package_ref=swebench_pkg,
+        workflow_builder_url=workflow_builder_url,
     )
     create_taskrun(api, namespace, prep_body)
     print(f"[swebench-evaluator] dispatched prepare TaskRun {namespace}/{prep_name}")
@@ -74,6 +78,7 @@ def main() -> int:
         api=api,
         namespace=namespace,
         pvc_name=pvc_name,
+        artifact_mode=artifact_mode,
         run_id=run_id,
         instance_ids=instance_ids,
         image_map=image_map,
@@ -88,6 +93,7 @@ def main() -> int:
         name=fin_name,
         namespace=namespace,
         pvc_name=pvc_name,
+        artifact_mode=artifact_mode,
         run_id=run_id,
         instance_ids=instance_ids,
         swebench_package_ref=swebench_pkg,
@@ -112,6 +118,8 @@ def main() -> int:
     # the dispatcher's collect_results would re-POST raw harness reports that
     # the BFF can't decode without a flatten step. Skip the dispatcher POST
     # and only do MLflow logging here (which lives outside the TaskRun).
+    if artifact_mode == "object":
+        materialize_reports_from_bff(run_id, instance_ids, artifacts_root)
     run_dir = artifacts_root / run_id
     results = collect_results(run_dir, instance_ids)
     log_mlflow_evaluation(run_id, results, log_dir, failure_message)
@@ -145,6 +153,11 @@ def evaluation_max_parallel() -> int:
     return max(1, min(parsed, MAX_EVAL_MAX_PARALLEL))
 
 
+def evaluator_artifact_mode() -> str:
+    raw = os.environ.get("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc").strip().lower()
+    return "object" if raw in {"object", "object-api", "api", "blob"} else "pvc"
+
+
 def bounded_int_env(name: str, *, default: int, minimum: int, maximum: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -161,6 +174,7 @@ def dispatch_run_instance_taskruns(
     api: Any,
     namespace: str,
     pvc_name: str,
+    artifact_mode: str,
     run_id: str,
     instance_ids: list[str],
     image_map: dict[str, str],
@@ -174,32 +188,48 @@ def dispatch_run_instance_taskruns(
     for offset in range(0, total, max_parallel):
         chunk = instance_ids[offset : offset + max_parallel]
         run_names: list[str] = []
+        holders: dict[str, str | None] = {}
         for iid in chunk:
+            holder_id = acquire_evaluator_slot(run_id, iid)
             name = taskrun_name(run_id, "run", iid)
-            body = build_run_instance_taskrun(
-                name=name,
-                namespace=namespace,
-                pvc_name=pvc_name,
-                run_id=run_id,
-                instance_id=iid,
-                instance_image=image_map[iid],
-                timeout_seconds=timeout_seconds,
-            )
-            create_taskrun(api, namespace, body)
+            try:
+                body = build_run_instance_taskrun(
+                    name=name,
+                    namespace=namespace,
+                    pvc_name=pvc_name,
+                    artifact_mode=artifact_mode,
+                    run_id=run_id,
+                    instance_id=iid,
+                    instance_image=image_map[iid],
+                    timeout_seconds=timeout_seconds,
+                )
+                create_taskrun(api, namespace, body)
+            except Exception:
+                release_evaluator_slot(run_id, iid, holder_id, "TaskRun create failed")
+                raise
             run_names.append(name)
+            holders[name] = holder_id
         print(
             "[swebench-evaluator] dispatched run-instance TaskRuns "
             f"{offset + 1}-{offset + len(chunk)} of {total} "
             f"(batch size={len(chunk)}, max_parallel={max_parallel})"
         )
-        final.update(
-            wait_for_taskruns(
+        try:
+            batch_final = wait_for_taskruns(
                 api,
                 namespace,
                 run_names,
                 deadline_seconds=deadline_seconds,
             )
-        )
+            final.update(batch_final)
+        finally:
+            for iid, name in zip(chunk, run_names, strict=False):
+                release_evaluator_slot(
+                    run_id,
+                    iid,
+                    holders.get(name),
+                    "run-instance TaskRun completed",
+                )
     return final
 
 
@@ -223,6 +253,118 @@ def parse_instance_image_map(raw: str, instance_ids: list[str]) -> dict[str, str
     if missing:
         raise RuntimeError(f"INSTANCE_IMAGE_MAP_JSON missing image refs for: {missing}")
     return {iid: parsed[iid] for iid in instance_ids}
+
+
+def artifact_api_url(run_id: str, artifact_path: str) -> str | None:
+    base = os.environ.get("WORKFLOW_BUILDER_URL", "").rstrip("/")
+    if not base:
+        return None
+    encoded_path = quote(artifact_path.strip("/"), safe="/")
+    return f"{base}/api/internal/benchmarks/runs/{run_id}/artifacts/{encoded_path}"
+
+
+def artifact_api_headers(content_type: str | None = None) -> dict[str, str]:
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    headers = {"X-Internal-Token": token}
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def download_bff_artifact(run_id: str, artifact_path: str, destination: pathlib.Path) -> bool:
+    url = artifact_api_url(run_id, artifact_path)
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    if not url or not token:
+        return False
+    response = requests.get(url, headers=artifact_api_headers(), timeout=120)
+    if response.status_code == 404:
+        return False
+    response.raise_for_status()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(response.content)
+    return True
+
+
+def materialize_reports_from_bff(
+    run_id: str, instance_ids: list[str], artifacts_root: pathlib.Path
+) -> None:
+    run_dir = artifacts_root / run_id
+    for iid in instance_ids:
+        download_bff_artifact(run_id, f"{iid}/report.json", run_dir / iid / "report.json")
+    download_bff_artifact(run_id, "run-report.json", run_dir / "run-report.json")
+
+
+def benchmark_leases_url(run_id: str) -> str | None:
+    base = os.environ.get("WORKFLOW_BUILDER_URL", "").rstrip("/")
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    if not base or not token:
+        return None
+    return f"{base}/api/internal/benchmarks/runs/{run_id}/leases"
+
+
+def acquire_evaluator_slot(run_id: str, instance_id: str) -> str | None:
+    url = benchmark_leases_url(run_id)
+    if not url:
+        return None
+    retry_default = bounded_int_env(
+        "SWEBENCH_EVALUATOR_LEASE_RETRY_SECONDS", default=10, minimum=1, maximum=300
+    )
+    while True:
+        response = requests.post(
+            url,
+            headers=artifact_api_headers("application/json"),
+            json={
+                "action": "acquire",
+                "instanceId": instance_id,
+                "phase": "evaluation",
+                "resources": ["evaluator_slot"],
+                "metadata": {"source": "swebench-evaluator"},
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("admitted"):
+            holder_id = payload.get("holderId")
+            return holder_id if isinstance(holder_id, str) else None
+        retry_after = payload.get("retryAfterSeconds")
+        try:
+            delay = max(1, int(retry_after or retry_default))
+        except (TypeError, ValueError):
+            delay = retry_default
+        print(
+            "[swebench-evaluator] evaluator_slot blocked for "
+            f"{instance_id}; retrying in {delay}s"
+        )
+        time.sleep(delay)
+
+
+def release_evaluator_slot(
+    run_id: str, instance_id: str, holder_id: str | None, reason: str
+) -> None:
+    url = benchmark_leases_url(run_id)
+    if not url:
+        return
+    try:
+        response = requests.post(
+            url,
+            headers=artifact_api_headers("application/json"),
+            json={
+                "action": "release",
+                "instanceId": instance_id,
+                "holderId": holder_id,
+                "phase": "evaluation",
+                "resources": ["evaluator_slot"],
+                "reason": reason,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        print(
+            f"[swebench-evaluator] best-effort evaluator_slot release failed for {instance_id}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def taskrun_name(run_id: str, phase: str, instance_id: str | None = None) -> str:
@@ -262,6 +404,12 @@ def _artifacts_workspace(pvc_name: str) -> dict[str, Any]:
     }
 
 
+def _taskrun_artifacts_workspace(pvc_name: str, artifact_mode: str) -> dict[str, Any]:
+    if artifact_mode == "object":
+        return {"name": "artifacts", "emptyDir": {}}
+    return _artifacts_workspace(pvc_name)
+
+
 def taskrun_execution_spec() -> dict[str, Any]:
     spec: dict[str, Any] = {}
     service_account = os.environ.get("SWEBENCH_TEKTON_SERVICE_ACCOUNT", "").strip()
@@ -287,11 +435,22 @@ def build_prepare_taskrun(
     name: str,
     namespace: str,
     pvc_name: str,
+    artifact_mode: str,
     run_id: str,
     predictions_path: str,
     instance_ids: list[str],
     swebench_package_ref: str,
+    workflow_builder_url: str,
 ) -> dict[str, Any]:
+    params: list[dict[str, Any]] = [
+        {"name": "run_id", "value": run_id},
+        {"name": "predictions_path", "value": predictions_path},
+        {"name": "instance_ids", "value": list(instance_ids)},
+        {"name": "swebench_package_ref", "value": swebench_package_ref},
+        {"name": "artifact_mode", "value": artifact_mode},
+    ]
+    if workflow_builder_url:
+        params.append({"name": "workflow_builder_url", "value": workflow_builder_url})
     return {
         "apiVersion": f"{TEKTON_GROUP}/{TEKTON_VERSION}",
         "kind": "TaskRun",
@@ -299,13 +458,8 @@ def build_prepare_taskrun(
         "spec": {
             **taskrun_execution_spec(),
             "taskRef": {"name": "swebench-eval-prepare"},
-            "params": [
-                {"name": "run_id", "value": run_id},
-                {"name": "predictions_path", "value": predictions_path},
-                {"name": "instance_ids", "value": list(instance_ids)},
-                {"name": "swebench_package_ref", "value": swebench_package_ref},
-            ],
-            "workspaces": [_artifacts_workspace(pvc_name)],
+            "params": params,
+            "workspaces": [_taskrun_artifacts_workspace(pvc_name, artifact_mode)],
             "timeout": "10m",
         },
     }
@@ -316,6 +470,7 @@ def build_run_instance_taskrun(
     name: str,
     namespace: str,
     pvc_name: str,
+    artifact_mode: str,
     run_id: str,
     instance_id: str,
     instance_image: str,
@@ -339,8 +494,13 @@ def build_run_instance_taskrun(
                 {"name": "instance_id", "value": instance_id},
                 {"name": "instance_image", "value": instance_image},
                 {"name": "timeout_seconds", "value": str(timeout_seconds)},
+                {"name": "artifact_mode", "value": artifact_mode},
+                {
+                    "name": "workflow_builder_url",
+                    "value": os.environ.get("WORKFLOW_BUILDER_URL", ""),
+                },
             ],
-            "workspaces": [_artifacts_workspace(pvc_name)],
+            "workspaces": [_taskrun_artifacts_workspace(pvc_name, artifact_mode)],
             "timeout": f"{max(timeout_seconds + 300, 1800)}s",
         },
     }
@@ -351,6 +511,7 @@ def build_finalize_taskrun(
     name: str,
     namespace: str,
     pvc_name: str,
+    artifact_mode: str,
     run_id: str,
     instance_ids: list[str],
     swebench_package_ref: str,
@@ -360,6 +521,7 @@ def build_finalize_taskrun(
         {"name": "run_id", "value": run_id},
         {"name": "instance_ids", "value": list(instance_ids)},
         {"name": "swebench_package_ref", "value": swebench_package_ref},
+        {"name": "artifact_mode", "value": artifact_mode},
     ]
     if workflow_builder_url:
         params.append({"name": "workflow_builder_url", "value": workflow_builder_url})
@@ -371,7 +533,7 @@ def build_finalize_taskrun(
             **taskrun_execution_spec(),
             "taskRef": {"name": "swebench-eval-finalize"},
             "params": params,
-            "workspaces": [_artifacts_workspace(pvc_name)],
+            "workspaces": [_taskrun_artifacts_workspace(pvc_name, artifact_mode)],
             "timeout": "10m",
         },
     }
