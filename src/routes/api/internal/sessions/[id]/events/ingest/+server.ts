@@ -3,7 +3,10 @@ import type { RequestHandler } from "./$types";
 import { eq } from "drizzle-orm";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { appendEvent } from "$lib/server/sessions/events";
-import { updateSessionStatus } from "$lib/server/sessions/registry";
+import {
+	updateSessionStatus,
+	updateSessionStatusUnlessTerminated,
+} from "$lib/server/sessions/registry";
 import { db } from "$lib/server/db";
 import { evaluationRunItems, sessions } from "$lib/server/db/schema";
 import { persistCodeCheckpointFromAgentEvent } from "$lib/server/workflows/code-checkpoints";
@@ -79,7 +82,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// Mirror status events onto the sessions row so list-page filters and
 	// the "terminated" UI state work without having to scan event history.
 	if (type === "session.status_running") {
-		await updateSessionStatus(params.id, "running");
+		await updateSessionStatusUnlessTerminated(params.id, "running");
 	} else if (type === "session.status_idle") {
 		const stopReasonData =
 			data && typeof data.stop_reason === "object"
@@ -90,7 +93,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			t === "end_turn" || t === "requires_action" || t === "retries_exhausted"
 				? (t as "end_turn" | "requires_action" | "retries_exhausted")
 				: "end_turn";
-		await updateSessionStatus(params.id, "idle", {
+		await updateSessionStatusUnlessTerminated(params.id, "idle", {
 			stopReason: stopReasonData
 				? {
 						type: normalizedType,
@@ -112,7 +115,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		// the cleanup endpoint is idempotent on already-removed sandboxes.
 		void cleanupSessionSandbox(params.id);
 	} else if (type === "session.status_rescheduled") {
-		await updateSessionStatus(params.id, "rescheduling");
+		await updateSessionStatusUnlessTerminated(params.id, "rescheduling");
 	}
 
 	// Phase 4 Step 2b: tool_result events may carry a `codeCheckpoint` payload

@@ -369,6 +369,32 @@ export async function updateSessionStatus(
 	await database.update(sessions).set(patch).where(eq(sessions.id, id));
 }
 
+export async function updateSessionStatusUnlessTerminated(
+	id: string,
+	status: Exclude<SessionStatus, "terminated">,
+	extras: {
+		stopReason?: SessionStopReason | null;
+		usage?: SessionUsage;
+		errorMessage?: string | null;
+	} = {},
+): Promise<void> {
+	const database = requireDb();
+	const patch: Partial<Session> & { updatedAt: Date } = {
+		status,
+		updatedAt: new Date(),
+	};
+	if (extras.stopReason !== undefined)
+		patch.stopReason = extras.stopReason as Record<string, unknown> | null;
+	if (extras.usage !== undefined)
+		patch.usage = extras.usage as Record<string, unknown>;
+	if (extras.errorMessage !== undefined)
+		patch.errorMessage = extras.errorMessage ?? null;
+	await database
+		.update(sessions)
+		.set(patch)
+		.where(and(eq(sessions.id, id), sql`${sessions.status} <> 'terminated'`));
+}
+
 export async function updateSessionTitle(
 	id: string,
 	title: string,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -405,15 +406,30 @@ def taskrun_name(run_id: str, phase: str, instance_id: str | None = None) -> str
         "".join(ch.lower() if ch.isalnum() else "-" for ch in run_id).strip("-")[:30]
         or "run"
     )
-    suffix = format(int(time.time() * 100) % 100000, "05d")
     if instance_id:
         safe_inst = "".join(
             ch.lower() if ch.isalnum() else "-" for ch in instance_id
-        ).strip("-")[:25]
-        return (
-            f"swebench-{phase}-{safe_run}-{safe_inst}-{suffix}"[:63].rstrip("-") or "tr"
+        ).strip("-")
+        return safe_kubernetes_name(
+            f"swebench-{phase}-{safe_run}-{safe_inst}",
+            unique_key=f"{run_id}:{phase}:{instance_id}",
         )
-    return f"swebench-{phase}-{safe_run}-{suffix}"[:63].rstrip("-") or "tr"
+    suffix = format(int(time.time() * 100) % 100000, "05d")
+    return safe_kubernetes_name(
+        f"swebench-{phase}-{safe_run}-{suffix}",
+        unique_key=f"{run_id}:{phase}:{suffix}",
+    )
+
+
+def safe_kubernetes_name(base: str, *, unique_key: str, max_length: int = 63) -> str:
+    safe_base = "".join(ch.lower() if ch.isalnum() else "-" for ch in base).strip("-")
+    if not safe_base:
+        safe_base = "tr"
+    if len(safe_base) <= max_length:
+        return safe_base
+    digest = hashlib.sha256(unique_key.encode("utf-8")).hexdigest()[:10]
+    prefix_length = max_length - len(digest) - 1
+    return f"{safe_base[:prefix_length].rstrip('-')}-{digest}" or digest
 
 
 def _common_metadata(

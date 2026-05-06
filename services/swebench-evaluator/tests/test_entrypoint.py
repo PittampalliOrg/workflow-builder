@@ -53,6 +53,28 @@ def test_evaluation_max_parallel_accepts_legacy_max_workers(monkeypatch):
     assert entrypoint.evaluation_max_parallel() == 8
 
 
+def test_taskrun_names_keep_long_instances_unique():
+    entrypoint = load_entrypoint()
+    run_id = "nZ4F1-pvj8GFOHb1rIG-x"
+
+    first = entrypoint.taskrun_name(
+        run_id,
+        "run",
+        "scikit-learn__scikit-learn-13496",
+    )
+    second = entrypoint.taskrun_name(
+        run_id,
+        "run",
+        "scikit-learn__scikit-learn-14053",
+    )
+
+    assert first != second
+    assert len(first) <= 63
+    assert len(second) <= 63
+    assert first.startswith("swebench-run-nz4f1-pvj8gfohb1rig-x-scikit-learn")
+    assert second.startswith("swebench-run-nz4f1-pvj8gfohb1rig-x-scikit-learn")
+
+
 def test_post_results_retries_transient_bff_failure(monkeypatch):
     entrypoint = load_entrypoint()
     calls: list[dict[str, object]] = []
