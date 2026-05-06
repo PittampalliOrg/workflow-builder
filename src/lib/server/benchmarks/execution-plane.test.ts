@@ -35,6 +35,7 @@ describe("benchmark host execution plane config", () => {
 		vi.stubEnv("BENCHMARK_EXECUTION_CLASS", "benchmark-fast");
 
 		expect(normalizeBenchmarkExecutionBackend("host_execution_plane")).toBe("host");
+		expect(normalizeBenchmarkExecutionBackend("host-execution")).toBe("host");
 		expect(normalizeBenchmarkExecutionBackend("legacy")).toBe("legacy-dapr");
 		expect(normalizeBenchmarkExecutionBackend("unknown")).toBe("legacy-dapr");
 		expect(normalizeBenchmarkExecutionClass("secure_gvisor")).toBe("secure-gvisor");

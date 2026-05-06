@@ -44,7 +44,13 @@ export function normalizeBenchmarkExecutionBackend(
 		.replace(/_/g, "-");
 	if (typeof value === "string" && value.trim()) {
 		const requested = value.trim().toLowerCase().replace(/_/g, "-");
-		if (requested === "host" || requested === "host-execution-plane") return "host";
+		if (
+			requested === "host" ||
+			requested === "host-execution" ||
+			requested === "host-execution-plane"
+		) {
+			return "host";
+		}
 		if (requested === "legacy" || requested === "legacy-dapr") return "legacy-dapr";
 		return "legacy-dapr";
 	}
