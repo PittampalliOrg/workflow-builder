@@ -4,6 +4,20 @@ on:
   push:
     branches:
       - main
+    paths:
+      - .github/workflows/nix-ci-images.yml
+      - flake.lock
+      - flake.nix
+      - nix/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - services/workflow-mcp-server/**
+      - services/mcp-gateway/**
+      - services/function-router/**
+      - services/code-runtime/**
+      - services/fn-system/**
+      - services/fn-activepieces/**
   workflow_dispatch:
     inputs:
       image:
