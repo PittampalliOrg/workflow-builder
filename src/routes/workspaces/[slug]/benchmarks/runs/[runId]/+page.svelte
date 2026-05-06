@@ -305,6 +305,9 @@
 							{#if capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity !== null}
 								<span>storage {capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity}</span>
 							{/if}
+							{#if capacityDiagnostics.sandbox.nodeFsLimitedCapacity !== null}
+								<span>node fs {capacityDiagnostics.sandbox.nodeFsLimitedCapacity}</span>
+							{/if}
 							{#if capacityDiagnostics.sandbox.diskPressureNodeCount}
 								<span class="text-amber-600">
 									disk pressure {capacityDiagnostics.sandbox.diskPressureNodeCount}

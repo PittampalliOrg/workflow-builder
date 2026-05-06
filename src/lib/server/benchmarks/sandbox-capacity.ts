@@ -1,4 +1,5 @@
 import {
+	kubeApiFetch,
 	listNodes,
 	listPods,
 	listPodsAllNamespaces,
@@ -33,6 +34,10 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	cpuLimitedCapacity: number;
 	memoryLimitedCapacity: number;
 	ephemeralStorageLimitedCapacity: number | null;
+	nodeFsAvailableBytes: number | null;
+	nodeFsCapacityBytes: number | null;
+	nodeFsEvictionReserveBytes: number;
+	nodeFsLimitedCapacity: number | null;
 	activeSwebenchPods: number;
 	pendingSwebenchPods: number;
 	diskPressureNodeCount: number;
@@ -47,8 +52,14 @@ export type BenchmarkSandboxResourceProfile = {
 
 const DEFAULT_SANDBOX_REQUEST_CPU = "100m";
 const DEFAULT_SANDBOX_REQUEST_MEMORY = "256Mi";
-const DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE = "8Gi";
+const DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE = "16Gi";
+const DEFAULT_NODE_FS_EVICTION_RESERVE = "24Gi";
 const DEFAULT_SANDBOX_NAMESPACE = "openshell";
+
+type NodeStorageStats = {
+	availableBytes: number | null;
+	capacityBytes: number | null;
+};
 
 function positiveInt(value: unknown): number | null {
 	const parsed =
@@ -240,6 +251,74 @@ function sandboxResourceProfileFromEnv(): BenchmarkSandboxResourceProfile {
 	};
 }
 
+function nodeFsEvictionReserveBytes(): number {
+	return (
+		parseMemoryBytes(process.env.BENCHMARK_SANDBOX_NODE_FS_EVICTION_RESERVE) ??
+		parseMemoryBytes(DEFAULT_NODE_FS_EVICTION_RESERVE)!
+	);
+}
+
+function finiteNumber(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function nestedRecord(value: unknown, key: string): Record<string, unknown> | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const child = (value as Record<string, unknown>)[key];
+	return child && typeof child === "object" && !Array.isArray(child)
+		? (child as Record<string, unknown>)
+		: null;
+}
+
+function extractNodeStorageStats(value: unknown): NodeStorageStats | null {
+	const root =
+		value && typeof value === "object" && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: null;
+	if (!root) return null;
+	const node = nestedRecord(root, "node");
+	const runtime = node ? nestedRecord(node, "runtime") : null;
+	const candidates = [
+		node ? nestedRecord(node, "fs") : null,
+		runtime ? nestedRecord(runtime, "imageFs") : null,
+		runtime ? nestedRecord(runtime, "containerFs") : null,
+	].filter((entry): entry is Record<string, unknown> => !!entry);
+	const availableValues = candidates
+		.map((entry) => finiteNumber(entry.availableBytes))
+		.filter((entry): entry is number => entry !== null);
+	if (availableValues.length === 0) return null;
+	const capacityValues = candidates
+		.map((entry) => finiteNumber(entry.capacityBytes))
+		.filter((entry): entry is number => entry !== null);
+	return {
+		availableBytes: Math.min(...availableValues),
+		capacityBytes: capacityValues.length ? Math.min(...capacityValues) : null,
+	};
+}
+
+async function loadNodeStorageStats(
+	nodeNames: string[],
+): Promise<Map<string, NodeStorageStats>> {
+	const entries = await Promise.all(
+		nodeNames.map(async (nodeName) => {
+			try {
+				const res = await kubeApiFetch(
+					`/api/v1/nodes/${encodeURIComponent(nodeName)}/proxy/stats/summary`,
+					{ retries: 0 },
+				);
+				if (!res.ok) return null;
+				const stats = extractNodeStorageStats(await res.json().catch(() => null));
+				return stats ? ([nodeName, stats] as const) : null;
+			} catch {
+				return null;
+			}
+		}),
+	);
+	return new Map(
+		entries.filter((entry): entry is [string, NodeStorageStats] => !!entry),
+	);
+}
+
 function namespaceFromEnv(): string {
 	return (
 		process.env.BENCHMARK_SANDBOX_CAPACITY_NAMESPACE?.trim() ||
@@ -252,6 +331,7 @@ export function estimateSchedulableSandboxCapacity(params: {
 	nodes: KubeNode[];
 	pods: KubePod[];
 	sandboxRequest?: BenchmarkSandboxResourceProfile | null;
+	nodeStorageStats?: Map<string, NodeStorageStats> | null;
 	namespace?: string | null;
 	podScope?: "all-namespaces" | "namespace";
 	now?: Date;
@@ -273,15 +353,29 @@ export function estimateSchedulableSandboxCapacity(params: {
 	).length;
 	const nodes = schedulableWorkerNodes(params.nodes);
 	const nodeNames = new Set(nodes.map((node) => node.metadata!.name!));
+	const nodeStorageStats = params.nodeStorageStats ?? null;
+	const nodeFsReserveBytes = nodeFsEvictionReserveBytes();
 	let allocatableCpuMilli = 0;
 	let allocatableMemoryBytes = 0;
 	let allocatableEphemeralStorageBytes = 0;
+	let nodeFsAvailableBytes: number | null = nodeStorageStats ? 0 : null;
+	let nodeFsCapacityBytes: number | null = nodeStorageStats ? 0 : null;
 	for (const node of nodes) {
+		const nodeName = node.metadata!.name!;
 		const allocatable = node.status?.allocatable ?? {};
 		allocatableCpuMilli += parseCpuMilli(allocatable.cpu) ?? 0;
 		allocatableMemoryBytes += parseMemoryBytes(allocatable.memory) ?? 0;
 		allocatableEphemeralStorageBytes +=
 			parseMemoryBytes(allocatable["ephemeral-storage"]) ?? 0;
+		const storage = nodeStorageStats?.get(nodeName);
+		if (storage?.availableBytes !== null && storage?.availableBytes !== undefined) {
+			nodeFsAvailableBytes =
+				(nodeFsAvailableBytes ?? 0) +
+				Math.max(0, storage.availableBytes - nodeFsReserveBytes);
+		}
+		if (storage?.capacityBytes !== null && storage?.capacityBytes !== undefined) {
+			nodeFsCapacityBytes = (nodeFsCapacityBytes ?? 0) + storage.capacityBytes;
+		}
 	}
 
 	let requestedCpuMilli = 0;
@@ -346,10 +440,21 @@ export function estimateSchedulableSandboxCapacity(params: {
 					),
 				)
 			: null;
+	const nodeFsLimitedCapacity =
+		nodeFsAvailableBytes !== null && sandboxRequest.ephemeralStorageBytes > 0
+			? Math.max(
+					0,
+					Math.floor(
+						Math.max(0, nodeFsAvailableBytes - pendingSwebenchEphemeralStorageBytes) /
+							sandboxRequest.ephemeralStorageBytes,
+					),
+				)
+			: null;
 	const availableSandboxSlots = Math.min(
 		cpuLimitedCapacity,
 		memoryLimitedCapacity,
 		ephemeralStorageLimitedCapacity ?? Number.POSITIVE_INFINITY,
+		nodeFsLimitedCapacity ?? Number.POSITIVE_INFINITY,
 	);
 	const currentSwebenchPods = activeSwebenchPods + pendingSwebenchPods;
 	const totalSchedulableSandboxCapacity =
@@ -381,6 +486,10 @@ export function estimateSchedulableSandboxCapacity(params: {
 		cpuLimitedCapacity,
 		memoryLimitedCapacity,
 		ephemeralStorageLimitedCapacity,
+		nodeFsAvailableBytes,
+		nodeFsCapacityBytes,
+		nodeFsEvictionReserveBytes: nodeFsReserveBytes,
+		nodeFsLimitedCapacity,
 		activeSwebenchPods,
 		pendingSwebenchPods,
 		diskPressureNodeCount,
@@ -399,6 +508,10 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 	const sandboxRequest = sandboxResourceProfileFromEnv();
 	try {
 		const nodes = await listNodes();
+		const nodeNames = schedulableWorkerNodes(nodes)
+			.map((node) => node.metadata?.name)
+			.filter((name): name is string => !!name);
+		const nodeStorageStats = await loadNodeStorageStats(nodeNames);
 		let pods: KubePod[];
 		let podScope: "all-namespaces" | "namespace" = "all-namespaces";
 		try {
@@ -411,6 +524,7 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			nodes,
 			pods,
 			sandboxRequest,
+			nodeStorageStats,
 			namespace,
 			podScope,
 		});
@@ -441,6 +555,10 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			cpuLimitedCapacity: 0,
 			memoryLimitedCapacity: 0,
 			ephemeralStorageLimitedCapacity: 0,
+			nodeFsAvailableBytes: null,
+			nodeFsCapacityBytes: null,
+			nodeFsEvictionReserveBytes: nodeFsEvictionReserveBytes(),
+			nodeFsLimitedCapacity: null,
 			activeSwebenchPods: 0,
 			pendingSwebenchPods: 0,
 			diskPressureNodeCount: 0,

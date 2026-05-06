@@ -92,6 +92,9 @@ export type BenchmarkCapacityDiagnostics = {
 		activeSwebenchPods: number | null;
 		pendingSwebenchPods: number | null;
 		ephemeralStorageLimitedCapacity: number | null;
+		nodeFsLimitedCapacity: number | null;
+		nodeFsAvailableBytes: number | null;
+		nodeFsEvictionReserveBytes: number | null;
 		diskPressureNodeCount: number | null;
 		error?: string | null;
 	};
@@ -351,6 +354,11 @@ function diagnosticsFromCapacity(params: {
 			pendingSwebenchPods: nonNegativeInt(sandboxCapacity.pendingSwebenchPods),
 			ephemeralStorageLimitedCapacity: nonNegativeInt(
 				sandboxCapacity.ephemeralStorageLimitedCapacity,
+			),
+			nodeFsLimitedCapacity: nonNegativeInt(sandboxCapacity.nodeFsLimitedCapacity),
+			nodeFsAvailableBytes: nonNegativeInt(sandboxCapacity.nodeFsAvailableBytes),
+			nodeFsEvictionReserveBytes: nonNegativeInt(
+				sandboxCapacity.nodeFsEvictionReserveBytes,
 			),
 			diskPressureNodeCount: nonNegativeInt(
 				sandboxCapacity.diskPressureNodeCount,

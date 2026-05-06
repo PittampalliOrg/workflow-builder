@@ -193,6 +193,41 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
+	it("uses live node filesystem headroom as a sandbox capacity limiter", () => {
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [
+				workerNode("worker-a", {
+					cpu: "8000m",
+					memory: "32Gi",
+					"ephemeral-storage": "200Gi",
+				}),
+			],
+			pods: [],
+			nodeStorageStats: new Map([
+				[
+					"worker-a",
+					{
+						availableBytes: 50 * 1024 * 1024 * 1024,
+						capacityBytes: 200 * 1024 * 1024 * 1024,
+					},
+				],
+			]),
+			sandboxRequest: {
+				cpuMilli: 100,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+			},
+		});
+
+		expect(snapshot).toMatchObject({
+			nodeFsAvailableBytes: 26 * 1024 * 1024 * 1024,
+			nodeFsEvictionReserveBytes: 24 * 1024 * 1024 * 1024,
+			nodeFsLimitedCapacity: 3,
+			availableSandboxSlots: 3,
+			schedulableSandboxCapacity: 3,
+		});
+	});
+
 	it("excludes workers with DiskPressure from schedulable capacity", () => {
 		const snapshot = estimateSchedulableSandboxCapacity({
 			nodes: [

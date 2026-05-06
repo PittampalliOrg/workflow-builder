@@ -129,6 +129,56 @@ const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = positiveIntEnv(
 );
 const DEFAULT_OPENSHELL_SANDBOX_NAMESPACE = "openshell";
 
+type BenchmarkTerminalResourceCleanupHooks = {
+	finalizeInstances: (
+		runId: string,
+		outcome: BenchmarkRunTerminalOutcome,
+		reason: string,
+		now: Date,
+	) => Promise<void>;
+	cleanupSandboxes: (runId: string, reason: string) => Promise<void>;
+	releaseLeases: (runId: string, reason: string) => Promise<void>;
+	warn: (message: string) => void;
+};
+
+const benchmarkTerminalResourceCleanupHooks: BenchmarkTerminalResourceCleanupHooks = {
+	finalizeInstances: finalizeActiveBenchmarkRunInstances,
+	cleanupSandboxes: async (runId, reason) => {
+		await cleanupBenchmarkRunSandboxes(runId, reason);
+	},
+	releaseLeases: async (runId, reason) => {
+		await releaseBenchmarkResourceLeasesForRun(runId, reason);
+	},
+	warn: (message) => console.warn(message),
+};
+
+export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
+	params: {
+		runId: string;
+		outcome: BenchmarkRunTerminalOutcome;
+		reason: string;
+		now: Date;
+		workflowsClosed: boolean;
+	},
+	hooks: BenchmarkTerminalResourceCleanupHooks = benchmarkTerminalResourceCleanupHooks,
+): Promise<boolean> {
+	if (!params.workflowsClosed) {
+		hooks.warn(
+			`Benchmark run ${params.runId} durable cleanup did not finish; leaving instances, sandboxes, and leases active for retry`,
+		);
+		return false;
+	}
+	await hooks.finalizeInstances(
+		params.runId,
+		params.outcome,
+		params.reason,
+		params.now,
+	);
+	await hooks.cleanupSandboxes(params.runId, params.reason);
+	await hooks.releaseLeases(params.runId, params.reason);
+	return true;
+}
+
 type BenchmarkAgentRuntimeCleanupInput = {
 	runtimeAppId: string | null;
 	sessionId: string | null;
@@ -1067,21 +1117,19 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 	const reason = "benchmark run cancelled";
 	if (run.status === "cancelled") {
 		const now = new Date();
-		await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
 		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
 			runId,
 			"cancelled",
 			reason,
 			now,
 		);
-		if (workflowsClosed) {
-			await cleanupBenchmarkRunSandboxes(runId, reason);
-			await releaseBenchmarkResourceLeasesForRun(runId, reason);
-		} else {
-			console.warn(
-				`Benchmark run ${runId} cancellation left durable instances active; retaining sandboxes and leases`,
-			);
-		}
+		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+			runId,
+			outcome: "cancelled",
+			reason,
+			now,
+			workflowsClosed,
+		});
 		await recomputeRunSummary(runId);
 		return getBenchmarkRun(projectId, runId);
 	}
@@ -1104,21 +1152,19 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 			})
 			.where(eq(benchmarkRuns.id, runId));
 	});
-	await finalizeActiveBenchmarkRunInstances(runId, "cancelled", reason, now);
 	const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
 		runId,
 		"cancelled",
 		reason,
 		now,
 	);
-	if (workflowsClosed) {
-		await cleanupBenchmarkRunSandboxes(runId, reason);
-		await releaseBenchmarkResourceLeasesForRun(runId, reason);
-	} else {
-		console.warn(
-			`Benchmark run ${runId} cancellation left durable instances active; retaining sandboxes and leases`,
-		);
-	}
+	await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+		runId,
+		outcome: "cancelled",
+		reason,
+		now,
+		workflowsClosed,
+	});
 	await recomputeRunSummary(runId);
 	return getBenchmarkRun(projectId, runId);
 }
@@ -1181,21 +1227,19 @@ export async function markBenchmarkRunStatus(
 	}
 	if (status === "failed" || status === "cancelled") {
 		const reason = benchmarkRunTerminalReason(status, extra);
-		await finalizeActiveBenchmarkRunInstances(runId, status, reason, now);
 		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
 			runId,
 			status,
 			reason,
 			now,
 		);
-		if (workflowsClosed) {
-			await cleanupBenchmarkRunSandboxes(runId, reason);
-			await releaseBenchmarkResourceLeasesForRun(runId, reason);
-		} else {
-			console.warn(
-				`Benchmark run ${runId} terminal transition left durable instances active; retaining sandboxes and leases`,
-			);
-		}
+		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+			runId,
+			outcome: status,
+			reason,
+			now,
+			workflowsClosed,
+		});
 		await recomputeRunSummary(runId);
 	}
 	if (status === "completed") {
