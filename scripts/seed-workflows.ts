@@ -252,28 +252,39 @@ async function resolveProjectId(
 }
 
 async function resolveAgentProfileVersion(db: ReturnType<typeof drizzle>) {
-	const preferred = await db.query.agentProfileTemplateVersions.findFirst({
-		where: and(
-			eq(agentProfileTemplateVersions.templateId, AGENT_PROFILE_TEMPLATE_ID),
-			eq(agentProfileTemplateVersions.isDefault, true),
-		),
-		orderBy: [desc(agentProfileTemplateVersions.version)],
-	});
-	if (preferred) return preferred.version;
+	try {
+		const preferred = await db.query.agentProfileTemplateVersions.findFirst({
+			where: and(
+				eq(agentProfileTemplateVersions.templateId, AGENT_PROFILE_TEMPLATE_ID),
+				eq(agentProfileTemplateVersions.isDefault, true),
+			),
+			orderBy: [desc(agentProfileTemplateVersions.version)],
+		});
+		if (preferred) return preferred.version;
 
-	const latest = await db.query.agentProfileTemplateVersions.findFirst({
-		where: eq(
-			agentProfileTemplateVersions.templateId,
-			AGENT_PROFILE_TEMPLATE_ID,
-		),
-		orderBy: [desc(agentProfileTemplateVersions.version)],
-	});
-	if (!latest) {
-		throw new Error(
-			`No versions found for agent profile template ${AGENT_PROFILE_TEMPLATE_ID}.`,
-		);
+		const latest = await db.query.agentProfileTemplateVersions.findFirst({
+			where: eq(
+				agentProfileTemplateVersions.templateId,
+				AGENT_PROFILE_TEMPLATE_ID,
+			),
+			orderBy: [desc(agentProfileTemplateVersions.version)],
+		});
+		if (!latest) {
+			throw new Error(
+				`No versions found for agent profile template ${AGENT_PROFILE_TEMPLATE_ID}.`,
+			);
+		}
+		return latest.version;
+	} catch (error) {
+		const code = (error as { cause?: { code?: string } }).cause?.code;
+		if (code === "42P01") {
+			console.warn(
+				`[seed-workflows] Agent profile template tables are missing; using ${AGENT_PROFILE_TEMPLATE_ID} version 1.`,
+			);
+			return 1;
+		}
+		throw error;
 	}
-	return latest.version;
 }
 
 async function resolveLatestGithubConnection(
