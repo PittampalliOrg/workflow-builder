@@ -45,7 +45,7 @@ const SWEBENCH_PIPELINE_TIMEOUTS = {
 } as const;
 const LEGACY_SWEBENCH_IMAGE_WORKSPACE_ROOT = "/testbed";
 const OPENSHELL_RUNTIME_WORKSPACE_ROOT = "/sandbox/repo";
-const SWEBENCH_WORKSPACE_ROOT = LEGACY_SWEBENCH_IMAGE_WORKSPACE_ROOT;
+const SWEBENCH_WORKSPACE_ROOT = OPENSHELL_RUNTIME_WORKSPACE_ROOT;
 const FALLBACK_WORKSPACE_ROOT = OPENSHELL_RUNTIME_WORKSPACE_ROOT;
 const SWEBENCH_CONDA_ENV = "testbed";
 const SUPPORTED_SWEBENCH_HARNESS_VERSIONS: Record<string, readonly string[]> = {
@@ -317,7 +317,7 @@ function defaultSwebenchEnvironmentTuning(
 	const commonNotes =
 		buildStrategy === "swebench-harness"
 			? [
-					"The repository is already prepared under /testbed at the SWE-bench base commit.",
+					"The repository is cloned into /sandbox/repo at the SWE-bench base commit before validation and runtime solve steps.",
 					"Dependencies are installed from the SWE-bench harness spec in the conda testbed environment.",
 					"Use the existing environment and avoid reinstalling project dependencies during the solve phase.",
 				]
