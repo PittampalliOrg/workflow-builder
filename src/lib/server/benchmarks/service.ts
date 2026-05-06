@@ -45,6 +45,7 @@ import {
 } from "$lib/server/dapr-client";
 import { isAgentRuntimeSandboxName } from "$lib/server/agent-runtime-sandboxes";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
+import { kubeApiFetch } from "$lib/server/kube/client";
 import { resolveSpecAgentRefs } from "$lib/server/agents/resolver";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import type { AgentConfig } from "$lib/types/agents";
@@ -122,7 +123,11 @@ async function syncBenchmarkInstanceMlflowAndTraceBundle(params: {
 	}
 }
 const DURABLE_RUNTIME_MISSING_STATUS = "__missing__";
-const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = 8;
+const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = positiveIntEnv(
+	"BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY",
+	8,
+);
+const DEFAULT_OPENSHELL_SANDBOX_NAMESPACE = "openshell";
 
 type BenchmarkAgentRuntimeCleanupInput = {
 	runtimeAppId: string | null;
@@ -138,6 +143,15 @@ type BenchmarkSessionTurnInput = {
 const DEFAULT_EVALUATION_CONCURRENCY = 24;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
+
+function positiveIntEnv(name: string, fallback: number): number {
+	const raw = env[name] ?? process.env[name];
+	const value =
+		typeof raw === "string" && raw.trim()
+			? Number.parseInt(raw.trim(), 10)
+			: Number.NaN;
+	return Number.isInteger(value) && value > 0 ? value : fallback;
+}
 const SWEBENCH_FALLBACK_REPO_PATH = "/sandbox/repo";
 const SWEBENCH_SANDBOX_TTL_SECONDS_FALLBACK = 2 * 60 * 60;
 const SWEBENCH_PATCH_EXCLUDE_PATHS = [
@@ -2180,7 +2194,7 @@ async function deleteOpenShellSandboxForBenchmark(
 		}
 		const detail = await res.text().catch(() => "");
 		if (res.status === 404 || isOpenShellSandboxNotFound(detail)) {
-			cleanup.notFound.push(sandboxName);
+			await recordOpenShellSandboxMissingFallback(sandboxName, cleanup);
 			return;
 		}
 		cleanup.errors.push({
@@ -2194,6 +2208,79 @@ async function deleteOpenShellSandboxForBenchmark(
 			error: err instanceof Error ? err.message : String(err),
 		});
 	}
+}
+
+async function recordOpenShellSandboxMissingFallback(
+	sandboxName: string,
+	cleanup: BenchmarkSandboxCleanupResult,
+) {
+	try {
+		const fallback = await deleteOpenShellSandboxKubernetesResources(sandboxName);
+		if (fallback.deleted) {
+			cleanup.deleted.push(sandboxName);
+			return;
+		}
+		cleanup.notFound.push(sandboxName);
+	} catch (err) {
+		cleanup.errors.push({
+			sandboxName,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+function openshellSandboxNamespace(): string {
+	return (
+		env.BENCHMARK_SANDBOX_CLEANUP_NAMESPACE?.trim() ||
+		env.BENCHMARK_SANDBOX_CAPACITY_NAMESPACE?.trim() ||
+		env.OPENSHELL_SANDBOX_NAMESPACE?.trim() ||
+		env.OPENSHELL_NAMESPACE?.trim() ||
+		process.env.BENCHMARK_SANDBOX_CLEANUP_NAMESPACE?.trim() ||
+		process.env.BENCHMARK_SANDBOX_CAPACITY_NAMESPACE?.trim() ||
+		process.env.OPENSHELL_SANDBOX_NAMESPACE?.trim() ||
+		process.env.OPENSHELL_NAMESPACE?.trim() ||
+		DEFAULT_OPENSHELL_SANDBOX_NAMESPACE
+	);
+}
+
+function isSafeKubernetesName(value: string): boolean {
+	return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(value);
+}
+
+async function deleteKubeResource(path: string): Promise<"deleted" | "missing"> {
+	const res = await kubeApiFetch(path, {
+		method: "DELETE",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			apiVersion: "v1",
+			kind: "DeleteOptions",
+			propagationPolicy: "Background",
+		}),
+	});
+	if (res.status === 404) return "missing";
+	if (res.ok) return "deleted";
+	throw new Error(`${res.status} ${await res.text()}`);
+}
+
+async function deleteOpenShellSandboxKubernetesResources(
+	sandboxName: string,
+): Promise<{ deleted: boolean }> {
+	const name = sandboxName.trim();
+	if (!isSafeKubernetesName(name)) return { deleted: false };
+	const namespace = openshellSandboxNamespace();
+	const ns = encodeURIComponent(namespace);
+	const encodedName = encodeURIComponent(name);
+	const targets = [
+		`/apis/agents.x-k8s.io/v1alpha1/namespaces/${ns}/sandboxes/${encodedName}`,
+		`/api/v1/namespaces/${ns}/pods/${encodedName}`,
+		`/api/v1/namespaces/${ns}/services/${encodedName}`,
+		`/api/v1/namespaces/${ns}/persistentvolumeclaims/${encodeURIComponent(`workspace-${name}`)}`,
+	];
+	let deleted = false;
+	for (const path of targets) {
+		if ((await deleteKubeResource(path)) === "deleted") deleted = true;
+	}
+	return { deleted };
 }
 
 function isOpenShellSandboxNotFound(detail: string): boolean {
