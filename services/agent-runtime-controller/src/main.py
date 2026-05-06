@@ -1111,6 +1111,11 @@ def on_last_active(old: Any, new: Any, name: str, namespace: str, **_: Any) -> N
 @kopf.timer(GROUP, VERSION, PLURAL, interval=IDLE_CHECK_INTERVAL)
 def idle_reaper(spec: dict, status: dict, name: str, namespace: str, logger: logging.Logger, **_: Any) -> None:
     """Scale back to minReplicas when idle > idleTtlSeconds."""
+    try:
+        ensure_agent_statestore_scopes(_app_id(spec), namespace, logger)
+    except Exception as exc:
+        logger.warning("failed to reconcile Dapr Component scopes for %s: %s", name, exc)
+
     replicas = (status or {}).get("replicas") or 0
     min_replicas = _min_replicas(spec)
     if replicas <= min_replicas:
