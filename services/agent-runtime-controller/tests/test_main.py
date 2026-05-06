@@ -78,6 +78,13 @@ class FakeCustomObjects:
     def patch_namespaced_custom_object(self, *, name, body, **_kwargs):
         self.patches.append((name, body))
         component = self.components[name]
+        if isinstance(body, list):
+            for operation in body:
+                if operation.get("op") == "add" and operation.get("path") == "/scopes/-":
+                    component.setdefault("scopes", []).append(operation["value"])
+                else:
+                    raise AssertionError(f"unexpected JSON patch operation {operation!r}")
+            return component
         component.update(body)
         return component
 
@@ -303,11 +310,11 @@ def test_ensure_agent_statestore_scopes_enrolls_app_and_workflow_stores(monkeypa
     assert fake.patches == [
         (
             "dapr-agent-py-statestore",
-            {"scopes": ["dapr-agent-py", "agent-runtime-pool-coding"]},
+            [{"op": "add", "path": "/scopes/-", "value": "agent-runtime-pool-coding"}],
         ),
         (
             "workflowstatestore",
-            {"scopes": ["workflow-orchestrator", "agent-runtime-pool-coding"]},
+            [{"op": "add", "path": "/scopes/-", "value": "agent-runtime-pool-coding"}],
         ),
     ]
 
