@@ -1191,6 +1191,22 @@ export async function markBenchmarkRunStatus(
 		run.status === status &&
 		(status === "failed" || status === "cancelled")
 	) {
+		const now = new Date();
+		const reason = benchmarkRunTerminalReason(status, extra);
+		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
+			runId,
+			status,
+			reason,
+			now,
+		);
+		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+			runId,
+			outcome: status,
+			reason,
+			now,
+			workflowsClosed,
+		});
+		await recomputeRunSummary(runId);
 		return run;
 	}
 	if (run.status !== status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status)) {
