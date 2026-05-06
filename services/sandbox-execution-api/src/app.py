@@ -4,6 +4,7 @@ import json
 import os
 import re
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
@@ -54,6 +55,16 @@ def _safe_name(value: str, *, max_length: int = 52) -> str:
     return (normalized or "execution")[:max_length].strip("-") or "execution"
 
 
+def _safe_resource_name(value: str, *, max_length: int = 63) -> str:
+    normalized = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-") or "execution"
+    if len(normalized) <= max_length:
+        return normalized
+    digest = sha256(normalized.encode("utf-8")).hexdigest()[:10]
+    prefix_length = max_length - len(digest) - 1
+    prefix = normalized[:prefix_length].strip("-") or "execution"
+    return f"{prefix}-{digest}"
+
+
 def _load_execution_classes() -> dict[str, ExecutionClassConfig]:
     defaults = {
         "benchmark-fast": ExecutionClassConfig(localQueue="benchmark-fast"),
@@ -101,7 +112,7 @@ def _worker_payload(request: ExecutionRequest, execution_id: str) -> dict[str, A
 
 
 def _payload_configmap_name(request: ExecutionRequest, execution_id: str) -> str:
-    return _safe_name(
+    return _safe_resource_name(
         f"sandbox-payload-{request.runId}-{request.instanceId}-{execution_id}",
         max_length=63,
     )
@@ -142,7 +153,7 @@ def build_job_manifest(
 ) -> dict[str, Any]:
     run_label = _safe_name(request.runId, max_length=63)
     instance_label = _safe_name(request.instanceId, max_length=63)
-    job_name = _safe_name(
+    job_name = _safe_resource_name(
         f"sandbox-{request.runId}-{request.instanceId}-{execution_id}",
         max_length=63,
     )

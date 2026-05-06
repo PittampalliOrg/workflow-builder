@@ -74,3 +74,40 @@ def test_secure_gvisor_sets_runtime_class_and_queue() -> None:
 
     assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "secure-gvisor"
     assert manifest["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor"
+
+
+def test_long_resource_names_keep_unique_suffixes() -> None:
+    first = _request()
+    first.instanceId = "scikit-learn__scikit-learn-10908"
+    second = _request()
+    second.instanceId = "scikit-learn__scikit-learn-13496"
+
+    first_job = build_job_manifest(
+        first,
+        execution_id="hexec-d699a",
+        namespace="sandbox-execution",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+    second_job = build_job_manifest(
+        second,
+        execution_id="hexec-80977",
+        namespace="sandbox-execution",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+    first_configmap = build_payload_configmap_manifest(
+        first,
+        execution_id="hexec-d699a",
+        namespace="sandbox-execution",
+    )
+    second_configmap = build_payload_configmap_manifest(
+        second,
+        execution_id="hexec-80977",
+        namespace="sandbox-execution",
+    )
+
+    assert first_job["metadata"]["name"] != second_job["metadata"]["name"]
+    assert first_configmap["metadata"]["name"] != second_configmap["metadata"]["name"]
+    assert len(first_job["metadata"]["name"]) <= 63
+    assert len(second_job["metadata"]["name"]) <= 63
+    assert len(first_configmap["metadata"]["name"]) <= 63
+    assert len(second_configmap["metadata"]["name"]) <= 63
