@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import requests
 
 from src import worker
@@ -9,6 +11,15 @@ class _Response:
     def __init__(self, status_code: int, text: str = "") -> None:
         self.status_code = status_code
         self.text = text
+
+
+def test_load_payload_prefers_request_file(monkeypatch, tmp_path) -> None:
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps({"runId": "run_1"}), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setenv("EXECUTION_REQUEST_JSON", json.dumps({"runId": "env"}))
+
+    assert worker._load_payload()["runId"] == "run_1"
 
 
 def test_post_callback_retries_transient_connection_errors(monkeypatch) -> None:

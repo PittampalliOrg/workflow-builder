@@ -100,6 +100,39 @@ def _worker_payload(request: ExecutionRequest, execution_id: str) -> dict[str, A
     }
 
 
+def _payload_configmap_name(request: ExecutionRequest, execution_id: str) -> str:
+    return _safe_name(
+        f"sandbox-payload-{request.runId}-{request.instanceId}-{execution_id}",
+        max_length=63,
+    )
+
+
+def build_payload_configmap_manifest(
+    request: ExecutionRequest,
+    *,
+    execution_id: str,
+    namespace: str,
+) -> dict[str, Any]:
+    run_label = _safe_name(request.runId, max_length=63)
+    instance_label = _safe_name(request.instanceId, max_length=63)
+    payload = json.dumps(_worker_payload(request, execution_id), separators=(",", ":"))
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": _payload_configmap_name(request, execution_id),
+            "namespace": namespace,
+            "labels": {
+                "app": "sandbox-execution-worker",
+                "benchmark-run-id": run_label,
+                "benchmark-instance-id": instance_label,
+                "sandbox-execution-class": _safe_name(request.executionClass),
+            },
+        },
+        "data": {"request.json": payload},
+    }
+
+
 def build_job_manifest(
     request: ExecutionRequest,
     *,
@@ -113,7 +146,8 @@ def build_job_manifest(
         f"sandbox-{request.runId}-{request.instanceId}-{execution_id}",
         max_length=63,
     )
-    payload = json.dumps(_worker_payload(request, execution_id), separators=(",", ":"))
+    payload_configmap_name = _payload_configmap_name(request, execution_id)
+    payload_path = "/var/run/sandbox-execution/request.json"
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "serviceAccountName": class_config.serviceAccountName,
@@ -137,7 +171,7 @@ def build_job_manifest(
                 "image": class_config.workerImage,
                 "command": ["python", "-m", "src.worker"],
                 "env": [
-                    {"name": "EXECUTION_REQUEST_JSON", "value": payload},
+                    {"name": "EXECUTION_REQUEST_PATH", "value": payload_path},
                     {
                         "name": "WORKFLOW_BUILDER_URL",
                         "value": os.environ.get("WORKFLOW_BUILDER_URL", ""),
@@ -165,12 +199,29 @@ def build_job_manifest(
                         },
                     },
                 ],
+                "volumeMounts": [
+                    {
+                        "name": "execution-request",
+                        "mountPath": payload_path,
+                        "subPath": "request.json",
+                        "readOnly": True,
+                    }
+                ],
                 "resources": {
                     "requests": {
                         "cpu": class_config.cpu,
                         "memory": class_config.memory,
                         "ephemeral-storage": class_config.ephemeralStorage,
                     }
+                },
+            }
+        ],
+        "volumes": [
+            {
+                "name": "execution-request",
+                "configMap": {
+                    "name": payload_configmap_name,
+                    "items": [{"key": "request.json", "path": "request.json"}],
                 },
             }
         ],
@@ -213,14 +264,14 @@ def build_job_manifest(
     }
 
 
-def _load_batch_client():
+def _load_k8s_clients():
     from kubernetes import client, config
 
     try:
         config.load_incluster_config()
     except Exception:
         config.load_kube_config()
-    return client.BatchV1Api()
+    return client.BatchV1Api(), client.CoreV1Api()
 
 
 def _require_internal(request: Request) -> None:
@@ -251,6 +302,11 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
         )
     namespace = os.environ.get("SANDBOX_EXECUTION_NAMESPACE", "sandbox-execution")
     execution_id = f"hexec-{uuid4().hex[:16]}"
+    payload_manifest = build_payload_configmap_manifest(
+        body,
+        execution_id=execution_id,
+        namespace=namespace,
+    )
     manifest = build_job_manifest(
         body,
         execution_id=execution_id,
@@ -262,8 +318,39 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
         "true",
         "yes",
     }:
-        batch = _load_batch_client()
-        batch.create_namespaced_job(namespace=namespace, body=manifest)
+        batch, core = _load_k8s_clients()
+        core.create_namespaced_config_map(namespace=namespace, body=payload_manifest)
+        try:
+            job = batch.create_namespaced_job(namespace=namespace, body=manifest)
+        except Exception:
+            try:
+                core.delete_namespaced_config_map(
+                    name=payload_manifest["metadata"]["name"],
+                    namespace=namespace,
+                )
+            except Exception:
+                pass
+            raise
+        job_uid = getattr(getattr(job, "metadata", None), "uid", None)
+        if job_uid:
+            core.patch_namespaced_config_map(
+                name=payload_manifest["metadata"]["name"],
+                namespace=namespace,
+                body={
+                    "metadata": {
+                        "ownerReferences": [
+                            {
+                                "apiVersion": "batch/v1",
+                                "kind": "Job",
+                                "name": manifest["metadata"]["name"],
+                                "uid": job_uid,
+                                "controller": False,
+                                "blockOwnerDeletion": False,
+                            }
+                        ]
+                    }
+                },
+            )
     return {
         "executionId": execution_id,
         "jobName": manifest["metadata"]["name"],

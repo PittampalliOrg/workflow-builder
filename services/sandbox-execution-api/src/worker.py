@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import sys
 import time
 from typing import Any
@@ -22,12 +23,15 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _load_payload() -> dict[str, Any]:
-    raw = _env("EXECUTION_REQUEST_JSON")
+    payload_path = _env("EXECUTION_REQUEST_PATH")
+    raw = pathlib.Path(payload_path).read_text(encoding="utf-8") if payload_path else ""
     if not raw:
-        raise RuntimeError("EXECUTION_REQUEST_JSON is required")
+        raw = _env("EXECUTION_REQUEST_JSON")
+    if not raw:
+        raise RuntimeError("EXECUTION_REQUEST_PATH or EXECUTION_REQUEST_JSON is required")
     payload = json.loads(raw)
     if not isinstance(payload, dict):
-        raise RuntimeError("EXECUTION_REQUEST_JSON must decode to an object")
+        raise RuntimeError("execution request payload must decode to an object")
     return payload
 
 
