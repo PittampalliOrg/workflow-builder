@@ -400,6 +400,13 @@
 			"when": 1778077469579,
 			"tag": "0064_normalize_default_platform",
 			"breakpoints": true
+		},
+		{
+			"idx": 57,
+			"version": "7",
+			"when": 1778078823887,
+			"tag": "0065_ensure_resource_library_tables",
+			"breakpoints": true
 		}
 	]
 }
