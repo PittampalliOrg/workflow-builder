@@ -1527,6 +1527,32 @@ async function finalizeBenchmarkWorkflowExecutions(
 		},
 	);
 
+	let parentDurableInstancesClosed = true;
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			const termination = workflowTerminations.get(instanceId) ?? "terminated";
+			if (termination === "failed") {
+				parentDurableInstancesClosed = false;
+				return;
+			}
+			const closed =
+				termination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
+			if (!closed) {
+				parentDurableInstancesClosed = false;
+				allDurableInstancesClosed = false;
+			}
+		},
+	);
+	if (!parentDurableInstancesClosed) {
+		console.warn(
+			`Benchmark run ${runId} durable cleanup did not confirm parent workflows closed; leaving child workflows, session/execution rows, sandboxes, and leases active for retry`,
+		);
+		return false;
+	}
+
 	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
 	await runWithConcurrency(
 		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
@@ -1565,25 +1591,6 @@ async function finalizeBenchmarkWorkflowExecutions(
 		},
 	);
 
-	let parentDurableInstancesClosed = true;
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			const termination = workflowTerminations.get(instanceId) ?? "terminated";
-			if (termination === "failed") {
-				parentDurableInstancesClosed = false;
-				return;
-			}
-			const closed =
-				termination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
-			if (!closed) {
-				parentDurableInstancesClosed = false;
-				allDurableInstancesClosed = false;
-			}
-		},
-	);
 	if (!allDurableInstancesClosed) {
 		console.warn(
 			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; parentClosed=${parentDurableInstancesClosed} agentRuntimeClosed=${agentRuntimeDurableInstancesClosed}; leaving session/execution rows active for retry`,
