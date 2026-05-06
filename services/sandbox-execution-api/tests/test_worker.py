@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import requests
+
+from src import worker
+
+
+class _Response:
+    def __init__(self, status_code: int, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+def test_post_callback_retries_transient_connection_errors(monkeypatch) -> None:
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder:3000")
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "secret")
+    monkeypatch.setenv("SANDBOX_EXECUTION_CALLBACK_ATTEMPTS", "3")
+    sleeps: list[float] = []
+    attempts = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise requests.ConnectionError("connection refused")
+        return _Response(200)
+
+    monkeypatch.setattr(worker.requests, "post", fake_post)
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+
+    worker._post_callback(
+        {"callback": {"path": "/api/internal/benchmarks/runs/r/instances/i/execution"}},
+        {"status": "success"},
+    )
+
+    assert attempts["count"] == 2
+    assert sleeps == [2.0]
+
+
+def test_post_callback_raises_after_retry_budget(monkeypatch) -> None:
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder:3000")
+    monkeypatch.setenv("SANDBOX_EXECUTION_CALLBACK_ATTEMPTS", "2")
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        worker.requests,
+        "post",
+        lambda *args, **kwargs: _Response(503, "not ready"),
+    )
+
+    try:
+        worker._post_callback(
+            {"callback": {"path": "/api/internal/benchmarks/runs/r/instances/i/execution"}},
+            {"status": "success"},
+        )
+    except RuntimeError as exc:
+        assert "after 2 attempt" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")

@@ -52,10 +52,26 @@ def _callback_url(payload: dict[str, Any]) -> str:
 
 
 def _post_callback(payload: dict[str, Any], body: dict[str, Any]) -> None:
-    url = _callback_url(payload)
-    res = requests.post(url, headers=_headers(), json=body, timeout=60)
-    if res.status_code >= 400:
-        raise RuntimeError(f"callback failed ({res.status_code}): {res.text[:800]}")
+	url = _callback_url(payload)
+	attempts = max(1, int(_env("SANDBOX_EXECUTION_CALLBACK_ATTEMPTS", "8")))
+	backoff_seconds = max(
+		1.0,
+		float(_env("SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS", "2")),
+	)
+	last_error: Exception | None = None
+	for attempt in range(1, attempts + 1):
+		try:
+			res = requests.post(url, headers=_headers(), json=body, timeout=60)
+			if res.status_code < 400:
+				return
+			last_error = RuntimeError(
+				f"callback failed ({res.status_code}): {res.text[:800]}"
+			)
+		except requests.RequestException as exc:
+			last_error = exc
+		if attempt < attempts:
+			time.sleep(min(30.0, backoff_seconds * attempt))
+	raise RuntimeError(f"callback failed after {attempts} attempt(s): {last_error}")
 
 
 def _orchestrator_url() -> str:
