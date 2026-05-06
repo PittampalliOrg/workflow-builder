@@ -91,7 +91,7 @@
 	let evaluationConcurrency = $state(DEFAULT_EVALUATION_CONCURRENCY);
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
-	let executionBackend = $state<'legacy-dapr' | 'host'>('legacy-dapr');
+	const executionBackend = 'host';
 	let executionClass = $state<'benchmark-fast' | 'secure-gvisor'>('benchmark-fast');
 	let tagsInput = $state('');
 	let agentQuery = $state('');
@@ -276,10 +276,7 @@
 					evaluationConcurrency,
 					timeoutSeconds,
 					evaluatorResourceClass,
-					tags:
-						executionBackend === 'host'
-							? [...new Set([...parseTags(tagsInput), 'host-backend-canary'])]
-							: parseTags(tagsInput),
+					tags: [...new Set([...parseTags(tagsInput), 'host-execution'])],
 					requirePrevalidatedEnvironments,
 					executionBackend,
 					executionClass
@@ -590,23 +587,11 @@
 
 			<div class="grid grid-cols-2 gap-3">
 				<div class="space-y-1.5">
-					<Label for="launch-backend">Execution backend</Label>
-					<select
-						id="launch-backend"
-						bind:value={executionBackend}
-						class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm"
-					>
-						<option value="legacy-dapr">Legacy Dapr</option>
-						<option value="host">Host execution</option>
-					</select>
-				</div>
-				<div class="space-y-1.5">
 					<Label for="launch-class">Execution class</Label>
 					<select
 						id="launch-class"
 						bind:value={executionClass}
-						disabled={executionBackend !== 'host'}
-						class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm disabled:opacity-60"
+						class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm"
 					>
 						<option value="benchmark-fast">benchmark-fast</option>
 						<option value="secure-gvisor">secure-gvisor</option>

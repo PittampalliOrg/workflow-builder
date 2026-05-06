@@ -184,7 +184,7 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
 | `BENCHMARK_LEASE_RETRY_SECONDS` | `15` | unset | Retry-after returned when the BFF resource-lease gate denies capacity. |
 | `BENCHMARK_INFERENCE_STALL_SECONDS` | `480` | `480` | Marks stale inference progress; not a dispatch cap. |
-| `BENCHMARK_EXECUTION_BACKEND` | `legacy-dapr` | unset | Set to `host` to submit SWE-bench instance inference to the host sandbox execution API. |
+| `BENCHMARK_EXECUTION_BACKEND` | `host` | unset | Host sandbox execution API is the default SWE-bench inference path. `legacy-dapr` is accepted only for rollback tests. |
 | `BENCHMARK_EXECUTION_CLASS` | `benchmark-fast` | unset | Host backend execution class; supported initial values are `benchmark-fast` and `secure-gvisor`. |
 | `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL` | unset | unset | Host execution API base URL required by the host backend. |
 | `SANDBOX_EXECUTION_API_TOKEN` / `HOST_EXECUTION_API_TOKEN` | `INTERNAL_API_TOKEN` fallback | unset | Bearer token used by the BFF when calling the host execution API. |

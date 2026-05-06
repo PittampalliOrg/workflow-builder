@@ -15,8 +15,8 @@ afterEach(() => {
 });
 
 describe("benchmark host execution plane config", () => {
-	it("defaults to the legacy Dapr backend and benchmark-fast class", () => {
-		expect(benchmarkExecutionBackend()).toBe("legacy-dapr");
+	it("defaults to the host execution backend and benchmark-fast class", () => {
+		expect(benchmarkExecutionBackend()).toBe("host");
 		expect(benchmarkExecutionClass()).toBe("benchmark-fast");
 	});
 

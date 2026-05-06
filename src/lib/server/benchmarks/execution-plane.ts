@@ -54,8 +54,8 @@ export function normalizeBenchmarkExecutionBackend(
 		if (requested === "legacy" || requested === "legacy-dapr") return "legacy-dapr";
 		return "legacy-dapr";
 	}
-	if (raw === "host" || raw === "host-execution-plane") return "host";
-	return "legacy-dapr";
+	if (raw === "legacy" || raw === "legacy-dapr") return "legacy-dapr";
+	return "host";
 }
 
 export function benchmarkExecutionClass(): BenchmarkExecutionClass {
