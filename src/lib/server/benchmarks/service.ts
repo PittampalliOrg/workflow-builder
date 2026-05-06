@@ -1601,19 +1601,9 @@ async function finalizeBenchmarkWorkflowExecutions(
 			await purgeBenchmarkWorkflowInstance(instanceId, "terminated");
 		},
 	);
-	await runWithConcurrency(
-		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
-			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
-		),
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			await purgeBenchmarkAgentRuntimeInstance(
-				runtimeAppId,
-				instanceId,
-				"terminated",
-			);
-		},
-	);
+	// Do not purge agent-runtime child workflow state here. Dapr parent workflow
+	// termination can still deliver sub-orchestration events after the child has
+	// stopped; removing the child history first makes the parent retry forever.
 	if (sessionIds.size > 0) {
 		await database
 			.update(sessions)
@@ -3049,19 +3039,9 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		if (parentDaprInstanceId) {
 			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId, "terminated");
 		}
-		if (runtimeAppId && runtimeInstanceIds.length > 0) {
-			await runWithConcurrency(
-				runtimeInstanceIds,
-				BENCHMARK_TERMINATION_CONCURRENCY,
-				async (instanceId) => {
-					await purgeBenchmarkAgentRuntimeInstance(
-						runtimeAppId,
-						instanceId,
-						"terminated",
-					);
-				},
-			);
-		}
+		// Leave agent-runtime child workflow history for retention cleanup. Immediate
+		// child purge can break parent Dapr termination replay if events are still in
+		// flight.
 
 		if (sessionId) {
 			await database
