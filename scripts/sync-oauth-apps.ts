@@ -111,7 +111,7 @@ async function main() {
 		let platformRows: { id: string }[] = await sql`
 			select id
 			from platforms
-			order by created_at asc
+			where id = 'default-platform'
 			limit 1
 		`;
 
@@ -119,6 +119,7 @@ async function main() {
 			await sql`
 				insert into platforms (id, name, created_at, updated_at)
 				values ('default-platform', 'Default Platform', now(), now())
+				on conflict (id) do nothing
 			`;
 			platformRows = [{ id: "default-platform" }];
 		}

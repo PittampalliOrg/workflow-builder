@@ -10,6 +10,8 @@ import { users, userIdentities, platforms, projects, projectMembers } from '$lib
 import { generateId } from '$lib/server/utils/id';
 import { generateTokens } from '$lib/server/auth';
 
+const DEFAULT_PLATFORM_ID = 'default-platform';
+
 export interface SocialProfile {
 	email: string;
 	name: string | null;
@@ -25,6 +27,7 @@ export interface AuthResult {
 		email: string;
 		name: string | null;
 		image: string | null;
+		projectSlug: string;
 	};
 }
 
@@ -46,11 +49,13 @@ export async function signInSocial(profile: SocialProfile): Promise<AuthResult> 
 	let userId: string;
 	let userName: string | null;
 	let userImage: string | null;
+	let platformId: string | null = null;
 
 	if (existingUser) {
 		userId = existingUser.id;
 		userName = existingUser.name;
 		userImage = existingUser.image;
+		platformId = existingUser.platformId;
 
 		// Update image if social provides one and we don't have it
 		if (profile.image && !existingUser.image) {
@@ -88,6 +93,7 @@ export async function signInSocial(profile: SocialProfile): Promise<AuthResult> 
 
 		// Get or create default platform
 		const platform = await getOrCreateDefaultPlatform();
+		platformId = platform.id;
 
 		await db.insert(users).values({
 			id: userId,
@@ -116,8 +122,12 @@ export async function signInSocial(profile: SocialProfile): Promise<AuthResult> 
 		await getOrCreateDefaultProject(userId, platform.id);
 	}
 
-	// Get platform and project for token payload
-	const platform = await getOrCreateDefaultPlatform();
+	// Get platform and project for token payload. Existing users keep their
+	// platform because signing keys are platform-scoped.
+	let platform = platformId ? await getPlatformById(platformId) : null;
+	if (!platform) {
+		platform = await getOrCreateDefaultPlatform();
+	}
 	const project = await getOrCreateDefaultProject(userId, platform.id);
 
 	// Get token version
@@ -138,21 +148,34 @@ export async function signInSocial(profile: SocialProfile): Promise<AuthResult> 
 			id: userId,
 			email: profile.email,
 			name: userName,
-			image: userImage
+			image: userImage,
+			projectSlug: 'default'
 		}
 	};
 }
 
+async function getPlatformById(platformId: string) {
+	const [platform] = await db!
+		.select()
+		.from(platforms)
+		.where(eq(platforms.id, platformId))
+		.limit(1);
+	return platform ?? null;
+}
+
 async function getOrCreateDefaultPlatform() {
-	const [existing] = await db!.select().from(platforms).limit(1);
+	const [existing] = await db!
+		.select()
+		.from(platforms)
+		.where(eq(platforms.id, DEFAULT_PLATFORM_ID))
+		.limit(1);
 	if (existing) return existing;
 
-	const id = generateId();
 	const now = new Date();
 	const [platform] = await db!
 		.insert(platforms)
 		.values({
-			id,
+			id: DEFAULT_PLATFORM_ID,
 			name: 'Default Platform',
 			createdAt: now,
 			updatedAt: now

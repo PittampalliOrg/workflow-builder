@@ -82,7 +82,7 @@ export const GET: RequestHandler = async ({ params, url, request, cookies }) => 
 		maxAge: 60 * 60 * 24 * 7
 	});
 
-	redirect(302, '/workflows');
+	redirect(302, `/workspaces/${encodeURIComponent(result.user.projectSlug ?? 'default')}/workflows`);
 };
 
 async function exchangeGitHub(code: string, redirectUri: string) {
