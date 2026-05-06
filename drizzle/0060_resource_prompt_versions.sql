@@ -1,3 +1,28 @@
+CREATE TABLE IF NOT EXISTS "resource_prompts" (
+  "id" text PRIMARY KEY NOT NULL,
+  "name" text NOT NULL,
+  "description" text,
+  "system_prompt" text NOT NULL,
+  "user_prompt" text,
+  "prompt_mode" text NOT NULL DEFAULT 'system',
+  "metadata" jsonb,
+  "version" integer NOT NULL DEFAULT 1,
+  "is_enabled" boolean NOT NULL DEFAULT true,
+  "user_id" text NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+  "project_id" text REFERENCES "projects"("id") ON DELETE CASCADE,
+  "created_at" timestamp NOT NULL DEFAULT now(),
+  "updated_at" timestamp NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS "idx_resource_prompts_user_project"
+  ON "resource_prompts" ("user_id", "project_id");
+
+CREATE INDEX IF NOT EXISTS "idx_resource_prompts_enabled"
+  ON "resource_prompts" ("is_enabled");
+
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_resource_prompts_user_project_name"
+  ON "resource_prompts" ("user_id", "project_id", "name");
+
 CREATE TABLE IF NOT EXISTS "resource_prompt_versions" (
   "id" text PRIMARY KEY NOT NULL,
   "prompt_id" text NOT NULL REFERENCES "resource_prompts"("id") ON DELETE CASCADE,
