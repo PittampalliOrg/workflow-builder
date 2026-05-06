@@ -713,11 +713,6 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 )
                 + "\n"
             )
-    _bff_with_retry(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
-        json_body={"path": str(path)},
-    )
     if _object_artifact_mode():
         _put_bff_artifact(
             run["id"],
@@ -725,6 +720,20 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
             path.read_bytes(),
             kind="predictions_jsonl",
             content_type="application/jsonl; charset=utf-8",
+        )
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run['id']}/status",
+            json_body={
+                "status": run.get("status") or "inferencing",
+                "predictionsPath": str(path),
+            },
+        )
+    else:
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
+            json_body={"path": str(path)},
         )
     _mlflow_log_artifact(run.get("mlflowRunId"), path, "swebench")
     return {
@@ -744,11 +753,6 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
         timeout=120,
     )
     path.write_text(jsonl, encoding="utf-8")
-    _bff_with_retry(
-        "POST",
-        f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
-        json_body={"path": str(path)},
-    )
     if _object_artifact_mode():
         _put_bff_artifact(
             run_id,
@@ -756,6 +760,12 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
             path.read_bytes(),
             kind="dataset_jsonl",
             content_type="application/jsonl; charset=utf-8",
+        )
+    else:
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
+            json_body={"path": str(path)},
         )
     if _mlflow_enabled():
         try:
