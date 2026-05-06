@@ -2798,6 +2798,17 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
 
         try:
             _workflow_http_post(instance_id, "/terminate")
+        except requests.Timeout:
+            logger.warning(
+                "[Workflow Routes] Terminate request timed out for %s; polling status will confirm closure",
+                instance_id,
+            )
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "terminationStatusUnknown": True,
+                "childTermination": child_termination,
+            }
         except FileNotFoundError:
             logger.info(
                 "[Workflow Routes] Terminate skipped for %s: already gone",

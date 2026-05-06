@@ -4922,6 +4922,16 @@ def terminate_agent_run(
     try:
         _workflow_http_post(instance_id, "/terminate")
         return {"success": True, "instanceId": instance_id}
+    except requests.Timeout:
+        logger.warning(
+            "[agent-runs] Terminate request timed out for %s; polling status will confirm closure",
+            instance_id,
+        )
+        return {
+            "success": True,
+            "instanceId": instance_id,
+            "terminationStatusUnknown": True,
+        }
     except Exception as exc:
         if isinstance(exc, FileNotFoundError) or _is_workflow_instance_missing_error(exc):
             logger.info("[agent-runs] Terminate skipped for %s: already gone", instance_id)
