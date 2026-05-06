@@ -228,6 +228,33 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
+	it("does not block launches when live node filesystem stats are unavailable", () => {
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [
+				workerNode("worker-a", {
+					cpu: "8000m",
+					memory: "32Gi",
+					"ephemeral-storage": "200Gi",
+				}),
+			],
+			pods: [],
+			nodeStorageStats: new Map(),
+			sandboxRequest: {
+				cpuMilli: 100,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+			},
+		});
+
+		expect(snapshot).toMatchObject({
+			nodeFsAvailableBytes: null,
+			nodeFsLimitedCapacity: null,
+			ephemeralStorageLimitedCapacity: 25,
+			availableSandboxSlots: 25,
+			schedulableSandboxCapacity: 25,
+		});
+	});
+
 	it("excludes workers with DiskPressure from schedulable capacity", () => {
 		const snapshot = estimateSchedulableSandboxCapacity({
 			nodes: [

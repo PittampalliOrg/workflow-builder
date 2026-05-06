@@ -354,12 +354,13 @@ export function estimateSchedulableSandboxCapacity(params: {
 	const nodes = schedulableWorkerNodes(params.nodes);
 	const nodeNames = new Set(nodes.map((node) => node.metadata!.name!));
 	const nodeStorageStats = params.nodeStorageStats ?? null;
+	const hasNodeStorageStats = !!nodeStorageStats && nodeStorageStats.size > 0;
 	const nodeFsReserveBytes = nodeFsEvictionReserveBytes();
 	let allocatableCpuMilli = 0;
 	let allocatableMemoryBytes = 0;
 	let allocatableEphemeralStorageBytes = 0;
-	let nodeFsAvailableBytes: number | null = nodeStorageStats ? 0 : null;
-	let nodeFsCapacityBytes: number | null = nodeStorageStats ? 0 : null;
+	let nodeFsAvailableBytes: number | null = hasNodeStorageStats ? 0 : null;
+	let nodeFsCapacityBytes: number | null = hasNodeStorageStats ? 0 : null;
 	for (const node of nodes) {
 		const nodeName = node.metadata!.name!;
 		const allocatable = node.status?.allocatable ?? {};
