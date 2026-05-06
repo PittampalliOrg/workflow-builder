@@ -85,6 +85,10 @@ describe("benchmark capacity diagnostics", () => {
 			modelCaps: {
 				modelMaxActiveRequests: 64,
 			},
+			workflowLifecycle: {
+				issue: "dapr_component_diagnostics_unavailable",
+				error: "not_computed",
+			},
 			capReason: "global_max",
 		});
 		expect(diagnostics.computedAt).toEqual(expect.any(String));
@@ -96,9 +100,115 @@ describe("benchmark capacity diagnostics", () => {
 	});
 
 	it("counts explicit selected instances and falls back to one", () => {
-		expect(__benchmarkCapacityDiagnosticsForTest.instanceCount(["a", "b"])).toBe(2);
+		expect(
+			__benchmarkCapacityDiagnosticsForTest.instanceCount(["a", "b"]),
+		).toBe(2);
 		expect(__benchmarkCapacityDiagnosticsForTest.instanceCount([])).toBe(1);
 		expect(__benchmarkCapacityDiagnosticsForTest.instanceCount("12")).toBe(12);
 		expect(__benchmarkCapacityDiagnosticsForTest.instanceCount("many")).toBe(1);
+	});
+
+	it("flags multi-app workflow actor state-store mismatches", () => {
+		const diagnostics =
+			__benchmarkCapacityDiagnosticsForTest.buildWorkflowLifecycleDiagnostics({
+				childAppId: "agent-runtime-pool-coding",
+				components: [
+					{
+						metadata: { name: "workflowstatestore" },
+						scopes: ["workflow-orchestrator"],
+						spec: {
+							type: "state.postgresql",
+							metadata: [
+								{ name: "actorStateStore", value: "true" },
+								{ name: "tablePrefix", value: "wfstate_" },
+								{
+									name: "connectionString",
+									secretKeyRef: {
+										name: "workflow-builder-secrets",
+										key: "DATABASE_URL",
+									},
+								},
+							],
+						},
+					},
+					{
+						metadata: { name: "dapr-agent-py-statestore" },
+						scopes: ["agent-runtime-pool-coding"],
+						spec: {
+							type: "state.postgresql",
+							metadata: [
+								{ name: "actorStateStore", value: "true" },
+								{ name: "tablePrefix", value: "agent_py_" },
+								{
+									name: "connectionString",
+									secretKeyRef: {
+										name: "dapr-agent-py-secrets",
+										key: "DAPR_POSTGRES_CONNECTION_STRING",
+									},
+								},
+							],
+						},
+					},
+				],
+			});
+
+		expect(diagnostics).toMatchObject({
+			parentAppId: "workflow-orchestrator",
+			childAppId: "agent-runtime-pool-coding",
+			sharedActorStateStore: false,
+			issue: "dapr_actor_state_store_mismatch",
+			parentActorStateStore: {
+				componentName: "workflowstatestore",
+				tablePrefix: "wfstate_",
+			},
+			childActorStateStore: {
+				componentName: "dapr-agent-py-statestore",
+				tablePrefix: "agent_py_",
+			},
+		});
+	});
+
+	it("accepts differently named components when they share the same backing actor store", () => {
+		const diagnostics =
+			__benchmarkCapacityDiagnosticsForTest.buildWorkflowLifecycleDiagnostics({
+				childAppId: "agent-runtime-pool-coding",
+				components: [
+					{
+						metadata: { name: "parent-store" },
+						scopes: ["workflow-orchestrator"],
+						spec: {
+							type: "state.postgresql",
+							metadata: [
+								{ name: "actorStateStore", value: "true" },
+								{ name: "tablePrefix", value: "wfstate_" },
+								{
+									name: "connectionString",
+									secretKeyRef: { name: "shared", key: "DATABASE_URL" },
+								},
+							],
+						},
+					},
+					{
+						metadata: { name: "child-store" },
+						scopes: ["agent-runtime-pool-coding"],
+						spec: {
+							type: "state.postgresql",
+							metadata: [
+								{ name: "actorStateStore", value: "true" },
+								{ name: "tablePrefix", value: "wfstate_" },
+								{
+									name: "connectionString",
+									secretKeyRef: { name: "shared", key: "DATABASE_URL" },
+								},
+							],
+						},
+					},
+				],
+			});
+
+		expect(diagnostics).toMatchObject({
+			sharedActorStateStore: true,
+			issue: null,
+		});
 	});
 });

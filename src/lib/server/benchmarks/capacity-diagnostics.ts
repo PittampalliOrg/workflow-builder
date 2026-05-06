@@ -1,8 +1,15 @@
 import { error } from "@sveltejs/kit";
 import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { benchmarkRuns, type BenchmarkResourceLeaseType } from "$lib/server/db/schema";
+import {
+	benchmarkRuns,
+	type BenchmarkResourceLeaseType,
+} from "$lib/server/db/schema";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
+import {
+	listDaprComponents,
+	type DaprComponent,
+} from "$lib/server/kube/client";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
 import { loadBenchmarkResourceCapacityDiagnostics } from "./resource-leases";
@@ -61,7 +68,9 @@ export type BenchmarkCapacityDiagnostics = {
 	storedEffectiveConcurrency: number;
 	selectedInstanceCount: number;
 	blockedBy: BenchmarkResourceLeaseType[];
-	resources: Awaited<ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>>;
+	resources: Awaited<
+		ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>
+	>;
 	runtime: {
 		class: string | null;
 		appId: string | null;
@@ -87,15 +96,200 @@ export type BenchmarkCapacityDiagnostics = {
 	modelCaps: {
 		modelMaxActiveRequests: number | null;
 	};
+	workflowLifecycle: BenchmarkWorkflowLifecycleDiagnostics;
 	capReason: string | null;
 	computedAt: string;
 };
+
+export type BenchmarkWorkflowActorStateStore = {
+	componentName: string;
+	componentType: string | null;
+	tablePrefix: string | null;
+	connectionSecretRef: string | null;
+	scoped: boolean;
+};
+
+export type BenchmarkWorkflowLifecycleDiagnostics = {
+	parentAppId: string;
+	childAppId: string | null;
+	sharedActorStateStore: boolean | null;
+	parentActorStateStore: BenchmarkWorkflowActorStateStore | null;
+	childActorStateStore: BenchmarkWorkflowActorStateStore | null;
+	issue: string | null;
+	error: string | null;
+};
+
+const PARENT_WORKFLOW_APP_ID = "workflow-orchestrator";
+
+type DaprComponentMetadata = NonNullable<
+	NonNullable<DaprComponent["spec"]>["metadata"]
+>[number];
+
+function componentMetadata(
+	component: DaprComponent,
+	name: string,
+): DaprComponentMetadata | undefined {
+	return component.spec?.metadata?.find((entry) => entry.name === name);
+}
+
+function metadataValue(component: DaprComponent, name: string): string | null {
+	const entry = componentMetadata(component, name);
+	if (!entry) return null;
+	if (typeof entry.value === "string" && entry.value.trim())
+		return entry.value.trim();
+	if (typeof entry.value === "number" || typeof entry.value === "boolean") {
+		return String(entry.value);
+	}
+	return null;
+}
+
+function metadataSecretRef(
+	component: DaprComponent,
+	name: string,
+): string | null {
+	const entry = componentMetadata(component, name);
+	const secret = entry?.secretKeyRef;
+	if (!secret?.name || !secret.key) return null;
+	return `${secret.name}:${secret.key}`;
+}
+
+function isActorStateStore(component: DaprComponent): boolean {
+	return metadataValue(component, "actorStateStore")?.toLowerCase() === "true";
+}
+
+function componentVisibleToApp(
+	component: DaprComponent,
+	appId: string,
+): boolean {
+	const scopes = component.scopes ?? [];
+	return scopes.length === 0 || scopes.includes(appId);
+}
+
+function actorStoreForApp(
+	components: DaprComponent[],
+	appId: string,
+): BenchmarkWorkflowActorStateStore | null {
+	const stores = components.filter(
+		(component) =>
+			isActorStateStore(component) && componentVisibleToApp(component, appId),
+	);
+	if (stores.length !== 1) return null;
+	const [store] = stores;
+	return {
+		componentName: store.metadata?.name ?? "unknown",
+		componentType: store.spec?.type ?? null,
+		tablePrefix: metadataValue(store, "tablePrefix"),
+		connectionSecretRef: metadataSecretRef(store, "connectionString"),
+		scoped: (store.scopes ?? []).length > 0,
+	};
+}
+
+function actorStoreCountForApp(
+	components: DaprComponent[],
+	appId: string,
+): number {
+	return components.filter(
+		(component) =>
+			isActorStateStore(component) && componentVisibleToApp(component, appId),
+	).length;
+}
+
+function actorStoreIdentity(store: BenchmarkWorkflowActorStateStore): string {
+	return [
+		store.componentType ?? "",
+		store.connectionSecretRef ?? "",
+		store.tablePrefix ?? "",
+	].join("|");
+}
+
+export function buildWorkflowLifecycleDiagnostics(params: {
+	components: DaprComponent[];
+	childAppId?: string | null;
+	parentAppId?: string | null;
+	error?: string | null;
+}): BenchmarkWorkflowLifecycleDiagnostics {
+	const parentAppId = params.parentAppId ?? PARENT_WORKFLOW_APP_ID;
+	const childAppId = params.childAppId?.trim() || null;
+	if (params.error) {
+		return {
+			parentAppId,
+			childAppId,
+			sharedActorStateStore: null,
+			parentActorStateStore: null,
+			childActorStateStore: null,
+			issue: "dapr_component_diagnostics_unavailable",
+			error: params.error,
+		};
+	}
+	if (!childAppId) {
+		return {
+			parentAppId,
+			childAppId,
+			sharedActorStateStore: null,
+			parentActorStateStore: null,
+			childActorStateStore: null,
+			issue: "missing_child_app_id",
+			error: null,
+		};
+	}
+
+	const parentCount = actorStoreCountForApp(params.components, parentAppId);
+	const childCount = actorStoreCountForApp(params.components, childAppId);
+	const parentStore = actorStoreForApp(params.components, parentAppId);
+	const childStore = actorStoreForApp(params.components, childAppId);
+	const issue =
+		parentCount === 0
+			? "missing_parent_actor_state_store"
+			: parentCount > 1
+				? "duplicate_parent_actor_state_store"
+				: childCount === 0
+					? "missing_child_actor_state_store"
+					: childCount > 1
+						? "duplicate_child_actor_state_store"
+						: parentStore &&
+							  childStore &&
+							  actorStoreIdentity(parentStore) !==
+									actorStoreIdentity(childStore)
+							? "dapr_actor_state_store_mismatch"
+							: null;
+
+	return {
+		parentAppId,
+		childAppId,
+		sharedActorStateStore:
+			parentStore && childStore
+				? actorStoreIdentity(parentStore) === actorStoreIdentity(childStore)
+				: null,
+		parentActorStateStore: parentStore,
+		childActorStateStore: childStore,
+		issue,
+		error: null,
+	};
+}
+
+async function loadWorkflowLifecycleDiagnostics(
+	childAppId: string | null | undefined,
+): Promise<BenchmarkWorkflowLifecycleDiagnostics> {
+	try {
+		const components = await listDaprComponents();
+		return buildWorkflowLifecycleDiagnostics({ components, childAppId });
+	} catch (err) {
+		return buildWorkflowLifecycleDiagnostics({
+			components: [],
+			childAppId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
 
 function diagnosticsFromCapacity(params: {
 	run: typeof benchmarkRuns.$inferSelect;
 	capacity: Record<string, unknown>;
 	selectedInstanceCount: number;
-	resources: Awaited<ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>>;
+	resources: Awaited<
+		ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>
+	>;
+	workflowLifecycle?: BenchmarkWorkflowLifecycleDiagnostics | null;
 }): BenchmarkCapacityDiagnostics {
 	const capacity = params.capacity;
 	const sandboxCapacity = isRecord(capacity.sandboxCapacity)
@@ -118,8 +312,14 @@ function diagnosticsFromCapacity(params: {
 		blockedBy,
 		resources: params.resources,
 		runtime: {
-			class: typeof capacity.runtimeClass === "string" ? capacity.runtimeClass : null,
-			appId: typeof capacity.runtimeAppId === "string" ? capacity.runtimeAppId : null,
+			class:
+				typeof capacity.runtimeClass === "string"
+					? capacity.runtimeClass
+					: null,
+			appId:
+				typeof capacity.runtimeAppId === "string"
+					? capacity.runtimeAppId
+					: null,
 			replicas: positiveInt(capacity.runtimeReplicas),
 			slotsPerReplica: positiveInt(capacity.slotsPerReplica),
 			slots: positiveInt(capacity.runtimeSlots),
@@ -130,13 +330,21 @@ function diagnosticsFromCapacity(params: {
 				positiveInt(capacity.daprWorkflowLimitPerSidecar) ??
 				positiveInt(capacity.perSidecarWorkflowLimit),
 			effectiveCapacity: positiveInt(capacity.daprWorkflowEffectiveCapacity),
-			agentWorkflowMaxActiveTurns: positiveInt(capacity.agentWorkflowMaxActiveTurns),
+			agentWorkflowMaxActiveTurns: positiveInt(
+				capacity.agentWorkflowMaxActiveTurns,
+			),
 		},
 		sandbox: {
-			configuredMaxActiveSandboxes: nonNegativeInt(capacity.configuredMaxActiveSandboxes),
+			configuredMaxActiveSandboxes: nonNegativeInt(
+				capacity.configuredMaxActiveSandboxes,
+			),
 			maxActiveSandboxes: nonNegativeInt(capacity.maxActiveSandboxes),
-			schedulableSandboxCapacity: nonNegativeInt(capacity.schedulableSandboxCapacity),
-			availableSandboxSlots: nonNegativeInt(sandboxCapacity.availableSandboxSlots),
+			schedulableSandboxCapacity: nonNegativeInt(
+				capacity.schedulableSandboxCapacity,
+			),
+			availableSandboxSlots: nonNegativeInt(
+				sandboxCapacity.availableSandboxSlots,
+			),
 			activeSwebenchPods: nonNegativeInt(sandboxCapacity.activeSwebenchPods),
 			pendingSwebenchPods: nonNegativeInt(sandboxCapacity.pendingSwebenchPods),
 			error:
@@ -147,12 +355,24 @@ function diagnosticsFromCapacity(params: {
 		modelCaps: {
 			modelMaxActiveRequests: positiveInt(capacity.modelMaxActiveRequests),
 		},
-		capReason: typeof capacity.capReason === "string" ? capacity.capReason : null,
+		workflowLifecycle:
+			params.workflowLifecycle ??
+			buildWorkflowLifecycleDiagnostics({
+				components: [],
+				childAppId:
+					typeof capacity.runtimeAppId === "string"
+						? capacity.runtimeAppId
+						: params.run.agentRuntimeAppId,
+				error: "not_computed",
+			}),
+		capReason:
+			typeof capacity.capReason === "string" ? capacity.capReason : null,
 		computedAt: new Date().toISOString(),
 	};
 }
 
 export const __benchmarkCapacityDiagnosticsForTest = {
+	buildWorkflowLifecycleDiagnostics,
 	diagnosticsFromCapacity,
 	instanceCount,
 };
@@ -165,22 +385,28 @@ export async function getBenchmarkRunCapacityDiagnostics(
 	const [run] = await database
 		.select()
 		.from(benchmarkRuns)
-		.where(and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)))
+		.where(
+			and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)),
+		)
 		.limit(1);
 	if (!run) return null;
 	const capacity = capacityFromSummary(run.summary);
 	const selectedInstanceCount = instanceCount(run.selectedInstanceIds);
 	const liveSandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
-	const resources = await loadBenchmarkResourceCapacityDiagnostics({
-		run,
-		resources: DIAGNOSTIC_RESOURCES,
-		liveSandboxCapacity,
-	});
+	const [resources, workflowLifecycle] = await Promise.all([
+		loadBenchmarkResourceCapacityDiagnostics({
+			run,
+			resources: DIAGNOSTIC_RESOURCES,
+			liveSandboxCapacity,
+		}),
+		loadWorkflowLifecycleDiagnostics(run.agentRuntimeAppId),
+	]);
 	return diagnosticsFromCapacity({
 		run,
 		capacity,
 		selectedInstanceCount,
 		resources,
+		workflowLifecycle,
 	});
 }
 
@@ -238,8 +464,9 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 			agent.modelSpec ||
 			`${agent.slug}@v${agent.version}`,
 		modelConfigLabel: input.modelConfigLabel?.trim() || null,
-		selectedInstanceIds: Array.from({ length: selectedInstanceCount }, (_, index) =>
-			String(index),
+		selectedInstanceIds: Array.from(
+			{ length: selectedInstanceCount },
+			(_, index) => String(index),
 		),
 		concurrency: capacity.effectiveConcurrency,
 		evaluationConcurrency: positiveInt(input.evaluationConcurrency) ?? 24,
@@ -260,15 +487,19 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		createdAt: new Date(),
 		updatedAt: new Date(),
 	} as typeof benchmarkRuns.$inferSelect;
-	const resources = await loadBenchmarkResourceCapacityDiagnostics({
-		run: pseudoRun,
-		resources: DIAGNOSTIC_RESOURCES,
-		liveSandboxCapacity: sandboxCapacity,
-	});
+	const [resources, workflowLifecycle] = await Promise.all([
+		loadBenchmarkResourceCapacityDiagnostics({
+			run: pseudoRun,
+			resources: DIAGNOSTIC_RESOURCES,
+			liveSandboxCapacity: sandboxCapacity,
+		}),
+		loadWorkflowLifecycleDiagnostics(runtimeRoute.appId),
+	]);
 	return diagnosticsFromCapacity({
 		run: pseudoRun,
 		capacity,
 		selectedInstanceCount,
 		resources,
+		workflowLifecycle,
 	});
 }

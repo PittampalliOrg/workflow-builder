@@ -31,6 +31,19 @@
 		sandbox: {
 			schedulableSandboxCapacity: number | null;
 		};
+		workflowLifecycle?: {
+			sharedActorStateStore: boolean | null;
+			issue: string | null;
+			error: string | null;
+			parentActorStateStore: {
+				componentName: string;
+				tablePrefix: string | null;
+			} | null;
+			childActorStateStore: {
+				componentName: string;
+				tablePrefix: string | null;
+			} | null;
+		};
 	};
 
 	type Props = {
@@ -494,6 +507,15 @@
 						{#if capacityDiagnostics.blockedBy.length > 0}
 							<span class="text-amber-600">
 								· blocked by {capacityDiagnostics.blockedBy.map((r) => r.replace(/_/g, ' ')).join(', ')}
+							</span>
+						{/if}
+						{#if capacityDiagnostics.workflowLifecycle?.issue === 'dapr_actor_state_store_mismatch'}
+							<span class="text-amber-600">
+								· workflow store mismatch {capacityDiagnostics.workflowLifecycle.parentActorStateStore?.componentName ?? 'parent'} → {capacityDiagnostics.workflowLifecycle.childActorStateStore?.componentName ?? 'child'}
+							</span>
+						{:else if capacityDiagnostics.workflowLifecycle?.issue && capacityDiagnostics.workflowLifecycle.issue !== 'dapr_component_diagnostics_unavailable'}
+							<span class="text-amber-600">
+								· workflow lifecycle {capacityDiagnostics.workflowLifecycle.issue.replace(/_/g, ' ')}
 							</span>
 						{/if}
 					</div>

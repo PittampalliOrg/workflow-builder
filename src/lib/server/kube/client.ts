@@ -197,11 +197,37 @@ export type KubeNode = {
 	};
 };
 
-export async function listDeployments(namespace?: string): Promise<KubeDeployment[]> {
+export type DaprComponent = {
+	metadata?: {
+		name?: string;
+		namespace?: string;
+	};
+	scopes?: string[];
+	spec?: {
+		type?: string;
+		version?: string;
+		metadata?: Array<{
+			name?: string;
+			value?: unknown;
+			secretKeyRef?: {
+				name?: string;
+				key?: string;
+			};
+		}>;
+	};
+};
+
+export async function listDeployments(
+	namespace?: string,
+): Promise<KubeDeployment[]> {
 	const ns = namespace ?? (await getOwnNamespace());
-	const res = await kubeFetch(`/apis/apps/v1/namespaces/${encodeURIComponent(ns)}/deployments`);
+	const res = await kubeFetch(
+		`/apis/apps/v1/namespaces/${encodeURIComponent(ns)}/deployments`,
+	);
 	if (!res.ok) {
-		throw new Error(`listDeployments ${ns} failed: ${res.status} ${await res.text()}`);
+		throw new Error(
+			`listDeployments ${ns} failed: ${res.status} ${await res.text()}`,
+		);
 	}
 	const body = (await res.json()) as { items?: KubeDeployment[] };
 	return body.items ?? [];
@@ -209,7 +235,9 @@ export async function listDeployments(namespace?: string): Promise<KubeDeploymen
 
 export async function listPods(namespace?: string): Promise<KubePod[]> {
 	const ns = namespace ?? (await getOwnNamespace());
-	const res = await kubeFetch(`/api/v1/namespaces/${encodeURIComponent(ns)}/pods`);
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${encodeURIComponent(ns)}/pods`,
+	);
 	if (!res.ok) {
 		throw new Error(`listPods ${ns} failed: ${res.status} ${await res.text()}`);
 	}
@@ -220,7 +248,9 @@ export async function listPods(namespace?: string): Promise<KubePod[]> {
 export async function listPodsAllNamespaces(): Promise<KubePod[]> {
 	const res = await kubeFetch("/api/v1/pods");
 	if (!res.ok) {
-		throw new Error(`listPods all namespaces failed: ${res.status} ${await res.text()}`);
+		throw new Error(
+			`listPods all namespaces failed: ${res.status} ${await res.text()}`,
+		);
 	}
 	const body = (await res.json()) as { items?: KubePod[] };
 	return body.items ?? [];
@@ -232,6 +262,22 @@ export async function listNodes(): Promise<KubeNode[]> {
 		throw new Error(`listNodes failed: ${res.status} ${await res.text()}`);
 	}
 	const body = (await res.json()) as { items?: KubeNode[] };
+	return body.items ?? [];
+}
+
+export async function listDaprComponents(
+	namespace?: string,
+): Promise<DaprComponent[]> {
+	const ns = namespace ?? (await getOwnNamespace());
+	const res = await kubeFetch(
+		`/apis/dapr.io/v1alpha1/namespaces/${encodeURIComponent(ns)}/components`,
+	);
+	if (!res.ok) {
+		throw new Error(
+			`listDaprComponents ${ns} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	const body = (await res.json()) as { items?: DaprComponent[] };
 	return body.items ?? [];
 }
 
@@ -286,7 +332,10 @@ function httpsRequest(
 				port: u.port || 443,
 				path: `${u.pathname}${u.search}`,
 				method,
-				headers: body !== undefined ? { ...headers, "Content-Length": String(Buffer.byteLength(body)) } : headers,
+				headers:
+					body !== undefined
+						? { ...headers, "Content-Length": String(Buffer.byteLength(body)) }
+						: headers,
 				agent,
 			},
 			(res) => {
@@ -300,7 +349,9 @@ function httpsRequest(
 							statusText: res.statusMessage ?? "",
 							headers: Object.fromEntries(
 								Object.entries(res.headers).flatMap(([k, v]) =>
-									v === undefined ? [] : [[k, Array.isArray(v) ? v.join(", ") : v]],
+									v === undefined
+										? []
+										: [[k, Array.isArray(v) ? v.join(", ") : v]],
 								),
 							),
 						}),
@@ -315,7 +366,10 @@ function httpsRequest(
 	});
 }
 
-export async function kubeApiFetch(path: string, init: KubeRequestInit = {}): Promise<Response> {
+export async function kubeApiFetch(
+	path: string,
+	init: KubeRequestInit = {},
+): Promise<Response> {
 	const token = await getToken();
 	const agent = await getAgent();
 	const url = `https://${K8S_HOST}:${K8S_PORT}${path}`;
@@ -395,9 +449,13 @@ function kubeconfigDataValue(value: unknown): Buffer | undefined {
 async function loadKubeconfigAuth(options: KubeconfigFetchOptions) {
 	const raw =
 		readString(options.kubeconfigContent) ??
-		(options.kubeconfigPath ? await fs.readFile(options.kubeconfigPath, "utf-8") : null);
+		(options.kubeconfigPath
+			? await fs.readFile(options.kubeconfigPath, "utf-8")
+			: null);
 	if (!raw) throw new Error("kubeconfig content or path is required");
-	const baseDir = options.kubeconfigPath ? dirname(options.kubeconfigPath) : null;
+	const baseDir = options.kubeconfigPath
+		? dirname(options.kubeconfigPath)
+		: null;
 	const doc = yaml.load(raw) as KubeconfigDocument | null;
 	const contextName =
 		readString(options.context) ?? readString(doc?.["current-context"]);
@@ -407,13 +465,18 @@ async function loadKubeconfigAuth(options: KubeconfigFetchOptions) {
 	);
 	const clusterName = readString(context.cluster);
 	const userName = readString(context.user);
-	if (!clusterName) throw new Error(`kubeconfig context ${contextName} is missing cluster`);
-	if (!userName) throw new Error(`kubeconfig context ${contextName} is missing user`);
+	if (!clusterName)
+		throw new Error(`kubeconfig context ${contextName} is missing cluster`);
+	if (!userName)
+		throw new Error(`kubeconfig context ${contextName} is missing user`);
 
-	const cluster = asRecord(findNamed(doc?.clusters, clusterName, "cluster").cluster);
+	const cluster = asRecord(
+		findNamed(doc?.clusters, clusterName, "cluster").cluster,
+	);
 	const user = asRecord(findNamed(doc?.users, userName, "user").user);
 	const server = readString(cluster.server);
-	if (!server) throw new Error(`kubeconfig cluster ${clusterName} is missing server`);
+	if (!server)
+		throw new Error(`kubeconfig cluster ${clusterName} is missing server`);
 
 	const ca =
 		kubeconfigDataValue(cluster["certificate-authority-data"]) ??
@@ -444,7 +507,13 @@ async function loadKubeconfigAuth(options: KubeconfigFetchOptions) {
 	return {
 		server,
 		headers,
-		agent: new https.Agent({ ca, cert, key, rejectUnauthorized, keepAlive: true }),
+		agent: new https.Agent({
+			ca,
+			cert,
+			key,
+			rejectUnauthorized,
+			keepAlive: true,
+		}),
 	};
 }
 
@@ -585,7 +654,10 @@ const GROUP = "agents.x-k8s.io";
 const VERSION = "v1alpha1";
 const PLURAL = "agentruntimes";
 
-function crPath(name: string, namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE): string {
+function crPath(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
 	return `/apis/${GROUP}/${VERSION}/namespaces/${namespace}/${PLURAL}/${name}`;
 }
 
@@ -645,7 +717,9 @@ export async function upsertAgentRuntime(
 			body: JSON.stringify(body),
 		});
 		if (!res.ok) {
-			throw new Error(`create AgentRuntime ${name} failed: ${res.status} ${await res.text()}`);
+			throw new Error(
+				`create AgentRuntime ${name} failed: ${res.status} ${await res.text()}`,
+			);
 		}
 		return (await res.json()) as AgentRuntime;
 	}
@@ -666,7 +740,9 @@ export async function upsertAgentRuntime(
 		body: JSON.stringify(patch),
 	});
 	if (!res.ok) {
-		throw new Error(`patch AgentRuntime ${name} failed: ${res.status} ${await res.text()}`);
+		throw new Error(
+			`patch AgentRuntime ${name} failed: ${res.status} ${await res.text()}`,
+		);
 	}
 	return (await res.json()) as AgentRuntime;
 }
@@ -723,9 +799,17 @@ export async function getAgentRuntimePod(
 		const podIP = pod.status?.podIP;
 		if (!name || !podIP) continue;
 		const containers = (pod.status?.containerStatuses ?? [])
-			.filter((c): c is { name: string; ready: boolean } => typeof c.name === "string")
+			.filter(
+				(c): c is { name: string; ready: boolean } =>
+					typeof c.name === "string",
+			)
 			.map((c) => ({ name: c.name, ready: c.ready === true }));
-		return { name, namespace: pod.metadata?.namespace ?? namespace, podIP, containers };
+		return {
+			name,
+			namespace: pod.metadata?.namespace ?? namespace,
+			podIP,
+			containers,
+		};
 	}
 	return null;
 }

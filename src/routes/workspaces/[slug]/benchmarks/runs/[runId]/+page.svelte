@@ -312,6 +312,23 @@
 							Blocked by {capacityDiagnostics.blockedBy.map(resourceLabel).join(', ')}
 						</div>
 					{/if}
+					{#if capacityDiagnostics.workflowLifecycle?.issue === 'dapr_actor_state_store_mismatch'}
+						<div class="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+							Dapr workflow lifecycle risk: parent store {capacityDiagnostics.workflowLifecycle.parentActorStateStore?.componentName ?? 'unknown'}
+							{#if capacityDiagnostics.workflowLifecycle.parentActorStateStore?.tablePrefix}
+								({capacityDiagnostics.workflowLifecycle.parentActorStateStore.tablePrefix})
+							{/if}
+							and child store {capacityDiagnostics.workflowLifecycle.childActorStateStore?.componentName ?? 'unknown'}
+							{#if capacityDiagnostics.workflowLifecycle.childActorStateStore?.tablePrefix}
+								({capacityDiagnostics.workflowLifecycle.childActorStateStore.tablePrefix})
+							{/if}
+							do not share actor state.
+						</div>
+					{:else if capacityDiagnostics.workflowLifecycle?.issue && capacityDiagnostics.workflowLifecycle.issue !== 'dapr_component_diagnostics_unavailable'}
+						<div class="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+							Dapr workflow lifecycle check: {capacityDiagnostics.workflowLifecycle.issue.replace(/_/g, ' ')}
+						</div>
+					{/if}
 					<div class="mt-2 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
 						{#each capacityDiagnostics.resources as resource (resource.resourceType + resource.capacityKey)}
 							<div class="flex items-center justify-between gap-2 rounded border border-border bg-background/70 px-2 py-1">
