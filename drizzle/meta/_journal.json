@@ -407,6 +407,13 @@
 			"when": 1778078823887,
 			"tag": "0065_ensure_resource_library_tables",
 			"breakpoints": true
+		},
+		{
+			"idx": 58,
+			"version": "7",
+			"when": 1778083003077,
+			"tag": "0066_ensure_workflow_workspace_sessions",
+			"breakpoints": true
 		}
 	]
 }

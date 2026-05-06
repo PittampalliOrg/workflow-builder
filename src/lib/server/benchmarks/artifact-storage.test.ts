@@ -5,6 +5,7 @@ vi.mock("$lib/server/db", () => ({ db: null }));
 
 import {
 	benchmarkArtifactObjectKey,
+	getBenchmarkArtifact,
 	normalizeBenchmarkArtifactPath,
 	putBenchmarkArtifact,
 } from "./artifact-storage";
@@ -62,5 +63,25 @@ describe("benchmark artifact storage", () => {
 				}),
 			}),
 		);
+	});
+
+	it("treats Dapr blob binding not-found failures as missing artifacts", async () => {
+		vi.stubEnv("SWEBENCH_ARTIFACT_STORAGE_BACKEND", "dapr-blob");
+		vi.stubEnv("SWEBENCH_ARTIFACT_DAPR_BINDING", "swebench-artifacts");
+		vi.stubEnv("DAPR_HTTP_PORT", "3500");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						errorCode: "ERR_INVOKE_OUTPUT_BINDING",
+						message: "error invoking output binding swebench-artifacts: blob not found",
+					}),
+					{ status: 500 },
+				),
+			),
+		);
+
+		await expect(getBenchmarkArtifact("run_1", "instance/.status")).resolves.toBeNull();
 	});
 });

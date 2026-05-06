@@ -149,9 +149,9 @@ export async function getBenchmarkArtifact(
 		const response = await invokeDaprBlobBinding("get", null, { blobName: objectKey });
 		if (response.status === 404) return null;
 		if (!response.ok) {
-			throw new Error(
-				`Dapr blob get failed for ${objectKey}: ${response.status} ${await response.text()}`,
-			);
+			const body = await response.text();
+			if (isDaprBlobNotFound(response.status, body)) return null;
+			throw new Error(`Dapr blob get failed for ${objectKey}: ${response.status} ${body}`);
 		}
 		return {
 			body: new Uint8Array(await response.arrayBuffer()),
@@ -173,6 +173,16 @@ export async function getBenchmarkArtifact(
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
 	}
+}
+
+function isDaprBlobNotFound(status: number, body: string): boolean {
+	if (status === 404) return true;
+	const normalized = body.toLowerCase();
+	return (
+		status === 500 &&
+		normalized.includes("err_invoke_output_binding") &&
+		normalized.includes("blob not found")
+	);
 }
 
 export async function deleteBenchmarkArtifact(runId: string, path: string) {
