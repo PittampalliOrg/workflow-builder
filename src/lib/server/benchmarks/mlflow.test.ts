@@ -8,6 +8,7 @@ import {
 	listMlflowArtifacts,
 	logMlflowJsonArtifact,
 	publicMlflowTracesUrl,
+	publicWorkflowBuilderTraceUrl,
 } from "./mlflow";
 
 beforeEach(() => {
@@ -26,6 +27,14 @@ describe("publicMlflowTracesUrl", () => {
 
 	it("omits links when no trace id was recorded", () => {
 		expect(publicMlflowTracesUrl("1", null)).toBeNull();
+	});
+
+	it("builds absolute workflow-builder trace redirects when the app URL is configured", () => {
+		vi.stubEnv("APP_PUBLIC_URL", "https://workflow-builder-dev.example.com/");
+
+		expect(publicWorkflowBuilderTraceUrl("abc123")).toBe(
+			"https://workflow-builder-dev.example.com/api/observability/mlflow/traces/abc123",
+		);
 	});
 });
 

@@ -4352,13 +4352,15 @@ export function collectBenchmarkTraceIds(...values: unknown[]): string[] {
 				typeof child === "string" &&
 				child.trim()
 			) {
-				traceIds.add(child.trim());
+				const normalized = normalizeBenchmarkTraceId(child);
+				if (normalized) traceIds.add(normalized);
 				continue;
 			}
 			if ((key === "traceIds" || key === "trace_ids") && Array.isArray(child)) {
 				for (const traceId of child) {
-					if (typeof traceId === "string" && traceId.trim()) {
-						traceIds.add(traceId.trim());
+					if (typeof traceId === "string") {
+						const normalized = normalizeBenchmarkTraceId(traceId);
+						if (normalized) traceIds.add(normalized);
 					}
 				}
 				continue;
@@ -4368,6 +4370,13 @@ export function collectBenchmarkTraceIds(...values: unknown[]): string[] {
 	};
 	for (const value of values) visit(value);
 	return Array.from(traceIds);
+}
+
+function normalizeBenchmarkTraceId(value: string): string | null {
+	const trimmed = value.trim();
+	const raw = trimmed.startsWith("tr-") ? trimmed.slice(3) : trimmed;
+	if (!/^[a-f0-9]{32}$/i.test(raw) || /^0{32}$/.test(raw)) return null;
+	return raw.toLowerCase();
 }
 
 function firstStringByKey(values: unknown[], keys: string[]): string | null {

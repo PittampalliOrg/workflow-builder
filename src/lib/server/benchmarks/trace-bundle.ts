@@ -21,7 +21,9 @@ import {
 	logBatch,
 	logMlflowJsonArtifact,
 	publicMlflowTracesUrl,
+	publicWorkflowBuilderTraceUrl,
 } from "./mlflow";
+import type { MlflowTag } from "./mlflow";
 
 export type SwebenchTraceBundleBackend =
 	| "mlflow_artifact"
@@ -177,17 +179,28 @@ export async function logTraceBundleArtifact(
 	instanceId: string,
 	bundle: SwebenchTraceBundle,
 ): Promise<void> {
+	let mlflowRunId: string | null = null;
 	try {
-		const mlflowRunId =
+		mlflowRunId =
 			bundle.source.mlflowRunId ??
 			(await ensureBenchmarkInstanceMlflowRun({ runId, instanceId }));
 		if (!mlflowRunId) return;
+		await logTraceBundleTags(mlflowRunId, bundle);
+		await logParentTraceSummaryTags(runId, bundle);
+	} catch (err) {
+		console.warn(
+			`[mlflow] failed to log trace bundle tags ${runId}/${instanceId}:`,
+			errorMessage(err),
+		);
+	}
+
+	if (!mlflowRunId) return;
+	try {
 		await logMlflowJsonArtifact({
 			runId: mlflowRunId,
 			artifactPath: bundle.artifactPath,
 			value: { ...bundle, backend: bundle.backend === "none" ? "none" : bundle.backend },
 		});
-		await logTraceBundleTags(mlflowRunId, bundle);
 	} catch (err) {
 		console.warn(
 			`[mlflow] failed to log trace bundle artifact ${runId}/${instanceId}:`,
@@ -247,9 +260,15 @@ async function logTraceBundleTags(
 	bundle: SwebenchTraceBundle,
 ): Promise<void> {
 	await logBatch(mlflowRunId, {
-		tags: [
+		tags: compactTags([
 			{ key: "workflow_builder.trace_bundle_path", value: bundle.artifactPath },
 			{ key: "workflow_builder.trace_backend", value: "mlflow_artifact" },
+			{ key: "workflow_builder.trace_count", value: String(bundle.traceIds.length) },
+			{ key: "workflow_builder.first_trace_id", value: bundle.traceIds[0] ?? "" },
+			{
+				key: "workflow_builder.trace_url",
+				value: publicWorkflowBuilderTraceUrl(bundle.traceIds[0]) ?? bundle.mlflowTracesUrl ?? "",
+			},
 			{
 				key: "workflow_builder.trace_span_count",
 				value: String(bundle.summary.traceSpanCount),
@@ -262,8 +281,52 @@ async function logTraceBundleTags(
 				key: "workflow_builder.tool_span_count",
 				value: String(bundle.summary.toolSpanCount),
 			},
-		],
+		]),
 	});
+}
+
+async function logParentTraceSummaryTags(
+	runId: string,
+	bundle: SwebenchTraceBundle,
+): Promise<void> {
+	if (!db) return;
+	const database = db;
+	const [run] = await database
+		.select({ mlflowRunId: benchmarkRuns.mlflowRunId })
+		.from(benchmarkRuns)
+		.where(eq(benchmarkRuns.id, runId))
+		.limit(1);
+	if (!run?.mlflowRunId) return;
+
+	const rows = await database
+		.select({ traceIds: benchmarkRunInstances.traceIds })
+		.from(benchmarkRunInstances)
+		.where(eq(benchmarkRunInstances.runId, runId));
+	const traceIds = new Set<string>(bundle.traceIds);
+	for (const row of rows) {
+		for (const traceId of normalizeTraceIds(row.traceIds)) {
+			traceIds.add(traceId);
+		}
+	}
+	const firstTraceId = traceIds.values().next().value as string | undefined;
+	await logBatch(run.mlflowRunId, {
+		tags: compactTags([
+			{ key: "workflow_builder.trace_count", value: String(traceIds.size) },
+			{ key: "workflow_builder.first_trace_id", value: firstTraceId ?? "" },
+			{
+				key: "workflow_builder.trace_url",
+				value: publicWorkflowBuilderTraceUrl(firstTraceId) ?? "",
+			},
+			{
+				key: "workflow_builder.latest_trace_bundle_path",
+				value: bundle.artifactPath,
+			},
+		]),
+	});
+}
+
+function compactTags(tags: MlflowTag[]): MlflowTag[] {
+	return tags.filter((tag) => tag.value.trim().length > 0);
 }
 
 export async function buildSwebenchTraceBundleFromClickHouse(

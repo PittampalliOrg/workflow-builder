@@ -40,6 +40,63 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
+_otel_ready = False
+
+
+def _otel_trace_endpoint(endpoint: str) -> str:
+    trimmed = endpoint.rstrip("/")
+    if trimmed.endswith("/v1/traces"):
+        return trimmed
+    return f"{trimmed}/v1/traces"
+
+
+def _otel_resource_attributes() -> dict[str, str]:
+    attributes: dict[str, str] = {}
+    raw = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            attributes[key] = value
+    attributes.setdefault(
+        "service.name", os.environ.get("OTEL_SERVICE_NAME", "swebench-coordinator")
+    )
+    attributes.setdefault("service.namespace", "workflow-builder")
+    attributes.setdefault("openinference.project.name", "workflow-builder")
+    return attributes
+
+
+def _init_otel() -> None:
+    global _otel_ready
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, skipping tracing")
+        return
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.requests import RequestsInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        provider = TracerProvider(resource=Resource.create(_otel_resource_attributes()))
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint)))
+        )
+        trace.set_tracer_provider(provider)
+        RequestsInstrumentor().instrument()
+        _otel_ready = True
+        logger.info("OpenTelemetry tracing initialized -> %s", endpoint)
+    except Exception as exc:
+        logger.warning("OpenTelemetry init failed: %s", exc)
+
+
+_init_otel()
+
 WORKFLOW_BUILDER_URL = os.environ.get(
     "WORKFLOW_BUILDER_URL",
     "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
@@ -429,6 +486,32 @@ def _mlflow_instance_run_map(run: dict[str, Any]) -> dict[str, str]:
         ):
             out[instance_id] = mlflow_run_id
     return out
+
+
+def _child_otel_env(client: Any, run_id: str) -> list[Any]:
+    env: list[Any] = []
+    for name in (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_PROPAGATORS",
+        "OTEL_TRACES_EXPORTER",
+    ):
+        value = os.environ.get(name, "").strip()
+        if value:
+            env.append(client.V1EnvVar(name=name, value=value))
+    resource_attributes = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").strip()
+    extra_attributes = f"benchmark.run_id={run_id},workflow_builder.benchmark_run_id={run_id}"
+    env.append(
+        client.V1EnvVar(
+            name="OTEL_RESOURCE_ATTRIBUTES",
+            value=(
+                f"{resource_attributes},{extra_attributes}"
+                if resource_attributes
+                else extra_attributes
+            ),
+        )
+    )
+    return env
 
 
 def _load_evaluation_progress(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -913,6 +996,7 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 name="MLFLOW_INSTANCE_RUNS_JSON",
                 value=json.dumps(_mlflow_instance_run_map(run), sort_keys=True),
             ),
+            *_child_otel_env(client, run["id"]),
             client.V1EnvVar(
                 name="INTERNAL_API_TOKEN",
                 value_from=client.V1EnvVarSource(
@@ -2090,6 +2174,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="swebench-coordinator", lifespan=lifespan)
+
+if _otel_ready:
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz")
+        logger.info("FastAPI OpenTelemetry instrumentation applied")
+    except Exception as exc:
+        logger.warning("FastAPI OpenTelemetry instrumentation failed: %s", exc)
 
 
 @app.get("/healthz")

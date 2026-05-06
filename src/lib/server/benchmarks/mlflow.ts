@@ -65,6 +65,30 @@ export function publicMlflowTracesUrl(
 	return `/api/observability/mlflow/traces/${encodeURIComponent(trimmed)}`;
 }
 
+function publicWorkflowBuilderUrl(): string | null {
+	const base = (
+		publicEnv.PUBLIC_WORKFLOW_BUILDER_URL ??
+		publicEnv.PUBLIC_APP_URL ??
+		env.PUBLIC_WORKFLOW_BUILDER_URL ??
+		env.APP_PUBLIC_URL ??
+		env.APP_URL ??
+		env.NEXT_PUBLIC_APP_URL ??
+		""
+	)
+		.trim()
+		.replace(/\/+$/, "");
+	return base || null;
+}
+
+export function publicWorkflowBuilderTraceUrl(
+	traceId: string | null | undefined,
+): string | null {
+	const path = publicMlflowTracesUrl(null, traceId);
+	if (!path) return null;
+	const base = publicWorkflowBuilderUrl();
+	return base ? `${base}${path}` : path;
+}
+
 async function mlflowRequest<T>(
 	path: string,
 	init: RequestInit = {},

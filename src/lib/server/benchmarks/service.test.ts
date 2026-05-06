@@ -774,11 +774,17 @@ describe("SWE-bench workflow spec", () => {
 	it("collects benchmark trace ids only from trace-shaped fields", () => {
 		expect(
 			collectBenchmarkTraceIds(
-				{ primaryTraceId: "0123456789abcdef0123456789abcdef" },
+				{ primaryTraceId: "tr-0123456789abcdef0123456789abcdef" },
 				{
 					patchSha256:
 						"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					nested: { trace_ids: ["fedcba9876543210fedcba9876543210"] },
+					traceId: "not-a-trace",
+					nested: {
+						trace_ids: [
+							"fedcba9876543210fedcba9876543210",
+							"00000000000000000000000000000000",
+						],
+					},
 				},
 			),
 		).toEqual([
