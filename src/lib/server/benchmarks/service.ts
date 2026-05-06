@@ -94,10 +94,10 @@ import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environme
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
-const BENCHMARK_TERMINATION_CONCURRENCY = 8;
+const BENCHMARK_TERMINATION_CONCURRENCY = 32;
 const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
-const BENCHMARK_TERMINATION_WAIT_SECONDS = 300;
+const BENCHMARK_TERMINATION_WAIT_SECONDS = 30;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
@@ -1121,6 +1121,12 @@ export async function markBenchmarkRunStatus(
 		.where(eq(benchmarkRuns.id, runId))
 		.limit(1);
 	if (!run) return null;
+	if (
+		run.status === status &&
+		(status === "failed" || status === "cancelled")
+	) {
+		return run;
+	}
 	if (run.status !== status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status)) {
 		return run;
 	}
