@@ -30,6 +30,8 @@
 		};
 		sandbox: {
 			schedulableSandboxCapacity: number | null;
+			ephemeralStorageLimitedCapacity: number | null;
+			diskPressureNodeCount: number | null;
 		};
 		workflowLifecycle?: {
 			sharedActorStateStore: boolean | null;
@@ -504,6 +506,14 @@
 						</span>
 						<span>· dapr {capacityDiagnostics.daprWorkflow.effectiveCapacity ?? '—'}</span>
 						<span>· sandbox headroom {capacityDiagnostics.sandbox.schedulableSandboxCapacity ?? '—'}</span>
+						{#if capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity !== null}
+							<span>· storage {capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity}</span>
+						{/if}
+						{#if capacityDiagnostics.sandbox.diskPressureNodeCount}
+							<span class="text-amber-600">
+								· disk pressure {capacityDiagnostics.sandbox.diskPressureNodeCount}
+							</span>
+						{/if}
 						{#if capacityDiagnostics.blockedBy.length > 0}
 							<span class="text-amber-600">
 								· blocked by {capacityDiagnostics.blockedBy.map((r) => r.replace(/_/g, ' ')).join(', ')}

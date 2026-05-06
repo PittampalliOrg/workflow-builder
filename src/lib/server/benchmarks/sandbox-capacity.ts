@@ -14,31 +14,40 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	nodeCount: number;
 	allocatableCpuMilli: number;
 	allocatableMemoryBytes: number;
+	allocatableEphemeralStorageBytes: number;
 	requestedCpuMilli: number;
 	requestedMemoryBytes: number;
+	requestedEphemeralStorageBytes: number;
 	pendingSwebenchCpuMilli: number;
 	pendingSwebenchMemoryBytes: number;
+	pendingSwebenchEphemeralStorageBytes: number;
 	availableCpuMilli: number;
 	availableMemoryBytes: number;
+	availableEphemeralStorageBytes: number;
 	sandboxRequestCpuMilli: number;
 	sandboxRequestMemoryBytes: number;
+	sandboxRequestEphemeralStorageBytes: number;
 	availableSandboxSlots: number;
 	totalSchedulableSandboxCapacity: number;
 	schedulableSandboxCapacity: number;
 	cpuLimitedCapacity: number;
 	memoryLimitedCapacity: number;
+	ephemeralStorageLimitedCapacity: number | null;
 	activeSwebenchPods: number;
 	pendingSwebenchPods: number;
+	diskPressureNodeCount: number;
 	error?: string;
 };
 
 export type BenchmarkSandboxResourceProfile = {
 	cpuMilli: number;
 	memoryBytes: number;
+	ephemeralStorageBytes: number;
 };
 
 const DEFAULT_SANDBOX_REQUEST_CPU = "100m";
 const DEFAULT_SANDBOX_REQUEST_MEMORY = "256Mi";
+const DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE = "8Gi";
 const DEFAULT_SANDBOX_NAMESPACE = "openshell";
 
 function positiveInt(value: unknown): number | null {
@@ -52,7 +61,8 @@ function positiveInt(value: unknown): number | null {
 }
 
 export function parseCpuMilli(value: unknown): number | null {
-	if (typeof value === "number") return Number.isFinite(value) ? Math.ceil(value * 1000) : null;
+	if (typeof value === "number")
+		return Number.isFinite(value) ? Math.ceil(value * 1000) : null;
 	if (typeof value !== "string" || !value.trim()) return null;
 	const raw = value.trim();
 	if (raw.endsWith("m")) {
@@ -64,9 +74,12 @@ export function parseCpuMilli(value: unknown): number | null {
 }
 
 export function parseMemoryBytes(value: unknown): number | null {
-	if (typeof value === "number") return Number.isFinite(value) ? Math.ceil(value) : null;
+	if (typeof value === "number")
+		return Number.isFinite(value) ? Math.ceil(value) : null;
 	if (typeof value !== "string" || !value.trim()) return null;
-	const match = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)([KMGTPE]i?|[kMGTPE])?$/);
+	const match = value
+		.trim()
+		.match(/^([0-9]+(?:\.[0-9]+)?)([KMGTPE]i?|[kMGTPE])?$/);
 	if (!match) return null;
 	const parsed = Number(match[1]);
 	if (!Number.isFinite(parsed)) return null;
@@ -97,6 +110,7 @@ function containerRequests(container: KubeContainerSpec | undefined) {
 	return {
 		cpuMilli: parseCpuMilli(requests.cpu) ?? 0,
 		memoryBytes: parseMemoryBytes(requests.memory) ?? 0,
+		ephemeralStorageBytes: parseMemoryBytes(requests["ephemeral-storage"]) ?? 0,
 	};
 }
 
@@ -106,6 +120,7 @@ function addRequests(
 ) {
 	left.cpuMilli += right.cpuMilli;
 	left.memoryBytes += right.memoryBytes;
+	left.ephemeralStorageBytes += right.ephemeralStorageBytes;
 	return left;
 }
 
@@ -116,6 +131,10 @@ function maxRequests(
 	return {
 		cpuMilli: Math.max(left.cpuMilli, right.cpuMilli),
 		memoryBytes: Math.max(left.memoryBytes, right.memoryBytes),
+		ephemeralStorageBytes: Math.max(
+			left.ephemeralStorageBytes,
+			right.ephemeralStorageBytes,
+		),
 	};
 }
 
@@ -123,11 +142,11 @@ function podRequests(
 	pod: KubePod,
 	fallbackForSwebench?: BenchmarkSandboxResourceProfile,
 ): BenchmarkSandboxResourceProfile {
-	let regular = { cpuMilli: 0, memoryBytes: 0 };
+	let regular = { cpuMilli: 0, memoryBytes: 0, ephemeralStorageBytes: 0 };
 	for (const container of pod.spec?.containers ?? []) {
 		regular = addRequests(regular, containerRequests(container));
 	}
-	let initMax = { cpuMilli: 0, memoryBytes: 0 };
+	let initMax = { cpuMilli: 0, memoryBytes: 0, ephemeralStorageBytes: 0 };
 	for (const container of pod.spec?.initContainers ?? []) {
 		initMax = maxRequests(initMax, containerRequests(container));
 	}
@@ -136,17 +155,30 @@ function podRequests(
 		fallbackForSwebench &&
 		isSwebenchSandboxPod(pod) &&
 		request.cpuMilli === 0 &&
-		request.memoryBytes === 0
+		request.memoryBytes === 0 &&
+		request.ephemeralStorageBytes === 0
 	) {
 		return { ...fallbackForSwebench };
 	}
 	return request;
 }
 
-function isReadyNode(node: KubeNode): boolean {
+function hasNodeCondition(
+	node: KubeNode,
+	type: string,
+	status = "True",
+): boolean {
 	return (node.status?.conditions ?? []).some(
-		(condition) => condition.type === "Ready" && condition.status === "True",
+		(condition) => condition.type === type && condition.status === status,
 	);
+}
+
+function isReadyNode(node: KubeNode): boolean {
+	return hasNodeCondition(node, "Ready", "True");
+}
+
+function hasDiskPressure(node: KubeNode): boolean {
+	return hasNodeCondition(node, "DiskPressure", "True");
 }
 
 function isWorkerNode(node: KubeNode): boolean {
@@ -171,7 +203,8 @@ function schedulableWorkerNodes(nodes: KubeNode[]): KubeNode[] {
 			!node.spec?.unschedulable &&
 			isReadyNode(node) &&
 			isWorkerNode(node) &&
-			!hasBlockingTaint(node),
+			!hasBlockingTaint(node) &&
+			!hasDiskPressure(node),
 	);
 }
 
@@ -185,7 +218,10 @@ function isSwebenchSandboxPod(pod: KubePod): boolean {
 	const labels = pod.metadata?.labels ?? {};
 	return Object.entries(labels).some(([key, value]) => {
 		const combined = `${key}=${value}`.toLowerCase();
-		return combined.includes("swebench") || combined.includes("workflow-builder:swebench");
+		return (
+			combined.includes("swebench") ||
+			combined.includes("workflow-builder:swebench")
+		);
 	});
 }
 
@@ -197,6 +233,10 @@ function sandboxResourceProfileFromEnv(): BenchmarkSandboxResourceProfile {
 		memoryBytes:
 			parseMemoryBytes(process.env.BENCHMARK_SANDBOX_REQUEST_MEMORY) ??
 			parseMemoryBytes(DEFAULT_SANDBOX_REQUEST_MEMORY)!,
+		ephemeralStorageBytes:
+			parseMemoryBytes(
+				process.env.BENCHMARK_SANDBOX_REQUEST_EPHEMERAL_STORAGE,
+			) ?? parseMemoryBytes(DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE)!,
 	};
 }
 
@@ -220,21 +260,36 @@ export function estimateSchedulableSandboxCapacity(params: {
 	const sandboxRequest = params.sandboxRequest ?? {
 		cpuMilli: parseCpuMilli(DEFAULT_SANDBOX_REQUEST_CPU)!,
 		memoryBytes: parseMemoryBytes(DEFAULT_SANDBOX_REQUEST_MEMORY)!,
+		ephemeralStorageBytes: parseMemoryBytes(
+			DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE,
+		)!,
 	};
+	const diskPressureNodeCount = params.nodes.filter(
+		(node) =>
+			!!node.metadata?.name &&
+			!node.spec?.unschedulable &&
+			isWorkerNode(node) &&
+			hasDiskPressure(node),
+	).length;
 	const nodes = schedulableWorkerNodes(params.nodes);
 	const nodeNames = new Set(nodes.map((node) => node.metadata!.name!));
 	let allocatableCpuMilli = 0;
 	let allocatableMemoryBytes = 0;
+	let allocatableEphemeralStorageBytes = 0;
 	for (const node of nodes) {
 		const allocatable = node.status?.allocatable ?? {};
 		allocatableCpuMilli += parseCpuMilli(allocatable.cpu) ?? 0;
 		allocatableMemoryBytes += parseMemoryBytes(allocatable.memory) ?? 0;
+		allocatableEphemeralStorageBytes +=
+			parseMemoryBytes(allocatable["ephemeral-storage"]) ?? 0;
 	}
 
 	let requestedCpuMilli = 0;
 	let requestedMemoryBytes = 0;
+	let requestedEphemeralStorageBytes = 0;
 	let pendingSwebenchCpuMilli = 0;
 	let pendingSwebenchMemoryBytes = 0;
+	let pendingSwebenchEphemeralStorageBytes = 0;
 	let activeSwebenchPods = 0;
 	let pendingSwebenchPods = 0;
 
@@ -246,6 +301,7 @@ export function estimateSchedulableSandboxCapacity(params: {
 		if (nodeName && nodeNames.has(nodeName)) {
 			requestedCpuMilli += requests.cpuMilli;
 			requestedMemoryBytes += requests.memoryBytes;
+			requestedEphemeralStorageBytes += requests.ephemeralStorageBytes;
 			if (isSwebench) activeSwebenchPods += 1;
 			continue;
 		}
@@ -253,6 +309,7 @@ export function estimateSchedulableSandboxCapacity(params: {
 			pendingSwebenchPods += 1;
 			pendingSwebenchCpuMilli += requests.cpuMilli;
 			pendingSwebenchMemoryBytes += requests.memoryBytes;
+			pendingSwebenchEphemeralStorageBytes += requests.ephemeralStorageBytes;
 		}
 	}
 
@@ -264,6 +321,12 @@ export function estimateSchedulableSandboxCapacity(params: {
 		0,
 		allocatableMemoryBytes - requestedMemoryBytes - pendingSwebenchMemoryBytes,
 	);
+	const availableEphemeralStorageBytes = Math.max(
+		0,
+		allocatableEphemeralStorageBytes -
+			requestedEphemeralStorageBytes -
+			pendingSwebenchEphemeralStorageBytes,
+	);
 	const cpuLimitedCapacity = Math.max(
 		0,
 		Math.floor(availableCpuMilli / sandboxRequest.cpuMilli),
@@ -272,7 +335,22 @@ export function estimateSchedulableSandboxCapacity(params: {
 		0,
 		Math.floor(availableMemoryBytes / sandboxRequest.memoryBytes),
 	);
-	const availableSandboxSlots = Math.min(cpuLimitedCapacity, memoryLimitedCapacity);
+	const ephemeralStorageLimitedCapacity =
+		allocatableEphemeralStorageBytes > 0 &&
+		sandboxRequest.ephemeralStorageBytes > 0
+			? Math.max(
+					0,
+					Math.floor(
+						availableEphemeralStorageBytes /
+							sandboxRequest.ephemeralStorageBytes,
+					),
+				)
+			: null;
+	const availableSandboxSlots = Math.min(
+		cpuLimitedCapacity,
+		memoryLimitedCapacity,
+		ephemeralStorageLimitedCapacity ?? Number.POSITIVE_INFINITY,
+	);
 	const currentSwebenchPods = activeSwebenchPods + pendingSwebenchPods;
 	const totalSchedulableSandboxCapacity =
 		currentSwebenchPods + availableSandboxSlots;
@@ -284,28 +362,37 @@ export function estimateSchedulableSandboxCapacity(params: {
 		nodeCount: nodes.length,
 		allocatableCpuMilli,
 		allocatableMemoryBytes,
+		allocatableEphemeralStorageBytes,
 		requestedCpuMilli,
 		requestedMemoryBytes,
+		requestedEphemeralStorageBytes,
 		pendingSwebenchCpuMilli,
 		pendingSwebenchMemoryBytes,
+		pendingSwebenchEphemeralStorageBytes,
 		availableCpuMilli,
 		availableMemoryBytes,
+		availableEphemeralStorageBytes,
 		sandboxRequestCpuMilli: sandboxRequest.cpuMilli,
 		sandboxRequestMemoryBytes: sandboxRequest.memoryBytes,
+		sandboxRequestEphemeralStorageBytes: sandboxRequest.ephemeralStorageBytes,
 		availableSandboxSlots,
 		totalSchedulableSandboxCapacity,
 		schedulableSandboxCapacity: availableSandboxSlots,
 		cpuLimitedCapacity,
 		memoryLimitedCapacity,
+		ephemeralStorageLimitedCapacity,
 		activeSwebenchPods,
 		pendingSwebenchPods,
+		diskPressureNodeCount,
 	};
 }
 
-export async function loadSchedulableSandboxCapacitySnapshot(): Promise<
-	BenchmarkSandboxCapacitySnapshot | null
-> {
-	if (/^(1|true|yes)$/i.test(process.env.BENCHMARK_SANDBOX_CAPACITY_DISABLED ?? "")) {
+export async function loadSchedulableSandboxCapacitySnapshot(): Promise<BenchmarkSandboxCapacitySnapshot | null> {
+	if (
+		/^(1|true|yes)$/i.test(
+			process.env.BENCHMARK_SANDBOX_CAPACITY_DISABLED ?? "",
+		)
+	) {
 		return null;
 	}
 	const namespace = namespaceFromEnv();
@@ -335,21 +422,28 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<
 			nodeCount: 0,
 			allocatableCpuMilli: 0,
 			allocatableMemoryBytes: 0,
+			allocatableEphemeralStorageBytes: 0,
 			requestedCpuMilli: 0,
 			requestedMemoryBytes: 0,
+			requestedEphemeralStorageBytes: 0,
 			pendingSwebenchCpuMilli: 0,
 			pendingSwebenchMemoryBytes: 0,
+			pendingSwebenchEphemeralStorageBytes: 0,
 			availableCpuMilli: 0,
 			availableMemoryBytes: 0,
+			availableEphemeralStorageBytes: 0,
 			sandboxRequestCpuMilli: sandboxRequest.cpuMilli,
 			sandboxRequestMemoryBytes: sandboxRequest.memoryBytes,
+			sandboxRequestEphemeralStorageBytes: sandboxRequest.ephemeralStorageBytes,
 			availableSandboxSlots: 0,
 			totalSchedulableSandboxCapacity: 0,
 			schedulableSandboxCapacity: 0,
 			cpuLimitedCapacity: 0,
 			memoryLimitedCapacity: 0,
+			ephemeralStorageLimitedCapacity: 0,
 			activeSwebenchPods: 0,
 			pendingSwebenchPods: 0,
+			diskPressureNodeCount: 0,
 			error: err instanceof Error ? err.message : String(err),
 		};
 	}

@@ -91,6 +91,8 @@ export type BenchmarkCapacityDiagnostics = {
 		availableSandboxSlots: number | null;
 		activeSwebenchPods: number | null;
 		pendingSwebenchPods: number | null;
+		ephemeralStorageLimitedCapacity: number | null;
+		diskPressureNodeCount: number | null;
 		error?: string | null;
 	};
 	modelCaps: {
@@ -347,6 +349,12 @@ function diagnosticsFromCapacity(params: {
 			),
 			activeSwebenchPods: nonNegativeInt(sandboxCapacity.activeSwebenchPods),
 			pendingSwebenchPods: nonNegativeInt(sandboxCapacity.pendingSwebenchPods),
+			ephemeralStorageLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.ephemeralStorageLimitedCapacity,
+			),
+			diskPressureNodeCount: nonNegativeInt(
+				sandboxCapacity.diskPressureNodeCount,
+			),
 			error:
 				typeof sandboxCapacity.error === "string"
 					? sandboxCapacity.error

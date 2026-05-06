@@ -302,6 +302,14 @@
 							</span>
 							<span>dapr {capacityDiagnostics.daprWorkflow.effectiveCapacity ?? '—'} slots</span>
 							<span>sandbox headroom {capacityDiagnostics.sandbox.schedulableSandboxCapacity ?? '—'}</span>
+							{#if capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity !== null}
+								<span>storage {capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity}</span>
+							{/if}
+							{#if capacityDiagnostics.sandbox.diskPressureNodeCount}
+								<span class="text-amber-600">
+									disk pressure {capacityDiagnostics.sandbox.diskPressureNodeCount}
+								</span>
+							{/if}
 							{#if capacityDiagnostics.modelCaps.modelMaxActiveRequests}
 								<span>model cap {capacityDiagnostics.modelCaps.modelMaxActiveRequests}</span>
 							{/if}

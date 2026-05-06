@@ -30,6 +30,8 @@ describe("benchmark capacity diagnostics", () => {
 						availableSandboxSlots: 4,
 						activeSwebenchPods: 56,
 						pendingSwebenchPods: 0,
+						ephemeralStorageLimitedCapacity: 7,
+						diskPressureNodeCount: 1,
 					},
 					modelMaxActiveRequests: 64,
 					capReason: "global_max",
@@ -81,6 +83,8 @@ describe("benchmark capacity diagnostics", () => {
 				availableSandboxSlots: 4,
 				activeSwebenchPods: 56,
 				pendingSwebenchPods: 0,
+				ephemeralStorageLimitedCapacity: 7,
+				diskPressureNodeCount: 1,
 			},
 			modelCaps: {
 				modelMaxActiveRequests: 64,
