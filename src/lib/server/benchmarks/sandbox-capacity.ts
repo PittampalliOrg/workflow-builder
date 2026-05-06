@@ -226,13 +226,8 @@ function isTerminalPod(pod: KubePod): boolean {
 
 function isSwebenchSandboxPod(pod: KubePod, namespace: string): boolean {
 	const labels = pod.metadata?.labels ?? {};
-	const hasSwebenchWorkloadLabel = Object.entries(labels).some(([key, value]) => {
-		const combined = `${key}=${value}`.toLowerCase();
-		return (
-			combined.includes("swebench") ||
-			combined.includes("workflow-builder:swebench")
-		);
-	});
+	const hasSwebenchWorkloadLabel =
+		labels["agents.x-k8s.io/workload"] === "swebench";
 	if (hasSwebenchWorkloadLabel) return true;
 	const name = pod.metadata?.name ?? "";
 	return pod.metadata?.namespace === namespace && /^swebench[-_]/.test(name);
