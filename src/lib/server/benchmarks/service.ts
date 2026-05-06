@@ -95,7 +95,11 @@ import {
 	benchmarkExecutionBackend,
 	benchmarkExecutionClass,
 	isHostExecutionIr,
+	normalizeBenchmarkExecutionBackend,
+	normalizeBenchmarkExecutionClass,
 	submitBenchmarkInstanceToHostExecutionPlane,
+	type BenchmarkExecutionBackend,
+	type BenchmarkExecutionClass,
 } from "./execution-plane";
 import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
 
@@ -719,6 +723,8 @@ export type CreateBenchmarkRunInput = {
 	evaluatorResourceClass?: string | null;
 	tags?: string[] | null;
 	requirePrevalidatedEnvironments?: boolean;
+	executionBackend?: BenchmarkExecutionBackend | string | null;
+	executionClass?: BenchmarkExecutionClass | string | null;
 };
 
 async function assertPrevalidatedBenchmarkEnvironments(input: {
@@ -873,6 +879,12 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 			: clampInteger(input.maxTurns, 1, 1000, input.maxTurns);
 	const evaluatorResourceClass =
 		input.evaluatorResourceClass?.trim() || "standard";
+	const executionBackend = normalizeBenchmarkExecutionBackend(
+		input.executionBackend ?? benchmarkExecutionBackend(),
+	);
+	const executionClass = normalizeBenchmarkExecutionClass(
+		input.executionClass ?? benchmarkExecutionClass(),
+	);
 	const modelNameOrPath =
 		input.modelNameOrPath?.trim() ||
 		input.modelConfigLabel?.trim() ||
@@ -933,6 +945,10 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 					total: instanceIds.length,
 					resolvedRate: 0,
 					capacity,
+					execution: {
+						backend: executionBackend,
+						class: executionClass,
+					},
 				},
 				tags: normalizeTags(input.tags),
 			})
@@ -2370,6 +2386,19 @@ export async function recomputeRunSummary(runId: string) {
 		...zeroedStatusBuckets,
 		...summarizeRunInstances(rows.map((row) => row.status)),
 	};
+	if (run[0]?.status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run[0].status)) {
+		try {
+			summary.terminalCapacity = {
+				capturedAt: new Date().toISOString(),
+				sandbox: await loadSchedulableSandboxCapacitySnapshot(),
+			};
+		} catch (err) {
+			summary.terminalCapacity = {
+				capturedAt: new Date().toISOString(),
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}
 	await database
 		.update(benchmarkRuns)
 		.set({ summary, updatedAt: new Date() })
@@ -2578,8 +2607,16 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		instanceId: row.runInstance.instanceId,
 		inferenceEnvironment,
 	};
-	const dispatchBackend = benchmarkExecutionBackend();
-	const executionClass = benchmarkExecutionClass();
+	const runSummary = isRecord(row.run.summary) ? row.run.summary : {};
+	const runExecutionConfig = isRecord(runSummary.execution)
+		? runSummary.execution
+		: {};
+	const dispatchBackend = normalizeBenchmarkExecutionBackend(
+		runExecutionConfig.backend ?? benchmarkExecutionBackend(),
+	);
+	const executionClass = normalizeBenchmarkExecutionClass(
+		runExecutionConfig.class ?? benchmarkExecutionClass(),
+	);
 	const executionIr = {
 		spec,
 		triggerData,

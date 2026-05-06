@@ -91,6 +91,8 @@
 	let evaluationConcurrency = $state(DEFAULT_EVALUATION_CONCURRENCY);
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
+	let executionBackend = $state<'legacy-dapr' | 'host'>('legacy-dapr');
+	let executionClass = $state<'benchmark-fast' | 'secure-gvisor'>('benchmark-fast');
 	let tagsInput = $state('');
 	let agentQuery = $state('');
 	let capacityDiagnostics = $state<CapacityDiagnostics | null>(null);
@@ -274,8 +276,13 @@
 					evaluationConcurrency,
 					timeoutSeconds,
 					evaluatorResourceClass,
-					tags: parseTags(tagsInput),
-					requirePrevalidatedEnvironments
+					tags:
+						executionBackend === 'host'
+							? [...new Set([...parseTags(tagsInput), 'host-backend-canary'])]
+							: parseTags(tagsInput),
+					requirePrevalidatedEnvironments,
+					executionBackend,
+					executionClass
 				})
 			});
 			const body = await res.json().catch(() => ({}) as Record<string, unknown>);
@@ -577,6 +584,32 @@
 						<option value="standard">Standard</option>
 						<option value="large">Large</option>
 						<option value="xlarge">XLarge</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="grid grid-cols-2 gap-3">
+				<div class="space-y-1.5">
+					<Label for="launch-backend">Execution backend</Label>
+					<select
+						id="launch-backend"
+						bind:value={executionBackend}
+						class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm"
+					>
+						<option value="legacy-dapr">Legacy Dapr</option>
+						<option value="host">Host execution</option>
+					</select>
+				</div>
+				<div class="space-y-1.5">
+					<Label for="launch-class">Execution class</Label>
+					<select
+						id="launch-class"
+						bind:value={executionClass}
+						disabled={executionBackend !== 'host'}
+						class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm disabled:opacity-60"
+					>
+						<option value="benchmark-fast">benchmark-fast</option>
+						<option value="secure-gvisor">secure-gvisor</option>
 					</select>
 				</div>
 			</div>

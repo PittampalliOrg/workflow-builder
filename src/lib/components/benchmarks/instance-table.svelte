@@ -16,6 +16,7 @@
 		sortFns,
 		filterFns
 	} from '@tanstack/svelte-table';
+	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -33,6 +34,8 @@
 		Columns3,
 		Dices,
 		ExternalLink,
+		Hammer,
+		Loader2,
 		Play,
 		Search,
 		Sparkles,
@@ -79,6 +82,8 @@
 	let sortDesc = $state(urlState.searchParams.get('dir') === 'desc');
 	const RANDOM_COUNT_OPTIONS = [1, 3, 5, 10, 25, 50, 100] as const;
 	let randomCount = $state<number>(3);
+	let validatingEnvironments = $state(false);
+	let validationMessage = $state<string | null>(null);
 
 	// ---- Column visibility ----------------------------------------------------
 	// Owned by TanStack's internal state. Mirroring it in Svelte $state and
@@ -264,6 +269,9 @@
 			selectedCount < filteredRowCount &&
 			table?.getIsAllPageRowsSelected() === true
 	);
+	const selectedEnvironmentBuildableCount = $derived(
+		selectedRows().filter((row) => row.environmentStatus === 'not_built').length
+	);
 
 	function isRandomLaunchable(row: BenchmarkInstanceRow): boolean {
 		return row.environmentStatus === 'validated';
@@ -334,6 +342,66 @@
 			suiteSlug: suite,
 			requirePrevalidatedEnvironments: true
 		});
+	}
+
+	async function validateSelectedEnvironments() {
+		const rows = selectedRows();
+		if (rows.length === 0 || validatingEnvironments) return;
+		const suite = effectiveSuiteSlug(rows);
+		const suiteRows = rows.filter((r) => r.suiteSlug === suite);
+		await queueEnvironmentValidation({
+			suiteSlug: suite,
+			instanceIds: suiteRows.map((r) => r.instanceId),
+			limit: Math.min(suiteRows.length, MAX_RUN_INSTANCES)
+		});
+	}
+
+	async function validateNextEnvironments() {
+		if (!table || validatingEnvironments) return;
+		const filteredRows = table.getFilteredRowModel().rows.map((r) => r.original);
+		if (filteredRows.length === 0) return;
+		const suite = effectiveSuiteSlug(filteredRows);
+		await queueEnvironmentValidation({
+			suiteSlug: suite,
+			limit: Math.min(Math.max(1, randomCount), 100)
+		});
+	}
+
+	async function queueEnvironmentValidation(args: {
+		suiteSlug: string;
+		instanceIds?: string[];
+		limit: number;
+	}) {
+		validatingEnvironments = true;
+		validationMessage = null;
+		try {
+			const res = await fetch('/api/benchmarks/environments/validate', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(args)
+			});
+			const body = (await res.json().catch(() => ({}))) as {
+				selected?: number;
+				submitted?: number;
+				results?: unknown[];
+				skipped?: { alreadyValidated?: number; alreadyBuilding?: number; failedRequiresReset?: number };
+				message?: string;
+				error?: string;
+			};
+			if (!res.ok) {
+				throw new Error(body.message ?? body.error ?? `Failed to queue environment builds (${res.status})`);
+			}
+			const submitted = body.submitted ?? body.results?.length ?? 0;
+			validationMessage =
+				submitted > 0
+					? `Queued ${submitted} environment build${submitted === 1 ? '' : 's'}.`
+					: `No new builds queued · ${body.skipped?.alreadyValidated ?? 0} already validated, ${body.skipped?.alreadyBuilding ?? 0} building.`;
+			await invalidateAll();
+		} catch (err) {
+			validationMessage = err instanceof Error ? err.message : String(err);
+		} finally {
+			validatingEnvironments = false;
+		}
 	}
 
 	function clearAllFilters() {
@@ -451,6 +519,23 @@
 
 		<div class="ml-auto flex items-center gap-2">
 			<div class="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 h-8 text-xs">
+				<Button
+					variant="ghost"
+					size="sm"
+					class="h-6 px-2 text-xs"
+					onclick={validateNextEnvironments}
+					disabled={validatingEnvironments || filteredRowCount === 0}
+					title="Queue validation builds for the next unbuilt instances in the current suite"
+				>
+					{#if validatingEnvironments}
+						<Loader2 class="h-3.5 w-3.5 animate-spin" />
+					{:else}
+						<Hammer class="h-3.5 w-3.5" />
+					{/if}
+					Validate next
+				</Button>
+			</div>
+			<div class="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 h-8 text-xs">
 				<Dices class="h-3.5 w-3.5 text-muted-foreground" />
 				<select
 					bind:value={randomCount}
@@ -496,6 +581,21 @@
 			</Button>
 			<div class="flex-1"></div>
 			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 text-xs"
+				onclick={validateSelectedEnvironments}
+				disabled={validatingEnvironments || selectedEnvironmentBuildableCount === 0}
+				title="Queue validation builds for selected instances that are not built yet"
+			>
+				{#if validatingEnvironments}
+					<Loader2 class="mr-1 h-3 w-3 animate-spin" />
+				{:else}
+					<Hammer class="mr-1 h-3 w-3" />
+				{/if}
+				Validate Selected ({selectedEnvironmentBuildableCount})
+			</Button>
+			<Button
 				size="sm"
 				class="h-7 text-xs"
 				onclick={launchSelected}
@@ -507,6 +607,12 @@
 				<Play class="mr-1 h-3 w-3" />
 				Run Selected ({selectedCount})
 			</Button>
+		</div>
+	{/if}
+
+	{#if validationMessage}
+		<div class="rounded-md border border-border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+			{validationMessage}
 		</div>
 	{/if}
 

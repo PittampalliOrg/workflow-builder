@@ -31,15 +31,38 @@ function normalizedConfigValue(name: string): string {
 }
 
 export function benchmarkExecutionBackend(): BenchmarkExecutionBackend {
+	return normalizeBenchmarkExecutionBackend(
+		normalizedConfigValue("BENCHMARK_EXECUTION_BACKEND"),
+	);
+}
+
+export function normalizeBenchmarkExecutionBackend(
+	value: unknown,
+): BenchmarkExecutionBackend {
 	const raw = normalizedConfigValue("BENCHMARK_EXECUTION_BACKEND")
 		.toLowerCase()
 		.replace(/_/g, "-");
+	if (typeof value === "string" && value.trim()) {
+		const requested = value.trim().toLowerCase().replace(/_/g, "-");
+		if (requested === "host" || requested === "host-execution-plane") return "host";
+		if (requested === "legacy" || requested === "legacy-dapr") return "legacy-dapr";
+		return "legacy-dapr";
+	}
 	if (raw === "host" || raw === "host-execution-plane") return "host";
 	return "legacy-dapr";
 }
 
 export function benchmarkExecutionClass(): BenchmarkExecutionClass {
-	const raw = normalizedConfigValue("BENCHMARK_EXECUTION_CLASS")
+	return normalizeBenchmarkExecutionClass(
+		normalizedConfigValue("BENCHMARK_EXECUTION_CLASS"),
+	);
+}
+
+export function normalizeBenchmarkExecutionClass(
+	value: unknown,
+): BenchmarkExecutionClass {
+	if (typeof value !== "string" || !value.trim()) return "benchmark-fast";
+	const raw = value
 		.toLowerCase()
 		.replace(/_/g, "-");
 	return raw === "secure-gvisor" ? "secure-gvisor" : "benchmark-fast";

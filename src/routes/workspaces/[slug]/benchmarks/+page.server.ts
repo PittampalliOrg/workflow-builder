@@ -298,12 +298,32 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
 
 	const suiteCounts = new Map<string, number>();
+	const suiteEnvironmentCoverage = new Map<
+		string,
+		{ validated: number; building: number; failed: number; notBuilt: number }
+	>();
 	for (const i of instances)
 		suiteCounts.set(i.suiteSlug, (suiteCounts.get(i.suiteSlug) ?? 0) + 1);
+	for (const instance of instances) {
+		const coverage =
+			suiteEnvironmentCoverage.get(instance.suiteSlug) ??
+			{ validated: 0, building: 0, failed: 0, notBuilt: 0 };
+		if (instance.environmentStatus === "validated") coverage.validated += 1;
+		else if (instance.environmentStatus === "building") coverage.building += 1;
+		else if (instance.environmentStatus === "failed") coverage.failed += 1;
+		else coverage.notBuilt += 1;
+		suiteEnvironmentCoverage.set(instance.suiteSlug, coverage);
+	}
 	const suiteFacets: SuiteFacet[] = suiteRows.map((s) => ({
 		slug: s.slug,
 		name: s.name,
 		instanceCount: suiteCounts.get(s.slug) ?? 0,
+		environmentCoverage: suiteEnvironmentCoverage.get(s.slug) ?? {
+			validated: 0,
+			building: 0,
+			failed: 0,
+			notBuilt: 0,
+		},
 	}));
 
 	const runnableAgents: RunnableAgent[] = agentRows

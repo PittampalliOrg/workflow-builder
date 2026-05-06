@@ -20,6 +20,12 @@ export type SuiteFacet = {
 	slug: string;
 	name: string;
 	instanceCount: number;
+	environmentCoverage?: {
+		validated: number;
+		building: number;
+		failed: number;
+		notBuilt: number;
+	};
 };
 
 export type RepoFacet = {

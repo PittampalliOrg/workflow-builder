@@ -78,6 +78,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				? body.tags.filter((t): t is string => typeof t === "string")
 				: null,
 			requirePrevalidatedEnvironments: body.requirePrevalidatedEnvironments,
+			executionBackend:
+				typeof body.executionBackend === "string" ? body.executionBackend : null,
+			executionClass:
+				typeof body.executionClass === "string" ? body.executionClass : null,
 		});
 	} catch (err) {
 		if (err instanceof BenchmarkAgentValidationError) {

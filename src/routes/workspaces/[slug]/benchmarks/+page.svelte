@@ -68,6 +68,22 @@
 					?.instanceCount ?? 0}) instances. Select or randomly sample, then launch a parallel run
 				through the SWE-bench coordinator.
 			</p>
+			<div class="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+				{#each data.suiteFacets as suite (suite.slug)}
+					<span class="rounded-md border border-border bg-background px-2 py-1">
+						{suite.name}: {suite.environmentCoverage?.validated ?? 0} validated
+						{#if suite.environmentCoverage?.building}
+							· {suite.environmentCoverage.building} building
+						{/if}
+						{#if suite.environmentCoverage?.failed}
+							· {suite.environmentCoverage.failed} failed
+						{/if}
+						{#if suite.environmentCoverage?.notBuilt}
+							· {suite.environmentCoverage.notBuilt} not built
+						{/if}
+					</span>
+				{/each}
+			</div>
 		</div>
 		<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/benchmarks/runs`)}>
 			View runs →

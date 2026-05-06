@@ -4,6 +4,8 @@ import {
 	benchmarkExecutionClass,
 	hostExecutionPlaneUrl,
 	isHostExecutionIr,
+	normalizeBenchmarkExecutionBackend,
+	normalizeBenchmarkExecutionClass,
 	submitBenchmarkInstanceToHostExecutionPlane,
 } from "./execution-plane";
 
@@ -26,6 +28,17 @@ describe("benchmark host execution plane config", () => {
 		expect(benchmarkExecutionBackend()).toBe("host");
 		expect(benchmarkExecutionClass()).toBe("secure-gvisor");
 		expect(hostExecutionPlaneUrl()).toBe("http://sandbox-exec:8080");
+	});
+
+	it("normalizes per-run backend overrides independently from env defaults", () => {
+		vi.stubEnv("BENCHMARK_EXECUTION_BACKEND", "legacy-dapr");
+		vi.stubEnv("BENCHMARK_EXECUTION_CLASS", "benchmark-fast");
+
+		expect(normalizeBenchmarkExecutionBackend("host_execution_plane")).toBe("host");
+		expect(normalizeBenchmarkExecutionBackend("legacy")).toBe("legacy-dapr");
+		expect(normalizeBenchmarkExecutionBackend("unknown")).toBe("legacy-dapr");
+		expect(normalizeBenchmarkExecutionClass("secure_gvisor")).toBe("secure-gvisor");
+		expect(normalizeBenchmarkExecutionClass("benchmark-fast")).toBe("benchmark-fast");
 	});
 
 	it("detects host-dispatched execution IR snapshots", () => {
