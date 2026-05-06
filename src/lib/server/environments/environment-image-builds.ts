@@ -28,6 +28,7 @@ import {
 	type TektonTargetCluster,
 } from "$lib/server/kube/tekton";
 import {
+	isExactValidatedSwebenchInferenceEnvironment,
 	resolveSwebenchInferenceEnvironment,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
@@ -436,7 +437,13 @@ export async function ensureSwebenchEnvironment(
 		staticResolved.environmentStatus === "validated" &&
 		!(
 			input.forceRefreshLegacyStatic === true &&
-			isLegacyStaticSwebenchEnvironment(staticResolved)
+			(isLegacyStaticSwebenchEnvironment(staticResolved) ||
+				!isExactValidatedSwebenchInferenceEnvironment({
+					suiteSlug: input.suiteSlug,
+					repo: input.repo,
+					baseCommit: input.baseCommit,
+					testMetadata: input.testMetadata,
+				}))
 		)
 	) {
 		return validatedResult(staticResolved, "static_mapping");

@@ -390,6 +390,58 @@ describe("SWE-bench environment image build planning", () => {
 		expect(dbMocks.insertValues).not.toHaveBeenCalled();
 	});
 
+	it("bypasses non-exact static SWE-bench mappings when refresh is requested", async () => {
+		vi.stubEnv(
+			"SWEBENCH_INFERENCE_ENVIRONMENTS_JSON",
+			JSON.stringify([
+				{
+					suite: "SWE-bench_Verified",
+					repo: "sympy/sympy",
+					version: "1.7",
+					environmentKey: "sympy-1.7",
+					baseCommit: "different-base-commit",
+					sandboxTemplate: "dapr-agent",
+					sandboxImage:
+						"ghcr.io/pittampalliorg/swebench-inference-sympy-1.7:env-abc",
+					digest:
+						"sha256:3333333333333333333333333333333333333333333333333333333333333333",
+					validationStatus: "validated",
+					buildStrategy: "swebench-harness",
+					workspaceRoot: "/testbed",
+					condaEnvironment: "testbed",
+					envSpecHash: "b".repeat(64),
+				},
+			]),
+		);
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_DIR", "");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE", "local");
+
+		const result = await ensureSwebenchEnvironment({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			allowBuild: true,
+			forceRefreshLegacyStatic: true,
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			status: "failed",
+			reason: "dynamic_build_local_target_not_allowed",
+			environmentKey: "sympy-1.7",
+		});
+		expect(tektonMocks.createTektonPipelineRun).not.toHaveBeenCalled();
+		expect(dbMocks.insertValues).not.toHaveBeenCalled();
+	});
+
 	it("refuses local SWE-bench image PipelineRuns unless local submission is explicitly enabled", async () => {
 		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_JSON", "");
 		vi.stubEnv("SWEBENCH_INFERENCE_ENVIRONMENTS_FILE", "");
