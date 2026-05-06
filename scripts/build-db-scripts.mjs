@@ -9,6 +9,7 @@ const entries = [
 	"scripts/seed-workflows.ts",
 	"scripts/seed-swebench-fixtures.ts",
 	"scripts/queue-swebench-environment-validation.ts",
+	"scripts/start-swebench-benchmark-run.ts",
 ];
 
 const aliasPlugin = {
