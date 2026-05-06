@@ -152,6 +152,7 @@ function maxRequests(
 function podRequests(
 	pod: KubePod,
 	fallbackForSwebench?: BenchmarkSandboxResourceProfile,
+	namespace = DEFAULT_SANDBOX_NAMESPACE,
 ): BenchmarkSandboxResourceProfile {
 	let regular = { cpuMilli: 0, memoryBytes: 0, ephemeralStorageBytes: 0 };
 	for (const container of pod.spec?.containers ?? []) {
@@ -164,7 +165,7 @@ function podRequests(
 	const request = maxRequests(regular, initMax);
 	if (
 		fallbackForSwebench &&
-		isSwebenchSandboxPod(pod) &&
+		isSwebenchSandboxPod(pod, namespace) &&
 		request.cpuMilli === 0 &&
 		request.memoryBytes === 0 &&
 		request.ephemeralStorageBytes === 0
@@ -223,17 +224,18 @@ function isTerminalPod(pod: KubePod): boolean {
 	return pod.status?.phase === "Succeeded" || pod.status?.phase === "Failed";
 }
 
-function isSwebenchSandboxPod(pod: KubePod): boolean {
-	const name = pod.metadata?.name ?? "";
-	if (/^swebench[-_]/.test(name)) return true;
+function isSwebenchSandboxPod(pod: KubePod, namespace: string): boolean {
 	const labels = pod.metadata?.labels ?? {};
-	return Object.entries(labels).some(([key, value]) => {
+	const hasSwebenchWorkloadLabel = Object.entries(labels).some(([key, value]) => {
 		const combined = `${key}=${value}`.toLowerCase();
 		return (
 			combined.includes("swebench") ||
 			combined.includes("workflow-builder:swebench")
 		);
 	});
+	if (hasSwebenchWorkloadLabel) return true;
+	const name = pod.metadata?.name ?? "";
+	return pod.metadata?.namespace === namespace && /^swebench[-_]/.test(name);
 }
 
 function sandboxResourceProfileFromEnv(): BenchmarkSandboxResourceProfile {
@@ -390,9 +392,9 @@ export function estimateSchedulableSandboxCapacity(params: {
 
 	for (const pod of params.pods) {
 		if (isTerminalPod(pod)) continue;
-		const requests = podRequests(pod, sandboxRequest);
+		const requests = podRequests(pod, sandboxRequest, namespace);
 		const nodeName = pod.spec?.nodeName;
-		const isSwebench = isSwebenchSandboxPod(pod);
+		const isSwebench = isSwebenchSandboxPod(pod, namespace);
 		if (nodeName && nodeNames.has(nodeName)) {
 			requestedCpuMilli += requests.cpuMilli;
 			requestedMemoryBytes += requests.memoryBytes;

@@ -132,6 +132,43 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
+	it("does not count non-sandbox SWE-bench controller pods as active sandboxes", () => {
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [workerNode("worker-a", { cpu: "2000m", memory: "2Gi" })],
+			pods: [
+				{
+					...pod({
+						name: "swebench-coordinator-abc",
+						nodeName: "worker-a",
+						cpu: "500m",
+						memory: "256Mi",
+					}),
+					metadata: {
+						name: "swebench-coordinator-abc",
+						namespace: "workflow-builder",
+						labels: {},
+					},
+				},
+				pod({
+					name: "swebench-instance-1",
+					nodeName: "worker-a",
+					cpu: "500m",
+					memory: "256Mi",
+					labels: { "agents.x-k8s.io/workload": "swebench" },
+				}),
+			],
+			sandboxRequest: {
+				cpuMilli: 500,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+			},
+		});
+
+		expect(snapshot).toMatchObject({
+			activeSwebenchPods: 1,
+		});
+	});
+
 	it("reports zero available slots when requests consume worker headroom", () => {
 		const snapshot = estimateSchedulableSandboxCapacity({
 			nodes: [workerNode("worker-a", { cpu: "1000m", memory: "1Gi" })],
