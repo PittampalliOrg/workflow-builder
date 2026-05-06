@@ -4,7 +4,16 @@ Workflow Builder is a visual workflow system that uses Dapr Workflows for durabl
 
 ## Current Runtime Model
 
-The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
+The active runtime runs on `kind-ryzen` for local development and on
+GitOps-managed Talos spoke clusters for shared environments. `dev` is a
+Crossplane-owned Hetzner Talos spoke managed from the hub through stacks,
+source-hydrator, GitOps Promoter, and hub ArgoCD. The May 2026 dev rebuild uses
+3 control-plane nodes plus 6 benchmark worker nodes labeled
+`stacks.io/swebench-pool=dev-benchmark`; workflow-builder's SWE-bench
+concurrency gates are configured for a 72-instance inference ceiling on that
+worker pool.
+
+The runtime components are:
 
 - `workflow-builder`: SvelteKit UI and BFF (Dapr app-id: `workflow-builder`, `workflow-builder` namespace)
 - `workflow-orchestrator`: Python Dapr durable workflow owner (`workflow-builder` namespace)
@@ -16,6 +25,13 @@ The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 - `fn-activepieces`: default SaaS action backend
 - `postgresql`: workflow definitions, executions, artifacts, approvals, child-run metadata, sessions, agents, agent_versions
 - `redis` plus Dapr sidecars: workflow state, pub/sub, service invocation, actor durability
+- `swebench-coordinator`: Dapr Workflow service that validates SWE-bench
+  inference environments, admits instance child workflows through resource
+  leases, writes dataset/prediction artifacts, and launches official evaluator
+  Jobs.
+- `swebench-evaluator`: short-lived Kubernetes Job that dispatches per-instance
+  Tekton TaskRuns for official harness grading and posts results back to the
+  workflow-builder internal benchmark API.
 
 Per-agent runtime pods run in the **same namespace as the orchestrator**
 (`workflow-builder`) — Dapr workflow sub-orchestration resolves the
@@ -26,6 +42,11 @@ See `docs/per-agent-runtime.md` for the full agent runtime model: controller
 lifecycle, runtime-class pools, pod shape, Dapr Component scoping, wake/idle
 TTL, dispatch paths (direct session vs workflow bridge), and troubleshooting
 cheatsheet.
+
+See `docs/swebench-concurrency.md` for the SWE-bench capacity model. The
+headline rule is that requested concurrency is only an input; actual throughput
+is the minimum of runtime slots, Dapr workflow slots, global benchmark caps,
+OpenShell sandbox headroom, model caps, and evaluator parallelism.
 
 Model selection for `durable/run` is data-driven. `dapr-agent-py` reads
 `agentConfig.modelSpec` from the workflow call, maps that value to a Dapr LLM

@@ -6,6 +6,38 @@ The SWE-bench benchmark path uses a Dapr Workflow preflight/inference split:
 - `swebench_run_workflow` admits instance child workflows through resource leases instead of scheduling all selected instances at once.
 - `swebench_instance_workflow` requires a stamped, validated `inferenceEnvironment`; it must not submit environment build PipelineRuns.
 
+## Dev Cluster Architecture
+
+The current `dev` spoke is a Crossplane-owned Talos cluster on Hetzner. It is
+not a manually maintained HCloud/Talos cluster. Hub ArgoCD owns the spoke
+through the stacks GitOps bridge, and workflow-builder changes reach dev by the
+normal image-promotion path:
+
+```text
+workflow-builder origin/main
+  -> hub outer-loop PipelineRun
+  -> stacks release-pins/workflow-builder-images.yaml
+  -> generated workflow-builder-system overlay
+  -> source-hydrator env/spokes-dev-next
+  -> GitOps Promoter env/spokes-dev
+  -> hub ArgoCD dev-workflow-builder Application
+```
+
+The capacity-oriented dev shape is:
+
+- 3 control-plane nodes.
+- 6 benchmark worker nodes, currently `cpx51`, labeled
+  `stacks.io/swebench-pool=dev-benchmark`.
+- All SWE-bench OpenShell pods should schedule on that worker pool.
+- Tailscale exposes the API through the spoke ProxyGroup; workflow-builder app
+  access remains a promoted spoke workload.
+
+The May 2026 rebuild targets a conservative 72-instance inference ceiling. That
+number is a runtime/model admission cap, not a raw Kubernetes maximum. The six
+workers have more sandbox headroom than 72, but workflow-builder only admits 72
+concurrent inference instances until the runtime pool and global caps are raised
+again.
+
 ## PipelineRun Guardrails
 
 Dynamic SWE-bench inference image builds require `allowBuild=true` and `SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE=hub`. Hub submission also requires a scoped hub kubeconfig at `SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG` or equivalent content env var. If hub submission is not configured, preflight fails closed instead of creating a local PipelineRun.
@@ -109,10 +141,10 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `MAX_INFERENCE_CONCURRENCY` | `128` | n/a | Launch sheet slider maximum. Backend still clamps. |
 | `MAX_EVALUATION_CONCURRENCY` | `128` | n/a | Launch sheet evaluation slider maximum. Backend/evaluator also clamp to 128. |
 | `BENCHMARK_DEFAULT_CONCURRENCY` | `10` | `10` | BFF fallback requested inference concurrency when the request omits or passes an invalid value. |
-| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` | `56` | Global active inference cap across benchmark resource leases. |
-| `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | `56` | Global Dapr agent child-workflow cap used by capacity estimates and `dapr_workflow_slot` leases. |
+| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` | `72` | Global active inference cap across benchmark resource leases. |
+| `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | `72` | Global Dapr agent child-workflow cap used by capacity estimates and `dapr_workflow_slot` leases. |
 | `BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS` | unset | unset | Backward-compatible alias for `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`. |
-| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | `60` | Configured OpenShell sandbox cap. Effective sandbox cap is the minimum of this and live schedulable headroom when available. |
+| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | `80` | Configured OpenShell sandbox cap. Effective sandbox cap is the minimum of this and live schedulable headroom when available. |
 | `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS` | unset | unset | Optional per-model request cap for `model_slot` leases. |
 | `BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS` | unset | unset | Backward-compatible alias for `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`. |
 | `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
@@ -137,9 +169,9 @@ controller status calculation lives in `services/agent-runtime-controller/src/ma
 
 | Variable or config field | Default | Dev GitOps value | Effect |
 | --- | ---: | ---: | --- |
-| `AGENT_RUNTIME_POOL_MAX_REPLICAS` | `2` | `7` | Shared-pool replica fallback when a pool config omits `maxReplicas`. |
+| `AGENT_RUNTIME_POOL_MAX_REPLICAS` | `2` | `9` | Shared-pool replica fallback when a pool config omits `maxReplicas`. |
 | `AGENT_RUNTIME_POOL_MIN_REPLICAS` | unset | unset | Shared-pool minimum replica metadata when configured. |
-| `AGENT_RUNTIME_POOL_APP_IDS_JSON` | unset | `{"coding":{"appId":"agent-runtime-pool-coding","maxReplicas":7,"slotsPerReplica":8}}` | Maps runtime classes to shared pool app IDs and optional pool capacity. Explicit `slotsPerReplica` here wins for that shared pool. |
+| `AGENT_RUNTIME_POOL_APP_IDS_JSON` | unset | `{"coding":{"appId":"agent-runtime-pool-coding","maxReplicas":9,"slotsPerReplica":8}}` | Maps runtime classes to shared pool app IDs and optional pool capacity. Explicit `slotsPerReplica` here wins for that shared pool. Dev coding pool capacity is `9 * 8 = 72` runtime slots. |
 | `AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON` | `{"coding":5,"office":2,"browser":1,"testing":2}` | `{"coding":12,"office":2,"browser":1,"testing":2}` | Slots-per-replica fallback by runtime class. For dev, dedicated coding runtimes use `12`; the shared coding pool still uses the explicit pool value `8`. |
 | `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR` | `slotsPerReplica` | `12` | Per-sidecar Dapr workflow invocation capacity used by BFF capacity estimates and controller status. |
 | `DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS` | unset | unset | BFF capacity-estimate override checked before `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`; use carefully because controller status reads the `AGENT_RUNTIME_*` value. |
@@ -154,9 +186,9 @@ These live in `services/swebench-coordinator/src/concurrency.py` and
 
 | Variable | Default | Dev GitOps value | Effect |
 | --- | ---: | ---: | --- |
-| `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` | `56` | `56` | Coordinator-side backstop for active `swebench_instance_workflow` children. |
-| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE` | `10` | `12` | Max new instance child workflows to start before an optional pacing delay. |
-| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` | `5` | `2` | Delay between start batches. `0` disables pacing delay. |
+| `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` | `56` | `72` | Coordinator-side backstop for active `swebench_instance_workflow` children. |
+| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE` | `10` | `18` | Max new instance child workflows to start before an optional pacing delay. |
+| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` | `5` | `1` | Delay between start batches. `0` disables pacing delay. |
 | `SWEBENCH_LEASE_RETRY_SECONDS` | `15` | `15` | Coordinator sleep interval when a resource lease is denied. |
 | `SWEBENCH_EVAL_MAX_PARALLEL` | `24` | `24` | Evaluation TaskRun batch size passed to the evaluator Job. Clamped to `1..128`. |
 | `SWEBENCH_MAX_WORKERS` | `24` via evaluator fallback | unset | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent. |
@@ -175,12 +207,9 @@ up to `SWEBENCH_EVAL_MAX_PARALLEL` TaskRuns active and starts the next instance
 as soon as any active TaskRun finishes. Evaluator leases are released per
 completed TaskRun, not at the end of a fixed batch.
 
-## Dev Ramp Profile
+## Current Dev Ramp Profile
 
-Baseline canaries should first run at the current dev values: inference `56`,
-evaluator `24`, coordinator start batch size `12`, and start delay `2s`.
-
-Ramp 1 raises inference coherently to `72`:
+Dev currently runs the 72-slot inference profile:
 
 - `AGENT_RUNTIME_POOL_MAX_REPLICAS=9`
 - coding pool `maxReplicas=9`
@@ -192,10 +221,67 @@ Ramp 1 raises inference coherently to `72`:
 - `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=18`
 - `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=1`
 
-Keep evaluator concurrency at `24` until the sliding-window evaluator image is
-rolled and canaried, then test `32`. Do not raise evaluator concurrency beyond
-scheduler capacity unless evaluator TaskRun requests are reduced or more nodes
-are schedulable.
+Keep evaluator concurrency at `24` until the evaluator finalization path has a
+clean passing canary on object storage, then test `32`. Do not raise evaluator
+concurrency beyond scheduler capacity unless evaluator TaskRun requests are
+reduced or more nodes are schedulable.
+
+### May 2026 24-Instance Validation
+
+The first post-rebuild Kimi Verified 24-run validated the inference-side
+concurrency mechanics even though official grading failed during evaluator
+finalization:
+
+- Requested/effective inference concurrency was `24`.
+- Observed max active leases reached `24` for all inference resource classes:
+  `agent_runtime_slot`, `dapr_workflow_slot`, `inference_slot`, `model_slot`,
+  and `openshell_sandbox`.
+- Observed max active evaluator leases reached `24`.
+- Inference resource leases released cleanly; the two evaluator leases left by
+  the failed finalizer were released manually after diagnosis.
+- The run capacity snapshot reported:
+  - `runtimeSlots: 72`
+  - `agentWorkflowMaxActiveTurns: 72`
+  - `daprWorkflowEffectiveCapacity: 108`
+  - `configuredMaxActiveSandboxes: 80`
+  - `schedulableSandboxCapacity: 108`
+- The failure was post-inference: the evaluator's finalize TaskRun treated a
+  Dapr blob-storage "blob not found" response as HTTP 500. That path is fixed
+  by `fix(benchmarks): tolerate missing object artifacts`.
+
+Use this run as evidence that the cluster and runtime can admit at least 24
+fully concurrent instances. It is not an official score run because the
+evaluation callback did not persist per-instance harness results.
+
+### Estimating Maximum Concurrency
+
+For the current dev deployment, the practical inference ceiling is:
+
+```text
+min(
+  72 runtime slots,
+  108 Dapr workflow effective capacity,
+  80 configured OpenShell sandbox slots,
+  108 live schedulable sandbox slots,
+  72 global inference slots,
+  72 global agent workflow slots,
+  selected instance count,
+  requested concurrency
+) = 72
+```
+
+The worker pool has more physical headroom than 72. Raising above 72 requires
+changing the runtime pool and global caps together, then rerunning capacity
+diagnostics. A plausible next infrastructure ceiling is `80`, because
+`BENCHMARK_MAX_ACTIVE_SANDBOXES=80` is the next configured limiter. Going past
+`80` requires increasing the sandbox cap and validating nodefs/disk-pressure
+behavior under load.
+
+Because the 24-run had 8 stalled inferences that held slots until the
+`BENCHMARK_INFERENCE_STALL_SECONDS=480` detector fired, extrapolate wall-clock
+from the slow tail, not only from successful inference medians. At 72
+concurrent instances, expect a single inference wave to last about as long as
+the slowest timeout tail if provider behavior is similar.
 
 ### OpenAI-Parity Evaluation Coordinator
 

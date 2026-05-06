@@ -75,6 +75,19 @@ If the feature gate is enabled and a class is not listed, the router derives
 `agent-runtime-pool-<class>` and uses `AGENT_RUNTIME_POOL_MIN_REPLICAS` /
 `AGENT_RUNTIME_POOL_MAX_REPLICAS` for capacity metadata.
 
+On the May 2026 dev Talos spoke, the SWE-bench coding pool is intentionally
+larger:
+
+```json
+{
+  "coding": { "appId": "agent-runtime-pool-coding", "maxReplicas": 9, "slotsPerReplica": 8 }
+}
+```
+
+That gives the shared coding pool 72 runtime slots. The global benchmark caps
+and coordinator caps must match that value before a 72-instance run can use the
+pool fully.
+
 Capacity-sensitive benchmark runs also read
 `AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON`,
 `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`, and any explicit
