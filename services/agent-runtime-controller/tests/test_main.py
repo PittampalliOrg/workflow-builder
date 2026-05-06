@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import types
+import logging
 from pathlib import Path
 
 
@@ -58,6 +59,27 @@ sys.modules.setdefault("kubernetes.client", client)
 sys.modules.setdefault("kubernetes.config", config)
 
 import main  # noqa: E402
+
+
+LOGGER = logging.getLogger("test-agent-runtime-controller")
+
+
+class FakeCustomObjects:
+    def __init__(self, components):
+        self.components = components
+        self.patches = []
+
+    def get_namespaced_custom_object(self, *, name, **_kwargs):
+        component = self.components.get(name)
+        if component is None:
+            raise main.client.ApiException(status=404)
+        return component
+
+    def patch_namespaced_custom_object(self, *, name, body, **_kwargs):
+        self.patches.append((name, body))
+        component = self.components[name]
+        component.update(body)
+        return component
 
 
 def _spec(**overrides):
@@ -246,3 +268,90 @@ def test_unknown_model_spec_is_rejected_instead_of_defaulting_to_anthropic():
         assert "Unknown AgentRuntime modelSpec" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_agent_statestore_components_are_deduped(monkeypatch):
+    monkeypatch.setattr(main, "AGENT_APP_STATESTORE_COMPONENT", "workflowstatestore")
+    monkeypatch.setattr(main, "AGENT_WORKFLOW_STATESTORE_COMPONENT", "workflowstatestore")
+
+    assert main._agent_statestore_components() == ["workflowstatestore"]
+
+
+def test_ensure_agent_statestore_scopes_enrolls_app_and_workflow_stores(monkeypatch):
+    fake = FakeCustomObjects(
+        {
+            "dapr-agent-py-statestore": {"scopes": ["dapr-agent-py"]},
+            "workflowstatestore": {"scopes": ["workflow-orchestrator"]},
+        }
+    )
+    monkeypatch.setattr(main, "CUSTOM", fake)
+
+    main.ensure_agent_statestore_scopes(
+        "agent-runtime-pool-coding",
+        "workflow-builder",
+        LOGGER,
+    )
+
+    assert fake.components["dapr-agent-py-statestore"]["scopes"] == [
+        "dapr-agent-py",
+        "agent-runtime-pool-coding",
+    ]
+    assert fake.components["workflowstatestore"]["scopes"] == [
+        "workflow-orchestrator",
+        "agent-runtime-pool-coding",
+    ]
+    assert fake.patches == [
+        (
+            "dapr-agent-py-statestore",
+            {"scopes": ["dapr-agent-py", "agent-runtime-pool-coding"]},
+        ),
+        (
+            "workflowstatestore",
+            {"scopes": ["workflow-orchestrator", "agent-runtime-pool-coding"]},
+        ),
+    ]
+
+
+def test_ensure_agent_statestore_scopes_skips_existing_scopes(monkeypatch):
+    fake = FakeCustomObjects(
+        {
+            "dapr-agent-py-statestore": {"scopes": ["agent-runtime-pool-coding"]},
+            "workflowstatestore": {"scopes": ["agent-runtime-pool-coding"]},
+        }
+    )
+    monkeypatch.setattr(main, "CUSTOM", fake)
+
+    main.ensure_agent_statestore_scopes(
+        "agent-runtime-pool-coding",
+        "workflow-builder",
+        LOGGER,
+    )
+
+    assert fake.patches == []
+
+
+def test_remove_agent_statestore_scopes_removes_from_both_components(monkeypatch):
+    fake = FakeCustomObjects(
+        {
+            "dapr-agent-py-statestore": {
+                "scopes": ["dapr-agent-py", "agent-runtime-pool-coding"]
+            },
+            "workflowstatestore": {
+                "scopes": ["workflow-orchestrator", "agent-runtime-pool-coding"]
+            },
+        }
+    )
+    monkeypatch.setattr(main, "CUSTOM", fake)
+
+    main.remove_agent_statestore_scopes(
+        "agent-runtime-pool-coding",
+        "workflow-builder",
+        LOGGER,
+    )
+
+    assert fake.components["dapr-agent-py-statestore"]["scopes"] == ["dapr-agent-py"]
+    assert fake.components["workflowstatestore"]["scopes"] == ["workflow-orchestrator"]
+    assert fake.patches == [
+        ("dapr-agent-py-statestore", {"scopes": ["dapr-agent-py"]}),
+        ("workflowstatestore", {"scopes": ["workflow-orchestrator"]}),
+    ]

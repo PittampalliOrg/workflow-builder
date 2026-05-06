@@ -56,10 +56,16 @@ DEFAULT_OPENSHELL_GATEWAY_NAME = os.environ.get(
     "OPENSHELL_GATEWAY_NAME",
     "ryzen-internal",
 )
-AGENT_STATESTORE_COMPONENT = os.environ.get(
+AGENT_APP_STATESTORE_COMPONENT = os.environ.get(
     "AGENT_RUNTIME_STATESTORE_COMPONENT",
     "dapr-agent-py-statestore",
 )
+AGENT_WORKFLOW_STATESTORE_COMPONENT = os.environ.get(
+    "AGENT_RUNTIME_WORKFLOW_STATESTORE_COMPONENT",
+    "workflowstatestore",
+)
+# Back-compat for tests/tools that imported the old single-store constant.
+AGENT_STATESTORE_COMPONENT = AGENT_APP_STATESTORE_COMPONENT
 
 # modelSpec -> Dapr conversation component. Mirrors
 # services/dapr-agent-py/src/effective_agent_config.py:MODEL_COMPONENT_MAP so
@@ -368,28 +374,39 @@ def _capacity_status(
     }
 
 
-def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
-    """Enroll the per-agent Dapr app id in the shared actor state store.
+def _agent_statestore_components() -> list[str]:
+    """Components every AgentRuntime app id must be scoped into.
 
-    Dapr durable workflows use the actor backend. Each runtime pod must see
-    exactly one actorStateStore=true Component, so the centralized
-    dapr-agent-py state store is scoped and the controller mutates only the
-    scopes list. Workflow history stays centralized; no per-agent state store
-    is created or deleted.
+    dapr-agent-py-statestore remains the application state store used by the
+    agent process. workflowstatestore is the single actor/workflow state store
+    shared with parent workflow apps, which Dapr requires for multi-app
+    child-workflow routing.
     """
-    if not app_id:
-        return
+    components: list[str] = []
+    for component in (AGENT_APP_STATESTORE_COMPONENT, AGENT_WORKFLOW_STATESTORE_COMPONENT):
+        normalized = str(component or "").strip()
+        if normalized and normalized not in components:
+            components.append(normalized)
+    return components
+
+
+def _ensure_dapr_component_scope(
+    component_name: str,
+    app_id: str,
+    namespace: str,
+    logger: logging.Logger,
+) -> None:
     try:
         component = CUSTOM.get_namespaced_custom_object(
             group=DAPR_GROUP,
             version=DAPR_VERSION,
             namespace=namespace,
             plural=DAPR_COMPONENT_PLURAL,
-            name=AGENT_STATESTORE_COMPONENT,
+            name=component_name,
         )
     except client.ApiException as exc:
         raise RuntimeError(
-            f"Dapr Component {AGENT_STATESTORE_COMPONENT!r} is required before "
+            f"Dapr Component {component_name!r} is required before "
             f"AgentRuntime {app_id!r} can host durable workflows"
         ) from exc
 
@@ -406,33 +423,48 @@ def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.L
         version=DAPR_VERSION,
         namespace=namespace,
         plural=DAPR_COMPONENT_PLURAL,
-        name=AGENT_STATESTORE_COMPONENT,
+        name=component_name,
         body=patch,
     )
     logger.info(
         "enrolled app id %s in Dapr Component %s scopes",
         app_id,
-        AGENT_STATESTORE_COMPONENT,
+        component_name,
     )
 
 
-def remove_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
-    """Remove a deleted runtime app id from the shared actor state store scopes."""
+def ensure_agent_statestore_scopes(app_id: str, namespace: str, logger: logging.Logger) -> None:
+    """Enroll the runtime app id into all Dapr Components it must load."""
     if not app_id:
         return
+    for component_name in _agent_statestore_components():
+        _ensure_dapr_component_scope(component_name, app_id, namespace, logger)
+
+
+def ensure_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
+    """Backward-compatible wrapper for callers/tests using the old name."""
+    ensure_agent_statestore_scopes(app_id, namespace, logger)
+
+
+def _remove_dapr_component_scope(
+    component_name: str,
+    app_id: str,
+    namespace: str,
+    logger: logging.Logger,
+) -> None:
     try:
         component = CUSTOM.get_namespaced_custom_object(
             group=DAPR_GROUP,
             version=DAPR_VERSION,
             namespace=namespace,
             plural=DAPR_COMPONENT_PLURAL,
-            name=AGENT_STATESTORE_COMPONENT,
+            name=component_name,
         )
     except client.ApiException as exc:
         if exc.status == 404:
             logger.warning(
                 "Dapr Component %s missing while removing scope for app id %s",
-                AGENT_STATESTORE_COMPONENT,
+                component_name,
                 app_id,
             )
             return
@@ -447,14 +479,27 @@ def remove_agent_statestore_scope(app_id: str, namespace: str, logger: logging.L
         version=DAPR_VERSION,
         namespace=namespace,
         plural=DAPR_COMPONENT_PLURAL,
-        name=AGENT_STATESTORE_COMPONENT,
+        name=component_name,
         body={"scopes": [scope for scope in scopes if scope != app_id]},
     )
     logger.info(
         "removed app id %s from Dapr Component %s scopes",
         app_id,
-        AGENT_STATESTORE_COMPONENT,
+        component_name,
     )
+
+
+def remove_agent_statestore_scopes(app_id: str, namespace: str, logger: logging.Logger) -> None:
+    """Remove a deleted runtime app id from all controller-managed Dapr scopes."""
+    if not app_id:
+        return
+    for component_name in _agent_statestore_components():
+        _remove_dapr_component_scope(component_name, app_id, namespace, logger)
+
+
+def remove_agent_statestore_scope(app_id: str, namespace: str, logger: logging.Logger) -> None:
+    """Backward-compatible wrapper for callers/tests using the old name."""
+    remove_agent_statestore_scopes(app_id, namespace, logger)
 
 
 def _build_browser_sidecars(browser_spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
