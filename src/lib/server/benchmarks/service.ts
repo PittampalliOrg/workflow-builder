@@ -2923,13 +2923,15 @@ export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
 	terminationReason?: string | null;
 }) {
 	const database = requireDb();
-	const status = normalizeHostBenchmarkExecutionStatus(params.status);
+	let status = normalizeHostBenchmarkExecutionStatus(params.status);
 	const [row] = await database
 		.select({
+			run: benchmarkRuns,
 			runInstance: benchmarkRunInstances,
 			execution: workflowExecutions,
 		})
 		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.leftJoin(
 			workflowExecutions,
 			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
@@ -2944,6 +2946,20 @@ export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
 	if (!row?.execution) return null;
 	if (!isHostExecutionIr(row.execution.executionIr)) {
 		throw error(409, "Benchmark instance is not using the host execution backend");
+	}
+	if (BENCHMARK_RUN_TERMINAL_STATUSES.has(row.run.status)) {
+		if (!isHostBenchmarkExecutionTerminal(status)) return row.runInstance;
+		if (row.run.status === "cancelled") {
+			status = "cancelled";
+		} else {
+			return row.runInstance;
+		}
+	}
+	if (
+		INSTANCE_TERMINAL_STATUSES.has(row.runInstance.status) &&
+		!isHostBenchmarkExecutionTerminal(status)
+	) {
+		return row.runInstance;
 	}
 
 	const now = new Date();
