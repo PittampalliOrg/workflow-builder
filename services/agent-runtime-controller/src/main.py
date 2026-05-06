@@ -415,13 +415,9 @@ def _ensure_dapr_component_scope(
         return
 
     if isinstance(scopes, list):
-        patch: list[dict[str, Any]] | dict[str, Any] = [
-            {"op": "add", "path": "/scopes/-", "value": app_id}
-        ]
-        content_type = "application/json-patch+json"
+        patch = {"scopes": [*scopes, app_id]}
     else:
         patch = {"scopes": [app_id]}
-        content_type = "application/merge-patch+json"
     CUSTOM.patch_namespaced_custom_object(
         group=DAPR_GROUP,
         version=DAPR_VERSION,
@@ -429,7 +425,6 @@ def _ensure_dapr_component_scope(
         plural=DAPR_COMPONENT_PLURAL,
         name=component_name,
         body=patch,
-        _content_type=content_type,
     )
     logger.info(
         "enrolled app id %s in Dapr Component %s scopes",

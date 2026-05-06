@@ -310,11 +310,11 @@ def test_ensure_agent_statestore_scopes_enrolls_app_and_workflow_stores(monkeypa
     assert fake.patches == [
         (
             "dapr-agent-py-statestore",
-            [{"op": "add", "path": "/scopes/-", "value": "agent-runtime-pool-coding"}],
+            {"scopes": ["dapr-agent-py", "agent-runtime-pool-coding"]},
         ),
         (
             "workflowstatestore",
-            [{"op": "add", "path": "/scopes/-", "value": "agent-runtime-pool-coding"}],
+            {"scopes": ["workflow-orchestrator", "agent-runtime-pool-coding"]},
         ),
     ]
 
