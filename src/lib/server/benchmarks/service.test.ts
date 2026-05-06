@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	__benchmarkDurableRuntimeForTest,
 	__benchmarkSandboxCleanupForTest,
 	benchmarkInferenceStallState,
 	benchmarkAgentRuntimeCleanupInstanceIds,
@@ -892,6 +893,19 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).toBe(true);
 		expect(isBenignDaprTerminationMiss(new Error("context deadline exceeded"))).toBe(false);
+	});
+
+	it("extracts durable runtime status from nested response envelopes", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.durableRuntimeStatusFromBody({
+				status: { runtimeStatus: "TERMINATED" },
+			}),
+		).toBe("TERMINATED");
+		expect(
+			__benchmarkDurableRuntimeForTest.durableRuntimeStatusFromBody({
+				runtime_status: "COMPLETED",
+			}),
+		).toBe("COMPLETED");
 	});
 
 	it("keeps cancellation sandbox cleanup scoped to benchmark-owned OpenShell names", () => {

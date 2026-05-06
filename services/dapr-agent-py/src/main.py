@@ -607,6 +607,25 @@ def _runtime_context_state_key(instance_id: str) -> str:
     return f"runtime-context:{instance_id}"
 
 
+def _runtime_context_candidate_ids(instance_id: str) -> list[str]:
+    """Return context lookup keys for a durable activity instance id.
+
+    Dapr Agent activity payloads can scope work to a turn id such as
+    ``<workflow-instance>:turn-1`` while the runtime context is seeded once
+    under the base workflow instance id. Prefer the exact key, then fall back
+    to the base id so turn-scoped activities keep the selected model, sandbox,
+    and allowed-tool context.
+    """
+    text = str(instance_id or "").strip()
+    if not text:
+        return []
+    candidates = [text]
+    base = re.sub(r":turn-\d+$", "", text)
+    if base and base != text:
+        candidates.append(base)
+    return candidates
+
+
 def _save_agent_state_key(key: str, value: Any) -> None:
     sidecar = (
         f"http://{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
@@ -1415,20 +1434,37 @@ class OpenShellDurableAgent(DurableAgent):
         return clean
 
     def _runtime_context_for_instance(self, instance_id: str) -> dict[str, Any]:
-        if not instance_id:
+        candidates = _runtime_context_candidate_ids(instance_id)
+        if not candidates:
             return {}
-        with self._agent_context_lock:
-            sandbox_context = dict(self._openshell_context_by_instance.get(instance_id) or {})
-            agent_context = dict(self._agent_context_by_instance.get(instance_id) or {})
-        if sandbox_context or agent_context:
-            return {**sandbox_context, **agent_context}
-        state_value = _read_agent_state_key(_runtime_context_state_key(instance_id))
-        if isinstance(state_value, dict):
-            return self._remember_runtime_context(instance_id, state_value)
+        for candidate in candidates:
+            with self._agent_context_lock:
+                sandbox_context = dict(
+                    self._openshell_context_by_instance.get(candidate) or {}
+                )
+                agent_context = dict(
+                    self._agent_context_by_instance.get(candidate) or {}
+                )
+            if sandbox_context or agent_context:
+                context = {**sandbox_context, **agent_context}
+                if candidate != candidates[0]:
+                    self._remember_runtime_context(candidates[0], context)
+                return context
+        for candidate in candidates:
+            state_value = _read_agent_state_key(_runtime_context_state_key(candidate))
+            if isinstance(state_value, dict):
+                context = self._remember_runtime_context(candidate, state_value)
+                if candidate != candidates[0]:
+                    self._remember_runtime_context(candidates[0], context)
+                return context
         return {}
 
     def _is_tool_allowed_for_instance(self, instance_id: str, tool_name: str) -> bool:
-        allowed_tools = self._allowed_tools_by_instance.get(instance_id)
+        allowed_tools = None
+        for candidate in _runtime_context_candidate_ids(instance_id):
+            allowed_tools = self._allowed_tools_by_instance.get(candidate)
+            if allowed_tools:
+                break
         if not allowed_tools:
             return True
         return _normalize_tool_lookup_name(tool_name) in allowed_tools

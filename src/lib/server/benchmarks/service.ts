@@ -291,13 +291,16 @@ function isTerminalDurableRuntimeStatus(status: unknown): boolean {
 function durableRuntimeStatusFromBody(body: unknown): unknown {
 	if (!body || typeof body !== "object" || Array.isArray(body)) return null;
 	const record = body as Record<string, unknown>;
-	return (
+	const direct =
 		record.runtimeStatus ??
 		record.runtime_status ??
 		record.status ??
 		record.workflowStatus ??
-		null
-	);
+		null;
+	if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+		return durableRuntimeStatusFromBody(direct);
+	}
+	return direct;
 }
 
 function benchmarkTerminationWaitMs(): number {
@@ -1518,6 +1521,44 @@ async function finalizeBenchmarkWorkflowExecutions(
 		},
 	);
 
+	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
+	await runWithConcurrency(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
+		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async ({ runtimeAppId, instanceId }) => {
+			const termination = await terminateBenchmarkAgentRuntimeInstance(
+				runtimeAppId,
+				instanceId,
+				reason,
+			);
+			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
+			if (termination === "failed") allDurableInstancesClosed = false;
+		},
+	);
+
+	let agentRuntimeDurableInstancesClosed = true;
+	await runWithConcurrency(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
+		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async ({ runtimeAppId, instanceId }) => {
+			const termination =
+				agentRuntimeTerminations.get(`${runtimeAppId}\0${instanceId}`) ??
+				"terminated";
+			if (termination === "failed") return;
+			const closed =
+				termination === "alreadyGone" ||
+				(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
+			if (!closed) {
+				agentRuntimeDurableInstancesClosed = false;
+				allDurableInstancesClosed = false;
+			}
+		},
+	);
+
 	let parentDurableInstancesClosed = true;
 	await runWithConcurrency(
 		[...daprInstanceIds],
@@ -1537,49 +1578,9 @@ async function finalizeBenchmarkWorkflowExecutions(
 			}
 		},
 	);
-	if (!parentDurableInstancesClosed) {
-		console.warn(
-			`Benchmark run ${runId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandboxes, and leases active for retry`,
-		);
-		return false;
-	}
-
-	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
-	await runWithConcurrency(
-		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
-			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
-		),
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			const termination = await terminateBenchmarkAgentRuntimeInstance(
-				runtimeAppId,
-				instanceId,
-				reason,
-			);
-			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
-			if (termination === "failed") allDurableInstancesClosed = false;
-		},
-	);
-
-	await runWithConcurrency(
-		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
-			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
-		),
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			const termination =
-				agentRuntimeTerminations.get(`${runtimeAppId}\0${instanceId}`) ??
-				"terminated";
-			if (termination === "failed") return;
-			const closed =
-				termination === "alreadyGone" ||
-				(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
-			if (!closed) allDurableInstancesClosed = false;
-		},
-	);
 	if (!allDurableInstancesClosed) {
 		console.warn(
-			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
+			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; parentClosed=${parentDurableInstancesClosed} agentRuntimeClosed=${agentRuntimeDurableInstancesClosed}; leaving session/execution rows active for retry`,
 		);
 		return false;
 	}
@@ -1971,6 +1972,10 @@ export const __benchmarkSandboxCleanupForTest = {
 	collectBenchmarkSandboxNamesFromValues,
 	isOpenShellSandboxNotFound,
 	shouldDeleteBenchmarkSandboxName,
+};
+
+export const __benchmarkDurableRuntimeForTest = {
+	durableRuntimeStatusFromBody,
 };
 
 async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {

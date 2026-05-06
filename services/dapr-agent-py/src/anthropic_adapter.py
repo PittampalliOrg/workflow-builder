@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from src.instruction_bundle import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
@@ -78,6 +79,8 @@ COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-anthropic-haiku": "claude-haiku-4-5-20251001",
 }
 
+_ANTHROPIC_TOOL_USE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 
 def _is_anthropic_component(component: str) -> bool:
     """Check if a component name maps to an Anthropic model."""
@@ -87,6 +90,18 @@ def _is_anthropic_component(component: str) -> bool:
 def _get_anthropic_model(component: str) -> str:
     """Get the Anthropic model ID for a component name."""
     return COMPONENT_MODEL_MAP.get(component, "claude-sonnet-4-6-20250414")
+
+
+def _safe_anthropic_tool_use_id(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    if text and _ANTHROPIC_TOOL_USE_ID_RE.match(text):
+        return text
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", text).strip("_")
+    if not cleaned:
+        cleaned = fallback
+    if not _ANTHROPIC_TOOL_USE_ID_RE.match(cleaned):
+        cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", fallback).strip("_")
+    return cleaned or "tool_use"
 
 
 def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
@@ -416,6 +431,18 @@ def _normalize_messages_for_anthropic(
 ) -> tuple[str | None, list[dict[str, Any]]]:
     system_parts: list[str] = []
     messages: list[dict[str, Any]] = []
+    tool_use_id_map: dict[str, str] = {}
+
+    def map_tool_use_id(raw_id: Any) -> str:
+        raw_text = str(raw_id or "").strip()
+        if raw_text in tool_use_id_map:
+            return tool_use_id_map[raw_text]
+        safe = _safe_anthropic_tool_use_id(
+            raw_text,
+            f"tool_use_{len(tool_use_id_map) + 1}",
+        )
+        tool_use_id_map[raw_text] = safe
+        return safe
 
     source: list[Any]
     if raw_messages and isinstance(raw_messages, list):
@@ -440,7 +467,7 @@ def _normalize_messages_for_anthropic(
                 messages.append({
                     "role": "user",
                     "content": [{"type": "tool_result",
-                                 "tool_use_id": m.get("tool_call_id", ""),
+                                 "tool_use_id": map_tool_use_id(m.get("tool_call_id", "")),
                                  "content": str(content)[:5000] if content else "ok"}]
                 })
             elif role == "assistant" and m.get("tool_calls"):
@@ -451,7 +478,7 @@ def _normalize_messages_for_anthropic(
                     fn = call.get("function", {}) if isinstance(call, dict) else {}
                     content_blocks.append({
                         "type": "tool_use",
-                        "id": call.get("id", "") if isinstance(call, dict) else "",
+                        "id": map_tool_use_id(call.get("id", "") if isinstance(call, dict) else ""),
                         "name": fn.get("name", ""),
                         "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
                     })
@@ -470,7 +497,7 @@ def _normalize_messages_for_anthropic(
                 messages.append({
                     "role": "user",
                     "content": [{"type": "tool_result",
-                                 "tool_use_id": getattr(m, "tool_call_id", ""),
+                                 "tool_use_id": map_tool_use_id(getattr(m, "tool_call_id", "")),
                                  "content": str(content)[:5000] if content else "ok"}]
                 })
             else:
@@ -484,7 +511,7 @@ def _normalize_messages_for_anthropic(
                         fn = call.get("function", {}) if isinstance(call, dict) else {}
                         content_blocks.append({
                             "type": "tool_use",
-                            "id": call.get("id", "") if isinstance(call, dict) else "",
+                            "id": map_tool_use_id(call.get("id", "") if isinstance(call, dict) else ""),
                             "name": fn.get("name", ""),
                             "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
                         })

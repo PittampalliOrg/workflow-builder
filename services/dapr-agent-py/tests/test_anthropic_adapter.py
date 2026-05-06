@@ -57,6 +57,32 @@ def test_anthropic_normalizer_preserves_tool_result_shape() -> None:
     ]
 
 
+def test_anthropic_normalizer_sanitizes_foreign_tool_call_ids() -> None:
+    _system, messages = adapter._normalize_messages_for_anthropic(
+        None,
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "Grep:5",
+                        "function": {"name": "Grep", "arguments": '{"pattern":"x"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "match",
+                "tool_call_id": "Grep:5",
+            },
+        ],
+    )
+
+    assert messages[0]["content"][0]["id"] == "Grep_5"
+    assert messages[1]["content"][0]["tool_use_id"] == "Grep_5"
+
+
 def test_anthropic_sdk_requires_api_key(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
