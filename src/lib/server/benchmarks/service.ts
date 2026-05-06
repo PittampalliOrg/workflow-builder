@@ -1685,7 +1685,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		[...daprInstanceIds],
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async (instanceId) => {
-			await purgeBenchmarkWorkflowInstance(instanceId, "terminated");
+			await purgeBenchmarkWorkflowInstance(instanceId);
 		},
 	);
 	// Do not purge agent-runtime child workflow state here. Dapr parent workflow
@@ -1724,7 +1724,7 @@ async function terminateAndPurgeBenchmarkWorkflowInstance(
 ): Promise<boolean> {
 	const closed = await terminateAndWaitBenchmarkWorkflowInstance(instanceId, reason);
 	if (closed) {
-		await purgeBenchmarkWorkflowInstance(instanceId, "terminated");
+		await purgeBenchmarkWorkflowInstance(instanceId);
 	}
 	return closed;
 }
@@ -1822,15 +1822,11 @@ async function waitForBenchmarkWorkflowInstanceClosed(
 	);
 }
 
-async function purgeBenchmarkWorkflowInstance(
-	instanceId: string,
-	termination: DurableTerminationResult,
-) {
-	const purgeUrl = (force: boolean) =>
-		`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}?force=${force ? "true" : "false"}&recursive=true`;
+async function purgeBenchmarkWorkflowInstance(instanceId: string) {
+	const purgeUrl = `${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}?recursive=true`;
 	try {
 		const res = await daprFetch(
-			purgeUrl(false),
+			purgeUrl,
 			{
 				method: "DELETE",
 				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
@@ -1840,25 +1836,6 @@ async function purgeBenchmarkWorkflowInstance(
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
-			if (termination === "terminated" || termination === "alreadyGone") {
-				const forceRes = await daprFetch(purgeUrl(true), {
-					method: "DELETE",
-					signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
-					maxRetries: 0,
-				});
-				if (forceRes.ok) return;
-				const forceDetail = await forceRes.text().catch(() => "");
-				if (
-					forceRes.status === 404 ||
-					isBenignDaprTerminationMiss(forceDetail)
-				) {
-					return;
-				}
-				console.warn(
-					`Failed to purge benchmark workflow ${instanceId}: ${forceRes.status} ${forceDetail}`,
-				);
-				return;
-			}
 			console.warn(
 				`Failed to purge benchmark workflow ${instanceId}: ${res.status} ${detail}`,
 			);
@@ -1883,11 +1860,7 @@ async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
 		reason,
 	);
 	if (closed) {
-		await purgeBenchmarkAgentRuntimeInstance(
-			runtimeAppId,
-			instanceId,
-			"terminated",
-		);
+		await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
 	}
 	return closed;
 }
@@ -1993,13 +1966,11 @@ async function waitForBenchmarkAgentRuntimeInstanceClosed(
 async function purgeBenchmarkAgentRuntimeInstance(
 	runtimeAppId: string,
 	instanceId: string,
-	termination: DurableTerminationResult,
 ) {
-	const purgeUrl = (force: boolean) =>
-		`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}?force=${force ? "true" : "false"}&recursive=true`;
+	const purgeUrl = `${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}?recursive=true`;
 	try {
 		const res = await daprFetch(
-			purgeUrl(false),
+			purgeUrl,
 			{
 				method: "DELETE",
 				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
@@ -2009,25 +1980,6 @@ async function purgeBenchmarkAgentRuntimeInstance(
 		if (!res.ok) {
 			const detail = await res.text().catch(() => "");
 			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) return;
-			if (termination === "terminated" || termination === "alreadyGone") {
-				const forceRes = await daprFetch(purgeUrl(true), {
-					method: "DELETE",
-					signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
-					maxRetries: 0,
-				});
-				if (forceRes.ok) return;
-				const forceDetail = await forceRes.text().catch(() => "");
-				if (
-					forceRes.status === 404 ||
-					isBenignDaprTerminationMiss(forceDetail)
-				) {
-					return;
-				}
-				console.warn(
-					`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}: ${forceRes.status} ${forceDetail}`,
-				);
-				return;
-			}
 			console.warn(
 				`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
 			);
@@ -3525,7 +3477,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		}
 
 		if (parentDaprInstanceId) {
-			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId, "terminated");
+			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId);
 		}
 		// Leave agent-runtime child workflow history for retention cleanup. Immediate
 		// child purge can break parent Dapr termination replay if events are still in
