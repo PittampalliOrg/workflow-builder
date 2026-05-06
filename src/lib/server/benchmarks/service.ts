@@ -1451,7 +1451,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		),
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async ({ runtimeAppId, instanceId }) => {
-			const closed = await terminateAndPurgeBenchmarkAgentRuntimeInstance(
+			const closed = await terminateAndWaitBenchmarkAgentRuntimeInstance(
 				runtimeAppId,
 				instanceId,
 				reason,
@@ -1463,7 +1463,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		[...daprInstanceIds],
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async (instanceId) => {
-			const closed = await terminateAndPurgeBenchmarkWorkflowInstance(
+			const closed = await terminateAndWaitBenchmarkWorkflowInstance(
 				instanceId,
 				reason,
 			);
@@ -1476,6 +1476,26 @@ async function finalizeBenchmarkWorkflowExecutions(
 		);
 		return false;
 	}
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			await purgeBenchmarkWorkflowInstance(instanceId, "terminated");
+		},
+	);
+	await runWithConcurrency(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
+		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async ({ runtimeAppId, instanceId }) => {
+			await purgeBenchmarkAgentRuntimeInstance(
+				runtimeAppId,
+				instanceId,
+				"terminated",
+			);
+		},
+	);
 	if (sessionIds.size > 0) {
 		await database
 			.update(sessions)
@@ -1507,19 +1527,21 @@ async function terminateAndPurgeBenchmarkWorkflowInstance(
 	instanceId: string,
 	reason: string,
 ): Promise<boolean> {
+	const closed = await terminateAndWaitBenchmarkWorkflowInstance(instanceId, reason);
+	if (closed) {
+		await purgeBenchmarkWorkflowInstance(instanceId, "terminated");
+	}
+	return closed;
+}
+
+async function terminateAndWaitBenchmarkWorkflowInstance(
+	instanceId: string,
+	reason: string,
+): Promise<boolean> {
 	const termination = await terminateBenchmarkWorkflowInstance(instanceId, reason);
 	const closed =
 		termination === "alreadyGone" ||
 		(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
-	const effectiveTermination =
-		termination === "alreadyGone"
-			? termination
-			: closed
-				? "terminated"
-				: termination;
-	if (closed) {
-		await purgeBenchmarkWorkflowInstance(instanceId, effectiveTermination);
-	}
 	return closed;
 }
 
@@ -1646,6 +1668,26 @@ async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
 	instanceId: string,
 	reason: string,
 ): Promise<boolean> {
+	const closed = await terminateAndWaitBenchmarkAgentRuntimeInstance(
+		runtimeAppId,
+		instanceId,
+		reason,
+	);
+	if (closed) {
+		await purgeBenchmarkAgentRuntimeInstance(
+			runtimeAppId,
+			instanceId,
+			"terminated",
+		);
+	}
+	return closed;
+}
+
+async function terminateAndWaitBenchmarkAgentRuntimeInstance(
+	runtimeAppId: string,
+	instanceId: string,
+	reason: string,
+): Promise<boolean> {
 	const termination = await terminateBenchmarkAgentRuntimeInstance(
 		runtimeAppId,
 		instanceId,
@@ -1654,19 +1696,6 @@ async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
 	const closed =
 		termination === "alreadyGone" ||
 		(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
-	const effectiveTermination =
-		termination === "alreadyGone"
-			? termination
-			: closed
-				? "terminated"
-				: termination;
-	if (closed) {
-		await purgeBenchmarkAgentRuntimeInstance(
-			runtimeAppId,
-			instanceId,
-			effectiveTermination,
-		);
-	}
 	return closed;
 }
 
@@ -2755,6 +2784,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 
 		const runtimeAppId = runRows[0]?.runtimeAppId ?? null;
 		let allDurableInstancesClosed = true;
+		let runtimeInstanceIds: string[] = [];
 		if (runtimeAppId && sessionId) {
 			const turnRows = await database
 				.select({
@@ -2789,7 +2819,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 					turn: Number.isFinite(rawTurn) ? rawTurn : null,
 				};
 			});
-			const runtimeInstanceIds = benchmarkAgentRuntimeCleanupInstanceIds(
+			runtimeInstanceIds = benchmarkAgentRuntimeCleanupInstanceIds(
 				{
 					runtimeAppId,
 					sessionId,
@@ -2801,7 +2831,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 				runtimeInstanceIds,
 				BENCHMARK_TERMINATION_CONCURRENCY,
 				async (instanceId) => {
-					const closed = await terminateAndPurgeBenchmarkAgentRuntimeInstance(
+					const closed = await terminateAndWaitBenchmarkAgentRuntimeInstance(
 						runtimeAppId,
 						instanceId,
 						reason,
@@ -2812,7 +2842,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		}
 
 		if (parentDaprInstanceId) {
-			const closed = await terminateAndPurgeBenchmarkWorkflowInstance(
+			const closed = await terminateAndWaitBenchmarkWorkflowInstance(
 				parentDaprInstanceId,
 				reason,
 			);
@@ -2824,6 +2854,23 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
 			);
 			return;
+		}
+
+		if (parentDaprInstanceId) {
+			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId, "terminated");
+		}
+		if (runtimeAppId && runtimeInstanceIds.length > 0) {
+			await runWithConcurrency(
+				runtimeInstanceIds,
+				BENCHMARK_TERMINATION_CONCURRENCY,
+				async (instanceId) => {
+					await purgeBenchmarkAgentRuntimeInstance(
+						runtimeAppId,
+						instanceId,
+						"terminated",
+					);
+				},
+			);
 		}
 
 		if (sessionId) {
@@ -3035,7 +3082,7 @@ async function loadSwebenchDatasetRowsForRun(runId: string) {
 	}));
 }
 
-async function resolveBenchmarkAgent(params: {
+export async function resolveBenchmarkAgent(params: {
 	projectId: string;
 	agentId: string;
 	version?: number;

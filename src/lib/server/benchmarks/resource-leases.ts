@@ -50,6 +50,16 @@ export type BenchmarkResourceLeaseAdmission = {
 	retryAfterSeconds?: number;
 };
 
+export type BenchmarkResourceCapacityDiagnostic = {
+	resourceType: BenchmarkResourceLeaseType;
+	capacityKey: string;
+	active: number;
+	staleActive: number;
+	limit: number;
+	headroom: number;
+	blocked: boolean;
+};
+
 function requireDb() {
 	if (!db) throw error(503, "Database not configured");
 	return db;
@@ -245,6 +255,82 @@ export const __benchmarkResourceLeasesForTest = {
 	resourceCapacity,
 	sandboxCapacityLimit,
 };
+
+export async function loadBenchmarkResourceCapacityDiagnostics(params: {
+	run: BenchmarkRunForLease;
+	resources?: BenchmarkResourceLeaseType[] | null;
+	liveSandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
+}): Promise<BenchmarkResourceCapacityDiagnostic[]> {
+	const database = requireDb();
+	const resources = leaseResources(params.resources);
+	const liveSandboxCapacity =
+		params.liveSandboxCapacity ??
+		(resources.includes("openshell_sandbox")
+			? await loadSchedulableSandboxCapacitySnapshot()
+			: null);
+	const requested = resources.map((resourceType) => ({
+		resourceType,
+		...resourceCapacity(params.run, resourceType, liveSandboxCapacity),
+	}));
+	if (requested.length === 0) return [];
+
+	const activeRows = await database
+		.select({
+			resourceType: benchmarkResourceLeases.resourceType,
+			capacityKey: benchmarkResourceLeases.capacityKey,
+			active: sql<number>`coalesce(sum(${benchmarkResourceLeases.leaseCount}) filter (where ${benchmarkResourceLeases.expiresAt} > now()), 0)::int`,
+			staleActive: sql<number>`coalesce(sum(${benchmarkResourceLeases.leaseCount}) filter (where ${benchmarkResourceLeases.expiresAt} <= now()), 0)::int`,
+		})
+		.from(benchmarkResourceLeases)
+		.where(
+			and(
+				eq(benchmarkResourceLeases.status, "active"),
+				inArray(
+					benchmarkResourceLeases.resourceType,
+					requested.map((resource) => resource.resourceType),
+				),
+				inArray(
+					benchmarkResourceLeases.capacityKey,
+					requested.map((resource) => resource.capacityKey),
+				),
+			),
+		)
+		.groupBy(
+			benchmarkResourceLeases.resourceType,
+			benchmarkResourceLeases.capacityKey,
+		);
+	const activeByResource = new Map(
+		activeRows.map((row) => [
+			`${row.resourceType}:${row.capacityKey}`,
+			{
+				active: Number(row.active ?? 0),
+				staleActive: Number(row.staleActive ?? 0),
+			},
+		]),
+	);
+
+	return requested.map((resource) => {
+		const counts = activeByResource.get(
+			`${resource.resourceType}:${resource.capacityKey}`,
+		) ?? { active: 0, staleActive: 0 };
+		const limit = admissionLimit({
+			resourceType: resource.resourceType,
+			limit: resource.limit,
+			active: counts.active,
+			liveSandboxCapacity,
+		});
+		const headroom = Math.max(0, limit - counts.active);
+		return {
+			resourceType: resource.resourceType,
+			capacityKey: resource.capacityKey,
+			active: counts.active,
+			staleActive: counts.staleActive,
+			limit,
+			headroom,
+			blocked: counts.active >= limit,
+		};
+	});
+}
 
 function admissionLimit(params: {
 	resourceType: BenchmarkResourceLeaseType;

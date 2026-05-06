@@ -185,51 +185,84 @@ def dispatch_run_instance_taskruns(
     final: dict[str, dict[str, Any]] = {}
     total = len(instance_ids)
     max_parallel = max(1, max_parallel)
-    for offset in range(0, total, max_parallel):
-        chunk = instance_ids[offset : offset + max_parallel]
-        run_names: list[str] = []
-        holders: dict[str, str | None] = {}
-        for iid in chunk:
-            holder_id = acquire_evaluator_slot(run_id, iid)
-            name = taskrun_name(run_id, "run", iid)
-            try:
-                body = build_run_instance_taskrun(
-                    name=name,
-                    namespace=namespace,
-                    pvc_name=pvc_name,
-                    artifact_mode=artifact_mode,
-                    run_id=run_id,
-                    instance_id=iid,
-                    instance_image=image_map[iid],
-                    timeout_seconds=timeout_seconds,
-                )
-                create_taskrun(api, namespace, body)
-            except Exception:
-                release_evaluator_slot(run_id, iid, holder_id, "TaskRun create failed")
-                raise
-            run_names.append(name)
-            holders[name] = holder_id
-        print(
-            "[swebench-evaluator] dispatched run-instance TaskRuns "
-            f"{offset + 1}-{offset + len(chunk)} of {total} "
-            f"(batch size={len(chunk)}, max_parallel={max_parallel})"
-        )
+    pending = list(instance_ids)
+    active: dict[str, dict[str, str | None]] = {}
+    launched = 0
+    deadline_at = time.monotonic() + max(1, deadline_seconds)
+
+    def launch_next() -> bool:
+        nonlocal launched
+        if not pending:
+            return False
+        iid = pending.pop(0)
+        holder_id = acquire_evaluator_slot(run_id, iid)
+        name = taskrun_name(run_id, "run", iid)
         try:
-            batch_final = wait_for_taskruns(
+            body = build_run_instance_taskrun(
+                name=name,
+                namespace=namespace,
+                pvc_name=pvc_name,
+                artifact_mode=artifact_mode,
+                run_id=run_id,
+                instance_id=iid,
+                instance_image=image_map[iid],
+                timeout_seconds=timeout_seconds,
+            )
+            create_taskrun(api, namespace, body)
+        except Exception:
+            release_evaluator_slot(run_id, iid, holder_id, "TaskRun create failed")
+            raise
+        active[name] = {"instance_id": iid, "holder_id": holder_id}
+        launched += 1
+        print(
+            "[swebench-evaluator] dispatched run-instance TaskRun "
+            f"{launched} of {total} (active={len(active)}, max_parallel={max_parallel})"
+        )
+        return True
+
+    while pending and len(active) < max_parallel:
+        launch_next()
+
+    while active:
+        try:
+            name, taskrun = wait_for_next_taskrun(
                 api,
                 namespace,
-                run_names,
-                deadline_seconds=deadline_seconds,
+                list(active),
+                deadline_at=deadline_at,
             )
-            final.update(batch_final)
-        finally:
-            for iid, name in zip(chunk, run_names, strict=False):
+        except TimeoutError:
+            print(
+                "[swebench-evaluator] run-instance dispatch deadline reached; "
+                f"recording {len(active)} active TaskRuns and stopping launch"
+            )
+            for name, meta in list(active.items()):
+                final[name] = api.get_namespaced_custom_object(
+                    group=TEKTON_GROUP,
+                    version=TEKTON_VERSION,
+                    namespace=namespace,
+                    plural=TASKRUN_PLURAL,
+                    name=name,
+                )
                 release_evaluator_slot(
                     run_id,
-                    iid,
-                    holders.get(name),
-                    "run-instance TaskRun completed",
+                    str(meta["instance_id"]),
+                    meta.get("holder_id"),
+                    "run-instance TaskRun deadline reached",
                 )
+                del active[name]
+            break
+
+        meta = active.pop(name)
+        final[name] = taskrun
+        release_evaluator_slot(
+            run_id,
+            str(meta["instance_id"]),
+            meta.get("holder_id"),
+            "run-instance TaskRun completed",
+        )
+        while pending and len(active) < max_parallel:
+            launch_next()
     return final
 
 
@@ -607,6 +640,30 @@ def wait_for_taskruns(
             name=name,
         )
     return final
+
+
+def wait_for_next_taskrun(
+    api,
+    namespace: str,
+    names: list[str],
+    *,
+    deadline_at: float,
+) -> tuple[str, dict[str, Any]]:
+    poll_interval = max(2, int(os.environ.get("SWEBENCH_POLL_INTERVAL_SECONDS", "10")))
+    while names and time.monotonic() < deadline_at:
+        for name in names:
+            tr = api.get_namespaced_custom_object(
+                group=TEKTON_GROUP,
+                version=TEKTON_VERSION,
+                namespace=namespace,
+                plural=TASKRUN_PLURAL,
+                name=name,
+            )
+            cond = succeeded_condition(tr)
+            if cond and cond.get("status") in {"True", "False"}:
+                return name, tr
+        time.sleep(min(poll_interval, max(0.1, deadline_at - time.monotonic())))
+    raise TimeoutError("Timed out waiting for the next SWE-bench run-instance TaskRun")
 
 
 def succeeded_condition(obj: dict[str, Any]) -> dict[str, Any] | None:

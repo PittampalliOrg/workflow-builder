@@ -4352,6 +4352,115 @@ def _taskhub_call(method: str, request: Any) -> Any:
     return getattr(stub, method)(request, timeout=timeout_seconds)
 
 
+def _dapr_http_sidecar_url() -> str:
+    endpoint = os.environ.get("DAPR_HTTP_ENDPOINT", "").strip()
+    if endpoint:
+        return endpoint.rstrip("/")
+    return (
+        f"http://{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
+        f"{os.environ.get('DAPR_HTTP_PORT', '3500')}"
+    )
+
+
+def _workflow_http_timeout_seconds() -> float:
+    try:
+        return max(
+            0.5,
+            float(os.environ.get("DAPR_WORKFLOW_HTTP_TIMEOUT_SECONDS", "2.5")),
+        )
+    except ValueError:
+        return 2.5
+
+
+def _workflow_http_url(instance_id: str, suffix: str = "") -> str:
+    encoded_id = urllib.parse.quote(instance_id, safe="")
+    return f"{_dapr_http_sidecar_url()}/v1.0/workflows/dapr/{encoded_id}{suffix}"
+
+
+def _workflow_http_error_text(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _workflow_http_error_is_missing(status_code: int, detail: str) -> bool:
+    if status_code == 404:
+        return True
+    lowered = detail.lower()
+    return (
+        "no such instance" in lowered
+        or "not found" in lowered
+        or "does not exist" in lowered
+        or "no workflow" in lowered
+    )
+
+
+def _dapr_api_token_headers() -> dict[str, str]:
+    token = str(os.environ.get("DAPR_API_TOKEN") or "").strip()
+    return {"dapr-api-token": token} if token else {}
+
+
+def _workflow_http_get_instance(instance_id: str) -> dict[str, Any] | None:
+    request = urllib.request.Request(
+        _workflow_http_url(instance_id),
+        headers=_dapr_api_token_headers(),
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=_workflow_http_timeout_seconds(),
+        ) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = _workflow_http_error_text(exc)
+        if _workflow_http_error_is_missing(exc.code, detail):
+            return None
+        raise RuntimeError(
+            f"Dapr workflow status failed with HTTP {exc.code}: {detail[:500]}"
+        ) from exc
+    return _parse_json(raw)
+
+
+def _workflow_http_post(instance_id: str, suffix: str) -> None:
+    request = urllib.request.Request(
+        _workflow_http_url(instance_id, suffix),
+        headers=_dapr_api_token_headers(),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=_workflow_http_timeout_seconds(),
+        ) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        detail = _workflow_http_error_text(exc)
+        if _workflow_http_error_is_missing(exc.code, detail):
+            raise FileNotFoundError(detail or f"Workflow {instance_id} not found") from exc
+        raise RuntimeError(
+            f"Dapr workflow {suffix.strip('/')} failed with HTTP {exc.code}: {detail[:500]}"
+        ) from exc
+
+
+def _workflow_dict_value(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
+def _agent_run_status_state_timeout_seconds() -> float:
+    try:
+        return max(
+            0.1,
+            float(os.environ.get("AGENT_RUN_STATUS_STATE_TIMEOUT_SECONDS", "0.5")),
+        )
+    except ValueError:
+        return 0.5
+
+
 def _list_instance_ids(page_size: int) -> list[str]:
     import durabletask.internal.orchestrator_service_pb2 as pb
 
@@ -4436,7 +4545,7 @@ class TerminateAgentRunRequest(BaseModel):
     reason: str | None = None
 
 
-def _read_agent_state_key(key: str) -> Any:
+def _read_agent_state_key(key: str, timeout_seconds: float = 5) -> Any:
     store_name = AGENT_STATE_STORE
     encoded_key = urllib.parse.quote(key, safe="")
     sidecar = (
@@ -4448,7 +4557,7 @@ def _read_agent_state_key(key: str) -> Any:
         f"?metadata.partitionKey={encoded_key}"
     )
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
     except Exception:
         return None
@@ -4474,8 +4583,15 @@ def _build_instance_payload(instance_id: str) -> dict[str, Any] | None:
     output_payload = _parse_json(_wrapped_string(getattr(state, "output", None)))
     workflow_state_key = f"{AGENT_STATE_KEY_PREFIX}_{instance_id}".lower()
     memory_key = f"{AGENT_MEMORY_KEY_PREFIX}_{instance_id}".lower()
-    workflow_state = _read_agent_state_key(workflow_state_key)
-    memory_state = _read_agent_state_key(memory_key)
+    status_state_timeout = _agent_run_status_state_timeout_seconds()
+    workflow_state = _read_agent_state_key(
+        workflow_state_key,
+        timeout_seconds=status_state_timeout,
+    )
+    memory_state = _read_agent_state_key(
+        memory_key,
+        timeout_seconds=status_state_timeout,
+    )
     workflow_record = workflow_state if isinstance(workflow_state, dict) else {}
     input_record = input_payload if isinstance(input_payload, dict) else {}
 
@@ -4595,26 +4711,60 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
 
 
 def _build_agent_run_status_payload(instance_id: str) -> dict[str, Any] | None:
-    import durabletask.internal.orchestrator_service_pb2 as pb
-
-    response = _taskhub_call(
-        "GetInstance",
-        pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=True),
-    )
-    if not getattr(response, "exists", False):
+    workflow_payload = _workflow_http_get_instance(instance_id)
+    if not isinstance(workflow_payload, dict):
         return None
 
-    state = response.orchestrationState
-    runtime_status = _runtime_status_name(getattr(state, "orchestrationStatus", None))
-    started_at = _timestamp_iso(getattr(state, "createdTimestamp", None))
-    last_updated_at = _timestamp_iso(getattr(state, "lastUpdatedTimestamp", None))
-    completed_at = _timestamp_iso(getattr(state, "completedTimestamp", None))
-    input_payload = _parse_json(_wrapped_string(getattr(state, "input", None)))
-    output_payload = _parse_json(_wrapped_string(getattr(state, "output", None)))
+    runtime_status = str(
+        _workflow_dict_value(workflow_payload, "runtimeStatus", "runtime_status")
+        or "UNKNOWN"
+    ).upper()
+    started_at = _workflow_dict_value(
+        workflow_payload,
+        "createdAt",
+        "created_at",
+        "startedAt",
+        "started_at",
+    )
+    last_updated_at = _workflow_dict_value(
+        workflow_payload,
+        "lastUpdatedAt",
+        "last_updated_at",
+        "updatedAt",
+        "updated_at",
+    )
+    completed_at = _workflow_dict_value(
+        workflow_payload,
+        "completedAt",
+        "completed_at",
+    )
+    input_payload = _parse_json(
+        _workflow_dict_value(
+            workflow_payload,
+            "input",
+            "serializedInput",
+            "serialized_input",
+        )
+    )
+    output_payload = _parse_json(
+        _workflow_dict_value(
+            workflow_payload,
+            "output",
+            "serializedOutput",
+            "serialized_output",
+        )
+    )
     workflow_state_key = f"{AGENT_STATE_KEY_PREFIX}_{instance_id}".lower()
     memory_key = f"{AGENT_MEMORY_KEY_PREFIX}_{instance_id}".lower()
-    workflow_state = _read_agent_state_key(workflow_state_key)
-    memory_state = _read_agent_state_key(memory_key)
+    status_state_timeout = _agent_run_status_state_timeout_seconds()
+    workflow_state = _read_agent_state_key(
+        workflow_state_key,
+        timeout_seconds=status_state_timeout,
+    )
+    memory_state = _read_agent_state_key(
+        memory_key,
+        timeout_seconds=status_state_timeout,
+    )
     workflow_record = workflow_state if isinstance(workflow_state, dict) else {}
 
     error_value = None
@@ -4630,10 +4780,18 @@ def _build_agent_run_status_payload(instance_id: str) -> dict[str, Any] | None:
         "workflowName": AGENT_SERVICE_NAME,
         "runtimeStatus": runtime_status,
         "phase": runtime_status.lower(),
-        "startedAt": started_at,
-        "completedAt": completed_at or (last_updated_at if _terminal_status(runtime_status) else None),
+        "startedAt": started_at if isinstance(started_at, str) else None,
+        "completedAt": (
+            completed_at
+            or (last_updated_at if _terminal_status(runtime_status) else None)
+        ),
         "input": input_payload,
         "outputs": output_payload,
+        "properties": (
+            workflow_payload.get("properties")
+            if isinstance(workflow_payload.get("properties"), dict)
+            else None
+        ),
         "error": error_value,
         "messages": workflow_record.get("messages") or [],
         "toolHistory": workflow_record.get("tool_history") or [],
@@ -4762,15 +4920,10 @@ def terminate_agent_run(
     request: TerminateAgentRunRequest = TerminateAgentRunRequest(),
 ) -> dict[str, Any]:
     try:
-        from dapr.ext.workflow import DaprWorkflowClient
-
-        DaprWorkflowClient().terminate_workflow(
-            instance_id=instance_id,
-            output=request.reason,
-        )
+        _workflow_http_post(instance_id, "/terminate")
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:
-        if _is_workflow_instance_missing_error(exc):
+        if isinstance(exc, FileNotFoundError) or _is_workflow_instance_missing_error(exc):
             logger.info("[agent-runs] Terminate skipped for %s: already gone", instance_id)
             return {"success": True, "instanceId": instance_id, "alreadyGone": True}
         logger.error("[agent-runs] Failed to terminate %s: %s", instance_id, exc)
@@ -4807,26 +4960,27 @@ def purge_agent_run(
     force: bool = False,
     recursive: bool = False,
 ) -> dict[str, Any]:
-    import durabletask.internal.orchestrator_service_pb2 as pb
-
     try:
-        purge_response = _taskhub_call(
-            "PurgeInstances",
-            pb.PurgeInstancesRequest(
-                instanceId=instance_id,
-                recursive=recursive,
-                force=force,
-            ),
-        )
+        _workflow_http_post(instance_id, "/purge")
         return {
             "success": True,
             "instanceId": instance_id,
             "force": force,
             "recursive": recursive,
-            "deletedInstanceCount": int(getattr(purge_response, "deletedInstanceCount", 0) or 0),
-            "isComplete": bool(getattr(getattr(purge_response, "isComplete", None), "value", True)),
+            "purgeAccepted": True,
+            "isComplete": True,
         }
     except Exception as exc:
+        if isinstance(exc, FileNotFoundError) or _is_workflow_instance_missing_error(exc):
+            logger.info("[agent-runs] Purge skipped for %s: already gone", instance_id)
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "force": force,
+                "recursive": recursive,
+                "alreadyGone": True,
+                "isComplete": True,
+            }
         logger.error("[agent-runs] Failed to purge %s: %s", instance_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getBenchmarkRun } from "$lib/server/benchmarks/service";
 import { computeRunStats } from "$lib/server/benchmarks/stats";
+import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
 
 export const GET: RequestHandler = async ({ params, locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -26,6 +27,11 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 			}
 		: run;
 
-	const runStats = includeStats ? await computeRunStats(params.runId) : null;
-	return json({ run: slimmedRun, runStats });
+	const [runStats, capacityDiagnostics] = await Promise.all([
+		includeStats ? computeRunStats(params.runId) : Promise.resolve(null),
+		getBenchmarkRunCapacityDiagnostics(locals.session.projectId, params.runId).catch(
+			() => null,
+		),
+	]);
+	return json({ run: slimmedRun, runStats, capacityDiagnostics });
 };

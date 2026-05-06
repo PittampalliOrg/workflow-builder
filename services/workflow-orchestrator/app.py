@@ -24,6 +24,7 @@ import random
 import string
 import threading
 import time
+import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -241,6 +242,93 @@ _TRANSIENT_WORKFLOW_RUNTIME_ERROR_MARKERS = (
     "statuscode.unavailable",
     "deadline exceeded",
 )
+
+
+def _dapr_http_sidecar_url() -> str:
+    endpoint = os.environ.get("DAPR_HTTP_ENDPOINT", "").strip()
+    if endpoint:
+        return endpoint.rstrip("/")
+    return f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}"
+
+
+def _workflow_http_timeout_seconds() -> float:
+    try:
+        return max(
+            0.5,
+            float(os.environ.get("DAPR_WORKFLOW_HTTP_TIMEOUT_SECONDS", "2.5")),
+        )
+    except ValueError:
+        return 2.5
+
+
+def _workflow_http_url(instance_id: str, suffix: str = "") -> str:
+    encoded_id = urllib.parse.quote(instance_id, safe="")
+    return f"{_dapr_http_sidecar_url()}/v1.0/workflows/dapr/{encoded_id}{suffix}"
+
+
+def _workflow_http_error_is_missing(status_code: int, detail: str) -> bool:
+    if status_code == 404:
+        return True
+    lowered = detail.lower()
+    return (
+        "no such instance" in lowered
+        or "not found" in lowered
+        or "does not exist" in lowered
+        or "no workflow" in lowered
+    )
+
+
+def _dapr_api_token_headers() -> dict[str, str]:
+    token = str(getattr(config, "DAPR_API_TOKEN", "") or "").strip()
+    if not token:
+        token = str(os.environ.get("DAPR_API_TOKEN") or "").strip()
+    return {"dapr-api-token": token} if token else {}
+
+
+def _workflow_http_get_instance(instance_id: str) -> dict[str, Any] | None:
+    response = requests.get(
+        _workflow_http_url(instance_id),
+        headers=_dapr_api_token_headers(),
+        timeout=_workflow_http_timeout_seconds(),
+    )
+    if response.status_code == 404:
+        return None
+    if not response.ok:
+        detail = response.text or ""
+        if _workflow_http_error_is_missing(response.status_code, detail):
+            return None
+        raise RuntimeError(
+            "Dapr workflow status failed with HTTP "
+            f"{response.status_code}: {detail[:500]}"
+        )
+    if not response.content:
+        return {}
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def _workflow_http_post(instance_id: str, suffix: str) -> None:
+    response = requests.post(
+        _workflow_http_url(instance_id, suffix),
+        headers=_dapr_api_token_headers(),
+        timeout=_workflow_http_timeout_seconds(),
+    )
+    if response.ok:
+        return
+    detail = response.text or ""
+    if _workflow_http_error_is_missing(response.status_code, detail):
+        raise FileNotFoundError(detail or f"Workflow {instance_id} not found")
+    raise RuntimeError(
+        "Dapr workflow "
+        f"{suffix.strip('/')} failed with HTTP {response.status_code}: {detail[:500]}"
+    )
+
+
+def _workflow_dict_value(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    return None
 
 
 def _get_workflow_runtime_status(
@@ -1996,7 +2084,8 @@ def _build_workflow_status_payload(instance_id: str, orchestration_state: Any) -
         "workflowNameVersioned": workflow_name_versioned,
         "runtimeStatus": runtime_status,
         "traceId": trace_id,
-        "phase": phase or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
+        "phase": phase
+        or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
         "progress": progress if isinstance(progress, int) else 0,
         "message": message,
         "currentNodeId": current_node_id,
@@ -2008,6 +2097,187 @@ def _build_workflow_status_payload(instance_id: str, orchestration_state: Any) -
         "parentInstanceId": parent_instance_id,
         "startedAt": started_at,
         "completedAt": completed_at,
+    }
+
+
+def _build_workflow_status_payload_from_http(
+    instance_id: str,
+    workflow_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Build normalized workflow status payload from Dapr's HTTP Workflow API."""
+    runtime_status = map_runtime_status(
+        str(
+            _workflow_dict_value(
+                workflow_payload,
+                "runtimeStatus",
+                "runtime_status",
+            )
+            or "UNKNOWN"
+        ).upper()
+    )
+    custom_status = _parse_json_value(
+        _workflow_dict_value(
+            workflow_payload,
+            "customStatus",
+            "custom_status",
+            "properties",
+        )
+    )
+    phase = None
+    progress = 0
+    message = None
+    current_node_id = None
+    current_node_name = None
+    approval_event_name = None
+    trace_id = None
+    workflow_version = None
+    outputs = None
+    error = None
+    stack_trace = None
+    parent_instance_id = (
+        _workflow_dict_value(
+            workflow_payload,
+            "parentInstanceId",
+            "parent_instance_id",
+        )
+        or None
+    )
+
+    if isinstance(custom_status, dict):
+        phase = custom_status.get("phase")
+        progress = custom_status.get("progress", 0)
+        message = custom_status.get("message")
+        current_node_id = custom_status.get("currentNodeId")
+        current_node_name = custom_status.get("currentNodeName")
+        approval_event_name = custom_status.get("approvalEventName")
+        trace_id = custom_status.get("traceId") or custom_status.get("trace_id")
+        workflow_version = (
+            str(custom_status.get("workflowVersion") or "").strip() or None
+        )
+
+    input_payload = _parse_json_value(
+        _workflow_dict_value(
+            workflow_payload,
+            "input",
+            "serializedInput",
+            "serialized_input",
+        )
+    )
+    if not trace_id and isinstance(input_payload, dict):
+        otel_ctx = input_payload.get("_otel")
+        if isinstance(otel_ctx, dict):
+            trace_id = (
+                str(otel_ctx.get("traceId") or "").strip()
+                or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+            )
+
+    serialized_output = _parse_json_value(
+        _workflow_dict_value(
+            workflow_payload,
+            "output",
+            "serializedOutput",
+            "serialized_output",
+        )
+    )
+    if isinstance(serialized_output, dict):
+        outputs = serialized_output
+        if not trace_id:
+            trace_id = str(serialized_output.get("traceId") or "").strip() or None
+        nested_outputs = serialized_output.get("outputs")
+        if not trace_id and isinstance(nested_outputs, dict):
+            for value in nested_outputs.values():
+                if not isinstance(value, dict):
+                    continue
+                agent_progress = value.get("agentProgress")
+                candidate = str(
+                    value.get("traceId")
+                    or (
+                        agent_progress.get("traceId")
+                        if isinstance(agent_progress, dict)
+                        else ""
+                    )
+                    or ""
+                ).strip()
+                if candidate:
+                    trace_id = candidate
+                    break
+    elif serialized_output is not None:
+        outputs = {"raw": serialized_output}
+
+    failure_details = _workflow_dict_value(
+        workflow_payload,
+        "failureDetails",
+        "failure_details",
+    )
+    if isinstance(failure_details, dict):
+        error = str(
+            failure_details.get("errorMessage")
+            or failure_details.get("error_message")
+            or ""
+        ).strip() or None
+        stack_trace_value = failure_details.get("stackTrace") or failure_details.get(
+            "stack_trace"
+        )
+        if isinstance(stack_trace_value, dict):
+            stack_trace_value = stack_trace_value.get("value")
+        stack_trace = str(stack_trace_value).strip() if stack_trace_value else None
+
+    started_at = _workflow_dict_value(
+        workflow_payload,
+        "createdAt",
+        "created_at",
+        "startedAt",
+        "started_at",
+    )
+    last_updated_at = _workflow_dict_value(
+        workflow_payload,
+        "lastUpdatedAt",
+        "last_updated_at",
+        "updatedAt",
+        "updated_at",
+    )
+    completed_at = _workflow_dict_value(
+        workflow_payload,
+        "completedAt",
+        "completed_at",
+    )
+    if runtime_status in ("COMPLETED", "FAILED", "TERMINATED"):
+        completed_at = completed_at or last_updated_at
+
+    workflow_name = (
+        _workflow_dict_value(workflow_payload, "name", "workflowName", "workflow_name")
+        or None
+    )
+    if workflow_name is not None:
+        workflow_name = str(workflow_name)
+    workflow_name_versioned = (
+        f"{workflow_name}@{workflow_version}"
+        if workflow_name and workflow_version
+        else workflow_name
+    )
+    workflow_id = _workflow_id_from_instance(instance_id)
+
+    return {
+        "instanceId": instance_id,
+        "workflowId": workflow_id,
+        "workflowName": workflow_name,
+        "workflowVersion": workflow_version,
+        "workflowNameVersioned": workflow_name_versioned,
+        "runtimeStatus": runtime_status,
+        "traceId": trace_id,
+        "phase": phase
+        or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
+        "progress": progress if isinstance(progress, int) else 0,
+        "message": message,
+        "currentNodeId": current_node_id,
+        "currentNodeName": current_node_name,
+        "approvalEventName": approval_event_name,
+        "outputs": outputs,
+        "error": error,
+        "stackTrace": stack_trace,
+        "parentInstanceId": parent_instance_id,
+        "startedAt": started_at if isinstance(started_at, str) else None,
+        "completedAt": completed_at if isinstance(completed_at, str) else None,
     }
 
 
@@ -2349,13 +2619,10 @@ def get_workflow_status(instance_id: str):
     GET /api/v2/workflows/:instanceId/status
     """
     try:
-        response = _taskhub_call(
-            "GetInstance",
-            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=True),
-        )
-        if not getattr(response, "exists", False):
+        workflow_payload = _workflow_http_get_instance(instance_id)
+        if workflow_payload is None:
             raise HTTPException(status_code=404, detail="Workflow not found")
-        payload = _build_workflow_status_payload(instance_id, response.orchestrationState)
+        payload = _build_workflow_status_payload_from_http(instance_id, workflow_payload)
         return WorkflowStatusResponse(**payload)
 
     except HTTPException:
@@ -2508,8 +2775,6 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
     POST /api/v2/workflows/:instanceId/terminate
     """
     try:
-        client = get_workflow_client()
-
         logger.info(
             f"[Workflow Routes] Terminating workflow: {instance_id}"
             + (f" Reason: {request.reason}" if request.reason else "")
@@ -2531,7 +2796,19 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
                 f"[Workflow Routes] Child durable run termination failed: {child_err}"
             )
 
-        client.terminate_workflow(instance_id=instance_id, output=request.reason)
+        try:
+            _workflow_http_post(instance_id, "/terminate")
+        except FileNotFoundError:
+            logger.info(
+                "[Workflow Routes] Terminate skipped for %s: already gone",
+                instance_id,
+            )
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "alreadyGone": True,
+                "childTermination": child_termination,
+            }
 
         return {
             "success": True,
@@ -2577,24 +2854,30 @@ def purge_workflow(
                     child_err,
                 )
 
-        purge_request = pb.PurgeInstancesRequest(
-            instanceId=instance_id,
-            recursive=recursive,
-            force=force,
-        )
-        purge_response = _taskhub_call("PurgeInstances", purge_request)
+        try:
+            _workflow_http_post(instance_id, "/purge")
+        except FileNotFoundError:
+            logger.info(
+                "[Workflow Routes] Purge skipped for %s: already gone",
+                instance_id,
+            )
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "force": force,
+                "recursive": recursive,
+                "alreadyGone": True,
+                "isComplete": True,
+                "childCleanup": child_cleanup,
+            }
 
         return {
             "success": True,
             "instanceId": instance_id,
             "force": force,
             "recursive": recursive,
-            "deletedInstanceCount": int(
-                getattr(purge_response, "deletedInstanceCount", 0) or 0
-            ),
-            "isComplete": bool(
-                getattr(getattr(purge_response, "isComplete", None), "value", True)
-            ),
+            "purgeAccepted": True,
+            "isComplete": True,
             "childCleanup": child_cleanup,
         }
 

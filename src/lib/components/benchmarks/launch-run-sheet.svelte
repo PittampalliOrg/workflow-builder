@@ -7,8 +7,31 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Activity, Bot, Check, Loader2, Rocket, Search } from '@lucide/svelte';
+	import { Activity, Bot, Check, Gauge, Loader2, Rocket, Search } from '@lucide/svelte';
 	import type { RunnableAgent, SuiteFacet } from '$lib/types/benchmark-instance';
+
+	type CapacityDiagnostics = {
+		storedEffectiveConcurrency: number;
+		blockedBy: string[];
+		resources: Array<{
+			resourceType: string;
+			active: number;
+			limit: number;
+			headroom: number;
+			staleActive: number;
+		}>;
+		runtime: {
+			replicas: number | null;
+			slotsPerReplica: number | null;
+			slots: number | null;
+		};
+		daprWorkflow: {
+			effectiveCapacity: number | null;
+		};
+		sandbox: {
+			schedulableSandboxCapacity: number | null;
+		};
+	};
 
 	type Props = {
 		open: boolean;
@@ -54,6 +77,9 @@
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
 	let tagsInput = $state('');
 	let agentQuery = $state('');
+	let capacityDiagnostics = $state<CapacityDiagnostics | null>(null);
+	let capacityLoading = $state(false);
+	let capacityFetchSeq = 0;
 
 	let submitting = $state(false);
 	let errorMessage = $state<string | null>(null);
@@ -74,6 +100,9 @@
 	);
 	const effectiveInferenceConcurrency = $derived(
 		Math.max(1, Math.min(instanceIds.length || 1, concurrency, maxActiveInference))
+	);
+	const maxSafeConcurrency = $derived(
+		Math.max(0, capacityDiagnostics?.storedEffectiveConcurrency ?? effectiveInferenceConcurrency)
 	);
 	const inferenceConcurrencyCapped = $derived(
 		instanceIds.length > 0 && effectiveInferenceConcurrency < instanceIds.length
@@ -104,6 +133,50 @@
 		}
 	});
 
+	$effect(() => {
+		if (!open || !agentId || instanceIds.length === 0) {
+			capacityDiagnostics = null;
+			capacityLoading = false;
+			return;
+		}
+		const seq = ++capacityFetchSeq;
+		const controller = new AbortController();
+		const timer = setTimeout(async () => {
+			capacityLoading = true;
+			try {
+				const res = await fetch('/api/benchmarks/capacity', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					signal: controller.signal,
+					body: JSON.stringify({
+						agentId,
+						instanceIds,
+						requestedConcurrency: MAX_INFERENCE_CONCURRENCY,
+						evaluationConcurrency,
+						modelNameOrPath: modelNameOrPath.trim() || undefined,
+						modelConfigLabel: modelConfigLabel.trim() || undefined
+					})
+				});
+				const body = (await res.json().catch(() => ({}))) as {
+					diagnostics?: CapacityDiagnostics;
+				};
+				if (seq === capacityFetchSeq && res.ok) {
+					capacityDiagnostics = body.diagnostics ?? null;
+				}
+			} catch (err) {
+				if (!(err instanceof DOMException && err.name === 'AbortError')) {
+					if (seq === capacityFetchSeq) capacityDiagnostics = null;
+				}
+			} finally {
+				if (seq === capacityFetchSeq) capacityLoading = false;
+			}
+		}, 150);
+		return () => {
+			clearTimeout(timer);
+			controller.abort();
+		};
+	});
+
 	function parseModelDefault(modelSpec: string | null): string {
 		if (!modelSpec) return '';
 		// Common shapes: "anthropic:claude-opus-4-7", "claude-opus-4-7", "openai:gpt-4"
@@ -114,6 +187,12 @@
 	function selectAgent(agent: RunnableAgent) {
 		agentId = agent.id;
 		modelNameOrPath = parseModelDefault(agent.modelSpec);
+	}
+
+	function useMaxSafeConcurrency() {
+		if (maxSafeConcurrency > 0) {
+			concurrency = Math.min(MAX_INFERENCE_CONCURRENCY, maxSafeConcurrency);
+		}
 	}
 
 	function suiteName(slug: string): string {
@@ -373,7 +452,21 @@
 
 			<!-- Inference concurrency -->
 			<div class="space-y-1.5">
-				<Label for="launch-concurrency">Inference concurrency</Label>
+				<div class="flex items-center justify-between gap-2">
+					<Label for="launch-concurrency">Inference concurrency</Label>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="h-7 text-xs"
+						onclick={useMaxSafeConcurrency}
+						disabled={capacityLoading || maxSafeConcurrency <= 0}
+						title="Use the current backend capacity estimate"
+					>
+						<Gauge class="size-3.5" />
+						Max safe {capacityLoading ? '…' : maxSafeConcurrency}
+					</Button>
+				</div>
 				<div class="flex items-center gap-3">
 					<input
 						id="launch-concurrency"
@@ -389,6 +482,22 @@
 					Will dispatch up to {effectiveInferenceConcurrency} active
 					<code>swebench_instance_workflow</code> children after runtime admission and per-sidecar Dapr workflow caps.
 				</p>
+				{#if capacityDiagnostics}
+					<div class="rounded border border-border bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">
+						<span>backend safe {capacityDiagnostics.storedEffectiveConcurrency}</span>
+						<span>
+							· runtime {capacityDiagnostics.runtime.replicas ?? '—'}×{capacityDiagnostics.runtime.slotsPerReplica ?? '—'}
+							= {capacityDiagnostics.runtime.slots ?? '—'} slots
+						</span>
+						<span>· dapr {capacityDiagnostics.daprWorkflow.effectiveCapacity ?? '—'}</span>
+						<span>· sandbox headroom {capacityDiagnostics.sandbox.schedulableSandboxCapacity ?? '—'}</span>
+						{#if capacityDiagnostics.blockedBy.length > 0}
+							<span class="text-amber-600">
+								· blocked by {capacityDiagnostics.blockedBy.map((r) => r.replace(/_/g, ' ')).join(', ')}
+							</span>
+						{/if}
+					</div>
+				{/if}
 			</div>
 
 			<!-- Evaluation concurrency -->

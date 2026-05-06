@@ -45,6 +45,8 @@
 	let run = $state(data.run);
 	// svelte-ignore state_referenced_locally
 	let runStats = $state(data.runStats);
+	// svelte-ignore state_referenced_locally
+	let capacityDiagnostics = $state(data.capacityDiagnostics);
 	let pollTimer: ReturnType<typeof setTimeout> | null = null;
 	let drawerOpen = $state(false);
 	let drawerInstanceId = $state<string | null>(null);
@@ -96,9 +98,14 @@
 				if (!opts.silent) errorMessage = `Failed to refresh (${res.status})`;
 				return;
 			}
-			const body = (await res.json()) as { run: typeof run; runStats: typeof runStats };
+			const body = (await res.json()) as {
+				run: typeof run;
+				runStats: typeof runStats;
+				capacityDiagnostics: typeof capacityDiagnostics;
+			};
 			run = body.run;
 			if (body.runStats) runStats = body.runStats;
+			if (body.capacityDiagnostics) capacityDiagnostics = body.capacityDiagnostics;
 			errorMessage = null;
 		} catch (err) {
 			if (!opts.silent) errorMessage = err instanceof Error ? err.message : String(err);
@@ -157,6 +164,10 @@
 	function compareWith() {
 		if (!run) return;
 		goto(`/workspaces/${slug}/benchmarks/compare?runs=${encodeURIComponent(run.id)}`);
+	}
+
+	function resourceLabel(value: string): string {
+		return value.replace(/_/g, ' ');
 	}
 
 	onMount(() => {
@@ -275,6 +286,45 @@
 							mlflow <span class="font-mono">{run.mlflowRunId}</span>
 						</span>
 					{/if}
+				</div>
+			{/if}
+
+			{#if capacityDiagnostics}
+				<div class="rounded-md border border-border bg-muted/20 p-3 text-xs">
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<div class="font-medium">Capacity diagnostics</div>
+						<div class="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+							<span>requested {capacityDiagnostics.requestedConcurrency}</span>
+							<span>stored effective {capacityDiagnostics.storedEffectiveConcurrency}</span>
+							<span>
+								runtime {capacityDiagnostics.runtime.replicas ?? '—'}×{capacityDiagnostics.runtime.slotsPerReplica ?? '—'}
+								= {capacityDiagnostics.runtime.slots ?? '—'} slots
+							</span>
+							<span>dapr {capacityDiagnostics.daprWorkflow.effectiveCapacity ?? '—'} slots</span>
+							<span>sandbox headroom {capacityDiagnostics.sandbox.schedulableSandboxCapacity ?? '—'}</span>
+							{#if capacityDiagnostics.modelCaps.modelMaxActiveRequests}
+								<span>model cap {capacityDiagnostics.modelCaps.modelMaxActiveRequests}</span>
+							{/if}
+						</div>
+					</div>
+					{#if capacityDiagnostics.blockedBy.length > 0}
+						<div class="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+							Blocked by {capacityDiagnostics.blockedBy.map(resourceLabel).join(', ')}
+						</div>
+					{/if}
+					<div class="mt-2 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
+						{#each capacityDiagnostics.resources as resource (resource.resourceType + resource.capacityKey)}
+							<div class="flex items-center justify-between gap-2 rounded border border-border bg-background/70 px-2 py-1">
+								<span class="truncate">{resourceLabel(resource.resourceType)}</span>
+								<span class="font-mono tabular-nums">
+									{resource.active}/{resource.limit}
+									{#if resource.staleActive > 0}
+										<span class="text-amber-600"> +{resource.staleActive} stale</span>
+									{/if}
+								</span>
+							</div>
+						{/each}
+					</div>
 				</div>
 			{/if}
 

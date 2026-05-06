@@ -1,27 +1,33 @@
 import { error } from "@sveltejs/kit";
 import { getBenchmarkRun } from "$lib/server/benchmarks/service";
 import { computeRunStats, type RunStats } from "$lib/server/benchmarks/stats";
+import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
 import type { PageServerLoad } from "./$types";
 
 export type RunDetailPageData = {
 	runId: string;
 	run: Awaited<ReturnType<typeof getBenchmarkRun>>;
 	runStats: RunStats;
+	capacityDiagnostics: Awaited<ReturnType<typeof getBenchmarkRunCapacityDiagnostics>>;
 };
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	if (!locals.session?.userId) error(401, "Authentication required");
 	if (!locals.session.projectId) error(404, "Run not found");
 
-	const [run, runStats] = await Promise.all([
+	const [run, runStats, capacityDiagnostics] = await Promise.all([
 		getBenchmarkRun(locals.session.projectId, params.runId),
 		computeRunStats(params.runId).catch(() => null),
+		getBenchmarkRunCapacityDiagnostics(locals.session.projectId, params.runId).catch(
+			() => null,
+		),
 	]);
 	if (!run) error(404, "Run not found");
 
 	return {
 		runId: params.runId,
 		run,
+		capacityDiagnostics,
 		runStats:
 			runStats ??
 			({

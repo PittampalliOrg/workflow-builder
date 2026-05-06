@@ -177,10 +177,12 @@ def test_object_mode_taskruns_use_emptydir_instead_of_pvc(monkeypatch):
     assert params["workflow_builder_url"] == "http://workflow-builder"
 
 
-def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch):
+def test_dispatch_run_instance_taskruns_uses_sliding_window(monkeypatch):
     entrypoint = load_entrypoint()
     created: list[tuple[str, str]] = []
     waited: list[list[str]] = []
+    released: list[str] = []
+    terminal_order = ["run-b", "run-c", "run-d", "run-e", "run-a"]
 
     def fake_name(run_id: str, phase: str, instance_id: str | None = None) -> str:
         return f"{phase}-{instance_id or run_id}"
@@ -190,19 +192,28 @@ def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch)
         name = body["metadata"]["name"]
         created.append((labels["swebench.phase"], name))
 
-    def fake_wait(_api, _namespace, names, deadline_seconds):
+    def fake_wait_next(_api, _namespace, names, deadline_at):
         waited.append(list(names))
-        return {
-            name: {
-                "metadata": {"name": name},
-                "status": {"conditions": [{"type": "Succeeded", "status": "True"}]},
-            }
-            for name in names
+        name = next(candidate for candidate in terminal_order if candidate in names)
+        terminal_order.remove(name)
+        return name, {
+            "metadata": {"name": name},
+            "status": {"conditions": [{"type": "Succeeded", "status": "True"}]},
         }
 
     monkeypatch.setattr(entrypoint, "taskrun_name", fake_name)
     monkeypatch.setattr(entrypoint, "create_taskrun", fake_create)
-    monkeypatch.setattr(entrypoint, "wait_for_taskruns", fake_wait)
+    monkeypatch.setattr(entrypoint, "wait_for_next_taskrun", fake_wait_next)
+    monkeypatch.setattr(
+        entrypoint,
+        "acquire_evaluator_slot",
+        lambda _run_id, instance_id: f"holder-{instance_id}",
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "release_evaluator_slot",
+        lambda _run_id, instance_id, _holder_id, _reason: released.append(instance_id),
+    )
 
     result = entrypoint.dispatch_run_instance_taskruns(
         api=object(),
@@ -225,5 +236,12 @@ def test_dispatch_run_instance_taskruns_batches_by_eval_parallelism(monkeypatch)
         "run-e",
     ]
     assert all(phase == "run-instance" for phase, _name in created)
-    assert waited == [["run-a", "run-b"], ["run-c", "run-d"], ["run-e"]]
+    assert waited == [
+        ["run-a", "run-b"],
+        ["run-a", "run-c"],
+        ["run-a", "run-d"],
+        ["run-a", "run-e"],
+        ["run-a"],
+    ]
+    assert released == ["b", "c", "d", "e", "a"]
     assert sorted(result) == ["run-a", "run-b", "run-c", "run-d", "run-e"]

@@ -27,6 +27,28 @@ Do not roll `workflow-builder`, `swebench-coordinator`, `workflow-orchestrator`,
 
 Before a dev rollout, terminate or purge only terminal stale workflow instances. Do not force-purge active benchmark workflows or active resource leases.
 
+## Dapr Workflow Cleanup
+
+Dapr workflow termination is asynchronous. Benchmark cleanup must request
+termination, poll the parent and child workflow instances until each is
+terminal or missing, and only then purge durable state. Purging child workflow
+state before the parent has observed termination can leave the parent replay
+loop stuck on a missing sub-orchestration reference.
+
+For SWE-bench cancellation and stall cleanup, use this order:
+
+1. Terminate child agent-runtime workflow instances and wait for them to close.
+2. Terminate parent `workflow-orchestrator` instances and wait for them to close.
+3. Purge parent workflow state.
+4. Purge child agent-runtime workflow state.
+5. Mark `sessions` and `workflow_executions` terminal only after durable
+   closure is confirmed.
+
+Operationally, prefer Dapr SDK or CLI workflow management where it is reliable.
+The local sidecar HTTP workflow API is a bounded fallback for status,
+terminate, and purge calls in benchmark cleanup paths; it must use short
+timeouts and treat missing instances as already closed.
+
 ## Capacity Model
 
 Effective agent runtime workflow capacity is:
@@ -59,6 +81,18 @@ min(
 The live resource-lease gate re-checks the same classes before each instance
 starts. If a requested concurrency is higher than the runtime or cluster can
 actually admit, the run should slow down instead of over-scheduling.
+
+Capacity diagnostics are exposed in two places:
+
+- `POST /api/benchmarks/capacity` computes a launch-candidate safe capacity for
+  the selected agent/instances and reports active lease usage by resource.
+- `GET /api/benchmarks/runs/<runId>/capacity` reports the stored effective
+  concurrency, active/stale lease counts, active/limit per resource type,
+  `blockedBy`, sandbox schedulable headroom, runtime slots, Dapr workflow slots,
+  and model caps for an existing run.
+
+The launch sheet's `Max safe` control uses the launch-candidate diagnostics
+instead of the static default of 10.
 
 ## Concurrency Variable Inventory
 
@@ -135,6 +169,33 @@ These live in `services/swebench-evaluator/entrypoint.py`.
 | --- | ---: | ---: | --- |
 | `SWEBENCH_EVAL_MAX_PARALLEL` | `24` | `128` | Number of per-instance Tekton TaskRuns active during official grading. |
 | `SWEBENCH_MAX_WORKERS` | `24` | `128` | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent. |
+
+The evaluator dispatches per-instance TaskRuns with a sliding window. It keeps
+up to `SWEBENCH_EVAL_MAX_PARALLEL` TaskRuns active and starts the next instance
+as soon as any active TaskRun finishes. Evaluator leases are released per
+completed TaskRun, not at the end of a fixed batch.
+
+## Dev Ramp Profile
+
+Baseline canaries should first run at the current dev values: inference `56`,
+evaluator `24`, coordinator start batch size `12`, and start delay `2s`.
+
+Ramp 1 raises inference coherently to `72`:
+
+- `AGENT_RUNTIME_POOL_MAX_REPLICAS=9`
+- coding pool `maxReplicas=9`
+- coding pool `slotsPerReplica=8`
+- `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS=72`
+- `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES=72`
+- `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY=72`
+- `BENCHMARK_MAX_ACTIVE_SANDBOXES=80`
+- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=18`
+- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=1`
+
+Keep evaluator concurrency at `24` until the sliding-window evaluator image is
+rolled and canaried, then test `32`. Do not raise evaluator concurrency beyond
+scheduler capacity unless evaluator TaskRun requests are reduced or more nodes
+are schedulable.
 
 ### OpenAI-Parity Evaluation Coordinator
 
