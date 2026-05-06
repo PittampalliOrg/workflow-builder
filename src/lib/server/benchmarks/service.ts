@@ -91,6 +91,12 @@ import {
 	materializeSwebenchTraceBundle,
 } from "./trace-bundle";
 import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
+import {
+	benchmarkExecutionBackend,
+	benchmarkExecutionClass,
+	isHostExecutionIr,
+	submitBenchmarkInstanceToHostExecutionPlane,
+} from "./execution-plane";
 import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
@@ -2604,6 +2610,17 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		instanceId: row.runInstance.instanceId,
 		inferenceEnvironment,
 	};
+	const dispatchBackend = benchmarkExecutionBackend();
+	const executionClass = benchmarkExecutionClass();
+	const executionIr = {
+		spec,
+		triggerData,
+		benchmarkRunId: row.run.id,
+		dispatch: {
+			backend: dispatchBackend,
+			executionClass,
+		},
+	};
 
 	const [execution] = await database
 		.insert(workflowExecutions)
@@ -2616,9 +2633,108 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			progress: 0,
 			input: triggerData,
 			executionIrVersion: "sw-1.0",
-			executionIr: { spec, triggerData, benchmarkRunId: row.run.id },
+			executionIr,
 		})
 		.returning({ id: workflowExecutions.id });
+
+	if (dispatchBackend === "host") {
+		let hostResult: Awaited<
+			ReturnType<typeof submitBenchmarkInstanceToHostExecutionPlane>
+		>;
+		try {
+			hostResult = await submitBenchmarkInstanceToHostExecutionPlane({
+				runId: row.run.id,
+				instanceId: row.runInstance.instanceId,
+				workflowId: workflow.id,
+				workflowExecutionId: execution.id,
+				executionClass,
+				timeoutSeconds: row.run.timeoutSeconds,
+				workflow: spec,
+				triggerData,
+				inferenceEnvironment:
+					inferenceEnvironment as unknown as Record<string, unknown>,
+			});
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			await database
+				.update(workflowExecutions)
+				.set({
+					status: "error",
+					phase: "failed",
+					error: message.slice(0, 1000),
+					completedAt: new Date(),
+				})
+				.where(eq(workflowExecutions.id, execution.id));
+			throw error(
+				502,
+				message || "Failed to submit benchmark instance to host execution plane",
+			);
+		}
+		await database
+			.update(workflowExecutions)
+			.set({
+				workflowSessionId: execution.id,
+				executionIr: {
+					...executionIr,
+					dispatch: {
+						...executionIr.dispatch,
+						hostExecutionId: hostResult.hostExecutionId,
+						jobName: hostResult.jobName,
+						submitStatus: hostResult.status,
+					},
+				},
+			})
+			.where(eq(workflowExecutions.id, execution.id));
+		const [updatedRunInstance] = await database
+			.update(benchmarkRunInstances)
+			.set({
+				status: "inferencing",
+				inferenceStatus: "inferencing",
+				inferenceEnvironment:
+					inferenceEnvironment as unknown as Record<string, unknown>,
+				workflowExecutionId: execution.id,
+				daprInstanceId: null,
+				startedAt: new Date(),
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					eq(benchmarkRunInstances.id, row.runInstance.id),
+					eq(benchmarkRunInstances.status, "queued"),
+					eq(benchmarkRunInstances.inferenceStatus, "queued"),
+					sql`EXISTS (
+						SELECT 1 FROM benchmark_runs
+						WHERE benchmark_runs.id = ${row.run.id}
+							AND benchmark_runs.status IN ('queued', 'inferencing')
+					)`,
+				),
+			)
+			.returning({ id: benchmarkRunInstances.id });
+		if (!updatedRunInstance) {
+			await database
+				.update(workflowExecutions)
+				.set({
+					status: "cancelled",
+					phase: "cancelled",
+					error: "benchmark instance start superseded",
+					completedAt: new Date(),
+				})
+				.where(eq(workflowExecutions.id, execution.id));
+			return {
+				executionId: execution.id,
+				hostExecutionId: hostResult.hostExecutionId,
+				skipped: true,
+				reason: "benchmark_instance_start_superseded",
+			};
+		}
+		return {
+			executionId: execution.id,
+			hostExecutionId: hostResult.hostExecutionId,
+			jobName: hostResult.jobName,
+			dispatchBackend,
+			executionClass,
+		};
+	}
 
 	const res = await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
 		method: "POST",
@@ -2702,6 +2818,221 @@ export async function startBenchmarkInstanceWorkflow(params: {
 	return { executionId: execution.id, daprInstanceId };
 }
 
+export type HostBenchmarkExecutionStatus =
+	| "pending"
+	| "running"
+	| "success"
+	| "error"
+	| "timeout"
+	| "cancelled";
+
+function normalizeHostBenchmarkExecutionStatus(
+	value: unknown,
+): HostBenchmarkExecutionStatus {
+	const raw =
+		typeof value === "string"
+			? value.trim().toLowerCase().replace(/_/g, "-")
+			: "";
+	switch (raw) {
+		case "pending":
+		case "queued":
+			return "pending";
+		case "running":
+		case "admitted":
+		case "active":
+			return "running";
+		case "success":
+		case "succeeded":
+		case "completed":
+			return "success";
+		case "timeout":
+		case "timed-out":
+			return "timeout";
+		case "cancelled":
+		case "canceled":
+		case "terminated":
+			return "cancelled";
+		case "error":
+		case "failed":
+		default:
+			return "error";
+	}
+}
+
+function workflowExecutionStatusForHostStatus(
+	status: HostBenchmarkExecutionStatus,
+): "pending" | "running" | "success" | "error" | "cancelled" {
+	switch (status) {
+		case "pending":
+			return "pending";
+		case "running":
+			return "running";
+		case "success":
+			return "success";
+		case "cancelled":
+			return "cancelled";
+		case "timeout":
+		case "error":
+			return "error";
+	}
+}
+
+function workflowExecutionPhaseForHostStatus(
+	status: HostBenchmarkExecutionStatus,
+): string {
+	switch (status) {
+		case "pending":
+			return "pending";
+		case "running":
+			return "running";
+		case "success":
+			return "completed";
+		case "cancelled":
+			return "cancelled";
+		case "timeout":
+			return "timeout";
+		case "error":
+			return "failed";
+	}
+}
+
+function isHostBenchmarkExecutionTerminal(
+	status: HostBenchmarkExecutionStatus,
+): status is CompletedExecutionStatus {
+	return status !== "pending" && status !== "running";
+}
+
+export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
+	runId: string;
+	instanceId: string;
+	status: unknown;
+	hostExecutionId?: string | null;
+	daprInstanceId?: string | null;
+	jobName?: string | null;
+	output?: unknown;
+	error?: string | null;
+	sandboxName?: string | null;
+	workspaceRef?: string | null;
+	traceIds?: string[] | null;
+	inferenceEnvironment?: Record<string, unknown> | null;
+	terminationReason?: string | null;
+}) {
+	const database = requireDb();
+	const status = normalizeHostBenchmarkExecutionStatus(params.status);
+	const [row] = await database
+		.select({
+			runInstance: benchmarkRunInstances,
+			execution: workflowExecutions,
+		})
+		.from(benchmarkRunInstances)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+		)
+		.where(
+			and(
+				eq(benchmarkRunInstances.runId, params.runId),
+				eq(benchmarkRunInstances.instanceId, params.instanceId),
+			),
+		)
+		.limit(1);
+	if (!row?.execution) return null;
+	if (!isHostExecutionIr(row.execution.executionIr)) {
+		throw error(409, "Benchmark instance is not using the host execution backend");
+	}
+
+	const now = new Date();
+	const output =
+		params.output === undefined
+			? row.execution.output
+			: {
+					...(row.execution.output &&
+					typeof row.execution.output === "object" &&
+					!Array.isArray(row.execution.output)
+						? (row.execution.output as Record<string, unknown>)
+						: {}),
+					...(params.output &&
+					typeof params.output === "object" &&
+					!Array.isArray(params.output)
+						? (params.output as Record<string, unknown>)
+						: { output: params.output }),
+					hostExecutionId: params.hostExecutionId ?? undefined,
+					jobName: params.jobName ?? undefined,
+					sandboxName: params.sandboxName ?? undefined,
+					workspaceRef: params.workspaceRef ?? undefined,
+					traceIds: params.traceIds ?? undefined,
+					inferenceEnvironment: params.inferenceEnvironment ?? undefined,
+				};
+	const executionIr = row.execution.executionIr as Record<string, unknown>;
+	const dispatch =
+		executionIr.dispatch &&
+		typeof executionIr.dispatch === "object" &&
+		!Array.isArray(executionIr.dispatch)
+			? (executionIr.dispatch as Record<string, unknown>)
+			: {};
+	await database
+		.update(workflowExecutions)
+		.set({
+			status: workflowExecutionStatusForHostStatus(status),
+			phase: workflowExecutionPhaseForHostStatus(status),
+			progress: status === "success" ? 100 : row.execution.progress,
+			daprInstanceId:
+				params.daprInstanceId?.trim() || row.execution.daprInstanceId,
+			output,
+			error: params.error?.trim() || row.execution.error,
+			executionIr: {
+				...executionIr,
+				dispatch: {
+					...dispatch,
+					backend: "host",
+					hostExecutionId: params.hostExecutionId ?? dispatch.hostExecutionId,
+					jobName: params.jobName ?? dispatch.jobName,
+					lastStatus: status,
+					lastUpdateAt: now.toISOString(),
+				},
+			},
+			completedAt: isHostBenchmarkExecutionTerminal(status)
+				? (row.execution.completedAt ?? now)
+				: row.execution.completedAt,
+		})
+		.where(eq(workflowExecutions.id, row.execution.id));
+
+	if (status === "running" || status === "pending") {
+		const patch: Partial<typeof benchmarkRunInstances.$inferInsert> = {
+			status: "inferencing",
+			inferenceStatus: "inferencing",
+			updatedAt: now,
+		};
+		if (params.sandboxName?.trim()) patch.sandboxName = params.sandboxName.trim();
+		if (params.workspaceRef?.trim()) patch.workspaceRef = params.workspaceRef.trim();
+		if (params.traceIds?.length) patch.traceIds = params.traceIds;
+		if (params.inferenceEnvironment) {
+			patch.inferenceEnvironment = params.inferenceEnvironment;
+		}
+		const [updated] = await database
+			.update(benchmarkRunInstances)
+			.set(patch)
+			.where(eq(benchmarkRunInstances.id, row.runInstance.id))
+			.returning();
+		return updated ?? row.runInstance;
+	}
+
+	if (status === "success") {
+		return syncBenchmarkInstanceFromExecution({
+			runId: params.runId,
+			instanceId: params.instanceId,
+		});
+	}
+
+	return markBenchmarkInstanceInferenceFailure({
+		runId: params.runId,
+		instanceId: params.instanceId,
+		status,
+		error: params.error ?? null,
+		terminationReason: params.terminationReason ?? null,
+	});
+}
+
 export async function syncBenchmarkInstanceFromExecution(params: {
 	runId: string;
 	instanceId: string;
@@ -2731,7 +3062,10 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 
 	let runtimeStatus: string | null = null;
 	let runtimeOutput: unknown = row.execution.output;
-	if (row.execution.daprInstanceId) {
+	if (
+		row.execution.daprInstanceId &&
+		!isHostExecutionIr(row.execution.executionIr)
+	) {
 		const res = await daprFetch(
 			`${getOrchestratorUrl()}/api/v2/workflows/${row.execution.daprInstanceId}/status`,
 			{ maxRetries: 1 },

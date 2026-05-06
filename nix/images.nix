@@ -515,6 +515,15 @@ let
       blocker = "Ad-hoc pip install list needs a Nix Python dependency set before building without pip network access.";
     }
     {
+      name = "sandbox-execution-api";
+      kind = "python-service";
+      dockerfile = "services/sandbox-execution-api/Dockerfile";
+      context = "services/sandbox-execution-api";
+      buildable = false;
+      enabled = false;
+      blocker = "Python pyproject dependency lock needs a Nix resolver before building without pip network access.";
+    }
+    {
       name = "fn-system";
       kind = "node-service";
       dockerfile = "services/fn-system/Dockerfile";

@@ -126,6 +126,40 @@ Capacity diagnostics are exposed in two places:
 The launch sheet's `Max safe` control uses the launch-candidate diagnostics
 instead of the static default of 10.
 
+## Host Execution Plane Backend
+
+The current Dapr SWE-bench runner remains the default backend. The host-level
+sandbox execution plane is selected only when the BFF has
+`BENCHMARK_EXECUTION_BACKEND=host` and `SANDBOX_EXECUTION_API_URL` (or
+`HOST_EXECUTION_API_URL`) configured.
+
+Workflow-builder submits the existing generated SWE-bench instance workflow,
+trigger data, validated inference environment, timeout, and execution class to
+`POST /api/v1/executions` on the host execution API. The host API creates a
+Kueue-managed Kubernetes `Job` by setting the `kueue.x-k8s.io/queue-name` label
+on the Job and leaves Kueue to manage suspension/admission. The Job pod uses the
+requested execution class:
+
+| Execution class | Queue | RuntimeClass | Intended use |
+| --- | --- | --- | --- |
+| `benchmark-fast` | `benchmark-fast` | unset | runc/OpenShell parity path for trusted SWE-bench throughput comparisons. |
+| `secure-gvisor` | `secure-gvisor` | `secure-gvisor` | gVisor-isolated path for less trusted agent code once Talos exposes the runtime. |
+
+Both classes keep the benchmark worker node selector
+`stacks.io/swebench-pool=dev-benchmark`, hostname topology spread, and the
+initial `16Gi` ephemeral-storage request. The host execution worker reports
+state back through
+`POST /api/internal/benchmarks/runs/<runId>/instances/<instanceId>/execution`.
+Terminal success updates the existing `workflow_executions` row and reuses the
+normal `syncBenchmarkInstanceFromExecution` path, so benchmark summaries,
+patch extraction, MLflow sync, evaluator handoff, and UI state stay on the
+current schema.
+
+Relevant upstream contracts:
+
+- Kueue Jobs: `https://kueue.sigs.k8s.io/docs/tasks/run/jobs/`
+- Kubernetes RuntimeClass: `https://kubernetes.io/docs/concepts/containers/runtime-class/`
+
 ## Concurrency Variable Inventory
 
 ### Benchmarks UI and BFF
@@ -150,6 +184,10 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
 | `BENCHMARK_LEASE_RETRY_SECONDS` | `15` | unset | Retry-after returned when the BFF resource-lease gate denies capacity. |
 | `BENCHMARK_INFERENCE_STALL_SECONDS` | `480` | `480` | Marks stale inference progress; not a dispatch cap. |
+| `BENCHMARK_EXECUTION_BACKEND` | `legacy-dapr` | unset | Set to `host` to submit SWE-bench instance inference to the host sandbox execution API. |
+| `BENCHMARK_EXECUTION_CLASS` | `benchmark-fast` | unset | Host backend execution class; supported initial values are `benchmark-fast` and `secure-gvisor`. |
+| `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL` | unset | unset | Host execution API base URL required by the host backend. |
+| `SANDBOX_EXECUTION_API_TOKEN` / `HOST_EXECUTION_API_TOKEN` | `INTERNAL_API_TOKEN` fallback | unset | Bearer token used by the BFF when calling the host execution API. |
 
 Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 

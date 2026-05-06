@@ -1,0 +1,136 @@
+import { env } from "$env/dynamic/private";
+
+export type BenchmarkExecutionBackend = "legacy-dapr" | "host";
+export type BenchmarkExecutionClass = "benchmark-fast" | "secure-gvisor";
+
+export type HostExecutionPlaneSubmitInput = {
+	runId: string;
+	instanceId: string;
+	workflowId: string;
+	workflowExecutionId: string;
+	executionClass: BenchmarkExecutionClass;
+	timeoutSeconds: number;
+	workflow: unknown;
+	triggerData: Record<string, unknown>;
+	inferenceEnvironment: Record<string, unknown>;
+};
+
+export type HostExecutionPlaneSubmitResult = {
+	hostExecutionId: string;
+	jobName: string | null;
+	status: string | null;
+	raw: Record<string, unknown>;
+};
+
+function configValue(name: string): string | undefined {
+	return env[name] ?? process.env[name];
+}
+
+function normalizedConfigValue(name: string): string {
+	return configValue(name)?.trim() ?? "";
+}
+
+export function benchmarkExecutionBackend(): BenchmarkExecutionBackend {
+	const raw = normalizedConfigValue("BENCHMARK_EXECUTION_BACKEND")
+		.toLowerCase()
+		.replace(/_/g, "-");
+	if (raw === "host" || raw === "host-execution-plane") return "host";
+	return "legacy-dapr";
+}
+
+export function benchmarkExecutionClass(): BenchmarkExecutionClass {
+	const raw = normalizedConfigValue("BENCHMARK_EXECUTION_CLASS")
+		.toLowerCase()
+		.replace(/_/g, "-");
+	return raw === "secure-gvisor" ? "secure-gvisor" : "benchmark-fast";
+}
+
+export function hostExecutionPlaneUrl(): string | null {
+	const url =
+		normalizedConfigValue("SANDBOX_EXECUTION_API_URL") ||
+		normalizedConfigValue("HOST_EXECUTION_API_URL");
+	return url ? url.replace(/\/+$/, "") : null;
+}
+
+function hostExecutionPlaneToken(): string | null {
+	return (
+		normalizedConfigValue("SANDBOX_EXECUTION_API_TOKEN") ||
+		normalizedConfigValue("HOST_EXECUTION_API_TOKEN") ||
+		normalizedConfigValue("INTERNAL_API_TOKEN") ||
+		null
+	);
+}
+
+export function isHostExecutionIr(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const dispatch = (value as Record<string, unknown>).dispatch;
+	return (
+		!!dispatch &&
+		typeof dispatch === "object" &&
+		!Array.isArray(dispatch) &&
+		(dispatch as Record<string, unknown>).backend === "host"
+	);
+}
+
+export async function submitBenchmarkInstanceToHostExecutionPlane(
+	input: HostExecutionPlaneSubmitInput,
+): Promise<HostExecutionPlaneSubmitResult> {
+	const baseUrl = hostExecutionPlaneUrl();
+	if (!baseUrl) {
+		throw new Error(
+			"SANDBOX_EXECUTION_API_URL or HOST_EXECUTION_API_URL is required when BENCHMARK_EXECUTION_BACKEND=host",
+		);
+	}
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+	const token = hostExecutionPlaneToken();
+	if (token) headers.Authorization = `Bearer ${token}`;
+	const res = await fetch(`${baseUrl}/api/v1/executions`, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({
+			kind: "swebench-instance",
+			runId: input.runId,
+			instanceId: input.instanceId,
+			workflowId: input.workflowId,
+			workflowExecutionId: input.workflowExecutionId,
+			executionClass: input.executionClass,
+			timeoutSeconds: input.timeoutSeconds,
+			workflow: input.workflow,
+			triggerData: input.triggerData,
+			inferenceEnvironment: input.inferenceEnvironment,
+			callback: {
+				path: `/api/internal/benchmarks/runs/${encodeURIComponent(input.runId)}/instances/${encodeURIComponent(input.instanceId)}/execution`,
+			},
+		}),
+	});
+	const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+	if (!res.ok) {
+		throw new Error(
+			typeof body.error === "string"
+				? body.error
+				: typeof body.detail === "string"
+					? body.detail
+					: `host execution plane returned ${res.status}`,
+		);
+	}
+	const hostExecutionId =
+		typeof body.executionId === "string" && body.executionId.trim()
+			? body.executionId.trim()
+			: typeof body.id === "string" && body.id.trim()
+				? body.id.trim()
+				: input.workflowExecutionId;
+	return {
+		hostExecutionId,
+		jobName:
+			typeof body.jobName === "string" && body.jobName.trim()
+				? body.jobName.trim()
+				: null,
+		status:
+			typeof body.status === "string" && body.status.trim()
+				? body.status.trim()
+				: null,
+		raw: body,
+	};
+}
