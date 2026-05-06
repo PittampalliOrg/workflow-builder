@@ -97,7 +97,7 @@ const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const BENCHMARK_TERMINATION_CONCURRENCY = 8;
 const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
-const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
+const BENCHMARK_TERMINATION_WAIT_SECONDS = 300;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
@@ -1518,6 +1518,32 @@ async function finalizeBenchmarkWorkflowExecutions(
 		},
 	);
 
+	let parentDurableInstancesClosed = true;
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			const termination = workflowTerminations.get(instanceId) ?? "terminated";
+			if (termination === "failed") {
+				parentDurableInstancesClosed = false;
+				return;
+			}
+			const closed =
+				termination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
+			if (!closed) {
+				parentDurableInstancesClosed = false;
+				allDurableInstancesClosed = false;
+			}
+		},
+	);
+	if (!parentDurableInstancesClosed) {
+		console.warn(
+			`Benchmark run ${runId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandboxes, and leases active for retry`,
+		);
+		return false;
+	}
+
 	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
 	await runWithConcurrency(
 		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
@@ -1548,18 +1574,6 @@ async function finalizeBenchmarkWorkflowExecutions(
 			const closed =
 				termination === "alreadyGone" ||
 				(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
-			if (!closed) allDurableInstancesClosed = false;
-		},
-	);
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			const termination = workflowTerminations.get(instanceId) ?? "terminated";
-			if (termination === "failed") return;
-			const closed =
-				termination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
 			if (!closed) allDurableInstancesClosed = false;
 		},
 	);
@@ -2963,6 +2977,24 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			if (parentTermination === "failed") allDurableInstancesClosed = false;
 		}
 
+		let parentDurableInstanceClosed = true;
+		if (parentDaprInstanceId && parentTermination !== "failed") {
+			parentDurableInstanceClosed =
+				parentTermination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
+			if (!parentDurableInstanceClosed) allDurableInstancesClosed = false;
+		}
+		if (parentTermination === "failed") {
+			parentDurableInstanceClosed = false;
+		}
+
+		if (!parentDurableInstanceClosed) {
+			console.warn(
+				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandbox, and leases active for retry`,
+			);
+			return;
+		}
+
 		if (runtimeAppId && runtimeInstanceIds.length > 0) {
 			const runtimeTerminations = new Map<string, DurableTerminationResult>();
 			await runWithConcurrency(
@@ -2994,13 +3026,6 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 					if (!closed) allDurableInstancesClosed = false;
 				},
 			);
-		}
-
-		if (parentDaprInstanceId && parentTermination !== "failed") {
-			const closed =
-				parentTermination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
-			if (!closed) allDurableInstancesClosed = false;
 		}
 
 		if (!allDurableInstancesClosed) {
