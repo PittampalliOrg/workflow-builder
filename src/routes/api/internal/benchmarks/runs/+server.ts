@@ -49,6 +49,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (selectedInstanceIds.length === 0) {
 		return error(409, "No prevalidated SWE-bench instances matched the request");
 	}
+	if (body.previewOnly === true || body.dryRun === true) {
+		return json({
+			preview: true,
+			suiteSlug,
+			selectedInstanceIds,
+			selectedCount: selectedInstanceIds.length,
+			requestedLimit: readOptionalInt(body.limit) ?? selectedInstanceIds.length,
+		});
+	}
 
 	let run;
 	try {

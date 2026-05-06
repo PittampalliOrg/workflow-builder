@@ -157,8 +157,12 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
             "error": "operator stop",
         }
     ]
-    assert lease_releases == [{"runId": "run_1", "reason": "operator stop"}]
-    assert result["leaseRelease"] == {"released": 5}
+    assert lease_releases == []
+    assert result["leaseRelease"] == {
+        "success": True,
+        "skipped": True,
+        "reason": "handled_by_bff_terminal_cleanup",
+    }
 
 
 class Obj:

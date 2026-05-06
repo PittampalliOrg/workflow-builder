@@ -47,7 +47,7 @@ function usage(): never {
 		"  --execution-class NAME       benchmark-fast or secure-gvisor.",
 		"  --tag TAG                    Extra run tag. Repeatable.",
 		"  --api-url URL                Workflow-builder base URL. Default: WORKFLOW_BUILDER_URL or http://127.0.0.1:3000",
-		"  --apply                      Actually create the run. Omit for dry run.",
+		"  --apply                      Actually create the run. Omit to preview exact selected instances.",
 	].join("\n"));
 	process.exit(2);
 }
@@ -147,13 +147,12 @@ async function main() {
 			tags: args.tags,
 		};
 		console.log(
-			`${args.apply ? "Creating" : "Dry run"} SWE-bench run: project=${body.projectId} user=${body.userId} agent=${body.agentId} limit=${args.limit} concurrency=${args.concurrency} backend=${args.executionBackend ?? "default"}`,
+			`${args.apply ? "Creating" : "Previewing"} SWE-bench run: project=${body.projectId} user=${body.userId} agent=${body.agentId} limit=${args.limit} concurrency=${args.concurrency} backend=${args.executionBackend ?? "default"}`,
 		);
-		if (!args.apply) {
-			console.log(JSON.stringify(body, null, 2));
-			return;
-		}
-		const result = await createRun(args.apiUrl, body);
+		const result = await submitRun(args.apiUrl, {
+			...body,
+			previewOnly: !args.apply,
+		});
 		console.log(JSON.stringify(result, null, 2));
 	} finally {
 		await sql.end();
@@ -251,7 +250,7 @@ type AgentRow = {
 	name: string;
 };
 
-async function createRun(
+async function submitRun(
 	apiUrl: string,
 	body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {

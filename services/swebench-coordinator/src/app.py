@@ -2224,7 +2224,11 @@ def cancel_benchmark_run(
     client = DaprWorkflowClient()
     termination_errors: dict[str, str] = {}
     status_result: dict[str, Any] = {"success": False}
-    lease_release: dict[str, Any] = {"success": False}
+    lease_release: dict[str, Any] = {
+        "success": True,
+        "skipped": True,
+        "reason": "handled_by_bff_terminal_cleanup",
+    }
     for instance_id in (run_instance_id, preflight_instance_id, evaluation_instance_id):
         try:
             client.terminate_workflow(instance_id=instance_id, output=reason)
@@ -2261,14 +2265,6 @@ def cancel_benchmark_run(
         logger.warning(
             "Best-effort cancelled status update failed for %s: %s", run_id, exc
         )
-    try:
-        lease_release = _release_run_leases(
-            None,
-            {"runId": run_id, "reason": reason},
-        )
-    except Exception as exc:
-        lease_release = {"success": False, "error": str(exc)}
-        logger.warning("Best-effort lease release failed for %s: %s", run_id, exc)
     return {
         "success": True,
         "executionId": run_instance_id,

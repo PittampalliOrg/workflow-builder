@@ -4,6 +4,7 @@ type Args = {
 	suite: string;
 	limit: number;
 	targetValidated: number | null;
+	forceRefreshLegacyStatic: boolean;
 	apply: boolean;
 	apiUrl: string;
 	instanceIds: string[];
@@ -24,6 +25,7 @@ function usage(): never {
 		"  --suite SLUG              SWE-bench suite slug. Default: SWE-bench_Verified",
 		"  --limit N                 Max instances to inspect/submit. Default: 10",
 		"  --target-validated N      Stop once validated+building reaches N in this pass.",
+		"  --force-refresh-legacy-static  Build exact dynamic images instead of counting legacy static mappings as ready.",
 		"  --instance-id ID          Specific instance id. Repeatable.",
 		"  --api-url URL             Workflow-builder base URL. Default: WORKFLOW_BUILDER_URL or http://127.0.0.1:3000",
 		"  --apply                   Actually submit builds. Omit for dry run.",
@@ -36,6 +38,7 @@ function parseArgs(argv: string[]): Args {
 		suite: "SWE-bench_Verified",
 		limit: 10,
 		targetValidated: null,
+		forceRefreshLegacyStatic: false,
 		apply: false,
 		apiUrl: process.env.WORKFLOW_BUILDER_URL || "http://127.0.0.1:3000",
 		instanceIds: [],
@@ -53,6 +56,8 @@ function parseArgs(argv: string[]): Args {
 			args.targetValidated = positiveInt(next(), "--target-validated");
 		} else if (arg === "--instance-id") {
 			args.instanceIds.push(next());
+		} else if (arg === "--force-refresh-legacy-static") {
+			args.forceRefreshLegacyStatic = true;
 		} else if (arg === "--api-url") {
 			args.apiUrl = next().replace(/\/+$/, "");
 		} else if (arg === "--apply") {
@@ -134,6 +139,7 @@ async function main() {
 				baseCommit: row.base_commit,
 				testMetadata: row.test_metadata ?? {},
 				allowBuild: true,
+				forceRefreshLegacyStatic: args.forceRefreshLegacyStatic,
 			});
 			const state = result.environmentStatus || result.status || "unknown";
 			if (state === "building" || state === "validated") readyOrBuilding += 1;
