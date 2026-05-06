@@ -1504,17 +1504,50 @@ async function finalizeBenchmarkWorkflowExecutions(
 		}
 		agentRuntimeInstances.set(runtimeAppId, instances);
 	}
+	const workflowTerminations = new Map<string, DurableTerminationResult>();
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			const termination = await terminateBenchmarkWorkflowInstance(
+				instanceId,
+				reason,
+			);
+			workflowTerminations.set(instanceId, termination);
+			if (termination === "failed") allDurableInstancesClosed = false;
+		},
+	);
+
+	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
 	await runWithConcurrency(
 		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
 			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
 		),
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async ({ runtimeAppId, instanceId }) => {
-			const closed = await terminateAndWaitBenchmarkAgentRuntimeInstance(
+			const termination = await terminateBenchmarkAgentRuntimeInstance(
 				runtimeAppId,
 				instanceId,
 				reason,
 			);
+			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
+			if (termination === "failed") allDurableInstancesClosed = false;
+		},
+	);
+
+	await runWithConcurrency(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
+		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async ({ runtimeAppId, instanceId }) => {
+			const termination =
+				agentRuntimeTerminations.get(`${runtimeAppId}\0${instanceId}`) ??
+				"terminated";
+			if (termination === "failed") return;
+			const closed =
+				termination === "alreadyGone" ||
+				(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
 			if (!closed) allDurableInstancesClosed = false;
 		},
 	);
@@ -1522,10 +1555,11 @@ async function finalizeBenchmarkWorkflowExecutions(
 		[...daprInstanceIds],
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async (instanceId) => {
-			const closed = await terminateAndWaitBenchmarkWorkflowInstance(
-				instanceId,
-				reason,
-			);
+			const termination = workflowTerminations.get(instanceId) ?? "terminated";
+			if (termination === "failed") return;
+			const closed =
+				termination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
 			if (!closed) allDurableInstancesClosed = false;
 		},
 	);
@@ -2918,25 +2952,54 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 				},
 				turns,
 			);
+		}
+
+		let parentTermination: DurableTerminationResult | null = null;
+		if (parentDaprInstanceId) {
+			parentTermination = await terminateBenchmarkWorkflowInstance(
+				parentDaprInstanceId,
+				reason,
+			);
+			if (parentTermination === "failed") allDurableInstancesClosed = false;
+		}
+
+		if (runtimeAppId && runtimeInstanceIds.length > 0) {
+			const runtimeTerminations = new Map<string, DurableTerminationResult>();
 			await runWithConcurrency(
 				runtimeInstanceIds,
 				BENCHMARK_TERMINATION_CONCURRENCY,
 				async (instanceId) => {
-					const closed = await terminateAndWaitBenchmarkAgentRuntimeInstance(
+					const termination = await terminateBenchmarkAgentRuntimeInstance(
 						runtimeAppId,
 						instanceId,
 						reason,
 					);
+					runtimeTerminations.set(instanceId, termination);
+					if (termination === "failed") allDurableInstancesClosed = false;
+				},
+			);
+
+			await runWithConcurrency(
+				runtimeInstanceIds,
+				BENCHMARK_TERMINATION_CONCURRENCY,
+				async (instanceId) => {
+					const termination = runtimeTerminations.get(instanceId) ?? "terminated";
+					if (termination === "failed") return;
+					const closed =
+						termination === "alreadyGone" ||
+						(await waitForBenchmarkAgentRuntimeInstanceClosed(
+							runtimeAppId,
+							instanceId,
+						));
 					if (!closed) allDurableInstancesClosed = false;
 				},
 			);
 		}
 
-		if (parentDaprInstanceId) {
-			const closed = await terminateAndWaitBenchmarkWorkflowInstance(
-				parentDaprInstanceId,
-				reason,
-			);
+		if (parentDaprInstanceId && parentTermination !== "failed") {
+			const closed =
+				parentTermination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
 			if (!closed) allDurableInstancesClosed = false;
 		}
 
