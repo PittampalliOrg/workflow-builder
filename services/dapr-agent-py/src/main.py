@@ -4984,7 +4984,7 @@ def terminate_agent_run(
     try:
         _workflow_http_post(instance_id, "/terminate")
         return {"success": True, "instanceId": instance_id}
-    except requests.Timeout:
+    except TimeoutError:
         logger.warning(
             "[agent-runs] Terminate request timed out for %s; polling status will confirm closure",
             instance_id,
