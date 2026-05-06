@@ -28,6 +28,14 @@ test-results
 !tsconfig.json
 !vite.config.ts
 !drizzle/**
+!lib/**
+!scripts/
+!scripts/build-db-scripts.mjs
+!scripts/db-migrate-runtime.mjs
+!scripts/seed-dev-user.ts
+!scripts/seed-swebench-fixtures.ts
+!scripts/seed-workflows.ts
+!scripts/fixtures/**
 !src/**
 !static/**
 

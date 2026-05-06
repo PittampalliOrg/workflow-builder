@@ -13,11 +13,13 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 FROM deps AS builder
 COPY components.json drizzle.config.ts server-prod.js svelte.config.js tsconfig.json vite.config.ts ./
 COPY drizzle ./drizzle
+COPY lib ./lib
+COPY scripts ./scripts
 COPY src ./src
 COPY static ./static
 ENV NODE_ENV=production
 ENV NODE_OPTIONS=--max-old-space-size=8192
-RUN pnpm build && find build -name '*.map' -type f -delete
+RUN pnpm build:db-scripts && pnpm build && find build -name '*.map' -type f -delete
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -30,7 +32,9 @@ COPY --from=builder --chown=sveltekit:nodejs /app/package.json ./
 COPY --from=prod-deps --chown=sveltekit:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=sveltekit:nodejs /app/drizzle.config.ts ./
-COPY --chown=sveltekit:nodejs scripts/db-migrate-runtime.mjs ./scripts/db-migrate-runtime.mjs
+COPY --from=builder --chown=sveltekit:nodejs /app/scripts/*.bundle.js ./scripts/
+COPY --from=builder --chown=sveltekit:nodejs /app/scripts/fixtures ./scripts/fixtures
+COPY --from=builder --chown=sveltekit:nodejs /app/scripts/db-migrate-runtime.mjs ./scripts/db-migrate-runtime.mjs
 USER sveltekit
 EXPOSE 3000
 CMD ["node", "server-prod.js"]
