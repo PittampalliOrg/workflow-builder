@@ -383,7 +383,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentConfig,
 		agentId,
 	});
-	if (!sessionHost && wakeSlug) {
+	if (sessionHost) {
+		console.info(
+			`[ensure-for-workflow] provisioned agent workflow host ${sessionHost.agentAppId} for session ${sessionId}`,
+		);
+	} else if (wakeSlug) {
 		try {
 			const { wakeAgentRuntime } = await import("$lib/server/kube/client");
 			// Keep the wake budget well below the Python activity's 30s read

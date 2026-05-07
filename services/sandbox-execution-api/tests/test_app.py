@@ -152,7 +152,14 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     container = pod_spec["containers"][0]
     assert container["image"] == "ghcr.io/example/dapr-agent-py-sandbox:git-1"
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
+    assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
+    env_from = container["envFrom"]
+    assert env_from[0]["configMapRef"] == {
+        "name": "dapr-agent-py-config",
+        "optional": True,
+    }
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"

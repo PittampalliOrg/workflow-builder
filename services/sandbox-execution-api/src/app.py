@@ -467,7 +467,27 @@ def build_agent_workflow_host_job_manifest(
                 "imagePullPolicy": "IfNotPresent",
                 "ports": [{"name": "http", "containerPort": 8002}],
                 "env": [
+                    {"name": "AGENT_SERVICE_NAME", "value": request.agentAppId},
+                    {"name": "AGENT_SLUG", "value": request.agentAppId},
                     {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
+                    {"name": "DAPR_LLM_COMPONENT_DEFAULT", "value": "llm-anthropic-opus"},
+                    {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "true"},
+                    {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "true"},
+                    {
+                        "name": "DAPR_AGENT_PY_PLUGIN_PATHS",
+                        "value": "/etc/dapr-agent-py/plugins",
+                    },
+                    {"name": "DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON", "value": "[]"},
+                    {"name": "AGENT_CALL_AGENT_NATIVE", "value": "1"},
+                    {
+                        "name": "WORKFLOW_BUILDER_URL",
+                        "value": os.environ.get(
+                            "WORKFLOW_BUILDER_URL",
+                            "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+                        ),
+                    },
+                    {"name": "DAPR_HTTP_ENDPOINT", "value": "http://localhost:3500"},
+                    {"name": "DAPR_GRPC_ENDPOINT", "value": "dns:localhost:50001"},
                     {
                         "name": "DAPR_AGENT_SESSION_HOST_INSTANCE_ID",
                         "value": request.sessionId,
@@ -485,9 +505,9 @@ def build_agent_workflow_host_job_manifest(
                     },
                 ],
                 "envFrom": [
-                    {"configMapRef": {"name": "dapr-agent-py-sandbox-config"}},
-                    {"secretRef": {"name": "dapr-agent-py-secrets"}},
-                    {"secretRef": {"name": "workflow-checkpoint-gitea"}},
+                    {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
+                    {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
+                    {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
                 ],
                 "resources": {
                     "requests": {
