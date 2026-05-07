@@ -1118,7 +1118,43 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(true);
 	});
 
-	it("does not finalize instances, sandboxes, or leases before durable workflows close", async () => {
+	it("does not finalize failed instances, sandboxes, or leases before durable workflows close", async () => {
+		const calls: string[] = [];
+		const hooks = {
+			finalizeInstances: vi.fn(async () => {
+				calls.push("instances");
+			}),
+			cleanupSandboxes: vi.fn(async () => {
+				calls.push("sandboxes");
+			}),
+			releaseLeases: vi.fn(async () => {
+				calls.push("leases");
+			}),
+			warn: vi.fn(() => {
+				calls.push("warn");
+			}),
+		};
+
+		await expect(
+			cleanupBenchmarkTerminalResourcesAfterDurableClosure(
+				{
+					runId: "run_1",
+					outcome: "failed",
+					reason: "benchmark run failed",
+					now,
+					workflowsClosed: false,
+				},
+				hooks,
+			),
+		).resolves.toBe(false);
+
+		expect(calls).toEqual(["warn"]);
+		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
+		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
+		expect(hooks.releaseLeases).not.toHaveBeenCalled();
+	});
+
+	it("releases cancelled-run resources even if durable workflow projections are stale", async () => {
 		const calls: string[] = [];
 		const hooks = {
 			finalizeInstances: vi.fn(async () => {
@@ -1148,13 +1184,26 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).resolves.toBe(false);
 
-		expect(calls).toEqual(["warn"]);
-		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
-		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
-		expect(hooks.releaseLeases).not.toHaveBeenCalled();
+		expect(calls).toEqual(["warn", "instances", "sandboxes", "leases"]);
+	});
 
-		calls.length = 0;
-		vi.clearAllMocks();
+	it("finalizes terminal resources after durable workflows close", async () => {
+		const calls: string[] = [];
+		const hooks = {
+			finalizeInstances: vi.fn(async () => {
+				calls.push("instances");
+			}),
+			cleanupSandboxes: vi.fn(async () => {
+				calls.push("sandboxes");
+			}),
+			releaseLeases: vi.fn(async () => {
+				calls.push("leases");
+			}),
+			warn: vi.fn(() => {
+				calls.push("warn");
+			}),
+		};
+
 		await expect(
 			cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 				{

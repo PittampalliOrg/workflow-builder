@@ -189,6 +189,20 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 	hooks: BenchmarkTerminalResourceCleanupHooks = benchmarkTerminalResourceCleanupHooks,
 ): Promise<boolean> {
 	if (!params.workflowsClosed) {
+		if (params.outcome === "cancelled") {
+			hooks.warn(
+				`Benchmark run ${params.runId} durable cleanup did not confirm workflow closure; deleting benchmark-owned sandboxes and releasing leases because the run was cancelled`,
+			);
+			await hooks.finalizeInstances(
+				params.runId,
+				params.outcome,
+				params.reason,
+				params.now,
+			);
+			await hooks.cleanupSandboxes(params.runId, params.reason);
+			await hooks.releaseLeases(params.runId, params.reason);
+			return false;
+		}
 		hooks.warn(
 			`Benchmark run ${params.runId} durable cleanup did not finish; leaving instances, sandboxes, and leases active for retry`,
 		);
@@ -2599,6 +2613,14 @@ async function deleteOpenShellSandboxForBenchmark(
 			},
 		);
 		if (res.ok) {
+			try {
+				await deleteOpenShellSandboxKubernetesResources(sandboxName);
+			} catch (err) {
+				cleanup.errors.push({
+					sandboxName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 			cleanup.deleted.push(sandboxName);
 			return;
 		}
