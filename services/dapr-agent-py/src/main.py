@@ -4411,10 +4411,10 @@ def _workflow_http_timeout_seconds() -> float:
     try:
         return max(
             0.5,
-            float(os.environ.get("DAPR_WORKFLOW_HTTP_TIMEOUT_SECONDS", "2.5")),
+            float(os.environ.get("DAPR_WORKFLOW_HTTP_TIMEOUT_SECONDS", "15")),
         )
     except ValueError:
-        return 2.5
+        return 15.0
 
 
 def _workflow_http_url(instance_id: str, suffix: str = "") -> str:
