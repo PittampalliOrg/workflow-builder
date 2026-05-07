@@ -3954,7 +3954,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
-		await syncBenchmarkInstanceMlflowAndTraceBundle({
+		syncBenchmarkInstanceMlflowAndTraceBundleInBackground({
 			runId: params.runId,
 			instanceId: params.instanceId,
 		});
