@@ -8,9 +8,18 @@ from src import worker
 
 
 class _Response:
-    def __init__(self, status_code: int, text: str = "") -> None:
+    def __init__(
+        self,
+        status_code: int,
+        text: str = "",
+        body: dict[str, object] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.text = text
+        self._body = body or {}
+
+    def json(self) -> dict[str, object]:
+        return self._body
 
 
 def test_load_payload_prefers_request_file(monkeypatch, tmp_path) -> None:
@@ -66,3 +75,62 @@ def test_post_callback_raises_after_retry_budget(monkeypatch) -> None:
         assert "after 2 attempt" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_start_workflow_retries_transient_runtime_unavailable(monkeypatch) -> None:
+    monkeypatch.setenv("WORKFLOW_ORCHESTRATOR_URL", "http://workflow-orchestrator:8080")
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS", "3")
+    sleeps: list[float] = []
+    attempts = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return _Response(
+                503,
+                '{"detail":{"code":"workflow_runtime_unavailable","error":"Dapr workflow runtime is not ready"}}',
+            )
+        return _Response(200, body={"instanceId": "sw-1"})
+
+    monkeypatch.setattr(worker.requests, "post", fake_post)
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+    monkeypatch.setattr(worker.random, "uniform", lambda *_args: 0.0)
+
+    instance_id = worker._start_workflow(
+        {
+            "workflow": {"id": "wf"},
+            "workflowId": "wf",
+            "workflowExecutionId": "exec_1",
+        }
+    )
+
+    assert instance_id == "sw-1"
+    assert attempts["count"] == 2
+    assert sleeps == [4.0]
+
+
+def test_start_workflow_does_not_retry_non_transient_client_error(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS", "3")
+    attempts = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        attempts["count"] += 1
+        return _Response(400, "bad workflow")
+
+    monkeypatch.setattr(worker.requests, "post", fake_post)
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+
+    try:
+        worker._start_workflow(
+            {
+                "workflow": {"id": "wf"},
+                "workflowId": "wf",
+                "workflowExecutionId": "exec_1",
+            }
+        )
+    except RuntimeError as exc:
+        assert "after 1 attempt" in str(exc)
+        assert "bad workflow" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+    assert attempts["count"] == 1

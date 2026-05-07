@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import random
 import sys
 import time
 from typing import Any
@@ -85,7 +86,39 @@ def _orchestrator_url() -> str:
     ).rstrip("/")
 
 
-def _start_workflow(payload: dict[str, Any]) -> str:
+def _is_transient_workflow_start_failure(status_code: int | None, detail: str) -> bool:
+    if status_code in {408, 429, 500, 502, 503, 504}:
+        return True
+    lowered = detail.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "deadline_exceeded",
+            "deadline exceeded",
+            "rst_stream",
+            "workflow_runtime_unavailable",
+            "workflow runtime is not ready",
+            "temporarily unavailable",
+            "connection reset",
+            "connection aborted",
+            "read timed out",
+        )
+    )
+
+
+def _workflow_start_backoff_seconds(attempt: int) -> float:
+    base = max(
+        1.0,
+        float(_env("SANDBOX_EXECUTION_WORKFLOW_START_BACKOFF_SECONDS", "4")),
+    )
+    cap = max(
+        base,
+        float(_env("SANDBOX_EXECUTION_WORKFLOW_START_MAX_BACKOFF_SECONDS", "45")),
+    )
+    return min(cap, base * attempt) + random.uniform(0, min(1.0, base))
+
+
+def _start_workflow_once(payload: dict[str, Any]) -> str:
     res = requests.post(
         f"{_orchestrator_url()}/api/v2/sw-workflows",
         json={
@@ -95,7 +128,10 @@ def _start_workflow(payload: dict[str, Any]) -> str:
             "dbExecutionId": payload["workflowExecutionId"],
         },
         headers={"Content-Type": "application/json"},
-        timeout=90,
+        timeout=max(
+            30,
+            int(_env("SANDBOX_EXECUTION_WORKFLOW_START_TIMEOUT_SECONDS", "120")),
+        ),
     )
     if res.status_code >= 400:
         raise RuntimeError(f"workflow start failed ({res.status_code}): {res.text[:1200]}")
@@ -104,6 +140,42 @@ def _start_workflow(payload: dict[str, Any]) -> str:
     if not isinstance(instance_id, str) or not instance_id:
         raise RuntimeError("workflow start response did not include instanceId")
     return instance_id
+
+
+def _start_workflow(payload: dict[str, Any]) -> str:
+    attempts = max(
+        1,
+        int(_env("SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS", "10")),
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _start_workflow_once(payload)
+        except requests.RequestException as exc:
+            last_error = exc
+            transient = _is_transient_workflow_start_failure(None, str(exc))
+        except RuntimeError as exc:
+            last_error = exc
+            message = str(exc)
+            status_code: int | None = None
+            if message.startswith("workflow start failed ("):
+                status_text = message.split("(", 1)[1].split(")", 1)[0]
+                try:
+                    status_code = int(status_text)
+                except ValueError:
+                    status_code = None
+            transient = _is_transient_workflow_start_failure(status_code, message)
+        if not transient or attempt >= attempts:
+            break
+        sleep_seconds = _workflow_start_backoff_seconds(attempt)
+        print(
+            f"workflow start attempt {attempt}/{attempts} failed transiently; retrying in {sleep_seconds:.1f}s: {last_error}",
+            file=sys.stderr,
+        )
+        time.sleep(sleep_seconds)
+    raise RuntimeError(
+        f"workflow start failed after {attempt} attempt(s): {last_error}"
+    )
 
 
 def _workflow_status(instance_id: str) -> dict[str, Any]:
