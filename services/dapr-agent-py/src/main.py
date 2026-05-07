@@ -10,6 +10,7 @@ import posixpath
 import re
 import shlex
 import threading
+import time
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -4352,6 +4353,7 @@ async def lifespan(app: FastAPI):
             logger.info("[mcp-bootstrap] added %d tool(s) to agent", added)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-bootstrap] startup hook failed: %s", exc)
+    _start_session_host_monitor()
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
@@ -4400,6 +4402,94 @@ def _parse_json(value: Any) -> Any:
 
 def _terminal_status(status: str) -> bool:
     return status in {"COMPLETED", "FAILED", "CANCELED", "TERMINATED"}
+
+
+def _session_host_env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
+def _session_host_int(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(_session_host_env(name, str(default))))
+    except ValueError:
+        return max(minimum, default)
+
+
+def _start_session_host_monitor() -> None:
+    instance_id = _session_host_env("DAPR_AGENT_SESSION_HOST_INSTANCE_ID")
+    if not instance_id:
+        return
+    thread = threading.Thread(
+        target=_run_session_host_monitor,
+        args=(instance_id,),
+        name="session-host-monitor",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _run_session_host_monitor(instance_id: str) -> None:
+    start_timeout = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS",
+        900,
+    )
+    idle_timeout = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS",
+        300,
+    )
+    poll_seconds = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_POLL_SECONDS",
+        10,
+    )
+    started_at = time.monotonic()
+    first_seen_at: float | None = None
+    logger.info(
+        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss",
+        instance_id,
+        start_timeout,
+        idle_timeout,
+    )
+    while True:
+        elapsed = time.monotonic() - started_at
+        if first_seen_at is None and elapsed > start_timeout:
+            logger.error(
+                "[session-host] workflow %s was not observed within %ss; exiting",
+                instance_id,
+                start_timeout,
+            )
+            os._exit(1)
+        if first_seen_at is not None and time.monotonic() - first_seen_at > idle_timeout:
+            logger.warning(
+                "[session-host] workflow %s stayed non-terminal for %ss after first observation; continuing to monitor",
+                instance_id,
+                idle_timeout,
+            )
+            first_seen_at = time.monotonic()
+        try:
+            state = _workflow_http_get_instance(instance_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[session-host] status check for %s failed: %s", instance_id, exc)
+            state = None
+        if isinstance(state, dict) and state:
+            if first_seen_at is None:
+                first_seen_at = time.monotonic()
+                logger.info("[session-host] observed workflow %s", instance_id)
+            runtime_status = str(
+                state.get("runtimeStatus")
+                or state.get("runtime_status")
+                or state.get("status")
+                or ""
+            ).upper()
+            if _terminal_status(runtime_status):
+                exit_code = 0 if runtime_status == "COMPLETED" else 1
+                logger.info(
+                    "[session-host] workflow %s terminal status=%s; exiting code=%s",
+                    instance_id,
+                    runtime_status,
+                    exit_code,
+                )
+                os._exit(exit_code)
+        time.sleep(poll_seconds)
 
 
 def _taskhub_call(method: str, request: Any) -> Any:

@@ -77,6 +77,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "nodeId": input_data.get("nodeId") or "",
             "workflowExecutionId": input_data.get("workflowExecutionId"),
             "parentExecutionId": input_data.get("parentExecutionId"),
+            "benchmarkRunId": input_data.get("benchmarkRunId"),
+            "benchmarkInstanceId": input_data.get("benchmarkInstanceId"),
             "userId": input_data.get("userId") or "",
             "projectId": input_data.get("projectId"),
             "agentConfig": input_data.get("agentConfig") or {},

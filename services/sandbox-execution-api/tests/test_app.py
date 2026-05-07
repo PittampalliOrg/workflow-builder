@@ -1,8 +1,10 @@
 import json
 
 from src.app import (
+    AgentWorkflowHostRequest,
     ExecutionClassConfig,
     ExecutionRequest,
+    build_agent_workflow_host_job_manifest,
     build_job_manifest,
     build_payload_configmap_manifest,
 )
@@ -119,6 +121,41 @@ def test_secure_gvisor_sets_runtime_class_and_queue() -> None:
 
     assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "secure-gvisor"
     assert manifest["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor"
+
+
+def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
+    manifest = build_agent_workflow_host_job_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    template = manifest["spec"]["template"]
+    annotations = template["metadata"]["annotations"]
+    assert annotations["dapr.io/app-id"] == "agent-session-abc123"
+    assert annotations["dapr.io/enable-workflow"] == "true"
+    assert annotations["dapr.io/enable-native-sidecar"] == "true"
+    pod_spec = template["spec"]
+    assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
+    assert pod_spec["initContainers"][0]["name"] == "seed-openshell-config"
+    container = pod_spec["containers"][0]
+    assert container["image"] == "ghcr.io/example/dapr-agent-py-sandbox:git-1"
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
+    assert container["resources"]["requests"]["cpu"] == "500m"
+    assert container["resources"]["requests"]["memory"] == "1Gi"
+    assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
 
 
 def test_long_resource_names_keep_unique_suffixes() -> None:

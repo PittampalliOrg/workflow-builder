@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
 DEFAULT_JOB_TTL_SECONDS = 300
+DEFAULT_AGENT_HOST_IMAGE = "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:latest"
 WORKER_ENV_PASSTHROUGH = (
     "SANDBOX_EXECUTION_CALLBACK_ATTEMPTS",
     "SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS",
@@ -59,7 +60,21 @@ class ExecutionClassConfig(BaseModel):
     cpu: str = "100m"
     memory: str = "256Mi"
     ephemeralStorage: str = "1Gi"
+    agentHostImage: str = DEFAULT_AGENT_HOST_IMAGE
+    agentHostCpu: str = "500m"
+    agentHostMemory: str = "1Gi"
+    agentHostEphemeralStorage: str = "2Gi"
     ttlSecondsAfterFinished: int | None = Field(default=None, ge=0, le=86400)
+
+
+class AgentWorkflowHostRequest(BaseModel):
+    sessionId: str
+    agentAppId: str
+    runId: str | None = None
+    instanceId: str | None = None
+    executionClass: str = Field(default="benchmark-fast")
+    timeoutSeconds: int = Field(default=7200, ge=60, le=86400)
+    agentImage: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -316,6 +331,16 @@ def _load_k8s_clients():
     return client.BatchV1Api(), client.CoreV1Api()
 
 
+def _load_k8s_custom_objects_client():
+    from kubernetes import client, config
+
+    try:
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+    return client.CustomObjectsApi()
+
+
 def _require_internal(request: Request) -> None:
     expected = os.environ.get("SANDBOX_EXECUTION_API_TOKEN") or os.environ.get(
         "INTERNAL_API_TOKEN"
@@ -325,6 +350,275 @@ def _require_internal(request: Request) -> None:
     token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
     if token != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+
+
+def _openshell_seed_init_container(image: str) -> dict[str, Any]:
+    return {
+        "name": "seed-openshell-config",
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["sh", "-c"],
+        "args": [
+            """
+set -eu
+CONFIG_ROOT="${XDG_CONFIG_HOME}/openshell"
+GATEWAY_DIR="${CONFIG_ROOT}/gateways/${OPENSHELL_GATEWAY_NAME}"
+MTLS_DIR="${GATEWAY_DIR}/mtls"
+
+install -d -m 700 "${MTLS_DIR}"
+cat >"${GATEWAY_DIR}/metadata.json" <<EOF
+{
+  "name": "${OPENSHELL_GATEWAY_NAME}",
+  "gateway_endpoint": "${OPENSHELL_GATEWAY_URL}",
+  "is_remote": false,
+  "gateway_port": ${OPENSHELL_GATEWAY_PORT},
+  "auth_mode": "mtls"
+}
+EOF
+printf '%s\n' "${OPENSHELL_GATEWAY_NAME}" > "${CONFIG_ROOT}/active_gateway"
+
+cp /etc/openshell-tls/client/tls.crt "${MTLS_DIR}/tls.crt"
+cp /etc/openshell-tls/client/tls.key "${MTLS_DIR}/tls.key"
+if [ -f /etc/openshell-tls/client/ca.crt ]; then
+  cp /etc/openshell-tls/client/ca.crt "${MTLS_DIR}/ca.crt"
+else
+  cp /etc/openshell-tls/client-ca/tls.crt "${MTLS_DIR}/ca.crt"
+fi
+
+chmod 644 "${MTLS_DIR}/ca.crt" "${MTLS_DIR}/tls.crt"
+chmod 600 "${MTLS_DIR}/tls.key"
+""".strip()
+        ],
+        "env": [
+            {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
+            {
+                "name": "OPENSHELL_GATEWAY_URL",
+                "value": os.environ.get(
+                    "OPENSHELL_GATEWAY_URL",
+                    "https://openshell.openshell.svc.cluster.local:8080",
+                ),
+            },
+            {
+                "name": "OPENSHELL_GATEWAY_NAME",
+                "value": os.environ.get("OPENSHELL_GATEWAY_NAME", "dev-internal"),
+            },
+            {
+                "name": "OPENSHELL_GATEWAY_PORT",
+                "value": os.environ.get("OPENSHELL_GATEWAY_PORT", "8080"),
+            },
+        ],
+        "resources": {
+            "requests": {"memory": "64Mi", "cpu": "50m"},
+            "limits": {"memory": "256Mi", "cpu": "250m"},
+        },
+        "volumeMounts": [
+            {"name": "openshell-config", "mountPath": "/root/.config"},
+            {
+                "name": "openshell-client-tls",
+                "mountPath": "/etc/openshell-tls/client",
+                "readOnly": True,
+            },
+            {
+                "name": "openshell-client-ca",
+                "mountPath": "/etc/openshell-tls/client-ca",
+                "readOnly": True,
+            },
+        ],
+    }
+
+
+def _agent_host_job_name(agent_app_id: str) -> str:
+    return _safe_resource_name(f"agent-host-{agent_app_id}", max_length=63)
+
+
+def build_agent_workflow_host_job_manifest(
+    request: AgentWorkflowHostRequest,
+    *,
+    namespace: str,
+    class_config: ExecutionClassConfig,
+) -> dict[str, Any]:
+    run_label = _safe_name(request.runId or "manual", max_length=63)
+    instance_label = _safe_name(request.instanceId or request.sessionId, max_length=63)
+    app_label = _safe_name(request.agentAppId, max_length=63)
+    image = request.agentImage or class_config.agentHostImage
+    pod_spec: dict[str, Any] = {
+        "restartPolicy": "Never",
+        "serviceAccountName": class_config.serviceAccountName,
+        "terminationGracePeriodSeconds": 90,
+        "nodeSelector": class_config.nodeSelector,
+        "topologySpreadConstraints": [
+            {
+                "maxSkew": 1,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {
+                    "matchLabels": {
+                        "app": "agent-workflow-host",
+                        "benchmark-run-id": run_label,
+                    }
+                },
+            }
+        ],
+        "initContainers": [_openshell_seed_init_container(image)],
+        "containers": [
+            {
+                "name": "dapr-agent-py",
+                "image": image,
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [{"name": "http", "containerPort": 8002}],
+                "env": [
+                    {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_INSTANCE_ID",
+                        "value": request.sessionId,
+                    },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS",
+                        "value": str(min(request.timeoutSeconds, 1800)),
+                    },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS",
+                            "900",
+                        ),
+                    },
+                ],
+                "envFrom": [
+                    {"configMapRef": {"name": "dapr-agent-py-sandbox-config"}},
+                    {"secretRef": {"name": "dapr-agent-py-secrets"}},
+                    {"secretRef": {"name": "workflow-checkpoint-gitea"}},
+                ],
+                "resources": {
+                    "requests": {
+                        "cpu": class_config.agentHostCpu,
+                        "memory": class_config.agentHostMemory,
+                        "ephemeral-storage": class_config.agentHostEphemeralStorage,
+                    }
+                },
+                "startupProbe": {
+                    "httpGet": {"path": "/healthz", "port": 8002},
+                    "initialDelaySeconds": 10,
+                    "periodSeconds": 10,
+                    "failureThreshold": 18,
+                },
+                "livenessProbe": {
+                    "httpGet": {"path": "/healthz", "port": 8002},
+                    "periodSeconds": 30,
+                },
+                "readinessProbe": {
+                    "httpGet": {"path": "/readyz", "port": 8002},
+                    "periodSeconds": 10,
+                },
+                "volumeMounts": [
+                    {"name": "openshell-config", "mountPath": "/root/.config"},
+                    {"name": "sandbox", "mountPath": "/sandbox"},
+                ],
+            }
+        ],
+        "volumes": [
+            {"name": "openshell-config", "emptyDir": {}},
+            {"name": "sandbox", "emptyDir": {}},
+            {"name": "openshell-client-tls", "secret": {"secretName": "openshell-client-tls"}},
+            {
+                "name": "openshell-client-ca",
+                "secret": {"secretName": "openshell-server-client-ca"},
+            },
+        ],
+    }
+    if class_config.imagePullSecrets:
+        pod_spec["imagePullSecrets"] = [
+            {"name": name} for name in class_config.imagePullSecrets if name
+        ]
+    if class_config.runtimeClassName:
+        pod_spec["runtimeClassName"] = class_config.runtimeClassName
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": _agent_host_job_name(request.agentAppId),
+            "namespace": namespace,
+            "labels": {
+                "app": "agent-workflow-host",
+                KUEUE_QUEUE_LABEL: class_config.localQueue,
+                "benchmark-run-id": run_label,
+                "benchmark-instance-id": instance_label,
+                "agent-app-id": app_label,
+                "sandbox-execution-class": _safe_name(request.executionClass),
+            },
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "activeDeadlineSeconds": request.timeoutSeconds + 600,
+            "ttlSecondsAfterFinished": _job_ttl_seconds(class_config),
+            "template": {
+                "metadata": {
+                    "labels": {
+                        "app": "agent-workflow-host",
+                        "benchmark-run-id": run_label,
+                        "benchmark-instance-id": instance_label,
+                        "agent-app-id": app_label,
+                    },
+                    "annotations": {
+                        "dapr.io/enabled": "true",
+                        "dapr.io/app-id": request.agentAppId,
+                        "dapr.io/app-port": "8002",
+                        "dapr.io/app-protocol": "http",
+                        "dapr.io/config": os.environ.get(
+                            "DAPR_AGENT_HOST_CONFIG",
+                            "openshell-agent-runtime-tracing",
+                        ),
+                        "dapr.io/enable-workflow": "true",
+                        "dapr.io/enable-native-sidecar": "true",
+                        "dapr.io/placement-host-address": os.environ.get(
+                            "DAPR_PLACEMENT_HOST_ADDRESS",
+                            "dapr-placement-server.dapr-system.svc.cluster.local:50005",
+                        ),
+                        "dapr.io/graceful-shutdown-seconds": "60",
+                        "dapr.io/sidecar-readiness-probe-delay-seconds": "0",
+                        "dapr.io/sidecar-readiness-probe-period-seconds": "1",
+                        "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
+                    },
+                },
+                "spec": pod_spec,
+            },
+        },
+    }
+
+
+def _patch_component_scope(namespace: str, component_name: str, app_id: str) -> None:
+    custom = _load_k8s_custom_objects_client()
+    component = custom.get_namespaced_custom_object(
+        group="dapr.io",
+        version="v1alpha1",
+        namespace=namespace,
+        plural="components",
+        name=component_name,
+    )
+    scopes = component.get("scopes")
+    if not isinstance(scopes, list):
+        scopes = []
+    if app_id in scopes:
+        return
+    scopes = [entry for entry in scopes if isinstance(entry, str)]
+    scopes.append(app_id)
+    custom.patch_namespaced_custom_object(
+        group="dapr.io",
+        version="v1alpha1",
+        namespace=namespace,
+        plural="components",
+        name=component_name,
+        body={"scopes": scopes},
+    )
+
+
+def _ensure_agent_host_component_scopes(namespace: str, app_id: str) -> None:
+    raw = os.environ.get(
+        "SANDBOX_EXECUTION_AGENT_HOST_SCOPED_COMPONENTS",
+        "workflowstatestore,dapr-agent-py-statestore",
+    )
+    for component_name in [part.strip() for part in raw.split(",") if part.strip()]:
+        _patch_component_scope(namespace, component_name, app_id)
 
 
 @app.get("/healthz")
@@ -395,6 +689,48 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
             )
     return {
         "executionId": execution_id,
+        "jobName": manifest["metadata"]["name"],
+        "status": "queued",
+        "executionClass": body.executionClass,
+        "localQueue": class_config.localQueue,
+        "runtimeClassName": class_config.runtimeClassName,
+    }
+
+
+@app.post("/api/v1/agent-workflow-hosts", status_code=status.HTTP_202_ACCEPTED)
+def submit_agent_workflow_host(
+    request: Request,
+    body: AgentWorkflowHostRequest,
+) -> dict[str, Any]:
+    _require_internal(request)
+    classes = _load_execution_classes()
+    class_config = classes.get(body.executionClass)
+    if class_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported executionClass {body.executionClass}",
+        )
+    namespace = os.environ.get("SANDBOX_EXECUTION_NAMESPACE", "workflow-builder")
+    manifest = build_agent_workflow_host_job_manifest(
+        body,
+        namespace=namespace,
+        class_config=class_config,
+    )
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _core = _load_k8s_clients()
+        _ensure_agent_host_component_scopes(namespace, body.agentAppId)
+        try:
+            batch.create_namespaced_job(namespace=namespace, body=manifest)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 409:
+                raise
+    return {
+        "agentAppId": body.agentAppId,
+        "sessionId": body.sessionId,
         "jobName": manifest["metadata"]["name"],
         "status": "queued",
         "executionClass": body.executionClass,

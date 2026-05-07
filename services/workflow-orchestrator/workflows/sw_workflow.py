@@ -30,6 +30,7 @@ from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
+from dapr.ext.workflow import when_any as wf_when_any
 
 from core.config import config
 from core.sw_types import (
@@ -64,6 +65,28 @@ logger = logging.getLogger(__name__)
 
 # Workflow runtime instance
 wfr = wf.WorkflowRuntime()
+
+
+def _child_workflow_result_with_timeout(
+    ctx: wf.DaprWorkflowContext,
+    child_task: Any,
+    *,
+    timeout_minutes: int,
+    child_instance_id: str,
+    workflow_name: str,
+) -> Any:
+    timeout_seconds = max(1, int(timeout_minutes or 1)) * 60
+    timer_task = ctx.create_timer(timedelta(seconds=timeout_seconds))
+    winner = yield wf_when_any([child_task, timer_task])
+    if winner is not child_task:
+        raise TimeoutError(
+            f"Child workflow {workflow_name}/{child_instance_id} did not finish "
+            f"within {timeout_seconds}s"
+        )
+    get_result = getattr(child_task, "get_result", None)
+    if callable(get_result):
+        return get_result()
+    return winner
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1322,12 @@ def _run_native_durable_agent_child_workflow(
             "nodeId": task_name,
             "workflowExecutionId": tc.db_execution_id or tc.execution_id,
             "parentExecutionId": ctx.instance_id,
+            "benchmarkRunId": tc.trigger_data.get("runId")
+            if isinstance(tc.trigger_data, dict)
+            else None,
+            "benchmarkInstanceId": tc.trigger_data.get("instanceId")
+            if isinstance(tc.trigger_data, dict)
+            else None,
             "agentConfig": agent_config,
             "instructionBundle": child_input.get("instructionBundle"),
             "environmentConfig": child_input.get("environmentConfig"),
@@ -1348,7 +1377,7 @@ def _run_native_durable_agent_child_workflow(
             if isinstance(returned_app_id, str) and returned_app_id.strip():
                 bridge_app_id = returned_app_id.strip()
 
-        child_result = yield ctx.call_child_workflow(
+        child_task = ctx.call_child_workflow(
             "session_workflow",
             input=_freeze(bridge_child_input),
             instance_id=child_instance_id,
@@ -1357,12 +1386,26 @@ def _run_native_durable_agent_child_workflow(
             # runtime pool, or a legacy shared app id.
             app_id=bridge_app_id,
         )
+        child_result = yield from _child_workflow_result_with_timeout(
+            ctx,
+            child_task,
+            timeout_minutes=timeout_minutes,
+            child_instance_id=child_instance_id,
+            workflow_name="session_workflow",
+        )
     else:
-        child_result = yield ctx.call_child_workflow(
+        child_task = ctx.call_child_workflow(
             target["workflow_name"],
             input=_freeze(child_input),
             instance_id=child_instance_id,
             app_id=target["app_id"],
+        )
+        child_result = yield from _child_workflow_result_with_timeout(
+            ctx,
+            child_task,
+            timeout_minutes=timeout_minutes,
+            child_instance_id=child_instance_id,
+            workflow_name=target["workflow_name"],
         )
 
     child_result = (
