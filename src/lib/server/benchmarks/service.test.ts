@@ -173,8 +173,7 @@ describe("SWE-bench workflow spec", () => {
 				now,
 				stallSeconds: 480,
 				startedAt: new Date("2026-05-02T12:00:00Z"),
-				sessionUpdatedAt: new Date("2026-05-02T12:01:00Z"),
-				latestEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
+				latestProgressEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
 			}),
 		).toMatchObject({
 			stalled: true,
@@ -185,19 +184,18 @@ describe("SWE-bench workflow spec", () => {
 				now,
 				stallSeconds: 480,
 				startedAt: new Date("2026-05-02T12:00:00Z"),
-				latestEventCreatedAt: new Date("2026-05-02T12:06:00Z"),
+				latestProgressEventCreatedAt: new Date("2026-05-02T12:06:00Z"),
 			}).stalled,
 		).toBe(false);
 
-		const recentBenchmarkRowTouch = {
+		const recentHeartbeatOnly = {
 			now,
 			stallSeconds: 480,
 			startedAt: new Date("2026-05-02T12:00:00Z"),
-			sessionUpdatedAt: new Date("2026-05-02T12:01:00Z"),
-			latestEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
-			rowUpdatedAt: new Date("2026-05-02T12:09:59Z"),
-		} as Parameters<typeof benchmarkInferenceStallState>[0] & { rowUpdatedAt: Date };
-		expect(benchmarkInferenceStallState(recentBenchmarkRowTouch).stalled).toBe(true);
+			latestProgressEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
+			latestHeartbeatAt: new Date("2026-05-02T12:09:59Z"),
+		} as Parameters<typeof benchmarkInferenceStallState>[0] & { latestHeartbeatAt: Date };
+		expect(benchmarkInferenceStallState(recentHeartbeatOnly).stalled).toBe(true);
 	});
 
 	it("finalizes lifecycle aggregation after inference leaves active states", () => {

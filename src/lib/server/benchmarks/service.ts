@@ -90,7 +90,10 @@ import {
 	logBenchmarkTraceSummaryArtifact,
 	materializeSwebenchTraceBundle,
 } from "./trace-bundle";
-import { releaseBenchmarkResourceLeasesForRun } from "./resource-leases";
+import {
+	releaseBenchmarkResourceLeases,
+	releaseBenchmarkResourceLeasesForRun,
+} from "./resource-leases";
 import {
 	benchmarkExecutionBackend,
 	benchmarkExecutionClass,
@@ -2079,6 +2082,44 @@ async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {
 	return cleanup;
 }
 
+async function cleanupBenchmarkInstanceSandbox(params: {
+	runId: string;
+	instanceId: string;
+	sandboxName?: string | null;
+	reason: string;
+}) {
+	const retainRequested = shouldKeepSwebenchSandboxAfterRun();
+	const cleanup: BenchmarkSandboxCleanupResult = {
+		reason: params.reason,
+		retainRequested,
+		attempted: [],
+		deleted: [],
+		notFound: [],
+		skipped: [],
+		errors: [],
+		hostExecution: {
+			attempted: 0,
+			deleted: 0,
+			notFound: 0,
+			errors: [],
+		},
+	};
+	const sandboxName = params.sandboxName?.trim();
+	if (!sandboxName) {
+		await recordBenchmarkSandboxCleanup(params.runId, cleanup);
+		return cleanup;
+	}
+	if (retainRequested || !shouldDeleteBenchmarkSandboxName(params.runId, sandboxName)) {
+		cleanup.skipped.push(sandboxName);
+		await recordBenchmarkSandboxCleanup(params.runId, cleanup);
+		return cleanup;
+	}
+	cleanup.attempted.push(sandboxName);
+	await deleteOpenShellSandboxForBenchmark(sandboxName, cleanup);
+	await recordBenchmarkSandboxCleanup(params.runId, cleanup);
+	return cleanup;
+}
+
 function hostSandboxExecutionNamespace(): string {
 	return (
 		env.SANDBOX_EXECUTION_NAMESPACE?.trim() ||
@@ -3325,15 +3366,23 @@ function shouldKeepSwebenchSandboxAfterRun(): boolean {
 	);
 }
 
+const BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES = [
+	"session.turn_started",
+	"agent.iteration",
+	"llm_start",
+	"agent.llm_usage",
+	"agent.message",
+	"agent.tool_use",
+	"agent.tool_result",
+] as const;
+
 export function latestBenchmarkInferenceProgressAt(input: {
 	startedAt?: Date | null;
-	sessionUpdatedAt?: Date | null;
-	latestEventCreatedAt?: Date | null;
+	latestProgressEventCreatedAt?: Date | null;
 }): Date | null {
 	const timestamps = [
 		input.startedAt,
-		input.sessionUpdatedAt,
-		input.latestEventCreatedAt,
+		input.latestProgressEventCreatedAt,
 	].filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()));
 	if (timestamps.length === 0) return null;
 	return timestamps.reduce((latest, value) =>
@@ -3345,8 +3394,7 @@ export function benchmarkInferenceStallState(input: {
 	now: Date;
 	stallSeconds: number;
 	startedAt?: Date | null;
-	sessionUpdatedAt?: Date | null;
-	latestEventCreatedAt?: Date | null;
+	latestProgressEventCreatedAt?: Date | null;
 }): { stalled: boolean; lastProgressAt: Date | null; stalledSeconds: number } {
 	const lastProgressAt = latestBenchmarkInferenceProgressAt(input);
 	if (!lastProgressAt) {
@@ -3397,11 +3445,18 @@ async function timeoutBenchmarkInstanceIfStalled(
 					.limit(1)
 			: [];
 	const session = sessionRows[0] ?? null;
-	const latestEventRows = session
+	const latestProgressEventRows = session
 		? await database
 				.select({ createdAt: sessionEvents.createdAt })
 				.from(sessionEvents)
-				.where(eq(sessionEvents.sessionId, session.id))
+				.where(
+					and(
+						eq(sessionEvents.sessionId, session.id),
+						inArray(sessionEvents.type, [
+							...BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES,
+						]),
+					),
+				)
 				.orderBy(desc(sessionEvents.createdAt))
 				.limit(1)
 		: [];
@@ -3418,8 +3473,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 		now: new Date(),
 		stallSeconds,
 		startedAt: runInstance.startedAt,
-		sessionUpdatedAt: session?.updatedAt,
-		latestEventCreatedAt: latestEventRows[0]?.createdAt,
+		latestProgressEventCreatedAt: latestProgressEventRows[0]?.createdAt,
 	});
 	if (!state.stalled) {
 		return session?.id && session.id !== runInstance.sessionId
@@ -3458,6 +3512,31 @@ async function timeoutBenchmarkInstanceIfStalled(
 			...sessionEventRows.map((event) => event.data),
 		],
 	});
+	const workflowsClosed = await cleanupStalledBenchmarkInstanceWorkflows(
+		{
+			...runInstance,
+			sessionId: session?.id ?? runInstance.sessionId,
+			sandboxName: runtimeLinks.sandboxName ?? runInstance.sandboxName,
+			workspaceRef: runtimeLinks.workspaceRef ?? runInstance.workspaceRef,
+			traceIds: runtimeLinks.traceIds,
+		},
+		session?.id ?? runInstance.sessionId,
+		message,
+		now,
+	);
+	if (!workflowsClosed) {
+		const [touched] = await database
+			.update(benchmarkRunInstances)
+			.set({
+				sessionId: session?.id ?? runInstance.sessionId,
+				sandboxName: runtimeLinks.sandboxName ?? runInstance.sandboxName,
+				workspaceRef: runtimeLinks.workspaceRef ?? runInstance.workspaceRef,
+				traceIds: runtimeLinks.traceIds,
+			})
+			.where(eq(benchmarkRunInstances.id, runInstance.id))
+			.returning();
+		return touched ?? runInstance;
+	}
 	const [updated] = await database
 		.update(benchmarkRunInstances)
 		.set({
@@ -3476,12 +3555,18 @@ async function timeoutBenchmarkInstanceIfStalled(
 		.where(eq(benchmarkRunInstances.id, runInstance.id))
 		.returning();
 	if (updated) {
-		await cleanupStalledBenchmarkInstanceWorkflows(
-			updated,
-			session?.id ?? runInstance.sessionId,
-			message,
-			now,
-		);
+		await cleanupBenchmarkInstanceSandbox({
+			runId: updated.runId,
+			instanceId: updated.instanceId,
+			sandboxName: updated.sandboxName,
+			reason: message,
+		});
+		await releaseBenchmarkResourceLeases({
+			runId: updated.runId,
+			instanceId: updated.instanceId,
+			phase: "inference",
+			reason: "stalled instance cleanup completed",
+		});
 	}
 	await recomputeRunSummary(runInstance.runId);
 	if (updated) {
@@ -3498,7 +3583,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 	sessionId: string | null,
 	reason: string,
 	now = new Date(),
-) {
+): Promise<boolean> {
 	const database = requireDb();
 	try {
 		const runRows = await database
@@ -3593,7 +3678,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			console.warn(
 				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandbox, and leases active for retry`,
 			);
-			return;
+			return false;
 		}
 
 		if (runtimeAppId && runtimeInstanceIds.length > 0) {
@@ -3633,7 +3718,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			console.warn(
 				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
 			);
-			return;
+			return false;
 		}
 
 		if (parentDaprInstanceId) {
@@ -3675,11 +3760,13 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 					),
 				);
 		}
+		return true;
 	} catch (err) {
 		console.warn(
 			`Failed to clean up stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId}:`,
 			err instanceof Error ? err.message : err,
 		);
+		return false;
 	}
 }
 
