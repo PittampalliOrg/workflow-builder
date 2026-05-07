@@ -17,6 +17,7 @@
 		{ heading: 'Together AI', providers: ['together'] },
 		{ heading: 'NVIDIA NIM', providers: ['nvidia'] },
 		{ heading: 'Google AI', providers: ['googleai'] },
+		{ heading: 'Alibaba Cloud', providers: ['alibaba'] },
 		{ heading: 'DeepSeek', providers: ['deepseek'] },
 		{ heading: 'Kimi', providers: ['kimi'] },
 		{ heading: 'Open Models', providers: ['huggingface', 'mistral'] },

@@ -25,6 +25,7 @@ describe("agent model options", () => {
       "foundry/DeepSeek-V4-Flash",
       "deepseek/deepseek-v4-pro",
       "deepseek/deepseek-v4-flash",
+      "alibaba/qwen3-coder-plus",
       "kimi/kimi-k2.6",
       "kimi/kimi-k2.5",
       "together/zai-org/GLM-5.1",
@@ -74,6 +75,9 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("deepseek-v4-flash")).toBe(
       "deepseek/deepseek-v4-flash",
     );
+    expect(canonicalAgentModelSpec("qwen3-coder-plus")).toBe(
+      "alibaba/qwen3-coder-plus",
+    );
     expect(canonicalAgentModelSpec("kimi-k2.6")).toBe("kimi/kimi-k2.6");
     expect(canonicalAgentModelSpec("moonshot/kimi-k2.5")).toBe(
       "kimi/kimi-k2.5",
@@ -100,9 +104,13 @@ describe("agent model options", () => {
     expect(isSupportedAgentModelSpec("mistral/open-mistral-7b")).toBe(false);
     expect(isSupportedAgentModelSpec("foundry/Kimi-K2.6")).toBe(false);
     expect(isSupportedAgentModelSpec("kimi-k2.6")).toBe(true);
+    expect(isSupportedAgentModelSpec("qwen3-coder-plus")).toBe(true);
   });
 
-  it("marks direct Kimi models as SWE-bench capable", () => {
+  it("marks direct coding providers as SWE-bench capable", () => {
+    expect(
+      agentModelOptionFor("alibaba/qwen3-coder-plus")?.sweBenchCapable,
+    ).not.toBe(false);
     expect(agentModelOptionFor("kimi/kimi-k2.6")?.sweBenchCapable).not.toBe(
       false,
     );
@@ -124,6 +132,9 @@ describe("agent model options", () => {
     );
     expect(agentModelLabel("deepseek-v4-pro")).toBe("DeepSeek V4 Pro");
     expect(agentModelLabel("deepseek-v4-flash")).toBe("DeepSeek V4 Flash");
+    expect(agentModelLabel("qwen3-coder-plus")).toBe(
+      "Alibaba Qwen3-Coder Plus",
+    );
     expect(agentModelLabel("kimi-k2.6")).toBe("Kimi K2.6");
     expect(agentModelLabel("GLM-5.1")).toBe("Together GLM-5.1");
     expect(agentModelLabel("DeepSeek-V4-Pro")).toBe("Together DeepSeek V4 Pro");

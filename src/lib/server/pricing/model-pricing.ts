@@ -86,6 +86,18 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 		outputPerMillion: 0.87,
 		cacheReadPerMillion: 0.003625,
 	},
+	// Alibaba Cloud Model Studio international qwen3-coder-plus base tier
+	// (0-32K input tokens). Higher context requests use tiered pricing.
+	"alibaba/qwen3-coder-plus": {
+		inputPerMillion: 1.0,
+		outputPerMillion: 5.0,
+		cacheReadPerMillion: 0.2,
+	},
+	"qwen3-coder-plus": {
+		inputPerMillion: 1.0,
+		outputPerMillion: 5.0,
+		cacheReadPerMillion: 0.2,
+	},
 	// Kimi direct API pricing as advertised by Kimi Open Platform.
 	"kimi/kimi-k2.6": {
 		inputPerMillion: 0.95,

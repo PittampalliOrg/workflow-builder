@@ -5,6 +5,7 @@ export type AgentModelProvider =
   | "together"
   | "nvidia"
   | "googleai"
+  | "alibaba"
   | "deepseek"
   | "kimi"
   | "huggingface"
@@ -127,6 +128,14 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-deepseek-v4-flash",
   },
   {
+    value: "alibaba/qwen3-coder-plus",
+    label: "Alibaba Qwen3-Coder Plus",
+    provider: "alibaba",
+    iconProvider: "qwen",
+    component: "llm-alibaba-qwen3-coder-plus",
+    sweBenchCapable: true,
+  },
+  {
     value: "kimi/kimi-k2.6",
     label: "Kimi K2.6",
     provider: "kimi",
@@ -247,6 +256,10 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+  "alibaba/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
+  "qwen3-coder-plus": "alibaba/qwen3-coder-plus",
+  "qwen/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
+  "dashscope/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
   "kimi/kimi-k2.6": "kimi/kimi-k2.6",
   "kimi-k2.6": "kimi/kimi-k2.6",
   "moonshot/kimi-k2.6": "kimi/kimi-k2.6",

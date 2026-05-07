@@ -1740,6 +1740,11 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception:
             pass
         try:
+            from src.alibaba_adapter import patch_for_alibaba
+            patch_for_alibaba(self.llm)
+        except Exception:
+            pass
+        try:
             from src.kimi_adapter import patch_for_kimi
             patch_for_kimi(self.llm)
         except Exception:
@@ -4315,6 +4320,12 @@ try:
     patch_for_deepseek(agent.llm)
 except Exception as exc:
     logger.warning("DeepSeek adapter patch failed: %s", exc)
+
+try:
+    from src.alibaba_adapter import patch_for_alibaba
+    patch_for_alibaba(agent.llm)
+except Exception as exc:
+    logger.warning("Alibaba adapter patch failed: %s", exc)
 
 try:
     from src.kimi_adapter import patch_for_kimi

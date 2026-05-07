@@ -182,6 +182,12 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "deepseek-v4-pro",
         ),
         (
+            "alibaba/qwen3-coder-plus",
+            "llm-alibaba-qwen3-coder-plus",
+            "alibaba",
+            "qwen3-coder-plus",
+        ),
+        (
             "deepseek-v4-flash",
             "llm-deepseek-v4-flash",
             "deepseek",

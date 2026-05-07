@@ -71,6 +71,15 @@ describe("benchmark agent validation", () => {
 		expect(flash.effectiveLlmComponent).toBe("llm-deepseek-v4-flash");
 	});
 
+	it("accepts Alibaba Qwen3-Coder Plus after conformance passes", () => {
+		const qwen = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			modelSpec: "alibaba/qwen3-coder-plus",
+		});
+		expect(qwen.effectiveProvider).toBe("alibaba");
+		expect(qwen.effectiveLlmComponent).toBe("llm-alibaba-qwen3-coder-plus");
+	});
+
 	it("accepts direct Kimi models after conformance passes", () => {
 		const k26 = assertDaprAgentPyBenchmarkAgent({
 			...baseAgent,

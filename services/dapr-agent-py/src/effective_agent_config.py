@@ -76,6 +76,11 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "deepseek/deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek/default": "llm-deepseek",
+    # Alibaba Cloud Model Studio international endpoint
+    "alibaba/qwen3-coder-plus": "llm-alibaba-qwen3-coder-plus",
+    "qwen3-coder-plus": "llm-alibaba-qwen3-coder-plus",
+    "qwen/qwen3-coder-plus": "llm-alibaba-qwen3-coder-plus",
+    "dashscope/qwen3-coder-plus": "llm-alibaba-qwen3-coder-plus",
     # Kimi direct API
     "kimi/kimi-k2.6": "llm-kimi-k26",
     "kimi-k2.6": "llm-kimi-k26",
@@ -133,6 +138,7 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-deepseek-v4-pro": ("deepseek", "deepseek-v4-pro"),
     "llm-deepseek-v4-flash": ("deepseek", "deepseek-v4-flash"),
     "llm-deepseek": ("deepseek", "default"),
+    "llm-alibaba-qwen3-coder-plus": ("alibaba", "qwen3-coder-plus"),
     "llm-kimi-k26": ("kimi", "kimi-k2.6"),
     "llm-kimi-k25": ("kimi", "kimi-k2.5"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
@@ -250,6 +256,8 @@ def provider_metadata_for_component(
         provider = "googleai"
     elif "deepseek" in lowered:
         provider = "deepseek"
+    elif "alibaba" in lowered or "dashscope" in lowered:
+        provider = "alibaba"
     elif "kimi" in lowered:
         provider = "kimi"
     elif "huggingface" in lowered:
