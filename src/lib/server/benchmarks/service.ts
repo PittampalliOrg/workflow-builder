@@ -3627,7 +3627,6 @@ function shouldKeepSwebenchSandboxAfterRun(): boolean {
 
 const BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES = [
 	"session.turn_started",
-	"session.turn_heartbeat",
 	"agent.iteration",
 	"llm_start",
 	"agent.llm_usage",
