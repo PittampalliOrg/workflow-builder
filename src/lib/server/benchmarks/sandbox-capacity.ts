@@ -229,6 +229,11 @@ function isSwebenchSandboxPod(pod: KubePod, namespace: string): boolean {
 	const hasSwebenchWorkloadLabel =
 		labels["agents.x-k8s.io/workload"] === "swebench";
 	if (hasSwebenchWorkloadLabel) return true;
+	const hasHostBenchmarkExecutionLabels =
+		labels.app === "sandbox-execution-worker" &&
+		typeof labels["benchmark-run-id"] === "string" &&
+		typeof labels["sandbox-execution-class"] === "string";
+	if (hasHostBenchmarkExecutionLabels) return true;
 	const name = pod.metadata?.name ?? "";
 	return pod.metadata?.namespace === namespace && /^swebench[-_]/.test(name);
 }

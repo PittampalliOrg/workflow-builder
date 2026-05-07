@@ -25,6 +25,7 @@ function workerNode(
 
 function pod(params: {
 	name: string;
+	namespace?: string;
 	nodeName?: string;
 	phase?: string;
 	cpu?: string;
@@ -35,7 +36,7 @@ function pod(params: {
 	return {
 		metadata: {
 			name: params.name,
-			namespace: "openshell",
+			namespace: params.namespace ?? "openshell",
 			labels: params.labels ?? {},
 		},
 		spec: {
@@ -166,6 +167,67 @@ describe("sandbox scheduler capacity", () => {
 
 		expect(snapshot).toMatchObject({
 			activeSwebenchPods: 1,
+		});
+	});
+
+	it("counts host execution benchmark pods as active sandboxes", () => {
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [workerNode("worker-a", { cpu: "2000m", memory: "2Gi" })],
+			pods: [
+				pod({
+					name: "sandbox-run-1-django",
+					namespace: "workflow-builder",
+					nodeName: "worker-a",
+					cpu: "500m",
+					memory: "256Mi",
+					labels: {
+						app: "sandbox-execution-worker",
+						"benchmark-run-id": "run-1",
+						"sandbox-execution-class": "benchmark-fast",
+					},
+				}),
+			],
+			sandboxRequest: {
+				cpuMilli: 500,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+			},
+		});
+
+		expect(snapshot).toMatchObject({
+			activeSwebenchPods: 1,
+			totalSchedulableSandboxCapacity: 4,
+		});
+	});
+
+	it("counts pending host execution benchmark pods before admitting more", () => {
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [workerNode("worker-a", { cpu: "2000m", memory: "2Gi" })],
+			pods: [
+				pod({
+					name: "sandbox-run-1-django",
+					namespace: "workflow-builder",
+					phase: "Pending",
+					cpu: "500m",
+					memory: "256Mi",
+					labels: {
+						app: "sandbox-execution-worker",
+						"benchmark-run-id": "run-1",
+						"sandbox-execution-class": "benchmark-fast",
+					},
+				}),
+			],
+			sandboxRequest: {
+				cpuMilli: 500,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+			},
+		});
+
+		expect(snapshot).toMatchObject({
+			pendingSwebenchPods: 1,
+			pendingSwebenchCpuMilli: 500,
+			totalSchedulableSandboxCapacity: 4,
 		});
 	});
 
