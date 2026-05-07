@@ -80,6 +80,31 @@ describe("benchmark resource lease capacity", () => {
 		});
 	});
 
+	it("does not cap shared Dapr workflow admission at a single run's effective concurrency", () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS", "80");
+
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				{
+					...(run as Record<string, unknown>),
+					concurrency: 24,
+					summary: {
+						capacity: {
+							effectiveConcurrency: 24,
+							runtimeSlots: 80,
+							daprWorkflowEffectiveCapacity: 120,
+							agentWorkflowMaxActiveTurns: 80,
+						},
+					},
+				} as never,
+				"dapr_workflow_slot",
+			),
+		).toMatchObject({
+			capacityKey: "agent-runtime-pool-coding",
+			limit: 80,
+		});
+	});
+
 	it("defaults model admission to the global inference cap across concurrent runs", () => {
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "80");
 

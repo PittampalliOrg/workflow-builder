@@ -187,9 +187,8 @@ function daprWorkflowCapacityLimit(
 		capacityNumber(capacity, "agentWorkflowMaxActiveTurns"),
 		capacityNumber(capacity, "daprWorkflowEffectiveCapacity"),
 		capacityNumber(capacity, "runtimeSlots"),
-		effective,
 	].filter((value): value is number => value != null);
-	return Math.min(...candidates);
+	return candidates.length > 0 ? Math.min(...candidates) : effective;
 }
 
 function resourceCapacity(
