@@ -1106,12 +1106,13 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).resolves.toBe(false);
 
-		expect(calls).toEqual(["warn"]);
-		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
-		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
-		expect(hooks.releaseLeases).not.toHaveBeenCalled();
+		expect(calls).toEqual(["warn", "instances", "sandboxes", "leases"]);
+		expect(hooks.finalizeInstances).toHaveBeenCalledOnce();
+		expect(hooks.cleanupSandboxes).toHaveBeenCalledOnce();
+		expect(hooks.releaseLeases).toHaveBeenCalledOnce();
 
 		calls.length = 0;
+		vi.clearAllMocks();
 		await expect(
 			cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 				{

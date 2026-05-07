@@ -174,10 +174,11 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 ): Promise<boolean> {
 	if (!params.workflowsClosed) {
 		hooks.warn(
-			`Benchmark run ${params.runId} durable cleanup did not finish; leaving instances, sandboxes, and leases active for retry`,
+			`Benchmark run ${params.runId} durable cleanup did not finish; cleaning external resources and leases while leaving durable workflow purge for retry`,
 		);
-		return false;
 	}
+	// Dapr termination does not cancel in-flight activities, so external jobs and
+	// sandboxes must be torn down even when the parent workflow is still closing.
 	await hooks.finalizeInstances(
 		params.runId,
 		params.outcome,
@@ -186,7 +187,7 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 	);
 	await hooks.cleanupSandboxes(params.runId, params.reason);
 	await hooks.releaseLeases(params.runId, params.reason);
-	return true;
+	return params.workflowsClosed;
 }
 
 type BenchmarkAgentRuntimeCleanupInput = {
@@ -2017,6 +2018,12 @@ type BenchmarkSandboxCleanupResult = {
 	notFound: string[];
 	skipped: string[];
 	errors: Array<{ sandboxName: string; status?: number; error: string }>;
+	hostExecution: {
+		attempted: number;
+		deleted: number;
+		notFound: number;
+		errors: Array<{ resource: string; status?: number; error: string }>;
+	};
 };
 
 export const __benchmarkSandboxCleanupForTest = {
@@ -2039,7 +2046,14 @@ async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {
 		notFound: [],
 		skipped: [],
 		errors: [],
+		hostExecution: {
+			attempted: 0,
+			deleted: 0,
+			notFound: 0,
+			errors: [],
+		},
 	};
+	await deleteHostSandboxExecutionResourcesForBenchmarkRun(runId, cleanup);
 	const sandboxNames = await loadBenchmarkRunSandboxNames(runId);
 	if (retainRequested) {
 		cleanup.skipped = sandboxNames;
@@ -2063,6 +2077,98 @@ async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {
 	);
 	await recordBenchmarkSandboxCleanup(runId, cleanup);
 	return cleanup;
+}
+
+function hostSandboxExecutionNamespace(): string {
+	return (
+		env.SANDBOX_EXECUTION_NAMESPACE?.trim() ||
+		env.HOST_EXECUTION_NAMESPACE?.trim() ||
+		process.env.SANDBOX_EXECUTION_NAMESPACE?.trim() ||
+		process.env.HOST_EXECUTION_NAMESPACE?.trim() ||
+		"workflow-builder"
+	);
+}
+
+function benchmarkRunLabelValue(runId: string): string {
+	return normalizeSandboxNamePart(runId).slice(0, 63) || "execution";
+}
+
+async function deleteHostSandboxExecutionResourcesForBenchmarkRun(
+	runId: string,
+	cleanup: BenchmarkSandboxCleanupResult,
+) {
+	const namespace = hostSandboxExecutionNamespace();
+	const ns = encodeURIComponent(namespace);
+	const labelSelector = encodeURIComponent(
+		`benchmark-run-id=${benchmarkRunLabelValue(runId)}`,
+	);
+	const targets = [
+		{
+			kind: "job",
+			listPath: `/apis/batch/v1/namespaces/${ns}/jobs?labelSelector=${labelSelector}`,
+			itemPath: (name: string) =>
+				`/apis/batch/v1/namespaces/${ns}/jobs/${encodeURIComponent(name)}`,
+		},
+		{
+			kind: "pod",
+			listPath: `/api/v1/namespaces/${ns}/pods?labelSelector=${labelSelector}`,
+			itemPath: (name: string) =>
+				`/api/v1/namespaces/${ns}/pods/${encodeURIComponent(name)}`,
+		},
+		{
+			kind: "configmap",
+			listPath: `/api/v1/namespaces/${ns}/configmaps?labelSelector=${labelSelector}`,
+			itemPath: (name: string) =>
+				`/api/v1/namespaces/${ns}/configmaps/${encodeURIComponent(name)}`,
+		},
+	];
+	for (const target of targets) {
+		let names: string[] = [];
+		try {
+			names = await listKubeResourceNames(target.listPath);
+		} catch (err) {
+			cleanup.hostExecution.errors.push({
+				resource: `${target.kind}:list`,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			continue;
+		}
+		cleanup.hostExecution.attempted += names.length;
+		for (const name of names) {
+			const resource = `${target.kind}/${name}`;
+			try {
+				const result = await deleteKubeResource(target.itemPath(name));
+				if (result === "deleted") cleanup.hostExecution.deleted += 1;
+				else cleanup.hostExecution.notFound += 1;
+			} catch (err) {
+				cleanup.hostExecution.errors.push({
+					resource,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	}
+}
+
+async function listKubeResourceNames(path: string): Promise<string[]> {
+	const res = await kubeApiFetch(path, { method: "GET" });
+	if (res.status === 404) return [];
+	if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+	const body = (await res.json().catch(() => null)) as unknown;
+	if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+	const items = (body as { items?: unknown }).items;
+	if (!Array.isArray(items)) return [];
+	const names: string[] = [];
+	for (const item of items) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+		const metadata = (item as { metadata?: unknown }).metadata;
+		if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+			continue;
+		}
+		const name = (metadata as { name?: unknown }).name;
+		if (typeof name === "string" && name.trim()) names.push(name.trim());
+	}
+	return names;
 }
 
 async function loadBenchmarkRunSandboxNames(runId: string): Promise<string[]> {
@@ -2349,6 +2455,7 @@ async function recordBenchmarkSandboxCleanup(
 					notFound: cleanup.notFound.length,
 					skipped: cleanup.skipped.length,
 					errors: cleanup.errors,
+					hostExecution: cleanup.hostExecution,
 					sandboxNames: cleanup.attempted,
 					cleanedAt: new Date().toISOString(),
 				},
