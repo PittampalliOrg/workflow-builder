@@ -70,6 +70,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					: body.timeoutSeconds
 						? Number.parseInt(String(body.timeoutSeconds), 10)
 						: undefined,
+			maxTurns:
+				typeof body.maxTurns === "number"
+					? body.maxTurns
+					: body.maxTurns
+						? Number.parseInt(String(body.maxTurns), 10)
+						: null,
 			evaluatorResourceClass:
 				typeof body.evaluatorResourceClass === "string"
 					? body.evaluatorResourceClass

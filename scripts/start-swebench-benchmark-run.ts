@@ -12,6 +12,7 @@ type Args = {
 	concurrency: number;
 	evaluationConcurrency: number;
 	timeoutSeconds: number;
+	maxTurns: number | null;
 	evaluatorResourceClass: string;
 	executionBackend: string | null;
 	executionClass: string | null;
@@ -42,6 +43,7 @@ function usage(): never {
 		"  --concurrency N              Inference concurrency request. Default: 1",
 		"  --evaluation-concurrency N   Evaluator parallelism request. Default: 24",
 		"  --timeout-seconds N          Per-instance timeout. Default: 7200",
+		"  --max-turns N                Maximum agent turns per instance. Omit for agent default.",
 		"  --evaluator-resource-class C Evaluator resource class. Default: standard",
 		"  --execution-backend NAME     host-execution. Legacy values are accepted only for rollback tests.",
 		"  --execution-class NAME       benchmark-fast or secure-gvisor.",
@@ -65,6 +67,7 @@ function parseArgs(argv: string[]): Args {
 		concurrency: 1,
 		evaluationConcurrency: 24,
 		timeoutSeconds: 7200,
+		maxTurns: null,
 		evaluatorResourceClass: "standard",
 		executionBackend: "host-execution",
 		executionClass: null,
@@ -93,6 +96,8 @@ function parseArgs(argv: string[]): Args {
 			args.evaluationConcurrency = positiveInt(next(), "--evaluation-concurrency");
 		} else if (arg === "--timeout-seconds") {
 			args.timeoutSeconds = positiveInt(next(), "--timeout-seconds");
+		} else if (arg === "--max-turns") {
+			args.maxTurns = positiveInt(next(), "--max-turns");
 		} else if (arg === "--evaluator-resource-class") {
 			args.evaluatorResourceClass = next();
 		} else if (arg === "--execution-backend") {
@@ -141,13 +146,14 @@ async function main() {
 			concurrency: args.concurrency,
 			evaluationConcurrency: args.evaluationConcurrency,
 			timeoutSeconds: args.timeoutSeconds,
+			maxTurns: args.maxTurns,
 			evaluatorResourceClass: args.evaluatorResourceClass,
 			executionBackend: args.executionBackend ?? "host-execution",
 			executionClass: args.executionClass,
 			tags: args.tags,
 		};
 		console.log(
-			`${args.apply ? "Creating" : "Previewing"} SWE-bench run: project=${body.projectId} user=${body.userId} agent=${body.agentId} limit=${args.limit} concurrency=${args.concurrency} backend=${args.executionBackend ?? "default"}`,
+			`${args.apply ? "Creating" : "Previewing"} SWE-bench run: project=${body.projectId} user=${body.userId} agent=${body.agentId} limit=${args.limit} concurrency=${args.concurrency} maxTurns=${args.maxTurns ?? "default"} backend=${args.executionBackend ?? "default"}`,
 		);
 		const result = await submitRun(args.apiUrl, {
 			...body,

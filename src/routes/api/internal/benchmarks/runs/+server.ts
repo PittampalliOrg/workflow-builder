@@ -74,6 +74,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			evaluationConcurrency:
 				readOptionalInt(body.evaluationConcurrency) ?? undefined,
 			timeoutSeconds: readOptionalInt(body.timeoutSeconds) ?? undefined,
+			maxTurns: readOptionalInt(body.maxTurns),
 			evaluatorResourceClass: readOptionalString(body.evaluatorResourceClass),
 			tags: normalizeTags(body.tags),
 			requirePrevalidatedEnvironments: true,
