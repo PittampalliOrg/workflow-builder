@@ -178,12 +178,28 @@ export function estimateBenchmarkRuntimeCapacity(
 				? undefined
 				: input.sandboxCapacity?.schedulableSandboxCapacity),
 	);
-	const sandboxCapacityLimit =
+	const totalSchedulableSandboxCapacity = nonNegativeInt(
+		input.sandboxCapacity?.error
+			? undefined
+			: input.sandboxCapacity?.totalSchedulableSandboxCapacity,
+	);
+	const sandboxRunHeadroomLimit =
 		sandboxMax == null && schedulableSandboxCapacity == null
 			? null
 			: Math.min(
 					sandboxMax ?? Number.POSITIVE_INFINITY,
 					schedulableSandboxCapacity ?? Number.POSITIVE_INFINITY,
+				);
+	const sandboxActiveLimit =
+		sandboxMax == null &&
+		totalSchedulableSandboxCapacity == null &&
+		schedulableSandboxCapacity == null
+			? null
+			: Math.min(
+					sandboxMax ?? Number.POSITIVE_INFINITY,
+					totalSchedulableSandboxCapacity ??
+						schedulableSandboxCapacity ??
+						Number.POSITIVE_INFINITY,
 				);
 	const modelMax =
 		positiveInt(input.modelMaxActiveRequests) ??
@@ -195,7 +211,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		runtimeMax,
 		globalMax,
 		agentWorkflowMaxActiveTurns ?? Number.POSITIVE_INFINITY,
-		sandboxCapacityLimit ?? Number.POSITIVE_INFINITY,
+		sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY,
 		modelMax ?? Number.POSITIVE_INFINITY,
 	);
 	const reasons: string[] = [];
@@ -253,7 +269,7 @@ export function estimateBenchmarkRuntimeCapacity(
 			modelMax ?? Number.POSITIVE_INFINITY,
 		),
 		configuredMaxActiveSandboxes: sandboxMax,
-		maxActiveSandboxes: sandboxCapacityLimit,
+		maxActiveSandboxes: sandboxActiveLimit,
 		schedulableSandboxCapacity,
 		sandboxCapacity: input.sandboxCapacity ?? null,
 		modelMaxActiveRequests: modelMax,

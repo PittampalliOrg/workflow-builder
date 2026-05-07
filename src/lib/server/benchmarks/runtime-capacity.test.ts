@@ -132,19 +132,22 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			poolMaxReplicas: 4,
 			requestedInstanceCount: 20,
 			requestedConcurrency: 20,
-			schedulableSandboxCapacity: 6,
+			sandboxCapacity: {
+				schedulableSandboxCapacity: 6,
+				totalSchedulableSandboxCapacity: 40,
+			} as never,
 		});
 
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 6,
 			runtimeSlots: 20,
 			schedulableSandboxCapacity: 6,
-			maxActiveSandboxes: 6,
+			maxActiveSandboxes: 40,
 			capReason: "sandbox_schedulable_capacity",
 		});
 	});
 
-	it("allows zero effective concurrency when no sandbox can schedule", () => {
+	it("allows zero effective concurrency when no sandbox headroom remains", () => {
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "20");
 
 		const capacity = estimateBenchmarkRuntimeCapacity({
@@ -154,12 +157,15 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			poolMaxReplicas: 4,
 			requestedInstanceCount: 20,
 			requestedConcurrency: 10,
-			schedulableSandboxCapacity: 0,
+			sandboxCapacity: {
+				schedulableSandboxCapacity: 0,
+				totalSchedulableSandboxCapacity: 40,
+			} as never,
 		});
 
 		expect(capacity).toMatchObject({
 			effectiveConcurrency: 0,
-			maxActiveSandboxes: 0,
+			maxActiveSandboxes: 40,
 			schedulableSandboxCapacity: 0,
 			capReason: "sandbox_schedulable_capacity",
 		});
