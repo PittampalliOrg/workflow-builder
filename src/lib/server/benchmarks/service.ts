@@ -3503,7 +3503,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		: mapExecutionStatus(row.execution.status, runtimeStatus);
 	if (status === "running" || status === "pending") {
 		return (
-			(await timeoutBenchmarkInstanceIfStalled(row.runInstance)) ??
+			(await timeoutBenchmarkInstanceIfStalled(row.runInstance, row.run)) ??
 			row.runInstance
 		);
 	}
@@ -3600,12 +3600,20 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	return updated ?? null;
 }
 
-function benchmarkInferenceStallSeconds(): number {
+export function benchmarkInferenceStallSeconds(maxTurns?: number | null): number {
+	const isShortRunCanary =
+		maxTurns !== null && maxTurns !== undefined && maxTurns <= 1;
+	const rawShortRunStallSeconds = isShortRunCanary
+		? (env.BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS ??
+			process.env.BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS)
+		: undefined;
 	return clampInteger(
-		env.BENCHMARK_INFERENCE_STALL_SECONDS,
+		rawShortRunStallSeconds ??
+			env.BENCHMARK_INFERENCE_STALL_SECONDS ??
+			process.env.BENCHMARK_INFERENCE_STALL_SECONDS,
 		60,
 		24 * 60 * 60,
-		2400,
+		isShortRunCanary ? 600 : 2400,
 	);
 }
 
@@ -3668,6 +3676,7 @@ export function benchmarkInferenceStallState(input: {
 
 async function timeoutBenchmarkInstanceIfStalled(
 	runInstance: typeof benchmarkRunInstances.$inferSelect,
+	run?: Pick<typeof benchmarkRuns.$inferSelect, "maxTurns"> | null,
 ) {
 	if (
 		runInstance.status !== "inferencing" ||
@@ -3723,7 +3732,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 			.where(eq(benchmarkRunInstances.id, runInstance.id));
 	}
 
-	const stallSeconds = benchmarkInferenceStallSeconds();
+	const stallSeconds = benchmarkInferenceStallSeconds(run?.maxTurns);
 	const state = benchmarkInferenceStallState({
 		now: new Date(),
 		stallSeconds,

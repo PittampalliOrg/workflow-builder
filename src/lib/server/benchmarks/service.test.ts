@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	__benchmarkDurableRuntimeForTest,
 	__benchmarkSandboxCleanupForTest,
+	benchmarkInferenceStallSeconds,
 	benchmarkInferenceStallState,
 	benchmarkAgentRuntimeCleanupInstanceIds,
 	benchmarkRunInstanceTerminalPatch,
@@ -197,6 +198,16 @@ describe("SWE-bench workflow spec", () => {
 			latestHeartbeatAt: new Date("2026-05-02T12:09:59Z"),
 		} as Parameters<typeof benchmarkInferenceStallState>[0] & { latestHeartbeatAt: Date };
 		expect(benchmarkInferenceStallState(recentHeartbeatOnly).stalled).toBe(false);
+	});
+
+	it("uses a shorter stall window for one-turn benchmark canaries", () => {
+		expect(benchmarkInferenceStallSeconds(null)).toBe(2400);
+		expect(benchmarkInferenceStallSeconds(4)).toBe(2400);
+		expect(benchmarkInferenceStallSeconds(1)).toBe(600);
+
+		vi.stubEnv("BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS", "900");
+		expect(benchmarkInferenceStallSeconds(1)).toBe(900);
+		expect(benchmarkInferenceStallSeconds(2)).toBe(2400);
 	});
 
 	it("finalizes lifecycle aggregation after inference leaves active states", () => {
