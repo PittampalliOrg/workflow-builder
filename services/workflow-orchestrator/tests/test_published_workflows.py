@@ -306,6 +306,37 @@ def test_legacy_execution_routes_are_not_registered():
     assert not hasattr(APP, "start_ap_workflow")
 
 
+def test_readiness_requires_connected_dapr_workflow_worker(monkeypatch):
+    observed_kwargs = {}
+
+    def fake_runtime_status(*_args, **kwargs):
+        observed_kwargs.update(kwargs)
+        return True, {"workflowConnectedWorkers": 1}
+
+    monkeypatch.setattr(APP, "_get_workflow_runtime_status", fake_runtime_status)
+
+    response = APP.readiness_check()
+
+    assert response["status"] == "ready"
+    assert observed_kwargs["require_workflow_workers"] is True
+
+
+def test_health_requires_connected_dapr_workflow_worker(monkeypatch):
+    observed_kwargs = {}
+
+    def fake_runtime_status(*_args, **kwargs):
+        observed_kwargs.update(kwargs)
+        return True, {"workflowConnectedWorkers": 1}
+
+    monkeypatch.setattr(APP, "_get_workflow_runtime_status", fake_runtime_status)
+
+    response = APP.health_check()
+
+    assert response["status"] == "healthy"
+    assert observed_kwargs["require_workflow_workers"] is True
+    assert observed_kwargs["include_taskhub"] is False
+
+
 def test_sw_workflow_trace_context_is_isolated_per_execution():
     parent_trace_id = "0" * 31 + "1"
     parent_span_id = "0" * 15 + "2"
