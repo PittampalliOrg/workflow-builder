@@ -1684,22 +1684,6 @@ async function finalizeBenchmarkWorkflowExecutions(
 		agentRuntimeInstances.set(runtimeAppId, instances);
 	}
 	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
-	await runWithConcurrency(
-		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
-			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
-		),
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			const termination = await terminateBenchmarkAgentRuntimeInstance(
-				runtimeAppId,
-				instanceId,
-				reason,
-			);
-			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
-			if (termination === "failed") allDurableInstancesClosed = false;
-		},
-	);
-
 	const workflowTerminations = new Map<string, DurableTerminationResult>();
 	await runWithConcurrency(
 		[...daprInstanceIds],
@@ -1740,6 +1724,25 @@ async function finalizeBenchmarkWorkflowExecutions(
 		return false;
 	}
 
+	// Dapr terminates child workflows when the parent is terminated. Request and
+	// confirm parent closure first so the parent can settle its sub-orchestration
+	// events before we touch agent-runtime child workflow state.
+	await runWithConcurrency(
+		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
+			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
+		),
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async ({ runtimeAppId, instanceId }) => {
+			const termination = await terminateBenchmarkAgentRuntimeInstance(
+				runtimeAppId,
+				instanceId,
+				reason,
+			);
+			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
+			if (termination === "failed") allDurableInstancesClosed = false;
+		},
+	);
+
 	let agentRuntimeDurableInstancesClosed = true;
 	await runWithConcurrency(
 		[...agentRuntimeInstances.entries()].flatMap(([runtimeAppId, instanceIds]) =>
@@ -1778,9 +1781,9 @@ async function finalizeBenchmarkWorkflowExecutions(
 			await purgeBenchmarkWorkflowInstance(instanceId);
 		},
 	);
-	// Do not purge agent-runtime child workflow state here. Dapr parent workflow
-	// termination can still deliver sub-orchestration events after the child has
-	// stopped; removing the child history first makes the parent retry forever.
+	// Do not purge agent-runtime child workflow state here. Parent termination is
+	// authoritative; child history is left for retention cleanup so late Dapr
+	// sub-orchestration events do not strand parent actors in a retry loop.
 	if (sessionIds.size > 0) {
 		await database
 			.update(sessions)
@@ -3807,6 +3810,33 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			);
 		}
 
+		let parentTermination: DurableTerminationResult | null = null;
+		if (parentDaprInstanceId) {
+			parentTermination = await terminateBenchmarkWorkflowInstance(
+				parentDaprInstanceId,
+				reason,
+			);
+			if (parentTermination === "failed") allDurableInstancesClosed = false;
+		}
+
+		let parentDurableInstanceClosed = true;
+		if (parentDaprInstanceId && parentTermination !== "failed") {
+			parentDurableInstanceClosed =
+				parentTermination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
+			if (!parentDurableInstanceClosed) allDurableInstancesClosed = false;
+		}
+		if (parentTermination === "failed") {
+			parentDurableInstanceClosed = false;
+		}
+
+		if (!parentDurableInstanceClosed) {
+			console.warn(
+				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandbox, and leases active for retry`,
+			);
+			return false;
+		}
+
 		if (runtimeAppId && runtimeInstanceIds.length > 0) {
 			const runtimeTerminations = new Map<string, DurableTerminationResult>();
 			await runWithConcurrency(
@@ -3840,33 +3870,6 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			);
 		}
 
-		let parentTermination: DurableTerminationResult | null = null;
-		if (parentDaprInstanceId) {
-			parentTermination = await terminateBenchmarkWorkflowInstance(
-				parentDaprInstanceId,
-				reason,
-			);
-			if (parentTermination === "failed") allDurableInstancesClosed = false;
-		}
-
-		let parentDurableInstanceClosed = true;
-		if (parentDaprInstanceId && parentTermination !== "failed") {
-			parentDurableInstanceClosed =
-				parentTermination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
-			if (!parentDurableInstanceClosed) allDurableInstancesClosed = false;
-		}
-		if (parentTermination === "failed") {
-			parentDurableInstanceClosed = false;
-		}
-
-		if (!parentDurableInstanceClosed) {
-			console.warn(
-				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandbox, and leases active for retry`,
-			);
-			return false;
-		}
-
 		if (!allDurableInstancesClosed) {
 			console.warn(
 				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
@@ -3877,9 +3880,9 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		if (parentDaprInstanceId) {
 			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId);
 		}
-		// Leave agent-runtime child workflow history for retention cleanup. Immediate
-		// child purge can break parent Dapr termination replay if events are still in
-		// flight.
+		// Leave agent-runtime child workflow history for retention cleanup. Parent
+		// termination is authoritative and late child events can still be observed
+		// during Dapr replay.
 
 		if (sessionId) {
 			await database
