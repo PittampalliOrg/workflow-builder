@@ -10,6 +10,7 @@ sys.path.insert(0, str(SERVICE_ROOT))
 from src.concurrency import (  # noqa: E402
     bounded_swebench_concurrency,
     bounded_swebench_evaluation_concurrency,
+    bounded_swebench_run_concurrency,
     instance_start_batch_delay_seconds,
     instance_start_batch_size,
     max_inference_concurrency,
@@ -60,6 +61,48 @@ def test_instance_start_batch_honors_env(monkeypatch):
 
 def test_bounded_swebench_concurrency_falls_back_for_invalid_values():
     assert bounded_swebench_concurrency("many") == 1
+
+
+def test_bounded_swebench_run_concurrency_uses_bff_capacity_without_default_backstop(
+    monkeypatch,
+):
+    monkeypatch.delenv("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY", raising=False)
+
+    assert (
+        bounded_swebench_run_concurrency(
+            {
+                "concurrency": 80,
+                "summary": {
+                    "capacity": {
+                        "effectiveConcurrency": 80,
+                        "maxActiveInferenceInstances": 80,
+                    }
+                },
+            }
+        )
+        == 80
+    )
+
+
+def test_bounded_swebench_run_concurrency_honors_explicit_coordinator_guard(
+    monkeypatch,
+):
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY", "72")
+
+    assert (
+        bounded_swebench_run_concurrency(
+            {
+                "concurrency": 80,
+                "summary": {
+                    "capacity": {
+                        "effectiveConcurrency": 80,
+                        "maxActiveInferenceInstances": 80,
+                    }
+                },
+            }
+        )
+        == 72
+    )
 
 
 def test_bounded_swebench_evaluation_concurrency_defaults_to_dev_safe_cap():

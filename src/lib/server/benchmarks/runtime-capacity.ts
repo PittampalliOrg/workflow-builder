@@ -1,6 +1,7 @@
 import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
 
 export type BenchmarkRuntimeCapacitySnapshot = {
+	capacityMode: "manual" | "auto";
 	requestedConcurrency: number;
 	effectiveConcurrency: number;
 	runtimeClass: string;
@@ -12,6 +13,8 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	agentWorkflowMaxActiveTurns: number | null;
 	runtimeSlots: number;
 	slotsPerReplica: number;
+	configuredMaxActiveInferenceInstances: number | null;
+	maxActiveInferenceInstances: number | null;
 	maxActiveSessions: number;
 	configuredMaxActiveSandboxes: number | null;
 	maxActiveSandboxes: number | null;
@@ -85,6 +88,20 @@ function envOptionalPositiveInt(...names: string[]): number | null {
 		if (value) return value;
 	}
 	return null;
+}
+
+function capacityMode(): "manual" | "auto" {
+	const normalized = (process.env.BENCHMARK_CAPACITY_MODE ?? "")
+		.trim()
+		.toLowerCase();
+	return normalized === "auto" || normalized === "dynamic" ? "auto" : "manual";
+}
+
+function finiteMin(values: Array<number | null | undefined>): number | null {
+	const candidates = values.filter(
+		(value): value is number => typeof value === "number" && Number.isFinite(value),
+	);
+	return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
 function slotsByRuntimeClass(): Record<string, number> {
@@ -167,9 +184,9 @@ export function estimateBenchmarkRuntimeCapacity(
 		daprWorkflowEffectiveCapacity,
 		configuredMaxActiveSessions ?? Number.POSITIVE_INFINITY,
 	);
-	const globalMax = envPositiveInt(
-		"BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES",
-		DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES,
+	const mode = capacityMode();
+	const configuredGlobalMax = positiveInt(
+		process.env.BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES,
 	);
 	const sandboxMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_SANDBOXES);
 	const schedulableSandboxCapacity = nonNegativeInt(
@@ -205,6 +222,17 @@ export function estimateBenchmarkRuntimeCapacity(
 		positiveInt(input.modelMaxActiveRequests) ??
 		positiveInt(process.env.BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS) ??
 		positiveInt(process.env.BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS);
+	const derivedActiveInferenceLimit = finiteMin([
+		configuredGlobalMax,
+		runtimeMax,
+		agentWorkflowMaxActiveTurns,
+		sandboxActiveLimit,
+		modelMax,
+	]);
+	const globalMax =
+		mode === "auto"
+			? (configuredGlobalMax ?? derivedActiveInferenceLimit ?? runtimeMax)
+			: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES);
 	const effective = Math.min(
 		requested,
 		selectedCount,
@@ -227,7 +255,11 @@ export function estimateBenchmarkRuntimeCapacity(
 	) {
 		reasons.push("dapr_workflow_capacity");
 	}
-	if (requested > globalMax && effective === globalMax) {
+	if (
+		(mode === "manual" || configuredGlobalMax != null) &&
+		requested > globalMax &&
+		effective === globalMax
+	) {
 		reasons.push("global_max");
 	}
 	if (
@@ -252,6 +284,7 @@ export function estimateBenchmarkRuntimeCapacity(
 	}
 
 	return {
+		capacityMode: mode,
 		requestedConcurrency: requested,
 		effectiveConcurrency: effective,
 		runtimeClass,
@@ -263,6 +296,11 @@ export function estimateBenchmarkRuntimeCapacity(
 		agentWorkflowMaxActiveTurns,
 		runtimeSlots,
 		slotsPerReplica,
+		configuredMaxActiveInferenceInstances: configuredGlobalMax,
+		maxActiveInferenceInstances:
+			mode === "auto"
+				? derivedActiveInferenceLimit
+				: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES),
 		maxActiveSessions: Math.min(
 			runtimeMax,
 			globalMax,

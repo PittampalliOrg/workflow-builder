@@ -191,6 +191,17 @@ function daprWorkflowCapacityLimit(
 	return candidates.length > 0 ? Math.min(...candidates) : effective;
 }
 
+function inferenceCapacityLimit(
+	capacity: Record<string, unknown>,
+	effective: number,
+): number {
+	return (
+		envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES") ??
+		capacityNumber(capacity, "maxActiveInferenceInstances") ??
+		effective
+	);
+}
+
 function resourceCapacity(
 	run: BenchmarkRunForLease,
 	resourceType: BenchmarkResourceLeaseType,
@@ -206,9 +217,7 @@ function resourceCapacity(
 		case "inference_slot":
 			return {
 				capacityKey: "workflow-builder",
-				limit:
-					envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES") ??
-					effective,
+				limit: inferenceCapacityLimit(capacity, effective),
 			};
 		case "openshell_sandbox":
 			return {
@@ -244,7 +253,7 @@ function resourceCapacity(
 				limit:
 					envPositiveInt("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS") ??
 					envPositiveInt("BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS") ??
-					envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES") ??
+					inferenceCapacityLimit(capacity, effective) ??
 					effective,
 			};
 	}

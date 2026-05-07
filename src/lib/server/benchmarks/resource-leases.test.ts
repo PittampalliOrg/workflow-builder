@@ -116,6 +116,68 @@ describe("benchmark resource lease capacity", () => {
 		});
 	});
 
+	it("uses stored auto-mode inference capacity when the env guard is unset", () => {
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				{
+					...(run as Record<string, unknown>),
+					concurrency: 24,
+					summary: {
+						capacity: {
+							effectiveConcurrency: 24,
+							maxActiveInferenceInstances: 80,
+						},
+					},
+				} as never,
+				"inference_slot",
+			),
+		).toMatchObject({
+			capacityKey: "workflow-builder",
+			limit: 80,
+		});
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				{
+					...(run as Record<string, unknown>),
+					concurrency: 24,
+					summary: {
+						capacity: {
+							effectiveConcurrency: 24,
+							maxActiveInferenceInstances: 80,
+						},
+					},
+				} as never,
+				"model_slot",
+			),
+		).toMatchObject({
+			capacityKey: "claude-opus-4-7",
+			limit: 80,
+		});
+	});
+
+	it("lets an explicit global inference env guard override stored auto capacity", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "60");
+
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				{
+					...(run as Record<string, unknown>),
+					concurrency: 24,
+					summary: {
+						capacity: {
+							effectiveConcurrency: 24,
+							maxActiveInferenceInstances: 80,
+						},
+					},
+				} as never,
+				"inference_slot",
+			),
+		).toMatchObject({
+			capacityKey: "workflow-builder",
+			limit: 60,
+		});
+	});
+
 	it("allows an explicit model cap to override the global inference cap", () => {
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "80");
 		vi.stubEnv("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS", "32");

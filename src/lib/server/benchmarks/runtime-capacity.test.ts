@@ -66,13 +66,71 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		});
 
 		expect(capacity).toMatchObject({
+			capacityMode: "manual",
 			effectiveConcurrency: 12,
 			runtimeReplicas: 5,
 			perSidecarWorkflowLimit: 3,
 			daprWorkflowEffectiveCapacity: 15,
 			runtimeSlots: 15,
 			slotsPerReplica: 3,
+			configuredMaxActiveInferenceInstances: 12,
+			maxActiveInferenceInstances: 12,
 			maxActiveSessions: 12,
+			capReason: "global_max",
+		});
+	});
+
+	it("can derive global inference capacity in auto mode", () => {
+		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 10,
+			slotsPerReplica: 8,
+			requestedInstanceCount: 100,
+			requestedConcurrency: 100,
+			sandboxCapacity: {
+				schedulableSandboxCapacity: 80,
+				totalSchedulableSandboxCapacity: 96,
+			} as never,
+		});
+
+		expect(capacity).toMatchObject({
+			capacityMode: "auto",
+			effectiveConcurrency: 80,
+			runtimeSlots: 80,
+			configuredMaxActiveInferenceInstances: null,
+			maxActiveInferenceInstances: 80,
+			maxActiveSandboxes: 96,
+			capReason: "runtime_capacity+dapr_workflow_capacity+sandbox_schedulable_capacity",
+		});
+	});
+
+	it("keeps a configured global inference cap as the auto-mode hard ceiling", () => {
+		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "72");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 10,
+			slotsPerReplica: 8,
+			requestedInstanceCount: 100,
+			requestedConcurrency: 100,
+			sandboxCapacity: {
+				schedulableSandboxCapacity: 96,
+				totalSchedulableSandboxCapacity: 96,
+			} as never,
+		});
+
+		expect(capacity).toMatchObject({
+			capacityMode: "auto",
+			effectiveConcurrency: 72,
+			configuredMaxActiveInferenceInstances: 72,
+			maxActiveInferenceInstances: 72,
 			capReason: "global_max",
 		});
 	});

@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from src.concurrency import (
-    bounded_swebench_concurrency,
+    bounded_swebench_run_concurrency,
     bounded_swebench_evaluation_concurrency,
     instance_start_batch_delay_seconds,
     instance_start_batch_size,
@@ -1961,7 +1961,7 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                 f"current status is {marked_status}"
             )
         instance_ids = list(run.get("selectedInstanceIds") or [])
-        concurrency = bounded_swebench_concurrency(run.get("concurrency"))
+        concurrency = bounded_swebench_run_concurrency(run)
         start_batch_size = instance_start_batch_size()
         start_batch_delay_seconds = instance_start_batch_delay_seconds()
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)

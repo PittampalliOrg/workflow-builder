@@ -52,6 +52,34 @@ def bounded_swebench_concurrency(
     return max(1, min(parsed, cap))
 
 
+def _capacity_snapshot(run: dict[str, Any]) -> dict[str, Any]:
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    capacity = summary.get("capacity") if isinstance(summary, dict) else None
+    return capacity if isinstance(capacity, dict) else {}
+
+
+def bounded_swebench_run_concurrency(run: dict[str, Any]) -> int:
+    """Use the BFF capacity snapshot as the source of truth for fan-out.
+
+    The coordinator still honors SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY
+    when explicitly configured, but it should not impose its historical default
+    cap after the BFF has already computed runtime, Dapr, sandbox, and model
+    capacity for the run.
+    """
+
+    capacity = _capacity_snapshot(run)
+    candidates = [
+        _positive_int(run.get("concurrency")),
+        _positive_int(capacity.get("effectiveConcurrency")),
+        _positive_int(capacity.get("maxActiveInferenceInstances")),
+        _positive_int(os.environ.get("SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY")),
+    ]
+    selected = [candidate for candidate in candidates if candidate is not None]
+    if not selected:
+        return 1
+    return max(1, min(selected))
+
+
 def bounded_swebench_evaluation_concurrency(
     value: Any,
     *,

@@ -94,6 +94,13 @@ slots, agent runtime slots, Dapr workflow slots, and model request slots.
 Increasing only the UI concurrency value will not increase throughput unless
 these backing capacities are also raised.
 
+Set `BENCHMARK_CAPACITY_MODE=auto` when the BFF should derive the active
+inference budget from runtime, Dapr, sandbox, and model capacity. In this mode,
+`BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` is a hard safety ceiling, not the
+primary source of capacity. The coordinator should use the BFF's stored run
+capacity snapshot and only apply `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY`
+when an explicit emergency backstop is needed.
+
 For a benchmark run, stored inference concurrency is effectively:
 
 ```text
@@ -181,12 +188,13 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `DEFAULT_EVALUATION_CONCURRENCY` | `24` | n/a | Launch sheet initial evaluation request and BFF fallback. |
 | `MAX_INFERENCE_CONCURRENCY` | `128` | n/a | Launch sheet slider maximum. Backend still clamps. |
 | `MAX_EVALUATION_CONCURRENCY` | `128` | n/a | Launch sheet evaluation slider maximum. Backend/evaluator also clamp to 128. |
+| `BENCHMARK_CAPACITY_MODE` | `manual` | `auto` | `manual` preserves the historical global default cap; `auto` derives capacity from live/runtime limits and treats explicit caps as safety rails. |
 | `BENCHMARK_DEFAULT_CONCURRENCY` | `10` | `10` | BFF fallback requested inference concurrency when the request omits or passes an invalid value. |
-| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` | `72` | Global active inference cap across benchmark resource leases. |
-| `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | `72` | Global Dapr agent child-workflow cap used by capacity estimates and `dapr_workflow_slot` leases. |
+| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` in manual mode, derived in auto mode | `80` | Global active inference hard cap across benchmark resource leases. In auto mode, leave this as a cluster safety ceiling rather than mirroring every lower capacity. |
+| `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | unset | Optional hard cap for Dapr agent child workflows. Prefer leaving unset so `dapr_workflow_slot` capacity derives from runtime sidecar capacity. |
 | `BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS` | unset | unset | Backward-compatible alias for `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`. |
 | `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | `80` | Configured OpenShell sandbox cap. Per-run admission also considers remaining live schedulable headroom; stored global lease capacity should use configured cap plus total schedulable capacity. |
-| `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS` | unset | unset | Optional per-model request cap for `model_slot` leases. |
+| `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS` | unset | unset | Optional per-model request cap for `model_slot` leases. Prefer unset unless a provider has a lower quota than the cluster can otherwise run. |
 | `BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS` | unset | unset | Backward-compatible alias for `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`. |
 | `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
 | `BENCHMARK_LEASE_RETRY_SECONDS` | `15` | unset | Retry-after returned when the BFF resource-lease gate denies capacity. |
@@ -214,9 +222,9 @@ controller status calculation lives in `services/agent-runtime-controller/src/ma
 
 | Variable or config field | Default | Dev GitOps value | Effect |
 | --- | ---: | ---: | --- |
-| `AGENT_RUNTIME_POOL_MAX_REPLICAS` | `2` | `9` | Shared-pool replica fallback when a pool config omits `maxReplicas`. |
+| `AGENT_RUNTIME_POOL_MAX_REPLICAS` | `2` | `10` | Shared-pool replica fallback when a pool config omits `maxReplicas`. |
 | `AGENT_RUNTIME_POOL_MIN_REPLICAS` | unset | unset | Shared-pool minimum replica metadata when configured. |
-| `AGENT_RUNTIME_POOL_APP_IDS_JSON` | unset | `{"coding":{"appId":"agent-runtime-pool-coding","maxReplicas":9,"slotsPerReplica":8}}` | Maps runtime classes to shared pool app IDs and optional pool capacity. Explicit `slotsPerReplica` here wins for that shared pool. Dev coding pool capacity is `9 * 8 = 72` runtime slots. |
+| `AGENT_RUNTIME_POOL_APP_IDS_JSON` | unset | `{"coding":{"appId":"agent-runtime-pool-coding","maxReplicas":10,"slotsPerReplica":8}}` | Maps runtime classes to shared pool app IDs and optional pool capacity. Explicit `slotsPerReplica` here wins for that shared pool. Dev coding pool capacity is `10 * 8 = 80` runtime slots. |
 | `AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON` | `{"coding":5,"office":2,"browser":1,"testing":2}` | `{"coding":12,"office":2,"browser":1,"testing":2}` | Slots-per-replica fallback by runtime class. For dev, dedicated coding runtimes use `12`; the shared coding pool still uses the explicit pool value `8`. |
 | `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR` | `slotsPerReplica` | `12` | Per-sidecar Dapr workflow invocation capacity used by BFF capacity estimates and controller status. |
 | `DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS` | unset | unset | BFF capacity-estimate override checked before `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`; use carefully because controller status reads the `AGENT_RUNTIME_*` value. |
@@ -231,7 +239,7 @@ These live in `services/swebench-coordinator/src/concurrency.py` and
 
 | Variable | Default | Dev GitOps value | Effect |
 | --- | ---: | ---: | --- |
-| `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` | `56` | `72` | Coordinator-side backstop for active `swebench_instance_workflow` children. |
+| `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` | unset for run fan-out | unset | Optional emergency backstop for active `swebench_instance_workflow` children. Normal fan-out uses the BFF capacity snapshot stored on the run. |
 | `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE` | `10` | `18` | Max new instance child workflows to start before an optional pacing delay. |
 | `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` | `5` | `1` | Delay between start batches. `0` disables pacing delay. |
 | `SWEBENCH_LEASE_RETRY_SECONDS` | `15` | `15` | Coordinator sleep interval when a resource lease is denied. |
@@ -254,15 +262,16 @@ completed TaskRun, not at the end of a fixed batch.
 
 ## Current Dev Ramp Profile
 
-Dev currently runs the 72-slot inference profile:
+Dev currently runs the 80-slot auto-capacity inference profile:
 
-- `AGENT_RUNTIME_POOL_MAX_REPLICAS=9`
-- coding pool `maxReplicas=9`
+- `BENCHMARK_CAPACITY_MODE=auto`
+- `AGENT_RUNTIME_POOL_MAX_REPLICAS=10`
+- coding pool `maxReplicas=10`
 - coding pool `slotsPerReplica=8`
-- `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS=72`
-- `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES=72`
-- `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY=72`
+- no separate `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` cap; Dapr workflow capacity derives from runtime sidecar capacity
+- `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES=80`
 - `BENCHMARK_MAX_ACTIVE_SANDBOXES=80`
+- no separate `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` cap; coordinator uses the BFF run capacity snapshot
 - `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=18`
 - `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=1`
 
