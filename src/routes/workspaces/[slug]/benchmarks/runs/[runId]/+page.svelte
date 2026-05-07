@@ -51,10 +51,14 @@
 	let drawerOpen = $state(false);
 	let drawerInstanceId = $state<string | null>(null);
 	let cancelling = $state(false);
+	let cleaningUp = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let selectedInstanceId = $state<string | null>(null);
 
 	const isActive = $derived(isActiveRunStatus(run?.status));
+	const canRetryCleanup = $derived(
+		!!run && ['cancelled', 'failed', 'completed'].includes(run.status)
+	);
 
 	const inferenceDone = $derived.by(() => {
 		const counts = countByKey(run?.instances ?? [], 'inferenceStatus');
@@ -126,6 +130,23 @@
 			await refresh({ silent: true });
 		} finally {
 			cancelling = false;
+		}
+	}
+
+	async function retryCleanup() {
+		if (!run || !runId) return;
+		cleaningUp = true;
+		try {
+			const res = await fetch(`/api/benchmarks/runs/${encodeURIComponent(runId)}/cleanup`, {
+				method: 'POST'
+			});
+			if (!res.ok) {
+				errorMessage = `Cleanup failed (${res.status})`;
+				return;
+			}
+			await refresh({ silent: true });
+		} finally {
+			cleaningUp = false;
 		}
 	}
 
@@ -255,6 +276,11 @@
 					{#if isActive}
 						<Button variant="destructive" size="sm" onclick={cancelRun} disabled={cancelling}>
 							<StopCircle class="size-3.5" /> Cancel
+						</Button>
+					{/if}
+					{#if canRetryCleanup}
+						<Button variant="outline" size="sm" onclick={retryCleanup} disabled={cleaningUp}>
+							<RefreshCw class="size-3.5" /> Cleanup
 						</Button>
 					{/if}
 				</div>
@@ -571,4 +597,5 @@
 	instanceId={drawerInstanceId}
 	workspaceSlug={slug}
 	onOpenChange={closeDrawer}
+	onTerminated={() => refresh({ silent: true })}
 />

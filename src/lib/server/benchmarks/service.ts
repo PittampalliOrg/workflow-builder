@@ -1222,6 +1222,33 @@ async function cleanupTerminalBenchmarkRun(params: {
 	await recomputeRunSummary(params.runId);
 }
 
+export async function retryBenchmarkRunTerminalCleanup(
+	projectId: string,
+	runId: string,
+) {
+	const database = requireDb();
+	const [run] = await database
+		.select()
+		.from(benchmarkRuns)
+		.where(and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)))
+		.limit(1);
+	if (!run) return null;
+	if (!BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status)) {
+		throw error(409, `Cannot retry cleanup for a ${run.status} benchmark run`);
+	}
+	const outcome: BenchmarkRunTerminalOutcome =
+		run.status === "cancelled" ? "cancelled" : "failed";
+	await cleanupTerminalBenchmarkRun({
+		runId,
+		outcome,
+		reason: benchmarkRunTerminalReason(outcome, {
+			error: run.status === "cancelled" ? "benchmark run cancelled" : run.error,
+		}),
+		now: new Date(),
+	});
+	return getBenchmarkRun(projectId, runId);
+}
+
 function scheduleTerminalBenchmarkCleanup(params: {
 	runId: string;
 	outcome: BenchmarkRunTerminalOutcome;
@@ -1711,46 +1738,6 @@ async function finalizeBenchmarkWorkflowExecutions(
 	);
 
 	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			const termination = await terminateBenchmarkWorkflowInstance(
-				instanceId,
-				reason,
-			);
-			workflowTerminations.set(instanceId, termination);
-			if (termination === "failed") allDurableInstancesClosed = false;
-		},
-	);
-
-	let parentDurableInstancesClosed = true;
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			const termination = workflowTerminations.get(instanceId) ?? "terminated";
-			if (termination === "failed") {
-				parentDurableInstancesClosed = false;
-				return;
-			}
-			const closed =
-				termination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
-			if (!closed) {
-				parentDurableInstancesClosed = false;
-				allDurableInstancesClosed = false;
-			}
-		},
-	);
-
-	if (!parentDurableInstancesClosed) {
-		console.warn(
-			`Benchmark run ${runId} durable cleanup did not confirm every parent workflow closed; leaving session/execution rows active for retry`,
-		);
-		return false;
-	}
-
-	await runWithConcurrency(
 		agentRuntimeTargets,
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async ({ runtimeAppId, instanceId }) => {
@@ -1781,6 +1768,39 @@ async function finalizeBenchmarkWorkflowExecutions(
 				(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
 			if (!closed) {
 				agentRuntimeDurableInstancesClosed = false;
+				allDurableInstancesClosed = false;
+			}
+		},
+	);
+
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			const termination = await terminateBenchmarkWorkflowInstance(
+				instanceId,
+				reason,
+			);
+			workflowTerminations.set(instanceId, termination);
+			if (termination === "failed") allDurableInstancesClosed = false;
+		},
+	);
+
+	let parentDurableInstancesClosed = true;
+	await runWithConcurrency(
+		[...daprInstanceIds],
+		BENCHMARK_TERMINATION_CONCURRENCY,
+		async (instanceId) => {
+			const termination = workflowTerminations.get(instanceId) ?? "terminated";
+			if (termination === "failed") {
+				parentDurableInstancesClosed = false;
+				return;
+			}
+			const closed =
+				termination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
+			if (!closed) {
+				parentDurableInstancesClosed = false;
 				allDurableInstancesClosed = false;
 			}
 		},
@@ -3765,6 +3785,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 	sessionId: string | null,
 	reason: string,
 	now = new Date(),
+	outcome: BenchmarkRunTerminalOutcome = "failed",
 ): Promise<boolean> {
 	const database = requireDb();
 	try {
@@ -3836,33 +3857,6 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			);
 		}
 
-		let parentTermination: DurableTerminationResult | null = null;
-		if (parentDaprInstanceId) {
-			parentTermination = await terminateBenchmarkWorkflowInstance(
-				parentDaprInstanceId,
-				reason,
-			);
-			if (parentTermination === "failed") allDurableInstancesClosed = false;
-		}
-
-		let parentDurableInstanceClosed = true;
-		if (parentDaprInstanceId && parentTermination !== "failed") {
-			parentDurableInstanceClosed =
-				parentTermination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
-			if (!parentDurableInstanceClosed) allDurableInstancesClosed = false;
-		}
-		if (parentTermination === "failed") {
-			parentDurableInstanceClosed = false;
-		}
-
-		if (!parentDurableInstanceClosed) {
-			console.warn(
-				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} parent workflow cleanup did not confirm closure; leaving child workflows, session/execution rows, sandbox, and leases active for retry`,
-			);
-			return false;
-		}
-
 		if (runtimeAppId && runtimeInstanceIds.length > 0) {
 			const runtimeTerminations = new Map<string, DurableTerminationResult>();
 			await runWithConcurrency(
@@ -3896,9 +3890,29 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			);
 		}
 
+		let parentTermination: DurableTerminationResult | null = null;
+		if (parentDaprInstanceId) {
+			parentTermination = await terminateBenchmarkWorkflowInstance(
+				parentDaprInstanceId,
+				reason,
+			);
+			if (parentTermination === "failed") allDurableInstancesClosed = false;
+		}
+
+		let parentDurableInstanceClosed = true;
+		if (parentDaprInstanceId && parentTermination !== "failed") {
+			parentDurableInstanceClosed =
+				parentTermination === "alreadyGone" ||
+				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
+			if (!parentDurableInstanceClosed) allDurableInstancesClosed = false;
+		}
+		if (parentTermination === "failed") {
+			parentDurableInstanceClosed = false;
+		}
+
 		if (!allDurableInstancesClosed) {
 			console.warn(
-				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; leaving session/execution rows active for retry`,
+				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${parentDurableInstanceClosed}; leaving session/execution rows active for retry`,
 			);
 			return false;
 		}
@@ -3926,8 +3940,8 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			await database
 				.update(workflowExecutions)
 				.set({
-					status: "error",
-					phase: "failed",
+					status: outcome === "cancelled" ? "cancelled" : "error",
+					phase: outcome === "cancelled" ? "cancelled" : "failed",
 					error: reason,
 					completedAt: now,
 				})
@@ -4004,6 +4018,81 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 		});
 	}
 	return updated ?? null;
+}
+
+export async function terminateBenchmarkRunInstance(params: {
+	projectId: string;
+	runId: string;
+	instanceId: string;
+	reason?: string | null;
+}) {
+	const database = requireDb();
+	const reason = params.reason?.trim() || "benchmark instance terminated";
+	const [row] = await database
+		.select({
+			run: benchmarkRuns,
+			instance: benchmarkRunInstances,
+		})
+		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+		.where(
+			and(
+				eq(benchmarkRuns.projectId, params.projectId),
+				eq(benchmarkRunInstances.runId, params.runId),
+				eq(benchmarkRunInstances.instanceId, params.instanceId),
+			),
+		)
+		.limit(1);
+	if (!row) return null;
+	const now = new Date();
+	const workflowsClosed = await cleanupStalledBenchmarkInstanceWorkflows(
+		row.instance,
+		row.instance.sessionId,
+		reason,
+		now,
+		"cancelled",
+	);
+	if (!workflowsClosed) {
+		return {
+			instance: row.instance,
+			cleanupConfirmed: false,
+		};
+	}
+	const patch = benchmarkRunInstanceTerminalPatch(
+		row.instance,
+		"cancelled",
+		reason,
+		now,
+	);
+	let updated = row.instance;
+	if (patch) {
+		const [patched] = await database
+			.update(benchmarkRunInstances)
+			.set(patch)
+			.where(eq(benchmarkRunInstances.id, row.instance.id))
+			.returning();
+		updated = patched ?? row.instance;
+	}
+	await cleanupBenchmarkInstanceSandbox({
+		runId: params.runId,
+		instanceId: params.instanceId,
+		sandboxName: updated.sandboxName,
+		reason,
+	});
+	await releaseBenchmarkResourceLeases({
+		runId: params.runId,
+		instanceId: params.instanceId,
+		reason,
+	});
+	await recomputeRunSummary(params.runId);
+	await syncBenchmarkInstanceMlflowAndTraceBundle({
+		runId: params.runId,
+		instanceId: params.instanceId,
+	});
+	return {
+		instance: updated,
+		cleanupConfirmed: true,
+	};
 }
 
 export async function upsertPredictionsArtifact(

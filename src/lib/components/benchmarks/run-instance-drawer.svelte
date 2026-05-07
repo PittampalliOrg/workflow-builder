@@ -15,6 +15,7 @@
 		Loader2,
 		Repeat,
 		Scale,
+		StopCircle,
 		Timer,
 		Wrench,
 		X
@@ -96,6 +97,7 @@
 		instanceId: string | null;
 		workspaceSlug: string;
 		onOpenChange: (next: boolean) => void;
+		onTerminated?: () => void;
 	};
 
 	let {
@@ -103,7 +105,8 @@
 		runId,
 		instanceId,
 		workspaceSlug,
-		onOpenChange
+		onOpenChange,
+		onTerminated
 	}: Props = $props();
 
 	type SpansPayload = {
@@ -137,6 +140,12 @@
 	let spans = $state<SpansPayload | null>(null);
 	let spansLoading = $state(false);
 	let spansError = $state<string | null>(null);
+	let terminating = $state(false);
+
+	const canTerminate = $derived(
+		!!detail &&
+			['queued', 'inferencing', 'evaluating'].includes(detail.runInstance.status)
+	);
 
 	// --- Resizable panel ---
 	const STORAGE_KEY = 'benchmarks.runInstanceDrawer.width';
@@ -267,6 +276,29 @@
 			spansError = err instanceof Error ? err.message : String(err);
 		} finally {
 			spansLoading = false;
+		}
+	}
+
+	async function terminateInstance() {
+		if (!runId || !instanceId || !detail) return;
+		terminating = true;
+		errorMessage = null;
+		try {
+			const res = await fetch(
+				`/api/benchmarks/runs/${encodeURIComponent(runId)}/instances/${encodeURIComponent(instanceId)}/terminate`,
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ reason: 'benchmark instance terminated by user' })
+				}
+			);
+			if (!res.ok) throw new Error(`Terminate failed (${res.status})`);
+			await load(runId, instanceId);
+			onTerminated?.();
+		} catch (err) {
+			errorMessage = err instanceof Error ? err.message : String(err);
+		} finally {
+			terminating = false;
 		}
 	}
 
@@ -416,6 +448,23 @@
 									Traces
 									<ExternalLink class="h-2.5 w-2.5" />
 								</a>
+							{/if}
+							{#if canTerminate}
+								<Button
+									variant="destructive"
+									size="sm"
+									class="h-6 px-2 text-[10px]"
+									onclick={terminateInstance}
+									disabled={terminating}
+									title="Terminate this benchmark instance"
+								>
+									{#if terminating}
+										<Loader2 class="h-3 w-3 animate-spin" />
+									{:else}
+										<StopCircle class="h-3 w-3" />
+									{/if}
+									Terminate
+								</Button>
 							{/if}
 						</div>
 					{/if}
