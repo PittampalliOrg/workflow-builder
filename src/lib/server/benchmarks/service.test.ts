@@ -18,6 +18,7 @@ import {
 	resolveBenchmarkInstanceStatusAfterInference,
 	sanitizeSwebenchInferenceEnvironmentForRuntime,
 	shouldFinalizeBenchmarkLifecycle,
+	shouldTerminateCompletedBenchmarkSessionProjection,
 } from "./service";
 import {
 	buildSwebenchDatasetJsonl,
@@ -1072,6 +1073,49 @@ describe("SWE-bench terminal run cleanup", () => {
 				now,
 			),
 		).toBeNull();
+	});
+
+	it("terminates completed-run session projections only after workflow closure", () => {
+		expect(
+			shouldTerminateCompletedBenchmarkSessionProjection({
+				sessionStatus: "running",
+				executionStatus: "success",
+				executionPhase: "completed",
+				instanceStatus: "failed",
+			}),
+		).toBe(true);
+		expect(
+			shouldTerminateCompletedBenchmarkSessionProjection({
+				sessionStatus: "rescheduling",
+				executionStatus: "error",
+				executionPhase: "failed",
+				instanceStatus: "error",
+			}),
+		).toBe(true);
+		expect(
+			shouldTerminateCompletedBenchmarkSessionProjection({
+				sessionStatus: "running",
+				executionStatus: "running",
+				executionPhase: "running",
+				instanceStatus: "failed",
+			}),
+		).toBe(false);
+		expect(
+			shouldTerminateCompletedBenchmarkSessionProjection({
+				sessionStatus: "terminated",
+				executionStatus: "success",
+				executionPhase: "completed",
+				instanceStatus: "resolved",
+			}),
+		).toBe(false);
+		expect(
+			shouldTerminateCompletedBenchmarkSessionProjection({
+				sessionStatus: "running",
+				executionStatus: null,
+				executionPhase: null,
+				instanceStatus: "resolved",
+			}),
+		).toBe(true);
 	});
 
 	it("does not finalize instances, sandboxes, or leases before durable workflows close", async () => {

@@ -262,6 +262,30 @@ type BenchmarkRunTerminalOutcome = Extract<
 	BenchmarkRunStatus,
 	"failed" | "cancelled"
 >;
+const ACTIVE_BENCHMARK_SESSION_STATUSES = [
+	"pending",
+	"running",
+	"rescheduling",
+] as const;
+const TERMINAL_WORKFLOW_EXECUTION_STATUSES = new Set([
+	"success",
+	"error",
+	"timeout",
+	"cancelled",
+	"canceled",
+]);
+const TERMINAL_WORKFLOW_EXECUTION_PHASES = new Set([
+	"completed",
+	"complete",
+	"success",
+	"succeeded",
+	"failed",
+	"error",
+	"timeout",
+	"timed_out",
+	"cancelled",
+	"canceled",
+]);
 type BenchmarkRunInstanceTerminalInput = {
 	status: BenchmarkRunInstanceStatus;
 	inferenceStatus: BenchmarkInferenceStatus;
@@ -286,6 +310,35 @@ export function shouldFinalizeBenchmarkLifecycle(row: {
 	return (
 		INSTANCE_TERMINAL_STATUSES.has(row.status) ||
 		(row.inferenceStatus !== "queued" && row.inferenceStatus !== "inferencing")
+	);
+}
+
+export function shouldTerminateCompletedBenchmarkSessionProjection(row: {
+	sessionStatus: string | null;
+	executionStatus: string | null;
+	executionPhase: string | null;
+	instanceStatus: BenchmarkRunInstanceStatus | string | null;
+}): boolean {
+	if (
+		!ACTIVE_BENCHMARK_SESSION_STATUSES.includes(
+			row.sessionStatus as (typeof ACTIVE_BENCHMARK_SESSION_STATUSES)[number],
+		)
+	) {
+		return false;
+	}
+	const executionStatus = String(row.executionStatus ?? "").toLowerCase();
+	const executionPhase = String(row.executionPhase ?? "").toLowerCase();
+	const workflowTerminal =
+		TERMINAL_WORKFLOW_EXECUTION_STATUSES.has(executionStatus) ||
+		TERMINAL_WORKFLOW_EXECUTION_PHASES.has(executionPhase);
+	if (workflowTerminal) return true;
+	const workflowStillRunning =
+		executionStatus === "pending" ||
+		executionStatus === "running" ||
+		executionPhase === "running";
+	if (workflowStillRunning) return false;
+	return INSTANCE_TERMINAL_STATUSES.has(
+		row.instanceStatus as BenchmarkRunInstanceStatus,
 	);
 }
 
@@ -1285,7 +1338,12 @@ export async function markBenchmarkRunStatus(
 		await recomputeRunSummary(runId);
 	}
 	if (status === "completed") {
-		await releaseBenchmarkResourceLeasesForRun(runId, "benchmark run completed");
+		await cleanupCompletedBenchmarkRunResources(
+			runId,
+			"benchmark run completed",
+			now,
+		);
+		await recomputeRunSummary(runId);
 	}
 	if (status === "evaluating") {
 		await database
@@ -1736,6 +1794,73 @@ async function finalizeBenchmarkWorkflowExecutions(
 		})
 		.where(inArray(workflowExecutions.id, [...activeExecutionIds]));
 	return true;
+}
+
+async function cleanupCompletedBenchmarkRunResources(
+	runId: string,
+	reason: string,
+	now = new Date(),
+) {
+	const database = requireDb();
+	const rows = await database
+		.select({
+			instanceId: benchmarkRunInstances.instanceId,
+			instanceStatus: benchmarkRunInstances.status,
+			sessionId: sessions.id,
+			sessionStatus: sessions.status,
+			executionId: workflowExecutions.id,
+			executionStatus: workflowExecutions.status,
+			executionPhase: workflowExecutions.phase,
+		})
+		.from(benchmarkRunInstances)
+		.leftJoin(sessions, eq(sessions.id, benchmarkRunInstances.sessionId))
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+		)
+		.where(eq(benchmarkRunInstances.runId, runId));
+
+	const sessionIdsToTerminate = new Set<string>();
+	const activeRows: string[] = [];
+	for (const row of rows) {
+		if (!row.sessionId) continue;
+		if (shouldTerminateCompletedBenchmarkSessionProjection(row)) {
+			sessionIdsToTerminate.add(row.sessionId);
+			continue;
+		}
+		if (
+			ACTIVE_BENCHMARK_SESSION_STATUSES.includes(
+				row.sessionStatus as (typeof ACTIVE_BENCHMARK_SESSION_STATUSES)[number],
+			)
+		) {
+			activeRows.push(
+				`${row.instanceId}:${row.executionId ?? "no-workflow"}:${row.executionStatus ?? "unknown"}/${row.executionPhase ?? "unknown"}`,
+			);
+		}
+	}
+
+	if (activeRows.length > 0) {
+		console.warn(
+			`Benchmark run ${runId} completed with ${activeRows.length} non-terminal session projection(s); leaving them active for retry: ${activeRows.slice(0, 10).join(", ")}`,
+		);
+	}
+
+	if (sessionIdsToTerminate.size > 0) {
+		await database
+			.update(sessions)
+			.set({
+				status: "terminated",
+				updatedAt: now,
+			})
+			.where(
+				and(
+					inArray(sessions.id, [...sessionIdsToTerminate]),
+					inArray(sessions.status, [...ACTIVE_BENCHMARK_SESSION_STATUSES]),
+				),
+			);
+	}
+	await cleanupBenchmarkRunSandboxes(runId, reason);
+	await releaseBenchmarkResourceLeasesForRun(runId, reason);
 }
 
 async function terminateAndPurgeBenchmarkWorkflowInstance(
