@@ -3506,7 +3506,7 @@ function benchmarkInferenceStallSeconds(): number {
 		env.BENCHMARK_INFERENCE_STALL_SECONDS,
 		60,
 		24 * 60 * 60,
-		480,
+		2400,
 	);
 }
 
