@@ -190,11 +190,10 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 ): Promise<boolean> {
 	if (!params.workflowsClosed) {
 		hooks.warn(
-			`Benchmark run ${params.runId} durable cleanup did not finish; cleaning external resources and leases while leaving durable workflow purge for retry`,
+			`Benchmark run ${params.runId} durable cleanup did not finish; leaving instances, sandboxes, and leases active for retry`,
 		);
+		return false;
 	}
-	// Dapr termination does not cancel in-flight activities, so external jobs and
-	// sandboxes must be torn down even when the parent workflow is still closing.
 	await hooks.finalizeInstances(
 		params.runId,
 		params.outcome,
@@ -1854,8 +1853,20 @@ async function cleanupCompletedBenchmarkRunResources(
 
 	if (activeRows.length > 0) {
 		console.warn(
-			`Benchmark run ${runId} completed with ${activeRows.length} non-terminal session projection(s); leaving them active for retry: ${activeRows.slice(0, 10).join(", ")}`,
+			`Benchmark run ${runId} completed with ${activeRows.length} non-terminal session projection(s); attempting durable cleanup before releasing resources: ${activeRows.slice(0, 10).join(", ")}`,
 		);
+		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
+			runId,
+			"failed",
+			reason,
+			now,
+		);
+		if (!workflowsClosed) {
+			console.warn(
+				`Benchmark run ${runId} completed cleanup did not confirm durable workflow closure; leaving sandboxes and leases active for retry`,
+			);
+			return;
+		}
 	}
 
 	if (sessionIdsToTerminate.size > 0) {
