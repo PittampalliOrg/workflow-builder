@@ -24,6 +24,10 @@ TERMINAL_RUNTIME_STATUSES = {
 _termination_requested = threading.Event()
 
 
+def _log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -51,7 +55,7 @@ def _headers() -> dict[str, str]:
 
 
 def _handle_termination(signum: int, _frame: object) -> None:
-    print(f"received signal {signum}; requesting workflow termination", file=sys.stderr)
+    _log(f"received signal {signum}; requesting workflow termination")
     _termination_requested.set()
 
 
@@ -159,10 +163,7 @@ def _stagger_workflow_start(payload: dict[str, Any]) -> None:
     sleep_seconds = _workflow_start_stagger_seconds(payload)
     if sleep_seconds <= 0:
         return
-    print(
-        f"staggering workflow start for {sleep_seconds:.1f}s",
-        file=sys.stderr,
-    )
+    _log(f"staggering workflow start for {sleep_seconds:.1f}s")
     _sleep(sleep_seconds)
 
 
@@ -216,9 +217,8 @@ def _start_workflow(payload: dict[str, Any]) -> str:
         if not transient or attempt >= attempts:
             break
         sleep_seconds = _workflow_start_backoff_seconds(attempt)
-        print(
+        _log(
             f"workflow start attempt {attempt}/{attempts} failed transiently; retrying in {sleep_seconds:.1f}s: {last_error}",
-            file=sys.stderr,
         )
         time.sleep(sleep_seconds)
     raise RuntimeError(
@@ -264,7 +264,7 @@ def _cancel_started_workflow(
         _terminate_workflow(instance_id, reason)
     except Exception as exc:
         termination_error = str(exc)
-        print(f"workflow termination failed for {instance_id}: {exc}", file=sys.stderr)
+        _log(f"workflow termination failed for {instance_id}: {exc}")
 
     callback_body: dict[str, Any] = {
         "status": "cancelled",
@@ -282,11 +282,24 @@ def _run() -> int:
     payload = _load_payload()
     execution_id = str(payload.get("executionId") or payload["workflowExecutionId"])
     instance_id: str | None = None
+    run_id = str(payload.get("runId") or "")
+    benchmark_instance_id = str(payload.get("instanceId") or "")
     try:
+        _log(
+            "host execution worker starting "
+            f"execution={execution_id} run={run_id} "
+            f"instance={benchmark_instance_id} class={payload.get('executionClass')} "
+            f"timeoutSeconds={payload.get('timeoutSeconds')}"
+        )
         _stagger_workflow_start(payload)
         if _termination_requested.is_set():
             raise RuntimeError("host execution worker terminated before workflow start")
+        _log(
+            "starting workflow "
+            f"execution={execution_id} workflowExecution={payload.get('workflowExecutionId')}"
+        )
         instance_id = _start_workflow(payload)
+        _log(f"workflow started execution={execution_id} daprInstance={instance_id}")
         if _termination_requested.is_set():
             _cancel_started_workflow(
                 payload,
@@ -303,9 +316,11 @@ def _run() -> int:
                 "daprInstanceId": instance_id,
             },
         )
+        _log(f"running callback posted execution={execution_id} daprInstance={instance_id}")
         deadline = time.monotonic() + int(payload.get("timeoutSeconds") or 7200) + 300
         poll_seconds = max(2, int(_env("SANDBOX_EXECUTION_WORKER_POLL_SECONDS", "15")))
         last_status: dict[str, Any] = {}
+        previous_runtime_status: str | None = None
         while time.monotonic() < deadline:
             if _termination_requested.is_set():
                 _cancel_started_workflow(
@@ -317,6 +332,13 @@ def _run() -> int:
                 return 1
             last_status = _workflow_status(instance_id)
             runtime_status = str(last_status.get("runtimeStatus") or "").upper()
+            if runtime_status != previous_runtime_status:
+                _log(
+                    "workflow status changed "
+                    f"execution={execution_id} daprInstance={instance_id} "
+                    f"runtimeStatus={runtime_status or '<empty>'}"
+                )
+                previous_runtime_status = runtime_status
             if runtime_status in TERMINAL_RUNTIME_STATUSES:
                 status = TERMINAL_RUNTIME_STATUSES[runtime_status]
                 _post_callback(
@@ -330,6 +352,11 @@ def _run() -> int:
                         else last_status.get("outputs"),
                         "error": last_status.get("error"),
                     },
+                )
+                _log(
+                    "terminal callback posted "
+                    f"execution={execution_id} daprInstance={instance_id} "
+                    f"runtimeStatus={runtime_status} status={status}"
                 )
                 return 0 if status == "success" else 1
             _sleep(poll_seconds)
@@ -351,6 +378,7 @@ def _run() -> int:
                 "error": "host execution worker timed out waiting for workflow",
             },
         )
+        _log(f"timeout callback posted execution={execution_id} daprInstance={instance_id}")
         return 1
     except Exception as exc:
         try:
@@ -364,8 +392,8 @@ def _run() -> int:
                 },
             )
         except Exception as callback_exc:
-            print(f"callback after failure also failed: {callback_exc}", file=sys.stderr)
-        print(str(exc), file=sys.stderr)
+            _log(f"callback after failure also failed: {callback_exc}")
+        _log(str(exc))
         return 1
 
 

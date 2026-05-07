@@ -40,6 +40,7 @@ def test_benchmark_fast_job_is_kueue_managed() -> None:
     )
 
     assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == 300
     pod_spec = manifest["spec"]["template"]["spec"]
     container = pod_spec["containers"][0]
     assert pod_spec["nodeSelector"] == {"stacks.io/swebench-pool": "dev-benchmark"}
@@ -77,6 +78,32 @@ def test_worker_retry_and_throttle_env_is_passed_through(monkeypatch) -> None:
     }
     assert env["SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS"] == "20"
     assert env["SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS"] == "180"
+
+
+def test_job_ttl_can_be_overridden_by_class_config() -> None:
+    manifest = build_job_manifest(
+        _request(),
+        execution_id="hexec-123",
+        namespace="sandbox-execution",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            ttlSecondsAfterFinished=120,
+        ),
+    )
+
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == 120
+
+
+def test_job_ttl_can_be_overridden_by_env(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_JOB_TTL_SECONDS", "600")
+    manifest = build_job_manifest(
+        _request(),
+        execution_id="hexec-123",
+        namespace="sandbox-execution",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == 600
 
 
 def test_secure_gvisor_sets_runtime_class_and_queue() -> None:

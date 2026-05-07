@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
+DEFAULT_JOB_TTL_SECONDS = 300
 WORKER_ENV_PASSTHROUGH = (
     "SANDBOX_EXECUTION_CALLBACK_ATTEMPTS",
     "SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS",
@@ -58,6 +59,7 @@ class ExecutionClassConfig(BaseModel):
     cpu: str = "100m"
     memory: str = "256Mi"
     ephemeralStorage: str = "1Gi"
+    ttlSecondsAfterFinished: int | None = Field(default=None, ge=0, le=86400)
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -102,6 +104,20 @@ def _load_execution_classes() -> dict[str, ExecutionClassConfig]:
         base = merged.get(name, ExecutionClassConfig(localQueue=_safe_name(name)))
         merged[name] = base.model_copy(update=value)
     return merged
+
+
+def _job_ttl_seconds(class_config: ExecutionClassConfig) -> int:
+    if class_config.ttlSecondsAfterFinished is not None:
+        return class_config.ttlSecondsAfterFinished
+    raw = os.environ.get(
+        "SANDBOX_EXECUTION_JOB_TTL_SECONDS",
+        str(DEFAULT_JOB_TTL_SECONDS),
+    )
+    try:
+        ttl = int(raw)
+    except ValueError:
+        return DEFAULT_JOB_TTL_SECONDS
+    return max(0, min(86400, ttl))
 
 
 def _worker_payload(request: ExecutionRequest, execution_id: str) -> dict[str, Any]:
@@ -275,7 +291,7 @@ def build_job_manifest(
         "spec": {
             "backoffLimit": 0,
             "activeDeadlineSeconds": request.timeoutSeconds + 300,
-            "ttlSecondsAfterFinished": 3600,
+            "ttlSecondsAfterFinished": _job_ttl_seconds(class_config),
             "template": {
                 "metadata": {
                     "labels": {
