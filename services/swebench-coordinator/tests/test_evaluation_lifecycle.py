@@ -108,6 +108,7 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     terminated: list[tuple[str, str | None]] = []
     status_updates: list[dict[str, str]] = []
     lease_releases: list[dict[str, str]] = []
+    terminal_cleanups: list[dict[str, str]] = []
 
     class RecordingWorkflowClient:
         def terminate_workflow(self, *, instance_id, output=None):
@@ -124,6 +125,12 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
         app,
         "_release_run_leases",
         lambda _ctx, data: lease_releases.append(data) or {"released": 5},
+    )
+    monkeypatch.setattr(
+        app,
+        "_retry_run_terminal_cleanup",
+        lambda _ctx, data: terminal_cleanups.append(data)
+        or {"success": True, "run": {"id": data["runId"], "status": "cancelled"}},
     )
     monkeypatch.setattr(
         app,
@@ -158,11 +165,9 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
         }
     ]
     assert lease_releases == []
-    assert result["leaseRelease"] == {
-        "success": True,
-        "skipped": True,
-        "reason": "handled_by_bff_terminal_cleanup",
-    }
+    assert terminal_cleanups == [{"runId": "run_1"}]
+    assert result["leaseRelease"]["success"] is True
+    assert result["leaseRelease"]["run"]["status"] == "cancelled"
 
 
 class Obj:

@@ -1263,6 +1263,30 @@ export async function retryBenchmarkRunTerminalCleanup(
 	return getBenchmarkRun(projectId, runId);
 }
 
+export async function retryBenchmarkRunTerminalCleanupByRunId(runId: string) {
+	const database = requireDb();
+	const [run] = await database
+		.select()
+		.from(benchmarkRuns)
+		.where(eq(benchmarkRuns.id, runId))
+		.limit(1);
+	if (!run) return null;
+	if (!BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status)) {
+		throw error(409, `Cannot retry cleanup for a ${run.status} benchmark run`);
+	}
+	const outcome: BenchmarkRunTerminalOutcome =
+		run.status === "cancelled" ? "cancelled" : "failed";
+	await cleanupTerminalBenchmarkRun({
+		runId,
+		outcome,
+		reason: benchmarkRunTerminalReason(outcome, {
+			error: run.status === "cancelled" ? "benchmark run cancelled" : run.error,
+		}),
+		now: new Date(),
+	});
+	return getBenchmarkRun(run.projectId, runId);
+}
+
 function scheduleTerminalBenchmarkCleanup(params: {
 	runId: string;
 	outcome: BenchmarkRunTerminalOutcome;

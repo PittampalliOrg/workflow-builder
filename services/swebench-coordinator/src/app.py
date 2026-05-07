@@ -723,6 +723,20 @@ def _release_run_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _retry_run_terminal_cleanup(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    return _compact_bff_response(
+        _bff_with_retry(
+            "POST",
+            f"/api/internal/benchmarks/runs/{run_id}/cleanup",
+            json_body={},
+            timeout=180,
+            attempts=3,
+            delay_seconds=5,
+        )
+    )
+
+
 def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
@@ -2264,6 +2278,15 @@ def cancel_benchmark_run(
         status_result = {"success": False, "error": str(exc)}
         logger.warning(
             "Best-effort cancelled status update failed for %s: %s", run_id, exc
+        )
+    try:
+        lease_release = _retry_run_terminal_cleanup(None, {"runId": run_id})
+    except Exception as exc:
+        lease_release = {"success": False, "error": str(exc)}
+        logger.warning(
+            "Best-effort terminal cleanup failed for cancelled run %s: %s",
+            run_id,
+            exc,
         )
     return {
         "success": True,
