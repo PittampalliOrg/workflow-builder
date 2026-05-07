@@ -1197,7 +1197,54 @@ export async function buildPredictionsJsonlForRun(
 	);
 }
 
-export async function cancelBenchmarkRun(projectId: string, runId: string) {
+type BenchmarkTerminalCleanupMode = "sync" | "background";
+
+type BenchmarkStatusUpdateOptions = {
+	terminalCleanup?: BenchmarkTerminalCleanupMode;
+};
+
+async function cleanupTerminalBenchmarkRun(params: {
+	runId: string;
+	outcome: BenchmarkRunTerminalOutcome;
+	reason: string;
+	now: Date;
+}): Promise<void> {
+	const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
+		params.runId,
+		params.outcome,
+		params.reason,
+		params.now,
+	);
+	await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+		...params,
+		workflowsClosed,
+	});
+	await recomputeRunSummary(params.runId);
+}
+
+function scheduleTerminalBenchmarkCleanup(params: {
+	runId: string;
+	outcome: BenchmarkRunTerminalOutcome;
+	reason: string;
+	now: Date;
+	mode?: BenchmarkTerminalCleanupMode;
+}): Promise<void> {
+	const task = cleanupTerminalBenchmarkRun(params);
+	if (params.mode !== "background") return task;
+	void task.catch((err) => {
+		console.warn(
+			`Benchmark run ${params.runId} background terminal cleanup failed:`,
+			err instanceof Error ? err.message : err,
+		);
+	});
+	return Promise.resolve();
+}
+
+export async function cancelBenchmarkRun(
+	projectId: string,
+	runId: string,
+	options: BenchmarkStatusUpdateOptions = {},
+) {
 	const database = requireDb();
 	const [run] = await database
 		.select()
@@ -1208,20 +1255,13 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 	const reason = "benchmark run cancelled";
 	if (run.status === "cancelled") {
 		const now = new Date();
-		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
-			runId,
-			"cancelled",
-			reason,
-			now,
-		);
-		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+		await scheduleTerminalBenchmarkCleanup({
 			runId,
 			outcome: "cancelled",
 			reason,
 			now,
-			workflowsClosed,
+			mode: options.terminalCleanup,
 		});
-		await recomputeRunSummary(runId);
 		return getBenchmarkRun(projectId, runId);
 	}
 	if (run.status === "completed" || run.status === "failed") {
@@ -1243,20 +1283,13 @@ export async function cancelBenchmarkRun(projectId: string, runId: string) {
 			})
 			.where(eq(benchmarkRuns.id, runId));
 	});
-	const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
-		runId,
-		"cancelled",
-		reason,
-		now,
-	);
-	await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+	await scheduleTerminalBenchmarkCleanup({
 		runId,
 		outcome: "cancelled",
 		reason,
 		now,
-		workflowsClosed,
+		mode: options.terminalCleanup,
 	});
-	await recomputeRunSummary(runId);
 	return getBenchmarkRun(projectId, runId);
 }
 
@@ -1264,6 +1297,7 @@ export async function markBenchmarkRunStatus(
 	runId: string,
 	status: BenchmarkRunStatus,
 	extra: Record<string, unknown> = {},
+	options: BenchmarkStatusUpdateOptions = {},
 ) {
 	const database = requireDb();
 	const [run] = await database
@@ -1278,20 +1312,13 @@ export async function markBenchmarkRunStatus(
 	) {
 		const now = new Date();
 		const reason = benchmarkRunTerminalReason(status, extra);
-		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
-			runId,
-			status,
-			reason,
-			now,
-		);
-		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+		await scheduleTerminalBenchmarkCleanup({
 			runId,
 			outcome: status,
 			reason,
 			now,
-			workflowsClosed,
+			mode: options.terminalCleanup,
 		});
-		await recomputeRunSummary(runId);
 		return run;
 	}
 	if (run.status !== status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status)) {
@@ -1334,20 +1361,13 @@ export async function markBenchmarkRunStatus(
 	}
 	if (status === "failed" || status === "cancelled") {
 		const reason = benchmarkRunTerminalReason(status, extra);
-		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
-			runId,
-			status,
-			reason,
-			now,
-		);
-		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
+		await scheduleTerminalBenchmarkCleanup({
 			runId,
 			outcome: status,
 			reason,
 			now,
-			workflowsClosed,
+			mode: options.terminalCleanup,
 		});
-		await recomputeRunSummary(runId);
 	}
 	if (status === "completed") {
 		await cleanupCompletedBenchmarkRunResources(

@@ -45,7 +45,10 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	if (typeof body.predictionsPath === "string") {
 		extra.predictionsPath = body.predictionsPath;
 	}
-	const run = await markBenchmarkRunStatus(params.runId, status, extra);
+	const run = await markBenchmarkRunStatus(params.runId, status, extra, {
+		terminalCleanup:
+			status === "failed" || status === "cancelled" ? "background" : "sync",
+	});
 	if (!run) return error(404, "Benchmark run not found");
 	try {
 		await recomputeRunSummary(params.runId);
