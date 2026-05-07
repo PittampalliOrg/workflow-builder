@@ -2302,6 +2302,11 @@ async function cleanupBenchmarkInstanceSandbox(params: {
 			errors: [],
 		},
 	};
+	await deleteHostSandboxExecutionResourcesForBenchmarkInstance(
+		params.runId,
+		params.instanceId,
+		cleanup,
+	);
 	const sandboxName = params.sandboxName?.trim();
 	if (!sandboxName) {
 		await recordBenchmarkSandboxCleanup(params.runId, cleanup);
@@ -2332,15 +2337,41 @@ function benchmarkRunLabelValue(runId: string): string {
 	return normalizeSandboxNamePart(runId).slice(0, 63) || "execution";
 }
 
+function benchmarkInstanceLabelValue(instanceId: string): string {
+	return normalizeSandboxNamePart(instanceId).slice(0, 63) || "execution";
+}
+
 async function deleteHostSandboxExecutionResourcesForBenchmarkRun(
 	runId: string,
 	cleanup: BenchmarkSandboxCleanupResult,
 ) {
+	await deleteHostSandboxExecutionResources(
+		`benchmark-run-id=${benchmarkRunLabelValue(runId)}`,
+		cleanup,
+	);
+}
+
+async function deleteHostSandboxExecutionResourcesForBenchmarkInstance(
+	runId: string,
+	instanceId: string,
+	cleanup: BenchmarkSandboxCleanupResult,
+) {
+	await deleteHostSandboxExecutionResources(
+		[
+			`benchmark-run-id=${benchmarkRunLabelValue(runId)}`,
+			`benchmark-instance-id=${benchmarkInstanceLabelValue(instanceId)}`,
+		].join(","),
+		cleanup,
+	);
+}
+
+async function deleteHostSandboxExecutionResources(
+	rawLabelSelector: string,
+	cleanup: BenchmarkSandboxCleanupResult,
+) {
 	const namespace = hostSandboxExecutionNamespace();
 	const ns = encodeURIComponent(namespace);
-	const labelSelector = encodeURIComponent(
-		`benchmark-run-id=${benchmarkRunLabelValue(runId)}`,
-	);
+	const labelSelector = encodeURIComponent(rawLabelSelector);
 	const targets = [
 		{
 			kind: "job",
@@ -3911,6 +3942,29 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		}
 
 		if (!allDurableInstancesClosed) {
+			const cleanup: BenchmarkSandboxCleanupResult = {
+				reason,
+				retainRequested: shouldKeepSwebenchSandboxAfterRun(),
+				attempted: [],
+				deleted: [],
+				notFound: [],
+				skipped: [],
+				errors: [],
+				hostExecution: {
+					attempted: 0,
+					deleted: 0,
+					notFound: 0,
+					errors: [],
+				},
+			};
+			await deleteHostSandboxExecutionResourcesForBenchmarkInstance(
+				runInstance.runId,
+				runInstance.instanceId,
+				cleanup,
+			);
+			if (cleanup.hostExecution.attempted > 0 || cleanup.hostExecution.errors.length > 0) {
+				await recordBenchmarkSandboxCleanup(runInstance.runId, cleanup);
+			}
 			console.warn(
 				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${parentDurableInstanceClosed}; leaving session/execution rows active for retry`,
 			);
@@ -4021,7 +4075,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 }
 
 export async function terminateBenchmarkRunInstance(params: {
-	projectId: string;
+	projectId?: string | null;
 	runId: string;
 	instanceId: string;
 	reason?: string | null;
@@ -4037,7 +4091,9 @@ export async function terminateBenchmarkRunInstance(params: {
 		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.where(
 			and(
-				eq(benchmarkRuns.projectId, params.projectId),
+				...(params.projectId
+					? [eq(benchmarkRuns.projectId, params.projectId)]
+					: []),
 				eq(benchmarkRunInstances.runId, params.runId),
 				eq(benchmarkRunInstances.instanceId, params.instanceId),
 			),

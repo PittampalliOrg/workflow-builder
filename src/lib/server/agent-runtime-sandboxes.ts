@@ -16,9 +16,9 @@ const DEFAULT_RUNTIME_PROFILES: RuntimeProfile[] = [
 	{
 		name: 'dapr-agent-py',
 		appId: 'dapr-agent-py',
-		namespace: 'workflow-builder',
+		namespace: 'openshell',
 		serviceName: 'dapr-agent-py',
-		serviceUrl: 'http://dapr-agent-py.workflow-builder.svc.cluster.local:8002',
+		serviceUrl: 'http://dapr-agent-py.openshell.svc.cluster.local:8002',
 		stateStore: 'dapr-agent-py-statestore',
 		description: 'Default sandbox-hosted dapr-agent-py runtime',
 		tools: ['filesystem', 'shell', 'mcp']
@@ -26,9 +26,9 @@ const DEFAULT_RUNTIME_PROFILES: RuntimeProfile[] = [
 	{
 		name: 'dapr-agent-py-testing',
 		appId: 'dapr-agent-py-testing',
-		namespace: 'workflow-builder',
+		namespace: 'openshell',
 		serviceName: 'dapr-agent-py-testing',
-		serviceUrl: 'http://dapr-agent-py-testing.workflow-builder.svc.cluster.local:8002',
+		serviceUrl: 'http://dapr-agent-py-testing.openshell.svc.cluster.local:8002',
 		stateStore: 'dapr-agent-py-testing-statestore',
 		description: 'Browser MCP testing runtime with Playwright and Chrome DevTools tools',
 		tools: ['filesystem', 'shell', 'mcp', 'playwright', 'chrome-devtools']
