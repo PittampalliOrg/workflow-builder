@@ -13,6 +13,16 @@ from pydantic import BaseModel, Field
 
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
+WORKER_ENV_PASSTHROUGH = (
+    "SANDBOX_EXECUTION_CALLBACK_ATTEMPTS",
+    "SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS",
+    "SANDBOX_EXECUTION_WORKER_POLL_SECONDS",
+    "SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS",
+    "SANDBOX_EXECUTION_WORKFLOW_START_BACKOFF_SECONDS",
+    "SANDBOX_EXECUTION_WORKFLOW_START_MAX_BACKOFF_SECONDS",
+    "SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS",
+    "SANDBOX_EXECUTION_WORKFLOW_START_TIMEOUT_SECONDS",
+)
 DEFAULT_WORKER_IMAGE = "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
 
 app = FastAPI(title="sandbox-execution-api")
@@ -159,6 +169,39 @@ def build_job_manifest(
     )
     payload_configmap_name = _payload_configmap_name(request, execution_id)
     payload_path = "/var/run/sandbox-execution/request.json"
+    worker_env: list[dict[str, Any]] = [
+        {"name": "EXECUTION_REQUEST_PATH", "value": payload_path},
+        {
+            "name": "WORKFLOW_BUILDER_URL",
+            "value": os.environ.get("WORKFLOW_BUILDER_URL", ""),
+        },
+        {
+            "name": "WORKFLOW_ORCHESTRATOR_URL",
+            "value": os.environ.get(
+                "WORKFLOW_ORCHESTRATOR_URL",
+                "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080",
+            ),
+        },
+        {
+            "name": "INTERNAL_API_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": os.environ.get(
+                        "INTERNAL_API_SECRET_NAME",
+                        "workflow-builder-secrets",
+                    ),
+                    "key": os.environ.get(
+                        "INTERNAL_API_SECRET_KEY",
+                        "INTERNAL_API_TOKEN",
+                    ),
+                }
+            },
+        },
+    ]
+    for env_name in WORKER_ENV_PASSTHROUGH:
+        env_value = os.environ.get(env_name)
+        if env_value:
+            worker_env.append({"name": env_name, "value": env_value})
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "serviceAccountName": class_config.serviceAccountName,
@@ -181,35 +224,7 @@ def build_job_manifest(
                 "name": "worker",
                 "image": class_config.workerImage,
                 "command": ["python", "-m", "src.worker"],
-                "env": [
-                    {"name": "EXECUTION_REQUEST_PATH", "value": payload_path},
-                    {
-                        "name": "WORKFLOW_BUILDER_URL",
-                        "value": os.environ.get("WORKFLOW_BUILDER_URL", ""),
-                    },
-                    {
-                        "name": "WORKFLOW_ORCHESTRATOR_URL",
-                        "value": os.environ.get(
-                            "WORKFLOW_ORCHESTRATOR_URL",
-                            "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080",
-                        ),
-                    },
-                    {
-                        "name": "INTERNAL_API_TOKEN",
-                        "valueFrom": {
-                            "secretKeyRef": {
-                                "name": os.environ.get(
-                                    "INTERNAL_API_SECRET_NAME",
-                                    "workflow-builder-secrets",
-                                ),
-                                "key": os.environ.get(
-                                    "INTERNAL_API_SECRET_KEY",
-                                    "INTERNAL_API_TOKEN",
-                                ),
-                            }
-                        },
-                    },
-                ],
+                "env": worker_env,
                 "volumeMounts": [
                     {
                         "name": "execution-request",

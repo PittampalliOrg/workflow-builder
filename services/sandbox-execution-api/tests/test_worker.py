@@ -109,6 +109,45 @@ def test_start_workflow_retries_transient_runtime_unavailable(monkeypatch) -> No
     assert sleeps == [4.0]
 
 
+def test_workflow_start_stagger_is_deterministic(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS", "120")
+    payload = {"executionId": "hexec_1", "workflowExecutionId": "exec_1"}
+
+    first = worker._workflow_start_stagger_seconds(payload)
+    second = worker._workflow_start_stagger_seconds(payload)
+
+    assert first == second
+    assert 0 <= first <= 120
+
+
+def test_run_applies_workflow_start_stagger_before_start(monkeypatch, tmp_path) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS", "10")
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    monkeypatch.setattr(
+        worker,
+        "_workflow_status",
+        lambda _instance_id: {"runtimeStatus": "COMPLETED", "output": {}},
+    )
+    monkeypatch.setattr(worker, "_post_callback", lambda *_args, **_kwargs: None)
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+
+    assert worker._run() == 0
+    assert len(sleeps) == 1
+    assert 0 <= sleeps[0] <= 10
+
+
 def test_start_workflow_does_not_retry_non_transient_client_error(monkeypatch) -> None:
     monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS", "3")
     attempts = {"count": 0}

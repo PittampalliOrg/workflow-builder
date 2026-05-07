@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import pathlib
 import random
@@ -57,26 +58,26 @@ def _callback_url(payload: dict[str, Any]) -> str:
 
 
 def _post_callback(payload: dict[str, Any], body: dict[str, Any]) -> None:
-	url = _callback_url(payload)
-	attempts = max(1, int(_env("SANDBOX_EXECUTION_CALLBACK_ATTEMPTS", "8")))
-	backoff_seconds = max(
-		1.0,
-		float(_env("SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS", "2")),
-	)
-	last_error: Exception | None = None
-	for attempt in range(1, attempts + 1):
-		try:
-			res = requests.post(url, headers=_headers(), json=body, timeout=60)
-			if res.status_code < 400:
-				return
-			last_error = RuntimeError(
-				f"callback failed ({res.status_code}): {res.text[:800]}"
-			)
-		except requests.RequestException as exc:
-			last_error = exc
-		if attempt < attempts:
-			time.sleep(min(30.0, backoff_seconds * attempt))
-	raise RuntimeError(f"callback failed after {attempts} attempt(s): {last_error}")
+    url = _callback_url(payload)
+    attempts = max(1, int(_env("SANDBOX_EXECUTION_CALLBACK_ATTEMPTS", "8")))
+    backoff_seconds = max(
+        1.0,
+        float(_env("SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS", "2")),
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            res = requests.post(url, headers=_headers(), json=body, timeout=60)
+            if res.status_code < 400:
+                return
+            last_error = RuntimeError(
+                f"callback failed ({res.status_code}): {res.text[:800]}"
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+        if attempt < attempts:
+            time.sleep(min(30.0, backoff_seconds * attempt))
+    raise RuntimeError(f"callback failed after {attempts} attempt(s): {last_error}")
 
 
 def _orchestrator_url() -> str:
@@ -116,6 +117,35 @@ def _workflow_start_backoff_seconds(attempt: int) -> float:
         float(_env("SANDBOX_EXECUTION_WORKFLOW_START_MAX_BACKOFF_SECONDS", "45")),
     )
     return min(cap, base * attempt) + random.uniform(0, min(1.0, base))
+
+
+def _workflow_start_stagger_seconds(payload: dict[str, Any]) -> float:
+    window = max(
+        0.0,
+        float(_env("SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS", "0")),
+    )
+    if window <= 0:
+        return 0.0
+    key = str(
+        payload.get("executionId")
+        or payload.get("workflowExecutionId")
+        or payload.get("instanceId")
+        or ""
+    )
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    bucket = int(digest[:12], 16) / float(0xFFFFFFFFFFFF)
+    return bucket * window
+
+
+def _stagger_workflow_start(payload: dict[str, Any]) -> None:
+    sleep_seconds = _workflow_start_stagger_seconds(payload)
+    if sleep_seconds <= 0:
+        return
+    print(
+        f"staggering workflow start for {sleep_seconds:.1f}s",
+        file=sys.stderr,
+    )
+    time.sleep(sleep_seconds)
 
 
 def _start_workflow_once(payload: dict[str, Any]) -> str:
@@ -196,6 +226,7 @@ def _run() -> int:
     execution_id = str(payload.get("executionId") or payload["workflowExecutionId"])
     instance_id: str | None = None
     try:
+        _stagger_workflow_start(payload)
         instance_id = _start_workflow(payload)
         _post_callback(
             payload,

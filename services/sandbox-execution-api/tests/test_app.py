@@ -61,6 +61,24 @@ def test_benchmark_fast_job_is_kueue_managed() -> None:
     assert payload["instanceId"] == "sympy__sympy-20590"
 
 
+def test_worker_retry_and_throttle_env_is_passed_through(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS", "20")
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS", "180")
+    manifest = build_job_manifest(
+        _request(),
+        execution_id="hexec-123",
+        namespace="sandbox-execution",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS"] == "20"
+    assert env["SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS"] == "180"
+
+
 def test_secure_gvisor_sets_runtime_class_and_queue() -> None:
     manifest = build_job_manifest(
         _request("secure-gvisor"),
