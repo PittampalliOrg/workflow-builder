@@ -29,6 +29,7 @@ export type AgentRuntimeIsolation = "auto" | "shared" | "dedicated";
 export type AgentRuntimePoolBinding = {
 	appId?: string;
 	runtimeClass?: string;
+	idleTtlSeconds?: number;
 	minReplicas?: number;
 	maxReplicas?: number;
 	slotsPerReplica?: number;

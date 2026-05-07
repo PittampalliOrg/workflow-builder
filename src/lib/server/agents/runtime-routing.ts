@@ -13,6 +13,7 @@ export type AgentRuntimePool = {
 	runtimeClass: string;
 	appId: string;
 	slug: string;
+	idleTtlSeconds?: number;
 	minReplicas?: number;
 	maxReplicas?: number;
 	slotsPerReplica?: number;
@@ -144,6 +145,7 @@ function explicitPoolFromConfig(
 		runtimeClass: cleanRuntimeClass(raw.runtimeClass) ?? runtimeClass,
 		appId,
 		slug,
+		idleTtlSeconds: cleanPositiveInt(raw.idleTtlSeconds),
 		minReplicas: cleanPositiveInt(raw.minReplicas),
 		maxReplicas: cleanPositiveInt(raw.maxReplicas),
 		slotsPerReplica: cleanPositiveInt(raw.slotsPerReplica),
@@ -182,6 +184,7 @@ export function resolveAgentRuntimePool(
 			runtimeClass,
 			appId,
 			slug,
+			idleTtlSeconds: cleanPositiveInt(configured.idleTtlSeconds),
 			minReplicas: cleanPositiveInt(configured.minReplicas) ?? defaultMinReplicas,
 			maxReplicas: cleanPositiveInt(configured.maxReplicas) ?? defaultMaxReplicas,
 			slotsPerReplica: cleanPositiveInt(configured.slotsPerReplica),

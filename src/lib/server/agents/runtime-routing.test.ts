@@ -45,7 +45,11 @@ describe("resolveAgentRuntimeRoute", () => {
 	it("routes non-browser dapr-agent-py agents to a shared class pool when enabled", () => {
 		process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED = "true";
 		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({
-			coding: { appId: "agent-runtime-pool-coding", maxReplicas: 4 },
+			coding: {
+				appId: "agent-runtime-pool-coding",
+				idleTtlSeconds: 7200,
+				maxReplicas: 4,
+			},
 		});
 
 		const route = resolveAgentRuntimeRoute({
@@ -59,7 +63,7 @@ describe("resolveAgentRuntimeRoute", () => {
 			slug: "pool-coding",
 			runtimeClass: "coding",
 			isolation: "shared",
-			pool: { maxReplicas: 4 },
+			pool: { idleTtlSeconds: 7200, maxReplicas: 4 },
 		});
 	});
 
@@ -71,6 +75,7 @@ describe("resolveAgentRuntimeRoute", () => {
 				runtimeIsolation: "shared",
 				runtimePool: {
 					appId: "agent-runtime-pool-office",
+					idleTtlSeconds: 3600,
 					minReplicas: 1,
 					slotsPerReplica: 2,
 					maxActiveSessions: 4,
@@ -83,7 +88,12 @@ describe("resolveAgentRuntimeRoute", () => {
 			slug: "pool-office",
 			runtimeClass: "office",
 			isolation: "shared",
-			pool: { minReplicas: 1, slotsPerReplica: 2, maxActiveSessions: 4 },
+			pool: {
+				idleTtlSeconds: 3600,
+				minReplicas: 1,
+				slotsPerReplica: 2,
+				maxActiveSessions: 4,
+			},
 		});
 	});
 

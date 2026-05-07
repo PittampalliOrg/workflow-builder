@@ -776,13 +776,16 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		const raw = cfgRows[0]?.config as
 			| { agentRuntimeIdleTtlSeconds?: number }
 			| undefined;
-		if (
-			raw &&
-			typeof raw.agentRuntimeIdleTtlSeconds === "number" &&
-			raw.agentRuntimeIdleTtlSeconds >= 60
-		) {
-			idleTtlSeconds = raw.agentRuntimeIdleTtlSeconds;
-		}
+	if (
+		raw &&
+		typeof raw.agentRuntimeIdleTtlSeconds === "number" &&
+		raw.agentRuntimeIdleTtlSeconds >= 60
+	) {
+		idleTtlSeconds = raw.agentRuntimeIdleTtlSeconds;
+	}
+	if (!idleTtlSeconds && runtimeRoute.pool?.idleTtlSeconds) {
+		idleTtlSeconds = runtimeRoute.pool.idleTtlSeconds;
+	}
 	}
 
 	await requireDb()
