@@ -39,6 +39,8 @@ const DEFAULT_TEKTON_NAMESPACE = "tekton-pipelines";
 const DEFAULT_GIT_REVISION = "main";
 const DEFAULT_SWEBENCH_BUILD_GIT_URL = "https://github.com/PittampalliOrg/workflow-builder.git";
 const DEFAULT_SWEBENCH_STACKS_REPO = "https://github.com/PittampalliOrg/stacks.git";
+const DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM = "buildah-cache-swebench-inference";
+const MAX_SWEBENCH_BUILDAH_CACHE_SHARDS = 16;
 const SWEBENCH_PIPELINE_TIMEOUTS = {
 	pipeline: "6h0m0s",
 	tasks: "5h45m0s",
@@ -798,6 +800,7 @@ export function buildSwebenchPipelineRunManifest(
 	pipelineRunName: string,
 	namespace: string,
 ): TektonPipelineRun {
+	const buildahCacheClaimName = swebenchBuildahCacheClaimName(spec);
 	return {
 		apiVersion: "tekton.dev/v1",
 		kind: "PipelineRun",
@@ -812,6 +815,7 @@ export function buildSwebenchPipelineRunManifest(
 				"workflow-builder.cnoe.io/environment-key": spec.environmentKey,
 				"workflow-builder.cnoe.io/env-spec-hash": spec.envSpecHash.slice(0, 63),
 				"workflow-builder.cnoe.io/build-strategy": spec.buildStrategy,
+				"workflow-builder.cnoe.io/build-cache": buildahCacheClaimName,
 			},
 		},
 		spec: {
@@ -860,13 +864,37 @@ export function buildSwebenchPipelineRunManifest(
 			workspaces: [
 				{
 					name: "buildah-cache",
-					persistentVolumeClaim: { claimName: "buildah-cache-swebench-inference" },
+					persistentVolumeClaim: { claimName: buildahCacheClaimName },
 				},
 				{ name: "dockerconfig", secret: { secretName: "gitea-registry-credentials" } },
 				{ name: "stacks-source", emptyDir: {} },
 			],
 		},
 	};
+}
+
+function swebenchBuildahCacheClaimName(spec: SwebenchEnvironmentSpec): string {
+	const shards = configuredSwebenchBuildahCacheShards();
+	if (shards <= 1) {
+		return DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM;
+	}
+	const hash = createHash("sha256").update(spec.envSpecHash).digest();
+	const shard = hash.readUInt32BE(0) % shards;
+	return `${DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM}-${shard}`;
+}
+
+function configuredSwebenchBuildahCacheShards(): number {
+	const raw =
+		env.SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS ??
+		process.env.SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS;
+	if (!raw) {
+		return 1;
+	}
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed <= 1) {
+		return 1;
+	}
+	return Math.min(parsed, MAX_SWEBENCH_BUILDAH_CACHE_SHARDS);
 }
 
 export function normalizeEnvironmentBuildActivityEvents(input: {

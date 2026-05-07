@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => {
@@ -552,6 +553,58 @@ describe("SWE-bench environment image build planning", () => {
 				{
 					name: "stacks_repo",
 					value: "https://github.com/PittampalliOrg/stacks.git",
+				},
+			]),
+		);
+		expect(manifest.metadata?.labels).toMatchObject({
+			"workflow-builder.cnoe.io/build-cache": "buildah-cache-swebench-inference",
+		});
+		expect(runSpec.workspaces).toEqual(
+			expect.arrayContaining([
+				{
+					name: "buildah-cache",
+					persistentVolumeClaim: {
+						claimName: "buildah-cache-swebench-inference",
+					},
+				},
+			]),
+		);
+	});
+
+	it("shards SWE-bench PipelineRun Buildah caches when configured", () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS", "3");
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "django__django-10554",
+			repo: "django/django",
+			baseCommit: "08ecf3f6a13900c80ba7143db2f00898b783510e",
+			testMetadata: {
+				version: "2.2",
+				test_patch: "diff --git a/tests/test_fix.py b/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["tests/test_existing.py::test_existing"],
+			},
+		});
+		const shard =
+			createHash("sha256").update(spec.envSpecHash).digest().readUInt32BE(0) % 3;
+		const claimName = `buildah-cache-swebench-inference-${shard}`;
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+
+		expect(manifest.metadata?.labels).toMatchObject({
+			"workflow-builder.cnoe.io/build-cache": claimName,
+		});
+		expect(runSpec.workspaces).toEqual(
+			expect.arrayContaining([
+				{
+					name: "buildah-cache",
+					persistentVolumeClaim: { claimName },
 				},
 			]),
 		);
