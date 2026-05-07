@@ -5,7 +5,9 @@ import hashlib
 import os
 import pathlib
 import random
+import signal
 import sys
+import threading
 import time
 from typing import Any
 
@@ -18,6 +20,8 @@ TERMINAL_RUNTIME_STATUSES = {
     "CANCELED": "cancelled",
     "CANCELLED": "cancelled",
 }
+
+_termination_requested = threading.Event()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -44,6 +48,20 @@ def _headers() -> dict[str, str]:
         headers["X-Internal-Token"] = token
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _handle_termination(signum: int, _frame: object) -> None:
+    print(f"received signal {signum}; requesting workflow termination", file=sys.stderr)
+    _termination_requested.set()
+
+
+def _install_signal_handlers() -> None:
+    signal.signal(signal.SIGTERM, _handle_termination)
+    signal.signal(signal.SIGINT, _handle_termination)
+
+
+def _sleep(seconds: float) -> None:
+    _termination_requested.wait(timeout=max(0.0, seconds))
 
 
 def _callback_url(payload: dict[str, Any]) -> str:
@@ -145,7 +163,7 @@ def _stagger_workflow_start(payload: dict[str, Any]) -> None:
         f"staggering workflow start for {sleep_seconds:.1f}s",
         file=sys.stderr,
     )
-    time.sleep(sleep_seconds)
+    _sleep(sleep_seconds)
 
 
 def _start_workflow_once(payload: dict[str, Any]) -> str:
@@ -221,13 +239,62 @@ def _workflow_status(instance_id: str) -> dict[str, Any]:
     return body
 
 
+def _terminate_workflow(instance_id: str, reason: str) -> None:
+    res = requests.post(
+        f"{_orchestrator_url()}/api/v2/workflows/{instance_id}/terminate",
+        json={"reason": reason},
+        headers=_headers(),
+        timeout=30,
+    )
+    if res.status_code >= 400:
+        raise RuntimeError(
+            f"workflow terminate failed ({res.status_code}): {res.text[:800]}"
+        )
+
+
+def _cancel_started_workflow(
+    payload: dict[str, Any],
+    *,
+    execution_id: str,
+    instance_id: str,
+    reason: str,
+) -> None:
+    termination_error: str | None = None
+    try:
+        _terminate_workflow(instance_id, reason)
+    except Exception as exc:
+        termination_error = str(exc)
+        print(f"workflow termination failed for {instance_id}: {exc}", file=sys.stderr)
+
+    callback_body: dict[str, Any] = {
+        "status": "cancelled",
+        "hostExecutionId": execution_id,
+        "daprInstanceId": instance_id,
+        "error": reason,
+    }
+    if termination_error:
+        callback_body["terminationError"] = termination_error
+    _post_callback(payload, callback_body)
+
+
 def _run() -> int:
+    _install_signal_handlers()
     payload = _load_payload()
     execution_id = str(payload.get("executionId") or payload["workflowExecutionId"])
     instance_id: str | None = None
     try:
         _stagger_workflow_start(payload)
+        if _termination_requested.is_set():
+            raise RuntimeError("host execution worker terminated before workflow start")
         instance_id = _start_workflow(payload)
+        if _termination_requested.is_set():
+            _cancel_started_workflow(
+                payload,
+                execution_id=execution_id,
+                instance_id=instance_id,
+                reason="host execution worker terminated after workflow start",
+            )
+            return 1
         _post_callback(
             payload,
             {
@@ -240,6 +307,14 @@ def _run() -> int:
         poll_seconds = max(2, int(_env("SANDBOX_EXECUTION_WORKER_POLL_SECONDS", "15")))
         last_status: dict[str, Any] = {}
         while time.monotonic() < deadline:
+            if _termination_requested.is_set():
+                _cancel_started_workflow(
+                    payload,
+                    execution_id=execution_id,
+                    instance_id=instance_id,
+                    reason="host execution worker terminated",
+                )
+                return 1
             last_status = _workflow_status(instance_id)
             runtime_status = str(last_status.get("runtimeStatus") or "").upper()
             if runtime_status in TERMINAL_RUNTIME_STATUSES:
@@ -257,7 +332,15 @@ def _run() -> int:
                     },
                 )
                 return 0 if status == "success" else 1
-            time.sleep(poll_seconds)
+            _sleep(poll_seconds)
+        if _termination_requested.is_set():
+            _cancel_started_workflow(
+                payload,
+                execution_id=execution_id,
+                instance_id=instance_id,
+                reason="host execution worker terminated",
+            )
+            return 1
         _post_callback(
             payload,
             {

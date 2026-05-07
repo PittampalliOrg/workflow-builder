@@ -141,7 +141,7 @@ def test_run_applies_workflow_start_stagger_before_start(monkeypatch, tmp_path) 
     )
     monkeypatch.setattr(worker, "_post_callback", lambda *_args, **_kwargs: None)
     sleeps: list[float] = []
-    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+    monkeypatch.setattr(worker, "_sleep", sleeps.append)
 
     assert worker._run() == 0
     assert len(sleeps) == 1
@@ -173,3 +173,48 @@ def test_start_workflow_does_not_retry_non_transient_client_error(monkeypatch) -
     else:
         raise AssertionError("expected RuntimeError")
     assert attempts["count"] == 1
+
+
+def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tmp_path) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    callbacks: list[dict[str, object]] = []
+    terminated: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        worker,
+        "_workflow_status",
+        lambda _instance_id: {"runtimeStatus": "RUNNING"},
+    )
+    monkeypatch.setattr(
+        worker,
+        "_terminate_workflow",
+        lambda instance_id, reason: terminated.append((instance_id, reason)),
+    )
+
+    def fake_callback(_payload, body):
+        callbacks.append(body)
+        if body["status"] == "running":
+            worker._termination_requested.set()
+
+    monkeypatch.setattr(worker, "_post_callback", fake_callback)
+    worker._termination_requested.clear()
+
+    try:
+        assert worker._run() == 1
+    finally:
+        worker._termination_requested.clear()
+
+    assert terminated == [("sw-1", "host execution worker terminated")]
+    assert callbacks[-1]["status"] == "cancelled"
+    assert callbacks[-1]["daprInstanceId"] == "sw-1"
