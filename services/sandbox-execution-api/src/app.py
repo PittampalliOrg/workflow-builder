@@ -57,7 +57,7 @@ class ExecutionClassConfig(BaseModel):
     )
     cpu: str = "100m"
     memory: str = "256Mi"
-    ephemeralStorage: str = "16Gi"
+    ephemeralStorage: str = "1Gi"
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:

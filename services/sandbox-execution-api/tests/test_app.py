@@ -48,7 +48,7 @@ def test_benchmark_fast_job_is_kueue_managed() -> None:
     assert "runtimeClassName" not in pod_spec
     assert container["image"] == "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
     assert container["command"] == ["python", "-m", "src.worker"]
-    assert container["resources"]["requests"]["ephemeral-storage"] == "16Gi"
+    assert container["resources"]["requests"]["ephemeral-storage"] == "1Gi"
     assert container["env"][0] == {
         "name": "EXECUTION_REQUEST_PATH",
         "value": "/var/run/sandbox-execution/request.json",
