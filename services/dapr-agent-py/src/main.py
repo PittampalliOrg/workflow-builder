@@ -3248,10 +3248,17 @@ class OpenShellDurableAgent(DurableAgent):
             # orchestrator replay tick (see comment above on finally semantics).
             if not ctx.is_replaying and instance_id in self._interaction_span_by_instance:
                 try:
-                    from src.telemetry import end_interaction_span
+                    from src.telemetry import end_interaction_span, flush_telemetry
                     from src.telemetry.attributes import reset_session_context
 
                     end_interaction_span()
+                    # Force the BatchSpanProcessor to push the root span before
+                    # the activity returns. Without this, the root span can sit
+                    # in the queue (or get dropped when the queue is full from
+                    # a long, span-heavy turn) and MLflow keeps the trace
+                    # marked IN_PROGRESS with no root, which renders empty in
+                    # the MLflow Tracing UI even though child spans arrived.
+                    flush_telemetry()
                     self._interaction_span_by_instance.pop(instance_id, None)
                     tok = self._interaction_ctx_token_by_instance.pop(
                         instance_id, None

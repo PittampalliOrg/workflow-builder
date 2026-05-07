@@ -94,9 +94,22 @@ def init_telemetry() -> bool:
         )
 
         # --- Tracer ---
+        # Long SWE-bench turns produce hundreds of child spans before the root
+        # `claude_code.interaction` span ends. The default queue (2048) and
+        # batch size (512) silently drop spans under that load, leaving the
+        # root span trapped in MLflow as `IN_PROGRESS`. Bump both, and let env
+        # overrides win.
+        bsp_queue = _parse_int_env("OTEL_BSP_MAX_QUEUE_SIZE", 8192)
+        bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
+        bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
         tp = TracerProvider(resource=resource)
         tp.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"),
+                max_queue_size=bsp_queue,
+                max_export_batch_size=bsp_batch,
+                schedule_delay_millis=bsp_delay,
+            )
         )
         trace.set_tracer_provider(tp)
         _tracer_provider = tp
@@ -164,6 +177,27 @@ def get_event_logger():
     if not _ready:
         return None
     return _event_logger
+
+
+def flush_telemetry(timeout_ms: int | None = None) -> None:
+    """Force the tracer's BatchSpanProcessor to flush pending spans.
+
+    Call after ending the root `claude_code.interaction` span at the end of
+    an agent_workflow turn so the root span doesn't sit in the queue past the
+    activity return — which is what leaves MLflow traces stuck in
+    `IN_PROGRESS` with no root.
+    """
+    if not _ready or _tracer_provider is None:
+        return
+    effective = timeout_ms if timeout_ms is not None else _parse_int_env(
+        "CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS", 5_000
+    )
+    try:
+        flush = getattr(_tracer_provider, "force_flush", None)
+        if flush:
+            flush(timeout_millis=effective)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("flush_telemetry failed: %s", exc)
 
 
 def shutdown_telemetry() -> None:

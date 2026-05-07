@@ -25,7 +25,7 @@ from .metrics import (
     record_session_start,
     record_tokens,
 )
-from .providers import init_telemetry, is_telemetry_ready, shutdown_telemetry
+from .providers import flush_telemetry, init_telemetry, is_telemetry_ready, shutdown_telemetry
 from .session_tracing import (
     end_hook_span,
     end_interaction_span,
@@ -46,6 +46,7 @@ __all__ = [
     "init_telemetry",
     "shutdown_telemetry",
     "is_telemetry_ready",
+    "flush_telemetry",
     # attributes
     "get_telemetry_attributes",
     "set_session_context",
