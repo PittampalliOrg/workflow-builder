@@ -3506,6 +3506,7 @@ function shouldKeepSwebenchSandboxAfterRun(): boolean {
 
 const BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES = [
 	"session.turn_started",
+	"session.turn_heartbeat",
 	"agent.iteration",
 	"llm_start",
 	"agent.llm_usage",
@@ -3517,10 +3518,12 @@ const BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES = [
 export function latestBenchmarkInferenceProgressAt(input: {
 	startedAt?: Date | null;
 	latestProgressEventCreatedAt?: Date | null;
+	latestHeartbeatAt?: Date | null;
 }): Date | null {
 	const timestamps = [
 		input.startedAt,
 		input.latestProgressEventCreatedAt,
+		input.latestHeartbeatAt,
 	].filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()));
 	if (timestamps.length === 0) return null;
 	return timestamps.reduce((latest, value) =>
@@ -3533,6 +3536,7 @@ export function benchmarkInferenceStallState(input: {
 	stallSeconds: number;
 	startedAt?: Date | null;
 	latestProgressEventCreatedAt?: Date | null;
+	latestHeartbeatAt?: Date | null;
 }): { stalled: boolean; lastProgressAt: Date | null; stalledSeconds: number } {
 	const lastProgressAt = latestBenchmarkInferenceProgressAt(input);
 	if (!lastProgressAt) {

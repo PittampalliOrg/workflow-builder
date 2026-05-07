@@ -196,7 +196,7 @@ describe("SWE-bench workflow spec", () => {
 			latestProgressEventCreatedAt: new Date("2026-05-02T12:01:30Z"),
 			latestHeartbeatAt: new Date("2026-05-02T12:09:59Z"),
 		} as Parameters<typeof benchmarkInferenceStallState>[0] & { latestHeartbeatAt: Date };
-		expect(benchmarkInferenceStallState(recentHeartbeatOnly).stalled).toBe(true);
+		expect(benchmarkInferenceStallState(recentHeartbeatOnly).stalled).toBe(false);
 	});
 
 	it("finalizes lifecycle aggregation after inference leaves active states", () => {
