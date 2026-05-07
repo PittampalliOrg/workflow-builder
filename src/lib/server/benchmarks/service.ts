@@ -3614,13 +3614,20 @@ export function benchmarkInferenceStallSeconds(maxTurns?: number | null): number
 		? (env.BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS ??
 			process.env.BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS)
 		: undefined;
+	if (isShortRunCanary) {
+		return clampInteger(
+			rawShortRunStallSeconds,
+			60,
+			24 * 60 * 60,
+			600,
+		);
+	}
 	return clampInteger(
-		rawShortRunStallSeconds ??
-			env.BENCHMARK_INFERENCE_STALL_SECONDS ??
+		env.BENCHMARK_INFERENCE_STALL_SECONDS ??
 			process.env.BENCHMARK_INFERENCE_STALL_SECONDS,
 		60,
 		24 * 60 * 60,
-		isShortRunCanary ? 600 : 2400,
+		2400,
 	);
 }
 

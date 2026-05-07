@@ -205,6 +205,11 @@ describe("SWE-bench workflow spec", () => {
 		expect(benchmarkInferenceStallSeconds(4)).toBe(2400);
 		expect(benchmarkInferenceStallSeconds(1)).toBe(600);
 
+		vi.stubEnv("BENCHMARK_INFERENCE_STALL_SECONDS", "2400");
+		expect(benchmarkInferenceStallSeconds(1)).toBe(600);
+		expect(benchmarkInferenceStallSeconds(2)).toBe(2400);
+		vi.unstubAllEnvs();
+
 		vi.stubEnv("BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS", "900");
 		expect(benchmarkInferenceStallSeconds(1)).toBe(900);
 		expect(benchmarkInferenceStallSeconds(2)).toBe(2400);
