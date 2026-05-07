@@ -3418,6 +3418,13 @@ export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
 		.where(eq(workflowExecutions.id, row.execution.id));
 
 	if (status === "running" || status === "pending") {
+		const stalledOrTouched = await timeoutBenchmarkInstanceIfStalled(
+			row.runInstance,
+			row.run,
+		);
+		if (stalledOrTouched) {
+			return stalledOrTouched;
+		}
 		const patch: Partial<typeof benchmarkRunInstances.$inferInsert> = {
 			status: "inferencing",
 			inferenceStatus: "inferencing",
@@ -3643,7 +3650,6 @@ export function latestBenchmarkInferenceProgressAt(input: {
 	const timestamps = [
 		input.startedAt,
 		input.latestProgressEventCreatedAt,
-		input.latestHeartbeatAt,
 	].filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()));
 	if (timestamps.length === 0) return null;
 	return timestamps.reduce((latest, value) =>
