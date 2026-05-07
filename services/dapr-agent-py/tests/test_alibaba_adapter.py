@@ -145,7 +145,9 @@ def test_alibaba_chat_converts_tools_and_tool_choice(monkeypatch) -> None:
     assert bodies[0]["tool_choice"] == tool_choice
 
 
-def test_alibaba_structured_output_uses_json_object(monkeypatch) -> None:
+def test_alibaba_structured_output_prompts_for_json_without_response_format_by_default(
+    monkeypatch,
+) -> None:
     bodies: list[dict] = []
 
     class ConversationSummary(BaseModel):
@@ -179,6 +181,39 @@ def test_alibaba_structured_output_uses_json_object(monkeypatch) -> None:
         "role": "system",
         "content": "Return a valid JSON object only.",
     }
-    assert bodies[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in bodies[0]
     parsed = adapter.parse_structured_response(ConversationSummary, result["content"])
     assert parsed.summary == "ok"
+
+
+def test_alibaba_structured_output_can_enable_response_format(monkeypatch) -> None:
+    bodies: list[dict] = []
+
+    class ConversationSummary(BaseModel):
+        summary: str
+
+    monkeypatch.setenv("ALIBABA_API_KEY", "alibaba-test")
+    monkeypatch.setenv("ALIBABA_USE_RESPONSE_FORMAT", "true")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "chatcmpl_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"summary\":\"ok\"}",
+                },
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_alibaba_chat(
+        "llm-alibaba-qwen3-coder-plus",
+        [{"role": "user", "content": "summarize"}],
+        response_format=ConversationSummary,
+    )
+
+    assert bodies[0]["response_format"] == {"type": "json_object"}

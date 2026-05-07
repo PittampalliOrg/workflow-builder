@@ -419,7 +419,12 @@ def _call_alibaba_chat(
         "max_tokens": output_cap,
         "stream": False,
     }
-    if response_format is not None:
+    use_response_format = (
+        response_format is not None
+        and os.environ.get("ALIBABA_USE_RESPONSE_FORMAT", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    if use_response_format:
         request_body["response_format"] = {"type": "json_object"}
     if converted_tools:
         request_body["tools"] = converted_tools
