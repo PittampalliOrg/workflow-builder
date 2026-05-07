@@ -105,14 +105,21 @@ min(
   explicit runtime maxActiveSessions when configured,
   BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES,
   BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS / BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS,
-  BENCHMARK_MAX_ACTIVE_SANDBOXES and live schedulable sandbox headroom,
+  min(BENCHMARK_MAX_ACTIVE_SANDBOXES, live schedulable sandbox headroom),
   BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS / BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS
 )
 ```
 
 The live resource-lease gate re-checks the same classes before each instance
-starts. If a requested concurrency is higher than the runtime or cluster can
-actually admit, the run should slow down instead of over-scheduling.
+starts. Run admission and global lease capacity deliberately use different
+sandbox values: run admission is capped by remaining schedulable sandbox
+headroom at launch time, while the stored `maxActiveSandboxes` lease limit is
+capped by configured sandbox capacity and total schedulable sandbox capacity.
+Do not store launch-time remaining headroom as the global active sandbox limit,
+or overlapping runs can freeze at the amount of headroom that happened to be
+available when the newest run was created. If a requested concurrency is higher
+than the runtime or cluster can actually admit, the run should slow down instead
+of over-scheduling.
 
 Capacity diagnostics are exposed in two places:
 
@@ -178,7 +185,7 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` | `72` | Global active inference cap across benchmark resource leases. |
 | `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | `72` | Global Dapr agent child-workflow cap used by capacity estimates and `dapr_workflow_slot` leases. |
 | `BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS` | unset | unset | Backward-compatible alias for `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`. |
-| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | `80` | Configured OpenShell sandbox cap. Effective sandbox cap is the minimum of this and live schedulable headroom when available. |
+| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | `80` | Configured OpenShell sandbox cap. Per-run admission also considers remaining live schedulable headroom; stored global lease capacity should use configured cap plus total schedulable capacity. |
 | `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS` | unset | unset | Optional per-model request cap for `model_slot` leases. |
 | `BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS` | unset | unset | Backward-compatible alias for `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`. |
 | `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
@@ -359,7 +366,7 @@ assuming the change is effective:
 2. BFF stored run cap: `BENCHMARK_DEFAULT_CONCURRENCY` and `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES`.
 3. Runtime capacity: shared-pool replica/slot config or dedicated runtime `slotsPerReplica`.
 4. Dapr capacity: `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR` and, if used, lifecycle overrides.
-5. Resource leases: sandbox and model caps plus live schedulable sandbox headroom.
+5. Resource leases: sandbox and model caps; use live sandbox headroom for per-run admission and total sandbox capacity for global active lease limits.
 6. Coordinator backstop and start pacing: `SWEBENCH_COORDINATOR_*`.
 7. Evaluation: `SWEBENCH_EVAL_MAX_PARALLEL` on the coordinator and evaluator.
 
