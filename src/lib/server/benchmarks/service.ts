@@ -135,6 +135,19 @@ async function syncBenchmarkInstanceMlflowAndTraceBundle(params: {
 		);
 	}
 }
+
+function syncBenchmarkInstanceMlflowAndTraceBundleInBackground(params: {
+	runId: string;
+	instanceId: string;
+}): void {
+	void syncBenchmarkInstanceMlflowAndTraceBundle(params).catch((err) => {
+		console.warn(
+			`[trace-bundle] background materialize failed ${params.runId}/${params.instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	});
+}
+
 const DURABLE_RUNTIME_MISSING_STATUS = "__missing__";
 const BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY = positiveIntEnv(
 	"BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY",
@@ -3466,7 +3479,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
-		await syncBenchmarkInstanceMlflowAndTraceBundle({
+		syncBenchmarkInstanceMlflowAndTraceBundleInBackground({
 			runId: params.runId,
 			instanceId: params.instanceId,
 		});

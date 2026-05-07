@@ -66,6 +66,25 @@ function stripFullPayload(
 	return out;
 }
 
+function stripNulBytes(value: string): string {
+	return value.includes("\u0000") ? value.replace(/\u0000/g, "") : value;
+}
+
+export function sanitizeSessionEventDataForPostgres<T>(value: T): T {
+	if (typeof value === "string") return stripNulBytes(value) as T;
+	if (Array.isArray(value)) {
+		return value.map((entry) => sanitizeSessionEventDataForPostgres(entry)) as T;
+	}
+	if (value && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+			out[stripNulBytes(key)] = sanitizeSessionEventDataForPostgres(entry);
+		}
+		return out as T;
+	}
+	return value;
+}
+
 /**
  * Append an event to a session's log. Sequence is computed server-side via a
  * max+1 lookup while holding a per-session advisory transaction lock. The lock
@@ -85,6 +104,7 @@ export async function appendEvent(
 	},
 ): Promise<SessionEventEnvelope> {
 	const database = requireDb();
+	const cleanData = sanitizeSessionEventDataForPostgres(event.data ?? {});
 	// Retry loop is retained as a guard for transaction aborts and source-event
 	// duplicates delivered through more than one ingest path.
 	for (let attempt = 0; attempt < 5; attempt++) {
@@ -106,7 +126,7 @@ export async function appendEvent(
 						sessionId,
 						sequence: nextSeq,
 						type: event.type,
-						data: event.data ?? {},
+						data: cleanData,
 						processedAt: event.processedAt ?? null,
 						sourceEventId: event.sourceEventId ?? null,
 						producerId: event.producerId ?? null,
@@ -123,13 +143,13 @@ export async function appendEvent(
 			if (event.type === "agent.llm_usage") {
 				await aggregateLlmUsageIntoBenchmarkInstance(
 					sessionId,
-					(event.data ?? {}) as Record<string, unknown>,
+					cleanData as Record<string, unknown>,
 				);
 			}
 			if (event.type === "instance.metrics_summary") {
 				await applyInstanceMetricsSummaryToBenchmark(
 					sessionId,
-					(event.data ?? {}) as Record<string, unknown>,
+					cleanData as Record<string, unknown>,
 				);
 			}
 			// Phase B (corrected): the metrics_summary emit from dapr-agent-py
