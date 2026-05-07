@@ -80,6 +80,29 @@ describe("benchmark resource lease capacity", () => {
 		});
 	});
 
+	it("defaults model admission to the global inference cap across concurrent runs", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "80");
+
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(run, "model_slot"),
+		).toMatchObject({
+			capacityKey: "claude-opus-4-7",
+			limit: 80,
+		});
+	});
+
+	it("allows an explicit model cap to override the global inference cap", () => {
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "80");
+		vi.stubEnv("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS", "32");
+
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(run, "model_slot"),
+		).toMatchObject({
+			capacityKey: "claude-opus-4-7",
+			limit: 32,
+		});
+	});
+
 	it("uses live scheduler headroom as additional openshell admission capacity", () => {
 		expect(
 			__benchmarkResourceLeasesForTest.admissionLimit({

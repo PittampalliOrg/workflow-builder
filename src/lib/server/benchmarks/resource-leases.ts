@@ -245,6 +245,7 @@ function resourceCapacity(
 				limit:
 					envPositiveInt("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS") ??
 					envPositiveInt("BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS") ??
+					envPositiveInt("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES") ??
 					effective,
 			};
 	}
