@@ -729,8 +729,8 @@ def _retry_run_terminal_cleanup(ctx, data: dict[str, Any]) -> dict[str, Any]:
         _bff_with_retry(
             "POST",
             f"/api/internal/benchmarks/runs/{run_id}/cleanup",
-            json_body={},
-            timeout=180,
+            json_body={"background": True},
+            timeout=30,
             attempts=3,
             delay_seconds=5,
         )

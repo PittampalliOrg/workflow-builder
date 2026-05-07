@@ -130,7 +130,11 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
         app,
         "_retry_run_terminal_cleanup",
         lambda _ctx, data: terminal_cleanups.append(data)
-        or {"success": True, "run": {"id": data["runId"], "status": "cancelled"}},
+        or {
+            "success": True,
+            "background": True,
+            "run": {"id": data["runId"], "status": "cancelled"},
+        },
     )
     monkeypatch.setattr(
         app,
@@ -167,6 +171,7 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     assert lease_releases == []
     assert terminal_cleanups == [{"runId": "run_1"}]
     assert result["leaseRelease"]["success"] is True
+    assert result["leaseRelease"]["background"] is True
     assert result["leaseRelease"]["run"]["status"] == "cancelled"
 
 
