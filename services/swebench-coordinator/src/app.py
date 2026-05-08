@@ -731,13 +731,6 @@ def _acquire_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 "action": "acquire",
                 "instanceId": instance_id,
                 "phase": "inference",
-                "resources": [
-                    "inference_slot",
-                    "openshell_sandbox",
-                    "agent_runtime_slot",
-                    "dapr_workflow_slot",
-                    "model_slot",
-                ],
                 "metadata": {"source": "swebench-coordinator"},
             },
             timeout=60,

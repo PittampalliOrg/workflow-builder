@@ -896,6 +896,44 @@ def test_run_workflow_stops_when_status_mark_returns_terminal(monkeypatch):
         raise AssertionError("workflow should stop after terminal status")
 
 
+def test_acquire_instance_leases_lets_bff_select_backend_resources(monkeypatch):
+    app = load_app(monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    def fake_bff(method, path, json_body=None, timeout=60):
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "jsonBody": json_body,
+                "timeout": timeout,
+            }
+        )
+        return {"admitted": True, "holderId": "lease-holder"}
+
+    monkeypatch.setattr(app, "_bff", fake_bff)
+
+    result = app._acquire_instance_leases(
+        None,
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+
+    assert result == {"success": True, "admitted": True, "holderId": "lease-holder"}
+    assert calls == [
+        {
+            "method": "POST",
+            "path": "/api/internal/benchmarks/runs/run_1/leases",
+            "jsonBody": {
+                "action": "acquire",
+                "instanceId": "django__django-12754",
+                "phase": "inference",
+                "metadata": {"source": "swebench-coordinator"},
+            },
+            "timeout": 60,
+        }
+    ]
+
+
 def test_run_workflow_acquires_and_releases_instance_leases(monkeypatch):
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "wf_when_any", None)
