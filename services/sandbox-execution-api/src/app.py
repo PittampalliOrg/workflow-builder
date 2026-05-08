@@ -545,6 +545,13 @@ def build_agent_workflow_host_job_manifest(
                         ),
                     },
                     {
+                        "name": "DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS",
+                            "60",
+                        ),
+                    },
+                    {
                         "name": "DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS",
                         "value": os.environ.get(
                             "DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS",

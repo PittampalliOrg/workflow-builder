@@ -109,6 +109,7 @@ from src.code_checkpoint import (
 )
 from src.event_publisher import publish_session_event, scope_session, unscope_session
 from src.mcp_retry import connect_mcp_client_with_retries
+from src.session_host_monitor import decide_missing_workflow_action
 from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.session_config import (
     apply_session_control_events,
@@ -4518,6 +4519,11 @@ def _run_session_host_monitor(instance_id: str) -> None:
         "DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS",
         300,
     )
+    missing_grace_seconds = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS",
+        60,
+        minimum=5,
+    )
     poll_seconds = _session_host_int(
         "DAPR_AGENT_SESSION_HOST_POLL_SECONDS",
         10,
@@ -4528,12 +4534,14 @@ def _run_session_host_monitor(instance_id: str) -> None:
     )
     started_at = time.monotonic()
     first_seen_at: float | None = None
+    missing_since: float | None = None
     sidecar_unavailable_since: float | None = None
     logger.info(
-        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss sidecar_ready_timeout=%ss",
+        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss missing_grace=%ss sidecar_ready_timeout=%ss",
         instance_id,
         start_timeout,
         idle_timeout,
+        missing_grace_seconds,
         sidecar_ready_timeout,
     )
     while True:
@@ -4574,12 +4582,38 @@ def _run_session_host_monitor(instance_id: str) -> None:
                 idle_timeout,
             )
             first_seen_at = time.monotonic()
+        workflow_missing = False
         try:
             state = _workflow_http_get_instance(instance_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[session-host] status check for %s failed: %s", instance_id, exc)
             state = None
+        else:
+            workflow_missing = state is None
+        if workflow_missing:
+            now = time.monotonic()
+            decision = decide_missing_workflow_action(
+                first_seen_at=first_seen_at,
+                missing_since=missing_since,
+                now=now,
+                missing_grace_seconds=missing_grace_seconds,
+            )
+            missing_since = decision.missing_since
+            if decision.exit_code == 0:
+                logger.warning(
+                    "[session-host] workflow %s disappeared after observation; exiting cleanly",
+                    instance_id,
+                )
+                _session_host_exit(instance_id, 0)
+            if decision.exit_code == 1:
+                logger.error(
+                    "[session-host] workflow %s was missing for %ss; exiting",
+                    instance_id,
+                    int(now - missing_since),
+                )
+                _session_host_exit(instance_id, 1)
         if isinstance(state, dict) and state:
+            missing_since = None
             if first_seen_at is None:
                 first_seen_at = time.monotonic()
                 logger.info("[session-host] observed workflow %s", instance_id)
