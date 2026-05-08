@@ -640,14 +640,25 @@ def _patch_component_scope(namespace: str, component_name: str, app_id: str) -> 
         if scopes is None or app_id in scopes:
             return
         patch = [{"op": "add", "path": "/scopes/-", "value": app_id}]
-        custom.patch_namespaced_custom_object(
-            group="dapr.io",
-            version="v1alpha1",
-            namespace=namespace,
-            plural="components",
-            name=component_name,
+        custom.api_client.call_api(
+            "/apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}",
+            "PATCH",
+            {
+                "group": "dapr.io",
+                "version": "v1alpha1",
+                "namespace": namespace,
+                "plural": "components",
+                "name": component_name,
+            },
+            [],
+            {
+                "Accept": "application/json",
+                "Content-Type": "application/json-patch+json",
+            },
             body=patch,
-            _content_type="application/json-patch+json",
+            response_type="object",
+            auth_settings=["BearerToken"],
+            _return_http_data_only=True,
         )
         scopes = _component_scopes(
             custom,

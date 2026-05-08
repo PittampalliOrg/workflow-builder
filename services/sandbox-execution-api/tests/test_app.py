@@ -172,17 +172,28 @@ def test_component_scope_patch_uses_json_patch_append(monkeypatch) -> None:
     class FakeCustom:
         def __init__(self) -> None:
             self.component = {"scopes": ["workflow-orchestrator"]}
-            self.patches: list[tuple[list[dict[str, str]], str | None]] = []
+            self.api_client = self
+            self.patches: list[tuple[list[dict[str, str]], dict[str, str]]] = []
 
         def get_namespaced_custom_object(self, **_kwargs):
             return self.component
 
-        def patch_namespaced_custom_object(self, *, body, _content_type=None, **_kwargs):
-            self.patches.append((body, _content_type))
+        def call_api(
+            self,
+            _path,
+            _method,
+            _path_params,
+            _query_params,
+            header_params,
+            *,
+            body,
+            **_kwargs,
+        ):
+            self.patches.append((body, header_params))
             assert body == [
                 {"op": "add", "path": "/scopes/-", "value": "agent-session-abc123"}
             ]
-            assert _content_type == "application/json-patch+json"
+            assert header_params["Content-Type"] == "application/json-patch+json"
             self.component["scopes"].append(body[0]["value"])
 
     fake = FakeCustom()
