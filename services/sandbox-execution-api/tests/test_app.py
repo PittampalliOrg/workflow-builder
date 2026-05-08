@@ -306,7 +306,9 @@ def test_wait_for_agent_host_ready_returns_queued_when_kueue_delays_pod() -> Non
     assert status == "queued"
 
 
-def test_wait_for_agent_host_ready_still_fails_on_pod_startup_error() -> None:
+def test_wait_for_agent_host_ready_allows_job_retry_after_pod_startup_error(
+    monkeypatch,
+) -> None:
     failed_pod = SimpleNamespace(
         status=SimpleNamespace(
             phase="Running",
@@ -324,8 +326,65 @@ def test_wait_for_agent_host_ready_still_fails_on_pod_startup_error() -> None:
             ],
         )
     )
+    ready_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[SimpleNamespace(type="Ready", status="True")],
+            container_statuses=[],
+        )
+    )
+    pod_lists = [[failed_pod], [ready_pod]]
+
+    def list_namespaced_pod(**_kwargs):
+        if pod_lists:
+            return SimpleNamespace(items=pod_lists.pop(0))
+        return SimpleNamespace(items=[ready_pod])
+
+    core = SimpleNamespace(list_namespaced_pod=list_namespaced_pod)
+    batch = SimpleNamespace(
+        read_namespaced_job=lambda **_kwargs: SimpleNamespace(
+            status=SimpleNamespace(conditions=[])
+        )
+    )
+    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+
+    status = app_module._wait_for_agent_host_ready(
+        core,
+        namespace="workflow-builder",
+        agent_app_id="agent-session-abc123",
+        wait_seconds=1,
+        batch=batch,
+        job_name="agent-host-agent-session-abc123",
+    )
+
+    assert status == "ready"
+
+
+def test_wait_for_agent_host_ready_fails_when_job_fails() -> None:
+    failed_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Failed",
+            reason="Error",
+            conditions=[],
+            container_statuses=[],
+        )
+    )
     core = SimpleNamespace(
         list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[failed_pod])
+    )
+    batch = SimpleNamespace(
+        read_namespaced_job=lambda **_kwargs: SimpleNamespace(
+            status=SimpleNamespace(
+                conditions=[
+                    SimpleNamespace(
+                        type="Failed",
+                        status="True",
+                        reason="BackoffLimitExceeded",
+                        message="Job has reached the specified backoff limit",
+                    )
+                ]
+            )
+        )
     )
 
     with pytest.raises(HTTPException) as excinfo:
@@ -334,10 +393,12 @@ def test_wait_for_agent_host_ready_still_fails_on_pod_startup_error() -> None:
             namespace="workflow-builder",
             agent_app_id="agent-session-abc123",
             wait_seconds=1,
+            batch=batch,
+            job_name="agent-host-agent-session-abc123",
         )
 
     assert excinfo.value.status_code == 503
-    assert "CrashLoopBackOff" in str(excinfo.value.detail)
+    assert "BackoffLimitExceeded" in str(excinfo.value.detail)
 
 
 def test_long_resource_names_keep_unique_suffixes() -> None:

@@ -779,19 +779,51 @@ def _pod_failure_reason(pod: Any) -> str | None:
     return None
 
 
+def _job_failure_reason(batch: Any, *, namespace: str, job_name: str) -> str | None:
+    try:
+        job = batch.read_namespaced_job(name=job_name, namespace=namespace)
+    except Exception:
+        return None
+    job_status = getattr(job, "status", None)
+    conditions = getattr(job_status, "conditions", None) or []
+    for condition in conditions:
+        if (
+            getattr(condition, "type", None) == "Failed"
+            and getattr(condition, "status", None) == "True"
+        ):
+            reason = getattr(condition, "reason", None) or "job failed"
+            message = getattr(condition, "message", None)
+            return f"{reason}: {message}" if message else reason
+    return None
+
+
 def _wait_for_agent_host_ready(
     core: Any,
     *,
     namespace: str,
     agent_app_id: str,
     wait_seconds: int,
+    batch: Any | None = None,
+    job_name: str | None = None,
 ) -> str:
     if wait_seconds <= 0:
         return "queued"
     selector = f"app=agent-workflow-host,agent-app-id={_safe_name(agent_app_id, max_length=63)}"
     deadline = time.monotonic() + wait_seconds
     last_phase = "pending"
+    last_failure: str | None = None
     while time.monotonic() < deadline:
+        if batch is not None and job_name:
+            job_failure = _job_failure_reason(
+                batch,
+                namespace=namespace,
+                job_name=job_name,
+            )
+            if job_failure:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"agent workflow host {agent_app_id} job failed before readiness: {job_failure}",
+                )
         pods = core.list_namespaced_pod(
             namespace=namespace,
             label_selector=selector,
@@ -799,10 +831,8 @@ def _wait_for_agent_host_ready(
         for pod in pods:
             failure = _pod_failure_reason(pod)
             if failure:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=f"agent workflow host {agent_app_id} failed before readiness: {failure}",
-                )
+                last_failure = failure
+                continue
             if _pod_is_ready(pod):
                 return "ready"
             phase = getattr(getattr(pod, "status", None), "phase", None)
@@ -810,10 +840,11 @@ def _wait_for_agent_host_ready(
                 last_phase = phase
         time.sleep(1)
     logger.info(
-        "agent workflow host %s was not ready after %ss; last phase %s",
+        "agent workflow host %s was not ready after %ss; last phase %s; last failure %s",
         agent_app_id,
         wait_seconds,
         last_phase,
+        last_failure,
     )
     return "queued"
 
@@ -930,6 +961,8 @@ def submit_agent_workflow_host(
             namespace=namespace,
             agent_app_id=body.agentAppId,
             wait_seconds=body.waitReadySeconds,
+            batch=batch,
+            job_name=manifest["metadata"]["name"],
         )
     else:
         readiness_status = "queued"
