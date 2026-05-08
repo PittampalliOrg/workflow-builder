@@ -229,7 +229,9 @@ def test_sync_instance_uses_sibling_sync_endpoint(monkeypatch) -> None:
     assert instance == {"inferenceStatus": "inferred"}
 
 
-def test_run_exits_when_bff_sync_reports_terminal_inference(monkeypatch, tmp_path) -> None:
+def test_run_waits_for_dapr_terminal_after_bff_sync_reports_terminal_inference(
+    monkeypatch, tmp_path
+) -> None:
     payload = {
         "executionId": "hexec_1",
         "workflowExecutionId": "exec_1",
@@ -243,11 +245,11 @@ def test_run_exits_when_bff_sync_reports_terminal_inference(monkeypatch, tmp_pat
     monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
     monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
     monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
-    monkeypatch.setattr(
-        worker,
-        "_workflow_status",
-        lambda _instance_id: {"runtimeStatus": "RUNNING"},
-    )
+    statuses = iter([
+        {"runtimeStatus": "RUNNING"},
+        {"runtimeStatus": "COMPLETED", "output": {"ok": True}},
+    ])
+    monkeypatch.setattr(worker, "_workflow_status", lambda _instance_id: next(statuses))
     monkeypatch.setattr(
         worker,
         "_sync_instance",
@@ -261,14 +263,20 @@ def test_run_exits_when_bff_sync_reports_terminal_inference(monkeypatch, tmp_pat
         "_terminate_workflow",
         lambda instance_id, reason: terminated.append((instance_id, reason)),
     )
+    monkeypatch.setattr(worker, "_sleep", lambda _seconds: None)
 
     assert worker._run() == 0
     assert callbacks == [
-        {"status": "running", "hostExecutionId": "hexec_1", "daprInstanceId": "sw-1"}
+        {"status": "running", "hostExecutionId": "hexec_1", "daprInstanceId": "sw-1"},
+        {
+            "status": "success",
+            "hostExecutionId": "hexec_1",
+            "daprInstanceId": "sw-1",
+            "output": {"ok": True},
+            "error": None,
+        },
     ]
-    assert terminated == [
-        ("sw-1", "benchmark instance reached terminal inference state")
-    ]
+    assert terminated == []
 
 
 def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tmp_path) -> None:

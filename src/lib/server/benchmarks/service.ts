@@ -113,7 +113,7 @@ const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
 const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
-const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = false;
+const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = true;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
 	"CANCELLED",
@@ -366,6 +366,20 @@ export function shouldTerminateCompletedBenchmarkSessionProjection(row: {
 	if (workflowStillRunning) return false;
 	return INSTANCE_TERMINAL_STATUSES.has(
 		row.instanceStatus as BenchmarkRunInstanceStatus,
+	);
+}
+
+export function completedBenchmarkRunHasDurableWorkflowTarget(row: {
+	runInstanceDaprId?: string | null;
+	executionDaprId?: string | null;
+	runInstanceSessionId?: string | null;
+	sessionId?: string | null;
+}): boolean {
+	return Boolean(
+		row.runInstanceDaprId?.trim() ||
+			row.executionDaprId?.trim() ||
+			row.runInstanceSessionId?.trim() ||
+			row.sessionId?.trim(),
 	);
 }
 
@@ -2074,9 +2088,12 @@ async function cleanupCompletedBenchmarkRunResources(
 		.select({
 			instanceId: benchmarkRunInstances.instanceId,
 			instanceStatus: benchmarkRunInstances.status,
+			runInstanceDaprId: benchmarkRunInstances.daprInstanceId,
+			runInstanceSessionId: benchmarkRunInstances.sessionId,
 			sessionId: sessions.id,
 			sessionStatus: sessions.status,
 			executionId: workflowExecutions.id,
+			executionDaprId: workflowExecutions.daprInstanceId,
 			executionStatus: workflowExecutions.status,
 			executionPhase: workflowExecutions.phase,
 		})
@@ -2090,10 +2107,15 @@ async function cleanupCompletedBenchmarkRunResources(
 
 	const sessionIdsToTerminate = new Set<string>();
 	const activeRows: string[] = [];
+	let hasDurableWorkflowTargets = false;
 	for (const row of rows) {
-		if (!row.sessionId) continue;
+		const sessionId = row.runInstanceSessionId ?? row.sessionId;
+		if (completedBenchmarkRunHasDurableWorkflowTarget(row)) {
+			hasDurableWorkflowTargets = true;
+		}
+		if (!sessionId) continue;
 		if (shouldTerminateCompletedBenchmarkSessionProjection(row)) {
-			sessionIdsToTerminate.add(row.sessionId);
+			sessionIdsToTerminate.add(sessionId);
 			continue;
 		}
 		if (
@@ -2107,9 +2129,11 @@ async function cleanupCompletedBenchmarkRunResources(
 		}
 	}
 
-	if (activeRows.length > 0) {
+	if (activeRows.length > 0 || hasDurableWorkflowTargets) {
 		console.warn(
-			`Benchmark run ${runId} completed with ${activeRows.length} non-terminal session projection(s); attempting durable cleanup before releasing resources: ${activeRows.slice(0, 10).join(", ")}`,
+			activeRows.length > 0
+				? `Benchmark run ${runId} completed with ${activeRows.length} non-terminal session projection(s); attempting durable cleanup before releasing resources: ${activeRows.slice(0, 10).join(", ")}`
+				: `Benchmark run ${runId} completed; confirming durable workflow cleanup before releasing resources`,
 		);
 		const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
 			runId,
@@ -4409,8 +4433,9 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		) {
 			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId);
 		}
-		// Leave workflow history for Dapr retention cleanup. Parent termination is
-		// authoritative, and immediate purge can race Scheduler workflow reminders.
+		// Purge is intentionally gated on confirmed terminal state. Dapr uses
+		// Scheduler reminders for workflow events, and terminal purge removes those
+		// reminders without corrupting an active workflow state machine.
 
 		if (sessionId) {
 			await database

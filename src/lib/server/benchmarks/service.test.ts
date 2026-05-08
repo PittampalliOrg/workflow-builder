@@ -10,6 +10,7 @@ import {
 	benchmarkSessionHostAppId,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
+	completedBenchmarkRunHasDurableWorkflowTarget,
 	collectBenchmarkTraceIds,
 	cleanupBenchmarkTerminalResourcesAfterDurableClosure,
 	effectiveBenchmarkConcurrency,
@@ -1302,6 +1303,29 @@ describe("SWE-bench terminal run cleanup", () => {
 				instanceStatus: "resolved",
 			}),
 		).toBe(true);
+	});
+
+	it("requires completed-run durable cleanup when Dapr targets exist even if projections are terminal", () => {
+		expect(
+			completedBenchmarkRunHasDurableWorkflowTarget({
+				executionDaprId: "sw-swebench-instance-exec-abc",
+				sessionId: null,
+			}),
+		).toBe(true);
+		expect(
+			completedBenchmarkRunHasDurableWorkflowTarget({
+				runInstanceSessionId: "sw-swebench-instance-exec-abc__durable__solve__run__0",
+				sessionId: null,
+			}),
+		).toBe(true);
+		expect(
+			completedBenchmarkRunHasDurableWorkflowTarget({
+				runInstanceDaprId: null,
+				executionDaprId: null,
+				runInstanceSessionId: null,
+				sessionId: null,
+			}),
+		).toBe(false);
 	});
 
 	it("does not finalize failed instances, sandboxes, or leases before durable workflows close", async () => {

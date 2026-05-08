@@ -375,6 +375,7 @@ def _run() -> int:
         poll_seconds = max(2, int(_env("SANDBOX_EXECUTION_WORKER_POLL_SECONDS", "15")))
         last_status: dict[str, Any] = {}
         previous_runtime_status: str | None = None
+        previous_terminal_instance_status: str | None = None
         while time.monotonic() < deadline:
             if _termination_requested.is_set():
                 _cancel_started_workflow(
@@ -415,19 +416,14 @@ def _run() -> int:
                 return 0 if status == "success" else 1
             terminal_instance_status = _terminal_instance_status(_sync_instance(payload))
             if terminal_instance_status:
-                _log(
-                    "benchmark instance reached terminal inference state; "
-                    f"execution={execution_id} daprInstance={instance_id} "
-                    f"inferenceStatus={terminal_instance_status}"
-                )
-                try:
-                    _terminate_workflow(
-                        instance_id,
-                        "benchmark instance reached terminal inference state",
+                if terminal_instance_status != previous_terminal_instance_status:
+                    _log(
+                        "benchmark instance reached terminal inference state; "
+                        "continuing to wait for Dapr workflow terminal state "
+                        f"execution={execution_id} daprInstance={instance_id} "
+                        f"inferenceStatus={terminal_instance_status}"
                     )
-                except Exception as exc:
-                    _log(f"workflow termination after terminal instance state failed: {exc}")
-                return 0
+                    previous_terminal_instance_status = terminal_instance_status
             _sleep(poll_seconds)
         if _termination_requested.is_set():
             _cancel_started_workflow(
