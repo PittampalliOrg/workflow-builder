@@ -1287,6 +1287,13 @@ async function cleanupTerminalBenchmarkRun(params: {
 		...params,
 		workflowsClosed,
 	});
+	if (params.outcome === "cancelled") {
+		await finalizeCancelledBenchmarkRunProjections(
+			params.runId,
+			params.reason,
+			params.now,
+		);
+	}
 	await recomputeRunSummary(params.runId);
 }
 
@@ -1979,6 +1986,72 @@ async function finalizeBenchmarkWorkflowExecutions(
 		})
 		.where(inArray(workflowExecutions.id, [...activeExecutionIds]));
 	return true;
+}
+
+async function finalizeCancelledBenchmarkRunProjections(
+	runId: string,
+	reason: string,
+	now = new Date(),
+) {
+	const database = requireDb();
+	const rows = await database
+		.select({
+			sessionId: benchmarkRunInstances.sessionId,
+			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+		})
+		.from(benchmarkRunInstances)
+		.where(eq(benchmarkRunInstances.runId, runId));
+	const sessionIds = new Set<string>();
+	const workflowExecutionIds = new Set<string>();
+	for (const row of rows) {
+		if (row.sessionId?.trim()) sessionIds.add(row.sessionId.trim());
+		if (row.workflowExecutionId?.trim()) {
+			workflowExecutionIds.add(row.workflowExecutionId.trim());
+		}
+	}
+	if (workflowExecutionIds.size > 0) {
+		const sessionRows = await database
+			.select({ id: sessions.id })
+			.from(sessions)
+			.where(inArray(sessions.workflowExecutionId, [...workflowExecutionIds]));
+		for (const row of sessionRows) {
+			if (row.id?.trim()) sessionIds.add(row.id.trim());
+		}
+	}
+	if (sessionIds.size > 0) {
+		await database
+			.update(sessions)
+			.set({
+				status: "terminated",
+				updatedAt: now,
+			})
+			.where(
+				and(
+					inArray(sessions.id, [...sessionIds]),
+					inArray(sessions.status, ["pending", "running", "rescheduling"]),
+				),
+			);
+	}
+	if (workflowExecutionIds.size > 0) {
+		await database
+			.update(workflowExecutions)
+			.set({
+				status: "cancelled",
+				phase: "cancelled",
+				error: reason,
+				completedAt: now,
+			})
+			.where(
+				and(
+					inArray(workflowExecutions.id, [...workflowExecutionIds]),
+					or(
+						eq(workflowExecutions.status, "pending"),
+						eq(workflowExecutions.status, "running"),
+						eq(workflowExecutions.phase, "running"),
+					),
+				),
+			);
+	}
 }
 
 async function cleanupCompletedBenchmarkRunResources(
