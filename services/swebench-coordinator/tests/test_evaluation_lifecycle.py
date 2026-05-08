@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -183,6 +184,7 @@ class Obj:
 class FakeWorkflowCtx:
     def __init__(self):
         self.calls = []
+        self.current_utc_datetime = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     def call_activity(self, fn, *, input=None):
         marker = ("activity", fn.__name__, input)
@@ -964,18 +966,17 @@ def test_run_workflow_acquires_and_releases_instance_leases(monkeypatch):
         {"runId": "run_1", "instanceId": "django__django-12754"},
     )
     assert workflow.send({"admitted": True, "holderId": "lease-holder"}) == (
-        "child",
-        "swebench_instance_workflow",
-        {
-            "runId": "run_1",
-            "instanceId": "django__django-12754",
-            "timeoutSeconds": 60,
-        },
-        app._child_instance_workflow_id("run_1", "django__django-12754"),
-        app.SWEBENCH_COORDINATOR_APP_ID,
+        "activity",
+        "_start_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"success": True}) == (
+        "activity",
+        "_sync_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
     )
     assert workflow.send(
-        {"instanceId": "django__django-12754", "status": "inferred"}
+        {"instance": {"instanceId": "django__django-12754", "status": "inferred"}}
     ) == (
         "activity",
         "_release_instance_leases",
@@ -988,6 +989,60 @@ def test_run_workflow_acquires_and_releases_instance_leases(monkeypatch):
         },
     )
     assert workflow.send({"released": 5}) == (
+        "activity",
+        "_release_run_leases",
+        {"runId": "run_1", "reason": "inference fan-out completed"},
+    )
+
+
+def test_run_workflow_releases_lease_when_start_skips_instance(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754"],
+        "concurrency": 1,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"admitted": True, "holderId": "lease-holder"}) == (
+        "activity",
+        "_start_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send(
+        {"success": True, "skipped": True, "reason": "benchmark_instance_start_superseded"}
+    ) == (
+        "activity",
+        "_release_instance_leases",
+        {
+            "runId": "run_1",
+            "instanceId": "django__django-12754",
+            "holderId": "lease-holder",
+            "phase": "inference",
+            "reason": "benchmark_instance_start_superseded",
+        },
+    )
+    assert workflow.send({"released": 1}) == (
         "activity",
         "_release_run_leases",
         {"runId": "run_1", "reason": "inference fan-out completed"},
@@ -1033,7 +1088,7 @@ def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypa
         }
     ) == ("timer", 12)
     assert not any(
-        call[0] == "child" and call[1] == "swebench_instance_workflow"
+        call[0] == "activity" and call[1] == "_start_instance"
         for call in ctx.calls
     )
     assert workflow.send(None) == (
@@ -1075,16 +1130,21 @@ def test_run_workflow_batches_instance_child_starts(monkeypatch):
         {"runId": "run_1", "instanceId": "django__django-12754"},
     )
 
-    assert workflow.send({"admitted": True, "holderId": "lease-1"}) == ("timer", 7)
+    assert workflow.send({"admitted": True, "holderId": "lease-1"}) == (
+        "activity",
+        "_start_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"success": True}) == ("timer", 7)
     assert any(
-        call[0] == "child"
-        and call[1] == "swebench_instance_workflow"
+        call[0] == "activity"
+        and call[1] == "_start_instance"
         and call[2]["instanceId"] == "django__django-12754"
         for call in ctx.calls
     )
     assert not any(
-        call[0] == "child"
-        and call[1] == "swebench_instance_workflow"
+        call[0] == "activity"
+        and call[1] == "_start_instance"
         and call[2]["instanceId"] == "django__django-13012"
         for call in ctx.calls
     )
@@ -1095,15 +1155,9 @@ def test_run_workflow_batches_instance_child_starts(monkeypatch):
         {"runId": "run_1", "instanceId": "django__django-13012"},
     )
     assert workflow.send({"admitted": True, "holderId": "lease-2"}) == (
-        "child",
-        "swebench_instance_workflow",
-        {
-            "runId": "run_1",
-            "instanceId": "django__django-12754",
-            "timeoutSeconds": 60,
-        },
-        app._child_instance_workflow_id("run_1", "django__django-12754"),
-        app.SWEBENCH_COORDINATOR_APP_ID,
+        "activity",
+        "_start_instance",
+        {"runId": "run_1", "instanceId": "django__django-13012"},
     )
 
 

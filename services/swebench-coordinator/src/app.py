@@ -2027,12 +2027,13 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         start_batch_size = instance_start_batch_size()
         start_batch_delay_seconds = instance_start_batch_delay_seconds()
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
+        deadline = ctx.current_utc_datetime + timedelta(seconds=timeout_seconds + 300)
         results: list[Any] = []
         pending_instance_ids = list(instance_ids)
-        active_tasks: list[dict[str, Any]] = []
+        active_instances: list[dict[str, Any]] = []
         starts_in_batch = 0
-        while pending_instance_ids or active_tasks:
-            while pending_instance_ids and len(active_tasks) < concurrency:
+        while pending_instance_ids or active_instances:
+            while pending_instance_ids and len(active_instances) < concurrency:
                 instance_id = pending_instance_ids[0]
                 admission = yield ctx.call_activity(
                     _acquire_instance_leases,
@@ -2061,27 +2062,44 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                     continue
 
                 pending_instance_ids.pop(0)
-                task = _call_registered_child_workflow(
-                    ctx,
-                    "swebench_instance_workflow",
-                    input={
-                        "runId": run_id,
-                        "instanceId": instance_id,
-                        "timeoutSeconds": timeout_seconds,
-                    },
-                    instance_id=_child_instance_workflow_id(run_id, instance_id),
+                start_result = yield ctx.call_activity(
+                    _start_instance, input={"runId": run_id, "instanceId": instance_id}
                 )
-                active_tasks.append(
+                if isinstance(start_result, dict):
+                    reason = str(start_result.get("reason") or "")
+                    if reason.startswith("benchmark_run_"):
+                        raise RuntimeError(
+                            f"SWE-bench run stopped before starting {instance_id}: {reason}"
+                        )
+                    if start_result.get("skipped"):
+                        results.append(
+                            {
+                                "instanceId": instance_id,
+                                "status": "cancelled",
+                                "error": reason or "benchmark instance start skipped",
+                            }
+                        )
+                        yield ctx.call_activity(
+                            _release_instance_leases,
+                            input={
+                                "runId": run_id,
+                                "instanceId": instance_id,
+                                "holderId": admission.get("holderId"),
+                                "phase": "inference",
+                                "reason": reason or "benchmark instance start skipped",
+                            },
+                        )
+                        continue
+                active_instances.append(
                     {
                         "instanceId": instance_id,
-                        "task": task,
                         "holderId": admission.get("holderId"),
                     }
                 )
                 starts_in_batch += 1
                 if (
                     pending_instance_ids
-                    and len(active_tasks) < concurrency
+                    and len(active_instances) < concurrency
                     and starts_in_batch >= start_batch_size
                 ):
                     starts_in_batch = 0
@@ -2090,33 +2108,69 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                             timedelta(seconds=start_batch_delay_seconds)
                         )
 
-            if not active_tasks:
+            if not active_instances:
                 continue
 
-            if wf_when_any is not None:
-                winner = yield wf_when_any([entry["task"] for entry in active_tasks])
-                winner_index = next(
-                    index
-                    for index, entry in enumerate(active_tasks)
-                    if entry["task"] is winner
+            next_active_instances: list[dict[str, Any]] = []
+            for entry in active_instances:
+                instance_id = str(entry["instanceId"])
+                sync = yield ctx.call_activity(
+                    _sync_instance, input={"runId": run_id, "instanceId": instance_id}
                 )
-                entry = active_tasks.pop(winner_index)
-                result = winner.get_result()
-            else:
-                entry = active_tasks.pop(0)
-                result = yield entry["task"]
-
-            results.append(result)
-            yield ctx.call_activity(
-                _release_instance_leases,
-                input={
-                    "runId": run_id,
-                    "instanceId": entry["instanceId"],
-                    "holderId": entry.get("holderId"),
-                    "phase": "inference",
-                    "reason": "instance workflow completed",
-                },
-            )
+                instance = sync.get("instance") if isinstance(sync, dict) else {}
+                status = instance.get("status") if isinstance(instance, dict) else None
+                if status in ("inferred", "error", "timeout", "cancelled"):
+                    results.append(instance)
+                    yield ctx.call_activity(
+                        _release_instance_leases,
+                        input={
+                            "runId": run_id,
+                            "instanceId": instance_id,
+                            "holderId": entry.get("holderId"),
+                            "phase": "inference",
+                            "reason": "instance workflow completed",
+                        },
+                    )
+                    continue
+                if ctx.current_utc_datetime >= deadline:
+                    try:
+                        yield ctx.call_activity(
+                            _mark_instance_inference_failure,
+                            input={
+                                "runId": run_id,
+                                "instanceId": instance_id,
+                                "status": "timeout",
+                                "error": "Inference timed out before patch extraction",
+                            },
+                        )
+                    except Exception as mark_exc:
+                        logger.warning(
+                            "Failed to persist inference timeout for %s: %s",
+                            instance_id,
+                            mark_exc,
+                        )
+                    results.append(
+                        {
+                            "instanceId": instance_id,
+                            "status": "timeout",
+                            "error": "Inference timed out before patch extraction",
+                        }
+                    )
+                    yield ctx.call_activity(
+                        _release_instance_leases,
+                        input={
+                            "runId": run_id,
+                            "instanceId": instance_id,
+                            "holderId": entry.get("holderId"),
+                            "phase": "inference",
+                            "reason": "instance workflow timed out",
+                        },
+                    )
+                    continue
+                next_active_instances.append(entry)
+            active_instances = next_active_instances
+            if pending_instance_ids or active_instances:
+                yield ctx.create_timer(timedelta(seconds=30))
         failed_instances = [
             result
             for result in results

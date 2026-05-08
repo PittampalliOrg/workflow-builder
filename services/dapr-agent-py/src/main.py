@@ -1390,14 +1390,14 @@ class OpenShellDurableAgent(DurableAgent):
         self._empty_llm_response_count_by_instance: dict[str, int] = {}
         # Phase B — lifecycle metrics. Counters are incremented per call_llm /
         # run_tool from inside their durable activities (so values survive
-        # replay). Final values are emitted as `instance.metrics_summary` once
-        # in agent_workflow's finally-block, gated on `not ctx.is_replaying`.
+        # replay). Final values are emitted as `instance.metrics_summary` from
+        # terminal success/error paths, gated on `not ctx.is_replaying`.
         # turn_count = number of LLM calls. tool_call_count = number of
         # tool invocations. tool_histogram = {tool_name: count}.
         # termination_reason starts as None; a non-None value is set at each
         # AgentError/timeout/cancel site BEFORE the raise. If still None at
-        # finally-time and no exception was raised, we infer end_turn or
-        # max_iters by comparing turn_count to max_iterations.
+        # terminal emission time, we infer end_turn or max_iters by comparing
+        # turn_count to max_iterations.
         self._turn_count_by_instance: dict[str, int] = {}
         self._tool_call_count_by_instance: dict[str, int] = {}
         self._tool_histogram_by_instance: dict[str, dict[str, int]] = {}
@@ -2792,17 +2792,15 @@ class OpenShellDurableAgent(DurableAgent):
         if session_id_raw:
             self._session_id_by_instance[instance_id] = session_id_raw
 
-        # Phase B — record start timestamp and effective max_iterations so the
-        # finally-block can compute wall time + decide between end_turn and
-        # max_iters as the termination reason. Gated on `not ctx.is_replaying`
-        # so each replay tick doesn't reset the start time.
+        # Phase B — record effective max_iterations for activities, plus the
+        # first non-replay start timestamp for latency metrics.
+        self._max_iterations_by_instance[instance_id] = (
+            max_iterations or self.execution.max_iterations or 0
+        )
         if not ctx.is_replaying:
             import time as _time
 
             self._workflow_started_at_by_instance[instance_id] = _time.monotonic()
-            self._max_iterations_by_instance[instance_id] = (
-                max_iterations or self.execution.max_iterations or 0
-            )
 
         # Set telemetry session context and start interaction span (first
         # non-replay tick only). Span end + context reset happen in the
@@ -3089,6 +3087,71 @@ class OpenShellDurableAgent(DurableAgent):
             input={"instance_id": instance_id, "context": runtime_context},
         )
 
+        metrics_emitted = False
+
+        def emit_metrics_summary_once() -> None:
+            nonlocal metrics_emitted
+            if metrics_emitted or ctx.is_replaying:
+                return
+            metrics_emitted = True
+            try:
+                reason = self._termination_reason_by_instance.get(instance_id)
+                turn_count = self._turn_count_by_instance.get(instance_id, 0)
+                max_iters = self._max_iterations_by_instance.get(instance_id, 0)
+                if reason is None:
+                    reason = (
+                        "max_iters"
+                        if (max_iters and turn_count >= max_iters)
+                        else "end_turn"
+                    )
+                started_at = self._workflow_started_at_by_instance.get(instance_id)
+                first_token_at = self._first_token_at_by_instance.get(instance_id)
+                first_tool_at = self._first_tool_at_by_instance.get(instance_id)
+                ttft_first_ms = (
+                    int((first_token_at - started_at) * 1000)
+                    if started_at and first_token_at
+                    else None
+                )
+                ttft_first_tool_ms = (
+                    int((first_tool_at - started_at) * 1000)
+                    if started_at and first_tool_at
+                    else None
+                )
+                publish_session_event(
+                    self._session_id_by_instance.get(instance_id),
+                    "instance.metrics_summary",
+                    {
+                        "turn_count": turn_count,
+                        "tool_call_count": self._tool_call_count_by_instance.get(
+                            instance_id,
+                            0,
+                        ),
+                        "tool_histogram": dict(
+                            self._tool_histogram_by_instance.get(instance_id, {})
+                        ),
+                        "termination_reason": reason,
+                        "ttft_first_ms": ttft_first_ms,
+                        "ttft_first_tool_ms": ttft_first_tool_ms,
+                        "max_iterations": max_iters or None,
+                    },
+                    source_event_id=f"{instance_id}:metrics_summary",
+                    instance_id=instance_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[metrics] failed to emit instance.metrics_summary: %s",
+                    exc,
+                )
+            finally:
+                self._turn_count_by_instance.pop(instance_id, None)
+                self._tool_call_count_by_instance.pop(instance_id, None)
+                self._tool_histogram_by_instance.pop(instance_id, None)
+                self._termination_reason_by_instance.pop(instance_id, None)
+                self._first_token_at_by_instance.pop(instance_id, None)
+                self._first_tool_at_by_instance.pop(instance_id, None)
+                self._workflow_started_at_by_instance.pop(instance_id, None)
+                self._max_iterations_by_instance.pop(instance_id, None)
+
         agent_workflow_result = None
         try:
             # In dapr-agents 1.0.1 the base agent_workflow generator returns
@@ -3181,6 +3244,7 @@ class OpenShellDurableAgent(DurableAgent):
                     )
                 except Exception as exc:
                     logger.warning("[hooks] SessionEnd (success) error: %s", exc)
+            emit_metrics_summary_once()
             self._close_mcp_client(instance_id)
         except Exception as exc:
             # run_error is suppressed — session_workflow emits session.status_errored
@@ -3203,6 +3267,7 @@ class OpenShellDurableAgent(DurableAgent):
                     )
                 except Exception as hook_exc:
                     logger.warning("[hooks] SessionEnd (error) error: %s", hook_exc)
+            emit_metrics_summary_once()
             self._close_mcp_client(instance_id)
             raise
         finally:
@@ -3213,65 +3278,6 @@ class OpenShellDurableAgent(DurableAgent):
             # intact; each replay's install/resolve block rewrites the entries
             # idempotently, so the memory footprint is bounded by the number of
             # concurrently-live workflow instances.
-            #
-            # Phase B — emit instance.metrics_summary exactly once. Gated on
-            # `not ctx.is_replaying` so Dapr replay doesn't double-emit. We
-            # populate `termination_reason` last because earlier sites may
-            # have already pinned it (circuit breakers, timeout). If it's
-            # still None here, we infer end_turn (clean exit) or max_iters
-            # (turn_count >= max_iterations).
-            if not ctx.is_replaying:
-                try:
-                    import time as _time
-
-                    reason = self._termination_reason_by_instance.get(instance_id)
-                    turn_count = self._turn_count_by_instance.get(instance_id, 0)
-                    max_iters = self._max_iterations_by_instance.get(instance_id, 0)
-                    if reason is None:
-                        reason = "max_iters" if (max_iters and turn_count >= max_iters) else "end_turn"
-                    started_at = self._workflow_started_at_by_instance.get(instance_id)
-                    first_token_at = self._first_token_at_by_instance.get(instance_id)
-                    first_tool_at = self._first_tool_at_by_instance.get(instance_id)
-                    ttft_first_ms = (
-                        int((first_token_at - started_at) * 1000)
-                        if started_at and first_token_at
-                        else None
-                    )
-                    ttft_first_tool_ms = (
-                        int((first_tool_at - started_at) * 1000)
-                        if started_at and first_tool_at
-                        else None
-                    )
-                    summary_payload = {
-                        "turn_count": turn_count,
-                        "tool_call_count": self._tool_call_count_by_instance.get(instance_id, 0),
-                        "tool_histogram": dict(
-                            self._tool_histogram_by_instance.get(instance_id, {})
-                        ),
-                        "termination_reason": reason,
-                        "ttft_first_ms": ttft_first_ms,
-                        "ttft_first_tool_ms": ttft_first_tool_ms,
-                        "max_iterations": max_iters or None,
-                    }
-                    publish_session_event(
-                        self._session_id_by_instance.get(instance_id),
-                        "instance.metrics_summary",
-                        summary_payload,
-                        instance_id=instance_id,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[metrics] failed to emit instance.metrics_summary: %s", exc)
-                finally:
-                    # Pop per-instance counters once we've published — the dicts
-                    # only live for the duration of an agent_workflow run.
-                    self._turn_count_by_instance.pop(instance_id, None)
-                    self._tool_call_count_by_instance.pop(instance_id, None)
-                    self._tool_histogram_by_instance.pop(instance_id, None)
-                    self._termination_reason_by_instance.pop(instance_id, None)
-                    self._first_token_at_by_instance.pop(instance_id, None)
-                    self._first_tool_at_by_instance.pop(instance_id, None)
-                    self._workflow_started_at_by_instance.pop(instance_id, None)
-                    self._max_iterations_by_instance.pop(instance_id, None)
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
             _restore_prompt_state(self, previous_prompt_state)
