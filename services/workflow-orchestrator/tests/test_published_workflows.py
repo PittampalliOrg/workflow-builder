@@ -350,7 +350,7 @@ def test_readiness_requires_taskhub_but_not_metadata_worker_count(monkeypatch):
     response = APP.readiness_check()
 
     assert response["status"] == "ready"
-    assert observed_kwargs.get("require_workflow_workers") is None
+    assert observed_kwargs.get("require_workflow_workers") is True
 
 
 def test_health_does_not_require_dapr_workflow_worker_metadata(monkeypatch):
@@ -365,7 +365,7 @@ def test_health_does_not_require_dapr_workflow_worker_metadata(monkeypatch):
     response = APP.health_check()
 
     assert response["status"] == "healthy"
-    assert observed_kwargs.get("require_workflow_workers") is None
+    assert observed_kwargs.get("require_workflow_workers") is True
     assert observed_kwargs["include_taskhub"] is False
 
 
@@ -667,6 +667,95 @@ def test_durable_run_session_bridge_times_out_when_child_does_not_finish():
 
     with pytest.raises(TimeoutError, match="session_workflow/.+ within 60s"):
         workflow_gen.send(timer_task)
+
+
+def test_benchmark_durable_run_session_bridge_uses_child_completion_without_parent_timer():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={
+            "prompt": "Create a validation marker",
+            "runId": "bench-run-1",
+            "instanceId": "django__django-12345",
+        },
+        execution_id="exec_benchmark",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-benchmark-wf-1"
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+        def call_child_workflow(self, name, input=None, instance_id=None, app_id=None):
+            return _FakeWorkflowTask(
+                "call_child_workflow",
+                result={
+                    "success": True,
+                    "content": "VALIDATION COMPLETE",
+                },
+                name=name,
+                input=input,
+                instance_id=instance_id,
+                app_id=app_id,
+            )
+
+        def create_timer(self, timeout):
+            raise AssertionError("benchmark durable/run should not create a parent timer")
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "agentRuntime": "dapr-agent-py",
+                "timeoutMinutes": "1",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["activity"] == "spawn_session_for_workflow"
+    child_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-runtime-test",
+        }
+    )
+    assert child_yield.kind == "call_child_workflow"
+    assert child_yield.name == "session_workflow"
+    assert child_yield.app_id == "agent-runtime-test"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(child_yield)
+
+    result = stop.value.value
+    assert result["success"] is True
 
 
 def _durable_skill_policy_generator(agent_config):

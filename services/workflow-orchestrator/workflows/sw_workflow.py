@@ -144,6 +144,14 @@ def _child_workflow_result_with_timeout(
     return winner
 
 
+def _child_workflow_result_without_parent_timeout(child_task: Any) -> Any:
+    result = yield child_task
+    get_result = getattr(child_task, "get_result", None)
+    if callable(get_result):
+        return get_result()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -156,6 +164,12 @@ def _is_replaying(ctx: wf.DaprWorkflowContext) -> bool:
         except Exception:
             return False
     return bool(value)
+
+
+def _is_benchmark_trigger(trigger_data: Any) -> bool:
+    if not isinstance(trigger_data, dict):
+        return False
+    return bool(trigger_data.get("runId") and trigger_data.get("instanceId"))
 
 
 def _log_info(ctx: wf.DaprWorkflowContext, msg: str, *args: Any) -> None:
@@ -1441,13 +1455,23 @@ def _run_native_durable_agent_child_workflow(
             # runtime pool, or a legacy shared app id.
             app_id=bridge_app_id,
         )
-        child_result = yield from _child_workflow_result_with_timeout(
-            ctx,
-            child_task,
-            timeout_minutes=timeout_minutes,
-            child_instance_id=child_instance_id,
-            workflow_name="session_workflow",
-        )
+        if _is_benchmark_trigger(tc.trigger_data):
+            # Benchmark runs already have two stronger timeout owners:
+            # session_workflow enforces the per-turn timeout, and the
+            # benchmark service terminates stalled instances. Adding a parent
+            # workflow timer here creates Scheduler reminders that can outlive
+            # the child completion event and leave the parent instance RUNNING.
+            child_result = yield from _child_workflow_result_without_parent_timeout(
+                child_task,
+            )
+        else:
+            child_result = yield from _child_workflow_result_with_timeout(
+                ctx,
+                child_task,
+                timeout_minutes=timeout_minutes,
+                child_instance_id=child_instance_id,
+                workflow_name="session_workflow",
+            )
     else:
         child_task = ctx.call_child_workflow(
             target["workflow_name"],
