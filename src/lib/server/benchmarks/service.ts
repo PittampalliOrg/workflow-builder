@@ -2312,7 +2312,9 @@ type BenchmarkSandboxCleanupResult = {
 
 export const __benchmarkSandboxCleanupForTest = {
 	collectBenchmarkSandboxNamesFromValues,
+	collectOpenShellSandboxNamesFromKubeItems,
 	isOpenShellSandboxNotFound,
+	matchesBenchmarkRunSandboxName,
 	shouldDeleteBenchmarkSandboxName,
 };
 
@@ -2631,7 +2633,62 @@ async function loadBenchmarkRunSandboxNames(runId: string): Promise<string[]> {
 		}
 	}
 
-	return collectBenchmarkSandboxNamesFromValues(values);
+	const names = new Set(collectBenchmarkSandboxNamesFromValues(values));
+	for (const liveName of await loadBenchmarkRunSandboxNamesFromKubernetes(runId)) {
+		names.add(liveName);
+	}
+	return [...names];
+}
+
+async function loadBenchmarkRunSandboxNamesFromKubernetes(
+	runId: string,
+): Promise<string[]> {
+	const namespace = openshellSandboxNamespace();
+	const ns = encodeURIComponent(namespace);
+	try {
+		const res = await kubeApiFetch(`/api/v1/namespaces/${ns}/pods`, {
+			method: "GET",
+		});
+		if (res.status === 404) return [];
+		if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+		const body = (await res.json().catch(() => null)) as unknown;
+		if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+		return collectOpenShellSandboxNamesFromKubeItems(
+			runId,
+			(body as { items?: unknown }).items,
+		);
+	} catch (err) {
+		console.warn(
+			`Failed to list OpenShell sandboxes for benchmark cleanup ${runId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return [];
+	}
+}
+
+function collectOpenShellSandboxNamesFromKubeItems(
+	runId: string,
+	items: unknown,
+): string[] {
+	if (!Array.isArray(items)) return [];
+	const names = new Set<string>();
+	for (const item of items) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+		const metadata = (item as { metadata?: unknown }).metadata;
+		if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+			continue;
+		}
+		const name = (metadata as { name?: unknown }).name;
+		if (
+			typeof name === "string" &&
+			name.trim() &&
+			shouldDeleteBenchmarkSandboxName(runId, name) &&
+			matchesBenchmarkRunSandboxName(runId, name)
+		) {
+			names.add(name.trim());
+		}
+	}
+	return [...names];
 }
 
 function collectBenchmarkSandboxNamesFromValues(values: unknown[]): string[] {
@@ -2664,6 +2721,16 @@ function shouldDeleteBenchmarkSandboxName(runId: string, sandboxName: string): b
 		normalizedName.startsWith("swebench-") ||
 		(Boolean(normalizedRunId) && normalizedName.includes(normalizedRunId))
 	);
+}
+
+function matchesBenchmarkRunSandboxName(runId: string, sandboxName: string): boolean {
+	const normalizedRunId = normalizeSandboxNamePart(runId);
+	const normalizedName = normalizeSandboxNamePart(sandboxName);
+	if (!normalizedRunId || !normalizedName) return false;
+	if (normalizedName.includes(normalizedRunId)) return true;
+
+	const runIdPrefix = normalizedRunId.slice(0, 10);
+	return runIdPrefix.length >= 8 && normalizedName.includes(runIdPrefix);
 }
 
 function normalizeSandboxNamePart(value: string): string {
@@ -4251,6 +4318,30 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 	if (!row) return null;
 	if (INSTANCE_TERMINAL_STATUSES.has(row.status)) return row;
 	const now = new Date();
+	const sessionRows = row.sessionId
+		? await database
+				.select({
+					id: sessions.id,
+					sandboxName: sessions.sandboxName,
+					workspaceSandboxName: sessions.workspaceSandboxName,
+				})
+				.from(sessions)
+				.where(eq(sessions.id, row.sessionId))
+				.limit(1)
+		: row.workflowExecutionId
+			? await database
+					.select({
+						id: sessions.id,
+						sandboxName: sessions.sandboxName,
+						workspaceSandboxName: sessions.workspaceSandboxName,
+					})
+					.from(sessions)
+					.where(eq(sessions.workflowExecutionId, row.workflowExecutionId))
+					.limit(1)
+			: [];
+	const session = sessionRows[0] ?? null;
+	const sandboxName =
+		row.sandboxName ?? session?.sandboxName ?? session?.workspaceSandboxName ?? null;
 	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
 		row.status,
 		params.status,
@@ -4267,12 +4358,20 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 			error: keepEvaluationOwnedError ? row.error : inferenceError,
 			terminationReason: params.terminationReason ?? row.terminationReason,
 			inferenceCompletedAt: row.inferenceCompletedAt ?? now,
+			sessionId: session?.id ?? row.sessionId,
+			sandboxName,
 			updatedAt: now,
 		})
 		.where(eq(benchmarkRunInstances.id, row.id))
 		.returning();
 	if (updated) {
 		await aggregateBenchmarkInstanceTimings(updated.id);
+		await cleanupBenchmarkInstanceSandbox({
+			runId: updated.runId,
+			instanceId: updated.instanceId,
+			sandboxName: updated.sandboxName,
+			reason: inferenceError ?? `benchmark instance ${params.status}`,
+		});
 	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {

@@ -1084,6 +1084,35 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(true);
 	});
 
+	it("scopes live OpenShell pod discovery to the benchmark run", () => {
+		const runId = "1AZ8GqVDZgzekfnwHmsur";
+		const names =
+			__benchmarkSandboxCleanupForTest.collectOpenShellSandboxNamesFromKubeItems(
+				runId,
+				[
+					{ metadata: { name: "swebench-422bf07c90-1az8gqvdzg" } },
+					{ metadata: { name: "swebench-9266607f0c-otherun123" } },
+					{ metadata: { name: "agent-runtime-pool-coding" } },
+					{ metadata: { name: "dapr-agent-py" } },
+					{ metadata: { name: "manual-debug-sandbox" } },
+				],
+			);
+
+		expect(names).toEqual(["swebench-422bf07c90-1az8gqvdzg"]);
+		expect(
+			__benchmarkSandboxCleanupForTest.matchesBenchmarkRunSandboxName(
+				runId,
+				"swebench-422bf07c90-1az8gqvdzg",
+			),
+		).toBe(true);
+		expect(
+			__benchmarkSandboxCleanupForTest.matchesBenchmarkRunSandboxName(
+				runId,
+				"swebench-9266607f0c-otherun123",
+			),
+		).toBe(false);
+	});
+
 	it("cancels active inference rows without marking pending evaluation as evaluated", () => {
 		const patch = benchmarkRunInstanceTerminalPatch(
 			{
