@@ -201,6 +201,19 @@ describe("SWE-bench workflow spec", () => {
 		expect(benchmarkInferenceStallState(recentHeartbeatOnly).stalled).toBe(true);
 	});
 
+	it("does not count initial user messages as progress for rescheduling sessions", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkInstanceProgressEventTypesForSession(
+				"rescheduling",
+			),
+		).not.toContain("user.message");
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkInstanceProgressEventTypesForSession(
+				"running",
+			),
+		).toContain("user.message");
+	});
+
 	it("uses a shorter stall window for one-turn benchmark canaries", () => {
 		expect(benchmarkInferenceStallSeconds(null)).toBe(2400);
 		expect(benchmarkInferenceStallSeconds(4)).toBe(2400);

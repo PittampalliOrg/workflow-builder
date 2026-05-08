@@ -2318,6 +2318,7 @@ export const __benchmarkSandboxCleanupForTest = {
 
 export const __benchmarkDurableRuntimeForTest = {
 	durableRuntimeStatusFromBody,
+	benchmarkInstanceProgressEventTypesForSession,
 	benchmarkTerminatedSessionExecutionStatus,
 	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
@@ -3838,6 +3839,18 @@ export function benchmarkInferenceStallState(input: {
 	};
 }
 
+function benchmarkInstanceProgressEventTypesForSession(
+	sessionStatus?: string | null,
+): readonly string[] {
+	if (sessionStatus === "rescheduling") {
+		return BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES;
+	}
+	return [
+		...BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES,
+		"user.message",
+	] as const;
+}
+
 async function timeoutBenchmarkInstanceIfStalled(
 	runInstance: typeof benchmarkRunInstances.$inferSelect,
 	run?: Pick<typeof benchmarkRuns.$inferSelect, "maxTurns"> | null,
@@ -3853,6 +3866,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 		? await database
 				.select({
 					id: sessions.id,
+					status: sessions.status,
 					updatedAt: sessions.updatedAt,
 					sandboxName: sessions.sandboxName,
 					workspaceSandboxName: sessions.workspaceSandboxName,
@@ -3864,6 +3878,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 			? await database
 					.select({
 						id: sessions.id,
+						status: sessions.status,
 						updatedAt: sessions.updatedAt,
 						sandboxName: sessions.sandboxName,
 						workspaceSandboxName: sessions.workspaceSandboxName,
@@ -3881,7 +3896,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 					and(
 						eq(sessionEvents.sessionId, session.id),
 						inArray(sessionEvents.type, [
-							...BENCHMARK_INFERENCE_PROGRESS_EVENT_TYPES,
+							...benchmarkInstanceProgressEventTypesForSession(session.status),
 						]),
 					),
 				)
