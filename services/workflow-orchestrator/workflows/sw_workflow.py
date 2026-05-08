@@ -222,6 +222,13 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 
 def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     trigger_data = tc.trigger_data if isinstance(tc.trigger_data, dict) else {}
+    if _is_benchmark_trigger(trigger_data):
+        # SWE-bench workflows have explicit cleanup steps and host-execution
+        # cleanup owns sandbox deletion. Adding a final parent cleanup activity
+        # after the benchmark task graph has completed creates extra durable
+        # history at the least useful point in the run.
+        return False
+
     keep_sandbox = _as_bool(trigger_data.get("keepSandbox"), False) or _as_bool(
         trigger_data.get("keep_sandbox"), False
     )

@@ -755,6 +755,26 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
     assert result["success"] is True
 
 
+def test_benchmark_sw_workflow_skips_parent_workspace_cleanup():
+    workflow = types.SimpleNamespace(
+        unwrap_tasks=lambda: [],
+        document=types.SimpleNamespace(name="test-workflow"),
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={
+            "runId": "bench-run-1",
+            "instanceId": "django__django-12345",
+        },
+        execution_id="exec_benchmark",
+        db_execution_id="db_exec_benchmark",
+        integrations=None,
+    )
+
+    assert SW_WORKFLOW._should_cleanup_workspaces(tc) is False
+
+
 def _durable_skill_policy_generator(agent_config):
     workflow = types.SimpleNamespace(
         use=None,
