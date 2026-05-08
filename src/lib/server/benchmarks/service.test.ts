@@ -930,6 +930,29 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe("COMPLETED");
 	});
 
+	it("preserves top-level workflow status errors when outputs are empty", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.runtimeOutputFromWorkflowStatusBody(
+				{
+					runtimeStatus: "FAILED",
+					outputs: null,
+					error: "NonDeterminismError: replay mismatch",
+					stackTrace: "durabletask stack",
+				},
+				{ fallback: true },
+			),
+		).toMatchObject({
+			error: "NonDeterminismError: replay mismatch",
+			stackTrace: "durabletask stack",
+		});
+		expect(
+			__benchmarkDurableRuntimeForTest.runtimeOutputFromWorkflowStatusBody(
+				{ runtimeStatus: "COMPLETED", outputs: { ok: true } },
+				{ fallback: true },
+			),
+		).toEqual({ ok: true });
+	});
+
 	it("keeps cancellation sandbox cleanup scoped to benchmark-owned OpenShell names", () => {
 		const runId = "codexcap20x20260504014703";
 		const names =

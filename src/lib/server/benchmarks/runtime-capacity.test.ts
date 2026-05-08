@@ -108,6 +108,60 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		});
 	});
 
+	it("lets Kueue-backed runs request full fan-out while preserving diagnostics", () => {
+		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "96");
+		vi.stubEnv("BENCHMARK_MAX_ACTIVE_SANDBOXES", "96");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			slotsPerReplica: 8,
+			requestedInstanceCount: 120,
+			requestedConcurrency: 120,
+			executionBackend: "dapr-kueue",
+			sandboxCapacity: {
+				schedulableSandboxCapacity: 80,
+				totalSchedulableSandboxCapacity: 96,
+			} as never,
+		});
+
+		expect(capacity).toMatchObject({
+			capacityMode: "kueue",
+			effectiveConcurrency: 120,
+			runtimeSlots: 32,
+			configuredMaxActiveInferenceInstances: 96,
+			maxActiveInferenceInstances: null,
+			configuredMaxActiveSandboxes: 96,
+			maxActiveSandboxes: 96,
+			capReason: null,
+		});
+	});
+
+	it("keeps explicit provider caps for Kueue-backed runs", () => {
+		vi.stubEnv("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS", "48");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			slotsPerReplica: 8,
+			requestedInstanceCount: 120,
+			requestedConcurrency: 120,
+			executionBackend: "dapr-kueue",
+		});
+
+		expect(capacity).toMatchObject({
+			capacityMode: "kueue",
+			effectiveConcurrency: 48,
+			modelMaxActiveRequests: 48,
+			capReason: "model_capacity",
+		});
+	});
+
 	it("keeps a configured global inference cap as the auto-mode hard ceiling", () => {
 		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "72");

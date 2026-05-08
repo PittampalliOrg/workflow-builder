@@ -25,6 +25,33 @@ from fastapi.encoders import jsonable_encoder
 from google.protobuf import wrappers_pb2
 from pydantic import BaseModel, Field
 
+
+def _configure_durabletask_grpc_defaults() -> None:
+    """Raise durabletask's worker channel limit before any workflow runtime starts."""
+    try:
+        import durabletask.internal.shared as durabletask_shared
+    except Exception:
+        return
+    try:
+        max_message_bytes = max(
+            1,
+            int(os.environ.get("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", "16777216")),
+        )
+    except ValueError:
+        max_message_bytes = 16 * 1024 * 1024
+    existing = getattr(durabletask_shared, "DEFAULT_GRPC_KEEPALIVE_OPTIONS", ())
+    merged = {
+        str(key): value
+        for key, value in existing
+        if isinstance(key, str) and key
+    }
+    merged.setdefault("grpc.max_receive_message_length", max_message_bytes)
+    merged.setdefault("grpc.max_send_message_length", max_message_bytes)
+    durabletask_shared.DEFAULT_GRPC_KEEPALIVE_OPTIONS = tuple(merged.items())
+
+
+_configure_durabletask_grpc_defaults()
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
 # ---------------------------------------------------------------------------

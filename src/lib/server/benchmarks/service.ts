@@ -460,6 +460,25 @@ function durableRuntimeStatusFromBody(body: unknown): unknown {
 	return direct;
 }
 
+function runtimeOutputFromWorkflowStatusBody(
+	body: Record<string, unknown>,
+	fallback: unknown,
+): unknown {
+	const output = body.output ?? body.outputs;
+	if (output !== undefined && output !== null) return output;
+	if (
+		typeof body.error === "string" ||
+		typeof body.message === "string" ||
+		typeof body.stackTrace === "string" ||
+		(body.failureDetails &&
+			typeof body.failureDetails === "object" &&
+			!Array.isArray(body.failureDetails))
+	) {
+		return body;
+	}
+	return fallback;
+}
+
 function benchmarkTerminationWaitMs(): number {
 	return (
 		clampInteger(
@@ -932,6 +951,12 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		runtimeAppId: agent.runtimeAppId,
 		config: agent.config,
 	});
+	const executionBackend = normalizeBenchmarkExecutionBackend(
+		input.executionBackend ?? benchmarkExecutionBackend(),
+	);
+	const executionClass = normalizeBenchmarkExecutionClass(
+		input.executionClass ?? benchmarkExecutionClass(),
+	);
 	const sandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
 	const capacity = estimateBenchmarkRuntimeCapacity({
 		runtimeClass: runtimeRoute.runtimeClass,
@@ -943,6 +968,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		sandboxCapacity,
 		requestedInstanceCount: instanceIds.length,
 		requestedConcurrency: input.concurrency,
+		executionBackend,
 	});
 	const { evaluationConcurrency } = effectiveBenchmarkConcurrency({
 		instanceCount: instanceIds.length,
@@ -962,12 +988,6 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 			: clampInteger(input.maxTurns, 1, 1000, input.maxTurns);
 	const evaluatorResourceClass =
 		input.evaluatorResourceClass?.trim() || "standard";
-	const executionBackend = normalizeBenchmarkExecutionBackend(
-		input.executionBackend ?? benchmarkExecutionBackend(),
-	);
-	const executionClass = normalizeBenchmarkExecutionClass(
-		input.executionClass ?? benchmarkExecutionClass(),
-	);
 	const modelNameOrPath =
 		input.modelNameOrPath?.trim() ||
 		input.modelConfigLabel?.trim() ||
@@ -2298,6 +2318,7 @@ export const __benchmarkSandboxCleanupForTest = {
 
 export const __benchmarkDurableRuntimeForTest = {
 	durableRuntimeStatusFromBody,
+	runtimeOutputFromWorkflowStatusBody,
 };
 
 async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {
@@ -3549,7 +3570,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		if (res?.ok) {
 			const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 			runtimeStatus = typeof body.runtimeStatus === "string" ? body.runtimeStatus : null;
-			runtimeOutput = body.output ?? body.outputs ?? runtimeOutput;
+			runtimeOutput = runtimeOutputFromWorkflowStatusBody(body, runtimeOutput);
 		}
 	}
 

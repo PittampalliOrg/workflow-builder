@@ -148,7 +148,62 @@ REGISTERED_COORDINATOR_WORKFLOWS = {
     "swebench_evaluation_workflow",
 }
 
-wfr = wf.WorkflowRuntime()
+DEFAULT_WORKFLOW_GRPC_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_CONCURRENT_ORCHESTRATIONS = 128
+DEFAULT_MAX_CONCURRENT_ACTIVITIES = 192
+DEFAULT_MAX_THREAD_POOL_WORKERS = 64
+
+
+def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, default)
+
+
+def _configure_workflow_runtime_grpc_limits(runtime: wf.WorkflowRuntime) -> None:
+    max_message_bytes = _int_env(
+        "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES",
+        DEFAULT_WORKFLOW_GRPC_MAX_MESSAGE_BYTES,
+    )
+    worker = getattr(runtime, "_WorkflowRuntime__worker", None)
+    if worker is None:
+        return
+    existing_options = list(getattr(worker, "_channel_options", None) or [])
+    merged_options = {
+        str(key): value
+        for key, value in existing_options
+        if isinstance(key, str) and key
+    }
+    merged_options.setdefault("grpc.max_receive_message_length", max_message_bytes)
+    merged_options.setdefault("grpc.max_send_message_length", max_message_bytes)
+    setattr(worker, "_channel_options", list(merged_options.items()))
+
+
+def _new_workflow_runtime() -> wf.WorkflowRuntime:
+    kwargs = {
+        "maximum_concurrent_orchestration_work_items": _int_env(
+            "DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS",
+            DEFAULT_MAX_CONCURRENT_ORCHESTRATIONS,
+        ),
+        "maximum_concurrent_activity_work_items": _int_env(
+            "DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES",
+            DEFAULT_MAX_CONCURRENT_ACTIVITIES,
+        ),
+        "maximum_thread_pool_workers": _int_env(
+            "DAPR_WORKFLOW_MAX_THREAD_POOL_WORKERS",
+            DEFAULT_MAX_THREAD_POOL_WORKERS,
+        ),
+    }
+    try:
+        runtime = wf.WorkflowRuntime(**kwargs)
+    except TypeError:
+        runtime = wf.WorkflowRuntime()
+    _configure_workflow_runtime_grpc_limits(runtime)
+    return runtime
+
+
+wfr = _new_workflow_runtime()
 
 
 EVALUATOR_RESOURCE_PROFILES: dict[str, dict[str, dict[str, dict[str, str]]]] = {

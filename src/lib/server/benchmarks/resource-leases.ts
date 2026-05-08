@@ -20,6 +20,11 @@ const INFERENCE_RESOURCES = [
 	"model_slot",
 ] satisfies BenchmarkResourceLeaseType[];
 
+const KUEUE_OPTIONAL_LEASE_RESOURCES = [
+	"dapr_workflow_slot",
+	"model_slot",
+] satisfies BenchmarkResourceLeaseType[];
+
 type BenchmarkRunForLease = typeof benchmarkRuns.$inferSelect;
 
 export type BenchmarkResourceLeaseRequest = {
@@ -110,8 +115,76 @@ function leasePhase(value: string | null | undefined): string {
 		|| "inference";
 }
 
+function configuredLeaseResources(name: string): BenchmarkResourceLeaseType[] | null {
+	const raw = (env[name] ?? process.env[name] ?? "").trim();
+	if (!raw) return null;
+	const allowed = new Set<BenchmarkResourceLeaseType>([
+		"inference_slot",
+		"openshell_sandbox",
+		"agent_runtime_slot",
+		"dapr_workflow_slot",
+		"evaluator_slot",
+		"model_slot",
+	]);
+	return raw
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry): entry is BenchmarkResourceLeaseType =>
+			allowed.has(entry as BenchmarkResourceLeaseType),
+		);
+}
+
+function isKueueManagedRun(run: BenchmarkRunForLease): boolean {
+	const summary = isRecord(run.summary) ? run.summary : {};
+	const execution = recordValue(summary.execution);
+	const backend =
+		typeof execution?.backend === "string"
+			? execution.backend.trim().toLowerCase().replace(/_/g, "-")
+			: "";
+	return (
+		backend === "dapr-kueue" ||
+		backend === "kueue-dapr" ||
+		backend === "agent-host-kueue" ||
+		backend === "kueue-agent-hosts" ||
+		backend === "host" ||
+		backend === "host-execution" ||
+		backend === "host-execution-plane"
+	);
+}
+
+function defaultLeaseResources(
+	run?: BenchmarkRunForLease | null,
+): readonly BenchmarkResourceLeaseType[] {
+	if (!run || !isKueueManagedRun(run)) return INFERENCE_RESOURCES;
+	const configured = configuredLeaseResources("BENCHMARK_KUEUE_LEASE_RESOURCES");
+	if (configured) return configured;
+	const capacity = capacitySummary(run);
+	return KUEUE_OPTIONAL_LEASE_RESOURCES.filter((resourceType) => {
+		if (resourceType === "dapr_workflow_slot") {
+			return (
+				envOptionalPositiveInt(
+					"BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS",
+					"BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS",
+				) != null ||
+				capacityNumber(capacity, "agentWorkflowMaxActiveTurns") != null
+			);
+		}
+		if (resourceType === "model_slot") {
+			return (
+				envOptionalPositiveInt(
+					"BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS",
+					"BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS",
+				) != null ||
+				capacityNumber(capacity, "modelMaxActiveRequests") != null
+			);
+		}
+		return false;
+	});
+}
+
 function leaseResources(
 	resources: BenchmarkResourceLeaseType[] | null | undefined,
+	run?: BenchmarkRunForLease | null,
 ): BenchmarkResourceLeaseType[] {
 	const allowed = new Set<BenchmarkResourceLeaseType>([
 		"inference_slot",
@@ -121,7 +194,8 @@ function leaseResources(
 		"evaluator_slot",
 		"model_slot",
 	]);
-	const selected = (resources?.length ? resources : INFERENCE_RESOURCES).filter(
+	const defaults = defaultLeaseResources(run);
+	const selected = (resources?.length ? resources : defaults).filter(
 		(resource): resource is BenchmarkResourceLeaseType => allowed.has(resource),
 	);
 	return [...new Set(selected)].sort();
@@ -261,6 +335,7 @@ function resourceCapacity(
 
 export const __benchmarkResourceLeasesForTest = {
 	admissionLimit,
+	leaseResources,
 	resourceCapacity,
 	sandboxCapacityLimit,
 };
@@ -271,7 +346,7 @@ export async function loadBenchmarkResourceCapacityDiagnostics(params: {
 	liveSandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
 }): Promise<BenchmarkResourceCapacityDiagnostic[]> {
 	const database = requireDb();
-	const resources = leaseResources(params.resources);
+	const resources = leaseResources(params.resources, params.run);
 	const liveSandboxCapacity =
 		params.liveSandboxCapacity ??
 		(resources.includes("openshell_sandbox")
@@ -394,7 +469,13 @@ export async function acquireBenchmarkResourceLeases(
 			? params.instanceId.trim()
 			: null;
 	const holderId = leaseHolderId({ runId: params.runId, instanceId, phase });
-	const resources = leaseResources(params.resources);
+	const [planningRun] = await database
+		.select()
+		.from(benchmarkRuns)
+		.where(eq(benchmarkRuns.id, params.runId))
+		.limit(1);
+	if (!planningRun) throw error(404, "Benchmark run not found");
+	const resources = leaseResources(params.resources, planningRun);
 	const liveSandboxCapacity = resources.includes("openshell_sandbox")
 		? await loadSchedulableSandboxCapacitySnapshot()
 		: null;

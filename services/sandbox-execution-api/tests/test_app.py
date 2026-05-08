@@ -152,6 +152,7 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert annotations["dapr.io/config"] == "workflow-builder-agent-runtime"
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
+    assert annotations["dapr.io/max-body-size"] == "16Mi"
     assert manifest["spec"]["backoffLimit"] == 1
     pod_spec = template["spec"]
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
@@ -161,6 +162,9 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
     assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
     assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
+    assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "16777216"
+    assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS"] == "16"
+    assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES"] == "48"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
     assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"

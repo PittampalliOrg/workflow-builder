@@ -317,6 +317,27 @@ def test_legacy_execution_routes_are_not_registered():
     assert not hasattr(APP, "start_ap_workflow")
 
 
+def test_workflow_failure_details_from_history_supports_dapr_camel_case():
+    error, stack_trace = APP._workflow_failure_details_from_history(
+        [
+            {
+                "eventType": "ExecutionCompleted",
+                "raw": {
+                    "orchestrationStatus": "ORCHESTRATION_STATUS_FAILED",
+                    "failureDetails": {
+                        "errorType": "NonDeterminismError",
+                        "errorMessage": "A previous execution called call_activity with ID=5",
+                        "stackTrace": "durabletask stack",
+                    },
+                },
+            }
+        ]
+    )
+
+    assert error == "A previous execution called call_activity with ID=5"
+    assert stack_trace == "durabletask stack"
+
+
 def test_readiness_requires_taskhub_but_not_metadata_worker_count(monkeypatch):
     observed_kwargs = {}
 

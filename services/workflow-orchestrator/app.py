@@ -478,7 +478,25 @@ def _get_taskhub_stub() -> pb_grpc.TaskHubSidecarServiceStub:
     if _taskhub_stub is not None:
         return _taskhub_stub
     target = f"{config.DAPR_HOST}:{config.DAPR_GRPC_PORT}"
-    _taskhub_channel = grpc.insecure_channel(target)
+    try:
+        max_message_bytes = max(
+            1,
+            int(
+                os.environ.get(
+                    "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES",
+                    str(16 * 1024 * 1024),
+                )
+            ),
+        )
+    except ValueError:
+        max_message_bytes = 16 * 1024 * 1024
+    _taskhub_channel = grpc.insecure_channel(
+        target,
+        options=[
+            ("grpc.max_receive_message_length", max_message_bytes),
+            ("grpc.max_send_message_length", max_message_bytes),
+        ],
+    )
     _taskhub_stub = pb_grpc.TaskHubSidecarServiceStub(_taskhub_channel)
     return _taskhub_stub
 
@@ -2415,17 +2433,26 @@ def _normalize_history_event(event: Any) -> dict[str, Any]:
         output_value = payload_dict.get("failure_details")
 
     metadata: dict[str, Any] = {}
-    if "orchestration_status" in payload_dict:
-        metadata["status"] = map_runtime_status(str(payload_dict["orchestration_status"]))
+    orchestration_status = payload_dict.get("orchestration_status") or payload_dict.get(
+        "orchestrationStatus"
+    )
+    if orchestration_status:
+        metadata["status"] = map_runtime_status(str(orchestration_status))
     task_id = payload_dict.get("task_scheduled_id") or payload_dict.get("task_execution_id")
     if isinstance(task_id, (str, int)):
         metadata["taskId"] = str(task_id)
-    failure_details = payload_dict.get("failure_details")
+    failure_details = payload_dict.get("failure_details") or payload_dict.get(
+        "failureDetails"
+    )
     if isinstance(failure_details, dict):
-        error_message = failure_details.get("error_message")
+        error_message = failure_details.get("error_message") or failure_details.get(
+            "errorMessage"
+        )
         if isinstance(error_message, str) and error_message:
             metadata["error"] = error_message
-        stack_trace = failure_details.get("stack_trace")
+        stack_trace = failure_details.get("stack_trace") or failure_details.get(
+            "stackTrace"
+        )
         if isinstance(stack_trace, dict):
             stack_trace = stack_trace.get("value")
         if isinstance(stack_trace, str) and stack_trace:
@@ -2464,6 +2491,63 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
     """Get workflow execution history events via Dapr 1.17 APIs."""
     response = _taskhub_call("GetInstanceHistory", pb.GetInstanceHistoryRequest(instanceId=instance_id))
     return [_normalize_history_event(event) for event in response.events]
+
+
+def _workflow_failure_details_from_history(
+    events: list[dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    """Extract terminal failure details when Dapr's status API omits them."""
+    for event in events:
+        if str(event.get("eventType") or "") != "ExecutionCompleted":
+            continue
+
+        metadata = event.get("metadata")
+        if isinstance(metadata, dict):
+            error = metadata.get("error")
+            stack_trace = metadata.get("stackTrace")
+            if isinstance(error, str) and error.strip():
+                return (
+                    error.strip(),
+                    stack_trace.strip()
+                    if isinstance(stack_trace, str) and stack_trace.strip()
+                    else None,
+                )
+
+        output = event.get("output")
+        if isinstance(output, dict):
+            error = output.get("error_message") or output.get("errorMessage")
+            stack_trace = output.get("stack_trace") or output.get("stackTrace")
+            if isinstance(stack_trace, dict):
+                stack_trace = stack_trace.get("value")
+            if isinstance(error, str) and error.strip():
+                return (
+                    error.strip(),
+                    stack_trace.strip()
+                    if isinstance(stack_trace, str) and stack_trace.strip()
+                    else None,
+                )
+
+        raw = event.get("raw")
+        if isinstance(raw, dict):
+            failure_details = raw.get("failure_details") or raw.get("failureDetails")
+            if isinstance(failure_details, dict):
+                error = failure_details.get("error_message") or failure_details.get(
+                    "errorMessage"
+                )
+                stack_trace = failure_details.get("stack_trace") or failure_details.get(
+                    "stackTrace"
+                )
+                if isinstance(stack_trace, dict):
+                    stack_trace = stack_trace.get("value")
+                if isinstance(error, str) and error.strip():
+                    return (
+                        error.strip(),
+                        stack_trace.strip()
+                        if isinstance(stack_trace, str) and stack_trace.strip()
+                        else None,
+                    )
+
+    return None, None
 
 
 # --- Routes ---
@@ -2632,6 +2716,14 @@ def get_workflow_status(instance_id: str):
         if workflow_payload is None:
             raise HTTPException(status_code=404, detail="Workflow not found")
         payload = _build_workflow_status_payload_from_http(instance_id, workflow_payload)
+        if payload.get("runtimeStatus") == "FAILED" and not payload.get("error"):
+            history_error, history_stack_trace = _workflow_failure_details_from_history(
+                _get_instance_history(instance_id)
+            )
+            if history_error:
+                payload["error"] = history_error
+            if history_stack_trace and not payload.get("stackTrace"):
+                payload["stackTrace"] = history_stack_trace
         return WorkflowStatusResponse(**payload)
 
     except HTTPException:

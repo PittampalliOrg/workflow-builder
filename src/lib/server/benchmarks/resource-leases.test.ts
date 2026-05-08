@@ -155,6 +155,65 @@ describe("benchmark resource lease capacity", () => {
 		});
 	});
 
+	it("does not reserve Kueue-managed physical resources by default", () => {
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				{
+					...(run as Record<string, unknown>),
+					concurrency: 120,
+					summary: {
+						capacity: {
+							effectiveConcurrency: 120,
+							maxActiveInferenceInstances: null,
+							modelMaxActiveRequests: null,
+						},
+						execution: {
+							backend: "dapr-kueue",
+						},
+					},
+				} as never,
+				"inference_slot",
+			),
+		).toMatchObject({
+			capacityKey: "workflow-builder",
+			limit: 120,
+		});
+		expect(
+			__benchmarkResourceLeasesForTest.leaseResources(null, {
+				...(run as Record<string, unknown>),
+				summary: {
+					capacity: {
+						effectiveConcurrency: 120,
+						maxActiveInferenceInstances: null,
+						modelMaxActiveRequests: null,
+					},
+					execution: {
+						backend: "dapr-kueue",
+					},
+				},
+			} as never),
+		).toEqual([]);
+	});
+
+	it("keeps explicit provider leases for Kueue-backed runs", () => {
+		vi.stubEnv("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS", "48");
+
+		expect(
+			__benchmarkResourceLeasesForTest.leaseResources(null, {
+				...(run as Record<string, unknown>),
+				summary: {
+					capacity: {
+						effectiveConcurrency: 120,
+						modelMaxActiveRequests: 48,
+					},
+					execution: {
+						backend: "dapr-kueue",
+					},
+				},
+			} as never),
+		).toEqual(["model_slot"]);
+	});
+
 	it("lets an explicit global inference env guard override stored auto capacity", () => {
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "60");
 

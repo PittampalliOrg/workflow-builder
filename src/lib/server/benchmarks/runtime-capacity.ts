@@ -1,7 +1,7 @@
 import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
 
 export type BenchmarkRuntimeCapacitySnapshot = {
-	capacityMode: "manual" | "auto";
+	capacityMode: "manual" | "auto" | "kueue";
 	requestedConcurrency: number;
 	effectiveConcurrency: number;
 	runtimeClass: string;
@@ -37,6 +37,7 @@ export type BenchmarkRuntimeCapacityInput = {
 	schedulableSandboxCapacity?: number | null;
 	sandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
 	modelMaxActiveRequests?: number | null;
+	executionBackend?: string | null;
 };
 
 const DEFAULT_RUNTIME_CLASS = "coding";
@@ -90,7 +91,27 @@ function envOptionalPositiveInt(...names: string[]): number | null {
 	return null;
 }
 
-function capacityMode(): "manual" | "auto" {
+function isKueueExecutionBackend(value: unknown): boolean {
+	if (typeof value !== "string" || !value.trim()) return false;
+	const normalized = value
+		.trim()
+		.toLowerCase()
+		.replace(/_/g, "-");
+	return (
+		normalized === "dapr-kueue" ||
+		normalized === "kueue-dapr" ||
+		normalized === "kueue-agent-hosts" ||
+		normalized === "agent-host-kueue" ||
+		normalized === "host" ||
+		normalized === "host-execution" ||
+		normalized === "host-execution-plane"
+	);
+}
+
+function capacityMode(
+	input: BenchmarkRuntimeCapacityInput,
+): "manual" | "auto" | "kueue" {
+	if (isKueueExecutionBackend(input.executionBackend)) return "kueue";
 	const normalized = (process.env.BENCHMARK_CAPACITY_MODE ?? "")
 		.trim()
 		.toLowerCase();
@@ -184,7 +205,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		daprWorkflowEffectiveCapacity,
 		configuredMaxActiveSessions ?? Number.POSITIVE_INFINITY,
 	);
-	const mode = capacityMode();
+	const mode = capacityMode(input);
 	const configuredGlobalMax = positiveInt(
 		process.env.BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES,
 	);
@@ -230,16 +251,20 @@ export function estimateBenchmarkRuntimeCapacity(
 		modelMax,
 	]);
 	const globalMax =
-		mode === "auto"
-			? (configuredGlobalMax ?? derivedActiveInferenceLimit ?? runtimeMax)
-			: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES);
+		mode === "kueue"
+			? Number.POSITIVE_INFINITY
+			: mode === "auto"
+				? (configuredGlobalMax ?? derivedActiveInferenceLimit ?? runtimeMax)
+				: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES);
 	const effective = Math.min(
 		requested,
 		selectedCount,
-		runtimeMax,
+		mode === "kueue" ? Number.POSITIVE_INFINITY : runtimeMax,
 		globalMax,
 		agentWorkflowMaxActiveTurns ?? Number.POSITIVE_INFINITY,
-		sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY,
+		mode === "kueue"
+			? Number.POSITIVE_INFINITY
+			: (sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY),
 		modelMax ?? Number.POSITIVE_INFINITY,
 	);
 	const reasons: string[] = [];
@@ -256,6 +281,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		reasons.push("dapr_workflow_capacity");
 	}
 	if (
+		mode !== "kueue" &&
 		(mode === "manual" || configuredGlobalMax != null) &&
 		requested > globalMax &&
 		effective === globalMax
@@ -273,6 +299,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		reasons.push("sandbox_capacity");
 	}
 	if (
+		mode !== "kueue" &&
 		schedulableSandboxCapacity != null &&
 		requested > schedulableSandboxCapacity &&
 		effective === schedulableSandboxCapacity
@@ -298,11 +325,13 @@ export function estimateBenchmarkRuntimeCapacity(
 		slotsPerReplica,
 		configuredMaxActiveInferenceInstances: configuredGlobalMax,
 		maxActiveInferenceInstances:
-			mode === "auto"
-				? derivedActiveInferenceLimit
-				: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES),
+			mode === "kueue"
+				? null
+				: mode === "auto"
+					? derivedActiveInferenceLimit
+					: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES),
 		maxActiveSessions: Math.min(
-			runtimeMax,
+			mode === "kueue" ? selectedCount : runtimeMax,
 			globalMax,
 			modelMax ?? Number.POSITIVE_INFINITY,
 		),

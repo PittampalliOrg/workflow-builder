@@ -503,6 +503,33 @@ def build_agent_workflow_host_job_manifest(
                     {"name": "DAPR_HTTP_ENDPOINT", "value": "http://localhost:3500"},
                     {"name": "DAPR_GRPC_ENDPOINT", "value": "dns:localhost:50001"},
                     {
+                        "name": "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES",
+                        "value": os.environ.get(
+                            "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", "16777216"
+                        ),
+                    },
+                    {
+                        "name": "DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_HOST_MAX_CONCURRENT_ORCHESTRATIONS",
+                            "16",
+                        ),
+                    },
+                    {
+                        "name": "DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_HOST_MAX_CONCURRENT_ACTIVITIES",
+                            "48",
+                        ),
+                    },
+                    {
+                        "name": "DAPR_WORKFLOW_MAX_THREAD_POOL_WORKERS",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_HOST_MAX_THREAD_POOL_WORKERS",
+                            "16",
+                        ),
+                    },
+                    {
                         "name": "DAPR_AGENT_SESSION_HOST_INSTANCE_ID",
                         "value": request.sessionId,
                     },
@@ -621,6 +648,9 @@ def build_agent_workflow_host_job_manifest(
                         "dapr.io/placement-host-address": os.environ.get(
                             "DAPR_PLACEMENT_HOST_ADDRESS",
                             "dapr-placement-server.dapr-system.svc.cluster.local:50005",
+                        ),
+                        "dapr.io/max-body-size": os.environ.get(
+                            "DAPR_MAX_BODY_SIZE", "16Mi"
                         ),
                         "dapr.io/graceful-shutdown-seconds": "60",
                         "dapr.io/sidecar-readiness-probe-delay-seconds": "0",
