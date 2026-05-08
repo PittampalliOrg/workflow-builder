@@ -3088,6 +3088,7 @@ class OpenShellDurableAgent(DurableAgent):
         )
 
         metrics_emitted = False
+        workflow_terminal = False
 
         def emit_metrics_summary_once() -> None:
             nonlocal metrics_emitted
@@ -3161,6 +3162,7 @@ class OpenShellDurableAgent(DurableAgent):
             # per-turn result (and CallAgent's tool_result content ultimately
             # comes from this dict's "content" field).
             agent_workflow_result = yield from super().agent_workflow(ctx, message)
+            workflow_terminal = True
 
             # After agent completes, check for PLAN.md and persist full content
             # to Dapr state store (mirrors Claude Code's file-based plan persistence)
@@ -3247,6 +3249,7 @@ class OpenShellDurableAgent(DurableAgent):
             emit_metrics_summary_once()
             self._close_mcp_client(instance_id)
         except Exception as exc:
+            workflow_terminal = True
             # run_error is suppressed — session_workflow emits session.status_errored
             # with stop_reason carrying the full error context.
             _ = exc  # retained for re-raise below
@@ -3278,14 +3281,26 @@ class OpenShellDurableAgent(DurableAgent):
             # intact; each replay's install/resolve block rewrites the entries
             # idempotently, so the memory footprint is bounded by the number of
             # concurrently-live workflow instances.
-            self.execution.max_iterations = previous_max_iterations
-            self.llm._llm_component = previous_component
-            _restore_prompt_state(self, previous_prompt_state)
-            skill_registry.clear_instance_skills()
-            # End the claude_code.interaction span + reset session context.
-            # Gated on non-replay to avoid prematurely closing the span every
-            # orchestrator replay tick (see comment above on finally semantics).
-            if not ctx.is_replaying and instance_id in self._interaction_span_by_instance:
+            #
+            # The mutable process-wide settings below are also part of the
+            # live workflow's execution environment. Restoring them on an
+            # intermediate yield can make the first execution and replay walk
+            # different action sequences, which durabletask reports as
+            # NonDeterminismError ("previous execution called call_activity...").
+            # Restore them only after the workflow body reaches a terminal
+            # success/error path.
+            if workflow_terminal:
+                self.execution.max_iterations = previous_max_iterations
+                self.llm._llm_component = previous_component
+                _restore_prompt_state(self, previous_prompt_state)
+                skill_registry.clear_instance_skills()
+            # End the claude_code.interaction span + reset session context only
+            # on real completion, not on intermediate replay/yield closure.
+            if (
+                workflow_terminal
+                and not ctx.is_replaying
+                and instance_id in self._interaction_span_by_instance
+            ):
                 try:
                     from src.telemetry import end_interaction_span, flush_telemetry
                     from src.telemetry.attributes import reset_session_context
