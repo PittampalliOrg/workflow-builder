@@ -2572,6 +2572,21 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
     sw_workflow_v1 Dapr workflow interpreter.
     """
     try:
+        runtime_ready, runtime_status = _get_workflow_runtime_status(
+            timeout_seconds=1.0,
+            require_workflow_workers=True,
+        )
+        if not runtime_ready:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "workflow_runtime_unavailable",
+                    "error": "Dapr workflow runtime is not ready",
+                    "operation": "execute_sw_workflow",
+                    "runtimeStatus": runtime_status,
+                },
+            )
+
         from core.sw_types import Workflow as SWWorkflowModel
 
         # Validate the workflow document
@@ -3169,6 +3184,7 @@ def health_check():
     ready, runtime_status = _get_workflow_runtime_status(
         timeout_seconds=0.5,
         include_taskhub=False,
+        require_workflow_workers=True,
     )
     if not ready:
         raise HTTPException(
@@ -3190,7 +3206,9 @@ def health_check():
 @app.get("/readyz")
 def readiness_check():
     """Readiness check endpoint."""
-    ready, runtime_status = _get_workflow_runtime_status()
+    ready, runtime_status = _get_workflow_runtime_status(
+        require_workflow_workers=True,
+    )
     if not ready:
         raise HTTPException(
             status_code=503,

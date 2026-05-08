@@ -138,6 +138,19 @@ describe("SWE-bench DB metadata", () => {
 });
 
 describe("SWE-bench workflow spec", () => {
+	it("uses the same host execution label values as sandbox-execution-api", () => {
+		expect(
+			__benchmarkSandboxCleanupForTest.benchmarkRunLabelValue(
+				"rwPVt8a69bC2qwVwn9-_H",
+			),
+		).toBe("rwpvt8a69bc2qwvwn9--h");
+		expect(
+			__benchmarkSandboxCleanupForTest.benchmarkInstanceLabelValue(
+				"sympy__sympy-20590",
+			),
+		).toBe("sympy-sympy-20590");
+	});
+
 	it("caps stored benchmark concurrency to the selected instance count", () => {
 		vi.stubEnv("BENCHMARK_DEFAULT_CONCURRENCY", "5");
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "10");

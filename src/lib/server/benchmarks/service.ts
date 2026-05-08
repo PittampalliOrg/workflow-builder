@@ -2425,6 +2425,8 @@ type BenchmarkSandboxCleanupResult = {
 };
 
 export const __benchmarkSandboxCleanupForTest = {
+	benchmarkInstanceLabelValue,
+	benchmarkRunLabelValue,
 	collectBenchmarkSandboxNamesFromValues,
 	collectOpenShellSandboxNamesFromKubeItems,
 	isOpenShellSandboxNotFound,
@@ -2537,11 +2539,22 @@ function hostSandboxExecutionNamespace(): string {
 }
 
 function benchmarkRunLabelValue(runId: string): string {
-	return normalizeSandboxNamePart(runId).slice(0, 63) || "execution";
+	return normalizeHostExecutionLabelValue(runId);
 }
 
 function benchmarkInstanceLabelValue(instanceId: string): string {
-	return normalizeSandboxNamePart(instanceId).slice(0, 63) || "execution";
+	return normalizeHostExecutionLabelValue(instanceId);
+}
+
+function normalizeHostExecutionLabelValue(value: string): string {
+	return (
+		value
+			.toLowerCase()
+			.replace(/[^a-z0-9-]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(0, 63)
+			.replace(/-+$/g, "") || "execution"
+	);
 }
 
 async function deleteHostSandboxExecutionResourcesForBenchmarkRun(
