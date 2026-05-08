@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 
+import src.app as app_module
 from src.app import (
     AgentWorkflowHostRequest,
     ExecutionClassConfig,
@@ -164,6 +166,82 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+
+
+def test_component_scope_patch_uses_json_patch_append(monkeypatch) -> None:
+    class FakeCustom:
+        def __init__(self) -> None:
+            self.component = {"scopes": ["workflow-orchestrator"]}
+            self.patches: list[tuple[list[dict[str, str]], str | None]] = []
+
+        def get_namespaced_custom_object(self, **_kwargs):
+            return self.component
+
+        def patch_namespaced_custom_object(self, *, body, _content_type=None, **_kwargs):
+            self.patches.append((body, _content_type))
+            assert body == [
+                {"op": "add", "path": "/scopes/-", "value": "agent-session-abc123"}
+            ]
+            assert _content_type == "application/json-patch+json"
+            self.component["scopes"].append(body[0]["value"])
+
+    fake = FakeCustom()
+    monkeypatch.setattr(app_module, "_load_k8s_custom_objects_client", lambda: fake)
+
+    app_module._patch_component_scope(
+        "workflow-builder",
+        "workflowstatestore",
+        "agent-session-abc123",
+    )
+
+    assert fake.component["scopes"] == [
+        "workflow-orchestrator",
+        "agent-session-abc123",
+    ]
+    assert len(fake.patches) == 1
+
+
+def test_component_scope_patch_leaves_unscoped_component_unmodified(monkeypatch) -> None:
+    class FakeCustom:
+        def get_namespaced_custom_object(self, **_kwargs):
+            return {}
+
+        def patch_namespaced_custom_object(self, **_kwargs):
+            raise AssertionError("unscoped components are already visible to the app")
+
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_custom_objects_client",
+        lambda: FakeCustom(),
+    )
+
+    app_module._patch_component_scope(
+        "workflow-builder",
+        "workflowstatestore",
+        "agent-session-abc123",
+    )
+
+
+def test_wait_for_agent_host_ready_requires_pod_ready_condition() -> None:
+    ready_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[SimpleNamespace(type="Ready", status="True")],
+            container_statuses=[],
+        )
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[ready_pod])
+    )
+
+    status = app_module._wait_for_agent_host_ready(
+        core,
+        namespace="workflow-builder",
+        agent_app_id="agent-session-abc123",
+        wait_seconds=1,
+    )
+
+    assert status == "ready"
 
 
 def test_long_resource_names_keep_unique_suffixes() -> None:

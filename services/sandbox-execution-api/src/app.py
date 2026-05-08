@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
@@ -75,6 +76,7 @@ class AgentWorkflowHostRequest(BaseModel):
     executionClass: str = Field(default="benchmark-fast")
     timeoutSeconds: int = Field(default=7200, ge=60, le=86400)
     agentImage: str | None = None
+    waitReadySeconds: int = Field(default=0, ge=0, le=300)
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -606,8 +608,12 @@ def build_agent_workflow_host_job_manifest(
     }
 
 
-def _patch_component_scope(namespace: str, component_name: str, app_id: str) -> None:
-    custom = _load_k8s_custom_objects_client()
+def _component_scopes(
+    custom: Any,
+    *,
+    namespace: str,
+    component_name: str,
+) -> list[str] | None:
     component = custom.get_namespaced_custom_object(
         group="dapr.io",
         version="v1alpha1",
@@ -616,19 +622,43 @@ def _patch_component_scope(namespace: str, component_name: str, app_id: str) -> 
         name=component_name,
     )
     scopes = component.get("scopes")
+    if scopes is None:
+        return None
     if not isinstance(scopes, list):
-        scopes = []
-    if app_id in scopes:
-        return
-    scopes = [entry for entry in scopes if isinstance(entry, str)]
-    scopes.append(app_id)
-    custom.patch_namespaced_custom_object(
-        group="dapr.io",
-        version="v1alpha1",
-        namespace=namespace,
-        plural="components",
-        name=component_name,
-        body={"scopes": scopes},
+        return []
+    return [entry for entry in scopes if isinstance(entry, str)]
+
+
+def _patch_component_scope(namespace: str, component_name: str, app_id: str) -> None:
+    custom = _load_k8s_custom_objects_client()
+    for _attempt in range(5):
+        scopes = _component_scopes(
+            custom,
+            namespace=namespace,
+            component_name=component_name,
+        )
+        if scopes is None or app_id in scopes:
+            return
+        patch = [{"op": "add", "path": "/scopes/-", "value": app_id}]
+        custom.patch_namespaced_custom_object(
+            group="dapr.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="components",
+            name=component_name,
+            body=patch,
+            _content_type="application/json-patch+json",
+        )
+        scopes = _component_scopes(
+            custom,
+            namespace=namespace,
+            component_name=component_name,
+        )
+        if scopes is None or app_id in scopes:
+            return
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"failed to add app id {app_id!r} to Dapr component {component_name!r} scopes"
     )
 
 
@@ -639,6 +669,79 @@ def _ensure_agent_host_component_scopes(namespace: str, app_id: str) -> None:
     )
     for component_name in [part.strip() for part in raw.split(",") if part.strip()]:
         _patch_component_scope(namespace, component_name, app_id)
+
+
+def _pod_is_ready(pod: Any) -> bool:
+    conditions = getattr(getattr(pod, "status", None), "conditions", None) or []
+    for condition in conditions:
+        if getattr(condition, "type", None) == "Ready":
+            return getattr(condition, "status", None) == "True"
+    return False
+
+
+def _pod_failure_reason(pod: Any) -> str | None:
+    status = getattr(pod, "status", None)
+    phase = getattr(status, "phase", None)
+    if phase == "Failed":
+        return getattr(status, "reason", None) or "pod failed"
+    container_statuses = getattr(status, "container_statuses", None) or []
+    for container_status in container_statuses:
+        state = getattr(container_status, "state", None)
+        waiting = getattr(state, "waiting", None)
+        if waiting and getattr(waiting, "reason", None) in {
+            "CrashLoopBackOff",
+            "CreateContainerConfigError",
+            "CreateContainerError",
+            "ErrImagePull",
+            "ImagePullBackOff",
+        }:
+            reason = getattr(waiting, "reason", None)
+            message = getattr(waiting, "message", None)
+            return f"{reason}: {message}" if message else reason
+        terminated = getattr(state, "terminated", None)
+        if terminated and getattr(terminated, "exit_code", 0) != 0:
+            reason = getattr(terminated, "reason", None) or "container terminated"
+            return f"{reason}: exit {terminated.exit_code}"
+    return None
+
+
+def _wait_for_agent_host_ready(
+    core: Any,
+    *,
+    namespace: str,
+    agent_app_id: str,
+    wait_seconds: int,
+) -> str:
+    if wait_seconds <= 0:
+        return "queued"
+    selector = f"app=agent-workflow-host,agent-app-id={_safe_name(agent_app_id, max_length=63)}"
+    deadline = time.monotonic() + wait_seconds
+    last_phase = "pending"
+    while time.monotonic() < deadline:
+        pods = core.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=selector,
+        ).items
+        for pod in pods:
+            failure = _pod_failure_reason(pod)
+            if failure:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"agent workflow host {agent_app_id} failed before readiness: {failure}",
+                )
+            if _pod_is_ready(pod):
+                return "ready"
+            phase = getattr(getattr(pod, "status", None), "phase", None)
+            if phase:
+                last_phase = phase
+        time.sleep(1)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            f"agent workflow host {agent_app_id} was not ready after "
+            f"{wait_seconds}s; last phase {last_phase}"
+        ),
+    )
 
 
 @app.get("/healthz")
@@ -741,18 +844,26 @@ def submit_agent_workflow_host(
         "true",
         "yes",
     }:
-        batch, _core = _load_k8s_clients()
+        batch, core = _load_k8s_clients()
         _ensure_agent_host_component_scopes(namespace, body.agentAppId)
         try:
             batch.create_namespaced_job(namespace=namespace, body=manifest)
         except Exception as exc:
             if getattr(exc, "status", None) != 409:
                 raise
+        readiness_status = _wait_for_agent_host_ready(
+            core,
+            namespace=namespace,
+            agent_app_id=body.agentAppId,
+            wait_seconds=body.waitReadySeconds,
+        )
+    else:
+        readiness_status = "queued"
     return {
         "agentAppId": body.agentAppId,
         "sessionId": body.sessionId,
         "jobName": manifest["metadata"]["name"],
-        "status": "queued",
+        "status": readiness_status,
         "executionClass": body.executionClass,
         "localQueue": class_config.localQueue,
         "runtimeClassName": class_config.runtimeClassName,

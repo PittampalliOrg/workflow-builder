@@ -573,6 +573,14 @@ async function maybeProvisionAgentWorkflowHost(params: {
 	}
 	const agentAppId = sessionHostAppId(params.sessionId);
 	const timeoutSeconds = Math.max(60, (params.timeoutMinutes ?? 15) * 60);
+	const waitReadySecondsRaw = Number(
+		env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
+			process.env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
+			45,
+	);
+	const waitReadySeconds = Number.isFinite(waitReadySecondsRaw)
+		? Math.max(0, Math.min(55, waitReadySecondsRaw))
+		: 45;
 	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
 	const response = await fetch(`${baseUrl}/api/v1/agent-workflow-hosts`, {
 		method: "POST",
@@ -590,6 +598,7 @@ async function maybeProvisionAgentWorkflowHost(params: {
 				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
 				"benchmark-fast",
 			timeoutSeconds,
+			waitReadySeconds,
 		}),
 	});
 	const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
