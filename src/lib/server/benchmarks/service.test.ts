@@ -1397,6 +1397,43 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(calls).toEqual(["warn", "instances", "sandboxes", "leases"]);
 	});
 
+	it("does not repeat cancelled-run resource cleanup when it already ran before durable wait", async () => {
+		const calls: string[] = [];
+		const hooks = {
+			finalizeInstances: vi.fn(async () => {
+				calls.push("instances");
+			}),
+			cleanupSandboxes: vi.fn(async () => {
+				calls.push("sandboxes");
+			}),
+			releaseLeases: vi.fn(async () => {
+				calls.push("leases");
+			}),
+			warn: vi.fn(() => {
+				calls.push("warn");
+			}),
+		};
+
+		await expect(
+			cleanupBenchmarkTerminalResourcesAfterDurableClosure(
+				{
+					runId: "run_1",
+					outcome: "cancelled",
+					reason: "benchmark run cancelled",
+					now,
+					workflowsClosed: false,
+					resourcesAlreadyCleaned: true,
+				},
+				hooks,
+			),
+		).resolves.toBe(false);
+
+		expect(calls).toEqual(["warn"]);
+		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
+		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
+		expect(hooks.releaseLeases).not.toHaveBeenCalled();
+	});
+
 	it("finalizes terminal resources after durable workflows close", async () => {
 		const calls: string[] = [];
 		const hooks = {

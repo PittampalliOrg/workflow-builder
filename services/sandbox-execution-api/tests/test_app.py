@@ -32,7 +32,7 @@ def _request(execution_class: str = "benchmark-fast") -> ExecutionRequest:
     )
 
 
-def test_benchmark_fast_job_is_kueue_managed() -> None:
+def test_benchmark_fast_worker_job_is_not_kueue_managed() -> None:
     request = _request()
     manifest = build_job_manifest(
         request,
@@ -46,7 +46,7 @@ def test_benchmark_fast_job_is_kueue_managed() -> None:
         namespace="sandbox-execution",
     )
 
-    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    assert "kueue.x-k8s.io/queue-name" not in manifest["metadata"]["labels"]
     assert manifest["spec"]["ttlSecondsAfterFinished"] == 300
     pod_spec = manifest["spec"]["template"]["spec"]
     container = pod_spec["containers"][0]
@@ -113,7 +113,7 @@ def test_job_ttl_can_be_overridden_by_env(monkeypatch) -> None:
     assert manifest["spec"]["ttlSecondsAfterFinished"] == 600
 
 
-def test_secure_gvisor_sets_runtime_class_and_queue() -> None:
+def test_secure_gvisor_sets_runtime_class_without_queueing_worker_job() -> None:
     manifest = build_job_manifest(
         _request("secure-gvisor"),
         execution_id="hexec-123",
@@ -124,7 +124,7 @@ def test_secure_gvisor_sets_runtime_class_and_queue() -> None:
         ),
     )
 
-    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "secure-gvisor"
+    assert "kueue.x-k8s.io/queue-name" not in manifest["metadata"]["labels"]
     assert manifest["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor"
 
 

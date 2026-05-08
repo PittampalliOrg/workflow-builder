@@ -301,7 +301,6 @@ def build_job_manifest(
             "namespace": namespace,
             "labels": {
                 "app": "sandbox-execution-worker",
-                KUEUE_QUEUE_LABEL: class_config.localQueue,
                 "benchmark-run-id": run_label,
                 "benchmark-instance-id": instance_label,
                 "sandbox-execution-class": _safe_name(request.executionClass),

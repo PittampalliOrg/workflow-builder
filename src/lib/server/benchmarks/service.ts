@@ -186,6 +186,7 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 		reason: string;
 		now: Date;
 		workflowsClosed: boolean;
+		resourcesAlreadyCleaned?: boolean;
 	},
 	hooks: BenchmarkTerminalResourceCleanupHooks = benchmarkTerminalResourceCleanupHooks,
 ): Promise<boolean> {
@@ -194,14 +195,16 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 			hooks.warn(
 				`Benchmark run ${params.runId} durable cleanup did not confirm workflow closure; deleting benchmark-owned sandboxes and releasing leases because the run was cancelled`,
 			);
-			await hooks.finalizeInstances(
-				params.runId,
-				params.outcome,
-				params.reason,
-				params.now,
-			);
-			await hooks.cleanupSandboxes(params.runId, params.reason);
-			await hooks.releaseLeases(params.runId, params.reason);
+			if (!params.resourcesAlreadyCleaned) {
+				await hooks.finalizeInstances(
+					params.runId,
+					params.outcome,
+					params.reason,
+					params.now,
+				);
+				await hooks.cleanupSandboxes(params.runId, params.reason);
+				await hooks.releaseLeases(params.runId, params.reason);
+			}
 			return false;
 		}
 		hooks.warn(
@@ -209,14 +212,16 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 		);
 		return false;
 	}
-	await hooks.finalizeInstances(
-		params.runId,
-		params.outcome,
-		params.reason,
-		params.now,
-	);
-	await hooks.cleanupSandboxes(params.runId, params.reason);
-	await hooks.releaseLeases(params.runId, params.reason);
+	if (!params.resourcesAlreadyCleaned) {
+		await hooks.finalizeInstances(
+			params.runId,
+			params.outcome,
+			params.reason,
+			params.now,
+		);
+		await hooks.cleanupSandboxes(params.runId, params.reason);
+		await hooks.releaseLeases(params.runId, params.reason);
+	}
 	return params.workflowsClosed;
 }
 
@@ -1299,6 +1304,17 @@ async function cleanupTerminalBenchmarkRun(params: {
 	reason: string;
 	now: Date;
 }): Promise<void> {
+	const resourcesAlreadyCleaned = params.outcome === "cancelled";
+	if (resourcesAlreadyCleaned) {
+		await finalizeActiveBenchmarkRunInstances(
+			params.runId,
+			params.outcome,
+			params.reason,
+			params.now,
+		);
+		await cleanupBenchmarkRunSandboxes(params.runId, params.reason);
+		await releaseBenchmarkResourceLeasesForRun(params.runId, params.reason);
+	}
 	const workflowsClosed = await finalizeBenchmarkWorkflowExecutions(
 		params.runId,
 		params.outcome,
@@ -1308,6 +1324,7 @@ async function cleanupTerminalBenchmarkRun(params: {
 	await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
 		...params,
 		workflowsClosed,
+		resourcesAlreadyCleaned,
 	});
 	if (params.outcome === "cancelled") {
 		await finalizeCancelledBenchmarkRunProjections(
