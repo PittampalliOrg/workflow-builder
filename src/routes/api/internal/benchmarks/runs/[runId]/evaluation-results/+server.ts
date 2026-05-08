@@ -84,9 +84,11 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		return json({ success: true });
 	}
 	const patchContext = await loadPatchContextForRun(params.runId);
+	const mlflowInstanceIds: string[] = [];
 	for (const result of results) {
 		const instanceId = result.instance_id ?? result.instanceId;
 		if (!instanceId) continue;
+		mlflowInstanceIds.push(instanceId);
 		const { status, evaluationStatus } = mapHarnessStatus(result);
 		const evaluationError = result.error ?? null;
 		const ctx = patchContext.get(instanceId);
@@ -117,11 +119,8 @@ export const POST: RequestHandler = async ({ request, params }) => {
 					eq(benchmarkRunInstances.instanceId, instanceId),
 				),
 			);
-		await syncBenchmarkInstanceMlflow({
-			runId: params.runId,
-			instanceId,
-		});
 	}
+	syncEvaluationResultMlflowInBackground(params.runId, mlflowInstanceIds);
 	const summary = await recomputeRunSummary(params.runId);
 	const activeRows = await db
 		.select({ id: benchmarkRunInstances.id })
@@ -218,6 +217,26 @@ async function notifyCoordinatorEvaluationEvent(
 			err,
 		);
 	}
+}
+
+function syncEvaluationResultMlflowInBackground(
+	runId: string,
+	instanceIds: string[],
+) {
+	const uniqueInstanceIds = [...new Set(instanceIds)];
+	if (uniqueInstanceIds.length === 0) return;
+	void (async () => {
+		for (const instanceId of uniqueInstanceIds) {
+			try {
+				await syncBenchmarkInstanceMlflow({ runId, instanceId });
+			} catch (err) {
+				console.warn(
+					`SWE-bench MLflow evaluation sync failed for ${runId}/${instanceId}:`,
+					err,
+				);
+			}
+		}
+	})();
 }
 
 function mapHarnessStatus(result: EvaluationResult): {
