@@ -2318,6 +2318,7 @@ export const __benchmarkSandboxCleanupForTest = {
 
 export const __benchmarkDurableRuntimeForTest = {
 	durableRuntimeStatusFromBody,
+	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
 };
 
@@ -3584,10 +3585,14 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		}
 	}
 
-	const executionFailed = isFailedWorkflowExecution(row.execution);
-	const status = executionFailed
-		? "error"
-		: mapExecutionStatus(row.execution.status, runtimeStatus);
+	const status = benchmarkSyncExecutionStatus({
+		dbStatus: row.execution.status,
+		phase: row.execution.phase,
+		completedAt: row.execution.completedAt,
+		error: row.execution.error,
+		output: row.execution.output,
+		runtimeStatus,
+	});
 	if (status === "running" || status === "pending") {
 		return (
 			(await timeoutBenchmarkInstanceIfStalled(row.runInstance, row.run)) ??
@@ -5136,6 +5141,38 @@ function workflowExecutionError(
 		"message",
 	]);
 	return candidates.find((candidate) => candidate.trim())?.slice(0, 2000) ?? null;
+}
+
+function benchmarkSyncExecutionStatus(execution: {
+	dbStatus: string;
+	phase: string | null;
+	completedAt: Date | null;
+	error: string | null;
+	output: unknown;
+	runtimeStatus: string | null;
+}): ExecutionStatus {
+	if (
+		execution.dbStatus === "success" ||
+		execution.dbStatus === "error" ||
+		execution.dbStatus === "cancelled"
+	) {
+		return execution.dbStatus;
+	}
+	if (execution.phase === "completed" || execution.completedAt) {
+		const projected = mapExecutionStatus(execution.dbStatus, null);
+		if (projected !== "pending" && projected !== "running") return projected;
+	}
+	if (
+		isFailedWorkflowExecution({
+			status: execution.dbStatus,
+			phase: execution.phase,
+			error: execution.error,
+			output: execution.output,
+		})
+	) {
+		return "error";
+	}
+	return mapExecutionStatus(execution.dbStatus, execution.runtimeStatus);
 }
 
 function serializeRunSummary(row: {

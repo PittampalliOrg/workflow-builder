@@ -963,6 +963,29 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toEqual({ ok: true });
 	});
 
+	it("does not let stale Dapr status downgrade a terminal DB projection", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkSyncExecutionStatus({
+				dbStatus: "success",
+				phase: "completed",
+				completedAt: new Date("2026-05-08T07:00:00Z"),
+				error: null,
+				output: { patch: "diff --git a/file b/file\n" },
+				runtimeStatus: "RUNNING",
+			}),
+		).toBe("success");
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkSyncExecutionStatus({
+				dbStatus: "running",
+				phase: "running",
+				completedAt: null,
+				error: null,
+				output: null,
+				runtimeStatus: "COMPLETED",
+			}),
+		).toBe("success");
+	});
+
 	it("keeps cancellation sandbox cleanup scoped to benchmark-owned OpenShell names", () => {
 		const runId = "codexcap20x20260504014703";
 		const names =
