@@ -522,6 +522,13 @@ def build_agent_workflow_host_job_manifest(
                             "120",
                         ),
                     },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT",
+                            "true",
+                        ),
+                    },
                 ],
                 "envFrom": [
                     {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},

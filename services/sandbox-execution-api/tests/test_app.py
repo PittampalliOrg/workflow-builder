@@ -160,6 +160,7 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
+    assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"
     env_from = container["envFrom"]
     assert env_from[0]["configMapRef"] == {
         "name": "dapr-agent-py-config",

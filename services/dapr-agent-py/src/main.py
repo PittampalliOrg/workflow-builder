@@ -4415,6 +4415,13 @@ def _session_host_int(name: str, default: int, *, minimum: int = 1) -> int:
         return max(minimum, default)
 
 
+def _session_host_bool(name: str, default: bool) -> bool:
+    raw = _session_host_env(name)
+    if not raw:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _start_session_host_monitor() -> None:
     instance_id = _session_host_env("DAPR_AGENT_SESSION_HOST_INSTANCE_ID")
     if not instance_id:
@@ -4426,6 +4433,32 @@ def _start_session_host_monitor() -> None:
         daemon=True,
     )
     thread.start()
+
+
+def _shutdown_dapr_sidecar_for_job(instance_id: str) -> None:
+    if not _session_host_bool("DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT", True):
+        return
+    url = f"{_dapr_http_sidecar_url()}/v1.0/shutdown"
+    request = urllib.request.Request(
+        url,
+        headers=_dapr_api_token_headers(),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            response.read()
+        logger.info("[session-host] requested dapr sidecar shutdown for %s", instance_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[session-host] failed to request dapr sidecar shutdown for %s: %s",
+            instance_id,
+            exc,
+        )
+
+
+def _session_host_exit(instance_id: str, exit_code: int) -> None:
+    _shutdown_dapr_sidecar_for_job(instance_id)
+    os._exit(exit_code)
 
 
 def _run_session_host_monitor(instance_id: str) -> None:
@@ -4463,7 +4496,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
                 instance_id,
                 start_timeout,
             )
-            os._exit(1)
+            _session_host_exit(instance_id, 1)
         sidecar_error = _dapr_sidecar_health_error()
         if sidecar_error is not None:
             now = time.monotonic()
@@ -4477,7 +4510,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     instance_id,
                     sidecar_error,
                 )
-                os._exit(1)
+                _session_host_exit(instance_id, 1)
             logger.warning(
                 "[session-host] dapr sidecar unavailable while monitoring %s: %s",
                 instance_id,
@@ -4516,7 +4549,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     runtime_status,
                     exit_code,
                 )
-                os._exit(exit_code)
+                _session_host_exit(instance_id, exit_code)
         time.sleep(poll_seconds)
 
 
