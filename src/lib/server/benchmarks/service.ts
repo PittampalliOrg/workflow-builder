@@ -2912,25 +2912,34 @@ async function loadBenchmarkRunSandboxNamesFromKubernetes(
 ): Promise<string[]> {
 	const namespace = openshellSandboxNamespace();
 	const ns = encodeURIComponent(namespace);
-	try {
-		const res = await kubeApiFetch(`/api/v1/namespaces/${ns}/pods`, {
-			method: "GET",
-		});
-		if (res.status === 404) return [];
-		if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-		const body = (await res.json().catch(() => null)) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body)) return [];
-		return collectOpenShellSandboxNamesFromKubeItems(
-			runId,
-			(body as { items?: unknown }).items,
-		);
-	} catch (err) {
-		console.warn(
-			`Failed to list OpenShell sandboxes for benchmark cleanup ${runId}:`,
-			err instanceof Error ? err.message : err,
-		);
-		return [];
+	const paths = [
+		`/apis/agents.x-k8s.io/v1alpha1/namespaces/${ns}/sandboxes`,
+		`/api/v1/namespaces/${ns}/pods`,
+		`/api/v1/namespaces/${ns}/services`,
+		`/api/v1/namespaces/${ns}/persistentvolumeclaims`,
+	];
+	const names = new Set<string>();
+	for (const path of paths) {
+		try {
+			const res = await kubeApiFetch(path, { method: "GET" });
+			if (res.status === 404) continue;
+			if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+			const body = (await res.json().catch(() => null)) as unknown;
+			if (!body || typeof body !== "object" || Array.isArray(body)) continue;
+			for (const name of collectOpenShellSandboxNamesFromKubeItems(
+				runId,
+				(body as { items?: unknown }).items,
+			)) {
+				names.add(name);
+			}
+		} catch (err) {
+			console.warn(
+				`Failed to list OpenShell sandboxes for benchmark cleanup ${runId} from ${path}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
 	}
+	return [...names];
 }
 
 function collectOpenShellSandboxNamesFromKubeItems(
@@ -2945,14 +2954,21 @@ function collectOpenShellSandboxNamesFromKubeItems(
 		if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
 			continue;
 		}
-		const name = (metadata as { name?: unknown }).name;
-		if (
-			typeof name === "string" &&
-			name.trim() &&
-			shouldDeleteBenchmarkSandboxName(runId, name) &&
-			matchesBenchmarkRunSandboxName(runId, name)
-		) {
-			names.add(name.trim());
+		const rawName = (metadata as { name?: unknown }).name;
+		if (typeof rawName !== "string" || !rawName.trim()) continue;
+		const trimmedName = rawName.trim();
+		const candidates = [trimmedName];
+		if (trimmedName.startsWith("workspace-")) {
+			candidates.push(trimmedName.slice("workspace-".length));
+		}
+		for (const name of candidates) {
+			if (
+				name &&
+				shouldDeleteBenchmarkSandboxName(runId, name) &&
+				matchesBenchmarkRunSandboxName(runId, name)
+			) {
+				names.add(name);
+			}
 		}
 	}
 	return [...names];

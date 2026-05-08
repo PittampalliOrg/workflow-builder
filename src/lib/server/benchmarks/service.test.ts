@@ -1126,6 +1126,7 @@ describe("SWE-bench terminal run cleanup", () => {
 				runId,
 				[
 					{ metadata: { name: "swebench-422bf07c90-1az8gqvdzg" } },
+					{ metadata: { name: "workspace-swebench-422bf07c90-1az8gqvdzg" } },
 					{ metadata: { name: "swebench-9266607f0c-otherun123" } },
 					{ metadata: { name: "agent-runtime-pool-coding" } },
 					{ metadata: { name: "dapr-agent-py" } },
