@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -28,6 +29,7 @@ WORKER_ENV_PASSTHROUGH = (
 )
 DEFAULT_WORKER_IMAGE = "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
 
+logger = logging.getLogger("sandbox-execution-api")
 app = FastAPI(title="sandbox-execution-api")
 
 
@@ -770,13 +772,13 @@ def _wait_for_agent_host_ready(
             if phase:
                 last_phase = phase
         time.sleep(1)
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=(
-            f"agent workflow host {agent_app_id} was not ready after "
-            f"{wait_seconds}s; last phase {last_phase}"
-        ),
+    logger.info(
+        "agent workflow host %s was not ready after %ss; last phase %s",
+        agent_app_id,
+        wait_seconds,
+        last_phase,
     )
+    return "queued"
 
 
 @app.get("/healthz")

@@ -1,6 +1,9 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 import src.app as app_module
 from src.app import (
     AgentWorkflowHostRequest,
@@ -274,6 +277,62 @@ def test_wait_for_agent_host_ready_requires_pod_ready_condition() -> None:
     )
 
     assert status == "ready"
+
+
+def test_wait_for_agent_host_ready_returns_queued_when_kueue_delays_pod() -> None:
+    pending_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Pending",
+            conditions=[],
+            container_statuses=[],
+        )
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[pending_pod])
+    )
+
+    status = app_module._wait_for_agent_host_ready(
+        core,
+        namespace="workflow-builder",
+        agent_app_id="agent-session-abc123",
+        wait_seconds=1,
+    )
+
+    assert status == "queued"
+
+
+def test_wait_for_agent_host_ready_still_fails_on_pod_startup_error() -> None:
+    failed_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[],
+            container_statuses=[
+                SimpleNamespace(
+                    state=SimpleNamespace(
+                        waiting=SimpleNamespace(
+                            reason="CrashLoopBackOff",
+                            message="back-off restarting failed container",
+                        ),
+                        terminated=None,
+                    )
+                )
+            ],
+        )
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[failed_pod])
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        app_module._wait_for_agent_host_ready(
+            core,
+            namespace="workflow-builder",
+            agent_app_id="agent-session-abc123",
+            wait_seconds=1,
+        )
+
+    assert excinfo.value.status_code == 503
+    assert "CrashLoopBackOff" in str(excinfo.value.detail)
 
 
 def test_long_resource_names_keep_unique_suffixes() -> None:
