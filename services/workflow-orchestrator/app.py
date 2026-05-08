@@ -3180,26 +3180,14 @@ def subscribe():
 
 @app.get("/healthz")
 def health_check():
-    """Health check endpoint."""
-    ready, runtime_status = _get_workflow_runtime_status(
-        timeout_seconds=0.5,
-        include_taskhub=False,
-        require_workflow_workers=True,
-    )
-    if not ready:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "status": "unhealthy",
-                "service": "workflow-orchestrator",
-                "code": "workflow_runtime_unavailable",
-                "runtimeStatus": runtime_status,
-            },
-        )
+    """Liveness check endpoint.
+
+    Keep this process-local so transient Dapr scheduler/placement outages remove
+    the pod from service through /readyz without forcing a restart loop.
+    """
     return {
         "status": "healthy",
         "service": "workflow-orchestrator",
-        "runtimeStatus": runtime_status,
     }
 
 

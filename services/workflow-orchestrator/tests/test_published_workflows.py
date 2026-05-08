@@ -353,20 +353,17 @@ def test_readiness_requires_taskhub_but_not_metadata_worker_count(monkeypatch):
     assert observed_kwargs.get("require_workflow_workers") is True
 
 
-def test_health_does_not_require_dapr_workflow_worker_metadata(monkeypatch):
-    observed_kwargs = {}
+def test_health_is_process_local(monkeypatch):
+    def fail_runtime_status(*_args, **_kwargs):
+        raise AssertionError("liveness must not depend on Dapr workflow readiness")
 
-    def fake_runtime_status(*_args, **kwargs):
-        observed_kwargs.update(kwargs)
-        return True, {"workflowConnectedWorkers": 1}
-
-    monkeypatch.setattr(APP, "_get_workflow_runtime_status", fake_runtime_status)
+    monkeypatch.setattr(APP, "_get_workflow_runtime_status", fail_runtime_status)
 
     response = APP.health_check()
 
     assert response["status"] == "healthy"
-    assert observed_kwargs.get("require_workflow_workers") is True
-    assert observed_kwargs["include_taskhub"] is False
+    assert response["service"] == "workflow-orchestrator"
+    assert "runtimeStatus" not in response
 
 
 def test_sw_workflow_trace_context_is_isolated_per_execution():
