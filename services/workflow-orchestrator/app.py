@@ -3077,7 +3077,6 @@ def health_check():
     ready, runtime_status = _get_workflow_runtime_status(
         timeout_seconds=0.5,
         include_taskhub=False,
-        require_workflow_workers=True,
     )
     if not ready:
         raise HTTPException(
@@ -3099,9 +3098,7 @@ def health_check():
 @app.get("/readyz")
 def readiness_check():
     """Readiness check endpoint."""
-    ready, runtime_status = _get_workflow_runtime_status(
-        require_workflow_workers=True,
-    )
+    ready, runtime_status = _get_workflow_runtime_status()
     if not ready:
         raise HTTPException(
             status_code=503,

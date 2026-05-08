@@ -109,6 +109,38 @@ def test_start_workflow_retries_transient_runtime_unavailable(monkeypatch) -> No
     assert sleeps == [4.0]
 
 
+def test_start_workflow_retries_connection_refused(monkeypatch) -> None:
+    monkeypatch.setenv("WORKFLOW_ORCHESTRATOR_URL", "http://workflow-orchestrator:8080")
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_ATTEMPTS", "3")
+    sleeps: list[float] = []
+    attempts = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise requests.ConnectionError(
+                "HTTPConnectionPool(host='workflow-orchestrator', port=8080): "
+                "Failed to establish a new connection: [Errno 111] Connection refused"
+            )
+        return _Response(200, body={"instanceId": "sw-1"})
+
+    monkeypatch.setattr(worker.requests, "post", fake_post)
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+    monkeypatch.setattr(worker.random, "uniform", lambda *_args: 0.0)
+
+    instance_id = worker._start_workflow(
+        {
+            "workflow": {"id": "wf"},
+            "workflowId": "wf",
+            "workflowExecutionId": "exec_1",
+        }
+    )
+
+    assert instance_id == "sw-1"
+    assert attempts["count"] == 2
+    assert sleeps == [4.0]
+
+
 def test_workflow_start_stagger_is_deterministic(monkeypatch) -> None:
     monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_START_STAGGER_SECONDS", "120")
     payload = {"executionId": "hexec_1", "workflowExecutionId": "exec_1"}

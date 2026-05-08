@@ -124,6 +124,7 @@ def _is_transient_workflow_start_failure(status_code: int | None, detail: str) -
             "temporarily unavailable",
             "connection reset",
             "connection aborted",
+            "connection refused",
             "read timed out",
         )
     )

@@ -317,7 +317,7 @@ def test_legacy_execution_routes_are_not_registered():
     assert not hasattr(APP, "start_ap_workflow")
 
 
-def test_readiness_requires_connected_dapr_workflow_worker(monkeypatch):
+def test_readiness_requires_taskhub_but_not_metadata_worker_count(monkeypatch):
     observed_kwargs = {}
 
     def fake_runtime_status(*_args, **kwargs):
@@ -329,10 +329,10 @@ def test_readiness_requires_connected_dapr_workflow_worker(monkeypatch):
     response = APP.readiness_check()
 
     assert response["status"] == "ready"
-    assert observed_kwargs["require_workflow_workers"] is True
+    assert observed_kwargs.get("require_workflow_workers") is None
 
 
-def test_health_requires_connected_dapr_workflow_worker(monkeypatch):
+def test_health_does_not_require_dapr_workflow_worker_metadata(monkeypatch):
     observed_kwargs = {}
 
     def fake_runtime_status(*_args, **kwargs):
@@ -344,7 +344,7 @@ def test_health_requires_connected_dapr_workflow_worker(monkeypatch):
     response = APP.health_check()
 
     assert response["status"] == "healthy"
-    assert observed_kwargs["require_workflow_workers"] is True
+    assert observed_kwargs.get("require_workflow_workers") is None
     assert observed_kwargs["include_taskhub"] is False
 
 
