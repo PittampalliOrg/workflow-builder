@@ -91,7 +91,7 @@
 	let evaluationConcurrency = $state(DEFAULT_EVALUATION_CONCURRENCY);
 	let timeoutSeconds = $state(7200);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
-	const executionBackend = 'host';
+	const executionBackend = 'dapr-kueue';
 	let executionClass = $state<'benchmark-fast' | 'secure-gvisor'>('benchmark-fast');
 	let tagsInput = $state('');
 	let agentQuery = $state('');
@@ -276,7 +276,7 @@
 					evaluationConcurrency,
 					timeoutSeconds,
 					evaluatorResourceClass,
-					tags: [...new Set([...parseTags(tagsInput), 'host-execution'])],
+					tags: [...new Set([...parseTags(tagsInput), 'dapr-kueue'])],
 					requirePrevalidatedEnvironments,
 					executionBackend,
 					executionClass

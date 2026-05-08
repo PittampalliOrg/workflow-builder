@@ -1,6 +1,6 @@
 import { env } from "$env/dynamic/private";
 
-export type BenchmarkExecutionBackend = "legacy-dapr" | "host";
+export type BenchmarkExecutionBackend = "dapr-kueue" | "legacy-dapr" | "host";
 export type BenchmarkExecutionClass = "benchmark-fast" | "secure-gvisor";
 
 export type HostExecutionPlaneSubmitInput = {
@@ -51,11 +51,22 @@ export function normalizeBenchmarkExecutionBackend(
 		) {
 			return "host";
 		}
+		if (
+			requested === "dapr-kueue" ||
+			requested === "kueue-dapr" ||
+			requested === "kueue-agent-hosts" ||
+			requested === "agent-host-kueue"
+		) {
+			return "dapr-kueue";
+		}
 		if (requested === "legacy" || requested === "legacy-dapr") return "legacy-dapr";
-		return "legacy-dapr";
+		return "dapr-kueue";
 	}
 	if (raw === "legacy" || raw === "legacy-dapr") return "legacy-dapr";
-	return "host";
+	if (raw === "host" || raw === "host-execution" || raw === "host-execution-plane") {
+		return "host";
+	}
+	return "dapr-kueue";
 }
 
 export function benchmarkExecutionClass(): BenchmarkExecutionClass {

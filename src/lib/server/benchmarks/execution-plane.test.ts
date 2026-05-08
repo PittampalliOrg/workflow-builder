@@ -15,8 +15,8 @@ afterEach(() => {
 });
 
 describe("benchmark host execution plane config", () => {
-	it("defaults to the host execution backend and benchmark-fast class", () => {
-		expect(benchmarkExecutionBackend()).toBe("host");
+	it("defaults to Dapr workflows with Kueue agent hosts and benchmark-fast class", () => {
+		expect(benchmarkExecutionBackend()).toBe("dapr-kueue");
 		expect(benchmarkExecutionClass()).toBe("benchmark-fast");
 	});
 
@@ -36,8 +36,10 @@ describe("benchmark host execution plane config", () => {
 
 		expect(normalizeBenchmarkExecutionBackend("host_execution_plane")).toBe("host");
 		expect(normalizeBenchmarkExecutionBackend("host-execution")).toBe("host");
+		expect(normalizeBenchmarkExecutionBackend("dapr-kueue")).toBe("dapr-kueue");
+		expect(normalizeBenchmarkExecutionBackend("agent-host-kueue")).toBe("dapr-kueue");
 		expect(normalizeBenchmarkExecutionBackend("legacy")).toBe("legacy-dapr");
-		expect(normalizeBenchmarkExecutionBackend("unknown")).toBe("legacy-dapr");
+		expect(normalizeBenchmarkExecutionBackend("unknown")).toBe("dapr-kueue");
 		expect(normalizeBenchmarkExecutionClass("secure_gvisor")).toBe("secure-gvisor");
 		expect(normalizeBenchmarkExecutionClass("benchmark-fast")).toBe("benchmark-fast");
 	});
