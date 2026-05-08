@@ -43,6 +43,19 @@ logging.basicConfig(
 _otel_ready = False
 
 
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _otel_disabled_by() -> str | None:
+    if _env_flag_enabled("OTEL_SDK_DISABLED"):
+        return "OTEL_SDK_DISABLED"
+    traces_exporter = os.environ.get("OTEL_TRACES_EXPORTER", "").strip().lower()
+    if traces_exporter in {"none", "false", "off", "disabled"}:
+        return "OTEL_TRACES_EXPORTER"
+    return None
+
+
 def _otel_trace_endpoint(endpoint: str) -> str:
     trimmed = endpoint.rstrip("/")
     if trimmed.endswith("/v1/traces"):
@@ -71,6 +84,10 @@ def _otel_resource_attributes() -> dict[str, str]:
 
 def _init_otel() -> None:
     global _otel_ready
+    disabled_by = _otel_disabled_by()
+    if disabled_by:
+        logger.info("%s disables tracing, skipping OpenTelemetry", disabled_by)
+        return
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
     if not endpoint:
         logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, skipping tracing")

@@ -103,6 +103,26 @@ def load_app(monkeypatch):
     return module
 
 
+def test_otel_tracing_respects_disabled_exporter(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "none")
+
+    app = load_app(monkeypatch)
+
+    assert app._otel_disabled_by() == "OTEL_TRACES_EXPORTER"
+    assert app._otel_ready is False
+
+
+def test_otel_tracing_respects_sdk_disabled(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+
+    app = load_app(monkeypatch)
+
+    assert app._otel_disabled_by() == "OTEL_SDK_DISABLED"
+    assert app._otel_ready is False
+
+
 def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     app = load_app(monkeypatch)
     app.INTERNAL_API_TOKEN = "token"
