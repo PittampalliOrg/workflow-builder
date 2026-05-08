@@ -2827,6 +2827,12 @@ async function recordBenchmarkSandboxCleanup(
 		.where(eq(benchmarkRuns.id, runId));
 }
 
+export function shouldRunFullBenchmarkRunRecompute(
+	status: BenchmarkRunStatus | null | undefined,
+): boolean {
+	return !!status && BENCHMARK_RUN_TERMINAL_STATUSES.has(status);
+}
+
 export async function recomputeRunSummary(runId: string) {
 	const database = requireDb();
 	const [run, rows] = await Promise.all([
@@ -2872,6 +2878,10 @@ export async function recomputeRunSummary(runId: string) {
 		.update(benchmarkRuns)
 		.set({ summary, updatedAt: new Date() })
 		.where(eq(benchmarkRuns.id, runId));
+
+	if (!shouldRunFullBenchmarkRunRecompute(run[0]?.status)) {
+		return summary;
+	}
 
 	// Phase A + B backstop: re-aggregate from session_events for each instance
 	// so rows reflect canonical counts even if the in-line triggers (Phase A's

@@ -19,6 +19,7 @@ import {
 	resolveBenchmarkInstanceStatusAfterInference,
 	sanitizeSwebenchInferenceEnvironmentForRuntime,
 	shouldFinalizeBenchmarkLifecycle,
+	shouldRunFullBenchmarkRunRecompute,
 	shouldTerminateCompletedBenchmarkSessionProjection,
 } from "./service";
 import {
@@ -234,6 +235,15 @@ describe("SWE-bench workflow spec", () => {
 				inferenceStatus: "timeout",
 			}),
 		).toBe(true);
+	});
+
+	it("keeps active benchmark run recompute on the lightweight path", () => {
+		expect(shouldRunFullBenchmarkRunRecompute("queued")).toBe(false);
+		expect(shouldRunFullBenchmarkRunRecompute("inferencing")).toBe(false);
+		expect(shouldRunFullBenchmarkRunRecompute("evaluating")).toBe(false);
+		expect(shouldRunFullBenchmarkRunRecompute("completed")).toBe(true);
+		expect(shouldRunFullBenchmarkRunRecompute("failed")).toBe(true);
+		expect(shouldRunFullBenchmarkRunRecompute("cancelled")).toBe(true);
 	});
 
 	it("builds a canvas graph for generated SWE-bench instance runs", () => {
