@@ -1237,6 +1237,67 @@ def test_run_workflow_batches_instance_child_starts(monkeypatch):
     )
 
 
+def test_run_workflow_can_start_instances_in_parallel_batches(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE", "10")
+    monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS", "0")
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 2}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754", "django__django-13012"],
+        "concurrency": 2,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    batch = workflow.send({"success": True, "run": {"status": "inferencing"}})
+
+    assert batch == [
+        (
+            "activity",
+            "_admit_and_start_instance",
+            {"runId": "run_1", "instanceId": "django__django-12754"},
+        ),
+        (
+            "activity",
+            "_admit_and_start_instance",
+            {"runId": "run_1", "instanceId": "django__django-13012"},
+        ),
+    ]
+    assert workflow.send(
+        [
+            {
+                "success": True,
+                "instanceId": "django__django-12754",
+                "admission": {"admitted": True, "holderId": "lease-1"},
+                "start": {"success": True},
+            },
+            {
+                "success": True,
+                "instanceId": "django__django-13012",
+                "admission": {"admitted": True, "holderId": "lease-2"},
+                "start": {"success": True},
+            },
+        ]
+    ) == (
+        "activity",
+        "_sync_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+
+
 def test_registered_child_workflow_target_validation(monkeypatch):
     app = load_app(monkeypatch)
     assert (

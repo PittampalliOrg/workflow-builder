@@ -817,6 +817,27 @@ def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _admit_and_start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    instance_id = data["instanceId"]
+    admission = _acquire_instance_leases(ctx, data)
+    if not isinstance(admission, dict) or not admission.get("admitted"):
+        return {
+            "success": False,
+            "instanceId": instance_id,
+            "admission": admission,
+            "start": None,
+        }
+    start = _start_instance(ctx, data)
+    return {
+        "success": True,
+        "instanceId": instance_id,
+        "admission": admission,
+        "start": start,
+        "holderId": admission.get("holderId"),
+    }
+
+
 def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
@@ -2073,38 +2094,102 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         starts_in_batch = 0
         while pending_instance_ids or active_instances:
             while pending_instance_ids and len(active_instances) < concurrency:
-                instance_id = pending_instance_ids[0]
-                admission = yield ctx.call_activity(
-                    _acquire_instance_leases,
-                    input={"runId": run_id, "instanceId": instance_id},
+                available_slots = max(1, concurrency - len(active_instances))
+                batch_count = min(
+                    available_slots,
+                    len(pending_instance_ids),
+                    max(1, start_batch_size),
                 )
-                if not isinstance(admission, dict) or not admission.get("admitted"):
-                    reason = (
-                        admission.get("reason")
-                        if isinstance(admission, dict)
-                        else "admission_failed"
-                    )
-                    if isinstance(reason, str) and reason.startswith("benchmark_run_"):
-                        raise RuntimeError(
-                            f"SWE-bench run stopped before admitting {instance_id}: {reason}"
+                start_outcomes: list[dict[str, Any]] = []
+                if wf_when_all is not None and batch_count > 1:
+                    batch_instance_ids = pending_instance_ids[:batch_count]
+                    pending_instance_ids = pending_instance_ids[batch_count:]
+                    tasks = [
+                        ctx.call_activity(
+                            _admit_and_start_instance,
+                            input={"runId": run_id, "instanceId": instance_id},
                         )
-                    retry_after = LEASE_RETRY_SECONDS
-                    if isinstance(admission, dict):
+                        for instance_id in batch_instance_ids
+                    ]
+                    batch_results = yield wf_when_all(tasks)
+                    for instance_id, outcome in zip(batch_instance_ids, batch_results):
+                        if isinstance(outcome, dict):
+                            start_outcomes.append(outcome)
+                        else:
+                            start_outcomes.append(
+                                {
+                                    "success": False,
+                                    "instanceId": instance_id,
+                                    "admission": None,
+                                    "start": None,
+                                }
+                            )
+                else:
+                    instance_id = pending_instance_ids.pop(0)
+                    admission = yield ctx.call_activity(
+                        _acquire_instance_leases,
+                        input={"runId": run_id, "instanceId": instance_id},
+                    )
+                    if isinstance(admission, dict) and admission.get("admitted"):
+                        start_result = yield ctx.call_activity(
+                            _start_instance,
+                            input={"runId": run_id, "instanceId": instance_id},
+                        )
+                    else:
+                        start_result = None
+                    start_outcomes.append(
+                        {
+                            "success": bool(
+                                isinstance(admission, dict)
+                                and admission.get("admitted")
+                            ),
+                            "instanceId": instance_id,
+                            "admission": admission,
+                            "start": start_result,
+                            "holderId": admission.get("holderId")
+                            if isinstance(admission, dict)
+                            else None,
+                        }
+                    )
+
+                retry_after_seconds = 0
+                for outcome in start_outcomes:
+                    instance_id = str(outcome.get("instanceId") or "")
+                    admission = (
+                        outcome.get("admission")
+                        if isinstance(outcome.get("admission"), dict)
+                        else {}
+                    )
+                    start_result = (
+                        outcome.get("start")
+                        if isinstance(outcome.get("start"), dict)
+                        else {}
+                    )
+                    if not admission.get("admitted"):
+                        reason = admission.get("reason") or "admission_failed"
+                        if isinstance(reason, str) and reason.startswith("benchmark_run_"):
+                            raise RuntimeError(
+                                f"SWE-bench run stopped before admitting {instance_id}: {reason}"
+                            )
                         try:
-                            retry_after = max(
-                                1,
-                                int(admission.get("retryAfterSeconds") or retry_after),
+                            retry_after_seconds = max(
+                                retry_after_seconds,
+                                max(
+                                    1,
+                                    int(
+                                        admission.get("retryAfterSeconds")
+                                        or LEASE_RETRY_SECONDS
+                                    ),
+                                ),
                             )
                         except (TypeError, ValueError):
-                            retry_after = LEASE_RETRY_SECONDS
-                    yield ctx.create_timer(timedelta(seconds=retry_after))
-                    continue
+                            retry_after_seconds = max(
+                                retry_after_seconds, LEASE_RETRY_SECONDS
+                            )
+                        if instance_id:
+                            pending_instance_ids.insert(0, instance_id)
+                        continue
 
-                pending_instance_ids.pop(0)
-                start_result = yield ctx.call_activity(
-                    _start_instance, input={"runId": run_id, "instanceId": instance_id}
-                )
-                if isinstance(start_result, dict):
                     reason = str(start_result.get("reason") or "")
                     if reason.startswith("benchmark_run_"):
                         raise RuntimeError(
@@ -2129,13 +2214,17 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                             },
                         )
                         continue
-                active_instances.append(
-                    {
-                        "instanceId": instance_id,
-                        "holderId": admission.get("holderId"),
-                    }
-                )
-                starts_in_batch += 1
+                    active_instances.append(
+                        {
+                            "instanceId": instance_id,
+                            "holderId": admission.get("holderId"),
+                        }
+                    )
+                    starts_in_batch += 1
+
+                if retry_after_seconds > 0:
+                    yield ctx.create_timer(timedelta(seconds=retry_after_seconds))
+                    continue
                 if (
                     pending_instance_ids
                     and len(active_instances) < concurrency
@@ -2311,6 +2400,7 @@ async def lifespan(app: FastAPI):
         _release_instance_leases,
         _release_run_leases,
         _start_instance,
+        _admit_and_start_instance,
         _sync_instance,
         _mark_instance_inference_failure,
         _write_predictions,
