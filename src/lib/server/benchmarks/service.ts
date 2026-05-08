@@ -4981,7 +4981,6 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 		checkout_repo: { call: "workspace/command" },
 		solve: { call: "durable/run" },
 		extract_patch: { call: "workspace/command" },
-		cleanup_workspace: { call: "workspace/cleanup" },
 	};
 	const node = (
 		id: string,
@@ -5007,16 +5006,14 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 		node("checkout_repo", "call", "Checkout Repo", 320, taskConfigById.checkout_repo),
 		node("solve", "agent", "Solve", 460, taskConfigById.solve),
 		node("extract_patch", "call", "Extract Patch", 600, taskConfigById.extract_patch),
-		node("cleanup_workspace", "call", "Cleanup Workspace", 740, taskConfigById.cleanup_workspace),
-		node("__end__", "end", "End", 880),
+		node("__end__", "end", "End", 740),
 	];
 	const edgeIds = [
 		["__start__", "workspace_profile"],
 		["workspace_profile", "checkout_repo"],
 		["checkout_repo", "solve"],
 		["solve", "extract_patch"],
-		["extract_patch", "cleanup_workspace"],
-		["cleanup_workspace", "__end__"],
+		["extract_patch", "__end__"],
 	];
 	return {
 		nodes,
@@ -5220,15 +5217,6 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 								"${ .output.result.stdout // .output.stdout // .output.result.output // .output.output // \"\" }",
 							raw: "${ .output }",
 						},
-					},
-				},
-			},
-			{
-				cleanup_workspace: {
-					call: "workspace/cleanup",
-					with: {
-						workspaceRef: "${ .workspace_profile.workspaceRef }",
-						sandboxName: "${ .workspace_profile.sandboxName }",
 					},
 				},
 			},

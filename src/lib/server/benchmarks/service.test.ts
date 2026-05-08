@@ -285,7 +285,6 @@ describe("SWE-bench workflow spec", () => {
 			"checkout_repo",
 			"solve",
 			"extract_patch",
-			"cleanup_workspace",
 			"__end__",
 		]);
 		expect(nodes.find((node) => node.id === "solve")?.type).toBe("agent");
@@ -294,8 +293,7 @@ describe("SWE-bench workflow spec", () => {
 			"workspace_profile->checkout_repo",
 			"checkout_repo->solve",
 			"solve->extract_patch",
-			"extract_patch->cleanup_workspace",
-			"cleanup_workspace->__end__",
+			"extract_patch->__end__",
 		]);
 	});
 
@@ -364,20 +362,12 @@ describe("SWE-bench workflow spec", () => {
 		const solve = steps[2].solve as unknown as {
 			with: { sandboxPolicy: { keepAfterRun: boolean } };
 		};
-		const cleanup = steps[4].cleanup_workspace as unknown as {
-			call: string;
-			with: { workspaceRef: string; sandboxName: string };
-		};
 		expect(workspaceProfile.with.keepAfterRun).toBe(false);
 		expect(workspaceProfile.with.sandboxPolicy).toMatchObject({
 			keepAfterRun: false,
 		});
 		expect(solve.with.sandboxPolicy.keepAfterRun).toBe(false);
-		expect(cleanup.call).toBe("workspace/cleanup");
-		expect(cleanup.with).toMatchObject({
-			workspaceRef: "${ .workspace_profile.workspaceRef }",
-			sandboxName: "${ .workspace_profile.sandboxName }",
-		});
+		expect(steps.some((step) => "cleanup_workspace" in step)).toBe(false);
 	});
 
 	it("does not generate per-instance environment build or ensure steps", () => {
@@ -404,7 +394,6 @@ describe("SWE-bench workflow spec", () => {
 			"checkout_repo",
 			"solve",
 			"extract_patch",
-			"cleanup_workspace",
 		]);
 		for (const [name, task] of taskEntries) {
 			expect(name).not.toMatch(/build|ensure|environment/i);
