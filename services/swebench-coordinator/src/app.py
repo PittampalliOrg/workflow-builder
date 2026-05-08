@@ -2005,16 +2005,25 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                         "progress": progress_after_failure,
                         "deleteResult": delete_result,
                     }
-                return (
-                    yield ctx.call_activity(
-                        _mark_evaluation_timeout,
-                        input={
-                            "runId": run_id,
-                            "jobName": job_name,
-                            "error": "SWE-bench evaluator job failed before all active rows completed",
-                        },
-                    )
+                timeout_result = yield ctx.call_activity(
+                    _mark_evaluation_timeout,
+                    input={
+                        "runId": run_id,
+                        "jobName": job_name,
+                        "error": "SWE-bench evaluator job failed before all active rows completed",
+                    },
                 )
+                delete_result = yield ctx.call_activity(
+                    _delete_evaluator_job,
+                    input={
+                        "runId": run_id,
+                        "jobName": job_name,
+                        "reason": "evaluation job failed after partial results",
+                    },
+                )
+                if isinstance(timeout_result, dict):
+                    return {**timeout_result, "deleteResult": delete_result}
+                return {"success": True, "timeout": timeout_result, "deleteResult": delete_result}
 
             wait_seconds = max(
                 1,

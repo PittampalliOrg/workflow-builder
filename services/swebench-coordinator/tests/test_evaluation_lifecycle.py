@@ -421,6 +421,77 @@ def test_evaluation_workflow_deletes_job_after_terminal_progress(monkeypatch):
         raise AssertionError("expected evaluation workflow to complete")
 
 
+def test_evaluation_workflow_deletes_failed_job_after_timeout_mark(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_evaluation_workflow(
+        ctx,
+        {
+            "runId": "run_1",
+            "predictionsPath": "/artifacts/run_1/predictions.jsonl",
+            "datasetPath": "/artifacts/run_1/dataset.jsonl",
+            "timeoutSeconds": 60,
+            "evaluationMaxParallel": 1,
+            "instanceCount": 1,
+        },
+    )
+
+    assert next(workflow)[0] == "activity"
+    assert workflow.send({"jobName": "swebench-eval-run_1"}) == (
+        "activity",
+        "_load_evaluation_progress",
+        {"runId": "run_1"},
+    )
+    assert workflow.send({"runStatus": "evaluating", "activeEvaluationRows": 1}) == (
+        "activity",
+        "_get_evaluator_job_status",
+        {"runId": "run_1", "jobName": "swebench-eval-run_1"},
+    )
+    assert workflow.send({"failed": True, "message": "BackoffLimitExceeded"}) == (
+        "activity",
+        "_mark_evaluation_failure",
+        {
+            "runId": "run_1",
+            "jobName": "swebench-eval-run_1",
+            "error": "BackoffLimitExceeded",
+        },
+    )
+    assert workflow.send({"success": True, "skipped": True}) == (
+        "activity",
+        "_load_evaluation_progress",
+        {"runId": "run_1"},
+    )
+    assert workflow.send({"runStatus": "evaluating", "activeEvaluationRows": 1}) == (
+        "activity",
+        "_mark_evaluation_timeout",
+        {
+            "runId": "run_1",
+            "jobName": "swebench-eval-run_1",
+            "error": "SWE-bench evaluator job failed before all active rows completed",
+        },
+    )
+    assert workflow.send({"success": True, "timedOut": 1}) == (
+        "activity",
+        "_delete_evaluator_job",
+        {
+            "runId": "run_1",
+            "jobName": "swebench-eval-run_1",
+            "reason": "evaluation job failed after partial results",
+        },
+    )
+    try:
+        workflow.send({"success": True, "deleted": True})
+    except StopIteration as stop:
+        assert stop.value == {
+            "success": True,
+            "timedOut": 1,
+            "deleteResult": {"success": True, "deleted": True},
+        }
+    else:
+        raise AssertionError("expected evaluation workflow to complete")
+
+
 def test_mark_run_status_retries_bff_updates(monkeypatch):
     app = load_app(monkeypatch)
     captured = {}
