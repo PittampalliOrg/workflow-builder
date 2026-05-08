@@ -1894,6 +1894,32 @@ async function finalizeBenchmarkWorkflowExecutions(
 		agentRuntimeTargets,
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async ({ runtimeAppId, instanceId }) => {
+			let status: unknown = null;
+			try {
+				status = await getBenchmarkAgentRuntimeInstanceStatus(
+					runtimeAppId,
+					instanceId,
+				);
+			} catch (err) {
+				console.warn(
+					`Failed to preflight benchmark agent runtime status ${runtimeAppId}/${instanceId}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+			if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+				agentRuntimeTerminations.set(
+					`${runtimeAppId}\0${instanceId}`,
+					"alreadyGone",
+				);
+				return;
+			}
+			if (isTerminalDurableRuntimeStatus(status)) {
+				agentRuntimeTerminations.set(
+					`${runtimeAppId}\0${instanceId}`,
+					"terminated",
+				);
+				return;
+			}
 			const termination = await terminateBenchmarkAgentRuntimeInstance(
 				runtimeAppId,
 				instanceId,
@@ -1930,6 +1956,23 @@ async function finalizeBenchmarkWorkflowExecutions(
 		[...daprInstanceIds],
 		BENCHMARK_TERMINATION_CONCURRENCY,
 		async (instanceId) => {
+			let status: unknown = null;
+			try {
+				status = await getBenchmarkWorkflowInstanceStatus(instanceId);
+			} catch (err) {
+				console.warn(
+					`Failed to preflight benchmark workflow status ${instanceId}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+			if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+				workflowTerminations.set(instanceId, "alreadyGone");
+				return;
+			}
+			if (isTerminalDurableRuntimeStatus(status)) {
+				workflowTerminations.set(instanceId, "terminated");
+				return;
+			}
 			const termination = await terminateBenchmarkWorkflowInstance(
 				instanceId,
 				reason,
@@ -2182,6 +2225,17 @@ async function terminateAndWaitBenchmarkWorkflowInstance(
 	instanceId: string,
 	reason: string,
 ): Promise<boolean> {
+	let status: unknown = null;
+	try {
+		status = await getBenchmarkWorkflowInstanceStatus(instanceId);
+	} catch (err) {
+		console.warn(
+			`Failed to preflight benchmark workflow status ${instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+	if (status === DURABLE_RUNTIME_MISSING_STATUS) return true;
+	if (isTerminalDurableRuntimeStatus(status)) return true;
 	const termination = await terminateBenchmarkWorkflowInstance(instanceId, reason);
 	const closed =
 		termination === "alreadyGone" ||
@@ -2190,6 +2244,38 @@ async function terminateAndWaitBenchmarkWorkflowInstance(
 }
 
 type DurableTerminationResult = "terminated" | "alreadyGone" | "failed";
+
+async function getBenchmarkWorkflowInstanceStatus(
+	instanceId: string,
+): Promise<unknown> {
+	try {
+		const res = await daprFetch(
+			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}/status`,
+			{
+				method: "GET",
+				signal: AbortSignal.timeout(5_000),
+				maxRetries: 0,
+			},
+		);
+		if (res.status === 404) return DURABLE_RUNTIME_MISSING_STATUS;
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (isBenignDaprTerminationMiss(detail)) {
+				return DURABLE_RUNTIME_MISSING_STATUS;
+			}
+			if (isTransientDaprServiceInvokeError(detail)) return null;
+			throw new Error(
+				`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
+			);
+		}
+		const body = await res.json().catch(() => null);
+		return durableRuntimeStatusFromBody(body);
+	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return DURABLE_RUNTIME_MISSING_STATUS;
+		if (isTransientDaprServiceInvokeError(err)) return null;
+		throw err;
+	}
+}
 
 async function terminateBenchmarkWorkflowInstance(
 	instanceId: string,
@@ -2245,29 +2331,7 @@ async function waitForBenchmarkWorkflowInstanceClosed(
 ): Promise<boolean> {
 	return waitForDurableRuntimeClosed(
 		`benchmark workflow ${instanceId}`,
-		async () => {
-			const res = await daprFetch(
-				`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}/status`,
-				{
-					method: "GET",
-					signal: AbortSignal.timeout(5_000),
-					maxRetries: 0,
-				},
-			);
-			if (res.status === 404) return DURABLE_RUNTIME_MISSING_STATUS;
-			if (!res.ok) {
-				const detail = await res.text().catch(() => "");
-				if (isBenignDaprTerminationMiss(detail)) {
-					return DURABLE_RUNTIME_MISSING_STATUS;
-				}
-				if (isTransientDaprServiceInvokeError(detail)) return null;
-				throw new Error(
-					`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
-				);
-			}
-			const body = await res.json().catch(() => null);
-			return durableRuntimeStatusFromBody(body);
-		},
+		() => getBenchmarkWorkflowInstanceStatus(instanceId),
 	);
 }
 
@@ -2319,6 +2383,20 @@ async function terminateAndWaitBenchmarkAgentRuntimeInstance(
 	instanceId: string,
 	reason: string,
 ): Promise<boolean> {
+	let status: unknown = null;
+	try {
+		status = await getBenchmarkAgentRuntimeInstanceStatus(
+			runtimeAppId,
+			instanceId,
+		);
+	} catch (err) {
+		console.warn(
+			`Failed to preflight benchmark agent runtime status ${runtimeAppId}/${instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+	if (status === DURABLE_RUNTIME_MISSING_STATUS) return true;
+	if (isTerminalDurableRuntimeStatus(status)) return true;
 	const termination = await terminateBenchmarkAgentRuntimeInstance(
 		runtimeAppId,
 		instanceId,
@@ -2328,6 +2406,39 @@ async function terminateAndWaitBenchmarkAgentRuntimeInstance(
 		termination === "alreadyGone" ||
 		(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
 	return closed;
+}
+
+async function getBenchmarkAgentRuntimeInstanceStatus(
+	runtimeAppId: string,
+	instanceId: string,
+): Promise<unknown> {
+	try {
+		const res = await daprFetch(
+			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/status?summary=true`,
+			{
+				method: "GET",
+				signal: AbortSignal.timeout(10_000),
+				maxRetries: 0,
+			},
+		);
+		if (res.status === 404) return DURABLE_RUNTIME_MISSING_STATUS;
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (isBenignDaprTerminationMiss(detail)) {
+				return DURABLE_RUNTIME_MISSING_STATUS;
+			}
+			if (isTransientDaprServiceInvokeError(detail)) return null;
+			throw new Error(
+				`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
+			);
+		}
+		const body = await res.json().catch(() => null);
+		return durableRuntimeStatusFromBody(body);
+	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return DURABLE_RUNTIME_MISSING_STATUS;
+		if (isTransientDaprServiceInvokeError(err)) return null;
+		throw err;
+	}
 }
 
 async function terminateBenchmarkAgentRuntimeInstance(
@@ -2386,29 +2497,7 @@ async function waitForBenchmarkAgentRuntimeInstanceClosed(
 ): Promise<boolean> {
 	return waitForDurableRuntimeClosed(
 		`benchmark agent runtime ${runtimeAppId}/${instanceId}`,
-		async () => {
-			const res = await daprFetch(
-				`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/status?summary=true`,
-				{
-					method: "GET",
-					signal: AbortSignal.timeout(10_000),
-					maxRetries: 0,
-				},
-			);
-			if (res.status === 404) return DURABLE_RUNTIME_MISSING_STATUS;
-			if (!res.ok) {
-				const detail = await res.text().catch(() => "");
-				if (isBenignDaprTerminationMiss(detail)) {
-					return DURABLE_RUNTIME_MISSING_STATUS;
-				}
-				if (isTransientDaprServiceInvokeError(detail)) return null;
-				throw new Error(
-					`status request failed with ${res.status}${detail ? `: ${detail}` : ""}`,
-				);
-			}
-			const body = await res.json().catch(() => null);
-			return durableRuntimeStatusFromBody(body);
-		},
+		() => getBenchmarkAgentRuntimeInstanceStatus(runtimeAppId, instanceId),
 	);
 }
 
