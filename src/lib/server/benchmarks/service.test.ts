@@ -332,7 +332,13 @@ describe("SWE-bench workflow spec", () => {
 			"git -c protocol.version=2 fetch --depth=1 origin 'abc123'",
 		);
 		expect(String(checkoutStep.with.command)).toContain(
-			"git clone --filter=blob:none --no-checkout 'https://github.com/sympy/sympy.git' repo",
+			"git clone --filter=blob:none --no-checkout 'https://github.com/sympy/sympy.git' \"$tmp_repo\"",
+		);
+		expect(String(checkoutStep.with.command)).toContain(
+			"lock_dir=/sandbox/.swebench-checkout.lock",
+		);
+		expect(String(checkoutStep.with.command)).toContain(
+			"git -C repo rev-parse HEAD",
 		);
 	});
 
@@ -615,6 +621,7 @@ describe("SWE-bench workflow spec", () => {
 		expect(checkout.with.command).toContain("cd /sandbox");
 		expect(checkout.with.command).toContain("git remote add origin 'https://github.com/sympy/sympy.git'");
 		expect(checkout.with.command).toContain("git checkout --force FETCH_HEAD");
+		expect(checkout.with.command).toContain("mv \"$tmp_repo\" repo");
 		expect(checkout.with.command).not.toContain("/testbed");
 		const solve = (spec.do as Array<Record<string, { with: { body: { prompt: string } } }>>)[2]
 			.solve;
