@@ -58,6 +58,7 @@ _configure_durabletask_grpc_defaults()
 
 from src.telemetry import init_telemetry, is_telemetry_ready
 from src.telemetry.metrics import init_metrics as _init_claude_code_metrics
+from src.benchmark_context import is_swebench_execution_context
 
 _otel_ready = init_telemetry()
 if _otel_ready:
@@ -690,6 +691,8 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "instructionHash",
         "systemPrompt",
         "permissionMode",
+        "maxIterations",
+        "maxTurns",
     ):
         raw = value.get(key)
         if raw is None:
@@ -1529,6 +1532,17 @@ class OpenShellDurableAgent(DurableAgent):
             "sandboxName": context.get("sandboxName"),
             "cwd": context.get("cwd"),
         }
+
+    def summarize(self, ctx, payload: dict) -> dict:
+        instance_id = str(getattr(ctx, "workflow_id", "") or "").strip()
+        context = self._runtime_context_for_instance(instance_id)
+        if is_swebench_execution_context(instance_id, context):
+            logger.info(
+                "[memory] skipping conversation summary for SWE-bench workflow %s",
+                instance_id,
+            )
+            return {"skipped": True, "reason": "swebench_benchmark_turn"}
+        return super().summarize(ctx, payload)
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
