@@ -207,6 +207,70 @@ def test_start_workflow_does_not_retry_non_transient_client_error(monkeypatch) -
     assert attempts["count"] == 1
 
 
+def test_sync_instance_uses_sibling_sync_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder:3000")
+    calls: list[str] = []
+
+    def fake_post(url, **_kwargs):
+        calls.append(url)
+        return _Response(200, body={"instance": {"inferenceStatus": "inferred"}})
+
+    monkeypatch.setattr(worker.requests, "post", fake_post)
+
+    instance = worker._sync_instance(
+        {
+            "callback": {
+                "path": "/api/internal/benchmarks/runs/r/instances/i/execution"
+            }
+        }
+    )
+
+    assert calls == ["http://workflow-builder:3000/api/internal/benchmarks/runs/r/instances/i/sync"]
+    assert instance == {"inferenceStatus": "inferred"}
+
+
+def test_run_exits_when_bff_sync_reports_terminal_inference(monkeypatch, tmp_path) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback/execution"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    monkeypatch.setattr(
+        worker,
+        "_workflow_status",
+        lambda _instance_id: {"runtimeStatus": "RUNNING"},
+    )
+    monkeypatch.setattr(
+        worker,
+        "_sync_instance",
+        lambda _payload: {"status": "evaluating", "inferenceStatus": "inferred"},
+    )
+    callbacks: list[dict[str, object]] = []
+    terminated: list[tuple[str, str]] = []
+    monkeypatch.setattr(worker, "_post_callback", lambda _payload, body: callbacks.append(body))
+    monkeypatch.setattr(
+        worker,
+        "_terminate_workflow",
+        lambda instance_id, reason: terminated.append((instance_id, reason)),
+    )
+
+    assert worker._run() == 0
+    assert callbacks == [
+        {"status": "running", "hostExecutionId": "hexec_1", "daprInstanceId": "sw-1"}
+    ]
+    assert terminated == [
+        ("sw-1", "benchmark instance reached terminal inference state")
+    ]
+
+
 def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tmp_path) -> None:
     payload = {
         "executionId": "hexec_1",

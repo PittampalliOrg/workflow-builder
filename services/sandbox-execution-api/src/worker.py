@@ -20,6 +20,12 @@ TERMINAL_RUNTIME_STATUSES = {
     "CANCELED": "cancelled",
     "CANCELLED": "cancelled",
 }
+TERMINAL_INSTANCE_INFERENCE_STATUSES = {
+    "inferred",
+    "error",
+    "timeout",
+    "cancelled",
+}
 
 _termination_requested = threading.Event()
 
@@ -79,6 +85,20 @@ def _callback_url(payload: dict[str, Any]) -> str:
     return f"{workflow_builder_url}{callback['path']}"
 
 
+def _sync_url(payload: dict[str, Any]) -> str | None:
+    workflow_builder_url = _env(
+        "WORKFLOW_BUILDER_URL",
+        "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+    ).rstrip("/")
+    callback = payload.get("callback")
+    if not isinstance(callback, dict) or not isinstance(callback.get("path"), str):
+        return None
+    path = callback["path"].rstrip("/")
+    if not path.endswith("/execution"):
+        return None
+    return f"{workflow_builder_url}{path.removesuffix('/execution')}/sync"
+
+
 def _post_callback(payload: dict[str, Any], body: dict[str, Any]) -> None:
     url = _callback_url(payload)
     attempts = max(1, int(_env("SANDBOX_EXECUTION_CALLBACK_ATTEMPTS", "8")))
@@ -100,6 +120,39 @@ def _post_callback(payload: dict[str, Any], body: dict[str, Any]) -> None:
         if attempt < attempts:
             time.sleep(min(30.0, backoff_seconds * attempt))
     raise RuntimeError(f"callback failed after {attempts} attempt(s): {last_error}")
+
+
+def _sync_instance(payload: dict[str, Any]) -> dict[str, Any] | None:
+    url = _sync_url(payload)
+    if not url:
+        return None
+    try:
+        res = requests.post(url, headers=_headers(), timeout=60)
+    except requests.RequestException as exc:
+        _log(f"instance sync failed transiently: {exc}")
+        return None
+    if res.status_code == 404:
+        return None
+    if res.status_code >= 400:
+        _log(f"instance sync failed ({res.status_code}): {res.text[:800]}")
+        return None
+    body = res.json()
+    if not isinstance(body, dict):
+        return None
+    instance = body.get("instance")
+    return instance if isinstance(instance, dict) else None
+
+
+def _terminal_instance_status(instance: dict[str, Any] | None) -> str | None:
+    if not instance:
+        return None
+    inference_status = str(instance.get("inferenceStatus") or "").lower()
+    if inference_status in TERMINAL_INSTANCE_INFERENCE_STATUSES:
+        return inference_status
+    status = str(instance.get("status") or "").lower()
+    if status in {"evaluating", "resolved", "unresolved", "empty_patch"}:
+        return inference_status or status
+    return None
 
 
 def _orchestrator_url() -> str:
@@ -360,6 +413,21 @@ def _run() -> int:
                     f"runtimeStatus={runtime_status} status={status}"
                 )
                 return 0 if status == "success" else 1
+            terminal_instance_status = _terminal_instance_status(_sync_instance(payload))
+            if terminal_instance_status:
+                _log(
+                    "benchmark instance reached terminal inference state; "
+                    f"execution={execution_id} daprInstance={instance_id} "
+                    f"inferenceStatus={terminal_instance_status}"
+                )
+                try:
+                    _terminate_workflow(
+                        instance_id,
+                        "benchmark instance reached terminal inference state",
+                    )
+                except Exception as exc:
+                    _log(f"workflow termination after terminal instance state failed: {exc}")
+                return 0
             _sleep(poll_seconds)
         if _termination_requested.is_set():
             _cancel_started_workflow(
