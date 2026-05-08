@@ -41,6 +41,8 @@ const DEFAULT_SWEBENCH_BUILD_GIT_URL = "https://github.com/PittampalliOrg/workfl
 const DEFAULT_SWEBENCH_STACKS_REPO = "https://github.com/PittampalliOrg/stacks.git";
 const DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM = "buildah-cache-swebench-inference";
 const MAX_SWEBENCH_BUILDAH_CACHE_SHARDS = 16;
+const DEFAULT_SWEBENCH_MAX_ACTIVE_BUILDS = 0;
+const MAX_SWEBENCH_MAX_ACTIVE_BUILDS = 200;
 const SWEBENCH_PIPELINE_TIMEOUTS = {
 	pipeline: "6h0m0s",
 	tasks: "5h45m0s",
@@ -466,7 +468,7 @@ export async function ensureSwebenchEnvironment(
 		if (synced.pipelineRunName) return resultFromBuild(synced);
 	}
 
-	const submission = dynamicBuildSubmissionGuard(input);
+	const submission = await dynamicBuildSubmissionGuard(input);
 	if (!submission.allowed) {
 		return buildNotSubmittedResult(spec, submission.reason, submission.message);
 	}
@@ -1799,11 +1801,12 @@ function buildNotSubmittedResult(
 	};
 }
 
-function dynamicBuildSubmissionGuard(
+async function dynamicBuildSubmissionGuard(
 	input: EnsureSwebenchEnvironmentInput,
-):
+): Promise<
 	| { allowed: true; targetCluster: TektonTargetCluster }
-	| { allowed: false; reason: string; message: string } {
+	| { allowed: false; reason: string; message: string }
+> {
 	if (input.allowBuild !== true) {
 		return {
 			allowed: false,
@@ -1826,6 +1829,8 @@ function dynamicBuildSubmissionGuard(
 	}
 	if (mode === "hub") {
 		if (hasConfiguredHubTektonKubeconfig()) {
+			const capacity = await dynamicBuildCapacityGuard();
+			if (!capacity.allowed) return capacity;
 			return { allowed: true, targetCluster: "hub" };
 		}
 		return {
@@ -1841,6 +1846,41 @@ function dynamicBuildSubmissionGuard(
 		message:
 			"Dynamic SWE-bench inference image build submission is disabled; refusing to create a PipelineRun.",
 	};
+}
+
+async function dynamicBuildCapacityGuard(): Promise<
+	| { allowed: true }
+	| { allowed: false; reason: string; message: string }
+> {
+	const maxActive = configuredSwebenchMaxActiveBuilds();
+	if (maxActive <= 0) return { allowed: true };
+	const active = await countActiveEnvironmentBuilds(maxActive);
+	if (active < maxActive) return { allowed: true };
+	return {
+		allowed: false,
+		reason: "dynamic_build_capacity_exhausted",
+		message: `SWE-bench inference image build submission is throttled: ${active} active build(s) meet or exceed SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE=${maxActive}.`,
+	};
+}
+
+async function countActiveEnvironmentBuilds(limit: number): Promise<number> {
+	const database = requireDb();
+	const rows = await database
+		.select({ id: environmentImageBuilds.id })
+		.from(environmentImageBuilds)
+		.where(inArray(environmentImageBuilds.status, ["queued", "building"]))
+		.limit(limit);
+	return rows.length;
+}
+
+function configuredSwebenchMaxActiveBuilds(): number {
+	const raw =
+		env.SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE ??
+		process.env.SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE;
+	if (!raw) return DEFAULT_SWEBENCH_MAX_ACTIVE_BUILDS;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SWEBENCH_MAX_ACTIVE_BUILDS;
+	return Math.min(parsed, MAX_SWEBENCH_MAX_ACTIVE_BUILDS);
 }
 
 function dynamicBuildTargetFromEnv(): TektonTargetCluster {
