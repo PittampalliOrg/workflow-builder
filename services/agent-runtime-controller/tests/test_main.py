@@ -337,6 +337,24 @@ def test_ensure_agent_statestore_scopes_skips_existing_scopes(monkeypatch):
     assert fake.patches == []
 
 
+def test_ensure_agent_statestore_scopes_skips_unscoped_components(monkeypatch):
+    fake = FakeCustomObjects(
+        {
+            "dapr-agent-py-statestore": {},
+            "workflowstatestore": {},
+        }
+    )
+    monkeypatch.setattr(main, "CUSTOM", fake)
+
+    main.ensure_agent_statestore_scopes(
+        "agent-runtime-pool-coding",
+        "workflow-builder",
+        LOGGER,
+    )
+
+    assert fake.patches == []
+
+
 def test_remove_agent_statestore_scopes_removes_from_both_components(monkeypatch):
     fake = FakeCustomObjects(
         {

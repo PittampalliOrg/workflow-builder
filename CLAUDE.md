@@ -64,7 +64,7 @@ actor-lookup layer.
 - `durable/run` is a **Dapr child workflow**, not an HTTP call. The orchestrator calls `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>", ...)` — **session bridge is now a structural invariant**, not a feature flag. The `spawn_session_for_workflow` activity POSTs to `/api/internal/sessions/ensure-for-workflow` which (a) finds-or-creates the session row keyed by `{workflowId, nodeId}`, (b) rewrites Playwright stdio MCP presets to the per-pod sidecar URL, (c) **wakes the target per-agent runtime pod** and waits up to 20s for `phase=Active` before responding. After the activity returns, the parent yields `call_child_workflow` with `instance_id=<deterministic session_id>` and `autoTerminateAfterEndTurn: true` — one turn, emit `status_idle{end_turn}` + `status_terminated`. Full Dapr durability preserved; workflow-driven runs appear in `/sessions/[id]` with live event history. Retry resilience via `WorkflowRetryPolicy(max_attempts=8)` on the callee side.
 - **Direct (UI-initiated) sessions** go through `src/lib/server/sessions/spawn.ts`, which wakes `agent-runtime-<slug>` and then calls Dapr workflow `StartInstance` on the target app via service invoke. Bare app-id (no `.namespace` suffix) now that BFF + target are same-ns.
 - **MCP sidecar rewrite**: both paths (direct session + workflow bridge) call `rewriteMcpForBrowserSidecar` (`src/lib/server/agents/mcp-sidecar.ts`) before dispatch. Any `mcpServers` entry matching Playwright (by name, URL, or `@playwright/mcp` args) becomes `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }` — the in-pod playwright-mcp container's CDP-over-chromium endpoint.
-- **Dapr Component scoping** within `workflow-builder` ns is partitioned so every pod sees exactly one `actorStateStore=true` Component (Dapr rejects pods with more than one): `workflowstatestore` is scoped to `workflow-orchestrator` only; `dapr-agent-py-statestore` is scoped to legacy `dapr-agent-py` + BFF + the enumerated `agent-runtime-<slug>` app-ids; `agent-workflow` is scoped to legacy names only. New agent slugs must be added to `dapr-agent-py-statestore.scopes` in `packages/components/active-development/manifests/dapr-agent-py/Component-dapr-agent-py-statestore.yaml` — follow-up work is to have the controller patch this automatically on CR create.
+- **Dapr Component visibility** within `workflow-builder` ns relies on unscoped shared Components, not per-agent scope mutation. `workflowstatestore` is the only `actorStateStore=true` Component visible to current apps; `dapr-agent-py-statestore` and legacy `agent-workflow` are non-actor stores. New agent slugs must not be added to Component scopes.
 - Every non-agent action goes `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | openshell-agent-runtime | code-runtime | crawl4ai-adapter}`. The orchestrator uses `activities/dapr_invoke.py` (no raw HTTP). `openshell-agent-runtime` consolidates `workspace/*`, `browser/*`, and `openshell/*` handlers (function-router cutover 2026-04-19; legacy `workspace-runtime` TS service's GitOps + live resources fully removed 2026-04-21).
 - function-router owns credential decryption (AES-256-CBC from `app_connection`) + `credential_access_logs` audit. Orchestrator never holds plaintext secrets.
 
@@ -209,17 +209,17 @@ Every published agent gets its own pod. On publish, `src/lib/server/agents/regis
 - Pod replicas default to 0. Sessions are woken on demand by writing the `agents.x-k8s.io/wake` annotation on the CR — controller scales the Deployment to 1.
 - `idleTtlSeconds` (default 1800 in `_DEFAULT_IDLE_TTL`; overridable per agent via environment config's `agentRuntimeIdleTtlSeconds`) drives the `idle_reaper` timer. Scales back to 0 after the TTL elapses since `lastActiveAt`, which the BFF stamps each session dispatch.
 
-**Dapr Component scoping inside `workflow-builder` namespace**
+**Dapr Component visibility inside `workflow-builder` namespace**
 
-A Dapr sidecar refuses to start if it sees more than one Component with `actorStateStore=true`. We have three actor-capable stores in the namespace (`workflowstatestore`, `agent-workflow`, `dapr-agent-py-statestore`); scopes are partitioned so each pod sees exactly one:
+A Dapr sidecar refuses to start if it sees more than one Component with `actorStateStore=true`. `workflowstatestore` is the single namespace-visible workflow/actor store. Agent session state and legacy stores are non-actor stores so Kueue-admitted per-session app ids do not need Dapr Component scope mutation:
 
 | Component | `actorStateStore` | Scopes | Used by |
 |---|---|---|---|
-| `workflowstatestore` | true | workflow-orchestrator | Parent orchestrator history (`wfstate_*` tables) |
-| `dapr-agent-py-statestore` | true | dapr-agent-py, dapr-agent-py-testing, workflow-builder, controller-enrolled `agent-runtime-<slug>` app ids | Per-agent pod actor state + BFF workflow state |
-| `agent-workflow` | true | legacy openshell-durable-agent / vanilla-durable-agent (no active consumers) | n/a |
+| `workflowstatestore` | true | unscoped | Dapr workflow/actor history (`wfstate_*` tables) |
+| `dapr-agent-py-statestore` | false | unscoped | Agent/session state |
+| `agent-workflow` | false | legacy openshell-durable-agent / vanilla-durable-agent (no active consumers) | n/a |
 
-**When adding a new agent**, create or update its `AgentRuntime` CR. The `agent-runtime-controller` patches `dapr-agent-py-statestore.scopes` with the runtime app id before creating or waking the pod, so the CR catalog stays aligned with the centralized Dapr actor state store.
+**When adding a new agent**, create or update its `AgentRuntime` CR. Do not patch Dapr Component scopes for the runtime app id; unscoped Components are already visible within the namespace.
 
 ## Workflow → Session Bridge
 

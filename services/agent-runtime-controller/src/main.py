@@ -411,6 +411,13 @@ def _ensure_dapr_component_scope(
         ) from exc
 
     scopes = component.get("scopes")
+    if scopes is None:
+        logger.info(
+            "Dapr Component %s is unscoped; app id %s already has access",
+            component_name,
+            app_id,
+        )
+        return
     if isinstance(scopes, list) and app_id in scopes:
         return
 

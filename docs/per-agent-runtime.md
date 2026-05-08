@@ -114,28 +114,29 @@ Secrets (all in `workflow-builder` ns):
 - `workflow-checkpoint-gitea` — workflow-checkpoint Git credentials.
 - `openshell-client-tls` + `openshell-server-client-ca` — mTLS for the OpenShell gateway (mounted into the init container only).
 
-## Dapr Component scoping in `workflow-builder`
+## Dapr Components in `workflow-builder`
 
 Dapr rejects any pod that sees more than one `actorStateStore=true`
-Component. With three actor-capable stores in the namespace, scopes
-partition access so each pod sees exactly one:
+Component. The namespace now has one workflow/actor store and keeps the
+agent session store non-actor so transient Kueue app ids do not require
+Component scope mutation:
 
 | Component | `actorStateStore` | Scopes (allowlist) |
 |---|---|---|
-| `workflowstatestore` | true | `workflow-orchestrator`, `workspace-runtime` |
-| `dapr-agent-py-statestore` | true | `dapr-agent-py`, `dapr-agent-py-testing`, `workflow-builder`, controller-enrolled `agent-runtime-<slug>` and `agent-runtime-pool-<class>` app ids |
-| `agent-workflow` | true | legacy slugs only; no active consumer |
+| `workflowstatestore` | true | unscoped in namespace |
+| `dapr-agent-py-statestore` | false | unscoped in namespace |
+| `agent-workflow` | false | legacy slugs only; no active consumer |
 
 **Adding a new agent or pool**: create or update its `AgentRuntime` CR. The
-`agent-runtime-controller` patches `dapr-agent-py-statestore.scopes` with
-the runtime app id before creating or waking the pod, and removes that scope
-when the CR is deleted. This preserves the single centralized actor state
-store required by Dapr durable workflows without leaking stale app ids.
+runtime app id should not be added to Dapr Component scopes; unscoped
+Components are already visible inside the namespace. This avoids stale
+`agent-session-*` / `agent-runtime-*` scope buildup and lets Kueue-admitted
+per-execution workflow hosts use the shared workflow store without a custom
+scope controller.
 
-Non-actor components (`agent-registry`, `agent-memory`,
-`runtime-config`, `pubsub`, `llm-*`, `kubernetes-secrets`) are
-un-scoped within the namespace — being in `workflow-builder` ns is
-already the security boundary.
+Non-actor components (`agent-registry`, `agent-memory`, `runtime-config`,
+`pubsub`, `llm-*`, `kubernetes-secrets`) are also unscoped within the
+namespace; being in `workflow-builder` ns is the security boundary.
 
 ## Admission webhook
 
