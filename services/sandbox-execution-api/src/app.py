@@ -433,6 +433,16 @@ def _agent_host_job_name(agent_app_id: str) -> str:
     return _safe_resource_name(f"agent-host-{agent_app_id}", max_length=63)
 
 
+def _agent_host_backoff_limit() -> int:
+    try:
+        return max(
+            0,
+            int(os.environ.get("SANDBOX_EXECUTION_AGENT_HOST_BACKOFF_LIMIT", "1")),
+        )
+    except ValueError:
+        return 1
+
+
 def build_agent_workflow_host_job_manifest(
     request: AgentWorkflowHostRequest,
     *,
@@ -505,6 +515,13 @@ def build_agent_workflow_host_job_manifest(
                             "900",
                         ),
                     },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS",
+                        "value": os.environ.get(
+                            "DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS",
+                            "120",
+                        ),
+                    },
                 ],
                 "envFrom": [
                     {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
@@ -570,7 +587,7 @@ def build_agent_workflow_host_job_manifest(
             },
         },
         "spec": {
-            "backoffLimit": 0,
+            "backoffLimit": _agent_host_backoff_limit(),
             "activeDeadlineSeconds": request.timeoutSeconds + 600,
             "ttlSecondsAfterFinished": _job_ttl_seconds(class_config),
             "template": {

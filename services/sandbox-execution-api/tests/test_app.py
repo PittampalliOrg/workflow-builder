@@ -149,6 +149,7 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert annotations["dapr.io/config"] == "workflow-builder-agent-runtime"
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
+    assert manifest["spec"]["backoffLimit"] == 1
     pod_spec = template["spec"]
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
     assert pod_spec["initContainers"][0]["name"] == "seed-openshell-config"
@@ -158,6 +159,7 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
     assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
+    assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
     env_from = container["envFrom"]
     assert env_from[0]["configMapRef"] == {
         "name": "dapr-agent-py-config",
@@ -166,6 +168,24 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+
+
+def test_agent_workflow_host_backoff_can_be_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_AGENT_HOST_BACKOFF_LIMIT", "3")
+    manifest = build_agent_workflow_host_job_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+
+    assert manifest["spec"]["backoffLimit"] == 3
 
 
 def test_component_scope_patch_uses_json_patch_append(monkeypatch) -> None:

@@ -4441,13 +4441,19 @@ def _run_session_host_monitor(instance_id: str) -> None:
         "DAPR_AGENT_SESSION_HOST_POLL_SECONDS",
         10,
     )
+    sidecar_ready_timeout = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS",
+        120,
+    )
     started_at = time.monotonic()
     first_seen_at: float | None = None
+    sidecar_unavailable_since: float | None = None
     logger.info(
-        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss",
+        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss sidecar_ready_timeout=%ss",
         instance_id,
         start_timeout,
         idle_timeout,
+        sidecar_ready_timeout,
     )
     while True:
         elapsed = time.monotonic() - started_at
@@ -4458,6 +4464,28 @@ def _run_session_host_monitor(instance_id: str) -> None:
                 start_timeout,
             )
             os._exit(1)
+        sidecar_error = _dapr_sidecar_health_error()
+        if sidecar_error is not None:
+            now = time.monotonic()
+            if sidecar_unavailable_since is None:
+                sidecar_unavailable_since = now
+            unavailable_seconds = now - sidecar_unavailable_since
+            if unavailable_seconds > sidecar_ready_timeout:
+                logger.error(
+                    "[session-host] dapr sidecar stayed unavailable for %ss while monitoring %s: %s; exiting",
+                    int(unavailable_seconds),
+                    instance_id,
+                    sidecar_error,
+                )
+                os._exit(1)
+            logger.warning(
+                "[session-host] dapr sidecar unavailable while monitoring %s: %s",
+                instance_id,
+                sidecar_error,
+            )
+            time.sleep(poll_seconds)
+            continue
+        sidecar_unavailable_since = None
         if first_seen_at is not None and time.monotonic() - first_seen_at > idle_timeout:
             logger.warning(
                 "[session-host] workflow %s stayed non-terminal for %ss after first observation; continuing to monitor",
@@ -4513,6 +4541,24 @@ def _dapr_http_sidecar_url() -> str:
         f"http://{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
         f"{os.environ.get('DAPR_HTTP_PORT', '3500')}"
     )
+
+
+def _dapr_sidecar_health_error() -> str | None:
+    url = f"{_dapr_http_sidecar_url()}/v1.0/healthz/outbound"
+    request = urllib.request.Request(
+        url,
+        headers=_dapr_api_token_headers(),
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            response.read()
+        return None
+    except urllib.error.HTTPError as exc:
+        detail = _workflow_http_error_text(exc)
+        return f"HTTP {exc.code}: {detail[:300]}"
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)
 
 
 def _workflow_http_timeout_seconds() -> float:
