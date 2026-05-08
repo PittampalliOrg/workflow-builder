@@ -113,6 +113,7 @@ const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
 const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
+const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = false;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
 	"CANCELLED",
@@ -498,6 +499,13 @@ function benchmarkTerminalPurgeGraceMs(): number {
 			60,
 			BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS,
 		) * 1000
+	);
+}
+
+function shouldPurgeBenchmarkDaprWorkflowsOnCleanup(): boolean {
+	return parseBooleanFlag(
+		env.BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP,
+		BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP,
 	);
 }
 
@@ -1943,24 +1951,26 @@ async function finalizeBenchmarkWorkflowExecutions(
 		);
 		return false;
 	}
-	const purgeGraceMs = benchmarkTerminalPurgeGraceMs();
-	if (purgeGraceMs > 0) {
-		await sleep(purgeGraceMs);
+	if (shouldPurgeBenchmarkDaprWorkflowsOnCleanup()) {
+		const purgeGraceMs = benchmarkTerminalPurgeGraceMs();
+		if (purgeGraceMs > 0) {
+			await sleep(purgeGraceMs);
+		}
+		await runWithConcurrency(
+			agentRuntimeTargets,
+			BENCHMARK_TERMINATION_CONCURRENCY,
+			async ({ runtimeAppId, instanceId }) => {
+				await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
+			},
+		);
+		await runWithConcurrency(
+			[...daprInstanceIds],
+			BENCHMARK_TERMINATION_CONCURRENCY,
+			async (instanceId) => {
+				await purgeBenchmarkWorkflowInstance(instanceId);
+			},
+		);
 	}
-	await runWithConcurrency(
-		agentRuntimeTargets,
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
-		},
-	);
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			await purgeBenchmarkWorkflowInstance(instanceId);
-		},
-	);
 	if (sessionIds.size > 0) {
 		await database
 			.update(sessions)
@@ -2138,7 +2148,7 @@ async function terminateAndPurgeBenchmarkWorkflowInstance(
 	reason: string,
 ): Promise<boolean> {
 	const closed = await terminateAndWaitBenchmarkWorkflowInstance(instanceId, reason);
-	if (closed) {
+	if (closed && shouldPurgeBenchmarkDaprWorkflowsOnCleanup()) {
 		await purgeBenchmarkWorkflowInstance(instanceId);
 	}
 	return closed;
@@ -2274,7 +2284,7 @@ async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
 		instanceId,
 		reason,
 	);
-	if (closed) {
+	if (closed && shouldPurgeBenchmarkDaprWorkflowsOnCleanup()) {
 		await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
 	}
 	return closed;
@@ -4393,12 +4403,14 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			return false;
 		}
 
-		if (parentDaprInstanceId) {
+		if (
+			parentDaprInstanceId &&
+			shouldPurgeBenchmarkDaprWorkflowsOnCleanup()
+		) {
 			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId);
 		}
-		// Leave agent-runtime child workflow history for retention cleanup. Parent
-		// termination is authoritative and late child events can still be observed
-		// during Dapr replay.
+		// Leave workflow history for Dapr retention cleanup. Parent termination is
+		// authoritative, and immediate purge can race Scheduler workflow reminders.
 
 		if (sessionId) {
 			await database
