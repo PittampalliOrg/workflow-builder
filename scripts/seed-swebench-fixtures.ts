@@ -210,6 +210,12 @@ const JSON_COLUMNS = new Set([
   "config",
 ]);
 
+const REQUIRED_AGENT_MODEL_SPECS = {
+  "alibaba-qwen3-coder-swebench": "alibaba/qwen3-coder-plus",
+  "deepseek-v4-pro-swebench": "deepseek/deepseek-v4-pro",
+  "kimi-k26-swebench-canary": "kimi/kimi-k2.6",
+} as const;
+
 function loadFixtures(): Fixtures {
   const raw = JSON.parse(
     readFileSync(FIXTURE_PATH, "utf-8"),
@@ -404,6 +410,12 @@ function retarget(
 function validateFixtures(fixtures: Fixtures) {
   const envIds = new Set(fixtures.environments.map((row) => String(row.id)));
   const agentIds = new Set(fixtures.agents.map((row) => String(row.id)));
+  const agentsBySlug = new Map(
+    fixtures.agents.map((row) => [String(row.slug), row]),
+  );
+  const agentVersionsById = new Map(
+    fixtures.agent_versions.map((row) => [String(row.id), row]),
+  );
   const agentVersionIds = new Set(
     fixtures.agent_versions.map((row) => String(row.id)),
   );
@@ -429,6 +441,32 @@ function validateFixtures(fixtures: Fixtures) {
     ) {
       throw new Error(
         `Agent ${agent.id} references missing current_version_id ${agent.current_version_id}`,
+      );
+    }
+  }
+  for (const [slug, expectedModelSpec] of Object.entries(
+    REQUIRED_AGENT_MODEL_SPECS,
+  )) {
+    const agent = agentsBySlug.get(slug);
+    if (!agent) {
+      throw new Error(`Required SWE-bench canary agent is missing: ${slug}`);
+    }
+    const version = agentVersionsById.get(String(agent.current_version_id));
+    if (!version) {
+      throw new Error(
+        `Required SWE-bench canary agent ${slug} references missing current version ${String(agent.current_version_id)}`,
+      );
+    }
+    const rawConfig = version.config;
+    const config =
+      typeof rawConfig === "string" ? JSON.parse(rawConfig) : rawConfig;
+    if (
+      typeof config !== "object" ||
+      config === null ||
+      (config as { modelSpec?: unknown }).modelSpec !== expectedModelSpec
+    ) {
+      throw new Error(
+        `Required SWE-bench canary agent ${slug} expected modelSpec=${expectedModelSpec}`,
       );
     }
   }
