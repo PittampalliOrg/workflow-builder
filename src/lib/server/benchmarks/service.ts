@@ -2318,6 +2318,7 @@ export const __benchmarkSandboxCleanupForTest = {
 
 export const __benchmarkDurableRuntimeForTest = {
 	durableRuntimeStatusFromBody,
+	benchmarkTerminatedSessionExecutionStatus,
 	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
 };
@@ -3381,6 +3382,25 @@ function workflowExecutionPhaseForHostStatus(
 	}
 }
 
+function benchmarkTerminatedSessionExecutionStatus(
+	session: {
+		status: string;
+		errorMessage: string | null;
+	} | null,
+	sessionEventRows: Array<{ type: string; data: Record<string, unknown> }>,
+): CompletedExecutionStatus | null {
+	if (session?.status !== "terminated") return null;
+	if (session.errorMessage?.trim()) return "error";
+	const eventTypes = new Set(sessionEventRows.map((event) => event.type));
+	if (
+		eventTypes.has("session.status_idle") ||
+		eventTypes.has("instance.metrics_summary")
+	) {
+		return "success";
+	}
+	return null;
+}
+
 function isHostBenchmarkExecutionTerminal(
 	status: HostBenchmarkExecutionStatus,
 ): status is CompletedExecutionStatus {
@@ -3568,6 +3588,44 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	if (!row) return null;
 	if (!row.execution) return row.runInstance;
 
+	const sessionRow = row.runInstance.sessionId
+		? await database
+				.select({
+					id: sessions.id,
+					status: sessions.status,
+					errorMessage: sessions.errorMessage,
+					completedAt: sessions.completedAt,
+					sandboxName: sessions.sandboxName,
+					workspaceSandboxName: sessions.workspaceSandboxName,
+				})
+				.from(sessions)
+				.where(eq(sessions.id, row.runInstance.sessionId))
+				.limit(1)
+		: row.runInstance.workflowExecutionId
+			? await database
+					.select({
+						id: sessions.id,
+						status: sessions.status,
+						errorMessage: sessions.errorMessage,
+						completedAt: sessions.completedAt,
+						sandboxName: sessions.sandboxName,
+						workspaceSandboxName: sessions.workspaceSandboxName,
+					})
+					.from(sessions)
+					.where(eq(sessions.workflowExecutionId, row.runInstance.workflowExecutionId))
+					.limit(1)
+			: [];
+	const sessionEventRows = sessionRow[0]?.id
+		? await database
+				.select({
+					type: sessionEvents.type,
+					data: sessionEvents.data,
+				})
+				.from(sessionEvents)
+				.where(eq(sessionEvents.sessionId, sessionRow[0].id))
+				.orderBy(asc(sessionEvents.sequence))
+		: [];
+
 	let runtimeStatus: string | null = null;
 	let runtimeOutput: unknown = row.execution.output;
 	if (
@@ -3585,14 +3643,20 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		}
 	}
 
-	const status = benchmarkSyncExecutionStatus({
-		dbStatus: row.execution.status,
-		phase: row.execution.phase,
-		completedAt: row.execution.completedAt,
-		error: row.execution.error,
-		output: row.execution.output,
-		runtimeStatus,
-	});
+	const terminalSessionStatus = benchmarkTerminatedSessionExecutionStatus(
+		sessionRow[0] ?? null,
+		sessionEventRows,
+	);
+	const status =
+		terminalSessionStatus ??
+		benchmarkSyncExecutionStatus({
+			dbStatus: row.execution.status,
+			phase: row.execution.phase,
+			completedAt: row.execution.completedAt,
+			error: row.execution.error,
+			output: row.execution.output,
+			runtimeStatus,
+		});
 	if (status === "running" || status === "pending") {
 		return (
 			(await timeoutBenchmarkInstanceIfStalled(row.runInstance, row.run)) ??
@@ -3600,16 +3664,25 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		);
 	}
 
-	const patch = extractModelPatch(runtimeOutput ?? row.execution.output);
+	const runtimeValues = [
+		row.execution.output,
+		runtimeOutput,
+		...sessionEventRows.map((event) => event.data),
+	];
+	const runtimeOutputForExtraction = terminalSessionStatus
+		? runtimeValues
+		: (runtimeOutput ?? row.execution.output);
+	const patch = extractModelPatch(runtimeOutputForExtraction);
 	const now = new Date();
 	const successfulEmptyPatchReason =
 		status === "success" && !patch.trim()
-			? extractAgentStopReason(runtimeOutput ?? row.execution.output, row.run?.maxTurns)
+			? extractAgentStopReason(runtimeOutputForExtraction, row.run?.maxTurns)
 			: null;
 	const inferenceError =
 		status === "success"
 			? successfulEmptyPatchReason
-			: workflowExecutionError(row.execution, runtimeOutput);
+			: (sessionRow[0]?.errorMessage?.trim() ||
+				workflowExecutionError(row.execution, runtimeOutput));
 	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
 		row.runInstance.status,
 		status,
@@ -3617,24 +3690,6 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	const keepEvaluationOwnedError =
 		row.runInstance.status === "evaluating" ||
 		INSTANCE_TERMINAL_STATUSES.has(row.runInstance.status);
-	const sessionRow = row.runInstance.workflowExecutionId
-		? await database
-				.select({
-					id: sessions.id,
-					sandboxName: sessions.sandboxName,
-					workspaceSandboxName: sessions.workspaceSandboxName,
-				})
-				.from(sessions)
-				.where(eq(sessions.workflowExecutionId, row.runInstance.workflowExecutionId))
-				.limit(1)
-		: [];
-	const sessionEventRows = sessionRow[0]?.id
-		? await database
-				.select({ data: sessionEvents.data })
-				.from(sessionEvents)
-				.where(eq(sessionEvents.sessionId, sessionRow[0].id))
-				.orderBy(asc(sessionEvents.sequence))
-		: [];
 	const runtimeLinks = extractBenchmarkRuntimeLinks({
 		currentSandboxName: row.runInstance.sandboxName,
 		currentWorkspaceRef: row.runInstance.workspaceRef,
@@ -3649,8 +3704,20 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		],
 	});
 	const runtimeInferenceEnvironment = extractInferenceEnvironment(
-		runtimeOutput ?? row.execution.output,
+		runtimeOutputForExtraction,
 	);
+	if (terminalSessionStatus && row.execution.status !== status) {
+		await database
+			.update(workflowExecutions)
+			.set({
+				status: workflowExecutionStatusForHostStatus(status),
+				phase: workflowExecutionPhaseForHostStatus(status),
+				progress: status === "success" ? 100 : row.execution.progress,
+				error: status === "success" ? row.execution.error : inferenceError,
+				completedAt: row.execution.completedAt ?? sessionRow[0]?.completedAt ?? now,
+			})
+			.where(eq(workflowExecutions.id, row.execution.id));
+	}
 	const update: Partial<typeof benchmarkRunInstances.$inferInsert> = {
 		status: nextVisibleStatus,
 		inferenceStatus: resolveBenchmarkInferenceStatus(status),
@@ -3659,7 +3726,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		patchSha256: status === "success" ? sha256(patch) : undefined,
 		error: keepEvaluationOwnedError ? row.runInstance.error : inferenceError,
 		inferenceError,
-		inferenceCompletedAt: now,
+		inferenceCompletedAt: sessionRow[0]?.completedAt ?? now,
 		sessionId: sessionRow[0]?.id ?? row.runInstance.sessionId,
 		sandboxName: runtimeLinks.sandboxName,
 		workspaceRef: runtimeLinks.workspaceRef,
@@ -4836,10 +4903,14 @@ export function extractAgentStopReason(
 		"message",
 		"error",
 		"reason",
+		"stop_reason",
+		"termination_reason",
+		"terminationReason",
 	]);
 	const match = candidates.find((candidate) => {
 		const normalized = candidate.toLowerCase();
 		return (
+			normalized.includes("max_iters") ||
 			normalized.includes("maximum number of reasoning steps") ||
 			normalized.includes("hit max iterations") ||
 			normalized.includes("reached max iterations") ||

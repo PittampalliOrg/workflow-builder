@@ -986,6 +986,40 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe("success");
 	});
 
+	it("treats a naturally terminated benchmark session as terminal evidence", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkTerminatedSessionExecutionStatus(
+				{ status: "terminated", errorMessage: null },
+				[
+					{ type: "session.turn_started", data: {} },
+					{ type: "instance.metrics_summary", data: { termination_reason: "max_iters" } },
+					{ type: "session.status_terminated", data: { reason: "auto" } },
+				],
+			),
+		).toBe("success");
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkTerminatedSessionExecutionStatus(
+				{ status: "terminated", errorMessage: "agent failed" },
+				[{ type: "instance.metrics_summary", data: {} }],
+			),
+		).toBe("error");
+		expect(
+			__benchmarkDurableRuntimeForTest.benchmarkTerminatedSessionExecutionStatus(
+				{ status: "terminated", errorMessage: null },
+				[{ type: "session.status_terminated", data: { reason: "operator cleanup" } }],
+			),
+		).toBeNull();
+	});
+
+	it("extracts max-iteration stop reasons from session metrics", () => {
+		expect(
+			extractAgentStopReason(
+				[{ termination_reason: "max_iters" }],
+				1,
+			),
+		).toContain("maxTurns=1");
+	});
+
 	it("keeps cancellation sandbox cleanup scoped to benchmark-owned OpenShell names", () => {
 		const runId = "codexcap20x20260504014703";
 		const names =
