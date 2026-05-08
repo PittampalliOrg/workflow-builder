@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import types
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -652,6 +653,25 @@ def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tm
     assert posted["path"] == "/api/internal/benchmarks/runs/run_1/predictions-artifact"
     assert posted["json"] == {"path": str(tmp_path / "run_1" / "predictions.jsonl")}
     assert result["bytes"] > 0
+
+
+def test_mlflow_artifact_logging_has_hard_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.example")
+    monkeypatch.setenv("MLFLOW_ARTIFACT_TIMEOUT_SECONDS", "0.1")
+    app = load_app(monkeypatch)
+    artifact = tmp_path / "predictions.jsonl"
+    artifact.write_text("{}", encoding="utf-8")
+
+    def slow_upload(*_args, **_kwargs):
+        time.sleep(5)
+
+    monkeypatch.setattr(app, "_mlflow_log_artifact_sync", slow_upload)
+
+    started = time.monotonic()
+    app._mlflow_log_artifact("mlflow_run", artifact, "swebench")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1
 
 
 def test_load_run_activity_returns_compact_workflow_payload(monkeypatch):

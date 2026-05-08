@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import pathlib
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -516,6 +517,26 @@ def _mlflow_enabled() -> bool:
     return bool(MLFLOW_TRACKING_URI)
 
 
+def _mlflow_artifact_timeout_seconds() -> float:
+    raw = os.environ.get("MLFLOW_ARTIFACT_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        raw = os.environ.get("MLFLOW_HTTP_REQUEST_TIMEOUT", "10").strip()
+    try:
+        return max(0.1, min(60.0, float(raw)))
+    except ValueError:
+        return 10.0
+
+
+def _mlflow_log_artifact_sync(
+    run_id: Any, path: pathlib.Path, artifact_path: str
+) -> None:
+    import mlflow
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    with mlflow.start_run(run_id=run_id):
+        mlflow.log_artifact(str(path), artifact_path=artifact_path)
+
+
 def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) -> None:
     if (
         not _mlflow_enabled()
@@ -524,14 +545,34 @@ def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) ->
         or not path.exists()
     ):
         return
-    try:
-        import mlflow
+    timeout_seconds = _mlflow_artifact_timeout_seconds()
+    done = threading.Event()
+    error: list[BaseException] = []
 
-        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-        with mlflow.start_run(run_id=run_id):
-            mlflow.log_artifact(str(path), artifact_path=artifact_path)
-    except Exception as exc:
-        logger.warning("Best-effort MLflow artifact log failed for %s: %s", path, exc)
+    def _target() -> None:
+        try:
+            _mlflow_log_artifact_sync(run_id, path, artifact_path)
+        except BaseException as exc:  # noqa: BLE001 - best-effort background upload
+            error.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_target,
+        name=f"mlflow-artifact-{path.name}",
+        daemon=True,
+    )
+    thread.start()
+    if not done.wait(timeout_seconds):
+        logger.warning(
+            "Best-effort MLflow artifact log timed out after %.1fs for %s",
+            timeout_seconds,
+            path,
+        )
+        return
+    if error:
+        logger.warning("Best-effort MLflow artifact log failed for %s: %s", path, error[0])
+
 
 
 def _mlflow_log_text(
