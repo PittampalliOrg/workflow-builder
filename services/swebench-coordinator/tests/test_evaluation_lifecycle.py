@@ -345,6 +345,62 @@ def test_ensure_evaluator_job_skips_terminal_run(monkeypatch):
     }
 
 
+def test_evaluation_workflow_deletes_job_after_terminal_progress(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_evaluation_workflow(
+        ctx,
+        {
+            "runId": "run_1",
+            "predictionsPath": "/artifacts/run_1/predictions.jsonl",
+            "datasetPath": "/artifacts/run_1/dataset.jsonl",
+            "timeoutSeconds": 60,
+            "evaluationMaxParallel": 1,
+            "instanceCount": 1,
+        },
+    )
+
+    assert next(workflow) == (
+        "activity",
+        "_ensure_evaluator_job",
+        {
+            "runId": "run_1",
+            "predictionsPath": "/artifacts/run_1/predictions.jsonl",
+            "datasetPath": "/artifacts/run_1/dataset.jsonl",
+        },
+    )
+    assert workflow.send({"jobName": "swebench-eval-run_1"}) == (
+        "activity",
+        "_load_evaluation_progress",
+        {"runId": "run_1"},
+    )
+    terminal_progress = {
+        "runStatus": "completed",
+        "activeEvaluationRows": 0,
+    }
+    assert workflow.send(terminal_progress) == (
+        "activity",
+        "_delete_evaluator_job",
+        {
+            "runId": "run_1",
+            "jobName": "swebench-eval-run_1",
+            "reason": "evaluation rows reached terminal state",
+        },
+    )
+    try:
+        workflow.send({"success": True, "deleted": True})
+    except StopIteration as stop:
+        assert stop.value == {
+            "success": True,
+            "jobName": "swebench-eval-run_1",
+            "progress": terminal_progress,
+            "deleteResult": {"success": True, "deleted": True},
+        }
+    else:
+        raise AssertionError("expected evaluation workflow to complete")
+
+
 def test_mark_run_status_retries_bff_updates(monkeypatch):
     app = load_app(monkeypatch)
     captured = {}

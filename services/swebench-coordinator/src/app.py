@@ -1918,7 +1918,20 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                 _load_evaluation_progress, input={"runId": run_id}
             )
             if _evaluation_progress_is_terminal(progress):
-                return {"success": True, "jobName": job_name, "progress": progress}
+                delete_result = yield ctx.call_activity(
+                    _delete_evaluator_job,
+                    input={
+                        "runId": run_id,
+                        "jobName": job_name,
+                        "reason": "evaluation rows reached terminal state",
+                    },
+                )
+                return {
+                    "success": True,
+                    "jobName": job_name,
+                    "progress": progress,
+                    "deleteResult": delete_result,
+                }
 
             job_status = yield ctx.call_activity(
                 _get_evaluator_job_status,
@@ -1940,10 +1953,19 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                     _load_evaluation_progress, input={"runId": run_id}
                 )
                 if _evaluation_progress_is_terminal(progress_after_failure):
+                    delete_result = yield ctx.call_activity(
+                        _delete_evaluator_job,
+                        input={
+                            "runId": run_id,
+                            "jobName": job_name,
+                            "reason": "evaluation rows reached terminal state after job failure",
+                        },
+                    )
                     return {
                         "success": True,
                         "jobName": job_name,
                         "progress": progress_after_failure,
+                        "deleteResult": delete_result,
                     }
                 return (
                     yield ctx.call_activity(
