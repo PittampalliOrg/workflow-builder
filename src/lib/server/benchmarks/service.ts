@@ -570,6 +570,40 @@ export function benchmarkAgentRuntimeCleanupInstanceIds(
 	return [...ids];
 }
 
+export function benchmarkSessionHostAppId(sessionId: string): string | null {
+	const normalized = sessionId.trim();
+	if (!normalized) return null;
+	const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 20);
+	return `agent-session-${digest}`;
+}
+
+export function benchmarkRunUsesAgentWorkflowHosts(summary: unknown): boolean {
+	if (!isRecord(summary)) return false;
+	const execution = isRecord(summary.execution) ? summary.execution : null;
+	const backend = execution?.backend;
+	if (typeof backend !== "string" || !backend.trim()) return false;
+	return normalizeBenchmarkExecutionBackend(backend) !== "legacy-dapr";
+}
+
+function benchmarkAgentRuntimeCleanupRuntimeAppIds(params: {
+	runRuntimeAppId: string | null;
+	sessionId: string | null;
+	runSummary: unknown;
+}): string[] {
+	const ids = new Set<string>();
+	if (params.runRuntimeAppId?.trim()) {
+		ids.add(params.runRuntimeAppId.trim());
+	}
+	if (
+		params.sessionId?.trim() &&
+		benchmarkRunUsesAgentWorkflowHosts(params.runSummary)
+	) {
+		const sessionHostAppId = benchmarkSessionHostAppId(params.sessionId);
+		if (sessionHostAppId) ids.add(sessionHostAppId);
+	}
+	return [...ids];
+}
+
 async function runWithConcurrency<T>(
 	items: T[],
 	limit: number,
@@ -1717,6 +1751,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 	const rows = await database
 		.select({
 			runtimeAppId: benchmarkRuns.agentRuntimeAppId,
+			runSummary: benchmarkRuns.summary,
 			runInstanceDaprId: benchmarkRunInstances.daprInstanceId,
 			runInstanceSessionId: benchmarkRunInstances.sessionId,
 			runInstanceTurnCount: benchmarkRunInstances.turnCount,
@@ -1751,13 +1786,19 @@ async function finalizeBenchmarkWorkflowExecutions(
 			daprInstanceIds.add(daprInstanceId);
 		}
 		const sessionId = row.runInstanceSessionId ?? row.sessionId;
-		if (sessionId && row.runtimeAppId) {
+		if (sessionId) {
 			sessionIds.add(sessionId);
-			agentRuntimeCleanupRows.push({
-				runtimeAppId: row.runtimeAppId,
+			for (const runtimeAppId of benchmarkAgentRuntimeCleanupRuntimeAppIds({
+				runRuntimeAppId: row.runtimeAppId,
 				sessionId,
-				turnCount: row.runInstanceTurnCount,
-			});
+				runSummary: row.runSummary,
+			})) {
+				agentRuntimeCleanupRows.push({
+					runtimeAppId,
+					sessionId,
+					turnCount: row.runInstanceTurnCount,
+				});
+			}
 		}
 	}
 	const turnsBySession = new Map<string, BenchmarkSessionTurnInput[]>();
@@ -4098,7 +4139,10 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 	const database = requireDb();
 	try {
 		const runRows = await database
-			.select({ runtimeAppId: benchmarkRuns.agentRuntimeAppId })
+			.select({
+				runtimeAppId: benchmarkRuns.agentRuntimeAppId,
+				summary: benchmarkRuns.summary,
+			})
 			.from(benchmarkRuns)
 			.where(eq(benchmarkRuns.id, runInstance.runId))
 			.limit(1);
@@ -4118,10 +4162,14 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		const parentDaprInstanceId =
 			execution?.daprInstanceId ?? runInstance.daprInstanceId;
 
-		const runtimeAppId = runRows[0]?.runtimeAppId ?? null;
+		const runtimeAppIds = benchmarkAgentRuntimeCleanupRuntimeAppIds({
+			runRuntimeAppId: runRows[0]?.runtimeAppId ?? null,
+			sessionId,
+			runSummary: runRows[0]?.summary ?? null,
+		});
 		let allDurableInstancesClosed = true;
-		let runtimeInstanceIds: string[] = [];
-		if (runtimeAppId && sessionId) {
+		const runtimeInstanceIdsByAppId = new Map<string, string[]>();
+		if (runtimeAppIds.length > 0 && sessionId) {
 			const turnRows = await database
 				.select({
 					sessionId: sessionEvents.sessionId,
@@ -4153,39 +4201,50 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 								? data.child_instance_id
 								: null,
 					turn: Number.isFinite(rawTurn) ? rawTurn : null,
-				};
-			});
-			runtimeInstanceIds = benchmarkAgentRuntimeCleanupInstanceIds(
-				{
+					};
+				});
+			for (const runtimeAppId of runtimeAppIds) {
+				runtimeInstanceIdsByAppId.set(
 					runtimeAppId,
-					sessionId,
-					turnCount: runInstance.turnCount,
-				},
-				turns,
-			);
+					benchmarkAgentRuntimeCleanupInstanceIds(
+						{
+							runtimeAppId,
+							sessionId,
+							turnCount: runInstance.turnCount,
+						},
+						turns,
+					),
+				);
+			}
 		}
 
-		if (runtimeAppId && runtimeInstanceIds.length > 0) {
+		const runtimeTargets = [...runtimeInstanceIdsByAppId.entries()].flatMap(
+			([runtimeAppId, instanceIds]) =>
+				instanceIds.map((instanceId) => ({ runtimeAppId, instanceId })),
+		);
+		if (runtimeTargets.length > 0) {
 			const runtimeTerminations = new Map<string, DurableTerminationResult>();
 			await runWithConcurrency(
-				runtimeInstanceIds,
+				runtimeTargets,
 				BENCHMARK_TERMINATION_CONCURRENCY,
-				async (instanceId) => {
+				async ({ runtimeAppId, instanceId }) => {
 					const termination = await terminateBenchmarkAgentRuntimeInstance(
 						runtimeAppId,
 						instanceId,
 						reason,
 					);
-					runtimeTerminations.set(instanceId, termination);
+					runtimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
 					if (termination === "failed") allDurableInstancesClosed = false;
 				},
 			);
 
 			await runWithConcurrency(
-				runtimeInstanceIds,
+				runtimeTargets,
 				BENCHMARK_TERMINATION_CONCURRENCY,
-				async (instanceId) => {
-					const termination = runtimeTerminations.get(instanceId) ?? "terminated";
+				async ({ runtimeAppId, instanceId }) => {
+					const termination =
+						runtimeTerminations.get(`${runtimeAppId}\0${instanceId}`) ??
+						"terminated";
 					if (termination === "failed") return;
 					const closed =
 						termination === "alreadyGone" ||

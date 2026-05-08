@@ -5,7 +5,9 @@ import {
 	benchmarkInferenceStallSeconds,
 	benchmarkInferenceStallState,
 	benchmarkAgentRuntimeCleanupInstanceIds,
+	benchmarkRunUsesAgentWorkflowHosts,
 	benchmarkRunInstanceTerminalPatch,
+	benchmarkSessionHostAppId,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
 	collectBenchmarkTraceIds,
@@ -926,6 +928,29 @@ describe("SWE-bench terminal run cleanup", () => {
 			"custom-child-a",
 			"custom-child-b",
 		]);
+	});
+
+	it("derives per-session workflow host app ids for Kueue-backed benchmark runs", () => {
+		expect(benchmarkSessionHostAppId("session-1")).toBe(
+			"agent-session-84097828fc31a8c8d292",
+		);
+		expect(benchmarkSessionHostAppId("  ")).toBeNull();
+		expect(
+			benchmarkRunUsesAgentWorkflowHosts({
+				execution: { backend: "host-execution", class: "benchmark-fast" },
+			}),
+		).toBe(true);
+		expect(
+			benchmarkRunUsesAgentWorkflowHosts({
+				execution: { backend: "dapr-kueue", class: "benchmark-fast" },
+			}),
+		).toBe(true);
+		expect(
+			benchmarkRunUsesAgentWorkflowHosts({
+				execution: { backend: "legacy-dapr" },
+			}),
+		).toBe(false);
+		expect(benchmarkRunUsesAgentWorkflowHosts({})).toBe(false);
 	});
 
 	it("classifies already-gone Dapr workflow instances as benign", () => {
