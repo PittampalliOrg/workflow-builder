@@ -197,6 +197,9 @@ def dispatch_run_instance_taskruns(
             return False
         iid = pending.pop(0)
         holder_id = acquire_evaluator_slot(run_id, iid)
+        if holder_id is None and benchmark_leases_url(run_id):
+            pending.insert(0, iid)
+            return False
         name = taskrun_name(run_id, "run", iid)
         try:
             body = build_run_instance_taskrun(
@@ -221,10 +224,22 @@ def dispatch_run_instance_taskruns(
         )
         return True
 
-    while pending and len(active) < max_parallel:
-        launch_next()
+    while pending or active:
+        while pending and len(active) < max_parallel:
+            if not launch_next():
+                break
 
-    while active:
+        if not active:
+            time.sleep(
+                bounded_int_env(
+                    "SWEBENCH_EVALUATOR_LEASE_RETRY_SECONDS",
+                    default=10,
+                    minimum=1,
+                    maximum=300,
+                )
+            )
+            continue
+
         try:
             name, taskrun = wait_for_next_taskrun(
                 api,
@@ -262,8 +277,6 @@ def dispatch_run_instance_taskruns(
             meta.get("holder_id"),
             "run-instance TaskRun completed",
         )
-        while pending and len(active) < max_parallel:
-            launch_next()
     return final
 
 
@@ -343,34 +356,33 @@ def acquire_evaluator_slot(run_id: str, instance_id: str) -> str | None:
     retry_default = bounded_int_env(
         "SWEBENCH_EVALUATOR_LEASE_RETRY_SECONDS", default=10, minimum=1, maximum=300
     )
-    while True:
-        response = requests.post(
-            url,
-            headers=artifact_api_headers("application/json"),
-            json={
-                "action": "acquire",
-                "instanceId": instance_id,
-                "phase": "evaluation",
-                "resources": ["evaluator_slot"],
-                "metadata": {"source": "swebench-evaluator"},
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("admitted"):
-            holder_id = payload.get("holderId")
-            return holder_id if isinstance(holder_id, str) else None
-        retry_after = payload.get("retryAfterSeconds")
-        try:
-            delay = max(1, int(retry_after or retry_default))
-        except (TypeError, ValueError):
-            delay = retry_default
-        print(
-            "[swebench-evaluator] evaluator_slot blocked for "
-            f"{instance_id}; retrying in {delay}s"
-        )
-        time.sleep(delay)
+    response = requests.post(
+        url,
+        headers=artifact_api_headers("application/json"),
+        json={
+            "action": "acquire",
+            "instanceId": instance_id,
+            "phase": "evaluation",
+            "resources": ["evaluator_slot"],
+            "metadata": {"source": "swebench-evaluator"},
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("admitted"):
+        holder_id = payload.get("holderId")
+        return holder_id if isinstance(holder_id, str) else None
+    retry_after = payload.get("retryAfterSeconds")
+    try:
+        delay = max(1, int(retry_after or retry_default))
+    except (TypeError, ValueError):
+        delay = retry_default
+    print(
+        "[swebench-evaluator] evaluator_slot blocked for "
+        f"{instance_id}; will retry after active TaskRuns are polled or in {delay}s"
+    )
+    return None
 
 
 def release_evaluator_slot(

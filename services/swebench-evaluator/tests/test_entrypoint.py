@@ -267,3 +267,64 @@ def test_dispatch_run_instance_taskruns_uses_sliding_window(monkeypatch):
     ]
     assert released == ["b", "c", "d", "e", "a"]
     assert sorted(result) == ["run-a", "run-b", "run-c", "run-d", "run-e"]
+
+
+def test_dispatch_run_instance_taskruns_polls_active_when_slot_pool_is_full(
+    monkeypatch,
+):
+    entrypoint = load_entrypoint()
+    created: list[str] = []
+    waited: list[list[str]] = []
+    released: list[str] = []
+    active_leases: set[str] = set()
+
+    def fake_name(run_id: str, phase: str, instance_id: str | None = None) -> str:
+        return f"{phase}-{instance_id or run_id}"
+
+    def fake_create(_api, _namespace, body):
+        created.append(body["metadata"]["name"])
+
+    def fake_acquire(_run_id, instance_id):
+        if len(active_leases) >= 2:
+            return None
+        active_leases.add(instance_id)
+        return f"holder-{instance_id}"
+
+    def fake_release(_run_id, instance_id, _holder_id, _reason):
+        active_leases.discard(instance_id)
+        released.append(instance_id)
+
+    def fake_wait_next(_api, _namespace, names, deadline_at):
+        waited.append(list(names))
+        name = names[0]
+        return name, {
+            "metadata": {"name": name},
+            "status": {"conditions": [{"type": "Succeeded", "status": "True"}]},
+        }
+
+    monkeypatch.setattr(entrypoint, "taskrun_name", fake_name)
+    monkeypatch.setattr(entrypoint, "create_taskrun", fake_create)
+    monkeypatch.setattr(entrypoint, "wait_for_next_taskrun", fake_wait_next)
+    monkeypatch.setattr(
+        entrypoint, "benchmark_leases_url", lambda _run_id: "http://leases"
+    )
+    monkeypatch.setattr(entrypoint, "acquire_evaluator_slot", fake_acquire)
+    monkeypatch.setattr(entrypoint, "release_evaluator_slot", fake_release)
+
+    result = entrypoint.dispatch_run_instance_taskruns(
+        api=object(),
+        namespace="workflow-builder",
+        pvc_name="swebench-artifacts",
+        artifact_mode="pvc",
+        run_id="run_1",
+        instance_ids=["a", "b", "c"],
+        image_map={iid: f"image-{iid}" for iid in ["a", "b", "c"]},
+        timeout_seconds=120,
+        max_parallel=3,
+        deadline_seconds=1800,
+    )
+
+    assert created == ["run-a", "run-b", "run-c"]
+    assert waited == [["run-a", "run-b"], ["run-b", "run-c"], ["run-c"]]
+    assert released == ["a", "b", "c"]
+    assert sorted(result) == ["run-a", "run-b", "run-c"]
