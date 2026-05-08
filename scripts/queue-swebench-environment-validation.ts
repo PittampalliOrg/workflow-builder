@@ -26,6 +26,7 @@ function usage(): never {
 		"  --limit N                 Max instances to inspect/submit. Default: 10",
 		"  --target-validated N      Stop once validated+building reaches N in this pass.",
 		"  --force-refresh-legacy-static  Build exact dynamic images instead of counting legacy static mappings as ready.",
+		"  --exact-for-random-runs   Alias for --force-refresh-legacy-static; use this before high-concurrency random runs.",
 		"  --instance-id ID          Specific instance id. Repeatable.",
 		"  --api-url URL             Workflow-builder base URL. Default: WORKFLOW_BUILDER_URL or http://127.0.0.1:3000",
 		"  --apply                   Actually submit builds. Omit for dry run.",
@@ -57,6 +58,8 @@ function parseArgs(argv: string[]): Args {
 		} else if (arg === "--instance-id") {
 			args.instanceIds.push(next());
 		} else if (arg === "--force-refresh-legacy-static") {
+			args.forceRefreshLegacyStatic = true;
+		} else if (arg === "--exact-for-random-runs") {
 			args.forceRefreshLegacyStatic = true;
 		} else if (arg === "--api-url") {
 			args.apiUrl = next().replace(/\/+$/, "");
@@ -119,6 +122,11 @@ async function main() {
 		console.log(
 			`${args.apply ? "Submitting" : "Dry run"} ${rows.length} ${suite.slug} environment validation request(s) via ${args.apiUrl}`,
 		);
+		if (!args.forceRefreshLegacyStatic) {
+			console.log(
+				"Note: legacy static mappings may report validated here but are not necessarily exact launch-ready env-spec hashes. Use --exact-for-random-runs before high-concurrency random benchmark runs.",
+			);
+		}
 
 		let submitted = 0;
 		let readyOrBuilding = 0;
