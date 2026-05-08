@@ -144,6 +144,7 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     template = manifest["spec"]["template"]
     annotations = template["metadata"]["annotations"]
     assert annotations["dapr.io/app-id"] == "agent-session-abc123"
+    assert annotations["dapr.io/config"] == "workflow-builder-agent-runtime"
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
     pod_spec = template["spec"]

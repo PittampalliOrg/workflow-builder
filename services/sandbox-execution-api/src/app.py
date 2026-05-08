@@ -586,7 +586,7 @@ def build_agent_workflow_host_job_manifest(
                         "dapr.io/app-protocol": "http",
                         "dapr.io/config": os.environ.get(
                             "DAPR_AGENT_HOST_CONFIG",
-                            "openshell-agent-runtime-tracing",
+                            "workflow-builder-agent-runtime",
                         ),
                         "dapr.io/enable-workflow": "true",
                         "dapr.io/enable-native-sidecar": "true",
