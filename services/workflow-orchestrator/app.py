@@ -95,6 +95,80 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _delete_current_pod(reason: str) -> bool:
+    """Ask Kubernetes to replace this pod so the Dapr sidecar restarts too."""
+
+    host = os.environ.get("KUBERNETES_SERVICE_HOST", "").strip()
+    port = os.environ.get("KUBERNETES_SERVICE_PORT", "443").strip() or "443"
+    pod_name = os.environ.get("HOSTNAME", "").strip()
+    namespace_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+    if not host or not pod_name:
+        return False
+
+    try:
+        with open(namespace_path, encoding="utf-8") as namespace_file:
+            namespace = namespace_file.read().strip()
+        with open(token_path, encoding="utf-8") as token_file:
+            token = token_file.read().strip()
+    except OSError as exc:
+        logger.warning(
+            "[Workflow Runtime Watchdog] could not read service account token: %s",
+            exc,
+        )
+        return False
+
+    if not namespace or not token:
+        return False
+
+    grace_seconds = max(
+        0,
+        int(_env_float("WORKFLOW_RUNTIME_POD_DELETE_GRACE_SECONDS", 0.0)),
+    )
+    url = (
+        f"https://{host}:{port}/api/v1/namespaces/"
+        f"{urllib.parse.quote(namespace, safe='')}/pods/"
+        f"{urllib.parse.quote(pod_name, safe='')}"
+    )
+    try:
+        response = requests.delete(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "gracePeriodSeconds": grace_seconds,
+            },
+            timeout=5,
+            verify=ca_path if os.path.exists(ca_path) else True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Workflow Runtime Watchdog] pod self-delete request failed: %s",
+            exc,
+        )
+        return False
+
+    if response.status_code in {200, 202, 404}:
+        logger.error(
+            "[Workflow Runtime Watchdog] requested pod replacement for %s/%s "
+            "after %s",
+            namespace,
+            pod_name,
+            reason,
+        )
+        return True
+
+    logger.warning(
+        "[Workflow Runtime Watchdog] pod self-delete denied: status=%s body=%s",
+        response.status_code,
+        response.text[:500],
+    )
+    return False
+
+
 def _start_workflow_runtime_watchdog() -> None:
     """Restart the pod when the Dapr workflow worker disconnects permanently."""
 
@@ -173,10 +247,15 @@ def _start_workflow_runtime_watchdog() -> None:
             if disconnected_for >= restart_after_seconds:
                 logger.error(
                     "[Workflow Runtime Watchdog] no connected Dapr workflow workers "
-                    "for %.1fs; exiting process for Kubernetes restart. status=%s",
+                    "for %.1fs; replacing pod to restart Dapr sidecar. status=%s",
                     disconnected_for,
                     status,
                 )
+                if _delete_current_pod(
+                    f"workflow runtime had no connected workers for "
+                    f"{disconnected_for:.1f}s"
+                ):
+                    time.sleep(30)
                 os._exit(1)
 
     threading.Thread(
