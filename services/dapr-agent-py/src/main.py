@@ -2344,6 +2344,9 @@ class OpenShellDurableAgent(DurableAgent):
           _exec_span = None
           _exec_success = False
           _exec_error: str | None = None
+          # Pre-bind so the finally block can read it even if the try raises
+          # before assignment in either the MCP or super().run_tool branch.
+          result: Any = None
           try:
               from src.telemetry import (
                   end_tool_execution_span,
@@ -2495,10 +2498,21 @@ class OpenShellDurableAgent(DurableAgent):
           finally:
               if _exec_span is not None:
                   try:
+                      _tool_output_for_span: str | None = None
+                      if _exec_success and isinstance(result, dict):
+                          _content = result.get("content")
+                          if isinstance(_content, str):
+                              _tool_output_for_span = _content
+                          elif _content is not None:
+                              try:
+                                  _tool_output_for_span = json.dumps(_content, default=str)
+                              except (TypeError, ValueError):
+                                  _tool_output_for_span = str(_content)
                       end_tool_execution_span(
                           _exec_span,
                           success=_exec_success,
                           error=_exec_error[:200] if _exec_error else None,
+                          tool_output=_tool_output_for_span,
                       )
                   except Exception:
                       pass
@@ -2849,13 +2863,25 @@ class OpenShellDurableAgent(DurableAgent):
                 # Content is only included when OTEL_LOG_USER_PROMPTS=1.
                 from src.telemetry.events import is_user_prompt_logging_enabled
 
-                log_otel_event(
-                    "user_prompt",
-                    {
-                        "prompt_length": len(task_text),
-                        "prompt": task_text if is_user_prompt_logging_enabled() else "<REDACTED>",
-                    },
-                )
+                _user_prompt_event_attrs = {
+                    "prompt_length": len(task_text),
+                    "prompt": task_text if is_user_prompt_logging_enabled() else "<REDACTED>",
+                }
+                log_otel_event("user_prompt", _user_prompt_event_attrs)
+                # Mirror the log record into a span event on the
+                # claude_code.interaction span so the MLflow Trace UI's
+                # Events tab and Phoenix render the prompt inline. The
+                # log signal still ships independently.
+                if span is not None:
+                    try:
+                        span.add_event(
+                            "claude_code.user_prompt",
+                            attributes={
+                                k: str(v) for k, v in _user_prompt_event_attrs.items() if v is not None
+                            },
+                        )
+                    except Exception:
+                        pass
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[telemetry] interaction start failed: %s", exc)
         workspace_ref = str(

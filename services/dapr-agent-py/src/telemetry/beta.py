@@ -137,6 +137,13 @@ def add_llm_request_attributes(
             if truncated:
                 event_attrs["system_prompt_truncated"] = "true"
             log_otel_event("system_prompt", event_attrs)
+            try:
+                span.add_event(
+                    "claude_code.system_prompt",
+                    attributes={k: str(v) for k, v in event_attrs.items() if v is not None},
+                )
+            except Exception:
+                pass
 
     if tools_json:
         try:
@@ -149,6 +156,15 @@ def add_llm_request_attributes(
                     tool_str = json.dumps(tool, sort_keys=True)
                     th = hash_tool_schema(tool_str)
                     name = tool.get("name")
+                    if not isinstance(name, str):
+                        # OpenAI/DeepSeek-style tool defs nest the name under
+                        # function.name. Fall through to "unknown" only when
+                        # neither the flat nor the nested form has a string.
+                        fn = tool.get("function")
+                        if isinstance(fn, dict):
+                            candidate = fn.get("name")
+                            if isinstance(candidate, str):
+                                name = candidate
                     if not isinstance(name, str):
                         name = "unknown"
                     pairs.append((name, th, tool_str))
@@ -170,6 +186,13 @@ def add_llm_request_attributes(
                         if truncated:
                             event_attrs["tool_truncated"] = "true"
                         log_otel_event("tool", event_attrs)
+                        try:
+                            span.add_event(
+                                "claude_code.tool",
+                                attributes={k: str(v) for k, v in event_attrs.items() if v is not None},
+                            )
+                        except Exception:
+                            pass
         except (ValueError, TypeError):
             span.set_attribute("tools_parse_error", True)
 

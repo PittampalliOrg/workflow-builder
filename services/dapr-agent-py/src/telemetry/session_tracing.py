@@ -479,6 +479,7 @@ def end_tool_execution_span(
     *,
     success: bool | None = None,
     error: str | None = None,
+    tool_output: str | None = None,
 ) -> None:
     if span is None:
         return
@@ -490,6 +491,13 @@ def end_tool_execution_span(
         end_attrs["success"] = success
     if error is not None:
         end_attrs["error"] = error
+    if tool_output is not None:
+        # Truncate to keep span attribute size bounded — same convention as
+        # system_prompt_preview (500 chars). Larger payloads can still be
+        # reconstructed from the underlying tool result; this is the at-a-
+        # glance preview surfaced in MLflow Traces / Phoenix.
+        end_attrs["tool_output_preview"] = tool_output[:8000]
+        end_attrs["tool_output_length"] = len(tool_output)
     try:
         for k, v in end_attrs.items():
             span.set_attribute(k, v)
