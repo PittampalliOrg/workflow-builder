@@ -3195,7 +3195,7 @@ def health_check():
 def readiness_check():
     """Readiness check endpoint."""
     ready, runtime_status = _get_workflow_runtime_status(
-        require_workflow_workers=False,
+        require_workflow_workers=True,
     )
     if not ready:
         raise HTTPException(

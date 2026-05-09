@@ -343,19 +343,19 @@ def test_workflow_failure_details_from_history_supports_dapr_camel_case():
     assert stack_trace == "durabletask stack"
 
 
-def test_readiness_requires_taskhub_but_not_metadata_worker_count(monkeypatch):
+def test_readiness_requires_taskhub_and_metadata_worker_count(monkeypatch):
     observed_kwargs = {}
 
     def fake_runtime_status(*_args, **kwargs):
         observed_kwargs.update(kwargs)
-        return True, {"workflowConnectedWorkers": 0}
+        return True, {"workflowConnectedWorkers": 1}
 
     monkeypatch.setattr(APP, "_get_workflow_runtime_status", fake_runtime_status)
 
     response = APP.readiness_check()
 
     assert response["status"] == "ready"
-    assert observed_kwargs.get("require_workflow_workers") is False
+    assert observed_kwargs.get("require_workflow_workers") is True
 
 
 def test_health_is_process_local(monkeypatch):
