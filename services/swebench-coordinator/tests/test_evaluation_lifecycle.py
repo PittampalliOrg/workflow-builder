@@ -1271,6 +1271,61 @@ def test_run_workflow_releases_lease_when_start_skips_instance(monkeypatch):
     )
 
 
+def test_run_workflow_requeues_when_orchestrator_start_is_retryable(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754"],
+        "concurrency": 1,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"admitted": True, "holderId": "lease-holder"}) == (
+        "activity",
+        "_start_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send(
+        {
+            "success": False,
+            "retryable": True,
+            "reason": "workflow_orchestrator_not_ready",
+            "retryAfterSeconds": 15,
+        }
+    ) == (
+        "activity",
+        "_release_instance_leases",
+        {
+            "runId": "run_1",
+            "instanceId": "django__django-12754",
+            "holderId": "lease-holder",
+            "phase": "inference",
+            "reason": "workflow_orchestrator_not_ready",
+        },
+    )
+    assert workflow.send({"released": 1}) == ("timer", 15)
+
+
 def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypatch):
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "wf_when_any", None)

@@ -69,6 +69,129 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_workflow_runtime_watchdog_started = False
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %s", name, raw, default)
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid %s=%r; using %s", name, raw, default)
+    return default
+
+
+def _start_workflow_runtime_watchdog() -> None:
+    """Restart the pod when the Dapr workflow worker disconnects permanently."""
+
+    global _workflow_runtime_watchdog_started
+    if _workflow_runtime_watchdog_started:
+        return
+    if not _env_bool("WORKFLOW_RUNTIME_WATCHDOG_ENABLED", True):
+        logger.info("[Workflow Runtime Watchdog] disabled")
+        return
+
+    restart_after_seconds = _env_float(
+        "WORKFLOW_RUNTIME_ZERO_WORKER_RESTART_SECONDS",
+        90.0,
+    )
+    if restart_after_seconds <= 0:
+        logger.info("[Workflow Runtime Watchdog] restart threshold disabled")
+        return
+
+    interval_seconds = max(
+        1.0,
+        _env_float("WORKFLOW_RUNTIME_WATCHDOG_INTERVAL_SECONDS", 10.0),
+    )
+    startup_grace_seconds = max(
+        0.0,
+        _env_float("WORKFLOW_RUNTIME_WATCHDOG_STARTUP_GRACE_SECONDS", 60.0),
+    )
+    _workflow_runtime_watchdog_started = True
+
+    def run_watchdog() -> None:
+        started_at = time.monotonic()
+        zero_worker_since: float | None = None
+        while True:
+            time.sleep(interval_seconds)
+            now = time.monotonic()
+            if now - started_at < startup_grace_seconds:
+                continue
+
+            try:
+                _ready, status = _get_workflow_runtime_status(
+                    timeout_seconds=1.0,
+                    include_taskhub=False,
+                    require_metadata=True,
+                    require_workflow_workers=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Workflow Runtime Watchdog] readiness probe failed: %s",
+                    exc,
+                )
+                continue
+
+            raw_workers = status.get("workflowConnectedWorkers")
+            try:
+                connected_workers = int(raw_workers) if raw_workers is not None else 0
+            except (TypeError, ValueError):
+                connected_workers = 0
+
+            if connected_workers >= 1:
+                if zero_worker_since is not None:
+                    logger.info(
+                        "[Workflow Runtime Watchdog] Dapr workflow worker reconnected"
+                    )
+                zero_worker_since = None
+                continue
+
+            if zero_worker_since is None:
+                zero_worker_since = now
+                logger.warning(
+                    "[Workflow Runtime Watchdog] no connected Dapr workflow workers; "
+                    "will restart after %.1fs if unchanged",
+                    restart_after_seconds,
+                )
+                continue
+
+            disconnected_for = now - zero_worker_since
+            if disconnected_for >= restart_after_seconds:
+                logger.error(
+                    "[Workflow Runtime Watchdog] no connected Dapr workflow workers "
+                    "for %.1fs; exiting process for Kubernetes restart. status=%s",
+                    disconnected_for,
+                    status,
+                )
+                os._exit(1)
+
+    threading.Thread(
+        target=run_watchdog,
+        name="workflow-runtime-watchdog",
+        daemon=True,
+    ).start()
+    logger.info(
+        "[Workflow Runtime Watchdog] started interval=%.1fs startup_grace=%.1fs "
+        "restart_after=%.1fs",
+        interval_seconds,
+        startup_grace_seconds,
+        restart_after_seconds,
+    )
+
 
 def _otel_context_from_headers(request: Request) -> dict[str, str]:
     carrier: dict[str, str] = {}
@@ -784,6 +907,7 @@ async def lifespan(app: FastAPI):
     # Start the workflow runtime
     wfr.start()
     logger.info("[Workflow Orchestrator] Dapr Workflow Runtime started")
+    _start_workflow_runtime_watchdog()
 
     # Cleanup stale workflow instances without blocking readiness.
     _start_startup_cleanup_thread()

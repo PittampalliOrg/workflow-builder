@@ -488,6 +488,7 @@ def _compact_bff_response(response: Any) -> dict[str, Any]:
         "reason",
         "admitted",
         "holderId",
+        "retryable",
         "retryAfterSeconds",
         "blockedBy",
         "released",
@@ -504,6 +505,33 @@ def _compact_bff_response(response: Any) -> dict[str, Any]:
             "error": run.get("error"),
         }
     return compact
+
+
+def _is_retryable_instance_start_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "BFF POST" in message
+        and "/start failed (503)" in message
+        and (
+            "workflow-orchestrator" in message
+            or "workflow_runtime_unavailable" in message
+        )
+    )
+
+
+def _orchestrator_not_ready_retry_seconds() -> int:
+    raw = os.environ.get("SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS", "").strip()
+    if not raw:
+        return LEASE_RETRY_SECONDS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS=%r; using %s",
+            raw,
+            LEASE_RETRY_SECONDS,
+        )
+        return LEASE_RETRY_SECONDS
 
 
 def _load_run_activity(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -846,16 +874,27 @@ def _retry_run_terminal_cleanup(ctx, data: dict[str, Any]) -> dict[str, Any]:
 def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
-    return _compact_bff_response(
-        _bff_with_retry(
-            "POST",
-            f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/start",
-            json_body={},
-            timeout=90,
-            attempts=3,
-            delay_seconds=20,
+    try:
+        return _compact_bff_response(
+            _bff_with_retry(
+                "POST",
+                f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/start",
+                json_body={},
+                timeout=90,
+                attempts=3,
+                delay_seconds=20,
+            )
         )
-    )
+    except Exception as exc:
+        if _is_retryable_instance_start_error(exc):
+            return {
+                "success": False,
+                "retryable": True,
+                "reason": "workflow_orchestrator_not_ready",
+                "retryAfterSeconds": _orchestrator_not_ready_retry_seconds(),
+                "error": str(exc)[:800],
+            }
+        raise
 
 
 def _admit_and_start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
@@ -2287,6 +2326,27 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                                 "holderId": admission.get("holderId"),
                                 "phase": "inference",
                                 "reason": reason or "benchmark instance start skipped",
+                            },
+                        )
+                        continue
+                    if start_result.get("retryable"):
+                        retry_after_seconds = max(
+                            retry_after_seconds,
+                            int(
+                                start_result.get("retryAfterSeconds")
+                                or LEASE_RETRY_SECONDS
+                            ),
+                        )
+                        if instance_id:
+                            pending_instance_ids.insert(0, instance_id)
+                        yield ctx.call_activity(
+                            _release_instance_leases,
+                            input={
+                                "runId": run_id,
+                                "instanceId": instance_id,
+                                "holderId": admission.get("holderId"),
+                                "phase": "inference",
+                                "reason": reason or "benchmark instance start retryable",
                             },
                         )
                         continue

@@ -114,6 +114,8 @@ const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
 const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = true;
+const ORCHESTRATOR_READY_TIMEOUT_MS = 5_000;
+const ORCHESTRATOR_START_TIMEOUT_MS = 30_000;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
 	"CANCELLED",
@@ -121,6 +123,46 @@ const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"FAILED",
 	"TERMINATED",
 ]);
+
+async function assertBenchmarkOrchestratorReady(): Promise<void> {
+	let status = 0;
+	let detail = "";
+	try {
+		const res = await daprFetch(`${getOrchestratorUrl()}/readyz`, {
+			method: "GET",
+			maxRetries: 0,
+			signal: AbortSignal.timeout(ORCHESTRATOR_READY_TIMEOUT_MS),
+		});
+		if (res.ok) return;
+		status = res.status;
+		detail = await res.text().catch(() => "");
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw error(
+			503,
+			`workflow-orchestrator readiness probe failed before benchmark start: ${message}`,
+		);
+	}
+
+	throw error(
+		status === 503 ? 503 : 502,
+		`workflow-orchestrator is not ready for benchmark start: ${
+			detail || `HTTP ${status}`
+		}`.slice(0, 1000),
+	);
+}
+
+function ensureBenchmarkInstanceMlflowRunInBackground(params: {
+	runId: string;
+	instanceId: string;
+}): void {
+	void ensureBenchmarkInstanceMlflowRun(params).catch((err) => {
+		console.warn(
+			`[mlflow] failed to create benchmark instance MLflow run ${params.runId}/${params.instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	});
+}
 
 async function syncBenchmarkInstanceMlflowAndTraceBundle(params: {
 	runId: string;
@@ -3407,7 +3449,6 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			reason: `benchmark_instance_${row.runInstance.status}`,
 		};
 	}
-	await ensureBenchmarkInstanceMlflowRun(params);
 
 	const [latestStartState] = await database
 		.select({
@@ -3487,6 +3528,10 @@ export async function startBenchmarkInstanceWorkflow(params: {
 	const executionClass = normalizeBenchmarkExecutionClass(
 		runExecutionConfig.class ?? benchmarkExecutionClass(),
 	);
+	if (dispatchBackend !== "host") {
+		await assertBenchmarkOrchestratorReady();
+	}
+	ensureBenchmarkInstanceMlflowRunInBackground(params);
 	const executionIr = {
 		spec,
 		triggerData,
@@ -3634,16 +3679,36 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		};
 	}
 
-	const res = await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			workflow: spec,
-			workflowId: workflow.id,
-			triggerData,
-			dbExecutionId: execution.id,
-		}),
-	});
+	let res: Response;
+	try {
+		res = await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				workflow: spec,
+				workflowId: workflow.id,
+				triggerData,
+				dbExecutionId: execution.id,
+			}),
+			maxRetries: 0,
+			signal: AbortSignal.timeout(ORCHESTRATOR_START_TIMEOUT_MS),
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		await database
+			.update(workflowExecutions)
+			.set({
+				status: "error",
+				phase: "failed",
+				error: message.slice(0, 1000),
+				completedAt: new Date(),
+			})
+			.where(eq(workflowExecutions.id, execution.id));
+		throw error(
+			503,
+			`Failed to reach workflow-orchestrator while starting benchmark instance: ${message}`,
+		);
+	}
 	if (!res.ok) {
 		const detail = await res.text().catch(() => "");
 		await database
