@@ -3409,6 +3409,44 @@ export async function startBenchmarkInstanceWorkflow(params: {
 	}
 	await ensureBenchmarkInstanceMlflowRun(params);
 
+	const [latestStartState] = await database
+		.select({
+			runStatus: benchmarkRuns.status,
+			instanceStatus: benchmarkRunInstances.status,
+			inferenceStatus: benchmarkRunInstances.inferenceStatus,
+			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			daprInstanceId: benchmarkRunInstances.daprInstanceId,
+		})
+		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+		.where(
+			and(
+				eq(benchmarkRunInstances.runId, params.runId),
+				eq(benchmarkRunInstances.instanceId, params.instanceId),
+			),
+		)
+		.limit(1);
+	if (!latestStartState) throw error(404, "Benchmark instance not found");
+	if (BENCHMARK_RUN_TERMINAL_STATUSES.has(latestStartState.runStatus)) {
+		return {
+			executionId: latestStartState.workflowExecutionId,
+			daprInstanceId: latestStartState.daprInstanceId,
+			skipped: true,
+			reason: `benchmark_run_${latestStartState.runStatus}`,
+		};
+	}
+	if (
+		latestStartState.instanceStatus !== "queued" ||
+		latestStartState.inferenceStatus !== "queued"
+	) {
+		return {
+			executionId: latestStartState.workflowExecutionId,
+			daprInstanceId: latestStartState.daprInstanceId,
+			skipped: true,
+			reason: `benchmark_instance_${latestStartState.instanceStatus}`,
+		};
+	}
+
 	const workflow = await ensureHiddenBenchmarkWorkflow({
 		projectId: row.run.projectId,
 		userId: row.run.userId,
@@ -3548,6 +3586,29 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			)
 			.returning({ id: benchmarkRunInstances.id });
 		if (!updatedRunInstance) {
+			const [terminalRun] = await database
+				.select({ status: benchmarkRuns.status })
+				.from(benchmarkRuns)
+				.where(eq(benchmarkRuns.id, row.run.id))
+				.limit(1);
+			if (terminalRun && BENCHMARK_RUN_TERMINAL_STATUSES.has(terminalRun.status)) {
+				await cleanupBenchmarkRunSandboxes(
+					row.run.id,
+					"benchmark instance host start superseded by terminal run",
+				);
+			} else {
+				await cleanupBenchmarkInstanceSandbox({
+					runId: row.run.id,
+					instanceId: row.runInstance.instanceId,
+					reason: "benchmark instance host start superseded",
+				});
+			}
+			await releaseBenchmarkResourceLeases({
+				runId: row.run.id,
+				instanceId: row.runInstance.instanceId,
+				phase: "inference",
+				reason: "benchmark instance host start superseded",
+			});
 			await database
 				.update(workflowExecutions)
 				.set({

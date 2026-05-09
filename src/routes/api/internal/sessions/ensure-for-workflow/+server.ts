@@ -8,6 +8,8 @@ import { db } from "$lib/server/db";
 import {
 	agents,
 	agentVersions,
+	benchmarkRunInstances,
+	benchmarkRuns,
 	sessions,
 	workflowExecutions,
 	workflows,
@@ -89,6 +91,60 @@ export const POST: RequestHandler = async ({ request }) => {
 					.limit(1);
 				projectId = wfRow?.projectId ?? null;
 			}
+		}
+	}
+	if (benchmarkRunId) {
+		const [runState] = await db
+			.select({
+				runStatus: benchmarkRuns.status,
+				instanceStatus: benchmarkRunInstances.status,
+				inferenceStatus: benchmarkRunInstances.inferenceStatus,
+			})
+			.from(benchmarkRuns)
+			.leftJoin(
+				benchmarkRunInstances,
+				and(
+					eq(benchmarkRunInstances.runId, benchmarkRuns.id),
+					benchmarkInstanceId
+						? eq(benchmarkRunInstances.instanceId, benchmarkInstanceId)
+						: eq(benchmarkRunInstances.runId, benchmarkRuns.id),
+				),
+			)
+			.where(eq(benchmarkRuns.id, benchmarkRunId))
+			.limit(1);
+		if (!runState) {
+			return error(404, "Benchmark run not found");
+		}
+		if (
+			runState.runStatus !== "queued" &&
+			runState.runStatus !== "inferencing"
+		) {
+			return error(
+				409,
+				`Benchmark run ${benchmarkRunId} is ${runState.runStatus}; refusing to provision session host`,
+			);
+		}
+		if (
+			benchmarkInstanceId &&
+			runState.instanceStatus &&
+			runState.instanceStatus !== "queued" &&
+			runState.instanceStatus !== "inferencing"
+		) {
+			return error(
+				409,
+				`Benchmark instance ${benchmarkInstanceId} is ${runState.instanceStatus}; refusing to provision session host`,
+			);
+		}
+		if (
+			benchmarkInstanceId &&
+			runState.inferenceStatus &&
+			runState.inferenceStatus !== "queued" &&
+			runState.inferenceStatus !== "inferencing"
+		) {
+			return error(
+				409,
+				`Benchmark instance ${benchmarkInstanceId} inference is ${runState.inferenceStatus}; refusing to provision session host`,
+			);
 		}
 	}
 	const rawAgentConfig =
