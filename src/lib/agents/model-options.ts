@@ -338,3 +338,4 @@ export function isSupportedAgentModelSpec(
 ): boolean {
   return canonicalAgentModelSpec(value) !== null;
 }
+# rebuild after kind cluster recreation 2026-05-09T21:26:12Z
