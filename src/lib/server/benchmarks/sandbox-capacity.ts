@@ -44,6 +44,16 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	kueueMemoryLimitedCapacity: number | null;
 	kueueEphemeralStorageLimitedCapacity: number | null;
 	kueuePodLimitedCapacity: number | null;
+	kueueInstanceRequestCpuMilli: number | null;
+	kueueInstanceRequestMemoryBytes: number | null;
+	kueueInstanceRequestEphemeralStorageBytes: number | null;
+	kueueInstancePodCount: number | null;
+	kueueAvailableInstanceSlots: number | null;
+	kueueInstanceCpuLimitedCapacity: number | null;
+	kueueInstanceMemoryLimitedCapacity: number | null;
+	kueueInstanceEphemeralStorageLimitedCapacity: number | null;
+	kueueInstancePodLimitedCapacity: number | null;
+	schedulableKueueInstanceCapacity: number | null;
 	activeSwebenchPods: number;
 	pendingSwebenchPods: number;
 	diskPressureNodeCount: number;
@@ -61,6 +71,15 @@ export type BenchmarkKueueCapacitySnapshot = {
 	availableMemoryBytes: number | null;
 	availableEphemeralStorageBytes: number | null;
 	availablePods: number | null;
+	instanceRequestCpuMilli: number | null;
+	instanceRequestMemoryBytes: number | null;
+	instanceRequestEphemeralStorageBytes: number | null;
+	instancePodCount: number | null;
+	availableInstanceSlots: number | null;
+	instanceCpuLimitedCapacity: number | null;
+	instanceMemoryLimitedCapacity: number | null;
+	instanceEphemeralStorageLimitedCapacity: number | null;
+	instancePodLimitedCapacity: number | null;
 };
 
 export type BenchmarkSandboxResourceProfile = {
@@ -282,6 +301,66 @@ function sandboxResourceProfileFromEnv(): BenchmarkSandboxResourceProfile {
 	};
 }
 
+function addResourceProfiles(
+	left: BenchmarkSandboxResourceProfile,
+	right: BenchmarkSandboxResourceProfile,
+): BenchmarkSandboxResourceProfile {
+	return {
+		cpuMilli: left.cpuMilli + right.cpuMilli,
+		memoryBytes: left.memoryBytes + right.memoryBytes,
+		ephemeralStorageBytes:
+			left.ephemeralStorageBytes + right.ephemeralStorageBytes,
+	};
+}
+
+function agentHostResourceProfileFromEnv():
+	| BenchmarkSandboxResourceProfile
+	| null {
+	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
+		return null;
+	}
+	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
+	if (!raw?.trim()) return null;
+	const executionClass =
+		process.env.BENCHMARK_EXECUTION_CLASS?.trim() ||
+		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
+		null;
+	if (!executionClass) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		const classes = recordValue(parsed);
+		const config = recordValue(classes?.[executionClass]);
+		if (!config) return null;
+		const cpuMilli = parseCpuMilli(config.agentHostCpu);
+		const memoryBytes = parseMemoryBytes(config.agentHostMemory);
+		const ephemeralStorageBytes = parseMemoryBytes(
+			config.agentHostEphemeralStorage,
+		);
+		if (
+			cpuMilli == null &&
+			memoryBytes == null &&
+			ephemeralStorageBytes == null
+		) {
+			return null;
+		}
+		return {
+			cpuMilli: cpuMilli ?? 0,
+			memoryBytes: memoryBytes ?? 0,
+			ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
+		};
+	} catch {
+		return null;
+	}
+}
+
+function kueueInstanceResourceProfileFromEnv(
+	sandboxRequest: BenchmarkSandboxResourceProfile,
+): BenchmarkSandboxResourceProfile | null {
+	const agentHostRequest = agentHostResourceProfileFromEnv();
+	if (!agentHostRequest) return null;
+	return addResourceProfiles(sandboxRequest, agentHostRequest);
+}
+
 function nodeFsEvictionReserveBytes(): number {
 	return (
 		parseMemoryBytes(process.env.BENCHMARK_SANDBOX_NODE_FS_EVICTION_RESERVE) ??
@@ -432,6 +511,10 @@ function finiteCapacityMin(values: Array<number | null>): number | null {
 export function kueueCapacityFromClusterQueue(
 	clusterQueue: unknown,
 	sandboxRequest: BenchmarkSandboxResourceProfile,
+	options?: {
+		instanceRequest?: BenchmarkSandboxResourceProfile | null;
+		instancePodCount?: number | null;
+	},
 ): BenchmarkKueueCapacitySnapshot | null {
 	if (!clusterQueue || typeof clusterQueue !== "object" || Array.isArray(clusterQueue)) {
 		return null;
@@ -503,6 +586,39 @@ export function kueueCapacityFromClusterQueue(
 		podLimitedCapacity,
 	]);
 	if (availableSandboxSlots == null) return null;
+	const instanceRequest = options?.instanceRequest ?? null;
+	const instancePodCount = positiveInt(options?.instancePodCount) ?? 2;
+	const instanceCpuLimitedCapacity =
+		availableCpuMilli == null || !instanceRequest
+			? null
+			: Math.floor(availableCpuMilli / Math.max(1, instanceRequest.cpuMilli));
+	const instanceMemoryLimitedCapacity =
+		availableMemoryBytes == null || !instanceRequest
+			? null
+			: Math.floor(
+					availableMemoryBytes / Math.max(1, instanceRequest.memoryBytes),
+				);
+	const instanceEphemeralStorageLimitedCapacity =
+		availableEphemeralStorageBytes == null ||
+		!instanceRequest ||
+		instanceRequest.ephemeralStorageBytes <= 0
+			? null
+			: Math.floor(
+					availableEphemeralStorageBytes /
+						instanceRequest.ephemeralStorageBytes,
+				);
+	const instancePodLimitedCapacity =
+		availablePods == null || !instanceRequest
+			? null
+			: Math.floor(availablePods / instancePodCount);
+	const availableInstanceSlots = instanceRequest
+		? finiteCapacityMin([
+				instanceCpuLimitedCapacity,
+				instanceMemoryLimitedCapacity,
+				instanceEphemeralStorageLimitedCapacity,
+				instancePodLimitedCapacity,
+			])
+		: null;
 	return {
 		clusterQueueName,
 		availableSandboxSlots,
@@ -514,12 +630,23 @@ export function kueueCapacityFromClusterQueue(
 		availableMemoryBytes,
 		availableEphemeralStorageBytes,
 		availablePods,
+		instanceRequestCpuMilli: instanceRequest?.cpuMilli ?? null,
+		instanceRequestMemoryBytes: instanceRequest?.memoryBytes ?? null,
+		instanceRequestEphemeralStorageBytes:
+			instanceRequest?.ephemeralStorageBytes ?? null,
+		instancePodCount: instanceRequest ? instancePodCount : null,
+		availableInstanceSlots,
+		instanceCpuLimitedCapacity,
+		instanceMemoryLimitedCapacity,
+		instanceEphemeralStorageLimitedCapacity,
+		instancePodLimitedCapacity,
 	};
 }
 
 async function loadKueueClusterQueueCapacity(
 	clusterQueueName: string | null,
 	sandboxRequest: BenchmarkSandboxResourceProfile,
+	instanceRequest: BenchmarkSandboxResourceProfile | null,
 ): Promise<BenchmarkKueueCapacitySnapshot | null> {
 	if (!clusterQueueName) return null;
 	if (
@@ -536,7 +663,10 @@ async function loadKueueClusterQueueCapacity(
 				{ retries: 0 },
 			);
 			if (!res.ok) continue;
-			return kueueCapacityFromClusterQueue(await res.json(), sandboxRequest);
+			return kueueCapacityFromClusterQueue(await res.json(), sandboxRequest, {
+				instanceRequest,
+				instancePodCount: 2,
+			});
 		} catch {
 			continue;
 		}
@@ -548,6 +678,7 @@ export function estimateSchedulableSandboxCapacity(params: {
 	nodes: KubeNode[];
 	pods: KubePod[];
 	sandboxRequest?: BenchmarkSandboxResourceProfile | null;
+	kueueInstanceRequest?: BenchmarkSandboxResourceProfile | null;
 	nodeStorageStats?: Map<string, NodeStorageStats> | null;
 	kueueCapacity?: BenchmarkKueueCapacitySnapshot | null;
 	namespace?: string | null;
@@ -562,6 +693,7 @@ export function estimateSchedulableSandboxCapacity(params: {
 			DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE,
 		)!,
 	};
+	const kueueInstanceRequest = params.kueueInstanceRequest ?? null;
 	const diskPressureNodeCount = params.nodes.filter(
 		(node) =>
 			!!node.metadata?.name &&
@@ -669,6 +801,33 @@ export function estimateSchedulableSandboxCapacity(params: {
 					),
 				)
 			: null;
+	const kueueInstanceCpuLimitedCapacity = kueueInstanceRequest
+		? Math.max(
+				0,
+				Math.floor(
+					availableCpuMilli / Math.max(1, kueueInstanceRequest.cpuMilli),
+				),
+			)
+		: null;
+	const kueueInstanceMemoryLimitedCapacity = kueueInstanceRequest
+		? Math.max(
+				0,
+				Math.floor(
+					availableMemoryBytes /
+						Math.max(1, kueueInstanceRequest.memoryBytes),
+				),
+			)
+		: null;
+	const kueueInstanceEphemeralStorageLimitedCapacity =
+		kueueInstanceRequest && kueueInstanceRequest.ephemeralStorageBytes > 0
+			? Math.max(
+					0,
+					Math.floor(
+						availableEphemeralStorageBytes /
+							kueueInstanceRequest.ephemeralStorageBytes,
+					),
+				)
+			: null;
 	const rawAvailableSandboxSlots = Math.min(
 		cpuLimitedCapacity,
 		memoryLimitedCapacity,
@@ -680,6 +839,13 @@ export function estimateSchedulableSandboxCapacity(params: {
 		rawAvailableSandboxSlots,
 		kueueCapacity?.availableSandboxSlots ?? Number.POSITIVE_INFINITY,
 	);
+	const schedulableKueueInstanceCapacity =
+		kueueCapacity?.availableInstanceSlots == null
+			? null
+			: Math.min(
+					availableSandboxSlots,
+					kueueCapacity?.availableInstanceSlots ?? Number.POSITIVE_INFINITY,
+				);
 	const currentSwebenchPods = activeSwebenchPods + pendingSwebenchPods;
 	const totalSchedulableSandboxCapacity =
 		currentSwebenchPods + availableSandboxSlots;
@@ -721,6 +887,32 @@ export function estimateSchedulableSandboxCapacity(params: {
 		kueueEphemeralStorageLimitedCapacity:
 			kueueCapacity?.ephemeralStorageLimitedCapacity ?? null,
 		kueuePodLimitedCapacity: kueueCapacity?.podLimitedCapacity ?? null,
+		kueueInstanceRequestCpuMilli:
+			kueueCapacity?.instanceRequestCpuMilli ??
+			kueueInstanceRequest?.cpuMilli ??
+			null,
+		kueueInstanceRequestMemoryBytes:
+			kueueCapacity?.instanceRequestMemoryBytes ??
+			kueueInstanceRequest?.memoryBytes ??
+			null,
+		kueueInstanceRequestEphemeralStorageBytes:
+			kueueCapacity?.instanceRequestEphemeralStorageBytes ??
+			kueueInstanceRequest?.ephemeralStorageBytes ??
+			null,
+		kueueInstancePodCount: kueueCapacity?.instancePodCount ?? null,
+		kueueAvailableInstanceSlots: kueueCapacity?.availableInstanceSlots ?? null,
+		kueueInstanceCpuLimitedCapacity:
+			kueueCapacity?.instanceCpuLimitedCapacity ??
+			kueueInstanceCpuLimitedCapacity,
+		kueueInstanceMemoryLimitedCapacity:
+			kueueCapacity?.instanceMemoryLimitedCapacity ??
+			kueueInstanceMemoryLimitedCapacity,
+		kueueInstanceEphemeralStorageLimitedCapacity:
+			kueueCapacity?.instanceEphemeralStorageLimitedCapacity ??
+			kueueInstanceEphemeralStorageLimitedCapacity,
+		kueueInstancePodLimitedCapacity:
+			kueueCapacity?.instancePodLimitedCapacity ?? null,
+		schedulableKueueInstanceCapacity,
 		activeSwebenchPods,
 		pendingSwebenchPods,
 		diskPressureNodeCount,
@@ -737,10 +929,13 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 	}
 	const namespace = namespaceFromEnv();
 	const sandboxRequest = sandboxResourceProfileFromEnv();
+	const kueueInstanceRequest =
+		kueueInstanceResourceProfileFromEnv(sandboxRequest);
 	try {
 		const kueueCapacity = await loadKueueClusterQueueCapacity(
 			kueueClusterQueueNameFromEnv(),
 			sandboxRequest,
+			kueueInstanceRequest,
 		);
 		const nodes = await listNodes();
 		const nodeNames = schedulableWorkerNodes(nodes)
@@ -759,6 +954,7 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			nodes,
 			pods,
 			sandboxRequest,
+			kueueInstanceRequest,
 			nodeStorageStats,
 			kueueCapacity,
 			namespace,
@@ -801,6 +997,18 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			kueueMemoryLimitedCapacity: null,
 			kueueEphemeralStorageLimitedCapacity: null,
 			kueuePodLimitedCapacity: null,
+			kueueInstanceRequestCpuMilli: kueueInstanceRequest?.cpuMilli ?? null,
+			kueueInstanceRequestMemoryBytes:
+				kueueInstanceRequest?.memoryBytes ?? null,
+			kueueInstanceRequestEphemeralStorageBytes:
+				kueueInstanceRequest?.ephemeralStorageBytes ?? null,
+			kueueInstancePodCount: kueueInstanceRequest ? 2 : null,
+			kueueAvailableInstanceSlots: null,
+			kueueInstanceCpuLimitedCapacity: null,
+			kueueInstanceMemoryLimitedCapacity: null,
+			kueueInstanceEphemeralStorageLimitedCapacity: null,
+			kueueInstancePodLimitedCapacity: null,
+			schedulableKueueInstanceCapacity: null,
 			activeSwebenchPods: 0,
 			pendingSwebenchPods: 0,
 			diskPressureNodeCount: 0,

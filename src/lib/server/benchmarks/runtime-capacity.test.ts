@@ -140,6 +140,32 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		});
 	});
 
+	it("caps Kueue-backed runs by full instance capacity when agent hosts also use the queue", () => {
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 14,
+			slotsPerReplica: 12,
+			requestedInstanceCount: 200,
+			requestedConcurrency: 200,
+			executionBackend: "dapr-kueue",
+			sandboxCapacity: {
+				schedulableSandboxCapacity: 336,
+				schedulableKueueInstanceCapacity: 128,
+				totalSchedulableSandboxCapacity: 336,
+			} as never,
+		});
+
+		expect(capacity).toMatchObject({
+			capacityMode: "kueue",
+			effectiveConcurrency: 128,
+			runtimeSlots: 168,
+			schedulableSandboxCapacity: 336,
+			capReason: "kueue_instance_schedulable_capacity",
+		});
+	});
+
 	it("lets Kueue-backed runs use full selected fan-out when sandbox headroom is unknown", () => {
 		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "96");

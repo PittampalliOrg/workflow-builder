@@ -397,6 +397,79 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
+	it("reports Kueue full-instance capacity for sandbox plus agent host jobs", () => {
+		const sandboxRequest = {
+			cpuMilli: 250,
+			memoryBytes: 256 * 1024 * 1024,
+			ephemeralStorageBytes: 4 * 1024 * 1024 * 1024,
+		};
+		const instanceRequest = {
+			cpuMilli: 500,
+			memoryBytes: 1280 * 1024 * 1024,
+			ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+		};
+		const kueueCapacity = kueueCapacityFromClusterQueue(
+			{
+				metadata: { name: "benchmark-fast" },
+				spec: {
+					resourceGroups: [
+						{
+							flavors: [
+								{
+									name: "dev-benchmark",
+									resources: [
+										{ name: "cpu", nominalQuota: "84" },
+										{ name: "memory", nominalQuota: "160Gi" },
+										{ name: "ephemeral-storage", nominalQuota: "1536Gi" },
+										{ name: "pods", nominalQuota: "384" },
+									],
+								},
+							],
+						},
+					],
+				},
+				status: {
+					flavorsUsage: [
+						{
+							name: "dev-benchmark",
+							resources: [
+								{ name: "cpu", total: "0" },
+								{ name: "memory", total: "0" },
+								{ name: "ephemeral-storage", total: "0" },
+								{ name: "pods", total: "0" },
+							],
+						},
+					],
+				},
+			},
+			sandboxRequest,
+			{ instanceRequest, instancePodCount: 2 },
+		);
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [
+				workerNode("worker-a", {
+					cpu: "96000m",
+					memory: "256Gi",
+					"ephemeral-storage": "2Ti",
+				}),
+			],
+			pods: [],
+			kueueCapacity,
+			sandboxRequest,
+			kueueInstanceRequest: instanceRequest,
+		});
+
+		expect(snapshot).toMatchObject({
+			kueueAvailableSandboxSlots: 336,
+			kueueAvailableInstanceSlots: 128,
+			kueueInstanceCpuLimitedCapacity: 168,
+			kueueInstanceMemoryLimitedCapacity: 128,
+			kueueInstanceEphemeralStorageLimitedCapacity: 192,
+			kueueInstancePodLimitedCapacity: 192,
+			schedulableKueueInstanceCapacity: 128,
+		});
+	});
+
 	it("does not block launches when live node filesystem stats are unavailable", () => {
 		const snapshot = estimateSchedulableSandboxCapacity({
 			nodes: [

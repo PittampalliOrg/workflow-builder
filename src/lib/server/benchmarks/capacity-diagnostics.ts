@@ -101,6 +101,16 @@ export type BenchmarkCapacityDiagnostics = {
 		kueueMemoryLimitedCapacity: number | null;
 		kueueEphemeralStorageLimitedCapacity: number | null;
 		kueuePodLimitedCapacity: number | null;
+		kueueInstanceRequestCpuMilli: number | null;
+		kueueInstanceRequestMemoryBytes: number | null;
+		kueueInstanceRequestEphemeralStorageBytes: number | null;
+		kueueInstancePodCount: number | null;
+		kueueAvailableInstanceSlots: number | null;
+		kueueInstanceCpuLimitedCapacity: number | null;
+		kueueInstanceMemoryLimitedCapacity: number | null;
+		kueueInstanceEphemeralStorageLimitedCapacity: number | null;
+		kueueInstancePodLimitedCapacity: number | null;
+		schedulableKueueInstanceCapacity: number | null;
 		diskPressureNodeCount: number | null;
 		error?: string | null;
 	};
@@ -384,6 +394,36 @@ function diagnosticsFromCapacity(params: {
 			),
 			kueuePodLimitedCapacity: nonNegativeInt(
 				sandboxCapacity.kueuePodLimitedCapacity,
+			),
+			kueueInstanceRequestCpuMilli: nonNegativeInt(
+				sandboxCapacity.kueueInstanceRequestCpuMilli,
+			),
+			kueueInstanceRequestMemoryBytes: nonNegativeInt(
+				sandboxCapacity.kueueInstanceRequestMemoryBytes,
+			),
+			kueueInstanceRequestEphemeralStorageBytes: nonNegativeInt(
+				sandboxCapacity.kueueInstanceRequestEphemeralStorageBytes,
+			),
+			kueueInstancePodCount: nonNegativeInt(
+				sandboxCapacity.kueueInstancePodCount,
+			),
+			kueueAvailableInstanceSlots: nonNegativeInt(
+				sandboxCapacity.kueueAvailableInstanceSlots,
+			),
+			kueueInstanceCpuLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueInstanceCpuLimitedCapacity,
+			),
+			kueueInstanceMemoryLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueInstanceMemoryLimitedCapacity,
+			),
+			kueueInstanceEphemeralStorageLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueInstanceEphemeralStorageLimitedCapacity,
+			),
+			kueueInstancePodLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueInstancePodLimitedCapacity,
+			),
+			schedulableKueueInstanceCapacity: nonNegativeInt(
+				sandboxCapacity.schedulableKueueInstanceCapacity,
 			),
 			diskPressureNodeCount: nonNegativeInt(
 				sandboxCapacity.diskPressureNodeCount,

@@ -216,17 +216,28 @@ export function estimateBenchmarkRuntimeCapacity(
 				? undefined
 				: input.sandboxCapacity?.schedulableSandboxCapacity),
 	);
+	const schedulableKueueInstanceCapacity = nonNegativeInt(
+		input.sandboxCapacity?.error
+			? undefined
+			: input.sandboxCapacity?.schedulableKueueInstanceCapacity,
+	);
+	const usingKueueInstanceCapacity =
+		mode === "kueue" && schedulableKueueInstanceCapacity != null;
+	const schedulableCapacityForRun =
+		mode === "kueue"
+			? (schedulableKueueInstanceCapacity ?? schedulableSandboxCapacity)
+			: schedulableSandboxCapacity;
 	const totalSchedulableSandboxCapacity = nonNegativeInt(
 		input.sandboxCapacity?.error
 			? undefined
 			: input.sandboxCapacity?.totalSchedulableSandboxCapacity,
 	);
 	const sandboxRunHeadroomLimit =
-		sandboxMax == null && schedulableSandboxCapacity == null
+		sandboxMax == null && schedulableCapacityForRun == null
 			? null
 			: Math.min(
 					sandboxMax ?? Number.POSITIVE_INFINITY,
-					schedulableSandboxCapacity ?? Number.POSITIVE_INFINITY,
+					schedulableCapacityForRun ?? Number.POSITIVE_INFINITY,
 				);
 	const sandboxActiveLimit =
 		sandboxMax == null &&
@@ -299,11 +310,15 @@ export function estimateBenchmarkRuntimeCapacity(
 		reasons.push("sandbox_capacity");
 	}
 	if (
-		schedulableSandboxCapacity != null &&
-		requested > schedulableSandboxCapacity &&
-		effective === schedulableSandboxCapacity
+		schedulableCapacityForRun != null &&
+		requested > schedulableCapacityForRun &&
+		effective === schedulableCapacityForRun
 	) {
-		reasons.push("sandbox_schedulable_capacity");
+		reasons.push(
+			usingKueueInstanceCapacity
+				? "kueue_instance_schedulable_capacity"
+				: "sandbox_schedulable_capacity",
+		);
 	}
 	if (modelMax && requested > modelMax && effective === modelMax) {
 		reasons.push("model_capacity");
