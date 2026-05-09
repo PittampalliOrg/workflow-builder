@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -753,6 +754,197 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
 
     result = stop.value.value
     assert result["success"] is True
+
+
+def test_benchmark_durable_run_waits_for_queued_agent_session_host_before_child_workflow():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={
+            "prompt": "Create a validation marker",
+            "runId": "bench-run-1",
+            "instanceId": "django__django-12345",
+        },
+        execution_id="exec_benchmark",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-benchmark-wf-queued-host"
+        current_utc_datetime = datetime(2026, 5, 8, tzinfo=timezone.utc)
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+        def call_child_workflow(self, name, input=None, instance_id=None, app_id=None):
+            return _FakeWorkflowTask(
+                "call_child_workflow",
+                result={
+                    "success": True,
+                    "content": "VALIDATION COMPLETE",
+                },
+                name=name,
+                input=input,
+                instance_id=instance_id,
+                app_id=app_id,
+            )
+
+        def create_timer(self, timeout):
+            return _FakeWorkflowTask("timer", timeout=timeout)
+
+    ctx = _FakeCtx()
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        ctx,
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "agentRuntime": "dapr-agent-py",
+                "timeoutMinutes": "1",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["activity"] == "spawn_session_for_workflow"
+
+    readiness_timer = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "queued",
+        }
+    )
+    assert readiness_timer.kind == "timer"
+    assert readiness_timer.timeout == timedelta(
+        seconds=SW_WORKFLOW.AGENT_SESSION_HOST_READY_POLL_SECONDS
+    )
+
+    ctx.current_utc_datetime += readiness_timer.timeout
+    recheck = workflow_gen.send(readiness_timer)
+    assert recheck["activity"] == "spawn_session_for_workflow"
+
+    child_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "ready",
+        }
+    )
+    assert child_yield.kind == "call_child_workflow"
+    assert child_yield.name == "session_workflow"
+    assert child_yield.app_id == "agent-session-abc123"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(child_yield)
+
+    result = stop.value.value
+    assert result["success"] is True
+
+
+def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflow_order():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={
+            "prompt": "Create a validation marker",
+            "runId": "bench-run-1",
+            "instanceId": "django__django-12345",
+        },
+        execution_id="exec_benchmark",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-benchmark-wf-no-host-status"
+        current_utc_datetime = datetime(2026, 5, 8, tzinfo=timezone.utc)
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+        def call_child_workflow(self, name, input=None, instance_id=None, app_id=None):
+            return _FakeWorkflowTask(
+                "call_child_workflow",
+                result={"success": True},
+                name=name,
+                input=input,
+                instance_id=instance_id,
+                app_id=app_id,
+            )
+
+        def create_timer(self, timeout):
+            raise AssertionError("missing agentHostStatus should not add a new timer")
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "agentRuntime": "dapr-agent-py",
+                "timeoutMinutes": "1",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["activity"] == "spawn_session_for_workflow"
+
+    child_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-session-abc123",
+        }
+    )
+    assert child_yield.kind == "call_child_workflow"
+    assert child_yield.name == "session_workflow"
+    assert child_yield.app_id == "agent-session-abc123"
 
 
 def test_benchmark_sw_workflow_skips_parent_workspace_cleanup():

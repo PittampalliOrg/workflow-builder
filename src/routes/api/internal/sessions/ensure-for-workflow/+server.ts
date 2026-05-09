@@ -277,6 +277,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentVersion: existing.agentVersion,
 			agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 			agentAppId: reuseChildAppId,
+			agentHostStatus: reuseHost?.status ?? null,
 			childInput: buildChildInput({
 				sessionId: existing.id,
 				agentConfig,
@@ -417,6 +418,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentVersion,
 		agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
 		agentAppId: childAgentAppId,
+		agentHostStatus: sessionHost?.status ?? null,
 		childInput: buildChildInput({
 			sessionId,
 			agentConfig,
@@ -561,7 +563,7 @@ async function maybeProvisionAgentWorkflowHost(params: {
 	benchmarkRunId: string | null;
 	benchmarkInstanceId: string | null;
 	timeoutMinutes: number | null;
-}): Promise<{ agentAppId: string; jobName: string | null } | null> {
+}): Promise<{ agentAppId: string; jobName: string | null; status: string | null } | null> {
 	if (!agentWorkflowHostBackendEnabled()) return null;
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
 	const baseUrl = sandboxExecutionApiUrl();
@@ -619,6 +621,10 @@ async function maybeProvisionAgentWorkflowHost(params: {
 		jobName:
 			typeof body.jobName === "string" && body.jobName.trim()
 				? body.jobName.trim()
+				: null,
+		status:
+			typeof body.status === "string" && body.status.trim()
+				? body.status.trim()
 				: null,
 	};
 }
