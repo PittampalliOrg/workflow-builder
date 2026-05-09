@@ -135,7 +135,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 			    patch_well_formed = u.patch_well_formed,
 			    evaluated_at = ${now},
 			    updated_at = ${now}
-			FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb)
+			FROM jsonb_to_recordset((${JSON.stringify(updates)})::text::jsonb)
 			     AS u(
 			       instance_id text,
 			       status text,
