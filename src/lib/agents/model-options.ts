@@ -338,3 +338,4 @@ export function isSupportedAgentModelSpec(
 ): boolean {
   return canonicalAgentModelSpec(value) !== null;
 }
+// rebuild trigger 2026-05-09T17:32:00
