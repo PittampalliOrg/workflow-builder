@@ -67,8 +67,15 @@ const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
 const DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS = 300_000;
-const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = 300_000;
 const MAX_WORKSPACE_UTILITY_TIMEOUT_MS = 3_600_000;
+const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = Math.max(
+  300_000,
+  Number.parseInt(
+    process.env.MAX_WORKSPACE_PROFILE_TIMEOUT_MS ||
+      String(MAX_WORKSPACE_UTILITY_TIMEOUT_MS),
+    10,
+  ) || MAX_WORKSPACE_UTILITY_TIMEOUT_MS,
+);
 const BROWSER_CAPTURE_OVERHEAD_MS = 15_000;
 
 // Cold start detection: if response time is > 3x average, likely a cold start
@@ -209,7 +216,7 @@ function clampTimeoutMs(
   return Math.min(Math.max(value, min), max);
 }
 
-function resolveWorkspaceUtilityTimeoutMs(input: {
+export function resolveWorkspaceUtilityTimeoutMs(input: {
   toolId: string;
   timeoutMs: unknown;
   commandTimeoutMs: unknown;

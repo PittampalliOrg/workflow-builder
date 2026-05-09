@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildWorkspaceCommandPayload } from "./execute.js";
+import {
+  buildWorkspaceCommandPayload,
+  resolveWorkspaceUtilityTimeoutMs,
+} from "./execute.js";
 
 describe("workspace command routing", () => {
   it("forwards cwd to the workspace runtime", () => {
@@ -43,5 +46,27 @@ describe("workspace command routing", () => {
       command: "pwd",
       cwd: "/sandbox/app",
     });
+  });
+});
+
+describe("workspace utility timeout routing", () => {
+  it("honors long workspace/profile timeout budgets for Kueue-backed sandboxes", () => {
+    expect(
+      resolveWorkspaceUtilityTimeoutMs({
+        toolId: "profile",
+        timeoutMs: 2_100_000,
+        commandTimeoutMs: undefined,
+      }),
+    ).toBe(2_100_000);
+  });
+
+  it("still caps workspace/profile timeout budgets at the utility ceiling", () => {
+    expect(
+      resolveWorkspaceUtilityTimeoutMs({
+        toolId: "profile",
+        timeoutMs: 9_000_000,
+        commandTimeoutMs: undefined,
+      }),
+    ).toBe(3_600_000);
   });
 });
