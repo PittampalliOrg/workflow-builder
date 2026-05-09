@@ -17,6 +17,7 @@ import {
 import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
 import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
+import { benchmarkExecutionBackend } from "$lib/server/benchmarks/execution-plane";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
 import { agentModelOptionFor } from "$lib/agents/model-options";
 import type { AgentConfig } from "$lib/types/agents";
@@ -361,6 +362,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
 				requestedInstanceCount: 500,
 				requestedConcurrency: 500,
+				executionBackend: benchmarkExecutionBackend(),
 			});
 			return {
 				id: row.id,

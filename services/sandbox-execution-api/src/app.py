@@ -355,6 +355,12 @@ def _require_internal(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
 
 
+def _agent_workflow_host_namespace() -> str:
+    return os.environ.get("AGENT_WORKFLOW_HOST_NAMESPACE") or os.environ.get(
+        "WORKFLOW_BUILDER_NAMESPACE", "workflow-builder"
+    )
+
+
 def _openshell_seed_init_container(image: str) -> dict[str, Any]:
     return {
         "name": "seed-openshell-config",
@@ -937,7 +943,7 @@ def submit_agent_workflow_host(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"unsupported executionClass {body.executionClass}",
         )
-    namespace = os.environ.get("SANDBOX_EXECUTION_NAMESPACE", "workflow-builder")
+    namespace = _agent_workflow_host_namespace()
     manifest = build_agent_workflow_host_job_manifest(
         body,
         namespace=namespace,

@@ -263,7 +263,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		globalMax,
 		agentWorkflowMaxActiveTurns ?? Number.POSITIVE_INFINITY,
 		mode === "kueue"
-			? Number.POSITIVE_INFINITY
+			? (sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY)
 			: (sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY),
 		modelMax ?? Number.POSITIVE_INFINITY,
 	);
@@ -299,7 +299,6 @@ export function estimateBenchmarkRuntimeCapacity(
 		reasons.push("sandbox_capacity");
 	}
 	if (
-		mode !== "kueue" &&
 		schedulableSandboxCapacity != null &&
 		requested > schedulableSandboxCapacity &&
 		effective === schedulableSandboxCapacity
@@ -333,6 +332,10 @@ export function estimateBenchmarkRuntimeCapacity(
 		maxActiveSessions: Math.min(
 			mode === "kueue" ? selectedCount : runtimeMax,
 			globalMax,
+			agentWorkflowMaxActiveTurns ?? Number.POSITIVE_INFINITY,
+			mode === "kueue"
+				? (sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY)
+				: Number.POSITIVE_INFINITY,
 			modelMax ?? Number.POSITIVE_INFINITY,
 		),
 		configuredMaxActiveSandboxes: sandboxMax,

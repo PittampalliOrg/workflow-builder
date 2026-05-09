@@ -32,15 +32,27 @@ The capacity-oriented dev shape is:
 - Tailscale exposes the API through the spoke ProxyGroup; workflow-builder app
   access remains a promoted spoke workload.
 
-The May 2026 rebuild targets a conservative 72-instance inference ceiling. That
-number is a runtime/model admission cap, not a raw Kubernetes maximum. The six
-workers have more sandbox headroom than 72, but workflow-builder only admits 72
-concurrent inference instances until the runtime pool and global caps are raised
-again.
+The May 2026 rebuild started with conservative 72/168-instance ramps. The
+current staged Kueue target is 336 concurrent inference sandboxes on the six
+benchmark workers:
+
+```text
+84 benchmark-fast CPU quota / 250m sandbox CPU request = 336 sandboxes
+```
+
+This leaves about 7.8 allocatable CPU outside Kueue on the six-worker pool
+(91.8 CPU allocatable total). Memory, pod count, and ephemeral-storage quotas
+are not the limiting resources at the current 4Gi sandbox ephemeral request.
 
 ## PipelineRun Guardrails
 
 Dynamic SWE-bench inference image builds require `allowBuild=true` and `SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE=hub`. Hub submission also requires a scoped hub kubeconfig at `SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG` or equivalent content env var. If hub submission is not configured, preflight fails closed instead of creating a local PipelineRun.
+
+When hub Kueue is installed for build workloads, set
+`SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME` to the Tekton build LocalQueue name.
+Generated SWE-bench inference-image `PipelineRun`s will carry
+`kueue.x-k8s.io/queue-name`, which Kueue's Tekton integration propagates to the
+TaskRun pods. Leave it unset until the hub LocalQueue and ClusterQueue exist.
 
 Local PipelineRun submission is blocked by default. It is only available for intentional one-off local testing with both:
 
@@ -107,8 +119,8 @@ For a benchmark run, stored inference concurrency is effectively:
 min(
   requested concurrency,
   selected instance count,
-  runtime replicas * slots per replica,
-  runtime replicas * per-sidecar Dapr workflow limit,
+  runtime replicas * slots per replica when not using the Kueue execution backend,
+  runtime replicas * per-sidecar Dapr workflow limit when not using the Kueue execution backend,
   explicit runtime maxActiveSessions when configured,
   BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES,
   BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS / BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS,
@@ -119,8 +131,8 @@ min(
 
 The live resource-lease gate re-checks the same classes before each instance
 starts. Run admission and global lease capacity deliberately use different
-sandbox values: run admission is capped by remaining schedulable sandbox
-headroom at launch time, while the stored `maxActiveSandboxes` lease limit is
+sandbox values: run admission is capped by remaining Kueue and schedulable
+sandbox headroom at launch time, while the stored `maxActiveSandboxes` lease limit is
 capped by configured sandbox capacity and total schedulable sandbox capacity.
 Do not store launch-time remaining headroom as the global active sandbox limit,
 or overlapping runs can freeze at the amount of headroom that happened to be
@@ -134,25 +146,24 @@ Capacity diagnostics are exposed in two places:
   the selected agent/instances and reports active lease usage by resource.
 - `GET /api/benchmarks/runs/<runId>/capacity` reports the stored effective
   concurrency, active/stale lease counts, active/limit per resource type,
-  `blockedBy`, sandbox schedulable headroom, runtime slots, Dapr workflow slots,
-  and model caps for an existing run.
+  `blockedBy`, Kueue/sandbox schedulable headroom, runtime slots, Dapr workflow
+  slots, and model caps for an existing run.
 
 The launch sheet's `Max safe` control uses the launch-candidate diagnostics
 instead of the static default of 10.
 
-## Host Execution Plane Backend
+## Kueue Execution Plane Backend
 
-The current Dapr SWE-bench runner remains the default backend. The host-level
-sandbox execution plane is selected only when the BFF has
-`BENCHMARK_EXECUTION_BACKEND=host` and `SANDBOX_EXECUTION_API_URL` (or
-`HOST_EXECUTION_API_URL`) configured.
+Dev uses the Kueue-backed Dapr path: `BENCHMARK_EXECUTION_BACKEND=dapr-kueue`,
+`AGENT_WORKFLOW_HOST_BACKEND=kueue`, and
+`SANDBOX_EXECUTION_API_URL=http://sandbox-execution-api.workflow-builder.svc.cluster.local:8080`.
+The BFF still submits the generated SWE-bench instance workflow and validated
+inference environment, but each instance gets its own Kueue-managed OpenShell
+sandbox instead of being capped by the legacy shared runtime pool.
 
-Workflow-builder submits the existing generated SWE-bench instance workflow,
-trigger data, validated inference environment, timeout, and execution class to
-`POST /api/v1/executions` on the host execution API. The host API creates a
-Kueue-managed Kubernetes `Job` by setting the `kueue.x-k8s.io/queue-name` label
-on the Job and leaves Kueue to manage suspension/admission. The Job pod uses the
-requested execution class:
+The sandbox-execution-api creates Kueue-managed Kubernetes workloads by setting
+the `kueue.x-k8s.io/queue-name` label and leaves Kueue to manage
+suspension/admission. The pod uses the requested execution class:
 
 | Execution class | Queue | RuntimeClass | Intended use |
 | --- | --- | --- | --- |
@@ -161,8 +172,9 @@ requested execution class:
 
 Both classes keep the benchmark worker node selector
 `stacks.io/swebench-pool=dev-benchmark`, hostname topology spread, and the
-initial `16Gi` ephemeral-storage request. The host execution worker reports
-state back through
+configured sandbox resource requests. The current `benchmark-fast` admission
+profile is 250m CPU, 256Mi memory, and 4Gi ephemeral-storage. The host execution
+worker reports state back through
 `POST /api/internal/benchmarks/runs/<runId>/instances/<instanceId>/execution`.
 Terminal success updates the existing `workflow_executions` row and reuses the
 normal `syncBenchmarkInstanceFromExecution` path, so benchmark summaries,
@@ -186,22 +198,22 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | --- | ---: | ---: | --- |
 | `DEFAULT_INFERENCE_CONCURRENCY` | `10` | n/a | Launch sheet initial inference request. |
 | `DEFAULT_EVALUATION_CONCURRENCY` | `24` | n/a | Launch sheet initial evaluation request and BFF fallback. |
-| `MAX_INFERENCE_CONCURRENCY` | `128` | n/a | Launch sheet slider maximum. Backend still clamps. |
+| `MAX_INFERENCE_CONCURRENCY` | `500` | n/a | Launch sheet slider maximum. Backend still clamps by selected instances and live capacity. |
 | `MAX_EVALUATION_CONCURRENCY` | `128` | n/a | Launch sheet evaluation slider maximum. Backend/evaluator also clamp to 128. |
 | `BENCHMARK_CAPACITY_MODE` | `manual` | `auto` | `manual` preserves the historical global default cap; `auto` derives capacity from live/runtime limits and treats explicit caps as safety rails. |
 | `BENCHMARK_DEFAULT_CONCURRENCY` | `10` | `10` | BFF fallback requested inference concurrency when the request omits or passes an invalid value. |
-| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` in manual mode, derived in auto mode | `80` | Global active inference hard cap across benchmark resource leases. In auto mode, leave this as a cluster safety ceiling rather than mirroring every lower capacity. |
+| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` in manual mode, derived in auto mode | unset | Global active inference hard cap across benchmark resource leases. In Kueue/auto mode, leave unset unless an emergency ceiling is needed. |
 | `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | unset | Optional hard cap for Dapr agent child workflows. Prefer leaving unset so `dapr_workflow_slot` capacity derives from runtime sidecar capacity. |
 | `BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS` | unset | unset | Backward-compatible alias for `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`. |
-| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | `80` | Configured OpenShell sandbox cap. Per-run admission also considers remaining live schedulable headroom; stored global lease capacity should use configured cap plus total schedulable capacity. |
+| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | unset | Configured OpenShell sandbox cap. Per-run admission also considers remaining live Kueue and schedulable headroom; stored global lease capacity should use configured cap plus total schedulable capacity. |
 | `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS` | unset | unset | Optional per-model request cap for `model_slot` leases. Prefer unset unless a provider has a lower quota than the cluster can otherwise run. |
 | `BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS` | unset | unset | Backward-compatible alias for `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`. |
 | `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
 | `BENCHMARK_LEASE_RETRY_SECONDS` | `15` | unset | Retry-after returned when the BFF resource-lease gate denies capacity. |
-| `BENCHMARK_INFERENCE_STALL_SECONDS` | `480` | `480` | Marks stale inference progress; not a dispatch cap. |
-| `BENCHMARK_EXECUTION_BACKEND` | `host` | unset | Host sandbox execution API is the default SWE-bench inference path. `legacy-dapr` is accepted only for rollback tests. |
-| `BENCHMARK_EXECUTION_CLASS` | `benchmark-fast` | unset | Host backend execution class; supported initial values are `benchmark-fast` and `secure-gvisor`. |
-| `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL` | unset | unset | Host execution API base URL required by the host backend. |
+| `BENCHMARK_INFERENCE_STALL_SECONDS` | `480` | `2400` | Marks stale inference progress; not a dispatch cap. |
+| `BENCHMARK_EXECUTION_BACKEND` | `host` | `dapr-kueue` | Kueue-backed Dapr/OpenShell inference path. `legacy-dapr` is accepted only for rollback tests. |
+| `BENCHMARK_EXECUTION_CLASS` | `benchmark-fast` | `benchmark-fast` | Execution class; supported initial values are `benchmark-fast` and `secure-gvisor`. |
+| `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL` | unset | sandbox-execution-api service URL | Host execution API base URL required by the Kueue backend. |
 | `SANDBOX_EXECUTION_API_TOKEN` / `HOST_EXECUTION_API_TOKEN` | `INTERNAL_API_TOKEN` fallback | unset | Bearer token used by the BFF when calling the host execution API. |
 
 Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
@@ -212,6 +224,9 @@ Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 | `BENCHMARK_SANDBOX_CAPACITY_NAMESPACE` | `OPENSHELL_NAMESPACE` or `openshell` | Namespace used when pod listing falls back from all namespaces. |
 | `BENCHMARK_SANDBOX_REQUEST_CPU` | `100m` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable. |
 | `BENCHMARK_SANDBOX_REQUEST_MEMORY` | `256Mi` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable. |
+| `BENCHMARK_SANDBOX_REQUEST_EPHEMERAL_STORAGE` | `4Gi` | Per-sandbox ephemeral request used for schedulable and Kueue capacity estimates. Keep this aligned with sandbox-execution-api pod requests. |
+| `BENCHMARK_SANDBOX_KUEUE_CAPACITY_DISABLED` | false | Disables live ClusterQueue quota sampling when set to `1`, `true`, or `yes`. |
+| `BENCHMARK_KUEUE_CLUSTER_QUEUE` | `BENCHMARK_EXECUTION_CLASS` fallback | ClusterQueue used for live Kueue capacity sampling. |
 | `OPENSHELL_NAMESPACE` | `openshell` | Fallback namespace for sandbox capacity sampling. |
 
 ### Agent Runtime Capacity
@@ -262,15 +277,17 @@ completed TaskRun, not at the end of a fixed batch.
 
 ## Current Dev Ramp Profile
 
-Dev currently runs the 80-slot auto-capacity inference profile:
+Dev currently runs the Kueue-backed auto-capacity inference profile:
 
 - `BENCHMARK_CAPACITY_MODE=auto`
-- `AGENT_RUNTIME_POOL_MAX_REPLICAS=10`
-- coding pool `maxReplicas=10`
-- coding pool `slotsPerReplica=8`
+- `BENCHMARK_EXECUTION_BACKEND=dapr-kueue`
+- `AGENT_WORKFLOW_HOST_BACKEND=kueue`
+- `BENCHMARK_EXECUTION_CLASS=benchmark-fast`
+- `benchmark-fast` ClusterQueue staged quota: 84 CPU, 160Gi memory, 1536Gi ephemeral-storage, 384 pods
+- sandbox request profile: 250m CPU, 256Mi memory, 4Gi ephemeral-storage
 - no separate `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` cap; Dapr workflow capacity derives from runtime sidecar capacity
-- `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES=80`
-- `BENCHMARK_MAX_ACTIVE_SANDBOXES=80`
+- no separate `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` cap in the Kueue path
+- no separate `BENCHMARK_MAX_ACTIVE_SANDBOXES` cap; Kueue and live schedulable headroom cap admission
 - no separate `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` cap; coordinator uses the BFF run capacity snapshot
 - `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=18`
 - `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=1`
@@ -313,29 +330,26 @@ For the current dev deployment, the practical inference ceiling is:
 
 ```text
 min(
-  72 runtime slots,
-  108 Dapr workflow effective capacity,
-  80 configured OpenShell sandbox slots,
-  108 live schedulable sandbox slots,
-  72 global inference slots,
-  72 global agent workflow slots,
+  84 CPU Kueue quota / 250m sandbox CPU request = 336,
+  1536Gi Kueue ephemeral quota / 4Gi sandbox ephemeral request = 384,
+  384 Kueue pod quota,
+  live schedulable sandbox slots,
   selected instance count,
   requested concurrency
-) = 72
+) = 336 when the cluster is otherwise idle and launch diagnostics agree
 ```
 
-The worker pool has more physical headroom than 72. Raising above 72 requires
-changing the runtime pool and global caps together, then rerunning capacity
-diagnostics. A plausible next infrastructure ceiling is `80`, because
-`BENCHMARK_MAX_ACTIVE_SANDBOXES=80` is the next configured limiter. Going past
-`80` requires increasing the sandbox cap and validating nodefs/disk-pressure
-behavior under load.
+The six-worker pool has about 91.8 allocatable CPU. The 84 CPU Kueue quota is a
+staged safety value that leaves about 7.8 CPU for daprd, node agents, and
+system overhead. Going above 336 should be done as a separate ramp after
+validating nodefs/imagefs, DiskPressure, Dapr scheduler health, and provider
+tail latency at 336.
 
 Because the 24-run had 8 stalled inferences that held slots until the
 `BENCHMARK_INFERENCE_STALL_SECONDS=480` detector fired, extrapolate wall-clock
-from the slow tail, not only from successful inference medians. At 72
-concurrent instances, expect a single inference wave to last about as long as
-the slowest timeout tail if provider behavior is similar.
+from the slow tail, not only from successful inference medians. At high
+concurrency, expect a single inference wave to last about as long as the
+slowest timeout tail if provider behavior is similar.
 
 ### OpenAI-Parity Evaluation Coordinator
 

@@ -32,6 +32,12 @@
 			schedulableSandboxCapacity: number | null;
 			ephemeralStorageLimitedCapacity: number | null;
 			nodeFsLimitedCapacity: number | null;
+			kueueClusterQueueName?: string | null;
+			kueueAvailableSandboxSlots?: number | null;
+			kueueCpuLimitedCapacity?: number | null;
+			kueueMemoryLimitedCapacity?: number | null;
+			kueueEphemeralStorageLimitedCapacity?: number | null;
+			kueuePodLimitedCapacity?: number | null;
 			diskPressureNodeCount: number | null;
 		};
 		workflowLifecycle?: {
@@ -80,7 +86,7 @@
 	const slug = $derived((page.params.slug as string) ?? 'default');
 	const DEFAULT_INFERENCE_CONCURRENCY = 10;
 	const DEFAULT_EVALUATION_CONCURRENCY = 24;
-	const MAX_INFERENCE_CONCURRENCY = 128;
+	const MAX_INFERENCE_CONCURRENCY = 500;
 	const MAX_EVALUATION_CONCURRENCY = 128;
 	const DEFAULT_MAX_ACTIVE_INFERENCE = 56;
 
@@ -172,7 +178,8 @@
 						requestedConcurrency: MAX_INFERENCE_CONCURRENCY,
 						evaluationConcurrency,
 						modelNameOrPath: modelNameOrPath.trim() || undefined,
-						modelConfigLabel: modelConfigLabel.trim() || undefined
+						modelConfigLabel: modelConfigLabel.trim() || undefined,
+						executionBackend
 					})
 				});
 				const body = (await res.json().catch(() => ({}))) as {
@@ -516,6 +523,9 @@
 						{/if}
 						{#if capacityDiagnostics.sandbox.nodeFsLimitedCapacity !== null}
 							<span>· node fs {capacityDiagnostics.sandbox.nodeFsLimitedCapacity}</span>
+						{/if}
+						{#if capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== null && capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== undefined}
+							<span>· kueue {capacityDiagnostics.sandbox.kueueAvailableSandboxSlots}</span>
 						{/if}
 						{#if capacityDiagnostics.sandbox.diskPressureNodeCount}
 							<span class="text-amber-600">

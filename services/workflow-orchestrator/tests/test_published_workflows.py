@@ -348,14 +348,14 @@ def test_readiness_requires_taskhub_but_not_metadata_worker_count(monkeypatch):
 
     def fake_runtime_status(*_args, **kwargs):
         observed_kwargs.update(kwargs)
-        return True, {"workflowConnectedWorkers": 1}
+        return True, {"workflowConnectedWorkers": 0}
 
     monkeypatch.setattr(APP, "_get_workflow_runtime_status", fake_runtime_status)
 
     response = APP.readiness_check()
 
     assert response["status"] == "ready"
-    assert observed_kwargs.get("require_workflow_workers") is True
+    assert observed_kwargs.get("require_workflow_workers") is False
 
 
 def test_health_is_process_local(monkeypatch):
@@ -693,7 +693,7 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
             "instanceId": "django__django-12345",
         },
         execution_id="exec_benchmark",
-        db_execution_id=None,
+        db_execution_id="db_exec_benchmark",
         integrations=None,
     )
 
@@ -743,6 +743,7 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
 
     yielded = next(workflow_gen)
     assert yielded["activity"] == "spawn_session_for_workflow"
+    assert yielded["input"]["workflowExecutionId"] == "db_exec_benchmark"
     child_yield = workflow_gen.send(
         {
             "childInput": {"sessionId": "child-session"},

@@ -197,6 +197,108 @@ def test_agent_workflow_host_backoff_can_be_overridden(monkeypatch) -> None:
     assert manifest["spec"]["backoffLimit"] == 3
 
 
+def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
+    monkeypatch,
+) -> None:
+    created_jobs: list[tuple[str, dict]] = []
+    scoped_components: list[tuple[str, str]] = []
+    readiness_checks: list[tuple[str, str]] = []
+
+    class FakeBatch:
+        def create_namespaced_job(self, *, namespace, body):
+            created_jobs.append((namespace, body))
+
+    fake_core = SimpleNamespace()
+    monkeypatch.setenv("SANDBOX_EXECUTION_NAMESPACE", "openshell")
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.delenv("AGENT_WORKFLOW_HOST_NAMESPACE", raising=False)
+    monkeypatch.delenv("WORKFLOW_BUILDER_NAMESPACE", raising=False)
+    monkeypatch.setattr(
+        app_module,
+        "_load_execution_classes",
+        lambda: {"benchmark-fast": ExecutionClassConfig(localQueue="benchmark-fast")},
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (FakeBatch(), fake_core))
+    monkeypatch.setattr(
+        app_module,
+        "_ensure_agent_host_component_scopes",
+        lambda namespace, app_id: scoped_components.append((namespace, app_id)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_wait_for_agent_host_ready",
+        lambda _core, *, namespace, agent_app_id, **_kwargs: readiness_checks.append(
+            (namespace, agent_app_id)
+        )
+        or "ready",
+    )
+
+    response = app_module.submit_agent_workflow_host(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+    )
+
+    assert response["status"] == "ready"
+    assert created_jobs[0][0] == "workflow-builder"
+    assert created_jobs[0][1]["metadata"]["namespace"] == "workflow-builder"
+    assert scoped_components == [("workflow-builder", "agent-session-abc123")]
+    assert readiness_checks == [("workflow-builder", "agent-session-abc123")]
+
+
+def test_submit_agent_workflow_host_allows_explicit_namespace(monkeypatch) -> None:
+    created_namespaces: list[str] = []
+
+    class FakeBatch:
+        def create_namespaced_job(self, *, namespace, body):
+            created_namespaces.append(namespace)
+
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.setenv("SANDBOX_EXECUTION_NAMESPACE", "openshell")
+    monkeypatch.setenv("AGENT_WORKFLOW_HOST_NAMESPACE", "workflow-builder-canary")
+    monkeypatch.setattr(
+        app_module,
+        "_load_execution_classes",
+        lambda: {"benchmark-fast": ExecutionClassConfig(localQueue="benchmark-fast")},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_clients",
+        lambda: (FakeBatch(), SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_ensure_agent_host_component_scopes",
+        lambda _namespace, _app_id: None,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_wait_for_agent_host_ready",
+        lambda *_args, **_kwargs: "queued",
+    )
+
+    response = app_module.submit_agent_workflow_host(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+    )
+
+    assert response["status"] == "queued"
+    assert created_namespaces == ["workflow-builder-canary"]
+
+
 def test_component_scope_patch_uses_json_patch_append(monkeypatch) -> None:
     class FakeCustom:
         def __init__(self) -> None:

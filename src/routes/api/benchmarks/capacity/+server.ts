@@ -37,6 +37,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				typeof body.modelNameOrPath === "string" ? body.modelNameOrPath : null,
 			modelConfigLabel:
 				typeof body.modelConfigLabel === "string" ? body.modelConfigLabel : null,
+			executionBackend:
+				typeof body.executionBackend === "string" ? body.executionBackend : null,
 		});
 		return json({ diagnostics });
 	} catch (err) {

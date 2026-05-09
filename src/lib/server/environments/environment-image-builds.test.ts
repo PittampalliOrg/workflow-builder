@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => {
 	const state: { lastUpdate: Record<string, unknown> | null } = { lastUpdate: null };
-	const selectLimit = vi.fn(async () => []);
+	const selectLimit = vi.fn<() => Promise<Array<Record<string, unknown>>>>(async () => []);
 	const selectWhere = vi.fn(() => ({ limit: selectLimit }));
 	const selectFrom = vi.fn(() => ({ where: selectWhere }));
 	const select = vi.fn(() => ({ from: selectFrom }));
@@ -643,6 +643,33 @@ describe("SWE-bench environment image build planning", () => {
 				},
 			]),
 		);
+	});
+
+	it("can label SWE-bench PipelineRuns for Kueue-managed hub build capacity", () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME", "swebench-image-builds");
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+
+		expect(manifest.metadata?.labels).toMatchObject({
+			"kueue.x-k8s.io/queue-name": "swebench-image-builds",
+		});
 	});
 
 	it("uses repo-aware validation defaults for Flask source-layout images", () => {

@@ -95,6 +95,12 @@ export type BenchmarkCapacityDiagnostics = {
 		nodeFsLimitedCapacity: number | null;
 		nodeFsAvailableBytes: number | null;
 		nodeFsEvictionReserveBytes: number | null;
+		kueueClusterQueueName: string | null;
+		kueueAvailableSandboxSlots: number | null;
+		kueueCpuLimitedCapacity: number | null;
+		kueueMemoryLimitedCapacity: number | null;
+		kueueEphemeralStorageLimitedCapacity: number | null;
+		kueuePodLimitedCapacity: number | null;
 		diskPressureNodeCount: number | null;
 		error?: string | null;
 	};
@@ -360,6 +366,25 @@ function diagnosticsFromCapacity(params: {
 			nodeFsEvictionReserveBytes: nonNegativeInt(
 				sandboxCapacity.nodeFsEvictionReserveBytes,
 			),
+			kueueClusterQueueName:
+				typeof sandboxCapacity.kueueClusterQueueName === "string"
+					? sandboxCapacity.kueueClusterQueueName
+					: null,
+			kueueAvailableSandboxSlots: nonNegativeInt(
+				sandboxCapacity.kueueAvailableSandboxSlots,
+			),
+			kueueCpuLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueCpuLimitedCapacity,
+			),
+			kueueMemoryLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueMemoryLimitedCapacity,
+			),
+			kueueEphemeralStorageLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueueEphemeralStorageLimitedCapacity,
+			),
+			kueuePodLimitedCapacity: nonNegativeInt(
+				sandboxCapacity.kueuePodLimitedCapacity,
+			),
 			diskPressureNodeCount: nonNegativeInt(
 				sandboxCapacity.diskPressureNodeCount,
 			),
@@ -436,6 +461,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 	evaluationConcurrency?: unknown;
 	modelNameOrPath?: string | null;
 	modelConfigLabel?: string | null;
+	executionBackend?: string | null;
 }): Promise<BenchmarkCapacityDiagnostics> {
 	const selectedInstanceCount = input.instanceIds
 		? instanceCount(input.instanceIds)
@@ -463,6 +489,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		sandboxCapacity,
 		requestedInstanceCount: selectedInstanceCount,
 		requestedConcurrency: input.requestedConcurrency,
+		executionBackend: input.executionBackend,
 	});
 	const pseudoRun = {
 		id: "launch-candidate",

@@ -1314,7 +1314,9 @@ def _run_native_durable_agent_child_workflow(
             "data"
         ]
 
-    if tc.db_execution_id:
+    is_benchmark_run = _is_benchmark_trigger(tc.trigger_data)
+
+    if tc.db_execution_id and not is_benchmark_run:
         try:
             from activities.track_agent_run import track_agent_run_scheduled
 
@@ -1343,7 +1345,7 @@ def _run_native_durable_agent_child_workflow(
                 track_err,
             )
 
-    if tc.db_execution_id:
+    if tc.db_execution_id and not is_benchmark_run:
         try:
             from activities.track_agent_run import track_agent_run_running
 
@@ -1462,7 +1464,7 @@ def _run_native_durable_agent_child_workflow(
             # runtime pool, or a legacy shared app id.
             app_id=bridge_app_id,
         )
-        if _is_benchmark_trigger(tc.trigger_data):
+        if is_benchmark_run:
             # Benchmark runs already have two stronger timeout owners:
             # session_workflow enforces the per-turn timeout, and the
             # benchmark service terminates stalled instances. Adding a parent
@@ -1512,7 +1514,7 @@ def _run_native_durable_agent_child_workflow(
     if "success" not in child_result:
         child_result["success"] = not bool(child_result.get("error"))
     success = bool(child_result.get("success", True))
-    if tc.db_execution_id:
+    if tc.db_execution_id and not is_benchmark_run:
         try:
             from activities.track_agent_run import track_agent_run_completed
 

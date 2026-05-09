@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { KubeNode, KubePod } from "$lib/server/kube/client";
 import {
 	estimateSchedulableSandboxCapacity,
+	kueueCapacityFromClusterQueue,
 	parseCpuMilli,
 	parseMemoryBytes,
 } from "./sandbox-capacity";
@@ -324,6 +325,75 @@ describe("sandbox scheduler capacity", () => {
 			nodeFsLimitedCapacity: 3,
 			availableSandboxSlots: 3,
 			schedulableSandboxCapacity: 3,
+		});
+	});
+
+	it("uses Kueue cluster queue quota as a sandbox capacity limiter", () => {
+		const kueueCapacity = kueueCapacityFromClusterQueue(
+			{
+				metadata: { name: "benchmark-fast" },
+				spec: {
+					resourceGroups: [
+						{
+							flavors: [
+								{
+									name: "dev-benchmark",
+									resources: [
+										{ name: "cpu", nominalQuota: "72" },
+										{ name: "memory", nominalQuota: "160Gi" },
+										{ name: "ephemeral-storage", nominalQuota: "1536Gi" },
+										{ name: "pods", nominalQuota: "384" },
+									],
+								},
+							],
+						},
+					],
+				},
+				status: {
+					flavorsUsage: [
+						{
+							name: "dev-benchmark",
+							resources: [
+								{ name: "cpu", total: "42" },
+								{ name: "memory", total: "42Gi" },
+								{ name: "ephemeral-storage", total: "672Gi" },
+								{ name: "pods", total: "168" },
+							],
+						},
+					],
+				},
+			},
+			{
+				cpuMilli: 250,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 4 * 1024 * 1024 * 1024,
+			},
+		);
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [
+				workerNode("worker-a", {
+					cpu: "64000m",
+					memory: "256Gi",
+					"ephemeral-storage": "2Ti",
+				}),
+			],
+			pods: [],
+			kueueCapacity,
+			sandboxRequest: {
+				cpuMilli: 250,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 4 * 1024 * 1024 * 1024,
+			},
+		});
+
+		expect(snapshot).toMatchObject({
+			kueueClusterQueueName: "benchmark-fast",
+			kueueCpuLimitedCapacity: 120,
+			kueueEphemeralStorageLimitedCapacity: 216,
+			kueuePodLimitedCapacity: 216,
+			kueueAvailableSandboxSlots: 120,
+			availableSandboxSlots: 120,
+			schedulableSandboxCapacity: 120,
 		});
 	});
 

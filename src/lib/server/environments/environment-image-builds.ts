@@ -803,6 +803,7 @@ export function buildSwebenchPipelineRunManifest(
 	namespace: string,
 ): TektonPipelineRun {
 	const buildahCacheClaimName = swebenchBuildahCacheClaimName(spec);
+	const kueueQueueName = configuredSwebenchBuildKueueQueueName();
 	return {
 		apiVersion: "tekton.dev/v1",
 		kind: "PipelineRun",
@@ -818,6 +819,7 @@ export function buildSwebenchPipelineRunManifest(
 				"workflow-builder.cnoe.io/env-spec-hash": spec.envSpecHash.slice(0, 63),
 				"workflow-builder.cnoe.io/build-strategy": spec.buildStrategy,
 				"workflow-builder.cnoe.io/build-cache": buildahCacheClaimName,
+				...(kueueQueueName ? { "kueue.x-k8s.io/queue-name": kueueQueueName } : {}),
 			},
 		},
 		spec: {
@@ -897,6 +899,13 @@ function configuredSwebenchBuildahCacheShards(): number {
 		return 1;
 	}
 	return Math.min(parsed, MAX_SWEBENCH_BUILDAH_CACHE_SHARDS);
+}
+
+function configuredSwebenchBuildKueueQueueName(): string | null {
+	return (
+		runtimeEnvString("SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME") ??
+		runtimeEnvString("SWEBENCH_INFERENCE_BUILD_LOCAL_QUEUE")
+	);
 }
 
 export function normalizeEnvironmentBuildActivityEvents(input: {

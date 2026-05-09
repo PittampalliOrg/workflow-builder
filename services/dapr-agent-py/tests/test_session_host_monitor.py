@@ -22,7 +22,7 @@ def test_missing_workflow_waits_during_grace_window() -> None:
     assert decision.exit_code is None
 
 
-def test_missing_workflow_exits_after_grace_window() -> None:
+def test_unobserved_workflow_waits_for_start_timeout_owner() -> None:
     decision = decide_missing_workflow_action(
         first_seen_at=None,
         missing_since=100.0,
@@ -31,14 +31,14 @@ def test_missing_workflow_exits_after_grace_window() -> None:
     )
 
     assert decision.missing_since == 100.0
-    assert decision.exit_code == 1
+    assert decision.exit_code is None
 
 
 def test_observed_workflow_disappearing_exits_cleanly() -> None:
     decision = decide_missing_workflow_action(
         first_seen_at=90.0,
-        missing_since=None,
-        now=100.0,
+        missing_since=100.0,
+        now=161.0,
         missing_grace_seconds=60,
     )
 
