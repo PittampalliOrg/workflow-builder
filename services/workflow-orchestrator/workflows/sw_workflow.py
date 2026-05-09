@@ -67,8 +67,6 @@ DEFAULT_WORKFLOW_GRPC_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 DEFAULT_MAX_CONCURRENT_ORCHESTRATIONS = 128
 DEFAULT_MAX_CONCURRENT_ACTIVITIES = 192
 DEFAULT_MAX_THREAD_POOL_WORKERS = 64
-AGENT_SESSION_HOST_READY_POLL_SECONDS = 10
-AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS = 600
 
 
 def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
@@ -152,23 +150,6 @@ def _child_workflow_result_without_parent_timeout(child_task: Any) -> Any:
     if callable(get_result):
         return get_result()
     return result
-
-
-def _is_agent_session_app_id(value: Any) -> bool:
-    return isinstance(value, str) and value.strip().startswith("agent-session-")
-
-
-def _agent_session_host_is_ready(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    return value.strip().lower() in {"ready", "running"}
-
-
-def _agent_session_host_reported_status(value: Any) -> str | None:
-    if not isinstance(value, dict):
-        return None
-    status = value.get("agentHostStatus")
-    return status.strip().lower() if isinstance(status, str) and status.strip() else None
 
 
 # ---------------------------------------------------------------------------
@@ -1471,39 +1452,6 @@ def _run_native_durable_agent_child_workflow(
             returned_app_id = bridge_result.get("agentAppId")
             if isinstance(returned_app_id, str) and returned_app_id.strip():
                 bridge_app_id = returned_app_id.strip()
-
-        host_status = _agent_session_host_reported_status(bridge_result)
-        if _is_agent_session_app_id(bridge_app_id) and host_status is not None:
-            ready_deadline = ctx.current_utc_datetime + timedelta(
-                seconds=AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS
-            )
-            while not _agent_session_host_is_ready(host_status):
-                if ctx.current_utc_datetime >= ready_deadline:
-                    raise TimeoutError(
-                        f"agent workflow host {bridge_app_id} did not become ready "
-                        f"before scheduling session_workflow; last status={host_status}"
-                    )
-                yield ctx.create_timer(
-                    timedelta(seconds=AGENT_SESSION_HOST_READY_POLL_SECONDS)
-                )
-                bridge_result = yield ctx.call_activity(
-                    spawn_session_for_workflow, input=_freeze(bridge_payload)
-                )
-                bridge_child_input = bridge_result.get("childInput") if isinstance(
-                    bridge_result, dict
-                ) else None
-                if not isinstance(bridge_child_input, dict):
-                    raise RuntimeError(
-                        f"workflow↔session bridge: invalid bridge_result for {child_instance_id}"
-                    )
-                returned_app_id = bridge_result.get("agentAppId") if isinstance(
-                    bridge_result, dict
-                ) else None
-                if isinstance(returned_app_id, str) and returned_app_id.strip():
-                    bridge_app_id = returned_app_id.strip()
-                host_status = _agent_session_host_reported_status(bridge_result)
-                if host_status is None:
-                    break
 
         child_task = ctx.call_child_workflow(
             "session_workflow",

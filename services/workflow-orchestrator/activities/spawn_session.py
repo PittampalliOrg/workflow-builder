@@ -15,17 +15,19 @@ Durability:
     derived from ``{workflow_execution_id}__{node_id}__run__{index}``.
     The endpoint short-circuits if a row already exists so Dapr activity
     retries don't duplicate writes.
-  * No polling or long waits here — this is a short activity. The real
-    wait happens in the orchestrator's ``call_child_workflow`` call on
-    ``session_workflow`` right after this activity returns.
-  * Does not hold any non-deterministic state in memory between yields;
-    activity replay is safe.
+  * Polling is intentionally contained in this activity when the BFF reports
+    that a per-session agent host is still queued. Dapr workflow code must not
+    add readiness timers around this path because that mutates parent workflow
+    history and can trip replay nondeterminism during high fanout runs.
+  * Does not hold any workflow state in memory between yields; activity retries
+    are safe because the BFF endpoint is idempotent for ``sessionId``.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 import requests
@@ -33,6 +35,105 @@ import requests
 from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_AGENT_SESSION_HOST_READY_POLL_SECONDS = 5
+DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS = 600
+
+
+def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, default)
+
+
+def _is_agent_session_app_id(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().startswith("agent-session-")
+
+
+def _agent_session_host_status(value: dict[str, Any]) -> str | None:
+    status = value.get("agentHostStatus") or value.get("status")
+    return status.strip().lower() if isinstance(status, str) and status.strip() else None
+
+
+def _agent_session_host_is_ready(value: str | None) -> bool:
+    return value in {"ready", "running"}
+
+
+def _post_ensure_for_workflow(
+    endpoint: str,
+    payload: dict[str, Any],
+    internal_token: str,
+) -> dict[str, Any]:
+    try:
+        # The BFF may synchronously wait for host readiness for a short window.
+        # Keep the HTTP timeout above the BFF cap so slow readiness reports are
+        # returned as queued/ready instead of client-side disconnects.
+        response = requests.post(
+            endpoint,
+            json=payload,
+            headers={"X-Internal-Token": internal_token},
+            timeout=90,
+        )
+    except requests.exceptions.RequestException as exc:
+        logger.warning("[spawn_session] HTTP error calling %s: %s", endpoint, exc)
+        raise RuntimeError(
+            f"spawn_session_for_workflow: request failed: {exc}"
+        ) from exc
+
+    if response.status_code >= 400:
+        body_preview = response.text[:800] if response.text else "<empty>"
+        raise RuntimeError(
+            f"spawn_session_for_workflow: HTTP {response.status_code} from BFF: {body_preview}"
+        )
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"spawn_session_for_workflow: invalid JSON from BFF: {exc}"
+        ) from exc
+
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            f"spawn_session_for_workflow: expected object from BFF, got {type(body).__name__}"
+        )
+    return body
+
+
+def _ensure_agent_session_host_ready(
+    endpoint: str,
+    payload: dict[str, Any],
+    internal_token: str,
+) -> dict[str, Any]:
+    poll_seconds = _int_env(
+        "AGENT_SESSION_HOST_READY_POLL_SECONDS",
+        DEFAULT_AGENT_SESSION_HOST_READY_POLL_SECONDS,
+    )
+    timeout_seconds = _int_env(
+        "AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS",
+        DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS,
+    )
+    deadline = time.monotonic() + timeout_seconds
+    body = _post_ensure_for_workflow(endpoint, payload, internal_token)
+
+    while True:
+        agent_app_id = body.get("agentAppId")
+        if not _is_agent_session_app_id(agent_app_id):
+            return body
+
+        host_status = _agent_session_host_status(body)
+        if host_status is None or _agent_session_host_is_ready(host_status):
+            return body
+
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"agent workflow host {agent_app_id} did not become ready before "
+                f"scheduling session_workflow; last status={host_status}"
+            )
+
+        time.sleep(poll_seconds)
+        body = _post_ensure_for_workflow(endpoint, payload, internal_token)
 
 
 def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -108,44 +209,7 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
         }
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"
-        try:
-            # 60s read timeout: the BFF endpoint synchronously wakes the
-            # per-agent runtime pod before responding (up to ~20s for a
-            # cold 4-container browser-sidecar pod) + does DB writes. A
-            # 30s budget is tight when the placement service hasn't
-            # caught up; 60s gives the wake path room without masking
-            # true infrastructure outages.
-            response = requests.post(
-                endpoint,
-                json=payload,
-                headers={"X-Internal-Token": internal_token},
-                timeout=60,
-            )
-        except requests.exceptions.RequestException as exc:
-            logger.warning(
-                "[spawn_session] HTTP error calling %s: %s", endpoint, exc
-            )
-            raise RuntimeError(
-                f"spawn_session_for_workflow: request failed: {exc}"
-            ) from exc
-
-        if response.status_code >= 400:
-            body_preview = response.text[:800] if response.text else "<empty>"
-            raise RuntimeError(
-                f"spawn_session_for_workflow: HTTP {response.status_code} from BFF: {body_preview}"
-            )
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"spawn_session_for_workflow: invalid JSON from BFF: {exc}"
-            ) from exc
-
-        if not isinstance(body, dict):
-            raise RuntimeError(
-                f"spawn_session_for_workflow: expected object from BFF, got {type(body).__name__}"
-            )
+        body = _ensure_agent_session_host_ready(endpoint, payload, internal_token)
 
         child_input = body.get("childInput")
         if not isinstance(child_input, dict):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -28,6 +28,7 @@ if "requests" not in sys.modules:
     requests_module.get = lambda *_args, **_kwargs: None
     requests_module.post = lambda *_args, **_kwargs: None
     requests_module.request = lambda *_args, **_kwargs: None
+    requests_module.exceptions = types.SimpleNamespace(RequestException=Exception)
     sys.modules["requests"] = requests_module
 
 if "durabletask.internal.orchestrator_service_pb2" not in sys.modules:
@@ -255,6 +256,9 @@ def _load_module(name: str, relative_path: str):
 APP = _load_module("workflow_orchestrator_app", "app.py")
 SW_WORKFLOW = _load_module(
     "workflow_orchestrator_sw_workflow", "workflows/sw_workflow.py"
+)
+SPAWN_SESSION = _load_module(
+    "workflow_orchestrator_spawn_session", "activities/spawn_session.py"
 )
 
 
@@ -756,7 +760,7 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
     assert result["success"] is True
 
 
-def test_benchmark_durable_run_waits_for_queued_agent_session_host_before_child_workflow():
+def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
     workflow = types.SimpleNamespace(
         use=None,
         document=types.SimpleNamespace(name="test-workflow"),
@@ -783,8 +787,7 @@ def test_benchmark_durable_run_waits_for_queued_agent_session_host_before_child_
     )
 
     class _FakeCtx:
-        instance_id = "parent-benchmark-wf-queued-host"
-        current_utc_datetime = datetime(2026, 5, 8, tzinfo=timezone.utc)
+        instance_id = "parent-benchmark-wf-pre-waited-host"
 
         def call_activity(self, activity, input=None):
             return {
@@ -807,7 +810,7 @@ def test_benchmark_durable_run_waits_for_queued_agent_session_host_before_child_
             )
 
         def create_timer(self, timeout):
-            return _FakeWorkflowTask("timer", timeout=timeout)
+            raise AssertionError("agent host readiness belongs inside spawn_session activity")
 
     ctx = _FakeCtx()
     workflow_gen = SW_WORKFLOW._handle_call_task(
@@ -830,22 +833,6 @@ def test_benchmark_durable_run_waits_for_queued_agent_session_host_before_child_
 
     yielded = next(workflow_gen)
     assert yielded["activity"] == "spawn_session_for_workflow"
-
-    readiness_timer = workflow_gen.send(
-        {
-            "childInput": {"sessionId": "child-session"},
-            "agentAppId": "agent-session-abc123",
-            "agentHostStatus": "queued",
-        }
-    )
-    assert readiness_timer.kind == "timer"
-    assert readiness_timer.timeout == timedelta(
-        seconds=SW_WORKFLOW.AGENT_SESSION_HOST_READY_POLL_SECONDS
-    )
-
-    ctx.current_utc_datetime += readiness_timer.timeout
-    recheck = workflow_gen.send(readiness_timer)
-    assert recheck["activity"] == "spawn_session_for_workflow"
 
     child_yield = workflow_gen.send(
         {
@@ -893,7 +880,6 @@ def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflo
 
     class _FakeCtx:
         instance_id = "parent-benchmark-wf-no-host-status"
-        current_utc_datetime = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
         def call_activity(self, activity, input=None):
             return {
@@ -945,6 +931,106 @@ def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflo
     assert child_yield.kind == "call_child_workflow"
     assert child_yield.name == "session_workflow"
     assert child_yield.app_id == "agent-session-abc123"
+
+
+class _FakeResponse:
+    def __init__(self, body, status_code=200, text=""):
+        self._body = body
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        return self._body
+
+
+def test_spawn_session_activity_polls_agent_session_host_until_ready(monkeypatch):
+    bodies = [
+        {
+            "sessionId": "child-session",
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "queued",
+            "childInput": {"sessionId": "child-session"},
+        },
+        {
+            "sessionId": "child-session",
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "ready",
+            "childInput": {"sessionId": "child-session"},
+        },
+    ]
+    posts = []
+
+    def fake_post(endpoint, **kwargs):
+        posts.append((endpoint, kwargs))
+        return _FakeResponse(bodies[len(posts) - 1])
+
+    sleeps = []
+    monotonic_values = iter([0, 1])
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "1")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "10")
+    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
+    monkeypatch.setattr(SPAWN_SESSION.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(SPAWN_SESSION.time, "monotonic", lambda: next(monotonic_values))
+
+    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+        "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
+        {"sessionId": "child-session"},
+        "token",
+    )
+
+    assert body["agentHostStatus"] == "ready"
+    assert len(posts) == 2
+    assert sleeps == [1]
+
+
+def test_spawn_session_activity_times_out_waiting_for_agent_session_host(monkeypatch):
+    def fake_post(_endpoint, **_kwargs):
+        return _FakeResponse(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "agentHostStatus": "queued",
+                "childInput": {"sessionId": "child-session"},
+            }
+        )
+
+    monotonic_values = iter([0, 4])
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "3")
+    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
+    monkeypatch.setattr(SPAWN_SESSION.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(TimeoutError, match="agent workflow host agent-session-abc123"):
+        SPAWN_SESSION._ensure_agent_session_host_ready(
+            "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
+            {"sessionId": "child-session"},
+            "token",
+        )
+
+
+def test_spawn_session_activity_preserves_old_bff_missing_host_status(monkeypatch):
+    def fake_post(_endpoint, **_kwargs):
+        return _FakeResponse(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "childInput": {"sessionId": "child-session"},
+            }
+        )
+
+    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
+    monkeypatch.setattr(
+        SPAWN_SESSION.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("should not sleep")),
+    )
+
+    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+        "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
+        {"sessionId": "child-session"},
+        "token",
+    )
+
+    assert body["agentAppId"] == "agent-session-abc123"
 
 
 def test_benchmark_sw_workflow_skips_parent_workspace_cleanup():
