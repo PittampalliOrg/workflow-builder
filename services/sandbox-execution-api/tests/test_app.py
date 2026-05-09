@@ -9,7 +9,7 @@ from src.app import (
     AgentWorkflowHostRequest,
     ExecutionClassConfig,
     ExecutionRequest,
-    build_agent_workflow_host_job_manifest,
+    build_agent_workflow_host_sandbox_manifest,
     build_job_manifest,
     build_payload_configmap_manifest,
 )
@@ -128,8 +128,8 @@ def test_secure_gvisor_sets_runtime_class_without_queueing_worker_job() -> None:
     assert manifest["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor"
 
 
-def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
-    manifest = build_agent_workflow_host_job_manifest(
+def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
         AgentWorkflowHostRequest(
             sessionId="sw-session-1",
             agentAppId="agent-session-abc123",
@@ -145,16 +145,29 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
         ),
     )
 
-    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
-    template = manifest["spec"]["template"]
-    annotations = template["metadata"]["annotations"]
+    assert manifest["apiVersion"] == "agents.x-k8s.io/v1alpha1"
+    assert manifest["kind"] == "Sandbox"
+    assert manifest["spec"]["replicas"] == 1
+    # Kueue Plain Pod admission requires the queue label on the podTemplate,
+    # not on the parent Sandbox metadata.
+    assert "kueue.x-k8s.io/queue-name" not in manifest["metadata"]["labels"]
+    pod_template = manifest["spec"]["podTemplate"]
+    assert (
+        pod_template["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
+        == "benchmark-fast"
+    )
+    annotations = pod_template["metadata"]["annotations"]
     assert annotations["dapr.io/app-id"] == "agent-session-abc123"
     assert annotations["dapr.io/config"] == "workflow-builder-agent-runtime"
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
     assert annotations["dapr.io/max-body-size"] == "16Mi"
-    assert manifest["spec"]["backoffLimit"] == 1
-    pod_spec = template["spec"]
+    pod_spec = pod_template["spec"]
+    # Job-only fields must not leak through to the Sandbox.
+    assert "backoffLimit" not in manifest["spec"]
+    assert "ttlSecondsAfterFinished" not in manifest["spec"]
+    # The pod (not the Sandbox) carries the deadline.
+    assert pod_spec["activeDeadlineSeconds"] == 900 + 600
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
     assert pod_spec["initContainers"][0]["name"] == "seed-openshell-config"
     container = pod_spec["containers"][0]
@@ -179,36 +192,25 @@ def test_agent_workflow_host_job_is_kueue_managed_dapr_native_sidecar() -> None:
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
 
 
-def test_agent_workflow_host_backoff_can_be_overridden(monkeypatch) -> None:
-    monkeypatch.setenv("SANDBOX_EXECUTION_AGENT_HOST_BACKOFF_LIMIT", "3")
-    manifest = build_agent_workflow_host_job_manifest(
-        AgentWorkflowHostRequest(
-            sessionId="sw-session-1",
-            agentAppId="agent-session-abc123",
-            runId="run_1",
-            instanceId="sympy__sympy-20590",
-            executionClass="benchmark-fast",
-            timeoutSeconds=900,
-        ),
-        namespace="workflow-builder",
-        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
-    )
+class _FakeCustom:
+    def __init__(self) -> None:
+        self.creates: list[tuple[str, str, str, str, dict]] = []
 
-    assert manifest["spec"]["backoffLimit"] == 3
+    def create_namespaced_custom_object(
+        self, *, group, version, namespace, plural, body
+    ):
+        self.creates.append((group, version, namespace, plural, body))
+        return body
 
 
 def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
     monkeypatch,
 ) -> None:
-    created_jobs: list[tuple[str, dict]] = []
+    fake_custom = _FakeCustom()
+    fake_core = SimpleNamespace()
     scoped_components: list[tuple[str, str]] = []
     readiness_checks: list[tuple[str, str]] = []
 
-    class FakeBatch:
-        def create_namespaced_job(self, *, namespace, body):
-            created_jobs.append((namespace, body))
-
-    fake_core = SimpleNamespace()
     monkeypatch.setenv("SANDBOX_EXECUTION_NAMESPACE", "openshell")
     monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
     monkeypatch.delenv("AGENT_WORKFLOW_HOST_NAMESPACE", raising=False)
@@ -218,7 +220,12 @@ def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
         "_load_execution_classes",
         lambda: {"benchmark-fast": ExecutionClassConfig(localQueue="benchmark-fast")},
     )
-    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (FakeBatch(), fake_core))
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (SimpleNamespace(), fake_core)
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
+    )
     monkeypatch.setattr(
         app_module,
         "_ensure_agent_host_component_scopes",
@@ -246,18 +253,20 @@ def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
     )
 
     assert response["status"] == "ready"
-    assert created_jobs[0][0] == "workflow-builder"
-    assert created_jobs[0][1]["metadata"]["namespace"] == "workflow-builder"
+    assert response["sandboxName"]
+    assert response["sandboxName"] == response["jobName"]
+    assert len(fake_custom.creates) == 1
+    group, version, namespace, plural, body = fake_custom.creates[0]
+    assert (group, version, plural) == ("agents.x-k8s.io", "v1alpha1", "sandboxes")
+    assert namespace == "workflow-builder"
+    assert body["metadata"]["namespace"] == "workflow-builder"
+    assert body["kind"] == "Sandbox"
     assert scoped_components == [("workflow-builder", "agent-session-abc123")]
     assert readiness_checks == [("workflow-builder", "agent-session-abc123")]
 
 
 def test_submit_agent_workflow_host_allows_explicit_namespace(monkeypatch) -> None:
-    created_namespaces: list[str] = []
-
-    class FakeBatch:
-        def create_namespaced_job(self, *, namespace, body):
-            created_namespaces.append(namespace)
+    fake_custom = _FakeCustom()
 
     monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
     monkeypatch.setenv("SANDBOX_EXECUTION_NAMESPACE", "openshell")
@@ -270,7 +279,10 @@ def test_submit_agent_workflow_host_allows_explicit_namespace(monkeypatch) -> No
     monkeypatch.setattr(
         app_module,
         "_load_k8s_clients",
-        lambda: (FakeBatch(), SimpleNamespace()),
+        lambda: (SimpleNamespace(), SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
     )
     monkeypatch.setattr(
         app_module,
@@ -296,7 +308,8 @@ def test_submit_agent_workflow_host_allows_explicit_namespace(monkeypatch) -> No
     )
 
     assert response["status"] == "queued"
-    assert created_namespaces == ["workflow-builder-canary"]
+    assert len(fake_custom.creates) == 1
+    assert fake_custom.creates[0][2] == "workflow-builder-canary"
 
 
 def test_component_scope_patch_uses_json_patch_append(monkeypatch) -> None:
@@ -408,7 +421,7 @@ def test_wait_for_agent_host_ready_returns_queued_when_kueue_delays_pod() -> Non
     assert status == "queued"
 
 
-def test_wait_for_agent_host_ready_allows_job_retry_after_pod_startup_error(
+def test_wait_for_agent_host_ready_allows_sandbox_retry_after_pod_startup_error(
     monkeypatch,
 ) -> None:
     failed_pod = SimpleNamespace(
@@ -443,11 +456,6 @@ def test_wait_for_agent_host_ready_allows_job_retry_after_pod_startup_error(
         return SimpleNamespace(items=[ready_pod])
 
     core = SimpleNamespace(list_namespaced_pod=list_namespaced_pod)
-    batch = SimpleNamespace(
-        read_namespaced_job=lambda **_kwargs: SimpleNamespace(
-            status=SimpleNamespace(conditions=[])
-        )
-    )
     monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
 
     status = app_module._wait_for_agent_host_ready(
@@ -455,14 +463,13 @@ def test_wait_for_agent_host_ready_allows_job_retry_after_pod_startup_error(
         namespace="workflow-builder",
         agent_app_id="agent-session-abc123",
         wait_seconds=1,
-        batch=batch,
-        job_name="agent-host-agent-session-abc123",
+        failure_probe=lambda: None,
     )
 
     assert status == "ready"
 
 
-def test_wait_for_agent_host_ready_fails_when_job_fails() -> None:
+def test_wait_for_agent_host_ready_fails_when_sandbox_fails() -> None:
     failed_pod = SimpleNamespace(
         status=SimpleNamespace(
             phase="Failed",
@@ -474,20 +481,6 @@ def test_wait_for_agent_host_ready_fails_when_job_fails() -> None:
     core = SimpleNamespace(
         list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[failed_pod])
     )
-    batch = SimpleNamespace(
-        read_namespaced_job=lambda **_kwargs: SimpleNamespace(
-            status=SimpleNamespace(
-                conditions=[
-                    SimpleNamespace(
-                        type="Failed",
-                        status="True",
-                        reason="BackoffLimitExceeded",
-                        message="Job has reached the specified backoff limit",
-                    )
-                ]
-            )
-        )
-    )
 
     with pytest.raises(HTTPException) as excinfo:
         app_module._wait_for_agent_host_ready(
@@ -495,12 +488,51 @@ def test_wait_for_agent_host_ready_fails_when_job_fails() -> None:
             namespace="workflow-builder",
             agent_app_id="agent-session-abc123",
             wait_seconds=1,
-            batch=batch,
-            job_name="agent-host-agent-session-abc123",
+            failure_probe=lambda: "AdmissionFailed: cluster queue rejected",
         )
 
     assert excinfo.value.status_code == 503
-    assert "BackoffLimitExceeded" in str(excinfo.value.detail)
+    assert "AdmissionFailed" in str(excinfo.value.detail)
+
+
+def test_sandbox_failure_reason_reads_status_conditions() -> None:
+    fake_custom = SimpleNamespace(
+        get_namespaced_custom_object=lambda **_kwargs: {
+            "status": {
+                "conditions": [
+                    {
+                        "type": "Failed",
+                        "status": "True",
+                        "reason": "PodFailed",
+                        "message": "container exited 1",
+                    }
+                ]
+            }
+        }
+    )
+
+    reason = app_module._sandbox_failure_reason(
+        fake_custom,
+        namespace="workflow-builder",
+        sandbox_name="agent-host-agent-session-abc123",
+    )
+    assert reason == "PodFailed: container exited 1"
+
+
+def test_sandbox_failure_reason_returns_none_when_no_failed_condition() -> None:
+    fake_custom = SimpleNamespace(
+        get_namespaced_custom_object=lambda **_kwargs: {
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+        }
+    )
+    assert (
+        app_module._sandbox_failure_reason(
+            fake_custom,
+            namespace="workflow-builder",
+            sandbox_name="agent-host-agent-session-abc123",
+        )
+        is None
+    )
 
 
 def test_long_resource_names_keep_unique_suffixes() -> None:

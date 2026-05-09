@@ -11,6 +11,7 @@ import {
 	agentRuntimeInvokeTarget,
 	resolveAgentRuntimeRoute,
 } from "$lib/server/agents/runtime-routing";
+import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
 
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
@@ -138,12 +139,52 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,
 	};
 
+	// Resolve the dispatch app-id. Two paths share the same downstream shape
+	// (Dapr service-invoke into `/internal/sessions/spawn`); only the pod
+	// backing the app-id differs:
+	//   1. Kueue Sandbox path (preferred for non-browser agents): a fresh
+	//      `agents.x-k8s.io/v1alpha1 Sandbox` is admitted via Kueue, the pod
+	//      gets a deterministic `agent-session-<sha20>` app-id, and the BFF
+	//      blocks until the pod is ready. No wake handshake needed.
+	//   2. SandboxWarmPool path (browser-use-agent + Playwright MCP): per-slug
+	//      pool emitted at agent publish; we patch `spec.replicas: 1` on demand
+	//      via `wakeAgentRuntime` and the upstream agent-sandbox controller
+	//      manages the pod.
+	const sessionHost = await maybeProvisionAgentWorkflowHost({
+		sessionId,
+		agentConfig: agentConfigForDispatch,
+		workflowExecutionId: session.workflowExecutionId ?? null,
+		benchmarkRunId: null,
+		benchmarkInstanceId: null,
+		timeoutMinutes: null,
+	}).catch((err) => {
+		console.warn(
+			`[session-spawn] sandbox provision failed, falling back to warm-pool wake:`,
+			err instanceof Error ? err.message : err,
+		);
+		return null;
+	});
+	const targetAppId = sessionHost?.agentAppId ?? runtimeRoute.appId;
+	if (!sessionHost) {
+		try {
+			const { wakeAgentRuntime } = await import(
+				"$lib/server/kube/client"
+			);
+			await wakeAgentRuntime(runtimeRoute.slug, 30_000);
+		} catch (err) {
+			console.warn(
+				`[session-spawn] wake ${runtimeRoute.slug} failed, continuing anyway:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
 	const payload = {
 		sessionId,
 		agentId: agent.id,
 		agentVersion: session.agentVersion ?? agent.version ?? null,
 		agentSlug: agent.slug,
-		agentAppId: runtimeRoute.appId,
+		agentAppId: targetAppId,
 		agentRuntimeClass: runtimeRoute.runtimeClass,
 		agentRuntimeIsolation: runtimeRoute.isolation,
 		agentConfig: agentConfigForDispatch,
@@ -162,20 +203,6 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		sandboxName: session.workspaceSandboxName ?? null,
 		initialEvents,
 	};
-
-	// Dispatch to the physical Dapr runtime selected for this session. For
-	// pool-backed agents, multiple published agents share the app id while
-	// their instructions/tools/MCP stay pinned in the payload above.
-	const targetAppId = runtimeRoute.appId;
-	try {
-		const { wakeAgentRuntime } = await import("$lib/server/kube/client");
-		await wakeAgentRuntime(runtimeRoute.slug, 30_000);
-	} catch (err) {
-		console.warn(
-			`[session-spawn] wake ${runtimeRoute.slug} failed, continuing anyway:`,
-			err instanceof Error ? err.message : err,
-		);
-	}
 
 	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();

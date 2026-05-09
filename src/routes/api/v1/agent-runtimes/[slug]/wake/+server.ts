@@ -37,10 +37,12 @@ export const POST: RequestHandler = async ({ params, url, locals }) => {
 	const runtimeSlug = agentRuntimeSlugFromAppId(runtimeAppId) ?? slug;
 
 	try {
-		const cr = await wakeAgentRuntime(runtimeSlug, timeoutMs);
+		const status = await wakeAgentRuntime(runtimeSlug, timeoutMs);
 		return json({
-			phase: cr.status?.phase ?? "Unknown",
-			replicas: cr.status?.replicas ?? 0,
+			phase: status.phase,
+			replicas: status.replicas,
+			readyReplicas: status.readyReplicas,
+			source: status.source,
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

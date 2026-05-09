@@ -110,10 +110,6 @@
 			>
 				live
 			</Badge>
-		{:else if specialCase === "single-source" && cell}
-			<Badge variant="outline" class="h-4 px-1 text-[0.6rem]" title="agent-runtime-controller is bumped directly in base manifests">
-				single
-			</Badge>
 		{/if}
 	</div>
 

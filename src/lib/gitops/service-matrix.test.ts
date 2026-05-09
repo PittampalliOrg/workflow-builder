@@ -74,7 +74,6 @@ function makePin(name: string, tag: string): DesiredImageMetadata {
 describe("specialCaseFor", () => {
 	it("categorises every service", () => {
 		expect(specialCaseFor("workflow-builder")).toBeNull();
-		expect(specialCaseFor("agent-runtime-controller")).toBe("single-source");
 		expect(specialCaseFor("openshell-sandbox")).toBe("sandbox-only");
 		expect(specialCaseFor("dapr-agent-py-sandbox")).toBe("sandbox-only");
 		expect(specialCaseFor("browser-use-agent-sandbox")).toBe("sandbox-only");
@@ -186,20 +185,7 @@ describe("buildServiceMatrix", () => {
 		expect(sb?.envs.staging?.source).toBe("pin-only");
 	});
 
-	it("agent-runtime-controller synthesises pin-only cells on all three envs when no inventory", () => {
-		const rows = buildServiceMatrix({
-			inventory: null,
-			releasePins: [makePin("agent-runtime-controller", "git-55555555")],
-		});
-		const ctl = rows.find((r) => r.service === "agent-runtime-controller");
-		expect(ctl?.specialCase).toBe("single-source");
-		expect(ctl?.envs.ryzen?.source).toBe("pin-only");
-		expect(ctl?.envs.dev?.source).toBe("pin-only");
-		expect(ctl?.envs.staging?.source).toBe("pin-only");
-		expect(ctl?.envs.staging?.tag).toBe("git-55555555");
-	});
-
-	it("inventory = null returns all 14 rows without crashing", () => {
+	it("inventory = null returns all rows without crashing", () => {
 		const rows = buildServiceMatrix({ inventory: null, releasePins: [] });
 		expect(rows).toHaveLength(WB_SERVICES.length);
 		// Services with no special fallback should have all null cells.

@@ -436,21 +436,11 @@ chmod 600 "${MTLS_DIR}/tls.key"
     }
 
 
-def _agent_host_job_name(agent_app_id: str) -> str:
+def _agent_host_sandbox_name(agent_app_id: str) -> str:
     return _safe_resource_name(f"agent-host-{agent_app_id}", max_length=63)
 
 
-def _agent_host_backoff_limit() -> int:
-    try:
-        return max(
-            0,
-            int(os.environ.get("SANDBOX_EXECUTION_AGENT_HOST_BACKOFF_LIMIT", "1")),
-        )
-    except ValueError:
-        return 1
-
-
-def build_agent_workflow_host_job_manifest(
+def build_agent_workflow_host_sandbox_manifest(
     request: AgentWorkflowHostRequest,
     *,
     namespace: str,
@@ -619,15 +609,15 @@ def build_agent_workflow_host_job_manifest(
         ]
     if class_config.runtimeClassName:
         pod_spec["runtimeClassName"] = class_config.runtimeClassName
+    pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
     return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
+        "apiVersion": "agents.x-k8s.io/v1alpha1",
+        "kind": "Sandbox",
         "metadata": {
-            "name": _agent_host_job_name(request.agentAppId),
+            "name": _agent_host_sandbox_name(request.agentAppId),
             "namespace": namespace,
             "labels": {
                 "app": "agent-workflow-host",
-                KUEUE_QUEUE_LABEL: class_config.localQueue,
                 "benchmark-run-id": run_label,
                 "benchmark-instance-id": instance_label,
                 "agent-app-id": app_label,
@@ -635,13 +625,12 @@ def build_agent_workflow_host_job_manifest(
             },
         },
         "spec": {
-            "backoffLimit": _agent_host_backoff_limit(),
-            "activeDeadlineSeconds": request.timeoutSeconds + 600,
-            "ttlSecondsAfterFinished": _job_ttl_seconds(class_config),
-            "template": {
+            "replicas": 1,
+            "podTemplate": {
                 "metadata": {
                     "labels": {
                         "app": "agent-workflow-host",
+                        KUEUE_QUEUE_LABEL: class_config.localQueue,
                         "benchmark-run-id": run_label,
                         "benchmark-instance-id": instance_label,
                         "agent-app-id": app_label,
@@ -802,15 +791,48 @@ def _job_failure_reason(batch: Any, *, namespace: str, job_name: str) -> str | N
     return None
 
 
+def _sandbox_failure_reason(
+    custom: Any, *, namespace: str, sandbox_name: str
+) -> str | None:
+    try:
+        sandbox = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=sandbox_name,
+        )
+    except Exception:
+        return None
+    status_obj = sandbox.get("status") if isinstance(sandbox, dict) else None
+    if not isinstance(status_obj, dict):
+        return None
+    for condition in status_obj.get("conditions", []) or []:
+        if not isinstance(condition, dict):
+            continue
+        ctype = condition.get("type")
+        cstatus = condition.get("status")
+        if ctype in {"Failed", "Degraded"} and cstatus == "True":
+            reason = condition.get("reason") or "sandbox failed"
+            message = condition.get("message")
+            return f"{reason}: {message}" if message else reason
+    return None
+
+
 def _wait_for_agent_host_ready(
     core: Any,
     *,
     namespace: str,
     agent_app_id: str,
     wait_seconds: int,
-    batch: Any | None = None,
-    job_name: str | None = None,
+    failure_probe: Any | None = None,
 ) -> str:
+    """Poll the per-app pod selector until ready or `wait_seconds` elapses.
+
+    `failure_probe`, if provided, is called each tick with no args and must
+    return either ``None`` (no failure) or a string describing the failure;
+    when it returns a string we surface a 503 and stop polling.
+    """
     if wait_seconds <= 0:
         return "queued"
     selector = f"app=agent-workflow-host,agent-app-id={_safe_name(agent_app_id, max_length=63)}"
@@ -818,16 +840,12 @@ def _wait_for_agent_host_ready(
     last_phase = "pending"
     last_failure: str | None = None
     while time.monotonic() < deadline:
-        if batch is not None and job_name:
-            job_failure = _job_failure_reason(
-                batch,
-                namespace=namespace,
-                job_name=job_name,
-            )
-            if job_failure:
+        if failure_probe is not None:
+            host_failure = failure_probe()
+            if host_failure:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=f"agent workflow host {agent_app_id} job failed before readiness: {job_failure}",
+                    detail=f"agent workflow host {agent_app_id} failed before readiness: {host_failure}",
                 )
         pods = core.list_namespaced_pod(
             namespace=namespace,
@@ -944,20 +962,28 @@ def submit_agent_workflow_host(
             detail=f"unsupported executionClass {body.executionClass}",
         )
     namespace = _agent_workflow_host_namespace()
-    manifest = build_agent_workflow_host_job_manifest(
+    manifest = build_agent_workflow_host_sandbox_manifest(
         body,
         namespace=namespace,
         class_config=class_config,
     )
+    sandbox_name = manifest["metadata"]["name"]
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
         "1",
         "true",
         "yes",
     }:
-        batch, core = _load_k8s_clients()
+        _, core = _load_k8s_clients()
+        custom = _load_k8s_custom_objects_client()
         _ensure_agent_host_component_scopes(namespace, body.agentAppId)
         try:
-            batch.create_namespaced_job(namespace=namespace, body=manifest)
+            custom.create_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                body=manifest,
+            )
         except Exception as exc:
             if getattr(exc, "status", None) != 409:
                 raise
@@ -966,15 +992,19 @@ def submit_agent_workflow_host(
             namespace=namespace,
             agent_app_id=body.agentAppId,
             wait_seconds=body.waitReadySeconds,
-            batch=batch,
-            job_name=manifest["metadata"]["name"],
+            failure_probe=lambda: _sandbox_failure_reason(
+                custom, namespace=namespace, sandbox_name=sandbox_name
+            ),
         )
     else:
         readiness_status = "queued"
     return {
         "agentAppId": body.agentAppId,
         "sessionId": body.sessionId,
-        "jobName": manifest["metadata"]["name"],
+        "sandboxName": sandbox_name,
+        # Back-compat: callers (BFF, orchestrator) still read `jobName` until
+        # arc 1.5 lands the shared dispatcher rename. Keep both keys until then.
+        "jobName": sandbox_name,
         "status": readiness_status,
         "executionClass": body.executionClass,
         "localQueue": class_config.localQueue,

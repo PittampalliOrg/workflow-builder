@@ -253,14 +253,15 @@ async function invokeEvaluatorAgent(
 
 	// Path 2: Dapr service-invoke against the per-agent runtime pod's
 	// /api/grader-evaluate endpoint (added in services/dapr-agent-py/src/main.py).
-	// Wake the pod first; if it's already Active wakeAgentRuntime returns fast.
+	// Wake the pod first; if it's already Active wakeAgentRuntime returns
+	// fast. Tries SandboxWarmPool first (Arc 2), falls back to AgentRuntime.
 	try {
 		await wakeAgentRuntime(slug, 30_000);
 	} catch (err) {
 		throw new Error(
 			`failed to wake agent-runtime-${slug}: ${
 				err instanceof Error ? err.message : String(err)
-			}; ensure an AgentRuntime CR exists for this slug or set EVALUATIONS_GRADER_URL`,
+			}; ensure a SandboxWarmPool or AgentRuntime exists for this slug, or set EVALUATIONS_GRADER_URL`,
 		);
 	}
 

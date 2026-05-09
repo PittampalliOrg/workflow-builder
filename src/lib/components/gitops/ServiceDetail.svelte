@@ -65,8 +65,6 @@
 
 	const specialCaseLabel = $derived.by(() => {
 		switch (row.specialCase) {
-			case "single-source":
-				return "single-source across envs";
 			case "sandbox-only":
 				return "runtime-launched sandbox";
 			case "ryzen-missing-pin":

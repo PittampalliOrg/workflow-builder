@@ -37,10 +37,10 @@ logger = logging.getLogger(__name__)
 #   2. producer_id joins with agents.slug so "events by agent X" is a one-
 #      liner query (CMA-aligned identity, stable across pod restarts).
 #
-# Producer-Id = agent slug (AGENT_SLUG env var stamped by
-#   agent-runtime-controller for per-agent pods; falls back to
-#   WORKFLOW_BUILDER_APP_ID for the legacy shared dapr-agent-py pod;
-#   finally hostname as a last resort).
+# Producer-Id = agent slug (AGENT_SLUG env var stamped by the BFF on the
+#   SandboxTemplate / per-session Sandbox spec for warm-pool and Kueue-
+#   admitted pods; falls back to WORKFLOW_BUILDER_APP_ID for the legacy
+#   shared dapr-agent-py pod; finally hostname as a last resort).
 # Producer-Epoch = pod process start-time in ns — monotonic across restarts,
 #   collision-free in practice (pods don't restart at nanosecond resolution).
 # Producer-Seq = in-process atomic counter, unique per (id, epoch).

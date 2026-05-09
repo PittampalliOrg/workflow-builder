@@ -4,7 +4,11 @@ import { and, eq } from 'drizzle-orm';
 
 import { db } from '$lib/server/db';
 import { agents, sessions } from '$lib/server/db/schema';
-import { getAgentRuntime, getAgentRuntimePod } from '$lib/server/kube/client';
+import {
+	browserAgentSandboxWarmPoolName,
+	getAgentRuntimePod,
+	getSandboxWarmPool,
+} from '$lib/server/kube/client';
 
 // Must stay in sync with ALLOWED_CONTAINERS in ws-kube-exec-proxy.ts and
 // the matching set in server-prod.js. Don't offer a container in the UI
@@ -46,28 +50,44 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (rows.length === 0) return error(404, 'Session not found in workspace');
 
 	const slug = rows[0].slug;
-	const cr = await getAgentRuntime(slug);
-	const browserSidecarEnabled = cr?.spec?.browserSidecar?.enabled === true;
-	const phase = cr?.status?.phase ?? 'Unknown';
+	const pool = await getSandboxWarmPool(browserAgentSandboxWarmPoolName(slug));
+	const desired = pool?.spec?.replicas ?? 0;
+	const replicas = pool?.status?.replicas ?? 0;
+	const ready = pool?.status?.readyReplicas ?? 0;
+	const phase = !pool
+		? 'Unknown'
+		: desired === 0 && replicas === 0
+			? 'Sleeping'
+			: desired > 0 && ready >= desired
+				? 'Active'
+				: desired > 0
+					? 'Starting'
+					: 'Unknown';
 
 	// Discover the live pod (if any) so the shell dropdown knows which
-	// containers to offer. When the CR is Sleeping the pod won't exist
-	// and containers will be empty — the UI hides the tab.
+	// containers to offer. When the pool is Sleeping the pod won't exist
+	// and containers will be empty — the UI hides the tab. The presence of
+	// a `playwright-mcp` container in the live pod is the source of truth
+	// for browserSidecarEnabled (replaces the old CR boolean flag).
 	let shellContainers: string[] = [];
+	let browserSidecarEnabled = false;
 	let browserMcpAvailable = false;
 	if (phase === 'Active') {
-		const pod = await getAgentRuntimePod(slug);
-		if (pod) {
-			// Filter to the shell-proxy allow-list so the dropdown never offers
-			// a container the backend will reject (e.g., daprd).
-			shellContainers = pod.containers
+		const livePod = await getAgentRuntimePod(slug);
+		if (livePod) {
+			shellContainers = livePod.containers
 				.filter((c) => c.ready && SHELLABLE_CONTAINERS.has(c.name))
 				.map((c) => c.name);
-			// MCP panel needs the chromium + playwright-mcp sidecar pair
-			// both ready so the per-agent Service backend is live.
+			browserSidecarEnabled = livePod.containers.some(
+				(c) => c.name === 'playwright-mcp',
+			);
 			if (browserSidecarEnabled) {
-				const chromiumReady = pod.containers.some((c) => c.name === 'chromium' && c.ready);
-				const mcpReady = pod.containers.some((c) => c.name === 'playwright-mcp' && c.ready);
+				const chromiumReady = livePod.containers.some(
+					(c) => c.name === 'chromium' && c.ready,
+				);
+				const mcpReady = livePod.containers.some(
+					(c) => c.name === 'playwright-mcp' && c.ready,
+				);
 				browserMcpAvailable = chromiumReady && mcpReady;
 			}
 		}

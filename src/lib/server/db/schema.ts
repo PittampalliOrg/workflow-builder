@@ -2364,13 +2364,15 @@ export const agents = pgTable(
 		avatar: text("avatar"),
 		tags: jsonb("tags").$type<string[]>().notNull().default([]),
 		runtime: text("runtime").notNull().default("dapr-agent-py"),
-		// Physical Dapr app-id materialized by the agent-runtime-controller.
+		// Physical Dapr app-id stamped on the per-agent runtime pod (browser/
+		// Playwright agents) or on the per-session Sandbox (everything else).
 		// Usually `agent-runtime-<slug>`; with shared pools enabled this can be
 		// `agent-runtime-pool-<class>`. Stays null for archived / unpublished rows.
 		runtimeAppId: text("runtime_app_id"),
-		// Mirror of AgentRuntime.status.phase so the agent detail page can
-		// render Sleeping / Starting / Active / Failed without a live Kubernetes
-		// API hit. Updated by a lightweight reconcile poll.
+		// Mirror of the SandboxWarmPool / per-session Sandbox status so the
+		// agent detail page can render Sleeping / Starting / Active / Failed
+		// without a live Kubernetes API hit. Updated by a lightweight reconcile
+		// poll.
 		runtimeStatus: text("runtime_status").notNull().default("pending"),
 		runtimeStatusSyncedAt: timestamp("runtime_status_synced_at", {
 			withTimezone: true,

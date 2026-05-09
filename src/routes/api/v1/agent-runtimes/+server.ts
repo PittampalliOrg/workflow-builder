@@ -1,17 +1,19 @@
 import type { RequestHandler } from "./$types";
 import { error, json } from "@sveltejs/kit";
 
-import { listAgentRuntimes } from "$lib/server/kube/client";
+import { listSandboxWarmPools } from "$lib/server/kube/client";
 import { db } from "$lib/server/db";
 import { agents } from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
 
 /**
- * Workspace-scoped list of all AgentRuntime CRs, filtered to agents
- * belonging to the caller's active workspace. Non-admin callers see
- * only their workspace's agents; cluster admins see everything.
+ * Workspace-scoped list of SandboxWarmPools (the Arc 3 replacement for the
+ * AgentRuntime CR list), filtered to agents in the caller's active workspace.
+ * After Arc 3, only browser/Playwright agents have a per-agent warm pool —
+ * non-browser agents now use per-session Sandboxes from sandbox-execution-api
+ * and don't appear in this list.
  *
- * Used by /admin/agent-runtimes dashboard.
+ * Powers the /admin/agent-runtimes dashboard.
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -29,39 +31,39 @@ export const GET: RequestHandler = async ({ locals }) => {
 				.from(agents)
 				.where(eq(agents.projectId, projectId))
 		: [];
-	const slugSet = new Set(agentRows.filter((r) => !r.isArchived).map((r) => r.slug));
-	const runtimeAppIdSet = new Set(
-		agentRows
-			.filter((r) => !r.isArchived && r.runtimeAppId)
-			.map((r) => r.runtimeAppId as string),
+	const slugSet = new Set(
+		agentRows.filter((r) => !r.isArchived).map((r) => r.slug),
 	);
 
-	const crs = await listAgentRuntimes();
-	const rows = crs
-		.filter(
-			(cr) =>
-				!projectId ||
-				slugSet.has(cr.spec.agentSlug) ||
-				runtimeAppIdSet.has(cr.spec.appId),
-		)
-		.map((cr) => ({
-			name: cr.metadata.name,
-			slug: cr.spec.agentSlug,
-			appId: cr.spec.appId,
-			runtimeClass: cr.spec.runtimeClass ?? null,
-			runtimeIsolation: cr.spec.runtimeIsolation ?? null,
-			phase: cr.status?.phase ?? "Unknown",
-			replicas: cr.status?.replicas ?? 0,
-			readyReplicas: cr.status?.readyReplicas ?? 0,
-			lastActiveAt: cr.status?.lastActiveAt ?? null,
-			imageTag: cr.spec.environment?.imageTag ?? null,
-			mcpServers: (cr.spec.mcpServers ?? []).map((s) => s.name),
-			idleTtlSeconds: cr.spec.lifecycle?.idleTtlSeconds ?? 1800,
-			// Small surface for the agents list page: does this agent have
-			// a chromium + playwright-mcp sidecar pair? Drives the 🌐 badge
-			// in the Runtime column.
-			browserSidecarEnabled: cr.spec.browserSidecar?.enabled === true,
-		}));
+	const pools = await listSandboxWarmPools();
+	const rows = pools
+		.filter((p) => {
+			if (!projectId) return true;
+			const slug = p.metadata.labels?.["agents.x-k8s.io/slug"];
+			return slug ? slugSet.has(slug) : false;
+		})
+		.map((p) => {
+			const desired = p.spec?.replicas ?? 0;
+			const replicas = p.status?.replicas ?? 0;
+			const ready = p.status?.readyReplicas ?? 0;
+			const phase =
+				desired === 0 && replicas === 0
+					? "Sleeping"
+					: desired > 0 && ready >= desired
+						? "Active"
+						: desired > 0
+							? "Starting"
+							: "Unknown";
+			return {
+				name: p.metadata.name,
+				slug: p.metadata.labels?.["agents.x-k8s.io/slug"] ?? null,
+				phase,
+				desiredReplicas: desired,
+				replicas,
+				readyReplicas: ready,
+				sandboxTemplateRef: p.spec.sandboxTemplateRef.name,
+			};
+		});
 
 	return json({ runtimes: rows });
 };

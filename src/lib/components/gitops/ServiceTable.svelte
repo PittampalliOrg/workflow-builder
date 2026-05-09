@@ -76,9 +76,7 @@
 							<div class="truncate text-sm font-medium">{row.service}</div>
 							{#if row.specialCase}
 								<div class="truncate text-[0.65rem] text-muted-foreground">
-									{row.specialCase === "single-source"
-										? "single-source"
-										: row.specialCase === "sandbox-only"
+									{row.specialCase === "sandbox-only"
 											? "sandbox"
 											: row.specialCase === "ryzen-missing-pin"
 												? "no ryzen pin"

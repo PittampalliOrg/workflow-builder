@@ -31,7 +31,6 @@ export const WB_SERVICES = [
 	"openshell-sandbox-xlsx",
 	"dapr-agent-py-sandbox",
 	"browser-use-agent-sandbox",
-	"agent-runtime-controller",
 ] as const;
 
 export type ServiceName = (typeof WB_SERVICES)[number];
@@ -39,9 +38,11 @@ export type ServiceName = (typeof WB_SERVICES)[number];
 /**
  * Services whose image tag is set in release-pins (and for dev/staging, in the
  * hub inventory) but which do not run as a long-lived Deployment on the spoke
- * — agent-runtime-controller launches them on demand. We still want them in
- * the matrix so operators can see what tag will be launched, but we render
- * them with a "runtime-launched" variant instead of showing sync/health.
+ * — they're consumed by per-session/per-agent SandboxTemplate references and
+ * launched on demand by the upstream agent-sandbox controller. We still want
+ * them in the matrix so operators can see what tag will be launched, but we
+ * render them with a "runtime-launched" variant instead of showing sync/
+ * health.
  */
 const SANDBOX_ONLY = new Set<string>([
 	"openshell-sandbox",
@@ -51,7 +52,6 @@ const SANDBOX_ONLY = new Set<string>([
 ]);
 
 export type SpecialCase =
-	| "single-source"
 	| "sandbox-only"
 	| "ryzen-missing-pin"
 	| "ryzen-only"
@@ -93,7 +93,6 @@ export type BuildServiceMatrixInput = {
 };
 
 export function specialCaseFor(service: ServiceName): SpecialCase {
-	if (service === "agent-runtime-controller") return "single-source";
 	if (SANDBOX_ONLY.has(service)) return "sandbox-only";
 	if (service === "mcp-gateway") return "ryzen-missing-pin";
 	if (service === "openshell-agent-runtime") return "ryzen-only";
@@ -170,13 +169,6 @@ function computeCell(
 			// Sandbox images have no Deployment on any spoke. Promoted via
 			// release-pins to ghcr.io; surface the pinned tag on dev/staging only.
 			return env === "ryzen" ? null : pin ? fromPinOnly(pin) : null;
-		case "single-source":
-			// agent-runtime-controller is bumped directly in the base manifest, so
-			// every env runs the same image. If live metadata is available (only on
-			// the current env), prefer it; otherwise fall back to pin (which will
-			// usually be absent, in which case the cell is null and the UI renders
-			// an empty "single-source" placeholder).
-			return liveFallback(service, liveDeployment) ?? (pin ? fromPinOnly(pin) : null);
 		default:
 			// For a regular service that the hub inventory has no entry for on this
 			// env, two fallbacks are useful:

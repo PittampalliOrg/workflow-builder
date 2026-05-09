@@ -562,203 +562,25 @@ export async function kubeApiFetchFromKubeconfig(
 const kubeFetch = kubeApiFetch;
 
 // ---------------------------------------------------------------------------
-// AgentRuntime CR helpers
+// Agent-runtime pod inspection helpers
 // ---------------------------------------------------------------------------
-
-export type AgentRuntimeMcpServer = {
-	name: string;
-	transport: "streamable_http" | "sse" | "stdio" | "websocket";
-	url?: string;
-	command?: string;
-	args?: string[];
-	env?: Record<string, string>;
-	headers?: Record<string, string>;
-};
-
-export type AgentRuntimeBrowserSidecar = {
-	enabled: boolean;
-	chromeImage?: string;
-	mcpGatewayImage?: string;
-	chromeResources?: {
-		requests?: Record<string, string>;
-		limits?: Record<string, string>;
-	};
-	mcpResources?: {
-		requests?: Record<string, string>;
-		limits?: Record<string, string>;
-	};
-};
-
-export type AgentRuntimeSpec = {
-	agentSlug: string;
-	projectId?: string | null;
-	appId: string;
-	runtimeClass?: string;
-	runtimeIsolation?: "shared" | "dedicated";
-	// modelSpec drives the per-pod DAPR_LLM_COMPONENT_DEFAULT in the
-	// agent-runtime-controller. Without it, the controller falls back to
-	// llm-anthropic-opus, which silently mismatches the agent's model when
-	// a workflow omits modelSpec at session-spawn.
-	modelSpec?: string | null;
-	environment: {
-		id?: string;
-		slug?: string;
-		version?: number;
-		imageTag: string;
-	};
-	mcpServers?: AgentRuntimeMcpServer[];
-	lifecycle?: {
-		idleTtlSeconds?: number;
-		minReplicas?: number;
-		maxReplicas?: number;
-		slotsPerReplica?: number;
-	};
-	browserSidecar?: AgentRuntimeBrowserSidecar;
-};
-
-export type AgentRuntimeStatus = {
-	phase?: "Pending" | "Sleeping" | "Starting" | "Active" | "Failed";
-	replicas?: number;
-	readyReplicas?: number;
-	desiredReplicas?: number;
-	slotsPerReplica?: number;
-	effectiveSlots?: number;
-	daprWorkflowLimitPerSidecar?: number;
-	daprWorkflowEffectiveCapacity?: number;
-	admissionReady?: boolean;
-	effectiveModelSpec?: string;
-	effectiveLlmComponent?: string;
-	provider?: string;
-	providerModel?: string;
-	deploymentRef?: string;
-	lastActiveAt?: string;
-	lastTransitionTime?: string;
-	message?: string;
-};
-
-export type AgentRuntime = {
-	apiVersion: "agents.x-k8s.io/v1alpha1";
-	kind: "AgentRuntime";
-	metadata: {
-		name: string;
-		namespace: string;
-		annotations?: Record<string, string>;
-		labels?: Record<string, string>;
-		resourceVersion?: string;
-	};
-	spec: AgentRuntimeSpec;
-	status?: AgentRuntimeStatus;
-};
-
-const GROUP = "agents.x-k8s.io";
-const VERSION = "v1alpha1";
-const PLURAL = "agentruntimes";
-
-function crPath(
-	name: string,
-	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): string {
-	return `/apis/${GROUP}/${VERSION}/namespaces/${namespace}/${PLURAL}/${name}`;
-}
-
-function crCollectionPath(namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE): string {
-	return `/apis/${GROUP}/${VERSION}/namespaces/${namespace}/${PLURAL}`;
-}
+//
+// After Arc 3, the legacy `AgentRuntime` CR + custom Kopf controller are
+// gone — agents are backed by upstream `kubernetes-sigs/agent-sandbox`
+// primitives (per-session `Sandbox` for non-browser agents in Arc 1; per-
+// agent `SandboxTemplate` + `SandboxWarmPool` + per-slug `Service` for
+// browser/Playwright agents in Arc 2).
+//
+// What stays here is the small label-selector-based pod-discovery surface
+// that the BFF needs for the shell proxy + live-browser features. It looks
+// up pods by the stable `app=agent-runtime-<slug>` label that both the
+// SandboxTemplate (Arc 2) and the legacy controller stamped, so the same
+// helper works during and after the cutover.
 
 export function agentRuntimeName(agentSlug: string): string {
 	return `agent-runtime-${agentSlug}`;
 }
 
-export async function listAgentRuntimes(
-	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): Promise<AgentRuntime[]> {
-	const res = await kubeFetch(crCollectionPath(namespace));
-	if (!res.ok) {
-		throw new Error(`listAgentRuntimes failed: ${res.status}`);
-	}
-	const body = (await res.json()) as { items?: AgentRuntime[] };
-	return body.items ?? [];
-}
-
-export async function getAgentRuntime(
-	agentSlug: string,
-	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): Promise<AgentRuntime | null> {
-	const res = await kubeFetch(crPath(agentRuntimeName(agentSlug), namespace));
-	if (res.status === 404) return null;
-	if (!res.ok) {
-		throw new Error(`getAgentRuntime ${agentSlug} failed: ${res.status}`);
-	}
-	return (await res.json()) as AgentRuntime;
-}
-
-export async function upsertAgentRuntime(
-	spec: AgentRuntimeSpec,
-	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): Promise<AgentRuntime> {
-	const name = agentRuntimeName(spec.agentSlug);
-	const body: AgentRuntime = {
-		apiVersion: "agents.x-k8s.io/v1alpha1",
-		kind: "AgentRuntime",
-		metadata: {
-			name,
-			namespace,
-			labels: {
-				"agents.x-k8s.io/slug": spec.agentSlug,
-			},
-		},
-		spec,
-	};
-
-	const existing = await getAgentRuntime(spec.agentSlug, namespace);
-	if (!existing) {
-		const res = await kubeFetch(crCollectionPath(namespace), {
-			method: "POST",
-			body: JSON.stringify(body),
-		});
-		if (!res.ok) {
-			throw new Error(
-				`create AgentRuntime ${name} failed: ${res.status} ${await res.text()}`,
-			);
-		}
-		return (await res.json()) as AgentRuntime;
-	}
-
-	// Patch only the fields we care about — preserve controller-set
-	// annotations (wake/sleep/last-active).
-	const patch: Partial<AgentRuntime> = {
-		metadata: {
-			name,
-			namespace,
-			labels: { ...existing.metadata.labels, ...body.metadata.labels },
-		},
-		spec,
-	};
-	const res = await kubeFetch(crPath(name, namespace), {
-		method: "PATCH",
-		headers: { "Content-Type": "application/merge-patch+json" },
-		body: JSON.stringify(patch),
-	});
-	if (!res.ok) {
-		throw new Error(
-			`patch AgentRuntime ${name} failed: ${res.status} ${await res.text()}`,
-		);
-	}
-	return (await res.json()) as AgentRuntime;
-}
-
-/**
- * Return the Pod IP of the currently-running agent-runtime pod for the given
- * agent slug, or `null` when no pod is ready. Used by the live-browser WS
- * proxy to dial the chromium sidecar's VNC port (5901) directly — we prefer
- * Pod IP over a per-agent Service because agent-runtime pods are Dapr-app-id
- * routed, not Service routed, and spinning up one Service per agent would
- * explode the service count with the agent catalog.
- *
- * "Ready" here means: pod.phase == Running AND the `chromium` container's
- * ready flag is true. A half-started pod (agent-py up, chromium still
- * pulling) returns null so callers surface "reconnecting" in the UI.
- */
 /** Minimal Pod shape used by the BFF for live-view features. */
 export type AgentRuntimePodInfo = {
 	name: string;
@@ -845,90 +667,483 @@ export async function getAgentRuntimePodIP(
 	return null;
 }
 
-export async function deleteAgentRuntime(
-	agentSlug: string,
+// ---------------------------------------------------------------------------
+// Upstream `kubernetes-sigs/agent-sandbox` helpers
+// ---------------------------------------------------------------------------
+//
+// SandboxTemplate + SandboxWarmPool back per-agent runtime pods for
+// browser/Playwright agents. Browser/Playwright agents publish a per-slug
+// SandboxTemplate (full pod shape with chromium
+// + playwright-mcp sidecars) and a per-slug SandboxWarmPool referencing it;
+// scaling 0↔1 happens by patching the pool's `spec.replicas` (replaces the
+// old wake/sleep annotation handshake).
+
+const SANDBOX_GROUP = "agents.x-k8s.io";
+const SANDBOX_EXTENSIONS_GROUP = "extensions.agents.x-k8s.io";
+const SANDBOX_API_VERSION = "v1alpha1";
+
+function sandboxTemplatePath(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/apis/${SANDBOX_EXTENSIONS_GROUP}/${SANDBOX_API_VERSION}/namespaces/${namespace}/sandboxtemplates/${name}`;
+}
+
+function sandboxTemplateCollectionPath(
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/apis/${SANDBOX_EXTENSIONS_GROUP}/${SANDBOX_API_VERSION}/namespaces/${namespace}/sandboxtemplates`;
+}
+
+function sandboxWarmPoolPath(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/apis/${SANDBOX_EXTENSIONS_GROUP}/${SANDBOX_API_VERSION}/namespaces/${namespace}/sandboxwarmpools/${name}`;
+}
+
+function sandboxWarmPoolCollectionPath(
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/apis/${SANDBOX_EXTENSIONS_GROUP}/${SANDBOX_API_VERSION}/namespaces/${namespace}/sandboxwarmpools`;
+}
+
+function sandboxWarmPoolScalePath(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `${sandboxWarmPoolPath(name, namespace)}/scale`;
+}
+
+function servicePath(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/api/v1/namespaces/${namespace}/services/${name}`;
+}
+
+function serviceCollectionPath(
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/api/v1/namespaces/${namespace}/services`;
+}
+
+export type SandboxTemplate = {
+	apiVersion: `${typeof SANDBOX_EXTENSIONS_GROUP}/${typeof SANDBOX_API_VERSION}`;
+	kind: "SandboxTemplate";
+	metadata: {
+		name: string;
+		namespace: string;
+		labels?: Record<string, string>;
+		annotations?: Record<string, string>;
+		resourceVersion?: string;
+	};
+	// Upstream controller passes `spec.podTemplate` through to the pods it
+	// creates; the schema is a standard Kubernetes PodTemplateSpec.
+	spec: {
+		podTemplate: {
+			metadata?: {
+				labels?: Record<string, string>;
+				annotations?: Record<string, string>;
+			};
+			spec: Record<string, unknown>;
+		};
+		networkPolicy?: Record<string, unknown>;
+		networkPolicyManagement?: "Managed" | "Unmanaged";
+	};
+};
+
+export type SandboxWarmPool = {
+	apiVersion: `${typeof SANDBOX_EXTENSIONS_GROUP}/${typeof SANDBOX_API_VERSION}`;
+	kind: "SandboxWarmPool";
+	metadata: {
+		name: string;
+		namespace: string;
+		labels?: Record<string, string>;
+		annotations?: Record<string, string>;
+		resourceVersion?: string;
+	};
+	spec: {
+		replicas: number;
+		sandboxTemplateRef: { name: string };
+	};
+	status?: {
+		replicas?: number;
+		readyReplicas?: number;
+	};
+};
+
+export function browserAgentSandboxTemplateName(agentSlug: string): string {
+	return `agent-runtime-${agentSlug}`;
+}
+
+export function browserAgentSandboxWarmPoolName(agentSlug: string): string {
+	return `agent-runtime-${agentSlug}`;
+}
+
+export function browserAgentMcpServiceName(agentSlug: string): string {
+	return `agent-runtime-${agentSlug}-mcp`;
+}
+
+export async function upsertSandboxTemplate(
+	body: SandboxTemplate,
+): Promise<SandboxTemplate> {
+	const { name, namespace } = body.metadata;
+	const existing = await kubeFetch(sandboxTemplatePath(name, namespace));
+	if (existing.status === 404) {
+		const res = await kubeFetch(sandboxTemplateCollectionPath(namespace), {
+			method: "POST",
+			body: JSON.stringify(body),
+		});
+		if (!res.ok) {
+			throw new Error(
+				`create SandboxTemplate ${name} failed: ${res.status} ${await res.text()}`,
+			);
+		}
+		return (await res.json()) as SandboxTemplate;
+	}
+	if (!existing.ok) {
+		throw new Error(
+			`get SandboxTemplate ${name} failed: ${existing.status} ${await existing.text()}`,
+		);
+	}
+	const res = await kubeFetch(sandboxTemplatePath(name, namespace), {
+		method: "PATCH",
+		headers: { "Content-Type": "application/merge-patch+json" },
+		body: JSON.stringify({
+			metadata: {
+				labels: body.metadata.labels,
+				annotations: body.metadata.annotations,
+			},
+			spec: body.spec,
+		}),
+	});
+	if (!res.ok) {
+		throw new Error(
+			`patch SandboxTemplate ${name} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	return (await res.json()) as SandboxTemplate;
+}
+
+export async function deleteSandboxTemplate(
+	name: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
 ): Promise<void> {
-	const res = await kubeFetch(crPath(agentRuntimeName(agentSlug), namespace), {
+	const res = await kubeFetch(sandboxTemplatePath(name, namespace), {
 		method: "DELETE",
 	});
 	if (res.status !== 404 && !res.ok) {
-		throw new Error(`delete AgentRuntime ${agentSlug} failed: ${res.status}`);
+		throw new Error(
+			`delete SandboxTemplate ${name} failed: ${res.status}`,
+		);
 	}
 }
 
-export async function annotateAgentRuntime(
-	agentSlug: string,
-	annotations: Record<string, string>,
+export async function getSandboxWarmPool(
+	name: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): Promise<void> {
-	const patch = { metadata: { annotations } };
-	const res = await kubeFetch(crPath(agentRuntimeName(agentSlug), namespace), {
+): Promise<SandboxWarmPool | null> {
+	const res = await kubeFetch(sandboxWarmPoolPath(name, namespace));
+	if (res.status === 404) return null;
+	if (!res.ok) {
+		throw new Error(
+			`get SandboxWarmPool ${name} failed: ${res.status}`,
+		);
+	}
+	return (await res.json()) as SandboxWarmPool;
+}
+
+export async function listSandboxWarmPools(
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<SandboxWarmPool[]> {
+	const res = await kubeFetch(sandboxWarmPoolCollectionPath(namespace));
+	if (!res.ok) {
+		throw new Error(`listSandboxWarmPools failed: ${res.status}`);
+	}
+	const body = (await res.json()) as { items?: SandboxWarmPool[] };
+	return body.items ?? [];
+}
+
+export async function upsertSandboxWarmPool(
+	body: SandboxWarmPool,
+): Promise<SandboxWarmPool> {
+	const { name, namespace } = body.metadata;
+	const existing = await getSandboxWarmPool(name, namespace);
+	if (!existing) {
+		const res = await kubeFetch(sandboxWarmPoolCollectionPath(namespace), {
+			method: "POST",
+			body: JSON.stringify(body),
+		});
+		if (!res.ok) {
+			throw new Error(
+				`create SandboxWarmPool ${name} failed: ${res.status} ${await res.text()}`,
+			);
+		}
+		return (await res.json()) as SandboxWarmPool;
+	}
+	// Patch only spec — preserve the live `replicas` count if the wake helper
+	// already scaled it up, by overlaying the requested baseline replicas
+	// only when the caller explicitly asks for a lower value (via the
+	// `body.spec.replicas` field). For an idempotent publish that just
+	// re-asserts the template ref, callers should pass the existing replica
+	// count to avoid clobbering an in-flight wake.
+	const patch: Partial<SandboxWarmPool> = {
+		metadata: {
+			name,
+			namespace,
+			labels: { ...existing.metadata.labels, ...body.metadata.labels },
+			annotations: {
+				...existing.metadata.annotations,
+				...body.metadata.annotations,
+			},
+		},
+		spec: body.spec,
+	};
+	const res = await kubeFetch(sandboxWarmPoolPath(name, namespace), {
 		method: "PATCH",
 		headers: { "Content-Type": "application/merge-patch+json" },
 		body: JSON.stringify(patch),
 	});
 	if (!res.ok) {
 		throw new Error(
-			`annotate AgentRuntime ${agentSlug} failed: ${res.status} ${await res.text()}`,
+			`patch SandboxWarmPool ${name} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	return (await res.json()) as SandboxWarmPool;
+}
+
+export async function setSandboxWarmPoolReplicas(
+	name: string,
+	replicas: number,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<void> {
+	const res = await kubeFetch(sandboxWarmPoolScalePath(name, namespace), {
+		method: "PATCH",
+		headers: { "Content-Type": "application/merge-patch+json" },
+		body: JSON.stringify({ spec: { replicas } }),
+	});
+	if (!res.ok) {
+		throw new Error(
+			`scale SandboxWarmPool ${name} to ${replicas} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+}
+
+export async function deleteSandboxWarmPool(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<void> {
+	const res = await kubeFetch(sandboxWarmPoolPath(name, namespace), {
+		method: "DELETE",
+	});
+	if (res.status !== 404 && !res.ok) {
+		throw new Error(
+			`delete SandboxWarmPool ${name} failed: ${res.status}`,
 		);
 	}
 }
 
 /**
- * Request a runtime be scaled up and wait until status.phase === Active.
- * Idempotent: if the runtime is already Active, returns immediately.
+ * Wake (or keep awake) a SandboxWarmPool by patching `spec.replicas` to
+ * `targetReplicas` and waiting for `status.readyReplicas >= targetReplicas`.
+ * Replaces the AgentRuntime annotation handshake.
  *
- * @param timeoutMs  hard ceiling before giving up (default 30s for cold
- *                   start). Callers that know the runtime is already warm
- *                   can pass a shorter value.
+ * Idempotent: if the pool is already at the desired replica count and ready,
+ * returns immediately without re-scaling.
+ */
+export async function wakeSandboxWarmPool(
+	agentSlug: string,
+	timeoutMs = 30_000,
+	{
+		targetReplicas = 1,
+		namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+	}: { targetReplicas?: number; namespace?: string } = {},
+): Promise<SandboxWarmPool> {
+	const name = browserAgentSandboxWarmPoolName(agentSlug);
+	const current = await getSandboxWarmPool(name, namespace);
+	if (!current) {
+		throw new Error(
+			`wakeSandboxWarmPool: SandboxWarmPool ${name} not found in ${namespace}`,
+		);
+	}
+	if ((current.spec.replicas ?? 0) < targetReplicas) {
+		await setSandboxWarmPoolReplicas(name, targetReplicas, namespace);
+	}
+
+	const deadline = Date.now() + timeoutMs;
+	let lastReady = current.status?.readyReplicas ?? 0;
+	while (Date.now() < deadline) {
+		const cr = await getSandboxWarmPool(name, namespace);
+		if (!cr) break;
+		const ready = cr.status?.readyReplicas ?? 0;
+		if (ready >= targetReplicas) return cr;
+		lastReady = ready;
+		await sleep(1_000);
+	}
+	throw new Error(
+		`wakeSandboxWarmPool ${name}: timeout after ${timeoutMs}ms; readyReplicas=${lastReady}`,
+	);
+}
+
+export async function sleepSandboxWarmPool(
+	agentSlug: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<void> {
+	const name = browserAgentSandboxWarmPoolName(agentSlug);
+	await setSandboxWarmPoolReplicas(name, 0, namespace);
+}
+
+// Per-slug ClusterIP Service for the playwright-mcp sidecar (port 3100).
+// The current BFF expects the DNS name `agent-runtime-<slug>-mcp.<ns>.svc`
+// (see `src/lib/server/playwright-mcp-client.ts`); preserving this means
+// emitting a Service alongside each SandboxWarmPool. Selector matches the
+// pool pod labels stamped by the SandboxTemplate.
+export async function upsertAgentRuntimeService(params: {
+	agentSlug: string;
+	namespace?: string;
+	mcpPort?: number;
+}): Promise<void> {
+	const namespace = params.namespace ?? DEFAULT_AGENT_RUNTIME_NAMESPACE;
+	const name = browserAgentMcpServiceName(params.agentSlug);
+	const port = params.mcpPort ?? 3100;
+	const body = {
+		apiVersion: "v1",
+		kind: "Service",
+		metadata: {
+			name,
+			namespace,
+			labels: {
+				"app.kubernetes.io/name": "agent-runtime",
+				"app.kubernetes.io/part-of": "workflow-builder",
+				"agents.x-k8s.io/slug": params.agentSlug,
+				"agents.x-k8s.io/role": "agent-runtime-mcp",
+			},
+		},
+		spec: {
+			type: "ClusterIP",
+			selector: {
+				"agents.x-k8s.io/slug": params.agentSlug,
+				"agents.x-k8s.io/role": "agent-runtime",
+			},
+			ports: [
+				{
+					name: "mcp",
+					port,
+					targetPort: port,
+					protocol: "TCP",
+				},
+			],
+		},
+	};
+
+	const existing = await kubeFetch(servicePath(name, namespace));
+	if (existing.status === 404) {
+		const res = await kubeFetch(serviceCollectionPath(namespace), {
+			method: "POST",
+			body: JSON.stringify(body),
+		});
+		if (!res.ok) {
+			throw new Error(
+				`create Service ${name} failed: ${res.status} ${await res.text()}`,
+			);
+		}
+		return;
+	}
+	if (!existing.ok) {
+		throw new Error(
+			`get Service ${name} failed: ${existing.status} ${await existing.text()}`,
+		);
+	}
+	const res = await kubeFetch(servicePath(name, namespace), {
+		method: "PATCH",
+		headers: { "Content-Type": "application/merge-patch+json" },
+		body: JSON.stringify({
+			metadata: { labels: body.metadata.labels },
+			spec: body.spec,
+		}),
+	});
+	if (!res.ok) {
+		throw new Error(
+			`patch Service ${name} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+}
+
+export async function deleteAgentRuntimeService(
+	agentSlug: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<void> {
+	const name = browserAgentMcpServiceName(agentSlug);
+	const res = await kubeFetch(servicePath(name, namespace), {
+		method: "DELETE",
+	});
+	if (res.status !== 404 && !res.ok) {
+		throw new Error(`delete Service ${name} failed: ${res.status}`);
+	}
+}
+
+/**
+ * Wake helper that prefers the new upstream `SandboxWarmPool` and falls back
+ * to the legacy `AgentRuntime` CR when no warm pool exists yet (e.g., the
+ * agent hasn't been re-published since the Arc 2 BFF rolled out). Lets call
+ * sites use one signature regardless of which generation of resources back
+ * the agent today. Returns a normalized status the public/internal wake APIs
+ * can render uniformly.
+ */
+export type AgentRuntimePhase =
+	| "Pending"
+	| "Sleeping"
+	| "Starting"
+	| "Active"
+	| "Failed";
+
+export type NormalizedAgentRuntimeStatus = {
+	phase: AgentRuntimePhase | "Unknown";
+	replicas: number;
+	readyReplicas: number;
+	source: "sandbox-warm-pool";
+};
+
+function deriveSandboxWarmPoolPhase(
+	pool: SandboxWarmPool,
+): AgentRuntimePhase | "Unknown" {
+	const desired = pool.spec?.replicas ?? 0;
+	const replicas = pool.status?.replicas ?? 0;
+	const ready = pool.status?.readyReplicas ?? 0;
+	if (desired === 0 && replicas === 0) return "Sleeping";
+	if (desired > 0 && ready >= desired) return "Active";
+	if (desired > 0) return "Starting";
+	return "Unknown";
+}
+
+/**
+ * Wake (or keep awake) the per-agent runtime pod by patching the
+ * `SandboxWarmPool.spec.replicas` to `targetReplicas` and waiting for
+ * `status.readyReplicas >= targetReplicas`. Returns a normalized status the
+ * public/internal wake APIs render uniformly.
+ *
+ * Throws if no SandboxWarmPool exists for the slug — non-browser agents go
+ * through per-session `Sandbox` dispatch via sandbox-execution-api and
+ * shouldn't reach this wake path.
  */
 export async function wakeAgentRuntime(
 	agentSlug: string,
 	timeoutMs = 30_000,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): Promise<AgentRuntime> {
-	const now = new Date().toISOString();
-	await annotateAgentRuntime(
-		agentSlug,
-		{
-			"agents.x-k8s.io/wake": now,
-			"agents.x-k8s.io/last-active": now,
-		},
-		namespace,
-	);
-
-	const deadline = Date.now() + timeoutMs;
-	let lastPhase = "";
-	while (Date.now() < deadline) {
-		const cr = await getAgentRuntime(agentSlug, namespace);
-		if (cr?.status?.phase === "Active") return cr;
-		lastPhase = cr?.status?.phase ?? "Unknown";
-		await sleep(1_000);
-	}
-	throw new Error(
-		`wakeAgentRuntime ${agentSlug}: timeout after ${timeoutMs}ms; phase=${lastPhase}`,
-	);
+): Promise<NormalizedAgentRuntimeStatus> {
+	const woken = await wakeSandboxWarmPool(agentSlug, timeoutMs, { namespace });
+	return {
+		phase: deriveSandboxWarmPoolPhase(woken),
+		replicas: woken.status?.replicas ?? 0,
+		readyReplicas: woken.status?.readyReplicas ?? 0,
+		source: "sandbox-warm-pool",
+	};
 }
 
 export async function sleepAgentRuntime(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
 ): Promise<void> {
-	await annotateAgentRuntime(
-		agentSlug,
-		{ "agents.x-k8s.io/sleep": new Date().toISOString() },
-		namespace,
-	);
-}
-
-export async function stampLastActive(
-	agentSlug: string,
-	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
-): Promise<void> {
-	await annotateAgentRuntime(
-		agentSlug,
-		{ "agents.x-k8s.io/last-active": new Date().toISOString() },
-		namespace,
-	);
+	await sleepSandboxWarmPool(agentSlug, namespace);
 }

@@ -2,9 +2,9 @@ import type { RequestHandler } from "./$types";
 import { error, json } from "@sveltejs/kit";
 
 import {
-	getAgentRuntime,
+	browserAgentSandboxWarmPoolName,
 	getAgentRuntimePod,
-	agentRuntimeName,
+	getSandboxWarmPool,
 } from "$lib/server/kube/client";
 import { db } from "$lib/server/db";
 import { agents } from "$lib/server/db/schema";
@@ -15,12 +15,14 @@ import {
 } from "$lib/server/agents/runtime-routing";
 
 /**
- * Workspace-scoped AgentRuntime status read. Unlike the
- * /api/internal/agent-runtimes route, this one enforces:
- *  - authenticated session
- *  - the agent slug belongs to the caller's active workspace
+ * Workspace-scoped read-through of an agent's SandboxWarmPool status. After
+ * Arc 3, browser/Playwright agents have a SandboxWarmPool emitted by
+ * registry-sync; non-browser agents have no per-agent K8s state and return
+ * `exists: false`.
  *
- * Called by the AgentRuntimeCard component in the agent detail page.
+ * Powers the AgentRuntimeCard component on the agent detail page. The shape
+ * is intentionally thin (phase, replica counts, browserSidecarEnabled flag,
+ * live container readiness) — same fields the UI consumed pre-Arc-3.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -48,45 +50,67 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const runtimeAppId = rows[0].runtimeAppId ?? agentRuntimeDedicatedAppId(slug);
 	const runtimeSlug = agentRuntimeSlugFromAppId(runtimeAppId) ?? slug;
-	const cr = await getAgentRuntime(runtimeSlug);
-	if (!cr) {
+	const poolName = browserAgentSandboxWarmPoolName(runtimeSlug);
+	const pool = await getSandboxWarmPool(poolName);
+	if (!pool) {
 		return json({
-			name: agentRuntimeName(runtimeSlug),
+			name: poolName,
 			exists: false,
 			phase: "Unknown",
 			replicas: 0,
+			readyReplicas: 0,
 			browserSidecarEnabled: false,
-			liveBrowserAvailable: false,
+			browserMcpAvailable: false,
 		});
 	}
-	// Derived flags for the UI: browserSidecarEnabled drives whether the
-	// Browser state tab is offered at all; browserMcpAvailable says whether
-	// it can actually connect right now (phase Active + chromium + mcp ready).
-	const browserSidecarEnabled = cr.spec?.browserSidecar?.enabled === true;
 
-	// Live container readiness (Sleeping → empty list). Drives the
-	// per-container badges in AgentRuntimeCard and is cheap since we're
-	// already hitting the K8s API for the CR.
+	const desired = pool.spec?.replicas ?? 0;
+	const replicas = pool.status?.replicas ?? 0;
+	const ready = pool.status?.readyReplicas ?? 0;
+	const phase =
+		desired === 0 && replicas === 0
+			? "Sleeping"
+			: desired > 0 && ready >= desired
+				? "Active"
+				: desired > 0
+					? "Starting"
+					: "Unknown";
+
+	// `browserSidecarEnabled` was a boolean on the AgentRuntime CR; with the
+	// SandboxTemplate pod-shape we infer it from live pod containers. When
+	// the pool is Sleeping we leave it false rather than guessing from the
+	// template name — UI consumers gate the Browser tab on this flag and we
+	// don't want to render an unreachable panel.
 	let podContainers: Array<{ name: string; ready: boolean }> = [];
 	let podName: string | null = null;
-	if (cr.status?.phase === "Active") {
+	if (phase === "Active") {
 		const pod = await getAgentRuntimePod(runtimeSlug);
 		if (pod) {
 			podContainers = pod.containers;
 			podName = pod.name;
 		}
 	}
-	const chromiumReady = podContainers.some((c) => c.name === "chromium" && c.ready);
-	const mcpReady = podContainers.some((c) => c.name === "playwright-mcp" && c.ready);
+	const chromiumReady = podContainers.some(
+		(c) => c.name === "chromium" && c.ready,
+	);
+	const mcpReady = podContainers.some(
+		(c) => c.name === "playwright-mcp" && c.ready,
+	);
+	const browserSidecarEnabled = podContainers.some(
+		(c) => c.name === "playwright-mcp",
+	);
 	const browserMcpAvailable = browserSidecarEnabled && chromiumReady && mcpReady;
 
 	return json({
-		name: cr.metadata.name,
-		namespace: cr.metadata.namespace,
+		name: pool.metadata.name,
+		namespace: pool.metadata.namespace,
 		exists: true,
-		spec: cr.spec,
-		status: cr.status ?? {},
-		annotations: cr.metadata.annotations ?? {},
+		phase,
+		desiredReplicas: desired,
+		replicas,
+		readyReplicas: ready,
+		sandboxTemplateRef: pool.spec.sandboxTemplateRef.name,
+		annotations: pool.metadata.annotations ?? {},
 		browserSidecarEnabled,
 		browserMcpAvailable,
 		pod: podName ? { name: podName, containers: podContainers } : null,

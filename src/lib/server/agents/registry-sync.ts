@@ -795,53 +795,76 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		})
 		.where(eq(agents.id, agentId));
 
-	await kubeClient.upsertAgentRuntime({
-		agentSlug: runtimeRoute.slug,
-		projectId: runtimeRoute.isolation === "shared" ? null : row.projectId,
-		appId: runtimeRoute.appId,
-		runtimeClass: runtimeRoute.runtimeClass,
-		runtimeIsolation: runtimeRoute.isolation,
-		modelSpec:
-			runtimeRoute.isolation === "shared"
-				? null
-				: typeof config?.modelSpec === "string"
-					? config.modelSpec
-					: null,
-		environment: {
-			id: environmentRecord?.id,
-			slug: environmentRecord?.slug,
-			version: environmentRecord?.version,
+	// Arc 2: route browser/Playwright agents to upstream `agents.x-k8s.io`
+	// `SandboxTemplate` + `SandboxWarmPool` (+ a per-slug ClusterIP Service for
+	// the playwright-mcp sidecar). Non-browser agents need no per-agent
+	// resources at all — Arc 1's per-session Kueue `Sandbox` handles dispatch.
+	// In both cases the legacy `AgentRuntime` CR is best-effort deleted so the
+	// custom Kopf controller stops reconciling a parallel Deployment.
+	const isBrowserUseAgent = resolvedConfig?.runtime === "browser-use-agent";
+	const needsBrowserPool = useBrowserSidecar || isBrowserUseAgent;
+	const namespace = env.AGENT_RUNTIME_NAMESPACE || "workflow-builder";
+
+	if (needsBrowserPool) {
+		const { buildBrowserSandboxTemplate, buildBrowserSandboxWarmPool } =
+			await import("./sandbox-warmpool-builder");
+		const template = buildBrowserSandboxTemplate({
+			agentSlug: runtimeRoute.slug,
+			appId: runtimeRoute.appId,
+			runtimeClass: runtimeRoute.runtimeClass,
+			runtimeIsolation: runtimeRoute.isolation,
+			namespace,
 			imageTag,
-		},
-		// Shared pools rely on per-session agentConfig for MCP/tools/skills.
-		// Bootstrap MCP remains only for dedicated runtimes that still need
-		// startup sidecars or compatibility behaviour.
-		mcpServers: runtimeRoute.isolation === "shared" ? [] : mcpServers,
-		lifecycle:
-			idleTtlSeconds ||
-			runtimeRoute.pool?.minReplicas ||
-			runtimeRoute.pool?.maxReplicas ||
-			runtimeRoute.pool?.slotsPerReplica
-				? {
-						...(idleTtlSeconds ? { idleTtlSeconds } : {}),
-						...(runtimeRoute.pool?.minReplicas
-							? { minReplicas: runtimeRoute.pool.minReplicas }
-							: {}),
-						...(runtimeRoute.pool?.maxReplicas
-							? { maxReplicas: runtimeRoute.pool.maxReplicas }
-							: {}),
-						...(runtimeRoute.pool?.slotsPerReplica
-							? { slotsPerReplica: runtimeRoute.pool.slotsPerReplica }
-							: {}),
-					}
-				: undefined,
-		browserSidecar:
-			runtimeRoute.isolation === "shared"
-				? undefined
-				: useBrowserSidecar
-					? { enabled: true }
-					: undefined,
-	});
+			modelSpec:
+				typeof config?.modelSpec === "string" ? config.modelSpec : null,
+			mcpServers,
+			useBrowserSidecar,
+		});
+		const pool = buildBrowserSandboxWarmPool({
+			agentSlug: runtimeRoute.slug,
+			namespace,
+		});
+		await kubeClient.upsertSandboxTemplate(template);
+		await kubeClient.upsertSandboxWarmPool(pool);
+		// Per-slug ClusterIP Service is only meaningful for Playwright-MCP
+		// agents (where the BFF reaches `agent-runtime-<slug>-mcp:3100` for
+		// browser-validate calls). browser-use-agent has its own internal
+		// browser and exposes no MCP gateway.
+		if (useBrowserSidecar) {
+			await kubeClient.upsertAgentRuntimeService({
+				agentSlug: runtimeRoute.slug,
+				namespace,
+			});
+		} else {
+			// Drop a stale per-slug Service if a Playwright MCP entry was
+			// just removed from this agent's config.
+			await kubeClient
+				.deleteAgentRuntimeService(runtimeRoute.slug, namespace)
+				.catch(() => {});
+		}
+	} else {
+		// Non-browser path: ensure no orphan SandboxTemplate/WarmPool/Service
+		// from a previous browser configuration linger.
+		await Promise.allSettled([
+			kubeClient.deleteSandboxWarmPool(
+				kubeClient.browserAgentSandboxWarmPoolName(runtimeRoute.slug),
+				namespace,
+			),
+			kubeClient.deleteSandboxTemplate(
+				kubeClient.browserAgentSandboxTemplateName(runtimeRoute.slug),
+				namespace,
+			),
+			kubeClient.deleteAgentRuntimeService(runtimeRoute.slug, namespace),
+		]);
+	}
+
+	// `idleTtlSeconds` is read by environment config + drives the `reap-idle`
+	// CronJob via `AGENT_RUNTIME_IDLE_TTL_SECONDS` env on the BFF, not via the
+	// (deleted) AgentRuntime spec. `environmentRecord` is captured for future
+	// extension (e.g., per-agent runtime image overrides). Both are referenced
+	// here to keep the closure shape stable.
+	void idleTtlSeconds;
+	void environmentRecord;
 }
 
 async function deleteAgentRuntimeCR(agentId: string): Promise<void> {
@@ -855,7 +878,18 @@ async function deleteAgentRuntimeCR(agentId: string): Promise<void> {
 	const runtimeAppId = rows[0]?.runtimeAppId;
 	if (runtimeAppId && runtimeAppId !== agentRuntimeDedicatedAppId(slug)) return;
 	const kubeClient = await import("$lib/server/kube/client");
-	await kubeClient.deleteAgentRuntime(slug);
+	const namespace = env.AGENT_RUNTIME_NAMESPACE || "workflow-builder";
+	await Promise.allSettled([
+		kubeClient.deleteSandboxWarmPool(
+			kubeClient.browserAgentSandboxWarmPoolName(slug),
+			namespace,
+		),
+		kubeClient.deleteSandboxTemplate(
+			kubeClient.browserAgentSandboxTemplateName(slug),
+			namespace,
+		),
+		kubeClient.deleteAgentRuntimeService(slug, namespace),
+	]);
 }
 
 async function loadCurrentAgentConfig(

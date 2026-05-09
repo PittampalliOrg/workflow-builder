@@ -26,12 +26,12 @@ export const POST: RequestHandler = async ({ params, url, request }) => {
 		: 30_000;
 
 	try {
-		const cr = await wakeAgentRuntime(slug, timeoutMs);
+		const status = await wakeAgentRuntime(slug, timeoutMs);
 		return json({
-			phase: cr.status?.phase ?? "Unknown",
-			replicas: cr.status?.replicas ?? 0,
-			readyReplicas: cr.status?.readyReplicas ?? 0,
-			deploymentRef: cr.status?.deploymentRef ?? null,
+			phase: status.phase,
+			replicas: status.replicas,
+			readyReplicas: status.readyReplicas,
+			source: status.source,
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

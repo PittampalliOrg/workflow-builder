@@ -2,66 +2,55 @@ import type { RequestHandler } from "./$types";
 import { json } from "@sveltejs/kit";
 
 import {
-	getAgentRuntime,
-	upsertAgentRuntime,
-	deleteAgentRuntime,
-	agentRuntimeName,
-	type AgentRuntimeSpec,
+	browserAgentSandboxWarmPoolName,
+	getSandboxWarmPool,
 } from "$lib/server/kube/client";
 import { requireInternal } from "$lib/server/internal-auth";
 
 /**
- * Internal read-through of an AgentRuntime CR status for the UI + other
- * BFF callers. 404 when the CR does not exist (agent never published).
+ * Internal read-through of the per-agent SandboxWarmPool status.
+ *
+ * Browser/Playwright agents have a SandboxWarmPool emitted by registry-sync
+ * on publish; the response shape is normalized for UI consumption (phase,
+ * replicas, readyReplicas). Non-browser agents have no per-agent K8s state
+ * (their dispatch goes through per-session Sandboxes from sandbox-execution-
+ * api), so the endpoint returns `exists: false` for them.
+ *
+ * After Arc 3, the legacy AgentRuntime CR + its Kopf controller are gone;
+ * the PUT/DELETE handlers that used to mediate publish/archive went with
+ * them — registry-sync writes the new resources directly via kubeClient.
  */
 export const GET: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
 	const slug = params.slug!;
-	const cr = await getAgentRuntime(slug);
-	if (!cr) {
+	const name = browserAgentSandboxWarmPoolName(slug);
+	const pool = await getSandboxWarmPool(name);
+	if (!pool) {
 		return json(
-			{
-				name: agentRuntimeName(slug),
-				phase: "Unknown",
-				replicas: 0,
-				exists: false,
-			},
+			{ name, phase: "Unknown", replicas: 0, readyReplicas: 0, exists: false },
 			{ status: 200 },
 		);
 	}
+	const desired = pool.spec?.replicas ?? 0;
+	const replicas = pool.status?.replicas ?? 0;
+	const ready = pool.status?.readyReplicas ?? 0;
+	const phase =
+		desired === 0 && replicas === 0
+			? "Sleeping"
+			: desired > 0 && ready >= desired
+				? "Active"
+				: desired > 0
+					? "Starting"
+					: "Unknown";
 	return json({
-		name: cr.metadata.name,
-		namespace: cr.metadata.namespace,
+		name: pool.metadata.name,
+		namespace: pool.metadata.namespace,
 		exists: true,
-		spec: cr.spec,
-		status: cr.status ?? {},
-		annotations: cr.metadata.annotations ?? {},
+		phase,
+		desiredReplicas: desired,
+		replicas,
+		readyReplicas: ready,
+		sandboxTemplateRef: pool.spec.sandboxTemplateRef.name,
+		annotations: pool.metadata.annotations ?? {},
 	});
-};
-
-/**
- * Create or update the CR. Body is the full AgentRuntimeSpec.
- * Called by registry-sync on publish.
- */
-export const PUT: RequestHandler = async ({ params, request }) => {
-	requireInternal(request);
-	const slug = params.slug!;
-	const spec = (await request.json()) as AgentRuntimeSpec;
-	if (spec.agentSlug !== slug) {
-		return json(
-			{ error: `slug mismatch: path=${slug} body=${spec.agentSlug}` },
-			{ status: 400 },
-		);
-	}
-	const cr = await upsertAgentRuntime(spec);
-	return json({ name: cr.metadata.name, spec: cr.spec, status: cr.status ?? {} });
-};
-
-/**
- * Delete the CR. Called by registry-sync on archive.
- */
-export const DELETE: RequestHandler = async ({ params, request }) => {
-	requireInternal(request);
-	await deleteAgentRuntime(params.slug!);
-	return new Response(null, { status: 204 });
 };
