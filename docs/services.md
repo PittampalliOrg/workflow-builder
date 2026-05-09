@@ -47,11 +47,19 @@ Python FastAPI service and Dapr workflow owner.
   - schedule child runs
   - normalize execution state into Postgres
 - Important endpoints:
+  - `GET /healthz`
+  - `GET /readyz`
   - `POST /api/v2/workflows/execute-by-id`
   - `GET /api/v2/workflows/{instanceId}/status`
   - `POST /api/v2/workflows/{instanceId}/events`
   - `POST /api/v2/workflows/{instanceId}/terminate`
   - `GET /api/v2/runtime/introspect`
+
+`/readyz` is the start-path gate for benchmark instance dispatch. It requires
+Dapr outbound health, metadata access, at least one connected Dapr workflow
+worker, and taskhub readiness. The runtime watchdog self-deletes the pod when
+the workflow worker remains disconnected so Kubernetes restarts both
+`workflow-orchestrator` and its `daprd` sidecar.
 
 ## function-router
 

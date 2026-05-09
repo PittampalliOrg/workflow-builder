@@ -50,6 +50,14 @@ is the minimum of selected prevalidated instances, Kueue/OpenShell sandbox
 headroom, optional model caps, and evaluator parallelism. Legacy shared-runtime
 and Dapr sidecar slot caps still matter for non-Kueue rollback paths.
 
+SWE-bench instance starts are gated on `workflow-orchestrator` `GET /readyz`.
+That endpoint verifies Dapr outbound health, Dapr metadata, connected Dapr
+workflow workers, and taskhub access. If `workflowConnectedWorkers` is zero, the
+BFF returns `workflow_runtime_unavailable` and the coordinator requeues the
+instance instead of creating a stuck execution row. MLflow tracking is
+best-effort background work on this path; MLflow timeouts must not block Dapr
+workflow dispatch.
+
 Model selection for `durable/run` is data-driven. `dapr-agent-py` reads
 `agentConfig.modelSpec` from the workflow call, maps that value to a Dapr LLM
 component, and patches the underlying Dapr chat client when a provider needs a
@@ -87,6 +95,13 @@ validated with `low`.
 - final execution phase and status
 
 Agent runtimes do not own orchestration. They execute child work and return normalized results to the parent workflow.
+
+The orchestrator also owns a runtime watchdog for the parent Dapr worker. It
+polls Dapr metadata for `workflowConnectedWorkers`; if no workflow worker stays
+connected past the restart threshold, the pod deletes itself through the
+Kubernetes API so both the Python app container and the `daprd` sidecar are
+replaced. This is deliberate: process exit alone can leave a stale sidecar in
+the same pod.
 
 ### Data-driven definitions
 

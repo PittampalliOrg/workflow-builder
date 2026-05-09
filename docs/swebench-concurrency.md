@@ -71,6 +71,47 @@ Do not roll `workflow-builder`, `swebench-coordinator`, `workflow-orchestrator`,
 
 Before a dev rollout, terminate or purge only terminal stale workflow instances. Do not force-purge active benchmark workflows or active resource leases.
 
+## Start-Path Readiness Gates
+
+Benchmark instance start is fail-closed on the parent Dapr runtime. Before the
+BFF creates the instance `workflow_executions` row or dispatches
+`/api/v2/sw-workflows`, it calls `workflow-orchestrator` `GET /readyz`.
+Readiness requires Dapr outbound health, Dapr metadata, at least one connected
+Dapr workflow worker, and a taskhub probe. If the check fails, the BFF returns
+503 with `workflow_runtime_unavailable`.
+
+The coordinator treats BFF start 503s caused by orchestrator readiness as
+retryable infrastructure backpressure. It releases the resource lease, requeues
+the instance at the front of the run queue, and sleeps
+`SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS` (defaulting to
+`SWEBENCH_LEASE_RETRY_SECONDS`) before trying again.
+
+MLflow is not part of the start gate. With `MLFLOW_FAILURE_MODE=best_effort`,
+the BFF starts benchmark MLflow run creation in the background. A tracking
+timeout should only leave MLflow IDs null and log a warning; it must not block
+run creation, Dapr workflow IDs, agent sessions, token usage, or evaluator
+handoff.
+
+If hub ArgoCD reports the dev app as `Synced` but the live Deployment image
+still points at the previous tag, hard-refresh the app before diagnosing the
+runtime:
+
+```bash
+kubectl --kubeconfig ~/.kube/hub-config -n argocd annotate app dev-workflow-orchestrator argocd.argoproj.io/refresh=hard --overwrite
+```
+
+## Orchestrator Workflow Runtime Watchdog
+
+`workflow-orchestrator` polls Dapr metadata for `workflowConnectedWorkers`.
+When that count remains zero past the configured threshold, the watchdog deletes
+its own pod through the Kubernetes API, then falls back to process exit if pod
+deletion does not complete.
+
+This must be a full pod replacement, not only a Python process restart. A stale
+`daprd` sidecar can keep logging workflow actor registration errors while the
+application container is replaced inside the same pod; replacing the pod
+restarts both the app container and the Dapr sidecar.
+
 ## Dapr Workflow Cleanup
 
 Dapr workflow termination is asynchronous. Benchmark cleanup must request
@@ -215,6 +256,9 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `BENCHMARK_EXECUTION_CLASS` | `benchmark-fast` | `benchmark-fast` | Execution class; supported initial values are `benchmark-fast` and `secure-gvisor`. |
 | `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL` | unset | sandbox-execution-api service URL | Host execution API base URL required by the Kueue backend. |
 | `SANDBOX_EXECUTION_API_TOKEN` / `HOST_EXECUTION_API_TOKEN` | `INTERNAL_API_TOKEN` fallback | unset | Bearer token used by the BFF when calling the host execution API. |
+| `MLFLOW_ENABLED` | true | true | Enables benchmark tracking metadata. Start-path behavior should remain non-blocking when tracking is unavailable. |
+| `MLFLOW_FAILURE_MODE` | `best_effort` | `best_effort` | In best-effort mode, MLflow creation failures are logged and do not block benchmark instance start. |
+| `MLFLOW_REQUEST_TIMEOUT_MS` | `30000` | `30000` | Per-request timeout for MLflow calls. A timeout should not prevent Dapr workflow dispatch. |
 
 Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 
@@ -258,6 +302,7 @@ These live in `services/swebench-coordinator/src/concurrency.py` and
 | `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE` | `10` | `18` | Max new instance child workflows to start before an optional pacing delay. |
 | `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` | `5` | `1` | Delay between start batches. `0` disables pacing delay. |
 | `SWEBENCH_LEASE_RETRY_SECONDS` | `15` | `15` | Coordinator sleep interval when a resource lease is denied. |
+| `SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS` | `SWEBENCH_LEASE_RETRY_SECONDS` | unset | Coordinator sleep interval after BFF reports orchestrator runtime unready during instance start. |
 | `SWEBENCH_EVAL_MAX_PARALLEL` | `24` | `24` | Evaluation TaskRun batch size passed to the evaluator Job. Clamped to `1..128`. |
 | `SWEBENCH_MAX_WORKERS` | `24` via evaluator fallback | unset | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent. |
 
