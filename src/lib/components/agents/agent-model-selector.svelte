@@ -21,7 +21,7 @@
 		{ heading: 'DeepSeek', providers: ['deepseek'] },
 		{ heading: 'Kimi', providers: ['kimi'] },
 		{ heading: 'Open Models', providers: ['huggingface', 'mistral'] },
-		{ heading: 'Local', providers: ['echo'] }
+		{ heading: 'Local', providers: ['ollama', 'echo'] }
 	];
 
 	let {

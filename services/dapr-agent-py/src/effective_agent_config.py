@@ -96,6 +96,10 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "open-mistral-7b": "llm-mistral-open",
     # Local echo
     "echo/local": "llm-echo",
+    # Ollama (in-cluster, ryzen GPU)
+    "ollama/llama3.2:3b": "llm-ollama-llama32-3b",
+    "llama3.2:3b": "llm-ollama-llama32-3b",
+    "llama3.2": "llm-ollama-llama32-3b",
 }
 
 
@@ -144,6 +148,7 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
     "llm-mistral-open": ("mistral", "open-mistral-7b"),
     "llm-echo": ("echo", "local"),
+    "llm-ollama-llama32-3b": ("ollama", "llama3.2:3b"),
 }
 
 
@@ -266,6 +271,8 @@ def provider_metadata_for_component(
         provider = "mistral"
     elif "echo" in lowered:
         provider = "echo"
+    elif "ollama" in lowered:
+        provider = "ollama"
     else:
         provider = "unknown"
     out = {"provider": provider}

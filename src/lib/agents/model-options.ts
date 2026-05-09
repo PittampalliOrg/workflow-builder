@@ -10,6 +10,7 @@ export type AgentModelProvider =
   | "kimi"
   | "huggingface"
   | "mistral"
+  | "ollama"
   | "echo";
 
 export type AgentModelOption = {
@@ -196,6 +197,13 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-huggingface-llama3",
   },
   {
+    value: "ollama/llama3.2:3b",
+    label: "Llama 3.2 3B (Ollama, ryzen)",
+    provider: "ollama",
+    iconProvider: "llama",
+    component: "llm-ollama-llama32-3b",
+  },
+  {
     value: "echo/local",
     label: "Local Echo",
     provider: "echo",
@@ -288,6 +296,9 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
     "huggingface/meta-llama/Meta-Llama-3-8B",
   "meta-llama/Meta-Llama-3-8B": "huggingface/meta-llama/Meta-Llama-3-8B",
   "echo/local": "echo/local",
+  "ollama/llama3.2:3b": "ollama/llama3.2:3b",
+  "llama3.2:3b": "ollama/llama3.2:3b",
+  "llama3.2": "ollama/llama3.2:3b",
 };
 
 export function canonicalAgentModelSpec(
