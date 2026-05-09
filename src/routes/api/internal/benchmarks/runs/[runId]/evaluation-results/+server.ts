@@ -118,7 +118,6 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	// finalize task's 120s read timeout (Phase-4 177-way run, 2026-05-09).
 	// All rows share one `evaluated_at` timestamp — they ARE one batch.
 	if (updates.length > 0) {
-		const now = new Date();
 		await db.execute(sql`
 			UPDATE benchmark_run_instances AS b
 			SET status = u.status,
@@ -133,8 +132,8 @@ export const POST: RequestHandler = async ({ request, params }) => {
 			    patch_files_touched = u.patch_files_touched,
 			    patch_files_overlap_gold = u.patch_files_overlap_gold,
 			    patch_well_formed = u.patch_well_formed,
-			    evaluated_at = ${now},
-			    updated_at = ${now}
+			    evaluated_at = now(),
+			    updated_at = now()
 			FROM jsonb_to_recordset((${JSON.stringify(updates)})::text::jsonb)
 			     AS u(
 			       instance_id text,
