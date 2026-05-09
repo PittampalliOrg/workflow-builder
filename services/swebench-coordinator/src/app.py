@@ -1437,30 +1437,55 @@ def _cancel_child_instance_workflows(
         for value in (instance_ids or [])
         if isinstance(value, str) and value.strip()
     ]
+    explicit_workflow_ids: list[str] = []
     load_error: str | None = None
-    if not selected_ids:
-        try:
-            run = _load_run(run_id)
+    try:
+        run = _load_run(run_id)
+        if not selected_ids:
             selected_ids = [
                 value.strip()
                 for value in (run.get("selectedInstanceIds") or [])
                 if isinstance(value, str) and value.strip()
             ]
-            if not selected_ids and isinstance(run.get("instances"), list):
-                selected_ids = [
-                    instance.get("instanceId", "").strip()
-                    for instance in run["instances"]
-                    if isinstance(instance, dict)
-                    and isinstance(instance.get("instanceId"), str)
-                    and instance.get("instanceId", "").strip()
-                ]
-        except Exception as exc:
-            load_error = str(exc)
+        selected_set = set(selected_ids)
+        instances = run.get("instances")
+        if isinstance(instances, list):
+            fallback_selected_ids: list[str] = []
+            for instance in instances:
+                if not isinstance(instance, dict):
+                    continue
+                instance_id = ""
+                for key in ("instanceId", "instance_id"):
+                    value = instance.get(key)
+                    if isinstance(value, str) and value.strip():
+                        instance_id = value.strip()
+                        break
+                if instance_id:
+                    fallback_selected_ids.append(instance_id)
+                if selected_set and instance_id not in selected_set:
+                    continue
+                for key in (
+                    "workflowExecutionId",
+                    "workflow_execution_id",
+                    "daprInstanceId",
+                    "dapr_instance_id",
+                ):
+                    value = instance.get(key)
+                    if isinstance(value, str) and value.strip():
+                        explicit_workflow_ids.append(value.strip())
+            if not selected_ids:
+                selected_ids = fallback_selected_ids
+    except Exception as exc:
+        load_error = str(exc)
 
     termination_errors: dict[str, str] = {}
     terminated: list[str] = []
-    for instance_id in dict.fromkeys(selected_ids):
-        workflow_id = _child_instance_workflow_id(run_id, instance_id)
+    workflow_ids = list(dict.fromkeys(explicit_workflow_ids))
+    workflow_ids.extend(
+        _child_instance_workflow_id(run_id, instance_id)
+        for instance_id in dict.fromkeys(selected_ids)
+    )
+    for workflow_id in dict.fromkeys(workflow_ids):
         try:
             client.terminate_workflow(instance_id=workflow_id, output=reason)
             terminated.append(workflow_id)
@@ -1474,6 +1499,7 @@ def _cancel_child_instance_workflows(
 
     return {
         "selectedInstanceCount": len(selected_ids),
+        "workflowExecutionCount": len(dict.fromkeys(workflow_ids)),
         "terminated": len(terminated),
         "executionIds": terminated,
         "terminationErrors": termination_errors,

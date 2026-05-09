@@ -181,6 +181,7 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     assert app._child_instance_workflow_id("run_1", "django__django-12754") in terminated_ids
     assert app._child_instance_workflow_id("run_1", "django__django-12965") in terminated_ids
     assert result["childTermination"]["selectedInstanceCount"] == 2
+    assert result["childTermination"]["workflowExecutionCount"] == 2
     assert result["childTermination"]["terminated"] == 2
     assert result["childTermination"]["terminationErrors"] == {}
     assert status_updates == [
@@ -195,6 +196,60 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     assert result["leaseRelease"]["success"] is True
     assert result["leaseRelease"]["background"] is True
     assert result["leaseRelease"]["run"]["status"] == "cancelled"
+
+
+def test_child_instance_cancel_uses_recorded_workflow_execution_ids(monkeypatch):
+    app = load_app(monkeypatch)
+    terminated: list[tuple[str, str | None]] = []
+
+    class RecordingWorkflowClient:
+        def terminate_workflow(self, *, instance_id, output=None):
+            terminated.append((instance_id, output))
+
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda run_id: {
+            "id": run_id,
+            "selectedInstanceIds": ["django__django-12754", "django__django-12965"],
+            "instances": [
+                {
+                    "instanceId": "django__django-12754",
+                    "workflowExecutionId": "sw-swebench-instance-exec-a",
+                    "daprInstanceId": "sw-swebench-instance-exec-a",
+                },
+                {
+                    "instance_id": "django__django-12965",
+                    "workflow_execution_id": "sw-swebench-instance-exec-b",
+                    "dapr_instance_id": "sw-swebench-instance-dapr-b",
+                },
+                {
+                    "instanceId": "sympy__sympy-20590",
+                    "workflowExecutionId": "sw-swebench-instance-exec-ignored",
+                },
+            ],
+        },
+    )
+
+    result = app._cancel_child_instance_workflows(
+        RecordingWorkflowClient(),
+        "run_2",
+        "operator stop",
+    )
+
+    terminated_ids = [item[0] for item in terminated]
+    assert terminated_ids == [
+        "sw-swebench-instance-exec-a",
+        "sw-swebench-instance-exec-b",
+        "sw-swebench-instance-dapr-b",
+        app._child_instance_workflow_id("run_2", "django__django-12754"),
+        app._child_instance_workflow_id("run_2", "django__django-12965"),
+    ]
+    assert all(item[1] == "operator stop" for item in terminated)
+    assert result["selectedInstanceCount"] == 2
+    assert result["workflowExecutionCount"] == 5
+    assert result["terminated"] == 5
+    assert result["terminationErrors"] == {}
 
 
 class Obj:
