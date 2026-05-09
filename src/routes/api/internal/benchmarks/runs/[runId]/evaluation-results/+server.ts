@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { requireInternal } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
 import {
@@ -84,41 +84,75 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		return json({ success: true });
 	}
 	const patchContext = await loadPatchContextForRun(params.runId);
-	const mlflowInstanceIds: string[] = [];
-	for (const result of results) {
-		const instanceId = result.instance_id ?? result.instanceId;
-		if (!instanceId) continue;
-		mlflowInstanceIds.push(instanceId);
-		const { status, evaluationStatus } = mapHarnessStatus(result);
-		const evaluationError = result.error ?? null;
-		const ctx = patchContext.get(instanceId);
-		const stats = ctx ? parsePatchStats(ctx.modelPatch) : null;
-		const overlap = ctx ? compareToGold(ctx.modelPatch, ctx.goldPatch) : null;
-		await db
-			.update(benchmarkRunInstances)
-			.set({
+	// Build the per-row update payload once, JS-side. Filters out results
+	// missing instance_id (same as the previous loop's `if (!instanceId) continue`).
+	const updates = results
+		.map((result) => {
+			const instanceId = result.instance_id ?? result.instanceId;
+			if (!instanceId) return null;
+			const { status, evaluationStatus } = mapHarnessStatus(result);
+			const ctx = patchContext.get(instanceId);
+			const stats = ctx ? parsePatchStats(ctx.modelPatch) : null;
+			const overlap = ctx ? compareToGold(ctx.modelPatch, ctx.goldPatch) : null;
+			return {
+				instance_id: instanceId,
 				status,
-				evaluationStatus,
-				error: evaluationError,
-				evaluationError,
-				logsPath: result.logs_path ?? result.logsPath ?? null,
-				testOutputSummary:
+				evaluation_status: evaluationStatus,
+				error: result.error ?? null,
+				evaluation_error: result.error ?? null,
+				logs_path: result.logs_path ?? result.logsPath ?? null,
+				test_output_summary:
 					result.test_output_summary ?? result.testOutputSummary ?? null,
-				harnessResult: result.harness_result ?? result.harnessResult ?? null,
-				patchAddedLines: stats?.addedLines ?? null,
-				patchRemovedLines: stats?.removedLines ?? null,
-				patchFilesTouched: stats?.filesTouched.length ?? null,
-				patchFilesOverlapGold: overlap?.filesOverlap ?? null,
-				patchWellFormed: stats?.wellFormed ?? null,
-				evaluatedAt: new Date(),
-				updatedAt: new Date(),
-			})
-			.where(
-				and(
-					eq(benchmarkRunInstances.runId, params.runId),
-					eq(benchmarkRunInstances.instanceId, instanceId),
-				),
-			);
+				harness_result: result.harness_result ?? result.harnessResult ?? null,
+				patch_added_lines: stats?.addedLines ?? null,
+				patch_removed_lines: stats?.removedLines ?? null,
+				patch_files_touched: stats?.filesTouched.length ?? null,
+				patch_files_overlap_gold: overlap?.filesOverlap ?? null,
+				patch_well_formed: stats?.wellFormed ?? null,
+			};
+		})
+		.filter((u): u is NonNullable<typeof u> => u !== null);
+	const mlflowInstanceIds = updates.map((u) => u.instance_id);
+	// One SQL statement updates all rows via jsonb_to_recordset. Replaces a
+	// 177-iteration sequential UPDATE loop that was hitting the Tekton
+	// finalize task's 120s read timeout (Phase-4 177-way run, 2026-05-09).
+	// All rows share one `evaluated_at` timestamp — they ARE one batch.
+	if (updates.length > 0) {
+		const now = new Date();
+		await db.execute(sql`
+			UPDATE benchmark_run_instances AS b
+			SET status = u.status,
+			    evaluation_status = u.evaluation_status,
+			    error = u.error,
+			    evaluation_error = u.evaluation_error,
+			    logs_path = u.logs_path,
+			    test_output_summary = u.test_output_summary,
+			    harness_result = u.harness_result,
+			    patch_added_lines = u.patch_added_lines,
+			    patch_removed_lines = u.patch_removed_lines,
+			    patch_files_touched = u.patch_files_touched,
+			    patch_files_overlap_gold = u.patch_files_overlap_gold,
+			    patch_well_formed = u.patch_well_formed,
+			    evaluated_at = ${now},
+			    updated_at = ${now}
+			FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb)
+			     AS u(
+			       instance_id text,
+			       status text,
+			       evaluation_status text,
+			       error text,
+			       evaluation_error text,
+			       logs_path text,
+			       test_output_summary text,
+			       harness_result jsonb,
+			       patch_added_lines integer,
+			       patch_removed_lines integer,
+			       patch_files_touched integer,
+			       patch_files_overlap_gold integer,
+			       patch_well_formed boolean
+			     )
+			WHERE b.run_id = ${params.runId} AND b.instance_id = u.instance_id
+		`);
 	}
 	syncEvaluationResultMlflowInBackground(params.runId, mlflowInstanceIds);
 	const summary = await recomputeRunSummary(params.runId);
