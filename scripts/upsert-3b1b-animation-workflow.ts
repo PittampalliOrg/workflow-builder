@@ -205,12 +205,14 @@ function makeBrowserValidateTask(): JsonRecord {
       workspaceRef: "${ .workspace_profile.workspaceRef }",
       repoPath: APP_DIR,
       // Static HTML/CSS/JS only — Python's stock http.server is enough and
-      // ships in the dapr-agent sandbox (no npm install, instant boot). The
-      // earlier "Dev server failed to launch" with python3 was actually port
-      // 3009 EADDRINUSE (truncated in the BFF error column); switching to
-      // ${PREVIEW_PORT} avoids the openshell preview-proxy reservation.
+      // ships in the dapr-agent sandbox (no npm install, instant boot).
+      // Bind to 0.0.0.0 (not 127.0.0.1) so browser/validate's readiness
+      // probe can reach the server. The probe runs outside the sandbox
+      // loopback namespace and only succeeds when the listener is on a
+      // routable interface; this matches the working pattern from
+      // plan-execute-browser-demo (`npm run dev -- --host 0.0.0.0 --port`).
       installCommand: "",
-      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --bind 127.0.0.1 --directory ${APP_DIR}`,
+      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --bind 0.0.0.0 --directory ${APP_DIR}`,
       baseUrl: `http://127.0.0.1:${PREVIEW_PORT}`,
       steps: [
         {
