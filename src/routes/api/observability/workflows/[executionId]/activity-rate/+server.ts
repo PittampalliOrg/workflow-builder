@@ -11,7 +11,7 @@
 // without special-casing.
 
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
+import { desc, eq, or } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
 import { db } from "$lib/server/db";
 import { workflowExecutions, sessions } from "$lib/server/db/schema";
@@ -54,6 +54,15 @@ async function computePayload(executionId: string): Promise<ActivityRatePayload>
 	}
 
 	// Resolve the execution → session → agent dapr_app_id.
+	//
+	// Two linkage shapes are observed in production:
+	//   1. Manual session-backed runs: workflow_executions.workflow_session_id
+	//      points at the real sessions.id (SHA-suffix-shaped) — the join hits.
+	//   2. SWE-bench instance runs: workflow_executions.workflow_session_id is
+	//      set to the *execution_id* (legacy upstream code), so the join misses
+	//      and we fall back to sessions.workflow_execution_id = exec.id.
+	// Picking the newest match preserves "the live agent" semantics when an
+	// execution has been retried.
 	const [exec] = await db
 		.select({
 			workflowSessionId: workflowExecutions.workflowSessionId,
@@ -63,11 +72,18 @@ async function computePayload(executionId: string): Promise<ActivityRatePayload>
 		.limit(1);
 
 	let agentAppId: string | null = null;
-	if (exec?.workflowSessionId) {
+	if (exec) {
+		const conditions = exec.workflowSessionId
+			? or(
+				eq(sessions.id, exec.workflowSessionId),
+				eq(sessions.workflowExecutionId, executionId),
+			)
+			: eq(sessions.workflowExecutionId, executionId);
 		const [sessionRow] = await db
 			.select({ id: sessions.id })
 			.from(sessions)
-			.where(eq(sessions.id, exec.workflowSessionId))
+			.where(conditions)
+			.orderBy(desc(sessions.createdAt))
 			.limit(1);
 		if (sessionRow?.id) {
 			agentAppId = sessionHostAppId(sessionRow.id);
@@ -92,25 +108,23 @@ async function computePayload(executionId: string): Promise<ActivityRatePayload>
 		attribute: { dapr_app_id: agentAppId },
 	};
 
+	// Status enum values are lowercased on the wire (durabletask-go emits
+	// `success` / `failed` / `recoverable` even though Dapr APIs use TitleCase).
+	const METRIC = "dapr_runtime_workflow_activity_execution_count";
 	const [succeeded, failed, recoverable, latest] = await Promise.all([
-		queryCounterDelta("dapr_runtime_workflow_activity_operation_count", range, {
+		queryCounterDelta(METRIC, range, {
 			...filter,
-			attribute: { ...filter.attribute, status: "Succeeded" },
+			attribute: { ...filter.attribute, status: "success" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryCounterDelta("dapr_runtime_workflow_activity_operation_count", range, {
+		queryCounterDelta(METRIC, range, {
 			...filter,
-			attribute: { ...filter.attribute, status: "Failed" },
+			attribute: { ...filter.attribute, status: "failed" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryCounterDelta("dapr_runtime_workflow_activity_operation_count", range, {
+		queryCounterDelta(METRIC, range, {
 			...filter,
-			attribute: { ...filter.attribute, status: "Recoverable" },
+			attribute: { ...filter.attribute, status: "recoverable" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		// The "last activity timestamp" is approximated by the latest sample
-		// time of any activity counter — gauge query gives us the most recent
-		// TimeUnix without needing a separate ORDER BY query.
-		queryGaugeLatest("dapr_runtime_workflow_activity_operation_count", range, filter).catch(
-			() => null,
-		),
+		queryGaugeLatest(METRIC, range, filter).catch(() => null),
 	]);
 
 	const succDelta = Math.round(succeeded.delta);
