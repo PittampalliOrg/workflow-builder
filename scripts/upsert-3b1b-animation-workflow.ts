@@ -199,13 +199,16 @@ function makeBrowserValidateTask(): JsonRecord {
     with: {
       workspaceRef: "${ .workspace_profile.workspaceRef }",
       repoPath: APP_DIR,
-      // The animation is plain HTML/CSS/JS — Python's http.server is sufficient
-      // and is part of the dapr-agent sandbox image. No npm install needed.
-      // Explicit `--bind 127.0.0.1` forces IPv4-only so the bind doesn't try
-      // IPv6 dual-stack (Python 3.12+ default), which fails on container
-      // networks where the IPv6 stack is disabled.
+      // Use npx http-server for the static file server. The first attempt with
+      // `python3 -m http.server` (with and without `--bind 127.0.0.1`) failed
+      // at server_bind() inside the sandbox even though the CPython interpreter
+      // is present at /usr/local/lib/python3.12. The plan-execute-browser-demo
+      // canary already proved `npm`/`npx` work in the dapr-agent sandbox via
+      // Vite's `npm run dev -- --host 0.0.0.0 --port`, so http-server is the
+      // robust path. `npx -y` auto-confirms the install and `-c-1` disables
+      // caching so the agent's freshly-written files are served as-is.
       installCommand: "",
-      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --bind 127.0.0.1 --directory ${APP_DIR}`,
+      devServerCommand: `npx -y http-server ${APP_DIR} -p ${PREVIEW_PORT} -a 127.0.0.1 -c-1 --silent`,
       baseUrl: `http://127.0.0.1:${PREVIEW_PORT}`,
       steps: [
         {
