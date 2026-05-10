@@ -2,7 +2,7 @@ FROM node:22-bookworm AS deps
 
 WORKDIR /app
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9
 
 COPY services/code-runtime/package.json ./
 RUN pnpm install --prod=false
@@ -11,7 +11,7 @@ FROM node:22-bookworm AS builder
 
 WORKDIR /app
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY services/code-runtime/ ./
