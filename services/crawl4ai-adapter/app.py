@@ -169,7 +169,10 @@ POOL: asyncpg.Pool | None = None
 
 # Window after which a non-progressing PENDING/RUNNING row is presumed
 # orphaned (its in-process asyncio task died with the previous pod).
-ORPHAN_AFTER_SECONDS = int(os.environ.get("CRAWL4AI_ORPHAN_AFTER_SECONDS", "30"))
+# Tight default — the orchestrator's polling activity itself drives the
+# lazy-recovery in get_job below, so 10s is enough headroom for a normal
+# fetch to update the row at least once.
+ORPHAN_AFTER_SECONDS = int(os.environ.get("CRAWL4AI_ORPHAN_AFTER_SECONDS", "10"))
 
 
 async def _resume_orphaned_jobs() -> int:
@@ -617,15 +620,47 @@ async def post_job(req: CrawlRequest) -> JobAck:
 
 @app.get("/crawl/jobs/{job_id}", response_model=JobStatus)
 async def get_job(job_id: str) -> JobStatus:
+    """Status read for the orchestrator's polling activity.
+
+    Lazy orphan recovery happens here too. If the row is in PENDING or
+    RUNNING state and `updated_at` hasn't moved in the last
+    `ORPHAN_AFTER_SECONDS`, we presume the previous pod's asyncio task
+    died and re-kick. The orchestrator's next poll sees the state move
+    forward; from its perspective, "polling carried us through the
+    crash" is the only observable behaviour. Combined with the
+    startup watchdog this gives best-effort recovery without needing
+    a heartbeat thread.
+    """
     assert POOL is not None
     async with POOL.acquire() as con:
         row = await con.fetchrow(
-            "SELECT state, result, error FROM crawl4ai_jobs WHERE id=$1",
+            "SELECT state, result, error, request, "
+            "extract(epoch from now()-updated_at) as age_s "
+            "FROM crawl4ai_jobs WHERE id=$1",
             job_id,
         )
     if row is None:
         raise HTTPException(404, detail=f"unknown jobId: {job_id}")
     state = row["state"]
+
+    # Lazy orphan-resume on read.
+    if state in ("PENDING", "RUNNING") and float(row["age_s"] or 0) > ORPHAN_AFTER_SECONDS:
+        try:
+            req_dict = row["request"]
+            if isinstance(req_dict, str):
+                req_dict = json.loads(req_dict)
+            req = CrawlRequest(**req_dict)
+            async with POOL.acquire() as con:
+                await con.execute(
+                    "UPDATE crawl4ai_jobs SET state='PENDING', error=NULL, updated_at=now() WHERE id=$1",
+                    job_id,
+                )
+            asyncio.create_task(_kick_job(job_id, req))
+            logger.info("lazy-resumed orphan job=%s (age %.1fs)", job_id, float(row["age_s"]))
+        except Exception as exc:
+            logger.warning("lazy-resume failed job=%s err=%s", job_id, exc)
+        return JobStatus(complete=False)
+
     result = row["result"]
     if isinstance(result, str):
         result = json.loads(result)
