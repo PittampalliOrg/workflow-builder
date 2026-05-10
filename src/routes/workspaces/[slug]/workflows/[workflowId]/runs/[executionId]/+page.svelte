@@ -1497,20 +1497,6 @@
 		return typeof value === 'number' && Number.isFinite(value) ? value : null;
 	}
 
-	function previewPortFromBaseUrl(baseUrl: string): string {
-		try {
-			const parsed = new URL(baseUrl);
-			return parsed.port;
-		} catch {
-			return '';
-		}
-	}
-
-	function defaultDevServerCommand(baseUrl: string): string {
-		const port = previewPortFromBaseUrl(baseUrl);
-		return port ? `npm run dev -- --host 0.0.0.0 --port ${port}` : '';
-	}
-
 	function runtimePreviewPath(targetExecutionId: string, queryString = ''): string {
 		const base = slug
 			? `/workspaces/${encodeURIComponent(slug)}/workflows/runtime-preview/${encodeURIComponent(targetExecutionId)}`
@@ -1536,10 +1522,14 @@
 		if (repoPath) params.set('repoPath', repoPath);
 		if (baseUrl) {
 			params.set('baseUrl', baseUrl);
+			// Only forward an explicit devServerCommand if the artifact captured
+			// one. Otherwise let the runtime auto-detect via _local_devserver_runner
+			// (next.config -> next dev, package.json -> npm/pnpm/yarn run dev,
+			// index.html -> python3 -m http.server). Forcing `npm run dev` here
+			// breaks static sites (no package.json -> npm ENOENT).
 			const command =
 				metadataText(artifact, 'requestedDevServerCommand') ||
-				metadataText(artifact, 'devServerCommand') ||
-				defaultDevServerCommand(baseUrl);
+				metadataText(artifact, 'devServerCommand');
 			if (command) params.set('devServerCommand', command);
 		}
 		params.set('timeoutSeconds', '7200');

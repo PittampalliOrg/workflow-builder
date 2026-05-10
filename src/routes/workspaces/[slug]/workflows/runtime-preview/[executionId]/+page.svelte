@@ -20,21 +20,16 @@
 		return page.url.searchParams.get(name)?.trim() ?? '';
 	}
 
-	function defaultDevServerCommand(baseUrl: string): string {
-		try {
-			const parsed = new URL(baseUrl);
-			return parsed.port ? `npm run dev -- --host 0.0.0.0 --port ${parsed.port}` : '';
-		} catch {
-			return '';
-		}
-	}
-
 	function previewStartBody(): Record<string, string | number> {
 		const body: Record<string, string | number> = { previewId: previewId() };
 		const repoPath = queryParam('repoPath');
 		const installCommand = queryParam('installCommand');
 		const baseUrl = queryParam('baseUrl');
-		const devServerCommand = queryParam('devServerCommand') || defaultDevServerCommand(baseUrl);
+		// Only forward an explicit devServerCommand if the URL carries one.
+		// Otherwise let the runtime auto-detect via _local_devserver_runner.
+		// Forcing `npm run dev` here breaks static sites that have no
+		// package.json (npm ENOENTs on the missing manifest).
+		const devServerCommand = queryParam('devServerCommand');
 		const timeoutSeconds = Number(queryParam('timeoutSeconds'));
 
 		if (repoPath) body.repoPath = repoPath;
