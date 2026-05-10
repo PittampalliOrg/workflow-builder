@@ -131,7 +131,12 @@ async function resolveOwner(
 // ---------------------------------------------------------------------------
 
 const APP_DIR = "/sandbox/3b1b-style-animation-example";
-const PREVIEW_PORT = 3009;
+// Avoid 3009 — that port is reserved by openshell-agent-runtime's
+// built-in start-preview proxy on every per-run sandbox; binding a
+// second listener fails with EADDRINUSE before browser/validate can
+// connect. Use 8080 which we've verified is free in the dapr-agent
+// template.
+const PREVIEW_PORT = 8080;
 
 function makeWorkspaceProfileTask(): JsonRecord {
   return {
@@ -199,16 +204,13 @@ function makeBrowserValidateTask(): JsonRecord {
     with: {
       workspaceRef: "${ .workspace_profile.workspaceRef }",
       repoPath: APP_DIR,
-      // Use npx http-server for the static file server. The first attempt with
-      // `python3 -m http.server` (with and without `--bind 127.0.0.1`) failed
-      // at server_bind() inside the sandbox even though the CPython interpreter
-      // is present at /usr/local/lib/python3.12. The plan-execute-browser-demo
-      // canary already proved `npm`/`npx` work in the dapr-agent sandbox via
-      // Vite's `npm run dev -- --host 0.0.0.0 --port`, so http-server is the
-      // robust path. `npx -y` auto-confirms the install and `-c-1` disables
-      // caching so the agent's freshly-written files are served as-is.
+      // Static HTML/CSS/JS only — Python's stock http.server is enough and
+      // ships in the dapr-agent sandbox (no npm install, instant boot). The
+      // earlier "Dev server failed to launch" with python3 was actually port
+      // 3009 EADDRINUSE (truncated in the BFF error column); switching to
+      // ${PREVIEW_PORT} avoids the openshell preview-proxy reservation.
       installCommand: "",
-      devServerCommand: `npx -y http-server ${APP_DIR} -p ${PREVIEW_PORT} -a 127.0.0.1 -c-1 --silent`,
+      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --bind 127.0.0.1 --directory ${APP_DIR}`,
       baseUrl: `http://127.0.0.1:${PREVIEW_PORT}`,
       steps: [
         {
