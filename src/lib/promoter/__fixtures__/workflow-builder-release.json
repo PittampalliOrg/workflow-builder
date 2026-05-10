@@ -1,0 +1,138 @@
+{
+	"apiVersion": "promoter.argoproj.io/v1alpha1",
+	"kind": "PromotionStrategy",
+	"metadata": {
+		"name": "workflow-builder-release",
+		"namespace": "argocd",
+		"uid": "fixture-uid-workflow-builder-release",
+		"labels": { "stacks.io/promotion-gate": "workflow-builder-release" }
+	},
+	"spec": {
+		"gitRepositoryRef": { "name": "stacks" },
+		"activeCommitStatuses": [
+			{ "key": "argocd-health" },
+			{ "key": "timer" }
+		],
+		"environments": [
+			{ "branch": "env/spokes-dev", "autoMerge": true },
+			{ "branch": "env/spokes-staging", "autoMerge": true }
+		]
+	},
+	"status": {
+		"environments": [
+			{
+				"branch": "env/spokes-dev",
+				"active": {
+					"dry": {
+						"sha": "abc1234567890abc1234567890abc1234567890",
+						"repoURL": "https://github.com/PittampalliOrg/stacks",
+						"author": "Vinod Pittampalli",
+						"subject": "feat(gitops/render): wake browserstation workers on dev/staging",
+						"body": "Bumps the autoscaler signal so dev workers wake on schedule.",
+						"commitTime": "2026-05-09T18:32:00Z"
+					},
+					"hydrated": {
+						"sha": "def567890abcdef567890abcdef567890abcdef5",
+						"commitTime": "2026-05-09T18:32:30Z"
+					},
+					"commitStatuses": [
+						{ "key": "argocd-health", "phase": "success", "url": "https://argocd-hub.tail286401.ts.net/applications/argocd/dev-workflow-builder" },
+						{ "key": "timer", "phase": "success" }
+					]
+				},
+				"proposed": {
+					"dry": {
+						"sha": "abc1234567890abc1234567890abc1234567890",
+						"repoURL": "https://github.com/PittampalliOrg/stacks"
+					},
+					"hydrated": {
+						"sha": "def567890abcdef567890abcdef567890abcdef5"
+					},
+					"commitStatuses": []
+				},
+				"history": [
+					{
+						"active": {
+							"dry": {
+								"sha": "ed9d2c1234567890abc1234567890abc12345678",
+								"repoURL": "https://github.com/PittampalliOrg/stacks",
+								"author": "Codex",
+								"subject": "fix(function-router): route system/* to fn-system",
+								"commitTime": "2026-05-09T17:00:00Z"
+							},
+							"hydrated": { "sha": "11aa2233ed9d2c1234567890abc1234567890abc" }
+						},
+						"proposed": {
+							"hydrated": { "sha": "11aa2233ed9d2c1234567890abc1234567890abc" },
+							"commitStatuses": [
+								{ "key": "argocd-health", "phase": "success" },
+								{ "key": "timer", "phase": "success" }
+							]
+						},
+						"pullRequest": { "number": 42, "url": "https://github.com/PittampalliOrg/stacks/pull/42", "state": "merged" },
+						"endedAt": "2026-05-09T17:30:00Z"
+					}
+				]
+			},
+			{
+				"branch": "env/spokes-staging",
+				"active": {
+					"dry": {
+						"sha": "ed9d2c1234567890abc1234567890abc12345678",
+						"repoURL": "https://github.com/PittampalliOrg/stacks",
+						"author": "Codex",
+						"subject": "fix(function-router): route system/* to fn-system",
+						"commitTime": "2026-05-09T17:00:00Z"
+					},
+					"hydrated": {
+						"sha": "11aa2233ed9d2c1234567890abc1234567890abc",
+						"commitTime": "2026-05-09T17:30:00Z"
+					},
+					"commitStatuses": [
+						{ "key": "argocd-health", "phase": "success", "url": "https://argocd-hub.tail286401.ts.net/applications/argocd/staging-workflow-builder" },
+						{ "key": "timer", "phase": "success" }
+					]
+				},
+				"proposed": {
+					"dry": {
+						"sha": "abc1234567890abc1234567890abc1234567890",
+						"repoURL": "https://github.com/PittampalliOrg/stacks",
+						"subject": "feat(gitops/render): wake browserstation workers on dev/staging",
+						"author": "Vinod Pittampalli",
+						"commitTime": "2026-05-09T18:32:00Z"
+					},
+					"hydrated": {
+						"sha": "def567890abcdef567890abcdef567890abcdef5"
+					},
+					"commitStatuses": [
+						{ "key": "argocd-health", "phase": "pending", "description": "Application progressing", "url": "https://argocd-hub.tail286401.ts.net/applications/argocd/staging-workflow-builder" },
+						{ "key": "timer", "phase": "pending", "description": "soaking 4m of 10m" }
+					]
+				},
+				"history": [
+					{
+						"active": {
+							"dry": {
+								"sha": "f00ba1234567890abcdef1234567890abcdef1234",
+								"repoURL": "https://github.com/PittampalliOrg/stacks",
+								"author": "Codex",
+								"subject": "chore(outer-loop): update crawl4ai-adapter image",
+								"commitTime": "2026-05-08T22:00:00Z"
+							},
+							"hydrated": { "sha": "22bb3344f00ba1234567890abcdef1234567890a" }
+						},
+						"proposed": {
+							"hydrated": { "sha": "22bb3344f00ba1234567890abcdef1234567890a" },
+							"commitStatuses": [
+								{ "key": "argocd-health", "phase": "success" },
+								{ "key": "timer", "phase": "success" }
+							]
+						},
+						"pullRequest": { "number": 38, "url": "https://github.com/PittampalliOrg/stacks/pull/38", "state": "merged" },
+						"endedAt": "2026-05-08T22:30:00Z"
+					}
+				]
+			}
+		]
+	}
+}

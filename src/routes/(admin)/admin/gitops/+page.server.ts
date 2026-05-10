@@ -1,6 +1,8 @@
 import { env } from "$env/dynamic/public";
 
 import { getDeploymentMetadata } from "$lib/server/gitops/deployment-metadata";
+import { getPromotionStrategies } from "$lib/server/promoter";
+
 import type { PageServerLoad } from "./$types";
 
 export type GitopsPageLinks = {
@@ -13,7 +15,10 @@ export type GitopsPageLinks = {
 };
 
 export const load: PageServerLoad = async () => {
-	const initial = await getDeploymentMetadata();
+	const [initial, promotions] = await Promise.all([
+		getDeploymentMetadata(),
+		getPromotionStrategies(),
+	]);
 	const tektonBase =
 		env.PUBLIC_TEKTON_DASHBOARD_URL?.trim() ||
 		"https://tekton-dashboard-hub.tail286401.ts.net";
@@ -30,6 +35,7 @@ export const load: PageServerLoad = async () => {
 	};
 	return {
 		initial,
+		promotions,
 		tektonBase,
 		links,
 	};

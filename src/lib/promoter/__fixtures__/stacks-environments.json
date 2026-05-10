@@ -1,0 +1,51 @@
+{
+	"apiVersion": "promoter.argoproj.io/v1alpha1",
+	"kind": "PromotionStrategy",
+	"metadata": {
+		"name": "stacks-environments",
+		"namespace": "argocd",
+		"uid": "fixture-uid-stacks-environments",
+		"labels": { "stacks.io/promotion-gate": "hub-control-plane" }
+	},
+	"spec": {
+		"gitRepositoryRef": { "name": "stacks" },
+		"activeCommitStatuses": [],
+		"environments": [
+			{ "branch": "env/hub", "autoMerge": false }
+		]
+	},
+	"status": {
+		"environments": [
+			{
+				"branch": "env/hub",
+				"active": {
+					"dry": {
+						"sha": "25a7a08bb0c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4",
+						"repoURL": "https://github.com/PittampalliOrg/stacks",
+						"author": "Codex",
+						"subject": "feat(gitops/render): wake browserstation workers on dev/staging",
+						"commitTime": "2026-05-09T18:33:00Z"
+					},
+					"hydrated": {
+						"sha": "33cc445525a7a08bb0c0d1e2f3a4b5c6d7e8f9a0",
+						"commitTime": "2026-05-09T18:34:00Z"
+					},
+					"commitStatuses": []
+				},
+				"history": [
+					{
+						"active": {
+							"dry": {
+								"sha": "862e5a615abc1234567890abcdef1234567890abc",
+								"repoURL": "https://github.com/PittampalliOrg/stacks",
+								"subject": "feat(gitops/render): add fn-system + crawl4ai-adapter to release renderer"
+							},
+							"hydrated": { "sha": "44dd5566862e5a615abc1234567890abcdef1234" }
+						},
+						"endedAt": "2026-05-09T16:00:00Z"
+					}
+				]
+			}
+		]
+	}
+}
