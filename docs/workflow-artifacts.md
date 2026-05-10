@@ -35,7 +35,16 @@ synthesize:
       if: "${ .data.content != null }"       # optional gate
 ```
 
-**Resolution timing**: after the task's result is finalized (`_store_task_output` ran). Each entry's jq fields evaluate against the same expression context the task itself just used — including the task's own outputs. So `${ .data.tier }` works inside an `artifacts:` block on a `web/crawl.async` task because by then the task's result is in `tc.task_outputs[<task_name>]` and the unwrap exposes `.data.tier`.
+**Resolution timing**: after the task's result is finalized (`_store_task_output` ran). Each entry's jq fields evaluate against a per-task expression context that exposes the just-completed task's payload uniformly, regardless of how nested the producer's envelope is.
+
+**Expression context shape** (`_persist_task_artifacts` in `services/workflow-orchestrator/workflows/sw_workflow.py`):
+
+The hook strips two wrappers — `{label, actionType, data}` from `_store_task_output`, then a `{success, data, error}` envelope if present — to reach the *payload* the task produced. Then:
+
+- If the payload already has a `.data` field (e.g. `web/crawl.async`'s `{complete, success, data: {tier, markdown, …}, error}`), the context root is the payload itself. So `${ .data.markdown }`, `${ .complete }`, `${ .success }` all resolve.
+- If the payload is flat (e.g. an agent run returning `{success, content, turn, …}`), the context wraps it as `{data: payload}`. So `${ .data.content }` still works — same idiom on both shapes.
+
+This means a single canonical access pattern (`${ .data.X }`) works across crawl tasks, agent runs, system/* calls, and `for`-loop iterations. The hook also exposes `.input` (trigger), `.state.X`, and every previously-completed task by name (e.g. `${ .fetch_each.data.tier }`).
 
 **Auto-wrapping by kind**: `from:` produces the inner value; the orchestrator wraps it for the renderer:
 
