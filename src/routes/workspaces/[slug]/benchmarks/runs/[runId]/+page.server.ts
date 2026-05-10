@@ -2,6 +2,14 @@ import { error } from "@sveltejs/kit";
 import { getBenchmarkRun } from "$lib/server/benchmarks/service";
 import { computeRunStats, type RunStats } from "$lib/server/benchmarks/stats";
 import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
+import {
+	getBenchmarkRunPhaseAttribution,
+	type RunPhaseAttribution,
+} from "$lib/server/benchmarks/phase-attribution";
+import {
+	getRunFailureContext,
+	type RunFailureContext,
+} from "$lib/server/benchmarks/failure-context";
 import type { PageServerLoad } from "./$types";
 
 export type RunDetailPageData = {
@@ -9,18 +17,30 @@ export type RunDetailPageData = {
 	run: Awaited<ReturnType<typeof getBenchmarkRun>>;
 	runStats: RunStats;
 	capacityDiagnostics: Awaited<ReturnType<typeof getBenchmarkRunCapacityDiagnostics>>;
+	phaseAttribution: RunPhaseAttribution | null;
+	failureContext: RunFailureContext | null;
 };
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	if (!locals.session?.userId) error(401, "Authentication required");
 	if (!locals.session.projectId) error(404, "Run not found");
 
-	const [run, runStats, capacityDiagnostics] = await Promise.all([
+	const [
+		run,
+		runStats,
+		capacityDiagnostics,
+		phaseAttribution,
+		failureContext,
+	] = await Promise.all([
 		getBenchmarkRun(locals.session.projectId, params.runId),
 		computeRunStats(params.runId).catch(() => null),
 		getBenchmarkRunCapacityDiagnostics(locals.session.projectId, params.runId).catch(
 			() => null,
 		),
+		// Best-effort: ClickHouse may be unreachable in some envs (e.g., when
+		// the dev cluster is down). Don't block the run page on metrics.
+		getBenchmarkRunPhaseAttribution(params.runId).catch(() => null),
+		getRunFailureContext(params.runId).catch(() => null),
 	]);
 	if (!run) error(404, "Run not found");
 
@@ -28,6 +48,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		runId: params.runId,
 		run,
 		capacityDiagnostics,
+		phaseAttribution,
+		failureContext,
 		runStats:
 			runStats ??
 			({

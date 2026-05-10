@@ -42,12 +42,13 @@
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';
 	import SandboxPreviewPopover from '$lib/components/sandbox/sandbox-preview-popover.svelte';
 	import CreateSandboxDialog from '$lib/components/sandbox/create-sandbox-dialog.svelte';
-	import { getSandboxes } from './data.remote';
+	import { getSandboxes, getWarmPoolStats } from './data.remote';
 	import type { Sandbox, SandboxPhase } from '$lib/types/sandbox';
 
 	// -- Data sources --
 	const stream = createSandboxListStream();
 	const sandboxQuery = getSandboxes();
+	const warmPoolQuery = getWarmPoolStats();
 
 	// Use SSE stream data when actively streaming, otherwise remote function query
 	const data = $derived(stream.isStreaming ? stream.sandboxes : (sandboxQuery.current ?? []));
@@ -357,6 +358,65 @@
 	<div class="border-b border-border px-6 py-2">
 		<CapacityBanner />
 	</div>
+
+	{#if warmPoolQuery.current?.hasData}
+		{@const stats = warmPoolQuery.current}
+		<div class="border-b border-border px-6 py-3">
+			<div class="rounded-md border border-border bg-background p-3">
+				<div class="mb-2 flex items-baseline justify-between">
+					<h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+						Warm-pool effectiveness
+					</h3>
+					<span class="text-[10px] text-muted-foreground">
+						last {Math.round(stats.windowSeconds / 60)}m · cluster: {stats.cluster}
+					</span>
+				</div>
+				<table class="w-full text-xs">
+					<thead>
+						<tr class="text-left text-muted-foreground">
+							<th class="font-normal">Template</th>
+							<th class="font-normal">Claims</th>
+							<th class="font-normal">Warm-hit %</th>
+							<th class="font-normal">Cold P50</th>
+							<th class="font-normal">Warm P50</th>
+							<th class="font-normal">Time saved</th>
+						</tr>
+					</thead>
+					<tbody class="font-mono">
+						{#each stats.perTemplate as row (row.template)}
+							<tr class="border-t border-border/40">
+								<td class="py-1">{row.template}</td>
+								<td class="py-1">{row.totalCount}</td>
+								<td class="py-1">
+									<span
+										class:text-emerald-600={row.hitRatePct >= 70}
+										class:text-amber-600={row.hitRatePct >= 30 && row.hitRatePct < 70}
+										class:text-rose-600={row.hitRatePct < 30}
+									>
+										{row.hitRatePct.toFixed(0)}%
+									</span>
+									<span class="text-muted-foreground">
+										({row.warmCount}/{row.totalCount})
+									</span>
+								</td>
+								<td class="py-1">
+									{row.coldP50Ms !== null ? `${Math.round(row.coldP50Ms)}ms` : '—'}
+								</td>
+								<td class="py-1">
+									{row.warmP50Ms !== null ? `${Math.round(row.warmP50Ms)}ms` : '—'}
+								</td>
+								<td class="py-1">
+									{row.estimatedTimeSavedSec > 0
+										? `${row.estimatedTimeSavedSec.toFixed(1)}s`
+										: '—'}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	{/if}
 
 	<div class="flex flex-1 flex-col overflow-auto p-6">
 		<svelte:boundary>

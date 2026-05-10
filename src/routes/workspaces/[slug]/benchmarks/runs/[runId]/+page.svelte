@@ -28,6 +28,7 @@
 	import CumulativeResolvedSparkline from '$lib/components/benchmarks/cumulative-resolved-sparkline.svelte';
 	import RunInstanceTable from '$lib/components/benchmarks/run-instance-table.svelte';
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
+	import MetricWaterfall from '$lib/components/metrics/MetricWaterfall.svelte';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
 	import type { WorkloadSnapshot } from '$lib/server/kueueviz';
 	import {
@@ -424,6 +425,57 @@
 					<AlertDescription>{errorMessage}</AlertDescription>
 				</Alert>
 			{/if}
+
+			{#if data.failureContext}
+				{@const ctx = data.failureContext}
+				<div class="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+					<div class="mb-2 text-xs font-semibold uppercase tracking-wider text-destructive">
+						Platform state at failure time
+					</div>
+					<dl class="grid gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+						<div>
+							<dt class="text-muted-foreground">Kueue pending @ end</dt>
+							<dd class="font-mono">{ctx.kueue.pendingWorkloadsAtEnd ?? '—'}</dd>
+						</div>
+						<div>
+							<dt class="text-muted-foreground">Preemptions in window</dt>
+							<dd class="font-mono">{ctx.kueue.preemptionsInWindow}</dd>
+						</div>
+						<div>
+							<dt class="text-muted-foreground">Admission wait P95</dt>
+							<dd class="font-mono">
+								{ctx.kueue.admissionWaitP95Ms !== null
+									? `${(ctx.kueue.admissionWaitP95Ms / 1000).toFixed(1)}s`
+									: '—'}
+							</dd>
+						</div>
+						<div>
+							<dt class="text-muted-foreground">Sandbox reconcile errors</dt>
+							<dd class="font-mono">{ctx.agentSandbox.reconcileErrorsInWindow}</dd>
+						</div>
+						<div>
+							<dt class="text-muted-foreground">Workflow failed (Dapr)</dt>
+							<dd class="font-mono">{ctx.dapr.workflowFailedInWindow}</dd>
+						</div>
+						<div>
+							<dt class="text-muted-foreground">Workflow recoverable (Dapr)</dt>
+							<dd class="font-mono">{ctx.dapr.workflowRecoverableInWindow}</dd>
+						</div>
+						<div>
+							<dt class="text-muted-foreground">Scheduling P95</dt>
+							<dd class="font-mono">
+								{ctx.dapr.schedulingLatencyP95Ms !== null
+									? `${ctx.dapr.schedulingLatencyP95Ms.toFixed(0)}ms`
+									: '—'}
+							</dd>
+						</div>
+					</dl>
+					<p class="mt-2 italic text-muted-foreground">
+						If counts are spiking near your run window the platform was contended.
+						Otherwise the failure is likely run-internal — check the trace.
+					</p>
+				</div>
+			{/if}
 		</header>
 
 		<RunStatTiles
@@ -470,6 +522,71 @@
 			<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
 				<TerminationDonut data={runStats.byTerminationReason} />
 				<ToolUsageHistogram data={runStats.byTool} />
+			</div>
+		{/if}
+
+		{#if data.phaseAttribution?.hasMetricsCoverage}
+			{@const agg = data.phaseAttribution.aggregate}
+			{@const phaseTotal =
+				(agg.queueWaitP50Ms ?? 0) +
+				(agg.coldStartP50Ms ?? 0) +
+				(agg.inferenceP50Ms ?? 0) +
+				(agg.evaluationP50Ms ?? 0)}
+			<div class="rounded-md border border-border bg-background p-4">
+				<h3 class="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+					Run-time attribution (P50)
+				</h3>
+				<p class="mb-3 text-xs text-muted-foreground">
+					Where wall-clock time went across queue admission, sandbox startup, inference, and evaluation.
+					{#if data.phaseAttribution.caveat}
+						<span class="block italic">{data.phaseAttribution.caveat}</span>
+					{/if}
+				</p>
+				<MetricWaterfall
+					totalMs={phaseTotal}
+					phases={[
+						{ label: 'Queue', ms: agg.queueWaitP50Ms ?? 0, color: '#94a3b8' },
+						{ label: 'Sandbox start', ms: agg.coldStartP50Ms ?? 0, color: '#fb923c' },
+						{ label: 'Inference', ms: agg.inferenceP50Ms ?? 0, color: '#6366f1' },
+						{ label: 'Evaluation', ms: agg.evaluationP50Ms ?? 0, color: '#14b8a6' }
+					]}
+				/>
+				<table class="mt-4 w-full text-xs">
+					<thead>
+						<tr class="text-left text-muted-foreground">
+							<th class="font-normal">Phase</th>
+							<th class="font-normal">P50</th>
+							<th class="font-normal">P95</th>
+							<th class="font-normal">Samples</th>
+						</tr>
+					</thead>
+					<tbody class="font-mono">
+						<tr>
+							<td>Queue wait</td>
+							<td>{agg.queueWaitP50Ms !== null ? `${Math.round(agg.queueWaitP50Ms)}ms` : '—'}</td>
+							<td>{agg.queueWaitP95Ms !== null ? `${Math.round(agg.queueWaitP95Ms)}ms` : '—'}</td>
+							<td>{agg.queueWaitSamples}</td>
+						</tr>
+						<tr>
+							<td>Sandbox cold-start</td>
+							<td>{agg.coldStartP50Ms !== null ? `${Math.round(agg.coldStartP50Ms)}ms` : '—'}</td>
+							<td>{agg.coldStartP95Ms !== null ? `${Math.round(agg.coldStartP95Ms)}ms` : '—'}</td>
+							<td>{agg.coldStartSamples}</td>
+						</tr>
+						<tr>
+							<td>Inference</td>
+							<td>{agg.inferenceP50Ms !== null ? `${(agg.inferenceP50Ms / 1000).toFixed(1)}s` : '—'}</td>
+							<td>{agg.inferenceP95Ms !== null ? `${(agg.inferenceP95Ms / 1000).toFixed(1)}s` : '—'}</td>
+							<td>{agg.inferenceSamples}</td>
+						</tr>
+						<tr>
+							<td>Evaluation</td>
+							<td>{agg.evaluationP50Ms !== null ? `${(agg.evaluationP50Ms / 1000).toFixed(1)}s` : '—'}</td>
+							<td>{agg.evaluationP95Ms !== null ? `${(agg.evaluationP95Ms / 1000).toFixed(1)}s` : '—'}</td>
+							<td>{agg.evaluationSamples}</td>
+						</tr>
+					</tbody>
+				</table>
 			</div>
 		{/if}
 

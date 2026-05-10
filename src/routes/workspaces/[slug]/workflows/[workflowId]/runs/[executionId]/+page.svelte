@@ -143,6 +143,7 @@
 	import AnimatedEdge from '$lib/components/workflow/edges/animated-edge.svelte';
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
+	import LiveActivityRate from '$lib/components/metrics/LiveActivityRate.svelte';
 
 	let workflowId = $derived(page.params.workflowId ?? '');
 	let executionId = $derived(page.params.executionId ?? '');
@@ -1837,6 +1838,8 @@
 			instanceId={instanceId ?? undefined}
 			traceId={traceId ?? undefined}
 		/>
+
+		<LiveActivityRate {executionId} active={isRunning} />
 
 		<div class="ml-auto flex items-center gap-1 text-xs">
 			<!-- Prev / Next sibling runs. Disabled state cascades from the

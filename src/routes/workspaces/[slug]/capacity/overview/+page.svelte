@@ -16,12 +16,22 @@
 	import ClusterQueueCard from '$lib/components/capacity/cluster-queue-card.svelte';
 	import ResourceFlavorStrip from '$lib/components/capacity/resource-flavor-strip.svelte';
 	import StatusPill from '$lib/components/capacity/status-pill.svelte';
+	import MetricSparkline from '$lib/components/metrics/MetricSparkline.svelte';
+	import { getSchedulingLatency } from './data.remote';
 
 	const slug = $derived(page.params.slug as string);
 
 	const queues = createClusterQueueStream();
 	const workloads = createWorkloadStream();
 	const flavors = createResourceFlavorStream();
+	const schedulingQuery = getSchedulingLatency();
+
+	const sparklinePoints = $derived(
+		(schedulingQuery.current?.sparkline ?? []).map((p) => ({
+			t: new Date(p.t),
+			value: p.valueMs
+		}))
+	);
 
 	// Aggregate connection state — show the worst of the three so the
 	// user sees "Reconnecting" if any feed is degraded.
@@ -78,6 +88,20 @@
 			</a>
 		</div>
 		<div class="flex items-center gap-1">
+			{#if schedulingQuery.current?.hasData}
+				{@const snap = schedulingQuery.current}
+				<Badge
+					variant="outline"
+					class="font-mono text-[10px] inline-flex items-center gap-1.5"
+					title={`Dapr workflow scheduling latency over the last ${snap.windowSeconds / 60}m. P50/P95 measure the lag between CreateWorkflowInstance and the runtime picking it up — rising P95 = sidecar concurrency caps saturated.`}
+				>
+					<span class="text-muted-foreground">sched P95:</span>
+					<span>{snap.p95Ms !== null ? `${Math.round(snap.p95Ms)}ms` : '—'}</span>
+					{#if sparklinePoints.length > 1}
+						<MetricSparkline points={sparklinePoints} height={14} width={48} />
+					{/if}
+				</Badge>
+			{/if}
 			<Badge variant="outline" class="font-mono text-[10px]">
 				<Activity class="size-3" />
 				{totals.admitted} admitted
