@@ -2541,13 +2541,14 @@ def _persist_task_artifacts(
     Dapr retry via deterministic id (workflowId|executionId|nodeId|kind|title).
     """
     artifacts_spec = task_data.get("artifacts")
-    # Debug: confirm post-task hook is reached for every dispatch.
-    _log_info(
-        ctx,
-        "[SW Workflow] _persist_task_artifacts called: task=%s has_artifacts=%s count=%s",
+    # Debug: replay-safe log entry. Confirms whether the hook is reached for
+    # every _dispatch_task call (including for-loop iterations). Will revert.
+    logger.warning(
+        "[SW Workflow DEBUG] _persist_task_artifacts called: task=%s has_artifacts=%s count=%s replaying=%s",
         task_name,
         artifacts_spec is not None,
         len(artifacts_spec) if isinstance(artifacts_spec, list) else 0,
+        _is_replaying(ctx),
     )
     if not isinstance(artifacts_spec, list) or not artifacts_spec:
         return
