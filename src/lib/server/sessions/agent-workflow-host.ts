@@ -80,6 +80,24 @@ export interface AgentWorkflowHostResult {
 	status: string | null;
 }
 
+export interface TraceContext {
+	traceparent: string | null;
+	tracestate: string | null;
+}
+
+/**
+ * Extract W3C trace-context headers from an incoming SvelteKit request so
+ * they can be forwarded to sandbox-execution-api and ultimately stamped onto
+ * the Sandbox CR — letting traces stitch across BFF -> sandbox-execution-api
+ * -> daprd -> agent_workflow.
+ */
+export function extractTraceContext(request: { headers: Headers }): TraceContext {
+	return {
+		traceparent: request.headers.get("traceparent"),
+		tracestate: request.headers.get("tracestate"),
+	};
+}
+
 export async function maybeProvisionAgentWorkflowHost(params: {
 	sessionId: string;
 	agentConfig: AgentConfig | null;
@@ -87,6 +105,8 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	benchmarkRunId: string | null;
 	benchmarkInstanceId: string | null;
 	timeoutMinutes: number | null;
+	priorityClass?: string | null;
+	traceContext?: TraceContext | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentWorkflowHostBackendEnabled()) return null;
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
@@ -107,12 +127,25 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	const waitReadySeconds = Number.isFinite(waitReadySecondsRaw)
 		? Math.max(0, Math.min(55, waitReadySecondsRaw))
 		: 45;
+	const priorityClass =
+		params.priorityClass?.trim() ||
+		env.AGENT_WORKFLOW_HOST_PRIORITY_CLASS ||
+		process.env.AGENT_WORKFLOW_HOST_PRIORITY_CLASS ||
+		"interactive-agent";
 	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
+	const traceHeaders: Record<string, string> = {};
+	if (params.traceContext?.traceparent) {
+		traceHeaders["traceparent"] = params.traceContext.traceparent;
+	}
+	if (params.traceContext?.tracestate) {
+		traceHeaders["tracestate"] = params.traceContext.tracestate;
+	}
 	const response = await fetch(`${baseUrl}/api/v1/agent-workflow-hosts`, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
 			...(token ? { Authorization: `Bearer ${token}` } : {}),
+			...traceHeaders,
 		},
 		body: JSON.stringify({
 			sessionId: params.sessionId,
@@ -126,6 +159,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 				"benchmark-fast",
 			timeoutSeconds,
 			waitReadySeconds,
+			priorityClass,
 		}),
 	});
 	const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;

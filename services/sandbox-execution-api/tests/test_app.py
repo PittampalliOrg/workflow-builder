@@ -162,6 +162,10 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
     assert annotations["dapr.io/max-body-size"] == "16Mi"
+    assert annotations["prometheus.io/scrape"] == "true"
+    assert annotations["prometheus.io/port"] == "9090"
+    assert annotations["prometheus.io/path"] == "/"
+    assert "kueue.x-k8s.io/priority-class" not in pod_template["metadata"]["labels"]
     pod_spec = pod_template["spec"]
     # Job-only fields must not leak through to the Sandbox.
     assert "backoffLimit" not in manifest["spec"]
@@ -190,6 +194,91 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+
+
+def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+        trace_context={
+            "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            "tracestate": "rojo=00f067aa0ba902b7",
+        },
+    )
+
+    sandbox_annotations = manifest["metadata"].get("annotations", {})
+    assert (
+        sandbox_annotations["workflow-builder.cnoe.io/traceparent"]
+        == "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    )
+    assert (
+        sandbox_annotations["workflow-builder.cnoe.io/tracestate"]
+        == "rojo=00f067aa0ba902b7"
+    )
+    container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    env_by_name = {e["name"]: e for e in container["env"]}
+    assert "WORKFLOW_BUILDER_TRACEPARENT" in env_by_name
+    field_ref = env_by_name["WORKFLOW_BUILDER_TRACEPARENT"]["valueFrom"]["fieldRef"]
+    assert field_ref["fieldPath"] == (
+        "metadata.annotations['workflow-builder.cnoe.io/traceparent']"
+    )
+
+
+def test_agent_workflow_host_sandbox_omits_trace_annotations_when_unset() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    # Sandbox metadata.annotations is omitted entirely when no trace context
+    # is propagated, so the downward-API env stays empty rather than being
+    # blocked from starting the pod.
+    assert "annotations" not in manifest["metadata"]
+
+
+def test_agent_workflow_host_sandbox_stamps_kueue_priority_class() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+            priorityClass="interactive-agent",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    pod_labels = manifest["spec"]["podTemplate"]["metadata"]["labels"]
+    assert pod_labels["kueue.x-k8s.io/priority-class"] == "interactive-agent"
+    assert pod_labels["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
 
 
 class _FakeCustom:

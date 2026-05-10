@@ -22,7 +22,10 @@ import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeSlugFromAppId,
 } from "$lib/server/agents/runtime-routing";
-import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
+import {
+	extractTraceContext,
+	maybeProvisionAgentWorkflowHost,
+} from "$lib/server/sessions/agent-workflow-host";
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -45,6 +48,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	if (!db) return error(503, "Database not configured");
 
+	const traceContext = extractTraceContext(request);
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	const sessionId =
 		typeof body.sessionId === "string" && body.sessionId.trim()
@@ -310,6 +314,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			benchmarkRunId,
 			benchmarkInstanceId,
 			timeoutMinutes: bridgeTimeoutMinutes,
+			traceContext,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		if (!reuseHost && reuseWakeSlug) {
@@ -430,6 +435,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		benchmarkRunId,
 		benchmarkInstanceId,
 		timeoutMinutes: bridgeTimeoutMinutes,
+		traceContext,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const wakeSlug = await resolveWakeSlug({

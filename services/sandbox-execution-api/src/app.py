@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
+KUEUE_PRIORITY_CLASS_LABEL = "kueue.x-k8s.io/priority-class"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
 DEFAULT_JOB_TTL_SECONDS = 300
 DEFAULT_AGENT_HOST_IMAGE = "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:latest"
@@ -79,6 +80,9 @@ class AgentWorkflowHostRequest(BaseModel):
     timeoutSeconds: int = Field(default=7200, ge=60, le=86400)
     agentImage: str | None = None
     waitReadySeconds: int = Field(default=0, ge=0, le=300)
+    # Maps to kueue.x-k8s.io/priority-class on the pod template. Recognized
+    # values: interactive-agent (1000), swebench-cohort (100), background-warm (10).
+    priorityClass: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -440,11 +444,16 @@ def _agent_host_sandbox_name(agent_app_id: str) -> str:
     return _safe_resource_name(f"agent-host-{agent_app_id}", max_length=63)
 
 
+TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
+TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
+
+
 def build_agent_workflow_host_sandbox_manifest(
     request: AgentWorkflowHostRequest,
     *,
     namespace: str,
     class_config: ExecutionClassConfig,
+    trace_context: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     run_label = _safe_name(request.runId or "manual", max_length=63)
     instance_label = _safe_name(request.instanceId or request.sessionId, max_length=63)
@@ -565,6 +574,33 @@ def build_agent_workflow_host_sandbox_manifest(
                             "true",
                         ),
                     },
+                    # W3C trace-context, sourced from the parent BFF request
+                    # via Sandbox metadata.annotations. dapr-agent-py reads
+                    # this and uses it as the parent context for spans the
+                    # session_workflow emits, stitching the trace from
+                    # ensure-for-workflow -> agent_workflow.
+                    {
+                        "name": "WORKFLOW_BUILDER_TRACEPARENT",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": (
+                                    "metadata.annotations["
+                                    f"'{TRACEPARENT_ANNOTATION}']"
+                                ),
+                            },
+                        },
+                    },
+                    {
+                        "name": "WORKFLOW_BUILDER_TRACESTATE",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": (
+                                    "metadata.annotations["
+                                    f"'{TRACESTATE_ANNOTATION}']"
+                                ),
+                            },
+                        },
+                    },
                 ],
                 "envFrom": [
                     {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
@@ -615,56 +651,78 @@ def build_agent_workflow_host_sandbox_manifest(
     if class_config.runtimeClassName:
         pod_spec["runtimeClassName"] = class_config.runtimeClassName
     pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
+    pod_labels: dict[str, str] = {
+        "app": "agent-workflow-host",
+        KUEUE_QUEUE_LABEL: class_config.localQueue,
+        "benchmark-run-id": run_label,
+        "benchmark-instance-id": instance_label,
+        "agent-app-id": app_label,
+        "workflow-builder.cnoe.io/session-id": session_label,
+    }
+    if request.priorityClass:
+        pod_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(request.priorityClass)
+    sandbox_metadata_annotations: dict[str, str] = {}
+    if trace_context:
+        traceparent = trace_context.get("traceparent") or ""
+        if traceparent:
+            sandbox_metadata_annotations[TRACEPARENT_ANNOTATION] = traceparent
+        tracestate = trace_context.get("tracestate") or ""
+        if tracestate:
+            sandbox_metadata_annotations[TRACESTATE_ANNOTATION] = tracestate
+    pod_annotations: dict[str, str] = {
+        "dapr.io/enabled": "true",
+        "dapr.io/app-id": request.agentAppId,
+        "dapr.io/app-port": "8002",
+        "dapr.io/app-protocol": "http",
+        "dapr.io/config": os.environ.get(
+            "DAPR_AGENT_HOST_CONFIG",
+            "workflow-builder-agent-runtime",
+        ),
+        "dapr.io/enable-workflow": "true",
+        "dapr.io/enable-native-sidecar": "true",
+        "dapr.io/placement-host-address": os.environ.get(
+            "DAPR_PLACEMENT_HOST_ADDRESS",
+            "dapr-placement-server.dapr-system.svc.cluster.local:50005",
+        ),
+        "dapr.io/max-body-size": os.environ.get(
+            "DAPR_MAX_BODY_SIZE", "16Mi"
+        ),
+        "dapr.io/graceful-shutdown-seconds": "60",
+        "dapr.io/sidecar-readiness-probe-delay-seconds": "0",
+        "dapr.io/sidecar-readiness-probe-period-seconds": "1",
+        "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
+        # Make the Dapr sidecar's :9090 metrics endpoint scrapeable. The
+        # OTEL collector's prometheus/dapr receiver targets dapr.io/enabled
+        # pods directly; these annotations are a fallback path for any
+        # prometheus.io-style scraper deployed alongside.
+        "prometheus.io/scrape": "true",
+        "prometheus.io/port": "9090",
+        "prometheus.io/path": "/",
+    }
+    sandbox_metadata: dict[str, Any] = {
+        "name": _agent_host_sandbox_name(request.agentAppId),
+        "namespace": namespace,
+        "labels": {
+            "app": "agent-workflow-host",
+            "benchmark-run-id": run_label,
+            "benchmark-instance-id": instance_label,
+            "agent-app-id": app_label,
+            "sandbox-execution-class": _safe_name(request.executionClass),
+            "workflow-builder.cnoe.io/session-id": session_label,
+        },
+    }
+    if sandbox_metadata_annotations:
+        sandbox_metadata["annotations"] = sandbox_metadata_annotations
     return {
         "apiVersion": "agents.x-k8s.io/v1alpha1",
         "kind": "Sandbox",
-        "metadata": {
-            "name": _agent_host_sandbox_name(request.agentAppId),
-            "namespace": namespace,
-            "labels": {
-                "app": "agent-workflow-host",
-                "benchmark-run-id": run_label,
-                "benchmark-instance-id": instance_label,
-                "agent-app-id": app_label,
-                "sandbox-execution-class": _safe_name(request.executionClass),
-                "workflow-builder.cnoe.io/session-id": session_label,
-            },
-        },
+        "metadata": sandbox_metadata,
         "spec": {
             "replicas": 1,
             "podTemplate": {
                 "metadata": {
-                    "labels": {
-                        "app": "agent-workflow-host",
-                        KUEUE_QUEUE_LABEL: class_config.localQueue,
-                        "benchmark-run-id": run_label,
-                        "benchmark-instance-id": instance_label,
-                        "agent-app-id": app_label,
-                        "workflow-builder.cnoe.io/session-id": session_label,
-                    },
-                    "annotations": {
-                        "dapr.io/enabled": "true",
-                        "dapr.io/app-id": request.agentAppId,
-                        "dapr.io/app-port": "8002",
-                        "dapr.io/app-protocol": "http",
-                        "dapr.io/config": os.environ.get(
-                            "DAPR_AGENT_HOST_CONFIG",
-                            "workflow-builder-agent-runtime",
-                        ),
-                        "dapr.io/enable-workflow": "true",
-                        "dapr.io/enable-native-sidecar": "true",
-                        "dapr.io/placement-host-address": os.environ.get(
-                            "DAPR_PLACEMENT_HOST_ADDRESS",
-                            "dapr-placement-server.dapr-system.svc.cluster.local:50005",
-                        ),
-                        "dapr.io/max-body-size": os.environ.get(
-                            "DAPR_MAX_BODY_SIZE", "16Mi"
-                        ),
-                        "dapr.io/graceful-shutdown-seconds": "60",
-                        "dapr.io/sidecar-readiness-probe-delay-seconds": "0",
-                        "dapr.io/sidecar-readiness-probe-period-seconds": "1",
-                        "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
-                    },
+                    "labels": pod_labels,
+                    "annotations": pod_annotations,
                 },
                 "spec": pod_spec,
             },
@@ -969,10 +1027,15 @@ def submit_agent_workflow_host(
             detail=f"unsupported executionClass {body.executionClass}",
         )
     namespace = _agent_workflow_host_namespace()
+    trace_context = {
+        "traceparent": request.headers.get("traceparent", "") or "",
+        "tracestate": request.headers.get("tracestate", "") or "",
+    }
     manifest = build_agent_workflow_host_sandbox_manifest(
         body,
         namespace=namespace,
         class_config=class_config,
+        trace_context=trace_context,
     )
     sandbox_name = manifest["metadata"]["name"]
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {

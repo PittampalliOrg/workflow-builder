@@ -114,6 +114,12 @@ def init_telemetry() -> bool:
         trace.set_tracer_provider(tp)
         _tracer_provider = tp
 
+        # --- Inbound W3C trace-context (BFF -> sandbox-execution-api -> here) ---
+        # The Sandbox manifest stamps the parent BFF traceparent on the pod's
+        # downward-API env vars so spans emitted from session_workflow chain
+        # back to the original workflow run instead of starting a new root.
+        _attach_inbound_trace_context()
+
         # --- Meter ---
         export_interval_ms = _parse_int_env("OTEL_METRIC_EXPORT_INTERVAL", 60_000)
         reader = PeriodicExportingMetricReader(
@@ -153,6 +159,36 @@ def init_telemetry() -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("OpenTelemetry init failed: %s", exc)
         return False
+
+
+def _attach_inbound_trace_context() -> None:
+    """Honor WORKFLOW_BUILDER_TRACEPARENT/TRACESTATE downward-API env vars.
+
+    When the BFF forwards a W3C traceparent on the inbound provisioning call,
+    sandbox-execution-api stamps it on the Sandbox metadata.annotations and
+    surfaces it here as env. We extract it once at startup and attach the
+    resulting context globally; later spans (without an explicit parent) chain
+    to the BFF root and Tempo / Phoenix can render the full trace.
+    """
+    traceparent = (os.environ.get("WORKFLOW_BUILDER_TRACEPARENT") or "").strip()
+    if not traceparent:
+        return
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry.propagate import extract
+
+        carrier: dict[str, str] = {"traceparent": traceparent}
+        tracestate = (os.environ.get("WORKFLOW_BUILDER_TRACESTATE") or "").strip()
+        if tracestate:
+            carrier["tracestate"] = tracestate
+        parent_ctx = extract(carrier)
+        otel_context.attach(parent_ctx)
+        logger.info(
+            "Attached inbound trace context from BFF (traceparent prefix=%s)",
+            traceparent[:35],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to attach inbound trace context: %s", exc)
 
 
 def get_tracer():
