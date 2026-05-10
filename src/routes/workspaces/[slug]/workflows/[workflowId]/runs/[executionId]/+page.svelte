@@ -2071,6 +2071,10 @@
 					</Card>
 				{/if}
 
+				{#if primaryArtifacts.length > 0}
+					<ArtifactList artifacts={primaryArtifacts} mode="primary" />
+				{/if}
+
 				{#if input}
 					<Card>
 						<CardContent class="p-3">
@@ -2082,7 +2086,7 @@
 				{#if output}
 					<Card>
 						<CardContent class="p-3">
-							<JsonViewer data={output} label="Output" collapsed={false} />
+							<JsonViewer data={output} label="Output" collapsed={primaryArtifacts.length > 0} />
 						</CardContent>
 					</Card>
 				{/if}
