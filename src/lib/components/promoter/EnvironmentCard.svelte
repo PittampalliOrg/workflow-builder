@@ -44,10 +44,10 @@
 
 	const cardTone = $derived.by(() => {
 		const proposed = card.proposed?.checks;
-		if (proposed?.failure && proposed.failure > 0)
+		const active = card.active.checks;
+		if ((proposed?.failure ?? 0) > 0 || active.failure > 0)
 			return "border-destructive/40 bg-destructive/5";
-		if (card.active.checks.failure > 0) return "border-destructive/40 bg-destructive/5";
-		if (proposed && proposed.pending > 0)
+		if ((proposed?.pending ?? 0) > 0 || active.pending > 0)
 			return "border-amber-300/60 bg-amber-50/50 dark:border-amber-500/30 dark:bg-amber-950/20";
 		return "border-emerald-300/40 bg-emerald-50/40 dark:border-emerald-500/30 dark:bg-emerald-950/20";
 	});

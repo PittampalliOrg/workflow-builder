@@ -109,3 +109,47 @@ describe("buildPipelineView with proposed checks", () => {
 		expect(v.envs[0].proposed?.checks.failure).toBe(1);
 	});
 });
+
+describe("buildPipelineView active-pane pending (tail-most env, no proposed)", () => {
+	// Mirrors the live workflow-builder-release shape during a 10-min staging
+	// soak: dev is fully green; staging's active checks include a pending
+	// `timer` while proposed has been satisfied (active.dry === proposed.dry).
+	const stagingSoak: PromotionStrategy = {
+		metadata: { name: "wfb", namespace: "argocd" },
+		spec: { environments: [{ branch: "env/spokes-dev" }, { branch: "env/spokes-staging" }] },
+		status: {
+			environments: [
+				{
+					branch: "env/spokes-dev",
+					active: {
+						dry: { sha: "abc1234" },
+						hydrated: { sha: "h-dev" },
+						commitStatuses: [
+							{ key: "argocd-health", phase: "success" },
+							{ key: "timer", phase: "success" },
+						],
+					},
+				},
+				{
+					branch: "env/spokes-staging",
+					active: {
+						dry: { sha: "abc1234" },
+						hydrated: { sha: "h-stg" },
+						commitStatuses: [
+							{ key: "argocd-health", phase: "success" },
+							{ key: "timer", phase: "pending" },
+						],
+					},
+					// proposed.dry === active.dry, so buildEnvCard collapses proposed.
+				},
+			],
+		},
+	};
+
+	it("treats a tail-most env's active.pending as overallPhase=pending", () => {
+		const v = buildPipelineView(stagingSoak);
+		expect(v.envs[1].proposed).toBeNull();
+		expect(v.envs[1].active.checks.pending).toBe(1);
+		expect(v.overallPhase).toBe("pending");
+	});
+});

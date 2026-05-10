@@ -40,26 +40,37 @@ export function buildInboxRow(
 	const view = buildPipelineView(strategy, options);
 	const envs = view.envs;
 
+	// Pick the first env that has anything to flag. Prefer proposed-pane
+	// signals (a promotion in flight) when present; otherwise consider
+	// active-pane signals (the env itself is still settling — e.g., the
+	// final env's soak timer hasn't elapsed yet).
 	const stuckEnv = envs.find((env) => {
 		if (env.proposed && env.proposed.checks.failure > 0) return true;
 		if (env.proposed && env.proposed.checks.pending > 0) return true;
 		if (env.active.checks.failure > 0) return true;
+		if (env.active.checks.pending > 0) return true;
 		return false;
 	});
 
 	const stuckOn = stuckEnv
-		? {
-				branch: stuckEnv.branch,
-				failingChecks: (stuckEnv.proposed?.commitStatuses ?? stuckEnv.active.commitStatuses)
-					.filter((c) => c.phase === "failure")
-					.map((c) => c.key),
-				pendingChecks: (stuckEnv.proposed?.commitStatuses ?? stuckEnv.active.commitStatuses)
-					.filter((c) => c.phase === "pending")
-					.map((c) => c.key),
-				pullRequestUrl: stuckEnv.proposed?.pullRequest
-					? deriveUrl(stuckEnv.proposed.pullRequest)
-					: null,
-			}
+		? (() => {
+				// If proposed has any non-success checks, surface those.
+				const proposedNonGreen = stuckEnv.proposed?.commitStatuses.some(
+					(c) => c.phase !== "success",
+				);
+				const source = proposedNonGreen
+					? stuckEnv.proposed!.commitStatuses
+					: stuckEnv.active.commitStatuses;
+				return {
+					branch: stuckEnv.branch,
+					failingChecks: source.filter((c) => c.phase === "failure").map((c) => c.key),
+					pendingChecks: source.filter((c) => c.phase === "pending").map((c) => c.key),
+					pullRequestUrl:
+						stuckEnv.proposed?.pullRequest && proposedNonGreen
+							? deriveUrl(stuckEnv.proposed.pullRequest)
+							: null,
+				};
+			})()
 		: null;
 
 	const latestEnv = envs[0];

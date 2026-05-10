@@ -137,9 +137,17 @@ function computeOverallPhase(envs: EnvCardModel[]): PipelineViewModel["overallPh
 	let anyPending = false;
 	let anyFailure = false;
 	for (const env of envs) {
-		const checks = env.proposed ? env.proposed.checks : env.active.checks;
-		if (checks.failure > 0) anyFailure = true;
-		else if (env.proposed && checks.success < checks.total) anyPending = true;
+		// Failures on either pane are unambiguous failures.
+		if (env.active.checks.failure > 0) anyFailure = true;
+		if (env.proposed && env.proposed.checks.failure > 0) anyFailure = true;
+		// Pending counts on either pane mean "not fully settled":
+		//   - proposed.pending: promotion into this env is gated/in-flight.
+		//   - active.pending:  this env's own gates (e.g., TimedCommitStatus
+		//     soak, ArgoCD health while Progressing) haven't all gone green
+		//     yet — relevant even on the tail-most env where `proposed` is
+		//     null, because the env is still mid-stabilization.
+		if (env.active.checks.pending > 0) anyPending = true;
+		if (env.proposed && env.proposed.checks.pending > 0) anyPending = true;
 	}
 	if (anyFailure) return "failure";
 	if (anyPending) return "pending";

@@ -53,6 +53,45 @@ describe("buildInboxRows + sortInboxRows", () => {
 	});
 });
 
+describe("buildInboxRow tail-most env active.pending (soak in flight)", () => {
+	const stagingSoak: PromotionStrategy = {
+		metadata: { name: "wfb", namespace: "argocd" },
+		spec: { environments: [{ branch: "env/spokes-dev" }, { branch: "env/spokes-staging" }] },
+		status: {
+			environments: [
+				{
+					branch: "env/spokes-dev",
+					active: {
+						dry: { sha: "abc1234" },
+						commitStatuses: [
+							{ key: "argocd-health", phase: "success" },
+							{ key: "timer", phase: "success" },
+						],
+					},
+				},
+				{
+					branch: "env/spokes-staging",
+					active: {
+						dry: { sha: "abc1234" },
+						commitStatuses: [
+							{ key: "argocd-health", phase: "success" },
+							{ key: "timer", phase: "pending" },
+						],
+					},
+				},
+			],
+		},
+	};
+
+	it("phase is pending (not healthy) while staging timer is still soaking", () => {
+		const row = buildInboxRow(stagingSoak);
+		expect(row.phase).toBe("pending");
+		expect(row.stuckOn?.branch).toBe("env/spokes-staging");
+		expect(row.stuckOn?.pendingChecks).toEqual(["timer"]);
+		expect(row.stuckOn?.failingChecks).toEqual([]);
+	});
+});
+
 describe("buildInboxRow stuck on failure", () => {
 	const failed: PromotionStrategy = {
 		metadata: { name: "demo", namespace: "argocd" },
