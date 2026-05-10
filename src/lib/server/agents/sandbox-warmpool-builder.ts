@@ -299,6 +299,20 @@ export function buildBrowserSandboxTemplate(
 	const podSpec: Record<string, unknown> = {
 		serviceAccountName,
 		terminationGracePeriodSeconds: 60,
+		// daprd's secretstores.kubernetes initializer uses
+		// rest.InClusterConfig() (probes the projected SA token at
+		// /var/run/secrets/kubernetes.io/serviceaccount/token). The upstream
+		// agent-sandbox controller defaults pods to
+		// `automountServiceAccountToken: false` for sandbox hardening; that
+		// breaks daprd init because it falls back to ~/.kube/config which
+		// doesn't exist. Explicitly opt back in — the daprd sidecar lives in
+		// the same pod and *needs* API access to load Components like
+		// kubernetes-secrets. Arc-1's per-session Sandbox path
+		// (sandbox-execution-api) already works because it leaves this field
+		// unset and inherits the K8s default `true`; the SandboxWarmPool /
+		// SandboxTemplate path explicitly stamps false from the controller,
+		// so we have to override.
+		automountServiceAccountToken: true,
 		imagePullSecrets: pullSecrets,
 		topologySpreadConstraints: [
 			{
