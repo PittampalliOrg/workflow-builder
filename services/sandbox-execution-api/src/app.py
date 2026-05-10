@@ -449,6 +449,11 @@ def build_agent_workflow_host_sandbox_manifest(
     run_label = _safe_name(request.runId or "manual", max_length=63)
     instance_label = _safe_name(request.instanceId or request.sessionId, max_length=63)
     app_label = _safe_name(request.agentAppId, max_length=63)
+    # `agent-app-id` is the deterministic SHA-derived join key for sessions →
+    # workloads. The raw session id is also stamped here so an operator
+    # reading the Workload YAML can grep for the session without recomputing
+    # the hash. UI cross-feature lookup still uses `agent-app-id`.
+    session_label = _safe_name(request.sessionId, max_length=63)
     image = request.agentImage or class_config.agentHostImage
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
@@ -622,6 +627,7 @@ def build_agent_workflow_host_sandbox_manifest(
                 "benchmark-instance-id": instance_label,
                 "agent-app-id": app_label,
                 "sandbox-execution-class": _safe_name(request.executionClass),
+                "workflow-builder.cnoe.io/session-id": session_label,
             },
         },
         "spec": {
@@ -634,6 +640,7 @@ def build_agent_workflow_host_sandbox_manifest(
                         "benchmark-run-id": run_label,
                         "benchmark-instance-id": instance_label,
                         "agent-app-id": app_label,
+                        "workflow-builder.cnoe.io/session-id": session_label,
                     },
                     "annotations": {
                         "dapr.io/enabled": "true",
