@@ -131,12 +131,13 @@ async function resolveOwner(
 // ---------------------------------------------------------------------------
 
 const APP_DIR = "/sandbox/3b1b-style-animation-example";
-// Avoid 3009 — that port is reserved by openshell-agent-runtime's
-// built-in start-preview proxy on every per-run sandbox; binding a
-// second listener fails with EADDRINUSE before browser/validate can
-// connect. Use 8080 which we've verified is free in the dapr-agent
-// template.
-const PREVIEW_PORT = 8080;
+// Port is allocated by openshell-agent-runtime's `_allocate_local_port()`
+// per-run, not by us — so we don't pick one. Hardcoding a port collides
+// with the runtime's internal probe URL (the readiness check uses the
+// runtime-allocated port, not whatever we put in baseUrl). The default
+// runner detects `index.html` in repoPath and runs
+// `python3 -m http.server {port} --bind 0.0.0.0` automatically. We let
+// it.
 
 function makeWorkspaceProfileTask(): JsonRecord {
   return {
@@ -204,16 +205,15 @@ function makeBrowserValidateTask(): JsonRecord {
     with: {
       workspaceRef: "${ .workspace_profile.workspaceRef }",
       repoPath: APP_DIR,
-      // Static HTML/CSS/JS only — Python's stock http.server is enough and
-      // ships in the dapr-agent sandbox (no npm install, instant boot).
-      // Bind to 0.0.0.0 (not 127.0.0.1) so browser/validate's readiness
-      // probe can reach the server. The probe runs outside the sandbox
-      // loopback namespace and only succeeds when the listener is on a
-      // routable interface; this matches the working pattern from
-      // plan-execute-browser-demo (`npm run dev -- --host 0.0.0.0 --port`).
+      // Skip installCommand + devServerCommand. The runtime's default
+      // `_local_devserver_runner` detects index.html in repoPath and runs
+      // `python3 -m http.server {port} --bind 0.0.0.0` against a port it
+      // allocates itself. baseUrl's port is rewritten to match. Mirrors
+      // the canonical animation-3b1b-v2-managed.workflow.json shape and
+      // avoids the runtime/command port mismatch that broke our prior
+      // canaries OQK3 / FSOMOoo9 / Z1ebywvI / X3EZ5moY / Oa8AnQiR.
       installCommand: "",
-      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --bind 0.0.0.0 --directory ${APP_DIR}`,
-      baseUrl: `http://127.0.0.1:${PREVIEW_PORT}`,
+      baseUrl: "http://127.0.0.1:0",
       steps: [
         {
           id: "initial",
