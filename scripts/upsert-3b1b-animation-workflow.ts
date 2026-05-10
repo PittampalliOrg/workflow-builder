@@ -201,8 +201,11 @@ function makeBrowserValidateTask(): JsonRecord {
       repoPath: APP_DIR,
       // The animation is plain HTML/CSS/JS — Python's http.server is sufficient
       // and is part of the dapr-agent sandbox image. No npm install needed.
+      // Explicit `--bind 127.0.0.1` forces IPv4-only so the bind doesn't try
+      // IPv6 dual-stack (Python 3.12+ default), which fails on container
+      // networks where the IPv6 stack is disabled.
       installCommand: "",
-      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --directory ${APP_DIR}`,
+      devServerCommand: `python3 -m http.server ${PREVIEW_PORT} --bind 127.0.0.1 --directory ${APP_DIR}`,
       baseUrl: `http://127.0.0.1:${PREVIEW_PORT}`,
       steps: [
         {
