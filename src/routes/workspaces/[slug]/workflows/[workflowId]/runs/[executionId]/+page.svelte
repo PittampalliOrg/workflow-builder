@@ -2108,6 +2108,13 @@
 			</div>
 		</TabsContent>
 
+		<!-- Tab: Outputs (generic workflow_artifacts) -->
+		<TabsContent value="outputs" class="flex-1 overflow-y-auto p-4">
+			<div class="mx-auto max-w-5xl space-y-4">
+				<ArtifactList artifacts={workflowArtifacts} mode="all" />
+			</div>
+		</TabsContent>
+
 		<!-- Tab 2: Steps -->
 		<TabsContent value="steps" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-2">
