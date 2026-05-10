@@ -10,6 +10,10 @@ import {
 	workflowWorkspaceSessions
 } from '$lib/server/db/schema';
 import { listBrowserArtifactsByExecutionId } from '$lib/server/browser-artifacts';
+import {
+	listWorkflowArtifactsByExecutionId,
+	type WorkflowArtifactRecord
+} from '$lib/server/workflow-artifacts';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { extractExecutionTraceIds } from '$lib/server/otel/clickhouse';
 import type {
@@ -513,13 +517,14 @@ export async function loadExecutionReadModel(
 		execution = (await readExecutionRow(executionId)) ?? execution;
 	}
 
-	const [steps, browserArtifacts, agentRuns, workspaces, agentEvents, traceIds] = await Promise.all([
+	const [steps, browserArtifacts, agentRuns, workspaces, agentEvents, traceIds, artifacts] = await Promise.all([
 		readExecutionSteps(executionId),
 		listBrowserArtifactsByExecutionId(executionId),
 		readExecutionAgentRuns(executionId),
 		readExecutionWorkspaces(executionId),
 		options?.includeAgentEvents === false ? Promise.resolve([]) : fetchRecentAgentEvents(executionId),
-		readTraceIds(execution)
+		readTraceIds(execution),
+		listWorkflowArtifactsByExecutionId(executionId)
 	]);
 
 	// Step 2b: `last_agent_event_id` column dropped — the cursor comes from
@@ -560,6 +565,7 @@ export async function loadExecutionReadModel(
 		agentRuns,
 		workspaces,
 		agentEvents,
-		lastAgentEventId
+		lastAgentEventId,
+		artifacts
 	};
 }

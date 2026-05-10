@@ -243,7 +243,8 @@ export function createExecutionStream(executionId: string) {
 						traceIds: next.traceIds ?? state.snapshot.traceIds,
 						agentRuns: next.agentRuns ?? state.snapshot.agentRuns,
 						workspaces: next.workspaces ?? state.snapshot.workspaces,
-						agentEvents: next.agentEvents ?? state.snapshot.agentEvents
+						agentEvents: next.agentEvents ?? state.snapshot.agentEvents,
+						artifacts: next.artifacts ?? state.snapshot.artifacts
 					} as ExecutionReadModel);
 
 			return {

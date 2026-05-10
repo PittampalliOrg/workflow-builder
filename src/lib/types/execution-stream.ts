@@ -97,4 +97,22 @@ export interface ExecutionReadModel {
 	workspaces: ExecutionWorkspaceSession[];
 	agentEvents: ExecutionTimelineEvent[];
 	lastAgentEventId: number;
+	// Generic per-execution artifacts (workflow_artifacts table). Populated by
+	// the orchestrator's persist_workflow_artifact activity from SW 1.0 task
+	// `artifacts:` blocks. Rendered on the run-detail Overview tab (primary
+	// slot) + the new Outputs tab (all slots, grouped).
+	artifacts: Array<{
+		id: string;
+		nodeId: string | null;
+		slot: 'primary' | 'secondary' | 'aux' | null;
+		kind: string;
+		title: string;
+		description: string | null;
+		inlinePayload: unknown;
+		fileId: string | null;
+		contentType: string | null;
+		sizeBytes: number | null;
+		metadata: Record<string, unknown> | null;
+		createdAt: string;
+	}>;
 }

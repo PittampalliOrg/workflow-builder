@@ -67,6 +67,7 @@
 	} from '$lib/stores/execution-stream.svelte';
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
+	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
 	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
@@ -465,6 +466,24 @@
 	const browserArtifacts = $derived(
 		(snapshot?.browserArtifacts as BrowserArtifact[] | undefined) ?? []
 	);
+	// Generic per-execution artifacts (workflow_artifacts table). Populated by
+	// SW 1.0 task `artifacts:` blocks via the orchestrator's persist activity.
+	const workflowArtifacts = $derived(
+		(snapshot?.artifacts as Array<{
+			id: string;
+			nodeId: string | null;
+			slot: 'primary' | 'secondary' | 'aux' | null;
+			kind: string;
+			title: string;
+			description: string | null;
+			inlinePayload: unknown;
+			fileId: string | null;
+			contentType: string | null;
+			metadata: Record<string, unknown> | null;
+			createdAt: string;
+		}> | undefined) ?? []
+	);
+	const primaryArtifacts = $derived(workflowArtifacts.filter((a) => a.slot === 'primary'));
 	const agentRuns = $derived(
 		(snapshot?.agentRuns as ExecutionAgentRun[] | undefined) ?? []
 	);
@@ -1894,6 +1913,7 @@
 		<div class="border-b border-border px-4">
 			<TabsList class="h-10">
 				<TabsTrigger value="overview">Overview</TabsTrigger>
+				<TabsTrigger value="outputs">Outputs{#if workflowArtifacts.length > 0}<span class="ml-1.5 text-xs text-muted-foreground">{workflowArtifacts.length}</span>{/if}</TabsTrigger>
 				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
 				<TabsTrigger value="code">Code</TabsTrigger>
