@@ -167,13 +167,60 @@ class JobStatus(BaseModel):
 POOL: asyncpg.Pool | None = None
 
 
+# Window after which a non-progressing PENDING/RUNNING row is presumed
+# orphaned (its in-process asyncio task died with the previous pod).
+ORPHAN_AFTER_SECONDS = int(os.environ.get("CRAWL4AI_ORPHAN_AFTER_SECONDS", "30"))
+
+
+async def _resume_orphaned_jobs() -> int:
+    """On startup, find PENDING/RUNNING jobs whose updated_at is stale
+    (asyncio task died with the previous pod) and re-kick them. This is the
+    Dapr-durability completer: the orchestrator's polling activity keeps
+    seeing state transitions all the way through COMPLETE without ever
+    needing to know there was an adapter pod restart."""
+    assert POOL is not None
+    async with POOL.acquire() as con:
+        rows = await con.fetch(
+            f"SELECT id, request FROM crawl4ai_jobs "
+            f"WHERE state IN ('PENDING','RUNNING') "
+            f"AND updated_at < now() - interval '{ORPHAN_AFTER_SECONDS} seconds'"
+        )
+    if not rows:
+        return 0
+    resumed = 0
+    for row in rows:
+        try:
+            req_dict = row["request"]
+            if isinstance(req_dict, str):
+                req_dict = json.loads(req_dict)
+            req = CrawlRequest(**req_dict)
+        except Exception as exc:
+            logger.warning(
+                "orphan-resume failed to parse request for job=%s err=%s",
+                row["id"],
+                exc,
+            )
+            continue
+        # Reset to PENDING so the new asyncio task takes ownership cleanly,
+        # then create_task — exactly the path POST takes for a fresh job.
+        async with POOL.acquire() as con:
+            await con.execute(
+                "UPDATE crawl4ai_jobs SET state='PENDING', error=NULL, updated_at=now() WHERE id=$1",
+                row["id"],
+            )
+        asyncio.create_task(_kick_job(row["id"], req))
+        resumed += 1
+    return resumed
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global POOL
     POOL = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4)
     async with POOL.acquire() as con:
         await con.execute(DDL)
-    logger.info("crawl4ai-adapter ready (DB schema ensured)")
+    n = await _resume_orphaned_jobs()
+    logger.info("crawl4ai-adapter ready (DB schema ensured, resumed %d orphan job(s))", n)
     yield
     if POOL is not None:
         await POOL.close()
