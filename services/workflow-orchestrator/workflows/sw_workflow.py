@@ -2541,6 +2541,14 @@ def _persist_task_artifacts(
     Dapr retry via deterministic id (workflowId|executionId|nodeId|kind|title).
     """
     artifacts_spec = task_data.get("artifacts")
+    # Debug: confirm post-task hook is reached for every dispatch.
+    _log_info(
+        ctx,
+        "[SW Workflow] _persist_task_artifacts called: task=%s has_artifacts=%s count=%s",
+        task_name,
+        artifacts_spec is not None,
+        len(artifacts_spec) if isinstance(artifacts_spec, list) else 0,
+    )
     if not isinstance(artifacts_spec, list) or not artifacts_spec:
         return
 
