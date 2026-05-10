@@ -2541,22 +2541,53 @@ def _persist_task_artifacts(
     Dapr retry via deterministic id (workflowId|executionId|nodeId|kind|title).
     """
     artifacts_spec = task_data.get("artifacts")
-    # Debug: replay-safe log entry. Confirms whether the hook is reached for
-    # every _dispatch_task call (including for-loop iterations). Will revert.
-    logger.warning(
-        "[SW Workflow DEBUG] _persist_task_artifacts called: task=%s has_artifacts=%s count=%s replaying=%s",
-        task_name,
-        artifacts_spec is not None,
-        len(artifacts_spec) if isinstance(artifacts_spec, list) else 0,
-        _is_replaying(ctx),
-    )
     if not isinstance(artifacts_spec, list) or not artifacts_spec:
         return
 
-    # Same expression context the task's `output` resolution used: trigger,
-    # state vars, every previously-completed task's outputs (including this
-    # task's, since _store_task_output ran before this hook).
-    expr_context = _build_expression_context(tc)
+    # Build expression context with the just-completed task's data exposed at
+    # the top level so artifact expressions stay uniform regardless of the
+    # producer's envelope depth. Two access patterns work for `from:` /
+    # `title:` / `if:` expressions:
+    #   - Canonical: `${ .data.X }` — `.data` is the unwrapped task payload
+    #     (crawl4ai naturally nests {tier, markdown, …} under .data; agents
+    #     return flat {content, turn, …} which we wrap so the same idiom
+    #     works for both).
+    #   - Shorthand: `${ .X }` — top-level fields of the payload are
+    #     promoted into the root context, so `${ .content }` /
+    #     `${ .markdown }` also work (unless they collide with reserved keys
+    #     like input/state/task/output/workflow/runtime/result).
+    # Also exposes `.input` (trigger), `.state.X`, and every previously-
+    # completed task by its name.
+    task_record = tc.task_outputs.get(task_name)
+    # Layer 1: strip {label, actionType, data} wrapper from _store_task_output.
+    layer1 = task_record.get("data") if isinstance(task_record, dict) else None
+    # Layer 2: strip one {success, data, error} envelope if present (the
+    # `_apply_task_output_definition` shape used by call tasks).
+    if isinstance(layer1, dict) and isinstance(layer1.get("success"), bool) and "data" in layer1:
+        payload = layer1.get("data")
+    else:
+        payload = layer1
+
+    # Canonical `.data` view: if payload already has a `data` field (crawl4ai
+    # case), keep payload as the context root and the user accesses
+    # `.data.X` directly. Otherwise wrap so `.data.X` works for flat payloads
+    # (agent case: payload is `{content, turn, …}` → `data = payload`).
+    if isinstance(payload, dict) and "data" in payload:
+        root = payload
+    else:
+        root = {"data": payload if payload is not None else {}}
+
+    expr_context = _build_expression_context(
+        tc,
+        task_output=payload,
+        has_task_output=True,
+    )
+    # Promote root fields to the top level. Don't shadow reserved keys.
+    PROTECTED = {"input", "state", "task", "output", "workflow", "runtime", "result"}
+    if isinstance(root, dict):
+        for k, v in root.items():
+            if k not in PROTECTED and k not in expr_context:
+                expr_context[k] = v
     workflow_id = tc.workflow_id
 
     for raw in artifacts_spec:
