@@ -51,6 +51,7 @@ from core.template_resolver import resolve_templates
 from activities.execute_action import execute_action
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
+from activities.persist_artifact import persist_workflow_artifact
 from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
 from activities.log_external_event import (
@@ -2510,6 +2511,151 @@ def _handle_do_task(
 # Task dispatcher
 # ---------------------------------------------------------------------------
 
+def _persist_task_artifacts(
+    ctx: wf.DaprWorkflowContext,
+    task_name: str,
+    task_data: dict[str, Any],
+    tc: "TaskContext",
+):
+    """Best-effort post-task persistence of declarative artifacts.
+
+    SW 1.0 task spec may carry an ``artifacts: [...]`` list. After the task's
+    output is in ``tc.task_outputs``, walk each entry, evaluate jq expressions
+    against the same expression context the task itself just resolved against,
+    and yield a ``persist_workflow_artifact`` activity per entry.
+
+    Each entry shape::
+
+        - kind: markdown | json | text | table | image | link | card | <other>
+          slot: primary | secondary | aux              # optional, controls UI placement
+          title: "<jq or literal>"                     # required
+          description: "<jq or literal>"               # optional
+          from: "${ .data.content }"                   # jq → inlinePayload
+          fileId: "<jq or literal>"                    # alternative to `from`
+          contentType: "text/markdown"                 # optional
+          metadata: { ... }                            # optional jq-evaluated dict
+          if: "${ .data.success }"                     # optional gate
+
+    Persistence is best-effort: a failed activity logs but does not propagate
+    (see persist_workflow_artifact). The activity itself is idempotent under
+    Dapr retry via deterministic id (workflowId|executionId|nodeId|kind|title).
+    """
+    artifacts_spec = task_data.get("artifacts")
+    if not isinstance(artifacts_spec, list) or not artifacts_spec:
+        return
+
+    # Same expression context the task's `output` resolution used: trigger,
+    # state vars, every previously-completed task's outputs (including this
+    # task's, since _store_task_output ran before this hook).
+    expr_context = _build_expression_context(tc)
+    workflow_id = tc.workflow_id
+
+    for raw in artifacts_spec:
+        if not isinstance(raw, dict):
+            continue
+        # Optional gate.
+        guard = raw.get("if")
+        if guard is not None:
+            try:
+                if not evaluate_condition(guard, expr_context):
+                    continue
+            except Exception:  # pragma: no cover — bad jq shouldn't break workflow
+                logger.warning(
+                    "[SW Workflow] artifact `if` failed to evaluate (task=%s); skipping entry",
+                    task_name,
+                )
+                continue
+
+        try:
+            kind = evaluate_structure(raw.get("kind"), expr_context)
+            if not isinstance(kind, str) or not kind.strip():
+                continue
+            title = evaluate_structure(raw.get("title"), expr_context)
+            if not isinstance(title, str) or not title.strip():
+                continue
+
+            slot = evaluate_structure(raw.get("slot"), expr_context) if raw.get("slot") is not None else None
+            description = (
+                evaluate_structure(raw.get("description"), expr_context)
+                if raw.get("description") is not None
+                else None
+            )
+            content_type = (
+                evaluate_structure(raw.get("contentType"), expr_context)
+                if raw.get("contentType") is not None
+                else None
+            )
+            metadata = (
+                evaluate_structure(raw.get("metadata"), expr_context)
+                if raw.get("metadata") is not None
+                else None
+            )
+
+            # Either inline payload (from) or a file_id reference.
+            inline_payload: Any = None
+            file_id: Any = None
+            if raw.get("from") is not None:
+                from_value = evaluate_structure(raw.get("from"), expr_context)
+                # Wrap by kind for renderer expectations.
+                if kind == "markdown":
+                    inline_payload = {"markdown": str(from_value or "")}
+                elif kind == "text":
+                    inline_payload = {"text": str(from_value or "")}
+                elif kind == "json":
+                    inline_payload = {"value": from_value}
+                elif kind == "link":
+                    inline_payload = {"url": str(from_value or "")}
+                elif kind == "table":
+                    # Caller must hand a {columns,rows} object; pass through.
+                    inline_payload = from_value if isinstance(from_value, dict) else {"value": from_value}
+                else:
+                    # Unknown kind — pass through; UI falls back to JSON dump.
+                    inline_payload = from_value
+            if raw.get("fileId") is not None:
+                file_id = evaluate_structure(raw.get("fileId"), expr_context)
+
+            if inline_payload is None and not file_id:
+                logger.warning(
+                    "[SW Workflow] artifact entry has neither `from` nor `fileId` (task=%s, title=%s); skipping",
+                    task_name,
+                    title,
+                )
+                continue
+        except SWExpressionError as exc:
+            logger.warning(
+                "[SW Workflow] artifact expression eval failed (task=%s): %s", task_name, exc
+            )
+            continue
+
+        try:
+            yield ctx.call_activity(
+                persist_workflow_artifact,
+                input=_freeze(
+                    {
+                        "executionId": tc.db_execution_id or tc.execution_id,
+                        "workflowId": workflow_id,
+                        "nodeId": task_name,
+                        "slot": slot if slot in ("primary", "secondary", "aux") else None,
+                        "kind": kind,
+                        "title": title,
+                        "description": description if isinstance(description, str) else None,
+                        "inlinePayload": inline_payload,
+                        "fileId": file_id if isinstance(file_id, str) else None,
+                        "contentType": content_type if isinstance(content_type, str) else None,
+                        "metadata": metadata if isinstance(metadata, dict) else None,
+                        "_otel": tc.otel_ctx,
+                    }
+                ),
+            )
+        except Exception as exc:  # pragma: no cover — never let observability break the workflow
+            logger.warning(
+                "[SW Workflow] persist_workflow_artifact yield failed (task=%s, title=%s): %s",
+                task_name,
+                title,
+                exc,
+            )
+
+
 def _dispatch_task(
     ctx: wf.DaprWorkflowContext,
     task_name: str,
@@ -2536,33 +2682,40 @@ def _dispatch_task(
 
     match task_type:
         case TaskType.CALL:
-            return (yield from _handle_call_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_call_task(ctx, task_name, task_data, tc)
         case TaskType.SET:
-            return _handle_set_task(ctx, task_name, task_data, tc)
+            result = _handle_set_task(ctx, task_name, task_data, tc)
         case TaskType.SWITCH:
-            return _handle_switch_task(ctx, task_name, task_data, tc)
+            result = _handle_switch_task(ctx, task_name, task_data, tc)
         case TaskType.WAIT:
-            return (yield from _handle_wait_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_wait_task(ctx, task_name, task_data, tc)
         case TaskType.EMIT:
-            return (yield from _handle_emit_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_emit_task(ctx, task_name, task_data, tc)
         case TaskType.LISTEN:
-            return (yield from _handle_listen_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_listen_task(ctx, task_name, task_data, tc)
         case TaskType.FOR:
-            return (yield from _handle_for_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_for_task(ctx, task_name, task_data, tc)
         case TaskType.FORK:
-            return (yield from _handle_fork_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_fork_task(ctx, task_name, task_data, tc)
         case TaskType.TRY:
-            return (yield from _handle_try_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_try_task(ctx, task_name, task_data, tc)
         case TaskType.RUN:
-            return (yield from _handle_run_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_run_task(ctx, task_name, task_data, tc)
         case TaskType.RAISE:
-            return _handle_raise_task(ctx, task_name, task_data, tc)
+            result = _handle_raise_task(ctx, task_name, task_data, tc)
         case TaskType.DO:
-            return (yield from _handle_do_task(ctx, task_name, task_data, tc))
+            result = yield from _handle_do_task(ctx, task_name, task_data, tc)
         case _:
             logger.warning("[SW Workflow] Unknown task type: %s for task: %s", task_type, task_name)
             tc.completed_tasks.add(task_name)
             return None
+
+    # Post-task hook: persist any declared artifacts. Best-effort — never
+    # raises out of this point. See _persist_task_artifacts for the full
+    # spec, including supported kinds and idempotency under Dapr retry.
+    yield from _persist_task_artifacts(ctx, task_name, task_data, tc)
+
+    return result
 
 
 # ---------------------------------------------------------------------------

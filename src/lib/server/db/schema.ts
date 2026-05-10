@@ -649,6 +649,74 @@ export const filePayloads = pgTable("file_payloads", {
 
 export type FileRow = InferSelectModel<typeof files>;
 
+/**
+ * Generic per-execution artifacts surface for the run-detail UI.
+ *
+ * Goal: any workflow node can persist a typed, named output that renders
+ * coherently in the UI — without inventing a new table + tab per shape.
+ *
+ * - **`kind`** is an open-ended discriminator. UI ships renderers for
+ *   `markdown` / `json` / `text` / `table` / `image` / `link` / `card`
+ *   and falls back to JSON dump for unknown kinds.
+ * - **`slot`** controls UI placement. `primary` artifacts surface
+ *   front-and-centre on the run-detail Overview tab; everything else
+ *   lands in a collapsed Outputs tab.
+ * - **`inline_payload`** is the cheap path: structured data ≤256 KB
+ *   stored as JSONB, queryable directly. **`fileId`** is the blob path:
+ *   for image/video/large markdown, reuse the existing files +
+ *   filePayloads infra (25 MB cap, SHA-1 dedup, soft-delete).
+ *   Either side may be set; usually exactly one.
+ * - **`metadata`** holds free-form provenance: source URL, model id,
+ *   token counts, schema reference, etc. Not rendered by default;
+ *   surfaced in a "details" disclosure.
+ *
+ * Producer paths:
+ *   - SW 1.0 spec `artifacts:` block on any task — orchestrator's
+ *     post-task hook persists each entry via the persist_workflow_artifact
+ *     activity (Dapr-durable, idempotent under retry via deterministic id).
+ *   - `POST /api/internal/workflows/executions/[id]/artifacts` for any
+ *     internal-token-authenticated writer (adapter, sidecar, etc.).
+ *
+ * Existing browser/plan artifact tables stay as-is — they have working
+ * type-specific renderers. This is the long tail.
+ */
+export const workflowArtifacts = pgTable(
+	"workflow_artifacts",
+	{
+		id: text("id").primaryKey(),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		nodeId: text("node_id"),
+		slot: text("slot").$type<"primary" | "secondary" | "aux">(),
+		kind: text("kind").notNull(),
+		title: text("title").notNull(),
+		description: text("description"),
+		inlinePayload: jsonb("inline_payload"),
+		fileId: text("file_id").references(() => files.id, { onDelete: "set null" }),
+		contentType: text("content_type"),
+		sizeBytes: integer("size_bytes"),
+		metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		executionCreatedIdx: index("idx_workflow_artifacts_execution_created").on(
+			table.workflowExecutionId,
+			table.createdAt,
+		),
+		executionKindIdx: index("idx_workflow_artifacts_execution_kind").on(
+			table.workflowExecutionId,
+			table.kind,
+		),
+		executionSlotIdx: index("idx_workflow_artifacts_execution_slot").on(
+			table.workflowExecutionId,
+			table.slot,
+		),
+	}),
+);
+
+export type WorkflowArtifactRow = InferSelectModel<typeof workflowArtifacts>;
+
 export type WorkflowWorkspaceSessionStatus = "active" | "cleaned" | "error";
 
 /**
