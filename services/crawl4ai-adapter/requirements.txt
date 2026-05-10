@@ -3,3 +3,5 @@ uvicorn[standard]==0.32.1
 httpx==0.28.1
 markdownify==0.13.1
 pydantic==2.10.3
+asyncpg==0.30.0
+playwright==1.49.0

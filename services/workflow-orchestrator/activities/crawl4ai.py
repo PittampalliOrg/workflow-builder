@@ -1,7 +1,28 @@
-"""Activities for durable Crawl4AI job orchestration."""
+"""Activities for durable Crawl4AI job orchestration.
+
+Dapr workflow durability invariants:
+
+1. **Deterministic jobId.** The orchestrator computes
+   ``j_<sha256(workflowId|nodeId|url)>[:32]`` and injects it into the POST
+   body. Adapter-side, this becomes the primary key in ``crawl4ai_jobs`` —
+   so an activity retry (via Dapr's per-activity retry policy) hits the
+   same row. The adapter returns the existing record for terminal/in-flight
+   states or resets-and-re-kicks a FAILED row, never starting duplicate
+   work.
+
+2. **No client-side state.** This activity is pure — input → HTTP →
+   output. The adapter persists everything (job state + cache) so this
+   activity can be re-run on a different orchestrator pod, replayed from
+   workflow history, or retried, all without divergence.
+
+3. **Polling uses durable timers.** The caller (`_run_durable_crawl4ai_job`)
+   wraps repeated `crawl4ai_get_job_status` calls with `ctx.create_timer`
+   between polls; the timer state is part of the workflow checkpoint.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any
 
@@ -16,14 +37,32 @@ CRAWL4AI_ADAPTER_URL = os.environ.get(
 ).rstrip("/")
 
 
+def _deterministic_job_id(input_data: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Stable id from (workflowId, nodeId, url). Re-computed on every
+    activity attempt — equal inputs produce equal jobId, so adapter
+    deduplicates and the activity is fully idempotent under Dapr retry."""
+    seed = "|".join(
+        [
+            str(input_data.get("workflowId") or ""),
+            str(input_data.get("nodeId") or ""),
+            str(payload.get("url") or ""),
+        ]
+    )
+    return "j_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
 def crawl4ai_start_job(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Start a Crawl4AI async job through the workflow-owned adapter."""
     otel = input_data.get("_otel") or {}
     payload = input_data.get("input") if isinstance(input_data.get("input"), dict) else {}
+    payload = dict(payload)  # copy — don't mutate the activity input map.
+    if not payload.get("jobId"):
+        payload["jobId"] = _deterministic_job_id(input_data, payload)
     attrs = {
         "crawl4ai.operation": "start_job",
         "workflow.id": input_data.get("workflowId"),
         "node.id": input_data.get("nodeId"),
+        "crawl4ai.job_id": payload["jobId"],
     }
     with start_activity_span("activity.crawl4ai_start_job", otel, attrs):
         response = requests.post(
@@ -35,6 +74,9 @@ def crawl4ai_start_job(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         result = response.json()
         if not isinstance(result, dict):
             raise RuntimeError("crawl4ai-adapter returned a non-object job response")
+        # Always echo back our deterministic id so the polling activity uses it.
+        if not result.get("jobId"):
+            result["jobId"] = payload["jobId"]
         return result
 
 
