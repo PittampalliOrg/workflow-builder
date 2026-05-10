@@ -28,6 +28,8 @@
 	import CumulativeResolvedSparkline from '$lib/components/benchmarks/cumulative-resolved-sparkline.svelte';
 	import RunInstanceTable from '$lib/components/benchmarks/run-instance-table.svelte';
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
+	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
+	import type { WorkloadSnapshot } from '$lib/server/kueueviz';
 	import {
 		formatRelative,
 		formatStatus,
@@ -59,6 +61,33 @@
 	const canRetryCleanup = $derived(
 		!!run && ['cancelled', 'failed', 'completed'].includes(run.status)
 	);
+
+	// Live workloads stream — used to surface "Queue" status next to each
+	// instance row. Subscribed once per page; the BFF pool dedupes upstream
+	// across all viewers. Map keyed on the `benchmark-instance-id` label
+	// stamped onto the Sandbox pod template at provisioning time.
+	const workloadStream = createWorkloadStream();
+	const capacityByInstance = $derived.by(() => {
+		const out = new Map<string, WorkloadSnapshot>();
+		for (const wl of workloadStream.data) {
+			const id = wl.labels['benchmark-instance-id'];
+			if (!id) continue;
+			// Prefer the most recent active workload over a finished one — for
+			// re-runs the older finished entry would otherwise win the lookup.
+			const existing = out.get(id);
+			if (!existing) {
+				out.set(id, wl);
+			} else if (wl.active && !existing.active) {
+				out.set(id, wl);
+			} else if (
+				wl.active === existing.active &&
+				wl.creationTimestamp > existing.creationTimestamp
+			) {
+				out.set(id, wl);
+			}
+		}
+		return out;
+	});
 
 	const inferenceDone = $derived.by(() => {
 		const counts = countByKey(run?.instances ?? [], 'inferenceStatus');
@@ -589,6 +618,7 @@
 				workspaceSlug={slug}
 				selectedInstanceId={selectedInstanceId}
 				onSelect={openDrawer}
+				capacityByInstance={capacityByInstance}
 			/>
 		</section>
 	{/if}

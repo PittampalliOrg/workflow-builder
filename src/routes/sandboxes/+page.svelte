@@ -38,6 +38,7 @@
 		X
 	} from '@lucide/svelte';
 	import { createSandboxListStream } from '$lib/stores/sandbox-stream.svelte';
+	import CapacityBanner from '$lib/components/capacity/capacity-banner.svelte';
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';
 	import SandboxPreviewPopover from '$lib/components/sandbox/sandbox-preview-popover.svelte';
 	import CreateSandboxDialog from '$lib/components/sandbox/create-sandbox-dialog.svelte';
@@ -352,6 +353,10 @@
 			{quickCreateError}
 		</div>
 	{/if}
+
+	<div class="border-b border-border px-6 py-2">
+		<CapacityBanner />
+	</div>
 
 	<div class="flex flex-1 flex-col overflow-auto p-6">
 		<svelte:boundary>

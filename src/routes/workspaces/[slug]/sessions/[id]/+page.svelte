@@ -35,6 +35,7 @@
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
+	import SessionCapacityCard from '$lib/components/capacity/session-capacity-card.svelte';
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
@@ -1460,6 +1461,7 @@
 
 				<SessionResourcesPanel {sessionId} />
 				<SessionOutputsPanel {sessionId} />
+				<SessionCapacityCard {sessionId} workspaceSlug={slug} />
 
 				<Card>
 					<CardHeader class="pb-2">

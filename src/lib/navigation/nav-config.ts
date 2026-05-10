@@ -262,6 +262,14 @@ export const NAV_GROUPS: NavGroup[] = [
 		icon: Activity,
 		items: [
 			{
+				id: "capacity",
+				label: "Capacity",
+				icon: Gauge,
+				href: ({ slug }) => `/workspaces/${slug}/capacity`,
+				match: /^\/workspaces\/[^/]+\/capacity(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
+			{
 				id: "sandboxes",
 				label: "Sandboxes",
 				icon: Container,

@@ -28,6 +28,8 @@
 	} from '@lucide/svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import { formatDuration, formatTokens } from './run-status-helpers';
+	import WorkloadStatusBadge from '$lib/components/capacity/workload-status-badge.svelte';
+	import type { WorkloadSnapshot } from '$lib/server/kueueviz';
 
 	type Instance = {
 		id: string;
@@ -49,9 +51,24 @@
 		workspaceSlug: string;
 		selectedInstanceId: string | null;
 		onSelect: (instanceId: string) => void;
+		/**
+		 * Optional reverse index from `benchmark-instance-id` → live Workload
+		 * snapshot. Provided by the run detail page when capacity-by-instance
+		 * lookup is wanted; omitted when there's no value (e.g. the table is
+		 * mounted without an active workloads stream).
+		 */
+		capacityByInstance?: Map<string, WorkloadSnapshot>;
 	};
 
-	const { instances, workspaceSlug, selectedInstanceId, onSelect }: Props = $props();
+	const {
+		instances,
+		workspaceSlug,
+		selectedInstanceId,
+		onSelect,
+		capacityByInstance,
+	}: Props = $props();
+
+	const showCapacityColumn = $derived(capacityByInstance !== undefined);
 
 	let globalFilter = $state('');
 
@@ -209,6 +226,9 @@
 								</div>
 							</th>
 						{/each}
+						{#if showCapacityColumn}
+							<th class="px-3 py-2">Queue</th>
+						{/if}
 						<th class="px-3 py-2"></th>
 					</tr>
 				{/each}
@@ -244,6 +264,24 @@
 						<td class="px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground">
 							{row.original.patchBytes ? `${row.original.patchBytes}` : '—'}
 						</td>
+						{#if showCapacityColumn}
+							{@const wl = capacityByInstance?.get(row.original.instanceId) ?? null}
+							<td class="px-3 py-2">
+								{#if wl}
+									<a
+										href={`/workspaces/${workspaceSlug}/capacity/workloads?queue=${encodeURIComponent(wl.queueName || wl.clusterQueueName || '')}`}
+										onclick={(e) => e.stopPropagation()}
+										class="inline-flex items-center gap-1.5"
+										title={wl.name}
+									>
+										<WorkloadStatusBadge status={wl.status} />
+										<span class="font-mono text-[10px] text-muted-foreground">{wl.queueName}</span>
+									</a>
+								{:else}
+									<span class="text-[10px] text-muted-foreground">—</span>
+								{/if}
+							</td>
+						{/if}
 						<td class="px-3 py-2 text-right">
 							<div class="flex items-center justify-end gap-1">
 								{#if row.original.sessionId}
@@ -262,7 +300,7 @@
 					</tr>
 				{:else}
 					<tr>
-						<td colspan={columns.length + 1} class="px-4 py-12 text-center text-sm text-muted-foreground">
+						<td colspan={columns.length + 1 + (showCapacityColumn ? 1 : 0)} class="px-4 py-12 text-center text-sm text-muted-foreground">
 							No instances match.
 						</td>
 					</tr>
