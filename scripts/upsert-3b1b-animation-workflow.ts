@@ -171,30 +171,22 @@ function makeWorkspaceProfileTask(): JsonRecord {
 }
 
 // Build a literal jq expression as a string concat. Avoids template-literal
-// escape collisions (TypeScript ${ vs jq ${ vs JSON \" vs shell $PORT).
+// escape collisions (TypeScript ${ vs jq ${ vs JSON \").
 const BUILD_PROMPT_PARTS = [
   '${ .trigger.animationDescription + " — Build a self-contained browser animation in ',
   APP_DIR,
-  ' with index.html, styles.css, script.js, README.md, and package.json. ',
+  ' with index.html, styles.css, script.js, and README.md. ',
   'Use Canvas or SVG so the result runs via a simple static file server. ',
   'The browser animation is the required deliverable. ',
   'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
   'the play/pause control <button id=\\"btn-play\\">, ',
   'the restart control <button id=\\"btn-restart\\">. ',
   'Do NOT install Manim — if a scene is useful, include scene.py as optional source only. ',
-  'Do not start any preview server; the downstream browser/validate step will do that. ',
-  'The page must work when served as static files (no module imports outside relative script.js).\\n\\n',
-  'The package.json is required for the live-preview UI path (when the runtime picks ',
-  'npm-run-dev over python3 http.server). Use this exact content — note the literal ',
-  'dollar-PORT and the \\"--bind 0.0.0.0\\" flag — and DO NOT add any other dependencies, ',
-  'devDependencies, or scripts:\\n\\n',
-  '{\\n',
-  '  \\"name\\": \\"3b1b-style-animation\\",\\n',
-  '  \\"private\\": true,\\n',
-  '  \\"scripts\\": {\\n',
-  '    \\"dev\\": \\"exec python3 -m http.server ${PORT:-3000} --bind 0.0.0.0\\"\\n',
-  '  }\\n',
-  '}\\n\\n',
+  'Do not start any preview server; the downstream browser/validate and ',
+  'browser/start-preview steps will do that. ',
+  'The page must work when served as static files (no module imports outside relative script.js). ',
+  'Do NOT create a package.json — that triggers the runtime\'s npm-run-dev fallback ',
+  'which expects flags python3\'s http.server doesn\'t recognize. ',
   'Final answer: list the files created and a one-paragraph outline of the animation logic." }',
 ];
 const BUILD_PROMPT = BUILD_PROMPT_PARTS.join("");
@@ -220,6 +212,35 @@ function makeBuildAnimationTask(args: ParsedArgs): JsonRecord {
           cwd: "/sandbox",
           maxTurns: 60,
           timeoutMinutes: 60,
+        },
+      },
+    },
+  };
+}
+
+function makeStartPreviewTask(): JsonRecord {
+  // Pre-create the live-preview during the workflow (after browser/validate
+  // proves the files render). The UI's "live preview" button connects to
+  // this previewId instead of spawning a racy lazy preview that hits
+  // ENOENT on package.json before rsync completes.
+  return {
+    call: "browser/start-preview",
+    with: {
+      body: {
+        input: {
+          previewId:
+            '${ "3b1b-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
+          repoPath: APP_DIR,
+          rootPath: "/sandbox",
+          workingDir: "/sandbox",
+          // Same omit-devServerCommand pattern as browser/validate — runtime
+          // detects index.html and runs `python3 -m http.server {port} --bind 0.0.0.0`.
+          baseUrl: "http://127.0.0.1:0",
+          keepAlive: true,
+          timeoutSeconds: 7200,
+          timeoutMs: 7200000,
+          sandboxName: '${ .workspace_profile.sandboxName // "" }',
+          workspaceRef: "${ .workspace_profile.workspaceRef }",
         },
       },
     },
@@ -342,6 +363,7 @@ function buildSpec(args: ParsedArgs): JsonRecord {
       { workspace_profile: makeWorkspaceProfileTask() },
       { build_3b1b_animation: makeBuildAnimationTask(args) },
       { browser_validate_capture: makeBrowserValidateTask() },
+      { start_preview: makeStartPreviewTask() },
     ],
     output: {
       as: {
@@ -350,6 +372,7 @@ function buildSpec(args: ParsedArgs): JsonRecord {
         sandboxName: "${ .workspace_profile.sandboxName }",
         animation: "${ .build_3b1b_animation }",
         screenshots: "${ .browser_validate_capture }",
+        preview: "${ .start_preview }",
       },
     },
     input: {
@@ -419,6 +442,17 @@ function buildNodes(): JsonRecord[] {
           "Boot `python3 -m http.server` against the generated static files and capture initial / play×2 / restart screenshots.",
       },
     },
+    {
+      id: "start_preview",
+      type: "action",
+      position: { x: 80, y: 620 },
+      data: {
+        label: "Start live preview",
+        actionType: "browser/start-preview",
+        description:
+          "Pre-create the live-preview proxy with correct repoPath/rootPath so the UI's preview button connects to a ready-to-serve instance instead of spawning a racy lazy one.",
+      },
+    },
   ];
 }
 
@@ -440,6 +474,12 @@ function buildEdges(): JsonRecord[] {
       id: "e3",
       source: "build_3b1b_animation",
       target: "browser_validate_capture",
+      type: "default",
+    },
+    {
+      id: "e4",
+      source: "browser_validate_capture",
+      target: "start_preview",
       type: "default",
     },
   ];
