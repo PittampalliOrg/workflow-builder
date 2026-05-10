@@ -661,14 +661,24 @@ def build_agent_workflow_host_sandbox_manifest(
     }
     if request.priorityClass:
         pod_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(request.priorityClass)
+    # Capture inbound W3C trace-context. Stamp on BOTH:
+    #   - Sandbox CR metadata.annotations (for operator visibility)
+    #   - Pod template metadata.annotations (so the pod's downward-API
+    #     fieldRef on metadata.annotations['workflow-builder.cnoe.io/traceparent']
+    #     actually resolves — the agent-sandbox controller propagates pod-template
+    #     annotations to the pod, but does NOT propagate the parent Sandbox's
+    #     metadata.annotations).
     sandbox_metadata_annotations: dict[str, str] = {}
+    pod_trace_annotations: dict[str, str] = {}
     if trace_context:
         traceparent = trace_context.get("traceparent") or ""
         if traceparent:
             sandbox_metadata_annotations[TRACEPARENT_ANNOTATION] = traceparent
+            pod_trace_annotations[TRACEPARENT_ANNOTATION] = traceparent
         tracestate = trace_context.get("tracestate") or ""
         if tracestate:
             sandbox_metadata_annotations[TRACESTATE_ANNOTATION] = tracestate
+            pod_trace_annotations[TRACESTATE_ANNOTATION] = tracestate
     pod_annotations: dict[str, str] = {
         "dapr.io/enabled": "true",
         "dapr.io/app-id": request.agentAppId,
@@ -699,6 +709,10 @@ def build_agent_workflow_host_sandbox_manifest(
         "prometheus.io/port": "9090",
         "prometheus.io/path": "/",
     }
+    # Merge trace-context annotations onto the pod template so the downward-API
+    # fieldRef on metadata.annotations['workflow-builder.cnoe.io/traceparent']
+    # resolves to the value forwarded from the BFF.
+    pod_annotations.update(pod_trace_annotations)
     sandbox_metadata: dict[str, Any] = {
         "name": _agent_host_sandbox_name(request.agentAppId),
         "namespace": namespace,

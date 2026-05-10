@@ -226,6 +226,20 @@ def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> No
         sandbox_annotations["workflow-builder.cnoe.io/tracestate"]
         == "rojo=00f067aa0ba902b7"
     )
+    pod_template_annotations = manifest["spec"]["podTemplate"]["metadata"][
+        "annotations"
+    ]
+    # The downward-API fieldRef reads the *pod*'s annotations, not the parent
+    # Sandbox's metadata.annotations, so the trace-context must also be stamped
+    # on the pod template for the env var to resolve.
+    assert (
+        pod_template_annotations["workflow-builder.cnoe.io/traceparent"]
+        == "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    )
+    assert (
+        pod_template_annotations["workflow-builder.cnoe.io/tracestate"]
+        == "rojo=00f067aa0ba902b7"
+    )
     container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
     env_by_name = {e["name"]: e for e in container["env"]}
     assert "WORKFLOW_BUILDER_TRACEPARENT" in env_by_name
