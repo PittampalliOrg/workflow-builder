@@ -170,7 +170,34 @@ function makeWorkspaceProfileTask(): JsonRecord {
   };
 }
 
-const BUILD_PROMPT = `\${ .trigger.animationDescription + " — Build a self-contained browser animation in ${APP_DIR} with index.html, styles.css, script.js, README.md, and package.json. Use Canvas or SVG so the result runs via a simple static file server. The browser animation is the required deliverable. Use stable DOM ids for validation: the main canvas must be <canvas id=\\\\\\"canvas\\\\\\">, the play/pause control <button id=\\\\\\"btn-play\\\\\\">, the restart control <button id=\\\\\\"btn-restart\\\\\\">. Do NOT install Manim — if a scene is useful, include scene.py as optional source only. Do not start any preview server; the downstream browser/validate step will do that. The page must work when served as static files (no module imports outside relative script.js).\\n\\nThe package.json is required for the live-preview UI path (when the runtime picks npm-run-dev over python3 http.server). Use this exact content (single quoted shell so the args after \\\\\\"--\\\\\\" are silently absorbed and \\\\$PORT comes from the runtime env):\\n\\n{\\n  \\\\\\"name\\\\\\": \\\\\\"3b1b-style-animation\\\\\\",\\n  \\\\\\"private\\\\\\": true,\\n  \\\\\\"scripts\\\\\\": {\\n    \\\\\\"dev\\\\\\": \\\\\\"exec python3 -m http.server \\\\${PORT:-3000} --bind 0.0.0.0\\\\\\"\\n  }\\n}\\n\\nFinal answer: list the files created and a one-paragraph outline of the animation logic." }`;
+// Build a literal jq expression as a string concat. Avoids template-literal
+// escape collisions (TypeScript ${ vs jq ${ vs JSON \" vs shell $PORT).
+const BUILD_PROMPT_PARTS = [
+  '${ .trigger.animationDescription + " — Build a self-contained browser animation in ',
+  APP_DIR,
+  ' with index.html, styles.css, script.js, README.md, and package.json. ',
+  'Use Canvas or SVG so the result runs via a simple static file server. ',
+  'The browser animation is the required deliverable. ',
+  'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
+  'the play/pause control <button id=\\"btn-play\\">, ',
+  'the restart control <button id=\\"btn-restart\\">. ',
+  'Do NOT install Manim — if a scene is useful, include scene.py as optional source only. ',
+  'Do not start any preview server; the downstream browser/validate step will do that. ',
+  'The page must work when served as static files (no module imports outside relative script.js).\\n\\n',
+  'The package.json is required for the live-preview UI path (when the runtime picks ',
+  'npm-run-dev over python3 http.server). Use this exact content — note the literal ',
+  'dollar-PORT and the \\"--bind 0.0.0.0\\" flag — and DO NOT add any other dependencies, ',
+  'devDependencies, or scripts:\\n\\n',
+  '{\\n',
+  '  \\"name\\": \\"3b1b-style-animation\\",\\n',
+  '  \\"private\\": true,\\n',
+  '  \\"scripts\\": {\\n',
+  '    \\"dev\\": \\"exec python3 -m http.server ${PORT:-3000} --bind 0.0.0.0\\"\\n',
+  '  }\\n',
+  '}\\n\\n',
+  'Final answer: list the files created and a one-paragraph outline of the animation logic." }',
+];
+const BUILD_PROMPT = BUILD_PROMPT_PARTS.join("");
 
 function makeBuildAnimationTask(args: ParsedArgs): JsonRecord {
   return {
