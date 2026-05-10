@@ -13,6 +13,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > - `docs/cma-parity.md` — CMA (Claude Managed Agents) console parity: workspaces, members, sessions, custom skills, limits, observability
 > - `docs/callable-agents.md` — `CallAgent` peer-delegation tool (Approach B: native `WorkflowContextInjectedTool` on `dapr-agents>=1.0.1`; peer answer returns as `tool_result` in the same LLM turn)
 > - `docs/tiered-crawl-pipeline.md` — `crawl4ai-adapter` v2 + `browserresearchfanout01` v3 (tiered fetch + text-only synthesis). Postgres-durable, idempotent jobIds, lazy orphan-resume — the canonical pattern for multi-URL research workflows.
+> - `docs/workflow-artifacts.md` — Standardized `workflow_artifacts` surface: declarative `artifacts:` block in any SW 1.0 task spec, discriminated-union UI renderer (markdown / json / text / table / image / link / card), Dapr-durable producer.
 
 ## Architecture
 
@@ -276,6 +277,51 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 - Playwright browsers must be at `/opt/pw-browsers` (not `/root/.cache`) for sandbox user access
 - `imagePullPolicy: Always` for sandbox images — Gitea registry is authoritative
 
+## Standardized Workflow Artifacts
+
+Any SW 1.0 task can declare typed outputs that surface coherently in the run-detail UI by adding an `artifacts:` block alongside `with:`. Replaces the per-workflow ad-hoc storage problem (synth output buried in `output.outputs.<node>.data.content`, etc.) with a single generic table + discriminated-union renderer.
+
+**Producer (declarative in SW 1.0)**:
+
+```yaml
+synthesize:
+  call: durable/run
+  with: ...
+  artifacts:
+    - kind: markdown
+      slot: primary             # primary | secondary | aux
+      title: "Research synthesis"
+      description: "${ .trigger.topic }"
+      from: "${ .data.content }"  # jq evaluated post-task against expression context
+      contentType: "text/markdown"
+      metadata: "${ { topic: .trigger.topic } }"
+      if: "${ .data.content != null }"
+```
+
+After every task completes (in `_dispatch_task`), the orchestrator's `_persist_task_artifacts` walks `task_data.get("artifacts", [])`, evaluates each entry's jq expressions against the same expression context the task itself just used, and yields a `persist_workflow_artifact` activity per entry. Activity ID is deterministic (`sha256(workflowId|executionId|nodeId|kind|title)[:24]`) so Dapr retries collapse to UPSERTs on the same row.
+
+**Storage** — `workflow_artifacts` table (schema.ts:workflowArtifacts, drizzle 0067). Columns: id, workflow_execution_id (CASCADE), node_id, slot, kind, title, description, inline_payload (jsonb, ≤256 KB practical), file_id (FK files SET NULL — for blob-backed artifacts), content_type, size_bytes, metadata (jsonb), created_at. Hybrid storage: small structured artifacts inline, large blobs reuse the existing files + filePayloads infra.
+
+**Standard kinds + payload shapes**:
+
+| `kind` | `inline_payload` shape | UI renderer |
+|---|---|---|
+| `markdown` | `{ markdown: string }` | `Response` (Streamdown + Shiki) |
+| `json` | `{ value: any }` | `JsonViewer` |
+| `text` | `{ text: string }` | `<pre>` |
+| `table` | `{ columns: [...], rows: [[...]] }` | inline table |
+| `image` | `{ alt: string }` (blob via fileId) | `<img>` |
+| `link` | `{ url: string }` | anchor |
+| `card` | `{ body: string, footer?: string }` | shadcn `<Card>` |
+
+Unknown kinds fall back to a JSON dump so the data is never lost. The `from:` jq value is auto-wrapped per kind (e.g. `kind: markdown` + `from: "${ .data.content }"` becomes `{ markdown: <content> }`).
+
+**Consumer**: `<ArtifactList artifacts={...} mode="primary|all" />` (`src/lib/components/workflow/execution/artifact-list.svelte`) groups by slot. The run-detail Overview tab features `mode=primary` above the raw output JSON (which collapses to a debug pane); the new Outputs tab renders `mode=all`. APIs: `GET /api/workflows/executions/[id]/artifacts` (workspace-scoped read), `POST /api/internal/workflows/executions/[id]/artifacts` (internal-token write — used by the orchestrator and any future adapter-side writers).
+
+**Dapr-durability**: each artifact write is a separate `ctx.call_activity` with idempotency baked into the deterministic id. The activity is best-effort — network/4xx/5xx logged but not propagated, so observability never breaks the workflow it describes. See `services/workflow-orchestrator/activities/persist_artifact.py`.
+
+**Backward compat**: `workflow_browser_artifacts` and `workflow_plan_artifacts` are unchanged. Tasks without an `artifacts:` block see no behaviour change. Executions with no artifacts rows render the Overview tab the old way (raw output JsonViewer expanded).
+
 ## Tiered Crawl Pipeline (research workflows)
 
 `browserresearchfanout01` v3 is the canonical pattern for any multi-URL "fetch + extract + synthesize" workflow. Replaces the v2 browser-use-agent path for research/extraction; browser-use stays the right tool for *interactive* (vision/click) tasks.
@@ -343,6 +389,7 @@ Pure text agent — no MCP servers, no browser tools, no workspace sandbox. Rece
 - Trigger value like `${ .trigger.animationDescription }` reaches agent as literal string → SW 1.0 jq-template eval only fires for ENTIRE-value `${...}` (see `core/sw_expressions.py::is_expression_string`). Embedded `${...}` passes through. Fix: wrap whole value in one jq expression that concatenates.
 - `web/crawl.async` workflow times out at the per-URL `timeoutMs` ceiling → an adapter pod was restarted while a job was RUNNING and the lazy-resume in `GET /crawl/jobs/{id}` didn't fire fast enough. Manually reset stuck rows: `UPDATE crawl4ai_jobs SET state='FAILED' WHERE state IN ('PENDING','RUNNING') AND updated_at < now() - interval '2 minutes'`. Tighten `CRAWL4AI_ORPHAN_AFTER_SECONDS` if recurrent.
 - Synthesizer agent calls WebSearch / hangs / hits step budget on a research workflow → the per-URL corpus probably contains nulls (the agent compensates by web-searching). Cause: jq path missing the activity-envelope unwrap level. The for-task output value at `<for>/<sub>[<idx>]` reads `.data.tier` / `.data.extracted` (NOT `.tier` / `.extracted`).
+- `artifacts:` block declared but no rows in `workflow_artifacts` after the run → the activity is **best-effort**. Check workflow-orchestrator logs for `persist_workflow_artifact` warnings (network/4xx/5xx fail silently to keep observability from breaking the workflow). Common causes: BFF `/api/internal/workflows/executions/[id]/artifacts` route 503 (DB pool exhausted), `INTERNAL_API_TOKEN` not set on the orchestrator pod, or jq evaluation in `from:` returned `null` AND the `if:` guard (if any) was true. Verify with `SELECT id, kind, title FROM workflow_artifacts WHERE workflow_execution_id=?`.
 - SvelteKit type errors → Run `pnpm check`.
 
 > See Dapr component YAMLs in the stacks repo for service scoping and env var configuration.
