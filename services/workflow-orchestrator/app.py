@@ -3293,6 +3293,86 @@ def resume_workflow(instance_id: str):
         _raise_workflow_route_error("resume_workflow", e)
 
 
+# --- Observability Routes ---
+
+
+class ObservabilityFeedbackRequest(BaseModel):
+    """POST /api/v2/observability/feedback body."""
+
+    trace_id: str = Field(..., description="MLflow trace_id like 'tr-<hex>'")
+    name: str = Field(default="user_rating")
+    value: float | int | str | bool | None = None
+    rationale: str | None = None
+    source_type: str = Field(
+        default="HUMAN",
+        description="One of HUMAN, AI_JUDGE, LLM_JUDGE, CODE",
+    )
+    source_id: str = Field(default="anonymous")
+    metadata: dict[str, Any] | None = None
+    span_id: str | None = None
+
+
+@app.post("/api/v2/observability/feedback")
+def post_observability_feedback(request: ObservabilityFeedbackRequest):
+    """
+    Record a feedback assessment against an MLflow trace.
+
+    POST /api/v2/observability/feedback
+
+    Phase 3b of plan research-the-most-popular-stateful-hinton.md.
+    The BFF resolves a workflow execution id → trace_id, then calls
+    this endpoint which wraps `mlflow.log_feedback(...)`. Returns the
+    persisted assessment_id so the caller can correlate with future
+    reads of the trace's Assessments tab.
+    """
+    try:
+        import mlflow  # type: ignore[import-not-found]
+        from mlflow.entities.assessment_source import AssessmentSource  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "mlflow_sdk_unavailable", "error": str(exc)},
+        )
+
+    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+    if not tracking_uri:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "mlflow_tracking_uri_unset"},
+        )
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        assessment = mlflow.log_feedback(
+            trace_id=request.trace_id,
+            name=request.name,
+            value=request.value,
+            source=AssessmentSource(
+                source_type=request.source_type,
+                source_id=request.source_id,
+            ),
+            rationale=request.rationale,
+            metadata=request.metadata,
+            span_id=request.span_id,
+        )
+        return {
+            "success": True,
+            "assessment_id": getattr(assessment, "assessment_id", None),
+            "trace_id": request.trace_id,
+            "name": request.name,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[observability/feedback] log_feedback failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "mlflow_log_feedback_failed",
+                "error": str(exc),
+                "trace_id": request.trace_id,
+            },
+        )
+
+
 # --- Pub/Sub Subscription Routes ---
 
 @app.post("/subscriptions/agent-events")

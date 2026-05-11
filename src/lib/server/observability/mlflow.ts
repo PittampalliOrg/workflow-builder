@@ -127,3 +127,81 @@ export async function resolveMlflowTraceUrlForExecution(
 	if (!traceId) return null;
 	return publicMlflowTraceSearchUrl(experimentId, { traceId });
 }
+
+/**
+ * Resolve an executionId to a tr-<hex> MLflow trace_id by reading
+ * `workflow_executions.primary_trace_id`. Returns null when the
+ * execution row is missing or the trace_id hasn't been captured yet.
+ *
+ * Used by Phase 3b's feedback widget to translate UI input
+ * (executionId) into the trace_id MLflow needs.
+ */
+export async function resolveMlflowTraceIdForExecution(
+	executionId: string
+): Promise<string | null> {
+	const { db } = await import('$lib/server/db');
+	const { workflowExecutions } = await import('$lib/server/db/schema');
+	const { eq } = await import('drizzle-orm');
+
+	const row = await db
+		.select({ primaryTraceId: workflowExecutions.primaryTraceId })
+		.from(workflowExecutions)
+		.where(eq(workflowExecutions.id, executionId))
+		.limit(1);
+	const raw = row[0]?.primaryTraceId?.trim();
+	if (!raw) return null;
+	return raw.startsWith('tr-') ? raw : `tr-${raw}`;
+}
+
+/**
+ * POST a feedback assessment to the orchestrator's
+ * /api/v2/observability/feedback endpoint, which wraps
+ * `mlflow.log_feedback(...)`. Phase 3b of the MLflow 3.12 enhancement
+ * plan (research-the-most-popular-stateful-hinton.md).
+ *
+ * Caller is responsible for resolving executionId → trace_id first.
+ */
+export async function logTraceFeedback(args: {
+	traceId: string;
+	name?: string;
+	value?: number | string | boolean | null;
+	rationale?: string | null;
+	sourceType?: 'HUMAN' | 'AI_JUDGE' | 'LLM_JUDGE' | 'CODE';
+	sourceId?: string;
+	metadata?: Record<string, unknown> | null;
+}): Promise<{ assessmentId: string | null } | null> {
+	const { getOrchestratorUrl, daprFetch } = await import('$lib/server/dapr-client');
+	const orchestratorUrl = getOrchestratorUrl();
+
+	const body = {
+		trace_id: args.traceId.startsWith('tr-') ? args.traceId : `tr-${args.traceId}`,
+		name: args.name ?? 'user_rating',
+		value: args.value ?? null,
+		rationale: args.rationale ?? null,
+		source_type: args.sourceType ?? 'HUMAN',
+		source_id: args.sourceId ?? 'anonymous',
+		metadata: args.metadata ?? null
+	};
+
+	try {
+		const res = await daprFetch(`${orchestratorUrl}/api/v2/observability/feedback`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+		if (!res.ok) {
+			const errText = await res.text().catch(() => '');
+			console.warn(
+				'[mlflow] logTraceFeedback orchestrator returned',
+				res.status,
+				errText.slice(0, 300)
+			);
+			return null;
+		}
+		const payload = (await res.json()) as { assessment_id?: string | null };
+		return { assessmentId: payload.assessment_id ?? null };
+	} catch (err) {
+		console.warn('[mlflow] logTraceFeedback failed:', err instanceof Error ? err.message : err);
+		return null;
+	}
+}

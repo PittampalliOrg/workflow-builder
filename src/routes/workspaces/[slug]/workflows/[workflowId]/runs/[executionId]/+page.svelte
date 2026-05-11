@@ -55,6 +55,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import { Skeleton } from '$lib/components/ui/skeleton';
+	import TraceFeedback from '$lib/components/observability/trace-feedback.svelte';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
@@ -1840,6 +1841,11 @@
 		/>
 
 		<LiveActivityRate {executionId} active={isRunning} />
+
+		<!-- Phase 3b: trace-level feedback widget. Disabled until the run
+		     produces an MLflow trace_id (primary_trace_id populated by
+		     the orchestrator status poll). -->
+		<TraceFeedback {executionId} disabled={!traceId && isRunning} />
 
 		<div class="ml-auto flex items-center gap-1 text-xs">
 			<!-- Prev / Next sibling runs. Disabled state cascades from the
