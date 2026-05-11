@@ -53,6 +53,13 @@ function safeJsonParse(value: string): unknown {
 	}
 }
 
+function hasAuthorizationHeader(headers: Record<string, string>): boolean {
+	for (const key of Object.keys(headers)) {
+		if (key.toLowerCase() === "authorization") return true;
+	}
+	return false;
+}
+
 function toHeaders(value: unknown): Record<string, string> {
 	if (!value) return {};
 	if (typeof value === "string") {
@@ -91,7 +98,10 @@ function toBody(
 	return { kind: "text", text: String(value) };
 }
 
-export async function httpRequestStep(input: HttpRequestInput): Promise<
+export async function httpRequestStep(
+	input: HttpRequestInput,
+	credentials?: Record<string, string>,
+): Promise<
 	| {
 			success: true;
 			data: { status: number; data: unknown; headers: Record<string, string> };
@@ -100,6 +110,24 @@ export async function httpRequestStep(input: HttpRequestInput): Promise<
 > {
 	const method = (input.httpMethod || "POST").toUpperCase();
 	const headers = toHeaders(input.httpHeaders);
+
+	// Auto-inject Authorization: Bearer <token> for callers that pass a
+	// connection_external_id at the function-router boundary. function-router
+	// uses mapConnectionValueToEnvVars to convert OAUTH2/SECRET_TEXT connection
+	// values into env-var-shaped credentials; for github this lands under
+	// `GITHUB_TOKEN`. Other providers map analogously. Existing Authorization
+	// headers always win — the caller can override per-request.
+	if (credentials && !hasAuthorizationHeader(headers)) {
+		const bearer =
+			credentials.GITHUB_TOKEN ??
+			credentials.SLACK_BOT_TOKEN ??
+			credentials.LINEAR_API_KEY ??
+			credentials.OPENAI_API_KEY ??
+			credentials.ANTHROPIC_API_KEY;
+		if (bearer) {
+			headers.Authorization = `Bearer ${bearer}`;
+		}
+	}
 
 	// Compatibility shim: "events.internal" is commonly produced by LLMs as a placeholder.
 	// In this stack there is no such service, so we treat it as a no-op event publish to

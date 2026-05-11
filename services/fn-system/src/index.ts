@@ -182,7 +182,7 @@ async function main() {
 					result = { success: false, error: "Invalid input for http-request" };
 					break;
 				}
-				const r = await httpRequestStep(input.data);
+				const r = await httpRequestStep(input.data, body.credentials);
 				result = r.success
 					? { success: true, data: r.data }
 					: { success: false, error: r.error };
