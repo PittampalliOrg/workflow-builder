@@ -121,6 +121,22 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// Resolve Prompt Workbench preset bindings (version-pinned) into raw text
 	// arrays the runtime can stitch into the bundle without DB access. Fail
 	// open: a missing preset must never block a session spawn.
+	const emptyPresetStack = {
+		static: [] as string[],
+		dynamic: [] as string[],
+		staticManifest: [] as Array<{
+			promptId: string;
+			version: number;
+			promptVersionId: string;
+			mlflowUri: string | null;
+		}>,
+		dynamicManifest: [] as Array<{
+			promptId: string;
+			version: number;
+			promptVersionId: string;
+			mlflowUri: string | null;
+		}>,
+	};
 	const compiledPresetStack = agent.projectId
 		? await compilePromptStack(resolvedAgentConfig, {
 				projectId: agent.projectId,
@@ -129,14 +145,21 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 					"[session-spawn] compilePromptStack failed, continuing with empty stack:",
 					err instanceof Error ? err.message : err,
 				);
-				return { static: [] as string[], dynamic: [] as string[] };
+				return emptyPresetStack;
 			})
-		: { static: [] as string[], dynamic: [] as string[] };
+		: emptyPresetStack;
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
 		mcpServers: rewrittenMcp,
 		compiledStaticPresetSections: compiledPresetStack.static,
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,
+		// Phase 3a v2: per-ref version-id + mlflow_uri manifest so
+		// dapr-agent-py can stamp `tag.prompt_version_id` / `tag.prompt_version`
+		// on agent traces. Empty array when no presets are bound.
+		promptPresetManifest: [
+			...compiledPresetStack.staticManifest,
+			...compiledPresetStack.dynamicManifest,
+		],
 	};
 
 	// Resolve the dispatch app-id. Two paths share the same downstream shape

@@ -253,7 +253,7 @@ async function syncPromptToMlflow(args: {
 			.map((m) => `### ${m.role.toUpperCase()}\n${m.content}`)
 			.join('\n\n');
 		const mlflowName = `workflow-builder/prompt-presets/${args.promptId}`;
-		await registerPromptInMlflow({
+		const registered = await registerPromptInMlflow({
 			name: mlflowName,
 			template,
 			commitMessage: `prompt-preset v${args.version} from project ${args.projectId}`,
@@ -264,6 +264,29 @@ async function syncPromptToMlflow(args: {
 				'workflow-builder.version': String(args.version),
 			},
 		});
+		// Phase 3a v2: persist the MLflow URI back onto the version row so
+		// traces can later carry `tag.prompt_version = <uri>` and the UI
+		// can deep-link to MLflow's prompt browser. Best-effort: a missed
+		// write just leaves the column null until next preset save.
+		if (registered?.uri) {
+			try {
+				const database = requireDb();
+				await database
+					.update(resourcePromptVersions)
+					.set({ mlflowUri: registered.uri })
+					.where(
+						and(
+							eq(resourcePromptVersions.promptId, args.promptId),
+							eq(resourcePromptVersions.version, args.version),
+						),
+					);
+			} catch (writeErr) {
+				console.warn(
+					'[prompt-presets] mlflow uri persistence failed:',
+					writeErr instanceof Error ? writeErr.message : writeErr,
+				);
+			}
+		}
 	} catch (err) {
 		console.warn(
 			'[prompt-presets] mlflow sync failed:',
@@ -499,9 +522,30 @@ export function isValidPresetRef(value: unknown): value is PromptPresetRef {
 }
 
 /**
+ * Per-ref manifest entry: enough metadata for `dapr-agent-py` to stamp
+ * MLflow trace tags (`tag.prompt_version_id`, `tag.prompt_version`) on
+ * agent traces, so prompt-iteration → run-quality is queryable.
+ */
+export interface CompiledPromptStackEntry {
+	readonly promptId: string;
+	readonly version: number;
+	readonly promptVersionId: string;
+	readonly mlflowUri: string | null;
+}
+
+export interface CompiledPromptStack {
+	readonly static: string[];
+	readonly dynamic: string[];
+	readonly staticManifest: CompiledPromptStackEntry[];
+	readonly dynamicManifest: CompiledPromptStackEntry[];
+}
+
+/**
  * Pure resolution: given the in-memory refs and the DB-fetched
- * (promptId, version, messages) rows, produce the static + dynamic content
- * arrays. Exposed for unit testing without needing a live DB.
+ * (promptId, version, messages, promptVersionId, mlflowUri) rows,
+ * produce the static + dynamic content arrays AND a per-ref manifest
+ * carrying enough metadata for trace-tag propagation downstream.
+ * Exposed for unit testing without needing a live DB.
  */
 export function resolveCompiledPromptStack(
 	staticRefs: PromptPresetRef[],
@@ -510,20 +554,32 @@ export function resolveCompiledPromptStack(
 		promptId: string;
 		version: number;
 		messages: unknown;
+		promptVersionId?: string | null;
+		mlflowUri?: string | null;
 	}>,
 	warnContext?: string,
-): { static: string[]; dynamic: string[] } {
+): CompiledPromptStack {
 	const contentByKey = new Map<string, string>();
+	const manifestByKey = new Map<string, CompiledPromptStackEntry>();
 	for (const row of rows) {
 		const messages = Array.isArray(row.messages)
 			? (row.messages as PromptTemplateMessage[])
 			: [];
 		const systemContent = messageContentForRole(messages, "system").trim();
+		const key = `${row.promptId}@${row.version}`;
+		if (row.promptVersionId) {
+			manifestByKey.set(key, {
+				promptId: row.promptId,
+				version: row.version,
+				promptVersionId: row.promptVersionId,
+				mlflowUri: row.mlflowUri ?? null,
+			});
+		}
 		if (!systemContent) continue;
-		contentByKey.set(`${row.promptId}@${row.version}`, systemContent);
+		contentByKey.set(key, systemContent);
 	}
 
-	function resolve(refs: PromptPresetRef[]): string[] {
+	function resolveContent(refs: PromptPresetRef[]): string[] {
 		const out: string[] = [];
 		for (const ref of refs) {
 			const content = contentByKey.get(`${ref.id}@${ref.version}`);
@@ -540,7 +596,21 @@ export function resolveCompiledPromptStack(
 		return out;
 	}
 
-	return { static: resolve(staticRefs), dynamic: resolve(dynamicRefs) };
+	function resolveManifest(refs: PromptPresetRef[]): CompiledPromptStackEntry[] {
+		const out: CompiledPromptStackEntry[] = [];
+		for (const ref of refs) {
+			const entry = manifestByKey.get(`${ref.id}@${ref.version}`);
+			if (entry) out.push(entry);
+		}
+		return out;
+	}
+
+	return {
+		static: resolveContent(staticRefs),
+		dynamic: resolveContent(dynamicRefs),
+		staticManifest: resolveManifest(staticRefs),
+		dynamicManifest: resolveManifest(dynamicRefs),
+	};
 }
 
 /**
@@ -558,8 +628,14 @@ export function resolveCompiledPromptStack(
 export async function compilePromptStack(
 	agentConfig: AgentConfig | Record<string, unknown> | null | undefined,
 	opts: { projectId: string },
-): Promise<{ static: string[]; dynamic: string[] }> {
-	if (!agentConfig) return { static: [], dynamic: [] };
+): Promise<CompiledPromptStack> {
+	const empty: CompiledPromptStack = {
+		static: [],
+		dynamic: [],
+		staticManifest: [],
+		dynamicManifest: [],
+	};
+	if (!agentConfig) return empty;
 	const cfg = agentConfig as Record<string, unknown>;
 	const staticRefs = Array.isArray(cfg.staticPromptPresetRefs)
 		? (cfg.staticPromptPresetRefs as unknown[]).filter(isValidPresetRef)
@@ -568,7 +644,7 @@ export async function compilePromptStack(
 		? (cfg.dynamicPromptPresetRefs as unknown[]).filter(isValidPresetRef)
 		: [];
 	if (staticRefs.length === 0 && dynamicRefs.length === 0) {
-		return { static: [], dynamic: [] };
+		return empty;
 	}
 
 	const promptIds = [
@@ -581,6 +657,8 @@ export async function compilePromptStack(
 			promptId: resourcePromptVersions.promptId,
 			version: resourcePromptVersions.version,
 			messages: resourcePromptVersions.messages,
+			promptVersionId: resourcePromptVersions.id,
+			mlflowUri: resourcePromptVersions.mlflowUri,
 		})
 		.from(resourcePromptVersions)
 		.innerJoin(resourcePrompts, eq(resourcePrompts.id, resourcePromptVersions.promptId))

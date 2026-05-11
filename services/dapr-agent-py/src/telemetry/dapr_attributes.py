@@ -40,8 +40,12 @@ AGENT_CONFIG_REVISION_ATTRIBUTE = "agent.config_revision"
 AGENT_TURN_ATTRIBUTE = "agent.turn"
 AGENT_INSTRUCTION_HASH_ATTRIBUTE = "agent.instruction_hash"
 
-# Prompt registry (populated once Phase 3a lands).
+# Prompt registry. `prompt_version` carries comma-joined MLflow Prompt
+# Registry URIs (Phase 3a). `prompt_version_id` carries comma-joined
+# `resource_prompt_versions.id` PKs (Phase 3a v2) — useful for joining
+# back to the BFF's DB when the MLflow URI isn't sufficient.
 PROMPT_VERSION_ATTRIBUTE = "prompt_version"
+PROMPT_VERSION_ID_ATTRIBUTE = "prompt_version_id"
 
 
 def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
@@ -75,6 +79,7 @@ def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
         AGENT_LLM_COMPONENT_ATTRIBUTE,
         AGENT_CONFIG_REVISION_ATTRIBUTE,
         PROMPT_VERSION_ATTRIBUTE,
+        PROMPT_VERSION_ID_ATTRIBUTE,
     )
 
     tags: dict[str, str] = {}

@@ -121,6 +121,20 @@ export type AgentConfig = {
 	 */
 	compiledDynamicPresetSections?: string[];
 
+	/**
+	 * Phase 3a v2: per-ref manifest mirroring `compiledStaticPresetSections` +
+	 * `compiledDynamicPresetSections`. Each entry carries the
+	 * `resource_prompt_versions.id` (PK) and `mlflow_uri` so dapr-agent-py can
+	 * stamp `tag.prompt_version_id` / `tag.prompt_version` on agent traces
+	 * without needing DB access. Empty array when no presets are bound.
+	 */
+	promptPresetManifest?: Array<{
+		promptId: string;
+		version: number;
+		promptVersionId: string;
+		mlflowUri: string | null;
+	}>;
+
 	modelSpec?: string;
 	temperature?: number;
 	toolChoice?: AgentToolChoice;

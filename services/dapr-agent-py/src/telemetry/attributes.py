@@ -33,6 +33,13 @@ class SessionContext:
     user_email: str = ""
     user_account_uuid: str = ""
     terminal_type: str = ""
+    # Phase 3a v2: Prompt Workbench preset bindings carried by the BFF in
+    # `agentConfig.promptPresetManifest`. `prompt_version_ids` is the
+    # `resource_prompt_versions.id` (PK) per binding; `prompt_version_uris`
+    # is the matching MLflow Prompt Registry URI (when present). Both are
+    # comma-joined for the trace-tag value (single-value tag keys).
+    prompt_version_ids: tuple[str, ...] = ()
+    prompt_version_uris: tuple[str, ...] = ()
 
 
 _session_context: contextvars.ContextVar[SessionContext] = contextvars.ContextVar(
@@ -75,6 +82,8 @@ def set_session_context(
     user_email: str = "",
     user_account_uuid: str = "",
     terminal_type: str = "",
+    prompt_version_ids: tuple[str, ...] | list[str] | None = None,
+    prompt_version_uris: tuple[str, ...] | list[str] | None = None,
 ) -> contextvars.Token:
     """Set per-invocation session context. Returns token to reset later.
 
@@ -96,6 +105,8 @@ def set_session_context(
             user_email=user_email,
             user_account_uuid=user_account_uuid,
             terminal_type=terminal_type,
+            prompt_version_ids=tuple(prompt_version_ids or ()),
+            prompt_version_uris=tuple(prompt_version_uris or ()),
         )
     )
 
@@ -150,5 +161,15 @@ def get_telemetry_attributes() -> dict[str, Any]:
 
     if ctx.terminal_type:
         attrs["terminal.type"] = ctx.terminal_type
+
+    # Phase 3a v2: Prompt Workbench preset bindings carried by the BFF.
+    # Single-value tags get a comma-joined list when multiple presets are
+    # bound (typical: one static + one dynamic). The set is small (<5
+    # in practice) so a flat string is the right tag shape — MLflow's
+    # search supports `tag.prompt_version_id LIKE '%abc123%'`.
+    if ctx.prompt_version_ids:
+        attrs["prompt_version_id"] = ",".join(ctx.prompt_version_ids)
+    if ctx.prompt_version_uris:
+        attrs["prompt_version"] = ",".join(ctx.prompt_version_uris)
 
     return attrs

@@ -37,6 +37,37 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _coerce_prompt_preset_manifest(value: Any) -> list[dict[str, Any]]:
+    """Phase 3a v2: shape the BFF's `promptPresetManifest` entries for use as
+    MLflow trace-tag inputs. Each kept entry has `promptVersionId` (str) and
+    optionally `mlflowUri` (str | None). Drops rows that are missing the
+    PK so the downstream tagging code never has to defend against partial
+    data."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        prompt_version_id = _string(
+            item.get("promptVersionId") or item.get("prompt_version_id")
+        )
+        if not prompt_version_id:
+            continue
+        mlflow_uri = _string(item.get("mlflowUri") or item.get("mlflow_uri"))
+        prompt_id = _string(item.get("promptId") or item.get("prompt_id"))
+        version = _int(item.get("version"))
+        entry: dict[str, Any] = {"promptVersionId": prompt_version_id}
+        if mlflow_uri:
+            entry["mlflowUri"] = mlflow_uri
+        if prompt_id:
+            entry["promptId"] = prompt_id
+        if version is not None:
+            entry["version"] = version
+        out.append(entry)
+    return out
+
+
 def _int(value: Any) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -275,6 +306,14 @@ def build_instruction_bundle(
         ),
         "compiledDynamicPresetSections": _string_list(
             config.get("compiledDynamicPresetSections")
+        ),
+        # Phase 3a v2: per-ref manifest mirroring the compiled sections above.
+        # Each entry has `promptId`, `version`, `promptVersionId`, `mlflowUri`.
+        # Surfaced into the MLflow trace via `start_interaction_span()` as
+        # `tag.prompt_version_id` + `tag.prompt_version` so prompt iteration →
+        # run quality is queryable across runs.
+        "promptPresetManifest": _coerce_prompt_preset_manifest(
+            config.get("promptPresetManifest")
         ),
         # Anthropic ephemeral prompt cache TTL applied to the static-prefix +
         # last-tool cache breakpoints. Default `'5m'`; `'1h'` opts into the

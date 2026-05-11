@@ -1911,6 +1911,7 @@ export const resourcePromptVersions = pgTable(
 			.$type<PromptTemplateFormat>(),
 		templateHash: text("template_hash").notNull(),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		mlflowUri: text("mlflow_uri"),
 		createdByUserId: text("created_by_user_id").references(() => users.id, {
 			onDelete: "set null",
 		}),
@@ -1925,6 +1926,7 @@ export const resourcePromptVersions = pgTable(
 		templateHashIdx: index("idx_resource_prompt_versions_template_hash").on(
 			table.templateHash,
 		),
+		mlflowUriIdx: index("idx_resource_prompt_versions_mlflow_uri").on(table.mlflowUri),
 	}),
 );
 

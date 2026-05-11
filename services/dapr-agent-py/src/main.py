@@ -2843,6 +2843,26 @@ class OpenShellDurableAgent(DurableAgent):
                     start_interaction_span,
                 )
 
+                # Phase 3a v2: extract Prompt Workbench preset bindings from
+                # the BFF-provided `agentConfig.promptPresetManifest` so the
+                # interaction span can stamp `tag.prompt_version_id` /
+                # `tag.prompt_version`. Single-string tag values; comma-joined
+                # when an agent binds multiple presets.
+                _prompt_manifest = agent_config.get("promptPresetManifest") if isinstance(
+                    agent_config, dict
+                ) else None
+                _prompt_version_ids: list[str] = []
+                _prompt_version_uris: list[str] = []
+                if isinstance(_prompt_manifest, list):
+                    for _entry in _prompt_manifest:
+                        if not isinstance(_entry, dict):
+                            continue
+                        _pvid = _entry.get("promptVersionId") or _entry.get("prompt_version_id")
+                        if isinstance(_pvid, str) and _pvid.strip():
+                            _prompt_version_ids.append(_pvid.strip())
+                        _uri = _entry.get("mlflowUri") or _entry.get("mlflow_uri")
+                        if isinstance(_uri, str) and _uri.strip():
+                            _prompt_version_uris.append(_uri.strip())
                 tok = set_session_context(
                     instance_id=instance_id,
                     execution_id=execution_id,
@@ -2852,6 +2872,8 @@ class OpenShellDurableAgent(DurableAgent):
                     instruction_hash=effective_fields.get("instructionHash"),
                     model_spec=effective_fields.get("modelSpec"),
                     llm_component=effective_fields.get("llmComponent"),
+                    prompt_version_ids=tuple(_prompt_version_ids),
+                    prompt_version_uris=tuple(_prompt_version_uris),
                 )
                 self._interaction_ctx_token_by_instance[instance_id] = tok
                 task_text = str(message.get("task") or message.get("prompt") or "")

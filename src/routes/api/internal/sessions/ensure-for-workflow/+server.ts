@@ -182,6 +182,22 @@ export const POST: RequestHandler = async ({ request }) => {
 	// runs share the same projectId as the agent's workflow row (resolved
 	// above). Fail open: an unresolvable preset must never block a workflow
 	// turn.
+	const emptyPresetStack = {
+		static: [] as string[],
+		dynamic: [] as string[],
+		staticManifest: [] as Array<{
+			promptId: string;
+			version: number;
+			promptVersionId: string;
+			mlflowUri: string | null;
+		}>,
+		dynamicManifest: [] as Array<{
+			promptId: string;
+			version: number;
+			promptVersionId: string;
+			mlflowUri: string | null;
+		}>,
+	};
 	const compiledPresetStack =
 		agentConfigAfterMcp && projectId
 			? await compilePromptStack(agentConfigAfterMcp, { projectId }).catch(
@@ -190,15 +206,21 @@ export const POST: RequestHandler = async ({ request }) => {
 							"[ensure-for-workflow] compilePromptStack failed, continuing with empty stack:",
 							err instanceof Error ? err.message : err,
 						);
-						return { static: [] as string[], dynamic: [] as string[] };
+						return emptyPresetStack;
 					},
 				)
-			: { static: [] as string[], dynamic: [] as string[] };
+			: emptyPresetStack;
 	const agentConfig = agentConfigAfterMcp
 		? ({
 				...agentConfigAfterMcp,
 				compiledStaticPresetSections: compiledPresetStack.static,
 				compiledDynamicPresetSections: compiledPresetStack.dynamic,
+				// Phase 3a v2: per-ref version-id + mlflow_uri manifest for
+				// trace-tag propagation in dapr-agent-py.
+				promptPresetManifest: [
+					...compiledPresetStack.staticManifest,
+					...compiledPresetStack.dynamicManifest,
+				],
 			} as AgentConfig)
 		: null;
 	const environmentConfig =
