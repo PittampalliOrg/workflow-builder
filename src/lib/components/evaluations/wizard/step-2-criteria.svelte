@@ -9,6 +9,7 @@
 	import ModelScorerForm from './model-scorer-form.svelte';
 	import PythonGraderForm from './python-grader-form.svelte';
 	import EndpointGraderForm from './endpoint-grader-form.svelte';
+	import MlflowJudgeForm from './mlflow-judge-form.svelte';
 	import {
 		getWizardState,
 		addCriterion,
@@ -54,6 +55,27 @@
 			return { source: 'def grade(sample, item) -> float:\n    return 1.0', passThreshold: 0.5 };
 		if (type === 'endpoint')
 			return { url: '', headers: {}, scorePath: 'score', passThreshold: 0.5 };
+		if (type === 'mlflow_judge')
+			return {
+				model: 'anthropic-haiku',
+				prompt: [
+					'You are an evaluator. Score the model output against the expected behavior.',
+					'',
+					'Input:',
+					'{{input}}',
+					'',
+					'Expected behavior:',
+					'{{expected}}',
+					'',
+					'Actual model output:',
+					'{{actual}}',
+					'',
+					'Respond with EXACTLY this format:',
+					'VERDICT: <PASS|FAIL>',
+					'RATIONALE: <one sentence>'
+				].join('\n'),
+				passThreshold: 0.5
+			};
 		return {};
 	}
 
@@ -63,6 +85,7 @@
 		if (type === 'score_model') return mode === 'scorer' ? 'Model scorer' : 'Model labeler';
 		if (type === 'python') return 'Python grader';
 		if (type === 'endpoint') return 'Endpoint grader';
+		if (type === 'mlflow_judge') return 'MLflow LLM judge';
 		return 'Grader';
 	}
 
@@ -95,6 +118,8 @@
 				return 'Python';
 			case 'endpoint':
 				return 'Endpoint';
+			case 'mlflow_judge':
+				return 'MLflow LLM judge';
 			default:
 				return t;
 		}
@@ -148,6 +173,8 @@
 						<PythonGraderForm grader={c} onChange={patchCriterion} />
 					{:else if c.type === 'endpoint'}
 						<EndpointGraderForm grader={c} onChange={patchCriterion} />
+					{:else if c.type === 'mlflow_judge'}
+						<MlflowJudgeForm grader={c} onChange={patchCriterion} />
 					{:else}
 						<p class="text-xs text-muted-foreground italic">
 							{typeLabel(c.type)} form coming soon — saved with default config.

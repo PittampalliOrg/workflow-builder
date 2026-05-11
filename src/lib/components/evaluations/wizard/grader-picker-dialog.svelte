@@ -9,6 +9,7 @@
 	import {
 		Code2,
 		FileText,
+		Gavel,
 		Globe,
 		Network,
 		Sparkles,
@@ -78,6 +79,13 @@
 			desc: 'POSTs samples to your HTTPS endpoint; expects a numeric score in response.',
 			icon: Globe,
 			live: false
+		},
+		{
+			type: 'mlflow_judge',
+			title: 'MLflow LLM judge',
+			desc: 'LLM-as-a-judge via MLflow AI Gateway. Pick a route + rubric → emits PASS/FAIL + rationale.',
+			icon: Gavel,
+			live: true
 		}
 	];
 

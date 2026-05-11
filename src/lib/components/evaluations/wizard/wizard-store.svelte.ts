@@ -22,7 +22,8 @@ export type GraderType =
 	| 'python'
 	| 'multi'
 	| 'external_harness'
-	| 'endpoint';
+	| 'endpoint'
+	| 'mlflow_judge';
 
 export type WizardGrader = {
 	id: string;
