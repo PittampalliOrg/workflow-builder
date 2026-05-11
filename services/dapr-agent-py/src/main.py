@@ -1762,26 +1762,12 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_openai(self.llm)
         except Exception:
             pass
-        try:
-            from src.nvidia_adapter import patch_for_nvidia
-            patch_for_nvidia(self.llm)
-        except Exception:
-            pass
-        try:
-            from src.foundry_adapter import patch_for_foundry
-            patch_for_foundry(self.llm)
-        except Exception:
-            pass
-        try:
-            from src.together_adapter import patch_for_together
-            patch_for_together(self.llm)
-        except Exception:
-            pass
-        try:
-            from src.deepseek_adapter import patch_for_deepseek
-            patch_for_deepseek(self.llm)
-        except Exception:
-            pass
+        # Phase 2c v2 Stage A.8 (2026-05-11): nvidia/foundry/together/deepseek
+        # legacy adapters DELETED — those 4 providers route through the
+        # MLflow AI Gateway exclusively now. Kimi + Alibaba keep their
+        # legacy adapters until upstream issues (model id deprecated /
+        # billing) are resolved; their `DAPR_AGENT_PY_GATEWAY_<PROVIDER>`
+        # flags stay off so traffic falls through to legacy adapter.
         try:
             from src.alibaba_adapter import patch_for_alibaba
             patch_for_alibaba(self.llm)
@@ -4449,30 +4435,12 @@ try:
 except Exception as exc:
     logger.warning("OpenAI adapter patch failed: %s", exc)
 
-try:
-    from src.nvidia_adapter import patch_for_nvidia
-    patch_for_nvidia(agent.llm)
-except Exception as exc:
-    logger.warning("NVIDIA adapter patch failed: %s", exc)
-
-try:
-    from src.foundry_adapter import patch_for_foundry
-    patch_for_foundry(agent.llm)
-except Exception as exc:
-    logger.warning("Azure AI Foundry adapter patch failed: %s", exc)
-
-try:
-    from src.together_adapter import patch_for_together
-    patch_for_together(agent.llm)
-except Exception as exc:
-    logger.warning("Together AI adapter patch failed: %s", exc)
-
-try:
-    from src.deepseek_adapter import patch_for_deepseek
-    patch_for_deepseek(agent.llm)
-except Exception as exc:
-    logger.warning("DeepSeek adapter patch failed: %s", exc)
-
+# Phase 2c v2 Stage A.8 (2026-05-11): nvidia/foundry/together/deepseek legacy
+# adapters DELETED — those 4 providers route through the MLflow AI Gateway
+# exclusively. Kimi + Alibaba keep their legacy adapters because their
+# upstream APIs are currently broken (Moonshot 404 / Alibaba billing); the
+# `DAPR_AGENT_PY_GATEWAY_<PROVIDER>` flag stays off so traffic falls through
+# to legacy.
 try:
     from src.alibaba_adapter import patch_for_alibaba
     patch_for_alibaba(agent.llm)
