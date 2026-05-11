@@ -151,18 +151,14 @@ def _init_mlflow_destination() -> None:
 
     try:
         import mlflow
-        from mlflow.tracing.destination import MlflowExperiment
+        from mlflow.entities.trace_location import MlflowExperimentLocation
     except Exception as exc:  # noqa: BLE001
         logger.info("[Tracing] mlflow SDK unavailable; MLflow destination skipped (%s)", exc)
         return
 
     try:
-        mlflow.tracing.set_destination(
-            MlflowExperiment(
-                experiment_id=experiment_id,
-                tracking_uri=tracking_uri,
-            )
-        )
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.tracing.set_destination(MlflowExperimentLocation(experiment_id=experiment_id))
         logger.info(
             "[Tracing] MLflow destination set: experiment_id=%s tracking_uri=%s",
             experiment_id,
