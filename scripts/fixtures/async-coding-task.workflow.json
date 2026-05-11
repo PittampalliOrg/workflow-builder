@@ -8,7 +8,7 @@
       "name": "async-coding-task",
       "version": "1.0.0",
       "title": "Async Coding Task",
-      "summary": "Devin / Codex / Sweep / GitHub Copilot Coding Agent shape. Single async loop: clone -> plan -> optional human approval gate -> implement -> verify -> (optional) push branch -> (optional) open draft PR. Parameterized by `mode` (implement/bugfix/refactor/test-gen), `approval` (never/plan/always), `verify` (test/build/none), and `output` (pr/branch/summary)."
+      "summary": "Devin / Codex / Sweep / GitHub Copilot Coding Agent shape. Single async loop: clone -> plan -> optional human approval gate -> implement -> verify -> (optional) push branch -> (optional) open draft PR. Parameterized by `mode` (implement/bugfix/refactor/test-gen), `approval` (never/plan/always), `verify` (test/build/none), and `output` (pr/branch/summary). For `output: pr` or `branch`, set `githubConnection` to the external_id of a GitHub connection in your project — function-router decrypts it and injects GITHUB_TOKEN into the workspace shell."
     },
     "input": {
       "schema": {
@@ -65,9 +65,9 @@
             },
             "githubConnection": {
               "type": "string",
-              "title": "GitHub connection alias",
-              "description": "Project-level app_connection external_id for GitHub OAuth. Required when output is `branch` or `pr`.",
-              "default": "github"
+              "title": "GitHub connection external_id",
+              "description": "Project-level app_connection external_id (looks like `conn_...`). Required when output is `branch` or `pr`. Works with OAuth or SECRET_TEXT (PAT) GitHub connections — function-router decrypts whichever the user has and injects GITHUB_TOKEN into the workspace shell.",
+              "default": ""
             }
           },
           "required": ["repoUrl", "task"]
@@ -251,10 +251,8 @@
           "if": "${ (.trigger.output == \"pr\" or .trigger.output == \"branch\") and (.implement_step.data.content // \"\") != \"\" }",
           "call": "workspace/command",
           "with": {
+            "connectionExternalId": "${ .trigger.githubConnection }",
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
-            "auth": {
-              "connectionId": "${ .connections[.trigger.githubConnection] }"
-            },
             "timeoutMs": 120000,
             "command": "${ \"set -eu\\ncd /sandbox/repo\\nBRANCH=$(git rev-parse --abbrev-ref HEAD)\\nREMOTE=$(echo \" + .trigger.repoUrl + \" | sed 's|https://|https://x-access-token:${GITHUB_TOKEN}@|')\\ngit push \\\"$REMOTE\\\" \\\"$BRANCH\\\"\\necho PUSHED=$BRANCH\" }"
           },
@@ -266,27 +264,40 @@
         }
       },
       {
-        "open_pr": {
+        "lookup_repo_id": {
           "if": "${ .trigger.output == \"pr\" and (.push_branch.data.result.exitCode // 1) == 0 }",
-          "call": "system/http-request",
+          "call": "github/raw_graphql_query",
           "with": {
-            "url": "${ \"https://api.github.com/repos/\" + (.trigger.repoUrl | ltrimstr(\"https://github.com/\") | ltrimstr(\"http://github.com/\") | rtrimstr(\".git\")) + \"/pulls\" }",
-            "method": "POST",
-            "auth": {
-              "connectionId": "${ .connections[.trigger.githubConnection] }"
-            },
-            "headers": {
-              "Accept": "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28"
-            },
-            "body": {
-              "title": "${ \"[agent] \" + ((.trigger.task | split(\"\\n\")[0])[0:80]) }",
-              "head": "${ .push_branch.branch }",
-              "base": "${ .trigger.baseBranch // \"main\" }",
-              "body": "${ \"Automated PR by workflow-builder/async-coding-task.\\n\\n## Task\\n\\n\" + .trigger.task + \"\\n\\n## Plan\\n\\n\" + .plan_step.data.content + \"\\n\\n## Implementation summary\\n\\n\" + .implement_step.data.content + \"\\n\\n## Verification\\n\\n```\\n\" + (.verify_step.data.result.stdout // \"(skipped)\") + \"\\n```\" }",
-              "draft": true
-            },
-            "timeoutMs": 30000
+            "connectionExternalId": "${ .trigger.githubConnection }",
+            "metadata": { "pieceName": "github", "actionName": "rawGraphqlQuery" },
+            "input": {
+              "query": "query ($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id } }",
+              "variables": {
+                "owner": "${ .trigger.repoUrl | ltrimstr(\"https://github.com/\") | ltrimstr(\"http://github.com/\") | rtrimstr(\".git\") | split(\"/\") | .[0] }",
+                "name":  "${ .trigger.repoUrl | ltrimstr(\"https://github.com/\") | ltrimstr(\"http://github.com/\") | rtrimstr(\".git\") | split(\"/\") | .[1] }"
+              }
+            }
+          }
+        }
+      },
+      {
+        "open_pr": {
+          "if": "${ .trigger.output == \"pr\" and (.push_branch.data.result.exitCode // 1) == 0 and (.lookup_repo_id.body.data.repository.id // \"\") != \"\" }",
+          "call": "github/raw_graphql_query",
+          "with": {
+            "connectionExternalId": "${ .trigger.githubConnection }",
+            "metadata": { "pieceName": "github", "actionName": "rawGraphqlQuery" },
+            "input": {
+              "query": "mutation ($repoId: ID!, $baseRef: String!, $headRef: String!, $title: String!, $body: String!, $draft: Boolean!) { createPullRequest(input: { repositoryId: $repoId, baseRefName: $baseRef, headRefName: $headRef, title: $title, body: $body, draft: $draft }) { pullRequest { url number } } }",
+              "variables": {
+                "repoId":  "${ .lookup_repo_id.body.data.repository.id }",
+                "baseRef": "${ .trigger.baseBranch // \"main\" }",
+                "headRef": "${ .push_branch.branch }",
+                "title":   "${ \"[agent] \" + ((.trigger.task | split(\"\\n\")[0])[0:80]) }",
+                "body":    "${ \"Automated PR by workflow-builder/async-coding-task.\\n\\n## Task\\n\\n\" + .trigger.task + \"\\n\\n## Plan\\n\\n\" + .plan_step.data.content + \"\\n\\n## Implementation summary\\n\\n\" + .implement_step.data.content + \"\\n\\n## Verification\\n\\n```\\n\" + (.verify_step.data.result.stdout // \"(skipped)\") + \"\\n```\" }",
+                "draft":   true
+              }
+            }
           }
         }
       }
@@ -299,7 +310,8 @@
         "plan": "${ .plan_step.data.content }",
         "implementation": "${ .implement_step.data.content // null }",
         "verify_passed": "${ ((.verify_step.data.result.exitCode // 0) == 0) and (.trigger.verify != \"none\") }",
-        "pr_url": "${ .open_pr.data.html_url // null }",
+        "pr_url": "${ .open_pr.body.data.createPullRequest.pullRequest.url // null }",
+        "pr_number": "${ .open_pr.body.data.createPullRequest.pullRequest.number // null }",
         "pushed_branch": "${ .push_branch.branch // null }"
       }
     }
@@ -397,16 +409,23 @@
         "taskConfig": { "call": "workspace/command" } }
     },
     {
-      "id": "open_pr",
+      "id": "lookup_repo_id",
       "type": "call",
       "position": { "x": 250, "y": 1400 },
-      "data": { "label": "Open Draft PR", "type": "call", "status": "idle", "enabled": true,
-        "taskConfig": { "call": "system/http-request" } }
+      "data": { "label": "Look up repo node id (GraphQL)", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "github/raw_graphql_query" } }
+    },
+    {
+      "id": "open_pr",
+      "type": "call",
+      "position": { "x": 250, "y": 1550 },
+      "data": { "label": "Open Draft PR (GraphQL)", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "github/raw_graphql_query" } }
     },
     {
       "id": "__end__",
       "type": "end",
-      "position": { "x": 250, "y": 1550 },
+      "position": { "x": 250, "y": 1700 },
       "data": { "label": "End", "type": "end", "status": "idle", "enabled": true }
     }
   ],
@@ -419,7 +438,8 @@
     { "id": "implement_step->verify_step", "source": "implement_step", "target": "verify_step" },
     { "id": "verify_step->approval_pr", "source": "verify_step", "target": "approval_pr" },
     { "id": "approval_pr->push_branch", "source": "approval_pr", "target": "push_branch" },
-    { "id": "push_branch->open_pr", "source": "push_branch", "target": "open_pr" },
+    { "id": "push_branch->lookup_repo_id", "source": "push_branch", "target": "lookup_repo_id" },
+    { "id": "lookup_repo_id->open_pr", "source": "lookup_repo_id", "target": "open_pr" },
     { "id": "open_pr->__end__", "source": "open_pr", "target": "__end__" }
   ]
 }

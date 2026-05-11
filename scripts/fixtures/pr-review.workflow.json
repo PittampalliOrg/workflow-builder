@@ -8,7 +8,7 @@
       "name": "pr-review",
       "version": "1.0.0",
       "title": "PR Review",
-      "summary": "Sweep / GitHub Copilot Coding Agent review shape. Fetch a PR's metadata + diff, run a reviewer agent over the diff (optionally with the repo cloned for deeper exploration), produce a markdown review with a parsed VERDICT line, and optionally post it as a single PR comment. Persists the review as a workflow_artifact (slot=primary) so it renders front-and-centre on the run-detail Overview tab."
+      "summary": "Sweep / GitHub Copilot Coding Agent review shape. Fetch a PR's metadata + files-changed via the GitHub piece (uses the project's GitHub OAuth connection), run a reviewer agent over the summary, produce a markdown review with a parsed VERDICT line, and optionally post it as a single PR comment. Persists the review as a workflow_artifact (slot=primary) so it renders front-and-centre on the run-detail Overview tab."
     },
     "input": {
       "schema": {
@@ -16,12 +16,17 @@
         "document": {
           "type": "object",
           "properties": {
-            "repoUrl": {
+            "repoOwner": {
               "type": "string",
-              "format": "uri",
-              "title": "Repository URL",
-              "description": "HTTPS clone URL (private repos require the project's GitHub connection).",
-              "default": "https://github.com/PittampalliOrg/workflow-builder.git"
+              "title": "Repository owner",
+              "description": "GitHub user or org that owns the repo (e.g. 'PittampalliOrg').",
+              "default": "PittampalliOrg"
+            },
+            "repoName": {
+              "type": "string",
+              "title": "Repository name",
+              "description": "Repository name without the .git suffix (e.g. 'workflow-builder').",
+              "default": "workflow-builder"
             },
             "prNumber": {
               "type": "integer",
@@ -33,100 +38,54 @@
               "title": "Optional review focus",
               "description": "Appended verbatim to the reviewer prompt. E.g. 'security implications of the new env var' or 'performance under load'."
             },
-            "deepDive": {
-              "type": "boolean",
-              "default": false,
-              "title": "Deep dive (clone repo)",
-              "description": "Off = review the diff only (fast, no sandbox). On = also clone the repo + check out the PR so the agent can grep / read full context."
-            },
             "postComment": {
               "type": "boolean",
               "default": false,
               "title": "Post as PR comment",
-              "description": "When true, posts the review as a single PR comment via the GitHub API. Requires githubConnection."
+              "description": "When true, posts the review as a single PR comment via the GitHub API."
             },
             "githubConnection": {
               "type": "string",
-              "title": "GitHub connection alias",
-              "description": "Project-level app_connection external_id for GitHub OAuth.",
-              "default": "github"
+              "title": "GitHub connection external_id",
+              "description": "The app_connection external_id for your project's GitHub connection (looks like `conn_...`). Find it in /workspaces/<slug>/connections.",
+              "default": ""
             }
           },
-          "required": ["repoUrl", "prNumber"]
+          "required": ["repoOwner", "repoName", "prNumber", "githubConnection"]
         }
       }
     },
     "do": [
       {
         "fetch_pr": {
-          "call": "system/http-request",
+          "call": "github/get_issue_information",
           "with": {
-            "url": "${ \"https://api.github.com/repos/\" + (.trigger.repoUrl | ltrimstr(\"https://github.com/\") | ltrimstr(\"http://github.com/\") | rtrimstr(\".git\")) + \"/pulls/\" + (.trigger.prNumber | tostring) }",
-            "method": "GET",
-            "auth": {
-              "connectionId": "${ .connections[.trigger.githubConnection] }"
-            },
-            "headers": {
-              "Accept": "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28"
-            },
-            "timeoutMs": 30000
-          }
-        }
-      },
-      {
-        "fetch_diff": {
-          "call": "system/http-request",
-          "with": {
-            "url": "${ \"https://api.github.com/repos/\" + (.trigger.repoUrl | ltrimstr(\"https://github.com/\") | ltrimstr(\"http://github.com/\") | rtrimstr(\".git\")) + \"/pulls/\" + (.trigger.prNumber | tostring) }",
-            "method": "GET",
-            "auth": {
-              "connectionId": "${ .connections[.trigger.githubConnection] }"
-            },
-            "headers": {
-              "Accept": "application/vnd.github.v3.diff",
-              "X-GitHub-Api-Version": "2022-11-28"
-            },
-            "timeoutMs": 60000
-          }
-        }
-      },
-      {
-        "workspace_profile": {
-          "if": "${ .trigger.deepDive == true }",
-          "call": "workspace/profile",
-          "with": {
-            "rootPath": "/sandbox",
-            "sandboxTemplate": "dapr-agent",
-            "ttlSeconds": 3600,
-            "keepAfterRun": true,
-            "managedBy": "workflow-builder:sandbox-policy",
-            "name": "pr_review_workspace",
-            "enabledTools": [
-              "execute_command",
-              "read_file",
-              "list_files",
-              "glob_files",
-              "grep_search",
-              "file_stat"
-            ],
-            "sandboxPolicy": {
-              "keepAfterRun": true,
-              "mode": "per-run",
-              "template": "dapr-agent",
-              "ttlSeconds": 3600
+            "connectionExternalId": "${ .trigger.githubConnection }",
+            "metadata": { "pieceName": "github", "actionName": "getIssueInformation" },
+            "input": {
+              "repository": {
+                "owner": "${ .trigger.repoOwner }",
+                "repo": "${ .trigger.repoName }"
+              },
+              "issue_number": "${ .trigger.prNumber }"
             }
           }
         }
       },
       {
-        "clone_pr": {
-          "if": "${ .trigger.deepDive == true }",
-          "call": "workspace/command",
+        "fetch_files": {
+          "call": "github/raw_graphql_query",
           "with": {
-            "workspaceRef": "${ .workspace_profile.workspaceRef }",
-            "timeoutMs": 600000,
-            "command": "${ \"set -eu\\nTARGET=/sandbox/repo\\nrm -rf \\\"$TARGET\\\"\\ngit clone --depth 100 \" + .trigger.repoUrl + \" \\\"$TARGET\\\"\\ncd \\\"$TARGET\\\"\\ngit fetch origin pull/\" + (.trigger.prNumber | tostring) + \"/head:pr-review\\ngit checkout pr-review\\necho HEAD_SHA=$(git rev-parse HEAD)\\necho FILES_CHANGED=$(git diff --name-only \" + (.fetch_pr.data.base.sha // \"HEAD~1\") + \"...HEAD | wc -l)\" }"
+            "connectionExternalId": "${ .trigger.githubConnection }",
+            "metadata": { "pieceName": "github", "actionName": "rawGraphqlQuery" },
+            "input": {
+              "query": "query ($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { title body baseRefName headRefName mergeable additions deletions changedFiles files(first: 100) { nodes { path additions deletions changeType } } commits(last: 5) { nodes { commit { messageHeadline messageBody } } } } } }",
+              "variables": {
+                "owner": "${ .trigger.repoOwner }",
+                "repo": "${ .trigger.repoName }",
+                "number": "${ .trigger.prNumber }"
+              }
+            }
           }
         }
       },
@@ -140,32 +99,25 @@
                 "slug": "deepseek-v4-pro-swebench"
               },
               "overrides": {
-                "cwd": "${ if .trigger.deepDive == true then \"/sandbox/repo\" else \"/tmp\" end }",
-                "maxTurns": 15,
-                "timeoutMinutes": 12
+                "cwd": "/tmp",
+                "maxTurns": 12,
+                "timeoutMinutes": 10
               },
-              "prompt": "${ \"You are reviewing pull request #\" + (.trigger.prNumber | tostring) + \" on \" + .trigger.repoUrl + \".\\n\\nPR TITLE: \" + (.fetch_pr.data.title // \"(no title)\") + \"\\nPR AUTHOR: \" + (.fetch_pr.data.user.login // \"unknown\") + \"\\nPR DESCRIPTION:\\n\" + (.fetch_pr.data.body // \"(no description)\") + \"\\n\\nThis is a READ-ONLY review. DO NOT modify, create, or delete any files.\" + (if .trigger.deepDive == true then \" The PR branch is checked out at /sandbox/repo; you may use list_files / read_file / grep_search / execute_command (read-only shell) to explore beyond the diff.\" else \" You only have the diff below; no repo is cloned.\" end) + \"\\n\\nDIFF (unified format):\\n\\n\" + .fetch_diff.data + \"\\n\\nProduce a markdown review with these sections:\\n\\n1. **Summary** — one paragraph: what this PR does and why.\\n2. **Risks & concerns** — concrete issues: correctness bugs, security, perf regressions, missing tests. Cite line numbers from the diff. If none, say `(none)`.\\n3. **Style & maintainability** — naming, abstractions, consistency with the rest of the codebase. Be brief.\\n4. **Suggested follow-ups** — non-blocking improvements.\\n\\nEnd with EXACTLY one final line:\\n`VERDICT: approve` | `VERDICT: request-changes` | `VERDICT: comment-only`\" + (if (.trigger.focus // \"\") != \"\" then \"\\n\\nADDITIONAL FOCUS REQUESTED BY REVIEWER: \" + .trigger.focus else \"\" end) }"
+              "prompt": "${ \"You are reviewing pull request #\" + (.trigger.prNumber | tostring) + \" on https://github.com/\" + .trigger.repoOwner + \"/\" + .trigger.repoName + \".\\n\\nPR TITLE: \" + (.fetch_pr.body.title // \"(no title)\") + \"\\nPR AUTHOR: \" + (.fetch_pr.body.user.login // \"unknown\") + \"\\nBASE BRANCH: \" + (.fetch_files.body.data.repository.pullRequest.baseRefName // \"main\") + \"\\nHEAD BRANCH: \" + (.fetch_files.body.data.repository.pullRequest.headRefName // \"\") + \"\\nMERGEABLE: \" + (.fetch_files.body.data.repository.pullRequest.mergeable // \"UNKNOWN\") + \"\\nCHANGES: +\" + ((.fetch_files.body.data.repository.pullRequest.additions // 0) | tostring) + \" / -\" + ((.fetch_files.body.data.repository.pullRequest.deletions // 0) | tostring) + \" across \" + ((.fetch_files.body.data.repository.pullRequest.changedFiles // 0) | tostring) + \" file(s).\\n\\nPR DESCRIPTION:\\n\" + (.fetch_pr.body.body // \"(no description)\") + \"\\n\\nFILES CHANGED:\\n\" + ((.fetch_files.body.data.repository.pullRequest.files.nodes // []) | map(\"- \" + .path + \"  (+\" + (.additions|tostring) + \" / -\" + (.deletions|tostring) + \", \" + .changeType + \")\") | join(\"\\n\")) + \"\\n\\nRECENT COMMITS:\\n\" + ((.fetch_files.body.data.repository.pullRequest.commits.nodes // []) | map(\"- \" + .commit.messageHeadline) | join(\"\\n\")) + \"\\n\\nThis is a READ-ONLY review. DO NOT modify, create, or delete any files. You only have the metadata + files-changed summary above (no line-by-line diff).\\n\\nProduce a markdown review with these sections:\\n\\n1. **Summary** — one paragraph: what this PR appears to do, based on title/body/file list.\\n2. **Risks & concerns** — issues you can infer from the file list and commit messages: high-risk file paths touched (auth, migrations, secrets handling), suspiciously large changes, missing tests for changed code. If none, say `(none)`.\\n3. **Style & maintainability** — observations from the file list (e.g. inconsistent naming, churn in one area).\\n4. **Suggested follow-ups** — non-blocking improvements.\\n\\nEnd with EXACTLY one final line:\\n`VERDICT: approve` | `VERDICT: request-changes` | `VERDICT: comment-only`\" + (if (.trigger.focus // \"\") != \"\" then \"\\n\\nADDITIONAL FOCUS REQUESTED BY REVIEWER: \" + .trigger.focus else \"\" end) }"
             },
             "mode": "execute_direct",
-            "cwd": "${ if .trigger.deepDive == true then \"/sandbox/repo\" else \"/tmp\" end }",
-            "sandboxName": "${ .workspace_profile.sandboxName // \"local\" }",
-            "workspaceRef": "${ .workspace_profile.workspaceRef // \"local\" }",
-            "sandboxPolicy": {
-              "keepAfterRun": false,
-              "mode": "per-run",
-              "template": "dapr-agent",
-              "ttlSeconds": 3600
-            }
+            "workspaceRef": "local",
+            "sandboxName": "local"
           },
           "artifacts": [
             {
               "kind": "markdown",
               "slot": "primary",
               "title": "PR review",
-              "description": "${ .trigger.repoUrl + \" #\" + (.trigger.prNumber | tostring) + \" — \" + (.fetch_pr.data.title // \"\") }",
+              "description": "${ \"https://github.com/\" + .trigger.repoOwner + \"/\" + .trigger.repoName + \" #\" + (.trigger.prNumber | tostring) + \" — \" + (.fetch_pr.body.title // \"\") }",
               "from": "${ .data.content }",
               "contentType": "text/markdown",
-              "metadata": "${ { repoUrl: .trigger.repoUrl, prNumber: .trigger.prNumber, prTitle: .fetch_pr.data.title, prAuthor: .fetch_pr.data.user.login, deepDive: .trigger.deepDive, focus: (.trigger.focus // \"\"), turn: .data.turn, model: .data.modelSpec } }"
+              "metadata": "${ { repoOwner: .trigger.repoOwner, repoName: .trigger.repoName, prNumber: .trigger.prNumber, prTitle: .fetch_pr.body.title, prAuthor: .fetch_pr.body.user.login, focus: (.trigger.focus // \"\"), turn: .data.turn, model: .data.modelSpec } }"
             }
           ]
         }
@@ -173,35 +125,31 @@
       {
         "post_comment": {
           "if": "${ .trigger.postComment == true and (.review_step.data.content // \"\") != \"\" }",
-          "call": "system/http-request",
+          "call": "github/create_comment_on_a_issue",
           "with": {
-            "url": "${ .fetch_pr.data.comments_url }",
-            "method": "POST",
-            "auth": {
-              "connectionId": "${ .connections[.trigger.githubConnection] }"
-            },
-            "headers": {
-              "Accept": "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28"
-            },
-            "body": {
-              "body": "${ \"🤖 **Automated review by workflow-builder/pr-review**\\n\\n\" + .review_step.data.content }"
-            },
-            "timeoutMs": 30000
+            "connectionExternalId": "${ .trigger.githubConnection }",
+            "metadata": { "pieceName": "github", "actionName": "createCommentOnAIssue" },
+            "input": {
+              "repository": {
+                "owner": "${ .trigger.repoOwner }",
+                "repo": "${ .trigger.repoName }"
+              },
+              "issue_number": "${ .trigger.prNumber }",
+              "comment": "${ \"🤖 **Automated review by workflow-builder/pr-review**\\n\\n\" + .review_step.data.content }"
+            }
           }
         }
       }
     ],
     "output": {
       "as": {
-        "repo": "${ .trigger.repoUrl }",
+        "repo": "${ \"https://github.com/\" + .trigger.repoOwner + \"/\" + .trigger.repoName }",
         "pr_number": "${ .trigger.prNumber }",
-        "pr_title": "${ .fetch_pr.data.title // null }",
-        "pr_author": "${ .fetch_pr.data.user.login // null }",
+        "pr_title": "${ .fetch_pr.body.title // null }",
+        "pr_author": "${ .fetch_pr.body.user.login // null }",
         "review": "${ .review_step.data.content }",
         "verdict": "${ ((.review_step.data.content // \"\") | split(\"\\n\") | map(select(startswith(\"VERDICT:\"))) | first // \"VERDICT: comment-only\") | split(\":\") | .[1:] | join(\":\") | ltrimstr(\" \") | split(\"\\r\") | first }",
-        "comment_url": "${ .post_comment.data.html_url // null }",
-        "deep_dive": "${ .trigger.deepDive // false }"
+        "comment_posted": "${ .post_comment.data != null }"
       }
     }
   },
@@ -223,14 +171,14 @@
               "document": {
                 "type": "object",
                 "properties": {
-                  "repoUrl": { "type": "string", "format": "uri", "title": "Repository URL", "default": "https://github.com/PittampalliOrg/workflow-builder.git" },
+                  "repoOwner": { "type": "string", "title": "Repository owner", "default": "PittampalliOrg" },
+                  "repoName": { "type": "string", "title": "Repository name", "default": "workflow-builder" },
                   "prNumber": { "type": "integer", "minimum": 1, "title": "PR number" },
                   "focus": { "type": "string", "title": "Optional review focus" },
-                  "deepDive": { "type": "boolean", "default": false, "title": "Deep dive (clone repo)" },
                   "postComment": { "type": "boolean", "default": false, "title": "Post as PR comment" },
-                  "githubConnection": { "type": "string", "default": "github", "title": "GitHub connection alias" }
+                  "githubConnection": { "type": "string", "title": "GitHub connection external_id", "default": "" }
                 },
-                "required": ["repoUrl", "prNumber"]
+                "required": ["repoOwner", "repoName", "prNumber", "githubConnection"]
               }
             }
           }
@@ -241,34 +189,20 @@
       "id": "fetch_pr",
       "type": "call",
       "position": { "x": 250, "y": 200 },
-      "data": { "label": "Fetch PR Metadata", "type": "call", "status": "idle", "enabled": true,
-        "taskConfig": { "call": "system/http-request" } }
+      "data": { "label": "Fetch PR metadata", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "github/get_issue_information" } }
     },
     {
-      "id": "fetch_diff",
+      "id": "fetch_files",
       "type": "call",
       "position": { "x": 250, "y": 350 },
-      "data": { "label": "Fetch PR Diff", "type": "call", "status": "idle", "enabled": true,
-        "taskConfig": { "call": "system/http-request" } }
-    },
-    {
-      "id": "workspace_profile",
-      "type": "call",
-      "position": { "x": 250, "y": 500 },
-      "data": { "label": "Workspace (deep dive)", "type": "call", "status": "idle", "enabled": true,
-        "taskConfig": { "call": "workspace/profile" } }
-    },
-    {
-      "id": "clone_pr",
-      "type": "call",
-      "position": { "x": 250, "y": 650 },
-      "data": { "label": "Clone + Checkout PR", "type": "call", "status": "idle", "enabled": true,
-        "taskConfig": { "call": "workspace/command" } }
+      "data": { "label": "Fetch files changed (GraphQL)", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "github/raw_graphql_query" } }
     },
     {
       "id": "review_step",
       "type": "agent",
-      "position": { "x": 250, "y": 800 },
+      "position": { "x": 250, "y": 500 },
       "data": { "label": "Review", "type": "agent", "status": "idle", "enabled": true,
         "agent": { "id": "agnt_deepseek_v4_pro_swe_smoke", "slug": "deepseek-v4-pro-swebench", "runtime": "dapr-agent-py" },
         "taskConfig": { "call": "durable/run" } }
@@ -276,23 +210,21 @@
     {
       "id": "post_comment",
       "type": "call",
-      "position": { "x": 250, "y": 950 },
-      "data": { "label": "Post PR Comment", "type": "call", "status": "idle", "enabled": true,
-        "taskConfig": { "call": "system/http-request" } }
+      "position": { "x": 250, "y": 650 },
+      "data": { "label": "Post PR comment", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "github/create_comment_on_a_issue" } }
     },
     {
       "id": "__end__",
       "type": "end",
-      "position": { "x": 250, "y": 1100 },
+      "position": { "x": 250, "y": 800 },
       "data": { "label": "End", "type": "end", "status": "idle", "enabled": true }
     }
   ],
   "edges": [
     { "id": "__start__->fetch_pr", "source": "__start__", "target": "fetch_pr" },
-    { "id": "fetch_pr->fetch_diff", "source": "fetch_pr", "target": "fetch_diff" },
-    { "id": "fetch_diff->workspace_profile", "source": "fetch_diff", "target": "workspace_profile" },
-    { "id": "workspace_profile->clone_pr", "source": "workspace_profile", "target": "clone_pr" },
-    { "id": "clone_pr->review_step", "source": "clone_pr", "target": "review_step" },
+    { "id": "fetch_pr->fetch_files", "source": "fetch_pr", "target": "fetch_files" },
+    { "id": "fetch_files->review_step", "source": "fetch_files", "target": "review_step" },
     { "id": "review_step->post_comment", "source": "review_step", "target": "post_comment" },
     { "id": "post_comment->__end__", "source": "post_comment", "target": "__end__" }
   ]

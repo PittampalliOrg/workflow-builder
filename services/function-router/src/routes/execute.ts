@@ -1068,6 +1068,54 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               }
             }
 
+            // Credential resolution for workspace/command operations.
+            // Mirrors the clone path: if a github connectionExternalId is present
+            // (top-level body.connection_external_id OR `auth: '{{connections[...]}}'`
+            // template inside the input), fetch the connection's decrypted token
+            // and inject it as GITHUB_TOKEN into args.env so shell scripts can use
+            // `https://x-access-token:${GITHUB_TOKEN}@github.com/...` URLs without
+            // the workflow author plumbing the token by hand.
+            if (toolId === "command" && pluginId === "workspace") {
+              const existingEnv =
+                args.env &&
+                typeof args.env === "object" &&
+                !Array.isArray(args.env)
+                  ? (args.env as Record<string, string>)
+                  : undefined;
+              if (!existingEnv?.GITHUB_TOKEN) {
+                const authValue = (body.input as Record<string, unknown>)?.auth;
+                const parsedConnectionId =
+                  parseConnectionExternalIdFromAuthTemplate(authValue) ||
+                  body.connection_external_id;
+                if (parsedConnectionId) {
+                  try {
+                    const credResult = await fetchCredentialsWithAudit(
+                      "github",
+                      body.integrations,
+                      body.db_execution_id
+                        ? {
+                            executionId: body.db_execution_id,
+                            nodeId: body.node_id,
+                          }
+                        : undefined,
+                      parsedConnectionId,
+                    );
+                    if (credResult.credentials.GITHUB_TOKEN) {
+                      args.env = {
+                        ...(existingEnv ?? {}),
+                        GITHUB_TOKEN: credResult.credentials.GITHUB_TOKEN,
+                      };
+                    }
+                  } catch (err) {
+                    console.warn(
+                      "[Execute Route] GitHub credential resolution failed for workspace/command:",
+                      err,
+                    );
+                  }
+                }
+              }
+            }
+
             const isAgentRun = toolId === "run";
             const isPlan = toolId === "plan";
             const isClaudePlan = toolId === "claude-plan";
