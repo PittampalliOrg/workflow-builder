@@ -25,7 +25,6 @@
 		isLoading?: boolean;
 		error?: string | null;
 		mlflowHref?: string | null;
-		phoenixHref?: string | null;
 		legacyTraceHref?: string | null;
 		fullTraceHref?: string | null;
 		onRefresh?: () => void;
@@ -36,7 +35,6 @@
 		isLoading = false,
 		error = null,
 		mlflowHref = null,
-		phoenixHref = null,
 		legacyTraceHref = null,
 		fullTraceHref = null,
 		onRefresh = () => {}
@@ -174,7 +172,7 @@
 	const activeServiceFilter = $derived(store.serviceFilter);
 	const activeTraceFilter = $derived(store.traceFilter);
 	const activeSelectedDecision = $derived(store.selectedDecision);
-	const legacyExternalTraceHref = $derived(legacyTraceHref ?? phoenixHref);
+	const legacyExternalTraceHref = $derived(legacyTraceHref);
 
 	const selectedSpan = $derived.by(() => {
 		if (!store.selectedSpanRef) return null;

@@ -2976,7 +2976,7 @@
 					mlflowHref={primaryInvestigationTraceId
 						? `/api/observability/mlflow/traces/${encodeURIComponent(primaryInvestigationTraceId)}`
 						: `/api/observability/mlflow/sessions/${encodeURIComponent(executionId)}`}
-					legacyTraceHref={`/api/observability/phoenix/sessions/${encodeURIComponent(executionId)}`}
+					
 					onRefresh={() => {
 						investigationFetched = false;
 						fetchInvestigation();

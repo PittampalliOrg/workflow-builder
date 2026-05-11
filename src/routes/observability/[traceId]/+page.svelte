@@ -65,7 +65,7 @@
 			<InvestigationStudio
 				{payload}
 				mlflowHref={traceId ? `/api/observability/mlflow/traces/${encodeURIComponent(traceId)}` : null}
-				legacyTraceHref={payload.summary.sessionId ? `/api/observability/phoenix/sessions/${encodeURIComponent(payload.summary.sessionId)}` : null}
+				
 				onRefresh={loadInvestigation}
 			/>
 		{/if}

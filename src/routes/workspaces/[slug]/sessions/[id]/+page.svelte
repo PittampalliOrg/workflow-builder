@@ -1358,18 +1358,10 @@
 							Open in MLflow <ExternalLink class="size-3" />
 						</a>
 						<a
-							href={`/api/observability/phoenix/sessions/${encodeURIComponent(session.id)}`}
-							target="_blank"
-							rel="noreferrer"
-							class="text-primary hover:underline flex items-center gap-1"
-						>
-							Legacy Phoenix <ExternalLink class="size-3" />
-						</a>
-						<a
 							href="/observability?sessionId={session.id}"
 							class="text-primary hover:underline block"
 						>
-							Trace explorer ↗
+							Trace explorer (ClickHouse) ↗
 						</a>
 						<div class="text-[10px] text-muted-foreground pt-1">
 							Spans emitted by the durable agent runtime — LLM calls, tool calls,

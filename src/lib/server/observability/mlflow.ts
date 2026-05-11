@@ -97,3 +97,52 @@ export async function publicMlflowTraceRedirectUrl(
 	const experimentId = await getMlflowTraceExperimentId();
 	return publicMlflowTraceSearchUrl(experimentId, filter);
 }
+
+/**
+ * Resolve a workflow execution id to an MLflow trace_id by searching the
+ * configured trace experiment for the most recent trace tagged with
+ * `workflow.execution.id = <executionId>`. Returns the MLflow OSS UI URL for
+ * that trace, or null if no match (or MLflow is unconfigured / unreachable).
+ *
+ * Uses MLflow 3.x's `POST /api/3.0/mlflow/traces/search` because the older
+ * `/api/2.0/mlflow/traces` endpoint only accepts experiment-scoped filters
+ * via the `locations` payload, not `tag.X` predicates.
+ */
+export async function resolveMlflowTraceUrlForExecution(
+	executionId: string
+): Promise<string | null> {
+	const tracking = trackingUri();
+	const experimentId = await getMlflowTraceExperimentId();
+	if (!tracking || !experimentId) return null;
+
+	const rawTimeoutMs = Number(env.MLFLOW_REQUEST_TIMEOUT_MS ?? 3000);
+	const timeoutMs = Number.isFinite(rawTimeoutMs) ? Math.max(500, rawTimeoutMs) : 3000;
+
+	try {
+		const res = await fetch(`${tracking}/api/3.0/mlflow/traces/search`, {
+			method: 'POST',
+			signal: AbortSignal.timeout(timeoutMs),
+			headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				locations: [{ type: 'MLFLOW_EXPERIMENT', mlflow_experiment_id: experimentId }],
+				filter: `tag.\`workflow.execution.id\` = '${executionId.replace(/'/g, "''")}'`,
+				max_results: 1,
+				order_by: [{ field_name: 'timestamp_ms', ascending: false }]
+			})
+		});
+		if (!res.ok) return null;
+		const payload = (await res.json()) as {
+			traces?: Array<{ trace_info?: { trace_id?: string }; trace_id?: string }>;
+		};
+		const trace = payload.traces?.[0];
+		const traceId = trace?.trace_info?.trace_id ?? trace?.trace_id;
+		if (!traceId) return null;
+		return publicMlflowTraceSearchUrl(experimentId, { traceId });
+	} catch (err) {
+		console.warn(
+			'[mlflow] execution trace lookup failed:',
+			err instanceof Error ? err.message : err
+		);
+		return null;
+	}
+}

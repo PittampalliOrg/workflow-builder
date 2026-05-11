@@ -12,7 +12,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _TRACING_INITIALIZED = False
-PHOENIX_SESSION_ATTRIBUTE = "session.id"
+SESSION_ID_ATTRIBUTE = "session.id"
 WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id"
 
 
@@ -118,13 +118,13 @@ class TraceContextFilter(logging.Filter):
                     record.trace_id = f"{ctx.trace_id:032x}"
                     record.span_id = f"{ctx.span_id:016x}"
             session_id = workflow_session_id(
-                ot_baggage.get_baggage(PHOENIX_SESSION_ATTRIBUTE)
+                ot_baggage.get_baggage(SESSION_ID_ATTRIBUTE)
                 or ot_baggage.get_baggage("sessionId")
                 or ot_baggage.get_baggage("session_id")
                 or ot_baggage.get_baggage(WORKFLOW_EXECUTION_ATTRIBUTE)
             )
             if session_id:
-                record.__dict__[PHOENIX_SESSION_ATTRIBUTE] = session_id
+                record.__dict__[SESSION_ID_ATTRIBUTE] = session_id
                 record.__dict__[WORKFLOW_EXECUTION_ATTRIBUTE] = session_id
         except Exception:
             pass
@@ -292,7 +292,7 @@ def extract_session_id(carrier: dict[str, Any] | None) -> str | None:
     explicit = workflow_session_id(
         carrier.get("sessionId")
         or carrier.get("session_id")
-        or carrier.get(PHOENIX_SESSION_ATTRIBUTE)
+        or carrier.get(SESSION_ID_ATTRIBUTE)
         or carrier.get("x-workflow-session-id")
     )
     if explicit:
@@ -301,7 +301,7 @@ def extract_session_id(carrier: dict[str, Any] | None) -> str | None:
     if isinstance(baggage, str):
         baggage_map = _parse_baggage_header(baggage)
         return workflow_session_id(
-            baggage_map.get(PHOENIX_SESSION_ATTRIBUTE)
+            baggage_map.get(SESSION_ID_ATTRIBUTE)
             or baggage_map.get(WORKFLOW_EXECUTION_ATTRIBUTE)
         )
     return None
@@ -311,7 +311,7 @@ def attach_workflow_session(span: Any, session_id: str | None) -> None:
     if not span or not session_id:
         return
     try:
-        span.set_attribute(PHOENIX_SESSION_ATTRIBUTE, session_id)
+        span.set_attribute(SESSION_ID_ATTRIBUTE, session_id)
         span.set_attribute(WORKFLOW_EXECUTION_ATTRIBUTE, session_id)
     except Exception:
         pass
