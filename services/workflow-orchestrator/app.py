@@ -3538,6 +3538,73 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
     }
 
 
+class ObservabilityPromptRegisterRequest(BaseModel):
+    """POST /api/v2/observability/prompts/register body.
+
+    Phase 3a of plan research-the-most-popular-stateful-hinton.md.
+    BFF calls this fire-and-forget after every prompt-preset
+    save/update; orchestrator wraps `mlflow.register_prompt(...)` so
+    the preset version lands in MLflow's Prompt Registry.
+    """
+
+    name: str = Field(..., description="Prompt name in MLflow's registry (e.g. preset.id)")
+    template: str = Field(..., description="The prompt template body")
+    commit_message: str | None = None
+    tags: dict[str, str] | None = None
+
+
+@app.post("/api/v2/observability/prompts/register")
+def post_observability_prompt_register(request: ObservabilityPromptRegisterRequest):
+    """
+    Register a prompt version in MLflow's Prompt Registry.
+
+    POST /api/v2/observability/prompts/register
+
+    Wraps `mlflow.register_prompt(name, template, commit_message, tags)`.
+    Returns the resulting PromptVersion's name + version + uri so the
+    BFF can stash the uri back into resource_prompt_versions when the
+    follow-up migration adds the column (Phase 3a v2).
+    """
+    try:
+        import mlflow  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "mlflow_sdk_unavailable", "error": str(exc)},
+        )
+    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+    if not tracking_uri:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "mlflow_tracking_uri_unset"},
+        )
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        pv = mlflow.register_prompt(
+            name=request.name,
+            template=request.template,
+            commit_message=request.commit_message,
+            tags=request.tags or None,
+        )
+        return {
+            "success": True,
+            "name": pv.name,
+            "version": pv.version,
+            "uri": pv.uri,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[observability/prompts/register] failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "mlflow_register_prompt_failed",
+                "error": str(exc),
+                "name": request.name,
+            },
+        )
+
+
 # --- Pub/Sub Subscription Routes ---
 
 @app.post("/subscriptions/agent-events")

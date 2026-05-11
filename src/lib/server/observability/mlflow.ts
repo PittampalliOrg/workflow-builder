@@ -205,3 +205,59 @@ export async function logTraceFeedback(args: {
 		return null;
 	}
 }
+
+/**
+ * Phase 3a of the MLflow 3.12 enhancement plan
+ * (research-the-most-popular-stateful-hinton.md). Register a prompt
+ * version in MLflow's Prompt Registry via the orchestrator's
+ * /api/v2/observability/prompts/register endpoint (which wraps
+ * mlflow.register_prompt).
+ *
+ * Fire-and-forget: returns the resulting PromptVersion or null on
+ * failure but never throws — caller (createPromptPreset /
+ * updatePromptPreset) shouldn't have its DB transaction torn down
+ * just because MLflow's prompt registry is briefly unreachable.
+ */
+export async function registerPromptInMlflow(args: {
+	name: string;
+	template: string;
+	commitMessage?: string | null;
+	tags?: Record<string, string> | null;
+}): Promise<{ name: string; version: number; uri: string } | null> {
+	if (!args.name?.trim() || !args.template?.trim()) return null;
+	const { getOrchestratorUrl, daprFetch } = await import('$lib/server/dapr-client');
+	const orchestratorUrl = getOrchestratorUrl();
+
+	const body = {
+		name: args.name.trim(),
+		template: args.template,
+		commit_message: args.commitMessage ?? null,
+		tags: args.tags ?? null
+	};
+
+	try {
+		const res = await daprFetch(`${orchestratorUrl}/api/v2/observability/prompts/register`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+		if (!res.ok) {
+			const errText = await res.text().catch(() => '');
+			console.warn(
+				'[mlflow] registerPromptInMlflow orchestrator returned',
+				res.status,
+				errText.slice(0, 300)
+			);
+			return null;
+		}
+		const payload = (await res.json()) as { name?: string; version?: number; uri?: string };
+		if (!payload.name || typeof payload.version !== 'number' || !payload.uri) return null;
+		return { name: payload.name, version: payload.version, uri: payload.uri };
+	} catch (err) {
+		console.warn(
+			'[mlflow] registerPromptInMlflow failed:',
+			err instanceof Error ? err.message : err
+		);
+		return null;
+	}
+}
