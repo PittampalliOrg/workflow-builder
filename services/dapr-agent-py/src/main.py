@@ -3699,6 +3699,36 @@ class OpenShellDurableAgent(DurableAgent):
                 "session.status_rescheduled",
                 {"vaultIds": vault_ids},
             )
+            # Phase 4 v2: set an agent-aware MLflow trace name + agent tags
+            # ONCE at session entry so the Sessions/Traces UI shows
+            # `agent.<slug>/session.<sessionId>` instead of generic
+            # `session_workflow` defaults. The parent workflow already
+            # exported spans under this trace_id (W3C propagated from
+            # the orchestrator's call_child_workflow), so set_trace_tag
+            # finds the trace_info row already.
+            try:
+                from src.telemetry.dapr_attributes import set_mlflow_trace_tags
+                _agent_slug = (agent_cfg.get("slug") if isinstance(agent_cfg, dict) else None) or ""
+                if not _agent_slug:
+                    _app_id = os.environ.get("APP_ID") or os.environ.get("DAPR_APP_ID") or ""
+                    if _app_id.startswith("agent-runtime-"):
+                        _agent_slug = _app_id[len("agent-runtime-"):]
+                _agent_slug = _agent_slug.strip() or "unknown"
+                _display_name = f"agent.{_agent_slug}/session.{session_id}"
+                _trace_tags: dict[str, Any] = {
+                    "session.id": session_id,
+                    "agent.slug": _agent_slug,
+                }
+                if db_execution_id:
+                    _trace_tags["workflow.execution.id"] = db_execution_id
+                set_mlflow_trace_tags(_trace_tags, trace_name=_display_name)
+                logger.info(
+                    "[session-workflow] MLflow trace tags set: name=%s slug=%s",
+                    _display_name,
+                    _agent_slug,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[session-workflow] trace-tag set failed: %s", exc)
 
         turn_counter = 0
         while True:

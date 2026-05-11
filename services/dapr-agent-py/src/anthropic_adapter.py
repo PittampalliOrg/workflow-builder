@@ -836,32 +836,29 @@ def _call_anthropic_sdk(
         else:
             patched_messages.append(m)
 
-    # claude_code.llm_request span — wraps the whole call including
-    # SDK-internal retries, escalation, and multi-turn recovery. Token
-    # counts are summed across retries at end_llm_request_span. Matches
-    # TS behavior where endLLMRequestSpan reports aggregate usage.
+    # Phase 2b cleanup: manual `claude_code.llm_request` span dropped.
+    # `mlflow.anthropic.autolog()` (init'd in providers.py) now emits the
+    # canonical `Anthropic.messages.create` span with full input/output
+    # messages, tool calls, reasoning blocks, and `gen_ai.usage.*` token
+    # counts — superseding the hand-rolled span. Prompt-cache breadcrumbs
+    # that used to ride on llm_request migrate UP to the interaction
+    # span (whose lifetime spans the whole turn). `record_tokens`
+    # metric emission stays — Prometheus dashboards depend on it.
     import time as _time
 
-    llm_span = None
     agg_input_tokens = 0
     agg_output_tokens = 0
     agg_cache_read = 0
     agg_cache_create = 0
     llm_start_monotonic = _time.monotonic()
     ttft_ms_recorded: float | None = None
+    interaction_span = None
     try:
-        from src.telemetry import start_llm_request_span
+        from src.telemetry import current_interaction_span
 
-        llm_span = start_llm_request_span(
-            model,
-            fast_mode=False,
-            query_source="dapr_agent_py.anthropic_adapter",
-            system_prompt=kwargs.get("system") if isinstance(kwargs.get("system"), str) else None,
-            tools_json=json.dumps(anthropic_tools) if anthropic_tools else None,
-            messages_for_api=list(patched_messages),
-        )
+        interaction_span = current_interaction_span()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[telemetry] llm_request start failed: %s", exc)
+        logger.debug("[telemetry] no interaction span for cache attrs: %s", exc)
 
     # -- Attempt 1: initial request at current max_tokens -----------------
 
@@ -918,25 +915,28 @@ def _call_anthropic_sdk(
         prompt_cache_telemetry["tail_chars"],
         prompt_cache_telemetry["cache_ttl"],
     )
-    # Stamp prompt-cache attributes on the active llm_request span so Phoenix
-    # / Jaeger surface them alongside cache_creation/cache_read tokens.
-    if llm_span is not None:
+    # Stamp prompt-cache attributes on the parent interaction span so
+    # debugging tools (ClickHouse, MLflow trace UI) can surface them
+    # alongside cache_creation/cache_read tokens. Phase 2b cleanup
+    # migrated these UP from `claude_code.llm_request` (now removed —
+    # `mlflow.anthropic.autolog()` is the canonical LLM-call span).
+    if interaction_span is not None:
         try:
-            llm_span.set_attribute(
+            interaction_span.set_attribute(
                 "prompt.prefix_chars", prompt_cache_telemetry["prefix_chars"]
             )
-            llm_span.set_attribute(
+            interaction_span.set_attribute(
                 "prompt.tail_chars", prompt_cache_telemetry["tail_chars"]
             )
-            llm_span.set_attribute(
+            interaction_span.set_attribute(
                 "prompt.cache_eligible", prompt_cache_telemetry["cache_eligible"]
             )
-            llm_span.set_attribute(
+            interaction_span.set_attribute(
                 "prompt.cache_breakpoints",
                 prompt_cache_telemetry["cache_breakpoints"]
                 + (1 if anthropic_tools else 0),
             )
-            llm_span.set_attribute(
+            interaction_span.set_attribute(
                 "prompt.cache_ttl", prompt_cache_telemetry["cache_ttl"]
             )
             if anthropic_tools:
@@ -950,8 +950,8 @@ def _call_anthropic_sdk(
                         "utf-8"
                     )
                 ).hexdigest()
-                llm_span.set_attribute("prompt.tools_hash", tools_hash)
-                llm_span.set_attribute("prompt.tools_count", len(anthropic_tools))
+                interaction_span.set_attribute("prompt.tools_hash", tools_hash)
+                interaction_span.set_attribute("prompt.tools_count", len(anthropic_tools))
         except Exception as exc:  # noqa: BLE001
             logger.debug("[telemetry] prompt-cache attrs set failed: %s", exc)
 
@@ -959,7 +959,7 @@ def _call_anthropic_sdk(
         response = _stream_final_message(client, **request_kwargs)
         content, tool_calls, thinking_blocks = _extract_response(response)
         _emit_thinking(thinking_blocks)
-        if ttft_ms_recorded is None and llm_span is not None:
+        if ttft_ms_recorded is None:
             import time as _time
 
             ttft_ms_recorded = (_time.monotonic() - llm_start_monotonic) * 1000.0
@@ -970,21 +970,11 @@ def _call_anthropic_sdk(
             agg_cache_read += int(getattr(_u, "cache_read_input_tokens", 0) or 0)
             agg_cache_create += int(getattr(_u, "cache_creation_input_tokens", 0) or 0)
     except Exception as exc:
-        if llm_span is not None:
-            try:
-                from src.telemetry import end_llm_request_span
-
-                end_llm_request_span(
-                    llm_span,
-                    input_tokens=agg_input_tokens or None,
-                    output_tokens=agg_output_tokens or None,
-                    cache_read_tokens=agg_cache_read or None,
-                    cache_creation_tokens=agg_cache_create or None,
-                    success=False,
-                    error=str(exc)[:500],
-                )
-            except Exception:
-                pass
+        # Phase 2b cleanup: claude_code.llm_request span removed —
+        # `mlflow.anthropic.autolog()` handles the LLM-call span end
+        # state. Error context still surfaces via the autolog span's
+        # status code + exception event. `exc` is used below for the
+        # session-event publish and the re-raise.
         # Emit a usage event even on failure so the UI can show the caller
         # consumed tokens before the error. recovery_count is not yet defined
         # here (failure occurred in Attempt 1); use 0.
@@ -1117,34 +1107,21 @@ def _call_anthropic_sdk(
         result["tool_calls"] = tool_calls
         result["content"] = content or ""
 
-    # End claude_code.llm_request span + record token/cost metrics.
-    if llm_span is not None:
-        try:
-            from src.telemetry import (
-                end_llm_request_span,
-                record_cost,
-                record_tokens,
-            )
+    # Phase 2b cleanup: claude_code.llm_request span lifecycle removed —
+    # `mlflow.anthropic.autolog()` emits the canonical LLM-call span with
+    # `gen_ai.usage.*` covering all token types. We still emit Prometheus
+    # token metrics here because dashboards depend on them.
+    try:
+        from src.telemetry import record_cost, record_tokens
 
-            end_llm_request_span(
-                llm_span,
-                input_tokens=agg_input_tokens or None,
-                output_tokens=agg_output_tokens or None,
-                cache_read_tokens=agg_cache_read or None,
-                cache_creation_tokens=agg_cache_create or None,
-                success=True,
-                has_tool_call=bool(tool_calls),
-                ttft_ms=ttft_ms_recorded,
-                model_output=content or None,
-            )
-            record_tokens(type_="input", count=agg_input_tokens, model=model)
-            record_tokens(type_="output", count=agg_output_tokens, model=model)
-            record_tokens(type_="cacheRead", count=agg_cache_read, model=model)
-            record_tokens(type_="cacheCreation", count=agg_cache_create, model=model)
-            # Cost estimate left to caller — adapter doesn't own pricing.
-            _ = record_cost  # suppress unused until pricing lands
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[telemetry] llm_request end failed: %s", exc)
+        record_tokens(type_="input", count=agg_input_tokens, model=model)
+        record_tokens(type_="output", count=agg_output_tokens, model=model)
+        record_tokens(type_="cacheRead", count=agg_cache_read, model=model)
+        record_tokens(type_="cacheCreation", count=agg_cache_create, model=model)
+        # Cost estimate left to caller — adapter doesn't own pricing.
+        _ = record_cost  # suppress unused until pricing lands
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[telemetry] token metric emit failed: %s", exc)
 
     # Mirror usage metrics onto the session event stream so the UI can show
     # prompt-cache efficiency per turn without cross-referencing Phoenix.

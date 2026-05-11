@@ -27,6 +27,7 @@ from .metrics import (
 )
 from .providers import flush_telemetry, init_telemetry, is_telemetry_ready, shutdown_telemetry
 from .session_tracing import (
+    current_interaction_span,
     end_hook_span,
     end_interaction_span,
     end_llm_request_span,
@@ -53,6 +54,7 @@ __all__ = [
     # spans
     "start_interaction_span",
     "end_interaction_span",
+    "current_interaction_span",
     "start_llm_request_span",
     "end_llm_request_span",
     "start_tool_span",

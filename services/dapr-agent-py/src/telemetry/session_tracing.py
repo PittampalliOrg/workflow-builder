@@ -208,6 +208,20 @@ def end_interaction_span() -> None:
             _interaction_ctx.set(None)
 
 
+def current_interaction_span() -> Any:
+    """Return the active `claude_code.interaction` OTel span, or None.
+
+    Used by Phase 2b cleanup: when `mlflow.anthropic.autolog()` covers
+    the LLM call's own span, prompt-cache breadcrumbs that used to ride
+    on `claude_code.llm_request` migrate UP to the per-turn interaction
+    span (whose lifetime spans the entire turn including retries).
+    """
+    handle = _interaction_ctx.get()
+    if handle is None or handle.ended:
+        return None
+    return handle.span
+
+
 # ---------------------------------------------------------------------------
 # llm_request
 # ---------------------------------------------------------------------------
