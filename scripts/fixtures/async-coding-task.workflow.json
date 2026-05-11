@@ -1,0 +1,425 @@
+{
+  "name": "Async Coding Task",
+  "engineType": "dapr",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "async-coding-task",
+      "version": "1.0.0",
+      "title": "Async Coding Task",
+      "summary": "Devin / Codex / Sweep / GitHub Copilot Coding Agent shape. Single async loop: clone -> plan -> optional human approval gate -> implement -> verify -> (optional) push branch -> (optional) open draft PR. Parameterized by `mode` (implement/bugfix/refactor/test-gen), `approval` (never/plan/always), `verify` (test/build/none), and `output` (pr/branch/summary)."
+    },
+    "input": {
+      "schema": {
+        "format": "json",
+        "document": {
+          "type": "object",
+          "properties": {
+            "repoUrl": {
+              "type": "string",
+              "format": "uri",
+              "title": "Repository URL",
+              "description": "HTTPS clone URL. Private repos require the project's GitHub connection (see githubConnection field).",
+              "default": "https://github.com/octocat/Hello-World.git"
+            },
+            "baseBranch": {
+              "type": "string",
+              "title": "Base branch",
+              "description": "Branch to clone + branch off from.",
+              "default": "main"
+            },
+            "task": {
+              "type": "string",
+              "title": "Task description",
+              "description": "Free-text. The agent reads this verbatim. Be specific about acceptance criteria.",
+              "default": "Add a CONTRIBUTING.md with three sections: Building, Testing, and Submitting changes."
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["implement", "bugfix", "refactor", "test-gen"],
+              "default": "implement",
+              "title": "Mode",
+              "description": "implement = build the requested feature. bugfix = expect a failing test / repro and patch the cause. refactor = restructure without behavior change. test-gen = add tests only."
+            },
+            "approval": {
+              "type": "string",
+              "enum": ["never", "plan", "always"],
+              "default": "plan",
+              "title": "Approval gate",
+              "description": "plan = pause after planning, wait for human OK before implementing. always = also pause before pushing. never = full autonomy."
+            },
+            "verify": {
+              "type": "string",
+              "enum": ["test", "build", "none"],
+              "default": "test",
+              "title": "Verification",
+              "description": "test = invoke the project's test runner heuristically (npm test / pytest / cargo test / go test). build = npm/pnpm build or tsc. none = skip."
+            },
+            "output": {
+              "type": "string",
+              "enum": ["pr", "branch", "summary"],
+              "default": "summary",
+              "title": "Output",
+              "description": "summary = changes stay in sandbox + markdown report (no GitHub side-effects, default for v1). branch = push branch via the GitHub connection. pr = also open a draft PR."
+            },
+            "githubConnection": {
+              "type": "string",
+              "title": "GitHub connection alias",
+              "description": "Project-level app_connection external_id for GitHub OAuth. Required when output is `branch` or `pr`.",
+              "default": "github"
+            }
+          },
+          "required": ["repoUrl", "task"]
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "rootPath": "/sandbox",
+            "sandboxTemplate": "dapr-agent",
+            "ttlSeconds": 7200,
+            "keepAfterRun": true,
+            "managedBy": "workflow-builder:sandbox-policy",
+            "name": "async_coding_workspace",
+            "enabledTools": [
+              "execute_command",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "mkdir",
+              "file_stat",
+              "glob_files",
+              "grep_search"
+            ],
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            },
+            "commandTimeoutMs": 900000,
+            "timeoutMs": 1200000
+          }
+        }
+      },
+      {
+        "clone_repo": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "timeoutMs": 600000,
+            "command": "${ \"set -eu\\nTARGET=/sandbox/repo\\nrm -rf \\\"$TARGET\\\"\\ngit clone --depth 50 --branch \" + (.trigger.baseBranch // \"main\") + \" \" + .trigger.repoUrl + \" \\\"$TARGET\\\"\\ncd \\\"$TARGET\\\"\\nBRANCH=ac-$(date -u +%Y%m%d-%H%M%S)\\ngit checkout -b \\\"$BRANCH\\\"\\ngit config user.email 'agent@workflow-builder.invalid'\\ngit config user.name 'workflow-builder async-coding-task'\\necho BRANCH=$BRANCH\\necho BASE_SHA=$(git rev-parse HEAD)\" }"
+          },
+          "output": {
+            "as": {
+              "branch": "${ ((.data.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"BRANCH=\"))) | first // \"BRANCH=unknown\") | ltrimstr(\"BRANCH=\") }",
+              "baseSha": "${ ((.data.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"BASE_SHA=\"))) | first // \"BASE_SHA=unknown\") | ltrimstr(\"BASE_SHA=\") }"
+            }
+          }
+        }
+      },
+      {
+        "plan_step": {
+          "call": "durable/run",
+          "with": {
+            "body": {
+              "agentRef": {
+                "id": "agnt_deepseek_v4_pro_swe_smoke",
+                "slug": "deepseek-v4-pro-swebench"
+              },
+              "overrides": {
+                "cwd": "/sandbox/repo",
+                "maxTurns": 10,
+                "timeoutMinutes": 10
+              },
+              "prompt": "${ \"You are an autonomous coding agent. Mode=\" + .trigger.mode + \". Repo cloned at /sandbox/repo on branch \" + .clone_repo.branch + \" (forked from \" + (.trigger.baseBranch // \"main\") + \").\\n\\nTASK:\\n\" + .trigger.task + \"\\n\\nProduce ONLY an implementation plan in markdown. Use list_files / read_file / grep_search / glob_files / execute_command (read-only shell) to explore the repo. DO NOT modify, create, or delete any files this turn.\\n\\nPlan structure:\\n1. **Understanding** — one paragraph: what the codebase does and how this task fits.\\n2. **Files to touch** — bulleted list with file path + intended change.\\n3. **Approach** — concrete steps in order.\\n4. **Verification** — how we'll know it works (tests to run, builds to pass, manual checks).\\n5. **Risks & open questions** — non-blocking concerns.\\n\\nEnd with the literal marker `PLAN COMPLETE` on its own line.\" + (if .trigger.mode == \"bugfix\" then \"\\n\\nMODE NOTE: bugfix — first identify the failing test or reproduction, then design the minimal fix.\" elif .trigger.mode == \"refactor\" then \"\\n\\nMODE NOTE: refactor — preserve external behavior; identify the test suite that validates it.\" elif .trigger.mode == \"test-gen\" then \"\\n\\nMODE NOTE: test-gen — add tests only; do not modify production code.\" else \"\" end) }"
+            },
+            "mode": "execute_direct",
+            "cwd": "/sandbox/repo",
+            "sandboxName": "${ .workspace_profile.sandboxName }",
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "markdown",
+              "slot": "secondary",
+              "title": "Implementation plan",
+              "description": "${ \"mode=\" + .trigger.mode + \" • \" + (.trigger.task | split(\"\\n\")[0]) }",
+              "from": "${ .data.content }",
+              "contentType": "text/markdown",
+              "metadata": "${ { mode: .trigger.mode, turn: .data.turn, model: .data.modelSpec } }"
+            }
+          ]
+        }
+      },
+      {
+        "approval_plan": {
+          "if": "${ .trigger.approval == \"plan\" or .trigger.approval == \"always\" }",
+          "listen": {
+            "to": {
+              "one": {
+                "with": {
+                  "type": "approval_plan"
+                }
+              }
+            }
+          },
+          "timeout": {
+            "after": "PT2H"
+          }
+        }
+      },
+      {
+        "implement_step": {
+          "if": "${ .trigger.approval == \"never\" or ((.approval_plan.data.timedOut // false) == false and (.approval_plan.data.approved // true) == true) }",
+          "call": "durable/run",
+          "with": {
+            "body": {
+              "agentRef": {
+                "id": "agnt_deepseek_v4_pro_swe_smoke",
+                "slug": "deepseek-v4-pro-swebench"
+              },
+              "overrides": {
+                "cwd": "/sandbox/repo",
+                "maxTurns": 30,
+                "timeoutMinutes": 30
+              },
+              "prompt": "${ \"Continue from your plan. Apply the changes you proposed. Repo at /sandbox/repo on branch \" + .clone_repo.branch + \". Mode=\" + .trigger.mode + \".\\n\\nTools: read_file, write_file, edit_file, list_files, glob_files, grep_search, execute_command.\\n\\nAfter each significant change, stage and commit incrementally with descriptive messages:\\n  execute_command: git add <files>; git commit -m '<message>'\\n\\nEnd with the literal marker `IMPLEMENTATION COMPLETE` on its own line, summarizing in 3-5 bullets what you changed.\\n\\nORIGINAL TASK:\\n\" + .trigger.task + \"\\n\\nYOUR PLAN:\\n\" + .plan_step.data.content }"
+            },
+            "mode": "execute_direct",
+            "cwd": "/sandbox/repo",
+            "sandboxName": "${ .workspace_profile.sandboxName }",
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            }
+          }
+        }
+      },
+      {
+        "verify_step": {
+          "if": "${ .trigger.verify != \"none\" and (.implement_step.data.content // \"\") != \"\" }",
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "timeoutMs": 600000,
+            "command": "${ \"set -eu\\ncd /sandbox/repo\\n\" + (if .trigger.verify == \"build\" then \"echo '== build ==';\\nif [ -f package.json ]; then npm run build 2>&1 || pnpm build 2>&1 || npx tsc --noEmit 2>&1; elif [ -f pyproject.toml ]; then python -m build 2>&1 || python -m pip wheel . 2>&1; else echo NO_BUILD_RUNNER_FOUND; fi\" else \"echo '== test ==';\\nif [ -f package.json ]; then npm test --silent 2>&1 || pnpm test 2>&1; elif [ -f pyproject.toml ]; then python -m pytest -q 2>&1; elif [ -f Cargo.toml ]; then cargo test --quiet 2>&1; elif [ -f go.mod ]; then go test ./... 2>&1; else echo NO_TEST_RUNNER_FOUND; fi\" end) + \"\\necho EXIT=$?\" }"
+          },
+          "artifacts": [
+            {
+              "kind": "text",
+              "slot": "aux",
+              "title": "${ .trigger.verify + \" output\" }",
+              "from": "${ .data.result.stdout // .data.result.stderr // \"(no output)\" }"
+            }
+          ]
+        }
+      },
+      {
+        "approval_pr": {
+          "if": "${ .trigger.approval == \"always\" and (.trigger.output == \"pr\" or .trigger.output == \"branch\") }",
+          "listen": {
+            "to": {
+              "one": {
+                "with": {
+                  "type": "approval_pr"
+                }
+              }
+            }
+          },
+          "timeout": {
+            "after": "PT2H"
+          }
+        }
+      },
+      {
+        "push_branch": {
+          "if": "${ (.trigger.output == \"pr\" or .trigger.output == \"branch\") and (.implement_step.data.content // \"\") != \"\" }",
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "auth": {
+              "connectionId": "${ .connections[.trigger.githubConnection] }"
+            },
+            "timeoutMs": 120000,
+            "command": "${ \"set -eu\\ncd /sandbox/repo\\nBRANCH=$(git rev-parse --abbrev-ref HEAD)\\nREMOTE=$(echo \" + .trigger.repoUrl + \" | sed 's|https://|https://x-access-token:${GITHUB_TOKEN}@|')\\ngit push \\\"$REMOTE\\\" \\\"$BRANCH\\\"\\necho PUSHED=$BRANCH\" }"
+          },
+          "output": {
+            "as": {
+              "branch": "${ ((.data.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"PUSHED=\"))) | first // \"PUSHED=unknown\") | ltrimstr(\"PUSHED=\") }"
+            }
+          }
+        }
+      },
+      {
+        "open_pr": {
+          "if": "${ .trigger.output == \"pr\" and (.push_branch.data.result.exitCode // 1) == 0 }",
+          "call": "system/http-request",
+          "with": {
+            "url": "${ \"https://api.github.com/repos/\" + (.trigger.repoUrl | ltrimstr(\"https://github.com/\") | ltrimstr(\"http://github.com/\") | rtrimstr(\".git\")) + \"/pulls\" }",
+            "method": "POST",
+            "auth": {
+              "connectionId": "${ .connections[.trigger.githubConnection] }"
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+            },
+            "body": {
+              "title": "${ \"[agent] \" + ((.trigger.task | split(\"\\n\")[0])[0:80]) }",
+              "head": "${ .push_branch.branch }",
+              "base": "${ .trigger.baseBranch // \"main\" }",
+              "body": "${ \"Automated PR by workflow-builder/async-coding-task.\\n\\n## Task\\n\\n\" + .trigger.task + \"\\n\\n## Plan\\n\\n\" + .plan_step.data.content + \"\\n\\n## Implementation summary\\n\\n\" + .implement_step.data.content + \"\\n\\n## Verification\\n\\n```\\n\" + (.verify_step.data.result.stdout // \"(skipped)\") + \"\\n```\" }",
+              "draft": true
+            },
+            "timeoutMs": 30000
+          }
+        }
+      }
+    ],
+    "output": {
+      "as": {
+        "repo": "${ .trigger.repoUrl }",
+        "branch": "${ .clone_repo.branch }",
+        "mode": "${ .trigger.mode }",
+        "plan": "${ .plan_step.data.content }",
+        "implementation": "${ .implement_step.data.content // null }",
+        "verify_passed": "${ ((.verify_step.data.result.exitCode // 0) == 0) and (.trigger.verify != \"none\") }",
+        "pr_url": "${ .open_pr.data.html_url // null }",
+        "pushed_branch": "${ .push_branch.branch // null }"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "start",
+      "position": { "x": 250, "y": 50 },
+      "data": {
+        "label": "Start",
+        "type": "start",
+        "status": "idle",
+        "enabled": true,
+        "taskConfig": {
+          "input": {
+            "format": "json",
+            "schema": {
+              "format": "json",
+              "document": {
+                "type": "object",
+                "properties": {
+                  "repoUrl": { "type": "string", "format": "uri", "title": "Repository URL", "default": "https://github.com/octocat/Hello-World.git" },
+                  "baseBranch": { "type": "string", "title": "Base branch", "default": "main" },
+                  "task": { "type": "string", "title": "Task description", "default": "Add a CONTRIBUTING.md with three sections: Building, Testing, and Submitting changes." },
+                  "mode": { "type": "string", "enum": ["implement", "bugfix", "refactor", "test-gen"], "default": "implement", "title": "Mode" },
+                  "approval": { "type": "string", "enum": ["never", "plan", "always"], "default": "plan", "title": "Approval gate" },
+                  "verify": { "type": "string", "enum": ["test", "build", "none"], "default": "test", "title": "Verification" },
+                  "output": { "type": "string", "enum": ["pr", "branch", "summary"], "default": "summary", "title": "Output" },
+                  "githubConnection": { "type": "string", "title": "GitHub connection alias", "default": "github" }
+                },
+                "required": ["repoUrl", "task"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "call",
+      "position": { "x": 250, "y": 200 },
+      "data": { "label": "Workspace Profile", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "workspace/profile" } }
+    },
+    {
+      "id": "clone_repo",
+      "type": "call",
+      "position": { "x": 250, "y": 350 },
+      "data": { "label": "Clone + Branch", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "workspace/command" } }
+    },
+    {
+      "id": "plan_step",
+      "type": "agent",
+      "position": { "x": 250, "y": 500 },
+      "data": { "label": "Plan", "type": "agent", "status": "idle", "enabled": true,
+        "agent": { "id": "agnt_deepseek_v4_pro_swe_smoke", "slug": "deepseek-v4-pro-swebench", "runtime": "dapr-agent-py" },
+        "taskConfig": { "call": "durable/run" } }
+    },
+    {
+      "id": "approval_plan",
+      "type": "listen",
+      "position": { "x": 250, "y": 650 },
+      "data": { "label": "Approve Plan?", "type": "listen", "status": "idle", "enabled": true,
+        "taskConfig": { "listen": { "to": { "one": { "with": { "type": "approval_plan" } } } }, "timeout": { "after": "PT2H" } } }
+    },
+    {
+      "id": "implement_step",
+      "type": "agent",
+      "position": { "x": 250, "y": 800 },
+      "data": { "label": "Implement", "type": "agent", "status": "idle", "enabled": true,
+        "agent": { "id": "agnt_deepseek_v4_pro_swe_smoke", "slug": "deepseek-v4-pro-swebench", "runtime": "dapr-agent-py" },
+        "taskConfig": { "call": "durable/run" } }
+    },
+    {
+      "id": "verify_step",
+      "type": "call",
+      "position": { "x": 250, "y": 950 },
+      "data": { "label": "Verify (test/build)", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "workspace/command" } }
+    },
+    {
+      "id": "approval_pr",
+      "type": "listen",
+      "position": { "x": 250, "y": 1100 },
+      "data": { "label": "Approve PR?", "type": "listen", "status": "idle", "enabled": true,
+        "taskConfig": { "listen": { "to": { "one": { "with": { "type": "approval_pr" } } } }, "timeout": { "after": "PT2H" } } }
+    },
+    {
+      "id": "push_branch",
+      "type": "call",
+      "position": { "x": 250, "y": 1250 },
+      "data": { "label": "Push Branch", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "workspace/command" } }
+    },
+    {
+      "id": "open_pr",
+      "type": "call",
+      "position": { "x": 250, "y": 1400 },
+      "data": { "label": "Open Draft PR", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "system/http-request" } }
+    },
+    {
+      "id": "__end__",
+      "type": "end",
+      "position": { "x": 250, "y": 1550 },
+      "data": { "label": "End", "type": "end", "status": "idle", "enabled": true }
+    }
+  ],
+  "edges": [
+    { "id": "__start__->workspace_profile", "source": "__start__", "target": "workspace_profile" },
+    { "id": "workspace_profile->clone_repo", "source": "workspace_profile", "target": "clone_repo" },
+    { "id": "clone_repo->plan_step", "source": "clone_repo", "target": "plan_step" },
+    { "id": "plan_step->approval_plan", "source": "plan_step", "target": "approval_plan" },
+    { "id": "approval_plan->implement_step", "source": "approval_plan", "target": "implement_step" },
+    { "id": "implement_step->verify_step", "source": "implement_step", "target": "verify_step" },
+    { "id": "verify_step->approval_pr", "source": "verify_step", "target": "approval_pr" },
+    { "id": "approval_pr->push_branch", "source": "approval_pr", "target": "push_branch" },
+    { "id": "push_branch->open_pr", "source": "push_branch", "target": "open_pr" },
+    { "id": "open_pr->__end__", "source": "open_pr", "target": "__end__" }
+  ]
+}

@@ -1,0 +1,302 @@
+{
+  "name": "Repository Review (clone + summarize)",
+  "engineType": "dapr",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "repo-review",
+      "version": "1.0.0",
+      "title": "Repository Review (clone + summarize)",
+      "summary": "Provision a sandbox, git clone the repo into /sandbox/repo, then run a coding agent that reads the tree and produces a concise project summary. The summary is persisted as a workflow_artifact (slot=primary) so it renders front-and-centre on the run-detail Overview tab."
+    },
+    "input": {
+      "schema": {
+        "format": "json",
+        "document": {
+          "type": "object",
+          "properties": {
+            "repoUrl": {
+              "type": "string",
+              "title": "Repository URL",
+              "format": "uri",
+              "description": "HTTPS clone URL of a public repo (private repos require an auth shim).",
+              "default": "https://github.com/sveltejs/kit.git"
+            },
+            "branch": {
+              "type": "string",
+              "title": "Branch",
+              "description": "Branch / tag / commit to check out after clone.",
+              "default": "main"
+            },
+            "focus": {
+              "type": "string",
+              "title": "Review focus (optional)",
+              "description": "Optional extra emphasis appended to the agent prompt, e.g. 'security risks' or 'how is auth wired'."
+            }
+          },
+          "required": ["repoUrl"]
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "rootPath": "/sandbox",
+            "sandboxTemplate": "dapr-agent",
+            "ttlSeconds": 7200,
+            "keepAfterRun": true,
+            "managedBy": "workflow-builder:sandbox-policy",
+            "name": "repo_review_workspace",
+            "enabledTools": [
+              "execute_command",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "mkdir",
+              "file_stat"
+            ],
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            },
+            "commandTimeoutMs": 900000,
+            "timeoutMs": 1200000
+          }
+        }
+      },
+      {
+        "clone_repo": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "timeoutMs": 600000,
+            "command": "${ \"set -eu\\nTARGET=/sandbox/repo\\nrm -rf \\\"$TARGET\\\"\\ngit clone --depth 50 --branch \" + (.trigger.branch // \"main\") + \" \" + .trigger.repoUrl + \" \\\"$TARGET\\\"\\ncd \\\"$TARGET\\\"\\necho CLONED_AT=$(git rev-parse HEAD)\\necho BRANCH=$(git rev-parse --abbrev-ref HEAD)\\nls -la \\\"$TARGET\\\" | head -40\" }"
+          }
+        }
+      },
+      {
+        "agent_review": {
+          "call": "durable/run",
+          "with": {
+            "body": {
+              "agentRef": {
+                "id": "agnt_deepseek_v4_pro_swe_smoke",
+                "slug": "deepseek-v4-pro-swebench"
+              },
+              "overrides": {
+                "cwd": "/sandbox/repo",
+                "maxTurns": 25,
+                "timeoutMinutes": 25
+              },
+              "prompt": "${ \"You are reviewing a repository in read-only mode. The repo is cloned at /sandbox/repo from \" + .trigger.repoUrl + \" (branch \" + (.trigger.branch // \"main\") + \"). DO NOT modify, create, or delete any files. Use list_files / read_file / execute_command (with read-only shell commands like ls, find, head, cat, grep) to explore.\\n\\nProduce a concise project review in markdown with these sections:\\n\\n1. **What is this?** — one-paragraph project purpose, based on README / package metadata.\\n2. **Architecture & main subsystems** — directories, services, runtime, build/test tooling. Cite concrete paths.\\n3. **How is it deployed or operated?** — CI, container, infra-as-code clues. If unclear, say so.\\n4. **Key docs to read first** — 3-5 files a new contributor should open, with one-line rationale each.\\n5. **Top risks & open questions** — highest-priority technical, operational, or security concerns. Be specific; cite files.\\n\\nKeep the whole review under ~700 words. End the response with the literal marker `TASK COMPLETE` on its own line.\" + (if (.trigger.focus // \"\") != \"\" then \"\\n\\nADDITIONAL FOCUS: \" + .trigger.focus else \"\" end) }"
+            },
+            "mode": "execute_direct",
+            "cwd": "/sandbox/repo",
+            "sandboxName": "${ .workspace_profile.sandboxName }",
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "markdown",
+              "slot": "primary",
+              "title": "Repository review",
+              "description": "${ .trigger.repoUrl + \" @ \" + (.trigger.branch // \"main\") }",
+              "from": "${ .data.content }",
+              "contentType": "text/markdown",
+              "metadata": "${ { repoUrl: .trigger.repoUrl, branch: (.trigger.branch // \"main\"), focus: (.trigger.focus // \"\"), turn: .data.turn, model: .data.modelSpec } }"
+            }
+          ]
+        }
+      }
+    ],
+    "output": {
+      "as": {
+        "repoUrl": "${ .trigger.repoUrl }",
+        "branch": "${ .trigger.branch // \"main\" }",
+        "clonePath": "/sandbox/repo",
+        "summary": "${ .agent_review.data.content }"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "start",
+      "position": { "x": 250, "y": 50 },
+      "data": {
+        "label": "Start",
+        "type": "start",
+        "status": "idle",
+        "enabled": true,
+        "taskConfig": {
+          "input": {
+            "format": "json",
+            "schema": {
+              "format": "json",
+              "document": {
+                "type": "object",
+                "properties": {
+                  "repoUrl": {
+                    "type": "string",
+                    "title": "Repository URL",
+                    "format": "uri",
+                    "description": "HTTPS clone URL of a public repo (private repos require an auth shim).",
+                    "default": "https://github.com/sveltejs/kit.git"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "title": "Branch",
+                    "description": "Branch / tag / commit to check out after clone.",
+                    "default": "main"
+                  },
+                  "focus": {
+                    "type": "string",
+                    "title": "Review focus (optional)",
+                    "description": "Optional extra emphasis appended to the agent prompt."
+                  }
+                },
+                "required": ["repoUrl"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "call",
+      "position": { "x": 250, "y": 200 },
+      "data": {
+        "label": "Workspace Profile",
+        "type": "call",
+        "status": "idle",
+        "enabled": true,
+        "taskConfig": {
+          "call": "workspace/profile",
+          "with": {
+            "rootPath": "/sandbox",
+            "sandboxTemplate": "dapr-agent",
+            "ttlSeconds": 7200,
+            "keepAfterRun": true,
+            "managedBy": "workflow-builder:sandbox-policy",
+            "name": "repo_review_workspace",
+            "enabledTools": [
+              "execute_command",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "mkdir",
+              "file_stat"
+            ],
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            },
+            "commandTimeoutMs": 900000,
+            "timeoutMs": 1200000
+          }
+        }
+      }
+    },
+    {
+      "id": "clone_repo",
+      "type": "call",
+      "position": { "x": 250, "y": 350 },
+      "data": {
+        "label": "Clone Repo",
+        "type": "call",
+        "status": "idle",
+        "enabled": true,
+        "taskConfig": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "timeoutMs": 600000,
+            "command": "${ \"set -eu\\nTARGET=/sandbox/repo\\nrm -rf \\\"$TARGET\\\"\\ngit clone --depth 50 --branch \" + (.trigger.branch // \"main\") + \" \" + .trigger.repoUrl + \" \\\"$TARGET\\\"\\ncd \\\"$TARGET\\\"\\necho CLONED_AT=$(git rev-parse HEAD)\\necho BRANCH=$(git rev-parse --abbrev-ref HEAD)\\nls -la \\\"$TARGET\\\" | head -40\" }"
+          }
+        }
+      }
+    },
+    {
+      "id": "agent_review",
+      "type": "agent",
+      "position": { "x": 250, "y": 500 },
+      "data": {
+        "label": "Agent Review",
+        "type": "agent",
+        "status": "idle",
+        "enabled": true,
+        "agent": {
+          "id": "agnt_deepseek_v4_pro_swe_smoke",
+          "slug": "deepseek-v4-pro-swebench",
+          "runtime": "dapr-agent-py"
+        },
+        "taskConfig": {
+          "call": "durable/run",
+          "with": {
+            "body": {
+              "agentRef": {
+                "id": "agnt_deepseek_v4_pro_swe_smoke",
+                "slug": "deepseek-v4-pro-swebench"
+              },
+              "overrides": {
+                "cwd": "/sandbox/repo",
+                "maxTurns": 25,
+                "timeoutMinutes": 25
+              },
+              "prompt": "${ \"You are reviewing a repository in read-only mode. The repo is cloned at /sandbox/repo from \" + .trigger.repoUrl + \" (branch \" + (.trigger.branch // \"main\") + \"). DO NOT modify, create, or delete any files. Use list_files / read_file / execute_command (with read-only shell commands like ls, find, head, cat, grep) to explore.\\n\\nProduce a concise project review in markdown with these sections:\\n\\n1. **What is this?** — one-paragraph project purpose, based on README / package metadata.\\n2. **Architecture & main subsystems** — directories, services, runtime, build/test tooling. Cite concrete paths.\\n3. **How is it deployed or operated?** — CI, container, infra-as-code clues. If unclear, say so.\\n4. **Key docs to read first** — 3-5 files a new contributor should open, with one-line rationale each.\\n5. **Top risks & open questions** — highest-priority technical, operational, or security concerns. Be specific; cite files.\\n\\nKeep the whole review under ~700 words. End the response with the literal marker `TASK COMPLETE` on its own line.\" + (if (.trigger.focus // \"\") != \"\" then \"\\n\\nADDITIONAL FOCUS: \" + .trigger.focus else \"\" end) }"
+            },
+            "mode": "execute_direct",
+            "cwd": "/sandbox/repo",
+            "sandboxName": "${ .workspace_profile.sandboxName }",
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "sandboxPolicy": {
+              "keepAfterRun": true,
+              "mode": "per-run",
+              "template": "dapr-agent",
+              "ttlSeconds": 7200
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "markdown",
+              "slot": "primary",
+              "title": "Repository review",
+              "description": "${ .trigger.repoUrl + \" @ \" + (.trigger.branch // \"main\") }",
+              "from": "${ .data.content }",
+              "contentType": "text/markdown",
+              "metadata": "${ { repoUrl: .trigger.repoUrl, branch: (.trigger.branch // \"main\"), focus: (.trigger.focus // \"\"), turn: .data.turn, model: .data.modelSpec } }"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "__end__",
+      "type": "end",
+      "position": { "x": 250, "y": 650 },
+      "data": { "label": "End", "type": "end", "status": "idle", "enabled": true }
+    }
+  ],
+  "edges": [
+    { "id": "__start__->workspace_profile", "source": "__start__", "target": "workspace_profile" },
+    { "id": "workspace_profile->clone_repo", "source": "workspace_profile", "target": "clone_repo" },
+    { "id": "clone_repo->agent_review", "source": "clone_repo", "target": "agent_review" },
+    { "id": "agent_review->__end__", "source": "agent_review", "target": "__end__" }
+  ]
+}

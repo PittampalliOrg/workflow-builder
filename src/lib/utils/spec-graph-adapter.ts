@@ -163,11 +163,26 @@ function convertGraph(
     y += Y_SPACING;
   }
 
-  // Process edges
+  // Dedup nodes by id. The SDK's buildGraph can emit a synthetic decision
+  // node alongside the real task for task-level `if:` predicates, both
+  // sharing the same task-derived id. Without this filter, SvelteFlow's
+  // keyed each blocks (in particular Minimap.svelte) throw
+  // `each_key_duplicate` on every render, which can lock the canvas.
+  const seenNodeIds = new Set<string>();
+  const dedupedNodes = nodes.filter((n) => {
+    if (seenNodeIds.has(n.id)) return false;
+    seenNodeIds.add(n.id);
+    return true;
+  });
+
+  // Process edges (also dedup; same root cause)
+  const seenEdgeIds = new Set<string>();
   for (const sdkEdge of graph.edges) {
     const source = ID_MAP[sdkEdge.sourceId] || sdkEdge.sourceId;
     const target = ID_MAP[sdkEdge.destinationId] || sdkEdge.destinationId;
     const id = `${source}->${target}`;
+    if (seenEdgeIds.has(id)) continue;
+    seenEdgeIds.add(id);
 
     edges.push({
       id,
@@ -177,7 +192,7 @@ function convertGraph(
     });
   }
 
-  return { nodes, edges };
+  return { nodes: dedupedNodes, edges };
 }
 
 function getDoArray(spec: Record<string, unknown>): Array<Record<string, unknown>> {

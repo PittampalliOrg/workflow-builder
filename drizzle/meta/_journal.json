@@ -414,6 +414,13 @@
 			"when": 1778083003077,
 			"tag": "0066_ensure_workflow_workspace_sessions",
 			"breakpoints": true
+		},
+		{
+			"idx": 59,
+			"version": "7",
+			"when": 1778498822342,
+			"tag": "0067_workflow_artifacts",
+			"breakpoints": true
 		}
 	]
 }
