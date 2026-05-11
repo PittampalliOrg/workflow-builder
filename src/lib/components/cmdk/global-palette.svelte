@@ -145,7 +145,7 @@
 </script>
 
 <Dialog bind:open>
-	<DialogContent class="p-0 max-w-2xl overflow-hidden" showCloseButton={false}>
+	<DialogContent class="p-0 sm:max-w-2xl overflow-hidden" showCloseButton={false}>
 		<Command.Root label="Global search" class="rounded-lg border-none shadow-md">
 			<Command.Input
 				placeholder="Jump to a session, agent, or page… (⌘K)"

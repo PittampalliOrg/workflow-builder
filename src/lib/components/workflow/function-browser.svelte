@@ -102,7 +102,7 @@
 </script>
 
 <Dialog {open} onOpenChange={(v) => { if (!v) onClose(); }}>
-	<DialogContent class="max-w-xl max-h-[80vh] flex flex-col">
+	<DialogContent class="sm:max-w-xl max-h-[80vh] flex flex-col">
 		<DialogHeader>
 			<DialogTitle class="flex items-center gap-2 text-sm">
 				<Blocks size={16} />

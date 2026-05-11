@@ -165,7 +165,7 @@
 </script>
 
 <Dialog {open} onOpenChange={(v) => { if (!v) onClose(); }}>
-	<DialogContent class="max-w-4xl max-h-[70vh] flex flex-col p-0 gap-0 overflow-hidden">
+	<DialogContent class="sm:max-w-4xl max-h-[70vh] flex flex-col p-0 gap-0 overflow-hidden">
 		<Command.Root class="flex-1 flex flex-col" shouldFilter={false}>
 			<div class="flex items-center border-b px-3">
 				<Search size={14} class="shrink-0 text-muted-foreground" />

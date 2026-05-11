@@ -718,13 +718,13 @@
 </div>
 
 <Dialog bind:open={addDialogOpen}>
-	<DialogContent class="max-w-3xl">
+	<DialogContent class="sm:max-w-4xl max-h-[85vh]">
 		<DialogHeader>
 			<DialogTitle>New app connection</DialogTitle>
 			<DialogDescription>Select a provider and establish a user connection for this workspace.</DialogDescription>
 		</DialogHeader>
 
-		<div class="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4 min-h-[360px]">
+		<div class="grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)] gap-4 min-h-[360px]">
 			<div class="border rounded-md overflow-hidden">
 				<div class="p-2 border-b">
 					<Input placeholder="Search providers" bind:value={mcpSearch} />
