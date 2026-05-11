@@ -2617,3 +2617,4 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 }
+// retrigger build for workspace/command GITHUB_TOKEN injection
