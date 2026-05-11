@@ -2345,14 +2345,29 @@ def _build_workflow_status_payload_from_http(
             or "UNKNOWN"
         ).upper()
     )
-    custom_status = _parse_json_value(
-        _workflow_dict_value(
-            workflow_payload,
-            "customStatus",
-            "custom_status",
-            "properties",
-        )
+    # Try the top-level keys first, then drill into the Dapr HTTP API's
+    # `properties.dapr.workflow.custom_status` field. The HTTP API always
+    # nests custom_status under `properties` with a dotted key — without
+    # this drill, _workflow_dict_value matches `properties` itself and
+    # returns the dict, leaving custom_status empty + traceId/phase null
+    # on the BFF poll path (verified live 2026-05-11 against execution
+    # peb23oNs2mXUIvPS_tksF — workflow_executions.primary_trace_id was
+    # null on completed runs because the orchestrator status response
+    # couldn't extract traceId from the Dapr API payload).
+    raw_custom_status = _workflow_dict_value(
+        workflow_payload,
+        "customStatus",
+        "custom_status",
     )
+    if raw_custom_status is None:
+        props = workflow_payload.get("properties")
+        if isinstance(props, dict):
+            raw_custom_status = (
+                props.get("dapr.workflow.custom_status")
+                or props.get("dapr.workflow.customStatus")
+                or props.get("custom_status")
+            )
+    custom_status = _parse_json_value(raw_custom_status)
     phase = None
     progress = 0
     message = None
