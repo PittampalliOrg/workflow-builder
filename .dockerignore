@@ -35,6 +35,10 @@ test-results
 !scripts/seed-dev-user.ts
 !scripts/seed-swebench-fixtures.ts
 !scripts/seed-workflows.ts
+!scripts/queue-swebench-environment-validation.ts
+!scripts/sync-swebench-environment-builds.ts
+!scripts/start-swebench-benchmark-run.ts
+!scripts/sync-oauth-apps.ts
 !scripts/fixtures/**
 !src/**
 !static/**
