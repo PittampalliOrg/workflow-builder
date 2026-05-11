@@ -497,11 +497,30 @@ def patch_for_gateway(llm_client: Any) -> None:
         if route is None:
             return original_generate(self, *args, **kwargs)
 
+        response_format = kwargs.get("response_format")
+
+        # DeepSeek + `response_format: json_object` returns octet-stream content
+        # that MLflow Gateway's `application/json`-only check rejects with HTTP
+        # 502 (verified 2026-05-11 via direct curl from a dev session pod, both
+        # with and without `thinking: disabled`). Fall through to the legacy
+        # DeepSeek adapter for structured-output calls — it handles them
+        # correctly (see `deepseek_adapter._apply_deepseek_output_mode`).
+        # Plain chat + tool-chat calls still route through Gateway.
+        if response_format is not None and (
+            route.startswith("deepseek-") or route.startswith("foundry-deepseek-")
+        ):
+            logger.info(
+                "[gateway-adapter] %s: response_format set + DeepSeek route → "
+                "falling through to legacy adapter (Gateway can't parse "
+                "DeepSeek's structured-output octet-stream response)",
+                component,
+            )
+            return original_generate(self, *args, **kwargs)
+
         prompt = args[0] if args else kwargs.get("prompt", "")
         raw_messages = kwargs.get("messages")
         tools = kwargs.get("tools")
         max_tokens = kwargs.get("max_tokens")
-        response_format = kwargs.get("response_format")
         tool_choice = kwargs.get("tool_choice")
 
         messages = _normalize_messages(
