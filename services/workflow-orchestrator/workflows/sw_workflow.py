@@ -2839,13 +2839,16 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             from tracing import set_mlflow_trace_tags, start_activity_span
             short_exec = (db_execution_id or execution_id or "").strip()
             display_name = f"{tc.workflow_id}/{short_exec}" if short_exec else tc.workflow_id
-            # Wrap the tag set in a tiny OTel span so MLflow's destination
-            # processor creates the `trace_info` row (FK target for
-            # `set_trace_tag`). At workflow entry NO span has been
-            # exported yet, so calling `set_trace_tag` directly fails
-            # with `ForeignKeyViolation` on `fk_trace_tags_request_id`.
-            # Phase 1 tags landed because they fire from inside an
-            # activity span, where the trace row already exists.
+            # 1) Emit + flush a tiny OTel "workflow.init" span first.
+            #    MLflow's destination processor exports it; that creates
+            #    the `trace_info` row (FK target for `set_trace_tag`).
+            # 2) After the span ends, call set_mlflow_trace_tags — its
+            #    set_trace_tag fallback now finds the trace row and
+            #    persists `mlflow.traceName` + Phase 4 tags.
+            # The `update_current_trace` path inside the helper still
+            # no-ops here ("No active trace found") because our OTel
+            # spans are not MLflow-managed spans — that's expected and
+            # logged at DEBUG; set_trace_tag is the real persistence path.
             with start_activity_span(
                 "workflow.init",
                 otel_ctx,
@@ -2855,18 +2858,26 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "workflow.execution.id": short_exec,
                 },
             ):
-                set_mlflow_trace_tags(
-                    {
-                        "workflow.id": tc.workflow_id,
-                        "workflow.name": workflow_name,
-                        "workflow.execution.id": short_exec,
-                        "dapr.workflow.instance_id": execution_id,
-                        "dapr.workflow.name": workflow_name,
-                        "session.id": short_exec,
-                    },
-                    trace_name=display_name,
-                    trace_id_hex=tc.trace_id,
-                )
+                pass
+            try:
+                from opentelemetry import trace as ot_trace
+                tp = ot_trace.get_tracer_provider()
+                if hasattr(tp, "force_flush"):
+                    tp.force_flush(timeout_millis=2000)
+            except Exception as flush_exc:  # noqa: BLE001
+                logger.debug("[SW Workflow] tracer force_flush failed: %s", flush_exc)
+            set_mlflow_trace_tags(
+                {
+                    "workflow.id": tc.workflow_id,
+                    "workflow.name": workflow_name,
+                    "workflow.execution.id": short_exec,
+                    "dapr.workflow.instance_id": execution_id,
+                    "dapr.workflow.name": workflow_name,
+                    "session.id": short_exec,
+                },
+                trace_name=display_name,
+                trace_id_hex=tc.trace_id,
+            )
             logger.info(
                 "[SW Workflow] MLflow trace tags requested: trace_id=%s name=%s",
                 tc.trace_id or "<none>",

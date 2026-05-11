@@ -489,16 +489,36 @@ def set_mlflow_trace_tags(
         client = mlflow.MlflowClient()
         if session_id:
             clean["session.id"] = session_id
+
+        # Retry helper for set_trace_tag. At workflow entry the
+        # trace_info row may not be committed yet (OTel span flushed but
+        # MLflow's async export queue is still draining) — FK violation
+        # `fk_trace_tags_request_id`. Retry with short backoff so we
+        # block at most ~1.5s before giving up.
+        import time as _time
+        def _set_with_retry(k: str, v: str) -> None:
+            for attempt in range(6):
+                try:
+                    client.set_trace_tag(mlflow_trace_id, k, v)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    err_str = str(exc)
+                    if (
+                        ("ForeignKeyViolation" in err_str or "trace_info" in err_str)
+                        and attempt < 5
+                    ):
+                        _time.sleep(0.25 * (attempt + 1))
+                        continue
+                    logger.debug(
+                        "[Tracing] client.set_trace_tag(%s)=%s failed: %s",
+                        k, v, exc,
+                    )
+                    return
+
         for k, v in clean.items():
-            try:
-                client.set_trace_tag(mlflow_trace_id, k, v)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[Tracing] client.set_trace_tag(%s)=%s failed: %s", k, v, exc)
+            _set_with_retry(k, v)
         if trace_name:
-            try:
-                client.set_trace_tag(mlflow_trace_id, "mlflow.traceName", str(trace_name).strip())
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[Tracing] set_trace_tag(mlflow.traceName) failed: %s", exc)
+            _set_with_retry("mlflow.traceName", str(trace_name).strip())
     except Exception as exc:  # noqa: BLE001
         logger.debug("[Tracing] set_trace_tag fallback path failed: %s", exc)
 
