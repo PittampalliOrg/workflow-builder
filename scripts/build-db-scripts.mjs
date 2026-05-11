@@ -11,6 +11,11 @@ const entries = [
 	"scripts/queue-swebench-environment-validation.ts",
 	"scripts/sync-swebench-environment-builds.ts",
 	"scripts/start-swebench-benchmark-run.ts",
+	// Seeds platform_oauth_apps rows from OAUTH_APP_<SUFFIX>_CLIENT_ID/SECRET
+	// env vars. Wired into Job-db-seed.yaml so OAuth providers (github,
+	// gitea, microsoft-*, google, notion, linkedin) auto-sync after the
+	// dev/github user seed runs.
+	"scripts/sync-oauth-apps.ts",
 ];
 
 const aliasPlugin = {
