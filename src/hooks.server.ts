@@ -1,5 +1,8 @@
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
+import { and, eq } from 'drizzle-orm';
+import { db } from '$lib/server/db';
+import { projectMembers } from '$lib/server/db/schema';
 import { getSession } from '$lib/server/auth';
 import { ensureStartupReady } from '$lib/server/startup';
 import { resolveWorkspaceProjectId } from '$lib/server/workspaces/resolve';
@@ -31,6 +34,46 @@ const authHandle: Handle = async ({ event, resolve }) => {
 				platformId: session.user.platformId,
 			}
 		: null;
+
+	// Stale-JWT healing: when the JWT's `projectId` no longer exists in
+	// project_members for this user (e.g. the database was reseeded but
+	// the browser still holds an older signed JWT), the membership check
+	// in resolveWorkspaceProjectId silently returns null and every
+	// /workspaces/[slug] page 404s, including the OAuth callback resume.
+	// Detect this case once per request, look up any project the user is
+	// currently a member of, and patch locals.session.projectId in-place.
+	// The JWT itself isn't rotated here — that happens on the next
+	// /api/v1/auth/refresh — but the rest of the request sees a valid
+	// projectId so the user can actually use the app.
+	if (event.locals.session && db) {
+		try {
+			const [row] = await db
+				.select({ projectId: projectMembers.projectId })
+				.from(projectMembers)
+				.where(
+					and(
+						eq(projectMembers.projectId, event.locals.session.projectId),
+						eq(projectMembers.userId, event.locals.session.userId),
+					),
+				)
+				.limit(1);
+			if (!row) {
+				const [fallback] = await db
+					.select({ projectId: projectMembers.projectId })
+					.from(projectMembers)
+					.where(eq(projectMembers.userId, event.locals.session.userId))
+					.limit(1);
+				if (fallback) {
+					event.locals.session = {
+						...event.locals.session,
+						projectId: fallback.projectId,
+					};
+				}
+			}
+		} catch {
+			/* membership check is best-effort — never block the request */
+		}
+	}
 
 	// CMA-parity workspace scope: when a request carries an X-Workspace
 	// header (attached by the client-side fetch wrapper for any URL
