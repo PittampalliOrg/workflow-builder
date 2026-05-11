@@ -495,25 +495,39 @@ def _call_deepseek_chat(
     )
     data: dict[str, Any]
     rate_limit_retries = _rate_limit_max_retries()
-    attempt = 0
+    # Empty-content retry: DeepSeek's own JSON-mode docs say
+    # "the API may occasionally return empty content" for `response_format:
+    # json_object` and recommend "handle the occasional empty content
+    # response on the client side"
+    # (https://api-docs.deepseek.com/guides/json_mode). Retry the request
+    # before propagating the failure — typical end-to-end recovery is 1
+    # retry. Configurable via DEEPSEEK_EMPTY_CONTENT_RETRIES (default 3).
+    empty_content_retries = int(
+        os.environ.get("DEEPSEEK_EMPTY_CONTENT_RETRIES", "3")
+    )
+    rate_attempt = 0
+    empty_attempt = 0
+    content: str = ""
+    tool_calls: list[dict[str, Any]] = []
+    finish_reason: str | None = None
+    reasoning_content: str = ""
     try:
         while True:
             req = _make_deepseek_request(url, request_body, headers)
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     data = json.loads(resp.read() or b"{}")
-                break
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
-                if exc.code == 429 and attempt < rate_limit_retries:
+                if exc.code == 429 and rate_attempt < rate_limit_retries:
                     delay = _retry_after_seconds(exc)
-                    attempt += 1
+                    rate_attempt += 1
                     logger.warning(
                         "[deepseek-chat] 429 rate limit from %s; retrying in %.1fs "
                         "(attempt %d/%d): %s",
                         model,
                         delay,
-                        attempt,
+                        rate_attempt,
                         rate_limit_retries,
                         detail[:300],
                     )
@@ -522,6 +536,32 @@ def _call_deepseek_chat(
                 raise RuntimeError(
                     f"DeepSeek Chat API failed ({exc.code}): {detail}"
                 ) from exc
+
+            content, tool_calls, finish_reason, reasoning_content = (
+                _extract_deepseek_response(data)
+            )
+            # Retry on empty-content responses when the caller asked for
+            # structured output. DeepSeek's API treats this as a known
+            # intermittent edge case.
+            if (
+                response_format is not None
+                and not content.strip()
+                and empty_attempt < empty_content_retries
+            ):
+                empty_attempt += 1
+                backoff_s = 0.5 * empty_attempt
+                logger.warning(
+                    "[deepseek-chat] empty content for structured "
+                    "response_format on %s; retrying %d/%d after %.1fs%s",
+                    model,
+                    empty_attempt,
+                    empty_content_retries,
+                    backoff_s,
+                    " (reasoning_content present)" if reasoning_content else "",
+                )
+                time.sleep(backoff_s)
+                continue
+            break
     except Exception as exc:
         elapsed = (time.monotonic() - llm_start) * 1000.0
         _publish_llm_usage(
@@ -534,13 +574,14 @@ def _call_deepseek_chat(
         )
         raise
 
-    content, tool_calls, finish_reason, reasoning_content = _extract_deepseek_response(data)
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     duration_ms = (time.monotonic() - llm_start) * 1000.0
     if response_format is not None and not content.strip():
+        # Exhausted retries — propagate.
         error = (
             "DeepSeek Chat API returned empty assistant content for "
             f"structured response_format={getattr(response_format, '__name__', response_format)!r}"
+            f" after {empty_attempt} empty-content retries"
         )
         if reasoning_content:
             error += "; reasoning_content was present but is not structured output"
