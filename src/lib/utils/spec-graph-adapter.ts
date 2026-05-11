@@ -124,10 +124,26 @@ function convertGraph(
     return aOrder - bOrder;
   });
 
+  // Dedup BEFORE the position-assignment loop. The SDK's buildGraph can
+  // emit the same logical node many times for workflows with `if:`
+  // predicates (each branch retraces the node id). For our async-coding
+  // workflow that's 9 tasks → 68 SDK nodes. If we let y increment per
+  // SDK-node and dedup afterwards, the surviving nodes get sampled
+  // y-positions from whatever index they happened to FIRST appear at,
+  // scattering them vertically. Dedup first, then assign positions
+  // sequentially.
+  const seenSortedIds = new Set<string>();
+  const uniqueSortedNodes = sortedNodes.filter((n) => {
+    const mapped = ID_MAP[n.id] || n.id;
+    if (seenSortedIds.has(mapped)) return false;
+    seenSortedIds.add(mapped);
+    return true;
+  });
+
   let y = 50;
 
-  // Process nodes in sorted order
-  for (const sdkNode of sortedNodes) {
+  // Process nodes in sorted order, assigning positions sequentially
+  for (const sdkNode of uniqueSortedNodes) {
     const mappedId = ID_MAP[sdkNode.id] || sdkNode.id;
     const rawNodeType = NODE_TYPE_MAP[sdkNode.type] || "call";
 
@@ -163,17 +179,9 @@ function convertGraph(
     y += Y_SPACING;
   }
 
-  // Dedup nodes by id. The SDK's buildGraph can emit a synthetic decision
-  // node alongside the real task for task-level `if:` predicates, both
-  // sharing the same task-derived id. Without this filter, SvelteFlow's
-  // keyed each blocks (in particular Minimap.svelte) throw
-  // `each_key_duplicate` on every render, which can lock the canvas.
-  const seenNodeIds = new Set<string>();
-  const dedupedNodes = nodes.filter((n) => {
-    if (seenNodeIds.has(n.id)) return false;
-    seenNodeIds.add(n.id);
-    return true;
-  });
+  // nodes is already dedup'd via the pre-loop filter; keep this set up
+  // for legacy callers that pass through.
+  const dedupedNodes = nodes;
 
   // Process edges (also dedup; same root cause)
   const seenEdgeIds = new Set<string>();
