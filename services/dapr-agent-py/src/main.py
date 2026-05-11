@@ -1792,6 +1792,16 @@ class OpenShellDurableAgent(DurableAgent):
             patch_for_kimi(self.llm)
         except Exception:
             pass
+        # Phase 2c v2: Gateway adapter patches LAST so it's the OUTERMOST
+        # wrapper, getting first look at every generate() call. If a route
+        # is configured for the active component AND the master + per-
+        # provider feature flags are on, the call routes through the
+        # Gateway instead of the legacy adapter. Otherwise falls through.
+        try:
+            from src.gateway_adapter import patch_for_gateway
+            patch_for_gateway(self.llm)
+        except Exception:
+            pass
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
         exec_id = (
@@ -4474,6 +4484,16 @@ try:
     patch_for_kimi(agent.llm)
 except Exception as exc:
     logger.warning("Kimi adapter patch failed: %s", exc)
+
+# Phase 2c v2: Gateway adapter patches LAST so it's the OUTERMOST wrapper —
+# first to inspect every generate() call. If routing isn't configured for
+# the active component, it falls through to whichever per-provider adapter
+# claims it.
+try:
+    from src.gateway_adapter import patch_for_gateway
+    patch_for_gateway(agent.llm)
+except Exception as exc:
+    logger.warning("Gateway adapter patch failed: %s", exc)
 
 runner = AgentRunner()
 
