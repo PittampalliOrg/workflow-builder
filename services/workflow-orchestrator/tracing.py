@@ -446,12 +446,21 @@ def set_mlflow_trace_tags(
         return
     session_id = clean.pop("session.id", None)
 
+    # `mlflow.traceName` is the magic tag key MLflow's UI reads as the
+    # trace's display name. Adding it here so update_current_trace
+    # flushes it along with the other tags — critical at workflow
+    # entry where the trace_info row doesn't exist yet and the
+    # set_trace_tag fallback would fail with FK violation.
+    update_tags = dict(clean)
+    if trace_name:
+        update_tags["mlflow.traceName"] = str(trace_name).strip()
+
     # Try fluent API first (works when MLflow tracing context is active).
     try:
         if session_id:
-            mlflow.update_current_trace(tags=clean, session_id=session_id)
+            mlflow.update_current_trace(tags=update_tags, session_id=session_id)
         else:
-            mlflow.update_current_trace(tags=clean)
+            mlflow.update_current_trace(tags=update_tags)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[Tracing] update_current_trace failed (will fall back to set_trace_tag): %s", exc)
 

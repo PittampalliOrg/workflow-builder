@@ -2836,21 +2836,37 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     # the OTel-derived trace_id (no MLflow tracing context required).
     if not _is_replaying(ctx):
         try:
-            from tracing import set_mlflow_trace_tags
+            from tracing import set_mlflow_trace_tags, start_activity_span
             short_exec = (db_execution_id or execution_id or "").strip()
             display_name = f"{tc.workflow_id}/{short_exec}" if short_exec else tc.workflow_id
-            set_mlflow_trace_tags(
-                {
+            # Wrap the tag set in a tiny OTel span so MLflow's destination
+            # processor creates the `trace_info` row (FK target for
+            # `set_trace_tag`). At workflow entry NO span has been
+            # exported yet, so calling `set_trace_tag` directly fails
+            # with `ForeignKeyViolation` on `fk_trace_tags_request_id`.
+            # Phase 1 tags landed because they fire from inside an
+            # activity span, where the trace row already exists.
+            with start_activity_span(
+                "workflow.init",
+                otel_ctx,
+                attributes={
                     "workflow.id": tc.workflow_id,
                     "workflow.name": workflow_name,
                     "workflow.execution.id": short_exec,
-                    "dapr.workflow.instance_id": execution_id,
-                    "dapr.workflow.name": workflow_name,
-                    "session.id": short_exec,
                 },
-                trace_name=display_name,
-                trace_id_hex=tc.trace_id,
-            )
+            ):
+                set_mlflow_trace_tags(
+                    {
+                        "workflow.id": tc.workflow_id,
+                        "workflow.name": workflow_name,
+                        "workflow.execution.id": short_exec,
+                        "dapr.workflow.instance_id": execution_id,
+                        "dapr.workflow.name": workflow_name,
+                        "session.id": short_exec,
+                    },
+                    trace_name=display_name,
+                    trace_id_hex=tc.trace_id,
+                )
             logger.info(
                 "[SW Workflow] MLflow trace tags requested: trace_id=%s name=%s",
                 tc.trace_id or "<none>",
