@@ -100,8 +100,22 @@ def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
 def set_mlflow_trace_tags(tags: dict[str, Any]) -> None:
     """Promote a curated tag dict onto the active MLflow trace.
 
-    Best-effort: silent no-op when mlflow isn't installed or no active
-    trace exists. Strings only (MLflow's tag API rejects non-strings).
+    Two-stage approach because MLflow's `update_current_trace()` only
+    works when an MLflow-managed tracing context is active — which it
+    isn't for spans created via the bare OTel `tracer.start_as_current_span`
+    API (our case for Dapr workflow activities + dapr-agent-py manual
+    spans). The warning "No active trace found" surfaces when called
+    without that context.
+
+    Strategy:
+      1. Try `mlflow.update_current_trace(tags=..., session_id=...)` —
+         cheap, works for `@mlflow.trace`-decorated paths.
+      2. If that fails OR we have an active OTel span, ALSO call
+         `MlflowClient().set_trace_tag(trace_id, k, v)` per tag, using
+         the OTel trace_id translated to MLflow's `tr-<hex>` format.
+
+    Best-effort: silent no-op when mlflow isn't installed or no OTel
+    span is active. Strings only (MLflow's tag API rejects non-strings).
     """
     if not tags:
         return
@@ -117,15 +131,38 @@ def set_mlflow_trace_tags(tags: dict[str, Any]) -> None:
         import mlflow  # type: ignore[import-not-found]
     except Exception:
         return
-    # MLflow 3.12 exposes update_current_trace at the top level
-    # (mlflow.update_current_trace). Also takes a dedicated `session_id`
-    # kwarg — use it when present so MLflow's Sessions UI clusters
-    # traces correctly.
     session_id = clean.pop(SESSION_ID_ATTRIBUTE, None)
+
+    # Try the fluent API first (works when MLflow tracing context is active).
     try:
         if session_id:
             mlflow.update_current_trace(tags=clean, session_id=session_id)
         else:
             mlflow.update_current_trace(tags=clean)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("update_current_trace(tags=...) failed: %s", exc)
+        logger.debug("update_current_trace failed (will fall back to client.set_trace_tag): %s", exc)
+
+    # Always also call set_trace_tag via the OTel-derived trace_id —
+    # the fluent API silently no-ops when context isn't active. This
+    # belt-and-suspenders pass guarantees the tags land on the trace.
+    try:
+        from opentelemetry import trace as ot_trace
+        span = ot_trace.get_current_span()
+        if span is None:
+            return
+        ctx = span.get_span_context()
+        if not ctx or ctx.trace_id == 0:
+            return
+        otel_trace_hex = format(ctx.trace_id, "032x")
+        mlflow_trace_id = f"tr-{otel_trace_hex}"
+        client = mlflow.MlflowClient()
+        # Re-add session.id (we popped it earlier for the fluent kwarg).
+        if session_id:
+            clean[SESSION_ID_ATTRIBUTE] = session_id
+        for k, v in clean.items():
+            try:
+                client.set_trace_tag(mlflow_trace_id, k, v)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("client.set_trace_tag(%s)=%s failed: %s", k, v, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("set_trace_tag fallback path failed: %s", exc)
