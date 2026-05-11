@@ -173,6 +173,13 @@ def start_interaction_span(user_prompt: str) -> Any:
     span = tracer.start_span("claude_code.interaction", attributes=attrs)
     beta.add_interaction_attributes(span, user_prompt)
 
+    # Promote curated attributes to MLflow trace tags so search filters
+    # like `tag.session.id = '...'` work. Phase 1 of plan
+    # research-the-most-popular-stateful-hinton.md. Best-effort: silent
+    # no-op when mlflow isn't initialised.
+    from .dapr_attributes import set_mlflow_trace_tags, trace_tags_from_attrs
+    set_mlflow_trace_tags(trace_tags_from_attrs(attrs))
+
     handle = _SpanHandle(
         span=span,
         start_time_ns=time.time_ns(),

@@ -362,6 +362,49 @@ def attach_workflow_session(span: Any, session_id: str | None) -> None:
         span.set_attribute(WORKFLOW_EXECUTION_ATTRIBUTE, session_id)
     except Exception:
         pass
+    # Promote to MLflow trace tags so search filters work
+    # (Phase 1 of research-the-most-popular-stateful-hinton.md).
+    # `update_current_trace` is a no-op when MLflow SDK isn't initialised
+    # (e.g. unit-test contexts), so the call is best-effort and never
+    # raises.
+    set_mlflow_trace_tags({
+        SESSION_ID_ATTRIBUTE: session_id,
+        WORKFLOW_EXECUTION_ATTRIBUTE: session_id,
+        "dapr.workflow.instance_id": session_id,
+    })
+
+
+def set_mlflow_trace_tags(tags: dict[str, Any]) -> None:
+    """Promote a curated tag dict onto the active MLflow trace.
+
+    Best-effort: silent no-op when mlflow isn't installed or no active
+    trace exists. Skips empty/None values. Strings only (MLflow's tag
+    API rejects non-string values).
+    """
+    if not tags:
+        return
+    clean = {
+        k: str(v).strip()
+        for k, v in tags.items()
+        if v is not None and isinstance(v, (str, int, float))
+        and str(v).strip()
+    }
+    if not clean:
+        return
+    try:
+        import mlflow  # type: ignore[import-not-found]
+    except Exception:
+        return
+    # MLflow 3.12 exposes update_current_trace at the top level
+    # (mlflow.update_current_trace, not mlflow.tracing.update_current_trace).
+    session_id = clean.pop("session.id", None)
+    try:
+        if session_id:
+            mlflow.update_current_trace(tags=clean, session_id=session_id)
+        else:
+            mlflow.update_current_trace(tags=clean)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Tracing] update_current_trace(tags=...) failed: %s", exc)
 
 
 def _extract_context(carrier: dict[str, str] | None):
