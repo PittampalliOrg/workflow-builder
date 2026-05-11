@@ -376,6 +376,19 @@ def _call_gateway_chat(
         # Generic OpenAI shim accepts response_format as JSON-object hint.
         body["response_format"] = {"type": "json_object"}
 
+    # DeepSeek-specific: thinking mode is enabled by default on V4 Pro/Flash
+    # (https://api-docs.deepseek.com/guides/thinking_mode). When tools or
+    # structured output are involved, DeepSeek's thinking-mode response shape
+    # is not parseable by MLflow Gateway's `application/json`-only content-type
+    # check (`mlflow/gateway/providers/utils.py:60-69`) — it returns
+    # `application/octet-stream`, Gateway 502s. Mirrors the legacy
+    # `deepseek_adapter.py:_apply_deepseek_output_mode` logic that ALSO disables
+    # thinking when tools or structured output are present. Plain chat without
+    # tools would keep thinking enabled but the workflow agent path always
+    # passes tools, so disable universally for deepseek routes.
+    if route.startswith("deepseek-") or route.startswith("foundry-deepseek-"):
+        body["thinking"] = {"type": "disabled"}
+
     logger.info(
         "[gateway-adapter] %s → route=%s msgs=%d tools=%d",
         component,
