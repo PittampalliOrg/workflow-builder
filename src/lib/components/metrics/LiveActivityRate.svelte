@@ -118,7 +118,7 @@
 		<Tooltip>
 			<TooltipTrigger>
 				<div
-					class="group inline-flex h-7 items-center gap-1.5 rounded-md border bg-background/60 px-2 text-xs shadow-sm backdrop-blur-sm transition-colors"
+					class="group inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border bg-background/60 px-2 text-xs shadow-sm backdrop-blur-sm transition-colors"
 					class:border-emerald-500-40={live}
 					class:bg-emerald-500-10={live}
 					class:border-amber-500-30={idle}
