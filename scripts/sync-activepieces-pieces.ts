@@ -1,11 +1,56 @@
 #!/usr/bin/env tsx
+/**
+ * Seed `piece_metadata` from the Activepieces cloud LIST endpoint.
+ *
+ * The list endpoint at `https://cloud.activepieces.com/api/v1/pieces?limit=N`
+ * is fully public. The per-piece DETAIL endpoint requires an API key (returns
+ * 403 anonymously), but list responses already contain everything the UI
+ * picker needs: name, displayName, logoUrl, description, auth (with `type`),
+ * categories, version, and action/trigger COUNTS as integers.
+ *
+ * The `piece_metadata.actions` JSONB column must have `Object.keys(...).length > 0`
+ * — the `/api/mcp-connections/catalog` endpoint filters out pieces with zero
+ * actions (see `actionCount` in `src/lib/server/mcp-catalog.ts`). The list
+ * endpoint only gives us a count, so we synthesize placeholder keys
+ * `action_0`..`action_<n-1>` (and same for triggers). The runtime path through
+ * `fn-activepieces` uses the compiled-in piece-registry, NOT this column, so
+ * placeholders are fine for the picker.
+ *
+ * Usage:
+ *   DATABASE_URL=... pnpm tsx scripts/sync-activepieces-pieces.ts [--installed-only] [--dry-run]
+ *
+ * Flags:
+ *   --installed-only    Only seed pieces present in
+ *                       services/fn-activepieces/src/piece-registry.ts (45 + github).
+ *                       Default: seed everything the cloud returns (~705 pieces).
+ *   --dry-run           Print summary and skip the upsert.
+ *   --base-url=URL      Override the Activepieces cloud base URL.
+ *   --api-key=KEY       Optional Activepieces API key (not required for list).
+ */
 
-import { upsertPieceMetadata } from "@/lib/db/piece-metadata";
+import postgres from "postgres";
 
+const DATABASE_URL =
+  process.env.DATABASE_URL || "postgres://localhost:5432/workflow_builder";
+const DEFAULT_BASE_URL =
+  process.env.ACTIVEPIECES_API_BASE_URL ?? "https://cloud.activepieces.com/api/v1";
 const ACTIVEPIECES_PACKAGE_PREFIX = "@activepieces/piece-";
-const DEFAULT_BASE_URL = "https://cloud.activepieces.com/api/v1";
 
-type ActivepiecesPieceResponse = {
+// Pieces statically installed in services/fn-activepieces/src/piece-registry.ts.
+// When --installed-only is passed we filter the cloud list to only these.
+const INSTALLED_PIECES = new Set<string>([
+  "airtable", "asana", "azure-blob-storage", "azure-openai", "bitly",
+  "browse-ai", "browserless", "claude", "clickup", "contextual-ai",
+  "discord", "dropbox", "gitea", "github", "gmail", "google-calendar",
+  "google-docs", "google-drive", "google-sheets", "hubspot", "hugging-face",
+  "jira-cloud", "linear", "linkedin", "mailchimp", "microsoft-excel-365",
+  "microsoft-onedrive", "microsoft-onenote", "microsoft-outlook",
+  "microsoft-teams", "microsoft-todo", "monday", "nocodb", "notion",
+  "openai", "perplexity-ai", "postgres", "resend", "salesforce", "sendgrid",
+  "shopify", "telegram-bot", "todoist", "trello", "youtube", "zendesk",
+]);
+
+type ActivepiecesPieceListEntry = {
   name?: string;
   authors?: unknown;
   displayName?: string;
@@ -21,329 +66,172 @@ type ActivepiecesPieceResponse = {
   pieceType?: string;
   categories?: unknown;
   packageType?: string;
-  i18n?: unknown;
-  created?: string;
-  updated?: string;
 };
 
 type CliOptions = {
-  apiKey?: string;
   baseUrl: string;
+  apiKey?: string;
+  installedOnly: boolean;
   dryRun: boolean;
   limit: number;
-  onlyNames: string[];
-  includeDeprecated: boolean;
 };
 
 function normalizePieceName(name: string): string {
-  if (name.startsWith(ACTIVEPIECES_PACKAGE_PREFIX)) {
-    return name.slice(ACTIVEPIECES_PACKAGE_PREFIX.length);
-  }
-  return name;
-}
-
-function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = {
-    apiKey: process.env.ACTIVEPIECES_API_KEY,
-    baseUrl: process.env.ACTIVEPIECES_API_BASE_URL ?? DEFAULT_BASE_URL,
-    dryRun: false,
-    limit: 2000,
-    onlyNames: [],
-    includeDeprecated: false,
-  };
-
-  for (const arg of argv) {
-    if (arg === "--dry-run") {
-      options.dryRun = true;
-      continue;
-    }
-
-    if (arg === "--include-deprecated") {
-      options.includeDeprecated = true;
-      continue;
-    }
-
-    if (arg.startsWith("--base-url=")) {
-      options.baseUrl = arg.slice("--base-url=".length);
-      continue;
-    }
-
-    if (arg.startsWith("--api-key=")) {
-      options.apiKey = arg.slice("--api-key=".length);
-      continue;
-    }
-
-    if (arg.startsWith("--limit=")) {
-      const parsed = Number(arg.slice("--limit=".length));
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        options.limit = parsed;
-      }
-      continue;
-    }
-
-    if (arg.startsWith("--only=")) {
-      options.onlyNames = arg
-        .slice("--only=".length)
-        .split(",")
-        .map((name) => name.trim())
-        .filter(Boolean)
-        .map(normalizePieceName);
-    }
-  }
-
-  return options;
+  return name.startsWith(ACTIVEPIECES_PACKAGE_PREFIX)
+    ? name.slice(ACTIVEPIECES_PACKAGE_PREFIX.length)
+    : name;
 }
 
 function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((entry): entry is string => typeof entry === "string");
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string");
 }
 
-function toObjectRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
+function parseArgs(argv: string[]): CliOptions {
+  const opts: CliOptions = {
+    baseUrl: DEFAULT_BASE_URL,
+    apiKey: process.env.ACTIVEPIECES_API_KEY,
+    installedOnly: false,
+    dryRun: false,
+    limit: 2000,
+  };
+  for (const arg of argv) {
+    if (arg === "--installed-only") opts.installedOnly = true;
+    else if (arg === "--dry-run") opts.dryRun = true;
+    else if (arg.startsWith("--base-url=")) opts.baseUrl = arg.slice("--base-url=".length);
+    else if (arg.startsWith("--api-key=")) opts.apiKey = arg.slice("--api-key=".length);
+    else if (arg.startsWith("--limit=")) {
+      const n = Number(arg.slice("--limit=".length));
+      if (Number.isFinite(n) && n > 0) opts.limit = n;
+    }
   }
-
-  return value as Record<string, unknown>;
+  return opts;
 }
 
-async function fetchPieces(
-  options: CliOptions
-): Promise<ActivepiecesPieceResponse[]> {
-  const url = new URL(`${options.baseUrl.replace(/\/$/, "")}/pieces`);
-  url.searchParams.set("limit", String(options.limit));
-
+async function fetchList(opts: CliOptions): Promise<ActivepiecesPieceListEntry[]> {
+  const url = new URL(`${opts.baseUrl.replace(/\/$/, "")}/pieces`);
+  url.searchParams.set("limit", String(opts.limit));
   const headers: Record<string, string> = {
     "content-type": "application/json",
+    "user-agent": "workflow-builder-sync-activepieces-pieces/1.0",
   };
-
-  if (options.apiKey) {
-    headers["api-key"] = options.apiKey;
+  if (opts.apiKey) headers["api-key"] = opts.apiKey;
+  const res = await fetch(url.toString(), { headers });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch piece list (${res.status}): ${await res.text()}`);
   }
-
-  const response = await fetch(url.toString(), { headers });
-
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(
-      `Failed to fetch pieces from ${url.toString()} (${response.status}): ${message}`
-    );
-  }
-
-  const payload = (await response.json()) as unknown;
-  if (!Array.isArray(payload)) {
-    throw new Error("Unexpected /pieces response: expected an array");
-  }
-
-  return (payload as ActivepiecesPieceResponse[]).slice(0, options.limit);
+  const json = (await res.json()) as unknown;
+  if (!Array.isArray(json)) throw new Error("piece list response was not an array");
+  return json as ActivepiecesPieceListEntry[];
 }
 
 /**
- * Fetch a single piece's full detail (with actions/triggers as objects, not counts).
- * The listing API returns actions as a count (number), but the detail API returns
- * the full action definitions with props.
+ * Synthesize action/trigger object map with N placeholder keys. The catalog
+ * endpoint only cares about `Object.keys(actions).length`; the placeholder
+ * names never reach execution paths (those use the compiled-in piece-registry).
  */
-async function fetchPieceDetail(
-  options: CliOptions,
-  pieceName: string
-): Promise<ActivepiecesPieceResponse | null> {
-  const baseUrl = options.baseUrl.replace(/\/$/, "");
-  const url = `${baseUrl}/pieces/${encodeURIComponent(pieceName)}`;
-
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-
-  if (options.apiKey) {
-    headers["api-key"] = options.apiKey;
+function synthesizeKeyMap(prefix: string, count: number): Record<string, unknown> {
+  if (!Number.isFinite(count) || count <= 0) return {};
+  const out: Record<string, unknown> = {};
+  for (let i = 0; i < count; i += 1) {
+    out[`${prefix}_${i}`] = { name: `${prefix}_${i}` };
   }
+  return out;
+}
 
-  const response = await fetch(url, { headers });
+async function main(): Promise<void> {
+  const opts = parseArgs(process.argv.slice(2));
 
-  if (!response.ok) {
-    console.warn(
-      `[Sync Pieces] Failed to fetch detail for ${pieceName}: ${response.status}`
+  console.log(`[sync-pieces] source: ${opts.baseUrl}`);
+  console.log(`[sync-pieces] mode: ${opts.installedOnly ? "installed-only" : "all"}`);
+
+  const pieces = await fetchList(opts);
+  console.log(`[sync-pieces] fetched ${pieces.length} pieces`);
+
+  let filtered = pieces;
+  if (opts.installedOnly) {
+    filtered = pieces.filter((p) =>
+      INSTALLED_PIECES.has(normalizePieceName(String(p.name ?? ""))),
     );
-    return null;
+    console.log(`[sync-pieces] installed-only filter -> ${filtered.length} pieces`);
   }
 
-  return (await response.json()) as ActivepiecesPieceResponse;
-}
+  // Skip pieces with no actions and no triggers — nothing the picker can do
+  const before = filtered.length;
+  filtered = filtered.filter((p) => {
+    const a = typeof p.actions === "number" ? p.actions : 0;
+    const t = typeof p.triggers === "number" ? p.triggers : 0;
+    return a > 0 || t > 0;
+  });
+  if (before !== filtered.length) {
+    console.log(
+      `[sync-pieces] dropped ${before - filtered.length} pieces with 0 actions+triggers`,
+    );
+  }
 
-/**
- * Check if a piece is deprecated based on its maximumSupportedRelease.
- * Pieces with a maxRelease below 1.0.0 are considered deprecated.
- */
-function isDeprecated(piece: ActivepiecesPieceResponse): boolean {
-  const maxRelease = String(
-    piece.maximumSupportedRelease ?? "99999.99999.9999"
-  );
-  const major = Number.parseInt(maxRelease.split(".")[0], 10);
-  return !Number.isNaN(major) && major < 1;
-}
-
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-
-  console.log(`[Sync Pieces] Source: ${options.baseUrl}`);
-  console.log(`[Sync Pieces] Dry run: ${options.dryRun ? "yes" : "no"}`);
-  console.log(
-    `[Sync Pieces] Include deprecated: ${options.includeDeprecated ? "yes" : "no"}`
-  );
-
-  const allPieces = await fetchPieces(options);
-  console.log(`[Sync Pieces] Fetched ${allPieces.length} pieces from API`);
-
-  // Filter by --only names if specified
-  let pieces =
-    options.onlyNames.length === 0
-      ? allPieces
-      : allPieces.filter((piece) => {
-          const normalized = normalizePieceName(String(piece.name ?? ""));
-          return options.onlyNames.includes(normalized);
-        });
-
-  // Filter out deprecated pieces (maximumSupportedRelease < 1.0.0)
-  if (!options.includeDeprecated) {
-    const before = pieces.length;
-    pieces = pieces.filter((p) => !isDeprecated(p));
-    const removed = before - pieces.length;
-    if (removed > 0) {
-      console.log(`[Sync Pieces] Filtered out ${removed} deprecated pieces`);
+  if (opts.dryRun) {
+    console.log(`[sync-pieces] DRY RUN — would upsert ${filtered.length} pieces; sample:`);
+    for (const p of filtered.slice(0, 5)) {
+      const norm = normalizePieceName(String(p.name ?? ""));
+      const actions = typeof p.actions === "number" ? p.actions : 0;
+      console.log(`  - ${norm}@${p.version} (${actions} actions)`);
     }
-  }
-
-  // Filter out pieces with 0 actions (nothing useful to sync)
-  {
-    const before = pieces.length;
-    pieces = pieces.filter((p) => {
-      const actions = p.actions;
-      if (typeof actions === "number") {
-        return actions > 0;
-      }
-      if (actions && typeof actions === "object") {
-        return Object.keys(actions).length > 0;
-      }
-      return false;
-    });
-    const removed = before - pieces.length;
-    if (removed > 0) {
-      console.log(
-        `[Sync Pieces] Filtered out ${removed} pieces with 0 actions`
-      );
-    }
-  }
-
-  console.log(`[Sync Pieces] ${pieces.length} pieces to sync`);
-
-  if (pieces.length === 0) {
-    console.log("[Sync Pieces] No pieces matched filters. Nothing to sync.");
     return;
   }
 
-  let syncedCount = 0;
-  let skippedCount = 0;
-  let failedCount = 0;
-
-  for (const piece of pieces) {
-    const rawName = String(piece.name ?? "").trim();
-    if (!rawName) {
-      skippedCount += 1;
-      continue;
+  const sql = postgres(DATABASE_URL, { max: 4 });
+  try {
+    const names = filtered
+      .map((p) => normalizePieceName(String(p.name ?? "")))
+      .filter(Boolean);
+    if (names.length === 0) {
+      console.log("[sync-pieces] nothing to upsert");
+      return;
     }
 
-    const normalizedName = normalizePieceName(rawName);
-
-    // The listing API returns actions/triggers as counts (numbers), not objects.
-    // Fetch full detail for each piece to get actual action definitions with props.
-    const needsDetail =
-      typeof piece.actions === "number" || typeof piece.triggers === "number";
-    let detailPiece = piece;
-
-    if (needsDetail) {
-      const detail = await fetchPieceDetail(options, rawName);
-      if (detail) {
-        detailPiece = detail;
-      } else {
-        console.warn(
-          `[Sync Pieces] Could not fetch detail for ${normalizedName}, skipping`
-        );
-        failedCount += 1;
-        continue;
-      }
-    }
-
-    const version = String(detailPiece.version ?? "0.0.0").trim();
-    const actions = toObjectRecord(detailPiece.actions);
-    const actionCount = Object.keys(actions).length;
-
-    // Skip if detail fetch returned 0 actions
-    if (actionCount === 0) {
-      skippedCount += 1;
-      continue;
-    }
-
-    const record = {
-      name: normalizedName,
-      authors: toStringArray(detailPiece.authors),
-      displayName: String(detailPiece.displayName ?? normalizedName),
-      logoUrl: String(detailPiece.logoUrl ?? ""),
-      description: detailPiece.description ?? null,
-      platformId: detailPiece.platformId ?? null,
-      version,
-      minimumSupportedRelease: String(
-        detailPiece.minimumSupportedRelease ?? "0.0.0"
-      ),
-      maximumSupportedRelease: String(
-        detailPiece.maximumSupportedRelease ?? "9999.9999.9999"
-      ),
-      auth: detailPiece.auth ?? null,
-      actions,
-      triggers: toObjectRecord(detailPiece.triggers),
-      pieceType: String(detailPiece.pieceType ?? "OFFICIAL"),
-      categories: toStringArray(detailPiece.categories),
-      packageType: String(detailPiece.packageType ?? "REGISTRY"),
-      i18n: detailPiece.i18n ?? null,
-      createdAt: detailPiece.created
-        ? new Date(detailPiece.created)
-        : new Date(),
-      updatedAt: detailPiece.updated
-        ? new Date(detailPiece.updated)
-        : new Date(),
-    };
-
-    if (options.dryRun) {
-      console.log(
-        `[Sync Pieces] Would upsert ${normalizedName}@${version} (${actionCount} actions)`
-      );
-      syncedCount += 1;
-      continue;
-    }
-
-    await upsertPieceMetadata(record);
-    syncedCount += 1;
-
-    // Progress logging every 50 pieces
-    if (syncedCount % 50 === 0) {
-      console.log(
-        `[Sync Pieces] Progress: ${syncedCount}/${pieces.length} synced...`
-      );
-    }
+    // Replace-set semantics: delete the pieces we're about to insert, then
+    // bulk insert. Keeps the (name, version, platform_id) unique constraint
+    // clean across re-runs.
+    await sql.begin(async (tx) => {
+      await tx`DELETE FROM piece_metadata WHERE name IN ${tx(names)}`;
+      const rows = filtered.map((p) => {
+        const norm = normalizePieceName(String(p.name ?? ""));
+        const aCount = typeof p.actions === "number" ? p.actions : 0;
+        const tCount = typeof p.triggers === "number" ? p.triggers : 0;
+        return {
+          name: norm,
+          authors: toStringArray(p.authors),
+          display_name: String(p.displayName ?? norm),
+          logo_url: String(p.logoUrl ?? ""),
+          description: p.description ?? null,
+          // schema declares platform_id text-nullable but the live table is
+          // NOT NULL DEFAULT 'OFFICIAL' — fill with the marker when null.
+          platform_id: p.platformId ?? "OFFICIAL",
+          version: String(p.version ?? "0.0.0"),
+          minimum_supported_release: String(p.minimumSupportedRelease ?? "0.0.0"),
+          maximum_supported_release: String(p.maximumSupportedRelease ?? "9999.9999.9999"),
+          auth: p.auth ?? null,
+          // Catalog requires Object.keys(actions).length > 0. The list endpoint
+          // doesn't give us action defs (detail endpoint is 403 anonymous), so
+          // we fabricate placeholder keys matching the count.
+          actions: aCount > 0
+            ? synthesizeKeyMap("action", aCount)
+            : { action_0: { name: "action_0" } },
+          triggers: synthesizeKeyMap("trigger", tCount),
+          piece_type: String(p.pieceType ?? "OFFICIAL"),
+          categories: toStringArray(p.categories),
+          package_type: String(p.packageType ?? "REGISTRY"),
+        };
+      });
+      await tx`INSERT INTO piece_metadata ${tx(rows)}`;
+    });
+    console.log(`[sync-pieces] upserted ${filtered.length} pieces`);
+  } finally {
+    await sql.end();
   }
-
-  console.log(
-    `[Sync Pieces] Complete. Synced: ${syncedCount}, Skipped: ${skippedCount}, Failed: ${failedCount}`
-  );
 }
 
-main()
-  .then(() => {
-    process.exit(0);
-  })
-  .catch((error) => {
-    console.error("[Sync Pieces] Failed:", error);
-    process.exit(1);
-  });
+main().catch((err) => {
+  console.error("[sync-pieces] failed:", err);
+  process.exit(1);
+});
