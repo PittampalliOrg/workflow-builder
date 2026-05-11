@@ -3373,6 +3373,171 @@ def post_observability_feedback(request: ObservabilityFeedbackRequest):
         )
 
 
+class ObservabilityJudgeRequest(BaseModel):
+    """POST /api/v2/observability/judge body.
+
+    Phase 3c of plan research-the-most-popular-stateful-hinton.md.
+    Used by the BFF's mlflow_judge grader runner to invoke
+    `mlflow.genai.judges.llm_judge(...)` against a prompt + model.
+    """
+
+    model: str = Field(..., description="LiteLLM-style model spec, e.g. 'anthropic:claude-opus-4-7'")
+    prompt: str = Field(..., description="Rubric / instructions for the judge LLM")
+    name: str | None = Field(default=None, description="Optional name for the assessment")
+    metadata: dict[str, Any] | None = None
+
+
+@app.post("/api/v2/observability/judge")
+def post_observability_judge(request: ObservabilityJudgeRequest):
+    """
+    Invoke an LLM-as-a-judge against a rubric prompt + model.
+
+    POST /api/v2/observability/judge
+
+    Phase 3c routes through the MLflow AI Gateway (Phase 2c v1) instead
+    of `mlflow.genai.judges.make_judge` — which requires pandas/numpy
+    that our skinny image doesn't carry. The Gateway is configured with
+    all our providers (Anthropic/OpenAI/DeepSeek/NVIDIA/Kimi/Alibaba/
+    Together/Foundry/Gemini), so the same `model` string the caller
+    sends maps to a Gateway route.
+
+    Returns {score, rationale, raw}: score is parsed from the assistant
+    response (numeric, or a GOOD/PASS=1.0 / BAD/FAIL=0.0 verdict word);
+    raw carries the full Gateway response payload for debugging.
+    """
+    import re as _re
+    import urllib.request
+    import urllib.error
+
+    gateway_base = (os.environ.get("MLFLOW_AI_GATEWAY_BASE_URL") or "").strip().rstrip("/")
+    if not gateway_base:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "mlflow_ai_gateway_base_url_unset"},
+        )
+
+    # The Gateway exposes an OpenAI-compatible shim at /v1/chat/completions.
+    # The `model` value selects the Gateway route (anthropic-opus,
+    # deepseek-v4-pro, etc.). Caller can pass a bare route name OR
+    # `provider:/model-id` and we'll extract the route from the suffix.
+    route = request.model
+    if ":" in route:
+        # Strip a provider prefix like `anthropic:/claude-haiku-4-5` —
+        # the route name itself doesn't include the colon.
+        route = route.split(":", 1)[1].lstrip("/").replace("/", "-")
+
+    rubric = (
+        f"{request.prompt.strip()}\n\n"
+        "Respond with EXACTLY one verdict on the FIRST line: either GOOD or BAD.\n"
+        "Then on the next line, give a 1-2 sentence rationale.\n"
+        "Output format:\n"
+        "VERDICT: GOOD|BAD\n"
+        "RATIONALE: <reason>"
+    )
+    body = {
+        "model": route,
+        "messages": [{"role": "user", "content": rubric}],
+        "max_tokens": 200,
+        "temperature": 0.0,
+    }
+
+    try:
+        req = urllib.request.Request(
+            f"{gateway_base}/v1/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw_text = resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode() if exc.fp else ""
+        logger.warning("[observability/judge] gateway HTTPError %s: %s", exc.code, body_text[:300])
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "mlflow_gateway_http_error",
+                "status": exc.code,
+                "body": body_text[:500],
+                "model": request.model,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[observability/judge] gateway request failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "mlflow_gateway_failed", "error": str(exc), "model": request.model},
+        )
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "mlflow_gateway_invalid_json", "error": str(exc), "body": raw_text[:300]},
+        )
+
+    content = ""
+    try:
+        choice = payload["choices"][0]
+        msg = choice.get("message", {})
+        content = msg.get("content", "") or ""
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[observability/judge] response shape unexpected: %s", exc)
+
+    score: float | None = None
+    rationale: str | None = None
+    # Look for VERDICT: <verb> on any line; tolerant of leading whitespace.
+    m = _re.search(r"VERDICT\s*[:\-]\s*(\w+)", content, flags=_re.I)
+    if m:
+        verdict = m.group(1).strip().upper()
+        score = {"GOOD": 1.0, "PASS": 1.0, "YES": 1.0, "BAD": 0.0, "FAIL": 0.0, "NO": 0.0}.get(verdict)
+    if score is None:
+        # Fall back to scanning for a bare GOOD/BAD anywhere in content.
+        if _re.search(r"\b(good|pass|yes)\b", content, flags=_re.I):
+            score = 1.0
+        elif _re.search(r"\b(bad|fail|no)\b", content, flags=_re.I):
+            score = 0.0
+    rm = _re.search(r"RATIONALE\s*[:\-]\s*(.*)", content, flags=_re.I | _re.S)
+    if rm:
+        rationale = rm.group(1).strip()
+    else:
+        rationale = content.strip() or None
+
+    # Record the judge's verdict as an MLflow assessment if a trace_id
+    # is present in metadata — useful when this judge is called from an
+    # evaluation tied to a specific trace.
+    trace_id_for_assessment: str | None = None
+    if request.metadata and isinstance(request.metadata, dict):
+        tid = request.metadata.get("trace_id")
+        if isinstance(tid, str) and tid.strip():
+            trace_id_for_assessment = tid.strip()
+    if trace_id_for_assessment and score is not None:
+        try:
+            import mlflow as _mlflow  # type: ignore[import-not-found]
+            from mlflow.entities.assessment_source import AssessmentSource as _AS  # type: ignore[import-not-found]
+
+            tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+            if tracking_uri:
+                _mlflow.set_tracking_uri(tracking_uri)
+                _mlflow.log_feedback(
+                    trace_id=trace_id_for_assessment,
+                    name=request.name or "mlflow_judge",
+                    value=score,
+                    source=_AS(source_type="LLM_JUDGE", source_id=request.model),
+                    rationale=rationale,
+                    metadata=request.metadata,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[observability/judge] log_feedback side-effect failed: %s", exc)
+
+    return {
+        "score": score,
+        "rationale": rationale,
+        "raw": payload,
+    }
+
+
 # --- Pub/Sub Subscription Routes ---
 
 @app.post("/subscriptions/agent-events")

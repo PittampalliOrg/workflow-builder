@@ -37,6 +37,11 @@ export async function runGraderAsync(
 					return await runEndpointGrader(grader, context);
 				}
 				break;
+			case "mlflow_judge":
+				// Phase 3c of plan research-the-most-popular-stateful-hinton.md.
+				// Dispatches to the orchestrator's /api/v2/observability/judge
+				// endpoint which wraps mlflow.genai.judges.llm_judge(...).
+				return await runMlflowJudgeGrader(grader, context);
 			default:
 				break;
 		}
@@ -429,6 +434,120 @@ async function runEndpointGrader(
 		passed: score >= passThreshold,
 		details: { rawScore: score },
 	};
+}
+
+/* -------------------------------------------------------------------------- */
+/* mlflow_judge — LLM-as-a-judge via mlflow.genai.judges.llm_judge            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Run a `mlflow_judge` grader. Phase 3c of plan
+ * research-the-most-popular-stateful-hinton.md. Posts to the
+ * orchestrator's /api/v2/observability/judge endpoint which calls
+ * `mlflow.genai.judges.llm_judge(model=..., prompt=..., ...)`.
+ *
+ * Expected grader.config:
+ *   - model: str (e.g. "anthropic:claude-opus-4-7" or a route name)
+ *   - prompt: str — rubric / instructions; supports {{input}}, {{expected}},
+ *     {{actual}} template variables resolved against context
+ *   - passThreshold (optional, default 0.5): float
+ */
+async function runMlflowJudgeGrader(
+	grader: GraderDefinition,
+	context: GraderContext,
+): Promise<GraderResult> {
+	const model = String(grader.config.model ?? "").trim();
+	const promptTemplate = String(grader.config.prompt ?? "").trim();
+	if (!model) return skipped(grader, "mlflow_judge: missing config.model");
+	if (!promptTemplate) return skipped(grader, "mlflow_judge: missing config.prompt");
+
+	const passThreshold =
+		typeof grader.passThreshold === "number"
+			? grader.passThreshold
+			: typeof grader.config.passThreshold === "number"
+				? (grader.config.passThreshold as number)
+				: 0.5;
+
+	const variables: Record<string, unknown> = {
+		input: stringifyForTemplate(context.input),
+		expected: stringifyForTemplate(context.expectedOutput),
+		actual: stringifyForTemplate(context.generatedOutput),
+		...sampleFromContext(context),
+	};
+	const prompt = renderTemplate(promptTemplate, variables);
+
+	const orchestratorUrl = (env.WORKFLOW_ORCHESTRATOR_URL ?? "").trim() || "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080";
+	const url = `${orchestratorUrl}/api/v2/observability/judge`;
+	const body = {
+		model,
+		prompt,
+		name: grader.name,
+		metadata: {
+			grader_id: grader.id ?? null,
+			eval_grader_type: "mlflow_judge",
+		},
+	};
+
+	let response: Response;
+	try {
+		response = await daprFetch(url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	} catch (err) {
+		return {
+			id: grader.id,
+			name: grader.name,
+			type: grader.type,
+			score: 0,
+			passed: false,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+
+	if (!response.ok) {
+		const text = await response.text().catch(() => "");
+		return {
+			id: grader.id,
+			name: grader.name,
+			type: grader.type,
+			score: 0,
+			passed: false,
+			error: `orchestrator returned ${response.status}: ${text.slice(0, 300)}`,
+		};
+	}
+
+	const payload = (await response.json()) as {
+		score?: number | null;
+		rationale?: string | null;
+		raw?: unknown;
+	};
+	const score = typeof payload.score === "number" ? payload.score : null;
+
+	return {
+		id: grader.id,
+		name: grader.name,
+		type: grader.type,
+		score,
+		passed: typeof score === "number" ? score >= passThreshold : false,
+		details: {
+			model,
+			rationale: payload.rationale ?? null,
+			passThreshold,
+			raw: payload.raw ?? null,
+		},
+	};
+}
+
+function stringifyForTemplate(value: unknown): string {
+	if (value == null) return "";
+	if (typeof value === "string") return value;
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
 }
 
 /* -------------------------------------------------------------------------- */

@@ -3323,7 +3323,8 @@ export type EvaluationGraderType =
 	| "score_model"
 	| "python"
 	| "multi"
-	| "external_harness";
+	| "external_harness"
+	| "mlflow_judge";
 
 export type EvaluationRunStatus =
 	| "queued"
