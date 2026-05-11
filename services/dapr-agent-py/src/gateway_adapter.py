@@ -43,6 +43,7 @@ import urllib.request
 from src.provider_conformance import (
     build_llm_chat_response,
     parse_structured_response,
+    strict_json_schema,
 )
 
 logger = logging.getLogger(__name__)
@@ -471,6 +472,127 @@ def _call_gateway_chat(
 # ---------------------------------------------------------------------------
 
 
+def _schema_for_response_format(response_format: Any) -> dict[str, Any]:
+    """Extract a JSON schema from a Pydantic response_format class for use
+    as a forced tool_call parameter schema. Falls back to a permissive
+    `{"type": "object"}` if the class doesn't expose `model_json_schema`."""
+    try:
+        schema = response_format.model_json_schema()
+    except Exception:
+        return {"type": "object"}
+    return strict_json_schema(schema)
+
+
+def _response_format_tool_name(response_format: Any) -> str:
+    """Derive a stable, route-friendly tool name from the response_format
+    class name. e.g. `ConversationSummary` → `emit_conversation_summary`."""
+    raw = getattr(response_format, "__name__", "response")
+    import re as _re
+
+    snake = _re.sub(r"(?<!^)(?=[A-Z])", "_", raw).lower()
+    return f"emit_{snake}"
+
+
+def _call_via_tool_emit(
+    component: str,
+    route: str,
+    response_format: Any,
+    *,
+    prompt: Any,
+    raw_messages: Any,
+    max_tokens: int | None,
+) -> Any:
+    """Phase 2c v2 reliability layer for structured-output calls.
+
+    DeepSeek's `response_format: json_object` mode has a known
+    intermittent-empty-response bug (per DeepSeek's own docs:
+    https://api-docs.deepseek.com/guides/json_mode). And MLflow Gateway
+    can't parse DeepSeek's structured-output chunked octet-stream response
+    in the first place. Tool-calling is significantly more reliable across
+    providers AND MLflow Gateway handles it cleanly.
+
+    Strategy: when the caller asks for a structured Pydantic
+    `response_format`, transform the request into a forced tool-call where
+    the tool's parameter schema IS the response_format's JSON schema.
+    Provider returns a tool_call whose `arguments` field is JSON matching
+    the schema. Parse those args back into the Pydantic instance.
+    """
+    schema = _schema_for_response_format(response_format)
+    tool_name = _response_format_tool_name(response_format)
+    emit_tool = [
+        {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": (
+                    f"Emit a structured {getattr(response_format, '__name__', 'response')} "
+                    "object matching the schema. ALWAYS call this tool to deliver "
+                    "your response."
+                ),
+                "parameters": schema,
+            },
+        }
+    ]
+
+    # NOTE: tool_choice MUST be "auto", not a forced {type:function, name:...}
+    # object. Verified 2026-05-11 from a dev pod via direct curl: DeepSeek +
+    # Gateway returns HTTP 502 octet-stream for forced tool_choice but works
+    # cleanly with "auto" when the user message instructs the model to call
+    # the tool. Forced tool_choice triggers DeepSeek to stream the response,
+    # which MLflow Gateway's `application/json`-only check rejects.
+    messages = _normalize_messages(
+        prompt,
+        raw_messages if isinstance(raw_messages, list) else None,
+    )
+    # Append a strong tool-use directive on the last user message so the model
+    # reliably emits the tool_call. The legacy adapter used response_format +
+    # message rewriting; this is the tool-calling equivalent.
+    if messages:
+        # Find last user message and append directive (idempotent — won't
+        # repeat if already present from a prior attempt).
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "user":
+                content = str(messages[idx].get("content") or "")
+                directive = (
+                    f"\n\nCall the `{tool_name}` tool with the structured "
+                    f"output. Do not respond with free text."
+                )
+                if directive.strip() not in content:
+                    messages[idx] = {
+                        **messages[idx],
+                        "content": content + directive,
+                    }
+                break
+
+    logger.info(
+        "[gateway-adapter] %s: response_format=%s → tool_emit=%s (auto) via Gateway",
+        component,
+        getattr(response_format, "__name__", "?"),
+        tool_name,
+    )
+    result = _call_gateway_chat(
+        component,
+        route,
+        messages,
+        tools=emit_tool,
+        max_tokens=max_tokens,
+        response_format=None,
+        tool_choice="auto",
+    )
+
+    tool_calls = result.get("tool_calls") or []
+    if tool_calls:
+        args_str = tool_calls[0].get("function", {}).get("arguments", "{}")
+        if not isinstance(args_str, str):
+            args_str = json.dumps(args_str)
+        return parse_structured_response(response_format, args_str)
+
+    # Provider didn't emit a tool_call despite forced_choice. Fall back to
+    # parsing free-form content as JSON — same behavior as our regular
+    # gateway path.
+    return parse_structured_response(response_format, result.get("content", "") or "")
+
+
 def patch_for_gateway(llm_client: Any) -> None:
     """Patch DaprChatClient.generate to route OpenAI-protocol components
     through the MLflow AI Gateway. No-op when the master switch is off or
@@ -499,23 +621,43 @@ def patch_for_gateway(llm_client: Any) -> None:
 
         response_format = kwargs.get("response_format")
 
-        # DeepSeek + `response_format: json_object` returns octet-stream content
-        # that MLflow Gateway's `application/json`-only check rejects with HTTP
-        # 502 (verified 2026-05-11 via direct curl from a dev session pod, both
-        # with and without `thinking: disabled`). Fall through to the legacy
-        # DeepSeek adapter for structured-output calls — it handles them
-        # correctly (see `deepseek_adapter._apply_deepseek_output_mode`).
-        # Plain chat + tool-chat calls still route through Gateway.
+        # Structured output via forced tool-call (Phase 2c v2 reliability fix).
+        # DeepSeek's `response_format: json_object` mode is unreliable on V4:
+        #   (a) MLflow Gateway can't parse its octet-stream chunked response
+        #   (b) DeepSeek's own docs warn of intermittent empty content
+        #       (https://api-docs.deepseek.com/guides/json_mode)
+        # Tool-calling is significantly more reliable. Transform the
+        # response_format Pydantic class into a forced tool_call where the
+        # tool's parameter schema IS the model's JSON schema, then parse
+        # the tool_call's arguments back into the Pydantic instance.
+        # Plain chat + tool-chat calls (no response_format) take the regular
+        # Gateway path below unchanged.
         if response_format is not None and (
             route.startswith("deepseek-") or route.startswith("foundry-deepseek-")
         ):
-            logger.info(
-                "[gateway-adapter] %s: response_format set + DeepSeek route → "
-                "falling through to legacy adapter (Gateway can't parse "
-                "DeepSeek's structured-output octet-stream response)",
-                component,
-            )
-            return original_generate(self, *args, **kwargs)
+            prompt = args[0] if args else kwargs.get("prompt", "")
+            raw_messages = kwargs.get("messages")
+            max_tokens = kwargs.get("max_tokens")
+            try:
+                return _call_via_tool_emit(
+                    str(component),
+                    route,
+                    response_format,
+                    prompt=prompt,
+                    raw_messages=raw_messages,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Last-ditch fallback: if the forced-tool path fails for any
+                # reason (provider declines, schema rejected, etc.), fall
+                # through to the legacy direct-provider adapter chain.
+                logger.warning(
+                    "[gateway-adapter] %s: forced tool_emit failed (%s); "
+                    "falling through to legacy adapter",
+                    component,
+                    exc,
+                )
+                return original_generate(self, *args, **kwargs)
 
         prompt = args[0] if args else kwargs.get("prompt", "")
         raw_messages = kwargs.get("messages")
