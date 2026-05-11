@@ -55,7 +55,7 @@
 	<title>Library</title>
 </svelte:head>
 
-<div class="flex flex-col gap-6 p-6 max-w-5xl mx-auto w-full">
+<div class="h-full overflow-y-auto flex flex-col gap-6 p-6 max-w-5xl mx-auto w-full">
 	<header>
 		<h1 class="text-2xl font-semibold flex items-center gap-2">
 			<LibraryIcon class="size-6" /> Library

@@ -34,7 +34,7 @@
 	<title>Workflows</title>
 </svelte:head>
 
-<div class="p-6 space-y-6">
+<div class="h-full overflow-y-auto p-6 space-y-6">
 	<header class="flex items-center justify-between">
 		<div>
 			<h1 class="text-2xl font-semibold flex items-center gap-2">

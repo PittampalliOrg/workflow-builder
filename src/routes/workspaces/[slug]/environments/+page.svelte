@@ -100,7 +100,7 @@
 	onMount(load);
 </script>
 
-<div class="p-6 space-y-5 max-w-6xl mx-auto w-full">
+<div class="h-full overflow-y-auto p-6 space-y-5 max-w-6xl mx-auto w-full">
 	<header class="flex items-start justify-between gap-4 flex-wrap">
 		<div>
 			<h1 class="text-2xl font-semibold">Environments</h1>

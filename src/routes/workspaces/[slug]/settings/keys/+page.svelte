@@ -147,7 +147,7 @@
 	onMount(load);
 </script>
 
-<div class="space-y-6">
+<div class="h-full min-h-0 overflow-y-auto space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
 			<h2 class="text-lg font-semibold flex items-center gap-2">

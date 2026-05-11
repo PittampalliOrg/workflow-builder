@@ -104,7 +104,7 @@
 	});
 </script>
 
-<div class="p-6 space-y-4">
+<div class="h-full overflow-y-auto p-6 space-y-4">
 	<div class="flex items-baseline justify-between">
 		<div>
 			<h1 class="text-2xl font-semibold">Agent Runtimes</h1>

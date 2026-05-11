@@ -108,7 +108,7 @@
 	onMount(load);
 </script>
 
-<div class="max-w-4xl mx-auto w-full p-6 flex flex-col gap-6">
+<div class="h-full overflow-y-auto max-w-4xl mx-auto w-full p-6 flex flex-col gap-6">
 	<div class="flex items-center gap-2">
 		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
 			<ArrowLeft class="size-4" /> Back

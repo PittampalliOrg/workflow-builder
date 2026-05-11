@@ -53,7 +53,7 @@
 				{/each}
 			</nav>
 
-			<main class="min-w-0">
+			<main class="min-w-0 min-h-0 overflow-y-auto">
 				{@render children()}
 			</main>
 		</div>

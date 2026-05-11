@@ -40,7 +40,7 @@
 	]);
 </script>
 
-<div class="space-y-4 p-4 md:p-6">
+<div class="h-full overflow-y-auto space-y-4 p-4 md:p-6">
 	<header class="space-y-1">
 		<h1 class="text-xl font-semibold flex items-center gap-2">
 			<Gauge class="size-5" /> Capacity

@@ -209,7 +209,7 @@ print(batch.id)
 />
 
 {#snippet content()}
-	<div class="space-y-2">
+	<div class="h-full overflow-y-auto p-6 space-y-2">
 		{#each filtered as b (b.id)}
 			<Card>
 				<CardContent class="py-3">

@@ -269,7 +269,7 @@
 	onMount(load);
 </script>
 
-<div class="flex flex-col max-w-5xl mx-auto w-full p-6 gap-6">
+<div class="h-full overflow-y-auto flex flex-col max-w-5xl mx-auto w-full p-6 gap-6">
 	<nav class="flex items-center gap-1 text-xs text-muted-foreground">
 		<a href="/workspaces/{slug}" class="hover:text-foreground">Workspace</a>
 		<span class="text-muted-foreground/60">/</span>

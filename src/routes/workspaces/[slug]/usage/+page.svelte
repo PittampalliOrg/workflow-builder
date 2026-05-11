@@ -116,7 +116,7 @@
 	onMount(load);
 </script>
 
-<div class="flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
+<div class="h-full overflow-y-auto flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
 	<header class="flex items-start justify-between gap-4 flex-wrap">
 		<div>
 			<h1 class="text-2xl font-semibold">Usage</h1>

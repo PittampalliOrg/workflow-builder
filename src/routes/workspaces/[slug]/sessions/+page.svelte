@@ -341,7 +341,7 @@
 	});
 </script>
 
-<div class="p-6 space-y-5 max-w-7xl mx-auto w-full">
+<div class="h-full overflow-y-auto p-6 space-y-5 max-w-7xl mx-auto w-full">
 	<AppBreadcrumb
 		items={[
 			{ label: 'Workspace', href: `/workspaces/${slug}` },

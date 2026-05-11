@@ -102,7 +102,7 @@
 	}
 </script>
 
-<div class="max-w-5xl mx-auto w-full p-6 flex flex-col gap-6">
+<div class="h-full overflow-y-auto max-w-5xl mx-auto w-full p-6 flex flex-col gap-6">
 	<div class="flex items-center gap-2">
 		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/agents`)}>
 			<ArrowLeft class="size-4" /> Back

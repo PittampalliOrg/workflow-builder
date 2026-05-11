@@ -122,7 +122,7 @@
 	<title>Metrics · Admin · Workflow Builder</title>
 </svelte:head>
 
-<div class="flex flex-col gap-4 p-6">
+<div class="h-full overflow-y-auto flex flex-col gap-4 p-6">
 	<header class="flex items-baseline justify-between">
 		<div>
 			<h1 class="text-xl font-semibold">Workflow metrics</h1>
