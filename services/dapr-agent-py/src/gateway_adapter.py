@@ -53,29 +53,45 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-# Built-in fallback map for the 22 routes documented in
-# project_mlflow_ai_gateway_routes.md. Overridable via env var.
+# Built-in fallback map. Component name in Dapr → Gateway route name in
+# `packages/components/hub-management/manifests/mlflow/ConfigMap-mlflow-ai-gateway-config.yaml`.
+# Overridable via `DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON` env. Keep this map
+# 1:1 with the Component-llm-*.yaml file slugs we ship; if you add a new
+# LLM Component, add a matching Gateway route AND an entry here.
 _DEFAULT_ROUTE_MAP: dict[str, str] = {
     # DeepSeek
+    "llm-deepseek": "deepseek-v4-pro",                   # default DeepSeek route
     "llm-deepseek-v4-pro": "deepseek-v4-pro",
     "llm-deepseek-v4-flash": "deepseek-v4-flash",
-    # NVIDIA NIM
+    # NVIDIA NIM (6 routes)
     "llm-nvidia-llama31-8b": "nvidia-llama31-8b",
     "llm-nvidia-glm47": "nvidia-glm47",
+    "llm-nvidia-kimi-k2-0905": "nvidia-kimi-k2-thinking",
     "llm-nvidia-kimi-k2-thinking": "nvidia-kimi-k2-thinking",
     "llm-nvidia-devstral-2-123b": "nvidia-devstral-2-123b",
     "llm-nvidia-mistral-medium-35-128b": "nvidia-mistral-medium-35-128b",
     "llm-nvidia-qwen3-coder-480b": "nvidia-qwen3-coder-480b",
-    # Azure AI Foundry
-    "llm-foundry": "foundry-default",
-    "llm-foundry-default": "foundry-default",
+    # Azure AI Foundry — 2 routes
+    "llm-foundry-kimi-k26": "foundry-kimi-k26",
+    "llm-foundry-deepseek-v4-flash": "foundry-deepseek-v4-flash",
     # Moonshot Kimi
-    "llm-kimi-k2": "kimi-k2",
+    "llm-kimi-k25": "kimi-k25",
+    "llm-kimi-k26": "kimi-k25",                          # fall back to k25 — no k26 Gateway route
     # Alibaba DashScope
-    "llm-alibaba-qwen-max": "alibaba-qwen-max",
-    # Together
-    "llm-together": "together-default",
-    "llm-together-default": "together-default",
+    "llm-alibaba-qwen3-coder-plus": "alibaba-qwen3-coder-plus",
+    # Together (3 routes)
+    "llm-together-deepseek-v4-pro": "together-deepseek-v4-pro",
+    "llm-together-qwen3-coder-480b": "together-qwen3-coder-480b",
+    "llm-together-glm-51": "together-glm-51",
+    # OpenAI (2 routes)
+    "llm-openai-gpt5": "gpt-5.4",
+    "llm-openai-o3": "o3",
+    # Anthropic (3 routes)
+    "llm-anthropic-opus": "anthropic-opus",
+    "llm-anthropic-sonnet": "anthropic-sonnet",
+    "llm-anthropic-haiku": "anthropic-haiku",
+    # Google
+    "llm-google-gemini": "google-gemini",
 }
 
 
