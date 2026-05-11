@@ -2,6 +2,13 @@ FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 
 USER root
 
+# Overlay the OpenShell sandbox policy with our customizations. Adds
+# `gitea_internal_git` so workflow-checkpoint git pushes to
+# gitea-ryzen.tail286401.ts.net don't get 403'd at the OpenShell gateway
+# proxy. policy.yaml is a superset of the NVIDIA upstream policy with the
+# extra gitea CONNECT-passthrough rule appended. See policy.yaml for details.
+COPY policy.yaml /etc/openshell/policy.yaml
+
 # Install Playwright system dependencies
 # (Ubuntu 24.04 Noble ships chromium only as a snap, so we use Playwright's bundled binary)
 RUN apt-get update && apt-get install -y --no-install-recommends \
