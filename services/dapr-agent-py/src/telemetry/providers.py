@@ -114,6 +114,18 @@ def init_telemetry() -> bool:
         trace.set_tracer_provider(tp)
         _tracer_provider = tp
 
+        # --- MLflow tracing destination ---
+        # Add MLflow as an ADDITIONAL span processor on the TracerProvider
+        # so spans go to BOTH the OTEL Collector (ClickHouse + Tempo) AND
+        # MLflow's tracking server. MLflow's `set_destination()` writes
+        # trace_request_metadata that the search/UI API requires — the
+        # collector's otlphttp/mlflow path stores spans but is
+        # search-invisible. Setting MLFLOW_USE_DEFAULT_TRACER_PROVIDER=false
+        # tells mlflow to attach its processor to our TP instead of
+        # installing its own.
+        os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
+        _init_mlflow_destination()
+
         # --- Inbound W3C trace-context (BFF -> sandbox-execution-api -> here) ---
         # The Sandbox manifest stamps the parent BFF traceparent on the pod's
         # downward-API env vars so spans emitted from session_workflow chain
@@ -159,6 +171,47 @@ def init_telemetry() -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("OpenTelemetry init failed: %s", exc)
         return False
+
+
+def _init_mlflow_destination() -> None:
+    """Add MLflow as a span destination on the active TracerProvider.
+
+    No-op when `mlflow` isn't installed or when
+    `MLFLOW_TRACKING_URI`/`MLFLOW_TRACE_EXPERIMENT_ID` aren't set.
+    Failures are logged but never raise — tracing must stay best-effort.
+    """
+    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+    experiment_id = (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
+    if not tracking_uri or not experiment_id:
+        logger.info(
+            "MLflow tracing destination skipped (MLFLOW_TRACKING_URI=%r, "
+            "MLFLOW_TRACE_EXPERIMENT_ID=%r)",
+            tracking_uri or "<unset>",
+            experiment_id or "<unset>",
+        )
+        return
+
+    try:
+        import mlflow
+        from mlflow.tracing.destination import MlflowExperiment
+    except Exception as exc:  # noqa: BLE001
+        logger.info("mlflow SDK unavailable; MLflow tracing destination skipped (%s)", exc)
+        return
+
+    try:
+        mlflow.tracing.set_destination(
+            MlflowExperiment(
+                experiment_id=experiment_id,
+                tracking_uri=tracking_uri,
+            )
+        )
+        logger.info(
+            "MLflow tracing destination set: experiment_id=%s tracking_uri=%s",
+            experiment_id,
+            tracking_uri,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to set MLflow tracing destination: %s", exc)
 
 
 def _attach_inbound_trace_context() -> None:

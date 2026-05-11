@@ -14,6 +14,13 @@ dependencies = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-instrumentation-fastapi>=0.41b0",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
+    # MLflow tracing destination — added 2026-05-11 cutover so workflow
+    # spans land in MLflow with trace_request_metadata that powers
+    # mlflow.search_traces() (the OTEL Collector's otlphttp/mlflow path
+    # writes spans but not the metadata, so it's search-invisible).
+    # mlflow-skinny excludes scikit-learn / pandas / etc. — we only need
+    # the tracing module.
+    "mlflow-skinny>=3.6",
     "markdownify>=0.12",
     "ddgs>=7.0",
     "anthropic>=0.51",

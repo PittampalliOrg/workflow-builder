@@ -601,6 +601,23 @@ def build_agent_workflow_host_sandbox_manifest(
                             },
                         },
                     },
+                    # MLflow tracing destination — per-cluster experiment id
+                    # from the mlflow-workflow-builder-experiment ConfigMap
+                    # (3=dev, 6=ryzen, 7=staging) so providers.py can call
+                    # mlflow.tracing.set_destination(MlflowExperiment(...))
+                    # at startup. The CM is mirrored from observability into
+                    # workflow-builder ns by the bootstrap Job's PostSync
+                    # hook (Phase 3 of the MLflow cutover).
+                    {
+                        "name": "MLFLOW_TRACE_EXPERIMENT_ID",
+                        "valueFrom": {
+                            "configMapKeyRef": {
+                                "name": "mlflow-workflow-builder-experiment",
+                                "key": "MLFLOW_EXPERIMENT_ID",
+                                "optional": True,
+                            },
+                        },
+                    },
                 ],
                 "envFrom": [
                     {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},

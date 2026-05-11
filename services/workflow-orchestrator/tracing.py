@@ -131,6 +131,47 @@ class TraceContextFilter(logging.Filter):
         return True
 
 
+def _init_mlflow_destination() -> None:
+    """Add MLflow as a span destination on the active TracerProvider.
+
+    No-op when `mlflow` isn't installed or when
+    `MLFLOW_TRACKING_URI`/`MLFLOW_TRACE_EXPERIMENT_ID` aren't set.
+    Failures are logged but never raise — tracing must stay best-effort.
+    """
+    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+    experiment_id = (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
+    if not tracking_uri or not experiment_id:
+        logger.info(
+            "[Tracing] MLflow destination skipped "
+            "(MLFLOW_TRACKING_URI=%r, MLFLOW_TRACE_EXPERIMENT_ID=%r)",
+            tracking_uri or "<unset>",
+            experiment_id or "<unset>",
+        )
+        return
+
+    try:
+        import mlflow
+        from mlflow.tracing.destination import MlflowExperiment
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[Tracing] mlflow SDK unavailable; MLflow destination skipped (%s)", exc)
+        return
+
+    try:
+        mlflow.tracing.set_destination(
+            MlflowExperiment(
+                experiment_id=experiment_id,
+                tracking_uri=tracking_uri,
+            )
+        )
+        logger.info(
+            "[Tracing] MLflow destination set: experiment_id=%s tracking_uri=%s",
+            experiment_id,
+            tracking_uri,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Tracing] Failed to set MLflow destination: %s", exc)
+
+
 def setup_logging_json(otel_handler: logging.Handler | None = None) -> None:
     root = logging.getLogger()
     for h in list(root.handlers):
@@ -206,6 +247,16 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
         )
     )
     trace.set_tracer_provider(tracer_provider)
+
+    # Add MLflow as an ADDITIONAL span destination on the same TP. The
+    # OTEL Collector path (BatchSpanProcessor above) keeps sending to
+    # ClickHouse + Tempo; MLflow's `set_destination()` adds a processor
+    # that writes trace_request_metadata so traces are searchable via
+    # mlflow.search_traces() and visible in the MLflow UI. The
+    # otlphttp/mlflow collector exporter alone doesn't write that
+    # metadata — see project_mlflow_otlp_search_gap.md memory.
+    os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
+    _init_mlflow_destination()
 
     metric_reader = PeriodicExportingMetricReader(
         OTLPMetricExporter(
