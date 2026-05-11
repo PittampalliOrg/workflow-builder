@@ -346,23 +346,39 @@ export async function queryCounterDelta(
 	range: TimeRange,
 	filters?: MetricFilter,
 ): Promise<CounterDeltaResult> {
-	// OTEL `sum` metrics are cumulative; the delta over the window is
-	// max(Value) - min(Value) per series, then summed across series. We
-	// approximate by grouping on the full Attributes map.
-	const where = buildWhereClause(metric, range, filters);
+	// OTEL `sum` metrics are cumulative. Computing the delta requires a
+	// before-and-after pair, but inside a tight window (e.g. 60s) and a 30s
+	// scrape interval many series have only one sample, so naive max-min
+	// returns 0 even when the agent is doing work. Solution: widen the lookup
+	// by 5 minutes so we can capture a pre-window baseline per series, then
+	// per series compute `latest_in_window - latest_before_window`.
+	const baselineRange: TimeRange = {
+		from: new Date(range.from.getTime() - 5 * 60_000),
+		to: range.to,
+	};
+	const baseWhere = buildWhereClause(metric, baselineRange, filters);
+	const fromTs = toClickHouseTs(range.from);
+	const toTs = toClickHouseTs(range.to);
 	const sql = `
 		SELECT
-			max(Value) - min(Value) AS rowDelta,
-			count() AS samples
+			argMaxIf(Value, TimeUnix, TimeUnix > ${fromTs} AND TimeUnix <= ${toTs}) AS latest_in,
+			countIf(TimeUnix > ${fromTs} AND TimeUnix <= ${toTs}) AS samples_in,
+			argMaxIf(Value, TimeUnix, TimeUnix <= ${fromTs}) AS latest_before,
+			countIf(TimeUnix <= ${fromTs}) AS samples_before
 		FROM ${CLICKHOUSE_DB}.otel_metrics_sum
-		WHERE ${where}
+		WHERE ${baseWhere}
 		GROUP BY Attributes, ResourceAttributes`;
 	const rows = await queryClickHouse(sql);
 	let delta = 0;
 	let samples = 0;
 	for (const r of rows) {
-		delta += asNumber(r.rowDelta);
-		samples += asNumber(r.samples);
+		const samplesIn = asNumber(r.samples_in);
+		if (samplesIn === 0) continue;
+		const latestIn = asNumber(r.latest_in);
+		const latestBefore = asNumber(r.latest_before);
+		const seriesDelta = latestIn - latestBefore;
+		if (seriesDelta > 0) delta += seriesDelta;
+		samples += samplesIn;
 	}
 	return { delta: Math.max(0, delta), samples };
 }
@@ -370,6 +386,26 @@ export async function queryCounterDelta(
 // ---------------------------------------------------------------------------
 // queryGaugeLatest
 // ---------------------------------------------------------------------------
+
+export async function queryCounterLatestSample(
+	metric: string,
+	range: TimeRange,
+	filters?: MetricFilter,
+): Promise<{ value: number; t: Date } | null> {
+	const where = buildWhereClause(metric, range, filters);
+	const sql = `
+		SELECT Value AS v, TimeUnix AS t
+		FROM ${CLICKHOUSE_DB}.otel_metrics_sum
+		WHERE ${where}
+		ORDER BY TimeUnix DESC
+		LIMIT 1`;
+	const [row] = await queryClickHouse(sql);
+	if (!row) return null;
+	return {
+		value: asNumber(row.v),
+		t: new Date(String(row.t)),
+	};
+}
 
 export async function queryGaugeLatest(
 	metric: string,

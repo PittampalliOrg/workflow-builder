@@ -18,7 +18,7 @@ import { workflowExecutions, sessions } from "$lib/server/db/schema";
 import { sessionHostAppId } from "$lib/server/sessions/agent-workflow-host";
 import {
 	queryCounterDelta,
-	queryGaugeLatest,
+	queryCounterLatestSample,
 } from "$lib/server/otel/metrics";
 
 const WINDOW_SECONDS = 60;
@@ -124,7 +124,7 @@ async function computePayload(executionId: string): Promise<ActivityRatePayload>
 			...filter,
 			attribute: { ...filter.attribute, status: "recoverable" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryGaugeLatest(METRIC, range, filter).catch(() => null),
+		queryCounterLatestSample(METRIC, range, filter).catch(() => null),
 	]);
 
 	const succDelta = Math.round(succeeded.delta);
