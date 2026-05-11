@@ -97,7 +97,11 @@ def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
     return tags
 
 
-def set_mlflow_trace_tags(tags: dict[str, Any]) -> None:
+def set_mlflow_trace_tags(
+    tags: dict[str, Any],
+    *,
+    trace_name: str | None = None,
+) -> None:
     """Promote a curated tag dict onto the active MLflow trace.
 
     Two-stage approach because MLflow's `update_current_trace()` only
@@ -114,11 +118,17 @@ def set_mlflow_trace_tags(tags: dict[str, Any]) -> None:
          `MlflowClient().set_trace_tag(trace_id, k, v)` per tag, using
          the OTel trace_id translated to MLflow's `tr-<hex>` format.
 
+    If `trace_name` is provided, ALSO set the `mlflow.traceName` tag —
+    this is what MLflow's Traces UI shows as the trace's display name
+    in the list. Phase 4 uses this to render agent-aware names like
+    `agent.pr-reviewer/<session-id>` instead of the default span name.
+
     Best-effort: silent no-op when mlflow isn't installed or no OTel
     span is active. Strings only (MLflow's tag API rejects non-strings).
     """
-    if not tags:
+    if not tags and not trace_name:
         return
+    tags = dict(tags or {})
     clean = {
         k: str(v).strip()
         for k, v in tags.items()
@@ -164,5 +174,10 @@ def set_mlflow_trace_tags(tags: dict[str, Any]) -> None:
                 client.set_trace_tag(mlflow_trace_id, k, v)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("client.set_trace_tag(%s)=%s failed: %s", k, v, exc)
+        if trace_name:
+            try:
+                client.set_trace_tag(mlflow_trace_id, "mlflow.traceName", str(trace_name).strip())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("set_trace_tag(mlflow.traceName) failed: %s", exc)
     except Exception as exc:  # noqa: BLE001
         logger.debug("set_trace_tag fallback path failed: %s", exc)

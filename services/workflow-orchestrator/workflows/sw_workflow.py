@@ -2825,6 +2825,33 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     if not isinstance(tc.trigger_data, dict):
         tc.trigger_data = {"value": tc.trigger_data}
     tc.task_outputs["trigger"]["data"] = tc.trigger_data
+
+    # Phase 4 of plan research-the-most-popular-stateful-hinton.md:
+    # set a human-meaningful MLflow trace name + workflow-level trace
+    # tags once per workflow start (not on replay). Lands the trace's
+    # display name in MLflow's Traces tab as e.g.
+    # `wf_async_coding_task_v1/<db-execution-id>` instead of the
+    # default Dapr span name like `create_orchestration||sw_workflow_v1`.
+    # Helper calls `MlflowClient().set_trace_tag(trace_id, ...)` against
+    # the OTel-derived trace_id (no MLflow tracing context required).
+    if not _is_replaying(ctx):
+        try:
+            from tracing import set_mlflow_trace_tags
+            short_exec = (db_execution_id or execution_id or "").strip()
+            display_name = f"{tc.workflow_id}/{short_exec}" if short_exec else tc.workflow_id
+            set_mlflow_trace_tags(
+                {
+                    "workflow.id": tc.workflow_id,
+                    "workflow.name": workflow_name,
+                    "workflow.execution.id": short_exec,
+                    "dapr.workflow.instance_id": execution_id,
+                    "dapr.workflow.name": workflow_name,
+                    "session.id": short_exec,
+                },
+                trace_name=display_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[SW Workflow] set_mlflow_trace_tags at start failed: %s", exc)
     if code_checkpoint_restore:
         tc.task_outputs["codeCheckpointRestore"] = {
             "label": "Code checkpoint restore",
