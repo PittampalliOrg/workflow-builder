@@ -402,6 +402,7 @@ def set_mlflow_trace_tags(
     tags: dict[str, Any],
     *,
     trace_name: str | None = None,
+    trace_id_hex: str | None = None,
 ) -> None:
     """Promote a curated tag dict onto the active MLflow trace.
 
@@ -454,16 +455,28 @@ def set_mlflow_trace_tags(
     except Exception as exc:  # noqa: BLE001
         logger.debug("[Tracing] update_current_trace failed (will fall back to set_trace_tag): %s", exc)
 
-    # Always also call set_trace_tag via the OTel-derived trace_id.
+    # Always also call set_trace_tag via the OTel-derived trace_id,
+    # OR an explicit `trace_id_hex` provided by the caller. The explicit
+    # path is needed in Dapr workflow function contexts where no OTel
+    # span is active when the call fires (workflow entry runs outside
+    # `start_activity_span`); the caller already has `tc.trace_id`
+    # parsed from the W3C carrier and passes it through.
     try:
-        from opentelemetry import trace as ot_trace
-        span = ot_trace.get_current_span()
-        if span is None:
-            return
-        ctx = span.get_span_context()
-        if not ctx or ctx.trace_id == 0:
-            return
-        mlflow_trace_id = f"tr-{format(ctx.trace_id, '032x')}"
+        explicit_hex: str | None = None
+        if trace_id_hex:
+            explicit_hex = trace_id_hex.strip().lower().lstrip("tr-").replace("-", "")
+            if len(explicit_hex) != 32 or not all(c in "0123456789abcdef" for c in explicit_hex):
+                explicit_hex = None
+        if explicit_hex is None:
+            from opentelemetry import trace as ot_trace
+            span = ot_trace.get_current_span()
+            if span is None:
+                return
+            ctx = span.get_span_context()
+            if not ctx or ctx.trace_id == 0:
+                return
+            explicit_hex = format(ctx.trace_id, "032x")
+        mlflow_trace_id = f"tr-{explicit_hex}"
         client = mlflow.MlflowClient()
         if session_id:
             clean["session.id"] = session_id

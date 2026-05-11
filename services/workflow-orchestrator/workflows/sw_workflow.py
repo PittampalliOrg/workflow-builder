@@ -2849,9 +2849,15 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "session.id": short_exec,
                 },
                 trace_name=display_name,
+                trace_id_hex=tc.trace_id,
+            )
+            logger.info(
+                "[SW Workflow] MLflow trace tags requested: trace_id=%s name=%s",
+                tc.trace_id or "<none>",
+                display_name,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[SW Workflow] set_mlflow_trace_tags at start failed: %s", exc)
+            logger.warning("[SW Workflow] set_mlflow_trace_tags at start failed: %s", exc)
     if code_checkpoint_restore:
         tc.task_outputs["codeCheckpointRestore"] = {
             "label": "Code checkpoint restore",
