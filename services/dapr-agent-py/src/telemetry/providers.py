@@ -208,6 +208,51 @@ def _init_mlflow_destination() -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to set MLflow tracing destination: %s", exc)
+        return
+
+    # --- Phase 2b: provider-level autolog ------------------------------
+    # mlflow.anthropic.autolog() instruments every Anthropic Python SDK
+    # call (Messages, Tool Use, structured prompts) and emits child
+    # spans under our existing claude_code.interaction roll-up. Combined
+    # with MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true (Phase 2a, ConfigMap),
+    # the autolog span attributes get translated to standard OTel
+    # gen_ai.* keys on OTLP export — making the same data queryable
+    # from ClickHouse + Tempo without provider-specific glue.
+    #
+    # Gated by DAPR_AGENT_PY_MLFLOW_AUTOLOG_ANTHROPIC=true (default true
+    # on dev for soak; can disable per-env via configmap if needed).
+    autolog_anthropic = (
+        os.environ.get("DAPR_AGENT_PY_MLFLOW_AUTOLOG_ANTHROPIC", "true")
+        .strip()
+        .lower()
+        not in {"0", "false", "no", "off"}
+    )
+    if autolog_anthropic:
+        try:
+            import mlflow.anthropic  # type: ignore[import-not-found]
+            mlflow.anthropic.autolog(log_traces=True, silent=True)
+            logger.info("MLflow Anthropic autolog enabled (Phase 2b)")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("MLflow Anthropic autolog skipped (%s)", exc)
+
+    # mlflow.litellm.autolog() — covers MLflow AI Gateway proxied
+    # calls. Lower priority for now: until Phase 2c expands the Gateway
+    # config with our provider set, the only calls flowing through it
+    # are the two existing OpenAI routes. Still cheap to enable so the
+    # plumbing is verified end-to-end.
+    autolog_litellm = (
+        os.environ.get("DAPR_AGENT_PY_MLFLOW_AUTOLOG_LITELLM", "true")
+        .strip()
+        .lower()
+        not in {"0", "false", "no", "off"}
+    )
+    if autolog_litellm:
+        try:
+            import mlflow.litellm  # type: ignore[import-not-found]
+            mlflow.litellm.autolog(log_traces=True, silent=True)
+            logger.info("MLflow LiteLLM autolog enabled (Phase 2b/2c)")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("MLflow LiteLLM autolog skipped (%s)", exc)
 
 
 def _attach_inbound_trace_context() -> None:

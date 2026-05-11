@@ -166,6 +166,30 @@ def _init_mlflow_destination() -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Tracing] Failed to set MLflow destination: %s", exc)
+        return
+
+    # --- Phase 2b: provider-level autolog ------------------------------
+    # Orchestrator rarely calls LLM SDKs directly (most LLM traffic
+    # flows through dapr-agent-py), but enable autolog so the rare
+    # paths (e.g. swebench-coordinator dispatch) get full trace
+    # coverage. Combined with MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true
+    # (Phase 2a) the autolog span attrs get translated to standard
+    # gen_ai.* keys on OTLP export.
+    if os.environ.get("WORKFLOW_ORCHESTRATOR_MLFLOW_AUTOLOG", "true").strip().lower() not in {
+        "0", "false", "no", "off"
+    }:
+        try:
+            import mlflow.anthropic  # type: ignore[import-not-found]
+            mlflow.anthropic.autolog(log_traces=True, silent=True)
+            logger.info("[Tracing] MLflow Anthropic autolog enabled (Phase 2b)")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("[Tracing] MLflow Anthropic autolog skipped (%s)", exc)
+        try:
+            import mlflow.litellm  # type: ignore[import-not-found]
+            mlflow.litellm.autolog(log_traces=True, silent=True)
+            logger.info("[Tracing] MLflow LiteLLM autolog enabled (Phase 2b/2c)")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("[Tracing] MLflow LiteLLM autolog skipped (%s)", exc)
 
 
 def setup_logging_json(otel_handler: logging.Handler | None = None) -> None:
