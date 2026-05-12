@@ -130,7 +130,7 @@
       },
       {
         "setup_branch": {
-          "if": "${ (.clone_repo.data.result.clonePath // \"\") != \"\" }",
+          "if": "${ (.clone_repo.clonePath // .clone_repo.result.clonePath // \"\") != \"\" }",
           "call": "workspace/command",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
@@ -147,7 +147,7 @@
       },
       {
         "plan_step": {
-          "if": "${ (.setup_branch.data.result.exitCode // 1) == 0 }",
+          "if": "${ (.setup_branch.result.exitCode // 1) == 0 }",
           "call": "durable/run",
           "with": {
             "body": {
@@ -205,7 +205,7 @@
       },
       {
         "implement_step": {
-          "if": "${ ((.setup_branch.data.result.exitCode // 1) == 0) and (.trigger.approval == \"never\" or ((.approval_plan.data.timedOut // false) == false and (.approval_plan.data.approved // true) == true)) }",
+          "if": "${ ((.setup_branch.result.exitCode // 1) == 0) and (.trigger.approval == \"never\" or ((.approval_plan.data.timedOut // false) == false and (.approval_plan.data.approved // true) == true)) }",
           "call": "durable/run",
           "with": {
             "body": {
