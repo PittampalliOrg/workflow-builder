@@ -19,6 +19,8 @@ SESSION_ID_ATTRIBUTE = "session.id"
 WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id"
 MLFLOW_FINALIZE_ROOT_SPAN_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_ROOT_SPAN"
 MLFLOW_EXPORT_SPAN_METRICS_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_EXPORT_SPAN_METRICS"
+MLFLOW_TRACE_TAG_RETRY_SECONDS_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_TRACE_TAG_RETRY_SECONDS"
+MLFLOW_NODE_SPANS_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS"
 
 
 def _parse_headers(value: str | None) -> dict[str, str] | None:
@@ -73,6 +75,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _parse_resource_attributes(value: str | None) -> dict[str, str]:
@@ -130,6 +142,41 @@ def _deterministic_mlflow_root_span_id(trace_id: str, workflow_instance_id: str)
     return span_id
 
 
+def _deterministic_mlflow_node_span_id(
+    trace_id: str,
+    workflow_instance_id: str,
+    node_id: str,
+    task_sequence: str,
+) -> bytes:
+    seed = (
+        f"{trace_id}:{workflow_instance_id}:{node_id}:{task_sequence}:"
+        "mlflow-workflow-node"
+    ).encode("utf-8")
+    span_id = hashlib.sha256(seed).digest()[:8]
+    if int.from_bytes(span_id, "big") == 0:
+        return b"\x00\x00\x00\x00\x00\x00\x00\x01"
+    return span_id
+
+
+def _duration_ms(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        duration = int(float(str(value)))
+    except (TypeError, ValueError):
+        return None
+    return duration if duration >= 0 else None
+
+
+def _span_times_from_duration(duration_ms: int | None) -> tuple[int, int]:
+    end_ns = time.time_ns()
+    effective_ms = duration_ms if duration_ms is not None else 1
+    start_ns = max(0, end_ns - (effective_ms * 1_000_000))
+    if start_ns >= end_ns:
+        start_ns = max(0, end_ns - 1_000_000)
+    return start_ns, end_ns
+
+
 def _otlp_any_value(value: Any):
     from opentelemetry.proto.common.v1 import common_pb2
 
@@ -154,6 +201,94 @@ def _clean_otlp_attributes(attrs: dict[str, Any]) -> list[Any]:
         for key, value in attrs.items()
         if key and value is not None and str(value).strip()
     ]
+
+
+def _clean_mlflow_tag_values(tags: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(k): str(v).strip()
+        for k, v in dict(tags or {}).items()
+        if k and v is not None and isinstance(v, (str, int, float, bool))
+        and str(v).strip()
+    }
+
+
+def _mlflow_trace_id(trace_id_hex: str) -> str:
+    return f"tr-{trace_id_hex}"
+
+
+def _is_retryable_trace_tag_error(exc: Exception) -> bool:
+    err_str = str(exc)
+    return any(
+        marker in err_str
+        for marker in (
+            "ForeignKeyViolation",
+            "trace_info",
+            "fk_trace_tags_request_id",
+            "does not exist",
+        )
+    )
+
+
+def set_mlflow_trace_tags_by_id(
+    trace_id_hex: str,
+    tags: dict[str, Any],
+    *,
+    retry_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Set MLflow trace tags using an explicit OTel trace ID.
+
+    This is best-effort and safe for activity use after an OTLP span export.
+    """
+    clean_trace_id = _clean_hex_id(trace_id_hex, 32)
+    if not clean_trace_id:
+        return {"success": True, "skipped": True, "reason": "missing_or_invalid_trace_id"}
+    clean_tags = _clean_mlflow_tag_values(tags)
+    if not clean_tags:
+        return {"success": True, "skipped": True, "reason": "missing_tags"}
+    try:
+        import mlflow  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        return {"success": True, "skipped": True, "reason": "mlflow_unavailable", "error": str(exc)}
+
+    deadline = time.monotonic() + max(
+        0.0,
+        retry_seconds
+        if retry_seconds is not None
+        else _env_float(MLFLOW_TRACE_TAG_RETRY_SECONDS_ENV, 15.0),
+    )
+    mlflow_trace_id = _mlflow_trace_id(clean_trace_id)
+    client = mlflow.MlflowClient()
+    applied: list[str] = []
+    failed: dict[str, str] = {}
+
+    for key, value in clean_tags.items():
+        attempt = 0
+        while True:
+            try:
+                client.set_trace_tag(mlflow_trace_id, key, value)
+                applied.append(key)
+                break
+            except Exception as exc:  # noqa: BLE001
+                attempt += 1
+                if _is_retryable_trace_tag_error(exc) and time.monotonic() < deadline:
+                    time.sleep(min(1.0, 0.2 * attempt))
+                    continue
+                failed[key] = str(exc)
+                logger.debug(
+                    "[Tracing] set_trace_tag(%s, %s) failed: %s",
+                    mlflow_trace_id,
+                    key,
+                    exc,
+                )
+                break
+
+    return {
+        "success": not failed,
+        "traceId": clean_trace_id,
+        "mlflowTraceId": mlflow_trace_id,
+        "applied": applied,
+        "failed": failed,
+    }
 
 
 def _sanitize_otel_attribute_value(value: Any) -> Any | None:
@@ -343,8 +478,8 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
 
     span_name = str(input_data.get("spanName") or "").strip() or "workflow.finalize"
     error_message = str(input_data.get("error") or "").strip()
-    now_ns = time.time_ns()
-    end_ns = now_ns + 1_000_000
+    duration_ms = _duration_ms(input_data.get("durationMs"))
+    start_ns, end_ns = _span_times_from_duration(duration_ms)
 
     try:
         from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
@@ -366,6 +501,8 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
             "workflow.name": workflow_name,
             "workflow.execution.id": display_execution_id,
             "workflow.execution.db_id": db_execution_id,
+            "workflow.duration_ms": duration_ms,
+            "workflow.status": otlp_status,
             "dapr.workflow.instance_id": workflow_instance_id,
             "dapr.workflow.name": workflow_name,
             "status": otlp_status,
@@ -378,7 +515,7 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
             span_id=_deterministic_mlflow_root_span_id(trace_id, workflow_instance_id),
             name=span_name,
             kind=trace_pb2.Span.SPAN_KIND_INTERNAL,
-            start_time_unix_nano=now_ns,
+            start_time_unix_nano=start_ns,
             end_time_unix_nano=end_ns,
             attributes=_clean_otlp_attributes(span_attrs),
             status=trace_pb2.Status(
@@ -413,12 +550,7 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
         headers.setdefault("Content-Type", "application/x-protobuf")
         timeout_seconds = max(
             1.0,
-            float(
-                os.getenv(
-                    "WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_TIMEOUT_SECONDS",
-                    "10",
-                )
-            ),
+            _env_float("WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_TIMEOUT_SECONDS", 10.0),
         )
         response = requests.post(
             endpoint,
@@ -435,15 +567,173 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "traceId": trace_id,
             }
+        trace_tags = {
+            "mlflow.traceName": trace_name,
+            "workflow.id": workflow_id,
+            "workflow.name": workflow_name,
+            "workflow.execution.id": display_execution_id,
+            "workflow.status": otlp_status,
+            "dapr.workflow.instance_id": workflow_instance_id,
+            "dapr.workflow.name": workflow_name,
+            "session.id": display_execution_id,
+        }
+        tag_result = set_mlflow_trace_tags_by_id(trace_id, trace_tags)
         return {
             "success": True,
             "traceId": trace_id,
             "spanId": span.span_id.hex(),
             "status": otlp_status,
             "endpoint": endpoint,
+            "tags": tag_result,
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Tracing] MLflow root span finalization failed: %s", exc)
+        return {"success": False, "error": str(exc), "traceId": trace_id}
+
+
+def emit_mlflow_workflow_node_span(input_data: dict[str, Any]) -> dict[str, Any]:
+    """Emit one synthetic OTLP workflow-node span under the finalizer root."""
+    if not _env_bool(MLFLOW_NODE_SPANS_ENV, True):
+        return {"success": True, "skipped": True, "reason": "disabled"}
+
+    endpoint = _otlp_endpoint_for("traces")
+    if not endpoint:
+        return {"success": True, "skipped": True, "reason": "missing_endpoint"}
+
+    carrier = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    trace_id = _clean_hex_id(input_data.get("traceId"), 32) or extract_otel_trace_id(
+        carrier
+    )
+    if not trace_id:
+        return {"success": True, "skipped": True, "reason": "missing_or_invalid_trace_id"}
+
+    workflow_instance_id = str(
+        input_data.get("daprInstanceId")
+        or input_data.get("workflowInstanceId")
+        or input_data.get("executionId")
+        or ""
+    ).strip()
+    node_id = str(input_data.get("nodeId") or "").strip()
+    if not workflow_instance_id or not node_id:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "missing_workflow_instance_or_node_id",
+        }
+
+    task_sequence = str(input_data.get("taskSequence") or "0").strip() or "0"
+    node_name = str(input_data.get("nodeName") or node_id).strip()
+    node_type = str(input_data.get("nodeType") or "").strip()
+    action_type = str(input_data.get("actionType") or node_type or "").strip()
+    status_text = str(input_data.get("status") or "success").strip().lower()
+    is_error = status_text in {"error", "failed", "failure", "exception"}
+    otlp_status = "ERROR" if is_error else "OK"
+    duration_ms = _duration_ms(input_data.get("durationMs"))
+    start_ns, end_ns = _span_times_from_duration(duration_ms)
+    error_message = str(input_data.get("error") or "").strip()
+    db_execution_id = str(input_data.get("dbExecutionId") or input_data.get("executionId") or "").strip()
+
+    try:
+        from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
+        from opentelemetry.proto.common.v1 import common_pb2
+        from opentelemetry.proto.resource.v1 import resource_pb2
+        from opentelemetry.proto.trace.v1 import trace_pb2
+
+        resource_attrs = _parse_resource_attributes(os.getenv("OTEL_RESOURCE_ATTRIBUTES"))
+        resource_attrs.setdefault(
+            "service.name",
+            os.getenv("OTEL_SERVICE_NAME") or "workflow-orchestrator",
+        )
+        span_attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "workflow.node",
+            "mlflow.spanType": "CHAIN",
+            "workflow.node.id": node_id,
+            "workflow.node.name": node_name,
+            "workflow.node.type": node_type,
+            "workflow.action.type": action_type,
+            "workflow.node.status": otlp_status,
+            "workflow.node.duration_ms": duration_ms,
+            "workflow.execution.id": db_execution_id,
+            "dapr.workflow.instance_id": workflow_instance_id,
+        }
+        if error_message:
+            span_attrs["error.message"] = error_message
+
+        span = trace_pb2.Span(
+            trace_id=bytes.fromhex(trace_id),
+            span_id=_deterministic_mlflow_node_span_id(
+                trace_id,
+                workflow_instance_id,
+                node_id,
+                task_sequence,
+            ),
+            parent_span_id=_deterministic_mlflow_root_span_id(
+                trace_id,
+                workflow_instance_id,
+            ),
+            name=f"workflow.node.{node_id}",
+            kind=trace_pb2.Span.SPAN_KIND_INTERNAL,
+            start_time_unix_nano=start_ns,
+            end_time_unix_nano=end_ns,
+            attributes=_clean_otlp_attributes(span_attrs),
+            status=trace_pb2.Status(
+                code=(
+                    trace_pb2.Status.STATUS_CODE_ERROR
+                    if is_error
+                    else trace_pb2.Status.STATUS_CODE_OK
+                ),
+                message=error_message if is_error else "",
+            ),
+        )
+
+        request = trace_service_pb2.ExportTraceServiceRequest(
+            resource_spans=[
+                trace_pb2.ResourceSpans(
+                    resource=resource_pb2.Resource(
+                        attributes=_clean_otlp_attributes(resource_attrs)
+                    ),
+                    scope_spans=[
+                        trace_pb2.ScopeSpans(
+                            scope=common_pb2.InstrumentationScope(
+                                name="workflow-orchestrator.mlflow-node-spans",
+                                version="1.0.0",
+                            ),
+                            spans=[span],
+                        )
+                    ],
+                )
+            ]
+        )
+        headers = _parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS")) or {}
+        headers.setdefault("Content-Type", "application/x-protobuf")
+        response = requests.post(
+            endpoint,
+            data=request.SerializeToString(),
+            headers=headers,
+            timeout=max(
+                1.0,
+                _env_float("WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_TIMEOUT_SECONDS", 10.0),
+            ),
+        )
+        if response.status_code >= 400:
+            return {
+                "success": False,
+                "error": (
+                    f"OTLP export failed: HTTP {response.status_code} "
+                    f"{response.text[:500]}"
+                ),
+                "traceId": trace_id,
+            }
+        return {
+            "success": True,
+            "traceId": trace_id,
+            "spanId": span.span_id.hex(),
+            "parentSpanId": span.parent_span_id.hex(),
+            "status": otlp_status,
+            "endpoint": endpoint,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Tracing] MLflow node span export failed: %s", exc)
         return {"success": False, "error": str(exc), "traceId": trace_id}
 
 
@@ -803,13 +1093,7 @@ def set_mlflow_trace_tags(
     """
     if not tags and not trace_name:
         return
-    tags = dict(tags or {})
-    clean = {
-        k: str(v).strip()
-        for k, v in tags.items()
-        if v is not None and isinstance(v, (str, int, float))
-        and str(v).strip()
-    }
+    clean = _clean_mlflow_tag_values(tags or {})
     if not clean:
         return
     try:
@@ -857,40 +1141,11 @@ def set_mlflow_trace_tags(
             if not ctx or ctx.trace_id == 0:
                 return
             explicit_hex = format(ctx.trace_id, "032x")
-        mlflow_trace_id = f"tr-{explicit_hex}"
-        client = mlflow.MlflowClient()
         if session_id:
             clean["session.id"] = session_id
-
-        # Retry helper for set_trace_tag. At workflow entry the
-        # trace_info row may not be committed yet (OTel span flushed but
-        # MLflow's async export queue is still draining) — FK violation
-        # `fk_trace_tags_request_id`. Retry with short backoff so we
-        # block at most ~1.5s before giving up.
-        import time as _time
-        def _set_with_retry(k: str, v: str) -> None:
-            for attempt in range(6):
-                try:
-                    client.set_trace_tag(mlflow_trace_id, k, v)
-                    return
-                except Exception as exc:  # noqa: BLE001
-                    err_str = str(exc)
-                    if (
-                        ("ForeignKeyViolation" in err_str or "trace_info" in err_str)
-                        and attempt < 5
-                    ):
-                        _time.sleep(0.25 * (attempt + 1))
-                        continue
-                    logger.debug(
-                        "[Tracing] client.set_trace_tag(%s)=%s failed: %s",
-                        k, v, exc,
-                    )
-                    return
-
-        for k, v in clean.items():
-            _set_with_retry(k, v)
         if trace_name:
-            _set_with_retry("mlflow.traceName", str(trace_name).strip())
+            clean["mlflow.traceName"] = str(trace_name).strip()
+        set_mlflow_trace_tags_by_id(explicit_hex, clean)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[Tracing] set_trace_tag fallback path failed: %s", exc)
 

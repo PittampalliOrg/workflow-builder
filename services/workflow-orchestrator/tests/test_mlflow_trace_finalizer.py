@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,6 +19,26 @@ class _FakeResponse:
         self.text = text
 
 
+def _install_fake_mlflow(monkeypatch, *, fail_first: bool = False):
+    calls = []
+
+    class FakeClient:
+        attempts = {}
+
+        def set_trace_tag(self, trace_id, key, value):
+            calls.append((trace_id, key, value))
+            count = self.attempts.get(key, 0)
+            self.attempts[key] = count + 1
+            if fail_first and count == 0:
+                raise RuntimeError("ForeignKeyViolation: trace_info row missing")
+
+    mlflow_module = types.ModuleType("mlflow")
+    mlflow_module.MlflowClient = FakeClient
+    mlflow_module.update_current_trace = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "mlflow", mlflow_module)
+    return calls
+
+
 def _attribute_map(span):
     attrs = {}
     for item in span.attributes:
@@ -30,6 +51,7 @@ def _attribute_map(span):
 def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     trace_id = "1234567890abcdef1234567890abcdef"
     captured = {}
+    tag_calls = _install_fake_mlflow(monkeypatch)
 
     def fake_post(url, data, headers, timeout):
         captured.update(
@@ -56,6 +78,7 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
             "daprInstanceId": "dapr_wf_123",
             "traceName": "wf_test/db_exec_123",
             "status": "OK",
+            "durationMs": 1234,
         }
     )
 
@@ -74,19 +97,25 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     )
     assert span.span_id != b"\x00" * 8
     assert span.status.code == trace_pb2.Status.STATUS_CODE_OK
+    assert span.end_time_unix_nano - span.start_time_unix_nano == 1_234_000_000
 
     attrs = _attribute_map(span)
     assert attrs["gen_ai.operation.name"] == "workflow"
     assert attrs["mlflow.spanType"] == "AGENT"
     assert attrs["workflow.id"] == "wf_test"
     assert attrs["workflow.execution.id"] == "db_exec_123"
+    assert attrs["workflow.duration_ms"] == 1234
+    assert attrs["workflow.status"] == "OK"
     assert attrs["dapr.workflow.instance_id"] == "dapr_wf_123"
     assert attrs["mlflow.traceName"] == "wf_test/db_exec_123"
+    assert ("tr-" + trace_id, "workflow.id", "wf_test") in tag_calls
+    assert ("tr-" + trace_id, "mlflow.traceName", "wf_test/db_exec_123") in tag_calls
 
 
 def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
     trace_id = "abcdefabcdefabcdefabcdefabcdefab"
     captured = {}
+    _install_fake_mlflow(monkeypatch)
 
     def fake_post(_url, data, headers, timeout):
         _ = headers, timeout
@@ -114,6 +143,148 @@ def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
     assert span.status.code == trace_pb2.Status.STATUS_CODE_ERROR
     assert span.status.message == "forced failure"
     assert _attribute_map(span)["error.message"] == "forced failure"
+
+
+def test_set_mlflow_trace_tags_by_id_retries_transient_trace_row_errors(monkeypatch):
+    trace_id = "1234567890abcdef1234567890abcdef"
+    calls = _install_fake_mlflow(monkeypatch, fail_first=True)
+    monkeypatch.setattr(tracing.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = tracing.set_mlflow_trace_tags_by_id(
+        trace_id,
+        {"workflow.id": "wf_test"},
+        retry_seconds=1,
+    )
+
+    assert result["success"] is True
+    assert calls == [
+        ("tr-" + trace_id, "workflow.id", "wf_test"),
+        ("tr-" + trace_id, "workflow.id", "wf_test"),
+    ]
+
+
+def test_emit_mlflow_workflow_node_span_posts_child_span(monkeypatch):
+    trace_id = "1234567890abcdef1234567890abcdef"
+    captured = {}
+
+    def fake_post(url, data, headers, timeout):
+        captured.update({"url": url, "data": data, "headers": headers, "timeout": timeout})
+        return _FakeResponse()
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setattr(tracing.requests, "post", fake_post)
+
+    result = tracing.emit_mlflow_workflow_node_span(
+        {
+            "_otel": {"traceId": trace_id},
+            "workflowInstanceId": "dapr_wf_123",
+            "executionId": "db_exec_123",
+            "nodeId": "agent_step",
+            "nodeName": "Agent Step",
+            "nodeType": "durable/run",
+            "actionType": "durable/run",
+            "taskSequence": 2,
+            "durationMs": 250,
+            "status": "error",
+            "error": "node failed",
+        }
+    )
+
+    assert result["success"] is True
+    assert captured["url"] == "http://collector:4318/v1/traces"
+    request = trace_service_pb2.ExportTraceServiceRequest()
+    request.ParseFromString(captured["data"])
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    assert span.trace_id == bytes.fromhex(trace_id)
+    assert span.parent_span_id == tracing._deterministic_mlflow_root_span_id(
+        trace_id,
+        "dapr_wf_123",
+    )
+    assert span.span_id == tracing._deterministic_mlflow_node_span_id(
+        trace_id,
+        "dapr_wf_123",
+        "agent_step",
+        "2",
+    )
+    assert span.status.code == trace_pb2.Status.STATUS_CODE_ERROR
+    assert span.end_time_unix_nano - span.start_time_unix_nano == 250_000_000
+    attrs = _attribute_map(span)
+    assert attrs["workflow.node.id"] == "agent_step"
+    assert attrs["workflow.node.status"] == "ERROR"
+    assert attrs["workflow.node.duration_ms"] == 250
+    assert attrs["workflow.execution.id"] == "db_exec_123"
+
+
+def test_emit_mlflow_workflow_node_span_respects_env_gate(monkeypatch):
+    monkeypatch.setenv(tracing.MLFLOW_NODE_SPANS_ENV, "false")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+
+    result = tracing.emit_mlflow_workflow_node_span(
+        {
+            "_otel": {"traceId": "1" * 32},
+            "workflowInstanceId": "dapr_wf_123",
+            "nodeId": "node",
+        }
+    )
+
+    assert result == {"success": True, "skipped": True, "reason": "disabled"}
+
+
+def test_log_node_complete_emits_node_span(monkeypatch):
+    from activities import log_node_execution
+
+    emitted = {}
+    executed = {}
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, query, params):
+            executed["query"] = query
+            executed["params"] = params
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            executed["committed"] = True
+
+        def close(self):
+            executed["closed"] = True
+
+    monkeypatch.setattr(log_node_execution, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(log_node_execution.psycopg2, "connect", lambda *_args: FakeConn())
+
+    def fake_emit(payload):
+        emitted.update(payload)
+        return {"success": True, "spanId": "span_1"}
+
+    monkeypatch.setattr(log_node_execution, "emit_mlflow_workflow_node_span", fake_emit)
+
+    result = log_node_execution.log_node_complete(
+        None,
+        {
+            "logId": "log_1",
+            "status": "success",
+            "output": {"ok": True},
+            "durationMs": 42,
+            "executionId": "db_exec_123",
+            "workflowInstanceId": "dapr_wf_123",
+            "nodeId": "agent_step",
+            "_otel": {"traceId": "1" * 32},
+        },
+    )
+
+    assert result["success"] is True
+    assert result["nodeSpan"] == {"success": True, "spanId": "span_1"}
+    assert executed["committed"] is True
+    assert emitted["nodeId"] == "agent_step"
+    assert emitted["workflowInstanceId"] == "dapr_wf_123"
 
 
 def test_emit_mlflow_trace_root_span_skips_missing_inputs(monkeypatch):
