@@ -127,6 +127,25 @@ def test_sanitizing_span_exporter_removes_invalid_attributes():
     assert captured["shutdown"] is True
 
 
+def test_sanitizing_span_processor_mutates_span_before_export():
+    from opentelemetry.sdk.trace import Event, ReadableSpan
+
+    from src.telemetry import providers
+
+    span = ReadableSpan(
+        name="span",
+        attributes={"span_type": None, "ok": "value"},
+        events=(Event("event", attributes={"drop": None, "keep": 1}),),
+    )
+
+    processor = providers._SanitizingSpanProcessor()
+    processor.on_end(span)
+
+    assert dict(span.attributes) == {"ok": "value"}
+    assert dict(span.events[0].attributes) == {"keep": 1}
+    assert processor.force_flush(123) is True
+
+
 def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     exporter, _ = telemetry_with_in_memory
     monkeypatch.delenv("OTEL_LOG_USER_PROMPTS", raising=False)

@@ -141,6 +141,28 @@ class _SanitizingSpanExporter:
         return True
 
 
+class _SanitizingSpanProcessor:
+    """Normalize finished spans before any downstream exporter sees them."""
+
+    def on_start(self, span: Any, parent_context: Any = None) -> None:
+        return None
+
+    def on_end(self, span: Any) -> None:
+        try:
+            sanitized = _sanitize_readable_span(span)
+            span._attributes = dict(getattr(sanitized, "attributes", {}) or {})
+            span._events = tuple(getattr(sanitized, "events", ()) or ())
+            span._links = tuple(getattr(sanitized, "links", ()) or ())
+        except Exception:
+            return None
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
 def init_telemetry() -> bool:
     """Initialize tracer + meter + logger providers.
 
@@ -195,6 +217,7 @@ def init_telemetry() -> bool:
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
         tp = TracerProvider(resource=resource)
+        tp.add_span_processor(_SanitizingSpanProcessor())
         tp.add_span_processor(
             BatchSpanProcessor(
                 _SanitizingSpanExporter(
