@@ -218,7 +218,7 @@
                 "maxTurns": 30,
                 "timeoutMinutes": 30
               },
-              "prompt": "${ \"Continue from your plan. Apply the changes you proposed. Repo at /sandbox/repo on branch \" + .setup_branch.branch + \". Mode=\" + .trigger.mode + \".\\n\\nTools: read_file, write_file, edit_file, list_files, glob_files, grep_search, execute_command.\\n\\nAfter each significant change, stage and commit incrementally with descriptive messages:\\n  execute_command: git add <files>; git commit -m '<message>'\\n\\nEnd with the literal marker `IMPLEMENTATION COMPLETE` on its own line, summarizing in 3-5 bullets what you changed.\\n\\nORIGINAL TASK:\\n\" + .trigger.task + \"\\n\\nYOUR PLAN:\\n\" + .plan_step.data.content }"
+              "prompt": "${ \"Continue from your plan. Apply the changes you proposed. Repo at /sandbox/repo on branch \" + .setup_branch.branch + \". Mode=\" + .trigger.mode + \".\\n\\nTools: read_file, write_file, edit_file, list_files, glob_files, grep_search, execute_command.\\n\\nAfter each significant change, stage and commit incrementally with descriptive messages:\\n  execute_command: git add <files>; git commit -m '<message>'\\n\\nEnd with the literal marker `IMPLEMENTATION COMPLETE` on its own line, summarizing in 3-5 bullets what you changed.\\n\\nORIGINAL TASK:\\n\" + .trigger.task + \"\\n\\nYOUR PLAN:\\n\" + (.plan_step.content // \"\") }"
             },
             "mode": "execute_direct",
             "cwd": "/sandbox/repo",
@@ -271,7 +271,7 @@
       },
       {
         "push_branch": {
-          "if": "${ (.trigger.output == \"pr\" or .trigger.output == \"branch\") and (.implement_step.data.content // \"\") != \"\" }",
+          "if": "${ (.trigger.output == \"pr\" or .trigger.output == \"branch\") and (.implement_step.content // \"\") != \"\" }",
           "call": "workspace/command",
           "with": {
             "connectionExternalId": "${ .trigger.githubConnection }",
@@ -315,9 +315,9 @@
         "repo": "${ .trigger.repoUrl }",
         "branch": "${ .setup_branch.branch }",
         "mode": "${ .trigger.mode }",
-        "plan": "${ .plan_step.data.content }",
-        "implementation": "${ .implement_step.data.content // null }",
-        "verify_passed": "${ ((.verify_step.data.result.exitCode // 0) == 0) and (.trigger.verify != \"none\") }",
+        "plan": "${ .plan_step.content // null }",
+        "implementation": "${ .implement_step.content // null }",
+        "verify_passed": "${ ((.verify_step.result.exitCode // 0) == 0) and (.trigger.verify != \"none\") }",
         "pr_url": "${ .open_pr.data.html_url // null }",
         "pr_number": "${ .open_pr.data.number // null }",
         "pushed_branch": "${ .push_branch.branch // null }"
