@@ -278,7 +278,7 @@ def _attach_inbound_trace_context() -> None:
 
 def get_tracer():
     """Return the claude_code tracer, or None when telemetry is disabled."""
-    if not _ready:
+    if not _ready and _tracer_provider is None:
         return None
     from opentelemetry import trace
 
