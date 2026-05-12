@@ -22,6 +22,12 @@ from typing import Any
 class SessionContext:
     instance_id: str = ""
     execution_id: str = ""
+    workflow_id: str = ""
+    agent_id: str = ""
+    agent_version: int | str | None = None
+    agent_slug: str = ""
+    agent_app_id: str = ""
+    sandbox_name: str = ""
     turn: int | None = None
     config_revision: int | None = None
     config_hash: str = ""
@@ -71,6 +77,12 @@ def set_session_context(
     *,
     instance_id: str = "",
     execution_id: str = "",
+    workflow_id: str = "",
+    agent_id: str = "",
+    agent_version: int | str | None = None,
+    agent_slug: str = "",
+    agent_app_id: str = "",
+    sandbox_name: str = "",
     turn: int | None = None,
     config_revision: int | None = None,
     config_hash: str | None = "",
@@ -94,6 +106,12 @@ def set_session_context(
         SessionContext(
             instance_id=instance_id,
             execution_id=execution_id,
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            agent_version=agent_version,
+            agent_slug=agent_slug,
+            agent_app_id=agent_app_id,
+            sandbox_name=sandbox_name,
             turn=turn,
             config_revision=config_revision,
             config_hash=config_hash or "",
@@ -132,6 +150,18 @@ def get_telemetry_attributes() -> dict[str, Any]:
             attrs["session.id"] = ctx.instance_id
     if ctx.execution_id:
         attrs["workflow.execution.id"] = ctx.execution_id
+    if ctx.workflow_id:
+        attrs["workflow.id"] = ctx.workflow_id
+    if ctx.agent_id:
+        attrs["agent.id"] = ctx.agent_id
+    if ctx.agent_version is not None:
+        attrs["agent.version"] = ctx.agent_version
+    if ctx.agent_slug:
+        attrs["agent.slug"] = ctx.agent_slug
+    if ctx.agent_app_id:
+        attrs["agent.app_id"] = ctx.agent_app_id
+    if ctx.sandbox_name:
+        attrs["sandbox.name"] = ctx.sandbox_name
     if ctx.turn is not None:
         attrs["agent.turn"] = ctx.turn
     if ctx.config_revision is not None:

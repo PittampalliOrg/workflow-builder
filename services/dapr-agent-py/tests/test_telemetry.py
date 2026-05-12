@@ -94,7 +94,16 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
         start_tool_span,
     )
 
-    set_session_context(instance_id="wf-abc", execution_id="exec-1")
+    set_session_context(
+        instance_id="wf-abc",
+        execution_id="exec-1",
+        workflow_id="workflow-1",
+        agent_id="agent-1",
+        agent_version=3,
+        agent_slug="agent-slug",
+        agent_app_id="agent-runtime-agent-slug",
+        sandbox_name="sandbox-1",
+    )
     start_interaction_span("hello world")
     llm = start_llm_request_span(
         "claude-opus-4-7",
@@ -127,6 +136,13 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert interaction.attributes["span.type"] == "interaction"
     assert interaction.attributes["session.id"] == "wf-abc"
     assert interaction.attributes["workflow.execution.id"] == "exec-1"
+    assert interaction.attributes["workflow.id"] == "workflow-1"
+    assert interaction.attributes["agent.id"] == "agent-1"
+    assert interaction.attributes["agent.version"] == 3
+    assert interaction.attributes["agent.slug"] == "agent-slug"
+    assert interaction.attributes["agent.app_id"] == "agent-runtime-agent-slug"
+    assert interaction.attributes["sandbox.name"] == "sandbox-1"
+    assert interaction.attributes["mlflow.spanType"] == "AGENT"
     # Prompt redacted by default (OTEL_LOG_USER_PROMPTS unset).
     assert interaction.attributes["user_prompt"] == "<REDACTED>"
 
@@ -139,6 +155,7 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert llm_span.attributes["success"] is True
     assert llm_span.attributes["llm_request.context"] == "interaction"
     assert llm_span.attributes["query_source"] == "test"
+    assert llm_span.attributes["mlflow.spanType"] == "CHAT_MODEL"
     # llm_request should be a child of interaction.
     assert llm_span.parent is not None
     assert llm_span.parent.span_id == interaction.context.span_id
@@ -146,10 +163,12 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     tool_span = _find_span(exporter, "claude_code.tool")
     assert tool_span.attributes["tool_name"] == "Edit"
     assert tool_span.attributes["tool.call_id"] == "tc-1"
+    assert tool_span.attributes["mlflow.spanType"] == "TOOL"
     assert tool_span.parent.span_id == interaction.context.span_id
 
     exec_span_out = _find_span(exporter, "claude_code.tool.execution")
     assert exec_span_out.attributes["success"] is True
+    assert exec_span_out.attributes["mlflow.spanType"] == "TOOL"
     assert exec_span_out.parent.span_id == tool_span.context.span_id
 
 

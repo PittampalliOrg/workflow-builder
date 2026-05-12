@@ -753,7 +753,15 @@ def _runtime_context_audit_fields(context: dict[str, Any] | None) -> dict[str, A
 
 def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
     audit = _runtime_context_audit_fields(context)
+    if not isinstance(context, dict):
+        context = {}
     return {
+        "workflow_id": context.get("workflowId"),
+        "agent_id": context.get("agentId"),
+        "agent_version": context.get("agentVersion"),
+        "agent_slug": context.get("agentSlug"),
+        "agent_app_id": context.get("agentAppId"),
+        "sandbox_name": context.get("sandboxName"),
         "turn": audit.get("turn"),
         "config_revision": audit.get("configRevision"),
         "config_hash": audit.get("configHash"),
@@ -3238,8 +3246,8 @@ class OpenShellDurableAgent(DurableAgent):
         runtime_context = {
             "executionId": execution_id,
             "workflowId": message.get("workflowId") or metadata.get("workflowId"),
-            "agentId": message.get("agentId") or instruction_agent.get("id"),
-            "agentVersion": message.get("agentVersion") or instruction_agent.get("version"),
+            "agentId": message.get("agentId") or instruction_agent.get("id") or agent_config.get("id"),
+            "agentVersion": message.get("agentVersion") or instruction_agent.get("version") or agent_config.get("version"),
             "agentSlug": (
                 message.get("agentSlug")
                 or instruction_agent.get("slug")
@@ -4077,9 +4085,14 @@ class OpenShellDurableAgent(DurableAgent):
             child_runtime_context = {
                 "executionId": db_execution_id or child_instance_id,
                 "workflowId": child_input.get("workflowId") or message.get("workflowId"),
-                "agentId": child_input.get("agentId") or message.get("agentId"),
+                "agentId": (
+                    child_input.get("agentId")
+                    or message.get("agentId")
+                    or agent_cfg.get("id")
+                ),
                 "agentVersion": child_input.get("agentVersion")
-                or message.get("agentVersion"),
+                or message.get("agentVersion")
+                or agent_cfg.get("version"),
                 "agentSlug": (
                     child_input.get("agentSlug")
                     or message.get("agentSlug")
@@ -4378,10 +4391,10 @@ def _freeze_session_child_input(
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,
         "workflowId": raw_message.get("workflowId"),
-        "agentId": raw_message.get("agentId"),
-        "agentVersion": raw_message.get("agentVersion"),
-        "agentSlug": raw_message.get("agentSlug"),
-        "agentAppId": raw_message.get("agentAppId"),
+        "agentId": raw_message.get("agentId") or agent_cfg.get("id"),
+        "agentVersion": raw_message.get("agentVersion") or agent_cfg.get("version"),
+        "agentSlug": raw_message.get("agentSlug") or agent_cfg.get("slug"),
+        "agentAppId": raw_message.get("agentAppId") or agent_cfg.get("agentAppId"),
         "agentConfig": agent_cfg,
         "effectiveAgentConfig": effective_agent_config or {},
         "instructionBundle": instruction_bundle or {},

@@ -135,6 +135,14 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
 def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     attrs: dict[str, Any] = dict(get_telemetry_attributes())
     attrs["span.type"] = span_type
+    attrs["mlflow.spanType"] = {
+        "interaction": "AGENT",
+        "llm_request": "CHAT_MODEL",
+        "tool": "TOOL",
+        "tool.blocked_on_user": "TOOL",
+        "tool.execution": "TOOL",
+        "hook": "TOOL",
+    }.get(span_type, "CHAIN")
     if extra:
         for k, v in extra.items():
             if v is None:
