@@ -492,6 +492,91 @@ def test_sw_workflow_trace_context_is_isolated_per_execution():
     assert first["baggage"] == "caller.id=smoke"
 
 
+def test_sw_workflow_instance_id_fits_dapr_http_limit():
+    instance_id = APP._build_sw_workflow_instance_id(
+        "this-workflow-name-is-intentionally-longer-than-dapr-http-allows",
+        "execution-id-that-is-also-too-long-for-the-http-api",
+    )
+
+    assert len(instance_id) <= APP.MAX_DAPR_WORKFLOW_INSTANCE_ID_LENGTH
+    assert instance_id.startswith("sw-this-workflow-name")
+    assert "-exec-" in instance_id
+
+
+def test_workflow_http_start_posts_trace_context(monkeypatch):
+    captured = {}
+
+    class Response:
+        ok = True
+        status_code = 202
+        text = '{"instanceID":"started-instance"}'
+        content = b'{"instanceID":"started-instance"}'
+
+        def json(self):
+            return {"instanceID": "started-instance"}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return Response()
+
+    monkeypatch.setattr(APP.requests, "post", fake_post)
+    monkeypatch.setattr(APP, "_dapr_http_sidecar_url", lambda: "http://dapr")
+
+    result = APP._workflow_http_start_instance(
+        "sw_workflow_v1",
+        "sw-test-exec-123",
+        {"hello": "world"},
+        parent_trace_context={
+            "traceparent": "00-" + ("1" * 32) + "-" + ("2" * 16) + "-01",
+            "tracestate": "vendor=value",
+            "baggage": "session.id=abc",
+        },
+    )
+
+    assert result == "started-instance"
+    assert captured["url"] == (
+        "http://dapr/v1.0/workflows/dapr/sw_workflow_v1/start"
+        "?instanceID=sw-test-exec-123"
+    )
+    assert captured["kwargs"]["json"] == {"hello": "world"}
+    assert captured["kwargs"]["headers"]["traceparent"].startswith("00-")
+    assert captured["kwargs"]["headers"]["tracestate"] == "vendor=value"
+    assert captured["kwargs"]["headers"]["baggage"] == "session.id=abc"
+
+
+def test_schedule_uses_http_start_by_default(monkeypatch):
+    captured = {}
+
+    def fake_http_start(workflow_name, instance_id, workflow_input, **kwargs):
+        captured["workflow_name"] = workflow_name
+        captured["instance_id"] = instance_id
+        captured["workflow_input"] = workflow_input
+        captured["kwargs"] = kwargs
+        return "http-started"
+
+    def fail_taskhub(*_args, **_kwargs):
+        raise AssertionError("TaskHub gRPC start should not be used by default")
+
+    monkeypatch.delenv("WORKFLOW_ORCHESTRATOR_WORKFLOW_START_METHOD", raising=False)
+    monkeypatch.setattr(APP, "_workflow_http_start_instance", fake_http_start)
+    monkeypatch.setattr(APP, "_taskhub_call", fail_taskhub)
+
+    result = APP._schedule_new_workflow_instance(
+        "sw_workflow_v1",
+        "sw-test-exec-123",
+        {"input": True},
+        workflow_version="1.0.0",
+        parent_trace_context={"traceparent": "00-" + ("1" * 32) + "-" + ("2" * 16) + "-01"},
+    )
+
+    assert result == "http-started"
+    assert captured["workflow_name"] == "sw_workflow_v1"
+    assert captured["instance_id"] == "sw-test-exec-123"
+    assert captured["workflow_input"] == {"input": True}
+    assert captured["kwargs"]["parent_trace_context"]["traceparent"].startswith("00-")
+
+
 def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanup(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()
