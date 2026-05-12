@@ -35,6 +35,7 @@ import os
 from typing import TYPE_CHECKING
 
 from diagrid.agent.adk import DaprWorkflowAgentRunner
+from diagrid.agent.adk.workflow import register_tool
 
 from src.constants import AGENT_SLUG, MAX_ITERATIONS
 
@@ -42,6 +43,41 @@ if TYPE_CHECKING:
     from google.adk.agents import LlmAgent
 
 logger = logging.getLogger(__name__)
+
+
+def _register_tool_aliases(agent: "LlmAgent") -> None:
+    """Register declaration-name aliases for ADK tools.
+
+    Diagrid registers tools by `tool.name` (for example `Write`), but Gemini
+    emits the function declaration name (for example `file_write`). Keep both
+    names pointed at the same tool so durable tool execution can resolve model
+    tool calls.
+    """
+    for tool in getattr(agent, "tools", []) or []:
+        aliases: set[str] = set()
+        tool_name = getattr(tool, "name", None)
+        if isinstance(tool_name, str) and tool_name:
+            aliases.add(tool_name)
+
+        get_decl = getattr(tool, "_get_declaration", None)
+        if callable(get_decl):
+            try:
+                declaration = get_decl()
+                declaration_name = getattr(declaration, "name", None)
+                if isinstance(declaration_name, str) and declaration_name:
+                    aliases.add(declaration_name)
+                    aliases.add(declaration_name.split(":")[-1])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[adk-runner] declaration alias failed for %s: %s",
+                    tool_name,
+                    exc,
+                )
+
+        for alias in aliases:
+            register_tool(alias, tool)
+        if len(aliases) > 1:
+            logger.info("[adk-runner] registered tool aliases %s", sorted(aliases))
 
 
 def build_runner(agent: "LlmAgent") -> DaprWorkflowAgentRunner:
@@ -62,6 +98,7 @@ def build_runner(agent: "LlmAgent") -> DaprWorkflowAgentRunner:
         port=port,
         max_iterations=MAX_ITERATIONS,
     )
+    _register_tool_aliases(agent)
     logger.info(
         "[adk-runner] built DaprWorkflowAgentRunner name=%s diagrid_workflow=%s max_iter=%d",
         name,
