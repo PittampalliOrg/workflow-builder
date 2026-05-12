@@ -98,6 +98,29 @@ class _SanitizingSpanExporter:
             return span
 
 
+class _SanitizingSpanProcessor:
+    """Remove invalid attributes before downstream processors/exporters run."""
+
+    def on_start(self, span: Any, parent_context: Any | None = None) -> None:
+        return None
+
+    def on_end(self, span: Any) -> None:
+        attrs = _clean_attrs(getattr(span, "attributes", None))
+        original_attrs = getattr(span, "attributes", None)
+        if attrs == original_attrs:
+            return
+        try:
+            setattr(span, "_attributes", attrs)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to sanitize ended span %s: %s", getattr(span, "name", "?"), exc)
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return True
+
+
 def is_telemetry_ready() -> bool:
     return _ready
 
@@ -188,6 +211,7 @@ def init_telemetry() -> bool:
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
         tp = TracerProvider(resource=resource)
+        tp.add_span_processor(_SanitizingSpanProcessor())
         tp.add_span_processor(
             BatchSpanProcessor(
                 _SanitizingSpanExporter(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")),
