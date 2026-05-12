@@ -3,6 +3,7 @@ import { db } from "$lib/server/db";
 import {
 	benchmarkRunInstances,
 	benchmarkRuns,
+	workflowExecutions,
 } from "$lib/server/db/schema";
 import {
 	getMultiTraceLlmSpans,
@@ -39,6 +40,8 @@ export type SwebenchTraceBundle = {
 	runInstanceId: string | null;
 	instanceId: string;
 	traceIds: string[];
+	canonicalTraceId: string | null;
+	auxiliaryTraces: Array<{ traceId: string; status: "found" | "missing" }>;
 	mlflowTracesUrl: string | null;
 	traceSpans: ObservabilityTraceSpan[];
 	llmSpans: ObservabilityLlmSpan[];
@@ -50,6 +53,24 @@ export type SwebenchTraceBundle = {
 		toolSpanCount: number;
 		errorSpanCount: number;
 		source: SwebenchTraceBundleBackend;
+	};
+	requiredContext: {
+		rootPresent: boolean;
+		statusFinalized: boolean;
+		nodeSpansPresent: boolean;
+		llmToolSpansPresent: boolean;
+		agentIdentityComplete: boolean;
+		auxiliaryTracesFound: number;
+		auxiliaryTracesMissing: number;
+	};
+	groups: {
+		workflowRoot: number;
+		workflowNodes: number;
+		agentTurns: number;
+		llmCalls: number;
+		toolCalls: number;
+		workspaceActions: number;
+		evaluatorHarness: number;
 	};
 	source: {
 		kind: SwebenchTraceBundleBackend;
@@ -72,6 +93,7 @@ type RawBuildInput = {
 	runInstanceId: string | null;
 	instanceId: string;
 	traceIds: string[];
+	canonicalTraceId: string | null;
 	mlflowExperimentId: string | null;
 	mlflowRunId: string | null;
 	artifactPath: string;
@@ -107,9 +129,12 @@ export async function loadSwebenchTraceBundle(params: {
 			instanceId: benchmarkRunInstances.instanceId,
 			traceIds: benchmarkRunInstances.traceIds,
 			mlflowRunId: benchmarkRunInstances.mlflowRunId,
+			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			primaryTraceId: workflowExecutions.primaryTraceId,
 		})
 		.from(benchmarkRunInstances)
 		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+		.leftJoin(workflowExecutions, eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId))
 		.where(
 			and(
 				whereRun,
@@ -120,13 +145,21 @@ export async function loadSwebenchTraceBundle(params: {
 		.limit(1);
 	if (!row) return null;
 
-	const traceIds = normalizeTraceIds(row.traceIds);
+	const auxiliaryTraceIds = normalizeTraceIds(row.traceIds);
+	const canonicalTraceId =
+		typeof row.primaryTraceId === "string" && row.primaryTraceId.trim()
+			? row.primaryTraceId.trim()
+			: auxiliaryTraceIds[0] ?? null;
+	const traceIds = canonicalTraceId
+		? [canonicalTraceId, ...auxiliaryTraceIds.filter((id) => id !== canonicalTraceId)]
+		: auxiliaryTraceIds;
 	const artifactPath = safeSwebenchTraceArtifactPath(row.instanceId);
 	const base: RawBuildInput = {
 		runId: row.runId,
 		runInstanceId: row.runInstanceId,
 		instanceId: row.instanceId,
 		traceIds,
+		canonicalTraceId,
 		mlflowExperimentId: row.mlflowExperimentId,
 		mlflowRunId: row.mlflowRunId,
 		artifactPath,
@@ -147,6 +180,25 @@ export async function loadSwebenchTraceBundle(params: {
 					...artifact,
 					backend: "mlflow_artifact",
 					artifactPath,
+					canonicalTraceId:
+						artifact.canonicalTraceId ??
+						canonicalTraceId ??
+						artifact.traceIds?.[0] ??
+						null,
+					auxiliaryTraces:
+						artifact.auxiliaryTraces ??
+						(artifact.traceIds ?? [])
+							.filter((traceId) => traceId !== (artifact.canonicalTraceId ?? canonicalTraceId))
+							.map((traceId) => ({ traceId, status: "missing" as const })),
+					requiredContext:
+						artifact.requiredContext ??
+						defaultRequiredContext(
+							artifact.traceSpans ?? [],
+							artifact.llmSpans ?? [],
+							artifact.toolSpans ?? [],
+							artifact.canonicalTraceId ?? canonicalTraceId ?? null,
+						),
+					groups: artifact.groups ?? groupTraceSpans(artifact.traceSpans ?? []),
 					warnings: artifact.warnings ?? [],
 				};
 			}
@@ -264,10 +316,13 @@ async function logTraceBundleTags(
 			{ key: "workflow_builder.trace_bundle_path", value: bundle.artifactPath },
 			{ key: "workflow_builder.trace_backend", value: "mlflow_artifact" },
 			{ key: "workflow_builder.trace_count", value: String(bundle.traceIds.length) },
-			{ key: "workflow_builder.first_trace_id", value: bundle.traceIds[0] ?? "" },
+			{ key: "workflow_builder.first_trace_id", value: bundle.canonicalTraceId ?? bundle.traceIds[0] ?? "" },
 			{
 				key: "workflow_builder.trace_url",
-				value: publicWorkflowBuilderTraceUrl(bundle.traceIds[0]) ?? bundle.mlflowTracesUrl ?? "",
+				value:
+					publicWorkflowBuilderTraceUrl(bundle.canonicalTraceId ?? bundle.traceIds[0]) ??
+					bundle.mlflowTracesUrl ??
+					"",
 			},
 			{
 				key: "workflow_builder.trace_span_count",
@@ -335,7 +390,7 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 ): Promise<SwebenchTraceBundle> {
 	const mlflowTracesUrl = publicMlflowTracesUrl(
 		input.mlflowExperimentId,
-		input.traceIds[0],
+		input.canonicalTraceId ?? input.traceIds[0],
 	);
 	if (input.traceIds.length === 0) {
 		return createBundle(input, {
@@ -451,6 +506,20 @@ function createBundle(
 	},
 ): SwebenchTraceBundle {
 	const errorSpanCount = values.traceSpans.filter((span) => span.status === "error").length;
+	const foundTraceIds = new Set(values.traceSpans.map((span) => span.traceId));
+	const auxiliaryTraces = input.traceIds
+		.filter((traceId) => traceId !== input.canonicalTraceId)
+		.map((traceId) => ({
+			traceId,
+			status: foundTraceIds.has(traceId) ? "found" as const : "missing" as const,
+		}));
+	const groups = groupTraceSpans(values.traceSpans);
+	const requiredContext = defaultRequiredContext(
+		values.traceSpans,
+		values.llmSpans,
+		values.toolSpans,
+		input.canonicalTraceId,
+	);
 	return {
 		version: 1,
 		backend: values.backend,
@@ -459,6 +528,8 @@ function createBundle(
 		runInstanceId: input.runInstanceId,
 		instanceId: input.instanceId,
 		traceIds: input.traceIds,
+		canonicalTraceId: input.canonicalTraceId,
+		auxiliaryTraces,
 		mlflowTracesUrl: values.mlflowTracesUrl,
 		traceSpans: values.traceSpans,
 		llmSpans: values.llmSpans,
@@ -471,6 +542,12 @@ function createBundle(
 			errorSpanCount,
 			source: values.backend,
 		},
+		requiredContext: {
+			...requiredContext,
+			auxiliaryTracesFound: auxiliaryTraces.filter((trace) => trace.status === "found").length,
+			auxiliaryTracesMissing: auxiliaryTraces.filter((trace) => trace.status === "missing").length,
+		},
+		groups,
 		source: {
 			kind: values.backend,
 			generatedAt: new Date().toISOString(),
@@ -480,6 +557,92 @@ function createBundle(
 			rawTraceSpanCount: values.traceSpans.length,
 		},
 		warnings: values.warnings,
+	};
+}
+
+function groupTraceSpans(traceSpans: ObservabilityTraceSpan[]): SwebenchTraceBundle["groups"] {
+	const groups: SwebenchTraceBundle["groups"] = {
+		workflowRoot: 0,
+		workflowNodes: 0,
+		agentTurns: 0,
+		llmCalls: 0,
+		toolCalls: 0,
+		workspaceActions: 0,
+		evaluatorHarness: 0,
+	};
+	for (const span of traceSpans) {
+		const attrs = span.attributes ?? {};
+		const name = span.operationName.toLowerCase();
+		const operation = String(attrs["gen_ai.operation.name"] ?? "").toLowerCase();
+		const spanType = String(attrs["mlflow.spanType"] ?? attrs["span.type"] ?? "").toLowerCase();
+		const service = span.serviceName.toLowerCase();
+		if (span.operationName === "workflow.finalize" || operation === "workflow") {
+			groups.workflowRoot += 1;
+		} else if (name.startsWith("workflow.node.") || operation === "workflow.node") {
+			groups.workflowNodes += 1;
+		} else if (name.includes("interaction") || spanType === "agent") {
+			groups.agentTurns += 1;
+		} else if (spanType === "chat_model" || name.includes("llm") || operation === "chat") {
+			groups.llmCalls += 1;
+		} else if (spanType === "tool" || name.includes("tool")) {
+			groups.toolCalls += 1;
+		} else if (name.startsWith("workspace/") || name.includes("workspace")) {
+			groups.workspaceActions += 1;
+		} else if (service.includes("evaluator") || name.includes("harness") || name.includes("swebench")) {
+			groups.evaluatorHarness += 1;
+		}
+	}
+	return groups;
+}
+
+function defaultRequiredContext(
+	traceSpans: ObservabilityTraceSpan[],
+	llmSpans: ObservabilityLlmSpan[],
+	toolSpans: ObservabilityToolSpan[],
+	canonicalTraceId: string | null,
+): SwebenchTraceBundle["requiredContext"] {
+	const groups = groupTraceSpans(traceSpans);
+	const rootPresent = traceSpans.some(
+		(span) =>
+			(!canonicalTraceId || span.traceId === canonicalTraceId) &&
+			(span.operationName === "workflow.finalize" ||
+				span.attributes?.["gen_ai.operation.name"] === "workflow"),
+	);
+	const statusFinalized = traceSpans.some((span) => {
+		if (canonicalTraceId && span.traceId !== canonicalTraceId) return false;
+		if (
+			span.operationName !== "workflow.finalize" &&
+			span.attributes?.["gen_ai.operation.name"] !== "workflow"
+		) {
+			return false;
+		}
+		const status = String(
+			span.attributes?.["workflow.status"] ?? span.attributes?.["status"] ?? span.statusCode ?? "",
+		).toUpperCase();
+		return status.includes("OK") || status.includes("ERROR");
+	});
+	const agentIdentityComplete = [...llmSpans, ...toolSpans].some((span) => {
+		const rawSpan = traceSpans.find((candidate) => candidate.spanId === span.spanId);
+		const attrs = rawSpan?.attributes ?? {};
+		return Boolean(
+			attrs["workflow.id"] &&
+				attrs["workflow.execution.id"] &&
+				attrs["workflow.node.id"] &&
+				attrs["workflow.node.name"] &&
+				attrs["agent.id"] &&
+				attrs["agent.version"] &&
+				attrs["agent.slug"] &&
+				attrs["agent.app_id"],
+		);
+	});
+	return {
+		rootPresent,
+		statusFinalized,
+		nodeSpansPresent: groups.workflowNodes > 0,
+		llmToolSpansPresent: llmSpans.length > 0 || toolSpans.length > 0,
+		agentIdentityComplete,
+		auxiliaryTracesFound: 0,
+		auxiliaryTracesMissing: 0,
 	};
 }
 

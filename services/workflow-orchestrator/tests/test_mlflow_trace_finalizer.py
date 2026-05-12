@@ -59,6 +59,8 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
             "traceName": "wf_test/db_exec_123",
             "status": "OK",
             "durationMs": 1234,
+            "startTimeMs": 1_700_000_000_000,
+            "endTimeMs": 1_700_000_001_234,
         }
     )
 
@@ -78,6 +80,8 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     )
     assert span.span_id != b"\x00" * 8
     assert span.status.code == trace_pb2.Status.STATUS_CODE_OK
+    assert span.start_time_unix_nano == 1_700_000_000_000_000_000
+    assert span.end_time_unix_nano == 1_700_000_001_234_000_000
 
     attrs = _attribute_map(span)
     assert attrs["gen_ai.operation.name"] == "workflow"

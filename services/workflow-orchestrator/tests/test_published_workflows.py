@@ -873,7 +873,12 @@ def test_durable_run_routes_through_session_bridge():
                 "agentRuntime": "dapr-agent-py",
                 "maxTurns": "8",
                 "timeoutMinutes": "15",
-                "agentConfig": {"name": "durable-validation"},
+                "agentConfig": {
+                    "id": "agent_123",
+                    "version": 4,
+                    "slug": "durable-validation",
+                    "name": "durable-validation",
+                },
             },
         },
         tc,
@@ -889,6 +894,9 @@ def test_durable_run_routes_through_session_bridge():
     assert bridge_payload["workspaceRef"] == "ws_test_123"
     assert bridge_payload["sandboxName"] == "ws-test-123"
     assert bridge_payload["cwd"] == "/sandbox/repo"
+    assert bridge_payload["agentId"] == "agent_123"
+    assert bridge_payload["agentVersion"] == 4
+    assert bridge_payload["agentSlug"] == "durable-validation"
     assert bridge_payload["agentConfig"]["name"] == "durable-validation"
     assert bridge_payload["timeoutMinutes"] == 15
     assert bridge_payload["maxIterations"] == 8
@@ -904,6 +912,16 @@ def test_durable_run_routes_through_session_bridge():
     assert child_task.kind == "call_child_workflow"
     assert child_task.name == "session_workflow"
     assert child_task.app_id == "agent-runtime-test"
+    assert child_task.input["workflowId"] == "test-workflow"
+    assert child_task.input["workflowExecutionId"] == "exec_456"
+    assert child_task.input["nodeId"] == "durable_validation_run"
+    assert child_task.input["nodeName"] == "durable_validation_run"
+    assert child_task.input["agentId"] == "agent_123"
+    assert child_task.input["agentVersion"] == 4
+    assert child_task.input["agentSlug"] == "durable-validation"
+    assert child_task.input["sandboxName"] == "ws-test-123"
+    assert child_task.input["workspaceRef"] == "ws_test_123"
+    assert child_task.input["_message_metadata"]["agentSlug"] == "durable-validation"
     assert timer_task.kind == "timer"
 
     with pytest.raises(StopIteration) as stop:

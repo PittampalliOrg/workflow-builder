@@ -57,6 +57,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	const workflowId =
 		typeof body.workflowId === "string" ? body.workflowId : "";
 	const nodeId = typeof body.nodeId === "string" ? body.nodeId : "";
+	const nodeName =
+		typeof body.nodeName === "string" && body.nodeName.trim()
+			? body.nodeName.trim()
+			: nodeId;
 	const workflowExecutionId =
 		typeof body.workflowExecutionId === "string" ? body.workflowExecutionId : null;
 	const parentExecutionId =
@@ -366,6 +370,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				environmentConfig,
 				workflowId,
 				nodeId,
+				nodeName,
 				vaultIds: Array.isArray(existing.vaultIds) ? existing.vaultIds : vaultIds,
 				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
 				initialMessage,
@@ -510,6 +515,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			environmentConfig,
 			workflowId,
 			nodeId,
+			nodeName,
 			vaultIds,
 			workflowExecutionId,
 			initialMessage,
@@ -534,6 +540,7 @@ function buildChildInput(params: {
 	environmentConfig: Record<string, unknown> | null;
 	workflowId: string;
 	nodeId: string;
+	nodeName?: string | null;
 	vaultIds: string[];
 	workflowExecutionId: string | null;
 	initialMessage: string | null;
@@ -558,6 +565,7 @@ function buildChildInput(params: {
 		environmentConfig: params.environmentConfig,
 		workflowId: params.workflowId,
 		nodeId: params.nodeId,
+		nodeName: params.nodeName ?? params.nodeId,
 		workflowExecutionId: params.workflowExecutionId,
 		vaultIds: params.vaultIds,
 		dbExecutionId: params.workflowExecutionId,
@@ -571,6 +579,21 @@ function buildChildInput(params: {
 		cwd: params.cwd ?? null,
 		timeoutMinutes: params.timeoutMinutes ?? null,
 		maxIterations: params.maxIterations ?? null,
+		_message_metadata: {
+			executionId: params.workflowExecutionId,
+			workflowExecutionId: params.workflowExecutionId,
+			workflowId: params.workflowId,
+			nodeId: params.nodeId,
+			nodeName: params.nodeName ?? params.nodeId,
+			agentId: params.agentId ?? null,
+			agentVersion: params.agentVersion ?? null,
+			agentSlug: params.agentSlug ?? null,
+			agentAppId: params.agentAppId ?? null,
+			sandboxName: params.sandboxName ?? null,
+			workspaceRef: params.workspaceRef ?? null,
+			cwd: params.cwd ?? null,
+			source: "durable/run",
+		},
 		initialEvents: params.initialMessage
 			? [
 					{

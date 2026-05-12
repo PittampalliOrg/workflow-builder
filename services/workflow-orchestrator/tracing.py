@@ -185,6 +185,16 @@ def _clean_otlp_attributes(attrs: dict[str, Any]) -> list[Any]:
     ]
 
 
+def _coerce_epoch_ns(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _post_otlp_span(
     *,
     span: Any,
@@ -318,7 +328,23 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
     error_message = str(input_data.get("error") or "").strip()
     duration_ms = input_data.get("durationMs")
     now_ns = time.time_ns()
-    end_ns = now_ns + 1_000_000
+    start_ns = _coerce_epoch_ns(input_data.get("startTimeUnixNano"))
+    end_ns = _coerce_epoch_ns(input_data.get("endTimeUnixNano"))
+    if start_ns is None and input_data.get("startTimeMs") is not None:
+        start_ms = _coerce_epoch_ns(input_data.get("startTimeMs"))
+        start_ns = start_ms * 1_000_000 if start_ms is not None else None
+    if end_ns is None and input_data.get("endTimeMs") is not None:
+        end_ms = _coerce_epoch_ns(input_data.get("endTimeMs"))
+        end_ns = end_ms * 1_000_000 if end_ms is not None else None
+    if start_ns is None and duration_ms is not None:
+        try:
+            start_ns = now_ns - max(0, int(duration_ms)) * 1_000_000
+        except (TypeError, ValueError):
+            start_ns = None
+    if start_ns is None:
+        start_ns = now_ns
+    if end_ns is None or end_ns < start_ns:
+        end_ns = max(start_ns + 1_000_000, now_ns)
 
     try:
         from opentelemetry.proto.trace.v1 import trace_pb2
@@ -345,7 +371,7 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
             span_id=_deterministic_mlflow_root_span_id(trace_id, workflow_instance_id),
             name=span_name,
             kind=trace_pb2.Span.SPAN_KIND_INTERNAL,
-            start_time_unix_nano=now_ns,
+            start_time_unix_nano=start_ns,
             end_time_unix_nano=end_ns,
             attributes=_clean_otlp_attributes(span_attrs),
             status=trace_pb2.Status(

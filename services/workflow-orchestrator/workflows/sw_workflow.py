@@ -357,8 +357,14 @@ def _mlflow_finalizer_input(
     execution_id: str,
     db_execution_id: str | None,
     duration_ms: int | None = None,
+    start_time_ms: int | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
+    end_time_ms = (
+        start_time_ms + duration_ms
+        if start_time_ms is not None and duration_ms is not None
+        else None
+    )
     return {
         "status": status,
         "traceId": trace_id,
@@ -368,6 +374,8 @@ def _mlflow_finalizer_input(
         "dbExecutionId": db_execution_id,
         "daprInstanceId": execution_id,
         "durationMs": duration_ms,
+        "startTimeMs": start_time_ms,
+        "endTimeMs": end_time_ms,
         "error": error,
         "traceName": _workflow_trace_name(workflow_id, execution_id, db_execution_id),
         "_otel": otel_ctx,
@@ -379,6 +387,74 @@ def _json_size_chars(value: Any) -> int | None:
         return len(json.dumps(value, default=str))
     except Exception:
         return None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _canonical_agent_context(
+    *,
+    flattened_args: dict[str, Any],
+    agent_config: dict[str, Any] | None,
+    instruction_bundle: dict[str, Any] | None,
+    tc: "TaskContext",
+    task_name: str,
+    agent_runtime: str,
+    agent_app_id: str | None,
+    workspace_ref: str | None,
+) -> dict[str, Any]:
+    instruction_agent = (
+        instruction_bundle.get("agent")
+        if isinstance(instruction_bundle, dict)
+        and isinstance(instruction_bundle.get("agent"), dict)
+        else {}
+    )
+    effective_agent = (
+        flattened_args.get("effectiveAgentConfig")
+        if isinstance(flattened_args.get("effectiveAgentConfig"), dict)
+        else {}
+    )
+    config = agent_config if isinstance(agent_config, dict) else {}
+    sandbox_name = _string_or_none(flattened_args.get("sandboxName"))
+    return {
+        "workflowId": _string_or_none(tc.workflow_id),
+        "workflowExecutionId": _string_or_none(tc.db_execution_id or tc.execution_id),
+        "nodeId": _string_or_none(task_name),
+        "nodeName": _string_or_none(flattened_args.get("nodeName")) or _string_or_none(task_name),
+        "agentId": (
+            _string_or_none(flattened_args.get("agentId"))
+            or _string_or_none(instruction_agent.get("id"))
+            or _string_or_none(effective_agent.get("id"))
+            or _string_or_none(config.get("id"))
+        ),
+        "agentVersion": (
+            flattened_args.get("agentVersion")
+            if flattened_args.get("agentVersion") is not None
+            else instruction_agent.get("version")
+            if instruction_agent.get("version") is not None
+            else effective_agent.get("version")
+            if effective_agent.get("version") is not None
+            else config.get("version")
+        ),
+        "agentSlug": (
+            _string_or_none(flattened_args.get("agentSlug"))
+            or _string_or_none(instruction_agent.get("slug"))
+            or _string_or_none(effective_agent.get("slug"))
+            or _string_or_none(config.get("slug"))
+        ),
+        "agentAppId": (
+            _string_or_none(agent_app_id)
+            or _string_or_none(flattened_args.get("agentAppId"))
+            or _string_or_none(config.get("agentAppId"))
+        ),
+        "agentRuntime": _string_or_none(agent_runtime),
+        "sandboxName": sandbox_name,
+        "workspaceRef": _string_or_none(workspace_ref),
+    }
 
 
 def _mlflow_node_span_input(
@@ -1396,36 +1472,53 @@ def _run_native_durable_agent_child_workflow(
             ]
         )
 
+    instruction_bundle = (
+        flattened_args.get("instructionBundle")
+        if isinstance(flattened_args.get("instructionBundle"), dict)
+        else None
+    )
+    environment_config = (
+        flattened_args.get("environmentConfig")
+        if isinstance(flattened_args.get("environmentConfig"), dict)
+        else None
+    )
+    canonical_context = _canonical_agent_context(
+        flattened_args=flattened_args,
+        agent_config=agent_config,
+        instruction_bundle=instruction_bundle,
+        tc=tc,
+        task_name=task_name,
+        agent_runtime=agent_runtime,
+        agent_app_id=target.get("app_id"),
+        workspace_ref=workspace_ref,
+    )
+
     child_input = {
         "task": run_prompt,
         "prompt": prompt,
         "sessionId": child_instance_id,
         "workflow_instance_id": child_instance_id,
         "parentExecutionId": ctx.instance_id,
-        "executionId": tc.db_execution_id or tc.execution_id,
-        "workflowExecutionId": tc.db_execution_id or tc.execution_id,
-        "workflowId": tc.workflow_id,
-        "nodeId": task_name,
-        "nodeName": task_name,
-        "agentId": flattened_args.get("agentId"),
-        "agentVersion": flattened_args.get("agentVersion"),
-        "agentSlug": flattened_args.get("agentSlug")
-        or (agent_config.get("slug") if isinstance(agent_config, dict) else None),
-        "agentAppId": target.get("app_id"),
+        "executionId": canonical_context["workflowExecutionId"],
+        "workflowExecutionId": canonical_context["workflowExecutionId"],
+        "workflowId": canonical_context["workflowId"],
+        "nodeId": canonical_context["nodeId"],
+        "nodeName": canonical_context["nodeName"],
+        "agentId": canonical_context["agentId"],
+        "agentVersion": canonical_context["agentVersion"],
+        "agentSlug": canonical_context["agentSlug"],
+        "agentAppId": canonical_context["agentAppId"],
         "agentRunId": child_instance_id,
-        "workspaceRef": workspace_ref,
-        "agentRuntime": agent_runtime,
+        "workspaceRef": canonical_context["workspaceRef"],
+        "sandboxName": canonical_context["sandboxName"],
+        "agentRuntime": canonical_context["agentRuntime"],
         "stopCondition": stop_condition or None,
         "cwd": cwd,
         "requireFileChanges": require_file_changes,
         "timeoutMinutes": timeout_minutes,
         "agentConfig": agent_config,
-        "instructionBundle": flattened_args.get("instructionBundle")
-        if isinstance(flattened_args.get("instructionBundle"), dict)
-        else None,
-        "environmentConfig": flattened_args.get("environmentConfig")
-        if isinstance(flattened_args.get("environmentConfig"), dict)
-        else None,
+        "instructionBundle": instruction_bundle,
+        "environmentConfig": environment_config,
         "agentGraph": agent_graph if isinstance(agent_graph, dict) else None,
         "autoTerminateAfterEndTurn": True,
         "loopPolicy": flattened_args.get("loopPolicy")
@@ -1436,8 +1529,20 @@ def _run_native_durable_agent_child_workflow(
         "_message_metadata": {
             "source": action_type,
             "triggering_workflow_instance_id": ctx.instance_id,
-            "executionId": tc.db_execution_id or tc.execution_id,
-            "workflowExecutionId": tc.db_execution_id or tc.execution_id,
+            "executionId": canonical_context["workflowExecutionId"],
+            "workflowExecutionId": canonical_context["workflowExecutionId"],
+            "workflowId": canonical_context["workflowId"],
+            "nodeId": canonical_context["nodeId"],
+            "nodeName": canonical_context["nodeName"],
+            "agentId": canonical_context["agentId"],
+            "agentVersion": canonical_context["agentVersion"],
+            "agentSlug": canonical_context["agentSlug"],
+            "agentAppId": canonical_context["agentAppId"],
+            "agentRunId": child_instance_id,
+            "agentRuntime": canonical_context["agentRuntime"],
+            "sandboxName": canonical_context["sandboxName"],
+            "workspaceRef": canonical_context["workspaceRef"],
+            "cwd": cwd,
         },
         "_otel_span_context": tc.otel_ctx,
     }
@@ -1534,7 +1639,8 @@ def _run_native_durable_agent_child_workflow(
             "sessionId": child_instance_id,
             "workflowId": tc.workflow_id,
             "nodeId": task_name,
-            "workflowExecutionId": tc.db_execution_id or tc.execution_id,
+            "nodeName": canonical_context["nodeName"],
+            "workflowExecutionId": canonical_context["workflowExecutionId"],
             "parentExecutionId": ctx.instance_id,
             "benchmarkRunId": tc.trigger_data.get("runId")
             if isinstance(tc.trigger_data, dict)
@@ -1555,18 +1661,17 @@ def _run_native_durable_agent_child_workflow(
             # "the app may not be available: context deadline exceeded"
             # and the parent orchestrator silently stalls on the task-5
             # completion event.
-            "agentId": flattened_args.get("agentId"),
-            "agentVersion": flattened_args.get("agentVersion"),
-            "agentAppId": target.get("app_id"),
-            "agentSlug": flattened_args.get("agentSlug")
-            or (agent_config.get("slug") if isinstance(agent_config, dict) else None),
+            "agentId": canonical_context["agentId"],
+            "agentVersion": canonical_context["agentVersion"],
+            "agentAppId": canonical_context["agentAppId"],
+            "agentSlug": canonical_context["agentSlug"],
             # Sandbox plumbing — forwarded to ensure-for-workflow which in turn
             # embeds these in childInput so session_workflow can forward them
             # to agent_workflow. Required for any durable/run that uses
             # OpenShell tools (the runtime refuses to bind a sandbox without
             # a non-empty sandboxName or a workspaceRef starting with "ws_").
-            "workspaceRef": workspace_ref,
-            "sandboxName": flattened_args.get("sandboxName"),
+            "workspaceRef": canonical_context["workspaceRef"],
+            "sandboxName": canonical_context["sandboxName"],
             "cwd": cwd,
             # Preserve durable/run execution guards across the workflow↔session
             # bridge. session_workflow uses timeoutMinutes to raise its own
@@ -1585,6 +1690,32 @@ def _run_native_durable_agent_child_workflow(
             raise RuntimeError(
                 f"workflow↔session bridge: invalid bridge_result for {child_instance_id}"
             )
+        bridge_child_input = {
+            **bridge_child_input,
+            "workflowId": canonical_context["workflowId"],
+            "workflowExecutionId": canonical_context["workflowExecutionId"],
+            "dbExecutionId": canonical_context["workflowExecutionId"],
+            "nodeId": canonical_context["nodeId"],
+            "nodeName": canonical_context["nodeName"],
+            "agentId": bridge_result.get("agentId") or canonical_context["agentId"],
+            "agentVersion": bridge_result.get("agentVersion")
+            if bridge_result.get("agentVersion") is not None
+            else canonical_context["agentVersion"],
+            "agentSlug": bridge_result.get("agentSlug") or canonical_context["agentSlug"],
+            "agentAppId": bridge_result.get("agentAppId") or canonical_context["agentAppId"],
+            "sandboxName": bridge_child_input.get("sandboxName")
+            or canonical_context["sandboxName"],
+            "workspaceRef": bridge_child_input.get("workspaceRef")
+            or canonical_context["workspaceRef"],
+            "_message_metadata": {
+                **(
+                    bridge_child_input.get("_message_metadata")
+                    if isinstance(bridge_child_input.get("_message_metadata"), dict)
+                    else {}
+                ),
+                **child_input["_message_metadata"],
+            },
+        }
         bridge_app_id = target["app_id"]
         if isinstance(bridge_result, dict):
             returned_app_id = bridge_result.get("agentAppId")
@@ -2954,6 +3085,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     execution_id=execution_id,
                     db_execution_id=db_execution_id,
                     duration_ms=_elapsed_ms(ctx, start_time_ms),
+                    start_time_ms=start_time_ms,
                     error=f"Invalid workflow document: {e}",
                 ),
             )
@@ -3275,6 +3407,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 execution_id=execution_id,
                 db_execution_id=db_execution_id,
                 duration_ms=duration_ms,
+                start_time_ms=start_time_ms,
             ),
         )
 
@@ -3349,6 +3482,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 execution_id=execution_id,
                 db_execution_id=db_execution_id,
                 duration_ms=duration_ms,
+                start_time_ms=start_time_ms,
                 error=error_msg,
             ),
         )

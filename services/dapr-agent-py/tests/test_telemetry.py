@@ -98,11 +98,15 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
         instance_id="wf-abc",
         execution_id="exec-1",
         workflow_id="workflow-1",
+        workflow_node_id="node-1",
+        workflow_node_name="Solve",
         agent_id="agent-1",
         agent_version=3,
         agent_slug="agent-slug",
         agent_app_id="agent-runtime-agent-slug",
         sandbox_name="sandbox-1",
+        workspace_ref="ws_abc",
+        dapr_component="llm-anthropic",
     )
     start_interaction_span("hello world")
     llm = start_llm_request_span(
@@ -137,11 +141,15 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert interaction.attributes["session.id"] == "wf-abc"
     assert interaction.attributes["workflow.execution.id"] == "exec-1"
     assert interaction.attributes["workflow.id"] == "workflow-1"
+    assert interaction.attributes["workflow.node.id"] == "node-1"
+    assert interaction.attributes["workflow.node.name"] == "Solve"
     assert interaction.attributes["agent.id"] == "agent-1"
     assert interaction.attributes["agent.version"] == 3
     assert interaction.attributes["agent.slug"] == "agent-slug"
     assert interaction.attributes["agent.app_id"] == "agent-runtime-agent-slug"
     assert interaction.attributes["sandbox.name"] == "sandbox-1"
+    assert interaction.attributes["sandbox.workspace_ref"] == "ws_abc"
+    assert interaction.attributes["dapr.component"] == "llm-anthropic"
     assert interaction.attributes["mlflow.spanType"] == "AGENT"
     # Prompt redacted by default (OTEL_LOG_USER_PROMPTS unset).
     assert interaction.attributes["user_prompt"] == "<REDACTED>"

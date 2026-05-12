@@ -133,15 +133,99 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			runInstanceId: "ri_1",
 			instanceId: "django__django-1",
 			traceIds: ["abc123"],
+			canonicalTraceId: "abc123",
 			mlflowExperimentId: "1",
 			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_derived");
+		expect(bundle.canonicalTraceId).toBe("abc123");
 		expect(bundle.llmSpans).toHaveLength(1);
 		expect(bundle.traceSpans).toHaveLength(1);
 		expect(bundle.warnings).toEqual([]);
+	});
+
+	it("reports canonical root health and missing auxiliary traces", async () => {
+		const llmSpan: ObservabilityLlmSpan = {
+			traceId: "primary123",
+			spanId: "llm-1",
+			parentSpanId: null,
+			serviceName: "dapr-agent-py",
+			timestamp: "2026-05-05T12:00:02.000Z",
+			sessionId: "session-1",
+			workflowExecutionId: "exec-1",
+			agentRunId: null,
+			statusCode: "OK",
+			modelName: "claude",
+			provider: "anthropic",
+			inputMessages: [],
+			outputMessages: [],
+			invocationParameters: null,
+			finishReason: null,
+			promptTokens: null,
+			completionTokens: null,
+			totalTokens: null,
+			inputMessagesTruncated: false,
+			outputMessagesTruncated: false,
+			invocationParametersTruncated: false,
+		};
+		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+			baseSpan({
+				traceId: "primary123",
+				spanId: "root",
+				operationName: "workflow.finalize",
+				attributes: {
+					"gen_ai.operation.name": "workflow",
+					"workflow.status": "OK",
+				},
+			}),
+			baseSpan({
+				traceId: "primary123",
+				spanId: "node",
+				operationName: "workflow.node.solve",
+				attributes: { "gen_ai.operation.name": "workflow.node" },
+			}),
+			baseSpan({
+				traceId: "primary123",
+				spanId: "llm-1",
+				operationName: "claude_code.llm_request",
+				attributes: {
+					"workflow.id": "wf",
+					"workflow.execution.id": "exec-1",
+					"workflow.node.id": "solve",
+					"workflow.node.name": "Solve",
+					"agent.id": "agent-1",
+					"agent.version": 1,
+					"agent.slug": "agent",
+					"agent.app_id": "agent-runtime-agent",
+					"mlflow.spanType": "CHAT_MODEL",
+				},
+			}),
+		]);
+
+		const bundle = await buildSwebenchTraceBundleFromClickHouse({
+			runId: "run_1",
+			runInstanceId: "ri_1",
+			instanceId: "django__django-1",
+			traceIds: ["primary123", "secondary456"],
+			canonicalTraceId: "primary123",
+			mlflowExperimentId: "1",
+			mlflowRunId: null,
+			artifactPath: "traces/django__django-1/trace-bundle.json",
+		});
+
+		expect(bundle.requiredContext.rootPresent).toBe(true);
+		expect(bundle.requiredContext.statusFinalized).toBe(true);
+		expect(bundle.requiredContext.nodeSpansPresent).toBe(true);
+		expect(bundle.requiredContext.llmToolSpansPresent).toBe(true);
+		expect(bundle.requiredContext.agentIdentityComplete).toBe(true);
+		expect(bundle.requiredContext.auxiliaryTracesMissing).toBe(1);
+		expect(bundle.auxiliaryTraces).toEqual([
+			{ traceId: "secondary456", status: "missing" },
+		]);
 	});
 
 	it("falls back to raw OTel normalization when derived tables are empty", async () => {
@@ -164,6 +248,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			runInstanceId: "ri_1",
 			instanceId: "django__django-1",
 			traceIds: ["abc123"],
+			canonicalTraceId: "abc123",
 			mlflowExperimentId: "1",
 			mlflowRunId: null,
 			artifactPath: "traces/django__django-1/trace-bundle.json",

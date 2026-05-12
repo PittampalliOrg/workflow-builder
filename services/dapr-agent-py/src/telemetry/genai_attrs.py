@@ -268,6 +268,8 @@ def set_activity_attrs(
     workflow_id: str | None = None,
     workflow_execution_id: str | None = None,
     workflow_instance_id: str | None = None,
+    workflow_node_id: str | None = None,
+    workflow_node_name: str | None = None,
     session_id: str | None = None,
     agent_id: str | None = None,
     agent_version: int | str | None = None,
@@ -275,6 +277,7 @@ def set_activity_attrs(
     agent_app_id: str | None = None,
     component: str | None = None,
     iteration: int | None = None,
+    mlflow_span_type: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> None:
     """Generic workflow-context attrs for any Dapr activity span."""
@@ -288,6 +291,10 @@ def set_activity_attrs(
         _safe_set(span, "workflow.execution.id", workflow_execution_id)
     if workflow_instance_id:
         _safe_set(span, "workflow.instance_id", workflow_instance_id)
+    if workflow_node_id:
+        _safe_set(span, "workflow.node.id", workflow_node_id)
+    if workflow_node_name:
+        _safe_set(span, "workflow.node.name", workflow_node_name)
     if session_id:
         _safe_set(span, "session.id", session_id)
     if agent_id:
@@ -302,6 +309,8 @@ def set_activity_attrs(
         _safe_set(span, "dapr.component", component)
     if iteration is not None:
         _safe_set(span, "agent.iteration", int(iteration))
+    if mlflow_span_type:
+        _safe_set(span, "mlflow.spanType", mlflow_span_type)
     if extra:
         for k, v in extra.items():
             _safe_set(span, str(k), v)

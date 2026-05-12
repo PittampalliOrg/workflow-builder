@@ -677,8 +677,33 @@ def _save_agent_state_key(key: str, value: Any) -> None:
 
 def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
     context: dict[str, Any] = {}
+    agent_config = value.get("agentConfig") if isinstance(value.get("agentConfig"), dict) else {}
+    effective_config = (
+        value.get("effectiveAgentConfig")
+        if isinstance(value.get("effectiveAgentConfig"), dict)
+        else {}
+    )
+    instruction_bundle = (
+        value.get("instructionBundle")
+        if isinstance(value.get("instructionBundle"), dict)
+        else {}
+    )
+    instruction_agent = (
+        instruction_bundle.get("agent")
+        if isinstance(instruction_bundle.get("agent"), dict)
+        else {}
+    )
     for key in (
         "executionId",
+        "workflowId",
+        "workflowExecutionId",
+        "nodeId",
+        "nodeName",
+        "agentId",
+        "agentVersion",
+        "agentSlug",
+        "agentAppId",
+        "agentRuntime",
         "sandboxName",
         "cwd",
         "sessionId",
@@ -697,6 +722,27 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         raw = value.get(key)
         if raw is None:
             context[key] = None
+            continue
+        text = str(raw).strip()
+        context[key] = text or None
+    fallback_fields = {
+        "workflowId": value.get("workflow_id"),
+        "workflowExecutionId": value.get("workflow_execution_id") or value.get("dbExecutionId"),
+        "nodeId": value.get("workflowNodeId") or value.get("workflow_node_id"),
+        "nodeName": value.get("workflowNodeName") or value.get("workflow_node_name"),
+        "agentId": instruction_agent.get("id") or effective_config.get("id") or agent_config.get("id"),
+        "agentVersion": instruction_agent.get("version")
+        or effective_config.get("version")
+        or agent_config.get("version"),
+        "agentSlug": instruction_agent.get("slug")
+        or effective_config.get("slug")
+        or agent_config.get("slug"),
+        "agentAppId": agent_config.get("agentAppId")
+        or os.environ.get("APP_ID")
+        or os.environ.get("DAPR_APP_ID"),
+    }
+    for key, raw in fallback_fields.items():
+        if context.get(key) is not None or raw is None:
             continue
         text = str(raw).strip()
         context[key] = text or None
@@ -757,11 +803,18 @@ def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
         context = {}
     return {
         "workflow_id": context.get("workflowId"),
+        "workflow_node_id": context.get("nodeId"),
+        "workflow_node_name": context.get("nodeName"),
         "agent_id": context.get("agentId"),
         "agent_version": context.get("agentVersion"),
         "agent_slug": context.get("agentSlug"),
         "agent_app_id": context.get("agentAppId"),
         "sandbox_name": context.get("sandboxName"),
+        "workspace_ref": context.get("workspaceRef"),
+        "dapr_component": context.get("llmComponent")
+        or context.get("agentAppId")
+        or os.environ.get("APP_ID")
+        or os.environ.get("DAPR_APP_ID"),
         "turn": audit.get("turn"),
         "config_revision": audit.get("configRevision"),
         "config_hash": audit.get("configHash"),
@@ -1447,6 +1500,20 @@ class OpenShellDurableAgent(DurableAgent):
             "executionId": clean.get("executionId"),
         }
         agent_context = runtime_context_audit_cache_fields(clean)
+        for key in (
+            "workflowId",
+            "workflowExecutionId",
+            "nodeId",
+            "nodeName",
+            "agentId",
+            "agentVersion",
+            "agentSlug",
+            "agentAppId",
+            "agentRuntime",
+            "workspaceRef",
+        ):
+            if clean.get(key) is not None:
+                agent_context[key] = clean.get(key)
         if clean.get("llmComponent") is not None:
             agent_context["llmComponent"] = clean.get("llmComponent")
         agent_context.update(
@@ -1845,6 +1912,8 @@ class OpenShellDurableAgent(DurableAgent):
                 workflow_id=context.get("workflowId"),
                 workflow_execution_id=exec_id,
                 workflow_instance_id=inst_id,
+                workflow_node_id=context.get("nodeId"),
+                workflow_node_name=context.get("nodeName"),
                 session_id=context.get("sessionId") or exec_id,
                 agent_id=context.get("agentId"),
                 agent_version=context.get("agentVersion"),
@@ -1852,6 +1921,7 @@ class OpenShellDurableAgent(DurableAgent):
                 agent_app_id=context.get("agentAppId"),
                 component=component,
                 iteration=iteration,
+                mlflow_span_type="CHAT_MODEL",
                 extra={
                     "agent.name": agent_name,
                     "agent.max_iterations": context.get("maxIterations"),
@@ -2216,11 +2286,14 @@ class OpenShellDurableAgent(DurableAgent):
                 workflow_id=context.get("workflowId"),
                 workflow_execution_id=exec_id,
                 workflow_instance_id=inst_id,
+                workflow_node_id=context.get("nodeId"),
+                workflow_node_name=context.get("nodeName"),
                 session_id=context.get("sessionId") or sess_id or exec_id,
                 agent_id=context.get("agentId"),
                 agent_version=context.get("agentVersion"),
                 agent_slug=str(agent_slug) if agent_slug else None,
                 agent_app_id=context.get("agentAppId"),
+                mlflow_span_type="TOOL",
                 extra={
                     "agent.name": agent_name,
                     "tool.name": tool_name,
@@ -2231,6 +2304,9 @@ class OpenShellDurableAgent(DurableAgent):
                         if isinstance(tool_args, dict)
                         else None
                     ),
+                    "sandbox.workspace_ref": context.get("workspaceRef"),
+                    "sandbox.name": context.get("sandboxName"),
+                    "sandbox.cwd": context.get("cwd"),
                     "gen_ai.operation.name": "execute_tool",
                     "gen_ai.tool.name": tool_name,
                     "agent.tool_call_index": self._tool_call_count_by_instance.get(inst_id),
@@ -3245,7 +3321,20 @@ class OpenShellDurableAgent(DurableAgent):
         )
         runtime_context = {
             "executionId": execution_id,
+            "workflowExecutionId": (
+                message.get("workflowExecutionId")
+                or message.get("dbExecutionId")
+                or metadata.get("workflowExecutionId")
+                or execution_id
+            ),
             "workflowId": message.get("workflowId") or metadata.get("workflowId"),
+            "nodeId": message.get("nodeId") or metadata.get("nodeId"),
+            "nodeName": (
+                message.get("nodeName")
+                or metadata.get("nodeName")
+                or message.get("nodeId")
+                or metadata.get("nodeId")
+            ),
             "agentId": message.get("agentId") or instruction_agent.get("id") or agent_config.get("id"),
             "agentVersion": message.get("agentVersion") or instruction_agent.get("version") or agent_config.get("version"),
             "agentSlug": (
@@ -4084,7 +4173,21 @@ class OpenShellDurableAgent(DurableAgent):
             child_audit_fields = effective_audit_fields(effective_config)
             child_runtime_context = {
                 "executionId": db_execution_id or child_instance_id,
+                "workflowExecutionId": (
+                    child_input.get("workflowExecutionId")
+                    or child_input.get("dbExecutionId")
+                    or child_metadata.get("workflowExecutionId")
+                    or db_execution_id
+                    or child_instance_id
+                ),
                 "workflowId": child_input.get("workflowId") or message.get("workflowId"),
+                "nodeId": child_input.get("nodeId") or message.get("nodeId"),
+                "nodeName": (
+                    child_input.get("nodeName")
+                    or message.get("nodeName")
+                    or child_input.get("nodeId")
+                    or message.get("nodeId")
+                ),
                 "agentId": (
                     child_input.get("agentId")
                     or message.get("agentId")
@@ -4372,10 +4475,22 @@ def _freeze_session_child_input(
         max_iterations = agent_cfg.get("maxIterations") or agent_cfg.get("max_iterations")
     metadata = {
         "executionId": db_execution_id,
+        "workflowExecutionId": raw_message.get("workflowExecutionId") or db_execution_id,
         "sessionId": session_id,
         "turn": turn,
     }
-    for key in ("workflowId", "agentId", "agentVersion", "agentSlug", "agentAppId"):
+    for key in (
+        "workflowId",
+        "nodeId",
+        "nodeName",
+        "agentId",
+        "agentVersion",
+        "agentSlug",
+        "agentAppId",
+        "sandboxName",
+        "workspaceRef",
+        "cwd",
+    ):
         if raw_message.get(key) is not None:
             metadata[key] = raw_message.get(key)
     if max_turns is not None:
@@ -4391,6 +4506,8 @@ def _freeze_session_child_input(
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,
         "workflowId": raw_message.get("workflowId"),
+        "nodeId": raw_message.get("nodeId"),
+        "nodeName": raw_message.get("nodeName") or raw_message.get("nodeId"),
         "agentId": raw_message.get("agentId") or agent_cfg.get("id"),
         "agentVersion": raw_message.get("agentVersion") or agent_cfg.get("version"),
         "agentSlug": raw_message.get("agentSlug") or agent_cfg.get("slug"),
