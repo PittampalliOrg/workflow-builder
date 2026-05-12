@@ -99,7 +99,11 @@ def _session_id(input_data: dict[str, Any]) -> str | None:
     return sid or None
 
 
-def session_workflow_factory(diagrid_workflow_name: str) -> Callable[..., Any]:
+def session_workflow_factory(
+    diagrid_workflow_name: str,
+    *,
+    declared_tools: list[Any] | None = None,
+) -> Callable[..., Any]:
     """Return a Dapr workflow body closed over the Diagrid child workflow name."""
 
     def session_workflow(
@@ -177,7 +181,7 @@ def session_workflow_factory(diagrid_workflow_name: str) -> Callable[..., Any]:
                     agent_config,
                     rendered_system_prompt=rendered_system,
                     model=agent_config.get("modelSpec"),
-                    declared_tools=None,  # Tool defs already in Diagrid's global registry.
+                    declared_tools=declared_tools,
                 )
                 child_input = {
                     "agent_config": per_turn_config,

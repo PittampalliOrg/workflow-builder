@@ -76,7 +76,7 @@ def _build_agent() -> LlmAgent:
 # Module-level so `uvicorn src.main:app` finds the FastAPI app.
 _agent = _build_agent()
 _runner = build_runner(_agent)
-register_session_workflow(_runner)
+register_session_workflow(_runner, declared_tools=list(_agent.tools or []))
 
 
 @asynccontextmanager

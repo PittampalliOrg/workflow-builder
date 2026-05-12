@@ -71,7 +71,11 @@ def build_runner(agent: "LlmAgent") -> DaprWorkflowAgentRunner:
     return runner
 
 
-def register_session_workflow(runner: DaprWorkflowAgentRunner) -> None:
+def register_session_workflow(
+    runner: DaprWorkflowAgentRunner,
+    *,
+    declared_tools: list[object] | None = None,
+) -> None:
     """Add our outer `session_workflow` to the same `WorkflowRuntime`.
 
     The session_workflow body (in `src/runner/session_workflow.py`) calls
@@ -89,7 +93,16 @@ def register_session_workflow(runner: DaprWorkflowAgentRunner) -> None:
         )
 
     diagrid_workflow_name = runner.workflow_name
-    session_workflow = session_workflow_factory(diagrid_workflow_name)
+    declared_tools = list(
+        declared_tools
+        or getattr(getattr(runner, "_agent", None), "tools", [])
+        or getattr(getattr(runner, "agent", None), "tools", [])
+        or []
+    )
+    session_workflow = session_workflow_factory(
+        diagrid_workflow_name,
+        declared_tools=declared_tools,
+    )
     rt.register_workflow(session_workflow, name="session_workflow")
     logger.info(
         "[adk-runner] registered session_workflow → child=%s on shared WorkflowRuntime",
