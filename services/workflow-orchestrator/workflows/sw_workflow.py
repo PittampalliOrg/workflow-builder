@@ -59,7 +59,11 @@ from activities.log_external_event import (
     log_approval_response,
     log_approval_timeout,
 )
-from activities.log_node_execution import log_node_start, log_node_complete
+from activities.log_node_execution import (
+    emit_mlflow_node_span,
+    log_node_complete,
+    log_node_start,
+)
 from activities.persist_results_to_db import persist_results_to_db
 from activities.finalize_mlflow_trace_root import finalize_mlflow_trace_root
 
@@ -3041,6 +3045,27 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "_otel": tc.otel_ctx,
                         }),
                     )
+                elif db_execution_id:
+                    task_duration_ms = _elapsed_ms(ctx, task_start_ms)
+                    yield ctx.call_activity(
+                        emit_mlflow_node_span,
+                        input=_freeze({
+                            "status": "error",
+                            "output": None,
+                            "error": str(task_err),
+                            "durationMs": task_duration_ms,
+                            "executionId": db_execution_id,
+                            "dbExecutionId": db_execution_id,
+                            "workflowInstanceId": execution_id,
+                            "daprInstanceId": execution_id,
+                            "nodeId": task_name,
+                            "nodeName": task_name,
+                            "nodeType": task_type.value,
+                            "actionType": task_type.value,
+                            "taskSequence": task_index,
+                            "_otel": tc.otel_ctx,
+                        }),
+                    )
                 raise
 
             # Log task completion
@@ -3056,6 +3081,32 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     log_node_complete,
                     input=_freeze({
                         "logId": log_id,
+                        "status": "success" if task_success else "error",
+                        "output": result if isinstance(result, dict) else {"raw": str(result)},
+                        "durationMs": task_duration_ms,
+                        "executionId": db_execution_id,
+                        "dbExecutionId": db_execution_id,
+                        "workflowInstanceId": execution_id,
+                        "daprInstanceId": execution_id,
+                        "nodeId": task_name,
+                        "nodeName": task_name,
+                        "nodeType": task_type.value,
+                        "actionType": task_type.value,
+                        "taskSequence": task_index,
+                        "_otel": tc.otel_ctx,
+                    }),
+                )
+            elif db_execution_id:
+                task_duration_ms = _elapsed_ms(ctx, task_start_ms)
+                if result is None:
+                    task_success = True
+                elif isinstance(result, dict):
+                    task_success = result.get("success", True)
+                else:
+                    task_success = True
+                yield ctx.call_activity(
+                    emit_mlflow_node_span,
+                    input=_freeze({
                         "status": "success" if task_success else "error",
                         "output": result if isinstance(result, dict) else {"raw": str(result)},
                         "durationMs": task_duration_ms,

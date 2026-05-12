@@ -94,6 +94,12 @@ def _emit_node_span(input_data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
+def emit_mlflow_node_span(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
+    """Trace-only activity for nodes whose DB logs are owned by another service."""
+    node_span = _emit_node_span(input_data)
+    return {"success": bool(node_span.get("success")), "nodeSpan": node_span}
+
+
 def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Insert a 'running' row into workflow_execution_logs.

@@ -615,7 +615,13 @@ def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup
     execution = next(workflow_gen)
     assert execution["activity"] == "execute_action"
 
-    persisted = workflow_gen.send({"success": False, "error": "forced failure"})
+    node_span = workflow_gen.send({"success": False, "error": "forced failure"})
+    assert node_span["activity"] == "emit_mlflow_node_span"
+    assert node_span["input"]["status"] == "error"
+    assert node_span["input"]["nodeId"] == "fail_step"
+    assert node_span["input"]["error"] == "forced failure"
+
+    persisted = workflow_gen.send({"success": False})
     assert persisted["activity"] == "persist_results_to_db"
     assert persisted["input"]["success"] is False
     assert persisted["input"]["error"] == "forced failure"
