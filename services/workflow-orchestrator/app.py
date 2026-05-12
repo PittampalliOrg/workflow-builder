@@ -62,6 +62,7 @@ from tracing import (
     setup_tracing,
     inject_current_context,
     attach_workflow_session,
+    extract_otel_trace_id,
     extract_session_id,
     workflow_session_id,
 )
@@ -1810,6 +1811,7 @@ def _create_workflow_execution(
 def _mark_workflow_execution_started(
     execution_id: str,
     dapr_instance_id: str,
+    trace_id: str | None = None,
 ) -> None:
     """Attach dapr instance correlation to an execution row."""
     import psycopg2
@@ -1821,10 +1823,21 @@ def _mark_workflow_execution_started(
             cur.execute(
                 """
                 UPDATE workflow_executions
-                SET dapr_instance_id = %s, phase = %s, progress = %s, workflow_session_id = COALESCE(workflow_session_id, %s)
+                SET dapr_instance_id = %s,
+                    phase = %s,
+                    progress = %s,
+                    workflow_session_id = COALESCE(workflow_session_id, %s),
+                    primary_trace_id = COALESCE(primary_trace_id, %s)
                 WHERE id = %s
                 """,
-                (dapr_instance_id, "running", 0, execution_id, execution_id),
+                (
+                    dapr_instance_id,
+                    "running",
+                    0,
+                    execution_id,
+                    trace_id,
+                    execution_id,
+                ),
             )
         conn.commit()
     finally:
@@ -3067,7 +3080,11 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
         )
 
         if db_execution_id:
-            _mark_workflow_execution_started(db_execution_id, result_id)
+            _mark_workflow_execution_started(
+                db_execution_id,
+                result_id,
+                extract_otel_trace_id(otel_ctx),
+            )
 
         return StartWorkflowResponse(
             instanceId=result_id,
