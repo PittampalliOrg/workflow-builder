@@ -121,9 +121,9 @@
           },
           "output": {
             "as": {
-              "clonePath": "${ .data.result.clonePath // \"/sandbox/repo\" }",
-              "baseSha": "${ .data.result.commitHash // \"unknown\" }",
-              "fileCount": "${ .data.result.fileCount // 0 }"
+              "clonePath": "${ .output.result.clonePath // .output.clonePath // \"/sandbox/repo\" }",
+              "baseSha": "${ .output.result.commitHash // .output.commitHash // \"unknown\" }",
+              "fileCount": "${ .output.result.fileCount // .output.fileCount // 0 }"
             }
           }
         }
@@ -139,8 +139,8 @@
           },
           "output": {
             "as": {
-              "branch": "${ ((.data.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"BRANCH=\"))) | first // \"BRANCH=unknown\") | ltrimstr(\"BRANCH=\") }",
-              "baseSha": "${ ((.data.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"BASE_SHA=\"))) | first // \"BASE_SHA=unknown\") | ltrimstr(\"BASE_SHA=\") }"
+              "branch": "${ ((.output.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"BRANCH=\"))) | first // \"BRANCH=unknown\") | ltrimstr(\"BRANCH=\") }",
+              "baseSha": "${ ((.output.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"BASE_SHA=\"))) | first // \"BASE_SHA=unknown\") | ltrimstr(\"BASE_SHA=\") }"
             }
           }
         }
@@ -281,7 +281,7 @@
           },
           "output": {
             "as": {
-              "branch": "${ ((.data.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"PUSHED=\"))) | first // \"PUSHED=unknown\") | ltrimstr(\"PUSHED=\") }"
+              "branch": "${ ((.output.result.stdout // \"\") | split(\"\\n\") | map(select(startswith(\"PUSHED=\"))) | first // \"PUSHED=unknown\") | ltrimstr(\"PUSHED=\") }"
             }
           }
         }
