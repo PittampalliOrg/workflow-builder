@@ -310,6 +310,7 @@ def set_activity_attrs(
     if iteration is not None:
         _safe_set(span, "agent.iteration", int(iteration))
     if mlflow_span_type:
+        _safe_set(span, "span_type", mlflow_span_type)
         _safe_set(span, "mlflow.spanType", mlflow_span_type)
     if extra:
         for k, v in extra.items():

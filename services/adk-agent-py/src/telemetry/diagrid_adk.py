@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _PATCHED = False
 _MAX_ATTR_CHARS = 20_000
 _DIAG_COUNT = 0
-_DIAG_LIMIT = 8
+_DIAG_LIMIT = 0
 
 
 def _diag_limit() -> int:
@@ -464,11 +464,14 @@ def install_diagrid_adk_telemetry_patch() -> None:
     runner_module.call_llm_activity = workflow_module.call_llm_activity
     runner_module.execute_tool_activity = workflow_module.execute_tool_activity
     _PATCHED = True
-    logger.warning(
-        "[adk-telemetry] installed Diagrid ADK typed span patch workflow=%s "
-        "call_llm=%s execute_tool=%s providers=%s",
-        workflow_module.agent_workflow,
-        workflow_module.call_llm_activity,
-        workflow_module.execute_tool_activity,
-        telemetry_debug_state(),
-    )
+    if _diag_limit() > 0:
+        logger.warning(
+            "[adk-telemetry] installed Diagrid ADK typed span patch workflow=%s "
+            "call_llm=%s execute_tool=%s providers=%s",
+            workflow_module.agent_workflow,
+            workflow_module.call_llm_activity,
+            workflow_module.execute_tool_activity,
+            telemetry_debug_state(),
+        )
+    else:
+        logger.info("[adk-telemetry] installed Diagrid ADK typed span patch")
