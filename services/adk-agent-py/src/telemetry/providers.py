@@ -34,6 +34,70 @@ _event_logger: Any = None
 _ready = False
 
 
+def _valid_attr_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple)):
+        return all(item is not None for item in value)
+    return True
+
+
+def _clean_attrs(attrs: Any) -> dict[str, Any] | None:
+    if not attrs:
+        return None
+    return {
+        str(key): value
+        for key, value in dict(attrs).items()
+        if _valid_attr_value(value)
+    }
+
+
+class _SanitizingSpanExporter:
+    """Drop invalid OTel attributes before handing spans to OTLP encoding."""
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+
+    def export(self, spans: Any) -> Any:
+        return self._wrapped.export([self._sanitize_span(span) for span in spans])
+
+    def shutdown(self) -> Any:
+        return self._wrapped.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        force_flush = getattr(self._wrapped, "force_flush", None)
+        if force_flush is None:
+            return True
+        return bool(force_flush(timeout_millis=timeout_millis))
+
+    def _sanitize_span(self, span: Any) -> Any:
+        attrs = _clean_attrs(getattr(span, "attributes", None))
+        original_attrs = getattr(span, "attributes", None)
+        if attrs == original_attrs:
+            return span
+        try:
+            from opentelemetry.sdk.trace import ReadableSpan
+
+            return ReadableSpan(
+                name=span.name,
+                context=span.context,
+                parent=span.parent,
+                resource=span.resource,
+                attributes=attrs,
+                events=span.events,
+                links=span.links,
+                kind=span.kind,
+                instrumentation_info=span.instrumentation_info,
+                status=span.status,
+                start_time=span.start_time,
+                end_time=span.end_time,
+                instrumentation_scope=span.instrumentation_scope,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to sanitize span %s: %s", getattr(span, "name", "?"), exc)
+            return span
+
+
 def is_telemetry_ready() -> bool:
     return _ready
 
@@ -126,7 +190,7 @@ def init_telemetry() -> bool:
         tp = TracerProvider(resource=resource)
         tp.add_span_processor(
             BatchSpanProcessor(
-                OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"),
+                _SanitizingSpanExporter(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")),
                 max_queue_size=bsp_queue,
                 max_export_batch_size=bsp_batch,
                 schedule_delay_millis=bsp_delay,
