@@ -269,6 +269,8 @@ def set_activity_attrs(
     workflow_execution_id: str | None = None,
     workflow_instance_id: str | None = None,
     session_id: str | None = None,
+    agent_id: str | None = None,
+    agent_version: int | str | None = None,
     agent_slug: str | None = None,
     agent_app_id: str | None = None,
     component: str | None = None,
@@ -288,6 +290,10 @@ def set_activity_attrs(
         _safe_set(span, "workflow.instance_id", workflow_instance_id)
     if session_id:
         _safe_set(span, "session.id", session_id)
+    if agent_id:
+        _safe_set(span, "agent.id", agent_id)
+    if agent_version is not None:
+        _safe_set(span, "agent.version", agent_version)
     if agent_slug:
         _safe_set(span, "agent.slug", agent_slug)
     if agent_app_id:

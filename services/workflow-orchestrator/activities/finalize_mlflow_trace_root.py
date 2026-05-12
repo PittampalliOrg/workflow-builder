@@ -23,6 +23,7 @@ def finalize_mlflow_trace_root(ctx, input_data: dict[str, Any]) -> dict[str, Any
         "workflow.instance_id": input_data.get("daprInstanceId")
         or input_data.get("workflowInstanceId"),
         "workflow.status": input_data.get("status") or input_data.get("statusCode"),
+        "workflow.duration_ms": input_data.get("durationMs"),
         "mlflow.trace_id": input_data.get("traceId"),
         "mlflow.trace_name": input_data.get("traceName"),
     })

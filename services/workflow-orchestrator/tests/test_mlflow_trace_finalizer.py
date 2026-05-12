@@ -56,6 +56,7 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
             "daprInstanceId": "dapr_wf_123",
             "traceName": "wf_test/db_exec_123",
             "status": "OK",
+            "durationMs": 1234,
         }
     )
 
@@ -82,6 +83,8 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     assert attrs["workflow.execution.id"] == "db_exec_123"
     assert attrs["dapr.workflow.instance_id"] == "dapr_wf_123"
     assert attrs["mlflow.traceName"] == "wf_test/db_exec_123"
+    assert attrs["workflow.status"] == "OK"
+    assert attrs["workflow.duration_ms"] == 1234
 
 
 def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
@@ -172,3 +175,101 @@ def test_emit_mlflow_trace_root_span_catches_transport_errors(monkeypatch):
 
     assert result["success"] is False
     assert "network down" in result["error"]
+
+
+def test_emit_mlflow_workflow_node_span_posts_child_chain_span(monkeypatch):
+    trace_id = "1234567890abcdef1234567890abcdef"
+    captured = {}
+
+    def fake_post(url, data, headers, timeout):
+        captured.update(
+            {
+                "url": url,
+                "data": data,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return _FakeResponse()
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setattr(tracing.requests, "post", fake_post)
+
+    result = tracing.emit_mlflow_workflow_node_span(
+        {
+            "_otel": {"traceId": trace_id},
+            "workflowId": "wf_test",
+            "workflowName": "Test Workflow",
+            "executionId": "dapr_wf_123",
+            "dbExecutionId": "db_exec_123",
+            "daprInstanceId": "dapr_wf_123",
+            "nodeId": "agent_step",
+            "nodeName": "Agent Step",
+            "nodeType": "call",
+            "actionType": "durable/run",
+            "taskSequence": 2,
+            "durationMs": 456,
+            "resultSizeChars": 789,
+            "status": "OK",
+        }
+    )
+
+    assert result["success"] is True
+    request = trace_service_pb2.ExportTraceServiceRequest()
+    request.ParseFromString(captured["data"])
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    assert span.trace_id == bytes.fromhex(trace_id)
+    assert span.span_id == tracing._deterministic_mlflow_node_span_id(
+        trace_id,
+        "dapr_wf_123",
+        "agent_step",
+        2,
+    )
+    assert span.span_id != b"\x00" * 8
+    assert span.parent_span_id == tracing._deterministic_mlflow_root_span_id(
+        trace_id,
+        "dapr_wf_123",
+    )
+    assert span.name == "workflow.node.agent_step"
+    assert span.status.code == trace_pb2.Status.STATUS_CODE_OK
+
+    attrs = _attribute_map(span)
+    assert attrs["gen_ai.operation.name"] == "workflow.node"
+    assert attrs["mlflow.spanType"] == "CHAIN"
+    assert attrs["workflow.id"] == "wf_test"
+    assert attrs["workflow.execution.id"] == "db_exec_123"
+    assert attrs["workflow.node.id"] == "agent_step"
+    assert attrs["workflow.node.status"] == "OK"
+    assert attrs["workflow.node.duration_ms"] == 456
+    assert attrs["workflow.node.result_size_chars"] == 789
+
+
+def test_emit_mlflow_workflow_node_span_sets_error_status(monkeypatch):
+    trace_id = "abcdefabcdefabcdefabcdefabcdefab"
+    captured = {}
+
+    def fake_post(_url, data, headers, timeout):
+        _ = headers, timeout
+        captured["data"] = data
+        return _FakeResponse()
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setattr(tracing.requests, "post", fake_post)
+
+    result = tracing.emit_mlflow_workflow_node_span(
+        {
+            "_otel": {"traceId": trace_id},
+            "daprInstanceId": "dapr_wf_123",
+            "nodeId": "bad_step",
+            "status": "ERROR",
+            "error": "forced failure",
+        }
+    )
+
+    assert result["success"] is True
+    request = trace_service_pb2.ExportTraceServiceRequest()
+    request.ParseFromString(captured["data"])
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    assert span.status.code == trace_pb2.Status.STATUS_CODE_ERROR
+    assert span.status.message == "forced failure"
+    assert _attribute_map(span)["error.message"] == "forced failure"

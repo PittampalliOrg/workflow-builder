@@ -1617,6 +1617,7 @@ def _create_workflow_execution(
 def _mark_workflow_execution_started(
     execution_id: str,
     dapr_instance_id: str,
+    primary_trace_id: str | None = None,
 ) -> None:
     """Attach dapr instance correlation to an execution row."""
     import psycopg2
@@ -1628,10 +1629,21 @@ def _mark_workflow_execution_started(
             cur.execute(
                 """
                 UPDATE workflow_executions
-                SET dapr_instance_id = %s, phase = %s, progress = %s, workflow_session_id = COALESCE(workflow_session_id, %s)
+                SET dapr_instance_id = %s,
+                    phase = %s,
+                    progress = %s,
+                    workflow_session_id = COALESCE(workflow_session_id, %s),
+                    primary_trace_id = COALESCE(primary_trace_id, %s)
                 WHERE id = %s
                 """,
-                (dapr_instance_id, "running", 0, execution_id, execution_id),
+                (
+                    dapr_instance_id,
+                    "running",
+                    0,
+                    execution_id,
+                    primary_trace_id,
+                    execution_id,
+                ),
             )
         conn.commit()
     finally:
@@ -2854,6 +2866,12 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "triggerData": request.triggerData,
             "integrations": request.integrations,
             "dbExecutionId": db_execution_id,
+            "features": {
+                "mlflowNodeSpans": _env_bool(
+                    "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS",
+                    False,
+                ),
+            },
             "_otel": otel_ctx,
         }
 
@@ -2876,7 +2894,11 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
         )
 
         if db_execution_id:
-            _mark_workflow_execution_started(db_execution_id, result_id)
+            _mark_workflow_execution_started(
+                db_execution_id,
+                result_id,
+                otel_ctx.get("traceId"),
+            )
 
         return StartWorkflowResponse(
             instanceId=result_id,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -260,6 +260,9 @@ SW_WORKFLOW = _load_module(
 SPAWN_SESSION = _load_module(
     "workflow_orchestrator_spawn_session", "activities/spawn_session.py"
 )
+PERSIST_RESULTS = _load_module(
+    "workflow_orchestrator_persist_results", "activities/persist_results_to_db.py"
+)
 
 
 class _FakeWorkflowTask:
@@ -492,6 +495,109 @@ def test_sw_workflow_trace_context_is_isolated_per_execution():
     assert first["baggage"] == "caller.id=smoke"
 
 
+def test_mark_workflow_execution_started_persists_primary_trace_id(monkeypatch):
+    executed = {}
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params):
+            executed["sql"] = sql
+            executed["params"] = params
+
+    class _Connection:
+        def cursor(self):
+            return _Cursor()
+
+        def commit(self):
+            executed["committed"] = True
+
+        def close(self):
+            executed["closed"] = True
+
+    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        sys.modules["psycopg2"],
+        "connect",
+        lambda *_args, **_kwargs: _Connection(),
+    )
+
+    APP._mark_workflow_execution_started(
+        "db_exec_123",
+        "sw-test-exec-db_exec_123",
+        "1234567890abcdef1234567890abcdef",
+    )
+
+    assert "primary_trace_id = COALESCE(primary_trace_id, %s)" in executed["sql"]
+    assert executed["params"] == (
+        "sw-test-exec-db_exec_123",
+        "running",
+        0,
+        "db_exec_123",
+        "1234567890abcdef1234567890abcdef",
+        "db_exec_123",
+    )
+    assert executed["committed"] is True
+
+
+def test_persist_results_backfills_primary_trace_id_from_otel(monkeypatch):
+    executed = []
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params):
+            executed.append((sql, params))
+
+        def fetchone(self):
+            return (datetime.now(timezone.utc),)
+
+    class _Connection:
+        def cursor(self):
+            return _Cursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(PERSIST_RESULTS, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        sys.modules["psycopg2"],
+        "connect",
+        lambda *_args, **_kwargs: _Connection(),
+    )
+
+    result = PERSIST_RESULTS.persist_results_to_db(
+        None,
+        {
+            "dbExecutionId": "db_exec_123",
+            "executionId": "sw-test-exec-db_exec_123",
+            "outputs": {},
+            "success": True,
+            "durationMs": 10,
+            "_otel": {"traceId": "1234567890abcdef1234567890abcdef"},
+        },
+    )
+
+    assert result["success"] is True
+    update_sql, update_params = executed[-1]
+    assert "primary_trace_id = COALESCE(primary_trace_id, %s)" in update_sql
+    assert update_params[-2:] == (
+        "1234567890abcdef1234567890abcdef",
+        "db_exec_123",
+    )
+
+
 def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanup(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()
@@ -580,6 +686,30 @@ def test_sw_workflow_parse_failure_schedules_error_finalizer_when_trace_exists(m
 
     assert stop.value.value["success"] is False
     assert stop.value.value["phase"] == "failed"
+
+
+def test_sw_workflow_schedules_node_span_only_when_input_feature_enabled(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    task = {"assign": {"set": {"foo": "bar"}}}
+
+    disabled_input = _terminal_workflow_input([task])
+    disabled_input["dbExecutionId"] = None
+    disabled_ctx = _FakeTerminalWorkflowCtx()
+    disabled_gen = SW_WORKFLOW.sw_workflow(disabled_ctx, disabled_input)
+    disabled_first = next(disabled_gen)
+    assert disabled_first["activity"] != "emit_mlflow_node_span"
+
+    enabled_input = _terminal_workflow_input([task])
+    enabled_input["dbExecutionId"] = None
+    enabled_input["features"] = {"mlflowNodeSpans": True}
+    enabled_ctx = _FakeTerminalWorkflowCtx()
+    enabled_gen = SW_WORKFLOW.sw_workflow(enabled_ctx, enabled_input)
+    node_span = next(enabled_gen)
+
+    assert node_span["activity"] == "emit_mlflow_node_span"
+    assert node_span["input"]["status"] == "OK"
+    assert node_span["input"]["nodeId"] == "assign"
+    assert node_span["input"]["traceId"] == "1234567890abcdef1234567890abcdef"
 
 
 def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):

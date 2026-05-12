@@ -20,7 +20,7 @@ from dapr.clients import DaprClient
 
 from core.config import config
 from core.output_summary import SUMMARY_OUTPUT_KEYS, extract_summary_fields_from_outputs
-from tracing import set_current_span_attrs, start_activity_span
+from tracing import extract_otel_trace_id, set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     error = input_data.get("error")
     duration_ms = _coerce_duration_ms(input_data.get("durationMs"))
     otel = input_data.get("_otel") or {}
+    trace_id = extract_otel_trace_id(otel if isinstance(otel, dict) else None)
 
     logger.info(
         f"[Persist Results] Writing output to DB for execution: {db_execution_id} "
@@ -189,7 +190,8 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                             progress = %s,
                             error = %s,
                             completed_at = %s,
-                            duration = %s
+                            duration = %s,
+                            primary_trace_id = COALESCE(primary_trace_id, %s)
                         WHERE id = %s
                         """,
                         (
@@ -205,6 +207,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                                 if persisted_duration_ms is not None
                                 else None
                             ),
+                            trace_id,
                             db_execution_id,
                         ),
                     )

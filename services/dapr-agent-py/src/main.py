@@ -1838,6 +1838,8 @@ class OpenShellDurableAgent(DurableAgent):
                 workflow_execution_id=exec_id,
                 workflow_instance_id=inst_id,
                 session_id=context.get("sessionId") or exec_id,
+                agent_id=context.get("agentId"),
+                agent_version=context.get("agentVersion"),
                 agent_slug=str(agent_slug) if agent_slug else None,
                 agent_app_id=context.get("agentAppId"),
                 component=component,
@@ -2207,6 +2209,8 @@ class OpenShellDurableAgent(DurableAgent):
                 workflow_execution_id=exec_id,
                 workflow_instance_id=inst_id,
                 session_id=context.get("sessionId") or sess_id or exec_id,
+                agent_id=context.get("agentId"),
+                agent_version=context.get("agentVersion"),
                 agent_slug=str(agent_slug) if agent_slug else None,
                 agent_app_id=context.get("agentAppId"),
                 extra={
@@ -3226,8 +3230,27 @@ class OpenShellDurableAgent(DurableAgent):
         effective_cwd = runtime.cwd or cwd or DEFAULT_CWD
         self._cwd_by_instance[instance_id] = effective_cwd
         refresh_instruction_bundle()
+        instruction_agent = (
+            instruction_bundle.get("agent")
+            if isinstance(instruction_bundle.get("agent"), dict)
+            else {}
+        )
         runtime_context = {
             "executionId": execution_id,
+            "workflowId": message.get("workflowId") or metadata.get("workflowId"),
+            "agentId": message.get("agentId") or instruction_agent.get("id"),
+            "agentVersion": message.get("agentVersion") or instruction_agent.get("version"),
+            "agentSlug": (
+                message.get("agentSlug")
+                or instruction_agent.get("slug")
+                or agent_config.get("slug")
+            ),
+            "agentAppId": (
+                message.get("agentAppId")
+                or agent_config.get("agentAppId")
+                or os.environ.get("APP_ID")
+                or os.environ.get("DAPR_APP_ID")
+            ),
             "sandboxName": sandbox_name or None,
             "cwd": effective_cwd,
             "sessionId": session_id_raw or None,
@@ -4053,6 +4076,22 @@ class OpenShellDurableAgent(DurableAgent):
             child_audit_fields = effective_audit_fields(effective_config)
             child_runtime_context = {
                 "executionId": db_execution_id or child_instance_id,
+                "workflowId": child_input.get("workflowId") or message.get("workflowId"),
+                "agentId": child_input.get("agentId") or message.get("agentId"),
+                "agentVersion": child_input.get("agentVersion")
+                or message.get("agentVersion"),
+                "agentSlug": (
+                    child_input.get("agentSlug")
+                    or message.get("agentSlug")
+                    or agent_cfg.get("slug")
+                ),
+                "agentAppId": (
+                    child_input.get("agentAppId")
+                    or message.get("agentAppId")
+                    or agent_cfg.get("agentAppId")
+                    or os.environ.get("APP_ID")
+                    or os.environ.get("DAPR_APP_ID")
+                ),
                 "sandboxName": child_input.get("sandboxName") or None,
                 "cwd": child_input.get("cwd") or DEFAULT_CWD,
                 "sessionId": session_id,
@@ -4323,6 +4362,9 @@ def _freeze_session_child_input(
         "sessionId": session_id,
         "turn": turn,
     }
+    for key in ("workflowId", "agentId", "agentVersion", "agentSlug", "agentAppId"):
+        if raw_message.get(key) is not None:
+            metadata[key] = raw_message.get(key)
     if max_turns is not None:
         metadata["maxTurns"] = max_turns
     if max_iterations is not None:
@@ -4335,6 +4377,11 @@ def _freeze_session_child_input(
         "executionId": db_execution_id,
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,
+        "workflowId": raw_message.get("workflowId"),
+        "agentId": raw_message.get("agentId"),
+        "agentVersion": raw_message.get("agentVersion"),
+        "agentSlug": raw_message.get("agentSlug"),
+        "agentAppId": raw_message.get("agentAppId"),
         "agentConfig": agent_cfg,
         "effectiveAgentConfig": effective_agent_config or {},
         "instructionBundle": instruction_bundle or {},

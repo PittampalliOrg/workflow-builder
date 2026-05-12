@@ -62,6 +62,7 @@ from activities.log_external_event import (
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
 from activities.finalize_mlflow_trace_root import finalize_mlflow_trace_root
+from activities.emit_mlflow_node_span import emit_mlflow_node_span
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +374,68 @@ def _mlflow_finalizer_input(
     }
 
 
+def _json_size_chars(value: Any) -> int | None:
+    try:
+        return len(json.dumps(value, default=str))
+    except Exception:
+        return None
+
+
+def _mlflow_node_span_input(
+    *,
+    status: str,
+    task_name: str,
+    task_type: TaskType,
+    task_data: dict[str, Any],
+    workflow_name: str | None,
+    tc: "TaskContext",
+    result: Any = None,
+    error: str | None = None,
+    duration_ms: int | None = None,
+    task_sequence: int | None = None,
+) -> dict[str, Any]:
+    action_type = str(task_type.value)
+    try:
+        if task_type == TaskType.CALL:
+            resolved = _resolve_function_call(task_data, tc.workflow)
+            action_type = str(
+                resolved.get("actionType")
+                or resolved.get("functionName")
+                or action_type
+            )
+        elif task_type == TaskType.RUN:
+            run_config = task_data.get("run") if isinstance(task_data, dict) else None
+            if isinstance(run_config, dict) and "workflow" in run_config:
+                child_input = (
+                    run_config.get("workflow", {}).get("input", {})
+                    if isinstance(run_config.get("workflow"), dict)
+                    else {}
+                )
+                if isinstance(child_input, dict) and child_input.get("actionType"):
+                    action_type = str(child_input.get("actionType"))
+    except Exception:
+        pass
+
+    return {
+        "status": status,
+        "traceId": tc.trace_id,
+        "workflowId": tc.workflow_id,
+        "workflowName": workflow_name,
+        "executionId": tc.execution_id,
+        "dbExecutionId": tc.db_execution_id,
+        "daprInstanceId": tc.execution_id,
+        "nodeId": task_name,
+        "nodeName": task_name,
+        "nodeType": task_type.value,
+        "actionType": action_type,
+        "taskSequence": task_sequence,
+        "durationMs": duration_ms,
+        "resultSizeChars": _json_size_chars(result) if error is None else None,
+        "error": error,
+        "_otel": tc.otel_ctx,
+    }
+
+
 def _finalize_mlflow_trace(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]):
     try:
         yield ctx.call_activity(
@@ -383,6 +446,20 @@ def _finalize_mlflow_trace(ctx: wf.DaprWorkflowContext, payload: dict[str, Any])
         _log_info(
             ctx,
             "[SW Workflow] MLflow trace finalization failed (non-fatal): %s",
+            exc,
+        )
+
+
+def _emit_mlflow_node_span(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]):
+    try:
+        yield ctx.call_activity(
+            emit_mlflow_node_span,
+            input=_freeze(payload),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_info(
+            ctx,
+            "[SW Workflow] MLflow node span emission failed (non-fatal): %s",
             exc,
         )
 
@@ -570,6 +647,7 @@ class TaskContext:
         # OTEL context
         self.otel_ctx: dict[str, str] = {}
         self.trace_id: str | None = None
+        self.mlflow_node_spans_enabled = False
 
         # Runtime state - NodeOutputs format for resolve_templates compatibility
         # Each entry: {label: str, actionType: str, data: Any}
@@ -1329,6 +1407,11 @@ def _run_native_durable_agent_child_workflow(
         "workflowId": tc.workflow_id,
         "nodeId": task_name,
         "nodeName": task_name,
+        "agentId": flattened_args.get("agentId"),
+        "agentVersion": flattened_args.get("agentVersion"),
+        "agentSlug": flattened_args.get("agentSlug")
+        or (agent_config.get("slug") if isinstance(agent_config, dict) else None),
+        "agentAppId": target.get("app_id"),
         "agentRunId": child_instance_id,
         "workspaceRef": workspace_ref,
         "agentRuntime": agent_runtime,
@@ -2844,6 +2927,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     db_execution_id = input_data.get("dbExecutionId")
     otel_ctx = input_data.get("_otel") or {}
     trace_id = _trace_id_from_otel(otel_ctx)
+    features = input_data.get("features") if isinstance(input_data.get("features"), dict) else {}
+    mlflow_node_spans_enabled = _as_bool(
+        features.get("mlflowNodeSpans", input_data.get("mlflowNodeSpans")),
+        False,
+    )
 
     try:
         workflow = Workflow.model_validate(workflow_data)
@@ -2889,6 +2977,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     )
     tc.otel_ctx = otel_ctx
     tc.trace_id = trace_id
+    tc.mlflow_node_spans_enabled = mlflow_node_spans_enabled
     tc.trigger_data = resolve_input_definition(
         workflow.input.model_dump(by_alias=True) if workflow.input else None,
         _build_expression_context(tc),
@@ -3019,8 +3108,8 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             try:
                 result = yield from _dispatch_task(ctx, task_name, task_data, tc)
             except Exception as task_err:
+                task_duration_ms = _elapsed_ms(ctx, task_start_ms)
                 if db_execution_id and log_id:
-                    task_duration_ms = _elapsed_ms(ctx, task_start_ms)
                     yield ctx.call_activity(
                         log_node_complete,
                         input=_freeze({
@@ -3032,11 +3121,26 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "_otel": tc.otel_ctx,
                         }),
                     )
+                if tc.mlflow_node_spans_enabled and tc.trace_id:
+                    yield from _emit_mlflow_node_span(
+                        ctx,
+                        _mlflow_node_span_input(
+                            status="ERROR",
+                            task_name=task_name,
+                            task_type=task_type,
+                            task_data=task_data,
+                            error=str(task_err),
+                            duration_ms=task_duration_ms,
+                            task_sequence=task_index,
+                            workflow_name=workflow_name,
+                            tc=tc,
+                        ),
+                    )
                 raise
 
             # Log task completion
+            task_duration_ms = _elapsed_ms(ctx, task_start_ms)
             if db_execution_id and log_id:
-                task_duration_ms = _elapsed_ms(ctx, task_start_ms)
                 if result is None:
                     task_success = True
                 elif isinstance(result, dict):
@@ -3052,6 +3156,32 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         "durationMs": task_duration_ms,
                         "_otel": tc.otel_ctx,
                     }),
+                )
+            if result is None:
+                task_success = True
+            elif isinstance(result, dict):
+                task_success = result.get("success", True)
+            else:
+                task_success = True
+            if tc.mlflow_node_spans_enabled and tc.trace_id:
+                yield from _emit_mlflow_node_span(
+                    ctx,
+                    _mlflow_node_span_input(
+                        status="OK" if task_success else "ERROR",
+                        task_name=task_name,
+                        task_type=task_type,
+                        task_data=task_data,
+                        result=result,
+                        error=(
+                            result.get("error")
+                            if isinstance(result, dict) and result.get("error")
+                            else None
+                        ),
+                        duration_ms=task_duration_ms,
+                        task_sequence=task_index,
+                        workflow_name=workflow_name,
+                        tc=tc,
+                    ),
                 )
 
             # Handle `then` flow directive
