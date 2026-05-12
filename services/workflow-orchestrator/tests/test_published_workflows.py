@@ -273,6 +273,106 @@ class _FakeWorkflowTask:
         return self.result
 
 
+class _FakeTerminalWorkflowCtx:
+    instance_id = "parent-terminal-wf-1"
+    is_replaying = True
+
+    def __init__(self):
+        self.statuses = []
+
+    def set_custom_status(self, status):
+        self.statuses.append(status)
+
+    def call_activity(self, activity, input=None):
+        return {
+            "kind": "call_activity",
+            "activity": getattr(activity, "__name__", str(activity)),
+            "input": input,
+        }
+
+
+def _minimal_sw_workflow(tasks=None):
+    return {
+        "document": {
+            "dsl": "1.0.0",
+            "namespace": "test",
+            "name": "test-workflow",
+            "version": "0.1.0",
+        },
+        "do": tasks or [],
+    }
+
+
+def _terminal_workflow_input(tasks=None):
+    trace_id = "1234567890abcdef1234567890abcdef"
+    return {
+        "workflow": _minimal_sw_workflow(tasks),
+        "workflowId": "wf_test",
+        "triggerData": {},
+        "dbExecutionId": "db_exec_123",
+        "_otel": {"traceId": trace_id},
+    }
+
+
+def _install_terminal_workflow_model_fakes(monkeypatch):
+    class _FakeDocument:
+        def __init__(self, data):
+            self.name = data.get("name") or "test-workflow"
+
+    class _FakeWorkflow:
+        def __init__(self, data):
+            self._data = data
+            self.document = _FakeDocument(data.get("document") or {})
+            self.input = None
+            self.output = None
+            self.use = None
+            self.do = data.get("do") or []
+
+        def unwrap_tasks(self):
+            return [
+                (name, task_data)
+                for item in self.do
+                for name, task_data in item.items()
+            ]
+
+        def model_dump(self, **_kwargs):
+            return self._data
+
+    class _WorkflowModel:
+        @classmethod
+        def model_validate(cls, data):
+            if not isinstance(data, dict) or "do" not in data:
+                raise ValueError("Invalid workflow document")
+            return _FakeWorkflow(data)
+
+    class _WorkflowOutputModel:
+        def __init__(
+            self,
+            *,
+            success,
+            outputs=None,
+            workflowOutput=None,
+            error=None,
+            duration_ms=0,
+            phase="completed",
+            **_kwargs,
+        ):
+            self.payload = {
+                "success": success,
+                "outputs": outputs or {},
+                "workflowOutput": workflowOutput,
+                "error": error,
+                "durationMs": duration_ms,
+                "phase": phase,
+            }
+
+        def model_dump(self, **_kwargs):
+            return dict(self.payload)
+
+    monkeypatch.setattr(SW_WORKFLOW, "Workflow", _WorkflowModel)
+    monkeypatch.setattr(SW_WORKFLOW, "SWWorkflowOutput", _WorkflowOutputModel)
+
+
 def test_extract_published_revisions_reads_latest_revision_snapshot():
     workflow_row = {
         "id": "wf_123",
@@ -390,6 +490,96 @@ def test_sw_workflow_trace_context_is_isolated_per_execution():
     assert first["parentTraceId"] == parent_trace_id
     assert second["parentTraceId"] == parent_trace_id
     assert first["baggage"] == "caller.id=smoke"
+
+
+def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanup(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(ctx, _terminal_workflow_input())
+
+    persisted = next(workflow_gen)
+    assert persisted["activity"] == "persist_results_to_db"
+    assert persisted["input"]["success"] is True
+
+    cleanup = workflow_gen.send({"success": True})
+    assert cleanup["activity"] == "cleanup_execution_workspaces"
+
+    finalized = workflow_gen.send({"success": True})
+    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["input"]["status"] == "OK"
+    assert finalized["input"]["traceId"] == "1234567890abcdef1234567890abcdef"
+    assert finalized["input"]["traceName"] == "wf_test/db_exec_123"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send({"success": True})
+
+    assert stop.value.value["success"] is True
+
+
+def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(
+        ctx,
+        _terminal_workflow_input(
+            [
+                {
+                    "fail_step": {
+                        "call": "system/fail",
+                        "with": {},
+                    }
+                }
+            ]
+        ),
+    )
+
+    execution = next(workflow_gen)
+    assert execution["activity"] == "execute_action"
+
+    persisted = workflow_gen.send({"success": False, "error": "forced failure"})
+    assert persisted["activity"] == "persist_results_to_db"
+    assert persisted["input"]["success"] is False
+    assert persisted["input"]["error"] == "forced failure"
+
+    cleanup = workflow_gen.send({"success": True})
+    assert cleanup["activity"] == "cleanup_execution_workspaces"
+
+    finalized = workflow_gen.send({"success": True})
+    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["input"]["status"] == "ERROR"
+    assert finalized["input"]["error"] == "forced failure"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send({"success": False})
+
+    assert stop.value.value["success"] is False
+    assert stop.value.value["phase"] == "failed"
+
+
+def test_sw_workflow_parse_failure_schedules_error_finalizer_when_trace_exists(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(
+        ctx,
+        {
+            "workflow": {"document": {"name": "broken-workflow"}},
+            "workflowId": "wf_broken",
+            "dbExecutionId": "db_exec_broken",
+            "_otel": {"traceId": "abcdefabcdefabcdefabcdefabcdefab"},
+        },
+    )
+
+    finalized = next(workflow_gen)
+    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["input"]["status"] == "ERROR"
+    assert finalized["input"]["workflowId"] == "wf_broken"
+    assert finalized["input"]["workflowName"] == "broken-workflow"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send({"success": False})
+
+    assert stop.value.value["success"] is False
+    assert stop.value.value["phase"] == "failed"
 
 
 def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):
