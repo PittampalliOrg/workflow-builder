@@ -57,7 +57,8 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 			? (applyBuiltinTemplate(templateSlug) ?? createDefaultAgentConfig())
 			: createDefaultAgentConfig();
 	const config = mergeConfig(baseConfig, body.config);
-	const runtime = pickRuntime(body.runtime) ?? "dapr-agent-py";
+	const runtime =
+		pickRuntime(body.runtime) ?? pickRuntime(baseConfig.runtime) ?? "dapr-agent-py";
 
 	const input: CreateAgentInput = {
 		slug: typeof body.slug === "string" ? body.slug : undefined,

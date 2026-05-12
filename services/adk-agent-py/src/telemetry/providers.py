@@ -152,8 +152,8 @@ def init_telemetry() -> bool:
         _event_logger = lp.get_logger(_EVENT_LOGGER_SCOPE)
 
         # No `DaprAgentsInstrumentor` for adk-agent-py — that's a
-        # dapr-agents-specific OpenInference wrapper and we don't ship the
-        # `dapr-agents` package here. Instead, the Diagrid ADK plugin emits
+        # dapr-agents-specific OpenInference wrapper for the classic runtime.
+        # Instead, the Diagrid ADK plugin emits
         # its own `LLM.generate_content` / `Tool.execute` spans via
         # `diagrid.agent.core.telemetry.get_tracer("adk.agent")`; `adk_spans`
         # layers wrapping `adk_agent.session` / `adk_agent.turn` spans on top.

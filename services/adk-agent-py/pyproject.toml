@@ -11,6 +11,7 @@ dependencies = [
     # to handle session.status_* events, control events, autoTerminate, and
     # the session-turn `when_any` timer.
     "diagrid>=0.1",
+    "dapr-agents>=1.0.2",
     "google-adk>=1.0",
     "google-genai>=1.0",
     "dapr-ext-workflow>=1.14",
@@ -28,7 +29,7 @@ dependencies = [
     "mlflow-skinny>=3.6",
     "markdownify>=0.12",
     "ddgs>=7.0",
-    "openshell>=0.0.7",
+    "openshell==0.0.26",
     # mcp gives us StreamableHTTPConnectionParams / SseConnectionParams /
     # StdioServerParameters for the ADK McpToolset.
     "mcp>=1.0",

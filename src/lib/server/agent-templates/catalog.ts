@@ -45,6 +45,33 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		}),
 	},
 	{
+		slug: "adk-gemini-agent",
+		name: "ADK Gemini agent",
+		description:
+			"Runs on the adk-agent-py runtime with Gemini and the standard workspace toolset.",
+		providerIcons: [],
+		highlights: [
+			"adk-agent-py runtime",
+			"Gemini-backed agent loop",
+			"Workspace tools, no project MCP cold start",
+		],
+		config: base({
+			runtime: "adk-agent-py",
+			systemPrompt:
+				"You are a pragmatic coding agent running on the ADK runtime. Inspect the workspace, make focused changes, and report the exact outcome.",
+			maxTurns: 80,
+			timeoutMinutes: 60,
+			mcpConnectionMode: "explicit",
+			builtinTools: [
+				"execute_command",
+				"read_file",
+				"write_file",
+				"list_files",
+				"edit_file",
+			],
+		}),
+	},
+	{
 		slug: "deep-researcher",
 		name: "Deep researcher",
 		description:

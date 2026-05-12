@@ -14,6 +14,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { ArrowLeft, Sparkles } from '@lucide/svelte';
+	import type { AgentRuntime } from '$lib/types/agents';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -24,6 +25,7 @@
 		avatar: string;
 		tags: string[];
 		highlights: string[];
+		runtime?: AgentRuntime;
 	};
 
 	const templates: Template[] = [
@@ -34,6 +36,19 @@
 			avatar: '🤖',
 			tags: ['general'],
 			highlights: ['execute_command, read_file, write_file', 'No MCP servers', 'Default sandbox']
+		},
+		{
+			slug: 'adk-gemini-agent',
+			name: 'ADK Gemini Agent',
+			description: 'Gemini-backed ADK runtime with the standard workspace toolset.',
+			avatar: 'A',
+			tags: ['adk', 'code'],
+			runtime: 'adk-agent-py',
+			highlights: [
+				'adk-agent-py runtime',
+				'Gemini-backed agent loop',
+				'Workspace tools, no project MCP cold start'
+			]
 		},
 		{
 			slug: 'github-mcp-agent',
@@ -85,7 +100,8 @@
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					name: name.trim() || chosenTemplate?.name || 'Untitled Agent'
+					name: name.trim() || chosenTemplate?.name || 'Untitled Agent',
+					runtime: chosenTemplate?.runtime
 				})
 			});
 			if (!res.ok) {
