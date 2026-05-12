@@ -18,6 +18,7 @@ _TRACING_INITIALIZED = False
 SESSION_ID_ATTRIBUTE = "session.id"
 WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id"
 MLFLOW_FINALIZE_ROOT_SPAN_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_ROOT_SPAN"
+MLFLOW_EXPORT_SPAN_METRICS_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_EXPORT_SPAN_METRICS"
 
 
 def _parse_headers(value: str | None) -> dict[str, str] | None:
@@ -247,6 +248,42 @@ class _SanitizingSpanExporter:
         if callable(force_flush):
             return bool(force_flush(timeout_millis))
         return True
+
+
+def _disable_mlflow_span_metrics_by_default() -> None:
+    """Disable MLflow's auxiliary OTLP span metrics unless explicitly enabled.
+
+    MLflow traces are still exported to the configured MLflow destination. This
+    only prevents MLflow's internal duration histogram from adding metric labels
+    like span_type=None, which the OTLP protobuf exporter rejects.
+    """
+    if _env_bool(MLFLOW_EXPORT_SPAN_METRICS_ENV, False):
+        logger.info("[Tracing] MLflow span OTLP metrics enabled by environment")
+        return
+
+    try:
+        from opentelemetry import trace
+        from mlflow.tracing.processor.base_mlflow import BaseMlflowSpanProcessor
+
+        provider = trace.get_tracer_provider()
+        active_processor = getattr(provider, "_active_span_processor", None)
+        processors = getattr(active_processor, "_span_processors", None) or ()
+        disabled = 0
+        for processor in processors:
+            if isinstance(processor, BaseMlflowSpanProcessor) and getattr(
+                processor,
+                "_export_metrics",
+                False,
+            ):
+                processor._export_metrics = False
+                disabled += 1
+        if disabled:
+            logger.info(
+                "[Tracing] Disabled MLflow span OTLP metrics for %d processor(s)",
+                disabled,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[Tracing] Failed to adjust MLflow span metrics: %s", exc)
 
 
 def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
@@ -491,6 +528,7 @@ def _init_mlflow_destination() -> None:
     try:
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.tracing.set_destination(MlflowExperimentLocation(experiment_id=experiment_id))
+        _disable_mlflow_span_metrics_by_default()
         logger.info(
             "[Tracing] MLflow destination set: experiment_id=%s tracking_uri=%s",
             experiment_id,

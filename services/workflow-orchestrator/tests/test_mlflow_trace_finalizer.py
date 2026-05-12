@@ -221,3 +221,81 @@ def test_sanitizing_span_exporter_removes_invalid_attributes():
     assert captured["event_attrs"]["event_ok"] == 1
     assert exporter.force_flush(123) is True
     assert captured["flush_timeout"] == 123
+
+
+def test_disable_mlflow_span_metrics_by_default(monkeypatch):
+    import sys
+    import types
+
+    from opentelemetry import trace as ot_trace
+
+    class FakeBaseMlflowSpanProcessor:
+        pass
+
+    base_module = types.ModuleType("mlflow.tracing.processor.base_mlflow")
+    base_module.BaseMlflowSpanProcessor = FakeBaseMlflowSpanProcessor
+    monkeypatch.setitem(sys.modules, "mlflow", types.ModuleType("mlflow"))
+    monkeypatch.setitem(sys.modules, "mlflow.tracing", types.ModuleType("mlflow.tracing"))
+    monkeypatch.setitem(
+        sys.modules,
+        "mlflow.tracing.processor",
+        types.ModuleType("mlflow.tracing.processor"),
+    )
+    monkeypatch.setitem(sys.modules, base_module.__name__, base_module)
+
+    class Processor(FakeBaseMlflowSpanProcessor):
+        _export_metrics = True
+
+    processor = Processor()
+
+    class ActiveProcessor:
+        _span_processors = (processor,)
+
+    class Provider:
+        _active_span_processor = ActiveProcessor()
+
+    monkeypatch.delenv(tracing.MLFLOW_EXPORT_SPAN_METRICS_ENV, raising=False)
+    monkeypatch.setattr(ot_trace, "get_tracer_provider", lambda: Provider())
+
+    tracing._disable_mlflow_span_metrics_by_default()
+
+    assert processor._export_metrics is False
+
+
+def test_disable_mlflow_span_metrics_respects_env_gate(monkeypatch):
+    import sys
+    import types
+
+    from opentelemetry import trace as ot_trace
+
+    class FakeBaseMlflowSpanProcessor:
+        pass
+
+    base_module = types.ModuleType("mlflow.tracing.processor.base_mlflow")
+    base_module.BaseMlflowSpanProcessor = FakeBaseMlflowSpanProcessor
+    monkeypatch.setitem(sys.modules, "mlflow", types.ModuleType("mlflow"))
+    monkeypatch.setitem(sys.modules, "mlflow.tracing", types.ModuleType("mlflow.tracing"))
+    monkeypatch.setitem(
+        sys.modules,
+        "mlflow.tracing.processor",
+        types.ModuleType("mlflow.tracing.processor"),
+    )
+    monkeypatch.setitem(sys.modules, base_module.__name__, base_module)
+
+    class Processor(FakeBaseMlflowSpanProcessor):
+        _export_metrics = True
+
+    processor = Processor()
+
+    class ActiveProcessor:
+        _span_processors = (processor,)
+
+    class Provider:
+        _active_span_processor = ActiveProcessor()
+
+    monkeypatch.setenv(tracing.MLFLOW_EXPORT_SPAN_METRICS_ENV, "true")
+    monkeypatch.setattr(ot_trace, "get_tracer_provider", lambda: Provider())
+
+    tracing._disable_mlflow_span_metrics_by_default()
+
+    assert processor._export_metrics is True
