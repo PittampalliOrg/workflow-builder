@@ -261,32 +261,98 @@ def _normalize_messages(prompt: Any, raw_messages: list[Any] | None) -> list[dic
     return out
 
 
+def _tool_name(tool: Any) -> str:
+    """Extract a tool name from any of the shapes dapr-agents passes:
+    dict (OpenAI-format), dict with bare `name`, or an object with a
+    `.name` attribute (the dapr-agents Tool class)."""
+    if isinstance(tool, dict):
+        fn = tool.get("function")
+        if isinstance(fn, dict) and fn.get("name"):
+            return str(fn["name"])
+        return str(tool.get("name") or "")
+    return str(getattr(tool, "name", "") or "")
+
+
+def _tool_description(tool: Any, name: str) -> str:
+    if isinstance(tool, dict):
+        fn = tool.get("function")
+        if isinstance(fn, dict) and fn.get("description"):
+            return str(fn["description"])
+        if tool.get("description"):
+            return str(tool["description"])
+    return str(getattr(tool, "description", "") or name)
+
+
+def _tool_parameters(tool: Any) -> dict[str, Any]:
+    if isinstance(tool, dict):
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            return params
+        fn = tool.get("function")
+        if isinstance(fn, dict) and isinstance(fn.get("parameters"), dict):
+            return fn["parameters"]
+        input_schema = tool.get("input_schema")
+        if isinstance(input_schema, dict):
+            return input_schema
+    # dapr-agents Tool class exposes the Pydantic args model via `args_model`.
+    args_model = getattr(tool, "args_model", None)
+    if args_model is not None:
+        try:
+            schema = args_model.model_json_schema()
+            if isinstance(schema, dict):
+                return schema
+        except Exception:
+            pass
+    return {"type": "object", "properties": {}}
+
+
 def _convert_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
+    """Normalize any tool shape dapr-agents passes (dict, OpenAI-format dict,
+    dapr-agents Tool object with .name/.description/.args_model, Pydantic
+    with .model_dump()) into the OpenAI function-tool wire format."""
     if not tools:
         return None
     converted: list[dict[str, Any]] = []
     for tool in tools:
-        if isinstance(tool, dict) and tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+        # Already in OpenAI function-tool format
+        if (
+            isinstance(tool, dict)
+            and tool.get("type") == "function"
+            and isinstance(tool.get("function"), dict)
+        ):
             converted.append(tool)
             continue
-        if isinstance(tool, dict) and "name" in tool:
-            converted.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": str(tool["name"]),
-                        "description": str(tool.get("description") or "")[:1024],
-                        "parameters": tool.get("input_schema") or tool.get("parameters") or {"type": "object"},
-                    },
-                }
-            )
-            continue
-        # Pydantic-style with .model_dump()
+        # Pydantic-style model_dump that produces an OpenAI function-tool dict
         if hasattr(tool, "model_dump"):
-            dumped = tool.model_dump()
-            if isinstance(dumped, dict) and dumped.get("type") == "function":
+            try:
+                dumped = tool.model_dump()
+            except Exception:
+                dumped = None
+            if (
+                isinstance(dumped, dict)
+                and dumped.get("type") == "function"
+                and isinstance(dumped.get("function"), dict)
+            ):
                 converted.append(dumped)
                 continue
+        # Everything else: extract via the legacy adapter's _tool_name /
+        # _tool_description / _tool_parameters helpers. This catches the
+        # dapr-agents Tool class (object with .name, .description,
+        # .args_model attributes) — the legacy DeepSeek adapter's path
+        # that we previously dropped silently in this converter.
+        name = _tool_name(tool)
+        if not name:
+            continue
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": _tool_description(tool, name)[:1024],
+                    "parameters": _tool_parameters(tool),
+                },
+            }
+        )
     return converted or None
 
 
