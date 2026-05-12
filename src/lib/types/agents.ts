@@ -22,6 +22,7 @@ export type PromptPresetRef = {
 export type AgentRuntime =
 	| "dapr-agent-py"
 	| "dapr-agent-py-testing"
+	| "adk-agent-py"
 	| "browser-use-agent";
 
 export type AgentRuntimeIsolation = "auto" | "shared" | "dedicated";

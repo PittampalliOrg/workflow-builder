@@ -885,6 +885,18 @@ _NATIVE_DURABLE_AGENT_TARGETS = {
         "app_id": config.BROWSER_USE_AGENT_APP_ID,
         "instance_prefix": "durable-browser-use",
     },
+    # adk-agent-py registers its outer workflow under the well-known name
+    # `session_workflow` (see services/adk-agent-py/src/runner/compose.py:
+    # register_session_workflow). That matches DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+    # since both runtimes share the orchestrator-facing contract. The actual
+    # Diagrid-managed `agent_workflow` registers as `dapr.adk.<TitleCase>.workflow`
+    # internally — only the outer `session_workflow` is invoked from the
+    # orchestrator.
+    "adk-agent-py": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.ADK_AGENT_PY_APP_ID,
+        "instance_prefix": "durable-adk",
+    },
 }
 
 

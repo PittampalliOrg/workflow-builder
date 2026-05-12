@@ -187,10 +187,18 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
     assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"
     env_from = container["envFrom"]
-    assert env_from[0]["configMapRef"] == {
-        "name": "dapr-agent-py-config",
-        "optional": True,
-    }
+    assert {
+        "configMapRef": {
+            "name": "dapr-agent-py-config",
+            "optional": True,
+        }
+    } in env_from
+    assert {
+        "configMapRef": {
+            "name": "adk-agent-py-config",
+            "optional": True,
+        }
+    } in env_from
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"

@@ -254,6 +254,11 @@ export function getOutputDisplayConfig(actionType: string): OutputDisplayConfig 
 async function main(): Promise<void> {
 	console.log("Discovering plugins...");
 
+	if (!existsSync(PLUGINS_DIR)) {
+		console.log("plugins/ directory not found, skipping plugin discovery");
+		return;
+	}
+
 	const plugins = discoverPlugins();
 
 	if (plugins.length === 0) {

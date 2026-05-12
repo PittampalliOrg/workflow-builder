@@ -727,8 +727,11 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 		resolvedConfig?.runtime === "browser-use-agent"
 			? env.AGENT_RUNTIME_BROWSER_USE_DEFAULT_IMAGE ??
 				"gitea-ryzen.tail286401.ts.net/giteaadmin/browser-use-agent-sandbox:latest"
-			: env.AGENT_RUNTIME_DEFAULT_IMAGE ??
-				"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
+			: resolvedConfig?.runtime === "adk-agent-py"
+				? env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE ??
+					"gitea-ryzen.tail286401.ts.net/giteaadmin/adk-agent-py-sandbox:latest"
+				: env.AGENT_RUNTIME_DEFAULT_IMAGE ??
+					"gitea-ryzen.tail286401.ts.net/giteaadmin/dapr-agent-py-sandbox:latest";
 
 	const rawMcpServers = (resolvedConfig?.mcpServers ?? []).map((s) => ({
 		name: s.server_name ?? s.serverName ?? s.name ?? "mcp",
