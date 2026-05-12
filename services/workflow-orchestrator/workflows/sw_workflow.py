@@ -3062,32 +3062,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "[SW Workflow] Skipping workspace cleanup because keepSandbox was requested",
             )
 
-        # Finalize MLflow trace_info state IN_PROGRESS → OK. Dapr-engine
-        # spans never reach MLflow's OTLP ingest (no gen_ai.* attrs), so
-        # MLflow's `_on_end_impl` never sees a parent=None span to flip
-        # the state. Helper builds a TraceInfo with the workflow's
-        # OTel-derived trace_id and POSTs to MLflow's StartTraceV3 (which,
-        # per its own docstring, is the "end of trace" upsert).
-        if not _is_replaying(ctx):
-            try:
-                from tracing import finalize_mlflow_trace_state
-                short_exec = (db_execution_id or execution_id or "").strip()
-                finalize_mlflow_trace_state(
-                    tc.trace_id,
-                    status="OK",
-                    request_time_ms=start_time_ms,
-                    execution_duration_ms=duration_ms,
-                    extra_tags={
-                        "workflow.id": tc.workflow_id,
-                        "workflow.execution.id": short_exec,
-                        "dapr.workflow.instance_id": execution_id,
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[SW Workflow] finalize_mlflow_trace_state(OK) failed: %s", exc,
-                )
-
         return SWWorkflowOutput(
             success=True,
             outputs=tc.task_outputs,
@@ -3146,27 +3120,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     ctx,
                     "[SW Workflow] Workspace cleanup after failure failed (non-fatal): %s",
                     cleanup_err,
-                )
-
-        if not _is_replaying(ctx):
-            try:
-                from tracing import finalize_mlflow_trace_state
-                short_exec = (db_execution_id or execution_id or "").strip()
-                finalize_mlflow_trace_state(
-                    tc.trace_id,
-                    status="ERROR",
-                    request_time_ms=start_time_ms,
-                    execution_duration_ms=duration_ms,
-                    extra_tags={
-                        "workflow.id": tc.workflow_id,
-                        "workflow.execution.id": short_exec,
-                        "dapr.workflow.instance_id": execution_id,
-                        "workflow.error": error_msg[:512] if error_msg else "",
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[SW Workflow] finalize_mlflow_trace_state(ERROR) failed: %s", exc,
                 )
 
         return SWWorkflowOutput(
