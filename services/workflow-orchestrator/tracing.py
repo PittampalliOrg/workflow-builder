@@ -63,6 +63,20 @@ def _otlp_endpoint_for(signal: str) -> str:
     return f"{base}/v1/{signal}"
 
 
+def _mlflow_otlp_endpoint_for(signal: str) -> str:
+    explicit = (
+        os.getenv("WORKFLOW_ORCHESTRATOR_MLFLOW_OTLP_ENDPOINT") or ""
+    ).strip().rstrip("/")
+    if explicit:
+        if explicit.endswith(f"/v1/{signal}"):
+            return explicit
+        return f"{explicit}/v1/{signal}"
+    tracking_uri = (os.getenv("MLFLOW_TRACKING_URI") or "").strip().rstrip("/")
+    if not tracking_uri:
+        return _otlp_endpoint_for(signal)
+    return f"{tracking_uri}/v1/{signal}"
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = (os.getenv(name) or "").strip().lower()
     if not raw:
@@ -182,7 +196,7 @@ def _post_otlp_span(
     from opentelemetry.proto.resource.v1 import resource_pb2
     from opentelemetry.proto.trace.v1 import trace_pb2
 
-    endpoint = _otlp_endpoint_for("traces")
+    endpoint = _mlflow_otlp_endpoint_for("traces")
     if not endpoint:
         return {"success": True, "skipped": True, "reason": "missing_endpoint"}
 
@@ -212,6 +226,13 @@ def _post_otlp_span(
     )
     headers = _parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS")) or {}
     headers.setdefault("Content-Type", "application/x-protobuf")
+    experiment_id = (
+        os.getenv("MLFLOW_TRACE_EXPERIMENT_ID")
+        or os.getenv("MLFLOW_EXPERIMENT_ID")
+        or ""
+    ).strip()
+    if experiment_id:
+        headers.setdefault("x-mlflow-experiment-id", experiment_id)
     timeout_seconds = max(
         1.0,
         float(

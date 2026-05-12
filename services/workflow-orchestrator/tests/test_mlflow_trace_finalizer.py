@@ -42,6 +42,8 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
         )
         return _FakeResponse()
 
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    monkeypatch.setenv("MLFLOW_TRACE_EXPERIMENT_ID", "3")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
     monkeypatch.setattr(tracing.requests, "post", fake_post)
@@ -61,8 +63,9 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     )
 
     assert result["success"] is True
-    assert captured["url"] == "http://collector:4318/v1/traces"
+    assert captured["url"] == "http://mlflow:5000/v1/traces"
     assert captured["headers"]["Content-Type"] == "application/x-protobuf"
+    assert captured["headers"]["x-mlflow-experiment-id"] == "3"
 
     request = trace_service_pb2.ExportTraceServiceRequest()
     request.ParseFromString(captured["data"])
@@ -96,6 +99,10 @@ def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
         captured["data"] = data
         return _FakeResponse()
 
+    monkeypatch.setenv(
+        "WORKFLOW_ORCHESTRATOR_MLFLOW_OTLP_ENDPOINT",
+        "http://mlflow:5000/v1/traces",
+    )
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318/v1/traces")
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
@@ -120,6 +127,8 @@ def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
 
 
 def test_emit_mlflow_trace_root_span_skips_missing_inputs(monkeypatch):
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.delenv("WORKFLOW_ORCHESTRATOR_MLFLOW_OTLP_ENDPOINT", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     assert tracing.emit_mlflow_trace_root_span({"_otel": {"traceId": "1" * 32}}) == {
         "success": True,
@@ -145,6 +154,7 @@ def test_emit_mlflow_trace_root_span_reports_http_failures(monkeypatch):
     def fake_post(*_args, **_kwargs):
         return _FakeResponse(status_code=503, text="collector unavailable")
 
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
@@ -163,6 +173,7 @@ def test_emit_mlflow_trace_root_span_catches_transport_errors(monkeypatch):
     def fake_post(*_args, **_kwargs):
         raise RuntimeError("network down")
 
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
@@ -192,6 +203,7 @@ def test_emit_mlflow_workflow_node_span_posts_child_chain_span(monkeypatch):
         )
         return _FakeResponse()
 
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
@@ -215,6 +227,7 @@ def test_emit_mlflow_workflow_node_span_posts_child_chain_span(monkeypatch):
     )
 
     assert result["success"] is True
+    assert captured["url"] == "http://mlflow:5000/v1/traces"
     request = trace_service_pb2.ExportTraceServiceRequest()
     request.ParseFromString(captured["data"])
     span = request.resource_spans[0].scope_spans[0].spans[0]
@@ -253,6 +266,7 @@ def test_emit_mlflow_workflow_node_span_sets_error_status(monkeypatch):
         captured["data"] = data
         return _FakeResponse()
 
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
