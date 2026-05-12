@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,7 @@ def init_telemetry() -> bool:
         try:
             from dapr_agents.observability import DaprAgentsInstrumentor
 
+            _install_dapr_agents_context_bridge()
             DaprAgentsInstrumentor().instrument(tracer_provider=tp)
             logger.info("DaprAgentsInstrumentor enabled")
         except Exception as exc:  # noqa: BLE001
@@ -171,6 +173,55 @@ def init_telemetry() -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("OpenTelemetry init failed: %s", exc)
         return False
+
+
+def _iter_context_bridge_attrs(original: Any) -> Iterator[tuple[str, Any]]:
+    """Merge OpenInference context with workflow-builder runtime context.
+
+    Dapr Agents' built-in LLM/tool wrappers call a module-local
+    `get_attributes_from_context()` while constructing spans like
+    `execute_tool Bash`. Their OpenInference context only contains generic
+    session/user metadata. Our per-activity runtime context lives in
+    `src.telemetry.attributes`, so expose it through the same hook before the
+    wrapper snapshots span attributes.
+    """
+    try:
+        yield from original()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Dapr Agents context bridge original lookup failed: %s", exc)
+
+    try:
+        from src.telemetry.attributes import get_telemetry_attributes
+
+        for key, value in get_telemetry_attributes().items():
+            if value is not None:
+                yield key, value
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Dapr Agents context bridge runtime lookup failed: %s", exc)
+
+
+def _install_dapr_agents_context_bridge() -> None:
+    """Patch Dapr Agents wrappers to include workflow-builder context attrs."""
+    for module_name in (
+        "dapr_agents.observability.wrappers.llm",
+        "dapr_agents.observability.wrappers.tool",
+    ):
+        try:
+            module = __import__(module_name, fromlist=["get_attributes_from_context"])
+            original = getattr(module, "get_attributes_from_context", None)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Dapr Agents context bridge skipped for %s: %s", module_name, exc)
+            continue
+        if original is None or getattr(original, "_workflow_builder_context_bridge", False):
+            continue
+
+        def bridged_get_attributes_from_context(
+            _original=original,
+        ) -> Iterator[tuple[str, Any]]:
+            yield from _iter_context_bridge_attrs(_original)
+
+        setattr(bridged_get_attributes_from_context, "_workflow_builder_context_bridge", True)
+        setattr(module, "get_attributes_from_context", bridged_get_attributes_from_context)
 
 
 def _init_mlflow_destination() -> None:

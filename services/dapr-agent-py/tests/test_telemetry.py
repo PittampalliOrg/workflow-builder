@@ -222,6 +222,43 @@ def test_metric_counters(telemetry_with_in_memory):
     assert "claude_code.code_edit_tool.decision" in names
 
 
+def test_dapr_agents_context_bridge_stamps_runtime_identity():
+    from src.telemetry.attributes import reset_session_context, set_session_context
+    from src.telemetry.providers import _iter_context_bridge_attrs
+
+    token = set_session_context(
+        instance_id="wf-tool",
+        execution_id="exec-tool",
+        workflow_id="workflow-tool",
+        workflow_node_id="agent-node",
+        workflow_node_name="Agent Node",
+        agent_id="agent-tool",
+        agent_version="5",
+        agent_slug="agent-tool-slug",
+        agent_app_id="agent-runtime-tool",
+        sandbox_name="sandbox-tool",
+        workspace_ref="workspace-tool",
+        dapr_component="llm-tool",
+    )
+    try:
+        attrs = dict(_iter_context_bridge_attrs(lambda: iter([("session.id", "oi-session")])))
+    finally:
+        reset_session_context(token)
+
+    assert attrs["session.id"] == "wf-tool"
+    assert attrs["workflow.execution.id"] == "exec-tool"
+    assert attrs["workflow.id"] == "workflow-tool"
+    assert attrs["workflow.node.id"] == "agent-node"
+    assert attrs["workflow.node.name"] == "Agent Node"
+    assert attrs["agent.id"] == "agent-tool"
+    assert attrs["agent.version"] == "5"
+    assert attrs["agent.slug"] == "agent-tool-slug"
+    assert attrs["agent.app_id"] == "agent-runtime-tool"
+    assert attrs["sandbox.name"] == "sandbox-tool"
+    assert attrs["sandbox.workspace_ref"] == "workspace-tool"
+    assert attrs["dapr.component"] == "llm-tool"
+
+
 def test_beta_tracing_adds_content_when_flag_set(monkeypatch, telemetry_with_in_memory):
     exporter, _ = telemetry_with_in_memory
     monkeypatch.setenv("ENABLE_BETA_TRACING_DETAILED", "1")
