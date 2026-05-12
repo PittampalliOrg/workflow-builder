@@ -39,12 +39,16 @@ from fastapi import FastAPI  # noqa: E402
 
 from google.adk.agents import LlmAgent  # noqa: E402
 
+from src.adapters.gemini_thought_signatures import (  # noqa: E402
+    install_gemini_thought_signature_patch,
+)
 from src.adapters.gemini_model import build_default_model  # noqa: E402
 from src.adapters.mcp_translation import build_mcp_toolsets  # noqa: E402
 from src.runner.compose import build_runner, register_session_workflow  # noqa: E402
 from src.tools import all_adk_tools  # noqa: E402
 
 logger = logging.getLogger(__name__)
+install_gemini_thought_signature_patch()
 
 
 def _build_agent() -> LlmAgent:
