@@ -49,120 +49,6 @@ def _parse_int_env(name: str, default: int) -> int:
         return default
 
 
-def _sanitize_otel_attribute_value(value: Any) -> Any | None:
-    if value is None:
-        return None
-    if isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, (list, tuple)):
-        cleaned: list[Any] = []
-        for item in value:
-            item_value = _sanitize_otel_attribute_value(item)
-            if item_value is None or isinstance(item_value, (list, tuple)):
-                continue
-            cleaned.append(item_value)
-        return cleaned or None
-    return str(value)
-
-
-def _sanitize_otel_attributes(attrs: Any) -> dict[str, Any]:
-    if not attrs:
-        return {}
-    cleaned: dict[str, Any] = {}
-    for key, value in dict(attrs).items():
-        if not key:
-            continue
-        sanitized = _sanitize_otel_attribute_value(value)
-        if sanitized is not None:
-            cleaned[str(key)] = sanitized
-    return cleaned
-
-
-def _sanitize_readable_span(span: Any) -> Any:
-    """Clone a ReadableSpan with OTLP-encodable attrs.
-
-    MLflow/OpenInference semantic conversion can leave values like
-    span_type=None on finished spans. The SDK stores those on ReadableSpan,
-    but the OTLP protobuf encoder rejects them and can drop the whole batch.
-    """
-    try:
-        from opentelemetry.sdk.trace import Event, ReadableSpan
-        from opentelemetry.trace import Link
-
-        events = tuple(
-            Event(
-                event.name,
-                attributes=_sanitize_otel_attributes(getattr(event, "attributes", None)),
-                timestamp=getattr(event, "timestamp", None),
-            )
-            for event in (getattr(span, "events", None) or ())
-        )
-        links = tuple(
-            Link(
-                link.context,
-                attributes=_sanitize_otel_attributes(getattr(link, "attributes", None)),
-            )
-            for link in (getattr(span, "links", None) or ())
-        )
-        return ReadableSpan(
-            name=span.name,
-            context=span.context,
-            parent=span.parent,
-            resource=span.resource,
-            attributes=_sanitize_otel_attributes(span.attributes),
-            events=events,
-            links=links,
-            kind=span.kind,
-            status=span.status,
-            start_time=span.start_time,
-            end_time=span.end_time,
-            instrumentation_scope=getattr(span, "instrumentation_scope", None),
-        )
-    except Exception:
-        return span
-
-
-class _SanitizingSpanExporter:
-    def __init__(self, exporter: Any) -> None:
-        self._exporter = exporter
-
-    def export(self, spans: Any) -> Any:
-        return self._exporter.export(
-            tuple(_sanitize_readable_span(span) for span in spans)
-        )
-
-    def shutdown(self) -> Any:
-        return self._exporter.shutdown()
-
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        force_flush = getattr(self._exporter, "force_flush", None)
-        if callable(force_flush):
-            return bool(force_flush(timeout_millis))
-        return True
-
-
-class _SanitizingSpanProcessor:
-    """Normalize finished spans before any downstream exporter sees them."""
-
-    def on_start(self, span: Any, parent_context: Any = None) -> None:
-        return None
-
-    def on_end(self, span: Any) -> None:
-        try:
-            sanitized = _sanitize_readable_span(span)
-            span._attributes = dict(getattr(sanitized, "attributes", {}) or {})
-            span._events = tuple(getattr(sanitized, "events", ()) or ())
-            span._links = tuple(getattr(sanitized, "links", ()) or ())
-        except Exception:
-            return None
-
-    def shutdown(self) -> None:
-        return None
-
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return True
-
-
 def init_telemetry() -> bool:
     """Initialize tracer + meter + logger providers.
 
@@ -217,12 +103,9 @@ def init_telemetry() -> bool:
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
         tp = TracerProvider(resource=resource)
-        tp.add_span_processor(_SanitizingSpanProcessor())
         tp.add_span_processor(
             BatchSpanProcessor(
-                _SanitizingSpanExporter(
-                    OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")
-                ),
+                OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"),
                 max_queue_size=bsp_queue,
                 max_export_batch_size=bsp_batch,
                 schedule_delay_millis=bsp_delay,

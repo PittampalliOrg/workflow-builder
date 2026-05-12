@@ -21,7 +21,6 @@ import psycopg2
 import requests
 
 from core.config import config
-from tracing import emit_mlflow_workflow_node_span
 
 logger = logging.getLogger(__name__)
 
@@ -84,20 +83,6 @@ def _json_dumps_safe(value: Any) -> str | None:
         return json.dumps(value)
     except (TypeError, ValueError):
         return json.dumps(str(value))
-
-
-def _emit_node_span(input_data: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return emit_mlflow_workflow_node_span(input_data or {})
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[Log Node Execution] MLflow node span emit failed: %s", exc)
-        return {"success": False, "error": str(exc)}
-
-
-def emit_mlflow_node_span(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
-    """Trace-only activity for nodes whose DB logs are owned by another service."""
-    node_span = _emit_node_span(input_data)
-    return {"success": bool(node_span.get("success")), "nodeSpan": node_span}
 
 
 def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -185,7 +170,6 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             - output: Output data (dict) from the node
             - error: Error message (if status is "error")
             - durationMs: Execution duration in milliseconds
-            - nodeId/nodeName/nodeType/actionType/taskSequence: trace metadata
 
     Returns:
         Dict with success status
@@ -229,12 +213,10 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         finally:
             conn.close()
 
-        node_span = _emit_node_span(input_data)
         logger.info(f"[Log Node Execution] Updated log to {status}: {log_id}")
-        return {"success": True, "nodeSpan": node_span}
+        return {"success": True}
 
     except Exception as e:
         logger.error(f"[Log Node Execution] Failed to log node complete: {e}")
-        node_span = _emit_node_span(input_data)
         # Don't throw - logging failure shouldn't break workflow execution
-        return {"success": False, "error": str(e), "nodeSpan": node_span}
+        return {"success": False, "error": str(e)}

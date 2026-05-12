@@ -15,7 +15,6 @@ both Python services emit the same trace-tag set.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -47,28 +46,6 @@ AGENT_INSTRUCTION_HASH_ATTRIBUTE = "agent.instruction_hash"
 # back to the BFF's DB when the MLflow URI isn't sufficient.
 PROMPT_VERSION_ATTRIBUTE = "prompt_version"
 PROMPT_VERSION_ID_ATTRIBUTE = "prompt_version_id"
-
-
-def _clean_trace_id(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().lower().removeprefix("tr-").replace("-", "")
-    if len(normalized) != 32:
-        return None
-    if not all(c in "0123456789abcdef" for c in normalized):
-        return None
-    if int(normalized, 16) == 0:
-        return None
-    return normalized
-
-
-def _trace_id_from_traceparent(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    parts = value.strip().split("-")
-    if len(parts) < 4:
-        return None
-    return _clean_trace_id(parts[1])
 
 
 def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
@@ -129,7 +106,6 @@ def set_mlflow_trace_tags(
     tags: dict[str, Any],
     *,
     trace_name: str | None = None,
-    trace_id_hex: str | None = None,
 ) -> None:
     """Promote a curated tag dict onto the active MLflow trace.
 
@@ -185,20 +161,14 @@ def set_mlflow_trace_tags(
     # the fluent API silently no-ops when context isn't active. This
     # belt-and-suspenders pass guarantees the tags land on the trace.
     try:
-        otel_trace_hex = _clean_trace_id(trace_id_hex)
-        if not otel_trace_hex:
-            from opentelemetry import trace as ot_trace
-            span = ot_trace.get_current_span()
-            if span is not None:
-                ctx = span.get_span_context()
-                if ctx and ctx.trace_id != 0:
-                    otel_trace_hex = format(ctx.trace_id, "032x")
-        if not otel_trace_hex:
-            otel_trace_hex = _trace_id_from_traceparent(
-                os.environ.get("WORKFLOW_BUILDER_TRACEPARENT")
-            )
-        if not otel_trace_hex:
+        from opentelemetry import trace as ot_trace
+        span = ot_trace.get_current_span()
+        if span is None:
             return
+        ctx = span.get_span_context()
+        if not ctx or ctx.trace_id == 0:
+            return
+        otel_trace_hex = format(ctx.trace_id, "032x")
         mlflow_trace_id = f"tr-{otel_trace_hex}"
         client = mlflow.MlflowClient()
         # Re-add session.id (we popped it earlier for the fluent kwarg).

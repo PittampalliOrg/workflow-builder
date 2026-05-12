@@ -3731,19 +3731,7 @@ class OpenShellDurableAgent(DurableAgent):
                 }
                 if db_execution_id:
                     _trace_tags["workflow.execution.id"] = db_execution_id
-                _otel_ctx = message.get("_otel") or message.get("_otel_span_context")
-                _trace_id_hex = None
-                if isinstance(_otel_ctx, dict):
-                    _trace_id_hex = (
-                        str(_otel_ctx.get("traceId") or _otel_ctx.get("trace_id") or "")
-                        .strip()
-                        or None
-                    )
-                set_mlflow_trace_tags(
-                    _trace_tags,
-                    trace_name=_display_name,
-                    trace_id_hex=_trace_id_hex,
-                )
+                set_mlflow_trace_tags(_trace_tags, trace_name=_display_name)
                 logger.info(
                     "[session-workflow] MLflow trace tags set: name=%s slug=%s",
                     _display_name,

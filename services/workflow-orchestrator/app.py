@@ -17,19 +17,16 @@ KEY FEATURE: Native child workflow support for Dapr agent actions via Dapr child
 from __future__ import annotations
 
 import inspect
-import hashlib
-import http.client
 import json
 import logging
 import os
 import random
-import re
 import string
 import threading
 import time
 import urllib.parse
 import uuid
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 from collections.abc import Callable
@@ -45,12 +42,6 @@ from google.protobuf import wrappers_pb2
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-try:
-    from opentelemetry.instrumentation.utils import suppress_instrumentation
-except Exception:  # pragma: no cover - optional in unit-test shims
-    def suppress_instrumentation():
-        return nullcontext()
-
 from core.config import config
 from workflows.sw_workflow import sw_workflow
 from workflows.sw_workflow import wfr
@@ -62,7 +53,6 @@ from tracing import (
     setup_tracing,
     inject_current_context,
     attach_workflow_session,
-    extract_otel_trace_id,
     extract_session_id,
     workflow_session_id,
 )
@@ -473,64 +463,9 @@ def _workflow_http_timeout_seconds() -> float:
         return 15.0
 
 
-def _workflow_start_http_timeout_seconds() -> float:
-    raw = os.environ.get(
-        "DAPR_WORKFLOW_START_HTTP_TIMEOUT_SECONDS",
-        os.environ.get("DAPR_WORKFLOW_HTTP_TIMEOUT_SECONDS", "5"),
-    )
-    try:
-        return max(0.5, float(raw))
-    except ValueError:
-        return 5.0
-
-
 def _workflow_http_url(instance_id: str, suffix: str = "") -> str:
     encoded_id = urllib.parse.quote(instance_id, safe="")
     return f"{_dapr_http_sidecar_url()}/v1.0/workflows/dapr/{encoded_id}{suffix}"
-
-
-def _workflow_http_start_url(workflow_name: str, instance_id: str) -> str:
-    encoded_name = urllib.parse.quote(workflow_name, safe="")
-    encoded_id = urllib.parse.quote(instance_id, safe="")
-    return (
-        f"{_dapr_http_sidecar_url()}/v1.0/workflows/dapr/{encoded_name}/start"
-        f"?instanceID={encoded_id}"
-    )
-
-
-def _post_json_without_http_instrumentation(
-    url: str,
-    *,
-    headers: dict[str, str],
-    payload: dict[str, Any],
-    timeout: float,
-) -> tuple[int, str]:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise RuntimeError(f"unsupported Dapr HTTP URL: {url}")
-
-    body = json.dumps(payload).encode("utf-8")
-    request_headers = {
-        **headers,
-        "content-length": str(len(body)),
-    }
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    connection_cls = (
-        http.client.HTTPSConnection
-        if parsed.scheme == "https"
-        else http.client.HTTPConnection
-    )
-    conn = connection_cls(parsed.hostname, parsed.port, timeout=timeout)
-    try:
-        with suppress_instrumentation():
-            conn.request("POST", path, body=body, headers=request_headers)
-            response = conn.getresponse()
-            response_body = response.read().decode("utf-8", errors="replace")
-            return response.status, response_body
-    finally:
-        conn.close()
 
 
 def _workflow_http_error_is_missing(status_code: int, detail: str) -> bool:
@@ -550,22 +485,6 @@ def _dapr_api_token_headers() -> dict[str, str]:
     if not token:
         token = str(os.environ.get("DAPR_API_TOKEN") or "").strip()
     return {"dapr-api-token": token} if token else {}
-
-
-def _workflow_http_start_conflict(status_code: int, detail: str) -> bool:
-    if status_code not in {400, 409, 500}:
-        return False
-    lowered = detail.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "already exists",
-            "already running",
-            "already started",
-            "duplicate",
-            "instance id is already",
-        )
-    )
 
 
 def _workflow_http_get_instance(instance_id: str) -> dict[str, Any] | None:
@@ -588,48 +507,6 @@ def _workflow_http_get_instance(instance_id: str) -> dict[str, Any] | None:
         return {}
     payload = response.json()
     return payload if isinstance(payload, dict) else {}
-
-
-def _workflow_http_start_instance(
-    workflow_name: str,
-    instance_id: str,
-    workflow_input: dict[str, Any],
-    *,
-    parent_trace_context: dict[str, str] | None = None,
-) -> str:
-    headers = {
-        "content-type": "application/json",
-        **_dapr_api_token_headers(),
-    }
-    # Dapr 1.17's HTTP workflow start endpoint accepts W3C trace headers but
-    # can leave the new instance stuck in PENDING without a workflowName. Keep
-    # trace context in the durable workflow input instead; the MLflow finalizer
-    # uses that _otel payload to attach the terminal root span to the trace.
-    status_code, body = _post_json_without_http_instrumentation(
-        _workflow_http_start_url(workflow_name, instance_id),
-        headers=headers,
-        payload=workflow_input,
-        timeout=_workflow_start_http_timeout_seconds(),
-    )
-    if 200 <= status_code < 300:
-        payload = json.loads(body) if body else {}
-        if isinstance(payload, dict):
-            result_id = str(
-                payload.get("instanceID") or payload.get("instanceId") or ""
-            ).strip()
-            if result_id:
-                return result_id
-        return instance_id
-
-    detail = body or ""
-    if _workflow_http_start_conflict(status_code, detail):
-        raise _WorkflowStartAlreadyExistsError(
-            f"Dapr workflow instance {instance_id} already exists"
-        )
-    raise RuntimeError(
-        "Dapr workflow start failed with HTTP "
-        f"{status_code}: {detail[:500]}"
-    )
 
 
 def _workflow_http_post(instance_id: str, suffix: str) -> None:
@@ -786,11 +663,6 @@ def _raise_workflow_route_error(operation: str, error: Exception) -> None:
 _taskhub_channel: grpc.Channel | None = None
 _taskhub_stub: pb_grpc.TaskHubSidecarServiceStub | None = None
 SW_WORKFLOW_NAME = "sw_workflow_v1"
-MAX_DAPR_WORKFLOW_INSTANCE_ID_LENGTH = 64
-
-
-class _WorkflowStartAlreadyExistsError(RuntimeError):
-    pass
 
 
 def _taskhub_metadata() -> list[tuple[str, str]] | None:
@@ -855,17 +727,7 @@ def _list_instance_ids(
     return list(getattr(response, "instanceIds", []) or []), next_token
 
 
-def _workflow_start_method() -> str:
-    method = os.environ.get(
-        "WORKFLOW_ORCHESTRATOR_WORKFLOW_START_METHOD",
-        "http",
-    ).strip().lower()
-    if method in {"grpc", "taskhub"}:
-        return "grpc"
-    return "http"
-
-
-def _schedule_new_workflow_instance_grpc(
+def _schedule_new_workflow_instance(
     workflow_name: str,
     instance_id: str,
     workflow_input: dict[str, Any],
@@ -912,47 +774,6 @@ def _schedule_new_workflow_instance_grpc(
     return result_id
 
 
-def _schedule_new_workflow_instance(
-    workflow_name: str,
-    instance_id: str,
-    workflow_input: dict[str, Any],
-    *,
-    workflow_version: str | None = None,
-    idempotent: bool = False,
-    parent_trace_context: dict[str, str] | None = None,
-) -> str:
-    if _workflow_start_method() == "grpc":
-        return _schedule_new_workflow_instance_grpc(
-            workflow_name=workflow_name,
-            instance_id=instance_id,
-            workflow_input=workflow_input,
-            workflow_version=workflow_version,
-            idempotent=idempotent,
-            parent_trace_context=parent_trace_context,
-        )
-    if workflow_version:
-        logger.debug(
-            "[SW Workflow] Starting %s via Dapr HTTP Workflow API latest version "
-            "(requested version=%s)",
-            instance_id,
-            workflow_version,
-        )
-    return _workflow_http_start_instance(
-        workflow_name=workflow_name,
-        instance_id=instance_id,
-        workflow_input=workflow_input,
-        parent_trace_context=parent_trace_context,
-    )
-
-
-def _workflow_instance_runtime_status(instance_id: str) -> str | None:
-    payload = _workflow_http_get_instance(instance_id)
-    if payload is None:
-        return None
-    raw_status = _workflow_dict_value(payload, "runtimeStatus", "runtime_status")
-    return map_runtime_status(str(raw_status or "UNKNOWN").upper())
-
-
 def _idempotent_schedule(
     workflow_name: str,
     instance_id: str,
@@ -981,20 +802,20 @@ def _idempotent_schedule(
             parent_trace_context=parent_trace_context,
         )
     except Exception as schedule_err:
-        if not isinstance(schedule_err, _WorkflowStartAlreadyExistsError) and (
-            _workflow_start_method() != "grpc"
-        ):
-            raise
         # Atomic IGNORE didn't help -- instance may be in terminal state.
         # Try purging and retrying.
         try:
-            status_name = _workflow_instance_runtime_status(instance_id)
+            client = get_workflow_client()
+            existing = client.get_workflow_state(
+                instance_id=instance_id, fetch_payloads=False
+            )
         except Exception:
-            status_name = None
+            existing = None
 
-        if status_name is None:
+        if existing is None:
             raise schedule_err
 
+        status_name = str(getattr(existing, "runtime_status", "")).upper()
         logger.info(
             "[Idempotent Schedule] Instance %s exists (status=%s), purging and retrying",
             instance_id,
@@ -1003,7 +824,7 @@ def _idempotent_schedule(
 
         if status_name in ("COMPLETED", "FAILED", "TERMINATED"):
             try:
-                _workflow_http_post(instance_id, "/purge")
+                client.purge_workflow(instance_id=instance_id)
                 logger.info("[Idempotent Schedule] Purged terminal instance %s", instance_id)
             except Exception as purge_err:
                 logger.warning("[Idempotent Schedule] Purge failed: %s", purge_err)
@@ -1748,21 +1569,6 @@ def _generate_execution_id() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(21))
 
 
-def _build_sw_workflow_instance_id(workflow_name: str, db_execution_id: str) -> str:
-    safe_name = re.sub(r"[^a-z0-9-]", "-", workflow_name.lower()).strip("-") or "workflow"
-    safe_execution_id = (
-        re.sub(r"[^a-z0-9-]", "-", str(db_execution_id).lower()).strip("-")
-        or hashlib.sha256(str(db_execution_id).encode("utf-8")).hexdigest()[:21]
-    )
-    if len(safe_execution_id) > 21:
-        safe_execution_id = hashlib.sha256(
-            str(db_execution_id).encode("utf-8")
-        ).hexdigest()[:21]
-    fixed_len = len("sw-") + len("-exec-") + len(safe_execution_id)
-    max_name_len = max(1, MAX_DAPR_WORKFLOW_INSTANCE_ID_LENGTH - fixed_len)
-    return f"sw-{safe_name[:max_name_len].strip('-') or 'workflow'}-exec-{safe_execution_id}"
-
-
 def _create_workflow_execution(
     workflow_id: str,
     user_id: str,
@@ -1811,7 +1617,6 @@ def _create_workflow_execution(
 def _mark_workflow_execution_started(
     execution_id: str,
     dapr_instance_id: str,
-    trace_id: str | None = None,
 ) -> None:
     """Attach dapr instance correlation to an execution row."""
     import psycopg2
@@ -1823,21 +1628,10 @@ def _mark_workflow_execution_started(
             cur.execute(
                 """
                 UPDATE workflow_executions
-                SET dapr_instance_id = %s,
-                    phase = %s,
-                    progress = %s,
-                    workflow_session_id = COALESCE(workflow_session_id, %s),
-                    primary_trace_id = COALESCE(primary_trace_id, %s)
+                SET dapr_instance_id = %s, phase = %s, progress = %s, workflow_session_id = COALESCE(workflow_session_id, %s)
                 WHERE id = %s
                 """,
-                (
-                    dapr_instance_id,
-                    "running",
-                    0,
-                    execution_id,
-                    trace_id,
-                    execution_id,
-                ),
+                (dapr_instance_id, "running", 0, execution_id, execution_id),
             )
         conn.commit()
     finally:
@@ -3063,7 +2857,9 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "_otel": otel_ctx,
         }
 
-        instance_id = _build_sw_workflow_instance_id(workflow_name, db_execution_id)
+        import re
+        safe_name = re.sub(r'[^a-z0-9-]', '-', workflow_name.lower()).strip('-')[:40]
+        instance_id = f"sw-{safe_name}-exec-{db_execution_id}"
 
         logger.info(
             "[SW Workflow] Starting: %s (%s)",
@@ -3080,11 +2876,7 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
         )
 
         if db_execution_id:
-            _mark_workflow_execution_started(
-                db_execution_id,
-                result_id,
-                extract_otel_trace_id(otel_ctx),
-            )
+            _mark_workflow_execution_started(db_execution_id, result_id)
 
         return StartWorkflowResponse(
             instanceId=result_id,
