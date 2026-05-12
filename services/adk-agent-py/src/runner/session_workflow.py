@@ -59,10 +59,33 @@ _CHILD_RETRY_POLICY = RetryPolicy(
 
 
 def _extract_seed_user_message(input_data: dict[str, Any]) -> str | None:
-    """Pull the initial user prompt from `with.x-workflow-builder.input`.
+    """Pull the initial user prompt from the workflow/session bridge envelope.
 
-    Mirrors how dapr-agent-py decodes the SW 1.0 `durable/run` envelope.
+    New workflow-driven sessions arrive through the BFF's
+    `ensure-for-workflow` bridge, which stores the prompt in `initialEvents`.
+    Keep the older `with.x-workflow-builder.input` fallback for direct legacy
+    child-input shapes.
     """
+    initial_events = input_data.get("initialEvents")
+    if isinstance(initial_events, list):
+        for event in initial_events:
+            if not isinstance(event, dict) or event.get("type") != "user.message":
+                continue
+            content = event.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, str) and item.strip():
+                        parts.append(item.strip())
+                    elif isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str) and text.strip():
+                            parts.append(text.strip())
+                if parts:
+                    return "\n".join(parts)
+
     with_block = input_data.get("with") or {}
     wb = with_block.get("x-workflow-builder") or {}
     raw = wb.get("input")
