@@ -283,8 +283,10 @@ def get_tracer():
     fully marked ready. Returning the global tracer keeps activity-level
     enrichment working even when metrics setup logs a provider override.
     """
-    from opentelemetry import trace
+    if _tracer_provider is not None:
+        return _tracer_provider.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
 
+    from opentelemetry import trace
     return trace.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
 
 
