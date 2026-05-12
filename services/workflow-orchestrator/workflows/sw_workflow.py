@@ -61,6 +61,7 @@ from activities.log_external_event import (
 )
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
+from activities.finalize_mlflow_trace_root import finalize_mlflow_trace_root
 
 logger = logging.getLogger(__name__)
 
@@ -333,6 +334,57 @@ def _trace_id_from_otel(otel_ctx: object) -> str | None:
         parts = traceparent.split("-")
         return parts[1] if len(parts) > 1 else None
     return None
+
+
+def _workflow_trace_name(
+    workflow_id: str | None,
+    execution_id: str | None,
+    db_execution_id: str | None,
+) -> str:
+    short_exec = (db_execution_id or execution_id or "").strip()
+    normalized_workflow_id = str(workflow_id or "workflow").strip() or "workflow"
+    return f"{normalized_workflow_id}/{short_exec}" if short_exec else normalized_workflow_id
+
+
+def _mlflow_finalizer_input(
+    *,
+    status: str,
+    trace_id: str | None,
+    otel_ctx: dict[str, Any],
+    workflow_id: str | None,
+    workflow_name: str | None,
+    execution_id: str,
+    db_execution_id: str | None,
+    duration_ms: int | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "traceId": trace_id,
+        "workflowId": workflow_id,
+        "workflowName": workflow_name,
+        "executionId": execution_id,
+        "dbExecutionId": db_execution_id,
+        "daprInstanceId": execution_id,
+        "durationMs": duration_ms,
+        "error": error,
+        "traceName": _workflow_trace_name(workflow_id, execution_id, db_execution_id),
+        "_otel": otel_ctx,
+    }
+
+
+def _finalize_mlflow_trace(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]):
+    try:
+        yield ctx.call_activity(
+            finalize_mlflow_trace_root,
+            input=_freeze(payload),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_info(
+            ctx,
+            "[SW Workflow] MLflow trace finalization failed (non-fatal): %s",
+            exc,
+        )
 
 
 def _unwrap_standardized_output(value: Any) -> Any:
@@ -2797,6 +2849,26 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         workflow = Workflow.model_validate(workflow_data)
     except Exception as e:
         logger.error("[SW Workflow] Failed to parse workflow: %s", e)
+        if trace_id:
+            workflow_name_for_trace = None
+            if isinstance(workflow_data, dict):
+                document = workflow_data.get("document")
+                if isinstance(document, dict):
+                    workflow_name_for_trace = document.get("name")
+            yield from _finalize_mlflow_trace(
+                ctx,
+                _mlflow_finalizer_input(
+                    status="ERROR",
+                    trace_id=trace_id,
+                    otel_ctx=otel_ctx,
+                    workflow_id=workflow_id or workflow_name_for_trace,
+                    workflow_name=workflow_name_for_trace,
+                    execution_id=execution_id,
+                    db_execution_id=db_execution_id,
+                    duration_ms=_elapsed_ms(ctx, start_time_ms),
+                    error=f"Invalid workflow document: {e}",
+                ),
+            )
         return SWWorkflowOutput(
             success=False,
             error=f"Invalid workflow document: {e}",
@@ -2838,7 +2910,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         try:
             from tracing import set_mlflow_trace_tags, start_activity_span
             short_exec = (db_execution_id or execution_id or "").strip()
-            display_name = f"{tc.workflow_id}/{short_exec}" if short_exec else tc.workflow_id
+            display_name = _workflow_trace_name(tc.workflow_id, execution_id, db_execution_id)
             # 1) Emit + flush a tiny OTel "workflow.init" span first.
             #    MLflow's destination processor exports it; that creates
             #    the `trace_info` row (FK target for `set_trace_tag`).
@@ -3062,6 +3134,20 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "[SW Workflow] Skipping workspace cleanup because keepSandbox was requested",
             )
 
+        yield from _finalize_mlflow_trace(
+            ctx,
+            _mlflow_finalizer_input(
+                status="OK",
+                trace_id=trace_id,
+                otel_ctx=tc.otel_ctx,
+                workflow_id=tc.workflow_id,
+                workflow_name=workflow_name,
+                execution_id=execution_id,
+                db_execution_id=db_execution_id,
+                duration_ms=duration_ms,
+            ),
+        )
+
         return SWWorkflowOutput(
             success=True,
             outputs=tc.task_outputs,
@@ -3121,6 +3207,21 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "[SW Workflow] Workspace cleanup after failure failed (non-fatal): %s",
                     cleanup_err,
                 )
+
+        yield from _finalize_mlflow_trace(
+            ctx,
+            _mlflow_finalizer_input(
+                status="ERROR",
+                trace_id=trace_id,
+                otel_ctx=tc.otel_ctx,
+                workflow_id=tc.workflow_id,
+                workflow_name=workflow_name,
+                execution_id=execution_id,
+                db_execution_id=db_execution_id,
+                duration_ms=duration_ms,
+                error=error_msg,
+            ),
+        )
 
         return SWWorkflowOutput(
             success=False,

@@ -3,17 +3,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import requests
 
 logger = logging.getLogger(__name__)
 
 _TRACING_INITIALIZED = False
 SESSION_ID_ATTRIBUTE = "session.id"
 WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id"
+MLFLOW_FINALIZE_ROOT_SPAN_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_ROOT_SPAN"
 
 
 def _parse_headers(value: str | None) -> dict[str, str] | None:
@@ -59,6 +63,17 @@ def _otlp_endpoint_for(signal: str) -> str:
     return f"{base}/v1/{signal}"
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _parse_resource_attributes(value: str | None) -> dict[str, str]:
     # OTEL_RESOURCE_ATTRIBUTES uses comma-separated key=value.
     if not value:
@@ -76,6 +91,229 @@ def _parse_resource_attributes(value: str | None) -> dict[str, str]:
         if k:
             out[k] = v
     return out
+
+
+def _clean_hex_id(value: object, length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower().removeprefix("tr-").replace("-", "")
+    if len(normalized) != length:
+        return None
+    if not all(c in "0123456789abcdef" for c in normalized):
+        return None
+    if int(normalized, 16) == 0:
+        return None
+    return normalized
+
+
+def extract_otel_trace_id(carrier: dict[str, Any] | None) -> str | None:
+    """Extract a valid 32-hex trace ID from a lightweight OTel carrier."""
+    if not isinstance(carrier, dict):
+        return None
+    explicit = _clean_hex_id(carrier.get("traceId") or carrier.get("trace_id"), 32)
+    if explicit:
+        return explicit
+    traceparent = carrier.get("traceparent")
+    if isinstance(traceparent, str):
+        parts = traceparent.strip().split("-")
+        if len(parts) >= 4:
+            return _clean_hex_id(parts[1], 32)
+    return None
+
+
+def _deterministic_mlflow_root_span_id(trace_id: str, workflow_instance_id: str) -> bytes:
+    seed = f"{trace_id}:{workflow_instance_id}:mlflow-finalize-root".encode("utf-8")
+    span_id = hashlib.sha256(seed).digest()[:8]
+    if int.from_bytes(span_id, "big") == 0:
+        return b"\x00\x00\x00\x00\x00\x00\x00\x01"
+    return span_id
+
+
+def _otlp_any_value(value: Any):
+    from opentelemetry.proto.common.v1 import common_pb2
+
+    if isinstance(value, bool):
+        return common_pb2.AnyValue(bool_value=value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return common_pb2.AnyValue(int_value=value)
+    if isinstance(value, float):
+        return common_pb2.AnyValue(double_value=value)
+    return common_pb2.AnyValue(string_value=str(value))
+
+
+def _otlp_key_value(key: str, value: Any):
+    from opentelemetry.proto.common.v1 import common_pb2
+
+    return common_pb2.KeyValue(key=key, value=_otlp_any_value(value))
+
+
+def _clean_otlp_attributes(attrs: dict[str, Any]) -> list[Any]:
+    return [
+        _otlp_key_value(key, value)
+        for key, value in attrs.items()
+        if key and value is not None and str(value).strip()
+    ]
+
+
+def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
+    """Emit one synthetic OTLP root span so MLflow finalizes the workflow trace.
+
+    This is intentionally independent from the SDK tracer provider: MLflow needs
+    a root span with the existing trace ID, while Dapr workflow/activity spans are
+    otherwise emitted as children. All failures are returned, never raised.
+    """
+    if not _env_bool(MLFLOW_FINALIZE_ROOT_SPAN_ENV, True):
+        return {"success": True, "skipped": True, "reason": "disabled"}
+
+    endpoint = _otlp_endpoint_for("traces")
+    if not endpoint:
+        return {"success": True, "skipped": True, "reason": "missing_endpoint"}
+
+    carrier = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    trace_id = _clean_hex_id(input_data.get("traceId"), 32) or extract_otel_trace_id(
+        carrier
+    )
+    if not trace_id:
+        return {"success": True, "skipped": True, "reason": "missing_or_invalid_trace_id"}
+
+    workflow_instance_id = str(
+        input_data.get("daprInstanceId")
+        or input_data.get("workflowInstanceId")
+        or input_data.get("executionId")
+        or ""
+    ).strip()
+    if not workflow_instance_id:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "missing_workflow_instance_id",
+        }
+
+    status_text = str(
+        input_data.get("status") or input_data.get("statusCode") or "OK"
+    ).upper()
+    is_error = status_text in {"ERROR", "FAILED", "FAILURE", "EXCEPTION"}
+    otlp_status = "ERROR" if is_error else "OK"
+
+    workflow_id = str(input_data.get("workflowId") or "").strip()
+    workflow_name = str(
+        input_data.get("workflowName") or workflow_id or "workflow"
+    ).strip()
+    execution_id = str(input_data.get("executionId") or "").strip()
+    db_execution_id = str(input_data.get("dbExecutionId") or "").strip()
+    display_execution_id = db_execution_id or execution_id or workflow_instance_id
+    trace_name = str(input_data.get("traceName") or "").strip()
+    if not trace_name:
+        trace_name = (
+            f"{workflow_id}/{display_execution_id}"
+            if workflow_id
+            else display_execution_id
+        )
+
+    span_name = str(input_data.get("spanName") or "").strip() or "workflow.finalize"
+    error_message = str(input_data.get("error") or "").strip()
+    now_ns = time.time_ns()
+    end_ns = now_ns + 1_000_000
+
+    try:
+        from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
+        from opentelemetry.proto.common.v1 import common_pb2
+        from opentelemetry.proto.resource.v1 import resource_pb2
+        from opentelemetry.proto.trace.v1 import trace_pb2
+
+        resource_attrs = _parse_resource_attributes(os.getenv("OTEL_RESOURCE_ATTRIBUTES"))
+        resource_attrs.setdefault(
+            "service.name",
+            os.getenv("OTEL_SERVICE_NAME") or "workflow-orchestrator",
+        )
+
+        span_attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "workflow",
+            "mlflow.spanType": "AGENT",
+            "mlflow.traceName": trace_name,
+            "workflow.id": workflow_id,
+            "workflow.name": workflow_name,
+            "workflow.execution.id": display_execution_id,
+            "workflow.execution.db_id": db_execution_id,
+            "dapr.workflow.instance_id": workflow_instance_id,
+            "dapr.workflow.name": workflow_name,
+            "status": otlp_status,
+        }
+        if error_message:
+            span_attrs["error.message"] = error_message
+
+        span = trace_pb2.Span(
+            trace_id=bytes.fromhex(trace_id),
+            span_id=_deterministic_mlflow_root_span_id(trace_id, workflow_instance_id),
+            name=span_name,
+            kind=trace_pb2.Span.SPAN_KIND_INTERNAL,
+            start_time_unix_nano=now_ns,
+            end_time_unix_nano=end_ns,
+            attributes=_clean_otlp_attributes(span_attrs),
+            status=trace_pb2.Status(
+                code=(
+                    trace_pb2.Status.STATUS_CODE_ERROR
+                    if is_error
+                    else trace_pb2.Status.STATUS_CODE_OK
+                ),
+                message=error_message if is_error else "",
+            ),
+        )
+
+        request = trace_service_pb2.ExportTraceServiceRequest(
+            resource_spans=[
+                trace_pb2.ResourceSpans(
+                    resource=resource_pb2.Resource(
+                        attributes=_clean_otlp_attributes(resource_attrs)
+                    ),
+                    scope_spans=[
+                        trace_pb2.ScopeSpans(
+                            scope=common_pb2.InstrumentationScope(
+                                name="workflow-orchestrator.mlflow-finalizer",
+                                version="1.0.0",
+                            ),
+                            spans=[span],
+                        )
+                    ],
+                )
+            ]
+        )
+        headers = _parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS")) or {}
+        headers.setdefault("Content-Type", "application/x-protobuf")
+        timeout_seconds = max(
+            1.0,
+            float(
+                os.getenv(
+                    "WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_TIMEOUT_SECONDS",
+                    "10",
+                )
+            ),
+        )
+        response = requests.post(
+            endpoint,
+            data=request.SerializeToString(),
+            headers=headers,
+            timeout=timeout_seconds,
+        )
+        if response.status_code >= 400:
+            return {
+                "success": False,
+                "error": (
+                    f"OTLP export failed: HTTP {response.status_code} "
+                    f"{response.text[:500]}"
+                ),
+                "traceId": trace_id,
+            }
+        return {
+            "success": True,
+            "traceId": trace_id,
+            "spanId": span.span_id.hex(),
+            "status": otlp_status,
+            "endpoint": endpoint,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Tracing] MLflow root span finalization failed: %s", exc)
+        return {"success": False, "error": str(exc), "traceId": trace_id}
 
 
 class JsonTraceFormatter(logging.Formatter):
