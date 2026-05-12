@@ -172,3 +172,52 @@ def test_emit_mlflow_trace_root_span_catches_transport_errors(monkeypatch):
 
     assert result["success"] is False
     assert "network down" in result["error"]
+
+
+def test_sanitizing_span_exporter_removes_invalid_attributes():
+    from opentelemetry.sdk.trace import Event, ReadableSpan
+
+    captured = {}
+
+    class FakeExporter:
+        def export(self, spans):
+            captured["span_attrs"] = dict(spans[0].attributes)
+            captured["event_attrs"] = dict(spans[0].events[0].attributes)
+            return "ok"
+
+        def shutdown(self):
+            captured["shutdown"] = True
+
+        def force_flush(self, timeout_millis=30000):
+            captured["flush_timeout"] = timeout_millis
+            return True
+
+    span = ReadableSpan(
+        name="bad",
+        attributes={
+            "span_type": None,
+            "ok": "yes",
+            "zero": 0,
+            "false": False,
+            "items": ["a", None, "b"],
+        },
+        events=(
+            Event(
+                "event",
+                attributes={"event_bad": None, "event_ok": 1},
+            ),
+        ),
+    )
+
+    exporter = tracing._SanitizingSpanExporter(FakeExporter())
+
+    assert exporter.export([span]) == "ok"
+    assert "span_type" not in captured["span_attrs"]
+    assert captured["span_attrs"]["ok"] == "yes"
+    assert captured["span_attrs"]["zero"] == 0
+    assert captured["span_attrs"]["false"] is False
+    assert captured["span_attrs"]["items"] == ["a", "b"]
+    assert "event_bad" not in captured["event_attrs"]
+    assert captured["event_attrs"]["event_ok"] == 1
+    assert exporter.force_flush(123) is True
+    assert captured["flush_timeout"] == 123

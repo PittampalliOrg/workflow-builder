@@ -155,6 +155,100 @@ def _clean_otlp_attributes(attrs: dict[str, Any]) -> list[Any]:
     ]
 
 
+def _sanitize_otel_attribute_value(value: Any) -> Any | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (str, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        cleaned: list[Any] = []
+        for item in value:
+            item_value = _sanitize_otel_attribute_value(item)
+            if item_value is None or isinstance(item_value, (list, tuple)):
+                continue
+            cleaned.append(item_value)
+        return cleaned or None
+    return str(value)
+
+
+def _sanitize_otel_attributes(attrs: Any) -> dict[str, Any]:
+    if not attrs:
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, value in dict(attrs).items():
+        if not key:
+            continue
+        sanitized = _sanitize_otel_attribute_value(value)
+        if sanitized is not None:
+            cleaned[str(key)] = sanitized
+    return cleaned
+
+
+def _sanitize_readable_span(span: Any) -> Any:
+    """Clone a ReadableSpan with OTLP-encodable attributes.
+
+    MLflow semantic conversion can attach attributes such as span_type=None.
+    The SDK allows those through on a ReadableSpan, but the OTLP protobuf
+    encoder rejects them and drops the whole export batch.
+    """
+    try:
+        from opentelemetry.sdk.trace import Event, ReadableSpan
+        from opentelemetry.trace import Link
+
+        events = tuple(
+            Event(
+                event.name,
+                attributes=_sanitize_otel_attributes(getattr(event, "attributes", None)),
+                timestamp=getattr(event, "timestamp", None),
+            )
+            for event in (getattr(span, "events", None) or ())
+        )
+        links = tuple(
+            Link(
+                link.context,
+                attributes=_sanitize_otel_attributes(getattr(link, "attributes", None)),
+            )
+            for link in (getattr(span, "links", None) or ())
+        )
+        return ReadableSpan(
+            name=span.name,
+            context=span.context,
+            parent=span.parent,
+            resource=span.resource,
+            attributes=_sanitize_otel_attributes(span.attributes),
+            events=events,
+            links=links,
+            kind=span.kind,
+            status=span.status,
+            start_time=span.start_time,
+            end_time=span.end_time,
+            instrumentation_scope=getattr(span, "instrumentation_scope", None),
+        )
+    except Exception:
+        return span
+
+
+class _SanitizingSpanExporter:
+    def __init__(self, exporter: Any) -> None:
+        self._exporter = exporter
+
+    def export(self, spans: Any) -> Any:
+        return self._exporter.export(
+            tuple(_sanitize_readable_span(span) for span in spans)
+        )
+
+    def shutdown(self) -> Any:
+        return self._exporter.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        force_flush = getattr(self._exporter, "force_flush", None)
+        if callable(force_flush):
+            return bool(force_flush(timeout_millis))
+        return True
+
+
 def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
     """Emit one synthetic OTLP root span so MLflow finalizes the workflow trace.
 
@@ -498,9 +592,11 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
     tracer_provider = TracerProvider(resource=resource)
     tracer_provider.add_span_processor(
         BatchSpanProcessor(
-            OTLPSpanExporter(
-                endpoint=_otlp_endpoint_for("traces"),
-                headers=headers,
+            _SanitizingSpanExporter(
+                OTLPSpanExporter(
+                    endpoint=_otlp_endpoint_for("traces"),
+                    headers=headers,
+                )
             )
         )
     )
