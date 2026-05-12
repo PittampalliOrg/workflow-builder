@@ -277,9 +277,12 @@ def _attach_inbound_trace_context() -> None:
 
 
 def get_tracer():
-    """Return the claude_code tracer, or None when telemetry is disabled."""
-    if not _ready and _tracer_provider is None:
-        return None
+    """Return the active tracer.
+
+    The ADK stack may install an OpenTelemetry provider before this module is
+    fully marked ready. Returning the global tracer keeps activity-level
+    enrichment working even when metrics setup logs a provider override.
+    """
     from opentelemetry import trace
 
     return trace.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
