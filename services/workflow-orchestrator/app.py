@@ -509,19 +509,6 @@ def _dapr_api_token_headers() -> dict[str, str]:
     return {"dapr-api-token": token} if token else {}
 
 
-def _workflow_http_trace_headers(
-    parent_trace_context: dict[str, str] | None,
-) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if not parent_trace_context:
-        return headers
-    for key in ("traceparent", "tracestate", "baggage", "x-workflow-session-id"):
-        value = str(parent_trace_context.get(key) or "").strip()
-        if value:
-            headers[key] = value
-    return headers
-
-
 def _workflow_http_start_conflict(status_code: int, detail: str) -> bool:
     if status_code not in {400, 409, 500}:
         return False
@@ -570,8 +557,11 @@ def _workflow_http_start_instance(
     headers = {
         "content-type": "application/json",
         **_dapr_api_token_headers(),
-        **_workflow_http_trace_headers(parent_trace_context),
     }
+    # Dapr 1.17's HTTP workflow start endpoint accepts W3C trace headers but
+    # can leave the new instance stuck in PENDING without a workflowName. Keep
+    # trace context in the durable workflow input instead; the MLflow finalizer
+    # uses that _otel payload to attach the terminal root span to the trace.
     response = requests.post(
         _workflow_http_start_url(workflow_name, instance_id),
         headers=headers,

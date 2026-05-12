@@ -503,7 +503,7 @@ def test_sw_workflow_instance_id_fits_dapr_http_limit():
     assert "-exec-" in instance_id
 
 
-def test_workflow_http_start_posts_trace_context(monkeypatch):
+def test_workflow_http_start_keeps_trace_context_out_of_headers(monkeypatch):
     captured = {}
 
     class Response:
@@ -540,9 +540,7 @@ def test_workflow_http_start_posts_trace_context(monkeypatch):
         "?instanceID=sw-test-exec-123"
     )
     assert captured["kwargs"]["json"] == {"hello": "world"}
-    assert captured["kwargs"]["headers"]["traceparent"].startswith("00-")
-    assert captured["kwargs"]["headers"]["tracestate"] == "vendor=value"
-    assert captured["kwargs"]["headers"]["baggage"] == "session.id=abc"
+    assert captured["kwargs"]["headers"] == {"content-type": "application/json"}
 
 
 def test_schedule_uses_http_start_by_default(monkeypatch):
