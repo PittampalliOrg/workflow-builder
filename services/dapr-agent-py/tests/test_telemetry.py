@@ -79,6 +79,54 @@ def _find_span(exporter, name):
     return None
 
 
+def test_sanitizing_span_exporter_removes_invalid_attributes():
+    from opentelemetry.sdk.trace import Event, ReadableSpan
+
+    from src.telemetry import providers
+
+    captured = {}
+
+    class FakeExporter:
+        def export(self, spans):
+            captured["span_attrs"] = dict(spans[0].attributes)
+            captured["event_attrs"] = dict(spans[0].events[0].attributes)
+            return "ok"
+
+        def shutdown(self):
+            captured["shutdown"] = True
+
+        def force_flush(self, timeout_millis=30000):
+            captured["timeout_millis"] = timeout_millis
+            return True
+
+    span = ReadableSpan(
+        name="span",
+        attributes={
+            "span_type": None,
+            "ok": "value",
+            "items": ["a", None, 3, {"nested": True}],
+        },
+        events=(
+            Event(
+                "event",
+                attributes={"drop": None, "keep": 1},
+            ),
+        ),
+    )
+
+    exporter = providers._SanitizingSpanExporter(FakeExporter())
+
+    assert exporter.export((span,)) == "ok"
+    assert "span_type" not in captured["span_attrs"]
+    assert captured["span_attrs"]["ok"] == "value"
+    assert captured["span_attrs"]["items"] == ["a", 3, "{'nested': True}"]
+    assert captured["event_attrs"] == {"keep": 1}
+    assert exporter.force_flush(123) is True
+    assert captured["timeout_millis"] == 123
+    exporter.shutdown()
+    assert captured["shutdown"] is True
+
+
 def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     exporter, _ = telemetry_with_in_memory
     monkeypatch.delenv("OTEL_LOG_USER_PROMPTS", raising=False)
