@@ -32,7 +32,7 @@ from typing import Any
 
 import requests
 
-from tracing import start_activity_span
+from tracing import set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,27 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
         { sessionId, agentId, agentVersion, childInput, reused }
     """
     otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else None
+    set_current_span_attrs({
+        "session.id": input_data.get("sessionId"),
+        "workflow.id": input_data.get("workflowId"),
+        "workflow.execution.id": input_data.get("workflowExecutionId"),
+        "workflow.parent_instance_id": input_data.get("parentExecutionId"),
+        "node.id": input_data.get("nodeId"),
+        "agent.id": input_data.get("agentId"),
+        "agent.version": input_data.get("agentVersion"),
+        "agent.slug": input_data.get("agentSlug"),
+        "agent.app_id": input_data.get("agentAppId"),
+        "project.id": input_data.get("projectId"),
+        "user.id": input_data.get("userId"),
+        "sandbox.workspace_ref": input_data.get("workspaceRef"),
+        "sandbox.name": input_data.get("sandboxName"),
+        "sandbox.cwd": input_data.get("cwd"),
+        "agent.max_iterations": input_data.get("maxIterations"),
+        "agent.timeout_minutes": input_data.get("timeoutMinutes"),
+        "benchmark.run_id": input_data.get("benchmarkRunId"),
+        "benchmark.instance_id": input_data.get("benchmarkInstanceId"),
+        "session.vault_count": len(input_data.get("vaultIds") or []),
+    })
     with start_activity_span("activity.spawn_session_for_workflow", otel):
         workflow_builder_url = os.environ.get(
             "WORKFLOW_BUILDER_URL",

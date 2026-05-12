@@ -797,3 +797,46 @@ def start_activity_span(
                 except Exception:
                     pass
         yield span
+
+
+def set_current_span_attrs(attributes: dict[str, Any] | None) -> None:
+    """Stamp attributes onto the **currently active** OTel span.
+
+    Used by Dapr activity bodies to enrich the outer
+    `activity||<name>` span the durabletask runtime creates around them.
+    Best-effort: no active span / no OTel install → silent no-op.
+    None / empty-string / empty-list values are skipped automatically.
+
+    Convenience over calling `trace.get_current_span().set_attribute()`
+    directly: defends against the no-op `INVALID_SPAN` sentinel + handles
+    list/tuple/None coercion in one place.
+    """
+    if not attributes:
+        return
+    try:
+        from opentelemetry import trace as ot_trace
+    except Exception:
+        return
+    try:
+        span = ot_trace.get_current_span()
+    except Exception:
+        return
+    if span is None:
+        return
+    try:
+        sc = span.get_span_context()
+        if sc is None or getattr(sc, "trace_id", 0) == 0:
+            return
+    except Exception:
+        return
+    for k, v in attributes.items():
+        if v is None:
+            continue
+        if isinstance(v, str) and not v:
+            continue
+        if isinstance(v, (list, tuple)) and not v:
+            continue
+        try:
+            span.set_attribute(str(k), v)
+        except Exception:
+            pass

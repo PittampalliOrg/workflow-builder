@@ -521,6 +521,41 @@ def _call_gateway_chat(
     except Exception as exc:  # noqa: BLE001
         logger.debug("[gateway-adapter] token metric emit failed: %s", exc)
 
+    # Stamp GenAI semconv attrs on the active Dapr activity span (the
+    # `agent-session-X.call_llm` span). The dapr-agents
+    # `LLMObservabilityWrapper._set_token_attributes` would also extract
+    # these from `metadata.usage` below, but it only runs on calls that
+    # pass through the dapr-agents observability wrapper — which our
+    # patched `DaprChatClient.generate` path may not.
+    try:
+        from src.telemetry.genai_attrs import (
+            set_genai_request_attrs,
+            set_genai_response_attrs,
+        )
+
+        set_genai_request_attrs(
+            system=f"gateway:{route.split('-', 1)[0]}",
+            request_model=route,
+            max_tokens=max_tokens,
+            tools_count=len(converted_tools) if converted_tools else None,
+            response_format=("json_object" if response_format is not None else None),
+            tool_choice=(
+                tool_choice if isinstance(tool_choice, str) else None
+            ),
+            streaming=False,
+            extra={"gen_ai.gateway.route": route, "gen_ai.gateway.component": component},
+        )
+        set_genai_response_attrs(
+            response_model=route,
+            finish_reason=_finish,
+            usage=usage,
+            duration_ms=duration_ms,
+            tool_calls_count=len(tool_calls) if tool_calls else None,
+            output_chars=len(content) if isinstance(content, str) else None,
+        )
+    except Exception as _attr_exc:  # noqa: BLE001
+        logger.debug("[genai-attrs] gateway span enrichment failed: %s", _attr_exc)
+
     return {
         "content": content,
         "tool_calls": tool_calls,
@@ -529,6 +564,7 @@ def _call_gateway_chat(
             "component": component,
             "usage": usage,
             "duration_ms": duration_ms,
+            "finish_reason": _finish,
         },
     }
 

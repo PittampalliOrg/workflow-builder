@@ -543,12 +543,40 @@ def _call_together_chat(
             "auth_mode": auth_mode,
             "id": data.get("id"),
             "finish_reason": finish_reason,
+            "usage": usage,
+            "duration_ms": duration_ms,
         },
     }
     if reasoning_content:
         result["metadata"]["reasoning_content_present"] = True
     if tool_calls:
         result["tool_calls"] = tool_calls
+
+    try:
+        from src.telemetry.genai_attrs import (
+            set_genai_request_attrs,
+            set_genai_response_attrs,
+        )
+
+        set_genai_request_attrs(
+            system="together",
+            request_model=model,
+            max_tokens=max_tokens,
+            tools_count=len(tools) if tools else None,
+            streaming=False,
+        )
+        set_genai_response_attrs(
+            response_model=data.get("model") or model,
+            response_id=data.get("id"),
+            finish_reason=finish_reason,
+            usage=usage,
+            duration_ms=duration_ms,
+            tool_calls_count=len(tool_calls) if tool_calls else None,
+            output_chars=len(content) if isinstance(content, str) else None,
+        )
+    except Exception as _attr_exc:  # noqa: BLE001
+        logger.debug("[genai-attrs] together span enrichment failed: %s", _attr_exc)
+
     return result
 
 

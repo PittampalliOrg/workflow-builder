@@ -1107,6 +1107,22 @@ def _call_anthropic_sdk(
         result["tool_calls"] = tool_calls
         result["content"] = content or ""
 
+    # Stash aggregated token + timing telemetry on the result so the patched
+    # `DaprChatClient.generate` wrapper can both (a) include `usage` in the
+    # returned LLMChatResponse.metadata (which the dapr-agents
+    # `LLMObservabilityWrapper._set_token_attributes` extracts) and (b) stamp
+    # `gen_ai.usage.*` attrs onto the current Dapr activity span directly.
+    result["_telemetry"] = {
+        "input_tokens": agg_input_tokens,
+        "output_tokens": agg_output_tokens,
+        "cache_read_input_tokens": agg_cache_read,
+        "cache_creation_input_tokens": agg_cache_create,
+        "ttft_ms": ttft_ms_recorded,
+        "duration_ms": (_time.monotonic() - llm_start_monotonic) * 1000.0,
+        "model": model,
+        "recovery_attempts": recovery_count,
+    }
+
     # Phase 2b cleanup: claude_code.llm_request span lifecycle removed —
     # `mlflow.anthropic.autolog()` emits the canonical LLM-call span with
     # `gen_ai.usage.*` covering all token types. We still emit Prometheus
@@ -1290,6 +1306,66 @@ def patch_for_anthropic(llm_client: Any) -> None:
 
                 finish_reason = "tool_use" if result.get("tool_calls") else "end_turn"
 
+                # Stamp GenAI semconv attrs on the active Dapr activity span
+                # (the `agent-session-X.call_llm` span the dapr-agents
+                # WorkflowActivityRegistrationWrapper wrapped around us) AND
+                # include `usage` in the returned metadata so MLflow/Phoenix
+                # consumers see token counts as searchable OTel attrs instead
+                # of buried inside the JSON output blob.
+                tel = result.get("_telemetry") or {}
+                anthropic_model = _get_anthropic_model(component)
+                usage_dict = {
+                    "prompt_tokens": tel.get("input_tokens"),
+                    "completion_tokens": tel.get("output_tokens"),
+                    "total_tokens": (tel.get("input_tokens") or 0)
+                    + (tel.get("output_tokens") or 0),
+                    "cache_read_input_tokens": tel.get("cache_read_input_tokens"),
+                    "cache_creation_input_tokens": tel.get(
+                        "cache_creation_input_tokens"
+                    ),
+                }
+                try:
+                    from src.telemetry.genai_attrs import (
+                        set_genai_request_attrs,
+                        set_genai_response_attrs,
+                    )
+
+                    set_genai_request_attrs(
+                        system="anthropic",
+                        request_model=anthropic_model,
+                        max_tokens=max_tokens,
+                        tools_count=len(tools) if tools else None,
+                        response_format=(
+                            response_format.__name__
+                            if response_format is not None
+                            and hasattr(response_format, "__name__")
+                            else None
+                        ),
+                        streaming=True,
+                    )
+                    set_genai_response_attrs(
+                        response_model=anthropic_model,
+                        finish_reason=finish_reason,
+                        usage=usage_dict,
+                        duration_ms=tel.get("duration_ms"),
+                        ttft_ms=tel.get("ttft_ms"),
+                        tool_calls_count=(
+                            len(result.get("tool_calls") or [])
+                            if result.get("tool_calls")
+                            else None
+                        ),
+                        output_chars=(
+                            len(result.get("content") or "")
+                            if isinstance(result.get("content"), str)
+                            else None
+                        ),
+                    )
+                except Exception as _attr_exc:  # noqa: BLE001
+                    logger.debug(
+                        "[genai-attrs] anthropic span enrichment failed: %s",
+                        _attr_exc,
+                    )
+
                 return LLMChatResponse(
                     results=[LLMChatCandidate(
                         message=msg,
@@ -1297,7 +1373,10 @@ def patch_for_anthropic(llm_client: Any) -> None:
                     )],
                     metadata={
                         "provider": "anthropic-sdk",
-                        "model": _get_anthropic_model(component),
+                        "model": anthropic_model,
+                        "usage": {k: v for k, v in usage_dict.items() if v is not None},
+                        "duration_ms": tel.get("duration_ms"),
+                        "ttft_ms": tel.get("ttft_ms"),
                     },
                 )
             except Exception as exc:

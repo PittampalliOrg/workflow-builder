@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from activities.dapr_invoke import dapr_invoke
 from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
-from tracing import start_activity_span
+from tracing import set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,27 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "action.type": action_type,
     }
 
+    # Mirror onto the durabletask outer span so MLflow / ClickHouse can
+    # filter by workflow.id / action.type / node.id without parsing the
+    # inner `activity.execute_action` manual span. Also adds richer
+    # function-router routing context for debugging.
+    set_current_span_attrs({
+        "workflow.id": workflow_id,
+        "workflow.execution.id": execution_id,
+        "workflow.db_execution_id": db_execution_id,
+        "node.id": node.get("id"),
+        "node.name": node_name,
+        "node.action_type": action_type,
+        "function_router.app_id": FUNCTION_ROUTER_APP_ID,
+        "function_router.method": "execute",
+        "function_router.connection_external_id": connection_external_id,
+        "function_router.ap_project_id": ap_project_id,
+        "function_router.ap_platform_id": ap_platform_id,
+        "function_router.is_ap_flow": workflow_id == "ap-flow",
+        "function_router.has_resolved_config": bool(resolved_config),
+        "function_router.has_integrations": bool(integrations),
+    })
+
     try:
         with start_activity_span("activity.execute_action", otel, attrs):
             # Use per-node timeoutMs if available, otherwise default to 5 min.
@@ -193,6 +214,13 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     else f"Function execution failed (status={status}): {resp_text[:300]}"
                 )
                 logger.error(f"[Execute Action] {error_msg}")
+                set_current_span_attrs({
+                    "function_router.http_status": status,
+                    "function_router.response_chars": len(resp_text or ""),
+                    "activity.success": False,
+                    "activity.error": error_msg[:500],
+                    "activity.duration_ms": duration_ms,
+                })
                 return {
                     "success": False,
                     "error": error_msg,
@@ -212,6 +240,28 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 "error": result.get("error"),
                 "duration_ms": duration_ms,
             }
+
+            # Result-side enrichment so spans show outcome without parsing
+            # the JSON output.value blob.
+            data = result.get("data")
+            data_size = None
+            if isinstance(data, (dict, list)):
+                try:
+                    import json as _json
+                    data_size = len(_json.dumps(data, default=str))
+                except Exception:
+                    data_size = None
+            elif isinstance(data, str):
+                data_size = len(data)
+            set_current_span_attrs({
+                "function_router.http_status": status,
+                "function_router.response_chars": len(resp_text or ""),
+                "activity.success": bool(result.get("success")),
+                "activity.error": (result.get("error") or "")[:500] if result.get("error") else None,
+                "activity.duration_ms": duration_ms,
+                "activity.result_size_chars": data_size,
+                "activity.has_pause": bool(result.get("pause")),
+            })
 
             # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
             if result.get("pause"):

@@ -618,6 +618,43 @@ def _call_openai_responses(
         success=True,
         prompt_cache_telemetry=prompt_cache_telemetry,
     )
+
+    # Surface usage on the result.metadata + stamp GenAI semconv attrs on the
+    # active Dapr activity span.
+    duration_ms = (_time.monotonic() - llm_start) * 1000.0
+    raw_usage = data.get("usage") or {}
+    result["metadata"]["usage"] = raw_usage
+    result["metadata"]["duration_ms"] = duration_ms
+    try:
+        from src.telemetry.genai_attrs import (
+            set_genai_request_attrs,
+            set_genai_response_attrs,
+        )
+
+        set_genai_request_attrs(
+            system="openai",
+            request_model=model,
+            max_tokens=max_tokens,
+            tools_count=len(tools) if tools else None,
+            response_format=(
+                response_format.__name__
+                if response_format is not None and hasattr(response_format, "__name__")
+                else None
+            ),
+            streaming=False,
+        )
+        set_genai_response_attrs(
+            response_model=data.get("model") or model,
+            response_id=data.get("id"),
+            finish_reason=data.get("status"),
+            usage=raw_usage,
+            duration_ms=duration_ms,
+            tool_calls_count=len(tool_calls) if tool_calls else None,
+            output_chars=len(content) if isinstance(content, str) else None,
+        )
+    except Exception as _attr_exc:  # noqa: BLE001
+        logger.debug("[genai-attrs] openai span enrichment failed: %s", _attr_exc)
+
     return result
 
 

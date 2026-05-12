@@ -20,7 +20,7 @@ from dapr.clients import DaprClient
 
 from core.config import config
 from core.output_summary import SUMMARY_OUTPUT_KEYS, extract_summary_fields_from_outputs
-from tracing import start_activity_span
+from tracing import set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,28 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "db.execution_id": db_execution_id,
         "action.type": "persist_results_to_db",
     }
+
+    outputs_size_chars = None
+    try:
+        if isinstance(outputs, (dict, list)):
+            import json as _json
+            outputs_size_chars = len(_json.dumps(outputs, default=str))
+    except Exception:
+        pass
+
+    set_current_span_attrs({
+        "workflow.execution.db_id": db_execution_id,
+        "workflow.execution.id": input_data.get("executionId"),
+        "workflow.success": bool(success),
+        "workflow.phase": "completed" if success else "failed",
+        "workflow.duration_ms": duration_ms,
+        "workflow.error": (error or "")[:500] if error else None,
+        "workflow.outputs.size_chars": outputs_size_chars,
+        "workflow.outputs.node_count": (
+            len(outputs) if isinstance(outputs, dict) else None
+        ),
+        "workflow.has_workflow_output": workflow_output is not None,
+    })
 
     with start_activity_span("activity.persist_results_to_db", otel, attrs):
         try:

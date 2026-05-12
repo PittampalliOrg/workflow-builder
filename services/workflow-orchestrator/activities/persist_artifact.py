@@ -32,7 +32,7 @@ from typing import Any
 
 import requests
 
-from tracing import start_activity_span
+from tracing import set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger("activities.persist_artifact")
 
@@ -105,6 +105,28 @@ def persist_workflow_artifact(ctx, input_data: dict[str, Any]) -> dict[str, Any]
         "workflow.id": input_data.get("workflowId"),
         "node.id": input_data.get("nodeId"),
     }
+    inline_payload = input_data.get("inlinePayload")
+    inline_size = None
+    if inline_payload is not None:
+        try:
+            import json as _json
+            inline_size = len(_json.dumps(inline_payload, default=str))
+        except Exception:
+            inline_size = None
+    set_current_span_attrs({
+        "artifact.id": artifact_id,
+        "artifact.kind": kind,
+        "artifact.slot": input_data.get("slot"),
+        "artifact.title": (str(input_data.get("title") or ""))[:200],
+        "artifact.content_type": input_data.get("contentType"),
+        "artifact.size_bytes": input_data.get("sizeBytes") or inline_size,
+        "artifact.inline_size_chars": inline_size,
+        "artifact.has_file_id": bool(input_data.get("fileId")),
+        "artifact.file_id": input_data.get("fileId"),
+        "workflow.id": input_data.get("workflowId"),
+        "workflow.execution.id": execution_id,
+        "node.id": input_data.get("nodeId"),
+    })
     with start_activity_span("activity.persist_workflow_artifact", otel, attrs):
         url = os.environ.get(
             "WORKFLOW_BUILDER_URL",

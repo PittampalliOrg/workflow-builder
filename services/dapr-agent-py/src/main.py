@@ -1815,6 +1815,59 @@ class OpenShellDurableAgent(DurableAgent):
         self._activate_instance_skills(inst_id)
         self._ensure_mcp_client(inst_id)
 
+        # Stamp workflow + agent context onto the current Dapr activity span
+        # so the call_llm span is filterable in MLflow / ClickHouse by agent
+        # slug, session id, and component without parsing the input/output
+        # JSON blobs. The provider-specific gen_ai.* attrs land later, inside
+        # the adapter's own enrichment block.
+        try:
+            from src.telemetry.genai_attrs import set_activity_attrs
+
+            iteration = None
+            try:
+                iteration = self._compaction_call_count_by_instance.get(inst_id)
+            except Exception:
+                iteration = None
+            agent_slug = (
+                context.get("agentSlug")
+                or getattr(self, "_agent_slug", None)
+            )
+            agent_name = getattr(self.profile, "name", None) if hasattr(self, "profile") else None
+            set_activity_attrs(
+                workflow_id=context.get("workflowId"),
+                workflow_execution_id=exec_id,
+                workflow_instance_id=inst_id,
+                session_id=context.get("sessionId") or exec_id,
+                agent_slug=str(agent_slug) if agent_slug else None,
+                agent_app_id=context.get("agentAppId"),
+                component=component,
+                iteration=iteration,
+                extra={
+                    "agent.name": agent_name,
+                    "agent.max_iterations": context.get("maxIterations"),
+                    "agent.timeout_minutes": context.get("timeoutMinutes"),
+                    "sandbox.workspace_ref": context.get("workspaceRef"),
+                    "sandbox.name": context.get("sandboxName"),
+                    "sandbox.cwd": context.get("cwd"),
+                    "agent.tools_count": (
+                        len(self.tool_executor.list_tools())
+                        if hasattr(self, "tool_executor")
+                        else None
+                    ),
+                    "compaction.enabled": bool(
+                        self._compaction_cfg_by_instance.get(inst_id)
+                        and self._compaction_cfg_by_instance[inst_id].enabled
+                    )
+                    if hasattr(self, "_compaction_cfg_by_instance")
+                    else None,
+                    "instance.empty_streak": self._empty_llm_response_count_by_instance.get(inst_id, 0)
+                    if hasattr(self, "_empty_llm_response_count_by_instance")
+                    else None,
+                },
+            )
+        except Exception as _attr_exc:  # noqa: BLE001
+            logger.debug("[genai-attrs] call_llm activity enrichment failed: %s", _attr_exc)
+
         # ---- Context compaction (inline, same activity boundary) -----------
         # Runs BEFORE the base call_llm. If compaction triggers it rewrites
         # entry.messages via save_state; super().call_llm() will reload the
@@ -2133,6 +2186,46 @@ class OpenShellDurableAgent(DurableAgent):
             tool_args = tool_args["kwargs"]
         if not isinstance(tool_args, dict):
             tool_args = {}
+
+        # Stamp GenAI semconv tool attrs + workflow context on the
+        # `agent-session-X.run_tool` activity span so each tool call is
+        # filterable by tool_name / args_size / agent / session without
+        # parsing the JSON payload.
+        try:
+            from src.telemetry.genai_attrs import (
+                get_current_span,
+                set_activity_attrs,
+            )
+
+            agent_slug = context.get("agentSlug") or getattr(self, "_agent_slug", None)
+            agent_name = getattr(self.profile, "name", None) if hasattr(self, "profile") else None
+            args_size = None
+            if isinstance(raw_args, str):
+                args_size = len(raw_args)
+            set_activity_attrs(
+                workflow_id=context.get("workflowId"),
+                workflow_execution_id=exec_id,
+                workflow_instance_id=inst_id,
+                session_id=context.get("sessionId") or sess_id or exec_id,
+                agent_slug=str(agent_slug) if agent_slug else None,
+                agent_app_id=context.get("agentAppId"),
+                extra={
+                    "agent.name": agent_name,
+                    "tool.name": tool_name,
+                    "tool.call_id": tool_call_id,
+                    "tool.args.size_chars": args_size,
+                    "tool.args.keys": (
+                        ",".join(sorted(tool_args.keys()))[:200]
+                        if isinstance(tool_args, dict)
+                        else None
+                    ),
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": tool_name,
+                    "agent.tool_call_index": self._tool_call_count_by_instance.get(inst_id),
+                },
+            )
+        except Exception as _attr_exc:  # noqa: BLE001
+            logger.debug("[genai-attrs] run_tool activity enrichment failed: %s", _attr_exc)
         import time as _time_tool
 
         tool_started_at = _time_tool.monotonic()
