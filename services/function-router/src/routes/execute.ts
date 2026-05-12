@@ -1471,6 +1471,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 typeof args.githubToken === "string"
                   ? args.githubToken.trim()
                   : "";
+              const skipGiteaMirror =
+                args.skipGiteaMirror === true ||
+                args.directClone === true ||
+                args.mirrorToGitea === false;
 
               if (!repositoryBranch) {
                 throw new Error(
@@ -1478,18 +1482,31 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 );
               }
 
-              const resolved = await resolveCloneRepository({
-                repositoryUrl,
-                repositoryOwner,
-                repositoryRepo,
-                repositoryBranch,
-                repositoryUsername,
-                repositoryToken,
-                githubToken,
-              });
+              const resolved = skipGiteaMirror
+                ? {
+                    repositoryUrl,
+                    repositoryOwner,
+                    repositoryRepo,
+                    repositoryUsername,
+                    repositoryToken,
+                    ensuredInGitea: false,
+                  }
+                : await resolveCloneRepository({
+                    repositoryUrl,
+                    repositoryOwner,
+                    repositoryRepo,
+                    repositoryBranch,
+                    repositoryUsername,
+                    repositoryToken,
+                    githubToken,
+                  });
               if (resolved.ensuredInGitea) {
                 console.log(
                   `[Execute Route] workspace/clone ensured Gitea repo ${resolved.repositoryOwner}/${resolved.repositoryRepo}`,
+                );
+              } else if (skipGiteaMirror) {
+                console.log(
+                  "[Execute Route] workspace/clone using direct repository clone",
                 );
               }
 

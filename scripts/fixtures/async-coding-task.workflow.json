@@ -109,11 +109,33 @@
       },
       {
         "clone_repo": {
+          "call": "workspace/clone",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "connectionExternalId": "${ .trigger.githubConnection }",
+            "repositoryUrl": "${ .trigger.repoUrl }",
+            "repositoryBranch": "${ .trigger.baseBranch // \"main\" }",
+            "skipGiteaMirror": true,
+            "targetDir": "repo",
+            "timeoutMs": 600000
+          },
+          "output": {
+            "as": {
+              "clonePath": "${ .data.result.clonePath // \"/sandbox/repo\" }",
+              "baseSha": "${ .data.result.commitHash // \"unknown\" }",
+              "fileCount": "${ .data.result.fileCount // 0 }"
+            }
+          }
+        }
+      },
+      {
+        "setup_branch": {
+          "if": "${ (.clone_repo.data.result.clonePath // \"\") != \"\" }",
           "call": "workspace/command",
           "with": {
             "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "timeoutMs": 600000,
-            "command": "${ \"set -eu\\nTARGET=/sandbox/repo\\nrm -rf \\\"$TARGET\\\"\\ngit clone --depth 50 --branch \" + (.trigger.baseBranch // \"main\") + \" \" + .trigger.repoUrl + \" \\\"$TARGET\\\"\\ncd \\\"$TARGET\\\"\\nBRANCH=ac-$(date -u +%Y%m%d-%H%M%S)\\ngit checkout -b \\\"$BRANCH\\\"\\ngit config user.email 'agent@workflow-builder.invalid'\\ngit config user.name 'workflow-builder async-coding-task'\\necho BRANCH=$BRANCH\\necho BASE_SHA=$(git rev-parse HEAD)\" }"
+            "command": "set -eu\ncd /sandbox/repo\nBRANCH=ac-$(date -u +%Y%m%d-%H%M%S)\ngit checkout -b \"$BRANCH\"\ngit config user.email 'agent@workflow-builder.invalid'\ngit config user.name 'workflow-builder async-coding-task'\necho BRANCH=$BRANCH\necho BASE_SHA=$(git rev-parse HEAD)"
           },
           "output": {
             "as": {
@@ -125,6 +147,7 @@
       },
       {
         "plan_step": {
+          "if": "${ (.setup_branch.data.result.exitCode // 1) == 0 }",
           "call": "durable/run",
           "with": {
             "body": {
@@ -137,7 +160,7 @@
                 "maxTurns": 10,
                 "timeoutMinutes": 10
               },
-              "prompt": "${ \"You are an autonomous coding agent. Mode=\" + .trigger.mode + \". Repo cloned at /sandbox/repo on branch \" + .clone_repo.branch + \" (forked from \" + (.trigger.baseBranch // \"main\") + \").\\n\\nTASK:\\n\" + .trigger.task + \"\\n\\nProduce ONLY an implementation plan in markdown. Use list_files / read_file / grep_search / glob_files / execute_command (read-only shell) to explore the repo. DO NOT modify, create, or delete any files this turn.\\n\\nPlan structure:\\n1. **Understanding** — one paragraph: what the codebase does and how this task fits.\\n2. **Files to touch** — bulleted list with file path + intended change.\\n3. **Approach** — concrete steps in order.\\n4. **Verification** — how we'll know it works (tests to run, builds to pass, manual checks).\\n5. **Risks & open questions** — non-blocking concerns.\\n\\nEnd with the literal marker `PLAN COMPLETE` on its own line.\" + (if .trigger.mode == \"bugfix\" then \"\\n\\nMODE NOTE: bugfix — first identify the failing test or reproduction, then design the minimal fix.\" elif .trigger.mode == \"refactor\" then \"\\n\\nMODE NOTE: refactor — preserve external behavior; identify the test suite that validates it.\" elif .trigger.mode == \"test-gen\" then \"\\n\\nMODE NOTE: test-gen — add tests only; do not modify production code.\" else \"\" end) }"
+              "prompt": "${ \"You are an autonomous coding agent. Mode=\" + .trigger.mode + \". Repo cloned at /sandbox/repo on branch \" + .setup_branch.branch + \" (forked from \" + (.trigger.baseBranch // \"main\") + \").\\n\\nTASK:\\n\" + .trigger.task + \"\\n\\nProduce ONLY an implementation plan in markdown. Use list_files / read_file / grep_search / glob_files / execute_command (read-only shell) to explore the repo. DO NOT modify, create, or delete any files this turn.\\n\\nPlan structure:\\n1. **Understanding** — one paragraph: what the codebase does and how this task fits.\\n2. **Files to touch** — bulleted list with file path + intended change.\\n3. **Approach** — concrete steps in order.\\n4. **Verification** — how we'll know it works (tests to run, builds to pass, manual checks).\\n5. **Risks & open questions** — non-blocking concerns.\\n\\nEnd with the literal marker `PLAN COMPLETE` on its own line.\" + (if .trigger.mode == \"bugfix\" then \"\\n\\nMODE NOTE: bugfix — first identify the failing test or reproduction, then design the minimal fix.\" elif .trigger.mode == \"refactor\" then \"\\n\\nMODE NOTE: refactor — preserve external behavior; identify the test suite that validates it.\" elif .trigger.mode == \"test-gen\" then \"\\n\\nMODE NOTE: test-gen — add tests only; do not modify production code.\" else \"\" end) }"
             },
             "mode": "execute_direct",
             "cwd": "/sandbox/repo",
@@ -182,7 +205,7 @@
       },
       {
         "implement_step": {
-          "if": "${ .trigger.approval == \"never\" or ((.approval_plan.data.timedOut // false) == false and (.approval_plan.data.approved // true) == true) }",
+          "if": "${ ((.setup_branch.data.result.exitCode // 1) == 0) and (.trigger.approval == \"never\" or ((.approval_plan.data.timedOut // false) == false and (.approval_plan.data.approved // true) == true)) }",
           "call": "durable/run",
           "with": {
             "body": {
@@ -195,7 +218,7 @@
                 "maxTurns": 30,
                 "timeoutMinutes": 30
               },
-              "prompt": "${ \"Continue from your plan. Apply the changes you proposed. Repo at /sandbox/repo on branch \" + .clone_repo.branch + \". Mode=\" + .trigger.mode + \".\\n\\nTools: read_file, write_file, edit_file, list_files, glob_files, grep_search, execute_command.\\n\\nAfter each significant change, stage and commit incrementally with descriptive messages:\\n  execute_command: git add <files>; git commit -m '<message>'\\n\\nEnd with the literal marker `IMPLEMENTATION COMPLETE` on its own line, summarizing in 3-5 bullets what you changed.\\n\\nORIGINAL TASK:\\n\" + .trigger.task + \"\\n\\nYOUR PLAN:\\n\" + .plan_step.data.content }"
+              "prompt": "${ \"Continue from your plan. Apply the changes you proposed. Repo at /sandbox/repo on branch \" + .setup_branch.branch + \". Mode=\" + .trigger.mode + \".\\n\\nTools: read_file, write_file, edit_file, list_files, glob_files, grep_search, execute_command.\\n\\nAfter each significant change, stage and commit incrementally with descriptive messages:\\n  execute_command: git add <files>; git commit -m '<message>'\\n\\nEnd with the literal marker `IMPLEMENTATION COMPLETE` on its own line, summarizing in 3-5 bullets what you changed.\\n\\nORIGINAL TASK:\\n\" + .trigger.task + \"\\n\\nYOUR PLAN:\\n\" + .plan_step.data.content }"
             },
             "mode": "execute_direct",
             "cwd": "/sandbox/repo",
@@ -290,7 +313,7 @@
     "output": {
       "as": {
         "repo": "${ .trigger.repoUrl }",
-        "branch": "${ .clone_repo.branch }",
+        "branch": "${ .setup_branch.branch }",
         "mode": "${ .trigger.mode }",
         "plan": "${ .plan_step.data.content }",
         "implementation": "${ .implement_step.data.content // null }",
@@ -346,13 +369,20 @@
       "id": "clone_repo",
       "type": "call",
       "position": { "x": 250, "y": 350 },
-      "data": { "label": "Clone + Branch", "type": "call", "status": "idle", "enabled": true,
+      "data": { "label": "Clone Repo", "type": "call", "status": "idle", "enabled": true,
+        "taskConfig": { "call": "workspace/clone" } }
+    },
+    {
+      "id": "setup_branch",
+      "type": "call",
+      "position": { "x": 250, "y": 500 },
+      "data": { "label": "Setup Branch", "type": "call", "status": "idle", "enabled": true,
         "taskConfig": { "call": "workspace/command" } }
     },
     {
       "id": "plan_step",
       "type": "agent",
-      "position": { "x": 250, "y": 500 },
+      "position": { "x": 250, "y": 650 },
       "data": { "label": "Plan", "type": "agent", "status": "idle", "enabled": true,
         "agent": { "id": "agnt_deepseek_v4_pro_swe_smoke", "slug": "deepseek-v4-pro-swebench", "runtime": "dapr-agent-py" },
         "taskConfig": { "call": "durable/run" } }
@@ -360,14 +390,14 @@
     {
       "id": "approval_plan",
       "type": "listen",
-      "position": { "x": 250, "y": 650 },
+      "position": { "x": 250, "y": 800 },
       "data": { "label": "Approve Plan?", "type": "listen", "status": "idle", "enabled": true,
         "taskConfig": { "listen": { "to": { "one": { "with": { "type": "approval_plan" } } } }, "timeout": { "after": "PT2H" } } }
     },
     {
       "id": "implement_step",
       "type": "agent",
-      "position": { "x": 250, "y": 800 },
+      "position": { "x": 250, "y": 950 },
       "data": { "label": "Implement", "type": "agent", "status": "idle", "enabled": true,
         "agent": { "id": "agnt_deepseek_v4_pro_swe_smoke", "slug": "deepseek-v4-pro-swebench", "runtime": "dapr-agent-py" },
         "taskConfig": { "call": "durable/run" } }
@@ -375,42 +405,43 @@
     {
       "id": "verify_step",
       "type": "call",
-      "position": { "x": 250, "y": 950 },
+      "position": { "x": 250, "y": 1100 },
       "data": { "label": "Verify (test/build)", "type": "call", "status": "idle", "enabled": true,
         "taskConfig": { "call": "workspace/command" } }
     },
     {
       "id": "approval_pr",
       "type": "listen",
-      "position": { "x": 250, "y": 1100 },
+      "position": { "x": 250, "y": 1250 },
       "data": { "label": "Approve PR?", "type": "listen", "status": "idle", "enabled": true,
         "taskConfig": { "listen": { "to": { "one": { "with": { "type": "approval_pr" } } } }, "timeout": { "after": "PT2H" } } }
     },
     {
       "id": "push_branch",
       "type": "call",
-      "position": { "x": 250, "y": 1250 },
+      "position": { "x": 250, "y": 1400 },
       "data": { "label": "Push Branch", "type": "call", "status": "idle", "enabled": true,
         "taskConfig": { "call": "workspace/command" } }
     },
     {
       "id": "open_pr",
       "type": "call",
-      "position": { "x": 250, "y": 1400 },
+      "position": { "x": 250, "y": 1550 },
       "data": { "label": "Open Draft PR", "type": "call", "status": "idle", "enabled": true,
         "taskConfig": { "call": "system/http-request" } }
     },
     {
       "id": "__end__",
       "type": "end",
-      "position": { "x": 250, "y": 1550 },
+      "position": { "x": 250, "y": 1700 },
       "data": { "label": "End", "type": "end", "status": "idle", "enabled": true }
     }
   ],
   "edges": [
     { "id": "__start__->workspace_profile", "source": "__start__", "target": "workspace_profile" },
     { "id": "workspace_profile->clone_repo", "source": "workspace_profile", "target": "clone_repo" },
-    { "id": "clone_repo->plan_step", "source": "clone_repo", "target": "plan_step" },
+    { "id": "clone_repo->setup_branch", "source": "clone_repo", "target": "setup_branch" },
+    { "id": "setup_branch->plan_step", "source": "setup_branch", "target": "plan_step" },
     { "id": "plan_step->approval_plan", "source": "plan_step", "target": "approval_plan" },
     { "id": "approval_plan->implement_step", "source": "approval_plan", "target": "implement_step" },
     { "id": "implement_step->verify_step", "source": "implement_step", "target": "verify_step" },
