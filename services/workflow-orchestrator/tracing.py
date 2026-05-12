@@ -523,6 +523,131 @@ def set_mlflow_trace_tags(
         logger.debug("[Tracing] set_trace_tag fallback path failed: %s", exc)
 
 
+def finalize_mlflow_trace_state(
+    trace_id_hex: str | None,
+    *,
+    status: str = "OK",
+    request_time_ms: int | None = None,
+    execution_duration_ms: int | None = None,
+    experiment_id: str | None = None,
+    request_preview: str | None = None,
+    response_preview: str | None = None,
+    extra_tags: dict[str, Any] | None = None,
+) -> bool:
+    """Flip MLflow `trace_info.state` from IN_PROGRESS → OK or ERROR.
+
+    Background: MLflow's OTel ingestion path creates a `trace_info` row in
+    IN_PROGRESS state when our spans first arrive. The state transition is
+    normally driven by an MLflow-managed span end on a span whose
+    `_parent is None`, but Dapr workflow spans are parented to durabletask
+    engine spans that MLflow's OTLP receiver drops (no `gen_ai.*` attrs).
+    The row never finalizes.
+
+    Mechanism: MLflow's REST store exposes `start_trace(TraceInfo)` —
+    misleadingly named, the docstring states it is "supposed to be called
+    at the end of the trace". The server upserts the row with the supplied
+    state + duration. We construct a TraceInfo with the workflow's
+    OTel-derived trace_id and the final state, then call through
+    `MlflowClient()._tracking_client.start_trace`.
+
+    Best-effort: silent failure if mlflow isn't installed or the call
+    errors. Returns True on success so callers can log telemetry.
+    """
+    if not trace_id_hex:
+        return False
+    explicit_hex = trace_id_hex.strip().lower().lstrip("tr-").replace("-", "")
+    if len(explicit_hex) != 32 or not all(c in "0123456789abcdef" for c in explicit_hex):
+        return False
+    mlflow_trace_id = f"tr-{explicit_hex}"
+    state_value = str(status).strip().upper()
+    if state_value not in ("OK", "ERROR"):
+        state_value = "OK"
+
+    try:
+        import mlflow  # type: ignore[import-not-found]
+        from mlflow.entities import TraceInfo, TraceLocation
+        from mlflow.entities.trace_state import TraceState
+    except Exception:
+        return False
+
+    # Resolve experiment_id: explicit arg > MLFLOW_TRACE_EXPERIMENT_ID
+    # (set by `_init_mlflow_destination`) > MLFLOW_EXPERIMENT_ID > "0".
+    exp_id = (
+        experiment_id
+        or os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID")
+        or os.environ.get("MLFLOW_EXPERIMENT_ID")
+        or ""
+    ).strip()
+    if not exp_id:
+        exp_id = "0"
+
+    try:
+        location = TraceLocation.from_experiment_id(exp_id)
+    except Exception:
+        # Older mlflow versions: build manually.
+        try:
+            from mlflow.entities.trace_location import MlflowExperimentLocation
+            location = TraceLocation(
+                type=TraceLocation.TraceLocationType.MLFLOW_EXPERIMENT,
+                mlflow_experiment=MlflowExperimentLocation(experiment_id=exp_id),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Tracing] finalize: TraceLocation build failed: %s", exc)
+            return False
+
+    request_time = int(request_time_ms) if request_time_ms is not None else int(datetime.now(timezone.utc).timestamp() * 1000)
+    state = TraceState.OK if state_value == "OK" else TraceState.ERROR
+
+    tags: dict[str, str] = {}
+    if extra_tags:
+        for k, v in extra_tags.items():
+            if v is None:
+                continue
+            try:
+                tags[str(k)] = str(v)
+            except Exception:
+                pass
+
+    try:
+        trace_info = TraceInfo(
+            trace_id=mlflow_trace_id,
+            trace_location=location,
+            request_time=request_time,
+            state=state,
+            execution_duration=int(execution_duration_ms) if execution_duration_ms is not None else None,
+            request_preview=request_preview,
+            response_preview=response_preview,
+            tags=tags,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Tracing] finalize: TraceInfo construction failed: %s", exc)
+        return False
+
+    try:
+        client = mlflow.MlflowClient()
+        tracking = getattr(client, "_tracking_client", None)
+        store = getattr(tracking, "store", None) if tracking else None
+        if store is None or not hasattr(store, "start_trace"):
+            logger.debug("[Tracing] finalize: tracking store missing start_trace; skipping")
+            return False
+        store.start_trace(trace_info=trace_info)
+        logger.info(
+            "[Tracing] MLflow trace state finalized: trace_id=%s state=%s duration_ms=%s",
+            mlflow_trace_id,
+            state_value,
+            execution_duration_ms,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[Tracing] finalize_mlflow_trace_state failed (state=%s trace=%s): %s",
+            state_value,
+            mlflow_trace_id,
+            exc,
+        )
+        return False
+
+
 def _extract_context(carrier: dict[str, str] | None):
     try:
         from opentelemetry.propagate import extract
