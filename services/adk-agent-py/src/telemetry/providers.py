@@ -121,6 +121,32 @@ class _SanitizingSpanProcessor:
         return True
 
 
+class _SanitizingLogExporter:
+    """Drop invalid OTel log attributes before OTLP log encoding."""
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+
+    def export(self, batch: Any) -> Any:
+        for record in batch:
+            try:
+                log_record = record.log_record
+                attrs = _clean_attrs(getattr(log_record, "attributes", None))
+                setattr(log_record, "attributes", attrs)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to sanitize log record: %s", exc)
+        return self._wrapped.export(batch)
+
+    def shutdown(self) -> Any:
+        return self._wrapped.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        force_flush = getattr(self._wrapped, "force_flush", None)
+        if force_flush is None:
+            return True
+        return bool(force_flush(timeout_millis=timeout_millis))
+
+
 def is_telemetry_ready() -> bool:
     return _ready
 
@@ -254,7 +280,9 @@ def init_telemetry() -> bool:
         # --- Logger ---
         lp = LoggerProvider(resource=resource)
         lp.add_log_record_processor(
-            BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{endpoint}/v1/logs"))
+            BatchLogRecordProcessor(
+                _SanitizingLogExporter(OTLPLogExporter(endpoint=f"{endpoint}/v1/logs"))
+            )
         )
         set_logger_provider(lp)
         _logger_provider = lp
