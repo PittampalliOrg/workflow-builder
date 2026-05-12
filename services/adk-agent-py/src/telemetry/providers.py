@@ -38,6 +38,27 @@ def is_telemetry_ready() -> bool:
     return _ready
 
 
+def telemetry_debug_state() -> dict[str, Any]:
+    """Small diagnostic snapshot for tracing bootstrap logs."""
+    try:
+        from opentelemetry import trace
+
+        global_provider = type(trace.get_tracer_provider()).__name__
+    except Exception as exc:  # noqa: BLE001
+        global_provider = f"<unavailable: {exc}>"
+
+    return {
+        "ready": _ready,
+        "configured_provider": type(_tracer_provider).__name__ if _tracer_provider else None,
+        "global_provider": global_provider,
+        "otel_endpoint": bool((os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()),
+        "mlflow_tracking_uri": bool((os.environ.get("MLFLOW_TRACKING_URI") or "").strip()),
+        "mlflow_experiment_id": bool(
+            (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
+        ),
+    }
+
+
 def _parse_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():

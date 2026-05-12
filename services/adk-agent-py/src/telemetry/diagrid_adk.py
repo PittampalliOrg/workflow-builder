@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import timedelta
 from time import perf_counter
 from typing import Any, Generator, Mapping
@@ -20,12 +21,24 @@ from src.telemetry.genai_attrs import (
     set_genai_request_attrs,
     set_genai_response_attrs,
 )
-from src.telemetry.providers import get_tracer
+from src.telemetry.providers import get_tracer, telemetry_debug_state
 
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
 _MAX_ATTR_CHARS = 20_000
+_DIAG_COUNT = 0
+_DIAG_LIMIT = 8
+
+
+def _diag_limit() -> int:
+    raw = os.environ.get("ADK_TELEMETRY_DIAG_LIMIT")
+    if raw is None or not raw.strip():
+        return _DIAG_LIMIT
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        return _DIAG_LIMIT
 
 
 def _json_attr(value: Any) -> str:
@@ -52,6 +65,47 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _span_debug(span: Any | None) -> dict[str, Any]:
+    if span is None:
+        return {"present": False}
+    try:
+        context = span.get_span_context()
+        return {
+            "present": True,
+            "recording": bool(span.is_recording()),
+            "trace_id": format(context.trace_id, "032x") if context.trace_id else None,
+            "span_id": format(context.span_id, "016x") if context.span_id else None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"present": True, "error": str(exc)}
+
+
+def _diag(activity: str, ctx: Mapping[str, Any], *, tracer: Any | None = None, span: Any | None = None) -> None:
+    global _DIAG_COUNT
+    if _DIAG_COUNT >= _diag_limit():
+        return
+    _DIAG_COUNT += 1
+    logger.warning(
+        "[adk-telemetry] activity=%s diag=%d ctx_keys=%s workflow_execution=%r "
+        "workflow_node=%r/%r agent=%r/%r session=%r workspace=%r component=%r "
+        "active_span=%s tracer=%s providers=%s",
+        activity,
+        _DIAG_COUNT,
+        sorted(str(key) for key in ctx.keys()),
+        ctx.get("workflow.execution.id"),
+        ctx.get("workflow.node.id"),
+        ctx.get("workflow.node.name"),
+        ctx.get("agent.id"),
+        ctx.get("agent.app_id") or ctx.get("agent.slug"),
+        ctx.get("session.id"),
+        ctx.get("sandbox.workspace_ref"),
+        ctx.get("dapr.component"),
+        _span_debug(span),
+        type(tracer).__name__ if tracer is not None else None,
+        telemetry_debug_state(),
+    )
 
 
 def _telemetry_context(input_data: Mapping[str, Any]) -> dict[str, Any]:
@@ -167,9 +221,11 @@ def _patch_workflow_module(module: Any) -> None:
         }
         attrs = {key: value for key, value in attrs.items() if value is not None and value != ""}
         tracer = get_tracer()
+        _diag("call_llm_activity.before_child", tel, tracer=tracer, span=get_current_span())
 
         def run_with_span(span: Any | None) -> dict[str, Any]:
             start = perf_counter()
+            _diag("call_llm_activity.child", tel, tracer=tracer, span=span)
             if span is not None:
                 for key, value in attrs.items():
                     span.set_attribute(key, value)
@@ -246,8 +302,10 @@ def _patch_workflow_module(module: Any) -> None:
             attrs["tool.args.size_chars"] = len(_json_attr(args))
         attrs = {key: value for key, value in attrs.items() if value is not None and value != ""}
         tracer = get_tracer()
+        _diag("execute_tool_activity.before_child", tel, tracer=tracer, span=get_current_span())
 
         def run_with_span(span: Any | None) -> dict[str, Any]:
+            _diag("execute_tool_activity.child", tel, tracer=tracer, span=span)
             if span is not None:
                 for key, value in attrs.items():
                     span.set_attribute(key, value)
@@ -406,4 +464,11 @@ def install_diagrid_adk_telemetry_patch() -> None:
     runner_module.call_llm_activity = workflow_module.call_llm_activity
     runner_module.execute_tool_activity = workflow_module.execute_tool_activity
     _PATCHED = True
-    logger.info("[adk-telemetry] installed Diagrid ADK typed span patch")
+    logger.warning(
+        "[adk-telemetry] installed Diagrid ADK typed span patch workflow=%s "
+        "call_llm=%s execute_tool=%s providers=%s",
+        workflow_module.agent_workflow,
+        workflow_module.call_llm_activity,
+        workflow_module.execute_tool_activity,
+        telemetry_debug_state(),
+    )
