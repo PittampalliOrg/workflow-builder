@@ -527,12 +527,26 @@ class TraceContextFilter(logging.Filter):
 
 
 def _init_mlflow_destination() -> None:
-    """Add MLflow as a span destination on the active TracerProvider.
+    """Optionally add MLflow as a span destination on the active TracerProvider.
 
     No-op when `mlflow` isn't installed or when
     `MLFLOW_TRACKING_URI`/`MLFLOW_TRACE_EXPERIMENT_ID` aren't set.
     Failures are logged but never raise — tracing must stay best-effort.
+
+    Workflow-orchestrator should normally rely on the replay-safe raw OTLP
+    finalizer/node-span path for MLflow. The SDK destination exports ordinary
+    OTel spans and has produced invalid `span_type=None` attributes in the
+    collector path, so keep it opt-in only.
     """
+    if os.environ.get("WORKFLOW_ORCHESTRATOR_MLFLOW_SDK_DESTINATION", "false").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        logger.info("[Tracing] MLflow SDK destination skipped (raw OTLP finalizer mode)")
+        return
+
     tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
     experiment_id = (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
     if not tracking_uri or not experiment_id:
@@ -563,13 +577,8 @@ def _init_mlflow_destination() -> None:
         logger.warning("[Tracing] Failed to set MLflow destination: %s", exc)
         return
 
-    # --- Phase 2b: provider-level autolog ------------------------------
-    # Orchestrator rarely calls LLM SDKs directly (most LLM traffic
-    # flows through dapr-agent-py), but enable autolog so the rare
-    # paths (e.g. swebench-coordinator dispatch) get full trace
-    # coverage. Combined with MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true
-    # (Phase 2a) the autolog span attrs get translated to standard
-    # gen_ai.* keys on OTLP export.
+    # Provider-level autolog is tied to the optional SDK destination. Keep it
+    # off by default for the orchestrator; dapr-agent-py owns LLM/tool spans.
     if os.environ.get("WORKFLOW_ORCHESTRATOR_MLFLOW_AUTOLOG", "true").strip().lower() not in {
         "0", "false", "no", "off"
     }:
@@ -850,14 +859,22 @@ def set_mlflow_trace_tags(
     if trace_name:
         update_tags["mlflow.traceName"] = str(trace_name).strip()
 
-    # Try fluent API first (works when MLflow tracing context is active).
-    try:
-        if session_id:
-            mlflow.update_current_trace(tags=update_tags, session_id=session_id)
-        else:
-            mlflow.update_current_trace(tags=update_tags)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[Tracing] update_current_trace failed (will fall back to set_trace_tag): %s", exc)
+    # The orchestrator uses plain OTel spans plus raw OTLP finalizer spans,
+    # not MLflow-managed spans. Calling the fluent API here usually logs
+    # "No active trace found", so keep it opt-in for local experiments.
+    if os.environ.get("WORKFLOW_ORCHESTRATOR_MLFLOW_FLUENT_TAGS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        try:
+            if session_id:
+                mlflow.update_current_trace(tags=update_tags, session_id=session_id)
+            else:
+                mlflow.update_current_trace(tags=update_tags)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Tracing] update_current_trace failed (will fall back to set_trace_tag): %s", exc)
 
     # Always also call set_trace_tag via the OTel-derived trace_id,
     # OR an explicit `trace_id_hex` provided by the caller. The explicit
