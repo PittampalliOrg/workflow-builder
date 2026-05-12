@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import inspect
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -45,9 +46,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 try:
-    from opentelemetry.instrumentation.utils import suppress_http_instrumentation
+    from opentelemetry.instrumentation.utils import suppress_instrumentation
 except Exception:  # pragma: no cover - optional in unit-test shims
-    def suppress_http_instrumentation():
+    def suppress_instrumentation():
         return nullcontext()
 
 from core.config import config
@@ -496,6 +497,41 @@ def _workflow_http_start_url(workflow_name: str, instance_id: str) -> str:
     )
 
 
+def _post_json_without_http_instrumentation(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: float,
+) -> tuple[int, str]:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError(f"unsupported Dapr HTTP URL: {url}")
+
+    body = json.dumps(payload).encode("utf-8")
+    request_headers = {
+        **headers,
+        "content-length": str(len(body)),
+    }
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    connection_cls = (
+        http.client.HTTPSConnection
+        if parsed.scheme == "https"
+        else http.client.HTTPConnection
+    )
+    conn = connection_cls(parsed.hostname, parsed.port, timeout=timeout)
+    try:
+        with suppress_instrumentation():
+            conn.request("POST", path, body=body, headers=request_headers)
+            response = conn.getresponse()
+            response_body = response.read().decode("utf-8", errors="replace")
+            return response.status, response_body
+    finally:
+        conn.close()
+
+
 def _workflow_http_error_is_missing(status_code: int, detail: str) -> bool:
     if status_code == 404:
         return True
@@ -568,15 +604,14 @@ def _workflow_http_start_instance(
     # can leave the new instance stuck in PENDING without a workflowName. Keep
     # trace context in the durable workflow input instead; the MLflow finalizer
     # uses that _otel payload to attach the terminal root span to the trace.
-    with suppress_http_instrumentation():
-        response = requests.post(
-            _workflow_http_start_url(workflow_name, instance_id),
-            headers=headers,
-            json=workflow_input,
-            timeout=_workflow_start_http_timeout_seconds(),
-        )
-    if response.ok:
-        payload = response.json() if response.content else {}
+    status_code, body = _post_json_without_http_instrumentation(
+        _workflow_http_start_url(workflow_name, instance_id),
+        headers=headers,
+        payload=workflow_input,
+        timeout=_workflow_start_http_timeout_seconds(),
+    )
+    if 200 <= status_code < 300:
+        payload = json.loads(body) if body else {}
         if isinstance(payload, dict):
             result_id = str(
                 payload.get("instanceID") or payload.get("instanceId") or ""
@@ -585,14 +620,14 @@ def _workflow_http_start_instance(
                 return result_id
         return instance_id
 
-    detail = response.text or ""
-    if _workflow_http_start_conflict(response.status_code, detail):
+    detail = body or ""
+    if _workflow_http_start_conflict(status_code, detail):
         raise _WorkflowStartAlreadyExistsError(
             f"Dapr workflow instance {instance_id} already exists"
         )
     raise RuntimeError(
         "Dapr workflow start failed with HTTP "
-        f"{response.status_code}: {detail[:500]}"
+        f"{status_code}: {detail[:500]}"
     )
 
 

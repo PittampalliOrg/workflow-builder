@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
-from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -505,33 +504,18 @@ def test_sw_workflow_instance_id_fits_dapr_http_limit():
 
 
 def test_workflow_http_start_keeps_trace_context_out_of_headers(monkeypatch):
-    captured = {"suppressed": False}
+    captured = {}
 
-    class Response:
-        ok = True
-        status_code = 202
-        text = '{"instanceID":"started-instance"}'
-        content = b'{"instanceID":"started-instance"}'
-
-        def json(self):
-            return {"instanceID": "started-instance"}
-
-    def fake_post(url, **kwargs):
+    def fake_post_json(url, **kwargs):
         captured["url"] = url
         captured["kwargs"] = kwargs
-        return Response()
+        return 202, '{"instanceID":"started-instance"}'
 
-    @contextmanager
-    def fake_suppress_http_instrumentation():
-        captured["suppressed"] = True
-        yield
-
-    monkeypatch.setattr(APP.requests, "post", fake_post)
     monkeypatch.setattr(APP, "_dapr_http_sidecar_url", lambda: "http://dapr")
     monkeypatch.setattr(
         APP,
-        "suppress_http_instrumentation",
-        fake_suppress_http_instrumentation,
+        "_post_json_without_http_instrumentation",
+        fake_post_json,
     )
 
     result = APP._workflow_http_start_instance(
@@ -550,9 +534,9 @@ def test_workflow_http_start_keeps_trace_context_out_of_headers(monkeypatch):
         "http://dapr/v1.0/workflows/dapr/sw_workflow_v1/start"
         "?instanceID=sw-test-exec-123"
     )
-    assert captured["kwargs"]["json"] == {"hello": "world"}
+    assert captured["kwargs"]["payload"] == {"hello": "world"}
     assert captured["kwargs"]["headers"] == {"content-type": "application/json"}
-    assert captured["suppressed"] is True
+    assert captured["kwargs"]["timeout"] == APP._workflow_start_http_timeout_seconds()
 
 
 def test_schedule_uses_http_start_by_default(monkeypatch):
