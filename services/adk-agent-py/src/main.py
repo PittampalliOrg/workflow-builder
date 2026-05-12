@@ -39,6 +39,10 @@ from fastapi import FastAPI  # noqa: E402
 
 from google.adk.agents import LlmAgent  # noqa: E402
 
+from src.telemetry.diagrid_adk import install_diagrid_adk_telemetry_patch  # noqa: E402
+
+install_diagrid_adk_telemetry_patch()
+
 from src.adapters.gemini_thought_signatures import (  # noqa: E402
     install_gemini_thought_signature_patch,
 )

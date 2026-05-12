@@ -30,6 +30,7 @@ per-activity retry + replay automatically.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import timedelta
 from typing import Any, Callable, Generator
 
@@ -155,6 +156,134 @@ def _extract_runtime_context(input_data: dict[str, Any]) -> tuple[str | None, st
     return sandbox_name, workspace_ref, cwd
 
 
+def _first_resolved(*values: Any) -> str | None:
+    for value in values:
+        resolved = _resolved_string(value)
+        if resolved:
+            return resolved
+        if value is None or isinstance(value, bool):
+            continue
+        text = str(value).strip()
+        if text and "${" not in text:
+            return text
+    return None
+
+
+def _telemetry_context_value(input_data: dict[str, Any], *keys: str) -> str | None:
+    candidates: list[Any] = []
+
+    for key in keys:
+        candidates.append(input_data.get(key))
+
+    metadata = _nested_record(input_data, "_message_metadata")
+    for key in keys:
+        candidates.append(metadata.get(key))
+
+    instruction_agent = _nested_record(input_data, "instructionBundle", "agent")
+    agent_config = _nested_record(input_data, "agentConfig")
+    effective_agent_config = _nested_record(input_data, "effectiveAgentConfig")
+    for key in keys:
+        candidates.append(instruction_agent.get(key))
+        candidates.append(agent_config.get(key))
+        candidates.append(effective_agent_config.get(key))
+
+    return _first_resolved(*candidates)
+
+
+def _build_telemetry_context(
+    input_data: dict[str, Any],
+    *,
+    session_id: str | None,
+    sandbox_name: str | None,
+    workspace_ref: str | None,
+    cwd: str | None,
+    agent_config: dict[str, Any],
+    model: str | None,
+    provider: str | None,
+) -> dict[str, Any]:
+    """Build attrs for Diagrid's inner LLM/tool activities.
+
+    Diagrid's dataclasses drop unknown top-level fields, so pass these as an
+    explicit private dict and have the patched inner workflow copy it into each
+    activity input.
+    """
+
+    workflow_id = _telemetry_context_value(input_data, "workflowId", "workflow_id")
+    workflow_execution_id = _telemetry_context_value(
+        input_data,
+        "workflowExecutionId",
+        "workflow_execution_id",
+        "dbExecutionId",
+        "executionId",
+    )
+    node_id = _telemetry_context_value(
+        input_data,
+        "nodeId",
+        "workflowNodeId",
+        "workflow_node_id",
+    )
+    node_name = _telemetry_context_value(
+        input_data,
+        "nodeName",
+        "workflowNodeName",
+        "workflow_node_name",
+    ) or node_id
+
+    agent_id = _telemetry_context_value(input_data, "agentId", "agent_id", "id")
+    agent_version = _telemetry_context_value(
+        input_data,
+        "agentVersion",
+        "agent_version",
+        "version",
+    )
+    agent_slug = _telemetry_context_value(input_data, "agentSlug", "agent_slug", "slug")
+    agent_app_id = _telemetry_context_value(
+        input_data,
+        "agentAppId",
+        "agent_app_id",
+        "appId",
+        "appid",
+    )
+    if not agent_app_id:
+        agent_app_id = _first_resolved(
+            agent_config.get("agentAppId"),
+            os.environ.get("APP_ID"),
+            os.environ.get("DAPR_APP_ID"),
+        )
+
+    component = _first_resolved(
+        _telemetry_context_value(input_data, "llmComponent", "daprComponent"),
+        f"llm-{provider}" if provider else None,
+    )
+
+    attrs: dict[str, Any] = {
+        "workflow.id": workflow_id,
+        "workflow.execution.id": workflow_execution_id,
+        "workflow.node.id": node_id,
+        "workflow.node.name": node_name,
+        "workflow.node.type": "agent",
+        "workflow.node.action_type": "durable/run",
+        "workflow.node.sequence": _telemetry_context_value(
+            input_data,
+            "nodeSequence",
+            "workflowNodeSequence",
+            "sequence",
+        ),
+        "session.id": session_id,
+        "agent.id": agent_id,
+        "agent.version": agent_version,
+        "agent.slug": agent_slug,
+        "agent.app_id": agent_app_id,
+        "sandbox.name": sandbox_name,
+        "sandbox.workspace_ref": workspace_ref,
+        "sandbox.cwd": cwd,
+        "dapr.component": component,
+        "gen_ai.request.model": model,
+        "gen_ai.system": provider,
+    }
+    return {key: value for key, value in attrs.items() if value is not None and value != ""}
+
+
 def session_workflow_factory(
     diagrid_workflow_name: str,
     *,
@@ -243,6 +372,18 @@ def session_workflow_factory(
                     model=agent_config.get("modelSpec"),
                     declared_tools=declared_tools,
                 )
+                telemetry_context = _build_telemetry_context(
+                    input_data,
+                    session_id=session_id,
+                    sandbox_name=sandbox_name,
+                    workspace_ref=workspace_ref,
+                    cwd=cwd,
+                    agent_config=agent_config,
+                    model=per_turn_config.get("model"),
+                    provider=per_turn_config.get("provider"),
+                )
+                if telemetry_context.get("dapr.component"):
+                    per_turn_config["component_name"] = telemetry_context["dapr.component"]
                 child_input = {
                     "agent_config": per_turn_config,
                     "messages": compact_image_tool_results(message_history),
@@ -251,6 +392,7 @@ def session_workflow_factory(
                     "app_name": workspace_ref or "workflow-builder",
                     "iteration": 0,
                     "max_iterations": max_turns,
+                    "_telemetry_context": telemetry_context,
                 }
 
                 child_instance_id = f"{ctx.instance_id}-t{turn_index}"
