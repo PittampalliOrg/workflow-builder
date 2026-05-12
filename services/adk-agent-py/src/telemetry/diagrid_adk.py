@@ -20,7 +20,6 @@ from src.telemetry.genai_attrs import (
     set_genai_request_attrs,
     set_genai_response_attrs,
 )
-from src.telemetry.providers import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +84,15 @@ def _base_attrs(ctx: Mapping[str, Any]) -> dict[str, Any]:
     return attrs
 
 
-def _stamp_current_activity(ctx: Mapping[str, Any], *, activity: str) -> None:
+def _stamp_current_activity(
+    ctx: Mapping[str, Any],
+    *,
+    activity: str,
+    mlflow_span_type: str | None = None,
+) -> Any | None:
     span = get_current_span()
     if span is None:
-        return
+        return None
     set_activity_attrs(
         span,
         workflow_id=_clean_string(ctx.get("workflow.id")),
@@ -101,6 +105,7 @@ def _stamp_current_activity(ctx: Mapping[str, Any], *, activity: str) -> None:
         agent_app_id=_clean_string(ctx.get("agent.app_id")),
         component=_clean_string(ctx.get("dapr.component")),
         iteration=_int_or_none(ctx.get("agent.iteration")),
+        mlflow_span_type=mlflow_span_type,
         extra={
             "workflow.activity": activity,
             "workflow.node.id": ctx.get("workflow.node.id"),
@@ -113,13 +118,7 @@ def _stamp_current_activity(ctx: Mapping[str, Any], *, activity: str) -> None:
             "sandbox.cwd": ctx.get("sandbox.cwd"),
         },
     )
-
-
-def _span_name(ctx: Mapping[str, Any], activity: str) -> str:
-    agent_app_id = _clean_string(ctx.get("agent.app_id")) or _clean_string(
-        ctx.get("agent.slug")
-    )
-    return f"{agent_app_id}.{activity}" if agent_app_id else f"adk_agent.{activity}"
+    return span
 
 
 def _llm_output_stats(output: Mapping[str, Any]) -> tuple[str | None, int, int]:
@@ -146,40 +145,33 @@ def _patch_workflow_module(module: Any) -> None:
         )
         tel.setdefault("dapr.component", component or f"llm-{provider}")
 
-        _stamp_current_activity(tel, activity="call_llm_activity")
-        attrs = {
-            **_base_attrs(tel),
-            "mlflow.spanType": "CHAT_MODEL",
-            "openinference.span.kind": "LLM",
-            "gen_ai.operation.name": "chat",
-            "gen_ai.system": provider,
-            "gen_ai.provider.name": provider,
-            "llm.provider": provider,
-            "gen_ai.request.model": model,
-            "llm.model_name": model,
-            "gen_ai.request.streaming": False,
-            "gen_ai.request.tools.count": len(agent_config.get("tool_definitions") or []),
-            "input.mime_type": "application/json",
-            "input.value": _json_attr(input_data),
-        }
-        attrs = {k: v for k, v in attrs.items() if v is not None and v != ""}
-
-        tracer = get_tracer()
-        if tracer is None:
-            return original_call_llm_activity(ctx, input_data)
-
+        span = _stamp_current_activity(
+            tel,
+            activity="call_llm_activity",
+            mlflow_span_type="CHAT_MODEL",
+        )
         start = perf_counter()
-        with tracer.start_as_current_span(_span_name(tel, "call_llm"), attributes=attrs) as span:
-            try:
-                set_genai_request_attrs(
-                    span,
-                    system=provider,
-                    request_model=model,
-                    tools_count=len(agent_config.get("tool_definitions") or []),
-                    streaming=False,
-                    extra={"dapr.component": tel.get("dapr.component")},
-                )
-                output = original_call_llm_activity(ctx, input_data)
+        if span is not None:
+            for key, value in {
+                **_base_attrs(tel),
+                "openinference.span.kind": "LLM",
+                "gen_ai.operation.name": "chat",
+                "input.mime_type": "application/json",
+                "input.value": _json_attr(input_data),
+            }.items():
+                if value is not None and value != "":
+                    span.set_attribute(key, value)
+            set_genai_request_attrs(
+                span,
+                system=provider,
+                request_model=model,
+                tools_count=len(agent_config.get("tool_definitions") or []),
+                streaming=False,
+                extra={"dapr.component": tel.get("dapr.component")},
+            )
+        try:
+            output = original_call_llm_activity(ctx, input_data)
+            if span is not None:
                 content, tool_call_count, output_chars = _llm_output_stats(output)
                 set_genai_response_attrs(
                     span,
@@ -193,11 +185,12 @@ def _patch_workflow_module(module: Any) -> None:
                 span.set_attribute("output.value", _json_attr(output))
                 if content is not None:
                     span.set_attribute("gen_ai.response.content.chars", len(content))
-                return output
-            except Exception as exc:
+            return output
+        except Exception as exc:
+            if span is not None:
                 span.set_attribute("error", True)
                 span.record_exception(exc)
-                raise
+            raise
 
     def execute_tool_activity(ctx: Any, input_data: dict[str, Any]) -> dict[str, Any]:
         tel = _telemetry_context(input_data)
@@ -205,41 +198,43 @@ def _patch_workflow_module(module: Any) -> None:
         tool_name = _clean_string(tool_call.get("name")) or "unknown"
         args = tool_call.get("args") if isinstance(tool_call, Mapping) else None
 
-        _stamp_current_activity(tel, activity="execute_tool_activity")
-        attrs = {
-            **_base_attrs(tel),
-            "mlflow.spanType": "TOOL",
-            "openinference.span.kind": "TOOL",
-            "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": tool_name,
-            "tool.name": tool_name,
-            "tool.call_id": tool_call.get("id") if isinstance(tool_call, Mapping) else None,
-            "input.mime_type": "application/json",
-            "input.value": _json_attr(input_data),
-        }
-        if isinstance(args, Mapping):
-            attrs["tool.args.keys"] = ",".join(str(k) for k in sorted(args.keys()))
-            attrs["tool.args.size_chars"] = len(_json_attr(args))
-        attrs = {k: v for k, v in attrs.items() if v is not None and v != ""}
-
-        tracer = get_tracer()
-        if tracer is None:
-            return original_execute_tool_activity(ctx, input_data)
-
-        with tracer.start_as_current_span(_span_name(tel, "run_tool"), attributes=attrs) as span:
-            try:
-                output = original_execute_tool_activity(ctx, input_data)
+        span = _stamp_current_activity(
+            tel,
+            activity="execute_tool_activity",
+            mlflow_span_type="TOOL",
+        )
+        if span is not None:
+            attrs = {
+                **_base_attrs(tel),
+                "openinference.span.kind": "TOOL",
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": tool_name,
+                "tool.name": tool_name,
+                "tool.call_id": tool_call.get("id") if isinstance(tool_call, Mapping) else None,
+                "input.mime_type": "application/json",
+                "input.value": _json_attr(input_data),
+            }
+            if isinstance(args, Mapping):
+                attrs["tool.args.keys"] = ",".join(str(k) for k in sorted(args.keys()))
+                attrs["tool.args.size_chars"] = len(_json_attr(args))
+            for key, value in attrs.items():
+                if value is not None and value != "":
+                    span.set_attribute(key, value)
+        try:
+            output = original_execute_tool_activity(ctx, input_data)
+            if span is not None:
                 span.set_attribute("output.mime_type", "application/json")
                 span.set_attribute("output.value", _json_attr(output))
                 result = output.get("tool_result") if isinstance(output, Mapping) else None
                 if isinstance(result, Mapping) and result.get("error"):
                     span.set_attribute("error", True)
                     span.set_attribute("tool.error", str(result.get("error")))
-                return output
-            except Exception as exc:
+            return output
+        except Exception as exc:
+            if span is not None:
                 span.set_attribute("error", True)
                 span.record_exception(exc)
-                raise
+            raise
 
     def agent_workflow(
         ctx: Any, input_data: dict[str, Any]
@@ -373,4 +368,3 @@ def install_diagrid_adk_telemetry_patch() -> None:
     runner_module.execute_tool_activity = workflow_module.execute_tool_activity
     _PATCHED = True
     logger.info("[adk-telemetry] installed Diagrid ADK typed span patch")
-
