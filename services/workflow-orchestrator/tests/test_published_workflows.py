@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -504,7 +505,7 @@ def test_sw_workflow_instance_id_fits_dapr_http_limit():
 
 
 def test_workflow_http_start_keeps_trace_context_out_of_headers(monkeypatch):
-    captured = {}
+    captured = {"suppressed": False}
 
     class Response:
         ok = True
@@ -520,8 +521,18 @@ def test_workflow_http_start_keeps_trace_context_out_of_headers(monkeypatch):
         captured["kwargs"] = kwargs
         return Response()
 
+    @contextmanager
+    def fake_suppress_http_instrumentation():
+        captured["suppressed"] = True
+        yield
+
     monkeypatch.setattr(APP.requests, "post", fake_post)
     monkeypatch.setattr(APP, "_dapr_http_sidecar_url", lambda: "http://dapr")
+    monkeypatch.setattr(
+        APP,
+        "suppress_http_instrumentation",
+        fake_suppress_http_instrumentation,
+    )
 
     result = APP._workflow_http_start_instance(
         "sw_workflow_v1",
@@ -541,6 +552,7 @@ def test_workflow_http_start_keeps_trace_context_out_of_headers(monkeypatch):
     )
     assert captured["kwargs"]["json"] == {"hello": "world"}
     assert captured["kwargs"]["headers"] == {"content-type": "application/json"}
+    assert captured["suppressed"] is True
 
 
 def test_schedule_uses_http_start_by_default(monkeypatch):

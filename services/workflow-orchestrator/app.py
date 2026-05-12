@@ -28,7 +28,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Any
 from collections.abc import Callable
@@ -43,6 +43,12 @@ from fastapi import FastAPI, HTTPException, Request
 from google.protobuf import wrappers_pb2
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+try:
+    from opentelemetry.instrumentation.utils import suppress_http_instrumentation
+except Exception:  # pragma: no cover - optional in unit-test shims
+    def suppress_http_instrumentation():
+        return nullcontext()
 
 from core.config import config
 from workflows.sw_workflow import sw_workflow
@@ -562,12 +568,13 @@ def _workflow_http_start_instance(
     # can leave the new instance stuck in PENDING without a workflowName. Keep
     # trace context in the durable workflow input instead; the MLflow finalizer
     # uses that _otel payload to attach the terminal root span to the trace.
-    response = requests.post(
-        _workflow_http_start_url(workflow_name, instance_id),
-        headers=headers,
-        json=workflow_input,
-        timeout=_workflow_start_http_timeout_seconds(),
-    )
+    with suppress_http_instrumentation():
+        response = requests.post(
+            _workflow_http_start_url(workflow_name, instance_id),
+            headers=headers,
+            json=workflow_input,
+            timeout=_workflow_start_http_timeout_seconds(),
+        )
     if response.ok:
         payload = response.json() if response.content else {}
         if isinstance(payload, dict):
