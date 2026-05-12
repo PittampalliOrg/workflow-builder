@@ -8,7 +8,7 @@
       "name": "async-coding-task",
       "version": "1.0.0",
       "title": "Async Coding Task",
-      "summary": "Devin / Codex / Sweep / GitHub Copilot Coding Agent shape. Single async loop: clone -> plan -> optional human approval gate -> implement -> verify -> (optional) push branch -> (optional) open draft PR. Parameterized by `mode` (implement/bugfix/refactor/test-gen), `approval` (never/plan/always), `verify` (test/build/none), and `output` (pr/branch/summary). For `output: pr` or `branch`, set `githubConnection` to the external_id of a GitHub connection in your project — function-router decrypts it and injects GITHUB_TOKEN into the workspace shell."
+      "summary": "Devin / Codex / Sweep / GitHub Copilot Coding Agent shape. Single async loop: clone -> plan -> optional human approval gate -> implement -> verify -> (optional) push branch -> (optional) open draft PR. Parameterized by `mode` (implement/bugfix/refactor/test-gen), `approval` (never/plan/always), `verify` (test/build/none), and `output` (pr/branch/summary). For private repos or `output: pr` / `branch`, set `githubConnection` to the external_id of a GitHub connection in your project."
     },
     "input": {
       "schema": {
@@ -66,8 +66,8 @@
             "githubConnection": {
               "type": "string",
               "title": "GitHub connection external_id",
-              "description": "Project-level app_connection external_id (looks like `conn_...`). Required when output is `branch` or `pr`. Works with OAuth or SECRET_TEXT (PAT) GitHub connections — function-router decrypts whichever the user has and injects GITHUB_TOKEN into the workspace shell.",
-              "default": ""
+              "description": "Project-level app_connection external_id (looks like `conn_...`). Required for private repos and when output is `branch` or `pr`. Works with OAuth or SECRET_TEXT (PAT) GitHub connections.",
+              "default": "conn_cpaSvkntZVht0fi7Xq_1c"
             }
           },
           "required": ["repoUrl", "task"]
@@ -349,7 +349,7 @@
                   "approval": { "type": "string", "enum": ["never", "plan", "always"], "default": "plan", "title": "Approval gate" },
                   "verify": { "type": "string", "enum": ["test", "build", "none"], "default": "test", "title": "Verification" },
                   "output": { "type": "string", "enum": ["pr", "branch", "summary"], "default": "summary", "title": "Output" },
-                  "githubConnection": { "type": "string", "title": "GitHub connection alias", "default": "github" }
+                  "githubConnection": { "type": "string", "title": "GitHub connection external_id", "default": "conn_cpaSvkntZVht0fi7Xq_1c" }
                 },
                 "required": ["repoUrl", "task"]
               }

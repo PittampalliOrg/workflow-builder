@@ -1519,9 +1519,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 repositoryOwner: resolved.repositoryOwner,
                 repositoryRepo: resolved.repositoryRepo,
                 repositoryBranch,
-                repositoryUsername: resolved.repositoryUsername,
+                repositoryUsername:
+                  resolved.repositoryUsername ||
+                  (skipGiteaMirror && githubToken ? "x-access-token" : ""),
                 targetDir: args.targetDir,
-                repositoryToken: resolved.repositoryToken,
+                repositoryToken:
+                  resolved.repositoryToken ||
+                  (skipGiteaMirror ? githubToken : ""),
                 githubToken,
                 timeoutMs: args.timeoutMs,
                 workflowId: body.workflow_id,
