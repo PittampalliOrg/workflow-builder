@@ -9,6 +9,12 @@ const REMOVED_SW10_AGENT_CALLS = new Set([
   "durable/plan",
 ]);
 
+const APPROVED_DURABLE_AGENT_RUNTIMES = new Set([
+  "dapr-agent-py",
+  "dapr-agent-py-testing",
+  "adk-agent-py",
+]);
+
 type ValidationIssue = {
   code: "removed_call" | "missing_workspace_ref" | "invalid_agent_runtime";
   call: string;
@@ -47,20 +53,14 @@ function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
       typeof withRecord?.agentRuntime === "string"
         ? withRecord.agentRuntime.trim()
         : "";
-    if (
-      !workspaceRef &&
-      !["dapr-agent-py", "dapr-agent-py-testing"].includes(runtime)
-    ) {
+    if (!workspaceRef && !APPROVED_DURABLE_AGENT_RUNTIMES.has(runtime)) {
       issues.push({
         code: "missing_workspace_ref",
         call,
         path: `${path}.with.workspaceRef`,
       });
     }
-    if (
-      runtime &&
-      !["dapr-agent-py", "dapr-agent-py-testing"].includes(runtime)
-    ) {
+    if (runtime && !APPROVED_DURABLE_AGENT_RUNTIMES.has(runtime)) {
       issues.push({
         code: "invalid_agent_runtime",
         call,

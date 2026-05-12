@@ -621,6 +621,7 @@ def build_agent_workflow_host_sandbox_manifest(
                 ],
                 "envFrom": [
                     {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
+                    {"configMapRef": {"name": "adk-agent-py-config", "optional": True}},
                     {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
                     {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
                 ],

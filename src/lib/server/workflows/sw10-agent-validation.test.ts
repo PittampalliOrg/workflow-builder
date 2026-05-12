@@ -36,4 +36,21 @@ describe('getRemovedSw10AgentCallsError', () => {
 
 		expect(error).toBeNull();
 	});
+
+	it('allows the ADK durable agent runtime without workspaceRef', () => {
+		const error = getRemovedSw10AgentCallsError({
+			do: [
+				{
+					run_adk_agent: {
+						call: 'durable/run',
+						with: {
+							agentRuntime: 'adk-agent-py',
+						},
+					},
+				},
+			],
+		});
+
+		expect(error).toBeNull();
+	});
 });

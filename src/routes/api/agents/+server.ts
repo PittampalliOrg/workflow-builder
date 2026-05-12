@@ -95,6 +95,7 @@ function pickRuntime(value: unknown): AgentRuntime | undefined {
 	if (
 		value === "dapr-agent-py" ||
 		value === "dapr-agent-py-testing" ||
+		value === "adk-agent-py" ||
 		value === "browser-use-agent"
 	) {
 		return value;

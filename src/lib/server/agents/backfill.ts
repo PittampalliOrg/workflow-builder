@@ -80,9 +80,11 @@ function normalizeInlineToAgentConfig(
 	const runtime =
 		inline.runtime === "dapr-agent-py-testing"
 			? "dapr-agent-py-testing"
-			: inline.runtime === "browser-use-agent"
-				? "browser-use-agent"
-				: "dapr-agent-py";
+			: inline.runtime === "adk-agent-py"
+				? "adk-agent-py"
+				: inline.runtime === "browser-use-agent"
+					? "browser-use-agent"
+					: "dapr-agent-py";
 	const policySource = isRecord(inline.runtimeOverridePolicy)
 		? (inline.runtimeOverridePolicy as typeof defaults.runtimeOverridePolicy)
 		: defaults.runtimeOverridePolicy;
