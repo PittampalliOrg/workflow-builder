@@ -99,6 +99,62 @@ def _session_id(input_data: dict[str, Any]) -> str | None:
     return sid or None
 
 
+def _resolved_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or "${" in text:
+        return None
+    return text
+
+
+def _nested_record(value: Any, *path: str) -> dict[str, Any]:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _runtime_value(input_data: dict[str, Any], *keys: str) -> str | None:
+    candidates: list[Any] = []
+
+    for key in keys:
+        candidates.append(input_data.get(key))
+
+    metadata = _nested_record(input_data, "_message_metadata")
+    for key in keys:
+        candidates.append(metadata.get(key))
+
+    runtime = _nested_record(input_data, "instructionBundle", "runtime")
+    for key in keys:
+        candidates.append(runtime.get(key))
+
+    agent_config = _nested_record(input_data, "agentConfig")
+    for key in keys:
+        candidates.append(agent_config.get(key))
+
+    effective_agent_config = _nested_record(input_data, "effectiveAgentConfig")
+    for key in keys:
+        candidates.append(effective_agent_config.get(key))
+
+    for candidate in candidates:
+        resolved = _resolved_string(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def _extract_runtime_context(input_data: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    workspace_ref = _runtime_value(input_data, "workspaceRef", "workspace_ref")
+    sandbox_name = _runtime_value(input_data, "sandboxName", "sandbox_name") or (
+        workspace_ref if workspace_ref and workspace_ref.startswith("workspace-") else None
+    )
+    cwd = _runtime_value(input_data, "cwd", "workingDirectory", "rootPath")
+    return sandbox_name, workspace_ref, cwd
+
+
 def session_workflow_factory(
     diagrid_workflow_name: str,
     *,
@@ -115,16 +171,20 @@ def session_workflow_factory(
         rendered_system = (instruction_bundle.get("rendered") or {}).get("system") or ""
         auto_term = bool(input_data.get("autoTerminateAfterEndTurn"))
         max_turns = int(input_data.get("maxIterations") or agent_config.get("maxTurns") or 120)
+        sandbox_name, workspace_ref, cwd = _extract_runtime_context(input_data)
 
         # Scope tools to this session for the lifetime of the workflow body.
-        # `set_session_id` on the singleton OpenShell runtime + push a
-        # ContextVar onto event_publisher.scope_session — both used by the
-        # tool wrappers to publish CMA-shaped session events.
+        # Configure the singleton OpenShell runtime + push a ContextVar onto
+        # event_publisher.scope_session — both used by the tool wrappers to
+        # publish CMA-shaped session events and target the workflow sandbox.
         if not ctx.is_replaying and session_id:
             try:
-                get_runtime().set_session_id(session_id)
+                runtime = get_runtime()
+                runtime.set_session_id(session_id)
+                runtime.set_sandbox_name(sandbox_name)
+                runtime.set_cwd(cwd)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[session_workflow] set_session_id failed: %s", exc)
+                logger.warning("[session_workflow] runtime context setup failed: %s", exc)
             publish_session_event(session_id, "session.status_starting", {})
 
         scope_token = None
@@ -188,7 +248,7 @@ def session_workflow_factory(
                     "messages": compact_image_tool_results(message_history),
                     "session_id": session_id or "",
                     "user_id": input_data.get("userId"),
-                    "app_name": input_data.get("workspaceRef") or "workflow-builder",
+                    "app_name": workspace_ref or "workflow-builder",
                     "iteration": 0,
                     "max_iterations": max_turns,
                 }
