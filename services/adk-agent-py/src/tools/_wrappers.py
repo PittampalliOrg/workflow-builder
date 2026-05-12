@@ -1,0 +1,125 @@
+"""`with_session_events` decorator — publishes tool_call_* events.
+
+Diagrid's `execute_tool_activity` invokes `tool.run_async(args=..., tool_context=...)`
+where `tool` is an ADK `BaseTool` (typically `FunctionTool`). `FunctionTool`
+inspects the wrapped function's signature and injects a `tool_context`
+parameter only when the function declares it explicitly.
+
+To publish CMA-shaped `agent.tool_use` / `agent.tool_result` events without
+modifying every tool's signature, we read the session_id from the
+process-local `OpenShellRuntime` singleton — `session_workflow` stamps it at
+entry, and the Sandbox pod handles ONE session at a time (Arc 3 model), so
+the singleton is unambiguous.
+
+`source_event_id` is built per-call as `<tool_name>:<session_id>:<sequence>`
+so duplicate retries (Diagrid's `RetryPolicy(max_number_of_attempts=3)`)
+collapse to a single CMA row via the `session_events` (session_id,
+source_event_id) UNIQUE constraint.
+"""
+
+from __future__ import annotations
+
+import functools
+import logging
+import threading
+from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
+
+_SEQ_LOCK = threading.Lock()
+_SEQ_BY_TOOL: dict[str, int] = {}
+
+
+def _next_seq(tool_name: str) -> int:
+    with _SEQ_LOCK:
+        next_val = _SEQ_BY_TOOL.get(tool_name, 0) + 1
+        _SEQ_BY_TOOL[tool_name] = next_val
+        return next_val
+
+
+def _scoped_session_id() -> str | None:
+    try:
+        from src.openshell_runtime import get_runtime
+
+        sid = get_runtime().session_id
+    except Exception:
+        sid = None
+    return sid or None
+
+
+def _truncate(value: Any, *, limit: int = 4_096) -> Any:
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + f"... [+{len(value) - limit} chars truncated]"
+    return value
+
+
+def with_session_events(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Wrap a FunctionTool body to emit `tool_call_start` / `tool_call_end`
+    / `tool_call_error` CMA events. Best-effort — never raises if publishing
+    fails, never blocks the tool body."""
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            session_id = _scoped_session_id()
+            seq = _next_seq(tool_name)
+            source_event_id = (
+                f"{tool_name}:{session_id or 'no-session'}:{seq}"
+            )
+            try:
+                from src.event_publisher import publish_session_event
+
+                if session_id:
+                    publish_session_event(
+                        session_id,
+                        "tool_call_start",
+                        {
+                            "toolName": tool_name,
+                            "args": _truncate(kwargs),
+                        },
+                        source_event_id=f"{source_event_id}:start",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[tool-wrap] publish start failed: %s", exc)
+
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as exc:
+                try:
+                    from src.event_publisher import publish_session_event
+
+                    if session_id:
+                        publish_session_event(
+                            session_id,
+                            "tool_call_error",
+                            {
+                                "toolName": tool_name,
+                                "error": str(exc),
+                            },
+                            source_event_id=f"{source_event_id}:error",
+                        )
+                except Exception:
+                    pass
+                raise
+
+            try:
+                from src.event_publisher import publish_session_event
+
+                if session_id:
+                    publish_session_event(
+                        session_id,
+                        "tool_call_end",
+                        {
+                            "toolName": tool_name,
+                            "output": _truncate(result),
+                        },
+                        source_event_id=f"{source_event_id}:end",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[tool-wrap] publish end failed: %s", exc)
+
+            return result
+
+        return wrapped
+
+    return decorator

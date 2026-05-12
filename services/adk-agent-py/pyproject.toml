@@ -1,0 +1,45 @@
+[project]
+name = "adk-agent-py"
+version = "0.1.0"
+description = "Google ADK (Agent Development Kit) durable agent runtime — drop-in for dapr-agent-py via Diagrid Dapr Workflow plugin"
+requires-python = ">=3.12"
+dependencies = [
+    # Diagrid Dapr Workflow plugin + ADK framework. Diagrid registers an
+    # `agent_workflow` + per-LLM-call / per-tool-call activities on a Dapr
+    # WorkflowRuntime; ADK's LlmAgent + FunctionTool are the user-facing
+    # primitives. We register OUR session_workflow on the same WorkflowRuntime
+    # to handle session.status_* events, control events, autoTerminate, and
+    # the session-turn `when_any` timer.
+    "diagrid>=0.1",
+    "google-adk>=1.0",
+    "google-genai>=1.0",
+    "dapr-ext-workflow>=1.14",
+    "dapr>=1.14",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    "pydantic>=2.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+    # MLflow tracing destination — additional span processor so workflow
+    # spans land in MLflow with trace_request_metadata that powers
+    # mlflow.search_traces(). Same as dapr-agent-py.
+    "mlflow-skinny>=3.6",
+    "markdownify>=0.12",
+    "ddgs>=7.0",
+    "openshell>=0.0.7",
+    # mcp gives us StreamableHTTPConnectionParams / SseConnectionParams /
+    # StdioServerParameters for the ADK McpToolset.
+    "mcp>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
