@@ -31,9 +31,10 @@ describe("agent model options", () => {
       "together/zai-org/GLM-5.1",
       "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
       "together/deepseek-ai/DeepSeek-V4-Pro",
-      "googleai/gemini-3.1-pro-preview",
+      "googleai/gemini-3-pro-preview",
       "deepseek/default",
       "huggingface/meta-llama/Meta-Llama-3-8B",
+      "ollama/llama3.2:3b",
       "echo/local",
     ]);
   });
@@ -89,8 +90,11 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("DeepSeek-V4-Pro")).toBe(
       "together/deepseek-ai/DeepSeek-V4-Pro",
     );
+    expect(canonicalAgentModelSpec("google/gemini-3-pro-preview")).toBe(
+      "googleai/gemini-3-pro-preview",
+    );
     expect(canonicalAgentModelSpec("google/gemini-3.1-pro-preview")).toBe(
-      "googleai/gemini-3.1-pro-preview",
+      "googleai/gemini-3-pro-preview",
     );
     expect(canonicalAgentModelSpec("meta-llama/Meta-Llama-3-8B")).toBe(
       "huggingface/meta-llama/Meta-Llama-3-8B",
@@ -138,8 +142,11 @@ describe("agent model options", () => {
     expect(agentModelLabel("kimi-k2.6")).toBe("Kimi K2.6");
     expect(agentModelLabel("GLM-5.1")).toBe("Together GLM-5.1");
     expect(agentModelLabel("DeepSeek-V4-Pro")).toBe("Together DeepSeek V4 Pro");
+    expect(agentModelLabel("google/gemini-3-pro-preview")).toBe(
+      "Gemini 3 Pro Preview",
+    );
     expect(agentModelLabel("google/gemini-3.1-pro-preview")).toBe(
-      "Gemini 3.1 Pro Preview",
+      "Gemini 3 Pro Preview",
     );
   });
 });

@@ -67,6 +67,9 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "deepseek-ai/DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
     "DeepSeek-V4-Pro": "llm-together-deepseek-v4-pro",
     # GoogleAI
+    "googleai/gemini-3-pro-preview": "llm-google-gemini",
+    "google/gemini-3-pro-preview": "llm-google-gemini",
+    "gemini-3-pro-preview": "llm-google-gemini",
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
     "gemini-3.1-pro-preview": "llm-google-gemini",
@@ -138,7 +141,7 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
         "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
     ),
     "llm-together-deepseek-v4-pro": ("together", "deepseek-ai/DeepSeek-V4-Pro"),
-    "llm-google-gemini": ("googleai", "gemini-3.1-pro-preview"),
+    "llm-google-gemini": ("googleai", "gemini-3-pro-preview"),
     "llm-deepseek-v4-pro": ("deepseek", "deepseek-v4-pro"),
     "llm-deepseek-v4-flash": ("deepseek", "deepseek-v4-flash"),
     "llm-deepseek": ("deepseek", "default"),
