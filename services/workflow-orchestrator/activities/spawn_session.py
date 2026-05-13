@@ -64,7 +64,14 @@ def _post_ensure_for_workflow(
     endpoint: str,
     payload: dict[str, Any],
     internal_token: str,
+    otel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    headers = {"X-Internal-Token": internal_token}
+    if isinstance(otel, dict):
+        for key in ("traceparent", "tracestate", "baggage"):
+            value = otel.get(key)
+            if isinstance(value, str) and value.strip():
+                headers[key] = value.strip()
     try:
         # The BFF may synchronously wait for host readiness for a short window.
         # Keep the HTTP timeout above the BFF cap so slow readiness reports are
@@ -72,7 +79,7 @@ def _post_ensure_for_workflow(
         response = requests.post(
             endpoint,
             json=payload,
-            headers={"X-Internal-Token": internal_token},
+            headers=headers,
             timeout=90,
         )
     except requests.exceptions.RequestException as exc:
@@ -105,6 +112,7 @@ def _ensure_agent_session_host_ready(
     endpoint: str,
     payload: dict[str, Any],
     internal_token: str,
+    otel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     poll_seconds = _int_env(
         "AGENT_SESSION_HOST_READY_POLL_SECONDS",
@@ -115,7 +123,7 @@ def _ensure_agent_session_host_ready(
         DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS,
     )
     deadline = time.monotonic() + timeout_seconds
-    body = _post_ensure_for_workflow(endpoint, payload, internal_token)
+    body = _post_ensure_for_workflow(endpoint, payload, internal_token, otel)
 
     while True:
         agent_app_id = body.get("agentAppId")
@@ -133,7 +141,7 @@ def _ensure_agent_session_host_ready(
             )
 
         time.sleep(poll_seconds)
-        body = _post_ensure_for_workflow(endpoint, payload, internal_token)
+        body = _post_ensure_for_workflow(endpoint, payload, internal_token, otel)
 
 
 def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -233,7 +241,7 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
         }
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"
-        body = _ensure_agent_session_host_ready(endpoint, payload, internal_token)
+        body = _ensure_agent_session_host_ready(endpoint, payload, internal_token, otel)
 
         child_input = body.get("childInput")
         if not isinstance(child_input, dict):

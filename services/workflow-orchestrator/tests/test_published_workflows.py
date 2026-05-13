@@ -1537,11 +1537,22 @@ def test_spawn_session_activity_polls_agent_session_host_until_ready(monkeypatch
         "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
         {"sessionId": "child-session"},
         "token",
+        {
+            "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            "tracestate": "vendor=value",
+            "baggage": "workflow.execution.id=exec_1,session.id=session_1",
+        },
     )
 
     assert body["agentHostStatus"] == "ready"
     assert len(posts) == 2
     assert sleeps == [1]
+    assert posts[0][1]["headers"] == {
+        "X-Internal-Token": "token",
+        "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        "tracestate": "vendor=value",
+        "baggage": "workflow.execution.id=exec_1,session.id=session_1",
+    }
 
 
 def test_spawn_session_activity_times_out_waiting_for_agent_session_host(monkeypatch):
