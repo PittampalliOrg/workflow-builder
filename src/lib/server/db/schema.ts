@@ -177,6 +177,8 @@ export const workflows = pgTable("workflows", {
 	engineType: text("engine_type").default("dapr").$type<"vercel" | "dapr">(),
 	daprWorkflowName: text("dapr_workflow_name"), // Registered Dapr workflow name
 	daprOrchestratorUrl: text("dapr_orchestrator_url"), // URL of the Dapr orchestrator service
+	mlflowExperimentId: text("mlflow_experiment_id"),
+	mlflowExperimentName: text("mlflow_experiment_name"),
 	createdAt: timestamp("created_at").notNull().defaultNow(),
 	updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -2517,6 +2519,7 @@ export const agentVersions = pgTable(
 
 export type MlflowLineageEntityType =
 	| "agent_version"
+	| "workflow"
 	| "workflow_version"
 	| "workflow_execution"
 	| "workflow_node_run"
@@ -2529,6 +2532,7 @@ export type MlflowLineageEntityType =
 	| "trace_proxy";
 
 export type MlflowLineageMlflowEntityType =
+	| "experiment"
 	| "run"
 	| "trace"
 	| "dataset"

@@ -4,6 +4,17 @@ vi.mock("$env/dynamic/private", () => ({ env: process.env }));
 vi.mock("$env/dynamic/public", () => ({ env: process.env }));
 
 const dbMock = vi.hoisted(() => {
+	let workflowRow: Record<string, unknown> | null = {
+		id: "workflow_1",
+		name: "Demo",
+		projectId: "project_1",
+		mlflowExperimentId: null,
+		mlflowExperimentName: null,
+	};
+	const selectLimit = vi.fn(async () => (workflowRow ? [workflowRow] : []));
+	const selectWhere = vi.fn(() => ({ limit: selectLimit }));
+	const selectFrom = vi.fn(() => ({ where: selectWhere }));
+	const select = vi.fn(() => ({ from: selectFrom }));
 	const updateWhere = vi.fn();
 	const updateSet = vi.fn(() => ({ where: updateWhere }));
 	const update = vi.fn(() => ({ set: updateSet }));
@@ -14,6 +25,13 @@ const dbMock = vi.hoisted(() => {
 		fn({ update, insert }),
 	);
 	return {
+		setWorkflowRow: (row: Record<string, unknown> | null) => {
+			workflowRow = row;
+		},
+		selectLimit,
+		selectWhere,
+		selectFrom,
+		select,
 		updateWhere,
 		updateSet,
 		update,
@@ -25,7 +43,12 @@ const dbMock = vi.hoisted(() => {
 });
 
 vi.mock("$lib/server/db", () => ({
-	db: { transaction: dbMock.transaction },
+	db: {
+		transaction: dbMock.transaction,
+		select: dbMock.select,
+		update: dbMock.update,
+		insert: dbMock.insert,
+	},
 }));
 
 import {
@@ -39,6 +62,10 @@ beforeEach(() => {
 	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
 	dbMock.updateWhere.mockClear();
+	dbMock.selectLimit.mockClear();
+	dbMock.selectWhere.mockClear();
+	dbMock.selectFrom.mockClear();
+	dbMock.select.mockClear();
 	dbMock.updateSet.mockClear();
 	dbMock.update.mockClear();
 	dbMock.conflictUpdate.mockClear();
@@ -49,6 +76,13 @@ beforeEach(() => {
 	vi.stubEnv("MLFLOW_TRACKING_URI", "http://mlflow.test");
 	vi.stubEnv("PUBLIC_MLFLOW_URL", "https://mlflow.example");
 	vi.stubEnv("WORKFLOW_BUILDER_ENV", "ryzen");
+	dbMock.setWorkflowRow({
+		id: "workflow_1",
+		name: "Demo",
+		projectId: "project_1",
+		mlflowExperimentId: null,
+		mlflowExperimentName: null,
+	});
 });
 
 describe("mlflow lifecycle helpers", () => {
@@ -156,6 +190,10 @@ describe("mlflow lifecycle helpers", () => {
 					status: 200,
 				}),
 			)
+			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
 			.mockResolvedValueOnce(
 				new Response(
 					JSON.stringify({ run: { info: { run_id: "workflow_run_1" } } }),
@@ -195,9 +233,12 @@ describe("mlflow lifecycle helpers", () => {
 		});
 
 		expect(parent?.runId).toBe("workflow_run_1");
+		expect(parent?.experimentId).toBe("11");
+		expect(parent?.traceExperimentId).toBe("11");
+		expect(parent?.experimentName).toBe("workflow-builder/ryzen/workflows/demo-workflow1");
 		expect(child?.runId).toBe("agent_run_1");
 		expect(fetchMock).toHaveBeenNthCalledWith(
-			2,
+			6,
 			"http://mlflow.test/api/2.0/mlflow/runs/create",
 			expect.objectContaining({
 				method: "POST",
@@ -205,7 +246,7 @@ describe("mlflow lifecycle helpers", () => {
 			}),
 		);
 		expect(fetchMock).toHaveBeenNthCalledWith(
-			3,
+			7,
 			"http://mlflow.test/api/2.0/mlflow/runs/create",
 			expect.objectContaining({
 				method: "POST",
@@ -213,7 +254,7 @@ describe("mlflow lifecycle helpers", () => {
 			}),
 		);
 		expect(fetchMock).toHaveBeenNthCalledWith(
-			3,
+			7,
 			"http://mlflow.test/api/2.0/mlflow/runs/create",
 			expect.objectContaining({
 				method: "POST",
@@ -224,6 +265,7 @@ describe("mlflow lifecycle helpers", () => {
 			expect.objectContaining({
 				sourceKey: "workflow_execution:exec_1:run:workflow_run_1",
 				entityType: "workflow_execution",
+				mlflowExperimentId: "11",
 				mlflowRunId: "workflow_run_1",
 			}),
 		);

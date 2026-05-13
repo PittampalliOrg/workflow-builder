@@ -98,6 +98,26 @@ export async function publicMlflowTraceRedirectUrl(
 	return publicMlflowTraceSearchUrl(experimentId, filter);
 }
 
+export async function listMlflowLineageLinks(filter: {
+	entityType: 'workflow' | 'workflow_execution' | 'session';
+	entityId: string;
+}) {
+	const { db } = await import('$lib/server/db');
+	const { mlflowLineageLinks } = await import('$lib/server/db/schema');
+	const { and, desc, eq } = await import('drizzle-orm');
+
+	return await db
+		.select()
+		.from(mlflowLineageLinks)
+		.where(
+			and(
+				eq(mlflowLineageLinks.entityType, filter.entityType),
+				eq(mlflowLineageLinks.entityId, filter.entityId)
+			)
+		)
+		.orderBy(desc(mlflowLineageLinks.updatedAt));
+}
+
 /**
  * Resolve a workflow execution id to an MLflow trace_id. Reads
  * `workflow_executions.primary_trace_id` (the OTEL trace_id captured by the
@@ -111,20 +131,23 @@ export async function publicMlflowTraceRedirectUrl(
 export async function resolveMlflowTraceUrlForExecution(
 	executionId: string
 ): Promise<string | null> {
-	const experimentId = await getMlflowTraceExperimentId();
-	if (!experimentId) return null;
-
 	const { db } = await import('$lib/server/db');
 	const { workflowExecutions } = await import('$lib/server/db/schema');
 	const { eq } = await import('drizzle-orm');
 
 	const row = await db
-		.select({ primaryTraceId: workflowExecutions.primaryTraceId })
+		.select({
+			primaryTraceId: workflowExecutions.primaryTraceId,
+			mlflowExperimentId: workflowExecutions.mlflowExperimentId
+		})
 		.from(workflowExecutions)
 		.where(eq(workflowExecutions.id, executionId))
 		.limit(1);
 	const traceId = row[0]?.primaryTraceId?.trim();
 	if (!traceId) return null;
+	const experimentId =
+		row[0]?.mlflowExperimentId?.trim() || (await getMlflowTraceExperimentId());
+	if (!experimentId) return null;
 	return publicMlflowTraceSearchUrl(experimentId, { traceId });
 }
 

@@ -359,6 +359,7 @@ def _mlflow_finalizer_input(
     duration_ms: int | None = None,
     start_time_ms: int | None = None,
     error: str | None = None,
+    mlflow_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     end_time_ms = (
         start_time_ms + duration_ms
@@ -378,6 +379,7 @@ def _mlflow_finalizer_input(
         "endTimeMs": end_time_ms,
         "error": error,
         "traceName": _workflow_trace_name(workflow_id, execution_id, db_execution_id),
+        "mlflowContext": mlflow_context or None,
         "_otel": otel_ctx,
     }
 
@@ -508,6 +510,7 @@ def _mlflow_node_span_input(
         "durationMs": duration_ms,
         "resultSizeChars": _json_size_chars(result) if error is None else None,
         "error": error,
+        "mlflowContext": tc.mlflow_context or None,
         "_otel": tc.otel_ctx,
     }
 
@@ -1556,6 +1559,8 @@ def _run_native_durable_agent_child_workflow(
             "mlflowRunId": (tc.mlflow_context or {}).get("runId"),
             "mlflowParentRunId": (tc.mlflow_context or {}).get("parentRunId"),
             "mlflowExperimentId": (tc.mlflow_context or {}).get("experimentId"),
+            "mlflowTraceExperimentId": (tc.mlflow_context or {}).get("traceExperimentId")
+            or (tc.mlflow_context or {}).get("experimentId"),
             "agentRuntime": canonical_context["agentRuntime"],
             "sandboxName": canonical_context["sandboxName"],
             "workspaceRef": canonical_context["workspaceRef"],
@@ -3114,6 +3119,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     duration_ms=_elapsed_ms(ctx, start_time_ms),
                     start_time_ms=start_time_ms,
                     error=f"Invalid workflow document: {e}",
+                    mlflow_context=mlflow_context,
                 ),
             )
         return SWWorkflowOutput(
@@ -3436,6 +3442,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 db_execution_id=db_execution_id,
                 duration_ms=duration_ms,
                 start_time_ms=start_time_ms,
+                mlflow_context=tc.mlflow_context,
             ),
         )
 
@@ -3512,6 +3519,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 duration_ms=duration_ms,
                 start_time_ms=start_time_ms,
                 error=error_msg,
+                mlflow_context=tc.mlflow_context,
             ),
         )
 

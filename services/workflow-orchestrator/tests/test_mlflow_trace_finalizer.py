@@ -112,6 +112,32 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     assert attrs["workflow.duration_ms"] == 1234
 
 
+def test_emit_mlflow_trace_root_span_prefers_context_experiment(monkeypatch):
+    captured = {}
+
+    def fake_post(url, data, headers, timeout):
+        captured.update({"url": url, "headers": headers})
+        return _FakeResponse()
+
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    monkeypatch.setenv("MLFLOW_TRACE_EXPERIMENT_ID", "legacy-global")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setattr(tracing.requests, "post", fake_post)
+
+    result = tracing.emit_mlflow_trace_root_span(
+        {
+            "_otel": {"traceId": "1234567890abcdef1234567890abcdef"},
+            "workflowId": "wf_test",
+            "executionId": "exec_123",
+            "daprInstanceId": "dapr_wf_123",
+            "mlflowContext": {"traceExperimentId": "per-workflow-11"},
+        }
+    )
+
+    assert result["success"] is True
+    assert captured["headers"]["x-mlflow-experiment-id"] == "per-workflow-11"
+
+
 def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
     trace_id = "abcdefabcdefabcdefabcdefabcdefab"
     captured = {}

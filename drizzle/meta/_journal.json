@@ -435,6 +435,13 @@
 			"when": 1778673600000,
 			"tag": "0069_mlflow_native_lineage",
 			"breakpoints": true
+		},
+		{
+			"idx": 62,
+			"version": "7",
+			"when": 1778682600000,
+			"tag": "0070_workflow_mlflow_experiment_pins",
+			"breakpoints": true
 		}
 	]
 }

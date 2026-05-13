@@ -306,6 +306,41 @@ def _init_mlflow_destination() -> None:
             logger.info("MLflow LiteLLM autolog skipped (%s)", exc)
 
 
+def set_mlflow_trace_experiment_for_context(experiment_id: str | None) -> bool:
+    """Set a context-local MLflow trace destination for the current workflow turn."""
+    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+    experiment_id = (experiment_id or "").strip()
+    if not tracking_uri or not experiment_id:
+        return False
+
+    try:
+        import mlflow
+        from mlflow.entities.trace_location import MlflowExperimentLocation
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlflow SDK unavailable; context-local destination skipped (%s)", exc)
+        return False
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        try:
+            mlflow.tracing.set_destination(
+                MlflowExperimentLocation(experiment_id=experiment_id),
+                context_local=True,
+            )
+        except TypeError:
+            mlflow.tracing.set_destination(
+                MlflowExperimentLocation(experiment_id=experiment_id)
+            )
+        logger.info(
+            "MLflow context-local tracing destination set: experiment_id=%s",
+            experiment_id,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to set context-local MLflow tracing destination: %s", exc)
+        return False
+
+
 def _attach_inbound_trace_context() -> None:
     """Honor WORKFLOW_BUILDER_TRACEPARENT/TRACESTATE downward-API env vars.
 

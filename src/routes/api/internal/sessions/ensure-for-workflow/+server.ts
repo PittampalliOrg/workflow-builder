@@ -625,6 +625,14 @@ function buildChildInput(params: {
 						params.mlflowContext?.activeModelName ?? params.activeModelName ?? null,
 					activeModelUri:
 						params.mlflowContext?.activeModelUri ?? params.activeModelUri ?? null,
+					traceExperimentId:
+						params.mlflowContext?.traceExperimentId ??
+						params.mlflowContext?.experimentId ??
+						null,
+					traceExperimentName:
+						params.mlflowContext?.traceExperimentName ??
+						params.mlflowContext?.experimentName ??
+						null,
 				}
 			: null;
 	return {
@@ -666,6 +674,7 @@ function buildChildInput(params: {
 			mlflowRunId: mlflowContext?.runId ?? null,
 			mlflowParentRunId: mlflowContext?.parentRunId ?? null,
 			mlflowExperimentId: mlflowContext?.experimentId ?? null,
+			mlflowTraceExperimentId: mlflowContext?.traceExperimentId ?? null,
 			mlflowPublicUrl: mlflowContext?.publicUrl ?? null,
 			mlflowActiveModelId: mlflowContext?.activeModelId ?? null,
 			mlflowActiveModelName: mlflowContext?.activeModelName ?? null,
@@ -728,9 +737,24 @@ function parseMlflowContext(value: unknown): MlflowRunContext | null {
 		typeof input.activeModelUri === "string" && input.activeModelUri.trim()
 			? input.activeModelUri.trim()
 			: null;
+	const experimentName =
+		typeof input.experimentName === "string" && input.experimentName.trim()
+			? input.experimentName.trim()
+			: null;
+	const traceExperimentId =
+		typeof input.traceExperimentId === "string" && input.traceExperimentId.trim()
+			? input.traceExperimentId.trim()
+			: experimentId;
+	const traceExperimentName =
+		typeof input.traceExperimentName === "string" && input.traceExperimentName.trim()
+			? input.traceExperimentName.trim()
+			: experimentName;
 	if (!experimentId || !runId) return null;
 	return {
 		experimentId,
+		experimentName,
+		traceExperimentId,
+		traceExperimentName,
 		runId,
 		parentRunId,
 		publicUrl,
@@ -747,6 +771,12 @@ function parseExistingSessionMlflowContext(
 	if (!session.mlflowExperimentId || !session.mlflowRunId) return null;
 	return {
 		experimentId: session.mlflowExperimentId,
+		experimentName: incomingMlflowContext?.experimentName ?? null,
+		traceExperimentId:
+			incomingMlflowContext?.traceExperimentId ??
+			session.mlflowExperimentId ??
+			null,
+		traceExperimentName: incomingMlflowContext?.traceExperimentName ?? null,
 		runId: session.mlflowRunId,
 		parentRunId: session.mlflowParentRunId ?? incomingMlflowContext?.runId ?? null,
 		publicUrl: null,
@@ -790,6 +820,11 @@ async function maybeCreateSessionMlflowRun(params: {
 		activeModelId: params.activeModelId,
 		activeModelName: params.activeModelName,
 		activeModelUri: params.activeModelUri,
+		traceExperimentId:
+			params.incomingMlflowContext?.traceExperimentId ??
+			params.incomingMlflowContext?.experimentId ??
+			null,
+		traceExperimentName: params.incomingMlflowContext?.traceExperimentName ?? null,
 		projectId: params.projectId,
 		userId: params.userId,
 	});

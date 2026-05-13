@@ -2829,6 +2829,26 @@ class OpenShellDurableAgent(DurableAgent):
         metadata = _parse_metadata(message.get("metadata")) | _parse_metadata(
             message.get("_message_metadata")
         )
+        mlflow_context = (
+            message.get("mlflowContext")
+            if isinstance(message.get("mlflowContext"), dict)
+            else metadata.get("mlflowContext")
+            if isinstance(metadata.get("mlflowContext"), dict)
+            else {}
+        )
+        if not ctx.is_replaying and mlflow_context:
+            try:
+                from src.telemetry.providers import set_mlflow_trace_experiment_for_context
+
+                set_mlflow_trace_experiment_for_context(
+                    str(
+                        mlflow_context.get("traceExperimentId")
+                        or mlflow_context.get("experimentId")
+                        or ""
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[telemetry] MLflow context destination skipped: %s", exc)
         sandbox_name = (
             str(message.get("sandboxName") or metadata.get("sandboxName") or "").strip()
             or _sandbox_name_from_workspace_ref(
@@ -3936,6 +3956,19 @@ class OpenShellDurableAgent(DurableAgent):
             if isinstance(message.get("mlflowContext"), dict)
             else {}
         )
+        if not ctx.is_replaying and mlflow_context:
+            try:
+                from src.telemetry.providers import set_mlflow_trace_experiment_for_context
+
+                set_mlflow_trace_experiment_for_context(
+                    str(
+                        mlflow_context.get("traceExperimentId")
+                        or mlflow_context.get("experimentId")
+                        or ""
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[session-workflow] MLflow context destination skipped: %s", exc)
         pending = list(message.get("initialEvents") or [])
         # Workflow-bridge mode: when an orchestrator calls session_workflow as
         # a child workflow for a `durable/run` node, it wants a single-turn
@@ -3977,6 +4010,7 @@ class OpenShellDurableAgent(DurableAgent):
                     _trace_tags["workflow.execution.id"] = db_execution_id
                 for _key, _tag_key in (
                     ("experimentId", "mlflow.experiment_id"),
+                    ("traceExperimentId", "mlflow.trace_experiment_id"),
                     ("runId", "mlflow.run_id"),
                     ("parentRunId", "mlflow.parent_run_id"),
                 ):
@@ -4542,6 +4576,7 @@ def _freeze_session_child_input(
         metadata["mlflowRunId"] = mlflow_context.get("runId")
         metadata["mlflowParentRunId"] = mlflow_context.get("parentRunId")
         metadata["mlflowExperimentId"] = mlflow_context.get("experimentId")
+        metadata["mlflowTraceExperimentId"] = mlflow_context.get("traceExperimentId")
         metadata["mlflowActiveModelId"] = mlflow_context.get("activeModelId")
         metadata["mlflowActiveModelUri"] = mlflow_context.get("activeModelUri")
     if max_turns is not None:

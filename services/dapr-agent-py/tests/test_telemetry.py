@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -267,6 +268,40 @@ def test_dapr_agents_context_bridge_stamps_runtime_identity():
     assert attrs["mlflow.modelId"] == "m-agent-tool"
     assert attrs["mlflow.model.uri"] == "models:/m-agent-tool"
     assert attrs["agent.mlflow_uri"] == "models:/m-agent-tool"
+
+
+def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
+    calls = {}
+
+    class FakeMlflowExperimentLocation:
+        def __init__(self, experiment_id):
+            self.experiment_id = experiment_id
+
+    fake_mlflow = types.ModuleType("mlflow")
+    fake_mlflow.tracing = types.SimpleNamespace(
+        set_destination=lambda location, **kwargs: calls.update(
+            {"experiment_id": location.experiment_id, "kwargs": kwargs}
+        )
+    )
+    fake_mlflow.set_tracking_uri = lambda uri: calls.update({"tracking_uri": uri})
+
+    fake_entities = types.ModuleType("mlflow.entities")
+    fake_trace_location = types.ModuleType("mlflow.entities.trace_location")
+    fake_trace_location.MlflowExperimentLocation = FakeMlflowExperimentLocation
+
+    monkeypatch.setitem(sys.modules, "mlflow", fake_mlflow)
+    monkeypatch.setitem(sys.modules, "mlflow.entities", fake_entities)
+    monkeypatch.setitem(sys.modules, "mlflow.entities.trace_location", fake_trace_location)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+
+    from src.telemetry.providers import set_mlflow_trace_experiment_for_context
+
+    assert set_mlflow_trace_experiment_for_context("per-workflow-11") is True
+    assert calls == {
+        "tracking_uri": "http://mlflow:5000",
+        "experiment_id": "per-workflow-11",
+        "kwargs": {"context_local": True},
+    }
 
 
 def test_beta_tracing_adds_content_when_flag_set(monkeypatch, telemetry_with_in_memory):

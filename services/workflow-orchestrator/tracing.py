@@ -200,6 +200,7 @@ def _post_otlp_span(
     span: Any,
     scope_name: str,
     scope_version: str = "1.0.0",
+    experiment_id: str | None = None,
 ) -> dict[str, Any]:
     from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
     from opentelemetry.proto.common.v1 import common_pb2
@@ -236,13 +237,14 @@ def _post_otlp_span(
     )
     headers = _parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS")) or {}
     headers.setdefault("Content-Type", "application/x-protobuf")
-    experiment_id = (
-        os.getenv("MLFLOW_TRACE_EXPERIMENT_ID")
+    selected_experiment_id = (
+        experiment_id
+        or os.getenv("MLFLOW_TRACE_EXPERIMENT_ID")
         or os.getenv("MLFLOW_EXPERIMENT_ID")
         or ""
     ).strip()
-    if experiment_id:
-        headers.setdefault("x-mlflow-experiment-id", experiment_id)
+    if selected_experiment_id:
+        headers.setdefault("x-mlflow-experiment-id", selected_experiment_id)
     timeout_seconds = max(
         1.0,
         float(
@@ -323,6 +325,16 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
             if workflow_id
             else display_execution_id
         )
+    mlflow_context = (
+        input_data.get("mlflowContext")
+        if isinstance(input_data.get("mlflowContext"), dict)
+        else {}
+    )
+    trace_experiment_id = str(
+        mlflow_context.get("traceExperimentId")
+        or mlflow_context.get("experimentId")
+        or ""
+    ).strip() or None
 
     span_name = str(input_data.get("spanName") or "").strip() or "workflow.finalize"
     error_message = str(input_data.get("error") or "").strip()
@@ -387,6 +399,7 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
         post_result = _post_otlp_span(
             span=span,
             scope_name="workflow-orchestrator.mlflow-finalizer",
+            experiment_id=trace_experiment_id,
         )
         if post_result.get("skipped"):
             return {**post_result, "traceId": trace_id}
@@ -448,6 +461,16 @@ def emit_mlflow_workflow_node_span(input_data: dict[str, Any]) -> dict[str, Any]
     error_message = str(input_data.get("error") or "").strip()
     result_size = input_data.get("resultSizeChars")
     task_sequence = input_data.get("taskSequence")
+    mlflow_context = (
+        input_data.get("mlflowContext")
+        if isinstance(input_data.get("mlflowContext"), dict)
+        else {}
+    )
+    trace_experiment_id = str(
+        mlflow_context.get("traceExperimentId")
+        or mlflow_context.get("experimentId")
+        or ""
+    ).strip() or None
 
     try:
         from opentelemetry.proto.trace.v1 import trace_pb2
@@ -502,6 +525,7 @@ def emit_mlflow_workflow_node_span(input_data: dict[str, Any]) -> dict[str, Any]
         post_result = _post_otlp_span(
             span=span,
             scope_name="workflow-orchestrator.mlflow-node-spans",
+            experiment_id=trace_experiment_id,
         )
         if post_result.get("skipped"):
             return {**post_result, "traceId": trace_id}
