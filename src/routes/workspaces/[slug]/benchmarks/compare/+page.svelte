@@ -84,7 +84,7 @@
 				launcherAgents = (body.agents ?? [])
 					.filter(
 						(a) =>
-							a.runtime === 'dapr-agent-py' &&
+							(a.runtime === 'dapr-agent-py' || a.runtime === 'adk-agent-py') &&
 							a.registryStatus === 'registered' &&
 							typeof a.currentVersion === 'number'
 					)

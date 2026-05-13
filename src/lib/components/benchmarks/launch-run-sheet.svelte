@@ -382,7 +382,7 @@
 					<Alert variant="destructive">
 						<AlertDescription>
 							No registered <code class="text-[11px]">dapr-agent-py</code> agents in this workspace.
-							Publish an agent first.
+							or <code class="text-[11px]">adk-agent-py</code> agents in this workspace. Publish an agent first.
 						</AlertDescription>
 					</Alert>
 				{:else}
@@ -417,7 +417,7 @@
 									<span class="min-w-0 flex-1">
 										<span class="block truncate font-medium">{agent.name}</span>
 										<span class="block truncate text-[11px] text-muted-foreground">
-											v{agent.currentVersion}{agent.modelSpec ? ` · ${agent.modelSpec}` : ''}
+											{agent.runtime} · v{agent.currentVersion}{agent.modelSpec ? ` · ${agent.modelSpec}` : ''}
 										</span>
 									</span>
 									{#if agent.id === agentId}

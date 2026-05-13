@@ -57,6 +57,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		],
 		config: base({
 			runtime: "adk-agent-py",
+			modelSpec: "googleai/gemini-3.1-pro-preview",
 			systemPrompt:
 				"You are a pragmatic coding agent running on the ADK runtime. Inspect the workspace, make focused changes, and report the exact outcome.",
 			maxTurns: 80,

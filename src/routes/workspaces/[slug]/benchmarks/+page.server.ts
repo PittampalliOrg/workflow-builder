@@ -1,5 +1,5 @@
 import { error } from "@sveltejs/kit";
-import { and, asc, count, desc, eq, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
@@ -33,11 +33,13 @@ const PROBLEM_PREVIEW_LEN = 240;
 const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"anthropic",
 	"openai",
+	"foundry",
 	"together",
 	"nvidia",
 	"deepseek",
 	"alibaba",
 	"kimi",
+	"googleai",
 ]);
 
 type BenchmarkInstanceEnvironmentStatus =
@@ -123,7 +125,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					and(
 						eq(agents.projectId, projectId),
 						eq(agents.isArchived, false),
-						eq(agents.runtime, "dapr-agent-py"),
+						inArray(agents.runtime, ["dapr-agent-py", "adk-agent-py"]),
 						eq(agents.registryStatus, "registered"),
 						sql`NOT (${agents.tags} @> '["workflow-ephemeral"]'::jsonb)`,
 					),

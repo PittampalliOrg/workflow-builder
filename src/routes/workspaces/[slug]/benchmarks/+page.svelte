@@ -102,6 +102,7 @@
 	{#if data.runnableAgents.length === 0}
 		<div class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
 			No registered <code class="rounded bg-amber-100 px-1 text-[11px] dark:bg-amber-900/40">dapr-agent-py</code>
+			or <code class="rounded bg-amber-100 px-1 text-[11px] dark:bg-amber-900/40">adk-agent-py</code>
 			agents in this workspace. Publish one to launch SWE-bench runs.
 		</div>
 	{/if}

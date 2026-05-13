@@ -21,6 +21,18 @@ describe("benchmark agent validation", () => {
 		expect(valid.effectiveLlmComponent).toBe("llm-nvidia-qwen3-coder-480b");
 	});
 
+	it("accepts a published ADK Gemini agent runtime", () => {
+		const valid = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			runtime: "adk-agent-py",
+			modelSpec: "googleai/gemini-3.1-pro-preview",
+		});
+		expect(valid.runtime).toBe("adk-agent-py");
+		expect(valid.runtimeAppId).toBe("agent-runtime-solver");
+		expect(valid.effectiveProvider).toBe("googleai");
+		expect(valid.effectiveLlmComponent).toBe("llm-google-gemini");
+	});
+
 	it("accepts the tool-capable Foundry DeepSeek deployment", () => {
 		const valid = assertDaprAgentPyBenchmarkAgent({
 			...baseAgent,
@@ -126,7 +138,7 @@ describe("benchmark agent validation", () => {
 				...baseAgent,
 				runtime: "browser-use-agent",
 			}),
-		).toThrow(/dapr-agent-py/);
+		).toThrow(/durable coding runtime/);
 	});
 
 	it("rejects unpublished or unregistered agents", () => {

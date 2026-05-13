@@ -19,7 +19,7 @@ export type BenchmarkAgentCandidate = {
 
 export type ValidBenchmarkAgent = BenchmarkAgentCandidate & {
 	slug: string;
-	runtime: "dapr-agent-py";
+	runtime: "dapr-agent-py" | "adk-agent-py";
 	runtimeAppId: string;
 	currentVersionId: string;
 	version: number;
@@ -41,7 +41,12 @@ function validationError(message: string): never {
 
 function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
 	if (agent.runtimeAppId?.startsWith("agent-runtime-")) return agent.runtimeAppId;
-	if (agent.slug && agent.runtime === "dapr-agent-py") return `agent-runtime-${agent.slug}`;
+	if (
+		agent.slug &&
+		(agent.runtime === "dapr-agent-py" || agent.runtime === "adk-agent-py")
+	) {
+		return `agent-runtime-${agent.slug}`;
+	}
 	return agent.runtimeAppId ?? null;
 }
 
@@ -54,6 +59,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"deepseek",
 	"alibaba",
 	"kimi",
+	"googleai",
 ]);
 
 export function assertBenchmarkModelMatchesRuntime(params: {
@@ -94,8 +100,8 @@ export function assertBenchmarkModelMatchesRuntime(params: {
 }
 
 /**
- * SWE-bench V1 intentionally runs inference only through published
- * dapr-agent-py agents using durable/run and an agent-runtime Dapr app id
+ * SWE-bench V1 intentionally runs inference only through published durable
+ * coding agents using durable/run and an agent-runtime Dapr app id
  * (either a dedicated agent-runtime-<slug> pod or a shared runtime pool).
  * This guard is pure so the API and unit tests can share exactly the same
  * rejection behavior.
@@ -106,9 +112,9 @@ export function assertDaprAgentPyBenchmarkAgent(
 ): ValidBenchmarkAgent {
 	if (!agent) validationError("Selected agent was not found");
 	if (agent.isArchived) validationError("Selected agent is archived");
-	if (agent.runtime !== "dapr-agent-py") {
+	if (agent.runtime !== "dapr-agent-py" && agent.runtime !== "adk-agent-py") {
 		validationError(
-			`SWE-bench runs require a dapr-agent-py runtime; got ${agent.runtime ?? "unknown"}`,
+			`SWE-bench runs require a durable coding runtime; got ${agent.runtime ?? "unknown"}`,
 		);
 	}
 	if (!agent.slug) validationError("Selected agent is missing a slug");
