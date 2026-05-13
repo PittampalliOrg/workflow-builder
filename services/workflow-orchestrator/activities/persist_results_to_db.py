@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 import psycopg2
+import requests
 from dapr.clients import DaprClient
 
 from core.config import config
@@ -29,6 +31,37 @@ SECRET_NAME = "workflow-builder-secrets"
 
 # Cached connection string (fetched once from Dapr secrets)
 _database_url: str | None = None
+
+
+def _mlflow_enabled() -> bool:
+    raw = os.environ.get("MLFLOW_ENABLED", "").strip().lower()
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    return raw not in {"", "0", "false", "no", "off"} and bool(tracking_uri)
+
+
+def _finish_mlflow_run(run_id: str | None, status: str) -> None:
+    if not run_id or not _mlflow_enabled():
+        return
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip().rstrip("/")
+    try:
+        response = requests.post(
+            f"{tracking_uri}/api/2.0/mlflow/runs/update",
+            json={
+                "run_id": run_id,
+                "status": status,
+                "end_time": int(datetime.now(timezone.utc).timestamp() * 1000),
+            },
+            timeout=5,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "[Persist Results] MLflow run update failed for %s: HTTP %s %s",
+                run_id,
+                response.status_code,
+                response.text[:300],
+            )
+    except Exception as exc:  # noqa: BLE001 - MLflow is best effort
+        logger.warning("[Persist Results] MLflow run update failed for %s: %s", run_id, exc)
 
 
 def _coerce_duration_ms(value: Any) -> int | None:
@@ -158,7 +191,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     # Prefer wall-clock duration based on DB started_at to avoid replay artifacts.
                     cur.execute(
                         """
-                        SELECT started_at
+                        SELECT started_at, mlflow_run_id
                         FROM workflow_executions
                         WHERE id = %s
                         LIMIT 1
@@ -167,6 +200,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     )
                     row = cur.fetchone()
                     started_at = row[0] if row else None
+                    mlflow_run_id = row[1] if row and len(row) > 1 else None
                     if started_at and getattr(started_at, "tzinfo", None) is None:
                         started_at = started_at.replace(tzinfo=timezone.utc)
                     computed_duration_ms = None
@@ -214,6 +248,11 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 conn.commit()
             finally:
                 conn.close()
+
+            _finish_mlflow_run(
+                mlflow_run_id if isinstance(mlflow_run_id, str) else None,
+                "FINISHED" if success else "FAILED",
+            )
 
             logger.info(
                 f"[Persist Results] Successfully persisted output for: {db_execution_id}"

@@ -7,6 +7,8 @@ import {
 	downloadMlflowJsonArtifact,
 	listMlflowArtifacts,
 	logMlflowJsonArtifact,
+	mlflowArtifactLocationForExperiment,
+	normalizeMlflowTraceId,
 	publicMlflowTracesUrl,
 	publicWorkflowBuilderTraceUrl,
 } from "./mlflow";
@@ -34,6 +36,30 @@ describe("publicMlflowTracesUrl", () => {
 
 		expect(publicWorkflowBuilderTraceUrl("abc123")).toBe(
 			"https://workflow-builder-dev.example.com/api/observability/mlflow/traces/abc123",
+		);
+	});
+});
+
+describe("MLflow identity helpers", () => {
+	it("normalizes OTel trace identifiers to MLflow trace IDs", () => {
+		expect(normalizeMlflowTraceId("abcdefabcdefabcdefabcdefabcdefab")).toBe(
+			"tr-abcdefabcdefabcdefabcdefabcdefab",
+		);
+		expect(normalizeMlflowTraceId("tr-ABCDEFABCDEFABCDEFABCDEFABCDEFAB")).toBe(
+			"tr-abcdefabcdefabcdefabcdefabcdefab",
+		);
+		expect(
+			normalizeMlflowTraceId(
+				"00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01",
+			),
+		).toBe("tr-abcdefabcdefabcdefabcdefabcdefab");
+		expect(normalizeMlflowTraceId("00000000000000000000000000000000")).toBeNull();
+		expect(normalizeMlflowTraceId("not-a-trace")).toBeNull();
+	});
+
+	it("uses mlflow-artifacts for benchmark experiments", () => {
+		expect(mlflowArtifactLocationForExperiment("workflow-builder/dev/swebench")).toBe(
+			"mlflow-artifacts:/workflow-builder/dev/swebench",
 		);
 	});
 });

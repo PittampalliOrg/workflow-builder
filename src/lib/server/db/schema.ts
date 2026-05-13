@@ -442,6 +442,8 @@ export const workflowExecutions = pgTable(
 		currentNodeName: text("current_node_name"),
 		primaryTraceId: text("primary_trace_id"),
 		workflowSessionId: text("workflow_session_id"),
+		mlflowExperimentId: text("mlflow_experiment_id"),
+		mlflowRunId: text("mlflow_run_id"),
 		summaryOutput: jsonb("summary_output").$type<Record<string, unknown> | null>(),
 		errorStackTrace: text("error_stack_trace"),
 		rerunOfExecutionId: text("rerun_of_execution_id"),
@@ -465,6 +467,9 @@ export const workflowExecutions = pgTable(
 		),
 		sessionIdx: index("idx_workflow_executions_session").on(
 			table.workflowSessionId,
+		),
+		mlflowRunIdx: index("idx_workflow_executions_mlflow_run").on(
+			table.mlflowRunId,
 		),
 		projectIdx: index("idx_workflow_executions_project_id").on(
 			table.projectId,
@@ -2492,6 +2497,9 @@ export const agentVersions = pgTable(
 		version: integer("version").notNull(),
 		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
 		configHash: text("config_hash").notNull(),
+		mlflowUri: text("mlflow_uri"),
+		mlflowModelName: text("mlflow_model_name"),
+		mlflowModelVersion: text("mlflow_model_version"),
 		changelog: text("changelog"),
 		publishedAt: timestamp("published_at"),
 		publishedBy: text("published_by").references(() => users.id, {
@@ -2503,6 +2511,93 @@ export const agentVersions = pgTable(
 		versionUnique: unique("uq_agent_version").on(table.agentId, table.version),
 		hashIdx: index("idx_agent_versions_hash").on(table.configHash),
 		agentIdx: index("idx_agent_versions_agent").on(table.agentId),
+		mlflowUriIdx: index("idx_agent_versions_mlflow_uri").on(table.mlflowUri),
+	}),
+);
+
+export type MlflowLineageEntityType =
+	| "agent_version"
+	| "workflow_version"
+	| "workflow_execution"
+	| "workflow_node_run"
+	| "session"
+	| "agent_run"
+	| "benchmark_run"
+	| "benchmark_run_instance"
+	| "evaluation_run"
+	| "dataset"
+	| "trace_proxy";
+
+export type MlflowLineageMlflowEntityType =
+	| "run"
+	| "trace"
+	| "dataset"
+	| "dataset_record"
+	| "logged_model"
+	| "prompt";
+
+export const mlflowLineageLinks = pgTable(
+	"mlflow_lineage_links",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		sourceKey: text("source_key").notNull(),
+		entityType: text("entity_type").notNull().$type<MlflowLineageEntityType>(),
+		entityId: text("entity_id").notNull(),
+		entityVersion: text("entity_version"),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "set null",
+		}),
+		mlflowEntityType: text("mlflow_entity_type")
+			.notNull()
+			.$type<MlflowLineageMlflowEntityType>(),
+		mlflowExperimentId: text("mlflow_experiment_id"),
+		mlflowRunId: text("mlflow_run_id"),
+		mlflowTraceId: text("mlflow_trace_id"),
+		mlflowDatasetId: text("mlflow_dataset_id"),
+		mlflowDatasetRecordId: text("mlflow_dataset_record_id"),
+		mlflowLoggedModelId: text("mlflow_logged_model_id"),
+		mlflowLoggedModelName: text("mlflow_logged_model_name"),
+		mlflowLoggedModelUri: text("mlflow_logged_model_uri"),
+		mlflowModelVersion: text("mlflow_model_version"),
+		mlflowPromptUri: text("mlflow_prompt_uri"),
+		mlflowPromptName: text("mlflow_prompt_name"),
+		mlflowPromptVersion: text("mlflow_prompt_version"),
+		mlflowPublicUrl: text("mlflow_public_url"),
+		tags: jsonb("tags").$type<Record<string, unknown>>().notNull().default({}),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		sourceKeyUnique: unique("uq_mlflow_lineage_links_source_key").on(
+			table.sourceKey,
+		),
+		localEntityIdx: index("idx_mlflow_lineage_links_local_entity").on(
+			table.entityType,
+			table.entityId,
+			table.entityVersion,
+		),
+		projectIdx: index("idx_mlflow_lineage_links_project").on(table.projectId),
+		mlflowRunIdx: index("idx_mlflow_lineage_links_mlflow_run").on(
+			table.mlflowRunId,
+		),
+		mlflowTraceIdx: index("idx_mlflow_lineage_links_mlflow_trace").on(
+			table.mlflowTraceId,
+		),
+		mlflowDatasetIdx: index("idx_mlflow_lineage_links_mlflow_dataset").on(
+			table.mlflowDatasetId,
+		),
+		mlflowLoggedModelIdx: index(
+			"idx_mlflow_lineage_links_mlflow_logged_model",
+		).on(table.mlflowLoggedModelUri),
+		mlflowPromptIdx: index("idx_mlflow_lineage_links_mlflow_prompt").on(
+			table.mlflowPromptUri,
+		),
 	}),
 );
 
@@ -2644,6 +2739,9 @@ export const sessions = pgTable(
 		workspaceSandboxName: text("workspace_sandbox_name"),
 		workflowExecutionId: text("workflow_execution_id"),
 		parentExecutionId: text("parent_execution_id"),
+		mlflowExperimentId: text("mlflow_experiment_id"),
+		mlflowRunId: text("mlflow_run_id"),
+		mlflowParentRunId: text("mlflow_parent_run_id"),
 		userId: text("user_id")
 			.notNull()
 			.references(() => users.id, { onDelete: "cascade" }),
@@ -2668,6 +2766,10 @@ export const sessions = pgTable(
 		sandboxIdx: index("idx_sessions_sandbox_name").on(table.sandboxName),
 		workspaceSandboxIdx: index("idx_sessions_workspace_sandbox").on(
 			table.workspaceSandboxName,
+		),
+		mlflowRunIdx: index("idx_sessions_mlflow_run").on(table.mlflowRunId),
+		mlflowParentRunIdx: index("idx_sessions_mlflow_parent_run").on(
+			table.mlflowParentRunId,
 		),
 		// Composite partial index that serves the workspace sessions list
 		// query (WHERE project_id = X AND archived_at IS NULL ORDER BY
@@ -2850,6 +2952,8 @@ export const benchmarkInstances = pgTable(
 			.notNull()
 			.default({}),
 		goldPatch: text("gold_patch"),
+		mlflowDatasetId: text("mlflow_dataset_id"),
+		mlflowDatasetRecordId: text("mlflow_dataset_record_id"),
 		metadata: jsonb("metadata")
 			.$type<Record<string, unknown>>()
 			.notNull()
@@ -2867,6 +2971,12 @@ export const benchmarkInstances = pgTable(
 			table.instanceId,
 		),
 		repoIdx: index("idx_benchmark_instances_repo").on(table.repo),
+		mlflowDatasetIdx: index("idx_benchmark_instances_mlflow_dataset").on(
+			table.mlflowDatasetId,
+		),
+		mlflowRecordIdx: index("idx_benchmark_instances_mlflow_record").on(
+			table.mlflowDatasetRecordId,
+		),
 	}),
 );
 
@@ -2915,6 +3025,8 @@ export const benchmarkRuns = pgTable(
 		predictionsPath: text("predictions_path"),
 		mlflowExperimentId: text("mlflow_experiment_id"),
 		mlflowRunId: text("mlflow_run_id"),
+		mlflowDatasetId: text("mlflow_dataset_id"),
+		mlflowEvalRunId: text("mlflow_eval_run_id"),
 		summary: jsonb("summary")
 			.$type<Record<string, unknown>>()
 			.notNull()
@@ -2937,6 +3049,12 @@ export const benchmarkRuns = pgTable(
 		agentIdx: index("idx_benchmark_runs_agent").on(table.agentId),
 		mlflowRunIdx: index("idx_benchmark_runs_mlflow_run").on(
 			table.mlflowRunId,
+		),
+		mlflowDatasetIdx: index("idx_benchmark_runs_mlflow_dataset").on(
+			table.mlflowDatasetId,
+		),
+		mlflowEvalRunIdx: index("idx_benchmark_runs_mlflow_eval_run").on(
+			table.mlflowEvalRunId,
 		),
 	}),
 );
@@ -2976,6 +3094,9 @@ export const benchmarkRunInstances = pgTable(
 		),
 		daprInstanceId: text("dapr_instance_id"),
 		mlflowRunId: text("mlflow_run_id"),
+		mlflowTraceId: text("mlflow_trace_id"),
+		mlflowDatasetId: text("mlflow_dataset_id"),
+		mlflowDatasetRecordId: text("mlflow_dataset_record_id"),
 		sandboxName: text("sandbox_name"),
 		workspaceRef: text("workspace_ref"),
 		modelPatch: text("model_patch"),
@@ -3035,6 +3156,15 @@ export const benchmarkRunInstances = pgTable(
 		).on(table.workflowExecutionId),
 		mlflowRunIdx: index("idx_benchmark_run_instances_mlflow_run").on(
 			table.mlflowRunId,
+		),
+		mlflowTraceIdx: index("idx_benchmark_run_instances_mlflow_trace").on(
+			table.mlflowTraceId,
+		),
+		mlflowDatasetIdx: index("idx_benchmark_run_instances_mlflow_dataset").on(
+			table.mlflowDatasetId,
+		),
+		mlflowRecordIdx: index("idx_benchmark_run_instances_mlflow_record").on(
+			table.mlflowDatasetRecordId,
 		),
 	}),
 	);
@@ -4010,6 +4140,8 @@ export type Agent = typeof agents.$inferSelect;
 export type NewAgent = typeof agents.$inferInsert;
 export type AgentVersion = typeof agentVersions.$inferSelect;
 export type NewAgentVersion = typeof agentVersions.$inferInsert;
+export type MlflowLineageLink = typeof mlflowLineageLinks.$inferSelect;
+export type NewMlflowLineageLink = typeof mlflowLineageLinks.$inferInsert;
 export type Environment = typeof environments.$inferSelect;
 export type NewEnvironment = typeof environments.$inferInsert;
 export type EnvironmentVersion = typeof environmentVersions.$inferSelect;

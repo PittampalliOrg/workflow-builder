@@ -541,7 +541,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.104" },
     { name = "markdownify", specifier = ">=0.12" },
     { name = "mlflow-skinny", specifier = ">=3.6" },
-    { name = "openshell", specifier = ">=0.0.7" },
+    { name = "openshell", specifier = "==0.0.26" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.41b0" },

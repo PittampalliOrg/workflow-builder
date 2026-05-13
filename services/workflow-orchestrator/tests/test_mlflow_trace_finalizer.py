@@ -1,15 +1,33 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Some workflow tests install minimal google.protobuf stubs for app import
+# isolation. Remove those stubs before importing the real OTLP protobuf types.
+protobuf_module = sys.modules.get("google.protobuf")
+if protobuf_module is not None and not hasattr(protobuf_module, "descriptor"):
+    for module_name in list(sys.modules):
+        if module_name == "google" or module_name.startswith("google.protobuf"):
+            del sys.modules[module_name]
+
 import tracing
 from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
 from opentelemetry.proto.trace.v1 import trace_pb2
+
+FINALIZER_PATH = ROOT / "activities" / "finalize_mlflow_trace_root.py"
+FINALIZER_SPEC = importlib.util.spec_from_file_location(
+    "finalize_mlflow_trace_root_for_tests",
+    FINALIZER_PATH,
+)
+assert FINALIZER_SPEC is not None and FINALIZER_SPEC.loader is not None
+finalizer = importlib.util.module_from_spec(FINALIZER_SPEC)
+FINALIZER_SPEC.loader.exec_module(finalizer)
 
 
 class _FakeResponse:
@@ -291,3 +309,97 @@ def test_emit_mlflow_workflow_node_span_sets_error_status(monkeypatch):
     assert span.status.code == trace_pb2.Status.STATUS_CODE_ERROR
     assert span.status.message == "forced failure"
     assert _attribute_map(span)["error.message"] == "forced failure"
+
+
+def test_finalize_activity_links_trace_to_parent_and_child_runs(monkeypatch):
+    trace_id = "1234567890abcdef1234567890abcdef"
+    targets = [
+        {
+            "entity_type": "workflow_execution",
+            "entity_id": "db_exec_123",
+            "project_id": "project_1",
+            "experiment_id": "8",
+            "run_id": "parent_run",
+        },
+        {
+            "entity_type": "session",
+            "entity_id": "session_1",
+            "project_id": "project_1",
+            "experiment_id": "8",
+            "run_id": "child_run",
+        },
+    ]
+    linked = []
+    recorded = {}
+
+    monkeypatch.setenv("MLFLOW_ENABLED", "true")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    monkeypatch.setattr(
+        finalizer,
+        "_fetch_mlflow_run_targets",
+        lambda db_execution_id: targets if db_execution_id == "db_exec_123" else [],
+    )
+    monkeypatch.setattr(
+        finalizer,
+        "_link_trace_to_run",
+        lambda mlflow_trace_id, run_id: linked.append((mlflow_trace_id, run_id)) or True,
+    )
+
+    def fake_record_lineage_links(*, trace_id, targets):
+        recorded["trace_id"] = trace_id
+        recorded["run_ids"] = [target["run_id"] for target in targets]
+
+    monkeypatch.setattr(finalizer, "_record_lineage_links", fake_record_lineage_links)
+
+    result = finalizer._link_trace_to_workflow_runs(
+        {"traceId": trace_id, "dbExecutionId": "db_exec_123"}
+    )
+
+    assert result["linked"] is True
+    assert result["traceId"] == f"tr-{trace_id}"
+    assert result["linkedRunIds"] == ["parent_run", "child_run"]
+    assert linked == [(f"tr-{trace_id}", "parent_run"), (f"tr-{trace_id}", "child_run")]
+    assert recorded == {
+        "trace_id": f"tr-{trace_id}",
+        "run_ids": ["parent_run", "child_run"],
+    }
+
+
+def test_link_trace_to_run_posts_mlflow_link_endpoint(monkeypatch):
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "json": json, "timeout": timeout})
+        return _FakeResponse(status_code=200, text="{}")
+
+    monkeypatch.setenv("MLFLOW_ENABLED", "true")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000/")
+    monkeypatch.setattr(finalizer.requests, "post", fake_post)
+
+    assert finalizer._link_trace_to_run("tr-abc", "run_123") is True
+    assert captured == {
+        "url": "http://mlflow:5000/api/2.0/mlflow/traces/link-to-run",
+        "json": {"trace_ids": ["tr-abc"], "run_id": "run_123"},
+        "timeout": 5,
+    }
+
+
+def test_finalize_activity_returns_trace_link_result(monkeypatch):
+    monkeypatch.setattr(
+        finalizer,
+        "emit_mlflow_trace_root_span",
+        lambda _input_data: {"success": True, "traceId": "1234567890abcdef1234567890abcdef"},
+    )
+    monkeypatch.setattr(
+        finalizer,
+        "_link_trace_to_workflow_runs",
+        lambda _input_data: {"linked": True, "linkedRunIds": ["run_123"]},
+    )
+
+    result = finalizer.finalize_mlflow_trace_root(
+        None,
+        {"traceId": "1234567890abcdef1234567890abcdef", "dbExecutionId": "db_exec_123"},
+    )
+
+    assert result["success"] is True
+    assert result["traceLink"] == {"linked": True, "linkedRunIds": ["run_123"]}

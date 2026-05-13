@@ -107,6 +107,8 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
         sandbox_name="sandbox-1",
         workspace_ref="ws_abc",
         dapr_component="llm-anthropic",
+        mlflow_model_id="m-agent-v1",
+        mlflow_model_uri="models:/m-agent-v1",
     )
     start_interaction_span("hello world")
     llm = start_llm_request_span(
@@ -150,6 +152,9 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert interaction.attributes["sandbox.name"] == "sandbox-1"
     assert interaction.attributes["sandbox.workspace_ref"] == "ws_abc"
     assert interaction.attributes["dapr.component"] == "llm-anthropic"
+    assert interaction.attributes["mlflow.modelId"] == "m-agent-v1"
+    assert interaction.attributes["mlflow.model.uri"] == "models:/m-agent-v1"
+    assert interaction.attributes["agent.mlflow_uri"] == "models:/m-agent-v1"
     assert interaction.attributes["mlflow.spanType"] == "AGENT"
     # Prompt redacted by default (OTEL_LOG_USER_PROMPTS unset).
     assert interaction.attributes["user_prompt"] == "<REDACTED>"
@@ -239,6 +244,8 @@ def test_dapr_agents_context_bridge_stamps_runtime_identity():
         sandbox_name="sandbox-tool",
         workspace_ref="workspace-tool",
         dapr_component="llm-tool",
+        mlflow_model_id="m-agent-tool",
+        mlflow_model_uri="models:/m-agent-tool",
     )
     try:
         attrs = dict(_iter_context_bridge_attrs(lambda: iter([("session.id", "oi-session")])))
@@ -257,6 +264,9 @@ def test_dapr_agents_context_bridge_stamps_runtime_identity():
     assert attrs["sandbox.name"] == "sandbox-tool"
     assert attrs["sandbox.workspace_ref"] == "workspace-tool"
     assert attrs["dapr.component"] == "llm-tool"
+    assert attrs["mlflow.modelId"] == "m-agent-tool"
+    assert attrs["mlflow.model.uri"] == "models:/m-agent-tool"
+    assert attrs["agent.mlflow_uri"] == "models:/m-agent-tool"
 
 
 def test_beta_tracing_adds_content_when_flag_set(monkeypatch, telemetry_with_in_memory):

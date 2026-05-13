@@ -72,6 +72,9 @@ vars:
   SWEBENCH_COORDINATOR_LOCAL_PORT: "3019"
   SWEBENCH_COORDINATOR_CONTAINER_PORT: "8080"
   SWEBENCH_EVALUATOR_APP_NAME: swebench-evaluator
+  DAPR_AGENT_PY_APP_NAME: dapr-agent-py
+  DAPR_AGENT_PY_LOCAL_PORT: "3020"
+  DAPR_AGENT_PY_CONTAINER_PORT: "8002"
   OPENSHELL_AGENT_RUNTIME_API_BASE_URL: "http://openshell-agent-runtime.openshell.svc.cluster.local:8083"
 
   # Registry configuration
@@ -134,22 +137,9 @@ vars:
       image="$(kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}"
-  TEKTON_WORKFLOW_BUILDER_DEV_IMAGE:
-    command: |
-      kubectl get taskrun -A -o json 2>/dev/null | jq -r '
-        [
-          .items[]
-          | select(any(.status.conditions[]?; .type == "Succeeded" and .status == "True"))
-          | {
-              created: .metadata.creationTimestamp,
-              image: (.status.results[]? | select(.name == "image_ref") | .value)
-            }
-          | select(.image != null and (.image | test("/workflow-builder:git-")))
-        ]
-        | sort_by(.created)
-        | last.image // empty
-      ' | sed 's#gitea.cnoe.localtest.me#gitea-ryzen.tail286401.ts.net#'
-    default: "gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder:git-75c7ecd71c29f884ab0848b0d2b3e8b5baca9cb5"
+  WORKFLOW_BUILDER_DEV_IMAGE:
+    noCache: true
+    default: "${DEV_IMAGE_REPOSITORY}:latest"
 
   DEV_IMAGE_REPOSITORY:
     noCache: true
@@ -233,6 +223,14 @@ vars:
   SWEBENCH_EVALUATOR_DEV_IMAGE:
     noCache: true
     default: "${DEVSPACE_IMAGE_REGISTRY}/${SWEBENCH_EVALUATOR_APP_NAME}:devspace"
+  CURRENT_DAPR_AGENT_PY_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${DAPR_AGENT_PY_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_PY_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_PY_APP_NAME}"
+  DAPR_AGENT_PY_DEV_IMAGE_REPOSITORY:
+    noCache: true
+    default: "${DEVSPACE_IMAGE_REGISTRY}/python-312-devspace"
   # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
   ARGO_APPS:
     noCache: true
@@ -255,7 +253,7 @@ dev:
     container: ${APP_NAME}
 
     # Use shared devcontainer (instead of per-app image)
-    devImage: ${TEKTON_WORKFLOW_BUILDER_DEV_IMAGE}
+    devImage: ${WORKFLOW_BUILDER_DEV_IMAGE}
     workingDir: /app
 
     # Resource requirements for development
@@ -392,6 +390,9 @@ dev:
         value:
           fsGroup: 1001
           runAsNonRoot: false
+      - op: replace
+        path: spec.containers.name=${APP_NAME}.env.name=MLFLOW_ENABLED.value
+        value: "true"
 
     # Port forwarding for development
     ports:
@@ -637,6 +638,10 @@ dev:
         value: "http://otel-collector.observability.svc.cluster.local:4318"
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
+      - name: MLFLOW_ENABLED
+        value: "true"
+      - name: MLFLOW_TRACKING_URI
+        value: "http://mlflow-hub-egress.tailscale.svc.cluster.local:5000"
       - name: DAPR_HTTP_PORT
         value: "3500"
       - name: DAPR_GRPC_PORT
@@ -751,6 +756,14 @@ dev:
         value: "openshell-agent-runtime.openshell"
       - name: OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME
         value: "dapr.langgraph.OpenShellLanggraphObservable.workflow"
+      - name: MLFLOW_ENABLED
+        value: "true"
+      - name: MLFLOW_TRACKING_URI
+        value: "http://mlflow-hub-egress.tailscale.svc.cluster.local:5000"
+      - name: MLFLOW_TRACE_EXPERIMENT_ID
+        value: "6"
+      - name: MLFLOW_TRACE_EXPERIMENT_NAME
+        value: "workflow-builder/ryzen/traces"
 
   function-router:
     namespace: ${APP_NAME}
@@ -1085,6 +1098,9 @@ dev:
         value:
           fsGroup: 1001
           runAsNonRoot: false
+      - op: replace
+        path: spec.containers.name=${SWEBENCH_COORDINATOR_APP_NAME}.env.name=MLFLOW_ENABLED.value
+        value: "true"
     ports:
       - port: "${SWEBENCH_COORDINATOR_LOCAL_PORT}:${SWEBENCH_COORDINATOR_CONTAINER_PORT}"
     env:
@@ -1112,6 +1128,106 @@ dev:
         value: "workflow-builder"
       - name: SWEBENCH_EVALUATOR_IMAGE
         value: ${SWEBENCH_EVALUATOR_IMAGE}
+
+  dapr-agent-py:
+    namespace: ${APP_NAME}
+    labelSelector:
+      app: dapr-agent-py
+    container: ${DAPR_AGENT_PY_APP_NAME}
+    devImage: ${DAPR_AGENT_PY_DEV_IMAGE_REPOSITORY}:latest
+    workingDir: /app
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container (dapr-agent-py) ==="
+        cd /app
+
+        python -m venv .venv
+        . .venv/bin/activate
+        pip install --upgrade pip
+        pip install -e .
+
+        exec uvicorn src.main:app --host 0.0.0.0 --port ${DAPR_AGENT_PY_CONTAINER_PORT} --reload --reload-dir /app
+    sync:
+      - path: ./services/dapr-agent-py/:/app
+        initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false
+          exec:
+            - name: install-dapr-agent-py-deps
+              command: sh
+              args:
+                - -lc
+                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+              failOnError: false
+              onChange:
+                - pyproject.toml
+                - uv.lock
+        excludePaths:
+          - .venv/
+          - __pycache__/
+          - .pytest_cache/
+          - "*.pyc"
+          - .claude/
+    patches:
+      - op: remove
+        path: spec.containers.name=${DAPR_AGENT_PY_APP_NAME}.livenessProbe
+      - op: remove
+        path: spec.containers.name=${DAPR_AGENT_PY_APP_NAME}.readinessProbe
+      - op: replace
+        path: spec.containers.name=${DAPR_AGENT_PY_APP_NAME}.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+    ports:
+      - port: "${DAPR_AGENT_PY_LOCAL_PORT}:${DAPR_AGENT_PY_CONTAINER_PORT}"
+    env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - name: OTEL_SERVICE_NAME
+        value: "${DAPR_AGENT_PY_APP_NAME}"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"
+      - name: WORKFLOW_BUILDER_URL
+        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
+      - name: WORKFLOW_BUILDER_APP_ID
+        value: "workflow-builder"
+      - name: OPENSHELL_AGENT_RUNTIME_API_BASE_URL
+        value: ${OPENSHELL_AGENT_RUNTIME_API_BASE_URL}
+      - name: MLFLOW_TRACKING_URI
+        value: "http://mlflow-hub-egress.tailscale.svc.cluster.local:5000"
+      - name: MLFLOW_TRACE_EXPERIMENT_ID
+        value: "6"
+      - name: MLFLOW_TRACE_EXPERIMENT_NAME
+        value: "workflow-builder/ryzen/traces"
 
 # ============================================================================
 # Pipelines — override the default `dev` pipeline to manage ArgoCD
@@ -1145,7 +1261,7 @@ pipelines:
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
           swebench-dev)
-            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py"
             ;;
           full-agent-stack)
             printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
@@ -1174,7 +1290,7 @@ pipelines:
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
           swebench-dev)
-            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py"
             ;;
           full-agent-stack)
             printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
@@ -1366,7 +1482,7 @@ hooks:
           ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
           function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
           sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-          swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
+          swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py" ;;
           full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
           *) ACTIVE_APPS="${ARGO_APPS}" ;;
         esac
@@ -1421,7 +1537,7 @@ commands:
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
+      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py" ;;
       full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
@@ -1436,7 +1552,7 @@ commands:
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
+      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py" ;;
       full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
@@ -1510,6 +1626,34 @@ commands:
     esac
     echo "==> Done: ${IMAGE}"
     echo "    Use with: devspace dev --profile swebench-dev --var=SWEBENCH_EVALUATOR_IMAGE=${IMAGE}"
+  build-python-devspace-image: |-
+    echo "==> Building Python 3.12 DevSpace image"
+    PRIMARY_IMAGE="${ORCHESTRATOR_DEV_IMAGE_REPOSITORY}:latest"
+    if [ -z "${ORCHESTRATOR_DEV_IMAGE_REPOSITORY}" ]; then
+      echo "ORCHESTRATOR_DEV_IMAGE_REPOSITORY is empty" >&2
+      exit 1
+    fi
+    IMAGES="${PRIMARY_IMAGE}"
+    for repository in "${SWEBENCH_COORDINATOR_DEV_IMAGE_REPOSITORY}" "${DAPR_AGENT_PY_DEV_IMAGE_REPOSITORY}"; do
+      if [ -n "${repository}" ]; then
+        image="${repository}:latest"
+        case " ${IMAGES} " in
+          *" ${image} "*) ;;
+          *) IMAGES="${IMAGES} ${image}" ;;
+        esac
+      fi
+    done
+    BUILD_TAG_ARGS=""
+    for image in ${IMAGES}; do
+      echo "    image: ${image}"
+      BUILD_TAG_ARGS="${BUILD_TAG_ARGS} -t ${image}"
+    done
+    docker build ${BUILD_TAG_ARGS} -f Dockerfile.devspace.python .
+    echo "==> Pushing image to registry"
+    for image in ${IMAGES}; do
+      docker push "${image}"
+    done
+    echo "==> Done: ${IMAGES}"
   build-dev-base-images: |-
     echo "==> Triggering Tekton base-image builds for workflow-builder and dapr-agent-py"
     GIT_SHA="${GIT_SHA:-$(git ls-remote https://gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder.git HEAD | awk '{print $1}')}"
@@ -1637,6 +1781,8 @@ profiles:
         path: dev.mcp-gateway
       - op: remove
         path: dev.swebench-coordinator
+      - op: remove
+        path: dev.dapr-agent-py
 
   - name: openshell-inner-loop
     description: >
@@ -1657,6 +1803,8 @@ profiles:
         path: dev.mcp-gateway
       - op: remove
         path: dev.swebench-coordinator
+      - op: remove
+        path: dev.dapr-agent-py
 
   - name: ui-orchestrator
     description: >
@@ -1679,6 +1827,8 @@ profiles:
         path: dev.mcp-gateway
       - op: remove
         path: dev.swebench-coordinator
+      - op: remove
+        path: dev.dapr-agent-py
 
   - name: workflow-ui-only
     description: >
@@ -1703,6 +1853,8 @@ profiles:
         path: dev.mcp-gateway
       - op: remove
         path: dev.swebench-coordinator
+      - op: remove
+        path: dev.dapr-agent-py
 
   - name: function-stack
     description: >
@@ -1719,6 +1871,8 @@ profiles:
         path: dev.mcp-gateway
       - op: remove
         path: dev.swebench-coordinator
+      - op: remove
+        path: dev.dapr-agent-py
 
   - name: sw-workflow-dev
     description: >
@@ -1743,6 +1897,8 @@ profiles:
         path: dev.mcp-gateway
       - op: remove
         path: dev.swebench-coordinator
+      - op: remove
+        path: dev.dapr-agent-py
 
   - name: swebench-dev
     description: >
@@ -1750,16 +1906,18 @@ profiles:
       Starts: workflow-builder (benchmark API + run state), workflow-orchestrator
               and function-router (agent inference workflow), and swebench-coordinator
               (parent/child SWE-bench workflows and evaluator Job creation).
+              Also replaces dapr-agent-py so local agent telemetry changes can be
+              validated against the same ryzen MLflow trace experiment.
       The evaluator itself is a Kubernetes Job image; use
       `devspace run build-swebench-evaluator-dev-image` when iterating on that image,
       then override SWEBENCH_EVALUATOR_IMAGE if the coordinator should launch the dev tag.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1773,7 +1931,7 @@ profiles:
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway swebench-coordinator dapr-agent-py"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
         value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"

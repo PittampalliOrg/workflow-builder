@@ -21,6 +21,11 @@ DEFAULT_TEKTON_IMAGE_PULL_SECRETS = "ghcr-pull-credentials"
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--prepare-task":
+        return prepare_task(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "--finalize-task":
+        return finalize_task(sys.argv[2:])
+
     required_env("DATASET_NAME")
     predictions_path = required_env("PREDICTIONS_PATH")
     run_id = required_env("RUN_ID")
@@ -157,6 +162,507 @@ def evaluation_max_parallel() -> int:
 def evaluator_artifact_mode() -> str:
     raw = os.environ.get("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc").strip().lower()
     return "object" if raw in {"object", "object-api", "api", "blob"} else "pvc"
+
+
+def evaluator_task_image() -> str:
+    return (
+        os.environ.get("SWEBENCH_EVALUATOR_TASK_IMAGE", "").strip()
+        or os.environ.get("SWEBENCH_EVALUATOR_IMAGE", "").strip()
+        or "ghcr.io/pittampalliorg/swebench-evaluator:latest"
+    )
+
+
+def prepare_task(instance_ids: list[str]) -> int:
+    from swebench.harness.dapr_native import validate_predictions_jsonl
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
+    run_id = required_env("RUN_ID")
+    preds_path = required_env("PREDICTIONS_PATH")
+    object_mode = os.environ.get("ARTIFACT_MODE", "").lower() in {
+        "object",
+        "object-api",
+        "api",
+        "blob",
+    }
+    out_dir = pathlib.Path(f"/workspace/artifacts/{run_id}")
+    patches_dir = out_dir / "patches"
+    patches_dir.mkdir(parents=True, exist_ok=True)
+
+    if not os.path.exists(preds_path):
+        workspace_path = preds_path.replace("/artifacts/", "/workspace/artifacts/", 1)
+        if os.path.exists(workspace_path):
+            preds_path = workspace_path
+
+    if object_mode:
+        download_task_artifact(run_id, "predictions.jsonl", out_dir / "predictions.jsonl")
+        download_task_artifact(run_id, "dataset.jsonl", out_dir / "dataset.jsonl")
+        preds_path = str(out_dir / "predictions.jsonl")
+
+    validation = validate_predictions_jsonl(
+        preds_path,
+        selected_instance_ids=instance_ids or None,
+        allow_extra_instances=True,
+    )
+    if validation.issues:
+        print(f"validation issues ({len(validation.issues)}):", file=sys.stderr)
+        for issue in validation.issues:
+            print(f"  - {issue.code.value}: {issue.message}", file=sys.stderr)
+
+    dataset_path = out_dir / "dataset.jsonl"
+    if not dataset_path.exists():
+        raise RuntimeError(f"dataset.jsonl missing at {dataset_path}")
+
+    rows_by_iid: dict[str, dict[str, Any]] = {}
+    with dataset_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            iid = row.get("instance_id") if isinstance(row, dict) else None
+            if isinstance(iid, str) and iid:
+                rows_by_iid[iid] = row
+
+    preds_by_iid: dict[str, dict[str, Any]] = {}
+    with open(preds_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                pred = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            iid = pred.get("instance_id") if isinstance(pred, dict) else None
+            if isinstance(iid, str) and iid:
+                preds_by_iid[iid] = pred
+
+    statuses: dict[str, str] = {}
+    selected_ids = instance_ids or list(preds_by_iid)
+    for iid in selected_ids:
+        inst_dir = out_dir / iid
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        patch_dir = patches_dir / iid
+        patch_dir.mkdir(parents=True, exist_ok=True)
+
+        pred = preds_by_iid.get(iid, {})
+        patch = pred.get("model_patch") or ""
+        patch_path = patch_dir / "model_patch.diff"
+        patch_path.write_text(patch, encoding="utf-8")
+        upload_task_artifact(
+            run_id,
+            f"patches/{iid}/model_patch.diff",
+            patch_path,
+            kind="model_patch",
+            instance_id=iid,
+            content_type="text/x-diff; charset=utf-8",
+        )
+
+        row = rows_by_iid.get(iid)
+        if row is None:
+            statuses[iid] = "missing_row"
+            continue
+        spec = make_test_spec(row)
+        eval_path = inst_dir / "eval.sh"
+        eval_path.write_text(spec.eval_script, encoding="utf-8")
+        eval_path.chmod(0o755)
+        row_path = inst_dir / "dataset_row.json"
+        pred_path = inst_dir / "prediction.json"
+        row_path.write_text(json.dumps(row, sort_keys=True), encoding="utf-8")
+        pred_path.write_text(json.dumps(pred, sort_keys=True), encoding="utf-8")
+        upload_task_artifact(
+            run_id,
+            f"{iid}/eval.sh",
+            eval_path,
+            instance_id=iid,
+            content_type="text/x-shellscript; charset=utf-8",
+        )
+        upload_task_artifact(
+            run_id,
+            f"{iid}/dataset_row.json",
+            row_path,
+            instance_id=iid,
+            content_type="application/json; charset=utf-8",
+        )
+        upload_task_artifact(
+            run_id,
+            f"{iid}/prediction.json",
+            pred_path,
+            instance_id=iid,
+            content_type="application/json; charset=utf-8",
+        )
+        statuses[iid] = "empty_patch" if not patch.strip() else "ready"
+
+    status_path = out_dir / "prepare-status.json"
+    status_path.write_text(
+        json.dumps(
+            {"run_id": run_id, "instance_statuses": statuses},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    upload_task_artifact(
+        run_id,
+        "prepare-status.json",
+        status_path,
+        content_type="application/json; charset=utf-8",
+    )
+    print(f"prepared {len(statuses)} instances; statuses={statuses}")
+    return 0
+
+
+def finalize_task(instance_ids: list[str]) -> int:
+    from swebench.harness.grading import get_eval_report
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
+    run_id = required_env("RUN_ID")
+    run_dir = pathlib.Path(f"/workspace/artifacts/{run_id}")
+    object_mode = os.environ.get("ARTIFACT_MODE", "").lower() in {
+        "object",
+        "object-api",
+        "api",
+        "blob",
+    }
+    if not instance_ids and run_dir.exists():
+        instance_ids = sorted(
+            p.name
+            for p in run_dir.iterdir()
+            if p.is_dir() and p.name not in {"patches", "harness"}
+        )
+
+    if object_mode:
+        for iid in instance_ids:
+            inst_dir = run_dir / iid
+            download_task_artifact(
+                run_id, f"{iid}/.status", inst_dir / ".status", required=False
+            )
+            download_task_artifact(
+                run_id,
+                f"{iid}/test_output.txt",
+                inst_dir / "test_output.txt",
+                required=False,
+            )
+            download_task_artifact(
+                run_id, f"{iid}/dataset_row.json", inst_dir / "dataset_row.json"
+            )
+            download_task_artifact(
+                run_id, f"{iid}/prediction.json", inst_dir / "prediction.json"
+            )
+
+    results: list[dict[str, Any]] = []
+    summary = {
+        "resolved": 0,
+        "unresolved": 0,
+        "empty_patch": 0,
+        "patch_failed": 0,
+        "eval_failed": 0,
+        "error": 0,
+    }
+
+    for iid in instance_ids:
+        inst_dir = run_dir / iid
+        status_file = inst_dir / ".status"
+        status = (
+            status_file.read_text(encoding="utf-8").strip()
+            if status_file.exists()
+            else "ready"
+        )
+
+        if status in {"empty_patch", "patch_failed", "eval_failed"}:
+            report, inst_report = terminal_harness_report(iid, inst_dir, status)
+            result: dict[str, Any] = {
+                "instance_id": iid,
+                "resolved": False,
+                "status": status,
+                "logs_path": str(inst_dir),
+                "harness_result": inst_report,
+            }
+            if status == "eval_failed":
+                result["error"] = (
+                    inst_report.get("message")
+                    or "evaluation failed before grading completed"
+                )
+            results.append(result)
+            summary[status] = summary.get(status, 0) + 1
+            write_instance_report(run_id, iid, inst_dir, report)
+            continue
+
+        log_path = inst_dir / "test_output.txt"
+        row_path = inst_dir / "dataset_row.json"
+        pred_path = inst_dir / "prediction.json"
+        if not log_path.exists():
+            record_finalize_error(
+                run_id,
+                results,
+                summary,
+                iid,
+                inst_dir,
+                "test_output.txt missing; run-instance TaskRun did not produce harness output",
+            )
+            continue
+        if not row_path.exists() or not pred_path.exists():
+            record_finalize_error(
+                run_id,
+                results,
+                summary,
+                iid,
+                inst_dir,
+                "dataset_row or prediction missing in artifacts",
+            )
+            continue
+
+        row = json.loads(row_path.read_text(encoding="utf-8"))
+        pred = json.loads(pred_path.read_text(encoding="utf-8"))
+        try:
+            report = get_eval_report(
+                test_spec=make_test_spec(row),
+                prediction=pred,
+                test_log_path=str(log_path),
+                include_tests_status=True,
+            )
+        except Exception as exc:
+            import traceback
+
+            print(f"[finalize] ERROR for {iid}: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            record_finalize_error(
+                run_id,
+                results,
+                summary,
+                iid,
+                inst_dir,
+                f"grading raised: {exc.__class__.__name__}: {exc}",
+            )
+            continue
+
+        write_instance_report(run_id, iid, inst_dir, report)
+        inst_report = report.get(iid) or next(iter(report.values()))
+        resolved = bool(inst_report.get("resolved"))
+        results.append(
+            {
+                "instance_id": iid,
+                "resolved": resolved,
+                "status": "resolved" if resolved else "unresolved",
+                "logs_path": str(inst_dir),
+                "harness_result": inst_report,
+            }
+        )
+        summary["resolved" if resolved else "unresolved"] += 1
+
+    aggregate = {
+        "run_id": run_id,
+        "total_instances": len(instance_ids),
+        "submitted_instances": len(instance_ids),
+        "completed_instances": sum(
+            1 for result in results if result.get("status") in {"resolved", "unresolved"}
+        ),
+        "resolved_instances": summary["resolved"],
+        "unresolved_instances": summary["unresolved"],
+        "empty_patch_instances": summary["empty_patch"],
+        "error_instances": summary["error"]
+        + summary["patch_failed"]
+        + summary["eval_failed"],
+        "resolved_ids": sorted(
+            result["instance_id"] for result in results if result.get("resolved")
+        ),
+        "unresolved_ids": sorted(
+            result["instance_id"]
+            for result in results
+            if result.get("status") == "unresolved"
+        ),
+        "empty_patch_ids": sorted(
+            result["instance_id"]
+            for result in results
+            if result.get("status") == "empty_patch"
+        ),
+        "error_ids": sorted(
+            result["instance_id"]
+            for result in results
+            if result.get("status") in {"error", "patch_failed", "eval_failed"}
+        ),
+    }
+    run_report_path = run_dir / "run-report.json"
+    run_report_path.write_text(
+        json.dumps(aggregate, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    upload_task_artifact(
+        run_id,
+        "run-report.json",
+        run_report_path,
+        kind="harness_result",
+        content_type="application/json; charset=utf-8",
+    )
+    post_results_summary(run_id, results, aggregate)
+    print(json.dumps(aggregate, indent=2, sort_keys=True))
+    return 0
+
+
+def task_artifact_url(run_id: str, rel_path: str) -> str:
+    base = os.environ.get("WORKFLOW_BUILDER_URL", "").rstrip("/")
+    if not base:
+        raise RuntimeError("object artifact mode requires WORKFLOW_BUILDER_URL")
+    encoded = quote(rel_path.strip("/"), safe="/")
+    return f"{base}/api/internal/benchmarks/runs/{run_id}/artifacts/{encoded}"
+
+
+def download_task_artifact(
+    run_id: str, rel_path: str, destination: pathlib.Path, *, required: bool = True
+) -> bool:
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    if not token:
+        raise RuntimeError("object artifact mode requires INTERNAL_API_TOKEN")
+    response = requests.get(
+        task_artifact_url(run_id, rel_path),
+        headers={"X-Internal-Token": token},
+        timeout=120,
+    )
+    if response.status_code == 404 and not required:
+        return False
+    response.raise_for_status()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(response.content)
+    return True
+
+
+def upload_task_artifact(
+    run_id: str,
+    rel_path: str,
+    source: pathlib.Path,
+    *,
+    kind: str | None = None,
+    instance_id: str | None = None,
+    content_type: str = "application/octet-stream",
+) -> None:
+    object_mode = os.environ.get("ARTIFACT_MODE", "").lower() in {
+        "object",
+        "object-api",
+        "api",
+        "blob",
+    }
+    if not object_mode or not source.exists():
+        return
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    if not token:
+        raise RuntimeError("object artifact mode requires INTERNAL_API_TOKEN")
+    headers = {"X-Internal-Token": token, "Content-Type": content_type}
+    if kind:
+        headers["X-Benchmark-Artifact-Kind"] = kind
+    if instance_id:
+        headers["X-Benchmark-Instance-Id"] = instance_id
+    response = requests.put(
+        task_artifact_url(run_id, rel_path),
+        headers=headers,
+        data=source.read_bytes(),
+        timeout=120,
+    )
+    response.raise_for_status()
+
+
+def write_instance_report(
+    run_id: str, instance_id: str, inst_dir: pathlib.Path, report: dict[str, Any]
+) -> None:
+    report_path = inst_dir / "report.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    upload_task_artifact(
+        run_id,
+        f"{instance_id}/report.json",
+        report_path,
+        kind="harness_result",
+        instance_id=instance_id,
+        content_type="application/json; charset=utf-8",
+    )
+
+
+def record_finalize_error(
+    run_id: str,
+    results: list[dict[str, Any]],
+    summary: dict[str, int],
+    instance_id: str,
+    inst_dir: pathlib.Path,
+    error: str,
+) -> None:
+    inst_dir.mkdir(parents=True, exist_ok=True)
+    results.append(
+        {
+            "instance_id": instance_id,
+            "resolved": False,
+            "status": "error",
+            "error": error,
+            "logs_path": str(inst_dir),
+        }
+    )
+    summary["error"] += 1
+    write_instance_report(
+        run_id,
+        instance_id,
+        inst_dir,
+        {
+            instance_id: {
+                "resolved": False,
+                "error": error,
+                "patch_successfully_applied": False,
+            }
+        },
+    )
+
+
+def terminal_harness_report(
+    instance_id: str, inst_dir: pathlib.Path, status: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    report_path = inst_dir / "report.json"
+    if report_path.exists():
+        try:
+            existing = json.loads(report_path.read_text(encoding="utf-8"))
+            inst_report = existing.get(instance_id) if isinstance(existing, dict) else None
+            if not isinstance(inst_report, dict) and isinstance(existing, dict):
+                first = next(iter(existing.values()), None)
+                inst_report = first if isinstance(first, dict) else None
+            if isinstance(inst_report, dict):
+                return existing, inst_report
+        except Exception as exc:
+            print(
+                f"[finalize] ignoring invalid report.json for {instance_id}: {exc}",
+                file=sys.stderr,
+            )
+
+    messages = {
+        "empty_patch": "model produced an empty patch",
+        "patch_failed": "model patch failed to apply before tests could run",
+        "eval_failed": "evaluation failed before grading completed",
+    }
+    patch_applied = False if status in {"empty_patch", "patch_failed"} else None
+    inst_report = {
+        "resolved": False,
+        "status": status,
+        "message": messages.get(status, status),
+        "patch_is_None": status == "empty_patch",
+        "patch_exists": status != "empty_patch",
+        "patch_successfully_applied": patch_applied,
+    }
+    return {instance_id: inst_report}, inst_report
+
+
+def post_results_summary(
+    run_id: str, results: list[dict[str, Any]], summary: dict[str, Any]
+) -> None:
+    base = os.environ.get("WORKFLOW_BUILDER_URL", "").rstrip("/")
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    if not base or not token:
+        print("WORKFLOW_BUILDER_URL or INTERNAL_API_TOKEN missing - skipping POST")
+        return
+    response = requests.post(
+        f"{base}/api/internal/benchmarks/runs/{run_id}/evaluation-results",
+        headers={"X-Internal-Token": token, "Content-Type": "application/json"},
+        json={"results": results, "summary": summary},
+        timeout=120,
+    )
+    try:
+        response.raise_for_status()
+        print(f"posted {len(results)} results to BFF (status={response.status_code})")
+    except Exception as exc:
+        print(
+            f"BFF POST failed (status={response.status_code}): {exc}; "
+            f"body={response.text[:400]}",
+            file=sys.stderr,
+        )
 
 
 def bounded_int_env(name: str, *, default: int, minimum: int, maximum: int) -> int:
@@ -518,7 +1024,66 @@ def build_prepare_taskrun(
         "metadata": _common_metadata(name, namespace, run_id, "prepare"),
         "spec": {
             **taskrun_execution_spec(),
-            "taskRef": {"name": "swebench-eval-prepare"},
+            "taskSpec": {
+                "params": [
+                    {"name": "run_id", "type": "string"},
+                    {"name": "predictions_path", "type": "string"},
+                    {"name": "instance_ids", "type": "array"},
+                    {
+                        "name": "swebench_package_ref",
+                        "type": "string",
+                        "default": "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
+                    },
+                    {"name": "artifact_mode", "type": "string", "default": "pvc"},
+                    {"name": "workflow_builder_url", "type": "string", "default": ""},
+                    {
+                        "name": "internal_api_secret_name",
+                        "type": "string",
+                        "default": "workflow-builder-secrets",
+                    },
+                    {
+                        "name": "internal_api_secret_key",
+                        "type": "string",
+                        "default": "INTERNAL_API_TOKEN",
+                    },
+                ],
+                "steps": [
+                    {
+                        "name": "validate-and-fanout",
+                        "image": evaluator_task_image(),
+                        "args": ["--prepare-task", "$(params.instance_ids[*])"],
+                        "computeResources": {
+                            "requests": {"cpu": "250m", "memory": "256Mi"},
+                            "limits": {"cpu": "1", "memory": "2Gi"},
+                        },
+                        "env": [
+                            {
+                                "name": "PREDICTIONS_PATH",
+                                "value": "$(params.predictions_path)",
+                            },
+                            {"name": "RUN_ID", "value": "$(params.run_id)"},
+                            {
+                                "name": "ARTIFACT_MODE",
+                                "value": "$(params.artifact_mode)",
+                            },
+                            {
+                                "name": "WORKFLOW_BUILDER_URL",
+                                "value": "$(params.workflow_builder_url)",
+                            },
+                            {
+                                "name": "INTERNAL_API_TOKEN",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "name": "$(params.internal_api_secret_name)",
+                                        "key": "$(params.internal_api_secret_key)",
+                                    }
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "workspaces": [{"name": "artifacts"}],
+            },
             "params": params,
             "workspaces": [_taskrun_artifacts_workspace(pvc_name, artifact_mode)],
             "timeout": "10m",
@@ -592,7 +1157,61 @@ def build_finalize_taskrun(
         "metadata": _common_metadata(name, namespace, run_id, "finalize"),
         "spec": {
             **taskrun_execution_spec(),
-            "taskRef": {"name": "swebench-eval-finalize"},
+            "taskSpec": {
+                "params": [
+                    {"name": "run_id", "type": "string"},
+                    {"name": "instance_ids", "type": "array"},
+                    {"name": "workflow_builder_url", "type": "string", "default": ""},
+                    {
+                        "name": "internal_api_secret_name",
+                        "type": "string",
+                        "default": "workflow-builder-secrets",
+                    },
+                    {
+                        "name": "internal_api_secret_key",
+                        "type": "string",
+                        "default": "INTERNAL_API_TOKEN",
+                    },
+                    {
+                        "name": "swebench_package_ref",
+                        "type": "string",
+                        "default": "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
+                    },
+                    {"name": "artifact_mode", "type": "string", "default": "pvc"},
+                ],
+                "steps": [
+                    {
+                        "name": "grade-and-post",
+                        "image": evaluator_task_image(),
+                        "args": ["--finalize-task", "$(params.instance_ids[*])"],
+                        "computeResources": {
+                            "requests": {"cpu": "250m", "memory": "256Mi"},
+                            "limits": {"cpu": "1", "memory": "2Gi"},
+                        },
+                        "env": [
+                            {"name": "RUN_ID", "value": "$(params.run_id)"},
+                            {
+                                "name": "WORKFLOW_BUILDER_URL",
+                                "value": "$(params.workflow_builder_url)",
+                            },
+                            {
+                                "name": "INTERNAL_API_TOKEN",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "name": "$(params.internal_api_secret_name)",
+                                        "key": "$(params.internal_api_secret_key)",
+                                    }
+                                },
+                            },
+                            {
+                                "name": "ARTIFACT_MODE",
+                                "value": "$(params.artifact_mode)",
+                            },
+                        ],
+                    }
+                ],
+                "workspaces": [{"name": "artifacts"}],
+            },
             "params": params,
             "workspaces": [_taskrun_artifacts_workspace(pvc_name, artifact_mode)],
             "timeout": "10m",

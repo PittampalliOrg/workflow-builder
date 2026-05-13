@@ -1293,6 +1293,9 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 				workflowExecutionId: runInstance.workflowExecutionId,
 				daprInstanceId: runInstance.daprInstanceId,
 				mlflowRunId: runInstance.mlflowRunId,
+				mlflowTraceId: runInstance.mlflowTraceId,
+				mlflowDatasetId: runInstance.mlflowDatasetId,
+				mlflowDatasetRecordId: runInstance.mlflowDatasetRecordId,
 				mlflowUrl: publicMlflowRunUrl(
 					row.run.mlflowExperimentId,
 					runInstance.mlflowRunId,
@@ -5091,6 +5094,7 @@ export async function recordBenchmarkMlflowEvaluation(params: {
 					mlflowEvalRunId: params.mlflowEvalRunId,
 				},
 			},
+			mlflowEvalRunId: params.mlflowEvalRunId,
 			updatedAt: new Date(),
 		})
 		.where(eq(benchmarkRuns.id, params.runId));
@@ -5999,6 +6003,9 @@ function serializeRunSummary(row: {
 		predictionsPath: row.run.predictionsPath,
 		mlflowExperimentId: row.run.mlflowExperimentId,
 		mlflowRunId: row.run.mlflowRunId,
+		mlflowDatasetId: row.run.mlflowDatasetId,
+		mlflowEvalRunId: row.run.mlflowEvalRunId,
+		mlflowTraceExperimentName: env.MLFLOW_TRACE_EXPERIMENT_NAME ?? null,
 		mlflowUrl: publicMlflowRunUrl(row.run.mlflowExperimentId, row.run.mlflowRunId),
 		summary: row.run.summary,
 		tags: Array.isArray(row.run.tags) ? row.run.tags : [],

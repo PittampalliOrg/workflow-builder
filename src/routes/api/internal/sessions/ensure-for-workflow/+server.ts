@@ -9,6 +9,7 @@ import {
 	benchmarkRunInstances,
 	benchmarkRuns,
 	sessions,
+	type Session,
 	workflowExecutions,
 	workflows,
 } from "$lib/server/db/schema";
@@ -26,6 +27,21 @@ import {
 	extractTraceContext,
 	maybeProvisionAgentWorkflowHost,
 } from "$lib/server/sessions/agent-workflow-host";
+import {
+	type MlflowRunContext,
+	registerAgentVersionInMlflow,
+	safeCreateWorkflowAgentMlflowRun,
+} from "$lib/server/observability/mlflow-lifecycle";
+
+type PublishedWorkflowAgent = {
+	agentId: string;
+	agentVersion: number;
+	agentSlug: string | null;
+	agentAppId: string | null;
+	mlflowUri: string | null;
+	mlflowModelName: string | null;
+	mlflowModelVersion: string | null;
+};
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -75,6 +91,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			: null;
 	let userId = typeof body.userId === "string" ? body.userId : "";
 	let projectId = typeof body.projectId === "string" ? body.projectId : null;
+	const incomingMlflowContext = parseMlflowContext(body.mlflowContext);
 
 	// If userId wasn't passed explicitly, resolve from the workflow execution
 	// row. The orchestrator doesn't carry user_id on TaskContext today, so
@@ -356,6 +373,25 @@ export const POST: RequestHandler = async ({ request }) => {
 				);
 			}
 		}
+		const reuseMlflowContext =
+			parseExistingSessionMlflowContext(existing, incomingMlflowContext) ??
+			(await maybeCreateSessionMlflowRun({
+				sessionId: existing.id,
+				incomingMlflowContext,
+				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
+				workflowId,
+				nodeId,
+				nodeName,
+				agentId: existing.agentId,
+				agentVersion: existing.agentVersion ?? null,
+				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
+				agentAppId: reuseChildAppId,
+				activeModelId: null,
+				activeModelName: null,
+				activeModelUri: null,
+				projectId,
+				userId,
+			}));
 		return json({
 			sessionId: existing.id,
 			agentId: existing.agentId,
@@ -381,6 +417,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				maxIterations: bridgeMaxIterations,
 				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 				agentAppId: reuseChildAppId,
+				mlflowContext: reuseMlflowContext,
 			}),
 			reused: true,
 		});
@@ -433,7 +470,6 @@ export const POST: RequestHandler = async ({ request }) => {
 		workflowExecutionId,
 		parentExecutionId,
 	});
-
 	if (initialMessage && initialMessage.trim()) {
 		await sendUserEvent(sessionId, {
 			type: "user.message",
@@ -465,6 +501,23 @@ export const POST: RequestHandler = async ({ request }) => {
 		traceContext,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
+	const sessionMlflowContext = await maybeCreateSessionMlflowRun({
+		sessionId,
+		incomingMlflowContext,
+		workflowExecutionId,
+		workflowId,
+		nodeId,
+		nodeName,
+		agentId,
+		agentVersion,
+		agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
+		agentAppId: childAgentAppId,
+		activeModelId: publishedAgent?.mlflowModelVersion ?? null,
+		activeModelName: publishedAgent?.mlflowModelName ?? null,
+		activeModelUri: publishedAgent?.mlflowUri ?? null,
+		projectId,
+		userId,
+	});
 	const wakeSlug = await resolveWakeSlug({
 		bodyAgentSlug,
 		bodyAgentAppId: childAgentAppId,
@@ -528,6 +581,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
 			agentAppId: childAgentAppId,
+			activeModelId: publishedAgent?.mlflowModelVersion ?? null,
+			activeModelName: publishedAgent?.mlflowModelName ?? null,
+			activeModelUri: publishedAgent?.mlflowUri ?? null,
+			mlflowContext: sessionMlflowContext,
 		}),
 		reused: false,
 	});
@@ -553,7 +610,23 @@ function buildChildInput(params: {
 	agentVersion?: number | null;
 	agentSlug?: string | null;
 	agentAppId?: string | null;
+	activeModelId?: string | null;
+	activeModelName?: string | null;
+	activeModelUri?: string | null;
+	mlflowContext?: MlflowRunContext | null;
 }): Record<string, unknown> {
+	const mlflowContext =
+		params.mlflowContext || params.activeModelId || params.activeModelUri
+			? {
+					...(params.mlflowContext ?? {}),
+					activeModelId:
+						params.mlflowContext?.activeModelId ?? params.activeModelId ?? null,
+					activeModelName:
+						params.mlflowContext?.activeModelName ?? params.activeModelName ?? null,
+					activeModelUri:
+						params.mlflowContext?.activeModelUri ?? params.activeModelUri ?? null,
+				}
+			: null;
 	return {
 		sessionId: params.sessionId,
 		agentId: params.agentId ?? null,
@@ -562,6 +635,7 @@ function buildChildInput(params: {
 		instructionBundle: params.instructionBundle ?? null,
 		agentSlug: params.agentSlug ?? null,
 		agentAppId: params.agentAppId ?? null,
+		mlflowContext,
 		environmentConfig: params.environmentConfig,
 		workflowId: params.workflowId,
 		nodeId: params.nodeId,
@@ -589,6 +663,13 @@ function buildChildInput(params: {
 			agentVersion: params.agentVersion ?? null,
 			agentSlug: params.agentSlug ?? null,
 			agentAppId: params.agentAppId ?? null,
+			mlflowRunId: mlflowContext?.runId ?? null,
+			mlflowParentRunId: mlflowContext?.parentRunId ?? null,
+			mlflowExperimentId: mlflowContext?.experimentId ?? null,
+			mlflowPublicUrl: mlflowContext?.publicUrl ?? null,
+			mlflowActiveModelId: mlflowContext?.activeModelId ?? null,
+			mlflowActiveModelName: mlflowContext?.activeModelName ?? null,
+			mlflowActiveModelUri: mlflowContext?.activeModelUri ?? null,
 			sandboxName: params.sandboxName ?? null,
 			workspaceRef: params.workspaceRef ?? null,
 			cwd: params.cwd ?? null,
@@ -616,6 +697,104 @@ function parsePositiveInteger(value: unknown): number | null {
 	return Math.trunc(numeric);
 }
 
+function parseMlflowContext(value: unknown): MlflowRunContext | null {
+	if (!value || typeof value !== "object") return null;
+	const input = value as Record<string, unknown>;
+	const experimentId =
+		typeof input.experimentId === "string" && input.experimentId.trim()
+			? input.experimentId.trim()
+			: null;
+	const runId =
+		typeof input.runId === "string" && input.runId.trim()
+			? input.runId.trim()
+			: null;
+	const parentRunId =
+		typeof input.parentRunId === "string" && input.parentRunId.trim()
+			? input.parentRunId.trim()
+			: null;
+	const publicUrl =
+		typeof input.publicUrl === "string" && input.publicUrl.trim()
+			? input.publicUrl.trim()
+			: null;
+	const activeModelId =
+		typeof input.activeModelId === "string" && input.activeModelId.trim()
+			? input.activeModelId.trim()
+			: null;
+	const activeModelName =
+		typeof input.activeModelName === "string" && input.activeModelName.trim()
+			? input.activeModelName.trim()
+			: null;
+	const activeModelUri =
+		typeof input.activeModelUri === "string" && input.activeModelUri.trim()
+			? input.activeModelUri.trim()
+			: null;
+	if (!experimentId || !runId) return null;
+	return {
+		experimentId,
+		runId,
+		parentRunId,
+		publicUrl,
+		activeModelId,
+		activeModelName,
+		activeModelUri,
+	};
+}
+
+function parseExistingSessionMlflowContext(
+	session: Session,
+	incomingMlflowContext: MlflowRunContext | null,
+): MlflowRunContext | null {
+	if (!session.mlflowExperimentId || !session.mlflowRunId) return null;
+	return {
+		experimentId: session.mlflowExperimentId,
+		runId: session.mlflowRunId,
+		parentRunId: session.mlflowParentRunId ?? incomingMlflowContext?.runId ?? null,
+		publicUrl: null,
+		activeModelId: incomingMlflowContext?.activeModelId ?? null,
+		activeModelName: incomingMlflowContext?.activeModelName ?? null,
+		activeModelUri: incomingMlflowContext?.activeModelUri ?? null,
+	};
+}
+
+async function maybeCreateSessionMlflowRun(params: {
+	sessionId: string;
+	incomingMlflowContext: MlflowRunContext | null;
+	workflowExecutionId: string | null;
+	workflowId: string;
+	nodeId: string;
+	nodeName: string;
+	agentId: string | null;
+	agentVersion: number | null;
+	agentSlug: string | null;
+	agentAppId: string | null;
+	activeModelId: string | null;
+	activeModelName: string | null;
+	activeModelUri: string | null;
+	projectId: string | null;
+	userId: string;
+}): Promise<MlflowRunContext | null> {
+	const parentRunId = params.incomingMlflowContext?.runId;
+	if (!parentRunId) return null;
+	return await safeCreateWorkflowAgentMlflowRun({
+		sessionId: params.sessionId,
+		parentRunId,
+		experimentId: params.incomingMlflowContext?.experimentId ?? null,
+		workflowExecutionId: params.workflowExecutionId,
+		workflowId: params.workflowId,
+		nodeId: params.nodeId,
+		nodeName: params.nodeName,
+		agentId: params.agentId,
+		agentVersion: params.agentVersion,
+		agentSlug: params.agentSlug,
+		agentAppId: params.agentAppId,
+		activeModelId: params.activeModelId,
+		activeModelName: params.activeModelName,
+		activeModelUri: params.activeModelUri,
+		projectId: params.projectId,
+		userId: params.userId,
+	});
+}
+
 // Silence "unused import" linter — createSession is reserved for future
 // expansion (e.g., when the caller stops pre-computing sessionId).
 void createSession;
@@ -640,15 +819,10 @@ async function resolvePublishedWorkflowAgent(params: {
 	agentId: string | null;
 	agentVersion: number | null;
 	projectId: string | null;
-}): Promise<{ agentId: string; agentVersion: number } | null> {
+}): Promise<PublishedWorkflowAgent | null> {
 	if (!params.agentId || !db) return null;
 	const [agent] = await db
-		.select({
-			id: agents.id,
-			projectId: agents.projectId,
-			currentVersionId: agents.currentVersionId,
-			isArchived: agents.isArchived,
-		})
+		.select()
 		.from(agents)
 		.where(eq(agents.id, params.agentId))
 		.limit(1);
@@ -665,7 +839,7 @@ async function resolvePublishedWorkflowAgent(params: {
 		requestedVersion > 0
 	) {
 		const [version] = await db
-			.select({ version: agentVersions.version })
+			.select()
 			.from(agentVersions)
 			.where(
 				and(
@@ -677,23 +851,78 @@ async function resolvePublishedWorkflowAgent(params: {
 		if (!version) {
 			throw error(
 				400,
-				`agent ${params.agentId} version ${requestedVersion} is not available`,
-			);
+					`agent ${params.agentId} version ${requestedVersion} is not available`,
+				);
 		}
-		return { agentId: agent.id, agentVersion: version.version };
+		const mlflowIdentity = await ensureAgentVersionMlflowIdentity(agent, version);
+		return {
+			agentId: agent.id,
+			agentVersion: version.version,
+			agentSlug: agent.slug,
+			agentAppId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
+			mlflowUri: mlflowIdentity.mlflowUri,
+			mlflowModelName: mlflowIdentity.mlflowModelName,
+			mlflowModelVersion: mlflowIdentity.mlflowModelVersion,
+		};
 	}
 	if (!agent.currentVersionId) {
 		throw error(400, `agent ${params.agentId} has no current version`);
 	}
 	const [current] = await db
-		.select({ version: agentVersions.version })
+		.select()
 		.from(agentVersions)
 		.where(eq(agentVersions.id, agent.currentVersionId))
 		.limit(1);
 	if (!current) {
 		throw error(400, `agent ${params.agentId} current version is not available`);
 	}
-	return { agentId: agent.id, agentVersion: current.version };
+	const mlflowIdentity = await ensureAgentVersionMlflowIdentity(agent, current);
+	return {
+		agentId: agent.id,
+		agentVersion: current.version,
+		agentSlug: agent.slug,
+		agentAppId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
+		mlflowUri: mlflowIdentity.mlflowUri,
+		mlflowModelName: mlflowIdentity.mlflowModelName,
+		mlflowModelVersion: mlflowIdentity.mlflowModelVersion,
+	};
+}
+
+async function ensureAgentVersionMlflowIdentity(
+	agent: typeof agents.$inferSelect,
+	version: typeof agentVersions.$inferSelect,
+): Promise<{
+	mlflowUri: string | null;
+	mlflowModelName: string | null;
+	mlflowModelVersion: string | null;
+}> {
+	if (version.mlflowUri?.trim()) {
+		return {
+			mlflowUri: version.mlflowUri,
+			mlflowModelName: version.mlflowModelName ?? null,
+			mlflowModelVersion: version.mlflowModelVersion ?? null,
+		};
+	}
+	try {
+		const registered = await registerAgentVersionInMlflow({ agent, version });
+		if (registered) {
+			return {
+				mlflowUri: registered.modelUri,
+				mlflowModelName: registered.modelName,
+				mlflowModelVersion: registered.modelId,
+			};
+		}
+	} catch (err) {
+		console.warn(
+			`[ensure-for-workflow] MLflow agent version registration failed for ${agent.id}@${version.version}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+	return {
+		mlflowUri: version.mlflowUri ?? null,
+		mlflowModelName: version.mlflowModelName ?? null,
+		mlflowModelVersion: version.mlflowModelVersion ?? null,
+	};
 }
 
 /**

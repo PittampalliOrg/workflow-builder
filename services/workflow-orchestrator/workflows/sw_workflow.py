@@ -724,6 +724,7 @@ class TaskContext:
         self.otel_ctx: dict[str, str] = {}
         self.trace_id: str | None = None
         self.mlflow_node_spans_enabled = False
+        self.mlflow_context: dict[str, Any] = {}
 
         # Runtime state - NodeOutputs format for resolve_templates compatibility
         # Each entry: {label: str, actionType: str, data: Any}
@@ -1521,6 +1522,7 @@ def _run_native_durable_agent_child_workflow(
         "agentSlug": canonical_context["agentSlug"],
         "agentAppId": canonical_context["agentAppId"],
         "agentRunId": child_instance_id,
+        "mlflowContext": tc.mlflow_context or None,
         "workspaceRef": canonical_context["workspaceRef"],
         "sandboxName": canonical_context["sandboxName"],
         "agentRuntime": canonical_context["agentRuntime"],
@@ -1551,6 +1553,9 @@ def _run_native_durable_agent_child_workflow(
             "agentSlug": canonical_context["agentSlug"],
             "agentAppId": canonical_context["agentAppId"],
             "agentRunId": child_instance_id,
+            "mlflowRunId": (tc.mlflow_context or {}).get("runId"),
+            "mlflowParentRunId": (tc.mlflow_context or {}).get("parentRunId"),
+            "mlflowExperimentId": (tc.mlflow_context or {}).get("experimentId"),
             "agentRuntime": canonical_context["agentRuntime"],
             "sandboxName": canonical_context["sandboxName"],
             "workspaceRef": canonical_context["workspaceRef"],
@@ -1690,6 +1695,7 @@ def _run_native_durable_agent_child_workflow(
             # per-turn timer above the runtime default for long benchmark tasks.
             "timeoutMinutes": timeout_minutes,
             "maxIterations": max_iterations,
+            "mlflowContext": child_input.get("mlflowContext"),
             "_otel": tc.otel_ctx,
         }
         bridge_result = yield ctx.call_activity(
@@ -1719,6 +1725,8 @@ def _run_native_durable_agent_child_workflow(
             or canonical_context["sandboxName"],
             "workspaceRef": bridge_child_input.get("workspaceRef")
             or canonical_context["workspaceRef"],
+            "mlflowContext": bridge_child_input.get("mlflowContext")
+            or child_input.get("mlflowContext"),
             "_message_metadata": {
                 **(
                     bridge_child_input.get("_message_metadata")
@@ -1726,6 +1734,8 @@ def _run_native_durable_agent_child_workflow(
                     else {}
                 ),
                 **child_input["_message_metadata"],
+                "mlflowContext": bridge_child_input.get("mlflowContext")
+                or child_input.get("mlflowContext"),
             },
         }
         bridge_app_id = target["app_id"]
@@ -3068,6 +3078,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     )
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
+    mlflow_context = (
+        input_data.get("mlflowContext")
+        if isinstance(input_data.get("mlflowContext"), dict)
+        else {}
+    )
     otel_ctx = input_data.get("_otel") or {}
     trace_id = _trace_id_from_otel(otel_ctx)
     features = input_data.get("features") if isinstance(input_data.get("features"), dict) else {}
@@ -3122,6 +3137,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     tc.otel_ctx = otel_ctx
     tc.trace_id = trace_id
     tc.mlflow_node_spans_enabled = mlflow_node_spans_enabled
+    tc.mlflow_context = mlflow_context
     tc.trigger_data = resolve_input_definition(
         workflow.input.model_dump(by_alias=True) if workflow.input else None,
         _build_expression_context(tc),

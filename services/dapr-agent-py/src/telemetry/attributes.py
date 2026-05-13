@@ -38,6 +38,8 @@ class SessionContext:
     instruction_hash: str = ""
     model_spec: str = ""
     llm_component: str = ""
+    mlflow_model_id: str = ""
+    mlflow_model_uri: str = ""
     user_id: str = ""
     organization_id: str = ""
     user_email: str = ""
@@ -97,6 +99,8 @@ def set_session_context(
     instruction_hash: str | None = "",
     model_spec: str | None = "",
     llm_component: str | None = "",
+    mlflow_model_id: str | None = "",
+    mlflow_model_uri: str | None = "",
     user_id: str = "",
     organization_id: str = "",
     user_email: str = "",
@@ -130,6 +134,8 @@ def set_session_context(
             instruction_hash=instruction_hash or "",
             model_spec=model_spec or "",
             llm_component=llm_component or "",
+            mlflow_model_id=mlflow_model_id or "",
+            mlflow_model_uri=mlflow_model_uri or "",
             user_id=user_id,
             organization_id=organization_id,
             user_email=user_email,
@@ -194,6 +200,11 @@ def get_telemetry_attributes() -> dict[str, Any]:
         attrs["agent.model_spec"] = ctx.model_spec
     if ctx.llm_component:
         attrs["agent.llm_component"] = ctx.llm_component
+    if ctx.mlflow_model_id:
+        attrs["mlflow.modelId"] = ctx.mlflow_model_id
+    if ctx.mlflow_model_uri:
+        attrs["mlflow.model.uri"] = ctx.mlflow_model_uri
+        attrs["agent.mlflow_uri"] = ctx.mlflow_model_uri
 
     if _should_include("OTEL_METRICS_INCLUDE_VERSION"):
         version = os.environ.get("DAPR_AGENT_PY_VERSION") or os.environ.get(

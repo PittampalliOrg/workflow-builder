@@ -2863,6 +2863,7 @@ class ExecuteSWWorkflowRequest(BaseModel):
     triggerData: dict = Field(default_factory=dict)
     integrations: dict | None = None
     dbExecutionId: str | None = None
+    mlflowContext: dict | None = None
 
 
 @app.post("/api/v2/sw-workflows", response_model=StartWorkflowResponse)
@@ -2940,6 +2941,7 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "triggerData": request.triggerData,
             "integrations": request.integrations,
             "dbExecutionId": db_execution_id,
+            "mlflowContext": request.mlflowContext,
             "features": {
                 "mlflowNodeSpans": _env_bool(
                     "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS",

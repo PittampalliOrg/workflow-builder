@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
+	agentVersions,
 	benchmarkInstances,
 	benchmarkRunInstances,
 	benchmarkRuns,
@@ -53,6 +54,42 @@ function experimentName(): string {
 	if (configured) return configured;
 	const cluster = (env.WORKFLOW_BUILDER_ENV ?? "unknown").trim() || "unknown";
 	return `workflow-builder/${cluster}/swebench`;
+}
+
+export function mlflowArtifactLocationForExperiment(name: string): string {
+	return `mlflow-artifacts:/${name
+		.split("/")
+		.map((part) => safeArtifactName(part))
+		.filter(Boolean)
+		.join("/")}`;
+}
+
+export function normalizeMlflowTraceId(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const raw = value.trim().toLowerCase();
+	if (!raw) return null;
+	const traceparent = raw.match(/^00-([a-f0-9]{32})-[a-f0-9]{16}-[a-f0-9]{2}$/);
+	if (traceparent) return `tr-${traceparent[1]}`;
+	const normalized = raw.startsWith("tr-") ? raw.slice(3) : raw;
+	if (/^[a-f0-9]{32}$/.test(normalized) && !/^0+$/.test(normalized)) {
+		return `tr-${normalized}`;
+	}
+	return null;
+}
+
+function resolveCanonicalMlflowTraceId(
+	primaryTraceId: unknown,
+	traceIds: unknown,
+): string | null {
+	const primary = normalizeMlflowTraceId(primaryTraceId);
+	if (primary) return primary;
+	if (Array.isArray(traceIds)) {
+		for (const traceId of traceIds) {
+			const normalized = normalizeMlflowTraceId(traceId);
+			if (normalized) return normalized;
+		}
+	}
+	return null;
 }
 
 export function publicMlflowRunUrl(
@@ -318,6 +355,9 @@ async function getOrCreateExperimentId(): Promise<string> {
 		const msg = err instanceof Error ? err.message : String(err);
 		if (!msg.includes("RESOURCE_DOES_NOT_EXIST") && !msg.includes("404")) throw err;
 	}
+	console.warn(
+		`[mlflow] SWE-bench experiment ${name} was not found; creating it with artifact_location=${mlflowArtifactLocationForExperiment(name)}`,
+	);
 	let created: { experiment_id?: string };
 	try {
 		created = await mlflowRequest<{ experiment_id?: string }>(
@@ -326,6 +366,7 @@ async function getOrCreateExperimentId(): Promise<string> {
 				method: "POST",
 				body: JSON.stringify({
 					name,
+					artifact_location: mlflowArtifactLocationForExperiment(name),
 					tags: [
 						{ key: "workflow_builder.kind", value: "swebench" },
 						{ key: "workflow_builder.env", value: env.WORKFLOW_BUILDER_ENV ?? "unknown" },
@@ -495,10 +536,19 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 			suiteName: benchmarkSuites.name,
 			agentName: agents.name,
 			agentSlug: agents.slug,
+			agentMlflowUri: agentVersions.mlflowUri,
+			agentConfigHash: agentVersions.configHash,
 		})
 		.from(benchmarkRuns)
 		.innerJoin(benchmarkSuites, eq(benchmarkSuites.id, benchmarkRuns.suiteId))
 		.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+		.leftJoin(
+			agentVersions,
+			and(
+				eq(agentVersions.agentId, benchmarkRuns.agentId),
+				eq(agentVersions.version, benchmarkRuns.agentVersion),
+			),
+		)
 		.where(eq(benchmarkRuns.id, runId))
 		.limit(1);
 	if (!row) return null;
@@ -523,7 +573,10 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 					tag("agent.id", row.run.agentId),
 					tag("agent.slug", row.agentSlug),
 					tag("agent.version", row.run.agentVersion),
+					tag("agent.config_hash", row.agentConfigHash),
+					tag("agent.mlflow_uri", row.agentMlflowUri),
 					tag("agent.runtime", row.run.agentRuntime),
+					tag("mlflow.dataset.id", row.run.mlflowDatasetId),
 				],
 			});
 		}
@@ -542,8 +595,11 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 				param("agent_id", row.run.agentId),
 				param("agent_slug", row.agentSlug),
 				param("agent_version", row.run.agentVersion),
+				param("agent_config_hash", row.agentConfigHash),
+				param("agent_mlflow_uri", row.agentMlflowUri),
 				param("agent_runtime", row.run.agentRuntime),
 				param("agent_runtime_app_id", row.run.agentRuntimeAppId),
+				param("mlflow_dataset_id", row.run.mlflowDatasetId),
 				param("model_name_or_path", row.run.modelNameOrPath),
 				param("model_config_label", row.run.modelConfigLabel),
 				param("concurrency", row.run.concurrency),
@@ -584,6 +640,8 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 			suiteSlug: benchmarkSuites.slug,
 			repo: benchmarkInstances.repo,
 			baseCommit: benchmarkInstances.baseCommit,
+			instanceMlflowDatasetId: benchmarkInstances.mlflowDatasetId,
+			instanceMlflowDatasetRecordId: benchmarkInstances.mlflowDatasetRecordId,
 			primaryTraceId: workflowExecutions.primaryTraceId,
 		})
 		.from(benchmarkRunInstances)
@@ -608,7 +666,34 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 		)
 		.limit(1);
 	if (!row) return null;
-	if (row.runInstance.mlflowRunId) return row.runInstance.mlflowRunId;
+	const mlflowTraceId = resolveCanonicalMlflowTraceId(
+		row.primaryTraceId,
+		row.runInstance.traceIds,
+	);
+	const mlflowDatasetId =
+		row.runInstance.mlflowDatasetId ?? row.instanceMlflowDatasetId ?? row.run.mlflowDatasetId;
+	const mlflowDatasetRecordId =
+		row.runInstance.mlflowDatasetRecordId ?? row.instanceMlflowDatasetRecordId;
+	if (row.runInstance.mlflowRunId) {
+		if (
+			(mlflowTraceId && row.runInstance.mlflowTraceId !== mlflowTraceId) ||
+			(mlflowDatasetId && row.runInstance.mlflowDatasetId !== mlflowDatasetId) ||
+			(mlflowDatasetRecordId &&
+				row.runInstance.mlflowDatasetRecordId !== mlflowDatasetRecordId)
+		) {
+			await database
+				.update(benchmarkRunInstances)
+				.set({
+					mlflowTraceId,
+					mlflowDatasetId: mlflowDatasetId ?? row.runInstance.mlflowDatasetId,
+					mlflowDatasetRecordId:
+						mlflowDatasetRecordId ?? row.runInstance.mlflowDatasetRecordId,
+					updatedAt: new Date(),
+				})
+				.where(eq(benchmarkRunInstances.id, row.runInstance.id));
+		}
+		return row.runInstance.mlflowRunId;
+	}
 	try {
 		const experimentId = row.run.mlflowExperimentId ?? (await getOrCreateExperimentId());
 		const identityTags = [
@@ -627,6 +712,10 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 					...identityTags,
 					tag("workflow_builder.workflow_execution_id", row.runInstance.workflowExecutionId),
 					tag("workflow_builder.primary_trace_id", row.primaryTraceId),
+					tag("workflow_builder.mlflow_trace_id", mlflowTraceId),
+					tag("mlflow.trace_id", mlflowTraceId),
+					tag("mlflow.dataset.id", mlflowDatasetId),
+					tag("mlflow.dataset.record_id", mlflowDatasetRecordId),
 					tag("swebench.suite", row.suiteSlug),
 					tag("swebench.instance_id", row.runInstance.instanceId),
 					tag("swebench.repo", row.repo),
@@ -639,7 +728,13 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 		}
 		await database
 			.update(benchmarkRunInstances)
-			.set({ mlflowRunId, updatedAt: new Date() })
+			.set({
+				mlflowRunId,
+				mlflowTraceId,
+				mlflowDatasetId: mlflowDatasetId ?? null,
+				mlflowDatasetRecordId: mlflowDatasetRecordId ?? null,
+				updatedAt: new Date(),
+			})
 			.where(eq(benchmarkRunInstances.id, row.runInstance.id));
 		await logBatch(mlflowRunId, {
 			params: [
@@ -647,6 +742,9 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 				param("run_id", row.run.id),
 				param("repo", row.repo),
 				param("base_commit", row.baseCommit),
+				param("mlflow_trace_id", mlflowTraceId),
+				param("mlflow_dataset_id", mlflowDatasetId),
+				param("mlflow_dataset_record_id", mlflowDatasetRecordId),
 				param(
 					"environment_key",
 					readRecordString(row.runInstance.inferenceEnvironment, "environmentKey"),
@@ -667,6 +765,10 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 				tag("workflow_builder.evaluation_status", row.runInstance.evaluationStatus),
 				tag("workflow_builder.workflow_execution_id", row.runInstance.workflowExecutionId),
 				tag("workflow_builder.primary_trace_id", row.primaryTraceId),
+				tag("workflow_builder.mlflow_trace_id", mlflowTraceId),
+				tag("mlflow.trace_id", mlflowTraceId),
+				tag("mlflow.dataset.id", mlflowDatasetId),
+				tag("mlflow.dataset.record_id", mlflowDatasetRecordId),
 			],
 		});
 		return mlflowRunId;
@@ -706,6 +808,15 @@ export async function syncBenchmarkInstanceMlflow(params: {
 			.limit(1);
 		if (!row) return;
 		const instance = row.runInstance;
+		const mlflowTraceId =
+			instance.mlflowTraceId ??
+			resolveCanonicalMlflowTraceId(row.primaryTraceId, instance.traceIds);
+		if (mlflowTraceId && instance.mlflowTraceId !== mlflowTraceId) {
+			await db
+				.update(benchmarkRunInstances)
+				.set({ mlflowTraceId, updatedAt: new Date() })
+				.where(eq(benchmarkRunInstances.id, instance.id));
+		}
 		const usage = isRecord(instance.usage) ? instance.usage : {};
 		const timings = isRecord(instance.timings) ? instance.timings : {};
 		const patchLineCount =
@@ -757,6 +868,10 @@ export async function syncBenchmarkInstanceMlflow(params: {
 				tag("workflow_builder.session_id", instance.sessionId),
 				tag("workflow_builder.workflow_execution_id", instance.workflowExecutionId),
 				tag("workflow_builder.primary_trace_id", row.primaryTraceId),
+				tag("workflow_builder.mlflow_trace_id", mlflowTraceId),
+				tag("mlflow.trace_id", mlflowTraceId),
+				tag("mlflow.dataset.id", instance.mlflowDatasetId),
+				tag("mlflow.dataset.record_id", instance.mlflowDatasetRecordId),
 				tag("workflow_builder.dapr_instance_id", instance.daprInstanceId),
 				tag("workflow_builder.sandbox_name", instance.sandboxName),
 				tag("workflow_builder.workspace_ref", instance.workspaceRef),
@@ -841,7 +956,8 @@ export async function syncBenchmarkRunMlflow(
 				tag("workflow_builder.coordinator_execution_id", run.coordinatorExecutionId),
 				tag("workflow_builder.evaluator_job_name", run.evaluatorJobName),
 				tag("workflow_builder.predictions_path", run.predictionsPath),
-				tag("workflow_builder.mlflow_eval_run_id", summary.mlflowEvalRunId),
+				tag("workflow_builder.mlflow_eval_run_id", run.mlflowEvalRunId ?? summary.mlflowEvalRunId),
+				tag("mlflow.dataset.id", run.mlflowDatasetId),
 				tag("workflow_builder.error", run.error),
 			],
 		});

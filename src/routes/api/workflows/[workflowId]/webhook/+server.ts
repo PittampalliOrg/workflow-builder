@@ -12,6 +12,11 @@ import {
 	getPromptExpansionConfig
 } from '$lib/utils/workflow-input-config';
 import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
+import {
+	type MlflowRunContext,
+	safeCreateWorkflowExecutionMlflowRun,
+	safeFinishMlflowRun
+} from '$lib/server/observability/mlflow-lifecycle';
 
 // ---------------------------------------------------------------------------
 // CORS headers — webhook callers may be cross-origin
@@ -234,6 +239,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 		console.log('[Webhook] Created execution:', execution.id);
 
+		const mlflowContext = await safeCreateWorkflowExecutionMlflowRun({
+			executionId: execution.id,
+			workflowId,
+			workflowName: workflow.name,
+			projectId: workflow.projectId ?? null,
+			userId: workflow.userId
+		});
+
 		// 8. Start workflow via orchestrator (fire-and-forget — return immediately)
 		const orchestratorUrl = getOrchestratorUrl();
 
@@ -242,7 +255,8 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			workflowId,
 			execution.id,
 			spec,
-			triggerData
+			triggerData,
+			mlflowContext
 		);
 
 		return corsJson({
@@ -267,7 +281,8 @@ function startWorkflowInBackground(
 	workflowId: string,
 	executionId: string,
 	spec: Record<string, unknown>,
-	triggerData: Record<string, unknown>
+	triggerData: Record<string, unknown>,
+	mlflowContext: MlflowRunContext | null
 ) {
 	(async () => {
 		try {
@@ -278,7 +293,8 @@ function startWorkflowInBackground(
 					workflow: spec,
 					workflowId,
 					triggerData,
-					dbExecutionId: executionId
+					dbExecutionId: executionId,
+					mlflowContext
 				})
 			});
 
@@ -309,6 +325,7 @@ function startWorkflowInBackground(
 					completedAt: new Date()
 				})
 				.where(eq(workflowExecutions.id, executionId));
+			void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
 		}
 	})();
 }

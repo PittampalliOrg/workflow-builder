@@ -19,6 +19,7 @@ import type {
 	SessionUsage,
 } from "$lib/types/sessions";
 import { resolveAgentRef } from "$lib/server/agents/registry";
+import { safeFinishMlflowRun } from "$lib/server/observability/mlflow-lifecycle";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
@@ -367,6 +368,20 @@ export async function updateSessionStatus(
 		patch.errorMessage = extras.errorMessage ?? null;
 	if (extras.markCompleted) patch.completedAt = new Date();
 	await database.update(sessions).set(patch).where(eq(sessions.id, id));
+	if (extras.markCompleted) {
+		const [session] = await database
+			.select({ mlflowRunId: sessions.mlflowRunId })
+			.from(sessions)
+			.where(eq(sessions.id, id))
+			.limit(1);
+		if (session?.mlflowRunId) {
+			void safeFinishMlflowRun({
+				runId: session.mlflowRunId,
+				status: status === "terminated" ? "FINISHED" : "FAILED",
+				endTime: patch.completedAt ?? patch.updatedAt,
+			});
+		}
+	}
 }
 
 export async function updateSessionStatusUnlessTerminated(

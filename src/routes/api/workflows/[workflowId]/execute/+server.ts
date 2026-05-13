@@ -19,6 +19,10 @@ import {
 	resolveSpecAgentRefs,
 	AgentRefResolutionError
 } from '$lib/server/agents/resolver';
+import {
+	safeCreateWorkflowExecutionMlflowRun,
+	safeFinishMlflowRun
+} from '$lib/server/observability/mlflow-lifecycle';
 
 /**
  * POST /api/workflows/[workflowId]/execute
@@ -155,6 +159,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// Send to orchestrator's SW 1.0 endpoint
 	const orchestratorUrl = getOrchestratorUrl();
 	const sessionId = buildWorkflowSessionId(execution.id);
+	const mlflowContext = await safeCreateWorkflowExecutionMlflowRun({
+		executionId: execution.id,
+		workflowId,
+		workflowName: workflow.name,
+		projectId: workflow.projectId ?? null,
+		userId
+	});
 
 	try {
 		const headers = sessionId
@@ -168,7 +179,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				workflow: spec,
 				workflowId,
 				triggerData,
-				dbExecutionId: execution.id
+				dbExecutionId: execution.id,
+				mlflowContext
 			})
 		});
 
@@ -179,6 +191,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				.update(workflowExecutions)
 				.set({ status: 'error', error: JSON.stringify(errBody).slice(0, 500) })
 				.where(eq(workflowExecutions.id, execution.id));
+			void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
 			return error(res.status, errBody.error ?? errBody.message ?? errBody.detail ?? 'Failed to start workflow');
 		}
 
@@ -206,6 +219,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			.update(workflowExecutions)
 			.set({ status: 'error', error: String(err) })
 			.where(eq(workflowExecutions.id, execution.id));
+		void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
 		return error(502, 'Workflow orchestrator unavailable');
 	}
 };

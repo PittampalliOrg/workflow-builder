@@ -15,6 +15,13 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 def load_app(monkeypatch):
     sys.path.insert(0, str(SERVICE_ROOT))
 
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"success": True}
+
     class FakeRuntime:
         def register_workflow(self, *_args, **_kwargs):
             return None
@@ -52,7 +59,10 @@ def load_app(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "requests",
-        types.SimpleNamespace(request=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(
+            request=lambda *_args, **_kwargs: FakeResponse(),
+            put=lambda *_args, **_kwargs: FakeResponse(),
+        ),
     )
 
     class FakeFastAPI:
@@ -122,6 +132,273 @@ def test_otel_tracing_respects_sdk_disabled(monkeypatch):
 
     assert app._otel_disabled_by() == "OTEL_SDK_DISABLED"
     assert app._otel_ready is False
+
+
+def test_mlflow_trace_id_normalization(monkeypatch):
+    app = load_app(monkeypatch)
+
+    assert (
+        app._normalize_mlflow_trace_id("abcdefabcdefabcdefabcdefabcdefab")
+        == "tr-abcdefabcdefabcdefabcdefabcdefab"
+    )
+    assert (
+        app._normalize_mlflow_trace_id("tr-ABCDEFABCDEFABCDEFABCDEFABCDEFAB")
+        == "tr-abcdefabcdefabcdefabcdefabcdefab"
+    )
+    assert (
+        app._normalize_mlflow_trace_id(
+            "00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01"
+        )
+        == "tr-abcdefabcdefabcdefabcdefabcdefab"
+    )
+    assert app._normalize_mlflow_trace_id("0" * 32) is None
+
+
+def test_mlflow_eval_prefers_native_trace_search(monkeypatch):
+    app = load_app(monkeypatch)
+    searched: list[dict[str, object]] = []
+
+    class FakeFrame:
+        empty = False
+
+        def __len__(self):
+            return 1
+
+    class FakeEmptyFrame:
+        empty = True
+
+        def __len__(self):
+            return 0
+
+    class FakeMlflow:
+        def get_experiment_by_name(self, name):
+            assert name == "workflow-builder/ryzen/traces"
+            return types.SimpleNamespace(experiment_id="trace-exp-1")
+
+        def search_traces(self, *, locations, filter_string, include_spans=None):
+            assert locations == ["1", "trace-exp-1"]
+            assert include_spans is True
+            searched.append({"locations": locations, "filter": filter_string})
+            if "abcdefabcdefabcdefabcdefabcdefab" in filter_string:
+                return FakeFrame()
+            raise AssertionError("unexpected trace filter")
+
+    summary: dict[str, object] = {}
+    traces = app._search_mlflow_eval_traces(
+        FakeMlflow(),
+        "1",
+        {"id": "run_1", "mlflowTraceExperimentName": "workflow-builder/ryzen/traces"},
+        [
+            {
+                "outputs": {
+                    "mlflow_trace_id": "tr-abcdefabcdefabcdefabcdefabcdefab",
+                    "trace_ids": [],
+                },
+                "metadata": {"instance_id": "i1"},
+            }
+        ],
+        summary,
+    )
+
+    assert traces is not None
+    assert searched
+    assert all("tags." not in str(entry["filter"]) for entry in searched)
+    assert summary["nativeTraceIds"] == ["tr-abcdefabcdefabcdefabcdefabcdefab"]
+    assert summary["nativeTraceCount"] == 1
+
+
+def test_mlflow_eval_trace_search_falls_back_to_experiment_ids(monkeypatch):
+    app = load_app(monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    class FakeFrame:
+        empty = False
+
+    class FakeMlflow:
+        def get_experiment_by_name(self, _name):
+            return None
+
+        def search_traces(self, **kwargs):
+            calls.append(kwargs)
+            if "locations" in kwargs:
+                raise TypeError("search_traces() got an unexpected keyword argument 'locations'")
+            assert kwargs["experiment_ids"] == ["parent-exp"]
+            assert kwargs["filter_string"] == "request_id = 'tr-abcdefabcdefabcdefabcdefabcdefab'"
+            assert kwargs["include_spans"] is True
+            return FakeFrame()
+
+    summary: dict[str, object] = {}
+    traces = app._search_mlflow_eval_traces(
+        FakeMlflow(),
+        "parent-exp",
+        {"id": "run_1"},
+        [
+            {
+                "outputs": {"mlflow_trace_id": "tr-abcdefabcdefabcdefabcdefabcdefab"},
+                "metadata": {"instance_id": "i1"},
+            }
+        ],
+        summary,
+    )
+
+    assert traces is not None
+    assert "locations" in calls[0]
+    assert "experiment_ids" in calls[1]
+
+
+def test_mlflow_eval_trace_row_lookup_restores_swebench_row(monkeypatch):
+    app = load_app(monkeypatch)
+    row = {
+        "outputs": {
+            "status": "resolved",
+            "evaluation_status": "resolved",
+            "model_patch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
+            "mlflow_trace_id": "tr-abcdefabcdefabcdefabcdefabcdefab",
+        },
+        "metadata": {"instance_id": "sympy__sympy-20590"},
+    }
+    lookup = app._mlflow_eval_trace_row_lookup([row])
+    summary: dict[str, object] = {}
+
+    trace = types.SimpleNamespace(
+        info=types.SimpleNamespace(request_id="tr-abcdefabcdefabcdefabcdefabcdefab")
+    )
+    resolved = app._mlflow_eval_row_for_trace(trace, lookup, summary)
+
+    assert resolved is row
+    assert app._row_scorer_values(resolved)["swebench_harness_resolved"] is True
+    assert app._row_scorer_values(resolved)["patch_present_and_well_formed"] is True
+
+
+def test_mlflow_eval_missing_trace_row_mapping_is_recorded(monkeypatch):
+    app = load_app(monkeypatch)
+    summary: dict[str, object] = {}
+
+    trace = {"request_id": "tr-deadbeefdeadbeefdeadbeefdeadbeef"}
+    resolved = app._mlflow_eval_row_for_trace(trace, {}, summary)
+
+    assert resolved is None
+    assert summary["missingNativeTraceRowIds"] == [
+        "tr-deadbeefdeadbeefdeadbeefdeadbeef"
+    ]
+    assert summary["missingNativeTraceRowCount"] == 1
+
+
+def test_mlflow_eval_proxy_trace_is_created_and_linked(monkeypatch):
+    app = load_app(monkeypatch)
+    source_trace_id = "tr-abcdefabcdefabcdefabcdefabcdefab"
+    proxy_trace_id = "tr-fedcbafedcbafedcbafedcbafedcbafe"
+    row = {
+        "inputs": {
+            "problem_statement": "Fix it",
+            "repo": "sympy/sympy",
+            "base_commit": "abc",
+        },
+        "outputs": {
+            "status": "resolved",
+            "evaluation_status": "resolved",
+            "model_patch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
+            "mlflow_trace_id": source_trace_id,
+        },
+        "metadata": {
+            "run_id": "run_1",
+            "run_instance_id": "ri_1",
+            "instance_id": "sympy__sympy-20590",
+            "mlflow_run_id": "child_run_1",
+        },
+    }
+    linked: list[tuple[tuple[str, ...], str]] = []
+    ended: list[str] = []
+
+    class FakeFrame:
+        empty = False
+
+        def __len__(self):
+            return 1
+
+    class FakeMlflow:
+        def flush_trace_async_logging(self):
+            pass
+
+        def search_traces(self, *, locations, filter_string, include_spans=None):
+            assert locations == ["8"]
+            assert filter_string == f"request_id = '{proxy_trace_id}'"
+            assert include_spans is True
+            return FakeFrame()
+
+    class FakeClient:
+        def start_trace(self, **kwargs):
+            assert kwargs["experiment_id"] == "8"
+            assert kwargs["tags"]["workflow_builder.source_mlflow_trace_id"] == source_trace_id
+            return types.SimpleNamespace(trace_id=proxy_trace_id)
+
+        def end_trace(self, trace_id, **_kwargs):
+            ended.append(trace_id)
+
+        def link_traces_to_run(self, *, trace_ids, run_id):
+            linked.append((tuple(trace_ids), run_id))
+
+    summary: dict[str, object] = {}
+    lookup = app._mlflow_eval_trace_row_lookup([row])
+
+    frame = app._mlflow_create_eval_trace_proxies(
+        FakeMlflow(),
+        FakeClient(),
+        "8",
+        "parent_run_1",
+        "eval_run_1",
+        [row],
+        lookup,
+        summary,
+    )
+
+    assert frame is not None
+    assert ended == [proxy_trace_id]
+    assert lookup[proxy_trace_id] is row
+    assert (tuple([proxy_trace_id]), "eval_run_1") in linked
+    assert (tuple([proxy_trace_id]), "parent_run_1") in linked
+    assert summary["evalProxyTraceIds"] == [proxy_trace_id]
+
+
+def test_mlflow_trace_link_uses_rest_fallback(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.test")
+    app = load_app(monkeypatch)
+    app.MLFLOW_TRACKING_URI = "http://mlflow.test"
+    posts: list[tuple[str, dict[str, object], int]] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+    def fake_post(url, json=None, timeout=10):
+        posts.append((url, json, timeout))
+        return FakeResponse()
+
+    class FakeClient:
+        def link_traces_to_run(self, **_kwargs):
+            raise AttributeError("link_traces_to_run unavailable")
+
+    monkeypatch.setattr(app.requests, "post", fake_post, raising=False)
+    summary: dict[str, object] = {}
+
+    app._mlflow_link_traces_to_runs(
+        FakeClient(),
+        ["tr-abcdefabcdefabcdefabcdefabcdefab"],
+        ["run_1"],
+        summary,
+    )
+
+    assert posts == [
+        (
+            "http://mlflow.test/api/2.0/mlflow/traces/link-to-run",
+            {
+                "trace_ids": ["tr-abcdefabcdefabcdefabcdefabcdefab"],
+                "run_id": "run_1",
+            },
+            10,
+        )
+    ]
+    assert summary["linkedEvalTraceRunIds"] == ["run_1"]
 
 
 def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
@@ -630,6 +907,8 @@ def test_validate_instance_metadata_rejects_missing_db_rows(monkeypatch):
 def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(
     monkeypatch, tmp_path
 ):
+    monkeypatch.setenv("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc")
+    monkeypatch.setenv("MLFLOW_ENABLED", "false")
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
     requests = []
@@ -663,7 +942,19 @@ def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(
     assert posted["json"] == {"path": str(tmp_path / "run_1" / "dataset.jsonl")}
 
 
+def test_write_jsonl_preview_artifact_creates_json_array(monkeypatch, tmp_path):
+    app = load_app(monkeypatch)
+    jsonl_path = tmp_path / "dataset.jsonl"
+    jsonl_path.write_text('{"a":1}\n{"b":2}\n', encoding="utf-8")
+
+    preview_path = app._write_jsonl_preview_artifact(jsonl_path)
+
+    assert preview_path == tmp_path / "dataset.preview.json"
+    assert json.loads(preview_path.read_text(encoding="utf-8")) == [{"a": 1}, {"b": 2}]
+
+
 def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc")
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
     monkeypatch.setattr(app, "_mlflow_log_artifact", lambda *_args, **_kwargs: None)
@@ -861,6 +1152,7 @@ def test_mlflow_eval_summary_scores_completed_rows(monkeypatch):
 
 
 def test_run_mlflow_swebench_eval_persists_eval_projection(monkeypatch, tmp_path):
+    monkeypatch.setenv("MLFLOW_ENABLED", "true")
     app = load_app(monkeypatch)
     app.MLFLOW_TRACKING_URI = "http://mlflow.test"
     monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)

@@ -561,6 +561,8 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		predictionsPath: null,
 		mlflowExperimentId: null,
 		mlflowRunId: null,
+		mlflowDatasetId: null,
+		mlflowEvalRunId: null,
 		summary: { capacity },
 		tags: [],
 		error: null,
