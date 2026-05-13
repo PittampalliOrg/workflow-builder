@@ -5536,14 +5536,15 @@ function buildSwebenchPrompt(params: {
 		`- Because checkpoint commits can make plain git diff/status look clean, inspect your final patch with git diff --binary ${params.baseCommit} -- . instead of plain git diff.`,
 		"- Produce the repository fix by editing implementation files only.",
 		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
-		"- Do not run `pip install`, `python setup.py build_ext --inplace`, or commands that rewrite /sandbox/.venv or /testbed. If imports or local tests fail because compiled extensions or /testbed permissions are unavailable, stop debugging the environment and inspect/edit source files instead.",
+		"- Do not run `pip install`, `python setup.py build_ext --inplace`, or commands that rewrite the benchmark Python environment. If imports or local tests fail because compiled extensions or benchmark-environment permissions are unavailable, stop debugging the environment and inspect/edit source files instead.",
 		"- Do not edit tests, test fixtures, benchmark metadata, generated artifact files, or files that only make local tests pass.",
 		"- The final benchmark patch excludes test and fixture paths; implementation fixes must be outside those paths.",
 		"- Running local tests is optional and best-effort. Official grading happens later in Kubernetes-native SWE-bench evaluator TaskRuns.",
+		`- If a local test or import fails because compiled extensions or benchmark-environment permissions are unavailable, do not keep trying alternate test invocations or toy reproductions. Once git diff --stat shows a minimal implementation patch, leave the patch applied and finish so the evaluator can grade it.`,
 		"- Do not use web search, web fetch, external issue pages, PR pages, or solution commits. Use only the repository contents, the problem statement, and local sandbox commands.",
 		...environmentNotes,
 		"",
-		"Make the smallest source changes needed to resolve the issue. When finished, leave the final patch applied.",
+		"Make the smallest source changes needed to resolve the issue. When finished, verify `git diff --stat` is non-empty, leave the final patch applied, and stop.",
 	].join("\n");
 }
 

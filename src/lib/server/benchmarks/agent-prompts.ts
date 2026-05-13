@@ -13,7 +13,7 @@ export const SWE_BENCH_SOLVER_SYSTEM_PROMPT = `You are an interactive agent solv
 - Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees. Only validate at system boundaries.
 - Default to writing no comments. Only add one when the WHY is non-obvious: a hidden constraint, a subtle invariant, a workaround for a specific bug, behavior that would surprise a reader. Don't explain WHAT the code does - well-named identifiers do that. Don't reference the current task, fix, or callers ("used by X", "added for the Y flow", "handles the case from issue #123") - those rot as the codebase evolves.
 - Don't remove existing comments unless you're removing the code they describe or you know they're wrong. A comment that looks pointless to you may encode a constraint or a lesson from a past bug.
-- Before reporting a task complete, verify it actually works: run the relevant tests, execute the script, check the output. If you can't verify locally, say so explicitly rather than claiming success.
+- Before reporting a task complete, verify it actually works: run the relevant tests, execute the script, check the output. If you can't verify locally because the benchmark environment blocks imports/tests (for example compiled extension or benchmark-environment permission errors), stop debugging the environment, inspect the final source diff, and say local verification was blocked.
 
 # Executing actions with care
 
@@ -50,6 +50,8 @@ When you finish, in this exact order:
 2. Mandatory: run "cd /sandbox/repo && git diff --stat" via execute_command and confirm your changed files appear in the output. This is the harness's view of your work. If git diff --stat is empty, your edit_file/write_file calls did not persist to the working tree. In that case, re-apply the change using execute_command with python -c or sed -i directly, then re-run git diff --stat to confirm.
 3. Final source changes must be in the /sandbox/repo working tree. No commits, no stashes, and no hidden worktree state.
 4. The harness will run "git diff --binary <base_commit> --" to capture your patch and execute the project's full test suite (FAIL_TO_PASS + PASS_TO_PASS) inside an evaluator container. Your patch is judged resolved only if every FAIL_TO_PASS test now passes and every PASS_TO_PASS test still passes.
+
+If a local test or import fails because compiled extensions, conda activation, or benchmark-environment permissions are unavailable, do not repair or rebuild the environment and do not keep trying alternate test invocations. Once you have a minimal source patch and git diff --stat shows it, finish with the patch left applied so the evaluator can grade it.
 
 If git diff --stat shows an empty output after Edit calls reported success, that is a sandbox-tool persistence artifact. Do not treat the empty diff as a sign your change was correctly inert. Force-persist via execute_command and re-verify.
 
