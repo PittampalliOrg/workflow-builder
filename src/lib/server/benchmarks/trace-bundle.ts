@@ -468,19 +468,7 @@ export function normalizeRawTraceSpans(traceSpans: ObservabilityTraceSpan[]): {
 			!kind &&
 			!firstString(attributes, ["llm.model_name", "gen_ai.request.model", "model", "model_name"]) &&
 			!firstString(attributes, ["tool.name", "tool_name", "mcp.tool.name", "function.name", "gen_ai.tool.name"]);
-		if (
-			mlflowSpanType === "chat_model" ||
-			mlflowSpanType === "llm" ||
-			kind === "llm" ||
-			kind === "chat" ||
-			kind === "language_model" ||
-			(!durableTaskWrapper && operation.includes("llm")) ||
-			Boolean(firstString(attributes, ["llm.model_name", "gen_ai.request.model", "model", "model_name"]))
-		) {
-			llmSpans.push(normalizeRawLlmSpan(span, attributes));
-			continue;
-		}
-		if (
+		const toolLike =
 			mlflowSpanType === "tool" ||
 			kind === "tool" ||
 			kind === "function" ||
@@ -493,9 +481,22 @@ export function normalizeRawTraceSpans(traceSpans: ObservabilityTraceSpan[]): {
 					"function.name",
 					"gen_ai.tool.name",
 				]),
-			)
-		) {
+			);
+		if (toolLike) {
 			toolSpans.push(normalizeRawToolSpan(span, attributes));
+			continue;
+		}
+		if (
+			mlflowSpanType === "chat_model" ||
+			mlflowSpanType === "llm" ||
+			kind === "llm" ||
+			kind === "chat" ||
+			kind === "language_model" ||
+			(!durableTaskWrapper && operation.includes("llm")) ||
+			Boolean(firstString(attributes, ["llm.model_name", "gen_ai.request.model", "model", "model_name"]))
+		) {
+			llmSpans.push(normalizeRawLlmSpan(span, attributes));
+			continue;
 		}
 	}
 	return {

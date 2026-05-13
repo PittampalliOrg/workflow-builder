@@ -95,6 +95,26 @@ describe("normalizeRawTraceSpans", () => {
 		expect(normalized.toolSpans[0].toolArguments).toEqual({ path: "app.py" });
 		expect(normalized.toolSpans[0].toolResult).toEqual({ ok: true });
 	});
+
+	it("does not classify tool spans as LLM spans when telemetry context carries a model", () => {
+		const tool = baseSpan({
+			spanId: "tool-with-model-context",
+			operationName: "agent-session.run_tool",
+			attributes: {
+				"mlflow.spanType": "TOOL",
+				"gen_ai.request.model": "gemini-3.1-pro-preview",
+				"tool.name": "bash_run",
+				"input.value": "{\"command\":\"pwd\"}",
+				"output.value": "{\"ok\":true}",
+			},
+		});
+
+		const normalized = normalizeRawTraceSpans([tool]);
+
+		expect(normalized.llmSpans).toHaveLength(0);
+		expect(normalized.toolSpans).toHaveLength(1);
+		expect(normalized.toolSpans[0].toolName).toBe("bash_run");
+	});
 });
 
 describe("buildSwebenchTraceBundleFromClickHouse", () => {
