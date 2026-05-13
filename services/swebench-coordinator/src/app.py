@@ -928,18 +928,26 @@ def _mlflow_genai_evaluate_sync(
             "swebench.suite": str(run.get("suiteSlug") or ""),
         },
     ) as eval_run:
-        mlflow.genai.evaluate(
-            data=data,
-            scorers=[
-                swebench_harness_resolved,
-                patch_present_and_well_formed,
-                implementation_only_patch,
-                no_environment_mutation,
-                trace_health,
-                agent_efficiency,
-                diff_stop_compliance,
-            ],
-        )
+        try:
+            mlflow.genai.evaluate(
+                data=data,
+                scorers=[
+                    swebench_harness_resolved,
+                    patch_present_and_well_formed,
+                    implementation_only_patch,
+                    no_environment_mutation,
+                    trace_health,
+                    agent_efficiency,
+                    diff_stop_compliance,
+                ],
+            )
+        except Exception as exc:
+            # Keep the MLflow projection recoverable when the optional GenAI
+            # evaluator cannot score a row, for example while traces are still
+            # propagating to the tracking store.
+            logger.warning("MLflow GenAI evaluation call failed: %s", exc)
+            summary["mlflowGenaiEvaluateError"] = str(exc)
+            mlflow.set_tag("workflow_builder.mlflow_genai_evaluate_error", str(exc))
         mlflow.log_dict(summary, "swebench/mlflow-eval-summary.json")
         for name, value in summary.get("scorers", {}).items():
             if isinstance(value, dict):
