@@ -302,23 +302,18 @@ def test_dapr_agents_context_bridge_drops_null_attributes():
     assert "span_type" not in attrs
 
 
-def test_span_attribute_sanitizer_drops_null_attributes():
-    from opentelemetry.sdk.trace import ReadableSpan
+def test_mlflow_destination_hides_otlp_metrics_env(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
 
-    from src.telemetry.providers import _sanitize_span_attributes
+    from src.telemetry.providers import _mlflow_destination_without_otlp_metrics
 
-    span = ReadableSpan(
-        "execute_tool Write",
-        attributes={
-            "span_type": None,
-            "openinference.span.kind": "TOOL",
-        },
-    )
+    with _mlflow_destination_without_otlp_metrics():
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
+        assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in os.environ
 
-    _sanitize_span_attributes(span)
-
-    assert span.attributes["openinference.span.kind"] == "TOOL"
-    assert "span_type" not in span.attributes
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+    assert os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == "http://collector:4318/v1/metrics"
 
 
 def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
@@ -329,11 +324,15 @@ def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
             self.experiment_id = experiment_id
 
     fake_mlflow = types.ModuleType("mlflow")
-    fake_mlflow.tracing = types.SimpleNamespace(
-        set_destination=lambda location, **kwargs: calls.update(
+
+    def fake_set_destination(location, **kwargs):
+        calls["otel_endpoint_visible"] = "OTEL_EXPORTER_OTLP_ENDPOINT" in os.environ
+        calls["otel_metrics_endpoint_visible"] = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" in os.environ
+        calls.update(
             {"experiment_id": location.experiment_id, "kwargs": kwargs}
         )
-    )
+
+    fake_mlflow.tracing = types.SimpleNamespace(set_destination=fake_set_destination)
     fake_mlflow.set_tracking_uri = lambda uri: calls.update({"tracking_uri": uri})
 
     fake_entities = types.ModuleType("mlflow.entities")
@@ -344,6 +343,8 @@ def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlflow.entities", fake_entities)
     monkeypatch.setitem(sys.modules, "mlflow.entities.trace_location", fake_trace_location)
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
 
     from src.telemetry.providers import set_mlflow_trace_experiment_for_context
 
@@ -352,7 +353,11 @@ def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
         "tracking_uri": "http://mlflow:5000",
         "experiment_id": "per-workflow-11",
         "kwargs": {"context_local": True},
+        "otel_endpoint_visible": False,
+        "otel_metrics_endpoint_visible": False,
     }
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+    assert os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == "http://collector:4318/v1/metrics"
 
 
 def test_beta_tracing_adds_content_when_flag_set(monkeypatch, telemetry_with_in_memory):

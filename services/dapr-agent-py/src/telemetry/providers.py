@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from typing import Any
 from collections.abc import Iterator
 
@@ -104,7 +105,6 @@ def init_telemetry() -> bool:
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
         tp = TracerProvider(resource=resource)
-        tp.add_span_processor(_NullAttributeSanitizingSpanProcessor())
         tp.add_span_processor(
             BatchSpanProcessor(
                 OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"),
@@ -206,54 +206,6 @@ def _iter_context_bridge_attrs(original: Any) -> Iterator[tuple[str, Any]]:
         logger.debug("Dapr Agents context bridge runtime lookup failed: %s", exc)
 
 
-def _sanitize_span_attributes(span: Any) -> None:
-    """Drop null span attributes before SDK exporters encode them."""
-    attrs = getattr(span, "_attributes", None)
-    if not attrs:
-        return
-
-    try:
-        items = list(attrs.items())
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Could not inspect span attributes for null cleanup: %s", exc)
-        return
-
-    clean_attrs: dict[str, Any] = {}
-    dropped_keys: list[str] = []
-    for key, value in items:
-        if value is None:
-            dropped_keys.append(str(key))
-            continue
-        clean_attrs[key] = value
-
-    if not dropped_keys:
-        return
-
-    try:
-        setattr(span, "_attributes", clean_attrs)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Could not update span attributes after null cleanup: %s", exc)
-        return
-
-    logger.debug("Dropped null OpenTelemetry span attributes: %s", ", ".join(dropped_keys))
-
-
-class _NullAttributeSanitizingSpanProcessor:
-    """Span processor that removes null attrs from third-party instrumentation."""
-
-    def on_start(self, span: Any, parent_context: Any = None) -> None:
-        return None
-
-    def on_end(self, span: Any) -> None:
-        _sanitize_span_attributes(span)
-
-    def shutdown(self) -> None:
-        return None
-
-    def force_flush(self, timeout_millis: int = 30_000) -> bool:
-        return True
-
-
 def _install_dapr_agents_context_bridge() -> None:
     """Patch Dapr Agents wrappers to include workflow-builder context attrs."""
     for module_name in (
@@ -276,6 +228,29 @@ def _install_dapr_agents_context_bridge() -> None:
 
         setattr(bridged_get_attributes_from_context, "_workflow_builder_context_bridge", True)
         setattr(module, "get_attributes_from_context", bridged_get_attributes_from_context)
+
+
+@contextmanager
+def _mlflow_destination_without_otlp_metrics() -> Iterator[None]:
+    """Prevent MLflow's trace processor from creating its internal OTLP metric exporter.
+
+    MLflow still exports traces to the configured MlflowExperimentLocation. This only
+    disables MLflow's span-duration metric labels for this process; workflow-builder's
+    own OTLP trace and metric exporters keep using OTEL_EXPORTER_OTLP_ENDPOINT.
+    """
+    hidden = {
+        name: os.environ.pop(name, None)
+        for name in (
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        )
+    }
+    try:
+        yield
+    finally:
+        for name, value in hidden.items():
+            if value is not None:
+                os.environ[name] = value
 
 
 def _init_mlflow_destination() -> None:
@@ -305,7 +280,8 @@ def _init_mlflow_destination() -> None:
 
     try:
         mlflow.set_tracking_uri(tracking_uri)
-        mlflow.tracing.set_destination(MlflowExperimentLocation(experiment_id=experiment_id))
+        with _mlflow_destination_without_otlp_metrics():
+            mlflow.tracing.set_destination(MlflowExperimentLocation(experiment_id=experiment_id))
         logger.info(
             "MLflow tracing destination set: experiment_id=%s tracking_uri=%s",
             experiment_id,
@@ -377,14 +353,16 @@ def set_mlflow_trace_experiment_for_context(experiment_id: str | None) -> bool:
     try:
         mlflow.set_tracking_uri(tracking_uri)
         try:
-            mlflow.tracing.set_destination(
-                MlflowExperimentLocation(experiment_id=experiment_id),
-                context_local=True,
-            )
+            with _mlflow_destination_without_otlp_metrics():
+                mlflow.tracing.set_destination(
+                    MlflowExperimentLocation(experiment_id=experiment_id),
+                    context_local=True,
+                )
         except TypeError:
-            mlflow.tracing.set_destination(
-                MlflowExperimentLocation(experiment_id=experiment_id)
-            )
+            with _mlflow_destination_without_otlp_metrics():
+                mlflow.tracing.set_destination(
+                    MlflowExperimentLocation(experiment_id=experiment_id)
+                )
         logger.info(
             "MLflow context-local tracing destination set: experiment_id=%s",
             experiment_id,
