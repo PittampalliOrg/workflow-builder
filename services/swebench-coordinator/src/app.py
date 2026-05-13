@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -627,6 +628,444 @@ def _mlflow_instance_run_map(run: dict[str, Any]) -> dict[str, str]:
         ):
             out[instance_id] = mlflow_run_id
     return out
+
+
+def _mlflow_genai_eval_enabled() -> bool:
+    if not _mlflow_enabled():
+        return False
+    enabled = (
+        os.environ.get("SWEBENCH_MLFLOW_GENAI_EVAL_ENABLED", "true")
+        .strip()
+        .lower()
+    )
+    return enabled not in {"0", "false", "no", "off"}
+
+
+def _mlflow_eval_timeout_seconds() -> float:
+    raw = os.environ.get("SWEBENCH_MLFLOW_EVAL_TIMEOUT_SECONDS", "180").strip()
+    try:
+        return max(1.0, min(1800.0, float(raw)))
+    except ValueError:
+        return 180.0
+
+
+def _read_trace_bundle_from_disk(run_id: str, instance_id: str) -> dict[str, Any] | None:
+    path = (
+        ARTIFACT_ROOT
+        / run_id
+        / "traces"
+        / _safe_artifact_name(instance_id)
+        / "trace-bundle.json"
+    )
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except Exception as exc:
+        logger.warning("Failed to read trace bundle %s: %s", path, exc)
+        return None
+
+
+def _mlflow_eval_input_row(
+    run: dict[str, Any], instance: dict[str, Any]
+) -> dict[str, Any]:
+    instance_id = str(instance.get("instanceId") or instance.get("instance_id") or "")
+    test_metadata = instance.get("testMetadata")
+    if not isinstance(test_metadata, dict):
+        test_metadata = {}
+    inference_environment = instance.get("inferenceEnvironment")
+    if not isinstance(inference_environment, dict):
+        inference_environment = {}
+    trace_bundle = _read_trace_bundle_from_disk(str(run.get("id") or ""), instance_id)
+    trace_ids = (
+        instance.get("traceIds") if isinstance(instance.get("traceIds"), list) else []
+    )
+    harness_result = instance.get("harnessResult")
+    if not isinstance(harness_result, dict):
+        harness_result = {}
+    model_patch = instance.get("modelPatch")
+    if not isinstance(model_patch, str):
+        model_patch = ""
+    return {
+        "inputs": {
+            "problem_statement": instance.get("problemStatement") or "",
+            "repo": instance.get("repo") or "",
+            "base_commit": instance.get("baseCommit") or "",
+            "hints": test_metadata.get("hints_text") or test_metadata.get("hints") or "",
+            "environment": inference_environment,
+        },
+        "outputs": {
+            "model_patch": model_patch,
+            "status": instance.get("status"),
+            "evaluation_status": instance.get("evaluationStatus"),
+            "harness_result": harness_result,
+            "trace_bundle": trace_bundle,
+            "trace_ids": trace_ids,
+        },
+        "expectations": {
+            "resolved": instance.get("status") == "resolved",
+            "FAIL_TO_PASS": test_metadata.get("FAIL_TO_PASS")
+            or test_metadata.get("fail_to_pass")
+            or [],
+            "PASS_TO_PASS": test_metadata.get("PASS_TO_PASS")
+            or test_metadata.get("pass_to_pass")
+            or [],
+            "has_internal_gold_patch": bool(test_metadata.get("patch")),
+        },
+        "metadata": {
+            "run_id": run.get("id"),
+            "run_instance_id": instance.get("id"),
+            "instance_id": instance_id,
+            "suite": run.get("suiteSlug"),
+            "dataset": run.get("datasetName"),
+            "agent_id": run.get("agentId"),
+            "agent_version": run.get("agentVersion"),
+            "agent_runtime": run.get("agentRuntimeAppId"),
+            "model": run.get("modelNameOrPath"),
+            "session_id": instance.get("sessionId"),
+            "workflow_execution_id": instance.get("workflowExecutionId"),
+            "mlflow_run_id": instance.get("mlflowRunId"),
+        },
+    }
+
+
+def _patch_files(patch: str) -> list[str]:
+    files: list[str] = []
+    for match in re.finditer(r"^diff --git a/(.*?) b/(.*?)$", patch, re.MULTILINE):
+        files.append(match.group(2))
+    return files
+
+
+def _contains_environment_mutation(text: str) -> bool:
+    patterns = [
+        r"\bpip\s+install\b",
+        r"\bconda\s+(install|env|create)\b",
+        r"\bpython\s+setup\.py\s+build_ext\b",
+        r"\bgit\s+stash\b",
+        r"\bgit\s+reset\b",
+        r"\bgit\s+clean\b",
+    ]
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _row_scorer_values(row: dict[str, Any]) -> dict[str, bool]:
+    outputs = row.get("outputs") if isinstance(row.get("outputs"), dict) else {}
+    patch = (
+        outputs.get("model_patch")
+        if isinstance(outputs.get("model_patch"), str)
+        else ""
+    )
+    files = _patch_files(patch)
+    trace_bundle = (
+        outputs.get("trace_bundle")
+        if isinstance(outputs.get("trace_bundle"), dict)
+        else {}
+    )
+    required_context = (
+        trace_bundle.get("requiredContext")
+        if isinstance(trace_bundle.get("requiredContext"), dict)
+        else {}
+    )
+    trace_text = json.dumps(trace_bundle, sort_keys=True) if trace_bundle else ""
+    non_impl_patterns = (
+        "test/",
+        "tests/",
+        "testing/",
+        "docs/",
+        "doc/",
+        ".github/",
+        "fixtures/",
+        "benchmark",
+    )
+    impl_files = [
+        path
+        for path in files
+        if not path.endswith((".md", ".rst", ".txt", ".yml", ".yaml", ".json"))
+        and not path.startswith(non_impl_patterns)
+        and "/tests/" not in path
+        and "/test/" not in path
+        and "/fixtures/" not in path
+    ]
+    diff_stat_mentions = len(
+        re.findall(r"git\s+diff\s+--stat", trace_text, re.IGNORECASE)
+    )
+    later_validation_mentions = len(
+        re.findall(
+            r"(pytest|tox|unittest|npm\s+test|mvn\s+test|cargo\s+test)",
+            trace_text,
+            re.IGNORECASE,
+        )
+    )
+    return {
+        "swebench_harness_resolved": outputs.get("status") == "resolved",
+        "patch_present_and_well_formed": bool(patch.strip())
+        and outputs.get("evaluation_status") != "empty_patch"
+        and (not patch.strip().startswith("diff --git") or len(files) > 0),
+        "implementation_only_patch": len(impl_files) > 0,
+        "no_environment_mutation": not _contains_environment_mutation(patch)
+        and not _contains_environment_mutation(trace_text),
+        "trace_health": bool(
+            required_context.get("rootPresent")
+            and required_context.get("statusFinalized")
+            and required_context.get("llmToolSpansPresent")
+        )
+        if required_context
+        else bool(outputs.get("trace_ids")),
+        "agent_efficiency": len(
+            re.findall(
+                r"(build_ext|conda|pip\s+install|apt-get|apk\s+add)",
+                trace_text,
+                re.IGNORECASE,
+            )
+        )
+        <= 3,
+        "diff_stop_compliance": not (
+            diff_stat_mentions > 0 and later_validation_mentions > 2
+        ),
+    }
+
+
+def _summarize_mlflow_eval_rows(data: list[dict[str, Any]]) -> dict[str, Any]:
+    scorer_names = [
+        "swebench_harness_resolved",
+        "patch_present_and_well_formed",
+        "implementation_only_patch",
+        "no_environment_mutation",
+        "trace_health",
+        "agent_efficiency",
+        "diff_stop_compliance",
+    ]
+    counts = {name: 0 for name in scorer_names}
+    row_scores: list[dict[str, Any]] = []
+    for row in data:
+        scores = _row_scorer_values(row)
+        for name, value in scores.items():
+            if value:
+                counts[name] += 1
+        row_scores.append(
+            {
+                "instanceId": (row.get("metadata") or {}).get("instance_id")
+                if isinstance(row.get("metadata"), dict)
+                else None,
+                "scores": scores,
+            }
+        )
+    total = len(data)
+    return {
+        "version": 1,
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "rowCount": total,
+        "scorers": {
+            name: {
+                "passing": counts[name],
+                "failing": max(0, total - counts[name]),
+                "mean": (counts[name] / total) if total else 0,
+            }
+            for name in scorer_names
+        },
+        "rows": row_scores,
+    }
+
+
+def _mlflow_genai_evaluate_sync(
+    parent_run_id: str,
+    run: dict[str, Any],
+    data: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> str:
+    import mlflow
+    from mlflow.genai import scorer
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    client = mlflow.tracking.MlflowClient()
+    parent = client.get_run(parent_run_id)
+    experiment_id = parent.info.experiment_id
+
+    @scorer
+    def swebench_harness_resolved(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})[
+            "swebench_harness_resolved"
+        ]
+
+    @scorer
+    def patch_present_and_well_formed(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})[
+            "patch_present_and_well_formed"
+        ]
+
+    @scorer
+    def implementation_only_patch(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})[
+            "implementation_only_patch"
+        ]
+
+    @scorer
+    def no_environment_mutation(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})[
+            "no_environment_mutation"
+        ]
+
+    @scorer
+    def trace_health(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})["trace_health"]
+
+    @scorer
+    def agent_efficiency(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})["agent_efficiency"]
+
+    @scorer
+    def diff_stop_compliance(outputs=None):
+        return _row_scorer_values({"outputs": outputs or {}})["diff_stop_compliance"]
+
+    with mlflow.start_run(
+        experiment_id=experiment_id,
+        run_name=f"swebench-mlflow-eval/{str(run.get('id') or '')[:12]}",
+        tags={
+            "mlflow.parentRunId": parent_run_id,
+            "workflow_builder.kind": "swebench_mlflow_eval",
+            "workflow_builder.benchmark_run_id": str(run.get("id") or ""),
+            "swebench.suite": str(run.get("suiteSlug") or ""),
+        },
+    ) as eval_run:
+        mlflow.genai.evaluate(
+            data=data,
+            scorers=[
+                swebench_harness_resolved,
+                patch_present_and_well_formed,
+                implementation_only_patch,
+                no_environment_mutation,
+                trace_health,
+                agent_efficiency,
+                diff_stop_compliance,
+            ],
+        )
+        mlflow.log_dict(summary, "swebench/mlflow-eval-summary.json")
+        for name, value in summary.get("scorers", {}).items():
+            if isinstance(value, dict):
+                mlflow.log_metric(f"{name}_mean", float(value.get("mean") or 0))
+        eval_run_id = eval_run.info.run_id
+
+    with mlflow.start_run(run_id=parent_run_id):
+        mlflow.set_tag("workflow_builder.mlflow_eval_run_id", eval_run_id)
+        mlflow.log_dict(summary, "swebench/mlflow-eval-summary.json")
+        for name, value in summary.get("scorers", {}).items():
+            if isinstance(value, dict):
+                mlflow.log_metric(
+                    f"mlflow_eval_{name}_mean", float(value.get("mean") or 0)
+                )
+    return eval_run_id
+
+
+def _run_mlflow_swebench_eval(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    if not _mlflow_genai_eval_enabled():
+        return {"success": True, "skipped": True, "reason": "mlflow-genai-eval-disabled"}
+    try:
+        run = _load_run(run_id)
+        parent_run_id = run.get("mlflowRunId")
+        if not isinstance(parent_run_id, str) or not parent_run_id:
+            return {"success": True, "skipped": True, "reason": "missing-parent-mlflow-run"}
+        instances = run.get("instances") if isinstance(run.get("instances"), list) else []
+        rows = [
+            _mlflow_eval_input_row(run, instance)
+            for instance in instances
+            if isinstance(instance, dict) and instance.get("status") in INSTANCE_TERMINAL_STATUSES
+        ]
+        if not rows:
+            return {"success": True, "skipped": True, "reason": "no-terminal-instances"}
+
+        input_path = ARTIFACT_ROOT / run_id / "mlflow-eval-input.jsonl"
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        _mlflow_log_artifact(parent_run_id, input_path, "swebench")
+
+        summary = _summarize_mlflow_eval_rows(rows)
+        summary["runId"] = run_id
+        summary_path = ARTIFACT_ROOT / run_id / "mlflow-eval-summary.json"
+        summary_path.write_text(
+            json.dumps(summary, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        _mlflow_log_artifact(parent_run_id, summary_path, "swebench")
+
+        result: dict[str, Any] = {}
+        done = threading.Event()
+        error: list[BaseException] = []
+
+        def _target() -> None:
+            try:
+                eval_run_id = _mlflow_genai_evaluate_sync(parent_run_id, run, rows, summary)
+                summary["mlflowEvalRunId"] = eval_run_id
+                result["mlflowEvalRunId"] = eval_run_id
+            except BaseException as exc:  # noqa: BLE001 - best-effort projection
+                error.append(exc)
+            finally:
+                done.set()
+
+        thread = threading.Thread(
+            target=_target,
+            name=f"mlflow-swebench-eval-{run_id}",
+            daemon=True,
+        )
+        thread.start()
+        if not done.wait(_mlflow_eval_timeout_seconds()):
+            logger.warning(
+                "Best-effort MLflow GenAI evaluation timed out for %s", run_id
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "mlflow-genai-eval-timeout",
+                "summary": summary,
+            }
+        if error:
+            logger.warning(
+                "Best-effort MLflow GenAI evaluation failed for %s: %s",
+                run_id,
+                error[0],
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "mlflow-genai-eval-failed",
+                "error": str(error[0]),
+                "summary": summary,
+            }
+        if result.get("mlflowEvalRunId"):
+            summary["mlflowEvalRunId"] = result["mlflowEvalRunId"]
+            try:
+                _bff_with_retry(
+                    "POST",
+                    f"/api/internal/benchmarks/runs/{run_id}/mlflow-evaluation",
+                    json_body={
+                        "mlflowEvalRunId": result["mlflowEvalRunId"],
+                        "summary": summary,
+                    },
+                    timeout=30,
+                    attempts=3,
+                    delay_seconds=5,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to persist MLflow eval summary for %s: %s", run_id, exc
+                )
+        return {"success": True, **result, "summary": summary}
+    except Exception as exc:
+        logger.warning(
+            "Best-effort MLflow SWE-bench eval activity failed for %s: %s",
+            run_id,
+            exc,
+        )
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "activity-failed",
+            "error": str(exc),
+        }
 
 
 def _child_otel_env(client: Any, run_id: str) -> list[Any]:
@@ -2070,11 +2509,15 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                         "reason": "evaluation rows reached terminal state",
                     },
                 )
+                mlflow_eval = yield ctx.call_activity(
+                    _run_mlflow_swebench_eval, input={"runId": run_id}
+                )
                 return {
                     "success": True,
                     "jobName": job_name,
                     "progress": progress,
                     "deleteResult": delete_result,
+                    "mlflowEvaluation": mlflow_eval,
                 }
 
             job_status = yield ctx.call_activity(
@@ -2105,11 +2548,15 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                             "reason": "evaluation rows reached terminal state after job failure",
                         },
                     )
+                    mlflow_eval = yield ctx.call_activity(
+                        _run_mlflow_swebench_eval, input={"runId": run_id}
+                    )
                     return {
                         "success": True,
                         "jobName": job_name,
                         "progress": progress_after_failure,
                         "deleteResult": delete_result,
+                        "mlflowEvaluation": mlflow_eval,
                     }
                 timeout_result = yield ctx.call_activity(
                     _mark_evaluation_timeout,
@@ -2546,6 +2993,7 @@ async def lifespan(app: FastAPI):
         _mark_evaluation_timeout,
         _mark_evaluation_failure,
         _delete_evaluator_job,
+        _run_mlflow_swebench_eval,
     ):
         wfr.register_activity(activity)
     wfr.start()

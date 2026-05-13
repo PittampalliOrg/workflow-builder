@@ -4,9 +4,11 @@ import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	agents,
+	benchmarkInstances,
 	benchmarkRunInstances,
 	benchmarkRuns,
 	benchmarkSuites,
+	workflowExecutions,
 } from "$lib/server/db/schema";
 
 export type MlflowTag = { key: string; value: string };
@@ -24,6 +26,14 @@ export type MlflowArtifactInfo = {
 };
 
 const terminalRunStatuses = new Set(["completed", "failed", "cancelled"]);
+const terminalInstanceStatuses = new Set([
+	"resolved",
+	"failed",
+	"error",
+	"timeout",
+	"cancelled",
+]);
+const terminalMlflowStatuses = new Set(["FINISHED", "FAILED", "KILLED"]);
 
 function mlflowEnabled(): boolean {
 	const enabled = (env.MLFLOW_ENABLED ?? "").trim().toLowerCase();
@@ -318,6 +328,52 @@ async function createRun(params: {
 	return runId;
 }
 
+async function getRun(runId: string): Promise<{
+	info?: { run_id?: string; status?: string; experiment_id?: string };
+	data?: { tags?: MlflowTag[] };
+} | null> {
+	const qs = new URLSearchParams({ run_id: runId });
+	const payload = await mlflowRequest<{
+		run?: {
+			info?: { run_id?: string; status?: string; experiment_id?: string };
+			data?: { tags?: MlflowTag[] };
+		};
+	}>(`/api/2.0/mlflow/runs/get?${qs.toString()}`, { method: "GET" });
+	return payload.run ?? null;
+}
+
+function escapeMlflowFilterValue(value: string): string {
+	return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+function searchTagFilter(tags: MlflowTag[]): string {
+	return tags
+		.map((item) => `tags.\`${item.key}\` = '${escapeMlflowFilterValue(item.value)}'`)
+		.join(" AND ");
+}
+
+async function findRunByTags(
+	experimentId: string,
+	tags: MlflowTag[],
+): Promise<string | null> {
+	if (tags.length === 0) return null;
+	const payload = await mlflowRequest<{
+		runs?: Array<{ info?: { run_id?: string; lifecycle_stage?: string } }>;
+	}>("/api/2.0/mlflow/runs/search", {
+		method: "POST",
+		body: JSON.stringify({
+			experiment_ids: [experimentId],
+			filter: searchTagFilter(tags),
+			max_results: 1,
+			order_by: ["attributes.start_time DESC"],
+		}),
+	});
+	const run = (payload.runs ?? []).find(
+		(candidate) => candidate.info?.lifecycle_stage !== "deleted" && candidate.info?.run_id,
+	);
+	return run?.info?.run_id ?? null;
+}
+
 export async function logBatch(
 	runId: string,
 	payload: {
@@ -348,6 +404,17 @@ async function updateRunStatus(runId: string, status: string, endTime?: Date | n
 			...(endTime ? { end_time: endTime.getTime() } : {}),
 		}),
 	});
+}
+
+async function updateRunStatusOnce(runId: string, status: string, endTime?: Date | null) {
+	try {
+		const run = await getRun(runId);
+		const current = run?.info?.status;
+		if (current && terminalMlflowStatuses.has(current)) return;
+	} catch (err) {
+		warnMlflow(`failed to inspect MLflow run status ${runId}`, err);
+	}
+	await updateRunStatus(runId, status, endTime);
 }
 
 function tag(key: string, value: unknown): MlflowTag {
@@ -396,21 +463,28 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 	if (row.run.mlflowRunId) return row.run.mlflowRunId;
 	try {
 		const experimentId = await getOrCreateExperimentId();
-		const mlflowRunId = await createRun({
-			experimentId,
-			name: `${row.suiteSlug}/${row.agentSlug ?? row.run.agentId}/${row.run.id.slice(0, 8)}`,
-			startTime: row.run.startedAt ?? row.run.createdAt,
-			tags: [
-				tag("workflow_builder.kind", "swebench_run"),
-				tag("workflow_builder.benchmark_run_id", row.run.id),
-				tag("workflow_builder.project_id", row.run.projectId),
-				tag("workflow_builder.env", env.WORKFLOW_BUILDER_ENV ?? "unknown"),
-				tag("swebench.suite", row.suiteSlug),
-				tag("agent.id", row.run.agentId),
-				tag("agent.slug", row.agentSlug),
-				tag("agent.version", row.run.agentVersion),
-			],
-		});
+		const identityTags = [
+			tag("workflow_builder.kind", "swebench_run"),
+			tag("workflow_builder.benchmark_run_id", row.run.id),
+		];
+		let mlflowRunId = await findRunByTags(experimentId, identityTags);
+		if (!mlflowRunId) {
+			mlflowRunId = await createRun({
+				experimentId,
+				name: `${row.suiteSlug}/${row.agentSlug ?? row.run.agentId}/${row.run.id.slice(0, 8)}`,
+				startTime: row.run.startedAt ?? row.run.createdAt,
+				tags: [
+					...identityTags,
+					tag("workflow_builder.project_id", row.run.projectId),
+					tag("workflow_builder.env", env.WORKFLOW_BUILDER_ENV ?? "unknown"),
+					tag("swebench.suite", row.suiteSlug),
+					tag("agent.id", row.run.agentId),
+					tag("agent.slug", row.agentSlug),
+					tag("agent.version", row.run.agentVersion),
+					tag("agent.runtime", row.run.agentRuntime),
+				],
+			});
+		}
 		await database
 			.update(benchmarkRuns)
 			.set({
@@ -435,6 +509,9 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 				param("timeout_seconds", row.run.timeoutSeconds),
 				param("max_turns", row.run.maxTurns),
 				param("evaluator_resource_class", row.run.evaluatorResourceClass),
+				param("evaluator_image", env.SWEBENCH_EVALUATOR_IMAGE),
+				param("git_sha", env.GIT_SHA ?? env.SOURCE_VERSION ?? env.VERCEL_GIT_COMMIT_SHA),
+				param("prompt_template_version", env.SWEBENCH_PROMPT_TEMPLATE_VERSION),
 				param("selected_instance_count", row.run.selectedInstanceIds.length),
 				param("tags", row.run.tags),
 			],
@@ -463,10 +540,24 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 			run: benchmarkRuns,
 			runInstance: benchmarkRunInstances,
 			suiteSlug: benchmarkSuites.slug,
+			repo: benchmarkInstances.repo,
+			baseCommit: benchmarkInstances.baseCommit,
+			primaryTraceId: workflowExecutions.primaryTraceId,
 		})
 		.from(benchmarkRunInstances)
 		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.innerJoin(benchmarkSuites, eq(benchmarkSuites.id, benchmarkRuns.suiteId))
+		.leftJoin(
+			benchmarkInstances,
+			and(
+				eq(benchmarkInstances.suiteId, benchmarkRuns.suiteId),
+				eq(benchmarkInstances.instanceId, benchmarkRunInstances.instanceId),
+			),
+		)
+		.leftJoin(
+			workflowExecutions,
+			eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+		)
 		.where(
 			and(
 				eq(benchmarkRunInstances.runId, params.runId),
@@ -478,19 +569,32 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 	if (row.runInstance.mlflowRunId) return row.runInstance.mlflowRunId;
 	try {
 		const experimentId = row.run.mlflowExperimentId ?? (await getOrCreateExperimentId());
-		const mlflowRunId = await createRun({
-			experimentId,
-			name: row.runInstance.instanceId,
-			startTime: row.runInstance.startedAt ?? row.run.startedAt ?? row.run.createdAt,
-			tags: [
-				tag("mlflow.parentRunId", parentRunId),
-				tag("workflow_builder.kind", "swebench_instance"),
-				tag("workflow_builder.benchmark_run_id", row.run.id),
-				tag("workflow_builder.benchmark_run_instance_id", row.runInstance.id),
-				tag("swebench.suite", row.suiteSlug),
-				tag("swebench.instance_id", row.runInstance.instanceId),
-			],
-		});
+		const identityTags = [
+			tag("workflow_builder.kind", "swebench_instance"),
+			tag("workflow_builder.benchmark_run_id", row.run.id),
+			tag("workflow_builder.benchmark_run_instance_id", row.runInstance.id),
+		];
+		let mlflowRunId = await findRunByTags(experimentId, identityTags);
+		if (!mlflowRunId) {
+			mlflowRunId = await createRun({
+				experimentId,
+				name: row.runInstance.instanceId,
+				startTime: row.runInstance.startedAt ?? row.run.startedAt ?? row.run.createdAt,
+				tags: [
+					tag("mlflow.parentRunId", parentRunId),
+					...identityTags,
+					tag("workflow_builder.workflow_execution_id", row.runInstance.workflowExecutionId),
+					tag("workflow_builder.primary_trace_id", row.primaryTraceId),
+					tag("swebench.suite", row.suiteSlug),
+					tag("swebench.instance_id", row.runInstance.instanceId),
+					tag("swebench.repo", row.repo),
+					tag("swebench.base_commit", row.baseCommit),
+					tag("agent.id", row.run.agentId),
+					tag("agent.version", row.run.agentVersion),
+					tag("agent.runtime", row.run.agentRuntime),
+				],
+			});
+		}
 		await database
 			.update(benchmarkRunInstances)
 			.set({ mlflowRunId, updatedAt: new Date() })
@@ -499,12 +603,28 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 			params: [
 				param("instance_id", row.runInstance.instanceId),
 				param("run_id", row.run.id),
+				param("repo", row.repo),
+				param("base_commit", row.baseCommit),
+				param(
+					"environment_key",
+					readRecordString(row.runInstance.inferenceEnvironment, "environmentKey"),
+				),
+				param(
+					"environment_image",
+					readRecordString(row.runInstance.inferenceEnvironment, "sandboxImage"),
+				),
+				param(
+					"environment_image_digest",
+					readRecordString(row.runInstance.inferenceEnvironment, "digest"),
+				),
 				param("model_name_or_path", row.run.modelNameOrPath),
 			],
 			tags: [
 				tag("workflow_builder.status", row.runInstance.status),
 				tag("workflow_builder.inference_status", row.runInstance.inferenceStatus),
 				tag("workflow_builder.evaluation_status", row.runInstance.evaluationStatus),
+				tag("workflow_builder.workflow_execution_id", row.runInstance.workflowExecutionId),
+				tag("workflow_builder.primary_trace_id", row.primaryTraceId),
 			],
 		});
 		return mlflowRunId;
@@ -526,8 +646,15 @@ export async function syncBenchmarkInstanceMlflow(params: {
 		const mlflowRunId = await ensureBenchmarkInstanceMlflowRun(params);
 		if (!mlflowRunId) return;
 		const [row] = await db
-			.select()
+			.select({
+				runInstance: benchmarkRunInstances,
+				primaryTraceId: workflowExecutions.primaryTraceId,
+			})
 			.from(benchmarkRunInstances)
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+			)
 			.where(
 				and(
 					eq(benchmarkRunInstances.runId, params.runId),
@@ -536,24 +663,31 @@ export async function syncBenchmarkInstanceMlflow(params: {
 			)
 			.limit(1);
 		if (!row) return;
-		const usage = isRecord(row.usage) ? row.usage : {};
-		const timings = isRecord(row.timings) ? row.timings : {};
+		const instance = row.runInstance;
+		const usage = isRecord(instance.usage) ? instance.usage : {};
+		const timings = isRecord(instance.timings) ? instance.timings : {};
+		const patchLineCount =
+			instance.patchAddedLines == null && instance.patchRemovedLines == null
+				? null
+				: (instance.patchAddedLines ?? 0) + (instance.patchRemovedLines ?? 0);
 		await logBatch(mlflowRunId, {
 			metrics: compactMetrics([
-				metric("resolved", row.status === "resolved" ? 1 : 0),
-				metric("patch_bytes", row.patchBytes),
-				metric("patch_added_lines", row.patchAddedLines),
-				metric("patch_removed_lines", row.patchRemovedLines),
-				metric("patch_files_touched", row.patchFilesTouched),
-				metric("patch_files_overlap_gold", row.patchFilesOverlapGold),
+				metric("resolved", instance.status === "resolved" ? 1 : 0),
+				metric("empty_patch", instance.evaluationStatus === "empty_patch" ? 1 : 0),
+				metric("patch_bytes", instance.patchBytes),
+				metric("patch_added_lines", instance.patchAddedLines),
+				metric("patch_removed_lines", instance.patchRemovedLines),
+				metric("patch_lines", patchLineCount),
+				metric("patch_files_touched", instance.patchFilesTouched),
+				metric("patch_files_overlap_gold", instance.patchFilesOverlapGold),
 				metric(
 					"patch_well_formed",
-					row.patchWellFormed ? 1 : row.patchWellFormed === false ? 0 : null,
+					instance.patchWellFormed ? 1 : instance.patchWellFormed === false ? 0 : null,
 				),
-				metric("turn_count", row.turnCount),
-				metric("tool_call_count", row.toolCallCount),
-				metric("ttft_first_ms", row.ttftFirstMs),
-				metric("ttft_first_tool_ms", row.ttftFirstToolMs),
+				metric("turn_count", instance.turnCount),
+				metric("tool_call_count", instance.toolCallCount),
+				metric("ttft_first_ms", instance.ttftFirstMs),
+				metric("ttft_first_tool_ms", instance.ttftFirstToolMs),
 				metric("input_tokens", usage.input_tokens),
 				metric("output_tokens", usage.output_tokens),
 				metric("cache_read_tokens", usage.cache_read_input_tokens),
@@ -575,20 +709,34 @@ export async function syncBenchmarkInstanceMlflow(params: {
 				metric("tool_duration_p90_ms", timings.tool_duration_p90_ms),
 			]),
 			tags: [
-				tag("workflow_builder.status", row.status),
-				tag("workflow_builder.inference_status", row.inferenceStatus),
-				tag("workflow_builder.evaluation_status", row.evaluationStatus),
-				tag("workflow_builder.session_id", row.sessionId),
-				tag("workflow_builder.workflow_execution_id", row.workflowExecutionId),
-				tag("workflow_builder.dapr_instance_id", row.daprInstanceId),
-				tag("workflow_builder.sandbox_name", row.sandboxName),
-				tag("workflow_builder.workspace_ref", row.workspaceRef),
-				tag("workflow_builder.trace_ids", row.traceIds),
-				tag("workflow_builder.patch_sha256", row.patchSha256),
-				tag("workflow_builder.logs_path", row.logsPath),
-				tag("workflow_builder.termination_reason", row.terminationReason),
+				tag("workflow_builder.status", instance.status),
+				tag("workflow_builder.inference_status", instance.inferenceStatus),
+				tag("workflow_builder.evaluation_status", instance.evaluationStatus),
+				tag("workflow_builder.session_id", instance.sessionId),
+				tag("workflow_builder.workflow_execution_id", instance.workflowExecutionId),
+				tag("workflow_builder.primary_trace_id", row.primaryTraceId),
+				tag("workflow_builder.dapr_instance_id", instance.daprInstanceId),
+				tag("workflow_builder.sandbox_name", instance.sandboxName),
+				tag("workflow_builder.workspace_ref", instance.workspaceRef),
+				tag("workflow_builder.trace_ids", instance.traceIds),
+				tag("workflow_builder.patch_sha256", instance.patchSha256),
+				tag("workflow_builder.logs_path", instance.logsPath),
+				tag("workflow_builder.termination_reason", instance.terminationReason),
 			],
 		});
+		if (terminalInstanceStatuses.has(instance.status)) {
+			const status =
+				instance.status === "cancelled"
+					? "KILLED"
+					: instance.status === "error" || instance.status === "timeout"
+						? "FAILED"
+						: "FINISHED";
+			await updateRunStatusOnce(
+				mlflowRunId,
+				status,
+				instance.evaluatedAt ?? instance.inferenceCompletedAt ?? new Date(),
+			);
+		}
 	} catch (err) {
 		warnMlflow(
 			`failed to sync instance MLflow metrics ${params.runId}/${params.instanceId}`,
@@ -628,6 +776,7 @@ export async function syncBenchmarkRunMlflow(
 				tag("workflow_builder.coordinator_execution_id", run.coordinatorExecutionId),
 				tag("workflow_builder.evaluator_job_name", run.evaluatorJobName),
 				tag("workflow_builder.predictions_path", run.predictionsPath),
+				tag("workflow_builder.mlflow_eval_run_id", summary.mlflowEvalRunId),
 				tag("workflow_builder.error", run.error),
 			],
 		});
@@ -638,7 +787,7 @@ export async function syncBenchmarkRunMlflow(
 					: run.status === "cancelled"
 						? "KILLED"
 						: "FAILED";
-			await updateRunStatus(mlflowRunId, mlflowStatus, run.completedAt ?? new Date());
+			await updateRunStatusOnce(mlflowRunId, mlflowStatus, run.completedAt ?? new Date());
 		}
 	} catch (err) {
 		warnMlflow(`failed to sync benchmark MLflow run ${runId}`, err);
@@ -647,4 +796,10 @@ export async function syncBenchmarkRunMlflow(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readRecordString(value: unknown, key: string): string | null {
+	if (!isRecord(value)) return null;
+	const candidate = value[key];
+	return typeof candidate === "string" && candidate.trim() ? candidate.trim() : null;
 }

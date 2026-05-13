@@ -464,14 +464,20 @@ def test_evaluation_workflow_deletes_job_after_terminal_progress(monkeypatch):
             "reason": "evaluation rows reached terminal state",
         },
     )
+    assert workflow.send({"success": True, "deleted": True}) == (
+        "activity",
+        "_run_mlflow_swebench_eval",
+        {"runId": "run_1"},
+    )
     try:
-        workflow.send({"success": True, "deleted": True})
+        workflow.send({"success": True, "mlflowEvalRunId": "eval_run_1"})
     except StopIteration as stop:
         assert stop.value == {
             "success": True,
             "jobName": "swebench-eval-run_1",
             "progress": terminal_progress,
             "deleteResult": {"success": True, "deleted": True},
+            "mlflowEvaluation": {"success": True, "mlflowEvalRunId": "eval_run_1"},
         }
     else:
         raise AssertionError("expected evaluation workflow to complete")
@@ -820,6 +826,97 @@ def test_sync_instance_logs_patch_but_returns_compact_payload(monkeypatch, tmp_p
     assert "modelPatch" not in result["instance"]
     assert "harnessResult" not in result["instance"]
     assert len(json.dumps(result)) < 1_000
+
+
+def test_mlflow_eval_summary_scores_completed_rows(monkeypatch):
+    app = load_app(monkeypatch)
+
+    summary = app._summarize_mlflow_eval_rows(
+        [
+            {
+                "outputs": {
+                    "status": "resolved",
+                    "evaluation_status": "resolved",
+                    "model_patch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
+                    "trace_ids": ["trace_1"],
+                },
+                "metadata": {"instance_id": "sympy__sympy-20590"},
+            },
+            {
+                "outputs": {
+                    "status": "failed",
+                    "evaluation_status": "empty_patch",
+                    "model_patch": "",
+                    "trace_ids": [],
+                },
+                "metadata": {"instance_id": "django__django-1"},
+            },
+        ]
+    )
+
+    assert summary["rowCount"] == 2
+    assert summary["scorers"]["swebench_harness_resolved"]["passing"] == 1
+    assert summary["scorers"]["patch_present_and_well_formed"]["passing"] == 1
+    assert summary["scorers"]["trace_health"]["passing"] == 1
+
+
+def test_run_mlflow_swebench_eval_persists_eval_projection(monkeypatch, tmp_path):
+    app = load_app(monkeypatch)
+    app.MLFLOW_TRACKING_URI = "http://mlflow.test"
+    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
+    monkeypatch.setattr(app, "_mlflow_log_artifact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        app,
+        "_mlflow_genai_evaluate_sync",
+        lambda parent_run_id, run, rows, summary: "eval_run_1",
+    )
+    posted = {}
+    monkeypatch.setattr(
+        app,
+        "_bff_with_retry",
+        lambda method, path, json_body=None, **_kwargs: posted.update(
+            {"method": method, "path": path, "json": json_body}
+        )
+        or {"success": True},
+    )
+    monkeypatch.setattr(
+        app,
+        "_load_run",
+        lambda _run_id: {
+            "id": "run_1",
+            "suiteSlug": "SWE-bench_Verified",
+            "datasetName": "princeton-nlp/SWE-bench_Verified",
+            "agentId": "agent_1",
+            "agentVersion": 3,
+            "agentRuntimeAppId": "agent-runtime-agent-1",
+            "modelNameOrPath": "model",
+            "mlflowRunId": "parent_run_1",
+            "instances": [
+                {
+                    "id": "ri_1",
+                    "instanceId": "sympy__sympy-20590",
+                    "status": "resolved",
+                    "evaluationStatus": "resolved",
+                    "repo": "sympy/sympy",
+                    "baseCommit": "abc",
+                    "problemStatement": "Fix it",
+                    "testMetadata": {"FAIL_TO_PASS": ["test_a"]},
+                    "modelPatch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
+                    "traceIds": ["trace_1"],
+                    "mlflowRunId": "child_run_1",
+                }
+            ],
+        },
+    )
+
+    result = app._run_mlflow_swebench_eval(None, {"runId": "run_1"})
+
+    assert result["success"] is True
+    assert result["mlflowEvalRunId"] == "eval_run_1"
+    assert (tmp_path / "run_1" / "mlflow-eval-input.jsonl").exists()
+    assert (tmp_path / "run_1" / "mlflow-eval-summary.json").exists()
+    assert posted["path"] == "/api/internal/benchmarks/runs/run_1/mlflow-evaluation"
+    assert posted["json"]["mlflowEvalRunId"] == "eval_run_1"
 
 
 def test_load_evaluation_progress_does_not_return_full_run(monkeypatch):
