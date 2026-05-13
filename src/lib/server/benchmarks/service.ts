@@ -5536,6 +5536,7 @@ function buildSwebenchPrompt(params: {
 		`- Because checkpoint commits can make plain git diff/status look clean, inspect your final patch with git diff --binary ${params.baseCommit} -- . instead of plain git diff.`,
 		"- Produce the repository fix by editing implementation files only.",
 		"- Do not reinstall project dependencies unless the issue explicitly requires it.",
+		"- Do not run `pip install`, `python setup.py build_ext --inplace`, or commands that rewrite /sandbox/.venv or /testbed. If imports or local tests fail because compiled extensions or /testbed permissions are unavailable, stop debugging the environment and inspect/edit source files instead.",
 		"- Do not edit tests, test fixtures, benchmark metadata, generated artifact files, or files that only make local tests pass.",
 		"- The final benchmark patch excludes test and fixture paths; implementation fixes must be outside those paths.",
 		"- Running local tests is optional and best-effort. Official grading happens later in Kubernetes-native SWE-bench evaluator TaskRuns.",

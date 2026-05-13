@@ -6,6 +6,7 @@ Ported from claude-code-src/main/tools/BashTool/BashTool.tsx
 from __future__ import annotations
 
 from src.openshell_runtime import get_runtime
+from src.swebench_bash_policy import swebench_bash_policy_violation
 from .._security import get_destructive_warning
 from .prompt import get_bash_tool_description, _DEFAULT_TIMEOUT_MS, _MAX_TIMEOUT_MS
 
@@ -18,6 +19,11 @@ def bash_run(
     if not command or not command.strip():
         return "Error: No command provided."
 
+    runtime = get_runtime()
+    policy_error = swebench_bash_policy_violation(command, runtime.session_id)
+    if policy_error:
+        return policy_error
+
     # Convert timeout from ms to seconds
     timeout_ms = min(timeout or _DEFAULT_TIMEOUT_MS, _MAX_TIMEOUT_MS)
     timeout_sec = timeout_ms / 1000
@@ -26,7 +32,7 @@ def bash_run(
     warning = get_destructive_warning(command)
 
     try:
-        result = get_runtime().execute(
+        result = runtime.execute(
             command,
             timeout_seconds=int(timeout_sec),
         )

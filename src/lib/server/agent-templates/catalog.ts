@@ -1,6 +1,7 @@
 import type { AgentConfig } from "$lib/types/agents";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import { createDefaultAgentConfig } from "$lib/types/agents";
+import { SWE_BENCH_SOLVER_SYSTEM_PROMPT } from "$lib/server/benchmarks/agent-prompts";
 
 /**
  * Template gallery for the Quickstart wizard. Mirrors the CMA templates
@@ -69,6 +70,38 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 				"write_file",
 				"list_files",
 				"edit_file",
+			],
+		}),
+	},
+	{
+		slug: "adk-gemini-swebench-solver",
+		name: "ADK Gemini SWE-bench solver",
+		description:
+			"Runs SWE-bench coding tasks on the adk-agent-py runtime with Gemini and the benchmark tool profile.",
+		providerIcons: [],
+		highlights: [
+			"adk-agent-py runtime",
+			"SWE-bench solver prompt",
+			"grep/glob workspace tools",
+		],
+		config: base({
+			runtime: "adk-agent-py",
+			modelSpec: "googleai/gemini-3.1-pro-preview",
+			systemPrompt: SWE_BENCH_SOLVER_SYSTEM_PROMPT,
+			cacheTtl: "1h",
+			maxTurns: 50,
+			timeoutMinutes: 60,
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			mcpConnectionMode: "explicit",
+			builtinTools: [
+				"execute_command",
+				"read_file",
+				"write_file",
+				"list_files",
+				"edit_file",
+				"glob_files",
+				"grep_search",
 			],
 		}),
 	},
