@@ -18,6 +18,13 @@ from typing import Any
 
 from src.constants import DEFAULT_MODEL
 
+
+def _google_provider_model(model_spec: str) -> str:
+    text = model_spec.strip()
+    if text.startswith(("googleai/", "google/")):
+        return text.split("/", 1)[1]
+    return text
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +50,7 @@ def build_per_turn_agent_config(
     cfg = dict(workflow_agent_config or {})
     name = (cfg.get("slug") or cfg.get("name") or "adk_agent_py").strip() or "adk_agent_py"
 
-    resolved_model = (
+    resolved_model = _google_provider_model(
         (model or "").strip()
         or (cfg.get("modelSpec") or "").strip()
         or DEFAULT_MODEL

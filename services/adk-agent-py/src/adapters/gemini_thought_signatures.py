@@ -197,6 +197,7 @@ def install_gemini_thought_signature_patch() -> None:
         )
 
         client = Client()
+        logger.info("[gemini] generate_content model=%s", llm_input.agent_config.model)
         response = client.models.generate_content(
             model=llm_input.agent_config.model,
             contents=contents,
