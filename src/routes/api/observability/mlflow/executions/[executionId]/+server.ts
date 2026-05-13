@@ -1,5 +1,8 @@
-import { error, redirect, type RequestHandler } from '@sveltejs/kit';
-import { resolveMlflowTraceUrlForExecution } from '$lib/server/observability/mlflow';
+import { error, json, redirect, type RequestHandler } from "@sveltejs/kit";
+import {
+  getMlflowTraceGroupForExecution,
+  resolveMlflowTraceUrlForExecution,
+} from "$lib/server/observability/mlflow";
 
 /**
  * GET /api/observability/mlflow/executions/[executionId]
@@ -10,16 +13,21 @@ import { resolveMlflowTraceUrlForExecution } from '$lib/server/observability/mlf
  * pattern — sessions filter by `tag.session.id`; executions filter by
  * `tag.workflow.execution.id`.
  */
-export const GET: RequestHandler = async ({ params }) => {
-	const executionId = params.executionId?.trim();
-	if (!executionId) return error(400, 'Execution id is required');
+export const GET: RequestHandler = async ({ params, url }) => {
+  const executionId = params.executionId?.trim();
+  if (!executionId) return error(400, "Execution id is required");
+  if (url.searchParams.get("format") === "json") {
+    const group = await getMlflowTraceGroupForExecution(executionId);
+    if (!group) return error(404, "Execution not found");
+    return json(group);
+  }
 
-	const href = await resolveMlflowTraceUrlForExecution(executionId);
-	if (!href) {
-		return error(
-			503,
-			'No MLflow trace found for this execution yet. Traces appear within ~10s of workflow start; refresh after the first agent turn completes.'
-		);
-	}
-	return redirect(302, href);
+  const href = await resolveMlflowTraceUrlForExecution(executionId);
+  if (!href) {
+    return error(
+      503,
+      "No MLflow trace found for this execution yet. Traces appear within ~10s of workflow start; refresh after the first agent turn completes.",
+    );
+  }
+  return redirect(302, href);
 };

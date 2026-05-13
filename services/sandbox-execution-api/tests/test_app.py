@@ -222,6 +222,7 @@ def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> No
         trace_context={
             "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
             "tracestate": "rojo=00f067aa0ba902b7",
+            "baggage": "workflow.execution.id=exec_1,session.id=session_1",
         },
     )
 
@@ -233,6 +234,10 @@ def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> No
     assert (
         sandbox_annotations["workflow-builder.cnoe.io/tracestate"]
         == "rojo=00f067aa0ba902b7"
+    )
+    assert (
+        sandbox_annotations["workflow-builder.cnoe.io/baggage"]
+        == "workflow.execution.id=exec_1,session.id=session_1"
     )
     pod_template_annotations = manifest["spec"]["podTemplate"]["metadata"][
         "annotations"
@@ -248,12 +253,21 @@ def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> No
         pod_template_annotations["workflow-builder.cnoe.io/tracestate"]
         == "rojo=00f067aa0ba902b7"
     )
+    assert (
+        pod_template_annotations["workflow-builder.cnoe.io/baggage"]
+        == "workflow.execution.id=exec_1,session.id=session_1"
+    )
     container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
     env_by_name = {e["name"]: e for e in container["env"]}
     assert "WORKFLOW_BUILDER_TRACEPARENT" in env_by_name
+    assert "WORKFLOW_BUILDER_BAGGAGE" in env_by_name
     field_ref = env_by_name["WORKFLOW_BUILDER_TRACEPARENT"]["valueFrom"]["fieldRef"]
     assert field_ref["fieldPath"] == (
         "metadata.annotations['workflow-builder.cnoe.io/traceparent']"
+    )
+    baggage_ref = env_by_name["WORKFLOW_BUILDER_BAGGAGE"]["valueFrom"]["fieldRef"]
+    assert baggage_ref["fieldPath"] == (
+        "metadata.annotations['workflow-builder.cnoe.io/baggage']"
     )
 
 

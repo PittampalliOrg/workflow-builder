@@ -916,7 +916,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       buildWorkflowSessionId(body.db_execution_id || body.execution_id) ||
       sessionIdFromHeaders(request.headers);
     if (resolvedSessionId) {
-      bindWorkflowSessionContext(resolvedSessionId);
+      bindWorkflowSessionContext({
+        sessionId: resolvedSessionId,
+        workflowExecutionId: body.db_execution_id || body.execution_id,
+        workflowId: body.workflow_id,
+        traceGroupId: body.db_execution_id || body.execution_id,
+      });
     }
     const functionSlug = body.function_slug || body.function_id;
 
@@ -1970,7 +1975,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 `${target.appId} HTTP ${httpResponse.status}: ${errorFromBody.slice(0, 300)}`,
               );
             }
-
 
             if (!response && typeof resolvedMastra?.success === "boolean") {
               const allowWorkspaceCommandFailure =

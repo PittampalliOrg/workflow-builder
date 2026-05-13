@@ -110,6 +110,10 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
         dapr_component="llm-anthropic",
         mlflow_model_id="m-agent-v1",
         mlflow_model_uri="models:/m-agent-v1",
+        mlflow_experiment_id="11",
+        mlflow_run_id="run_1",
+        mlflow_parent_run_id="parent_run_1",
+        workflow_trace_group_id="exec-1",
     )
     start_interaction_span("hello world")
     llm = start_llm_request_span(
@@ -156,6 +160,10 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert interaction.attributes["mlflow.modelId"] == "m-agent-v1"
     assert interaction.attributes["mlflow.model.uri"] == "models:/m-agent-v1"
     assert interaction.attributes["agent.mlflow_uri"] == "models:/m-agent-v1"
+    assert interaction.attributes["mlflow.experiment_id"] == "11"
+    assert interaction.attributes["mlflow.run_id"] == "run_1"
+    assert interaction.attributes["mlflow.parent_run_id"] == "parent_run_1"
+    assert interaction.attributes["workflow_builder.trace_group_id"] == "exec-1"
     assert interaction.attributes["mlflow.spanType"] == "AGENT"
     # Prompt redacted by default (OTEL_LOG_USER_PROMPTS unset).
     assert interaction.attributes["user_prompt"] == "<REDACTED>"

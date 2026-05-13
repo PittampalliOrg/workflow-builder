@@ -318,6 +318,21 @@ def _generate_trace_context() -> dict[str, str]:
     }
 
 
+def _parse_baggage(value: object) -> dict[str, str]:
+    if not isinstance(value, str):
+        return {}
+    out: dict[str, str] = {}
+    for part in value.split(","):
+        if "=" not in part:
+            continue
+        key, raw_value = part.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        out[key] = raw_value.strip()
+    return out
+
+
 def _merge_otel_context(
     request: Request | None = None,
     *,
@@ -350,7 +365,23 @@ def _merge_otel_context(
     if session_id:
         merged["sessionId"] = session_id
         merged["session.id"] = session_id
+    baggage = _parse_baggage(merged.get("baggage"))
+    for key in (
+        "workflow.execution.id",
+        "workflow.id",
+        "dapr.workflow.instance_id",
+        "mlflow.experiment_id",
+        "mlflow.run_id",
+        "mlflow.parent_run_id",
+        "workflow_builder.trace_group_id",
+    ):
+        value = baggage.get(key)
+        if value:
+            merged[key] = value
+    if "workflow.execution.id" not in merged and session_id:
         merged["workflow.execution.id"] = session_id
+    if "workflow_builder.trace_group_id" not in merged and merged.get("workflow.execution.id"):
+        merged["workflow_builder.trace_group_id"] = merged["workflow.execution.id"]
     return merged
 
 

@@ -106,6 +106,7 @@ def test_emit_mlflow_trace_root_span_posts_expected_otlp_request(monkeypatch):
     assert attrs["mlflow.spanType"] == "AGENT"
     assert attrs["workflow.id"] == "wf_test"
     assert attrs["workflow.execution.id"] == "db_exec_123"
+    assert attrs["workflow_builder.trace_group_id"] == "db_exec_123"
     assert attrs["dapr.workflow.instance_id"] == "dapr_wf_123"
     assert attrs["mlflow.traceName"] == "wf_test/db_exec_123"
     assert attrs["workflow.status"] == "OK"
@@ -376,6 +377,11 @@ def test_finalize_activity_links_trace_to_parent_and_child_runs(monkeypatch):
         recorded["run_ids"] = [target["run_id"] for target in targets]
 
     monkeypatch.setattr(finalizer, "_record_lineage_links", fake_record_lineage_links)
+    monkeypatch.setattr(
+        finalizer,
+        "_reconcile_related_traces",
+        lambda **_kwargs: {"relatedTraceCount": 0, "relatedTraceIds": []},
+    )
 
     result = finalizer._link_trace_to_workflow_runs(
         {"traceId": trace_id, "dbExecutionId": "db_exec_123"}
@@ -389,6 +395,79 @@ def test_finalize_activity_links_trace_to_parent_and_child_runs(monkeypatch):
         "trace_id": f"tr-{trace_id}",
         "run_ids": ["parent_run", "child_run"],
     }
+
+
+def test_reconcile_related_traces_records_matching_trace_sources(monkeypatch):
+    calls = []
+    targets = [
+        {
+            "entity_type": "workflow_execution",
+            "entity_id": "db_exec_123",
+            "project_id": "project_1",
+            "experiment_id": "8",
+            "run_id": "parent_run",
+        },
+        {
+            "entity_type": "session",
+            "entity_id": "session_1",
+            "project_id": "project_1",
+            "experiment_id": "8",
+            "run_id": "child_run",
+        },
+    ]
+
+    monkeypatch.setattr(
+        finalizer,
+        "_search_related_mlflow_traces",
+        lambda **_kwargs: [
+            {
+                "trace_id": "tr-1234567890abcdef1234567890abcdef",
+                "attrs": {"workflow.execution.id": "db_exec_123"},
+            },
+            {
+                "trace_id": "tr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "attrs": {"session.id": "session_1", "service.name": "agent-runtime-demo"},
+            },
+            {
+                "trace_id": "tr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "attrs": {
+                    "workflow.execution.id": "db_exec_123",
+                    "service.name": "daprd",
+                },
+            },
+        ],
+    )
+
+    def fake_record_lineage_links(*, trace_id, targets, source="primary", attrs=None):
+        calls.append(
+            {
+                "trace_id": trace_id,
+                "target_count": len(targets),
+                "source": source,
+                "attrs": attrs,
+            }
+        )
+
+    monkeypatch.setattr(finalizer, "_record_lineage_links", fake_record_lineage_links)
+
+    result = finalizer._reconcile_related_traces(
+        input_data={
+            "traceId": "1234567890abcdef1234567890abcdef",
+            "dbExecutionId": "db_exec_123",
+            "workflowId": "workflow_1",
+            "daprInstanceId": "dapr_wf_123",
+            "mlflowContext": {"traceExperimentId": "8"},
+        },
+        primary_trace_id="tr-1234567890abcdef1234567890abcdef",
+        targets=targets,
+    )
+
+    assert result["relatedTraceCount"] == 3
+    assert [call["source"] for call in calls] == [
+        "primary",
+        "agent_session",
+        "dapr_sidecar",
+    ]
 
 
 def test_link_trace_to_run_posts_mlflow_link_endpoint(monkeypatch):

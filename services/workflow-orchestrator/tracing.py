@@ -368,6 +368,7 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
             "workflow.id": workflow_id,
             "workflow.name": workflow_name,
             "workflow.execution.id": display_execution_id,
+            "workflow_builder.trace_group_id": display_execution_id,
             "workflow.execution.db_id": db_execution_id,
             "dapr.workflow.instance_id": workflow_instance_id,
             "dapr.workflow.name": workflow_name,

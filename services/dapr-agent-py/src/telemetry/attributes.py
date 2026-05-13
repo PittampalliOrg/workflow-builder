@@ -40,6 +40,10 @@ class SessionContext:
     llm_component: str = ""
     mlflow_model_id: str = ""
     mlflow_model_uri: str = ""
+    mlflow_experiment_id: str = ""
+    mlflow_run_id: str = ""
+    mlflow_parent_run_id: str = ""
+    workflow_trace_group_id: str = ""
     user_id: str = ""
     organization_id: str = ""
     user_email: str = ""
@@ -101,6 +105,10 @@ def set_session_context(
     llm_component: str | None = "",
     mlflow_model_id: str | None = "",
     mlflow_model_uri: str | None = "",
+    mlflow_experiment_id: str | None = "",
+    mlflow_run_id: str | None = "",
+    mlflow_parent_run_id: str | None = "",
+    workflow_trace_group_id: str | None = "",
     user_id: str = "",
     organization_id: str = "",
     user_email: str = "",
@@ -136,6 +144,10 @@ def set_session_context(
             llm_component=llm_component or "",
             mlflow_model_id=mlflow_model_id or "",
             mlflow_model_uri=mlflow_model_uri or "",
+            mlflow_experiment_id=mlflow_experiment_id or "",
+            mlflow_run_id=mlflow_run_id or "",
+            mlflow_parent_run_id=mlflow_parent_run_id or "",
+            workflow_trace_group_id=workflow_trace_group_id or "",
             user_id=user_id,
             organization_id=organization_id,
             user_email=user_email,
@@ -205,6 +217,14 @@ def get_telemetry_attributes() -> dict[str, Any]:
     if ctx.mlflow_model_uri:
         attrs["mlflow.model.uri"] = ctx.mlflow_model_uri
         attrs["agent.mlflow_uri"] = ctx.mlflow_model_uri
+    if ctx.mlflow_experiment_id:
+        attrs["mlflow.experiment_id"] = ctx.mlflow_experiment_id
+    if ctx.mlflow_run_id:
+        attrs["mlflow.run_id"] = ctx.mlflow_run_id
+    if ctx.mlflow_parent_run_id:
+        attrs["mlflow.parent_run_id"] = ctx.mlflow_parent_run_id
+    if ctx.workflow_trace_group_id:
+        attrs["workflow_builder.trace_group_id"] = ctx.workflow_trace_group_id
 
     if _should_include("OTEL_METRICS_INCLUDE_VERSION"):
         version = os.environ.get("DAPR_AGENT_PY_VERSION") or os.environ.get(

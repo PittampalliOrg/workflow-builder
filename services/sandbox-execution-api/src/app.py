@@ -446,6 +446,7 @@ def _agent_host_sandbox_name(agent_app_id: str) -> str:
 
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
 TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
+BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
 
 
 def build_agent_workflow_host_sandbox_manifest(
@@ -601,6 +602,17 @@ def build_agent_workflow_host_sandbox_manifest(
                             },
                         },
                     },
+                    {
+                        "name": "WORKFLOW_BUILDER_BAGGAGE",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": (
+                                    "metadata.annotations["
+                                    f"'{BAGGAGE_ANNOTATION}']"
+                                ),
+                            },
+                        },
+                    },
                     # MLflow tracing destination — per-cluster experiment id
                     # from the mlflow-workflow-builder-experiment ConfigMap
                     # (3=dev, 6=ryzen, 7=staging) so providers.py can call
@@ -697,6 +709,10 @@ def build_agent_workflow_host_sandbox_manifest(
         if tracestate:
             sandbox_metadata_annotations[TRACESTATE_ANNOTATION] = tracestate
             pod_trace_annotations[TRACESTATE_ANNOTATION] = tracestate
+        baggage = trace_context.get("baggage") or ""
+        if baggage:
+            sandbox_metadata_annotations[BAGGAGE_ANNOTATION] = baggage
+            pod_trace_annotations[BAGGAGE_ANNOTATION] = baggage
     pod_annotations: dict[str, str] = {
         "dapr.io/enabled": "true",
         "dapr.io/app-id": request.agentAppId,
@@ -1062,6 +1078,7 @@ def submit_agent_workflow_host(
     trace_context = {
         "traceparent": request.headers.get("traceparent", "") or "",
         "tracestate": request.headers.get("tracestate", "") or "",
+        "baggage": request.headers.get("baggage", "") or "",
     }
     manifest = build_agent_workflow_host_sandbox_manifest(
         body,

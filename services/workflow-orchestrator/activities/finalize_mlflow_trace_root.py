@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import uuid
 from typing import Any
@@ -59,6 +60,159 @@ def _normalize_mlflow_trace_id(value: Any) -> str | None:
     if len(normalized) != 32 or any(c not in "0123456789abcdef" for c in normalized):
         return None
     return f"tr-{normalized}"
+
+
+def _trace_experiment_id(
+    input_data: dict[str, Any],
+    targets: list[dict[str, str | None]],
+) -> str | None:
+    mlflow_context = (
+        input_data.get("mlflowContext")
+        if isinstance(input_data.get("mlflowContext"), dict)
+        else {}
+    )
+    for value in (
+        mlflow_context.get("traceExperimentId"),
+        mlflow_context.get("experimentId"),
+        input_data.get("mlflowTraceExperimentId"),
+        input_data.get("mlflowExperimentId"),
+        *(target.get("experiment_id") for target in targets),
+        os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID"),
+        os.environ.get("MLFLOW_EXPERIMENT_ID"),
+    ):
+        normalized = str(value or "").strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _trace_record_id(record: dict[str, Any]) -> str | None:
+    info = record.get("info") if isinstance(record.get("info"), dict) else {}
+    for value in (
+        record.get("trace_id"),
+        record.get("request_id"),
+        record.get("traceId"),
+        info.get("trace_id"),
+        info.get("request_id"),
+    ):
+        trace_id = _normalize_mlflow_trace_id(value)
+        if trace_id:
+            return trace_id
+    return None
+
+
+def _tag_map(raw: Any) -> dict[str, str]:
+    if isinstance(raw, dict):
+        return {
+            str(key): str(value)
+            for key, value in raw.items()
+            if key and value is not None and str(value).strip()
+        }
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        value = item.get("value")
+        if key and value is not None and str(value).strip():
+            out[key] = str(value)
+    return out
+
+
+def _trace_attrs(record: dict[str, Any]) -> dict[str, str]:
+    info = record.get("info") if isinstance(record.get("info"), dict) else {}
+    data = record.get("data") if isinstance(record.get("data"), dict) else {}
+    attrs: dict[str, str] = {}
+    for source in (
+        record.get("tags"),
+        info.get("tags"),
+        record.get("attributes"),
+        info.get("attributes"),
+        data.get("tags"),
+        data.get("attributes"),
+    ):
+        attrs.update(_tag_map(source))
+    return attrs
+
+
+def _search_related_mlflow_traces(
+    *,
+    experiment_id: str,
+    match_values: set[str],
+    primary_trace_id: str,
+) -> list[dict[str, Any]]:
+    if not _mlflow_enabled() or not experiment_id:
+        return []
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip().rstrip("/")
+    try:
+        response = requests.post(
+            f"{tracking_uri}/api/3.0/mlflow/traces/search",
+            json={
+                "experiment_ids": [experiment_id],
+                "max_results": 250,
+                "order_by": ["timestamp_ms DESC"],
+            },
+            timeout=8,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "[MLflow Finalize] trace search failed experiment=%s: HTTP %s %s",
+                experiment_id,
+                response.status_code,
+                response.text[:300],
+            )
+            return []
+        payload = response.json()
+    except Exception as exc:  # noqa: BLE001 - reconciliation is best effort
+        logger.warning("[MLflow Finalize] trace search failed experiment=%s: %s", experiment_id, exc)
+        return []
+
+    traces = payload.get("traces") if isinstance(payload, dict) else None
+    if not isinstance(traces, list):
+        return []
+
+    related: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in traces:
+        if not isinstance(record, dict):
+            continue
+        trace_id = _trace_record_id(record)
+        if not trace_id or trace_id in seen:
+            continue
+        attrs = _trace_attrs(record)
+        values = {str(value).strip() for value in attrs.values() if str(value).strip()}
+        if trace_id == primary_trace_id or values.intersection(match_values):
+            seen.add(trace_id)
+            related.append({"trace_id": trace_id, "attrs": attrs})
+    return related
+
+
+def _classify_trace_source(
+    trace_id: str,
+    primary_trace_id: str,
+    attrs: dict[str, str],
+    session_ids: set[str],
+) -> str:
+    if trace_id == primary_trace_id:
+        return "primary"
+    service_name = (
+        attrs.get("service.name")
+        or attrs.get("service_name")
+        or attrs.get("k8s.deployment.name")
+        or ""
+    ).lower()
+    span_name = (attrs.get("span.name") or attrs.get("name") or "").lower()
+    if attrs.get("session.id") in session_ids or attrs.get("workflow_builder.session_id") in session_ids:
+        return "agent_session"
+    if "daprd" in service_name or "dapr" in service_name or "taskhubsidecarservice" in span_name:
+        return "dapr_sidecar"
+    if "workflow-builder" in service_name or "sveltekit" in service_name:
+        return "bff"
+    if "workflow-orchestrator" in service_name:
+        return "orchestrator"
+    return "unclassified"
 
 
 def _fetch_mlflow_run_targets(db_execution_id: str | None) -> list[dict[str, str | None]]:
@@ -165,6 +319,8 @@ def _record_lineage_links(
     *,
     trace_id: str,
     targets: list[dict[str, str | None]],
+    source: str = "primary",
+    attrs: dict[str, str] | None = None,
 ) -> None:
     if not targets:
         return
@@ -180,7 +336,7 @@ def _record_lineage_links(
                 run_id = target.get("run_id")
                 if not entity_type or not entity_id or not run_id:
                     continue
-                source_key = f"{entity_type}:{entity_id}:mlflow_trace:{trace_id}:run:{run_id}"
+                source_key = f"{entity_type}:{entity_id}:mlflow_trace:{trace_id}:run:{run_id}:source:{source}"
                 cur.execute(
                     """
                     INSERT INTO mlflow_lineage_links (
@@ -198,12 +354,14 @@ def _record_lineage_links(
                         created_at,
                         updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, 'trace', %s, %s, %s, '{}'::jsonb, '{}'::jsonb, now(), now())
+                    VALUES (%s, %s, %s, %s, %s, 'trace', %s, %s, %s, %s::jsonb, %s::jsonb, now(), now())
                     ON CONFLICT (source_key) DO UPDATE SET
                         project_id = EXCLUDED.project_id,
                         mlflow_experiment_id = EXCLUDED.mlflow_experiment_id,
                         mlflow_run_id = EXCLUDED.mlflow_run_id,
                         mlflow_trace_id = EXCLUDED.mlflow_trace_id,
+                        tags = EXCLUDED.tags,
+                        metadata = EXCLUDED.metadata,
                         updated_at = now()
                     """,
                     (
@@ -215,6 +373,8 @@ def _record_lineage_links(
                         target.get("experiment_id"),
                         run_id,
                         trace_id,
+                        json.dumps(attrs or {}),
+                        json.dumps({"source": source}),
                     ),
                 )
         conn.commit()
@@ -256,11 +416,90 @@ def _link_trace_to_workflow_runs(input_data: dict[str, Any]) -> dict[str, Any]:
             failed_run_ids.append(run_id)
 
     _record_lineage_links(trace_id=trace_id, targets=linked_targets)
+    reconcile_result = _reconcile_related_traces(
+        input_data=input_data,
+        primary_trace_id=trace_id,
+        targets=targets,
+    )
     return {
         "linked": bool(linked_targets),
         "traceId": trace_id,
         "linkedRunIds": [target.get("run_id") for target in linked_targets],
         "failedRunIds": failed_run_ids,
+        "relatedTraceCount": reconcile_result.get("relatedTraceCount", 0),
+        "relatedTraceIds": reconcile_result.get("relatedTraceIds", []),
+    }
+
+
+def _reconcile_related_traces(
+    *,
+    input_data: dict[str, Any],
+    primary_trace_id: str,
+    targets: list[dict[str, str | None]],
+) -> dict[str, Any]:
+    experiment_id = _trace_experiment_id(input_data, targets)
+    if not experiment_id:
+        return {"relatedTraceCount": 0, "reason": "missing_experiment_id"}
+
+    db_execution_id = str(input_data.get("dbExecutionId") or "").strip()
+    workflow_id = str(input_data.get("workflowId") or "").strip()
+    dapr_instance_id = str(
+        input_data.get("daprInstanceId")
+        or input_data.get("workflowInstanceId")
+        or input_data.get("executionId")
+        or ""
+    ).strip()
+    session_ids = {
+        str(target.get("entity_id") or "").strip()
+        for target in targets
+        if target.get("entity_type") == "session" and str(target.get("entity_id") or "").strip()
+    }
+    run_ids = {
+        str(target.get("run_id") or "").strip()
+        for target in targets
+        if str(target.get("run_id") or "").strip()
+    }
+    match_values = {
+        value
+        for value in {
+            db_execution_id,
+            workflow_id,
+            dapr_instance_id,
+            primary_trace_id,
+            primary_trace_id.removeprefix("tr-"),
+            *session_ids,
+            *run_ids,
+        }
+        if value
+    }
+    if not match_values:
+        return {"relatedTraceCount": 0, "reason": "missing_match_values"}
+
+    related = _search_related_mlflow_traces(
+        experiment_id=experiment_id,
+        match_values=match_values,
+        primary_trace_id=primary_trace_id,
+    )
+    if not related:
+        return {"relatedTraceCount": 0, "reason": "no_related_traces"}
+
+    recorded_trace_ids: list[str] = []
+    for item in related:
+        trace_id = str(item.get("trace_id") or "").strip()
+        attrs = item.get("attrs") if isinstance(item.get("attrs"), dict) else {}
+        if not trace_id:
+            continue
+        source = _classify_trace_source(trace_id, primary_trace_id, attrs, session_ids)
+        _record_lineage_links(
+            trace_id=trace_id,
+            targets=targets,
+            source=source,
+            attrs=attrs,
+        )
+        recorded_trace_ids.append(trace_id)
+    return {
+        "relatedTraceCount": len(recorded_trace_ids),
+        "relatedTraceIds": recorded_trace_ids,
     }
 
 
@@ -293,6 +532,7 @@ def finalize_mlflow_trace_root(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "mlflow.trace_link.success": bool(link_result.get("linked")),
             "mlflow.trace_link.reason": link_result.get("reason"),
             "mlflow.trace_link.run_count": len(link_result.get("linkedRunIds") or []),
+            "mlflow.trace_link.related_trace_count": link_result.get("relatedTraceCount"),
         })
         if not result.get("success") and not result.get("skipped"):
             logger.warning(

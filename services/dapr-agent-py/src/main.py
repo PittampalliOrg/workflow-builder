@@ -832,6 +832,16 @@ def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
         or mlflow_context.get("activeModelId"),
         "mlflow_model_uri": context.get("mlflowActiveModelUri")
         or mlflow_context.get("activeModelUri"),
+        "mlflow_experiment_id": context.get("mlflowTraceExperimentId")
+        or context.get("mlflowExperimentId")
+        or mlflow_context.get("traceExperimentId")
+        or mlflow_context.get("experimentId"),
+        "mlflow_run_id": context.get("mlflowRunId") or mlflow_context.get("runId"),
+        "mlflow_parent_run_id": context.get("mlflowParentRunId")
+        or mlflow_context.get("parentRunId"),
+        "workflow_trace_group_id": context.get("workflowTraceGroupId")
+        or context.get("workflowExecutionId")
+        or mlflow_context.get("traceGroupId"),
     }
 
 
@@ -4008,6 +4018,7 @@ class OpenShellDurableAgent(DurableAgent):
                 }
                 if db_execution_id:
                     _trace_tags["workflow.execution.id"] = db_execution_id
+                    _trace_tags["workflow_builder.trace_group_id"] = db_execution_id
                 for _key, _tag_key in (
                     ("experimentId", "mlflow.experiment_id"),
                     ("traceExperimentId", "mlflow.trace_experiment_id"),

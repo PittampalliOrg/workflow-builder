@@ -361,6 +361,9 @@ def _attach_inbound_trace_context() -> None:
         tracestate = (os.environ.get("WORKFLOW_BUILDER_TRACESTATE") or "").strip()
         if tracestate:
             carrier["tracestate"] = tracestate
+        baggage = (os.environ.get("WORKFLOW_BUILDER_BAGGAGE") or "").strip()
+        if baggage:
+            carrier["baggage"] = baggage
         parent_ctx = extract(carrier)
         otel_context.attach(parent_ctx)
         logger.info(
