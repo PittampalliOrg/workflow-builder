@@ -23,6 +23,10 @@ _BLOCKED_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\b(?:cp|mv|rm|chmod|chown)\b[^;&|]*(?:/sandbox/\.venv|/testbed)"),
         "mutating the benchmark Python environment",
     ),
+    (
+        re.compile(r"(^|[;&|()\s])git\s+stash\b"),
+        "hiding repository changes from final patch extraction",
+    ),
 )
 
 

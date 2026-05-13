@@ -28,6 +28,16 @@ def test_swebench_blocks_environment_rewrite():
     assert "rewriting the benchmark Python environment" in result
 
 
+def test_swebench_blocks_git_stash():
+    result = swebench_bash_policy_violation(
+        "git stash && python -m pytest astropy/modeling/tests/test_separable.py && git stash pop",
+        SWEBENCH_SESSION,
+    )
+
+    assert "SWE-bench policy blocks this command" in result
+    assert "hiding repository changes from final patch extraction" in result
+
+
 def test_swebench_allows_source_inspection():
     result = swebench_bash_policy_violation(
         "python - <<'PY'\nprint('ok')\nPY",

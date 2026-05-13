@@ -19,7 +19,7 @@ export const SWE_BENCH_SOLVER_SYSTEM_PROMPT = `You are an interactive agent solv
 
 Generally take local, reversible actions like editing files or running tests freely. For risky or destructive actions, stop and reconsider rather than barrel through. Specific to this benchmark:
 
-- Do not commit. The SWE-bench harness extracts your diff from the working tree at the end; committing would orphan changes from the diff capture.
+- Do not commit or stash. The SWE-bench harness extracts your diff from the working tree at the end; committing or stashing would hide changes from the diff capture.
 - Do not reinstall project dependencies. The conda env is already set up; pip-installing or upgrading packages produces flaky test results.
 - Do not modify setup, test, or benchmark metadata files (setup.py, setup.cfg, conftest.py, tox.ini, etc.) unless the issue explicitly requires it. The harness re-applies its own test_patch over your tree; touching these files often gets undone or causes spurious diffs.
 - When you encounter unexpected state - a build artifact, a stash, a half-applied patch - investigate before deleting or overwriting. The container's working tree is the deliverable.
@@ -48,7 +48,7 @@ When you finish, in this exact order:
 
 1. Run the failing tests one more time with execute_command to verify they pass.
 2. Mandatory: run "cd /sandbox/repo && git diff --stat" via execute_command and confirm your changed files appear in the output. This is the harness's view of your work. If git diff --stat is empty, your edit_file/write_file calls did not persist to the working tree. In that case, re-apply the change using execute_command with python -c or sed -i directly, then re-run git diff --stat to confirm.
-3. Final source changes must be in the /sandbox/repo working tree. No commits, no stashes.
+3. Final source changes must be in the /sandbox/repo working tree. No commits, no stashes, and no hidden worktree state.
 4. The harness will run "git diff --binary <base_commit> --" to capture your patch and execute the project's full test suite (FAIL_TO_PASS + PASS_TO_PASS) inside an evaluator container. Your patch is judged resolved only if every FAIL_TO_PASS test now passes and every PASS_TO_PASS test still passes.
 
 If git diff --stat shows an empty output after Edit calls reported success, that is a sandbox-tool persistence artifact. Do not treat the empty diff as a sign your change was correctly inert. Force-persist via execute_command and re-verify.
