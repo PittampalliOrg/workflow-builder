@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,45 @@ def _clean_attrs(attrs: Any) -> dict[str, Any] | None:
         for key, value in dict(attrs).items()
         if _valid_attr_value(value)
     }
+
+
+def _install_otlp_attribute_encoder_guard() -> None:
+    """Filter invalid attributes at the final OTLP protobuf encoding boundary.
+
+    ADK/Diagrid and MLflow autologging can attach event, log, or metric
+    attributes outside our span processor/exporter wrappers. The OTLP encoder
+    rejects ``None`` values and only logs a generic key-level failure, so keep
+    this guard close to the exporter setup and apply it to each encoder module
+    that imports the helper directly.
+    """
+
+    try:
+        from opentelemetry.exporter.otlp.proto.common import _internal as otlp_common
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("OTLP attribute encoder guard unavailable: %s", exc)
+        return
+
+    original = getattr(otlp_common, "_encode_attributes", None)
+    if original is None:
+        return
+    if getattr(original, "_workflow_builder_sanitized", False):
+        return
+
+    def guarded_encode_attributes(attrs: Any, *args: Any, **kwargs: Any) -> Any:
+        cleaned = _clean_attrs(attrs)
+        return original(cleaned, *args, **kwargs)
+
+    setattr(guarded_encode_attributes, "_workflow_builder_sanitized", True)
+    otlp_common._encode_attributes = guarded_encode_attributes
+
+    for module_name in (
+        "opentelemetry.exporter.otlp.proto.common._internal.trace_encoder",
+        "opentelemetry.exporter.otlp.proto.common._internal.metrics_encoder",
+        "opentelemetry.exporter.otlp.proto.common._internal._log_encoder",
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "_encode_attributes"):
+            module._encode_attributes = guarded_encode_attributes
 
 
 def _infer_mlflow_span_type(span_name: str | None) -> str:
@@ -255,6 +295,8 @@ def init_telemetry() -> bool:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        _install_otlp_attribute_encoder_guard()
 
         resource = Resource.create(
             {
