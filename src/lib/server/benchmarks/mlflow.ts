@@ -159,16 +159,58 @@ function encodeArtifactPath(path: string): string {
 		.join("/");
 }
 
+function safeArtifactName(value: string): string {
+	return (
+		value
+			.trim()
+			.replace(/[^A-Za-z0-9._-]+/g, "_")
+			.replace(/^[._-]+|[._-]+$/g, "")
+			.slice(0, 180) || "artifact"
+	);
+}
+
 export async function listMlflowArtifacts(
 	runId: string,
 	path = "",
+	options: { proxiedFallback?: boolean } = {},
 ): Promise<MlflowArtifactInfo[]> {
 	const qs = new URLSearchParams({ run_id: runId });
 	if (path) qs.set("path", path);
 	const payload = await mlflowRequest<{
 		files?: Array<{ path?: string; is_dir?: boolean; file_size?: number | string }>;
 	}>(`/api/2.0/mlflow/artifacts/list?${qs.toString()}`, { method: "GET" });
-	return (payload.files ?? []).map((file) => ({
+	const files = payload.files ?? [];
+	if (files.length > 0) {
+		return files.map((file) => ({
+			path: String(file.path ?? ""),
+			isDir: Boolean(file.is_dir),
+			fileSize:
+				typeof file.file_size === "number"
+					? file.file_size
+					: typeof file.file_size === "string" && Number.isFinite(Number(file.file_size))
+						? Number(file.file_size)
+				: null,
+		}));
+	}
+	if (options.proxiedFallback === false) {
+		return [];
+	}
+	const artifactQs = new URLSearchParams({ run_id: runId });
+	if (path) artifactQs.set("path", path);
+	let artifactPayload: {
+		files?: Array<{ path?: string; is_dir?: boolean; file_size?: number | string }>;
+	};
+	try {
+		artifactPayload = await mlflowRequest<{
+			files?: Array<{ path?: string; is_dir?: boolean; file_size?: number | string }>;
+		}>(`/api/2.0/mlflow-artifacts/artifacts?${artifactQs.toString()}`, { method: "GET" });
+	} catch (err) {
+		if (isMlflowMissingArtifactError(err)) {
+			return [];
+		}
+		throw err;
+	}
+	return (artifactPayload.files ?? []).map((file) => ({
 		path: String(file.path ?? ""),
 		isDir: Boolean(file.is_dir),
 		fileSize:
@@ -184,7 +226,7 @@ export async function downloadMlflowTextArtifact(
 	runId: string,
 	artifactPath: string,
 ): Promise<string | null> {
-	const listed = await listMlflowArtifacts(runId, artifactPath);
+	const listed = await listMlflowArtifacts(runId, artifactPath, { proxiedFallback: false });
 	const listedExact = listed.some(
 		(file) => !file.isDir && file.path.replace(/^\/+/, "") === artifactPath.replace(/^\/+/, ""),
 	);
@@ -724,6 +766,29 @@ export async function syncBenchmarkInstanceMlflow(params: {
 				tag("workflow_builder.termination_reason", instance.terminationReason),
 			],
 		});
+		const safeInstanceId = safeArtifactName(instance.instanceId);
+		if (typeof instance.modelPatch === "string") {
+			await logMlflowTextArtifact({
+				runId: mlflowRunId,
+				artifactPath: `patches/${safeInstanceId}.patch`,
+				text: instance.modelPatch,
+				contentType: "text/x-diff; charset=utf-8",
+			});
+		}
+		if (isRecord(instance.harnessResult)) {
+			await logMlflowJsonArtifact({
+				runId: mlflowRunId,
+				artifactPath: "harness/result.json",
+				value: instance.harnessResult,
+			});
+		}
+		if (typeof instance.testOutputSummary === "string") {
+			await logMlflowTextArtifact({
+				runId: mlflowRunId,
+				artifactPath: "harness/test-output-summary.txt",
+				text: instance.testOutputSummary,
+			});
+		}
 		if (terminalInstanceStatuses.has(instance.status)) {
 			const status =
 				instance.status === "cancelled"
