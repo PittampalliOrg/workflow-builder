@@ -359,6 +359,9 @@ function buildAgentDecisionModel(args: {
 				promptTokens: llmSpan.promptTokens,
 				completionTokens: llmSpan.completionTokens,
 				totalTokens: llmSpan.totalTokens,
+				cacheReadInputTokens: llmSpan.cacheReadInputTokens,
+				cacheCreationInputTokens: llmSpan.cacheCreationInputTokens,
+				reasoningTokens: llmSpan.reasoningTokens,
 				status: turnError ? 'error' : 'ok',
 				evidence: {
 					traceId: llmSpan.traceId,
@@ -814,6 +817,15 @@ function buildSummary(args: {
 		0
 	);
 	const totalTokens = llmSpans.reduce((sum, span) => sum + (span.totalTokens ?? 0), 0);
+	const cacheReadInputTokens = llmSpans.reduce(
+		(sum, span) => sum + (span.cacheReadInputTokens ?? 0),
+		0
+	);
+	const cacheCreationInputTokens = llmSpans.reduce(
+		(sum, span) => sum + (span.cacheCreationInputTokens ?? 0),
+		0
+	);
+	const reasoningTokens = llmSpans.reduce((sum, span) => sum + (span.reasoningTokens ?? 0), 0);
 	const failure = events.find((event) => event.severity === 'error') ?? null;
 	const slowestSpan = [...traceSpans].sort((a, b) => b.duration - a.duration)[0] ?? null;
 	const allTimes = [
@@ -838,6 +850,9 @@ function buildSummary(args: {
 		errorCount: issues.filter((issue) => issue.severity === 'error').length,
 		totalDurationMs,
 		totalTokens,
+		cacheReadInputTokens,
+		cacheCreationInputTokens,
+		reasoningTokens,
 		startedAt: args.startedAt ?? allTimes[0] ?? null,
 		completedAt: args.completedAt ?? allTimes.at(-1) ?? null,
 		status,

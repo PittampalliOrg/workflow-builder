@@ -36,6 +36,9 @@ export interface ObservabilityLlmSpan extends ObservabilitySpanRef {
 	promptTokens: number | null;
 	completionTokens: number | null;
 	totalTokens: number | null;
+	cacheReadInputTokens: number | null;
+	cacheCreationInputTokens: number | null;
+	reasoningTokens: number | null;
 	inputMessagesTruncated: boolean;
 	outputMessagesTruncated: boolean;
 	invocationParametersTruncated: boolean;
@@ -100,6 +103,9 @@ export interface ObservabilityAgentDecisionTurn {
 	promptTokens: number | null;
 	completionTokens: number | null;
 	totalTokens: number | null;
+	cacheReadInputTokens: number | null;
+	cacheCreationInputTokens: number | null;
+	reasoningTokens: number | null;
 	status: 'ok' | 'error';
 	evidence: ObservabilityAgentDecisionEvidence;
 }
@@ -243,6 +249,9 @@ export interface ObservabilitySessionSummary {
 	errorCount: number;
 	totalDurationMs: number;
 	totalTokens: number;
+	cacheReadInputTokens: number;
+	cacheCreationInputTokens: number;
+	reasoningTokens: number;
 	startedAt: string | null;
 	completedAt: string | null;
 	status: string | null;

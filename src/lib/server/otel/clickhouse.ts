@@ -86,6 +86,9 @@ function mapObservabilityLlmSpan(row: Record<string, unknown>): ObservabilityLlm
 		promptTokens: toNullableNumber(row.PromptTokens),
 		completionTokens: toNullableNumber(row.CompletionTokens),
 		totalTokens: toNullableNumber(row.TotalTokens),
+		cacheReadInputTokens: toNullableNumber(row.CacheReadInputTokens),
+		cacheCreationInputTokens: toNullableNumber(row.CacheCreationInputTokens),
+		reasoningTokens: toNullableNumber(row.ReasoningTokens),
 		inputMessagesTruncated: Boolean(row.InputMessagesTruncated),
 		outputMessagesTruncated: Boolean(row.OutputMessagesTruncated),
 		invocationParametersTruncated: Boolean(row.InvocationParametersTruncated)

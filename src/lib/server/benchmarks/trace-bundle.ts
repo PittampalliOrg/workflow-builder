@@ -435,6 +435,8 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 		backend = "clickhouse_raw";
 	} else if (traceSpans.length === 0 && llmSpans.length === 0 && toolSpans.length === 0) {
 		backend = "none";
+	} else if (traceSpans.length > 0 && llmSpans.length > 0) {
+		llmSpans = enrichLlmSpansWithRawTraceAttributes(llmSpans, traceSpans);
 	}
 
 	return createBundle(input, {
@@ -500,6 +502,31 @@ export function normalizeRawTraceSpans(traceSpans: ObservabilityTraceSpan[]): {
 		llmSpans: llmSpans.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
 		toolSpans: toolSpans.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
 	};
+}
+
+export function enrichLlmSpansWithRawTraceAttributes(
+	llmSpans: ObservabilityLlmSpan[],
+	traceSpans: ObservabilityTraceSpan[],
+): ObservabilityLlmSpan[] {
+	const rawById = new Map<string, ObservabilityTraceSpan>();
+	for (const span of traceSpans) {
+		rawById.set(`${span.traceId}:${span.spanId}`, span);
+	}
+	return llmSpans.map((span) => {
+		const raw = rawById.get(`${span.traceId}:${span.spanId}`);
+		if (!raw) return span;
+		const usage = usageFromAttributes(flattenAttributes(raw.attributes ?? {}));
+		if (!hasUsage(usage)) return span;
+		return {
+			...span,
+			promptTokens: span.promptTokens ?? usage.promptTokens,
+			completionTokens: span.completionTokens ?? usage.completionTokens,
+			totalTokens: span.totalTokens ?? usage.totalTokens,
+			cacheReadInputTokens: span.cacheReadInputTokens ?? usage.cacheReadInputTokens,
+			cacheCreationInputTokens: span.cacheCreationInputTokens ?? usage.cacheCreationInputTokens,
+			reasoningTokens: span.reasoningTokens ?? usage.reasoningTokens,
+		};
+	});
 }
 
 function createBundle(
@@ -672,6 +699,7 @@ function normalizeRawLlmSpan(
 		"gen_ai.completion",
 		"completion",
 	]), "assistant");
+	const usage = usageFromAttributes(attributes);
 	return {
 		...spanRef(span),
 		modelName:
@@ -695,6 +723,28 @@ function normalizeRawLlmSpan(
 				"llm.finish_reason",
 				"gen_ai.response.finish_reasons",
 			]) ?? null,
+		promptTokens: usage.promptTokens,
+		completionTokens: usage.completionTokens,
+		totalTokens: usage.totalTokens,
+		cacheReadInputTokens: usage.cacheReadInputTokens,
+		cacheCreationInputTokens: usage.cacheCreationInputTokens,
+		reasoningTokens: usage.reasoningTokens,
+		inputMessagesTruncated: false,
+		outputMessagesTruncated: false,
+		invocationParametersTruncated: false,
+	};
+}
+
+function usageFromAttributes(attributes: Record<string, unknown>): Pick<
+	ObservabilityLlmSpan,
+	| "promptTokens"
+	| "completionTokens"
+	| "totalTokens"
+	| "cacheReadInputTokens"
+	| "cacheCreationInputTokens"
+	| "reasoningTokens"
+> {
+	return {
 		promptTokens: firstNumber(attributes, [
 			"llm.token_count.prompt",
 			"gen_ai.usage.input_tokens",
@@ -715,10 +765,36 @@ function normalizeRawLlmSpan(
 			"usage.total_tokens",
 			"total_tokens",
 		]),
-		inputMessagesTruncated: false,
-		outputMessagesTruncated: false,
-		invocationParametersTruncated: false,
+		cacheReadInputTokens: firstNumber(attributes, [
+			"gen_ai.usage.cache_read_input_tokens",
+			"llm.token_count.cache_read",
+			"usage.cache_read_input_tokens",
+			"cache_read_input_tokens",
+			"cached_content_token_count",
+			"prompt_tokens_details.cached_tokens",
+			"usage.prompt_tokens_details.cached_tokens",
+		]),
+		cacheCreationInputTokens: firstNumber(attributes, [
+			"gen_ai.usage.cache_creation_input_tokens",
+			"llm.token_count.cache_creation",
+			"usage.cache_creation_input_tokens",
+			"cache_creation_input_tokens",
+			"cache_creation_tokens",
+		]),
+		reasoningTokens: firstNumber(attributes, [
+			"gen_ai.usage.reasoning_tokens",
+			"llm.token_count.reasoning",
+			"usage.reasoning_tokens",
+			"reasoning_tokens",
+			"thoughts_token_count",
+			"completion_tokens_details.reasoning_tokens",
+			"usage.completion_tokens_details.reasoning_tokens",
+		]),
 	};
+}
+
+function hasUsage(usage: ReturnType<typeof usageFromAttributes>): boolean {
+	return Object.values(usage).some((value) => value != null);
 }
 
 function normalizeRawToolSpan(
@@ -791,16 +867,28 @@ function normalizeTraceIds(value: unknown): string[] {
 function flattenAttributes(value: Record<string, unknown>): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const [key, raw] of Object.entries(value)) {
-		out[key] = maybeJson(raw);
 		const parsed = maybeJson(raw);
+		out[key] = parsed;
 		if (isRecord(parsed)) {
-			for (const [childKey, childValue] of Object.entries(parsed)) {
-				out[`${key}.${childKey}`] = childValue;
-				out[childKey] ??= childValue;
-			}
+			flattenAttributeRecord(out, key, parsed);
 		}
 	}
 	return out;
+}
+
+function flattenAttributeRecord(
+	out: Record<string, unknown>,
+	prefix: string,
+	value: Record<string, unknown>,
+): void {
+	for (const [childKey, rawChildValue] of Object.entries(value)) {
+		const childValue = maybeJson(rawChildValue);
+		out[`${prefix}.${childKey}`] = childValue;
+		out[childKey] ??= childValue;
+		if (isRecord(childValue)) {
+			flattenAttributeRecord(out, `${prefix}.${childKey}`, childValue);
+		}
+	}
 }
 
 function messagesFromValue(value: unknown, role: string): ObservabilityLlmMessage[] {

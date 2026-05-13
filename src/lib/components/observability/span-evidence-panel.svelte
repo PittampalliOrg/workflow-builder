@@ -226,6 +226,21 @@
 											{llmSpan.totalTokens} tokens
 										</Badge>
 									{/if}
+									{#if llmSpan.cacheReadInputTokens}
+										<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+											{llmSpan.cacheReadInputTokens} cache-read
+										</Badge>
+									{/if}
+									{#if llmSpan.cacheCreationInputTokens}
+										<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+											{llmSpan.cacheCreationInputTokens} cache-write
+										</Badge>
+									{/if}
+									{#if llmSpan.reasoningTokens}
+										<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+											{llmSpan.reasoningTokens} reasoning
+										</Badge>
+									{/if}
 									{#if llmSpan.finishReason}
 										<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
 											{llmSpan.finishReason}

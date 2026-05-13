@@ -25,6 +25,15 @@
 	let totalTokens = $derived(
 		llmSpans.reduce((acc, s) => acc + (s.totalTokens ?? 0), 0)
 	);
+	let cacheReadTokens = $derived(
+		llmSpans.reduce((acc, s) => acc + (s.cacheReadInputTokens ?? 0), 0)
+	);
+	let cacheCreationTokens = $derived(
+		llmSpans.reduce((acc, s) => acc + (s.cacheCreationInputTokens ?? 0), 0)
+	);
+	let reasoningTokens = $derived(
+		llmSpans.reduce((acc, s) => acc + (s.reasoningTokens ?? 0), 0)
+	);
 	let firstTs = $derived(llmSpans[0]?.timestamp ?? null);
 
 	function formatRelative(timestamp: string): string {
@@ -71,6 +80,13 @@
 			<div class="mt-1 text-sm font-semibold tabular-nums">
 				{totalTokens.toLocaleString()}
 			</div>
+			{#if cacheReadTokens || cacheCreationTokens || reasoningTokens}
+				<div class="mt-0.5 text-[10px] text-muted-foreground">
+					{#if cacheReadTokens}{cacheReadTokens.toLocaleString()} cache-read{/if}
+					{#if cacheCreationTokens}{cacheReadTokens ? ' / ' : ''}{cacheCreationTokens.toLocaleString()} cache-write{/if}
+					{#if reasoningTokens}{cacheReadTokens || cacheCreationTokens ? ' / ' : ''}{reasoningTokens.toLocaleString()} reasoning{/if}
+				</div>
+			{/if}
 		</div>
 	</div>
 
@@ -105,6 +121,13 @@
 							{#if s.promptTokens !== null && s.completionTokens !== null}
 								<span class="ml-1 text-muted-foreground">
 									{s.promptTokens.toLocaleString()} in / {s.completionTokens.toLocaleString()} out
+								</span>
+							{/if}
+							{#if s.cacheReadInputTokens || s.cacheCreationInputTokens || s.reasoningTokens}
+								<span class="ml-1 text-muted-foreground">
+									{#if s.cacheReadInputTokens}{s.cacheReadInputTokens.toLocaleString()} cache-read{/if}
+									{#if s.cacheCreationInputTokens}{s.cacheReadInputTokens ? ' / ' : ''}{s.cacheCreationInputTokens.toLocaleString()} cache-write{/if}
+									{#if s.reasoningTokens}{s.cacheReadInputTokens || s.cacheCreationInputTokens ? ' / ' : ''}{s.reasoningTokens.toLocaleString()} reasoning{/if}
 								</span>
 							{/if}
 						</span>

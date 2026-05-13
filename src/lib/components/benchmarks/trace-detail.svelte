@@ -116,6 +116,15 @@
 	let totalTokens = $derived(
 		llmSpans.reduce((acc, s) => acc + (s.totalTokens ?? 0), 0)
 	);
+	let cacheReadTokens = $derived(
+		llmSpans.reduce((acc, s) => acc + (s.cacheReadInputTokens ?? 0), 0)
+	);
+	let cacheCreationTokens = $derived(
+		llmSpans.reduce((acc, s) => acc + (s.cacheCreationInputTokens ?? 0), 0)
+	);
+	let reasoningTokens = $derived(
+		llmSpans.reduce((acc, s) => acc + (s.reasoningTokens ?? 0), 0)
+	);
 
 	let scores = $state<ScoreRow[] | null>(null);
 	let scoresLoading = $state(false);
@@ -248,6 +257,9 @@
 		if (s.promptTokens !== null && s.completionTokens !== null) {
 			parts.push(`${formatTokens(s.promptTokens)} in / ${formatTokens(s.completionTokens)} out`);
 		}
+		if (s.cacheReadInputTokens) parts.push(`${formatTokens(s.cacheReadInputTokens)} cache-read`);
+		if (s.cacheCreationInputTokens) parts.push(`${formatTokens(s.cacheCreationInputTokens)} cache-write`);
+		if (s.reasoningTokens) parts.push(`${formatTokens(s.reasoningTokens)} reasoning`);
 		if (s.finishReason) parts.push(s.finishReason);
 		return parts.join(' · ');
 	}
@@ -342,6 +354,13 @@
 		<div class="rounded-md border border-border bg-background p-3">
 			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Tokens</div>
 			<div class="mt-1 text-lg font-semibold tabular-nums">{formatTokens(totalTokens)}</div>
+			{#if cacheReadTokens || cacheCreationTokens || reasoningTokens}
+				<div class="mt-0.5 text-[10px] text-muted-foreground">
+					{#if cacheReadTokens}{formatTokens(cacheReadTokens)} cache-read{/if}
+					{#if cacheCreationTokens}{cacheReadTokens ? ' / ' : ''}{formatTokens(cacheCreationTokens)} cache-write{/if}
+					{#if reasoningTokens}{cacheReadTokens || cacheCreationTokens ? ' / ' : ''}{formatTokens(reasoningTokens)} reasoning{/if}
+				</div>
+			{/if}
 			{#if totalCostUsd !== null}
 				<div class="mt-0.5 text-[10px] text-muted-foreground">${totalCostUsd.toFixed(2)}</div>
 			{/if}

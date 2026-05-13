@@ -152,6 +152,12 @@
 					{#if decision.totalTokens}
 						<span class="text-[10px] text-zinc-600">{decision.totalTokens} tokens</span>
 					{/if}
+					{#if decision.cacheReadInputTokens}
+						<span class="text-[10px] text-zinc-600">{decision.cacheReadInputTokens} cache-read</span>
+					{/if}
+					{#if decision.reasoningTokens}
+						<span class="text-[10px] text-zinc-600">{decision.reasoningTokens} reasoning</span>
+					{/if}
 					{#if decision.modelName}
 						<span class="text-[10px] text-zinc-600 ml-auto">
 							{decision.modelName.replace('anthropic/', '')}

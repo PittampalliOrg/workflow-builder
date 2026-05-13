@@ -64,6 +64,16 @@
 								{decision.totalTokens} tokens
 							</Badge>
 						{/if}
+						{#if decision.cacheReadInputTokens}
+							<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+								{decision.cacheReadInputTokens} cache-read
+							</Badge>
+						{/if}
+						{#if decision.reasoningTokens}
+							<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+								{decision.reasoningTokens} reasoning
+							</Badge>
+						{/if}
 					</div>
 					<p class="mt-3 text-sm font-medium text-zinc-100">{decision.decisionLabel}</p>
 					<p class="mt-1 text-xs text-zinc-400">

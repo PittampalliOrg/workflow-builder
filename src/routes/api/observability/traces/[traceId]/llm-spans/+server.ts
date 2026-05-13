@@ -1,5 +1,8 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { normalizeRawTraceSpans } from '$lib/server/benchmarks/trace-bundle';
+import {
+	enrichLlmSpansWithRawTraceAttributes,
+	normalizeRawTraceSpans
+} from '$lib/server/benchmarks/trace-bundle';
 import { getTraceLlmSpans, getTraceSpans } from '$lib/server/otel/clickhouse';
 
 export const GET: RequestHandler = async ({ params }) => {
@@ -7,10 +10,12 @@ export const GET: RequestHandler = async ({ params }) => {
 		const traceId = params.traceId ?? '';
 		let spans = await getTraceLlmSpans(traceId);
 		let source: 'derived' | 'raw-fallback' = 'derived';
+		const rawSpans = await getTraceSpans(traceId);
 		if (spans.length === 0) {
-			const rawSpans = await getTraceSpans(traceId);
 			spans = normalizeRawTraceSpans(rawSpans).llmSpans;
 			source = spans.length > 0 ? 'raw-fallback' : 'derived';
+		} else {
+			spans = enrichLlmSpansWithRawTraceAttributes(spans, rawSpans);
 		}
 		return json({
 			traceId,

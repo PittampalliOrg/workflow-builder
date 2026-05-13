@@ -65,6 +65,8 @@ describe("normalizeRawTraceSpans", () => {
 				"gen_ai.usage.input_tokens": "11",
 				"gen_ai.usage.output_tokens": 7,
 				"gen_ai.usage.total_tokens": "18",
+				"gen_ai.usage.cache_read_input_tokens": "5",
+				"llm.token_count.reasoning": 3,
 			},
 		});
 		const tool = baseSpan({
@@ -86,6 +88,8 @@ describe("normalizeRawTraceSpans", () => {
 		expect(normalized.llmSpans[0].promptTokens).toBe(11);
 		expect(normalized.llmSpans[0].completionTokens).toBe(7);
 		expect(normalized.llmSpans[0].totalTokens).toBe(18);
+		expect(normalized.llmSpans[0].cacheReadInputTokens).toBe(5);
+		expect(normalized.llmSpans[0].reasoningTokens).toBe(3);
 		expect(normalized.toolSpans).toHaveLength(1);
 		expect(normalized.toolSpans[0].toolName).toBe("workspace/edit_file");
 		expect(normalized.toolSpans[0].toolArguments).toEqual({ path: "app.py" });
@@ -120,13 +124,24 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			promptTokens: null,
 			completionTokens: null,
 			totalTokens: null,
+			cacheReadInputTokens: null,
+			cacheCreationInputTokens: null,
+			reasoningTokens: null,
 			inputMessagesTruncated: false,
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
 		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
 		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([baseSpan({ spanId: "raw" })]);
+		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+			baseSpan({
+				spanId: "llm-derived",
+				attributes: {
+					"gen_ai.usage.cache_read_input_tokens": 42,
+					"gen_ai.usage.reasoning_tokens": 9,
+				},
+			}),
+		]);
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -142,6 +157,8 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 		expect(bundle.backend).toBe("clickhouse_derived");
 		expect(bundle.canonicalTraceId).toBe("abc123");
 		expect(bundle.llmSpans).toHaveLength(1);
+		expect(bundle.llmSpans[0].cacheReadInputTokens).toBe(42);
+		expect(bundle.llmSpans[0].reasoningTokens).toBe(9);
 		expect(bundle.traceSpans).toHaveLength(1);
 		expect(bundle.warnings).toEqual([]);
 	});
@@ -166,6 +183,9 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			promptTokens: null,
 			completionTokens: null,
 			totalTokens: null,
+			cacheReadInputTokens: null,
+			cacheCreationInputTokens: null,
+			reasoningTokens: null,
 			inputMessagesTruncated: false,
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
