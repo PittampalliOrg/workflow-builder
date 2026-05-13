@@ -774,6 +774,16 @@ def _schedule_new_workflow_instance(
     return result_id
 
 
+def _normalize_workflow_runtime_status(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    for prefix in ("ORCHESTRATION_STATUS_", "WORKFLOW_RUNTIME_STATUS_"):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
 def _idempotent_schedule(
     workflow_name: str,
     instance_id: str,
@@ -792,6 +802,34 @@ def _idempotent_schedule(
     If the instance is in a terminal state (COMPLETED/FAILED/TERMINATED),
     purge it first, then schedule fresh.
     """
+    client = get_workflow_client()
+    try:
+        existing = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
+    except Exception:
+        existing = None
+
+    if existing is not None:
+        status_name = _normalize_workflow_runtime_status(
+            getattr(existing, "runtime_status", "")
+        )
+        if status_name in {"RUNNING", "PENDING", "SUSPENDED"}:
+            logger.info(
+                "[Idempotent Schedule] Instance %s exists (status=%s), returning existing",
+                instance_id,
+                status_name,
+            )
+            return instance_id
+        if status_name in {"COMPLETED", "FAILED", "TERMINATED"}:
+            try:
+                client.purge_workflow(instance_id=instance_id)
+                logger.info(
+                    "[Idempotent Schedule] Purged terminal instance %s (status=%s)",
+                    instance_id,
+                    status_name,
+                )
+            except Exception as purge_err:
+                logger.warning("[Idempotent Schedule] Purge failed: %s", purge_err)
+
     try:
         return _schedule_new_workflow_instance(
             workflow_name=workflow_name,
@@ -805,7 +843,6 @@ def _idempotent_schedule(
         # Atomic IGNORE didn't help -- instance may be in terminal state.
         # Try purging and retrying.
         try:
-            client = get_workflow_client()
             existing = client.get_workflow_state(
                 instance_id=instance_id, fetch_payloads=False
             )
@@ -815,9 +852,11 @@ def _idempotent_schedule(
         if existing is None:
             raise schedule_err
 
-        status_name = str(getattr(existing, "runtime_status", "")).upper()
+        status_name = _normalize_workflow_runtime_status(
+            getattr(existing, "runtime_status", "")
+        )
         logger.info(
-            "[Idempotent Schedule] Instance %s exists (status=%s), purging and retrying",
+            "[Idempotent Schedule] Instance %s exists (status=%s)",
             instance_id,
             status_name,
         )

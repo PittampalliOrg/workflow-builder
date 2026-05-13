@@ -446,6 +446,62 @@ def test_workflow_failure_details_from_history_supports_dapr_camel_case():
     assert stack_trace == "durabletask stack"
 
 
+def test_idempotent_schedule_returns_existing_pending_before_start(monkeypatch):
+    calls: list[str] = []
+
+    class FakeClient:
+        def get_workflow_state(self, *, instance_id, fetch_payloads):
+            calls.append(f"get:{instance_id}:{fetch_payloads}")
+            return types.SimpleNamespace(runtime_status="WORKFLOWSTATUS.PENDING")
+
+        def purge_workflow(self, *, instance_id):
+            calls.append(f"purge:{instance_id}")
+
+    monkeypatch.setattr(APP, "get_workflow_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        APP,
+        "_schedule_new_workflow_instance",
+        lambda **_kwargs: calls.append("start") or "new-instance",
+    )
+
+    result = APP._idempotent_schedule(
+        workflow_name="sw_workflow_v1",
+        instance_id="instance-1",
+        workflow_input={"ok": True},
+    )
+
+    assert result == "instance-1"
+    assert calls == ["get:instance-1:False"]
+
+
+def test_idempotent_schedule_purges_terminal_before_start(monkeypatch):
+    calls: list[str] = []
+
+    class FakeClient:
+        def get_workflow_state(self, *, instance_id, fetch_payloads):
+            calls.append(f"get:{instance_id}:{fetch_payloads}")
+            return types.SimpleNamespace(runtime_status="ORCHESTRATION_STATUS_FAILED")
+
+        def purge_workflow(self, *, instance_id):
+            calls.append(f"purge:{instance_id}")
+
+    monkeypatch.setattr(APP, "get_workflow_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        APP,
+        "_schedule_new_workflow_instance",
+        lambda **_kwargs: calls.append("start") or "new-instance",
+    )
+
+    result = APP._idempotent_schedule(
+        workflow_name="sw_workflow_v1",
+        instance_id="instance-1",
+        workflow_input={"ok": True},
+    )
+
+    assert result == "new-instance"
+    assert calls == ["get:instance-1:False", "purge:instance-1", "start"]
+
+
 def test_readiness_requires_taskhub_and_metadata_worker_count(monkeypatch):
     observed_kwargs = {}
 
