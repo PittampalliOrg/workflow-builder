@@ -185,17 +185,22 @@ def _iter_context_bridge_attrs(original: Any) -> Iterator[tuple[str, Any]]:
     `src.telemetry.attributes`, so expose it through the same hook before the
     wrapper snapshots span attributes.
     """
+    def _non_null_attrs(items: Any) -> Iterator[tuple[str, Any]]:
+        for key, value in items:
+            if value is None:
+                logger.debug("Dropping null OpenTelemetry attribute from Dapr Agents bridge: %s", key)
+                continue
+            yield key, value
+
     try:
-        yield from original()
+        yield from _non_null_attrs(original())
     except Exception as exc:  # noqa: BLE001
         logger.debug("Dapr Agents context bridge original lookup failed: %s", exc)
 
     try:
         from src.telemetry.attributes import get_telemetry_attributes
 
-        for key, value in get_telemetry_attributes().items():
-            if value is not None:
-                yield key, value
+        yield from _non_null_attrs(get_telemetry_attributes().items())
     except Exception as exc:  # noqa: BLE001
         logger.debug("Dapr Agents context bridge runtime lookup failed: %s", exc)
 

@@ -278,6 +278,30 @@ def test_dapr_agents_context_bridge_stamps_runtime_identity():
     assert attrs["agent.mlflow_uri"] == "models:/m-agent-tool"
 
 
+def test_dapr_agents_context_bridge_drops_null_attributes():
+    from src.telemetry.attributes import reset_session_context, set_session_context
+    from src.telemetry.providers import _iter_context_bridge_attrs
+
+    token = set_session_context(instance_id="wf-tool")
+    try:
+        attrs = dict(
+            _iter_context_bridge_attrs(
+                lambda: iter(
+                    [
+                        ("span_type", None),
+                        ("openinference.span.kind", "TOOL"),
+                    ]
+                )
+            )
+        )
+    finally:
+        reset_session_context(token)
+
+    assert attrs["session.id"] == "wf-tool"
+    assert attrs["openinference.span.kind"] == "TOOL"
+    assert "span_type" not in attrs
+
+
 def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
     calls = {}
 
