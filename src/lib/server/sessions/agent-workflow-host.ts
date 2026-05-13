@@ -83,6 +83,7 @@ export interface AgentWorkflowHostResult {
 export interface TraceContext {
 	traceparent: string | null;
 	tracestate: string | null;
+	baggage: string | null;
 }
 
 /**
@@ -95,6 +96,7 @@ export function extractTraceContext(request: { headers: Headers }): TraceContext
 	return {
 		traceparent: request.headers.get("traceparent"),
 		tracestate: request.headers.get("tracestate"),
+		baggage: request.headers.get("baggage"),
 	};
 }
 
@@ -139,6 +141,9 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	}
 	if (params.traceContext?.tracestate) {
 		traceHeaders["tracestate"] = params.traceContext.tracestate;
+	}
+	if (params.traceContext?.baggage) {
+		traceHeaders["baggage"] = params.traceContext.baggage;
 	}
 	// Per-runtime container image override. sandbox-execution-api honors
 	// `agentImage` on the request body and overrides the executionClass
