@@ -1689,6 +1689,41 @@ def _mark_workflow_execution_started(
         conn.close()
 
 
+def _existing_live_execution_instance(execution_id: str) -> str | None:
+    """Return the existing Dapr instance for a non-terminal DB execution row."""
+    if not execution_id:
+        return None
+
+    import psycopg2
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status, dapr_instance_id
+                FROM workflow_executions
+                WHERE id = %s
+                """,
+                (execution_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    status = str(row[0] or "").strip().lower()
+    dapr_instance_id = str(row[1] or "").strip()
+    if not dapr_instance_id:
+        return None
+    if status in {"completed", "failed", "error", "cancelled", "terminated"}:
+        return None
+    return dapr_instance_id
+
+
 def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> None:
     """Set failure state when workflow scheduling fails before execution starts."""
     import psycopg2
@@ -2923,6 +2958,24 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             workflow_name,
             instance_id,
         )
+
+        existing_instance_id = (
+            _existing_live_execution_instance(db_execution_id)
+            if request.dbExecutionId
+            else None
+        )
+        if existing_instance_id:
+            logger.info(
+                "[SW Workflow] Execution %s already has live instance %s; returning existing",
+                db_execution_id,
+                existing_instance_id,
+            )
+            return StartWorkflowResponse(
+                instanceId=existing_instance_id,
+                workflowId=workflow_name,
+                status="started",
+                workflowVersion="1.0.0",
+            )
 
         result_id = _idempotent_schedule(
             workflow_name=SW_WORKFLOW_NAME,

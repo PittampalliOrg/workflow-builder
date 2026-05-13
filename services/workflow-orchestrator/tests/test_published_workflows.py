@@ -502,6 +502,62 @@ def test_idempotent_schedule_purges_terminal_before_start(monkeypatch):
     assert calls == ["get:instance-1:False", "purge:instance-1", "start"]
 
 
+def test_existing_live_execution_instance_returns_running_dapr_id(monkeypatch):
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return ("running", "sw-instance-1")
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    fake_psycopg2 = types.SimpleNamespace(connect=lambda _url: FakeConnection())
+    monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
+    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+
+    assert APP._existing_live_execution_instance("exec-1") == "sw-instance-1"
+
+
+def test_existing_live_execution_instance_ignores_terminal_rows(monkeypatch):
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return ("error", "sw-instance-1")
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    fake_psycopg2 = types.SimpleNamespace(connect=lambda _url: FakeConnection())
+    monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
+    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+
+    assert APP._existing_live_execution_instance("exec-1") is None
+
+
 def test_readiness_requires_taskhub_and_metadata_worker_count(monkeypatch):
     observed_kwargs = {}
 
