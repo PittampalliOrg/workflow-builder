@@ -21,12 +21,12 @@ def _int_env(name: str, default: int) -> int:
 
 
 # --- Runtime / model ---------------------------------------------------------
-# Default model. Plan locks in Gemini 3 Pro Preview; precise model ID is
+# Default model. Plan locks in Gemini 3.1 Pro Preview; precise model ID is
 # overridable at deploy time via ConfigMap. `google.genai.Client` resolves the
 # string against Google's Gemini API.
 DEFAULT_MODEL: str = (
-    os.environ.get("ADK_AGENT_PY_DEFAULT_MODEL") or "gemini-3-pro-preview"
-).strip() or "gemini-3-pro-preview"
+    os.environ.get("ADK_AGENT_PY_DEFAULT_MODEL") or "gemini-3.1-pro-preview"
+).strip() or "gemini-3.1-pro-preview"
 
 # Diagrid's `agent_workflow` loops up to this many LLM calls before bailing
 # out with `max_iterations_reached`. Matches dapr-agent-py's default of 120.

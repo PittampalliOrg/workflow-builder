@@ -6,7 +6,7 @@ So the LlmAgent's `model=` attribute is only used at agent construction time
 (metadata extraction). Per-turn overrides come from `agentConfig.modelSpec`
 written by the BFF into the session_workflow input.
 
-Default: `gemini-3-pro-preview` (configurable via `ADK_AGENT_PY_DEFAULT_MODEL`).
+Default: `gemini-3.1-pro-preview` (configurable via `ADK_AGENT_PY_DEFAULT_MODEL`).
 """
 
 from __future__ import annotations

@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import base64
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_LAST_USAGE: ContextVar[dict[str, int] | None] = ContextVar(
+    "workflow_builder_adk_last_usage",
+    default=None,
+)
 
 
 def _encode_signature(value: Any) -> str | None:
@@ -34,6 +39,55 @@ def _decode_signature(value: Any) -> bytes | None:
     except Exception:  # noqa: BLE001
         logger.debug("[gemini-thought-signature] invalid base64 signature ignored")
         return None
+
+
+def _int_attr(obj: Any, *names: str) -> int | None:
+    for name in names:
+        value = getattr(obj, name, None)
+        if value is None and isinstance(obj, dict):
+            value = obj.get(name)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _usage_payload(response: Any) -> dict[str, int]:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return {}
+
+    payload: dict[str, int] = {}
+    input_tokens = _int_attr(usage, "prompt_token_count", "promptTokenCount")
+    output_tokens = _int_attr(usage, "candidates_token_count", "candidatesTokenCount")
+    total_tokens = _int_attr(usage, "total_token_count", "totalTokenCount")
+    cache_read_tokens = _int_attr(
+        usage,
+        "cached_content_token_count",
+        "cachedContentTokenCount",
+    )
+    reasoning_tokens = _int_attr(usage, "thoughts_token_count", "thoughtsTokenCount")
+
+    if input_tokens is not None:
+        payload["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        payload["output_tokens"] = output_tokens
+    if total_tokens is not None:
+        payload["total_tokens"] = total_tokens
+    if cache_read_tokens is not None:
+        payload["cache_read_input_tokens"] = cache_read_tokens
+    if reasoning_tokens is not None:
+        payload["reasoning_tokens"] = reasoning_tokens
+    return payload
+
+
+def pop_last_usage() -> dict[str, int] | None:
+    usage = _LAST_USAGE.get()
+    _LAST_USAGE.set(None)
+    return usage
 
 
 def install_gemini_thought_signature_patch() -> None:
@@ -148,6 +202,7 @@ def install_gemini_thought_signature_patch() -> None:
             contents=contents,
             config=config,
         )
+        _LAST_USAGE.set(_usage_payload(response))
 
         if not response.candidates:
             return dg_workflow.CallLlmOutput(

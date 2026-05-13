@@ -186,6 +186,14 @@ def _llm_output_stats(output: Mapping[str, Any]) -> tuple[str | None, int, int]:
     return content, tool_call_count, len(content or "")
 
 
+def _pop_gemini_usage() -> dict[str, int] | None:
+    try:
+        from src.adapters.gemini_thought_signatures import pop_last_usage
+    except Exception:  # noqa: BLE001
+        return None
+    return pop_last_usage()
+
+
 def _span_name(ctx: Mapping[str, Any], activity: str) -> str:
     agent_app_id = _clean_string(ctx.get("agent.app_id")) or _clean_string(ctx.get("agent.slug"))
     return f"{agent_app_id}.{activity}" if agent_app_id else f"adk_agent.{activity}"
@@ -250,6 +258,7 @@ def _patch_workflow_module(module: Any) -> None:
                     set_genai_response_attrs(
                         span,
                         response_model=model,
+                        usage=_pop_gemini_usage(),
                         duration_ms=(perf_counter() - start) * 1000,
                         tool_calls_count=tool_call_count,
                         output_chars=output_chars,

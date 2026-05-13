@@ -209,13 +209,13 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "googleai/gemini-3-pro-preview",
             "llm-google-gemini",
             "googleai",
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
         ),
         (
             "googleai/gemini-3.1-pro-preview",
             "llm-google-gemini",
             "googleai",
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
         ),
         ("deepseek/default", "llm-deepseek", "deepseek", "default"),
         (
