@@ -425,17 +425,26 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 	const derivedLlmSpanCount = llmSpans.length;
 	const derivedToolSpanCount = toolSpans.length;
 	let backend: SwebenchTraceBundleBackend = "clickhouse_derived";
-	if (traceSpans.length > 0 && llmSpans.length === 0 && toolSpans.length === 0) {
-		warnings.push(
-			"ClickHouse derived obs.llm_spans and obs.tool_spans returned zero rows while raw OTel spans exist",
-		);
+	if (traceSpans.length > 0 && (llmSpans.length === 0 || toolSpans.length === 0)) {
 		const normalized = normalizeRawTraceSpans(traceSpans);
-		llmSpans = normalized.llmSpans;
-		toolSpans = normalized.toolSpans;
-		backend = "clickhouse_raw";
+		if (llmSpans.length === 0 && normalized.llmSpans.length > 0) {
+			warnings.push(
+				"ClickHouse derived obs.llm_spans returned zero rows while raw OTel LLM spans exist",
+			);
+			llmSpans = normalized.llmSpans;
+			backend = "clickhouse_raw";
+		}
+		if (toolSpans.length === 0 && normalized.toolSpans.length > 0) {
+			warnings.push(
+				"ClickHouse derived obs.tool_spans returned zero rows while raw OTel tool spans exist",
+			);
+			toolSpans = normalized.toolSpans;
+			backend = "clickhouse_raw";
+		}
 	} else if (traceSpans.length === 0 && llmSpans.length === 0 && toolSpans.length === 0) {
 		backend = "none";
-	} else if (traceSpans.length > 0 && llmSpans.length > 0) {
+	}
+	if (traceSpans.length > 0 && llmSpans.length > 0) {
 		llmSpans = enrichLlmSpansWithRawTraceAttributes(llmSpans, traceSpans);
 	}
 

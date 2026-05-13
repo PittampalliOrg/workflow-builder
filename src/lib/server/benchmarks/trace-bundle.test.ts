@@ -183,6 +183,70 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 		expect(bundle.warnings).toEqual([]);
 	});
 
+	it("fills missing derived tool spans from raw OTel spans", async () => {
+		const llmSpan: ObservabilityLlmSpan = {
+			traceId: "abc123",
+			spanId: "llm-derived",
+			parentSpanId: null,
+			serviceName: "adk-agent-py",
+			timestamp: "2026-05-05T12:00:00.000Z",
+			sessionId: "",
+			workflowExecutionId: "",
+			agentRunId: null,
+			statusCode: "OK",
+			modelName: "gemini-3.1-pro-preview",
+			provider: "googleai",
+			inputMessages: [],
+			outputMessages: [],
+			invocationParameters: null,
+			finishReason: null,
+			promptTokens: null,
+			completionTokens: null,
+			totalTokens: null,
+			cacheReadInputTokens: null,
+			cacheCreationInputTokens: null,
+			reasoningTokens: null,
+			inputMessagesTruncated: false,
+			outputMessagesTruncated: false,
+			invocationParametersTruncated: false,
+		};
+		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+			baseSpan({
+				spanId: "llm-derived",
+				attributes: { "mlflow.spanType": "CHAT_MODEL" },
+			}),
+			baseSpan({
+				spanId: "tool-raw",
+				operationName: "agent-session.run_tool",
+				attributes: {
+					"mlflow.spanType": "TOOL",
+					"tool.name": "Bash",
+					"input.value": "{\"command\":\"git diff --stat\"}",
+					"output.value": "{\"output\":\"file.py | 1 +\"}",
+				},
+			}),
+		]);
+
+		const bundle = await buildSwebenchTraceBundleFromClickHouse({
+			runId: "run_1",
+			runInstanceId: "ri_1",
+			instanceId: "django__django-1",
+			traceIds: ["abc123"],
+			canonicalTraceId: "abc123",
+			mlflowExperimentId: "1",
+			mlflowRunId: "mlrun",
+			artifactPath: "traces/django__django-1/trace-bundle.json",
+		});
+
+		expect(bundle.backend).toBe("clickhouse_raw");
+		expect(bundle.llmSpans).toHaveLength(1);
+		expect(bundle.toolSpans).toHaveLength(1);
+		expect(bundle.toolSpans[0].toolName).toBe("Bash");
+		expect(bundle.warnings[0]).toContain("obs.tool_spans");
+	});
+
 	it("reports canonical root health and missing auxiliary traces", async () => {
 		const llmSpan: ObservabilityLlmSpan = {
 			traceId: "primary123",
