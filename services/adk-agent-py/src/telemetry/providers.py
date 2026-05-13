@@ -52,6 +52,42 @@ def _clean_attrs(attrs: Any) -> dict[str, Any] | None:
     }
 
 
+def _infer_mlflow_span_type(span_name: str | None) -> str:
+    name = (span_name or "").strip().lower()
+    if "tool" in name:
+        return "TOOL"
+    if (
+        "llm" in name
+        or "generate_content" in name
+        or "chat" in name
+        or "model" in name
+    ):
+        return "CHAT_MODEL"
+    if "agent" in name or "session" in name:
+        return "AGENT"
+    return "CHAIN"
+
+
+def _attrs_with_valid_span_type(span: Any, attrs: Any) -> dict[str, Any] | None:
+    cleaned = _clean_attrs(attrs) or {}
+    original = dict(attrs or {})
+    inferred = _infer_mlflow_span_type(getattr(span, "name", None))
+    raw_span_type = original.get("span_type", cleaned.get("span_type"))
+    raw_mlflow_span_type = original.get("mlflow.spanType", cleaned.get("mlflow.spanType"))
+    if raw_span_type is None:
+        cleaned["span_type"] = inferred
+    if raw_mlflow_span_type is None:
+        cleaned["mlflow.spanType"] = cleaned.get("span_type") or inferred
+    return cleaned or None
+
+
+def _replace_span_attrs(span: Any, attrs: dict[str, Any] | None) -> None:
+    try:
+        setattr(span, "_attributes", attrs or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to replace attrs for span %s: %s", getattr(span, "name", "?"), exc)
+
+
 class _SanitizingSpanExporter:
     """Drop invalid OTel attributes before handing spans to OTLP encoding."""
 
@@ -71,7 +107,7 @@ class _SanitizingSpanExporter:
         return bool(force_flush(timeout_millis=timeout_millis))
 
     def _sanitize_span(self, span: Any) -> Any:
-        attrs = _clean_attrs(getattr(span, "attributes", None))
+        attrs = _attrs_with_valid_span_type(span, getattr(span, "attributes", None))
         original_attrs = getattr(span, "attributes", None)
         if attrs == original_attrs:
             return span
@@ -102,17 +138,18 @@ class _SanitizingSpanProcessor:
     """Remove invalid attributes before downstream processors/exporters run."""
 
     def on_start(self, span: Any, parent_context: Any | None = None) -> None:
+        attrs = _attrs_with_valid_span_type(span, getattr(span, "attributes", None))
+        original_attrs = getattr(span, "attributes", None)
+        if attrs != original_attrs:
+            _replace_span_attrs(span, attrs)
         return None
 
     def on_end(self, span: Any) -> None:
-        attrs = _clean_attrs(getattr(span, "attributes", None))
+        attrs = _attrs_with_valid_span_type(span, getattr(span, "attributes", None))
         original_attrs = getattr(span, "attributes", None)
         if attrs == original_attrs:
             return
-        try:
-            setattr(span, "_attributes", attrs)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to sanitize ended span %s: %s", getattr(span, "name", "?"), exc)
+        _replace_span_attrs(span, attrs)
 
     def shutdown(self) -> None:
         return None
