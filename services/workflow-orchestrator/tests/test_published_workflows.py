@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import sys
 import types
@@ -708,6 +709,115 @@ def test_persist_results_backfills_primary_trace_id_from_otel(monkeypatch):
         "1234567890abcdef1234567890abcdef",
         "db_exec_123",
     )
+
+
+def test_mlflow_workflow_run_enrichment_logs_completion_projection(monkeypatch):
+    json_artifacts = []
+    binary_artifacts = []
+    batches = []
+
+    monkeypatch.setattr(PERSIST_RESULTS, "_mlflow_enabled", lambda: True)
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "_fetch_browser_artifacts",
+        lambda _db_url, _execution_id: [
+            {
+                "id": "bwf_test",
+                "workflowId": "workflow_1",
+                "nodeId": "browser_validate_capture",
+                "workspaceRef": "workspace_1",
+                "artifactType": "capture_flow_v1",
+                "artifactVersion": 1,
+                "status": "completed",
+                "manifestJson": {
+                    "assets": [
+                        {
+                            "kind": "screenshot",
+                            "label": "Initial",
+                            "storageRef": "workflow-browser-artifacts/exec/bwf_test/screenshot-1.png",
+                            "contentType": "image/png",
+                        },
+                        {
+                            "kind": "trace",
+                            "label": "Trace",
+                            "storageRef": "workflow-browser-artifacts/exec/bwf_test/trace-2.zip",
+                            "contentType": "application/zip",
+                        },
+                    ],
+                },
+                "blobs": {
+                    "workflow-browser-artifacts/exec/bwf_test/screenshot-1.png": {
+                        "payloadBase64": base64.b64encode(b"png-bytes").decode(),
+                        "contentType": "image/png",
+                    },
+                    "workflow-browser-artifacts/exec/bwf_test/trace-2.zip": {
+                        "payloadBase64": base64.b64encode(b"zip-bytes").decode(),
+                        "contentType": "application/zip",
+                    },
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "_log_mlflow_json_artifact",
+        lambda run_id, artifact_path, value: json_artifacts.append(
+            (run_id, artifact_path, value)
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "_log_mlflow_artifact",
+        lambda run_id, artifact_path, payload, content_type: binary_artifacts.append(
+            (run_id, artifact_path, payload, content_type)
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "_log_mlflow_batch",
+        lambda run_id, **payload: batches.append((run_id, payload)),
+    )
+
+    PERSIST_RESULTS._enrich_mlflow_workflow_run(
+        run_id="run_123",
+        db_url="postgres://test",
+        db_execution_id="exec_123",
+        workflow_id="workflow_1",
+        project_id="project_1",
+        workflow_input={"prompt": "hello"},
+        trace_id="1234567890abcdef1234567890abcdef",
+        final_output={"success": True, "outputs": {"node": {"ok": True}}},
+        summary_fields={"title": "Demo"},
+        status="success",
+        duration_ms=1234,
+        outputs_size_chars=99,
+    )
+
+    assert ("run_123", "workflow/input.json", {"prompt": "hello"}) in json_artifacts
+    assert any(path == "workflow/output.json" for _run, path, _value in json_artifacts)
+    assert any(path == "browser/bwf_test/manifest.json" for _run, path, _value in json_artifacts)
+    assert (
+        "run_123",
+        "browser/bwf_test/assets/screenshot-1.png",
+        b"png-bytes",
+        "image/png",
+    ) in binary_artifacts
+    assert (
+        "run_123",
+        "browser/bwf_test/assets/trace-2.zip",
+        b"zip-bytes",
+        "application/zip",
+    ) in binary_artifacts
+    assert batches
+    batch = batches[0][1]
+    assert {"key": "workflow_execution_id", "value": "exec_123"} in batch["params"]
+    assert {"key": "workflow_builder.mlflow_projection", "value": "workflow_completion_v1"} in batch["tags"]
+    metric_values = {metric["key"]: metric["value"] for metric in batch["metrics"]}
+    assert metric_values["workflow.duration_ms"] == 1234.0
+    assert metric_values["browser_artifacts"] == 1.0
+    assert metric_values["browser_assets_logged"] == 2.0
 
 
 def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanup(monkeypatch):

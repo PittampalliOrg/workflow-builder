@@ -2945,7 +2945,7 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "features": {
                 "mlflowNodeSpans": _env_bool(
                     "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS",
-                    False,
+                    _env_bool("MLFLOW_ENABLED", False),
                 ),
             },
             "_otel": otel_ctx,
