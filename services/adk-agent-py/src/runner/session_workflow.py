@@ -156,6 +156,34 @@ def _extract_runtime_context(input_data: dict[str, Any]) -> tuple[str | None, st
     return sandbox_name, workspace_ref, cwd
 
 
+def _session_turn_timeout_seconds(input_data: dict[str, Any]) -> int:
+    """Honor workflow-provided timeoutMinutes for long single-turn runs.
+
+    UI chat sessions usually omit timeoutMinutes and keep the runtime default.
+    SWE-bench durable/run calls pass a larger timeout through the orchestrator;
+    the session wrapper should not abort those turns at the 600s default.
+    """
+
+    agent_config = _nested_record(input_data, "agentConfig")
+    effective_agent_config = _nested_record(input_data, "effectiveAgentConfig")
+    candidates = [
+        input_data.get("timeoutMinutes"),
+        input_data.get("timeout_minutes"),
+        agent_config.get("timeoutMinutes"),
+        agent_config.get("timeout_minutes"),
+        effective_agent_config.get("timeoutMinutes"),
+        effective_agent_config.get("timeout_minutes"),
+    ]
+    for raw in candidates:
+        try:
+            minutes = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if minutes > 0:
+            return max(SESSION_TURN_TIMEOUT_SECONDS, minutes * 60)
+    return SESSION_TURN_TIMEOUT_SECONDS
+
+
 def _first_resolved(*values: Any) -> str | None:
     for value in values:
         resolved = _resolved_string(value)
@@ -300,6 +328,7 @@ def session_workflow_factory(
         rendered_system = (instruction_bundle.get("rendered") or {}).get("system") or ""
         auto_term = bool(input_data.get("autoTerminateAfterEndTurn"))
         max_turns = int(input_data.get("maxIterations") or agent_config.get("maxTurns") or 120)
+        turn_timeout_seconds = _session_turn_timeout_seconds(input_data)
         sandbox_name, workspace_ref, cwd = _extract_runtime_context(input_data)
 
         # Scope tools to this session for the lifetime of the workflow body.
@@ -402,9 +431,7 @@ def session_workflow_factory(
                     instance_id=child_instance_id,
                     retry_policy=_CHILD_RETRY_POLICY,
                 )
-                timer_task = ctx.create_timer(
-                    timedelta(seconds=SESSION_TURN_TIMEOUT_SECONDS)
-                )
+                timer_task = ctx.create_timer(timedelta(seconds=turn_timeout_seconds))
                 winner = yield wf_when_any([child_task, timer_task])
 
                 if winner is timer_task:
@@ -414,12 +441,12 @@ def session_workflow_factory(
                             "run_error",
                             {
                                 "reason": "session_turn_timeout",
-                                "timeoutSeconds": SESSION_TURN_TIMEOUT_SECONDS,
+                                "timeoutSeconds": turn_timeout_seconds,
                             },
                         )
                     raise RuntimeError(
                         f"session_workflow turn {turn_index} exceeded "
-                        f"{SESSION_TURN_TIMEOUT_SECONDS}s — aborting"
+                        f"{turn_timeout_seconds}s — aborting"
                     )
 
                 # Child completed.
