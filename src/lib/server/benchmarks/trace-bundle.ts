@@ -458,21 +458,31 @@ export function normalizeRawTraceSpans(traceSpans: ObservabilityTraceSpan[]): {
 	for (const span of traceSpans) {
 		const attributes = flattenAttributes(span.attributes ?? {});
 		const kind = firstString(attributes, ["openinference.span.kind", "span.type"])?.toLowerCase();
+		const mlflowSpanType = firstString(attributes, ["mlflow.spanType"])?.toLowerCase();
 		const operation = span.operationName.toLowerCase();
+		const durableTaskWrapper =
+			Boolean(firstString(attributes, ["durabletask.type"])) &&
+			!mlflowSpanType &&
+			!kind &&
+			!firstString(attributes, ["llm.model_name", "gen_ai.request.model", "model", "model_name"]) &&
+			!firstString(attributes, ["tool.name", "tool_name", "mcp.tool.name", "function.name", "gen_ai.tool.name"]);
 		if (
+			mlflowSpanType === "chat_model" ||
+			mlflowSpanType === "llm" ||
 			kind === "llm" ||
 			kind === "chat" ||
 			kind === "language_model" ||
-			operation.includes("llm") ||
+			(!durableTaskWrapper && operation.includes("llm")) ||
 			Boolean(firstString(attributes, ["llm.model_name", "gen_ai.request.model", "model", "model_name"]))
 		) {
 			llmSpans.push(normalizeRawLlmSpan(span, attributes));
 			continue;
 		}
 		if (
+			mlflowSpanType === "tool" ||
 			kind === "tool" ||
 			kind === "function" ||
-			operation.includes("tool") ||
+			(!durableTaskWrapper && operation.includes("tool")) ||
 			Boolean(
 				firstString(attributes, [
 					"tool.name",
