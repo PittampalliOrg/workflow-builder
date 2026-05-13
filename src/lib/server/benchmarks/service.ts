@@ -115,7 +115,7 @@ const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = true;
 const ORCHESTRATOR_READY_TIMEOUT_MS = 5_000;
-const ORCHESTRATOR_START_TIMEOUT_MS = 30_000;
+const ORCHESTRATOR_START_TIMEOUT_MS = 75_000;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 	"CANCELED",
 	"CANCELLED",
@@ -385,6 +385,31 @@ export function shouldFinalizeBenchmarkLifecycle(row: {
 		INSTANCE_TERMINAL_STATUSES.has(row.status) ||
 		(row.inferenceStatus !== "queued" && row.inferenceStatus !== "inferencing")
 	);
+}
+
+export function benchmarkInstanceStartReuseResult(row: {
+	status: string | null;
+	inferenceStatus: string | null;
+	workflowExecutionId: string | null;
+	daprInstanceId: string | null;
+}) {
+	if (
+		row.status === "inferencing" &&
+		row.inferenceStatus === "inferencing" &&
+		row.workflowExecutionId
+	) {
+		return {
+			executionId: row.workflowExecutionId,
+			daprInstanceId: row.daprInstanceId,
+			idempotent: true,
+			reason: "benchmark_instance_already_started",
+		};
+	}
+	return null;
+}
+
+function isOrchestratorStartTimeoutError(message: string): boolean {
+	return /abort|timeout|timed out/i.test(message);
 }
 
 export function shouldTerminateCompletedBenchmarkSessionProjection(row: {
@@ -3442,6 +3467,8 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		row.runInstance.status !== "queued" ||
 		row.runInstance.inferenceStatus !== "queued"
 	) {
+		const reuse = benchmarkInstanceStartReuseResult(row.runInstance);
+		if (reuse) return reuse;
 		return {
 			executionId: row.runInstance.workflowExecutionId,
 			daprInstanceId: row.runInstance.daprInstanceId,
@@ -3480,6 +3507,13 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		latestStartState.instanceStatus !== "queued" ||
 		latestStartState.inferenceStatus !== "queued"
 	) {
+		const reuse = benchmarkInstanceStartReuseResult({
+			status: latestStartState.instanceStatus,
+			inferenceStatus: latestStartState.inferenceStatus,
+			workflowExecutionId: latestStartState.workflowExecutionId,
+			daprInstanceId: latestStartState.daprInstanceId,
+		});
+		if (reuse) return reuse;
 		return {
 			executionId: latestStartState.workflowExecutionId,
 			daprInstanceId: latestStartState.daprInstanceId,
@@ -3679,6 +3713,68 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		};
 	}
 
+	const [claimedRunInstance] = await database
+		.update(benchmarkRunInstances)
+		.set({
+			status: "inferencing",
+			inferenceStatus: "inferencing",
+			inferenceEnvironment: inferenceEnvironment as unknown as Record<string, unknown>,
+			workflowExecutionId: execution.id,
+			daprInstanceId: null,
+			startedAt: new Date(),
+			updatedAt: new Date(),
+		})
+		.where(
+			and(
+				eq(benchmarkRunInstances.id, row.runInstance.id),
+				eq(benchmarkRunInstances.status, "queued"),
+				eq(benchmarkRunInstances.inferenceStatus, "queued"),
+				sql`EXISTS (
+					SELECT 1 FROM benchmark_runs
+					WHERE benchmark_runs.id = ${row.run.id}
+						AND benchmark_runs.status IN ('queued', 'inferencing')
+				)`,
+			),
+		)
+		.returning({
+			id: benchmarkRunInstances.id,
+			status: benchmarkRunInstances.status,
+			inferenceStatus: benchmarkRunInstances.inferenceStatus,
+			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			daprInstanceId: benchmarkRunInstances.daprInstanceId,
+		});
+	if (!claimedRunInstance) {
+		const [currentRunInstance] = await database
+			.select({
+				status: benchmarkRunInstances.status,
+				inferenceStatus: benchmarkRunInstances.inferenceStatus,
+				workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+				daprInstanceId: benchmarkRunInstances.daprInstanceId,
+			})
+			.from(benchmarkRunInstances)
+			.where(eq(benchmarkRunInstances.id, row.runInstance.id))
+			.limit(1);
+		await database
+			.update(workflowExecutions)
+			.set({
+				status: "cancelled",
+				phase: "cancelled",
+				error: "benchmark instance start superseded",
+				completedAt: new Date(),
+			})
+			.where(eq(workflowExecutions.id, execution.id));
+		const reuse = currentRunInstance
+			? benchmarkInstanceStartReuseResult(currentRunInstance)
+			: null;
+		if (reuse) return reuse;
+		return {
+			executionId: execution.id,
+			daprInstanceId: null,
+			skipped: true,
+			reason: "benchmark_instance_start_superseded",
+		};
+	}
+
 	let res: Response;
 	try {
 		res = await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
@@ -3695,6 +3791,29 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		if (isOrchestratorStartTimeoutError(message)) {
+			await database
+				.update(workflowExecutions)
+				.set({
+					phase: "dispatch_pending",
+					executionIr: {
+						...executionIr,
+						dispatch: {
+							...executionIr.dispatch,
+							startTimedOutAt: new Date().toISOString(),
+							startTimeoutMessage: message.slice(0, 1000),
+						},
+					},
+				})
+				.where(eq(workflowExecutions.id, execution.id));
+			return {
+				executionId: execution.id,
+				daprInstanceId: null,
+				dispatchBackend,
+				executionClass,
+				startPending: true,
+			};
+		}
 		await database
 			.update(workflowExecutions)
 			.set({
@@ -3704,6 +3823,13 @@ export async function startBenchmarkInstanceWorkflow(params: {
 				completedAt: new Date(),
 			})
 			.where(eq(workflowExecutions.id, execution.id));
+		await markBenchmarkInstanceInferenceFailure({
+			runId: row.run.id,
+			instanceId: row.runInstance.instanceId,
+			status: "error",
+			error: message,
+			terminationReason: "workflow_start_failed",
+		});
 		throw error(
 			503,
 			`Failed to reach workflow-orchestrator while starting benchmark instance: ${message}`,
@@ -3720,6 +3846,13 @@ export async function startBenchmarkInstanceWorkflow(params: {
 				completedAt: new Date(),
 			})
 			.where(eq(workflowExecutions.id, execution.id));
+		await markBenchmarkInstanceInferenceFailure({
+			runId: row.run.id,
+			instanceId: row.runInstance.instanceId,
+			status: "error",
+			error: detail || "Failed to start benchmark instance workflow",
+			terminationReason: "workflow_start_failed",
+		});
 		throw error(res.status, detail || "Failed to start benchmark instance workflow");
 	}
 	const result = (await res.json()) as { instanceId?: string };
@@ -3745,13 +3878,9 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		.where(
 			and(
 				eq(benchmarkRunInstances.id, row.runInstance.id),
-				eq(benchmarkRunInstances.status, "queued"),
-				eq(benchmarkRunInstances.inferenceStatus, "queued"),
-				sql`EXISTS (
-					SELECT 1 FROM benchmark_runs
-					WHERE benchmark_runs.id = ${row.run.id}
-						AND benchmark_runs.status IN ('queued', 'inferencing')
-				)`,
+				eq(benchmarkRunInstances.status, "inferencing"),
+				eq(benchmarkRunInstances.inferenceStatus, "inferencing"),
+				eq(benchmarkRunInstances.workflowExecutionId, execution.id),
 			),
 		)
 		.returning({ id: benchmarkRunInstances.id });

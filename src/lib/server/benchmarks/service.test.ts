@@ -4,6 +4,7 @@ import {
 	__benchmarkSandboxCleanupForTest,
 	benchmarkInferenceStallSeconds,
 	benchmarkInferenceStallState,
+	benchmarkInstanceStartReuseResult,
 	benchmarkAgentRuntimeCleanupInstanceIds,
 	benchmarkRunUsesAgentWorkflowHosts,
 	benchmarkRunInstanceTerminalPatch,
@@ -215,6 +216,39 @@ describe("SWE-bench workflow spec", () => {
 			latestHeartbeatAt: new Date("2026-05-02T12:09:59Z"),
 		} as Parameters<typeof benchmarkInferenceStallState>[0] & { latestHeartbeatAt: Date };
 		expect(benchmarkInferenceStallState(recentHeartbeatOnly).stalled).toBe(true);
+	});
+
+	it("reuses an already claimed benchmark instance start", () => {
+		expect(
+			benchmarkInstanceStartReuseResult({
+				status: "inferencing",
+				inferenceStatus: "inferencing",
+				workflowExecutionId: "exec_123",
+				daprInstanceId: "sw-exec_123",
+			}),
+		).toEqual({
+			executionId: "exec_123",
+			daprInstanceId: "sw-exec_123",
+			idempotent: true,
+			reason: "benchmark_instance_already_started",
+		});
+
+		expect(
+			benchmarkInstanceStartReuseResult({
+				status: "queued",
+				inferenceStatus: "queued",
+				workflowExecutionId: null,
+				daprInstanceId: null,
+			}),
+		).toBeNull();
+		expect(
+			benchmarkInstanceStartReuseResult({
+				status: "inferencing",
+				inferenceStatus: "inferencing",
+				workflowExecutionId: null,
+				daprInstanceId: null,
+			}),
+		).toBeNull();
 	});
 
 	it("does not count initial user messages as progress for rescheduling sessions", () => {
