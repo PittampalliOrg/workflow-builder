@@ -4,6 +4,7 @@ vi.mock("$env/dynamic/private", () => ({ env: process.env }));
 vi.mock("$env/dynamic/public", () => ({ env: process.env }));
 
 import {
+	benchmarkComparisonMlflowTags,
 	downloadMlflowJsonArtifact,
 	listMlflowArtifacts,
 	logMlflowJsonArtifact,
@@ -61,6 +62,25 @@ describe("MLflow identity helpers", () => {
 		expect(mlflowArtifactLocationForExperiment("workflow-builder/dev/swebench")).toBe(
 			"mlflow-artifacts:/workflow-builder/dev/swebench",
 		);
+	});
+
+	it("projects benchmark comparison tags into queryable MLflow tags", () => {
+		expect(
+			benchmarkComparisonMlflowTags([
+				"experiment-2026-05",
+				"mcp.ablation",
+				"baseline/control",
+				"EXPERIMENT-2026-05",
+			]),
+		).toEqual([
+			{
+				key: "workflow_builder.benchmark_tags",
+				value: "experiment-2026-05,mcp.ablation,baseline/control",
+			},
+			{ key: "workflow_builder.benchmark_tag.experiment-2026-05", value: "true" },
+			{ key: "workflow_builder.benchmark_tag.mcp.ablation", value: "true" },
+			{ key: "workflow_builder.benchmark_tag.baseline_control", value: "true" },
+		]);
 	});
 });
 

@@ -515,6 +515,36 @@ function metric(key: string, value: unknown, step = 0): MlflowMetric | null {
 	return { key, value: n, timestamp: Date.now(), step };
 }
 
+function benchmarkTagKeySuffix(value: string): string | null {
+	const suffix = value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9_.-]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 80);
+	return suffix || null;
+}
+
+export function benchmarkComparisonMlflowTags(value: unknown): MlflowTag[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const tags: MlflowTag[] = [];
+	const normalizedTags: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") continue;
+		const benchmarkTag = item.trim().toLowerCase().slice(0, 64);
+		if (!benchmarkTag || seen.has(benchmarkTag)) continue;
+		seen.add(benchmarkTag);
+		normalizedTags.push(benchmarkTag);
+		const suffix = benchmarkTagKeySuffix(benchmarkTag);
+		if (suffix) tags.push(tag(`workflow_builder.benchmark_tag.${suffix}`, "true"));
+	}
+	if (normalizedTags.length > 0) {
+		tags.unshift(tag("workflow_builder.benchmark_tags", normalizedTags.join(",")));
+	}
+	return tags;
+}
+
 function stringValue(value: unknown): string {
 	if (value == null) return "";
 	if (typeof value === "string") return value.slice(0, 5000);
@@ -559,6 +589,7 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 			tag("workflow_builder.kind", "swebench_run"),
 			tag("workflow_builder.benchmark_run_id", row.run.id),
 		];
+		const comparisonTags = benchmarkComparisonMlflowTags(row.run.tags);
 		let mlflowRunId = await findRunByTags(experimentId, identityTags);
 		if (!mlflowRunId) {
 			mlflowRunId = await createRun({
@@ -577,6 +608,7 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 					tag("agent.mlflow_uri", row.agentMlflowUri),
 					tag("agent.runtime", row.run.agentRuntime),
 					tag("mlflow.dataset.id", row.run.mlflowDatasetId),
+					...comparisonTags,
 				],
 			});
 		}
@@ -616,7 +648,7 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 			metrics: compactMetrics([
 				metric("selected_instance_count", row.run.selectedInstanceIds.length),
 			]),
-			tags: [tag("workflow_builder.status", row.run.status)],
+			tags: [tag("workflow_builder.status", row.run.status), ...comparisonTags],
 		});
 		return mlflowRunId;
 	} catch (err) {
@@ -696,6 +728,7 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 	}
 	try {
 		const experimentId = row.run.mlflowExperimentId ?? (await getOrCreateExperimentId());
+		const comparisonTags = benchmarkComparisonMlflowTags(row.run.tags);
 		const identityTags = [
 			tag("workflow_builder.kind", "swebench_instance"),
 			tag("workflow_builder.benchmark_run_id", row.run.id),
@@ -723,6 +756,7 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 					tag("agent.id", row.run.agentId),
 					tag("agent.version", row.run.agentVersion),
 					tag("agent.runtime", row.run.agentRuntime),
+					...comparisonTags,
 				],
 			});
 		}
@@ -769,6 +803,7 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 				tag("mlflow.trace_id", mlflowTraceId),
 				tag("mlflow.dataset.id", mlflowDatasetId),
 				tag("mlflow.dataset.record_id", mlflowDatasetRecordId),
+				...comparisonTags,
 			],
 		});
 		return mlflowRunId;
@@ -940,6 +975,7 @@ export async function syncBenchmarkRunMlflow(
 			.limit(1);
 		if (!run) return;
 		const summary = isRecord(run.summary) ? run.summary : {};
+		const comparisonTags = benchmarkComparisonMlflowTags(run.tags);
 		await logBatch(mlflowRunId, {
 			metrics: compactMetrics([
 				metric("total", summary.total),
@@ -959,6 +995,7 @@ export async function syncBenchmarkRunMlflow(
 				tag("workflow_builder.mlflow_eval_run_id", run.mlflowEvalRunId ?? summary.mlflowEvalRunId),
 				tag("mlflow.dataset.id", run.mlflowDatasetId),
 				tag("workflow_builder.error", run.error),
+				...comparisonTags,
 			],
 		});
 		if (options.terminate || terminalRunStatuses.has(run.status)) {

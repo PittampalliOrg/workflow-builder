@@ -1151,6 +1151,28 @@ def test_mlflow_eval_summary_scores_completed_rows(monkeypatch):
     assert summary["scorers"]["trace_health"]["passing"] == 1
 
 
+def test_mlflow_benchmark_comparison_tags_are_queryable(monkeypatch):
+    app = load_app(monkeypatch)
+
+    assert app._mlflow_benchmark_comparison_tags(
+        {
+            "tags": [
+                "experiment-2026-05",
+                "mcp.ablation",
+                "baseline/control",
+                "EXPERIMENT-2026-05",
+            ]
+        }
+    ) == {
+        "workflow_builder.benchmark_tags": (
+            "experiment-2026-05,mcp.ablation,baseline/control"
+        ),
+        "workflow_builder.benchmark_tag.experiment-2026-05": "true",
+        "workflow_builder.benchmark_tag.mcp.ablation": "true",
+        "workflow_builder.benchmark_tag.baseline_control": "true",
+    }
+
+
 def test_run_mlflow_swebench_eval_persists_eval_projection(monkeypatch, tmp_path):
     monkeypatch.setenv("MLFLOW_ENABLED", "true")
     app = load_app(monkeypatch)
@@ -1183,6 +1205,7 @@ def test_run_mlflow_swebench_eval_persists_eval_projection(monkeypatch, tmp_path
             "agentRuntimeAppId": "agent-runtime-agent-1",
             "modelNameOrPath": "model",
             "mlflowRunId": "parent_run_1",
+            "tags": ["experiment-2026-05", "baseline"],
             "instances": [
                 {
                     "id": "ri_1",
@@ -1207,6 +1230,14 @@ def test_run_mlflow_swebench_eval_persists_eval_projection(monkeypatch, tmp_path
     assert result["mlflowEvalRunId"] == "eval_run_1"
     assert (tmp_path / "run_1" / "mlflow-eval-input.jsonl").exists()
     assert (tmp_path / "run_1" / "mlflow-eval-summary.json").exists()
+    input_rows = [
+        json.loads(line)
+        for line in (tmp_path / "run_1" / "mlflow-eval-input.jsonl").read_text().splitlines()
+    ]
+    assert input_rows[0]["metadata"]["benchmark_tags"] == [
+        "experiment-2026-05",
+        "baseline",
+    ]
     assert posted["path"] == "/api/internal/benchmarks/runs/run_1/mlflow-evaluation"
     assert posted["json"]["mlflowEvalRunId"] == "eval_run_1"
 

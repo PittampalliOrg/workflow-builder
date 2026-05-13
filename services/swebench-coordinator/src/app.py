@@ -430,6 +430,7 @@ def _compact_run_for_workflow(run: dict[str, Any]) -> dict[str, Any]:
         "mlflowTraceExperimentName": run.get("mlflowTraceExperimentName"),
         "mlflowTraceExperimentId": run.get("mlflowTraceExperimentId"),
         "evaluatorResourceClass": run.get("evaluatorResourceClass"),
+        "tags": run.get("tags") if isinstance(run.get("tags"), list) else [],
         "summary": {"capacity": capacity} if isinstance(capacity, dict) else {},
     }
     instances = run.get("instances") if isinstance(run.get("instances"), list) else []
@@ -777,6 +778,27 @@ def _mlflow_eval_row_for_trace(
 def _mlflow_trace_tag_value(value: Any, max_length: int = 250) -> str:
     text = "" if value is None else str(value)
     return text[:max_length]
+
+
+def _mlflow_benchmark_comparison_tags(run: dict[str, Any]) -> dict[str, str]:
+    raw_tags = run.get("tags") if isinstance(run.get("tags"), list) else []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    out: dict[str, str] = {}
+    for item in raw_tags:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip().lower()[:64]
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+        suffix = re.sub(r"[^a-z0-9_.-]+", "_", tag).strip("_")[:80]
+        if suffix:
+            out[f"workflow_builder.benchmark_tag.{suffix}"] = "true"
+    if normalized:
+        out["workflow_builder.benchmark_tags"] = ",".join(normalized)
+    return out
 
 
 def _mlflow_link_traces_to_runs(
@@ -1191,6 +1213,7 @@ def _mlflow_eval_input_row(
             "agent_version": run.get("agentVersion"),
             "agent_runtime": run.get("agentRuntimeAppId"),
             "model": run.get("modelNameOrPath"),
+            "benchmark_tags": run.get("tags") if isinstance(run.get("tags"), list) else [],
             "session_id": instance.get("sessionId"),
             "workflow_execution_id": instance.get("workflowExecutionId"),
             "mlflow_run_id": instance.get("mlflowRunId"),
@@ -1405,6 +1428,11 @@ def _mlflow_genai_evaluate_sync(
             "workflow_builder.kind": "swebench_mlflow_eval",
             "workflow_builder.benchmark_run_id": str(run.get("id") or ""),
             "swebench.suite": str(run.get("suiteSlug") or ""),
+            "agent.id": str(run.get("agentId") or ""),
+            "agent.version": str(run.get("agentVersion") or ""),
+            "agent.runtime": str(run.get("agentRuntimeAppId") or ""),
+            "model.name_or_path": str(run.get("modelNameOrPath") or ""),
+            **_mlflow_benchmark_comparison_tags(run),
         },
     ) as eval_run:
         eval_run_id = eval_run.info.run_id
