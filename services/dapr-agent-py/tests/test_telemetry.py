@@ -302,6 +302,25 @@ def test_dapr_agents_context_bridge_drops_null_attributes():
     assert "span_type" not in attrs
 
 
+def test_span_attribute_sanitizer_drops_null_attributes():
+    from opentelemetry.sdk.trace import ReadableSpan
+
+    from src.telemetry.providers import _sanitize_span_attributes
+
+    span = ReadableSpan(
+        "execute_tool Write",
+        attributes={
+            "span_type": None,
+            "openinference.span.kind": "TOOL",
+        },
+    )
+
+    _sanitize_span_attributes(span)
+
+    assert span.attributes["openinference.span.kind"] == "TOOL"
+    assert "span_type" not in span.attributes
+
+
 def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
     calls = {}
 

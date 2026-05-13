@@ -104,6 +104,7 @@ def init_telemetry() -> bool:
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
         tp = TracerProvider(resource=resource)
+        tp.add_span_processor(_NullAttributeSanitizingSpanProcessor())
         tp.add_span_processor(
             BatchSpanProcessor(
                 OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"),
@@ -203,6 +204,54 @@ def _iter_context_bridge_attrs(original: Any) -> Iterator[tuple[str, Any]]:
         yield from _non_null_attrs(get_telemetry_attributes().items())
     except Exception as exc:  # noqa: BLE001
         logger.debug("Dapr Agents context bridge runtime lookup failed: %s", exc)
+
+
+def _sanitize_span_attributes(span: Any) -> None:
+    """Drop null span attributes before SDK exporters encode them."""
+    attrs = getattr(span, "_attributes", None)
+    if not attrs:
+        return
+
+    try:
+        items = list(attrs.items())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not inspect span attributes for null cleanup: %s", exc)
+        return
+
+    clean_attrs: dict[str, Any] = {}
+    dropped_keys: list[str] = []
+    for key, value in items:
+        if value is None:
+            dropped_keys.append(str(key))
+            continue
+        clean_attrs[key] = value
+
+    if not dropped_keys:
+        return
+
+    try:
+        setattr(span, "_attributes", clean_attrs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not update span attributes after null cleanup: %s", exc)
+        return
+
+    logger.debug("Dropped null OpenTelemetry span attributes: %s", ", ".join(dropped_keys))
+
+
+class _NullAttributeSanitizingSpanProcessor:
+    """Span processor that removes null attrs from third-party instrumentation."""
+
+    def on_start(self, span: Any, parent_context: Any = None) -> None:
+        return None
+
+    def on_end(self, span: Any) -> None:
+        _sanitize_span_attributes(span)
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return True
 
 
 def _install_dapr_agents_context_bridge() -> None:
