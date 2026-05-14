@@ -108,15 +108,20 @@
 	<div class="text-[10px] font-mono text-muted-foreground mb-2">{event.type}</div>
 	<JsonView value={data} />
 {:else if hasFullPayload && variant === 'panel'}
-	<div class="mb-2 flex items-center gap-2 rounded border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
-		<span class="flex-1">This event has a preview-only payload.</span>
-		{#if onLoadFull}
-			<Button variant="ghost" size="sm" class="h-6 gap-1 px-2 text-[11px]" onclick={onLoadFull} disabled={loadingFull}>
-				{#if loadingFull}<Loader2 class="size-3 animate-spin" />{:else}<Download class="size-3" />{/if}
-				Load full
+	{#if loadingFull}
+		<div class="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+			<Loader2 class="size-3 animate-spin" />
+			<span>Loading full payload…</span>
+		</div>
+	{:else if onLoadFull}
+		<div class="mb-2 flex items-center gap-2 rounded border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+			<span class="flex-1">Preview shape only — auto-load did not complete.</span>
+			<Button variant="ghost" size="sm" class="h-6 gap-1 px-2 text-[11px]" onclick={onLoadFull}>
+				<Download class="size-3" />
+				Retry
 			</Button>
-		{/if}
-	</div>
+		</div>
+	{/if}
 	{@render bodyRender()}
 {:else}
 	{@render bodyRender()}

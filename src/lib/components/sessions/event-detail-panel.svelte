@@ -85,13 +85,20 @@
 	}
 
 	// When the user navigates to a different event, reset the full-payload
-	// fetch state so the next event starts with preview-only again.
+	// fetch state so the next event starts with preview-only again, then
+	// auto-prefetch the full payload (and its pair) so the user doesn't
+	// have to click "Load full" on every selection. The list/stream
+	// endpoints stay preview-only for burst-traffic safety; the per-event
+	// full fetch only fires when an event is actually opened.
 	$effect(() => {
 		void event.id;
 		fullPayload = null;
 		pairedFullPayload = null;
 		loadingFull = false;
 		fullError = null;
+		if (hasPreviewShape || pairedHasPreviewShape) {
+			void loadFull();
+		}
 	});
 
 	const effectiveData = $derived(fullPayload ?? event.data);
