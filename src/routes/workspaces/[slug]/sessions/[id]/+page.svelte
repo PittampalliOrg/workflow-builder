@@ -211,6 +211,7 @@
 		'agent.thinking',
 		'agent.thinking_delta',
 		'agent.message_delta',
+		'agent.tool_input_delta',
 		'agent.tool_result',
 		'agent.mcp_tool_result',
 		'agent.custom_tool_result',

@@ -87,17 +87,22 @@
 	// When the user navigates to a different event, reset the full-payload
 	// fetch state so the next event starts with preview-only again, then
 	// auto-prefetch the full payload (and its pair) so the user doesn't
-	// have to click "Load full" on every selection. The list/stream
-	// endpoints stay preview-only for burst-traffic safety; the per-event
-	// full fetch only fires when an event is actually opened.
+	// have to click "Load full" on every selection. loadFull is deferred
+	// to a microtask so its synchronous state reads/writes (loadingFull,
+	// fullPayload) don't leak into this effect's reactive tracking
+	// context — otherwise the writes loop the effect (Svelte 5
+	// effect_update_depth_exceeded).
 	$effect(() => {
 		void event.id;
 		fullPayload = null;
 		pairedFullPayload = null;
 		loadingFull = false;
 		fullError = null;
-		if (hasPreviewShape || pairedHasPreviewShape) {
-			void loadFull();
+		const shouldLoad = hasPreviewShape || pairedHasPreviewShape;
+		if (shouldLoad) {
+			queueMicrotask(() => {
+				void loadFull();
+			});
 		}
 	});
 
