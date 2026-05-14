@@ -166,11 +166,7 @@
 >
 	<EventTypePill {kind} size="xs" />
 	<span class="flex-1 truncate text-foreground/90" title={preview}>
-		{preview}{#if batchCount > 1}
-			<span class="ml-1 rounded bg-muted px-1 py-0 text-[9px] text-muted-foreground"
-				>× {batchCount}</span
-			>
-		{/if}
+		{preview}{#if batchCount > 1}<span class="ml-1 text-muted-foreground/80">×{batchCount}</span>{/if}
 	</span>
 	{#if tokens}
 		<span class="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground" title="tokens in / out">

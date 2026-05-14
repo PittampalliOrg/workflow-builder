@@ -128,8 +128,8 @@ export function findToolPair<E extends ToolPairEvent>(
  * with a matching `tool_use_id` (or, when not stamped, the next llm_usage
  * after this tool's `tool_result`). Returns null if no usage is associated.
  *
- * Used by `event-row.svelte` to surface paired token cost on each tool row —
- * matches the CMA list-row affordance ("Write · 5.2k / 536").
+ * Kept for back-compat with callers that need a single-event lookup.
+ * Prefer `computeTokenAssignments` for the list-row case.
  */
 export function findToolTokenUsage<E extends ToolPairEvent & { sequence?: number }>(
 	events: readonly E[],
@@ -154,6 +154,48 @@ export function findToolTokenUsage<E extends ToolPairEvent & { sequence?: number
 		return null;
 	}
 	return null;
+}
+
+/**
+ * Walk the entire event stream once and assign each `agent.llm_usage`
+ * event's tokens to the FIRST content event (agent.message OR tool_use)
+ * that appeared after the previous llm_usage — matching CMA's display
+ * heuristic where tokens cluster with the row that "consumed" them.
+ *
+ * For a turn where the LLM produced a text message AND tool calls in one
+ * response, only the message gets tokens (the tools share the call). For
+ * tool-only turns, the first tool_use gets tokens.
+ *
+ * Returns a Map keyed by event id so list rows can do an O(1) lookup
+ * instead of an O(N) walk per row.
+ */
+export function computeTokenAssignments<E extends ToolPairEvent>(
+	events: readonly E[]
+): Map<string | number, { input: number; output: number }> {
+	const assignments = new Map<string | number, { input: number; output: number }>();
+	let pendingOwner: E | null = null;
+	for (const e of events) {
+		const isContent = e.type === 'agent.message' || START_TYPES.has(e.type);
+		if (isContent && pendingOwner === null) {
+			pendingOwner = e;
+			continue;
+		}
+		if (e.type === 'agent.llm_usage' && pendingOwner) {
+			const d = e.data as {
+				input_tokens?: number;
+				output_tokens?: number;
+				model_usage?: { input_tokens?: number; output_tokens?: number };
+			};
+			const usage = d.model_usage ?? d;
+			const input = Number(usage.input_tokens ?? 0);
+			const output = Number(usage.output_tokens ?? 0);
+			if (input || output) {
+				assignments.set(pendingOwner.id, { input, output });
+			}
+			pendingOwner = null;
+		}
+	}
+	return assignments;
 }
 
 export type { SessionEventEnvelope, ExecutionTimelineEvent };

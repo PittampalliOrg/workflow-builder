@@ -91,9 +91,7 @@
 			<div class="flex items-center gap-2">
 				<EventTypePill {kind} />
 				<h3 class="text-sm font-semibold truncate">{toolName}</h3>
-				<span class="rounded bg-muted px-1.5 py-0 text-[10px] text-muted-foreground">
-					× {children.length}
-				</span>
+				<span class="text-[11px] text-muted-foreground">×{children.length}</span>
 			</div>
 			<div class="text-[11px] text-muted-foreground">
 				{children.length} invocations
@@ -127,9 +125,9 @@
 						<ChevronRight class="size-3 text-muted-foreground" />
 					{/if}
 					<EventTypePill kind="tool" label={toolName} size="xs" />
-					<span class="min-w-0 flex-1 truncate text-muted-foreground" title={preview(ev)}>
+					<code class="min-w-0 flex-1 truncate text-foreground font-mono" title={preview(ev)}>
 						{preview(ev)}
-					</span>
+					</code>
 					{#if data.duration_ms}
 						<span class="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
 							<Clock class="size-2.5" />

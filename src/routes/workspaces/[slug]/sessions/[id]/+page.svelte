@@ -29,7 +29,7 @@
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
-	import { findToolPair, findToolTokenUsage } from '$lib/utils/tool-pair';
+	import { findToolPair, computeTokenAssignments } from '$lib/utils/tool-pair';
 	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
 	import SessionTimelineBar from '$lib/components/sessions/session-timeline-bar.svelte';
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
@@ -201,13 +201,40 @@
 			/* poll again next tick */
 		}
 	}
+	// Types that the Transcript view hides — the polished CMA-style read where
+	// only User / Tool / Agent rows are visible. The full stream stays available
+	// in Debug. Tool results are folded into their tool_use row's detail panel
+	// via findToolPair, so they don't need their own list row. Model/usage
+	// events surface their tokens inline on the message/tool row that consumed
+	// them via computeTokenAssignments.
+	const TRANSCRIPT_HIDDEN_TYPES: ReadonlySet<string> = new Set([
+		'agent.thinking',
+		'agent.thinking_delta',
+		'agent.message_delta',
+		'agent.tool_result',
+		'agent.mcp_tool_result',
+		'agent.custom_tool_result',
+		'agent.llm_usage',
+		'agent.iteration',
+		'agent.thread_context_compacted',
+		'agent.thread_images_compacted',
+		'span.model_request_start',
+		'span.model_request_end',
+		'session.status_running',
+		'session.status_idle',
+		'session.status_rescheduled',
+		'session.turn_started',
+		'session.instructions_applied',
+		'instance.metrics_summary',
+		'llm_start',
+		'llm_complete'
+	]);
+
 	const displayEvents = $derived.by(() => {
 		let list = events;
 		if (viewMode !== 'debug') {
 			list = list.filter((e) => {
-				if (e.type === 'agent.thinking') return false;
-				if (e.type.startsWith('session.status_') && e.type !== 'session.status_terminated')
-					return false;
+				if (TRANSCRIPT_HIDDEN_TYPES.has(e.type)) return false;
 				return true;
 			});
 		}
@@ -229,6 +256,10 @@
 		}
 		return list;
 	});
+
+	// Token cost per row, attributing each agent.llm_usage event to the
+	// content event that consumed it. Computed once per `events` change.
+	const tokenAssignments = $derived(computeTokenAssignments(events));
 	// Collapse consecutive same-tool rows into one — CMA shows "Web Search × 5"
 	// for a batch of 5 `agent.tool_use` events with the same tool name. We
 	// keep the full list in `displayEvents` for JSON export + debug view, but
@@ -282,6 +313,48 @@
 			batchedEvents.find((b) => String(b.event.id) === String(selectedEvent.id)) ?? null
 		);
 	});
+	// Augment the row list with "Session idle · {duration}" separators between
+	// turns so the user can see at a glance when the session went quiet between
+	// the agent's response and the next user message. Matches CMA's transcript
+	// affordance.
+	type ListRow =
+		| { kind: 'batch'; key: string; batch: BatchedEvent }
+		| { kind: 'separator'; key: string; sinceMs: number };
+	const listRows = $derived.by<ListRow[]>(() => {
+		if (viewMode === 'debug') {
+			return batchedEvents.map((b) => ({ kind: 'batch' as const, key: String(b.event.id), batch: b }));
+		}
+		const out: ListRow[] = [];
+		let prev: BatchedEvent | null = null;
+		for (const b of batchedEvents) {
+			if (prev && b.event.type.startsWith('user.')) {
+				const sinceMs =
+					new Date(b.event.createdAt).getTime() - new Date(prev.event.createdAt).getTime();
+				if (Number.isFinite(sinceMs) && sinceMs >= 30_000) {
+					out.push({
+						kind: 'separator' as const,
+						key: `sep:${prev.event.id}:${b.event.id}`,
+						sinceMs
+					});
+				}
+			}
+			out.push({ kind: 'batch' as const, key: String(b.event.id), batch: b });
+			prev = b;
+		}
+		return out;
+	});
+	function fmtIdleGap(ms: number): string {
+		if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+		if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+		if (ms < 86_400_000) {
+			const h = Math.floor(ms / 3_600_000);
+			const m = Math.floor((ms % 3_600_000) / 60_000);
+			return m > 0 ? `${h}h ${m}m` : `${h}h`;
+		}
+		const d = Math.floor(ms / 86_400_000);
+		const h = Math.floor((ms % 86_400_000) / 3_600_000);
+		return h > 0 ? `${d}d ${h}h` : `${d}d`;
+	}
 	// Every event type seen in this session, for the "All events" filter
 	// dropdown. Order matches first-seen order so the menu stays stable
 	// across turns.
@@ -1187,22 +1260,31 @@
 						</div>
 					{:else}
 						<div class="space-y-0.5 px-1.5">
-							{#each batchedEvents as batch (batch.event.id)}
-								{@const elapsed =
-									sessionStartMs !== null
-										? new Date(batch.event.createdAt).getTime() - sessionStartMs
-										: undefined}
-								{@const tokens = findToolTokenUsage(events, batch.event)}
-								<EventRow
-									event={batch.event}
-									batchCount={batch.count}
-									pairedTokens={tokens}
-									selected={selectedEvent
-										? String(selectedEvent.id) === String(batch.event.id)
-										: false}
-									elapsedMs={elapsed}
-									onClick={() => (selectedEventId = String(batch.event.id))}
-								/>
+							{#each listRows as row (row.key)}
+								{#if row.kind === 'separator'}
+									<div class="my-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+										<span class="h-px flex-1 bg-border/60"></span>
+										<span>Session idle · {fmtIdleGap(row.sinceMs)}</span>
+										<span class="h-px flex-1 bg-border/60"></span>
+									</div>
+								{:else}
+									{@const batch = row.batch}
+									{@const elapsed =
+										sessionStartMs !== null
+											? new Date(batch.event.createdAt).getTime() - sessionStartMs
+											: undefined}
+									{@const tokens = tokenAssignments.get(batch.event.id) ?? null}
+									<EventRow
+										event={batch.event}
+										batchCount={batch.count}
+										pairedTokens={tokens}
+										selected={selectedEvent
+											? String(selectedEvent.id) === String(batch.event.id)
+											: false}
+										elapsedMs={elapsed}
+										onClick={() => (selectedEventId = String(batch.event.id))}
+									/>
+								{/if}
 							{/each}
 							{#each Object.entries(inFlightPartials) as [key, partial] (key)}
 								<div
