@@ -32,10 +32,14 @@ from src.telemetry import init_telemetry
 
 init_telemetry()
 
+import json  # noqa: E402
 import logging  # noqa: E402
+import os  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
+from typing import Any  # noqa: E402
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from google.protobuf import wrappers_pb2  # noqa: E402
 
 from google.adk.agents import LlmAgent  # noqa: E402
 
@@ -49,6 +53,7 @@ from src.adapters.gemini_thought_signatures import (  # noqa: E402
 from src.adapters.gemini_model import build_default_model  # noqa: E402
 from src.adapters.mcp_translation import build_mcp_toolsets  # noqa: E402
 from src.runner.compose import build_runner, register_session_workflow  # noqa: E402
+from src.session_config import external_control_event_as_user_event  # noqa: E402
 from src.tools import all_adk_tools  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -109,3 +114,69 @@ def healthz() -> dict[str, str]:
 @app.get("/readyz")
 def readyz() -> dict[str, object]:
     return {"status": "ok", "running": _runner.is_running}
+
+
+def _taskhub_call(method: str, request: Any) -> Any:
+    import grpc
+    import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
+
+    target = (
+        f"{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
+        f"{os.environ.get('DAPR_GRPC_PORT', '50001')}"
+    )
+    timeout_seconds = float(os.environ.get("TASKHUB_RPC_TIMEOUT_SECONDS", "15"))
+    stub = pb_grpc.TaskHubSidecarServiceStub(grpc.insecure_channel(target))
+    return getattr(stub, method)(request, timeout=timeout_seconds)
+
+
+@app.post("/internal/sessions/spawn")
+def spawn_session_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+    """Start this runtime's session_workflow for a UI/direct session."""
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    instance_id = str(request.get("instanceId") or "").strip()
+    if not instance_id:
+        raise HTTPException(status_code=400, detail="instanceId is required")
+    payload = request.get("payload") or {}
+
+    create_request = pb.CreateInstanceRequest(
+        instanceId=instance_id,
+        name="session_workflow",
+        input=wrappers_pb2.StringValue(value=json.dumps(payload)),
+    )
+    try:
+        _taskhub_call("StartInstance", create_request)
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "already exists" in msg.lower() or "ALREADY_EXISTS" in msg:
+            logger.info("[spawn] instance %s already exists - reusing", instance_id)
+        else:
+            logger.exception("[spawn] StartInstance failed for %s", instance_id)
+            raise HTTPException(status_code=500, detail=f"StartInstance failed: {msg}")
+
+    return {"instanceId": instance_id, "ok": True}
+
+
+@app.post("/internal/sessions/raise-event")
+def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+    """Raise a user/control event into this runtime's session_workflow."""
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    instance_id = str(request.get("instanceId") or "").strip()
+    event_name = str(request.get("eventName") or "").strip()
+    payload = request.get("payload") or {}
+    if not instance_id or not event_name:
+        raise HTTPException(status_code=400, detail="instanceId + eventName required")
+    event_name, payload = external_control_event_as_user_event(event_name, payload)
+
+    raise_request = pb.RaiseEventRequest(
+        instanceId=instance_id,
+        name=event_name,
+        input=wrappers_pb2.StringValue(value=json.dumps(payload)),
+    )
+    try:
+        _taskhub_call("RaiseEvent", raise_request)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"RaiseEvent failed: {exc}")
+
+    return {"ok": True}

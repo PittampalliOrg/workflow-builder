@@ -61,6 +61,7 @@ import {
 	createInteractiveSessionMlflowRun,
 	createWorkflowExecutionMlflowRun,
 	mlflowArtifactLocationForLifecycleExperiment,
+	patchMlflowTracesForSession,
 	precreateMlflowTrace,
 	registerAgentVersionInMlflow,
 } from "./mlflow-lifecycle";
@@ -458,5 +459,80 @@ describe("mlflow lifecycle helpers", () => {
 		expect(body.trace.traceInfo.traceLocation.mlflowExperiment.experimentId).toBe("13");
 		expect(body.trace.traceInfo.traceMetadata["mlflow.modelId"]).toBe("m-agent-v1");
 		expect(body.trace.traceInfo.tags["mlflow.traceName"]).toBe("swebench/demo");
+	});
+
+	it("patches interactive session traces with exact session, run, and model metadata", async () => {
+		const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+			if (url.endsWith("/api/3.0/mlflow/traces/search")) {
+				const body = JSON.parse(String(init?.body ?? "{}"));
+				const filter = String(body.filter ?? "");
+				if (filter.includes("f06g-h1avdhy4noigex8s")) {
+					return new Response(
+						JSON.stringify({
+							traces: [
+								{
+									info: {
+										trace_id: "tr-22222222222222222222222222222222",
+										state: "OK",
+										timestamp_ms: 1000,
+										execution_time_ms: 25,
+									},
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (filter.includes("f06g_h1")) {
+					return new Response(
+						JSON.stringify({
+							traces: [
+								{
+									info: {
+										trace_id: "tr-11111111111111111111111111111111",
+										state: "IN_PROGRESS",
+										timestamp_ms: 500,
+									},
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ traces: [] }), { status: 200 });
+			}
+			if (url.includes("/api/2.0/mlflow/traces/")) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			throw new Error(`unexpected fetch ${url}`);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			patchMlflowTracesForSession({
+				sessionId: "f06g_h1AvdHY4noIgEx8S",
+				experimentId: "3",
+				runId: "run_1",
+				modelId: "m-agent-v1",
+				status: "OK",
+				endTime: 12345,
+			}),
+		).resolves.toBe(2);
+
+		const patchBodies = fetchMock.mock.calls
+			.filter(([url]) => String(url).includes("/api/2.0/mlflow/traces/"))
+			.map(([, init]) => JSON.parse(String(init?.body ?? "{}")));
+		expect(patchBodies).toHaveLength(2);
+		for (const body of patchBodies) {
+			expect(body.status).toBe("OK");
+			expect(body.timestamp_ms).toBe(12345);
+			expect(body.request_metadata).toEqual(
+				expect.arrayContaining([
+					{ key: "mlflow.trace.session", value: "f06g_h1AvdHY4noIgEx8S" },
+					{ key: "mlflow.sourceRun", value: "run_1" },
+					{ key: "mlflow.modelId", value: "m-agent-v1" },
+				]),
+			);
+		}
 	});
 });

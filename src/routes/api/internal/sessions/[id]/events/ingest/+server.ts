@@ -12,6 +12,7 @@ import { evaluationRunItems, sessions } from "$lib/server/db/schema";
 import { persistCodeCheckpointFromAgentEvent } from "$lib/server/workflows/code-checkpoints";
 import { recordEvaluationArtifact } from "$lib/server/evaluations/service";
 import { cleanupSessionSandbox } from "$lib/server/sandboxes/provision";
+import { safePatchInteractiveSessionMlflowTraces } from "$lib/server/observability/mlflow-lifecycle";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -105,9 +106,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					}
 				: null,
 		});
+		void safePatchInteractiveSessionMlflowTraces({
+			sessionId: params.id,
+			status: "OK",
+		});
 	} else if (type === "session.status_terminated") {
 		await updateSessionStatus(params.id, "terminated", {
 			markCompleted: true,
+		});
+		void safePatchInteractiveSessionMlflowTraces({
+			sessionId: params.id,
+			status: "OK",
 		});
 		// Release the per-session OpenShell sandbox. Fire-and-forget — the
 		// workspace runtime's TTL pass will reap leaks if this doesn't land.

@@ -516,6 +516,215 @@ function escapeMlflowFilterValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
+function traceIdFromSearchItem(item: unknown): string | null {
+  const obj = item as Record<string, unknown>;
+  const info =
+    (obj.trace_info as Record<string, unknown> | undefined) ??
+    (obj.info as Record<string, unknown> | undefined) ??
+    obj;
+  const raw = info.trace_id ?? info.traceId ?? obj.trace_id ?? obj.traceId;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function traceStateFromSearchItem(item: unknown): "OK" | "ERROR" | null {
+  const obj = item as Record<string, unknown>;
+  const info =
+    (obj.trace_info as Record<string, unknown> | undefined) ??
+    (obj.info as Record<string, unknown> | undefined) ??
+    obj;
+  const raw = info.state ?? info.status;
+  if (raw === "OK" || raw === "ERROR") return raw;
+  return null;
+}
+
+function traceEndTimestampMsFromSearchItem(item: unknown): number {
+  const obj = item as Record<string, unknown>;
+  const info =
+    (obj.trace_info as Record<string, unknown> | undefined) ??
+    (obj.info as Record<string, unknown> | undefined) ??
+    obj;
+  const startMs =
+    typeof info.timestamp_ms === "number"
+      ? info.timestamp_ms
+      : typeof info.timestampMs === "number"
+        ? info.timestampMs
+        : typeof info.request_time === "string"
+          ? Date.parse(info.request_time)
+          : typeof info.requestTime === "string"
+            ? Date.parse(info.requestTime)
+            : NaN;
+  const durationMs =
+    typeof info.execution_time_ms === "number"
+      ? info.execution_time_ms
+      : typeof info.executionTimeMs === "number"
+        ? info.executionTimeMs
+        : NaN;
+  if (Number.isFinite(startMs) && Number.isFinite(durationMs)) {
+    return Math.round(startMs + durationMs);
+  }
+  const durationText =
+    typeof info.execution_duration === "string"
+      ? info.execution_duration
+      : typeof info.executionDuration === "string"
+        ? info.executionDuration
+        : "";
+  const seconds = Number(durationText.replace(/s$/, ""));
+  if (Number.isFinite(startMs) && Number.isFinite(seconds)) {
+    return Math.round(startMs + seconds * 1000);
+  }
+  return Date.now();
+}
+
+function sessionTraceLookupValues(sessionId: string): string[] {
+  const raw = sessionId.trim();
+  const lower = raw.toLowerCase();
+  const k8sLabel = lower
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/_/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .replace(/[^a-z0-9]+$/, "")
+    .slice(0, 63);
+  return Array.from(new Set([raw, lower, k8sLabel].filter(Boolean)));
+}
+
+export async function patchMlflowTracesForSession(params: {
+  sessionId: string;
+  experimentId: string | null | undefined;
+  runId: string | null | undefined;
+  modelId: string | null | undefined;
+  status?: "OK" | "ERROR";
+  endTime?: Date | number | null;
+}): Promise<number> {
+  if (!mlflowLifecycleEnabled()) return 0;
+  const sessionId = params.sessionId.trim();
+  const experimentId = params.experimentId?.trim();
+  if (!sessionId || !experimentId) return 0;
+
+  const matches = new Map<string, unknown>();
+  for (const value of sessionTraceLookupValues(sessionId)) {
+    let pageToken: string | undefined;
+    const filter = `metadata.\`mlflow.trace.session\` LIKE '%${escapeMlflowFilterValue(value)}%'`;
+    for (let page = 0; page < 20; page += 1) {
+      const payload = await mlflowRequest<{
+        traces?: unknown[];
+        next_page_token?: string;
+      }>("/api/3.0/mlflow/traces/search", {
+        method: "POST",
+        body: JSON.stringify({
+          locations: [
+            {
+              type: "MLFLOW_EXPERIMENT",
+              mlflow_experiment: { experiment_id: experimentId },
+            },
+          ],
+          filter,
+          max_results: 250,
+          order_by: ["timestamp_ms DESC"],
+          ...(pageToken ? { page_token: pageToken } : {}),
+        }),
+      });
+      for (const item of payload.traces ?? []) {
+        const traceId = traceIdFromSearchItem(item);
+        if (traceId) matches.set(traceId, item);
+      }
+      pageToken = payload.next_page_token;
+      if (!pageToken) break;
+    }
+  }
+
+  const endTime =
+    params.endTime instanceof Date
+      ? params.endTime.getTime()
+      : typeof params.endTime === "number"
+        ? params.endTime
+        : null;
+  let patched = 0;
+  for (const [traceId, item] of matches) {
+    await mlflowRequest(`/api/2.0/mlflow/traces/${encodeURIComponent(traceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        timestamp_ms: endTime ?? traceEndTimestampMsFromSearchItem(item),
+        status: traceStateFromSearchItem(item) ?? params.status ?? "OK",
+        request_metadata: [
+          { key: "mlflow.trace.session", value: sessionId },
+          ...(params.runId ? [{ key: "mlflow.sourceRun", value: params.runId }] : []),
+          ...(params.modelId ? [{ key: "mlflow.modelId", value: params.modelId }] : []),
+        ],
+        tags: [
+          { key: "session.id", value: sessionId },
+          { key: "agent.session.id", value: sessionId },
+          { key: "workflow_builder.session_id", value: sessionId },
+          { key: "workflow_builder.mlflow_session_id", value: sessionId },
+          ...(params.runId ? [{ key: "mlflow.run_id", value: params.runId }] : []),
+          ...(params.modelId ? [{ key: "mlflow.modelId", value: params.modelId }] : []),
+        ],
+      }),
+    });
+    patched += 1;
+  }
+  return patched;
+}
+
+export async function patchInteractiveSessionMlflowTraces(params: {
+  sessionId: string;
+  status?: "OK" | "ERROR";
+  endTime?: Date | number | null;
+}): Promise<number> {
+  if (!mlflowLifecycleEnabled()) return 0;
+  const sessionId = params.sessionId.trim();
+  if (!sessionId) return 0;
+  const [session] = await db
+    .select({
+      mlflowExperimentId: sessions.mlflowExperimentId,
+      mlflowRunId: sessions.mlflowRunId,
+      mlflowSessionId: sessions.mlflowSessionId,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  if (!session) return 0;
+  const experimentId =
+    session.mlflowExperimentId?.trim() ||
+    (await resolveCanonicalTraceMlflowExperiment()).experimentId;
+  const links = await db
+    .select({
+      mlflowLoggedModelId: mlflowLineageLinks.mlflowLoggedModelId,
+      mlflowModelVersion: mlflowLineageLinks.mlflowModelVersion,
+    })
+    .from(mlflowLineageLinks)
+    .where(
+      and(
+        eq(mlflowLineageLinks.entityType, "session"),
+        eq(mlflowLineageLinks.entityId, sessionId),
+      ),
+    );
+  const modelLink =
+    links.find((link) => link.mlflowLoggedModelId || link.mlflowModelVersion) ??
+    null;
+  return patchMlflowTracesForSession({
+    sessionId: session.mlflowSessionId?.trim() || sessionId,
+    experimentId,
+    runId: session.mlflowRunId,
+    modelId: modelLink?.mlflowLoggedModelId ?? modelLink?.mlflowModelVersion ?? null,
+    status: params.status,
+    endTime: params.endTime,
+  });
+}
+
+export async function safePatchInteractiveSessionMlflowTraces(
+  params: Parameters<typeof patchInteractiveSessionMlflowTraces>[0],
+): Promise<number> {
+  try {
+    return await patchInteractiveSessionMlflowTraces(params);
+  } catch (err) {
+    console.warn(
+      `[mlflow] failed to patch session traces ${params.sessionId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return 0;
+  }
+}
+
 async function findAgentApplicationStateLoggedModel(
   experimentId: string,
   stateDigest: string,
