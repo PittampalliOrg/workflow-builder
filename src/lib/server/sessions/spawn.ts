@@ -11,7 +11,11 @@ import {
 	agentRuntimeInvokeTarget,
 	resolveAgentRuntimeRoute,
 } from "$lib/server/agents/runtime-routing";
-import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
+import {
+	maybeProvisionAgentWorkflowHost,
+	waitForAgentWorkflowHostAppReady,
+} from "$lib/server/sessions/agent-workflow-host";
+import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
 
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
@@ -236,12 +240,27 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// AGENT_RUNTIME_NAMESPACE is overridden away from the BFF's own
 	// namespace — supports the rollback path back to openshell.
 	const invokeTarget = agentRuntimeInvokeTarget(targetAppId);
-	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/spawn`;
-	const res = await daprFetch(url, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ instanceId, payload }),
-	});
+	let directRuntimeBaseUrl: string | null = null;
+	if (sessionHost) {
+		const ready = await waitForAgentWorkflowHostAppReady({
+			agentAppId: targetAppId,
+		});
+		directRuntimeBaseUrl = ready.baseUrl;
+	}
+	const res = await (directRuntimeBaseUrl
+		? fetch(`${directRuntimeBaseUrl}/internal/sessions/spawn`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ instanceId, payload }),
+			})
+		: daprFetch(
+				`${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/spawn`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ instanceId, payload }),
+				},
+			));
 	if (!res.ok && res.status !== 409) {
 		const text = await res.text().catch(() => "");
 		throw new Error(
@@ -253,6 +272,8 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	await attachRuntime(sessionId, {
 		daprInstanceId: instanceId,
 		natsSubject,
+		runtimeAppId: targetAppId,
+		runtimeSandboxName: sessionHost?.sandboxName ?? null,
 	});
 
 	return { instanceId, natsSubject };
@@ -274,25 +295,34 @@ export async function raiseSessionUserEvents(
 ): Promise<void> {
 	const session = await getSession(sessionId);
 	if (!session?.daprInstanceId) return; // not yet spawned — events will be picked up at spawn time via listEvents
-	// Route raise-event to the same per-agent pod that owns the session.
-	const agent = await resolveAgentRef({
-		id: session.agentId,
-		version: session.agentVersion ?? undefined,
-	});
-	const targetAppId =
-		agent?.runtimeAppId ?? (agent ? agentRuntimeDedicatedAppId(agent.slug) : "dapr-agent-py");
+	// Route raise-event to the exact runtime that owns the session. New rows
+	// persist this at spawn time; older rows fall back through the agent route.
+	const target = await resolveSessionRuntimeTarget(sessionId);
+	const invokeTarget = target?.invokeTarget ?? agentRuntimeInvokeTarget("dapr-agent-py");
 	const daprEndpoint = getDaprSidecarUrl();
-	const invokeTarget = agentRuntimeInvokeTarget(targetAppId);
-	const url = `${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`;
-	const res = await daprFetch(url, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			instanceId: session.daprInstanceId,
-			eventName: "session.user_events",
-			payload: { events },
-		}),
+	const body = JSON.stringify({
+		instanceId: session.daprInstanceId,
+		eventName: "session.user_events",
+		payload: { events },
 	});
+	const res =
+		target?.runtimeSandboxName || target?.appId.startsWith("agent-session-")
+			? await fetch(
+					`${(await waitForAgentWorkflowHostAppReady({ agentAppId: target.appId })).baseUrl}/internal/sessions/raise-event`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body,
+					},
+				)
+			: await daprFetch(
+					`${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body,
+					},
+				);
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		throw new Error(

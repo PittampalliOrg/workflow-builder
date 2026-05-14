@@ -1,10 +1,8 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
-import { and, eq } from 'drizzle-orm';
 
-import { db } from '$lib/server/db';
-import { agents, sessions } from '$lib/server/db/schema';
-import { getAgentRuntimePod } from '$lib/server/kube/client';
+import { getSessionRuntimePod } from '$lib/server/kube/client';
+import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
 
 const ALLOWED_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py']);
 
@@ -20,28 +18,21 @@ const ALLOWED_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py
  */
 export const POST: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	if (!db) return error(500, 'Database not configured');
 
 	const container = url.searchParams.get('container') ?? 'chromium';
 	if (!ALLOWED_CONTAINERS.has(container)) return error(400, 'Invalid container');
 
 	const sessionId = params.id!;
-	const rows = await db
-		.select({ slug: agents.slug })
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.where(
-			and(
-				eq(sessions.id, sessionId),
-				locals.session.projectId
-					? eq(agents.projectId, locals.session.projectId)
-					: undefined,
-			),
-		)
-		.limit(1);
-	if (rows.length === 0) return error(404, 'Session not found in workspace');
+	const target = await resolveSessionRuntimeDebugTarget(
+		sessionId,
+		locals.session.projectId,
+	);
+	if (!target) return error(404, 'Session not found in workspace');
 
-	const pod = await getAgentRuntimePod(rows[0].slug);
+	const pod = await getSessionRuntimePod({
+		runtimeAppId: target.appId,
+		agentSlug: target.agentSlug,
+	});
 	if (!pod) return error(503, 'Agent pod not running');
 	if (!pod.containers.some((c) => c.name === container && c.ready)) {
 		return error(503, `${container} container not ready`);

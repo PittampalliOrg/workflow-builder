@@ -83,6 +83,8 @@ function rowToDetail(row: Session, ctx: JoinContext = EMPTY_CTX): SessionDetail 
 		parentExecutionId: row.parentExecutionId ?? null,
 		sandboxName: row.sandboxName ?? null,
 		workspaceSandboxName: row.workspaceSandboxName ?? null,
+		runtimeAppId: row.runtimeAppId ?? null,
+		runtimeSandboxName: row.runtimeSandboxName ?? null,
 	};
 }
 
@@ -320,16 +322,32 @@ export async function createSession(
 
 export async function attachRuntime(
 	id: string,
-	params: { daprInstanceId?: string; natsSubject?: string },
+	params: {
+		daprInstanceId?: string;
+		natsSubject?: string;
+		runtimeAppId?: string | null;
+		runtimeSandboxName?: string | null;
+	},
 ): Promise<void> {
 	const database = requireDb();
+	const patch: Partial<Session> & { updatedAt: Date } = {
+		updatedAt: new Date(),
+	};
+	if (params.daprInstanceId !== undefined) {
+		patch.daprInstanceId = params.daprInstanceId;
+	}
+	if (params.natsSubject !== undefined) {
+		patch.natsSubject = params.natsSubject;
+	}
+	if (params.runtimeAppId !== undefined) {
+		patch.runtimeAppId = params.runtimeAppId;
+	}
+	if (params.runtimeSandboxName !== undefined) {
+		patch.runtimeSandboxName = params.runtimeSandboxName;
+	}
 	await database
 		.update(sessions)
-		.set({
-			daprInstanceId: params.daprInstanceId,
-			natsSubject: params.natsSubject,
-			updatedAt: new Date(),
-		})
+		.set(patch)
 		.where(eq(sessions.id, id));
 }
 

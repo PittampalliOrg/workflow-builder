@@ -2741,6 +2741,8 @@ export const sessions = pgTable(
 		natsSubject: text("nats_subject"),
 		sandboxName: text("sandbox_name"),
 		workspaceSandboxName: text("workspace_sandbox_name"),
+		runtimeAppId: text("runtime_app_id"),
+		runtimeSandboxName: text("runtime_sandbox_name"),
 		workflowExecutionId: text("workflow_execution_id"),
 		parentExecutionId: text("parent_execution_id"),
 		mlflowExperimentId: text("mlflow_experiment_id"),
@@ -2770,6 +2772,12 @@ export const sessions = pgTable(
 		sandboxIdx: index("idx_sessions_sandbox_name").on(table.sandboxName),
 		workspaceSandboxIdx: index("idx_sessions_workspace_sandbox").on(
 			table.workspaceSandboxName,
+		),
+		runtimeAppIdx: index("idx_sessions_runtime_app_id").on(
+			table.runtimeAppId,
+		),
+		runtimeSandboxIdx: index("idx_sessions_runtime_sandbox_name").on(
+			table.runtimeSandboxName,
 		),
 		mlflowRunIdx: index("idx_sessions_mlflow_run").on(table.mlflowRunId),
 		mlflowParentRunIdx: index("idx_sessions_mlflow_parent_run").on(

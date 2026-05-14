@@ -2,6 +2,7 @@ import { error } from "@sveltejs/kit";
 import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import { isPlaywrightMcpEntry } from "$lib/server/agents/mcp-sidecar";
+import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import type { AgentConfig } from "$lib/types/agents";
 
 /**
@@ -79,6 +80,15 @@ export interface AgentWorkflowHostResult {
 	sandboxName: string | null;
 	status: string | null;
 }
+
+export type AgentWorkflowHostAppReadyResult = {
+	ok: true;
+	attempts: number;
+	status: number;
+	baseUrl: string;
+	podName: string;
+	podIP: string;
+};
 
 export interface TraceContext {
 	traceparent: string | null;
@@ -211,4 +221,75 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 				? body.status.trim()
 				: null,
 	};
+}
+
+export async function waitForAgentWorkflowHostAppReady(params: {
+	agentAppId: string;
+	timeoutSeconds?: number;
+	pollMs?: number;
+	fetchImpl?: typeof fetch;
+}): Promise<AgentWorkflowHostAppReadyResult> {
+	const timeoutSeconds =
+		params.timeoutSeconds ??
+		readBoundedInt(
+			env.AGENT_WORKFLOW_HOST_APP_READY_SECONDS ??
+				process.env.AGENT_WORKFLOW_HOST_APP_READY_SECONDS,
+			60,
+			0,
+			300,
+		);
+	if (timeoutSeconds <= 0) {
+		throw new Error("agent workflow host app readiness wait is disabled");
+	}
+	const pollMs = Math.max(0, params.pollMs ?? 1_000);
+	const fetchImpl = params.fetchImpl ?? fetch;
+	const deadline = Date.now() + timeoutSeconds * 1_000;
+	let attempts = 0;
+	let lastError = "not attempted";
+
+	while (Date.now() <= deadline) {
+		attempts += 1;
+		try {
+			const pod = await getAgentWorkflowHostPod(params.agentAppId);
+			if (!pod) {
+				lastError = "pod not found";
+				throw new Error(lastError);
+			}
+			const baseUrl = `http://${pod.podIP}:8002`;
+			const url = `${baseUrl}/healthz`;
+			const res = await fetchImpl(url, { method: "GET" });
+			if (res.ok) {
+				return {
+					ok: true,
+					attempts,
+					status: res.status,
+					baseUrl,
+					podName: pod.name,
+					podIP: pod.podIP,
+				};
+			}
+			const text = await res.text().catch(() => "");
+			lastError = `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`;
+		} catch (err) {
+			lastError = err instanceof Error ? err.message : String(err);
+		}
+
+		if (Date.now() > deadline) break;
+		await new Promise((resolve) => setTimeout(resolve, pollMs));
+	}
+
+	throw new Error(
+		`agent workflow host ${params.agentAppId} app was not reachable after ${timeoutSeconds}s; last error: ${lastError}`,
+	);
+}
+
+function readBoundedInt(
+	value: string | undefined,
+	fallback: number,
+	min: number,
+	max: number,
+): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return fallback;
+	return Math.max(min, Math.min(max, Math.trunc(parsed)));
 }

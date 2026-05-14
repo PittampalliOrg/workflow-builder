@@ -360,6 +360,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			traceContext,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
+		if (reuseChildAppId) {
+			await db
+				.update(sessions)
+				.set({
+					runtimeAppId: reuseChildAppId,
+					runtimeSandboxName:
+						reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null,
+					updatedAt: new Date(),
+				})
+				.where(eq(sessions.id, existing.id));
+		}
 		if (!reuseHost && reuseWakeSlug) {
 			try {
 				const { wakeAgentRuntime } = await import(
@@ -501,6 +512,16 @@ export const POST: RequestHandler = async ({ request }) => {
 		traceContext,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
+	if (childAgentAppId) {
+		await db
+			.update(sessions)
+			.set({
+				runtimeAppId: childAgentAppId,
+				runtimeSandboxName: sessionHost?.sandboxName ?? null,
+				updatedAt: new Date(),
+			})
+			.where(eq(sessions.id, sessionId));
+	}
 	const sessionMlflowContext = await maybeCreateSessionMlflowRun({
 		sessionId,
 		incomingMlflowContext,

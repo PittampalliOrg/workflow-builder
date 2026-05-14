@@ -1,13 +1,11 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { and, eq } from 'drizzle-orm';
 
 import { verifyAccessToken, ACCESS_TOKEN_COOKIE } from './auth';
-import { getAgentRuntimePod } from './kube/client';
+import { getSessionRuntimePod } from './kube/client';
 import { execInteractive, type InteractiveExecSession } from './kube/ws-exec-client';
-import { db } from './db';
-import { agents, sessions } from './db/schema';
+import { resolveSessionRuntimeDebugTarget } from './sessions/runtime-target';
 
 const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
 const ALLOWED_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py']);
@@ -37,22 +35,6 @@ async function authenticate(
 		userId: payload.sub,
 		projectId: (payload as { projectId?: string }).projectId,
 	};
-}
-
-async function resolveAgentSlug(sessionId: string, projectId?: string): Promise<string | null> {
-	if (!db) return null;
-	const rows = await db
-		.select({ slug: agents.slug })
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.where(
-			and(
-				eq(sessions.id, sessionId),
-				projectId ? eq(agents.projectId, projectId) : undefined,
-			),
-		)
-		.limit(1);
-	return rows[0]?.slug ?? null;
 }
 
 /**
@@ -93,14 +75,20 @@ export async function handleUpgrade(
 		return true;
 	}
 
-	const slug = await resolveAgentSlug(sessionId, session.projectId);
-	if (!slug) {
+	const target = await resolveSessionRuntimeDebugTarget(
+		sessionId,
+		session.projectId,
+	);
+	if (!target) {
 		socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
 		socket.destroy();
 		return true;
 	}
 
-	const pod = await getAgentRuntimePod(slug);
+	const pod = await getSessionRuntimePod({
+		runtimeAppId: target.appId,
+		agentSlug: target.agentSlug,
+	});
 	if (!pod) {
 		socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
 		socket.destroy();

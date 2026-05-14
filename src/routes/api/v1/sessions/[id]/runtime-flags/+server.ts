@@ -1,14 +1,12 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
-import { and, eq } from 'drizzle-orm';
 
-import { db } from '$lib/server/db';
-import { agents, sessions } from '$lib/server/db/schema';
 import {
 	browserAgentSandboxWarmPoolName,
-	getAgentRuntimePod,
+	getSessionRuntimePod,
 	getSandboxWarmPool,
 } from '$lib/server/kube/client';
+import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
 
 // Must stay in sync with ALLOWED_CONTAINERS in ws-kube-exec-proxy.ts and
 // the matching set in server-prod.js. Don't offer a container in the UI
@@ -31,30 +29,21 @@ const SHELLABLE_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	if (!db) return error(500, 'Database not configured');
 
 	const sessionId = params.id!;
-	const rows = await db
-		.select({ slug: agents.slug })
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.where(
-			and(
-				eq(sessions.id, sessionId),
-				locals.session.projectId
-					? eq(agents.projectId, locals.session.projectId)
-					: undefined,
-			),
-		)
-		.limit(1);
-	if (rows.length === 0) return error(404, 'Session not found in workspace');
+	const target = await resolveSessionRuntimeDebugTarget(
+		sessionId,
+		locals.session.projectId,
+	);
+	if (!target) return error(404, 'Session not found in workspace');
 
-	const slug = rows[0].slug;
-	const pool = await getSandboxWarmPool(browserAgentSandboxWarmPoolName(slug));
+	const pool = target.agentSlug
+		? await getSandboxWarmPool(browserAgentSandboxWarmPoolName(target.agentSlug))
+		: null;
 	const desired = pool?.spec?.replicas ?? 0;
 	const replicas = pool?.status?.replicas ?? 0;
 	const ready = pool?.status?.readyReplicas ?? 0;
-	const phase = !pool
+	let phase = !pool
 		? 'Unknown'
 		: desired === 0 && replicas === 0
 			? 'Sleeping'
@@ -72,30 +61,34 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	let shellContainers: string[] = [];
 	let browserSidecarEnabled = false;
 	let browserMcpAvailable = false;
-	if (phase === 'Active') {
-		const livePod = await getAgentRuntimePod(slug);
-		if (livePod) {
-			shellContainers = livePod.containers
-				.filter((c) => c.ready && SHELLABLE_CONTAINERS.has(c.name))
-				.map((c) => c.name);
-			browserSidecarEnabled = livePod.containers.some(
-				(c) => c.name === 'playwright-mcp',
+	const livePod = await getSessionRuntimePod({
+		runtimeAppId: target.appId,
+		agentSlug: target.agentSlug,
+	});
+	if (livePod) {
+		if (!pool) phase = 'Active';
+		shellContainers = livePod.containers
+			.filter((c) => c.ready && SHELLABLE_CONTAINERS.has(c.name))
+			.map((c) => c.name);
+		browserSidecarEnabled = livePod.containers.some(
+			(c) => c.name === 'playwright-mcp',
+		);
+		if (browserSidecarEnabled) {
+			const chromiumReady = livePod.containers.some(
+				(c) => c.name === 'chromium' && c.ready,
 			);
-			if (browserSidecarEnabled) {
-				const chromiumReady = livePod.containers.some(
-					(c) => c.name === 'chromium' && c.ready,
-				);
-				const mcpReady = livePod.containers.some(
-					(c) => c.name === 'playwright-mcp' && c.ready,
-				);
-				browserMcpAvailable = chromiumReady && mcpReady;
-			}
+			const mcpReady = livePod.containers.some(
+				(c) => c.name === 'playwright-mcp' && c.ready,
+			);
+			browserMcpAvailable = chromiumReady && mcpReady;
 		}
 	}
 	const shellAvailable = phase === 'Active' && shellContainers.length > 0;
 
 	return json({
-		agentSlug: slug,
+		agentSlug: target.agentSlug,
+		runtimeAppId: target.appId,
+		runtimeSandboxName: target.runtimeSandboxName,
 		browserSidecarEnabled,
 		browserMcpAvailable,
 		shellAvailable,

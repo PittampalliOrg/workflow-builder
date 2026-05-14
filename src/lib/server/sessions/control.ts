@@ -1,10 +1,7 @@
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
-import { resolveAgentRef } from "$lib/server/agents/registry";
 import { getSession } from "$lib/server/sessions/registry";
-import {
-	agentRuntimeDedicatedAppId,
-	agentRuntimeInvokeTarget,
-} from "$lib/server/agents/runtime-routing";
+import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
+import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
 
 /**
  * Raise a Dapr workflow external event against the session's workflow
@@ -28,23 +25,27 @@ export async function raiseSessionEvent(
 				"Session has not been attached to a Dapr workflow instance yet — try again once the session is running.",
 		};
 	}
-	const agent = await resolveAgentRef({
-		id: session.agentId,
-		version: session.agentVersion ?? undefined,
-	});
-	if (!agent) return { ok: false, status: 404, error: "Agent not found" };
-
-	const targetAppId = agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug);
-	const invokeTarget = agentRuntimeInvokeTarget(targetAppId);
+	const target = await resolveSessionRuntimeTarget(sessionId);
+	if (!target) return { ok: false, status: 404, error: "Runtime target not found" };
 	const daprEndpoint = getDaprSidecarUrl();
-	const res = await daprFetch(
-		`${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/raise-event`,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ instanceId, eventName, payload: eventData }),
-		},
-	);
+	const res =
+		target.runtimeSandboxName || target.appId.startsWith("agent-session-")
+			? await fetch(
+					`${(await waitForAgentWorkflowHostAppReady({ agentAppId: target.appId })).baseUrl}/internal/sessions/raise-event`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ instanceId, eventName, payload: eventData }),
+					},
+				)
+			: await daprFetch(
+					`${daprEndpoint}/v1.0/invoke/${encodeURIComponent(target.invokeTarget)}/method/internal/sessions/raise-event`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ instanceId, eventName, payload: eventData }),
+					},
+				);
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		return { ok: false, status: res.status, error: text };

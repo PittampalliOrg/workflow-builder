@@ -636,6 +636,77 @@ export async function getAgentRuntimePod(
 	return null;
 }
 
+function safeKubernetesLabelValue(value: string, maxLength = 63): string {
+	const normalized = value
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return (
+		(normalized || "execution")
+			.slice(0, maxLength)
+			.replace(/^-+|-+$/g, "") || "execution"
+	);
+}
+
+export async function getAgentWorkflowHostPod(
+	agentAppId: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<AgentRuntimePodInfo | null> {
+	const appLabel = safeKubernetesLabelValue(agentAppId);
+	const selector = encodeURIComponent(
+		`app=agent-workflow-host,agent-app-id=${appLabel}`,
+	);
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${namespace}/pods?labelSelector=${selector}`,
+	);
+	if (!res.ok) return null;
+	const body = (await res.json()) as {
+		items?: Array<{
+			metadata?: { name?: string; namespace?: string };
+			status?: {
+				phase?: string;
+				podIP?: string;
+				containerStatuses?: Array<{ name?: string; ready?: boolean }>;
+			};
+		}>;
+	};
+	for (const pod of body.items ?? []) {
+		if (pod.status?.phase !== "Running") continue;
+		const name = pod.metadata?.name;
+		const podIP = pod.status?.podIP;
+		if (!name || !podIP) continue;
+		const containers = (pod.status?.containerStatuses ?? [])
+			.filter(
+				(c): c is { name: string; ready: boolean } =>
+					typeof c.name === "string",
+			)
+			.map((c) => ({ name: c.name, ready: c.ready === true }));
+		return {
+			name,
+			namespace: pod.metadata?.namespace ?? namespace,
+			podIP,
+			containers,
+		};
+	}
+	return null;
+}
+
+export async function getSessionRuntimePod(params: {
+	runtimeAppId: string;
+	agentSlug?: string | null;
+	namespace?: string;
+}): Promise<AgentRuntimePodInfo | null> {
+	const namespace = params.namespace ?? DEFAULT_AGENT_RUNTIME_NAMESPACE;
+	const hostPod = await getAgentWorkflowHostPod(params.runtimeAppId, namespace);
+	if (hostPod) return hostPod;
+	const slug =
+		params.agentSlug ??
+		(params.runtimeAppId.startsWith("agent-runtime-")
+			? params.runtimeAppId.slice("agent-runtime-".length)
+			: null);
+	return slug ? getAgentRuntimePod(slug, namespace) : null;
+}
+
 export async function getAgentRuntimePodIP(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,

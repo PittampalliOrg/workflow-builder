@@ -56,6 +56,8 @@ export type SessionDetail = SessionSummary & {
 	parentExecutionId: string | null;
 	sandboxName: string | null;
 	workspaceSandboxName: string | null;
+	runtimeAppId: string | null;
+	runtimeSandboxName: string | null;
 };
 
 export type SessionResourceType = "file" | "github_repository";

@@ -1,0 +1,99 @@
+import { and, eq } from "drizzle-orm";
+import { db } from "$lib/server/db";
+import { agents, sessions } from "$lib/server/db/schema";
+import { resolveAgentRef } from "$lib/server/agents/registry";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeInvokeTarget,
+} from "$lib/server/agents/runtime-routing";
+import { getSession } from "$lib/server/sessions/registry";
+
+export type SessionRuntimeTarget = {
+	appId: string;
+	invokeTarget: string;
+	runtimeSandboxName: string | null;
+	source: "persisted" | "agent" | "legacy";
+};
+
+export async function resolveSessionRuntimeTarget(
+	sessionId: string,
+): Promise<SessionRuntimeTarget | null> {
+	const session = await getSession(sessionId);
+	if (!session) return null;
+	if (session.runtimeAppId?.trim()) {
+		return buildTarget({
+			appId: session.runtimeAppId.trim(),
+			runtimeSandboxName: session.runtimeSandboxName,
+			source: "persisted",
+		});
+	}
+
+	const agent = await resolveAgentRef({
+		id: session.agentId,
+		version: session.agentVersion ?? undefined,
+	});
+	if (agent) {
+		return buildTarget({
+			appId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
+			runtimeSandboxName: null,
+			source: "agent",
+		});
+	}
+
+	return buildTarget({
+		appId: "dapr-agent-py",
+		runtimeSandboxName: null,
+		source: "legacy",
+	});
+}
+
+export type SessionRuntimeDebugTarget = SessionRuntimeTarget & {
+	agentSlug: string | null;
+};
+
+export async function resolveSessionRuntimeDebugTarget(
+	sessionId: string,
+	projectId?: string | null,
+): Promise<SessionRuntimeDebugTarget | null> {
+	if (!db) throw new Error("Database not configured");
+	const conditions = [eq(sessions.id, sessionId)];
+	if (projectId) conditions.push(eq(agents.projectId, projectId));
+	const rows = await db
+		.select({
+			runtimeAppId: sessions.runtimeAppId,
+			runtimeSandboxName: sessions.runtimeSandboxName,
+			agentSlug: agents.slug,
+			agentRuntimeAppId: agents.runtimeAppId,
+		})
+		.from(sessions)
+		.innerJoin(agents, eq(agents.id, sessions.agentId))
+		.where(and(...conditions))
+		.limit(1);
+	const row = rows[0];
+	if (!row) return null;
+	const appId =
+		row.runtimeAppId?.trim() ||
+		row.agentRuntimeAppId?.trim() ||
+		agentRuntimeDedicatedAppId(row.agentSlug);
+	return {
+		...buildTarget({
+			appId,
+			runtimeSandboxName: row.runtimeSandboxName ?? null,
+			source: row.runtimeAppId?.trim() ? "persisted" : "agent",
+		}),
+		agentSlug: row.agentSlug,
+	};
+}
+
+function buildTarget(params: {
+	appId: string;
+	runtimeSandboxName: string | null;
+	source: SessionRuntimeTarget["source"];
+}): SessionRuntimeTarget {
+	return {
+		appId: params.appId,
+		invokeTarget: agentRuntimeInvokeTarget(params.appId),
+		runtimeSandboxName: params.runtimeSandboxName,
+		source: params.source,
+	};
+}
