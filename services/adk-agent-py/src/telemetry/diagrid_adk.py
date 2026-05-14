@@ -8,6 +8,7 @@ each LLM and tool activity gets the same typed span shape as dapr-agent-py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -15,6 +16,14 @@ from datetime import timedelta
 from time import perf_counter
 from typing import Any, Generator, Mapping
 
+from src.telemetry.adk_session_events import (
+    publish_adk_event_actions,
+    publish_adk_iteration,
+    publish_adk_llm_start,
+    publish_adk_llm_usage,
+    publish_adk_tool_result,
+    publish_adk_tool_use,
+)
 from src.telemetry.genai_attrs import (
     get_current_span,
     set_activity_attrs,
@@ -82,7 +91,13 @@ def _span_debug(span: Any | None) -> dict[str, Any]:
         return {"present": True, "error": str(exc)}
 
 
-def _diag(activity: str, ctx: Mapping[str, Any], *, tracer: Any | None = None, span: Any | None = None) -> None:
+def _diag(
+    activity: str,
+    ctx: Mapping[str, Any],
+    *,
+    tracer: Any | None = None,
+    span: Any | None = None,
+) -> None:
     global _DIAG_COUNT
     if _DIAG_COUNT >= _diag_limit():
         return
@@ -195,13 +210,123 @@ def _pop_gemini_usage() -> dict[str, int] | None:
 
 
 def _span_name(ctx: Mapping[str, Any], activity: str) -> str:
-    agent_app_id = _clean_string(ctx.get("agent.app_id")) or _clean_string(ctx.get("agent.slug"))
+    agent_app_id = _clean_string(ctx.get("agent.app_id")) or _clean_string(
+        ctx.get("agent.slug")
+    )
     return f"{agent_app_id}.{activity}" if agent_app_id else f"adk_agent.{activity}"
+
+
+def _serialize_tool_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, (str, int, float, bool, list, dict, type(None))):
+        return value
+    return str(value)
+
+
+def _execute_tool_activity_with_actions(
+    module: Any,
+    input_data: dict[str, Any],
+) -> tuple[dict[str, Any], Any | None]:
+    """Mirror Diagrid's tool activity while retaining ToolContext.actions."""
+
+    tool_input = module.ExecuteToolInput.from_dict(input_data)
+    tool_call = tool_input.tool_call
+    event_actions = None
+
+    tool = module.get_registered_tool(tool_call.name)
+    if tool is None:
+        return (
+            module.ExecuteToolOutput(
+                tool_result=module.ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error=f"Tool '{tool_call.name}' not found in registry",
+                )
+            ).to_dict(),
+            None,
+        )
+
+    loop = None
+    try:
+        from google.adk.agents.invocation_context import (
+            InvocationContext,
+            new_invocation_context_id,
+        )
+        from google.adk.agents.llm_agent import LlmAgent
+        from google.adk.events.event_actions import EventActions
+        from google.adk.sessions.in_memory_session_service import InMemorySessionService
+        from google.adk.tools.tool_context import ToolContext
+
+        session_service = InMemorySessionService()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        session = loop.run_until_complete(
+            session_service.create_session(
+                app_name=tool_input.app_name or "dapr_workflow",
+                user_id=tool_input.user_id or "workflow_user",
+                session_id=tool_input.session_id,
+            )
+        )
+        dummy_agent = LlmAgent(
+            name=tool_input.agent_name,
+            model="gemini-2.0-flash",
+        )
+        invocation_context = InvocationContext(
+            invocation_id=new_invocation_context_id(),
+            session=session,
+            session_service=session_service,
+            agent=dummy_agent,
+        )
+        event_actions = EventActions()
+        tool_context = ToolContext(
+            invocation_context=invocation_context,
+            function_call_id=tool_call.id,
+            event_actions=event_actions,
+        )
+
+        result = loop.run_until_complete(
+            tool.run_async(args=tool_call.args, tool_context=tool_context)
+        )
+        return (
+            module.ExecuteToolOutput(
+                tool_result=module.ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=_serialize_tool_value(result),
+                )
+            ).to_dict(),
+            event_actions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error executing tool '%s'", tool_call.name)
+        return (
+            module.ExecuteToolOutput(
+                tool_result=module.ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error=str(exc),
+                )
+            ).to_dict(),
+            event_actions,
+        )
+    finally:
+        if loop is not None:
+            try:
+                loop.close()
+            finally:
+                try:
+                    asyncio.set_event_loop(None)
+                except Exception:
+                    pass
 
 
 def _patch_workflow_module(module: Any) -> None:
     original_call_llm_activity = module.call_llm_activity
-    original_execute_tool_activity = module.execute_tool_activity
 
     def call_llm_activity(ctx: Any, input_data: dict[str, Any]) -> dict[str, Any]:
         tel = _telemetry_context(input_data)
@@ -227,9 +352,24 @@ def _patch_workflow_module(module: Any) -> None:
             "input.mime_type": "application/json",
             "input.value": _json_attr(input_data),
         }
-        attrs = {key: value for key, value in attrs.items() if value is not None and value != ""}
+        attrs = {
+            key: value
+            for key, value in attrs.items()
+            if value is not None and value != ""
+        }
         tracer = get_tracer()
-        _diag("call_llm_activity.before_child", tel, tracer=tracer, span=get_current_span())
+        _diag(
+            "call_llm_activity.before_child",
+            tel,
+            tracer=tracer,
+            span=get_current_span(),
+        )
+        publish_adk_iteration(
+            tel,
+            agent_config,
+            max_iterations=tel.get("agent.max_iterations"),
+        )
+        publish_adk_llm_start(tel, agent_config)
 
         def run_with_span(span: Any | None) -> dict[str, Any]:
             start = perf_counter()
@@ -253,13 +393,18 @@ def _patch_workflow_module(module: Any) -> None:
                 )
             try:
                 output = original_call_llm_activity(ctx, input_data)
+                duration_ms = (perf_counter() - start) * 1000
+                usage = _pop_gemini_usage()
+                output_error = (
+                    output.get("error") if isinstance(output, Mapping) else None
+                )
                 if span is not None:
                     content, tool_call_count, output_chars = _llm_output_stats(output)
                     set_genai_response_attrs(
                         span,
                         response_model=model,
-                        usage=_pop_gemini_usage(),
-                        duration_ms=(perf_counter() - start) * 1000,
+                        usage=usage,
+                        duration_ms=duration_ms,
                         tool_calls_count=tool_call_count,
                         output_chars=output_chars,
                         finish_reason="tool_calls" if tool_call_count else "stop",
@@ -267,13 +412,32 @@ def _patch_workflow_module(module: Any) -> None:
                     span.set_attribute("output.mime_type", "application/json")
                     span.set_attribute("output.value", _json_attr(output))
                     if content is not None:
-                        span.set_attribute("gen_ai.response.content.chars", len(content))
-                return output
+                        span.set_attribute(
+                            "gen_ai.response.content.chars", len(content)
+                        )
             except Exception as exc:
                 if span is not None:
                     span.set_attribute("error", True)
                     span.record_exception(exc)
                 raise
+            if isinstance(output, Mapping):
+                publish_adk_llm_usage(
+                    tel,
+                    agent_config,
+                    usage,
+                    duration_ms=duration_ms,
+                    success=not output_error,
+                    error=str(output_error) if output_error else None,
+                )
+                message = output.get("message")
+                tool_calls = (
+                    message.get("tool_calls") if isinstance(message, Mapping) else []
+                )
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, Mapping):
+                            publish_adk_tool_use(tel, tool_call)
+            return output
 
         if tracer is not None:
             with tracer.start_as_current_span(
@@ -285,9 +449,10 @@ def _patch_workflow_module(module: Any) -> None:
 
     def execute_tool_activity(ctx: Any, input_data: dict[str, Any]) -> dict[str, Any]:
         tel = _telemetry_context(input_data)
-        tool_call = input_data.get("tool_call") or {}
+        raw_tool_call = input_data.get("tool_call")
+        tool_call = raw_tool_call if isinstance(raw_tool_call, Mapping) else {}
         tool_name = _clean_string(tool_call.get("name")) or "unknown"
-        args = tool_call.get("args") if isinstance(tool_call, Mapping) else None
+        args = tool_call.get("args")
 
         _stamp_current_activity(
             tel,
@@ -302,31 +467,56 @@ def _patch_workflow_module(module: Any) -> None:
             "gen_ai.operation.name": "execute_tool",
             "gen_ai.tool.name": tool_name,
             "tool.name": tool_name,
-            "tool.call_id": tool_call.get("id") if isinstance(tool_call, Mapping) else None,
+            "tool.call_id": tool_call.get("id")
+            if isinstance(tool_call, Mapping)
+            else None,
             "input.mime_type": "application/json",
             "input.value": _json_attr(input_data),
         }
         if isinstance(args, Mapping):
             attrs["tool.args.keys"] = ",".join(str(k) for k in sorted(args.keys()))
             attrs["tool.args.size_chars"] = len(_json_attr(args))
-        attrs = {key: value for key, value in attrs.items() if value is not None and value != ""}
+        attrs = {
+            key: value
+            for key, value in attrs.items()
+            if value is not None and value != ""
+        }
         tracer = get_tracer()
-        _diag("execute_tool_activity.before_child", tel, tracer=tracer, span=get_current_span())
+        _diag(
+            "execute_tool_activity.before_child",
+            tel,
+            tracer=tracer,
+            span=get_current_span(),
+        )
 
         def run_with_span(span: Any | None) -> dict[str, Any]:
+            start = perf_counter()
             _diag("execute_tool_activity.child", tel, tracer=tracer, span=span)
             if span is not None:
                 for key, value in attrs.items():
                     span.set_attribute(key, value)
             try:
-                output = original_execute_tool_activity(ctx, input_data)
+                output, event_actions = _execute_tool_activity_with_actions(
+                    module, input_data
+                )
+                duration_ms = (perf_counter() - start) * 1000
                 if span is not None:
                     span.set_attribute("output.mime_type", "application/json")
                     span.set_attribute("output.value", _json_attr(output))
-                    result = output.get("tool_result") if isinstance(output, Mapping) else None
+                    result = (
+                        output.get("tool_result")
+                        if isinstance(output, Mapping)
+                        else None
+                    )
                     if isinstance(result, Mapping) and result.get("error"):
                         span.set_attribute("error", True)
                         span.set_attribute("tool.error", str(result.get("error")))
+                result = (
+                    output.get("tool_result") if isinstance(output, Mapping) else None
+                )
+                if isinstance(result, Mapping):
+                    publish_adk_tool_result(tel, result, duration_ms=duration_ms)
+                publish_adk_event_actions(tel, tool_call, event_actions)
                 return output
             except Exception as exc:
                 if span is not None:
@@ -359,6 +549,11 @@ def _patch_workflow_module(module: Any) -> None:
             )
 
         telemetry_context = _telemetry_context(input_data)
+        telemetry_context.setdefault("agent.session.id", workflow_input.session_id)
+        telemetry_context.setdefault(
+            "workflow_builder.session_id", workflow_input.session_id
+        )
+        telemetry_context.setdefault("session.id", workflow_input.session_id)
         retry_policy = module.RetryPolicy(
             max_number_of_attempts=3,
             first_retry_interval=timedelta(seconds=1),
@@ -371,6 +566,7 @@ def _patch_workflow_module(module: Any) -> None:
             iter_context = {
                 **telemetry_context,
                 "agent.iteration": iteration,
+                "agent.max_iterations": workflow_input.max_iterations,
                 "workflow.instance_id": getattr(ctx, "instance_id", None),
             }
             llm_input = module.CallLlmInput(

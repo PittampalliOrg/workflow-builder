@@ -1,10 +1,14 @@
 """ADK FunctionTool registry — wraps dapr-agent-py tool bodies for ADK.
 
 Each tool body (in `bash_tool/tool.py`, `file_read/tool.py`, etc.) is a plain
-Python function ported verbatim from dapr-agent-py. Here we wrap them with
-`@with_session_events` (CMA event publishing) and adopt them as
+Python function ported verbatim from dapr-agent-py. Here we wrap them with the
+legacy `@with_session_events` fallback and adopt them as
 `FunctionTool` instances under the canonical Claude-Code-shaped names
 (`Read`, `Write`, `Edit`, `Bash`, ...).
+
+Canonical CMA tool events are emitted by `src.telemetry.diagrid_adk` from the
+durable `execute_tool_activity` wrapper so every ADK tool, including
+non-native tools, carries the stable Diagrid tool call id.
 
 The 18 tools are then attached to the LlmAgent's `.tools` list. Diagrid's
 `_register_agent_tools()` walks that list at runner construction and

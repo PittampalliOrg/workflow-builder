@@ -37,6 +37,9 @@
 			return 'Tool result';
 		}
 		if (kind === 'model') {
+			if (event.type === 'llm_start') {
+				return String(d.model ?? d.component ?? 'LLM started');
+			}
 			const inTok = Number(d.input_tokens ?? 0);
 			const outTok = Number(d.output_tokens ?? 0);
 			const cacheRead = Number(d.cache_read_input_tokens ?? 0);
@@ -65,6 +68,9 @@
 			const dur = Number(d.duration_ms ?? 0);
 			const status = d.success === false ? ' · failed' : '';
 			return `${name}${server} · ${dur}ms${status}`;
+		}
+		if (kind === 'adk') {
+			return event.type.replace('adk.', 'ADK ');
 		}
 		if (kind === 'alert') {
 			if (event.type === 'agent.circuit_breaker_tripped') {

@@ -1,26 +1,20 @@
-"""`with_session_events` decorator — publishes tool_call_* events.
+"""Legacy `with_session_events` decorator for tool_call_* events.
 
 Diagrid's `execute_tool_activity` invokes `tool.run_async(args=..., tool_context=...)`
 where `tool` is an ADK `BaseTool` (typically `FunctionTool`). `FunctionTool`
 inspects the wrapped function's signature and injects a `tool_context`
 parameter only when the function declares it explicitly.
 
-To publish CMA-shaped `agent.tool_use` / `agent.tool_result` events without
-modifying every tool's signature, we read the session_id from the
-process-local `OpenShellRuntime` singleton — `session_workflow` stamps it at
-entry, and the Sandbox pod handles ONE session at a time (Arc 3 model), so
-the singleton is unambiguous.
-
-`source_event_id` is built per-call as `<tool_name>:<session_id>:<sequence>`
-so duplicate retries (Diagrid's `RetryPolicy(max_number_of_attempts=3)`)
-collapse to a single CMA row via the `session_events` (session_id,
-source_event_id) UNIQUE constraint.
+The canonical event source is now `src.telemetry.diagrid_adk`, which emits
+stable tool call ids from the durable activity wrapper. This decorator remains
+as an explicit fallback for local debugging only.
 """
 
 from __future__ import annotations
 
 import functools
 import logging
+import os
 import threading
 from typing import Any, Callable
 
@@ -53,19 +47,32 @@ def _truncate(value: Any, *, limit: int = 4_096) -> Any:
     return value
 
 
-def with_session_events(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def _legacy_events_enabled() -> bool:
+    return os.environ.get(
+        "ADK_LEGACY_TOOL_BODY_SESSION_EVENTS", ""
+    ).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def with_session_events(
+    tool_name: str,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Wrap a FunctionTool body to emit `tool_call_start` / `tool_call_end`
-    / `tool_call_error` CMA events. Best-effort — never raises if publishing
-    fails, never blocks the tool body."""
+    / `tool_call_error` CMA events when the legacy fallback is enabled."""
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(fn)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if not _legacy_events_enabled():
+                return fn(*args, **kwargs)
+
             session_id = _scoped_session_id()
             seq = _next_seq(tool_name)
-            source_event_id = (
-                f"{tool_name}:{session_id or 'no-session'}:{seq}"
-            )
+            source_event_id = f"{tool_name}:{session_id or 'no-session'}:{seq}"
             try:
                 from src.event_publisher import publish_session_event
 

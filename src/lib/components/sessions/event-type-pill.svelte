@@ -10,6 +10,7 @@
 		| 'span'
 		| 'hook'
 		| 'mcp'
+		| 'adk'
 		| 'alert'
 		| 'other';
 
@@ -35,9 +36,15 @@
 			type === 'agent.custom_tool_result'
 		)
 			return 'result';
-		if (type.startsWith('span.model_request') || type === 'agent.llm_usage') return 'model';
+		if (
+			type.startsWith('span.model_request') ||
+			type === 'agent.llm_usage' ||
+			type === 'llm_start'
+		)
+			return 'model';
 		if (type === 'hook.decision') return 'hook';
 		if (type === 'mcp.tool_call') return 'mcp';
+		if (type.startsWith('adk.')) return 'adk';
 		if (
 			type === 'agent.circuit_breaker_tripped' ||
 			type === 'session.turn_timeout' ||
@@ -76,6 +83,7 @@
 		span: 'bg-blue-500/20 text-blue-200 border-blue-400/20',
 		hook: 'bg-indigo-500/25 text-indigo-200 border-indigo-400/20',
 		mcp: 'bg-cyan-500/25 text-cyan-200 border-cyan-400/20',
+		adk: 'bg-lime-500/20 text-lime-200 border-lime-400/20',
 		alert: 'bg-red-500/25 text-red-200 border-red-400/20',
 		other: 'bg-muted text-muted-foreground border-border'
 	};
@@ -91,6 +99,7 @@
 		span: 'Span',
 		hook: 'Hook',
 		mcp: 'MCP',
+		adk: 'ADK',
 		alert: 'Alert',
 		other: 'Event'
 	};

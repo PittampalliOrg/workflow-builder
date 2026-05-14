@@ -93,6 +93,7 @@
 			return 'Model request';
 		}
 		if (kind === 'status') return event.type.replace('session.status_', 'Status: ');
+		if (kind === 'adk') return event.type.replace('adk.', 'ADK ');
 		if (event.type === 'hook.decision') return 'Hook decision';
 		if (event.type === 'mcp.tool_call') return 'MCP tool call';
 		if (event.type === 'agent.circuit_breaker_tripped') return 'Circuit breaker tripped';
