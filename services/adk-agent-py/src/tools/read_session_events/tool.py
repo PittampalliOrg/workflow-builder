@@ -89,8 +89,8 @@ def read_session_events(
             }
         )
 
-    # Build query string. Dapr's invoke_method passes the path + query
-    # through unchanged to the target app.
+    # Pass the path and query separately. Newer Dapr Python SDKs expose
+    # service-invoke headers as metadata, not as a `headers=` kwarg.
     params: dict[str, Any] = {}
     if after_sequence is not None:
         try:
@@ -98,8 +98,8 @@ def read_session_events(
         except (TypeError, ValueError):
             return json.dumps({"error": "after_sequence must be an integer"})
     params["limit"] = max(1, min(int(limit or 100), 500))
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    method = f"api/internal/sessions/{session_id}/events?{query}"
+    query = tuple((k, str(v)) for k, v in params.items())
+    method = f"api/internal/sessions/{session_id}/events"
 
     try:
         with DaprClient() as client:
@@ -107,7 +107,8 @@ def read_session_events(
                 app_id=_WORKFLOW_BUILDER_APP_ID,
                 method_name=method,
                 http_verb="GET",
-                headers={"X-Internal-Token": token},
+                metadata=(("x-internal-token", token),),
+                http_querystring=query,
                 timeout=15,
             )
             text = (

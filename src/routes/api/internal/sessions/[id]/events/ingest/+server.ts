@@ -82,7 +82,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 	// Mirror status events onto the sessions row so list-page filters and
 	// the "terminated" UI state work without having to scan event history.
-	if (type === "session.status_running") {
+	if (type === "session.status_starting" || type === "session.status_running") {
 		await updateSessionStatusUnlessTerminated(params.id, "running");
 	} else if (type === "session.status_idle") {
 		const stopReasonData =
