@@ -18,11 +18,13 @@ const dbMock = vi.hoisted(() => {
 	const updateWhere = vi.fn();
 	const updateSet = vi.fn(() => ({ where: updateWhere }));
 	const update = vi.fn(() => ({ set: updateSet }));
+	const deleteWhere = vi.fn();
+	const deleteFn = vi.fn(() => ({ where: deleteWhere }));
 	const conflictUpdate = vi.fn();
 	const insertValues = vi.fn(() => ({ onConflictDoUpdate: conflictUpdate }));
 	const insert = vi.fn(() => ({ values: insertValues }));
 	const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
-		fn({ update, insert }),
+		fn({ update, insert, delete: deleteFn }),
 	);
 	return {
 		setWorkflowRow: (row: Record<string, unknown> | null) => {
@@ -35,6 +37,8 @@ const dbMock = vi.hoisted(() => {
 		updateWhere,
 		updateSet,
 		update,
+		deleteWhere,
+		deleteFn,
 		conflictUpdate,
 		insertValues,
 		insert,
@@ -48,13 +52,16 @@ vi.mock("$lib/server/db", () => ({
 		select: dbMock.select,
 		update: dbMock.update,
 		insert: dbMock.insert,
+		delete: dbMock.deleteFn,
 	},
 }));
 
 import {
 	createWorkflowAgentMlflowRun,
+	createInteractiveSessionMlflowRun,
 	createWorkflowExecutionMlflowRun,
 	mlflowArtifactLocationForLifecycleExperiment,
+	precreateMlflowTrace,
 	registerAgentVersionInMlflow,
 } from "./mlflow-lifecycle";
 
@@ -68,6 +75,8 @@ beforeEach(() => {
 	dbMock.select.mockClear();
 	dbMock.updateSet.mockClear();
 	dbMock.update.mockClear();
+	dbMock.deleteWhere.mockClear();
+	dbMock.deleteFn.mockClear();
 	dbMock.conflictUpdate.mockClear();
 	dbMock.insertValues.mockClear();
 	dbMock.insert.mockClear();
@@ -89,44 +98,55 @@ describe("mlflow lifecycle helpers", () => {
 	it("uses mlflow-artifacts for lifecycle experiments", () => {
 		expect(
 			mlflowArtifactLocationForLifecycleExperiment(
-				"workflow-builder/ryzen/agents",
+				"workflow-builder/ryzen/traces",
 			),
-		).toBe("mlflow-artifacts:/workflow-builder/ryzen/agents");
+		).toBe("mlflow-artifacts:/workflow-builder/ryzen/traces");
 	});
 
 	it("creates and finalizes an agent LoggedModel, then records lineage", async () => {
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ experiment: { experiment_id: "9" } }), {
+		const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+			if (url.includes("/experiments/get-by-name")) {
+				expect(url).toContain("workflow-builder%2Fryzen%2Ftraces");
+				return new Response(JSON.stringify({ experiment: { experiment_id: "6" } }), {
 					status: 200,
-				}),
-			)
-			.mockResolvedValueOnce(new Response(JSON.stringify({ models: [] }), { status: 200 }))
-			.mockResolvedValueOnce(
-				new Response(
+				});
+			}
+			if (url.includes("/experiments/set-experiment-tag")) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			if (url.endsWith("/api/2.0/mlflow/logged-models/search")) {
+				return new Response(JSON.stringify({ models: [] }), { status: 200 });
+			}
+			if (url.endsWith("/api/2.0/mlflow/logged-models")) {
+				return new Response(
 					JSON.stringify({
 						model: {
 							info: {
 								model_id: "m-agent-v1",
-								experiment_id: "9",
+								experiment_id: "6",
 								name: "agent-v1",
-								artifact_uri: "mlflow-artifacts:/workflow-builder/ryzen/agents/m-agent-v1",
+								artifact_uri: "mlflow-artifacts:/workflow-builder/ryzen/traces/m-agent-v1",
 								status: "LOGGED_MODEL_PENDING",
 							},
 						},
 					}),
 					{ status: 200 },
-				),
-			)
-			.mockResolvedValueOnce(
-				new Response(
+				);
+			}
+			if (url.includes("/mlflow-artifacts/artifacts/")) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			if (url.includes("/api/2.0/mlflow/logged-models/m-agent-v1")) {
+				expect(init?.method).toBe("PATCH");
+				return new Response(
 					JSON.stringify({
 						model: { info: { model_id: "m-agent-v1", status: "LOGGED_MODEL_READY" } },
 					}),
 					{ status: 200 },
-				),
-			);
+				);
+			}
+			throw new Error(`unexpected fetch ${url}`);
+		});
 		vi.stubGlobal("fetch", fetchMock);
 
 		const result = await registerAgentVersionInMlflow({
@@ -141,6 +161,16 @@ describe("mlflow lifecycle helpers", () => {
 				agentId: "agent_1",
 				version: 1,
 				configHash: "hash_1",
+				config: {
+					builtinTools: ["read_file"],
+					mcpConnectionMode: "explicit",
+					mcpServers: [],
+					skills: [],
+					runtime: "dapr-agent-py",
+					runtimeOverridePolicy: {},
+					modelSpec: "openai/gpt-5.1",
+				},
+				applicationStateDigest: null,
 				mlflowUri: null,
 				mlflowModelName: null,
 				mlflowModelVersion: null,
@@ -162,11 +192,23 @@ describe("mlflow lifecycle helpers", () => {
 				}),
 			}),
 		);
-		expect(dbMock.updateSet).toHaveBeenCalledWith({
-			mlflowUri: "models:/m-agent-v1",
-			mlflowModelName: "agent-v1",
-			mlflowModelVersion: "m-agent-v1",
-		});
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://mlflow.test/api/2.0/mlflow-artifacts/artifacts/workflow-builder/ryzen/traces/m-agent-v1/application-state.json",
+			expect.objectContaining({
+				method: "PUT",
+				body: expect.stringContaining(
+					'"schemaVersion": "workflow-builder.agent-application-state.v1"',
+				),
+			}),
+		);
+		expect(dbMock.updateSet).toHaveBeenCalledWith(
+			expect.objectContaining({
+				applicationStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+				mlflowUri: "models:/m-agent-v1",
+				mlflowModelName: "agent-v1",
+				mlflowModelVersion: "m-agent-v1",
+			}),
+		);
 		expect(dbMock.insertValues).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sourceKey: "agent_version:agent_version_1:logged_model:m-agent-v1",
@@ -174,38 +216,40 @@ describe("mlflow lifecycle helpers", () => {
 				entityId: "agent_version_1",
 				projectId: "project_1",
 				mlflowEntityType: "logged_model",
-				mlflowExperimentId: "9",
+				mlflowExperimentId: "6",
 				mlflowLoggedModelUri: "models:/m-agent-v1",
 				mlflowPublicUrl:
-					"https://mlflow.example/#/experiments/9/models/m-agent-v1",
+					"https://mlflow.example/#/experiments/6/models/m-agent-v1",
 			}),
 		);
 	});
 
 	it("creates parent workflow and child agent MLflow runs with lineage", async () => {
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ experiment: { experiment_id: "11" } }), {
+		let runCreateCount = 0;
+		const fetchMock = vi.fn(async (url: string) => {
+			if (url.includes("/experiments/get-by-name")) {
+				return new Response(JSON.stringify({ experiment: { experiment_id: "11" } }), {
 					status: 200,
-				}),
-			)
-			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({ run: { info: { run_id: "workflow_run_1" } } }),
+				});
+			}
+			if (url.includes("/experiments/set-experiment-tag")) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			if (url.includes("/runs/create")) {
+				runCreateCount += 1;
+				return new Response(
+					JSON.stringify({
+						run: {
+							info: {
+								run_id: runCreateCount === 1 ? "workflow_run_1" : "agent_run_1",
+							},
+						},
+					}),
 					{ status: 200 },
-				),
-			)
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({ run: { info: { run_id: "agent_run_1" } } }),
-					{ status: 200 },
-				),
-			);
+				);
+			}
+			throw new Error(`unexpected fetch ${url}`);
+		});
 		vi.stubGlobal("fetch", fetchMock);
 
 		const parent = await createWorkflowExecutionMlflowRun({
@@ -235,32 +279,32 @@ describe("mlflow lifecycle helpers", () => {
 		expect(parent?.runId).toBe("workflow_run_1");
 		expect(parent?.experimentId).toBe("11");
 		expect(parent?.traceExperimentId).toBe("11");
-		expect(parent?.experimentName).toBe("workflow-builder/ryzen/workflows/demo-workflow1");
+		expect(parent?.experimentName).toBe("workflow-builder/ryzen/traces");
 		expect(child?.runId).toBe("agent_run_1");
-		expect(fetchMock).toHaveBeenNthCalledWith(
-			6,
+		const runCreateCalls = fetchMock.mock.calls.filter(([url]) =>
+			String(url).includes("/runs/create"),
+		);
+		expect(runCreateCalls[0]).toEqual([
 			"http://mlflow.test/api/2.0/mlflow/runs/create",
 			expect.objectContaining({
 				method: "POST",
 				body: expect.stringContaining('"workflow_builder.kind","value":"workflow_execution"'),
 			}),
-		);
-		expect(fetchMock).toHaveBeenNthCalledWith(
-			7,
+		]);
+		expect(runCreateCalls[1]).toEqual([
 			"http://mlflow.test/api/2.0/mlflow/runs/create",
 			expect.objectContaining({
 				method: "POST",
 				body: expect.stringContaining('"mlflow.parentRunId","value":"workflow_run_1"'),
 			}),
-		);
-		expect(fetchMock).toHaveBeenNthCalledWith(
-			7,
+		]);
+		expect(runCreateCalls[1]).toEqual([
 			"http://mlflow.test/api/2.0/mlflow/runs/create",
 			expect.objectContaining({
 				method: "POST",
 				body: expect.stringContaining('"mlflow.modelId","value":"m-agent-v1"'),
 			}),
-		);
+		]);
 		expect(dbMock.insertValues).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sourceKey: "workflow_execution:exec_1:run:workflow_run_1",
@@ -279,5 +323,140 @@ describe("mlflow lifecycle helpers", () => {
 				mlflowLoggedModelUri: "models:/m-agent-v1",
 			}),
 		);
+	});
+
+	it("creates an interactive session parent run and records MLflow session lineage", async () => {
+		vi.stubEnv("MLFLOW_TRACE_EXPERIMENT_ID", "6");
+		vi.stubEnv("MLFLOW_TRACE_EXPERIMENT_NAME", "workflow-builder/ryzen/traces");
+		const fetchMock = vi.fn(async (url: string) => {
+			if (url.includes("/experiments/get-by-name")) {
+				return new Response(JSON.stringify({ experiment: { experiment_id: "9" } }), {
+					status: 200,
+				});
+			}
+			if (url.includes("/experiments/set-experiment-tag")) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			if (url.includes("/runs/create")) {
+				return new Response(
+					JSON.stringify({ run: { info: { run_id: "session_run_1" } } }),
+					{ status: 200 },
+				);
+			}
+			if (url.includes("/runs/get")) {
+				return new Response(
+					JSON.stringify({
+						run: {
+							info: {
+								artifact_uri:
+									"mlflow-artifacts:/workflow-builder/ryzen/traces/session_run_1",
+							},
+						},
+					}),
+					{ status: 200 },
+				);
+			}
+			if (url.includes("/mlflow-artifacts/artifacts/")) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			throw new Error(`unexpected fetch ${url}`);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const run = await createInteractiveSessionMlflowRun({
+			sessionId: "session_123",
+			title: "Interactive Kimi",
+			projectId: "project_1",
+			userId: "user_1",
+			agentId: "agent_1",
+			agentName: "Kimi",
+			agentSlug: "kimi",
+			agentVersion: 7,
+			agentAppId: "agent-runtime-kimi",
+			activeModelName: "kimi-state",
+			activeModelUri: "models:/m-kimi",
+		});
+
+		expect(run?.runId).toBe("session_run_1");
+		expect(run?.experimentId).toBe("6");
+		expect(run?.traceExperimentId).toBe("6");
+		expect(run?.activeModelId).toBe("m-kimi");
+		const createCall = fetchMock.mock.calls.find(([url]) =>
+			String(url).includes("/runs/create"),
+		);
+		expect(createCall).toEqual([
+			"http://mlflow.test/api/2.0/mlflow/runs/create",
+			expect.objectContaining({
+				method: "POST",
+				body: expect.stringContaining('"experiment_id":"6"'),
+			}),
+		]);
+		expect(createCall).toEqual([
+			"http://mlflow.test/api/2.0/mlflow/runs/create",
+			expect.objectContaining({
+				method: "POST",
+				body: expect.stringContaining('"workflow_builder.kind","value":"interactive_session"'),
+			}),
+		]);
+		expect(dbMock.updateSet).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mlflowExperimentId: "6",
+				mlflowRunId: "session_run_1",
+				mlflowParentRunId: null,
+				mlflowSessionId: "session_123",
+			}),
+		);
+		expect(dbMock.insertValues).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sourceKey: "session:session_123:mlflow_session:session_123",
+				entityType: "session",
+				mlflowEntityType: "session",
+				mlflowSessionId: "session_123",
+				mlflowRunId: "session_run_1",
+				mlflowLoggedModelId: "m-kimi",
+			}),
+		);
+		const artifactCall = fetchMock.mock.calls.find(([url]) =>
+			String(url).includes("/session-manifest.json"),
+		);
+		expect(artifactCall).toEqual([
+			"http://mlflow.test/api/2.0/mlflow-artifacts/artifacts/workflow-builder/ryzen/traces/session_run_1/session-manifest.json",
+			expect.objectContaining({
+				method: "PUT",
+				body: expect.stringContaining('"kind": "interactive_session"'),
+			}),
+		]);
+	});
+
+	it("pre-creates traces with MLflow model metadata in the target experiment", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			precreateMlflowTrace({
+				traceId: "abcdefabcdefabcdefabcdefabcdefab",
+				experimentId: "13",
+				name: "swebench/demo",
+				metadata: {
+					"mlflow.modelId": "m-agent-v1",
+					"mlflow.sourceRun": "run_1",
+				},
+				tags: {
+					"workflow_builder.kind": "swebench_instance",
+				},
+			}),
+		).resolves.toBe("tr-abcdefabcdefabcdefabcdefabcdefab");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://mlflow.test/api/3.0/mlflow/traces",
+			expect.objectContaining({
+				method: "POST",
+				body: expect.stringContaining('"traceId":"tr-abcdefabcdefabcdefabcdefabcdefab"'),
+			}),
+		);
+		const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+		expect(body.trace.traceInfo.traceLocation.mlflowExperiment.experimentId).toBe("13");
+		expect(body.trace.traceInfo.traceMetadata["mlflow.modelId"]).toBe("m-agent-v1");
+		expect(body.trace.traceInfo.tags["mlflow.traceName"]).toBe("swebench/demo");
 	});
 });

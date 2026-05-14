@@ -1,56 +1,52 @@
 # Workflow Builder
 
-Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. The SvelteKit app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
+Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. SvelteKit serves as UI + BFF proxy; all workflow execution lives in Dapr on Kubernetes.
 
-> **Supplementary docs**: See `docs/` for detailed references:
-> - `docs/per-agent-runtime.md` — AgentRuntime CRD + controller, per-agent pod shape, Dapr Component scoping, wake/idle TTL, dispatch paths, troubleshooting cheatsheet
-> - `docs/activepieces-auth.md` — AP auth/connection system details
-> - `docs/activepieces-integration-implementation.md` — AP integration implementation
-> - `docs/mcp-agent-workflows.md` - MCP-enabled `dapr-agent-py` workflow method
-> - `docs/hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins subsystem (Claude Code port)
-> - `docs/CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
-> - `docs/openshell-capabilities.md` — OpenShell sandbox capabilities
-> - `docs/cma-parity.md` — CMA (Claude Managed Agents) console parity: workspaces, members, sessions, custom skills, limits, observability
-> - `docs/callable-agents.md` — `CallAgent` peer-delegation tool (Approach B: native `WorkflowContextInjectedTool` on `dapr-agents>=1.0.1`; peer answer returns as `tool_result` in the same LLM turn)
-> - `docs/tiered-crawl-pipeline.md` — `crawl4ai-adapter` v2 + `browserresearchfanout01` v3 (tiered fetch + text-only synthesis). Postgres-durable, idempotent jobIds, lazy orphan-resume — the canonical pattern for multi-URL research workflows.
-> - `docs/workflow-artifacts.md` — Standardized `workflow_artifacts` surface: declarative `artifacts:` block in any SW 1.0 task spec, discriminated-union UI renderer (markdown / json / text / table / image / link / card), Dapr-durable producer.
+> **Supplementary docs** (`docs/`):
+> - `per-agent-runtime.md` — AgentRuntime CRD + controller, pod shape, Dapr Component scoping, wake/idle TTL, dispatch
+> - `activepieces-auth.md` / `activepieces-integration-implementation.md` — AP auth + integration
+> - `mcp-agent-workflows.md` — MCP-enabled `dapr-agent-py` workflow method
+> - `hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins (Claude Code port)
+> - `CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
+> - `openshell-capabilities.md` — OpenShell sandbox capabilities
+> - `cma-parity.md` — CMA console parity: workspaces, members, sessions, custom skills, limits
+> - `callable-agents.md` — `CallAgent` peer-delegation tool (native `WorkflowContextInjectedTool`)
+> - `tiered-crawl-pipeline.md` — `crawl4ai-adapter` v2 + `browserresearchfanout01` v3 (canonical multi-URL research pattern)
+> - `workflow-artifacts.md` — Standardized `workflow_artifacts` surface
 
 ## Architecture
 
-All workflow execution lives in the `workflow-builder` Kubernetes namespace:
+All workflow execution lives in `workflow-builder` namespace:
 
 - **SvelteKit BFF** (port 3000, Dapr sidecar) — UI + proxy. Calls workflow-orchestrator over Dapr.
 - **workflow-orchestrator** (Python/Dapr) — SW 1.0 interpreter. `durable/run` → `ctx.call_child_workflow`; all other slugs → Dapr svc invoke → function-router.
 - **AgentRuntime CRD + agent-runtime-controller** (Kopf operator) — reconciles 1 `Deployment/agent-runtime-<slug>` per published agent.
-- **agent-runtime-<slug> Pod** — `dapr-agent-py` (session_workflow + agent_workflow) + `daprd` sidecar (placement-registered) + `seed-openshell-config` init container + optional `chromium` + `playwright-mcp` sidecars.
-- **function-router** — slug routing + credential broker + Knative proxy. Routes to fn-system / fn-activepieces / openshell-agent-runtime / code-runtime / crawl4ai-adapter.
-- **MCP services** — workflow-mcp-server, piece-mcp-server, mcp-gateway (retained, on-demand).
-- **Infra** — Redis, PostgreSQL, OTEL Collector.
+- **agent-runtime-<slug> Pod** — `dapr-agent-py` (session_workflow + agent_workflow) + `daprd` sidecar + `seed-openshell-config` init container + optional `chromium` + `playwright-mcp` sidecars.
+- **function-router** — slug routing + credential broker. Routes to fn-system / fn-activepieces / openshell-agent-runtime / code-runtime / crawl4ai-adapter.
+- **Infra** — Redis, PostgreSQL, OTEL Collector. MCP services (workflow-mcp-server, piece-mcp-server, mcp-gateway) retained on-demand.
 
-Per-session sandbox pods (chromium + OpenShell workspace containers) live in the `openshell` namespace, addressed over mTLS. Agent runtime pods MUST colocate with the orchestrator — Dapr workflow sub-orchestration doesn't cross namespaces.
+Per-session sandbox pods (chromium + OpenShell workspace containers) live in `openshell` namespace, addressed over mTLS. Agent runtime pods MUST colocate with the orchestrator — Dapr workflow sub-orchestration doesn't cross namespaces.
 
 **Key dispatch invariants**
-- **Per-agent runtime pods** (`agent-runtime-<slug>`) live in the **same namespace as the orchestrator** (`workflow-builder`). One Deployment per published agent, materialized by the `agent-runtime-controller` Kopf operator from `AgentRuntime` CRs. Pods scale to 0 on idle (idleTtlSeconds default 1800) and are woken on demand via a `agents.x-k8s.io/wake` annotation → controller's `on_wake` handler scales to 1.
-- `durable/run` is a **Dapr child workflow**, not an HTTP call. The orchestrator calls `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>", ...)` — **session bridge is now a structural invariant**, not a feature flag. The `spawn_session_for_workflow` activity POSTs to `/api/internal/sessions/ensure-for-workflow` which (a) finds-or-creates the session row keyed by `{workflowId, nodeId}`, (b) rewrites Playwright stdio MCP presets to the per-pod sidecar URL, (c) **wakes the target per-agent runtime pod** and waits up to 20s for `phase=Active` before responding. After the activity returns, the parent yields `call_child_workflow` with `instance_id=<deterministic session_id>` and `autoTerminateAfterEndTurn: true` — one turn, emit `status_idle{end_turn}` + `status_terminated`. Full Dapr durability preserved; workflow-driven runs appear in `/sessions/[id]` with live event history. Retry resilience via `WorkflowRetryPolicy(max_attempts=8)` on the callee side.
-- **Direct (UI-initiated) sessions** go through `src/lib/server/sessions/spawn.ts`, which wakes `agent-runtime-<slug>` and then calls Dapr workflow `StartInstance` on the target app via service invoke. Bare app-id (no `.namespace` suffix) now that BFF + target are same-ns.
-- **MCP sidecar rewrite**: both paths (direct session + workflow bridge) call `rewriteMcpForBrowserSidecar` (`src/lib/server/agents/mcp-sidecar.ts`) before dispatch. Any `mcpServers` entry matching Playwright (by name, URL, or `@playwright/mcp` args) becomes `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }` — the in-pod playwright-mcp container's CDP-over-chromium endpoint.
-- **Dapr Component visibility** within `workflow-builder` ns relies on unscoped shared Components, not per-agent scope mutation. `workflowstatestore` is the only `actorStateStore=true` Component visible to current apps; `dapr-agent-py-statestore` and legacy `agent-workflow` are non-actor stores. New agent slugs must not be added to Component scopes.
-- Every non-agent action goes `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | openshell-agent-runtime | code-runtime | crawl4ai-adapter}`. The orchestrator uses `activities/dapr_invoke.py` (no raw HTTP). `openshell-agent-runtime` consolidates `workspace/*`, `browser/*`, and `openshell/*` handlers (function-router cutover 2026-04-19; legacy `workspace-runtime` TS service's GitOps + live resources fully removed 2026-04-21).
+- **Per-agent runtime pods** (`agent-runtime-<slug>`) live in `workflow-builder` ns. One Deployment per published agent, materialized by the controller from `AgentRuntime` CRs. Scale to 0 on idle (default `idleTtlSeconds=1800`); woken via `agents.x-k8s.io/wake` annotation.
+- `durable/run` is a **Dapr child workflow**, not HTTP. `spawn_session_for_workflow` activity POSTs to `/api/internal/sessions/ensure-for-workflow` which finds-or-creates the session row, rewrites Playwright stdio MCP presets to per-pod sidecar URL, wakes the target pod (waits up to 20s for `phase=Active`). Parent then yields `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>", instance_id=<deterministic session_id>, autoTerminateAfterEndTurn=true)`. Retry resilience via `WorkflowRetryPolicy(max_attempts=8)`.
+- **Direct (UI-initiated) sessions** go through `src/lib/server/sessions/spawn.ts`, which wakes the pod and calls Dapr `StartInstance` via service invoke (bare app-id, no `.namespace` suffix).
+- **MCP sidecar rewrite**: both paths call `rewriteMcpForBrowserSidecar` (`src/lib/server/agents/mcp-sidecar.ts`) — Playwright entries become `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }`.
+- **Dapr Component visibility**: `workflowstatestore` is the only `actorStateStore=true` Component visible to agents; `dapr-agent-py-statestore` and legacy `agent-workflow` are non-actor stores. New agents must NOT be added to Component scopes.
+- Every non-agent action: `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | openshell-agent-runtime | code-runtime | crawl4ai-adapter}`. Orchestrator uses `activities/dapr_invoke.py` (no raw HTTP). `openshell-agent-runtime` consolidates `workspace/* + browser/* + openshell/*` (legacy `workspace-runtime` removed 2026-04-21).
 - function-router owns credential decryption (AES-256-CBC from `app_connection`) + `credential_access_logs` audit. Orchestrator never holds plaintext secrets.
 
 ## Tech Stack
 
 - **Frontend**: SvelteKit 5, Svelte 5, Svelte Flow (@xyflow/svelte), shadcn-svelte
-- **Backend**: SvelteKit API routes (BFF proxy to Dapr orchestrator)
+- **Backend**: SvelteKit API routes (BFF proxy)
 - **Database**: PostgreSQL via Drizzle ORM
 - **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
-- **Durable AI Agent**: per-agent `agent-runtime-<slug>` pod running `dapr-agent-py` (native Python Dapr runtime). Materialized from `AgentRuntime` CRs (`agents.x-k8s.io/v1alpha1`) by the `agent-runtime-controller` Kopf operator. Scales 0↔1 on demand; wake triggered by `agents.x-k8s.io/wake` annotation.
-- **Function Execution**: function-router (Dapr invoke) → fn-system, fn-activepieces, openshell-agent-runtime (owns `workspace/* + browser/* + openshell/*`), code-runtime
-- **Durable Agent Dispatch**: orchestrator → `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>")`. Parent + child share the `workflow-builder` namespace (Dapr workflow actor routing resolves placement intra-namespace only).
-- **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
+- **Durable AI Agent**: per-agent `agent-runtime-<slug>` pod running `dapr-agent-py`. Scales 0↔1 on demand.
+- **Function Execution**: function-router (Dapr invoke) → fn-system / fn-activepieces / openshell-agent-runtime / code-runtime
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
-- **Observability**: OpenTelemetry → OTEL Collector → Jaeger
+- **Observability**: OpenTelemetry → OTEL Collector → Jaeger / MLflow
 - **Deployment**: Docker, Kind cluster, ingress-nginx
 
 ## Key Commands
@@ -62,114 +58,97 @@ pnpm check            # Svelte type checking
 pnpm db:generate      # Generate Drizzle migrations
 pnpm db:push          # Push schema to DB
 pnpm db:migrate       # Run migrations
-pnpm db:studio        # Drizzle Studio (DB browser)
-pnpm test:e2e         # Run Playwright E2E tests
+pnpm db:studio        # Drizzle Studio
+pnpm test:e2e         # Playwright E2E tests
 ```
 
 ## Services Overview
 
 | Service | Port | Role |
 |---------|------|------|
-| **workflow-orchestrator** | 8080 | Python Dapr workflow engine, topological node execution |
-| **agent-runtime-controller** | n/a | Kopf operator in `workflow-builder` ns; reconciles `AgentRuntime` CRs → one Deployment per agent (`agent-runtime-<slug>`) with dapr-agent-py + daprd + optional browser sidecar + seed-openshell-config init container |
-| **agent-runtime-&lt;slug&gt;** | n/a (app-id Dapr-routed) | Dynamic per-agent pod materialized by the controller. Runs `dapr-agent-py` with `@workflow_entry session_workflow` + `agent_workflow`. Scales to 0 on idle TTL; woken on demand via the `agents.x-k8s.io/wake` annotation. |
-| **dapr-agent-py** (legacy) | n/a | Legacy shared pod kept for backwards compat + for the one `openshell-durable-agent` enum path. New workflows all dispatch to `agent-runtime-<slug>` via `agentRef`. |
-| **function-router** | 8080 | Sync credential broker + Knative proxy. Receives Dapr invoke from orchestrator, decrypts credentials, routes to fn-system / fn-activepieces / openshell-agent-runtime (`workspace/* + browser/* + openshell/*`) / code-runtime / crawl4ai-adapter. Does **not** route `durable/run` or any `dapr-agent-py/*` slug. The `function-registry` ConfigMap is authoritative over the built-in fallback registry (see `services/function-router/src/core/registry.ts` loadRegistry merge order, corrected 2026-04-20). |
-| **fn-system** | 8080 | System actions: http-request, database-query, condition |
-| **mcp-gateway** | 8080 | Hosted MCP endpoint for external AI clients |
-| **fn-activepieces** | 8080 | AP executor for default-routed piece actions in the current cluster runtime |
-| **workflow-mcp-server** | 3200 | Retained MCP server, not part of the current core local runtime |
-| **piece-mcp-server** | dynamic | Retained MCP server, provisioned on demand |
-| **openshell-sandbox** | — | Custom OpenShell sandbox image with Chromium/Playwright for browser validation. Runs in `openshell` ns as per-session workspace containers. |
-
-> See service Dockerfiles in `services/` for build details.
+| **workflow-orchestrator** | 8080 | Python Dapr workflow engine, SW 1.0 interpreter |
+| **agent-runtime-controller** | n/a | Kopf operator; reconciles `AgentRuntime` CRs → 1 Deployment per agent |
+| **agent-runtime-&lt;slug&gt;** | n/a | Per-agent pod; `dapr-agent-py` + daprd + optional browser sidecars. Scales 0↔1. |
+| **dapr-agent-py** (legacy) | n/a | Legacy shared pod for `openshell-durable-agent` enum path |
+| **function-router** | 8080 | Sync credential broker + Knative proxy. `function-registry` ConfigMap is authoritative over built-in fallback. |
+| **fn-system** | 8080 | system/* (http-request, database-query, condition) |
+| **fn-activepieces** | 8080 | AP piece executor |
+| **mcp-gateway** | 8080 | Hosted MCP endpoint for external clients |
+| **workflow-mcp-server** | 3200 | Retained MCP server |
+| **piece-mcp-server** | dynamic | On-demand piece MCP |
+| **openshell-sandbox** | — | Custom sandbox image (Chromium/Playwright); per-session pods in `openshell` ns |
 
 ## Project Structure
 
-- `src/routes/` — API routes (`api/workflows`, `api/orchestrator`, `api/app-connections`, `api/internal/{connections,mcp,agent}`, `api/events/ingest`, `api/v1/auth`, `api/pieces`) + pages (`workflows/[id]`, `connections`, `settings`, `auth/sign-in`).
-- `src/lib/components/workflow/` — Svelte Flow canvas, side-panel, toolbar, base-sw-node, animated-edge. `lib/components/ui/` is shadcn-svelte (50+).
-- `src/lib/server/` — `db/schema.ts` (Drizzle), `dapr-client.ts`, `auth.ts`, `security/encryption.ts`, `app-connections/oauth2.ts`, `internal-auth.ts`, `workflows/external-event-registry.ts`, `otel/clickhouse.ts`.
-- `services/` — `workflow-orchestrator/` (Python Dapr), `dapr-agent-py/`, `agent-runtime-controller/`, `function-router/`, `fn-activepieces/`, `fn-system/`, `workflow-mcp-server/`, `piece-mcp-server/`, `mcp-gateway/`, `openshell-sandbox/`.
+- `src/routes/` — API routes (`api/workflows`, `api/orchestrator`, `api/app-connections`, `api/internal/{connections,mcp,agent}`, `api/events/ingest`, `api/v1/auth`, `api/pieces`) + pages
+- `src/lib/components/workflow/` — Svelte Flow canvas, side-panel, toolbar, base-sw-node, animated-edge
+- `src/lib/server/` — `db/schema.ts` (Drizzle), `dapr-client.ts`, `auth.ts`, `security/encryption.ts`, `app-connections/oauth2.ts`, `internal-auth.ts`, `workflows/external-event-registry.ts`, `otel/clickhouse.ts`
+- `services/` — `workflow-orchestrator/`, `dapr-agent-py/`, `agent-runtime-controller/`, `function-router/`, `fn-activepieces/`, `fn-system/`, `workflow-mcp-server/`, `piece-mcp-server/`, `mcp-gateway/`, `openshell-sandbox/`, `crawl4ai-adapter/`
 - `drizzle/` — migration SQL. `scripts/` — dev/seed/test. `docs/` — supplementary docs.
 
 ## Action Routing
 
-Actions are routed by `actionType` slug prefix. Orchestrator → function-router uses Dapr service invoke (`activities/dapr_invoke.py`); `durable/run` bypasses function-router entirely via `ctx.call_child_workflow`.
+Routed by `actionType` slug prefix. Orchestrator → function-router uses Dapr service invoke; `durable/run` bypasses function-router via `ctx.call_child_workflow`.
 
-| Prefix | Service | Dispatch | Examples |
-|--------|---------|----------|----------|
-| `durable/run` | `agent-runtime-<slug>` (per-agent pod) | Native Dapr child workflow (`session_workflow` → `agent_workflow`). Target app-id comes from `agentRef` → `agents.runtime_app_id` → `agent-runtime-<slug>`. Falls back to legacy `dapr-agent-py` only when neither `agentAppId` nor `agentSlug` is stamped. | Every agent turn |
-| `system/*` | fn-system | Dapr invoke → function-router | `system/http-request`, `system/database-query`, `system/condition` |
-| `workspace/*` | openshell-agent-runtime | Dapr invoke → function-router | Workspace profile, clone, command, file, cleanup. Orchestrator also yields `persist_workspace_session` activity after `workspace/profile` with `keepAfterRun=true` to UPSERT the row into `workflow_workspace_sessions` (which powers the live-preview proxy). |
-| `browser/*` | openshell-agent-runtime | Dapr invoke → function-router | Browser profile, clone, command, capture-flow, validate |
-| `openshell/*` | openshell-agent-runtime | Dapr invoke → function-router | OpenShell runtime helper routes |
-| `code/*` | code-runtime | Dapr invoke → function-router | Saved TS/Python code function execution |
-| `*` (default) | fn-activepieces | Dapr invoke → function-router | All AP piece actions (credential decrypt + audit via credential-service) |
+| Prefix | Service | Notes |
+|--------|---------|-------|
+| `durable/run` | `agent-runtime-<slug>` | Native Dapr child workflow. Target app-id from `agentRef` → `agents.runtime_app_id`; falls back to legacy `dapr-agent-py` only when neither `agentAppId` nor `agentSlug` is stamped. |
+| `system/*` | fn-system | http-request, database-query, condition |
+| `workspace/*` | openshell-agent-runtime | Plus `persist_workspace_session` activity after `workspace/profile` with `keepAfterRun=true` (UPSERTs `workflow_workspace_sessions` for live-preview proxy) |
+| `browser/*` | openshell-agent-runtime | Browser profile, clone, command, capture-flow, validate |
+| `openshell/*` | openshell-agent-runtime | OpenShell helper routes |
+| `code/*` | code-runtime | Saved TS/Python code execution |
+| `*` (default) | fn-activepieces | All AP piece actions |
 
-Rejected slugs (raise `Removed SW 1.0 agent action` at the orchestrator): `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph/run`, `openshell-langgraph-observable/run`, `dapr-agent-py/run`, `dapr-swe/run`, `durable/plan`, and any `mastra/*` or `agent/*` legacy slug.
+Rejected slugs (orchestrator raises): `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph/run`, `openshell-langgraph-observable/run`, `dapr-agent-py/run`, `dapr-swe/run`, `durable/plan`, any `mastra/*` or `agent/*`.
 
 ## Per-Agent Runtime Model
 
-Every published agent gets its own pod. On publish, `src/lib/server/agents/registry-sync.ts` upserts an `AgentRuntime` CR (`agents.x-k8s.io/v1alpha1`) in the `workflow-builder` namespace; the Kopf operator at `services/agent-runtime-controller/src/main.py` reconciles one `Deployment/agent-runtime-<slug>` per CR.
+Every published agent gets its own pod. On publish, `src/lib/server/agents/registry-sync.ts` upserts an `AgentRuntime` CR (`agents.x-k8s.io/v1alpha1`); the Kopf operator at `services/agent-runtime-controller/src/main.py` reconciles one `Deployment/agent-runtime-<slug>` per CR.
 
-**Pod shape** (built by `_build_deployment` in the controller):
-- `seed-openshell-config` **init container** — writes `${XDG_CONFIG_HOME}/openshell/active_gateway` + gateway metadata + mTLS certs from the `openshell-client-tls` + `openshell-server-client-ca` Secrets so any OpenShell-backed tool the agent runs can reach its sandbox. Without this, tools like `write_file`, `bash_run`, `execute_command` fail with ENOENT on `active_gateway`.
-- `dapr-agent-py` main container — runs the SDK's `session_workflow` + `agent_workflow` + optional plugins/hooks. Reads `DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON` from the CR spec. Shares the `openshell-config` emptyDir with the init container.
-- `daprd` sidecar — injected by the `openshell-sandbox-dapr-webhook` (the webhook's `namespaceSelector` matches both `openshell` and `workflow-builder`). Gets its X.509 SVID from Dapr sentry; requires the `openshell-sandbox-dapr` Configuration to exist in the pod's namespace.
-- *(Optional)* `chromium` + `playwright-mcp` **browser sidecars** when the agent has a Playwright MCP preset. Controller stamps `browserSidecar.enabled=true` on the CR + attaches a per-agent `ClusterIP Service` (`agent-runtime-<slug>-mcp:3100`) so other pods can reach the browser state endpoint.
+**Pod shape** (built by `_build_deployment`):
+- `seed-openshell-config` init container — writes `${XDG_CONFIG_HOME}/openshell/active_gateway` + mTLS certs from `openshell-client-tls` + `openshell-server-client-ca` Secrets. Without it, OpenShell tools fail with ENOENT on `active_gateway`.
+- `dapr-agent-py` main container — `session_workflow` + `agent_workflow` + plugins/hooks. Reads `DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON` from CR spec.
+- `daprd` sidecar — injected by `openshell-sandbox-dapr-webhook` (matches `openshell` and `workflow-builder`). Requires `openshell-sandbox-dapr` Configuration in the pod's namespace.
+- *(Optional)* `chromium` + `playwright-mcp` browser sidecars when agent has Playwright MCP preset. Controller stamps `browserSidecar.enabled=true` + attaches per-agent `ClusterIP Service` (`agent-runtime-<slug>-mcp:3100`).
 
-**Dispatch targets**
-- Parent orchestrator → child via `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>", ...)`.
-- Direct UI-initiated sessions → BFF's `src/lib/server/sessions/spawn.ts` wakes the pod then invokes `/internal/sessions/spawn` via Dapr service invoke on the bare app-id.
-- Both paths share the same `rewriteMcpForBrowserSidecar` helper (`src/lib/server/agents/mcp-sidecar.ts`) to rewrite Playwright stdio presets → `http://localhost:3100/mcp`.
+**Scaling**: replicas default to 0; sessions wake via `agents.x-k8s.io/wake` annotation. `idleTtlSeconds` (default 1800; per-agent overridable via `agentRuntimeIdleTtlSeconds`) drives the `idle_reaper` timer. Scales back to 0 after TTL since `lastActiveAt` (BFF stamps each dispatch).
 
-**Scaling**
-- Pod replicas default to 0. Sessions are woken on demand by writing the `agents.x-k8s.io/wake` annotation on the CR — controller scales the Deployment to 1.
-- `idleTtlSeconds` (default 1800 in `_DEFAULT_IDLE_TTL`; overridable per agent via environment config's `agentRuntimeIdleTtlSeconds`) drives the `idle_reaper` timer. Scales back to 0 after the TTL elapses since `lastActiveAt`, which the BFF stamps each session dispatch.
+**Dapr Component visibility** in `workflow-builder` ns:
 
-**Dapr Component visibility inside `workflow-builder` namespace**
+| Component | `actorStateStore` | Used by |
+|---|---|---|
+| `workflowstatestore` | true | Dapr workflow/actor history |
+| `dapr-agent-py-statestore` | false | Agent/session state |
+| `agent-workflow` | false | Legacy openshell-durable-agent (no active consumers) |
 
-A Dapr sidecar refuses to start if it sees more than one Component with `actorStateStore=true`. `workflowstatestore` is the single namespace-visible workflow/actor store. Agent session state and legacy stores are non-actor stores so Kueue-admitted per-session app ids do not need Dapr Component scope mutation:
-
-| Component | `actorStateStore` | Scopes | Used by |
-|---|---|---|---|
-| `workflowstatestore` | true | unscoped | Dapr workflow/actor history (`wfstate_*` tables) |
-| `dapr-agent-py-statestore` | false | unscoped | Agent/session state |
-| `agent-workflow` | false | legacy openshell-durable-agent / vanilla-durable-agent (no active consumers) | n/a |
-
-**When adding a new agent**, create or update its `AgentRuntime` CR. Do not patch Dapr Component scopes for the runtime app id; unscoped Components are already visible within the namespace.
+A Dapr sidecar refuses to start if it sees more than one `actorStateStore=true` Component. New agents: create/update `AgentRuntime` CR; do NOT patch Component scopes.
 
 ## Workflow → Session Bridge
 
-Every `durable/run` step in SW 1.0 goes through a session bridge so workflow-driven agent runs appear in the same `/sessions/[id]` UI as direct (UI-initiated) sessions. This is a structural invariant — the old `WORKFLOW_USE_SESSIONS` feature flag was removed once the bridge stabilized.
+Every `durable/run` step goes through a session bridge so workflow-driven runs appear in the same `/sessions/[id]` UI as direct sessions. Structural invariant — old `WORKFLOW_USE_SESSIONS` flag removed.
 
-**Flow** (`services/workflow-orchestrator/workflows/sw_workflow.py` + `services/workflow-orchestrator/activities/spawn_session.py`):
+**Flow** (`services/workflow-orchestrator/workflows/sw_workflow.py` + `activities/spawn_session.py`):
 
-1. Orchestrator yields `spawn_session_for_workflow` activity with `bridge_payload` including `agentAppId`, `agentSlug`, `workspaceRef`, `sandboxName`, `agentConfig`, the `durable/run` body.
-2. Activity HTTP-POSTs to the BFF's `/api/internal/sessions/ensure-for-workflow`. The handler:
-   - Rewrites `agentConfig.mcpServers` through `rewriteMcpForBrowserSidecar` so Playwright presets target the per-pod sidecar.
-   - Finds or creates the `sessions` row (keyed by deterministic `child_instance_id = <exec>__<kind>__<node>__run__<index>`).
-   - Creates the ephemeral `agents` row if the workflow uses inline `agentConfig`.
-   - Wakes the per-agent runtime pod via `wakeAgentRuntime(slug, 20_000)`. Non-blocking: if the pod takes longer than 20 s, the response returns anyway and Dapr retries the child-workflow schedule until placement catches up.
-   - Returns `{sessionId, agentId, agentVersion, childInput, reused}`.
-3. Activity returns `childInput` to the orchestrator. Orchestrator yields `ctx.call_child_workflow("session_workflow", input=childInput, instance_id=child_instance_id, app_id=target["app_id"])`.
-4. `session_workflow` runs on `agent-runtime-<slug>` with `autoTerminateAfterEndTurn: true` — one turn of `agent_workflow`, emits `session.status_idle{end_turn}` + `session.status_terminated`, returns.
-5. Parent resumes, final execution output persists to `workflow_executions.output`.
+1. Orchestrator yields `spawn_session_for_workflow` with `bridge_payload` (agentAppId, agentSlug, workspaceRef, sandboxName, agentConfig, durable/run body).
+2. Activity HTTP-POSTs to BFF's `/api/internal/sessions/ensure-for-workflow`. Handler rewrites `agentConfig.mcpServers` for browser sidecar, finds/creates session row (keyed by `child_instance_id = <exec>__<kind>__<node>__run__<index>`), creates ephemeral `agents` row if inline, wakes pod via `wakeAgentRuntime(slug, 20_000)` (non-blocking — Dapr retries if pod takes longer), returns `{sessionId, agentId, agentVersion, childInput, reused}`.
+3. Orchestrator yields `ctx.call_child_workflow("session_workflow", input=childInput, instance_id=child_instance_id, app_id=target["app_id"])`.
+4. Child runs on `agent-runtime-<slug>` with `autoTerminateAfterEndTurn: true` — one turn, emits `session.status_idle{end_turn}` + `session.status_terminated`.
+5. Parent resumes; final output persists to `workflow_executions.output`.
 
-### Safety nets on the agent side (landed 2026-04-21)
+### Safety nets on the agent side (2026-04-21)
 
-Three defensive layers prevent a `durable/run` child from hanging indefinitely:
+Three defensive layers prevent `durable/run` hangs:
 
-- **Empty-response circuit breaker** (`services/dapr-agent-py/src/main.py` `call_llm`): tracks consecutive empty-content + no-tool-calls LLM responses (or raised exceptions counted as empty) per workflow instance. After `DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD` (default 3), raises `AgentError` to break `agent_workflow`'s `for turn in range(max_iterations)` loop. Catches Anthropic SDK [issue #1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204) (Claude Opus 4.7 + adaptive thinking + tools sometimes emits `stop_reason=end_turn` with only a thinking block + empty text + no tool_use). Resets on any response with content or tool_calls.
-- **Session-turn timer** (`session_workflow` wraps `ctx.call_child_workflow` in `when_any([child, timer])`): if the child agent_workflow takes longer than `DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS` (default 600), raises a timeout `AgentError` so `session.error` + `session.status_terminated` publish. Safety net for any stuck state the circuit breaker doesn't catch (MCP hang, tool loop, deadlock).
-- **Image tool_result compaction** (`services/dapr-agent-py/src/anthropic_adapter.py` `_compact_image_tool_results`): before every `generate()` call, walks the merged message list, finds user-role `tool_result` blocks that embed `type: image` content, and keeps only the last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3) intact. Older image blocks are replaced with a short text placeholder while preserving the `tool_use_id` link. Prevents the 1M-token prompt overflow observed when a validator accumulates >3 Playwright screenshots (each ~100–500KB base64 ≈ 50k tokens).
+- **Empty-response circuit breaker** (`services/dapr-agent-py/src/main.py` `call_llm`): tracks consecutive empty-content + no-tool-calls responses (or exceptions counted as empty). After `DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD` (default 3), raises `AgentError`. Catches Anthropic SDK [#1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204) (Opus 4.7 + thinking + tools emits empty `end_turn`).
+- **Session-turn timer** (`session_workflow` wraps child in `when_any([child, timer])`): if child takes >`DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS` (default 600), raises timeout `AgentError`.
+- **Image tool_result compaction** (`anthropic_adapter.py` `_compact_image_tool_results`): keeps only last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3) intact image tool_result blocks; older ones replaced with placeholder text. Prevents 1M-token overflow from screenshot accumulation.
 
 ### Workspace session persistence
 
-Post function-router cutover (`workspace/*` routed to `openshell-agent-runtime` which is stateless w.r.t. this table; legacy `workspace-runtime` TS service's GitOps + live resources fully removed 2026-04-21), the orchestrator owns the DB write for `workflow_workspace_sessions`:
-
-- **`persist_workspace_session` activity** (`services/workflow-orchestrator/activities/persist_workspace_session.py`): after every `workspace/profile` action completes successfully with `keepAfterRun=true`, `_handle_call_task` yields this activity to UPSERT the row (status=`active`, sandbox_state JSONB) keyed on `workspace_ref`. This is what `getExecutionSandboxPreviewInfo` reads so the live-preview proxy `/api/workflows/executions/<execId>/sandbox-preview/<previewId>/` can resolve a run's retained sandbox.
-- **Cleanup gate respects spec**: `_should_cleanup_workspaces` in `sw_workflow.py` walks the SW 1.0 spec's `do[]` list for any `workspace/*` step with `with.keepAfterRun: true` (in addition to looking for `keepAfterRun` on task outputs). openshell-agent-runtime's `workspace/profile` response doesn't echo the flag back — checking only outputs missed the user's explicit intent and flipped `workflow_workspace_sessions.status` → `cleaned`, breaking the preview proxy. Fixed 2026-04-21.
+Orchestrator owns the DB write for `workflow_workspace_sessions` post `workspace/*` cutover:
+- **`persist_workspace_session` activity**: after `workspace/profile` with `keepAfterRun=true`, UPSERTs the row (status=`active`, sandbox_state JSONB) keyed on `workspace_ref`. Read by `getExecutionSandboxPreviewInfo` for the live-preview proxy.
+- **Cleanup gate**: `_should_cleanup_workspaces` walks the SW 1.0 spec for `workspace/*` steps with `with.keepAfterRun: true` (openshell-agent-runtime's response doesn't echo the flag back).
 
 ## Node Types
 
@@ -190,98 +169,82 @@ Post function-router cutover (`workspace/*` routed to `openshell-agent-runtime` 
 ## Database Schema (Key Tables)
 
 - **workflows**: `id`, `name`, `nodes` (JSONB), `edges` (JSONB), `engine_type`, MCP trigger config
-- **workflow_executions**: `id`, `workflow_id`, `dapr_instance_id`, `status`, `output` (JSONB) — output written via status polling + `persist_results_to_db` activity
+- **workflow_executions**: `id`, `workflow_id`, `dapr_instance_id`, `status`, `output` (JSONB)
 - **functions**: `id`, `slug`, `name`, `plugin_id`, `execution_type`, `is_builtin`
-- **app_connections**: `id`, `externalId`, `pieceName`, `type` (OAUTH2/SECRET_TEXT/etc), `value` (encrypted JSONB)
-- **piece_metadata**: `name`, `displayName`, `version`, `auth` (JSONB), `actions` (JSONB)
-- **mcp_connection**: project-level MCP bindings to app connections and MCP server URLs
-- **mcp_server**, **mcp_run**: hosted MCP server config and execution tracking where used
-- **workflow_connection_ref**: workflow-node connection usage index
-- **api_keys**: JWT API keys for programmatic access (`wfb_` prefix, SHA-256 hashed at rest; rotation keeps `id` stable). Webhook auth at `/api/workflows/[workflowId]/webhook`.
-- **CMA parity resources**: all workspace-scoped via `project_id` column — `sessions`, `vaults`, `agents`, `environments`, `agent_skill_registry` (nullable for curated-global rows). Scope comes from `locals.session.projectId` which `hooks.server.ts` resolves from the `X-Workspace` header or URL slug.
-- **project_members**: `(project_id, user_id, role)` with role in `ADMIN | EDITOR | OPERATOR | VIEWER`. Last-admin demote/remove is blocked in the API handler.
-- **sessions**: CMA session rows. `workflow_execution_id` links workflow-driven sessions back to their parent `durable/run` node; UI sessions leave it null.
-- **session_events**: append-only CMA event log. `sevt_` id prefix matches the wire format. SSE stream at `/api/v1/sessions/[id]/events/stream`.
-- **files**: standalone files API (distinct from `session_resources`); SHA-1 dedup, 25 MB cap per upload. Session-output auto-upload (`/mnt/session/outputs` + `/sandbox/outputs`) scanned in `services/dapr-agent-py/src/session_outputs.py`.
-- **Browser artifacts**: `workflow_browser_artifacts` (manifest JSONB), `workflow_browser_artifact_blob_payloads` (base64 PNG screenshots)
+- **app_connections**: encrypted credentials (`OAUTH2`/`SECRET_TEXT`/etc) in `value` JSONB
+- **piece_metadata**, **mcp_connection**, **mcp_server**, **mcp_run**, **workflow_connection_ref**
+- **api_keys**: JWT keys (`wfb_` prefix, SHA-256 hashed at rest); rotation keeps `id` stable
+- **CMA parity**: workspace-scoped via `project_id` — `sessions`, `vaults`, `agents`, `environments`, `agent_skill_registry` (nullable for curated-global). Scope from `locals.session.projectId` resolved by `hooks.server.ts`.
+- **project_members**: `(project_id, user_id, role)` with `ADMIN | EDITOR | OPERATOR | VIEWER`. Last-admin demote/remove blocked.
+- **sessions**: `workflow_execution_id` links workflow-driven sessions back to parent `durable/run` node
+- **session_events**: append-only CMA event log (`sevt_` id prefix). SSE at `/api/v1/sessions/[id]/events/stream`
+- **files**: standalone files API; SHA-1 dedup, 25 MB cap. Session-output auto-upload from `/mnt/session/outputs` + `/sandbox/outputs`
+- **Browser artifacts**: `workflow_browser_artifacts` (manifest), `workflow_browser_artifact_blob_payloads` (base64 PNG)
+- **workflow_artifacts**: standardized typed outputs (see Workflow Artifacts section)
 - **Observability**: `workflow_execution_logs`, `credential_access_logs`, `workflow_external_events`
 
 ## MCP Integration
 
-Current MCP paths:
+Three paths:
 
-1. **Activepieces piece MCP services**: per-piece in-cluster MCP endpoints, backed by `mcp_connection.connection_external_id` and the encrypted `app_connection` credential.
-2. **dapr-agent-py MCP client**: reads `durable/run.with.agentConfig.mcpServers`, connects at runtime, and exposes MCP tools beside built-in OpenShell workspace tools.
-3. **mcp-gateway / workflow-mcp-server / piece-mcp-server**: retained hosted MCP surfaces and source packages for external-client or on-demand server flows.
+1. **Activepieces piece MCP services**: per-piece in-cluster endpoints, backed by `mcp_connection.connection_external_id` + encrypted `app_connection` credential.
+2. **dapr-agent-py MCP client**: reads `durable/run.with.agentConfig.mcpServers`, connects at runtime, exposes alongside built-in OpenShell tools.
+3. **mcp-gateway / workflow-mcp-server / piece-mcp-server**: hosted MCP surfaces for external-client/on-demand flows.
 
-**Playwright sidecar rewrite**: any `agentConfig.mcpServers` entry that matches Playwright (by name, URL containing `playwright-mcp`, or args containing `@playwright/mcp`) is rewritten to `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }` before dispatch. The helper lives at `src/lib/server/agents/mcp-sidecar.ts` and is called from **both** session-spawn paths:
-- Direct sessions: `src/lib/server/sessions/spawn.ts` rewrites `agentConfig` just before the Dapr service invoke to the target app.
-- Workflow-driven sessions: `src/routes/api/internal/sessions/ensure-for-workflow/+server.ts` rewrites the inbound `agentConfig` from the orchestrator's `spawn_session_for_workflow` payload before returning `childInput`.
+**Playwright sidecar rewrite** (`src/lib/server/agents/mcp-sidecar.ts`): any `agentConfig.mcpServers` entry matching Playwright (by name, URL containing `playwright-mcp`, or args containing `@playwright/mcp`) is rewritten to `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }`. Called from BOTH spawn paths (`src/lib/server/sessions/spawn.ts` and `src/routes/api/internal/sessions/ensure-for-workflow/+server.ts`). Controller adds `chromium` + `playwright-mcp` sidecars when matched.
 
-When a rewrite matches, the controller adds `chromium` + `playwright-mcp` sidecar containers to the pod so the rewritten URL resolves in-pod (CDP over chromium on `localhost:9222`). Without this rewrite, the stdio preset `npx @playwright/mcp@latest` would run inside the dapr-agent-py container where no Chromium binary exists.
-
-For UI-runnable agent workflows, use SW 1.0 `durable/run` with `agentConfig.mcpServers` and `x-workflow-builder.input` prompt metadata. See `docs/mcp-agent-workflows.md`.
-
-MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in `components/mcp-chat/tool-widget.tsx`).
+For UI-runnable agent workflows: SW 1.0 `durable/run` with `agentConfig.mcpServers` and `x-workflow-builder.input` prompt metadata. See `docs/mcp-agent-workflows.md`. MCP Apps use `@modelcontextprotocol/ext-apps` (`tool-widget.tsx`).
 
 ## Hooks + Plugins (dapr-agent-py)
 
-Port of Claude Code's hooks + plugins extension surface into the Python Dapr agent. Feature-flagged on both deployments via `DAPR_AGENT_PY_HOOKS_ENABLED=true` + `DAPR_AGENT_PY_PLUGINS_ENABLED=true`; plugin files ship via a `fetch-claude-plugins` init container that clones `anthropics/claude-plugins-official` into `/etc/dapr-agent-py/plugins`.
+Port of Claude Code's hooks + plugins surface. Feature-flagged via `DAPR_AGENT_PY_HOOKS_ENABLED=true` + `DAPR_AGENT_PY_PLUGINS_ENABLED=true`; plugins ship via `fetch-claude-plugins` init container cloning `anthropics/claude-plugins-official` to `/etc/dapr-agent-py/plugins`.
 
-- **Events fired v1**: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd, Stop, Notification (other 18 TS events declared for manifest round-trip but not emitted)
-- **Hook types v1**: `command` (subprocess JSON stdin/stdout, exit-code 2 = blocking) + `callback` (in-process Python); http/prompt/agent parsed but not executed
-- **Per-run overlay**: workflow `durable/run.with.agentConfig.hooks` (inline HooksSettings) + `agentConfig.plugins` (plugin IDs) layered on the startup registry — mirrors how `mcpServers` already works
-- **Durability**: PreToolUse/PostToolUse/PostToolUseFailure fire inside the durable `run_tool` activity. Session-level events fire in the workflow function gated by `not ctx.is_replaying` (same pattern as existing PLAN.md injection)
+- **Events v1**: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd, Stop, Notification
+- **Hook types v1**: `command` (subprocess JSON stdin/stdout, exit-code 2 = blocking) + `callback` (in-process Python)
+- **Per-run overlay**: `durable/run.with.agentConfig.hooks` + `agentConfig.plugins` layered on startup registry (mirrors `mcpServers`)
+- **Durability**: PreToolUse/PostToolUse/PostToolUseFailure fire inside durable `run_tool` activity; session-level events gated by `not ctx.is_replaying`
 
-> See `docs/hooks-and-plugins.md` for events, matcher syntax, settings cascade, plugin manifest shape, and Dapr durability trade-offs.
+> See `docs/hooks-and-plugins.md`.
 
 ## Activepieces Integration
 
-- Credentials: AES-256-CBC encrypted at rest in `app_connections` table
+- Credentials: AES-256-CBC encrypted in `app_connections`
 - Auth types: `OAUTH2`, `SECRET_TEXT`, `BASIC_AUTH`, `CUSTOM_AUTH`
-- Connection flow: User creates → encrypted in DB → function-router decrypts at execution time
-- Adding a new piece: (1) add to `installed-pieces.ts`, (2) add npm dep to fn-activepieces, (3) add to `piece-registry.ts`, (4) rebuild
+- Flow: User creates → encrypted in DB → function-router decrypts at execution
+- Adding piece: (1) `installed-pieces.ts`, (2) npm dep to fn-activepieces, (3) `piece-registry.ts`, (4) rebuild
 
-> See `docs/activepieces-auth.md` for the full auth flow.
+> See `docs/activepieces-auth.md`.
 
 ## CMA Parity (Managed Agents Console)
 
-The SvelteKit app mirrors platform.claude.com/dashboard surface-for-surface where it makes sense, while keeping our divergences (visual workflow editor, sandboxes, observability) alongside. Workspace scoping is the unifying invariant: every user-facing resource carries `project_id`, and `hooks.server.ts` resolves scope from the `X-Workspace` header or URL slug into `locals.session.projectId`.
+Mirrors platform.claude.com/dashboard surface-for-surface. Workspace scoping is the unifying invariant: every user-facing resource carries `project_id`; `hooks.server.ts` resolves scope from `X-Workspace` header or URL slug into `locals.session.projectId`.
 
-- **Workspaces**: `/workspaces` manages membership; `/workspaces/[slug]/*` is the canonical path for each console surface. Non-member access 404s at the layout guard.
-- **Members**: `/settings/members` — real CRUD via `/api/v1/projects/[projectId]/members`. Roles: ADMIN / EDITOR / OPERATOR / VIEWER. Last-admin demote/remove blocked.
-- **Sessions**: CMA-shape event stream (`agent.message`, `agent.thinking`, `agent.tool_use`, `agent.tool_result`, `session.status_*`). Detail view shows Agent / Environment / Vaults / Workflow run / Sandbox / Observability cards. **Fork**: `POST /api/v1/sessions/[id]/fork` with `fromSequence` re-seeds a new session with replayed events up to N.
-- **Custom skills**: authored by workspace members (`sourceType = "custom"` in `agent_skill_registry`, scoped via `project_id`). `POST /api/agent-skills` + `PATCH /api/agent-skills/[id]` (prompt edit bumps the numeric version). Curated/global rows remain visible to every workspace.
-- **Usage + cost**: `/api/v1/usage` and `/api/v1/cost` are workspace-scoped — prefer `locals.session.projectId`, fall back to `userId` when no active project. Usage joins `agents.name` so rows show labels, not raw IDs.
-- **Limits dashboard**: `/settings/limits` auto-refreshes every 15s via `/api/v1/limits/live` — active session count + per-model rolling-window throughput (sessions/hour, tokens/min/hour). No new tables; computed on-demand from `sessions.usage` + `sessions.status`.
-- **Observability deep-link**: session detail → Phoenix (`/api/observability/phoenix/sessions/[id]`) + ClickHouse trace explorer (`/observability?sessionId=X`). The traces API filters by the `session.id` span attribute emitted by `src/telemetry/`.
-- **Workflow → session cross-link**: workflow run Overview tab lists sessions its `durable/run` nodes spawned via `/api/workflows/executions/[executionId]/sessions`. Refreshes every 5s while agent runs are running.
+- **Workspaces**: `/workspaces` membership; `/workspaces/[slug]/*` canonical path. Non-member 404s at layout guard.
+- **Members**: `/settings/members` — CRUD via `/api/v1/projects/[projectId]/members`. Last-admin demote/remove blocked.
+- **Sessions**: CMA-shape event stream (`agent.message`, `agent.thinking`, `agent.tool_use`, `agent.tool_result`, `session.status_*`). **Fork**: `POST /api/v1/sessions/[id]/fork` with `fromSequence`.
+- **Custom skills**: `sourceType = "custom"` in `agent_skill_registry`, scoped via `project_id`. `POST /api/agent-skills` + `PATCH /api/agent-skills/[id]` (prompt edit bumps version). Curated/global rows visible to all workspaces.
+- **Usage + cost**: `/api/v1/usage` and `/api/v1/cost` workspace-scoped; fall back to `userId` if no project. Joins `agents.name`.
+- **Limits dashboard**: `/settings/limits` auto-refreshes every 15s via `/api/v1/limits/live`. Computed on-demand from `sessions.usage` + `sessions.status`.
+- **Observability deep-link**: session detail → Phoenix + ClickHouse trace explorer (`session.id` span attribute filter).
+- **Workflow → session cross-link**: workflow run Overview lists sessions via `/api/workflows/executions/[executionId]/sessions`.
 
-Full resource map + gap rationale: `docs/cma-parity.md`.
+Full map: `docs/cma-parity.md`.
 
 ## Browser Validation (In-Sandbox Screenshots)
 
-The `browser/validate` action captures screenshots of a deployed feature inside the coding agent's OpenShell sandbox, eliminating the need for a second browser sandbox.
+`browser/validate` action captures screenshots inside the coding agent's OpenShell sandbox (no second sandbox needed).
 
-**Architecture**: coding sandbox (OpenShell) → install deps → start dev server → Playwright screenshot → persist to DB
+- **Custom sandbox image**: `services/openshell-sandbox/Dockerfile` — Ubuntu 24.04 + Chromium via Playwright at `/opt/pw-browsers`
+- **Composite endpoint**: `POST /api/browser/validate` in openshell-agent-runtime
+- **Screenshot transfer**: PNGs base64-encoded in sandbox, read in 4KB chunks via `dd` (OpenShell stdout truncates >4KB outputs)
+- **Storage**: `workflow_browser_artifacts` + `workflow_browser_artifact_blob_payloads`
+- **UI**: Artifacts tab in run detail, auto-expands first completed
 
-- **Custom sandbox image**: `services/openshell-sandbox/Dockerfile` — Ubuntu 24.04 base + Chromium via Playwright at `/opt/pw-browsers`
-- **Composite endpoint**: `POST /api/browser/validate` in openshell-agent-runtime — orchestrates install, dev server, readiness poll, and capture
-- **Screenshot transfer**: PNGs converted to base64 files in sandbox, read in 4KB chunks via `dd` (OpenShell stdout truncates large outputs)
-- **Artifact storage**: `workflow_browser_artifacts` + `workflow_browser_artifact_blob_payloads` tables
-- **UI display**: Artifacts tab in run detail page, auto-expands first completed browser artifact
-
-**Key constraints**:
-- OpenShell `run_command()` stdout drops leading bytes on outputs >4KB — use chunked file reads
-- Heredoc syntax doesn't work through OpenShell command API — use base64-encoded script upload
-- Playwright browsers must be at `/opt/pw-browsers` (not `/root/.cache`) for sandbox user access
-- `imagePullPolicy: Always` for sandbox images — Gitea registry is authoritative
+**Constraints**: chunked file reads for >4KB outputs; base64-encoded scripts (no heredoc through OpenShell API); browsers at `/opt/pw-browsers`; `imagePullPolicy: Always` for sandbox images.
 
 ## Standardized Workflow Artifacts
 
-Any SW 1.0 task can declare typed outputs that surface coherently in the run-detail UI by adding an `artifacts:` block alongside `with:`. Replaces the per-workflow ad-hoc storage problem (synth output buried in `output.outputs.<node>.data.content`, etc.) with a single generic table + discriminated-union renderer.
-
-**Producer (declarative in SW 1.0)**:
+Any SW 1.0 task can declare typed outputs via `artifacts:` block alongside `with:`. Generic table + discriminated-union renderer.
 
 ```yaml
 synthesize:
@@ -291,110 +254,95 @@ synthesize:
     - kind: markdown
       slot: primary             # primary | secondary | aux
       title: "Research synthesis"
-      description: "${ .trigger.topic }"
-      from: "${ .data.content }"  # jq evaluated post-task against expression context
+      from: "${ .data.content }"  # jq, evaluated against expression context
       contentType: "text/markdown"
-      metadata: "${ { topic: .trigger.topic } }"
       if: "${ .data.content != null }"
 ```
 
-After every task completes (in `_dispatch_task`), the orchestrator's `_persist_task_artifacts` walks `task_data.get("artifacts", [])`, evaluates each entry's jq expressions against the same expression context the task itself just used, and yields a `persist_workflow_artifact` activity per entry. Activity ID is deterministic (`sha256(workflowId|executionId|nodeId|kind|title)[:24]`) so Dapr retries collapse to UPSERTs on the same row.
+`_persist_task_artifacts` walks `task_data.get("artifacts", [])`, evaluates jq, yields `persist_workflow_artifact` per entry. Activity ID is deterministic (`sha256(workflowId|executionId|nodeId|kind|title)[:24]`) so retries collapse to UPSERT.
 
-**Storage** — `workflow_artifacts` table (schema.ts:workflowArtifacts, drizzle 0067). Columns: id, workflow_execution_id (CASCADE), node_id, slot, kind, title, description, inline_payload (jsonb, ≤256 KB practical), file_id (FK files SET NULL — for blob-backed artifacts), content_type, size_bytes, metadata (jsonb), created_at. Hybrid storage: small structured artifacts inline, large blobs reuse the existing files + filePayloads infra.
+**Storage**: `workflow_artifacts` table (drizzle 0067). Inline payload (jsonb ≤256 KB) or `file_id` for blobs.
 
-**Standard kinds + payload shapes**:
+**Standard kinds**:
 
-| `kind` | `inline_payload` shape | UI renderer |
+| `kind` | `inline_payload` | UI renderer |
 |---|---|---|
 | `markdown` | `{ markdown: string }` | `Response` (Streamdown + Shiki) |
 | `json` | `{ value: any }` | `JsonViewer` |
 | `text` | `{ text: string }` | `<pre>` |
-| `table` | `{ columns: [...], rows: [[...]] }` | inline table |
-| `image` | `{ alt: string }` (blob via fileId) | `<img>` |
-| `link` | `{ url: string }` | anchor |
-| `card` | `{ body: string, footer?: string }` | shadcn `<Card>` |
+| `table` | `{ columns, rows }` | inline table |
+| `image` | `{ alt }` (blob via fileId) | `<img>` |
+| `link` | `{ url }` | anchor |
+| `card` | `{ body, footer? }` | shadcn `<Card>` |
 
-Unknown kinds fall back to a JSON dump so the data is never lost. The `from:` jq value is auto-wrapped per kind (e.g. `kind: markdown` + `from: "${ .data.content }"` becomes `{ markdown: <content> }`).
+Unknown kinds fall back to JSON dump. `from:` jq value auto-wrapped per kind.
 
-**Consumer**: `<ArtifactList artifacts={...} mode="primary|all" />` (`src/lib/components/workflow/execution/artifact-list.svelte`) groups by slot. The run-detail Overview tab features `mode=primary` above the raw output JSON (which collapses to a debug pane); the new Outputs tab renders `mode=all`. APIs: `GET /api/workflows/executions/[id]/artifacts` (workspace-scoped read), `POST /api/internal/workflows/executions/[id]/artifacts` (internal-token write — used by the orchestrator and any future adapter-side writers).
+**Consumer**: `<ArtifactList artifacts={...} mode="primary|all" />` (`src/lib/components/workflow/execution/artifact-list.svelte`). APIs: `GET /api/workflows/executions/[id]/artifacts` (workspace-scoped read); `POST /api/internal/workflows/executions/[id]/artifacts` (internal-token write). Activity is best-effort — failures logged, not propagated.
 
-**Dapr-durability**: each artifact write is a separate `ctx.call_activity` with idempotency baked into the deterministic id. The activity is best-effort — network/4xx/5xx logged but not propagated, so observability never breaks the workflow it describes. See `services/workflow-orchestrator/activities/persist_artifact.py`.
-
-**Backward compat**: `workflow_browser_artifacts` and `workflow_plan_artifacts` are unchanged. Tasks without an `artifacts:` block see no behaviour change. Executions with no artifacts rows render the Overview tab the old way (raw output JsonViewer expanded).
+> See `docs/workflow-artifacts.md`.
 
 ## Tiered Crawl Pipeline (research workflows)
 
-`browserresearchfanout01` v3 is the canonical pattern for any multi-URL "fetch + extract + synthesize" workflow. Replaces the v2 browser-use-agent path for research/extraction; browser-use stays the right tool for *interactive* (vision/click) tasks.
-
-**Shape**:
+`browserresearchfanout01` v3 is the canonical pattern for multi-URL "fetch + extract + synthesize". Replaces v2 browser-use-agent for research/extraction; browser-use stays for *interactive* (vision/click) tasks.
 
 ```
 trigger {topic, urls, extractionPrompt}
   → for { url in .trigger.urls }            ← orchestrator-side sequential
-       web/crawl.async                      ← single durable activity sequence
-         (start_job + poll loop with timer) ← durable timer between polls
-         (deterministic per-URL jobId)      ← Dapr retries are no-ops
-         (Postgres-backed state)            ← adapter-restart safe
-         (tier escalation http→pw→stealth)  ← anti-bot resilience
-         (Anthropic schema-validated)       ← `extracted` field in result
+       web/crawl.async                       ← single durable activity sequence
+         (start_job + poll loop with timer)
+         (deterministic per-URL jobId, Postgres-backed, retry-safe)
+         (tier escalation http→pw→stealth)
+         (Anthropic schema-validated `extracted` field)
   → durable/run text-research-synthesizer    ← pure text agent (no browser)
-       (workspaceRef: "local")               ← skips per-run sandbox
-       (no MCP servers, no tools)            ← reads pre-extracted corpus
+       (workspaceRef: "local", no MCP, no tools)
 ```
 
-**crawl4ai-adapter v2** (`services/crawl4ai-adapter/`)
+**crawl4ai-adapter v2** (`services/crawl4ai-adapter/`):
+- API: `POST /crawl/jobs { url, jobId?, tiers?, extractionSchema?, cacheTtlSeconds? }`; `GET /crawl/jobs/{id}` → `{ complete, success, data, error }`
+- **State**: PG tables `crawl4ai_jobs` + `crawl4ai_cache`. DDL auto-applied. Single-replica but state externalised.
+- **Idempotent jobIds**: `j_<sha256(workflowId|nodeId|url)>[:32]`. Adapter returns existing for terminal/in-flight; FAILED resets to PENDING + re-kicks.
+- **Cache** keyed on `sha256(url|tier_chain|schemaHash)`. Default 1h TTL.
+- **Tier escalation**: `tiers: [http, playwright, stealth]` (default `[http]`). Escalates on block-detect (empty body, 403/429, Cloudflare/Akamai/PerimeterX/Captcha markers).
+- **Schema-driven extraction**: optional `extractionSchema` → Anthropic `tool_use` validated output in `result.extracted`. Skipped if `ANTHROPIC_API_KEY` unset.
+- **Orphan recovery**: startup watchdog scans stale PENDING/RUNNING; lazy resume in `GET /crawl/jobs/{id}` re-kicks from stored request.
 
-- HTTP API: `POST /crawl/jobs { url, jobId?, tiers?, extractionSchema?, cacheTtlSeconds? }` → `{ jobId, state, existing? }`; `GET /crawl/jobs/{id}` → `{ complete, success, data, error }`. Matches the orchestrator's existing `_run_durable_crawl4ai_job` contract.
-- **State store**: PostgreSQL tables `crawl4ai_jobs` (id, state, request, result, error, cache_key) + `crawl4ai_cache` (cache_key, payload, expires_at). DDL auto-applied on lifespan startup. Single-replica deployment but state is externalised — pod restart loses no in-flight work.
-- **Idempotent jobIds**: orchestrator's `crawl4ai_start_job` activity computes `j_<sha256(workflowId|nodeId|url)>[:32]` and POSTs it. Adapter returns existing rows for terminal/in-flight states; FAILED rows reset to PENDING + re-kick on retry. Activity retries via Dapr's `WorkflowRetryPolicy` become true no-ops for completed work.
-- **Cache** keyed on `sha256(url|tier_chain|schemaHash)`. TTL configurable per request (default 1h). Activity retry after partial network success → cache hit → no re-fetch.
-- **Tier escalation**: `tiers: [http, playwright, stealth]` (default `[http]`). Adapter walks the chain on each call, escalating on block-detect (empty body, HTTP 403/429, Cloudflare/Akamai/PerimeterX/Captcha markers in body). `playwright` runs Chromium headless; `stealth` adds `navigator.webdriver=false` + plausible UA + JS plugin shimming.
-- **Schema-driven extraction**: optional `extractionSchema` (JSON Schema) → adapter calls Anthropic `tool_use` with the schema as the tool's `input_schema` and returns the validated structured output in `result.extracted` alongside raw markdown. Skipped silently if `ANTHROPIC_API_KEY` is unset.
-- **Orphan recovery — two layers**:
-  - **Startup watchdog**: on lifespan, scan `state IN ('PENDING','RUNNING') AND updated_at < now() - CRAWL4AI_ORPHAN_AFTER_SECONDS` (default 10s). Reset to PENDING + `asyncio.create_task(_kick_job(...))` for each. Catches stale jobs on warm restart.
-  - **Lazy orphan-resume in `GET /crawl/jobs/{id}`**: if a poll sees state PENDING/RUNNING with stale `updated_at`, re-kick from the row's stored `request`. The orchestrator's polling activity itself becomes the recovery driver — adapter pod restart mid-flight is invisible to the workflow.
+**For-task jq output**: per-URL outputs at `<for_name>/<sub_name>[<idx>]`; envelope `{complete, success, data: {tier, url, extracted, ...}, error}` has ONE unwrap applied — read `.data.tier`, `.data.extracted` (NOT `.tier` / `.extracted` — that was the v3-iter1 bug).
 
-**For-task output access in jq expressions**: per-URL outputs are stored at `<for_name>/<sub_name>[<idx>]`; the activity envelope `{complete, success, data: {tier, url, status, extracted, ...}, error}` has ONE `_unwrap_standardized_output` strip applied, so jq reads `.data.tier`, `.data.extracted`, etc. (NOT `.tier` / `.extracted` — that's the v3-iter1 bug; agent saw null corpus and called WebSearch). See `docs/tiered-crawl-pipeline.md` for the full template.
+**text-research-synthesizer agent** (`runtime: dapr-agent-py`): pure text, no MCP, no browser, no sandbox. Receives corpus + topic + extractionPrompt, emits structured JSON + cross-URL synthesis.
 
-**text-research-synthesizer agent** (slug `text-research-synthesizer`, `runtime: dapr-agent-py`)
-
-Pure text agent — no MCP servers, no browser tools, no workspace sandbox. Receives the corpus + topic + extractionPrompt and emits structured JSON + cross-URL synthesis. Runs on the shared `agent-runtime-pool-coding` pool (no per-agent SandboxWarmPool needed).
-
-**Verified end-to-end durability** (2026-05-10): triggered 4-URL workflow → `kubectl delete pod` of crawl4ai-adapter mid-flight → new pod's lazy-resume completed orphaned RUNNING row → workflow finished `success` in 31.9s without intervention.
-
-**When NOT to use this pipeline**: anything that needs interactive browser control (form fills, login flows, click-through dashboards, vision-based extraction). For those, keep the browser-use-agent SandboxWarmPool path (`runtime: browser-use-agent` → playwright-mcp sidecar at `localhost:3100`).
+**Don't use this for**: interactive browser control (form fills, login, clicks, vision-based extraction) — use browser-use-agent path instead.
 
 ## Troubleshooting
 
-- Missing credentials → Add API keys to Azure Key Vault or create app connections
-- Agent timeout → Check `kubectl logs -n workflow-builder deploy/agent-runtime-<slug>` + workflow-orchestrator logs
-- Agent stops before completing plan → Check `maxTurns` setting (default: 50, configurable per-node)
-- OAuth2 token expired → Auto-refresh should handle; check `AP_ENCRYPTION_KEY`
-- AP credential decrypt fails → Verify `INTERNAL_API_TOKEN` matches across services
-- Tool fails with `[Errno 2] No such file or directory: '/root/.config/openshell/active_gateway'` → the pod's `seed-openshell-config` init container didn't run. Verify the CR was created AFTER the `openshell-sandbox-dapr-webhook` expanded its `namespaceSelector` to include `workflow-builder` AND the controller is on an image that includes the init container; if older, re-publish the agent to rebuild its Deployment.
-- daprd boot crashes `no X509 SVID available / failed to get configuration` → the `dapr.io/config`-referenced Configuration is missing in the pod's namespace. `openshell-sandbox-dapr` must exist in `workflow-builder` as well (declared at `packages/components/active-development/manifests/workflow-builder/Configuration-openshell-sandbox-dapr.yaml`).
-- daprd boot crashes `detected duplicate actor state store` → a Component with `actorStateStore=true` and no restrictive scopes became visible to the pod. Partition scopes so each pod sees exactly one (see the Per-Agent Runtime Model section).
-- `ctx.call_child_workflow` times out `the app may not be available` → the target pod isn't Dapr-placement-registered. Either the pod is scaled to 0 (wake annotation missing) OR it's in a different namespace than the parent (Dapr workflow sub-orchestration doesn't cross namespaces — per-agent pods MUST colocate with the orchestrator).
-- Workflow logging `Ignoring unexpected taskCompleted event with ID = N` → NOT a stuck signal; normal `call_child_workflow` replay chatter. Real stuck signals: `AgentRuntime` CR `phase=Sleeping` after wake annotation set, or pattern persists >5 min with daprd placement flaps.
-- BFF `wake <slug> failed ... phase=Sleeping` + CR stays Sleeping → Kopf agent-runtime-controller dropped its annotation watchers (only `Timer 'idle_reaper' succeeded` lines, no `on_wake`). Fix: `kubectl -n workflow-builder rollout restart deploy/agent-runtime-controller`.
-- BFF `/api/workflows/[id]/execute` fails with `ECONNREFUSED` to orchestrator → orchestrator pod is CrashLoopBackOff. Check previous logs; common cause is image predating `activities/crawl4ai.py` (`ModuleNotFoundError` in `sw_workflow.py`).
-- Session rows with `project_id=NULL` → can't happen post migration 0040 (2026-04-21). If seen, something's inserting outside the BFF + workflow→session bridge paths.
-- Workflow-driven session rows show raw agent IDs → workflow-ephemeral agents are filtered out of `/api/agents` by design. `listSessions` LEFT JOINs `agents` and returns `agentName/agentSlug/agentAvatar/agentEphemeral` so rows render a label without the catalog.
-- Agent loops with empty responses / never terminates → Anthropic SDK [issue #1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204) (Opus 4.7 + thinking + tools emits empty `end_turn`). Empty-response circuit breaker in `call_llm` trips after 3; check logs for `[call-llm] circuit-breaker tripped`. Tunable via `DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD`.
-- Child session hangs with no LLM traffic → session-turn timer (default 600s, `DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS`) should fire via `when_any([child, timer])`. Search pod logs for `Session turn N exceeded`.
-- Anthropic 400 `prompt is too long: N > 1000000` → too many image tool_results (~50k tokens each). `_compact_image_tool_results` keeps last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3); lower if still overflowing.
-- Anthropic 400 `Streaming is required ...` → non-streaming call on a request the server estimates >10 min (Opus 4.7 + many tools + high `max_tokens`). Fixed 2026-04-21 by routing all calls through `_stream_final_message` in `anthropic_adapter.py`. Circuit breaker doesn't catch this — workflow loops on retries. If reappears, lower `DAPR_AGENT_PY_MAX_TOKENS` (default 16384).
-- `dapr-agent-py` code changes need TWO image builds: `dapr-agent-py:git-<sha>` (legacy pods, GitOps tag bump) AND `dapr-agent-py-sandbox:latest` (per-agent runtime pods, `imagePullPolicy: Always` so scale 0→1 picks up new digest). Both built from `services/dapr-agent-py/src/**`.
-- Live-preview 404 "Retained sandbox not found" → `workflow_workspace_sessions` row missing or `status='cleaned'`. Verify `persist_workspace_session` activity fired, the spec has `with.keepAfterRun: true`, and `_should_cleanup_workspaces` honoured it. Revive: `UPDATE workflow_workspace_sessions SET status='active' WHERE workflow_execution_id=<id>`.
-- Trigger value like `${ .trigger.animationDescription }` reaches agent as literal string → SW 1.0 jq-template eval only fires for ENTIRE-value `${...}` (see `core/sw_expressions.py::is_expression_string`). Embedded `${...}` passes through. Fix: wrap whole value in one jq expression that concatenates.
-- `web/crawl.async` workflow times out at the per-URL `timeoutMs` ceiling → an adapter pod was restarted while a job was RUNNING and the lazy-resume in `GET /crawl/jobs/{id}` didn't fire fast enough. Manually reset stuck rows: `UPDATE crawl4ai_jobs SET state='FAILED' WHERE state IN ('PENDING','RUNNING') AND updated_at < now() - interval '2 minutes'`. Tighten `CRAWL4AI_ORPHAN_AFTER_SECONDS` if recurrent.
-- Synthesizer agent calls WebSearch / hangs / hits step budget on a research workflow → the per-URL corpus probably contains nulls (the agent compensates by web-searching). Cause: jq path missing the activity-envelope unwrap level. The for-task output value at `<for>/<sub>[<idx>]` reads `.data.tier` / `.data.extracted` (NOT `.tier` / `.extracted`).
-- `artifacts:` block declared but no rows in `workflow_artifacts` after the run → the activity is **best-effort**. Check workflow-orchestrator logs for `persist_workflow_artifact` warnings (network/4xx/5xx fail silently to keep observability from breaking the workflow). Common causes: BFF `/api/internal/workflows/executions/[id]/artifacts` route 503 (DB pool exhausted), `INTERNAL_API_TOKEN` not set on the orchestrator pod, or jq evaluation in `from:` returned `null` AND the `if:` guard (if any) was true. Verify with `SELECT id, kind, title FROM workflow_artifacts WHERE workflow_execution_id=?`.
-- MLflow Traces UI shows `IN_PROGRESS` after a successful workflow → **FIXED 2026-05-12** via `finalize_mlflow_trace_root` activity (`services/workflow-orchestrator/activities/finalize_mlflow_trace_root.py` + `tracing.py::emit_mlflow_trace_root_span`, commit `b9c3dfbb` live as `3a724061`). At workflow end, orchestrator yields an activity that POSTs a synthetic OTLP `ResourceSpans` proto directly to `${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces` over raw HTTP — with the workflow's existing trace_id and `parent_span_id` empty. MLflow's OTLP receiver processes that root-span end and flips `trace_info.state` from IN_PROGRESS to OK. **Must use raw HTTP, not the SDK tracer**: the SDK's BatchSpanProcessor would attach the synthetic span as a child of the currently-active OTel context, defeating the parent=None requirement. Disable via `MLFLOW_FINALIZE_ROOT_SPAN_ENABLED=false` if needed. The earlier REST-API `StartTraceV3` attempt failed (SQLAlchemy "blank-out primary key column" on existing trace_tags rows) and was reverted (commit `c36747e7` → revert `854f0828`).
-- SvelteKit type errors → Run `pnpm check`.
+- **Missing credentials** → Add API keys to Azure Key Vault or create app connections
+- **Agent timeout** → Check `kubectl logs -n workflow-builder deploy/agent-runtime-<slug>` + workflow-orchestrator logs
+- **Agent stops early** → Check `maxTurns` (default 50, per-node configurable)
+- **OAuth2 token expired** → Auto-refresh; check `AP_ENCRYPTION_KEY`
+- **AP credential decrypt fails** → Verify `INTERNAL_API_TOKEN` matches across services
+- **Tool fails ENOENT on `active_gateway`** → `seed-openshell-config` init didn't run; verify CR was created AFTER `openshell-sandbox-dapr-webhook` namespaceSelector covered `workflow-builder` AND controller image includes the init container; re-publish agent if older
+- **daprd `no X509 SVID / failed to get configuration`** → `dapr.io/config` Configuration missing in pod's namespace. `openshell-sandbox-dapr` must exist in `workflow-builder` (declared at `packages/components/active-development/manifests/workflow-builder/Configuration-openshell-sandbox-dapr.yaml`)
+- **daprd `detected duplicate actor state store`** → Component with `actorStateStore=true` and no restrictive scopes became visible. Partition scopes (see Per-Agent Runtime Model)
+- **`ctx.call_child_workflow` times out `app may not be available`** → target pod isn't placement-registered. Either scaled to 0 (missing wake annotation) OR different namespace from parent (sub-orchestration is intra-namespace only)
+- **`Ignoring unexpected taskCompleted event with ID = N`** → NOT stuck; normal `call_child_workflow` replay chatter. Real stuck signals: CR `phase=Sleeping` after wake set, or pattern persists >5 min with daprd placement flaps
+- **BFF `wake <slug> failed ... phase=Sleeping` + CR stays Sleeping** → Kopf controller dropped annotation watchers. Fix: `kubectl -n workflow-builder rollout restart deploy/agent-runtime-controller`
+- **BFF `/execute` `ECONNREFUSED` to orchestrator** → orchestrator CrashLoopBackOff; common cause is image predating `activities/crawl4ai.py`
+- **Session rows with `project_id=NULL`** → can't happen post migration 0040. If seen, something inserts outside BFF + bridge paths
+- **Workflow-driven sessions show raw agent IDs** → ephemeral agents filtered from `/api/agents` by design. `listSessions` LEFT JOINs `agents` returns `agentName/agentSlug/agentAvatar/agentEphemeral`
+- **Agent loops with empty responses** → Anthropic SDK [#1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204). Circuit breaker in `call_llm` trips after 3 (`DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD`); look for `[call-llm] circuit-breaker tripped`
+- **Child session hangs with no LLM traffic** → session-turn timer (default 600s, `DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS`) fires via `when_any([child, timer])`. Search logs for `Session turn N exceeded`
+- **Anthropic 400 `prompt is too long: N > 1000000`** → too many image tool_results. `_compact_image_tool_results` keeps last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3); lower if still overflowing
+- **Anthropic 400 `Streaming is required ...`** → non-streaming call estimated >10 min. Fixed 2026-04-21 by routing all calls through `_stream_final_message`. Lower `DAPR_AGENT_PY_MAX_TOKENS` (default 16384) if reappears
+- **dapr-agent-py code changes need TWO image builds**: `dapr-agent-py:git-<sha>` (legacy pods, GitOps tag bump) + `dapr-agent-py-sandbox:latest` (per-agent runtime pods, `imagePullPolicy: Always`)
+- **Live-preview 404 "Retained sandbox not found"** → `workflow_workspace_sessions` row missing or `status='cleaned'`. Verify `persist_workspace_session` fired, spec has `with.keepAfterRun: true`, `_should_cleanup_workspaces` honoured it. Revive: `UPDATE workflow_workspace_sessions SET status='active' WHERE workflow_execution_id=<id>`
+- **`${ .trigger.X }` reaches agent as literal string** → SW 1.0 jq-template eval only fires for ENTIRE-value `${...}` (`core/sw_expressions.py::is_expression_string`). Embedded `${...}` passes through. Wrap whole value in one jq expression
+- **`web/crawl.async` times out at per-URL `timeoutMs`** → adapter pod restarted while RUNNING + lazy-resume didn't fire fast enough. Reset stuck rows: `UPDATE crawl4ai_jobs SET state='FAILED' WHERE state IN ('PENDING','RUNNING') AND updated_at < now() - interval '2 minutes'`. Tighten `CRAWL4AI_ORPHAN_AFTER_SECONDS` if recurrent
+- **Synthesizer calls WebSearch / hangs / hits step budget** → per-URL corpus has nulls (agent compensates). Cause: jq path missing envelope unwrap. Use `.data.tier` / `.data.extracted` (NOT `.tier` / `.extracted`)
+- **`artifacts:` block declared but no rows** → activity is best-effort. Check orchestrator logs for `persist_workflow_artifact` warnings. Common causes: BFF route 503 (DB pool), missing `INTERNAL_API_TOKEN`, jq returned `null` AND `if:` guard true. Verify: `SELECT id, kind, title FROM workflow_artifacts WHERE workflow_execution_id=?`
+- **MLflow Traces UI shows `IN_PROGRESS` after success** -> FIXED 2026-05-12 via `finalize_mlflow_trace_root` activity. Orchestrator POSTs synthetic OTLP `ResourceSpans` proto directly to `${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces` over raw HTTP (parent_span_id empty). MLflow's OTLP receiver flips state IN_PROGRESS -> OK. **Must use raw HTTP, not SDK tracer** (BatchSpanProcessor would attach as child of active context). Disable via `WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_ROOT_SPAN=false`. Optional workflow node spans are frozen into new workflow inputs from `WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS=false` (default off).
+- **SvelteKit type errors** → `pnpm check`
 
-> See Dapr component YAMLs in the stacks repo for service scoping and env var configuration.
+> See Dapr component YAMLs in stacks repo for service scoping.
 
 ---
 
-**Last Updated**: 2026-05-10
+**Last Updated**: 2026-05-12

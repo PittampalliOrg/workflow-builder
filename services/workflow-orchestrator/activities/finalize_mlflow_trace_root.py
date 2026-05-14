@@ -150,7 +150,12 @@ def _search_related_mlflow_traces(
         response = requests.post(
             f"{tracking_uri}/api/3.0/mlflow/traces/search",
             json={
-                "experiment_ids": [experiment_id],
+                "locations": [
+                    {
+                        "type": "MLFLOW_EXPERIMENT",
+                        "mlflow_experiment": {"experiment_id": experiment_id},
+                    }
+                ],
                 "max_results": 250,
                 "order_by": ["timestamp_ms DESC"],
             },
@@ -313,6 +318,101 @@ def _link_trace_to_run(trace_id: str, run_id: str) -> bool:
             exc,
         )
         return False
+
+
+def _final_trace_timestamp_ms(input_data: dict[str, Any]) -> int:
+    for key in ("endTimeMs", "timestampMs", "completedAtMs"):
+        value = input_data.get(key)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    start = input_data.get("startTimeMs")
+    duration = input_data.get("durationMs")
+    try:
+        if start is not None and duration is not None:
+            return int(start) + max(0, int(duration))
+    except (TypeError, ValueError):
+        pass
+    import time
+
+    return int(time.time() * 1000)
+
+
+def _status_for_mlflow_patch(input_data: dict[str, Any]) -> str:
+    status = str(input_data.get("status") or input_data.get("statusCode") or "OK").upper()
+    return "ERROR" if status in {"ERROR", "FAILED", "FAILURE", "EXCEPTION"} else "OK"
+
+
+def _patch_trace_metadata(input_data: dict[str, Any], trace_id: str) -> dict[str, Any]:
+    if not _mlflow_enabled():
+        return {"patched": False, "reason": "mlflow_disabled"}
+    mlflow_context = (
+        input_data.get("mlflowContext")
+        if isinstance(input_data.get("mlflowContext"), dict)
+        else {}
+    )
+    mlflow_session_id = (
+        input_data.get("mlflowSessionId")
+        or mlflow_context.get("mlflowSessionId")
+    )
+    metadata = {
+        "mlflow.trace.session": mlflow_session_id,
+        "mlflow.sourceRun": mlflow_context.get("runId"),
+        "mlflow.modelId": mlflow_context.get("activeModelId"),
+    }
+    tags = {
+        "mlflow.traceName": input_data.get("traceName"),
+        "workflow_builder.trace_group_id": input_data.get("dbExecutionId")
+        or input_data.get("executionId"),
+        "workflow_builder.mlflow_session_id": mlflow_session_id,
+        "workflow_builder.workflow_id": input_data.get("workflowId"),
+        "workflow_builder.workflow_execution_id": input_data.get("dbExecutionId"),
+        "workflow.execution.id": input_data.get("dbExecutionId"),
+        "dapr.workflow.instance_id": input_data.get("daprInstanceId")
+        or input_data.get("workflowInstanceId"),
+        "mlflow.run_id": mlflow_context.get("runId"),
+        "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
+        "mlflow.modelId": mlflow_context.get("activeModelId"),
+        "mlflow.model.uri": mlflow_context.get("activeModelUri"),
+    }
+    request_metadata = [
+        {"key": key, "value": str(value)}
+        for key, value in metadata.items()
+        if value is not None and str(value).strip()
+    ]
+    trace_tags = [
+        {"key": key, "value": str(value)}
+        for key, value in tags.items()
+        if value is not None and str(value).strip()
+    ]
+    if not request_metadata and not trace_tags:
+        return {"patched": False, "reason": "empty_metadata"}
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip().rstrip("/")
+    try:
+        response = requests.patch(
+            f"{tracking_uri}/api/2.0/mlflow/traces/{trace_id}",
+            json={
+                "timestamp_ms": _final_trace_timestamp_ms(input_data),
+                "status": _status_for_mlflow_patch(input_data),
+                "request_metadata": request_metadata,
+                "tags": trace_tags,
+            },
+            timeout=5,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "[MLflow Finalize] trace metadata patch failed trace=%s: HTTP %s %s",
+                trace_id,
+                response.status_code,
+                response.text[:300],
+            )
+            return {"patched": False, "status": response.status_code}
+        return {"patched": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[MLflow Finalize] trace metadata patch failed trace=%s: %s", trace_id, exc)
+        return {"patched": False, "error": str(exc)}
 
 
 def _record_lineage_links(
@@ -523,6 +623,12 @@ def finalize_mlflow_trace_root(ctx, input_data: dict[str, Any]) -> dict[str, Any
 
     try:
         result = emit_mlflow_trace_root_span(input_data)
+        trace_id = _normalize_mlflow_trace_id(input_data.get("traceId"))
+        metadata_result = (
+            _patch_trace_metadata(input_data, trace_id)
+            if trace_id
+            else {"patched": False, "reason": "missing_or_invalid_trace_id"}
+        )
         link_result = _link_trace_to_workflow_runs(input_data)
         set_current_span_attrs({
             "mlflow.finalize.success": bool(result.get("success")),
@@ -533,13 +639,15 @@ def finalize_mlflow_trace_root(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "mlflow.trace_link.reason": link_result.get("reason"),
             "mlflow.trace_link.run_count": len(link_result.get("linkedRunIds") or []),
             "mlflow.trace_link.related_trace_count": link_result.get("relatedTraceCount"),
+            "mlflow.trace_metadata.patched": bool(metadata_result.get("patched")),
+            "mlflow.trace_metadata.reason": metadata_result.get("reason"),
         })
         if not result.get("success") and not result.get("skipped"):
             logger.warning(
                 "[MLflow Finalize] root span export failed: %s",
                 result.get("error") or result,
             )
-        return {**result, "traceLink": link_result}
+        return {**result, "traceMetadata": metadata_result, "traceLink": link_result}
     except Exception as exc:  # noqa: BLE001
         logger.warning("[MLflow Finalize] unexpected failure: %s", exc)
         set_current_span_attrs({

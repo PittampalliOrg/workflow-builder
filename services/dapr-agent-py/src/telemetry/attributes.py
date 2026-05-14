@@ -1,7 +1,8 @@
 """Common telemetry attributes attached to every `claude_code.*` span/metric/event.
 
 Port of `utils/telemetryAttributes.ts`. In the Dapr context:
-- `session.id` maps to the Dapr workflow instance_id
+- `session.id` maps to the canonical MLflow/application session when available
+- `dapr.workflow.instance_id` maps to the Dapr workflow instance_id
 - `workflow.execution.id` maps to the DB execution id (stashed via
   `set_session_context()` from the `agent_workflow` entry)
 - `user.id` / `organization.id` / `user.email` / `user.account_uuid` come from
@@ -43,6 +44,8 @@ class SessionContext:
     mlflow_experiment_id: str = ""
     mlflow_run_id: str = ""
     mlflow_parent_run_id: str = ""
+    mlflow_session_id: str = ""
+    turn_id: str = ""
     workflow_trace_group_id: str = ""
     user_id: str = ""
     organization_id: str = ""
@@ -108,6 +111,8 @@ def set_session_context(
     mlflow_experiment_id: str | None = "",
     mlflow_run_id: str | None = "",
     mlflow_parent_run_id: str | None = "",
+    mlflow_session_id: str | None = "",
+    turn_id: str | None = "",
     workflow_trace_group_id: str | None = "",
     user_id: str = "",
     organization_id: str = "",
@@ -147,6 +152,8 @@ def set_session_context(
             mlflow_experiment_id=mlflow_experiment_id or "",
             mlflow_run_id=mlflow_run_id or "",
             mlflow_parent_run_id=mlflow_parent_run_id or "",
+            mlflow_session_id=mlflow_session_id or "",
+            turn_id=turn_id or "",
             workflow_trace_group_id=workflow_trace_group_id or "",
             user_id=user_id,
             organization_id=organization_id,
@@ -176,8 +183,17 @@ def get_telemetry_attributes() -> dict[str, Any]:
         attrs["user.id"] = ctx.user_id
 
     if _should_include("OTEL_METRICS_INCLUDE_SESSION_ID"):
-        if ctx.instance_id:
-            attrs["session.id"] = ctx.instance_id
+        if ctx.mlflow_session_id or ctx.instance_id:
+            attrs["session.id"] = ctx.mlflow_session_id or ctx.instance_id
+    if ctx.instance_id:
+        attrs["dapr.workflow.instance_id"] = ctx.instance_id
+    if ctx.mlflow_session_id:
+        attrs["workflow_builder.mlflow_session_id"] = ctx.mlflow_session_id
+    if ctx.turn_id:
+        attrs["workflow_builder.turn_id"] = ctx.turn_id
+    if ctx.mlflow_session_id or ctx.instance_id:
+        attrs["agent.session.id"] = ctx.mlflow_session_id or ctx.instance_id
+        attrs["workflow_builder.session_id"] = ctx.mlflow_session_id or ctx.instance_id
     if ctx.execution_id:
         attrs["workflow.execution.id"] = ctx.execution_id
     if ctx.workflow_id:

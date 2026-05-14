@@ -3206,6 +3206,8 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     or (tc.mlflow_context or {}).get("experimentId"),
                     "mlflow.run_id": (tc.mlflow_context or {}).get("runId"),
                     "mlflow.parent_run_id": (tc.mlflow_context or {}).get("parentRunId"),
+                    "mlflow.modelId": (tc.mlflow_context or {}).get("activeModelId"),
+                    "mlflow.model.uri": (tc.mlflow_context or {}).get("activeModelUri"),
                 },
                 trace_name=display_name,
                 trace_id_hex=tc.trace_id,

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { context, propagation, trace, type Context } from "@opentelemetry/api";
 
 export const SESSION_ID_ATTRIBUTE = "session.id";
@@ -7,6 +8,9 @@ export const DAPR_WORKFLOW_INSTANCE_ATTRIBUTE = "dapr.workflow.instance_id";
 export const MLFLOW_EXPERIMENT_ATTRIBUTE = "mlflow.experiment_id";
 export const MLFLOW_RUN_ATTRIBUTE = "mlflow.run_id";
 export const MLFLOW_PARENT_RUN_ATTRIBUTE = "mlflow.parent_run_id";
+export const MLFLOW_SESSION_ATTRIBUTE = "workflow_builder.mlflow_session_id";
+export const MLFLOW_MODEL_ID_ATTRIBUTE = "mlflow.modelId";
+export const MLFLOW_MODEL_URI_ATTRIBUTE = "mlflow.model.uri";
 export const WORKFLOW_TRACE_GROUP_ATTRIBUTE = "workflow_builder.trace_group_id";
 
 export type WorkflowSessionHeaderContext = {
@@ -17,6 +21,9 @@ export type WorkflowSessionHeaderContext = {
   mlflowExperimentId?: string | null;
   mlflowRunId?: string | null;
   mlflowParentRunId?: string | null;
+  mlflowSessionId?: string | null;
+  mlflowModelId?: string | null;
+  mlflowModelUri?: string | null;
   traceGroupId?: string | null;
 };
 
@@ -73,6 +80,9 @@ export function normalizeWorkflowSessionContext(
     mlflowExperimentId: clean(raw.mlflowExperimentId),
     mlflowRunId: clean(raw.mlflowRunId),
     mlflowParentRunId: clean(raw.mlflowParentRunId),
+    mlflowSessionId: clean(raw.mlflowSessionId),
+    mlflowModelId: clean(raw.mlflowModelId),
+    mlflowModelUri: clean(raw.mlflowModelUri),
   };
 }
 
@@ -91,6 +101,9 @@ export function bindWorkflowSessionContext(
     [MLFLOW_EXPERIMENT_ATTRIBUTE]: workflowContext.mlflowExperimentId,
     [MLFLOW_RUN_ATTRIBUTE]: workflowContext.mlflowRunId,
     [MLFLOW_PARENT_RUN_ATTRIBUTE]: workflowContext.mlflowParentRunId,
+    [MLFLOW_SESSION_ATTRIBUTE]: workflowContext.mlflowSessionId,
+    [MLFLOW_MODEL_ID_ATTRIBUTE]: workflowContext.mlflowModelId,
+    [MLFLOW_MODEL_URI_ATTRIBUTE]: workflowContext.mlflowModelUri,
   };
   for (const [key, value] of Object.entries(attrs)) {
     if (value) currentSpan?.setAttribute(key, value);
@@ -125,10 +138,17 @@ export function injectWorkflowSessionHeaders(
     [MLFLOW_EXPERIMENT_ATTRIBUTE]: workflowContext.mlflowExperimentId,
     [MLFLOW_RUN_ATTRIBUTE]: workflowContext.mlflowRunId,
     [MLFLOW_PARENT_RUN_ATTRIBUTE]: workflowContext.mlflowParentRunId,
+    [MLFLOW_SESSION_ATTRIBUTE]: workflowContext.mlflowSessionId,
+    [MLFLOW_MODEL_ID_ATTRIBUTE]: workflowContext.mlflowModelId,
+    [MLFLOW_MODEL_URI_ATTRIBUTE]: workflowContext.mlflowModelUri,
   };
   const sessionContext = bindWorkflowSessionContext(workflowContext);
   const nextHeaders = { ...headers };
+  const explicitTraceparent = nextHeaders.traceparent;
+  const explicitTracestate = nextHeaders.tracestate;
   propagation.inject(sessionContext, nextHeaders);
+  if (explicitTraceparent) nextHeaders.traceparent = explicitTraceparent;
+  if (explicitTracestate) nextHeaders.tracestate = explicitTracestate;
   const contextBaggage = propagation.getBaggage(sessionContext);
   const contextBaggageAttrs = contextBaggage
     ? Object.fromEntries(
@@ -145,4 +165,34 @@ export function injectWorkflowSessionHeaders(
   nextHeaders["x-workflow-execution-id"] = workflowContext.workflowExecutionId;
   nextHeaders["x-workflow-trace-group-id"] = workflowContext.traceGroupId;
   return nextHeaders;
+}
+
+function randomHex(bytes: number): string {
+  return randomBytes(bytes).toString("hex");
+}
+
+export function generateWorkflowTraceparent(): string {
+  let traceId = randomHex(16);
+  while (/^0+$/.test(traceId)) traceId = randomHex(16);
+  let spanId = randomHex(8);
+  while (/^0+$/.test(spanId)) spanId = randomHex(8);
+  return `00-${traceId}-${spanId}-01`;
+}
+
+export function workflowTraceIdFromTraceparent(
+  traceparent: string | null | undefined,
+): string | null {
+  const match = traceparent
+    ?.trim()
+    .toLowerCase()
+    .match(/^00-([a-f0-9]{32})-[a-f0-9]{16}-[a-f0-9]{2}$/);
+  if (!match || /^0+$/.test(match[1])) return null;
+  return match[1];
+}
+
+export function ensureWorkflowTraceparentHeader(
+  headers: Record<string, string>,
+): Record<string, string> {
+  if (workflowTraceIdFromTraceparent(headers.traceparent)) return headers;
+  return { ...headers, traceparent: generateWorkflowTraceparent() };
 }

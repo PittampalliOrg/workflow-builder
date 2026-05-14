@@ -38,7 +38,10 @@ test-results
 !scripts/queue-swebench-environment-validation.ts
 !scripts/sync-swebench-environment-builds.ts
 !scripts/start-swebench-benchmark-run.ts
+!scripts/backfill-agent-application-state.ts
+!scripts/cutover-mlflow-application-lineage.ts
 !scripts/sync-oauth-apps.ts
+!scripts/esbuild-stubs/**
 !scripts/fixtures/**
 !src/**
 !static/**

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { build } from "esbuild";
@@ -11,6 +11,8 @@ const entries = [
 	"scripts/queue-swebench-environment-validation.ts",
 	"scripts/sync-swebench-environment-builds.ts",
 	"scripts/start-swebench-benchmark-run.ts",
+	"scripts/backfill-agent-application-state.ts",
+	"scripts/cutover-mlflow-application-lineage.ts",
 	// Seeds platform_oauth_apps rows from OAUTH_APP_<SUFFIX>_CLIENT_ID/SECRET
 	// env vars. Wired into Job-db-seed.yaml so OAuth providers (github,
 	// gitea, microsoft-*, google, notion, linkedin) auto-sync after the
@@ -21,6 +23,15 @@ const entries = [
 const aliasPlugin = {
 	name: "workflow-builder-alias",
 	setup(build) {
+		build.onResolve({ filter: /^\$app\/environment$/ }, () => ({
+			path: resolve(root, "scripts/esbuild-stubs/app-environment.js"),
+		}));
+		build.onResolve({ filter: /^\$env\/dynamic\/private$/ }, () => ({
+			path: resolve(root, "scripts/esbuild-stubs/env-dynamic-private.js"),
+		}));
+		build.onResolve({ filter: /^\$env\/dynamic\/public$/ }, () => ({
+			path: resolve(root, "scripts/esbuild-stubs/env-dynamic-public.js"),
+		}));
 		build.onResolve({ filter: /^\$lib\// }, (args) => ({
 			path: resolveAlias(args.path),
 		}));
@@ -30,7 +41,13 @@ const aliasPlugin = {
 function resolveAlias(path) {
 	const base = resolve(root, "src/lib", path.slice("$lib/".length));
 	for (const candidate of [base, `${base}.ts`, `${base}.js`, `${base}.svelte`]) {
-		if (existsSync(candidate)) return candidate;
+		if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+	}
+	for (const candidate of [
+		resolve(base, "index.ts"),
+		resolve(base, "index.js"),
+	]) {
+		if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
 	}
 	return base;
 }

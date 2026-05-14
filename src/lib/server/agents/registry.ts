@@ -226,6 +226,10 @@ function versionToSummary(row: AgentVersion): AgentVersionSummary {
 		agentId: row.agentId,
 		version: row.version,
 		configHash: row.configHash,
+		applicationStateDigest: row.applicationStateDigest ?? null,
+		mlflowUri: row.mlflowUri ?? null,
+		mlflowModelName: row.mlflowModelName ?? null,
+		mlflowModelVersion: row.mlflowModelVersion ?? null,
 		changelog: row.changelog ?? null,
 		publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
 		publishedBy: row.publishedBy ?? null,
@@ -655,6 +659,7 @@ export async function restoreVersion(
 export type ResolvedAgent = {
 	id: string;
 	slug: string;
+	name: string;
 	version: number;
 	configHash: string;
 	config: AgentConfig;
@@ -667,6 +672,9 @@ export type ResolvedAgent = {
 	 *  for unpublished agents; resolver stamps this into the durable/run
 	 *  body for orchestrator routing. */
 	runtimeAppId: string | null;
+	mlflowUri: string | null;
+	mlflowModelName: string | null;
+	mlflowModelVersion: string | null;
 	registryStatus: string;
 };
 
@@ -710,10 +718,11 @@ export async function resolveAgentRef(
 	if (!version) return null;
 
 	return {
-		id: agent.id,
-		slug: agent.slug,
-		version: version.version,
-		configHash: version.configHash,
+			id: agent.id,
+			slug: agent.slug,
+			name: agent.name,
+			version: version.version,
+			configHash: version.configHash,
 		config: version.config as unknown as AgentConfig,
 		environmentId: agent.environmentId ?? null,
 		environmentVersion: agent.environmentVersion ?? null,
@@ -721,10 +730,13 @@ export async function resolveAgentRef(
 			? agent.defaultVaultIds
 			: [],
 		projectId: agent.projectId ?? null,
-		runtime: agent.runtime as AgentRuntime,
-		runtimeAppId: agent.runtimeAppId ?? null,
-		registryStatus: agent.registryStatus ?? "unregistered",
-	};
+			runtime: agent.runtime as AgentRuntime,
+			runtimeAppId: agent.runtimeAppId ?? null,
+			mlflowUri: version.mlflowUri ?? null,
+			mlflowModelName: version.mlflowModelName ?? null,
+			mlflowModelVersion: version.mlflowModelVersion ?? null,
+			registryStatus: agent.registryStatus ?? "unregistered",
+		};
 }
 
 /**

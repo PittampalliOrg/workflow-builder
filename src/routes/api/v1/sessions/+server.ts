@@ -9,6 +9,8 @@ import {
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
 import { provisionSessionSandbox } from "$lib/server/sandboxes/provision";
+import { resolveAgentRef } from "$lib/server/agents/registry";
+import { safeCreateInteractiveSessionMlflowRun } from "$lib/server/observability/mlflow-lifecycle";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -87,10 +89,37 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		projectId: locals.session.projectId ?? null,
 	};
 
-	try {
-		const session = await createSession(input);
-		if (typeof body.initialMessage === "string" && body.initialMessage.trim()) {
-			await sendUserEvent(session.id, {
+		try {
+			const session = await createSession(input);
+			const resolvedAgent = await resolveAgentRef({
+				id: session.agentId,
+				version: session.agentVersion ?? undefined,
+			});
+			const mlflowRunContext = resolvedAgent
+				? await safeCreateInteractiveSessionMlflowRun({
+						sessionId: session.id,
+						title: session.title,
+						projectId: session.projectId,
+						userId: locals.session.userId,
+						agentId: resolvedAgent.id,
+						agentName: resolvedAgent.name,
+						agentSlug: resolvedAgent.slug,
+						agentVersion: resolvedAgent.version,
+						agentAppId: resolvedAgent.runtimeAppId,
+						activeModelId: resolvedAgent.mlflowModelVersion,
+						activeModelName: resolvedAgent.mlflowModelName,
+						activeModelUri: resolvedAgent.mlflowUri,
+						existingRunId: session.mlflowRunId,
+					})
+				: null;
+			if (mlflowRunContext) {
+				session.mlflowExperimentId = mlflowRunContext.experimentId;
+				session.mlflowRunId = mlflowRunContext.runId;
+				session.mlflowParentRunId = mlflowRunContext.parentRunId ?? null;
+				session.mlflowSessionId = session.id;
+			}
+			if (typeof body.initialMessage === "string" && body.initialMessage.trim()) {
+				await sendUserEvent(session.id, {
 				type: "user.message",
 				content: [{ type: "text", text: body.initialMessage }],
 			});

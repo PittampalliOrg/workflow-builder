@@ -13,9 +13,16 @@ import {
 } from '$lib/utils/workflow-input-config';
 import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
 import {
+	buildWorkflowSessionId,
+	ensureWorkflowTraceparentHeader,
+	injectWorkflowSessionHeaders,
+	workflowTraceIdFromTraceparent
+} from '$lib/server/observability/workflow-session';
+import {
 	type MlflowRunContext,
 	safeCreateWorkflowExecutionMlflowRun,
-	safeFinishMlflowRun
+	safeFinishMlflowRun,
+	safePrecreateMlflowTrace
 } from '$lib/server/observability/mlflow-lifecycle';
 
 // ---------------------------------------------------------------------------
@@ -286,15 +293,50 @@ function startWorkflowInBackground(
 ) {
 	(async () => {
 		try {
+			const sessionId = buildWorkflowSessionId(executionId);
+			const headers = injectWorkflowSessionHeaders(
+				ensureWorkflowTraceparentHeader({ 'Content-Type': 'application/json' }),
+				{
+					sessionId,
+					workflowExecutionId: executionId,
+					workflowId,
+					traceGroupId: executionId,
+					mlflowExperimentId:
+						mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
+					mlflowRunId: mlflowContext?.runId,
+					mlflowParentRunId: mlflowContext?.parentRunId
+				}
+			);
+			const traceContext = {
+				traceparent: headers.traceparent,
+				tracestate: headers.tracestate,
+				baggage: headers.baggage
+			};
+			await safePrecreateMlflowTrace({
+				traceId: workflowTraceIdFromTraceparent(headers.traceparent),
+				experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
+					name: `${workflowId}/${executionId}`,
+					metadata: {
+						'mlflow.sourceRun': mlflowContext?.runId
+					},
+				tags: {
+					'workflow_builder.kind': 'workflow_execution',
+					'workflow_builder.workflow_id': workflowId,
+					'workflow_builder.workflow_execution_id': executionId,
+					'workflow.execution.id': executionId,
+					'mlflow.run_id': mlflowContext?.runId
+				}
+			});
 			const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers,
 				body: JSON.stringify({
 					workflow: spec,
 					workflowId,
 					triggerData,
 					dbExecutionId: executionId,
-					mlflowContext
+					mlflowContext,
+					traceContext
 				})
 			});
 

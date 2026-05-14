@@ -2499,6 +2499,7 @@ export const agentVersions = pgTable(
 		version: integer("version").notNull(),
 		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
 		configHash: text("config_hash").notNull(),
+		applicationStateDigest: text("application_state_digest"),
 		mlflowUri: text("mlflow_uri"),
 		mlflowModelName: text("mlflow_model_name"),
 		mlflowModelVersion: text("mlflow_model_version"),
@@ -2512,6 +2513,9 @@ export const agentVersions = pgTable(
 	(table) => ({
 		versionUnique: unique("uq_agent_version").on(table.agentId, table.version),
 		hashIdx: index("idx_agent_versions_hash").on(table.configHash),
+		stateDigestIdx: index("idx_agent_versions_state_digest").on(
+			table.applicationStateDigest,
+		),
 		agentIdx: index("idx_agent_versions_agent").on(table.agentId),
 		mlflowUriIdx: index("idx_agent_versions_mlflow_uri").on(table.mlflowUri),
 	}),
@@ -2534,6 +2538,7 @@ export type MlflowLineageEntityType =
 export type MlflowLineageMlflowEntityType =
 	| "experiment"
 	| "run"
+	| "session"
 	| "trace"
 	| "dataset"
 	| "dataset_record"
@@ -2558,6 +2563,7 @@ export const mlflowLineageLinks = pgTable(
 			.$type<MlflowLineageMlflowEntityType>(),
 		mlflowExperimentId: text("mlflow_experiment_id"),
 		mlflowRunId: text("mlflow_run_id"),
+		mlflowSessionId: text("mlflow_session_id"),
 		mlflowTraceId: text("mlflow_trace_id"),
 		mlflowDatasetId: text("mlflow_dataset_id"),
 		mlflowDatasetRecordId: text("mlflow_dataset_record_id"),
@@ -2589,6 +2595,9 @@ export const mlflowLineageLinks = pgTable(
 		projectIdx: index("idx_mlflow_lineage_links_project").on(table.projectId),
 		mlflowRunIdx: index("idx_mlflow_lineage_links_mlflow_run").on(
 			table.mlflowRunId,
+		),
+		mlflowSessionIdx: index("idx_mlflow_lineage_links_mlflow_session").on(
+			table.mlflowSessionId,
 		),
 		mlflowTraceIdx: index("idx_mlflow_lineage_links_mlflow_trace").on(
 			table.mlflowTraceId,
@@ -2748,6 +2757,7 @@ export const sessions = pgTable(
 		mlflowExperimentId: text("mlflow_experiment_id"),
 		mlflowRunId: text("mlflow_run_id"),
 		mlflowParentRunId: text("mlflow_parent_run_id"),
+		mlflowSessionId: text("mlflow_session_id"),
 		userId: text("user_id")
 			.notNull()
 			.references(() => users.id, { onDelete: "cascade" }),
@@ -2782,6 +2792,9 @@ export const sessions = pgTable(
 		mlflowRunIdx: index("idx_sessions_mlflow_run").on(table.mlflowRunId),
 		mlflowParentRunIdx: index("idx_sessions_mlflow_parent_run").on(
 			table.mlflowParentRunId,
+		),
+		mlflowSessionIdx: index("idx_sessions_mlflow_session").on(
+			table.mlflowSessionId,
 		),
 		// Composite partial index that serves the workspace sessions list
 		// query (WHERE project_id = X AND archived_at IS NULL ORDER BY

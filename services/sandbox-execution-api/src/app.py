@@ -48,6 +48,8 @@ class ExecutionRequest(BaseModel):
     timeoutSeconds: int = Field(default=7200, ge=60, le=86400)
     workflow: dict[str, Any]
     triggerData: dict[str, Any] = Field(default_factory=dict)
+    mlflowContext: dict[str, Any] | None = None
+    traceContext: dict[str, str] | None = None
     inferenceEnvironment: dict[str, Any] = Field(default_factory=dict)
     callback: ExecutionCallback
 
@@ -155,6 +157,8 @@ def _worker_payload(request: ExecutionRequest, execution_id: str) -> dict[str, A
         "timeoutSeconds": request.timeoutSeconds,
         "workflow": request.workflow,
         "triggerData": request.triggerData,
+        "mlflowContext": request.mlflowContext,
+        "traceContext": request.traceContext,
         "inferenceEnvironment": request.inferenceEnvironment,
         "callback": request.callback.model_dump(),
     }
@@ -1000,6 +1004,15 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"unsupported executionClass {body.executionClass}",
         )
+    inbound_trace_context = {
+        "traceparent": request.headers.get("traceparent", "") or "",
+        "tracestate": request.headers.get("tracestate", "") or "",
+        "baggage": request.headers.get("baggage", "") or "",
+    }
+    trace_context = body.traceContext or {
+        key: value for key, value in inbound_trace_context.items() if value
+    }
+    body = body.model_copy(update={"traceContext": trace_context or None})
     namespace = os.environ.get("SANDBOX_EXECUTION_NAMESPACE", "sandbox-execution")
     execution_id = f"hexec-{uuid4().hex[:16]}"
     payload_manifest = build_payload_configmap_manifest(

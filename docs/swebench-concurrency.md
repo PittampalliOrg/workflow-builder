@@ -92,6 +92,25 @@ timeout should only leave MLflow IDs null and log a warning; it must not block
 run creation, Dapr workflow IDs, agent sessions, token usage, or evaluator
 handoff.
 
+## MLflow Tracking And Comparison Campaigns
+
+SWE-bench execution is durable workflow state first. MLflow is the tracking and
+evaluation projection for the completed benchmark rows. A normal run creates one
+MLflow parent run for the `benchmark_runs` row, one child run per
+`benchmark_run_instances` row, and one child `swebench_mlflow_eval` run when the
+post-hoc MLflow evaluation step can run.
+
+Agent comparisons should be launched as a campaign: one benchmark run per agent
+or configuration, all using the same suite and exact instance ids. The
+Benchmarks launch sheet's `Compare agents` mode does this automatically and
+applies a shared campaign tag. That tag is copied into parent, instance, and
+eval MLflow runs as `workflow_builder.benchmark_tags` plus
+`workflow_builder.benchmark_tag.<tag>=true`, so the whole campaign can be
+searched in MLflow.
+
+For the full hierarchy, query pattern, and live canary checklist, see
+[`docs/swebench-mlflow-comparison.md`](./swebench-mlflow-comparison.md).
+
 If hub ArgoCD reports the dev app as `Synced` but the live Deployment image
 still points at the previous tag, hard-refresh the app before diagnosing the
 runtime:

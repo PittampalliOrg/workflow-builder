@@ -265,6 +265,10 @@ export type AgentVersionSummary = {
 	agentId: string;
 	version: number;
 	configHash: string;
+	applicationStateDigest?: string | null;
+	mlflowUri?: string | null;
+	mlflowModelName?: string | null;
+	mlflowModelVersion?: string | null;
 	changelog: string | null;
 	publishedAt: string | null;
 	publishedBy: string | null;

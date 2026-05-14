@@ -15,9 +15,36 @@ both Python services emit the same trace-tag set.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_trace_metadata(trace_id: str, metadata: dict[str, Any]) -> None:
+    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip().rstrip("/")
+    clean = {
+        key: str(value).strip()
+        for key, value in metadata.items()
+        if value is not None and str(value).strip()
+    }
+    if not tracking_uri or not trace_id or not clean:
+        return
+    try:
+        import requests  # type: ignore[import-not-found]
+
+        requests.patch(
+            f"{tracking_uri}/api/2.0/mlflow/traces/{trace_id}",
+            json={
+                "request_metadata": [
+                    {"key": key, "value": value}
+                    for key, value in clean.items()
+                ]
+            },
+            timeout=3,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("trace metadata patch failed for %s: %s", trace_id, exc)
 
 # Our application-emitted attribute names.
 SESSION_ID_ATTRIBUTE = "session.id"
@@ -184,5 +211,13 @@ def set_mlflow_trace_tags(
                 client.set_trace_tag(mlflow_trace_id, "mlflow.traceName", str(trace_name).strip())
             except Exception as exc:  # noqa: BLE001
                 logger.debug("set_trace_tag(mlflow.traceName) failed: %s", exc)
+        _patch_trace_metadata(
+            mlflow_trace_id,
+            {
+                "mlflow.trace.session": session_id,
+                "mlflow.sourceRun": clean.get("mlflow.run_id"),
+                "mlflow.modelId": clean.get("mlflow.modelId"),
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("set_trace_tag fallback path failed: %s", exc)

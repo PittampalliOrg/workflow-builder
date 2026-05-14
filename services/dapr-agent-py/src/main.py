@@ -707,6 +707,8 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "sandboxName",
         "cwd",
         "sessionId",
+        "mlflowSessionId",
+        "turnId",
         "workspaceRef",
         "llmComponent",
         "modelSpec",
@@ -763,6 +765,8 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         rendered = value["instructionBundle"].get("rendered")
         if isinstance(rendered, dict) and isinstance(rendered.get("system"), str):
             context["systemPrompt"] = rendered["system"]
+    if isinstance(value.get("mlflowContext"), dict):
+        context["mlflowContext"] = value["mlflowContext"]
     for int_key in ("turn", "configRevision"):
         raw_int = value.get(int_key)
         if isinstance(raw_int, bool) or raw_int is None:
@@ -839,6 +843,10 @@ def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
         "mlflow_run_id": context.get("mlflowRunId") or mlflow_context.get("runId"),
         "mlflow_parent_run_id": context.get("mlflowParentRunId")
         or mlflow_context.get("parentRunId"),
+        "mlflow_session_id": context.get("mlflowSessionId")
+        or mlflow_context.get("mlflowSessionId")
+        or context.get("sessionId"),
+        "turn_id": context.get("turnId") or mlflow_context.get("turnId"),
         "workflow_trace_group_id": context.get("workflowTraceGroupId")
         or context.get("workflowExecutionId")
         or mlflow_context.get("traceGroupId"),
@@ -1532,6 +1540,8 @@ class OpenShellDurableAgent(DurableAgent):
             "agentAppId",
             "agentRuntime",
             "workspaceRef",
+            "mlflowSessionId",
+            "turnId",
         ):
             if clean.get(key) is not None:
                 agent_context[key] = clean.get(key)
@@ -3047,6 +3057,42 @@ class OpenShellDurableAgent(DurableAgent):
         self._exec_id = execution_id
         self._inst_id = instance_id
 
+        mlflow_session_id = str(
+            mlflow_context.get("mlflowSessionId")
+            or message.get("mlflowSessionId")
+            or session_id_raw
+            or ""
+        ).strip()
+        turn_id = str(
+            message.get("turnId")
+            or mlflow_context.get("turnId")
+            or instance_id
+            or ""
+        ).strip()
+        if not ctx.is_replaying and mlflow_context:
+            try:
+                from src.telemetry.dapr_attributes import set_mlflow_trace_tags
+
+                trace_tags: dict[str, Any] = {
+                    "session.id": mlflow_session_id or session_id_raw,
+                    "agent.session.id": session_id_raw,
+                    "workflow_builder.session_id": session_id_raw,
+                    "workflow_builder.mlflow_session_id": mlflow_session_id,
+                    "workflow_builder.turn_id": turn_id,
+                    "dapr.workflow.instance_id": instance_id,
+                    "workflow.execution.id": execution_id,
+                    "mlflow.run_id": mlflow_context.get("runId"),
+                    "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
+                    "mlflow.modelId": mlflow_context.get("activeModelId"),
+                    "mlflow.model.uri": mlflow_context.get("activeModelUri"),
+                }
+                set_mlflow_trace_tags(
+                    trace_tags,
+                    trace_name=f"agent.{message.get('agentSlug') or agent_config.get('slug') or 'unknown'}/turn.{turn_id or instance_id}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[telemetry] turn trace-tag set failed: %s", exc)
+
         # Phase 4 bridge: when session_workflow spawns agent_workflow, it
         # inlines sessionId into the child's message dict. Stash per-instance
         # so activities can pass it to publish_session_event.
@@ -3119,6 +3165,20 @@ class OpenShellDurableAgent(DurableAgent):
                     llm_component=effective_fields.get("llmComponent"),
                     mlflow_model_id=str(mlflow_context.get("activeModelId") or ""),
                     mlflow_model_uri=str(mlflow_context.get("activeModelUri") or ""),
+                    mlflow_experiment_id=str(
+                        mlflow_context.get("traceExperimentId")
+                        or mlflow_context.get("experimentId")
+                        or ""
+                    ),
+                    mlflow_run_id=str(mlflow_context.get("runId") or ""),
+                    mlflow_parent_run_id=str(mlflow_context.get("parentRunId") or ""),
+                    mlflow_session_id=str(
+                        mlflow_context.get("mlflowSessionId")
+                        or message.get("mlflowSessionId")
+                        or session_id_raw
+                        or ""
+                    ),
+                    turn_id=str(message.get("turnId") or ""),
                     prompt_version_ids=tuple(_prompt_version_ids),
                     prompt_version_uris=tuple(_prompt_version_uris),
                 )
@@ -4014,6 +4074,8 @@ class OpenShellDurableAgent(DurableAgent):
                 _display_name = f"agent.{_agent_slug}/session.{session_id}"
                 _trace_tags: dict[str, Any] = {
                     "session.id": session_id,
+                    "agent.session.id": session_id,
+                    "workflow_builder.session_id": session_id,
                     "agent.slug": _agent_slug,
                 }
                 if db_execution_id:
@@ -4024,6 +4086,10 @@ class OpenShellDurableAgent(DurableAgent):
                     ("traceExperimentId", "mlflow.trace_experiment_id"),
                     ("runId", "mlflow.run_id"),
                     ("parentRunId", "mlflow.parent_run_id"),
+                    ("mlflowSessionId", "workflow_builder.mlflow_session_id"),
+                    ("activeModelId", "mlflow.modelId"),
+                    ("activeModelUri", "mlflow.model.uri"),
+                    ("activeModelUri", "agent.mlflow_uri"),
                 ):
                     _value = mlflow_context.get(_key) if isinstance(mlflow_context, dict) else None
                     if _value:
@@ -4121,6 +4187,9 @@ class OpenShellDurableAgent(DurableAgent):
             pending = []
             turn_counter += 1
             child_instance_id = f"{session_id}:turn-{turn_counter}"
+            child_mlflow_context = dict(mlflow_context or {})
+            child_mlflow_context.setdefault("mlflowSessionId", session_id)
+            child_mlflow_context["turnId"] = child_instance_id
             child_cwd = str(
                 message.get("cwd")
                 or agent_cfg.get("cwd")
@@ -4232,6 +4301,8 @@ class OpenShellDurableAgent(DurableAgent):
                 raw_message=message,
                 effective_agent_config=effective_config,
                 instruction_bundle=instruction_bundle,
+                child_instance_id=child_instance_id,
+                mlflow_context=child_mlflow_context,
             )
 
             # Option-C MCP bridge: the agent_workflow body that would normally
@@ -4530,6 +4601,8 @@ def _freeze_session_child_input(
     raw_message: dict,
     effective_agent_config: dict | None = None,
     instruction_bundle: dict | None = None,
+    child_instance_id: str | None = None,
+    mlflow_context: dict | None = None,
 ) -> dict:
     """Build the frozen input payload for a per-turn agent_workflow child
     call. Reuses the message shape that sw_workflow already passes through,
@@ -4578,18 +4651,28 @@ def _freeze_session_child_input(
         if raw_message.get(key) is not None:
             metadata[key] = raw_message.get(key)
     mlflow_context = (
-        raw_message.get("mlflowContext")
+        mlflow_context
+        if isinstance(mlflow_context, dict)
+        else raw_message.get("mlflowContext")
         if isinstance(raw_message.get("mlflowContext"), dict)
         else {}
     )
+    mlflow_session_id = str(
+        mlflow_context.get("mlflowSessionId")
+        or raw_message.get("mlflowSessionId")
+        or session_id
+    ).strip()
     if mlflow_context:
         metadata["mlflowContext"] = mlflow_context
         metadata["mlflowRunId"] = mlflow_context.get("runId")
         metadata["mlflowParentRunId"] = mlflow_context.get("parentRunId")
         metadata["mlflowExperimentId"] = mlflow_context.get("experimentId")
         metadata["mlflowTraceExperimentId"] = mlflow_context.get("traceExperimentId")
+        metadata["mlflowSessionId"] = mlflow_session_id
         metadata["mlflowActiveModelId"] = mlflow_context.get("activeModelId")
         metadata["mlflowActiveModelUri"] = mlflow_context.get("activeModelUri")
+    if child_instance_id:
+        metadata["turnId"] = child_instance_id
     if max_turns is not None:
         metadata["maxTurns"] = max_turns
     if max_iterations is not None:
@@ -4599,6 +4682,8 @@ def _freeze_session_child_input(
         "task": task,
         "prompt": task,
         "sessionId": session_id,
+        "mlflowSessionId": mlflow_session_id or session_id,
+        "turnId": child_instance_id,
         "executionId": db_execution_id,
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,

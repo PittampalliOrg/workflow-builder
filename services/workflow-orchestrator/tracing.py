@@ -375,6 +375,10 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
             "status": otlp_status,
             "workflow.status": otlp_status,
             "workflow.duration_ms": duration_ms,
+            "mlflow.run_id": mlflow_context.get("runId"),
+            "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
+            "mlflow.modelId": mlflow_context.get("activeModelId"),
+            "mlflow.model.uri": mlflow_context.get("activeModelUri"),
         }
         if error_message:
             span_attrs["error.message"] = error_message

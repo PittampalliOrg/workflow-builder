@@ -10,6 +10,21 @@ The coordinator writes two artifacts from workflow-builder DB state:
 The job points `run_evaluation --dataset_name` at the local `dataset.jsonl`
 path and runs the official harness inside a Docker-in-Docker pod.
 
+## MLflow Projection
+
+MLflow is a tracking/evaluation projection for completed benchmark rows, not
+the execution authority. A workflow-builder benchmark run should appear as a
+parent `swebench_run` MLflow run, with one `swebench_instance` child per
+instance and a `swebench_mlflow_eval` child when post-hoc MLflow evaluation
+runs. Official SWE-bench resolved/unresolved/empty-patch status still comes
+from this evaluator's harness output and callback.
+
+When the Benchmarks UI launches an agent comparison campaign, every parent,
+instance, and eval run receives the same `workflow_builder.benchmark_tag.*`
+keys so MLflow can query the whole campaign. See
+[`docs/swebench-mlflow-comparison.md`](../../docs/swebench-mlflow-comparison.md)
+for the hierarchy and query contract.
+
 ## Runtime Security
 
 Evaluator Jobs keep Docker-in-Docker privileged mode so the official SWE-bench

@@ -13,6 +13,8 @@ The current core runtime is:
 - `dapr-agent-py`
 - `openshell-agent-runtime`
 - `dapr-swe`
+- `swebench-coordinator`
+- `swebench-evaluator`
 - `fn-activepieces`
 - `postgresql`
 
@@ -60,6 +62,35 @@ Dapr outbound health, metadata access, at least one connected Dapr workflow
 worker, and taskhub readiness. The runtime watchdog self-deletes the pod when
 the workflow worker remains disconnected so Kubernetes restarts both
 `workflow-orchestrator` and its `daprd` sidecar.
+
+## swebench-coordinator
+
+Python Dapr Workflow service for official workflow-builder SWE-bench runs.
+
+- Dapr app-id: `swebench-coordinator`
+- Responsibilities:
+  - validate selected inference environments before agent inference starts;
+  - admit instance workflows through benchmark resource leases;
+  - write SWE-bench-compatible `dataset.jsonl` and `predictions.jsonl`;
+  - launch the official evaluator Job;
+  - run post-hoc MLflow evaluation and link native traces when available.
+
+Agent comparison campaigns create one independent `benchmark_runs` row per
+agent/configuration over the same instance ids. The coordinator processes each
+run independently; the compare UI and MLflow campaign tags group the results
+afterward.
+
+## swebench-evaluator
+
+Short-lived Kubernetes Job for the official SWE-bench harness.
+
+- Responsibilities:
+  - run the harness over the coordinator-provided dataset and predictions;
+  - record official `resolved`, `unresolved`, `empty_patch`, and error status;
+  - post results back through the workflow-builder internal benchmark API.
+
+MLflow metrics and scorer output enrich the result, but this evaluator's
+harness callback remains the source of truth for SWE-bench resolution.
 
 ## function-router
 

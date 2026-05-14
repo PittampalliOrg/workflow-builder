@@ -54,15 +54,20 @@ function rowToSummary(
 		title: row.title ?? null,
 		status: row.status as SessionStatus,
 		stopReason: (row.stopReason as SessionStopReason | null) ?? null,
-		agentId: row.agentId,
-		agentVersion: row.agentVersion ?? null,
-		environmentId: row.environmentId ?? null,
+			agentId: row.agentId,
+			agentVersion: row.agentVersion ?? null,
+			projectId: row.projectId ?? null,
+			environmentId: row.environmentId ?? null,
 		environmentVersion: row.environmentVersion ?? null,
 		vaultIds: Array.isArray(row.vaultIds) ? row.vaultIds : [],
-		usage: (row.usage as SessionUsage) ?? {},
-		errorMessage: row.errorMessage ?? null,
-		workflowExecutionId: row.workflowExecutionId ?? null,
-		workflowId: ctx.workflowId,
+			usage: (row.usage as SessionUsage) ?? {},
+			errorMessage: row.errorMessage ?? null,
+			workflowExecutionId: row.workflowExecutionId ?? null,
+			mlflowExperimentId: row.mlflowExperimentId ?? null,
+			mlflowRunId: row.mlflowRunId ?? null,
+			mlflowParentRunId: row.mlflowParentRunId ?? null,
+			mlflowSessionId: row.mlflowSessionId ?? null,
+			workflowId: ctx.workflowId,
 		workflowName: ctx.workflowName,
 		agentName: ctx.agentName,
 		agentSlug: ctx.agentSlug,
@@ -314,11 +319,20 @@ export async function createSession(
 		projectId: input.projectId ?? null,
 		sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
 		workflowExecutionId: input.workflowExecutionId ?? null,
-		parentExecutionId: input.parentExecutionId ?? null,
-	};
-	const [row] = await database.insert(sessions).values(values).returning();
-	return rowToDetail(row);
-}
+			parentExecutionId: input.parentExecutionId ?? null,
+			mlflowSessionId: input.id ?? null,
+		};
+		const [row] = await database.insert(sessions).values(values).returning();
+		if (!row.mlflowSessionId) {
+			const [updated] = await database
+				.update(sessions)
+				.set({ mlflowSessionId: row.id, updatedAt: row.updatedAt })
+				.where(eq(sessions.id, row.id))
+				.returning();
+			return rowToDetail(updated ?? row);
+		}
+		return rowToDetail(row);
+	}
 
 export async function attachRuntime(
 	id: string,
@@ -443,11 +457,19 @@ export async function updateSessionTitle(
 
 export async function archiveSession(id: string): Promise<boolean> {
 	const database = requireDb();
+	const archivedAt = new Date();
 	const [row] = await database
 		.update(sessions)
-		.set({ archivedAt: new Date(), updatedAt: new Date() })
+		.set({ archivedAt, updatedAt: archivedAt })
 		.where(eq(sessions.id, id))
-		.returning({ id: sessions.id });
+		.returning({ id: sessions.id, mlflowRunId: sessions.mlflowRunId });
+	if (row?.mlflowRunId) {
+		void safeFinishMlflowRun({
+			runId: row.mlflowRunId,
+			status: "KILLED",
+			endTime: archivedAt,
+		});
+	}
 	return Boolean(row);
 }
 

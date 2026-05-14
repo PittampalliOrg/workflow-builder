@@ -373,6 +373,8 @@ def _merge_otel_context(
         "mlflow.experiment_id",
         "mlflow.run_id",
         "mlflow.parent_run_id",
+        "mlflow.modelId",
+        "mlflow.model.uri",
         "workflow_builder.trace_group_id",
     ):
         value = baggage.get(key)
@@ -2895,6 +2897,7 @@ class ExecuteSWWorkflowRequest(BaseModel):
     integrations: dict | None = None
     dbExecutionId: str | None = None
     mlflowContext: dict | None = None
+    traceContext: dict | None = None
 
 
 @app.post("/api/v2/sw-workflows", response_model=StartWorkflowResponse)
@@ -2954,6 +2957,18 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
         # fresh trace root so concurrent benchmark/eval items are not merged
         # into one trace solely because the start requests shared an HTTP span.
         otel_ctx = _merge_otel_context(http_request, isolate_trace=True)
+        request_trace_context = (
+            request.traceContext if isinstance(request.traceContext, dict) else {}
+        )
+        explicit_trace_id = _trace_id_from_traceparent(
+            request_trace_context.get("traceparent")
+        )
+        if explicit_trace_id:
+            for key in ("traceparent", "tracestate", "baggage"):
+                value = request_trace_context.get(key)
+                if isinstance(value, str) and value.strip():
+                    otel_ctx[key] = value.strip()
+            otel_ctx["traceId"] = explicit_trace_id
         session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
         if session_id:
             otel_ctx["sessionId"] = session_id

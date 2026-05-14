@@ -283,6 +283,16 @@ def _build_telemetry_context(
         _telemetry_context_value(input_data, "llmComponent", "daprComponent"),
         f"llm-{provider}" if provider else None,
     )
+    mlflow_context = (
+        input_data.get("mlflowContext")
+        if isinstance(input_data.get("mlflowContext"), dict)
+        else {}
+    )
+    mlflow_session_id = _first_resolved(
+        input_data.get("mlflowSessionId"),
+        mlflow_context.get("mlflowSessionId"),
+        session_id,
+    )
 
     attrs: dict[str, Any] = {
         "workflow.id": workflow_id,
@@ -297,7 +307,14 @@ def _build_telemetry_context(
             "workflowNodeSequence",
             "sequence",
         ),
-        "session.id": session_id,
+        "session.id": mlflow_session_id,
+        "agent.session.id": session_id,
+        "workflow_builder.session_id": session_id,
+        "workflow_builder.mlflow_session_id": mlflow_session_id,
+        "mlflow.run_id": mlflow_context.get("runId"),
+        "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
+        "mlflow.modelId": mlflow_context.get("activeModelId"),
+        "mlflow.model.uri": mlflow_context.get("activeModelUri"),
         "agent.id": agent_id,
         "agent.version": agent_version,
         "agent.slug": agent_slug,

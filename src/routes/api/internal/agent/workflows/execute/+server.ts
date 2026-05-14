@@ -12,6 +12,17 @@ import {
 	getPromptExpansionConfig
 } from '$lib/utils/workflow-input-config';
 import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
+import {
+	buildWorkflowSessionId,
+	ensureWorkflowTraceparentHeader,
+	injectWorkflowSessionHeaders,
+	workflowTraceIdFromTraceparent
+} from '$lib/server/observability/workflow-session';
+import {
+	safeCreateWorkflowExecutionMlflowRun,
+	safeFinishMlflowRun,
+	safePrecreateMlflowTrace
+} from '$lib/server/observability/mlflow-lifecycle';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -165,21 +176,68 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 
 		let instanceId: string | undefined;
+		const sessionId = buildWorkflowSessionId(execution.id);
+		const mlflowContext = await safeCreateWorkflowExecutionMlflowRun({
+			executionId: execution.id,
+			workflowId: workflow.id,
+			workflowName: workflow.name,
+			projectId: workflow.projectId ?? null,
+			userId: workflow.userId ?? null
+		});
 
 		try {
+			const headers = injectWorkflowSessionHeaders(
+				ensureWorkflowTraceparentHeader({ 'Content-Type': 'application/json' }),
+				{
+					sessionId,
+					workflowExecutionId: execution.id,
+					workflowId: workflow.id,
+					traceGroupId: execution.id,
+					mlflowExperimentId:
+						mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
+					mlflowRunId: mlflowContext?.runId,
+					mlflowParentRunId: mlflowContext?.parentRunId
+				}
+			);
+			const traceContext = {
+				traceparent: headers.traceparent,
+				tracestate: headers.tracestate,
+				baggage: headers.baggage
+			};
+			await safePrecreateMlflowTrace({
+				traceId: workflowTraceIdFromTraceparent(headers.traceparent),
+				experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
+					name: `${workflow.id}/${execution.id}`,
+					metadata: {
+						'mlflow.sourceRun': mlflowContext?.runId
+					},
+				tags: {
+					'workflow_builder.kind': 'workflow_execution',
+					'workflow_builder.workflow_id': workflow.id,
+					'workflow_builder.workflow_execution_id': execution.id,
+					'workflow.execution.id': execution.id,
+					'mlflow.run_id': mlflowContext?.runId
+				}
+			});
 			const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers,
 				body: JSON.stringify({
 					workflow: spec,
 					workflowId: workflow.id,
 					triggerData,
-					dbExecutionId: execution.id
+					dbExecutionId: execution.id,
+					mlflowContext,
+					traceContext
 				})
 			});
 
 			if (!res.ok) {
 				const errText = await res.text().catch(() => 'Unknown error');
+				void safeFinishMlflowRun({
+					runId: mlflowContext?.runId,
+					status: 'FAILED'
+				});
 				throw new Error(`Orchestrator error (${res.status}): ${errText}`);
 			}
 
@@ -207,7 +265,7 @@ export const POST: RequestHandler = async ({ request }) => {
 					daprInstanceId: instanceId,
 					phase: 'running',
 					progress: 0,
-					workflowSessionId: execution.id
+					workflowSessionId: sessionId ?? execution.id
 				})
 				.where(eq(workflowExecutions.id, execution.id));
 		}

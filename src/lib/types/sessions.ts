@@ -28,12 +28,17 @@ export type SessionSummary = {
 	stopReason: SessionStopReason | null;
 	agentId: string;
 	agentVersion: number | null;
+	projectId: string | null;
 	environmentId: string | null;
 	environmentVersion: number | null;
 	vaultIds: string[];
 	usage: SessionUsage;
 	errorMessage: string | null;
 	workflowExecutionId: string | null;
+	mlflowExperimentId: string | null;
+	mlflowRunId: string | null;
+	mlflowParentRunId: string | null;
+	mlflowSessionId: string | null;
 	/** Populated for workflow-driven sessions via join in listSessions. */
 	workflowId: string | null;
 	workflowName: string | null;

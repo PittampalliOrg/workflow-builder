@@ -11,6 +11,10 @@ import {
 	benchmarkSuites,
 	workflowExecutions,
 } from "$lib/server/db/schema";
+import {
+	registerAgentVersionInMlflow,
+	resolveAgentApplicationMlflowExperiment,
+} from "$lib/server/observability/mlflow-lifecycle";
 
 export type MlflowTag = { key: string; value: string };
 type MlflowParam = { key: string; value: string };
@@ -47,13 +51,6 @@ function mlflowEnabled(): boolean {
 function trackingUri(): string | null {
 	const value = (env.MLFLOW_TRACKING_URI ?? "").trim().replace(/\/+$/, "");
 	return value || null;
-}
-
-function experimentName(): string {
-	const configured = (env.MLFLOW_EXPERIMENT_NAME ?? "").trim();
-	if (configured) return configured;
-	const cluster = (env.WORKFLOW_BUILDER_ENV ?? "unknown").trim() || "unknown";
-	return `workflow-builder/${cluster}/swebench`;
 }
 
 export function mlflowArtifactLocationForExperiment(name: string): string {
@@ -341,54 +338,6 @@ export async function logMlflowJsonArtifact(params: {
 	});
 }
 
-async function getOrCreateExperimentId(): Promise<string> {
-	const name = experimentName();
-	const qs = new URLSearchParams({ experiment_name: name });
-	try {
-		const found = await mlflowRequest<{
-			experiment?: { experiment_id?: string };
-		}>(`/api/2.0/mlflow/experiments/get-by-name?${qs.toString()}`, {
-			method: "GET",
-		});
-		if (found.experiment?.experiment_id) return found.experiment.experiment_id;
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		if (!msg.includes("RESOURCE_DOES_NOT_EXIST") && !msg.includes("404")) throw err;
-	}
-	console.warn(
-		`[mlflow] SWE-bench experiment ${name} was not found; creating it with artifact_location=${mlflowArtifactLocationForExperiment(name)}`,
-	);
-	let created: { experiment_id?: string };
-	try {
-		created = await mlflowRequest<{ experiment_id?: string }>(
-			"/api/2.0/mlflow/experiments/create",
-			{
-				method: "POST",
-				body: JSON.stringify({
-					name,
-					artifact_location: mlflowArtifactLocationForExperiment(name),
-					tags: [
-						{ key: "workflow_builder.kind", value: "swebench" },
-						{ key: "workflow_builder.env", value: env.WORKFLOW_BUILDER_ENV ?? "unknown" },
-					],
-				}),
-			},
-		);
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		if (!msg.includes("RESOURCE_ALREADY_EXISTS") && !msg.includes("already exists")) {
-			throw err;
-		}
-		const retry = await mlflowRequest<{ experiment?: { experiment_id?: string } }>(
-			`/api/2.0/mlflow/experiments/get-by-name?${qs.toString()}`,
-			{ method: "GET" },
-		);
-		created = { experiment_id: retry.experiment?.experiment_id };
-	}
-	if (!created.experiment_id) throw new Error("MLflow experiment create returned no id");
-	return created.experiment_id;
-}
-
 async function createRun(params: {
 	experimentId: string;
 	name: string;
@@ -504,6 +453,16 @@ function tag(key: string, value: unknown): MlflowTag {
 	return { key, value: stringValue(value) };
 }
 
+function modelIdFromMlflowUri(value: string | null | undefined): string | null {
+	if (!value?.trim()) return null;
+	return (
+		value
+			.trim()
+			.replace(/^models:\//, "")
+			.replace(/^\//, "") || null
+	);
+}
+
 function param(key: string, value: unknown): MlflowParam {
 	return { key, value: stringValue(value) };
 }
@@ -562,6 +521,8 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 	const [row] = await database
 		.select({
 			run: benchmarkRuns,
+			agent: agents,
+			agentVersion: agentVersions,
 			suiteSlug: benchmarkSuites.slug,
 			suiteName: benchmarkSuites.name,
 			agentName: agents.name,
@@ -582,9 +543,21 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 		.where(eq(benchmarkRuns.id, runId))
 		.limit(1);
 	if (!row) return null;
-	if (row.run.mlflowRunId) return row.run.mlflowRunId;
 	try {
-		const experimentId = await getOrCreateExperimentId();
+		const registered =
+			row.agentVersion ? await registerAgentVersionInMlflow({
+				agent: row.agent,
+				version: row.agentVersion,
+			}) : null;
+		const agentExperiment = await resolveAgentApplicationMlflowExperiment({
+			agent: row.agent,
+		});
+		const experimentId = agentExperiment.experimentId;
+		const activeModelUri = registered?.modelUri ?? row.agentMlflowUri;
+		const activeModelId = registered?.modelId ?? modelIdFromMlflowUri(activeModelUri);
+		if (row.run.mlflowRunId && row.run.mlflowExperimentId === experimentId) {
+			return row.run.mlflowRunId;
+		}
 		const identityTags = [
 			tag("workflow_builder.kind", "swebench_run"),
 			tag("workflow_builder.benchmark_run_id", row.run.id),
@@ -605,7 +578,9 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 					tag("agent.slug", row.agentSlug),
 					tag("agent.version", row.run.agentVersion),
 					tag("agent.config_hash", row.agentConfigHash),
-					tag("agent.mlflow_uri", row.agentMlflowUri),
+					tag("agent.mlflow_uri", activeModelUri),
+					tag("mlflow.modelId", activeModelId),
+					tag("mlflow.model.uri", activeModelUri),
 					tag("agent.runtime", row.run.agentRuntime),
 					tag("mlflow.dataset.id", row.run.mlflowDatasetId),
 					...comparisonTags,
@@ -628,7 +603,8 @@ export async function ensureBenchmarkMlflowRun(runId: string): Promise<string | 
 				param("agent_slug", row.agentSlug),
 				param("agent_version", row.run.agentVersion),
 				param("agent_config_hash", row.agentConfigHash),
-				param("agent_mlflow_uri", row.agentMlflowUri),
+				param("agent_mlflow_uri", activeModelUri),
+				param("mlflow_model_id", activeModelId),
 				param("agent_runtime", row.run.agentRuntime),
 				param("agent_runtime_app_id", row.run.agentRuntimeAppId),
 				param("mlflow_dataset_id", row.run.mlflowDatasetId),
@@ -675,10 +651,21 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 			instanceMlflowDatasetId: benchmarkInstances.mlflowDatasetId,
 			instanceMlflowDatasetRecordId: benchmarkInstances.mlflowDatasetRecordId,
 			primaryTraceId: workflowExecutions.primaryTraceId,
+			agentSlug: agents.slug,
+			agentMlflowUri: agentVersions.mlflowUri,
+			agentConfigHash: agentVersions.configHash,
 		})
 		.from(benchmarkRunInstances)
 		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.innerJoin(benchmarkSuites, eq(benchmarkSuites.id, benchmarkRuns.suiteId))
+		.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+		.leftJoin(
+			agentVersions,
+			and(
+				eq(agentVersions.agentId, benchmarkRuns.agentId),
+				eq(agentVersions.version, benchmarkRuns.agentVersion),
+			),
+		)
 		.leftJoin(
 			benchmarkInstances,
 			and(
@@ -706,28 +693,43 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 		row.runInstance.mlflowDatasetId ?? row.instanceMlflowDatasetId ?? row.run.mlflowDatasetId;
 	const mlflowDatasetRecordId =
 		row.runInstance.mlflowDatasetRecordId ?? row.instanceMlflowDatasetRecordId;
+	const activeModelId = modelIdFromMlflowUri(row.agentMlflowUri);
+	const experimentId =
+		row.run.mlflowExperimentId ??
+		(
+			await resolveAgentApplicationMlflowExperiment({
+				agent: {
+					id: row.run.agentId,
+					slug: row.agentSlug ?? row.run.agentId,
+					name: row.agentSlug ?? row.run.agentId,
+					projectId: row.run.projectId,
+				},
+			})
+		).experimentId;
 	if (row.runInstance.mlflowRunId) {
-		if (
-			(mlflowTraceId && row.runInstance.mlflowTraceId !== mlflowTraceId) ||
-			(mlflowDatasetId && row.runInstance.mlflowDatasetId !== mlflowDatasetId) ||
-			(mlflowDatasetRecordId &&
-				row.runInstance.mlflowDatasetRecordId !== mlflowDatasetRecordId)
-		) {
-			await database
-				.update(benchmarkRunInstances)
-				.set({
-					mlflowTraceId,
-					mlflowDatasetId: mlflowDatasetId ?? row.runInstance.mlflowDatasetId,
-					mlflowDatasetRecordId:
-						mlflowDatasetRecordId ?? row.runInstance.mlflowDatasetRecordId,
-					updatedAt: new Date(),
-				})
-				.where(eq(benchmarkRunInstances.id, row.runInstance.id));
+		const existingRun = await getRun(row.runInstance.mlflowRunId).catch(() => null);
+		if (existingRun?.info?.experiment_id === experimentId) {
+			if (
+				(mlflowTraceId && row.runInstance.mlflowTraceId !== mlflowTraceId) ||
+				(mlflowDatasetId && row.runInstance.mlflowDatasetId !== mlflowDatasetId) ||
+				(mlflowDatasetRecordId &&
+					row.runInstance.mlflowDatasetRecordId !== mlflowDatasetRecordId)
+			) {
+				await database
+					.update(benchmarkRunInstances)
+					.set({
+						mlflowTraceId,
+						mlflowDatasetId: mlflowDatasetId ?? row.runInstance.mlflowDatasetId,
+						mlflowDatasetRecordId:
+							mlflowDatasetRecordId ?? row.runInstance.mlflowDatasetRecordId,
+						updatedAt: new Date(),
+					})
+					.where(eq(benchmarkRunInstances.id, row.runInstance.id));
+			}
+			return row.runInstance.mlflowRunId;
 		}
-		return row.runInstance.mlflowRunId;
 	}
 	try {
-		const experimentId = row.run.mlflowExperimentId ?? (await getOrCreateExperimentId());
 		const comparisonTags = benchmarkComparisonMlflowTags(row.run.tags);
 		const identityTags = [
 			tag("workflow_builder.kind", "swebench_instance"),
@@ -754,7 +756,12 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 					tag("swebench.repo", row.repo),
 					tag("swebench.base_commit", row.baseCommit),
 					tag("agent.id", row.run.agentId),
+					tag("agent.slug", row.agentSlug),
 					tag("agent.version", row.run.agentVersion),
+					tag("agent.config_hash", row.agentConfigHash),
+					tag("agent.mlflow_uri", row.agentMlflowUri),
+					tag("mlflow.modelId", activeModelId),
+					tag("mlflow.model.uri", row.agentMlflowUri),
 					tag("agent.runtime", row.run.agentRuntime),
 					...comparisonTags,
 				],
@@ -779,6 +786,8 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 				param("mlflow_trace_id", mlflowTraceId),
 				param("mlflow_dataset_id", mlflowDatasetId),
 				param("mlflow_dataset_record_id", mlflowDatasetRecordId),
+				param("agent_mlflow_uri", row.agentMlflowUri),
+				param("mlflow_model_id", activeModelId),
 				param(
 					"environment_key",
 					readRecordString(row.runInstance.inferenceEnvironment, "environmentKey"),
@@ -803,6 +812,14 @@ export async function ensureBenchmarkInstanceMlflowRun(params: {
 				tag("mlflow.trace_id", mlflowTraceId),
 				tag("mlflow.dataset.id", mlflowDatasetId),
 				tag("mlflow.dataset.record_id", mlflowDatasetRecordId),
+				tag("agent.id", row.run.agentId),
+				tag("agent.slug", row.agentSlug),
+				tag("agent.version", row.run.agentVersion),
+				tag("agent.config_hash", row.agentConfigHash),
+				tag("agent.mlflow_uri", row.agentMlflowUri),
+				tag("mlflow.modelId", activeModelId),
+				tag("mlflow.model.uri", row.agentMlflowUri),
+				tag("agent.runtime", row.run.agentRuntime),
 				...comparisonTags,
 			],
 		});
@@ -826,10 +843,23 @@ export async function syncBenchmarkInstanceMlflow(params: {
 		if (!mlflowRunId) return;
 		const [row] = await db
 			.select({
+				run: benchmarkRuns,
 				runInstance: benchmarkRunInstances,
 				primaryTraceId: workflowExecutions.primaryTraceId,
+				agentSlug: agents.slug,
+				agentMlflowUri: agentVersions.mlflowUri,
+				agentConfigHash: agentVersions.configHash,
 			})
 			.from(benchmarkRunInstances)
+			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+			.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+			.leftJoin(
+				agentVersions,
+				and(
+					eq(agentVersions.agentId, benchmarkRuns.agentId),
+					eq(agentVersions.version, benchmarkRuns.agentVersion),
+				),
+			)
 			.leftJoin(
 				workflowExecutions,
 				eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
@@ -843,6 +873,7 @@ export async function syncBenchmarkInstanceMlflow(params: {
 			.limit(1);
 		if (!row) return;
 		const instance = row.runInstance;
+		const activeModelId = modelIdFromMlflowUri(row.agentMlflowUri);
 		const mlflowTraceId =
 			instance.mlflowTraceId ??
 			resolveCanonicalMlflowTraceId(row.primaryTraceId, instance.traceIds);
@@ -907,6 +938,14 @@ export async function syncBenchmarkInstanceMlflow(params: {
 				tag("mlflow.trace_id", mlflowTraceId),
 				tag("mlflow.dataset.id", instance.mlflowDatasetId),
 				tag("mlflow.dataset.record_id", instance.mlflowDatasetRecordId),
+				tag("agent.id", row.run.agentId),
+				tag("agent.slug", row.agentSlug),
+				tag("agent.version", row.run.agentVersion),
+				tag("agent.config_hash", row.agentConfigHash),
+				tag("agent.mlflow_uri", row.agentMlflowUri),
+				tag("mlflow.modelId", activeModelId),
+				tag("mlflow.model.uri", row.agentMlflowUri),
+				tag("agent.runtime", row.run.agentRuntime),
 				tag("workflow_builder.dapr_instance_id", instance.daprInstanceId),
 				tag("workflow_builder.sandbox_name", instance.sandboxName),
 				tag("workflow_builder.workspace_ref", instance.workspaceRef),
@@ -968,14 +1007,27 @@ export async function syncBenchmarkRunMlflow(
 	try {
 		const mlflowRunId = await ensureBenchmarkMlflowRun(runId);
 		if (!mlflowRunId) return;
-		const [run] = await db
-			.select()
+		const [row] = await db
+			.select({
+				run: benchmarkRuns,
+				agentMlflowUri: agentVersions.mlflowUri,
+				agentConfigHash: agentVersions.configHash,
+			})
 			.from(benchmarkRuns)
+			.leftJoin(
+				agentVersions,
+				and(
+					eq(agentVersions.agentId, benchmarkRuns.agentId),
+					eq(agentVersions.version, benchmarkRuns.agentVersion),
+				),
+			)
 			.where(eq(benchmarkRuns.id, runId))
 			.limit(1);
-		if (!run) return;
+		if (!row) return;
+		const run = row.run;
 		const summary = isRecord(run.summary) ? run.summary : {};
 		const comparisonTags = benchmarkComparisonMlflowTags(run.tags);
+		const activeModelId = modelIdFromMlflowUri(row.agentMlflowUri);
 		await logBatch(mlflowRunId, {
 			metrics: compactMetrics([
 				metric("total", summary.total),
@@ -994,6 +1046,10 @@ export async function syncBenchmarkRunMlflow(
 				tag("workflow_builder.predictions_path", run.predictionsPath),
 				tag("workflow_builder.mlflow_eval_run_id", run.mlflowEvalRunId ?? summary.mlflowEvalRunId),
 				tag("mlflow.dataset.id", run.mlflowDatasetId),
+				tag("agent.config_hash", row.agentConfigHash),
+				tag("agent.mlflow_uri", row.agentMlflowUri),
+				tag("mlflow.modelId", activeModelId),
+				tag("mlflow.model.uri", row.agentMlflowUri),
 				tag("workflow_builder.error", run.error),
 				...comparisonTags,
 			],

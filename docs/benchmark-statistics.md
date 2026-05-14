@@ -9,6 +9,28 @@ We treat the **first selected run as baseline**; every other run in the
 comparison set is the **candidate**. Tests live in
 [`src/lib/server/benchmarks/regression.ts`](../src/lib/server/benchmarks/regression.ts).
 
+## Comparison Campaigns
+
+The preferred way to compare agents is the Benchmarks launch sheet's
+`Compare agents` mode. It creates one benchmark run per selected agent using
+the same suite and exact instance ids, applies one shared campaign tag to every
+run, and redirects to:
+
+```text
+/workspaces/<slug>/benchmarks/compare?runs=<runA>,<runB>[,<runC>,<runD>]&tag=<campaign-tag>
+```
+
+The compare route can also load the latest runs for a campaign directly with
+`?tag=<campaign-tag>`. Use explicit `runs=` when the comparison set must be
+fixed. See [`docs/swebench-mlflow-comparison.md`](./swebench-mlflow-comparison.md)
+for the MLflow experiment/run/tag contract that keeps those UI comparisons
+queryable outside workflow-builder.
+
+These statistics are strongest when the campaign changes one primary axis:
+agent, model, agent version, prompt/tooling, or concurrency. If multiple axes
+change at once, the page still renders but the p-values should be treated as
+exploratory diagnostics rather than a clean A/B result.
+
 ## Two test families
 
 ### Fisher's exact test — for binary outcomes

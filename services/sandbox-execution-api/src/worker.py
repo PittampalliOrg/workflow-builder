@@ -9,6 +9,7 @@ import signal
 import sys
 import threading
 import time
+from urllib.parse import quote
 from typing import Any
 
 import requests
@@ -221,7 +222,45 @@ def _stagger_workflow_start(payload: dict[str, Any]) -> None:
     _sleep(sleep_seconds)
 
 
+def _workflow_baggage(payload: dict[str, Any]) -> str:
+    mlflow_context = payload.get("mlflowContext")
+    if not isinstance(mlflow_context, dict):
+        mlflow_context = {}
+    attrs = {
+        "session.id": payload.get("workflowExecutionId"),
+        "workflow.execution.id": payload.get("workflowExecutionId"),
+        "workflow.id": payload.get("workflowId"),
+        "workflow_builder.trace_group_id": payload.get("workflowExecutionId"),
+        "mlflow.experiment_id": mlflow_context.get("traceExperimentId")
+        or mlflow_context.get("experimentId"),
+        "mlflow.run_id": mlflow_context.get("runId"),
+        "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
+        "mlflow.modelId": mlflow_context.get("activeModelId"),
+        "mlflow.model.uri": mlflow_context.get("activeModelUri"),
+    }
+    return ",".join(
+        f"{key}={quote(str(value), safe='')}"
+        for key, value in attrs.items()
+        if isinstance(value, str) and value.strip()
+    )
+
+
 def _start_workflow_once(payload: dict[str, Any]) -> str:
+    headers = {"Content-Type": "application/json"}
+    trace_context = payload.get("traceContext")
+    if not isinstance(trace_context, dict):
+        trace_context = {}
+    for key in ("traceparent", "tracestate", "baggage"):
+        value = trace_context.get(key)
+        if isinstance(value, str) and value.strip():
+            headers[key] = value.strip()
+    baggage = _workflow_baggage(payload)
+    if baggage:
+        headers["baggage"] = ",".join(
+            part for part in (headers.get("baggage"), baggage) if part
+        )
+    if isinstance(payload.get("workflowExecutionId"), str):
+        headers["x-workflow-session-id"] = payload["workflowExecutionId"]
     res = requests.post(
         f"{_orchestrator_url()}/api/v2/sw-workflows",
         json={
@@ -229,8 +268,9 @@ def _start_workflow_once(payload: dict[str, Any]) -> str:
             "workflowId": payload["workflowId"],
             "triggerData": payload.get("triggerData") or {},
             "dbExecutionId": payload["workflowExecutionId"],
+            "mlflowContext": payload.get("mlflowContext"),
         },
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         timeout=max(
             30,
             int(_env("SANDBOX_EXECUTION_WORKFLOW_START_TIMEOUT_SECONDS", "120")),

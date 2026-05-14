@@ -1,6 +1,6 @@
 import { env } from "$env/dynamic/private";
 import { env as publicEnv } from "$env/dynamic/public";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
   agentVersions,
@@ -11,6 +11,10 @@ import {
   type Agent,
   type AgentVersion,
 } from "$lib/server/db/schema";
+import {
+  compileAgentApplicationState,
+  type CompiledAgentApplicationState,
+} from "$lib/server/agents/application-state";
 
 type MlflowTag = { key: string; value: string };
 type MlflowParam = { key: string; value: string };
@@ -20,6 +24,7 @@ type LoggedModelInfo = {
   experiment_id?: string;
   name?: string;
   artifact_uri?: string;
+  artifact_location?: string;
   status?: string;
   model_type?: string;
   source_run_id?: string;
@@ -44,6 +49,8 @@ export type MlflowRunContext = {
   activeModelId?: string | null;
   activeModelName?: string | null;
   activeModelUri?: string | null;
+  applicationKind?: "agent" | "workflow" | "benchmark" | "unknown";
+  applicationId?: string | null;
 };
 
 function trackingUri(): string | null {
@@ -71,36 +78,55 @@ export function mlflowLifecycleEnabled(): boolean {
   return Boolean(trackingUri());
 }
 
-function lifecycleExperimentName(): string {
-  const configured = (env.MLFLOW_AGENT_EXPERIMENT_NAME ?? "").trim();
-  if (configured) return configured;
-  const cluster = (env.WORKFLOW_BUILDER_ENV ?? "unknown").trim() || "unknown";
-  return `workflow-builder/${cluster}/agents`;
+function clusterName(): string {
+  return (env.WORKFLOW_BUILDER_ENV ?? "unknown").trim() || "unknown";
 }
 
-function workflowExperimentName(): string {
-  const configured = (env.MLFLOW_WORKFLOW_EXPERIMENT_NAME ?? "").trim();
-  if (configured) return configured;
-  const cluster = (env.WORKFLOW_BUILDER_ENV ?? "unknown").trim() || "unknown";
-  return `workflow-builder/${cluster}/workflows`;
+function defaultTraceExperimentName(): string {
+  return `workflow-builder/${clusterName()}/traces`;
 }
 
-function workflowScopedExperimentName(params: {
-  workflowId: string;
-  workflowName?: string | null;
-}): string {
-  const cluster = (env.WORKFLOW_BUILDER_ENV ?? "unknown").trim() || "unknown";
-  const displayName = (params.workflowName ?? "").trim() || params.workflowId;
-  const sanitizedName =
-    displayName
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || "workflow";
-  const shortWorkflowId = params.workflowId
-    .replace(/[^A-Za-z0-9]+/g, "")
-    .slice(0, 12);
-  return `workflow-builder/${cluster}/workflows/${sanitizedName}-${shortWorkflowId || "workflow"}`;
+function configuredTraceExperimentName(): string {
+  return (
+    (env.MLFLOW_TRACE_EXPERIMENT_NAME ?? publicEnv.PUBLIC_MLFLOW_TRACE_EXPERIMENT_NAME ?? "")
+      .trim() || defaultTraceExperimentName()
+  );
+}
+
+async function resolveCanonicalTraceMlflowExperiment(): Promise<{
+  experimentId: string;
+  experimentName: string;
+  publicUrl: string | null;
+}> {
+  const experimentName = configuredTraceExperimentName();
+  const configuredId = (
+    env.MLFLOW_TRACE_EXPERIMENT_ID ??
+    publicEnv.PUBLIC_MLFLOW_TRACE_EXPERIMENT_ID ??
+    ""
+  ).trim();
+  const experimentId =
+    configuredId ||
+    (await getOrCreateMlflowExperimentId(experimentName, "traces", [
+      tag("workflow_builder.application_kind", "genai_observability"),
+    ]));
+
+  await setMlflowExperimentTags(experimentId, [
+    tag("workflow_builder.kind", "traces"),
+    tag("workflow_builder.application_kind", "genai_observability"),
+    tag("workflow_builder.canonical", "true"),
+    tag("workflow_builder.env", env.WORKFLOW_BUILDER_ENV ?? "unknown"),
+  ]).catch((err) => {
+    console.warn(
+      `[mlflow] failed to update canonical trace experiment tags ${experimentId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  });
+
+  return {
+    experimentId,
+    experimentName,
+    publicUrl: publicMlflowExperimentUrl(experimentId),
+  };
 }
 
 export function mlflowArtifactLocationForLifecycleExperiment(
@@ -168,18 +194,86 @@ async function mlflowRequest<T>(
   return (await res.json().catch(() => ({}))) as T;
 }
 
-async function getOrCreateLifecycleExperimentId(): Promise<string> {
-  return getOrCreateMlflowExperimentId(
-    lifecycleExperimentName(),
-    "agent_lifecycle",
-  );
+export async function resolveAgentApplicationMlflowExperiment(params: {
+  agent: Pick<Agent, "id" | "slug" | "name" | "projectId">;
+}): Promise<{ experimentId: string; experimentName: string; publicUrl: string | null }> {
+  if (!mlflowLifecycleEnabled()) {
+    throw new Error("MLflow lifecycle is not enabled");
+  }
+  void params;
+  return resolveCanonicalTraceMlflowExperiment();
 }
 
-async function getOrCreateWorkflowExperimentId(): Promise<string> {
-  return getOrCreateMlflowExperimentId(
-    workflowExperimentName(),
-    "workflow_runs",
-  );
+function normalizeMlflowTraceId(value: string | null | undefined): string | null {
+  const raw = value?.trim().toLowerCase() ?? "";
+  if (!raw) return null;
+  const normalized = raw.startsWith("tr-") ? raw.slice(3) : raw;
+  if (!/^[a-f0-9]{32}$/.test(normalized) || /^0+$/.test(normalized)) return null;
+  return `tr-${normalized}`;
+}
+
+function cleanRecord(value: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!key || raw == null) continue;
+    const stringValue = String(raw).trim();
+    if (stringValue) out[key] = stringValue.slice(0, 5000);
+  }
+  return out;
+}
+
+export async function precreateMlflowTrace(params: {
+  traceId: string | null | undefined;
+  experimentId: string | null | undefined;
+  requestTime?: Date | null;
+  name?: string | null;
+  metadata?: Record<string, unknown>;
+  tags?: Record<string, unknown>;
+}): Promise<string | null> {
+  if (!mlflowLifecycleEnabled()) return null;
+  const traceId = normalizeMlflowTraceId(params.traceId);
+  const experimentId = params.experimentId?.trim();
+  if (!traceId || !experimentId) {
+    throw new Error("MLflow trace precreate requires traceId and experimentId");
+  }
+  const metadata = cleanRecord(params.metadata ?? {});
+  const tags = cleanRecord({
+    ...(params.name ? { "mlflow.traceName": params.name } : {}),
+    ...(params.tags ?? {}),
+  });
+  await mlflowRequest("/api/3.0/mlflow/traces", {
+    method: "POST",
+    body: JSON.stringify({
+      trace: {
+        traceInfo: {
+          traceId,
+          traceLocation: {
+            type: "MLFLOW_EXPERIMENT",
+            mlflowExperiment: { experimentId },
+          },
+          requestTime: (params.requestTime ?? new Date()).toISOString(),
+          state: "IN_PROGRESS",
+          traceMetadata: metadata,
+          tags,
+        },
+      },
+    }),
+  });
+  return traceId;
+}
+
+export async function safePrecreateMlflowTrace(
+  params: Parameters<typeof precreateMlflowTrace>[0],
+): Promise<string | null> {
+  try {
+    return await precreateMlflowTrace(params);
+  } catch (err) {
+    console.warn(
+      "[mlflow] failed to pre-create trace:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }
 
 async function getOrCreateMlflowExperimentId(
@@ -258,7 +352,28 @@ async function setMlflowExperimentTags(
   );
 }
 
+async function setMlflowRunTags(runId: string, tags: MlflowTag[]): Promise<void> {
+  await Promise.all(
+    tags
+      .filter((item) => item.key && item.value !== "")
+      .map((item) =>
+        mlflowRequest("/api/2.0/mlflow/runs/set-tag", {
+          method: "POST",
+          body: JSON.stringify({
+            run_id: runId,
+            key: item.key,
+            value: item.value,
+          }),
+        }),
+      ),
+  );
+}
+
 function tag(key: string, value: unknown): MlflowTag {
+  return { key, value: value == null ? "" : String(value).slice(0, 5000) };
+}
+
+function param(key: string, value: unknown): MlflowParam {
   return { key, value: value == null ? "" : String(value).slice(0, 5000) };
 }
 
@@ -272,68 +387,45 @@ async function resolveWorkflowExperiment(params: {
       id: workflows.id,
       name: workflows.name,
       projectId: workflows.projectId,
-      mlflowExperimentId: workflows.mlflowExperimentId,
-      mlflowExperimentName: workflows.mlflowExperimentName,
     })
     .from(workflows)
     .where(eq(workflows.id, params.workflowId))
     .limit(1);
   const workflowName = row?.name ?? params.workflowName ?? params.workflowId;
-  const pinnedExperimentId = row?.mlflowExperimentId?.trim();
-  const pinnedExperimentName = row?.mlflowExperimentName?.trim();
-  const desiredExperimentName =
-    pinnedExperimentName ||
-    workflowScopedExperimentName({
-      workflowId: params.workflowId,
-      workflowName,
-    });
-  const experimentId =
-    pinnedExperimentId ||
-    (await getOrCreateMlflowExperimentId(
-      desiredExperimentName,
-      "workflow_runs",
-      [
-        tag("workflow_builder.workflow_id", params.workflowId),
-        tag("workflow_builder.workflow_name", workflowName),
-        tag("workflow_builder.project_id", row?.projectId ?? params.projectId),
-      ],
-    ));
+  const canonical = await resolveCanonicalTraceMlflowExperiment();
 
-  if (!pinnedExperimentId || !pinnedExperimentName) {
-    await db
-      .update(workflows)
-      .set({
-        mlflowExperimentId: experimentId,
-        mlflowExperimentName: desiredExperimentName,
-      })
-      .where(eq(workflows.id, params.workflowId));
-  }
+  await db
+    .update(workflows)
+    .set({
+      mlflowExperimentId: canonical.experimentId,
+      mlflowExperimentName: canonical.experimentName,
+    })
+    .where(eq(workflows.id, params.workflowId));
 
-  await setMlflowExperimentTags(experimentId, [
-    tag("workflow_builder.workflow_id", params.workflowId),
-    tag("workflow_builder.workflow_name", workflowName),
-    tag("workflow_builder.project_id", row?.projectId ?? params.projectId),
-    tag("workflow_builder.env", env.WORKFLOW_BUILDER_ENV ?? "unknown"),
-  ]).catch((err) => {
-    console.warn(
-      `[mlflow] failed to update workflow experiment tags ${experimentId}:`,
-      err instanceof Error ? err.message : err,
+  await db
+    .delete(mlflowLineageLinks)
+    .where(
+      and(
+        eq(mlflowLineageLinks.entityType, "workflow"),
+        eq(mlflowLineageLinks.entityId, params.workflowId),
+        eq(mlflowLineageLinks.mlflowEntityType, "experiment"),
+        ne(mlflowLineageLinks.mlflowExperimentId, canonical.experimentId),
+      ),
     );
-  });
 
   await db
     .insert(mlflowLineageLinks)
     .values({
-      sourceKey: `workflow:${params.workflowId}:experiment:${experimentId}`,
+      sourceKey: `workflow:${params.workflowId}:experiment:${canonical.experimentId}`,
       entityType: "workflow",
       entityId: params.workflowId,
       projectId: row?.projectId ?? params.projectId ?? null,
       mlflowEntityType: "experiment",
-      mlflowExperimentId: experimentId,
-      mlflowPublicUrl: publicMlflowExperimentUrl(experimentId),
+      mlflowExperimentId: canonical.experimentId,
+      mlflowPublicUrl: canonical.publicUrl,
       tags: {
         workflowName,
-        experimentName: desiredExperimentName,
+        experimentName: canonical.experimentName,
       },
       metadata: {},
     })
@@ -341,17 +433,20 @@ async function resolveWorkflowExperiment(params: {
       target: mlflowLineageLinks.sourceKey,
       set: {
         projectId: row?.projectId ?? params.projectId ?? null,
-        mlflowExperimentId: experimentId,
-        mlflowPublicUrl: publicMlflowExperimentUrl(experimentId),
+        mlflowExperimentId: canonical.experimentId,
+        mlflowPublicUrl: canonical.publicUrl,
         tags: {
           workflowName,
-          experimentName: desiredExperimentName,
+          experimentName: canonical.experimentName,
         },
         updatedAt: new Date(),
       },
     });
 
-  return { experimentId, experimentName: desiredExperimentName };
+  return {
+    experimentId: canonical.experimentId,
+    experimentName: canonical.experimentName,
+  };
 }
 
 async function createMlflowRun(params: {
@@ -377,13 +472,54 @@ async function createMlflowRun(params: {
   return runId;
 }
 
+async function getMlflowRunArtifactUri(runId: string): Promise<string | null> {
+  const payload = await mlflowRequest<{
+    run?: { info?: { artifact_uri?: string; artifact_location?: string } };
+  }>(`/api/2.0/mlflow/runs/get?run_id=${encodeURIComponent(runId)}`);
+  return payload.run?.info?.artifact_uri ?? payload.run?.info?.artifact_location ?? null;
+}
+
+async function getMlflowRunExperimentId(runId: string): Promise<string | null> {
+  const payload = await mlflowRequest<{
+    run?: { info?: { experiment_id?: string } };
+  }>(`/api/2.0/mlflow/runs/get?run_id=${encodeURIComponent(runId)}`);
+  return payload.run?.info?.experiment_id ?? null;
+}
+
+async function logRunJsonArtifact(params: {
+  runId: string;
+  artifactPath: string;
+  value: unknown;
+}): Promise<void> {
+  const artifactUri = await getMlflowRunArtifactUri(params.runId);
+  const artifactRoot = artifactRootPath(artifactUri);
+  const path = artifactRoot
+    ? `${artifactRoot}/${params.artifactPath}`
+    : `${params.runId}/artifacts/${params.artifactPath}`;
+  const encodedPath = encodeArtifactPath(path);
+  await mlflowRequest(`/api/2.0/mlflow-artifacts/artifacts/${encodedPath}`, {
+    method: "PUT",
+    body: `${JSON.stringify(params.value, null, 2)}\n`,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+    },
+  });
+}
+
+function modelIdFromMlflowUri(value: string | null | undefined): string | null {
+  const text = value?.trim() ?? "";
+  const match = text.match(/^models:\/([^/]+)$/);
+  return match?.[1] ?? null;
+}
+
 function escapeMlflowFilterValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-async function findAgentVersionLoggedModel(
+async function findAgentApplicationStateLoggedModel(
   experimentId: string,
-  agentVersionId: string,
+  stateDigest: string,
+  agent: Pick<Agent, "id" | "slug">,
 ): Promise<LoggedModelResponse["model"] | null> {
   const payload = await mlflowRequest<{
     models?: NonNullable<LoggedModelResponse["model"]>[];
@@ -391,20 +527,41 @@ async function findAgentVersionLoggedModel(
     method: "POST",
     body: JSON.stringify({
       experiment_ids: [experimentId],
-      filter: `tags.\`workflow_builder.agent_version_id\` = '${escapeMlflowFilterValue(agentVersionId)}'`,
-      max_results: 1,
+      filter: `tags.\`workflow_builder.agent_state_digest\` = '${escapeMlflowFilterValue(stateDigest)}'`,
+      max_results: 50,
       order_by: [{ field_name: "creation_time", ascending: false }],
     }),
   });
-  return payload.models?.[0] ?? null;
+  return (
+    payload.models?.find((model) => {
+      const tags = model.info?.tags ?? [];
+      const agentId = tags.find((item) => item.key === "workflow_builder.agent_id")?.value;
+      const agentSlug = tags.find((item) => item.key === "workflow_builder.agent_slug")?.value;
+      return agentId === agent.id || agentSlug === agent.slug;
+    }) ?? null
+  );
 }
 
 async function createAgentVersionLoggedModel(params: {
   experimentId: string;
   agent: Agent;
   version: AgentVersion;
+  state: CompiledAgentApplicationState;
 }): Promise<NonNullable<LoggedModelResponse["model"]>> {
-  const modelName = `${params.agent.slug}-v${params.version.version}`;
+  const modelName = safeLoggedModelName(
+    `workflow-builder_${params.agent.slug}_${params.state.stateDigest.slice(0, 12)}`,
+  );
+  const config = params.version.config as Record<string, unknown>;
+  const toolCount =
+    params.state.manifest.tools.builtinTools.length +
+    params.state.manifest.tools.toolNames.length;
+  const mcpCount = params.state.manifest.tools.mcpServers.length;
+  const promptManifestCount =
+    params.state.manifest.prompts.presetManifest?.length ?? 0;
+  const promptRefCount =
+    (params.state.manifest.prompts.staticPresetRefs?.length ?? 0) +
+    (params.state.manifest.prompts.dynamicPresetRefs?.length ?? 0);
+  const promptCount = promptManifestCount || promptRefCount;
   const created = await mlflowRequest<LoggedModelResponse>(
     "/api/2.0/mlflow/logged-models",
     {
@@ -412,29 +569,35 @@ async function createAgentVersionLoggedModel(params: {
       body: JSON.stringify({
         experiment_id: params.experimentId,
         name: modelName,
-        model_type: "Agent",
+        model_type: "agent",
         params: [
-          { key: "agent_id", value: params.agent.id },
-          { key: "agent_slug", value: params.agent.slug },
-          { key: "agent_version", value: String(params.version.version) },
-          { key: "config_hash", value: params.version.configHash },
+          param("agent_id", params.agent.id),
+          param("agent_slug", params.agent.slug),
+          param("agent_version", params.version.version),
+          param("agent_version_id", params.version.id),
+          param("agent_state_digest", params.state.stateDigest),
+          param("config_hash", params.version.configHash),
+          param("model_spec", config.modelSpec),
+          param("model_provider", params.state.manifest.model.provider),
+          param("runtime", params.agent.runtime),
+          param("runtime_class", params.state.manifest.runtime.route.runtimeClass),
+          param("runtime_app_id", params.state.manifest.agent.runtimeAppId),
+          param("tool_count", toolCount),
+          param("mcp_count", mcpCount),
+          param("prompt_count", promptCount),
         ],
         tags: [
-          { key: "workflow_builder.entity_type", value: "agent_version" },
-          { key: "workflow_builder.agent_id", value: params.agent.id },
-          { key: "workflow_builder.agent_slug", value: params.agent.slug },
-          {
-            key: "workflow_builder.agent_version_id",
-            value: params.version.id,
-          },
-          {
-            key: "workflow_builder.agent_version",
-            value: String(params.version.version),
-          },
-          {
-            key: "workflow_builder.project_id",
-            value: params.agent.projectId ?? "",
-          },
+          tag("workflow_builder.entity_type", "agent_application_state"),
+          tag("workflow_builder.agent_id", params.agent.id),
+          tag("workflow_builder.agent_slug", params.agent.slug),
+          tag("workflow_builder.agent_version_id", params.version.id),
+          tag("workflow_builder.agent_version", params.version.version),
+          tag("workflow_builder.agent_state_digest", params.state.stateDigest),
+          tag("workflow_builder.project_id", params.agent.projectId),
+          tag("workflow_builder.env", env.WORKFLOW_BUILDER_ENV ?? "unknown"),
+          tag("agent.name", params.agent.name),
+          tag("agent.app_id", params.state.manifest.agent.runtimeAppId),
+          tag("agent.runtime_class", params.state.manifest.runtime.route.runtimeClass),
         ],
       }),
     },
@@ -442,6 +605,11 @@ async function createAgentVersionLoggedModel(params: {
   if (!created.model?.info?.model_id) {
     throw new Error("MLflow logged model create returned no model id");
   }
+  await logAgentApplicationStateArtifacts({
+    modelId: created.model.info.model_id,
+    artifactUri: created.model.info.artifact_uri ?? created.model.info.artifact_location ?? null,
+    state: params.state,
+  });
   await mlflowRequest<LoggedModelResponse>(
     `/api/2.0/mlflow/logged-models/${encodeURIComponent(created.model.info.model_id)}`,
     {
@@ -461,6 +629,101 @@ async function createAgentVersionLoggedModel(params: {
   return created.model;
 }
 
+async function logAgentApplicationStateArtifacts(params: {
+  modelId: string;
+  artifactUri: string | null;
+  state: CompiledAgentApplicationState;
+}): Promise<void> {
+  await Promise.all([
+    logLoggedModelJsonArtifact({
+      modelId: params.modelId,
+      artifactUri: params.artifactUri,
+      artifactPath: "application-state.json",
+      value: params.state.manifest,
+    }),
+    logLoggedModelJsonArtifact({
+      modelId: params.modelId,
+      artifactUri: params.artifactUri,
+      artifactPath: "dapr-agent-metadata.json",
+      value: params.state.daprMetadata,
+    }),
+    logLoggedModelJsonArtifact({
+      modelId: params.modelId,
+      artifactUri: params.artifactUri,
+      artifactPath: "prompt-manifest.json",
+      value: params.state.promptManifest,
+    }),
+    logLoggedModelJsonArtifact({
+      modelId: params.modelId,
+      artifactUri: params.artifactUri,
+      artifactPath: "tool-mcp-manifest.json",
+      value: params.state.toolManifest,
+    }),
+    logLoggedModelJsonArtifact({
+      modelId: params.modelId,
+      artifactUri: params.artifactUri,
+      artifactPath: "source-manifest.json",
+      value: params.state.sourceManifest,
+    }),
+  ]);
+}
+
+async function logLoggedModelJsonArtifact(params: {
+  modelId: string;
+  artifactUri: string | null;
+  artifactPath: string;
+  value: unknown;
+}): Promise<void> {
+  const artifactRoot = artifactRootPath(params.artifactUri);
+  const path = artifactRoot
+    ? `${artifactRoot}/${params.artifactPath}`
+    : `logged_models/${params.modelId}/${params.artifactPath}`;
+  const encodedPath = encodeArtifactPath(path);
+  await mlflowRequest(
+    `/api/2.0/mlflow-artifacts/artifacts/${encodedPath}`,
+    {
+      method: "PUT",
+      body: `${JSON.stringify(params.value, null, 2)}\n`,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    },
+  );
+}
+
+function artifactRootPath(uri: string | null): string | null {
+  if (!uri) return null;
+  const trimmed = uri.trim();
+  if (trimmed.startsWith("mlflow-artifacts:/")) {
+    return trimmed.replace(/^mlflow-artifacts:\/*/, "").replace(/^\/+|\/+$/g, "");
+  }
+  const marker = "/api/2.0/mlflow-artifacts/artifacts/";
+  const idx = trimmed.indexOf(marker);
+  if (idx >= 0) {
+    return trimmed.slice(idx + marker.length).replace(/^\/+|\/+$/g, "");
+  }
+  return null;
+}
+
+function encodeArtifactPath(path: string): string {
+  return path
+    .split("/")
+    .filter((part) => part.length > 0)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function safeLoggedModelName(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/[/:.%'"]/g, "_")
+      .replace(/[^A-Za-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 240) || "workflow-builder-agent"
+  );
+}
+
 export async function registerAgentVersionInMlflow(params: {
   agent: Agent;
   version: AgentVersion;
@@ -470,24 +733,20 @@ export async function registerAgentVersionInMlflow(params: {
   modelUri: string;
 } | null> {
   if (!mlflowLifecycleEnabled()) return null;
-  if (params.version.mlflowUri?.trim()) {
-    return {
-      modelId: params.version.mlflowUri
-        .trim()
-        .replace(/^models:\//, "")
-        .replace(/^\//, ""),
-      modelName: params.version.mlflowModelName ?? null,
-      modelUri: params.version.mlflowUri.trim(),
-    };
-  }
-
-  const experimentId = await getOrCreateLifecycleExperimentId();
+  const state = compileAgentApplicationState(params);
+  const { experimentId, experimentName } =
+    await resolveAgentApplicationMlflowExperiment({ agent: params.agent });
   const existing =
-    (await findAgentVersionLoggedModel(experimentId, params.version.id)) ??
+    (await findAgentApplicationStateLoggedModel(
+      experimentId,
+      state.stateDigest,
+      params.agent,
+    )) ??
     (await createAgentVersionLoggedModel({
       experimentId,
       agent: params.agent,
       version: params.version,
+      state,
     }));
   const info = existing.info;
   const modelId = info?.model_id;
@@ -500,11 +759,23 @@ export async function registerAgentVersionInMlflow(params: {
     await tx
       .update(agentVersions)
       .set({
+        applicationStateDigest: state.stateDigest,
         mlflowUri: modelUri,
         mlflowModelName: modelName,
         mlflowModelVersion: modelId,
       })
       .where(eq(agentVersions.id, params.version.id));
+
+    await tx
+      .delete(mlflowLineageLinks)
+      .where(
+        and(
+          eq(mlflowLineageLinks.entityType, "agent_version"),
+          eq(mlflowLineageLinks.entityId, params.version.id),
+          eq(mlflowLineageLinks.mlflowEntityType, "logged_model"),
+          ne(mlflowLineageLinks.mlflowLoggedModelId, modelId),
+        ),
+      );
 
     await tx
       .insert(mlflowLineageLinks)
@@ -525,10 +796,14 @@ export async function registerAgentVersionInMlflow(params: {
           agentId: params.agent.id,
           agentSlug: params.agent.slug,
           configHash: params.version.configHash,
+          applicationStateDigest: state.stateDigest,
+          experimentName,
         },
         metadata: {
           artifactUri: info?.artifact_uri ?? null,
+          artifactLocation: info?.artifact_location ?? null,
           status: info?.status ?? null,
+          applicationState: state.manifest,
         },
       })
       .onConflictDoUpdate({
@@ -539,6 +814,13 @@ export async function registerAgentVersionInMlflow(params: {
           mlflowLoggedModelUri: modelUri,
           mlflowModelVersion: modelId,
           mlflowPublicUrl: modelUrl,
+        tags: {
+          agentId: params.agent.id,
+          agentSlug: params.agent.slug,
+          configHash: params.version.configHash,
+          applicationStateDigest: state.stateDigest,
+          experimentName,
+        },
           updatedAt: new Date(),
         },
       });
@@ -642,6 +924,8 @@ export async function createWorkflowExecutionMlflowRun(params: {
     runId,
     parentRunId: null,
     publicUrl,
+    applicationKind: "workflow",
+    applicationId: params.workflowId,
   };
 }
 
@@ -653,6 +937,253 @@ export async function safeCreateWorkflowExecutionMlflowRun(
   } catch (err) {
     console.warn(
       `[mlflow] failed to create workflow execution run ${params.executionId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+export async function createInteractiveSessionMlflowRun(params: {
+  sessionId: string;
+  title?: string | null;
+  projectId?: string | null;
+  userId?: string | null;
+  agentId: string;
+  agentName?: string | null;
+  agentSlug?: string | null;
+  agentVersion?: number | null;
+  agentAppId?: string | null;
+  activeModelId?: string | null;
+  activeModelName?: string | null;
+  activeModelUri?: string | null;
+  existingRunId?: string | null;
+}): Promise<MlflowRunContext | null> {
+  if (!mlflowLifecycleEnabled()) return null;
+  const agentSlug = params.agentSlug?.trim() || params.agentId;
+  const {
+    experimentId: agentExperimentId,
+    experimentName: agentExperimentName,
+  } = await resolveAgentApplicationMlflowExperiment({
+    agent: {
+      id: params.agentId,
+      slug: agentSlug,
+      name: params.agentName ?? agentSlug,
+      projectId: params.projectId ?? null,
+    },
+  });
+  const {
+    experimentId: traceExperimentId,
+    experimentName: traceExperimentName,
+  } = await resolveCanonicalTraceMlflowExperiment();
+  const runExperimentId = traceExperimentId;
+  const runExperimentName = traceExperimentName ?? agentExperimentName;
+  const mlflowSessionId = params.sessionId;
+  const activeModelId =
+    params.activeModelId ?? modelIdFromMlflowUri(params.activeModelUri);
+  const runTags = [
+    tag("workflow_builder.kind", "interactive_session"),
+    tag("workflow_builder.session_id", params.sessionId),
+    tag("workflow_builder.mlflow_session_id", mlflowSessionId),
+    tag("session.id", mlflowSessionId),
+    tag("agent.session.id", params.sessionId),
+    tag("workflow_builder.agent_id", params.agentId),
+    tag("workflow_builder.agent_version", params.agentVersion),
+    tag("workflow_builder.agent_slug", agentSlug),
+    tag("workflow_builder.agent_app_id", params.agentAppId),
+    tag("workflow_builder.agent_mlflow_uri", params.activeModelUri),
+    tag("workflow_builder.project_id", params.projectId),
+    tag("workflow_builder.env", env.WORKFLOW_BUILDER_ENV ?? "unknown"),
+    tag("workflow_builder.trace_experiment_id", traceExperimentId),
+    tag("mlflow.modelId", activeModelId),
+    tag("mlflow.model.uri", params.activeModelUri),
+  ];
+  const existingRunId = params.existingRunId?.trim();
+  const existingRunExperimentId = existingRunId
+    ? await getMlflowRunExperimentId(existingRunId).catch(() => null)
+    : null;
+  const runId =
+    existingRunId && existingRunExperimentId === runExperimentId
+      ? existingRunId
+      : await createMlflowRun({
+          experimentId: runExperimentId,
+          runName: `session/${agentSlug}/${params.sessionId.slice(0, 12)}`,
+          userId: params.userId ?? null,
+          tags: runTags,
+        });
+  if (existingRunId && existingRunExperimentId === runExperimentId) {
+    await setMlflowRunTags(runId, runTags);
+  }
+  const publicUrl = publicMlflowRunUrl(runExperimentId, runId);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(sessions)
+      .set({
+        mlflowExperimentId: runExperimentId,
+        mlflowRunId: runId,
+        mlflowParentRunId: null,
+        mlflowSessionId,
+      })
+      .where(eq(sessions.id, params.sessionId));
+
+    await tx
+      .delete(mlflowLineageLinks)
+      .where(
+        and(
+          eq(mlflowLineageLinks.entityType, "session"),
+          eq(mlflowLineageLinks.entityId, params.sessionId),
+          eq(mlflowLineageLinks.mlflowEntityType, "run"),
+          ne(mlflowLineageLinks.mlflowRunId, runId),
+        ),
+      );
+
+    await tx
+      .insert(mlflowLineageLinks)
+      .values({
+        sourceKey: `session:${params.sessionId}:mlflow_session:${mlflowSessionId}`,
+        entityType: "session",
+        entityId: params.sessionId,
+        projectId: params.projectId ?? null,
+        mlflowEntityType: "session",
+        mlflowExperimentId: traceExperimentId,
+        mlflowRunId: runId,
+        mlflowSessionId,
+        mlflowLoggedModelId: activeModelId ?? null,
+        mlflowLoggedModelName: params.activeModelName ?? null,
+        mlflowLoggedModelUri: params.activeModelUri ?? null,
+        mlflowModelVersion: activeModelId ?? null,
+        mlflowPublicUrl: publicUrl,
+        tags: {
+          source: "interactive_session",
+          agentId: params.agentId,
+          agentSlug,
+          activeModelId,
+          activeModelUri: params.activeModelUri ?? null,
+        },
+        metadata: {
+          title: params.title ?? null,
+          traceExperimentId,
+          traceExperimentName,
+        },
+      })
+      .onConflictDoUpdate({
+        target: mlflowLineageLinks.sourceKey,
+        set: {
+          mlflowExperimentId: traceExperimentId,
+          mlflowRunId: runId,
+          mlflowSessionId,
+          mlflowLoggedModelId: activeModelId ?? null,
+          mlflowLoggedModelName: params.activeModelName ?? null,
+          mlflowLoggedModelUri: params.activeModelUri ?? null,
+          mlflowModelVersion: activeModelId ?? null,
+          mlflowPublicUrl: publicUrl,
+          updatedAt: new Date(),
+        },
+      });
+
+    await tx
+      .insert(mlflowLineageLinks)
+      .values({
+        sourceKey: `session:${params.sessionId}:run:${runId}`,
+        entityType: "session",
+        entityId: params.sessionId,
+        projectId: params.projectId ?? null,
+        mlflowEntityType: "run",
+        mlflowExperimentId: runExperimentId,
+        mlflowRunId: runId,
+        mlflowSessionId,
+        mlflowLoggedModelId: activeModelId ?? null,
+        mlflowLoggedModelName: params.activeModelName ?? null,
+        mlflowLoggedModelUri: params.activeModelUri ?? null,
+        mlflowModelVersion: activeModelId ?? null,
+        mlflowPublicUrl: publicUrl,
+        tags: {
+          source: "interactive_session_parent_run",
+          agentId: params.agentId,
+          agentSlug,
+          activeModelId,
+          activeModelUri: params.activeModelUri ?? null,
+        },
+        metadata: {},
+      })
+      .onConflictDoUpdate({
+        target: mlflowLineageLinks.sourceKey,
+        set: {
+          mlflowExperimentId: runExperimentId,
+          mlflowRunId: runId,
+          mlflowSessionId,
+          mlflowLoggedModelId: activeModelId ?? null,
+          mlflowLoggedModelName: params.activeModelName ?? null,
+          mlflowLoggedModelUri: params.activeModelUri ?? null,
+          mlflowModelVersion: activeModelId ?? null,
+          mlflowPublicUrl: publicUrl,
+          updatedAt: new Date(),
+        },
+      });
+  });
+
+  await logRunJsonArtifact({
+    runId,
+    artifactPath: "session-manifest.json",
+    value: {
+      schemaVersion: 1,
+      kind: "interactive_session",
+      sessionId: params.sessionId,
+      mlflowSessionId,
+      title: params.title ?? null,
+      projectId: params.projectId ?? null,
+      userId: params.userId ?? null,
+      agent: {
+        id: params.agentId,
+        name: params.agentName ?? null,
+        slug: agentSlug,
+        version: params.agentVersion ?? null,
+        appId: params.agentAppId ?? null,
+        mlflowModelId: activeModelId,
+        mlflowModelName: params.activeModelName ?? null,
+        mlflowModelUri: params.activeModelUri ?? null,
+      },
+      mlflow: {
+        experimentId: runExperimentId,
+        experimentName: runExperimentName,
+        agentExperimentId,
+        agentExperimentName,
+        traceExperimentId,
+        traceExperimentName,
+        runId,
+      },
+    },
+  }).catch((err) => {
+    console.warn(
+      `[mlflow] failed to log session manifest ${params.sessionId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  });
+
+  return {
+    experimentId: runExperimentId,
+    experimentName: runExperimentName,
+    traceExperimentId,
+    traceExperimentName,
+    runId,
+    parentRunId: null,
+    publicUrl,
+    activeModelId,
+    activeModelName: params.activeModelName ?? null,
+    activeModelUri: params.activeModelUri ?? null,
+    applicationKind: "agent",
+    applicationId: params.agentId,
+  };
+}
+
+export async function safeCreateInteractiveSessionMlflowRun(
+  params: Parameters<typeof createInteractiveSessionMlflowRun>[0],
+): Promise<MlflowRunContext | null> {
+  try {
+    return await createInteractiveSessionMlflowRun(params);
+  } catch (err) {
+    console.warn(
+      `[mlflow] failed to create interactive session run ${params.sessionId}:`,
       err instanceof Error ? err.message : err,
     );
     return null;
@@ -681,8 +1212,12 @@ export async function createWorkflowAgentMlflowRun(params: {
 }): Promise<MlflowRunContext | null> {
   if (!mlflowLifecycleEnabled()) return null;
   if (!params.parentRunId.trim()) return null;
-  const experimentId =
-    params.experimentId?.trim() || (await getOrCreateWorkflowExperimentId());
+  const fallbackExperiment =
+    params.experimentId?.trim()
+      ? null
+      : await resolveCanonicalTraceMlflowExperiment();
+  const experimentId = params.experimentId?.trim() || fallbackExperiment?.experimentId;
+  if (!experimentId) return null;
   const runName = `agent/${params.agentSlug || params.agentId || "unknown"}/${params.sessionId.slice(0, 12)}`;
   const runId = await createMlflowRun({
     experimentId,
@@ -772,15 +1307,17 @@ export async function createWorkflowAgentMlflowRun(params: {
 
   return {
     experimentId,
-    experimentName: null,
+    experimentName: fallbackExperiment?.experimentName ?? params.traceExperimentName ?? null,
     traceExperimentId: params.traceExperimentId ?? experimentId,
-    traceExperimentName: params.traceExperimentName ?? null,
+    traceExperimentName: params.traceExperimentName ?? fallbackExperiment?.experimentName ?? null,
     runId,
     parentRunId: params.parentRunId,
     publicUrl,
     activeModelId: params.activeModelId ?? null,
     activeModelName: params.activeModelName ?? null,
     activeModelUri: params.activeModelUri ?? null,
+    applicationKind: "workflow",
+    applicationId: params.workflowId ?? null,
   };
 }
 

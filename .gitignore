@@ -38,6 +38,7 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+scripts/*.bundle.js
 
 tmp/
 

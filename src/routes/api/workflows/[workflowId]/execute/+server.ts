@@ -13,7 +13,9 @@ import { validateTriggerModel } from "$lib/server/workflows/model-validation";
 import { applyWorkflowInputDefaults } from "$lib/utils/workflow-input-config";
 import {
   buildWorkflowSessionId,
+  ensureWorkflowTraceparentHeader,
   injectWorkflowSessionHeaders,
+  workflowTraceIdFromTraceparent,
 } from "$lib/server/observability/workflow-session";
 import {
   resolveSpecAgentRefs,
@@ -22,6 +24,7 @@ import {
 import {
   safeCreateWorkflowExecutionMlflowRun,
   safeFinishMlflowRun,
+  safePrecreateMlflowTrace,
 } from "$lib/server/observability/mlflow-lifecycle";
 
 /**
@@ -186,7 +189,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   try {
     const headers = sessionId
       ? injectWorkflowSessionHeaders(
-          { "Content-Type": "application/json" },
+          ensureWorkflowTraceparentHeader({ "Content-Type": "application/json" }),
           {
             sessionId,
             workflowExecutionId: execution.id,
@@ -199,6 +202,26 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           },
         )
       : { "Content-Type": "application/json" };
+    const traceContext = {
+      traceparent: headers.traceparent,
+      tracestate: headers.tracestate,
+      baggage: headers.baggage,
+    };
+    await safePrecreateMlflowTrace({
+      traceId: workflowTraceIdFromTraceparent(headers.traceparent),
+      experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
+      name: `${workflow.id}/${execution.id}`,
+      metadata: {
+        "mlflow.sourceRun": mlflowContext?.runId,
+      },
+      tags: {
+        "workflow_builder.kind": "workflow_execution",
+        "workflow_builder.workflow_id": workflowId,
+        "workflow_builder.workflow_execution_id": execution.id,
+        "workflow.execution.id": execution.id,
+        "mlflow.run_id": mlflowContext?.runId,
+      },
+    });
 
     const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
       method: "POST",
@@ -209,6 +232,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         triggerData,
         dbExecutionId: execution.id,
         mlflowContext,
+        traceContext,
       }),
     });
 

@@ -50,6 +50,12 @@ is the minimum of selected prevalidated instances, Kueue/OpenShell sandbox
 headroom, optional model caps, and evaluator parallelism. Legacy shared-runtime
 and Dapr sidecar slot caps still matter for non-Kueue rollback paths.
 
+See `docs/swebench-mlflow-comparison.md` for the SWE-bench comparison and
+MLflow tracking model. The supported comparison shape is one benchmark parent
+run per agent/configuration over the same instance set, grouped by a campaign
+tag and projected into one MLflow experiment with parent, instance-child, and
+eval-child runs.
+
 SWE-bench instance starts are gated on `workflow-orchestrator` `GET /readyz`.
 That endpoint verifies Dapr outbound health, Dapr metadata, connected Dapr
 workflow workers, and taskhub access. If `workflowConnectedWorkers` is zero, the
