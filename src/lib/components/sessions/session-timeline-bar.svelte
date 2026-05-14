@@ -12,15 +12,28 @@
 
 	let { events, selectedId, onSelect }: Props = $props();
 
-	// Each segment corresponds to one event. Width is proportional to the
-	// event's implied duration: for CMA-style events where duration_ms is
-	// present we use it; otherwise we fall back to equal spacing.
+	// Each segment corresponds to one event and is sized by the event's
+	// duration. Sources, in priority order:
+	//   1. `data.duration_ms` (set by the agent for tool calls, hook
+	//      decisions, MCP calls — i.e. anything that knows how long it
+	//      took)
+	//   2. time-to-next-event, CAPPED at FALLBACK_CAP_MS so a long idle
+	//      gap (the typical "session went quiet" pattern) doesn't
+	//      consume the entire bar
+	//   3. SHORT_FALLBACK_MS for the last event with no explicit duration
+	//
+	// CMA renders the timeline this way too — idle gaps appear as wider
+	// neutral-coloured sections rather than dominating the bar.
+	const FALLBACK_CAP_MS = 10_000;
+	const SHORT_FALLBACK_MS = 1_000;
+
 	type Segment = {
 		id: string;
 		kind: EventKind;
 		widthPct: number;
 		title: string;
 		elapsedLabel: string;
+		durationLabel: string;
 	};
 
 	const sessionStartMs = $derived.by(() => {
@@ -39,6 +52,14 @@
 		return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 	}
 
+	function fmtDuration(ms: number): string {
+		if (ms < 1000) return `${Math.round(ms)}ms`;
+		if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+		const mins = Math.floor(ms / 60_000);
+		const secs = Math.round((ms % 60_000) / 1000);
+		return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+	}
+
 	function friendlyTitle(e: SessionEventEnvelope): string {
 		const kind = eventKindFor(e.type);
 		if (kind === 'tool' || kind === 'result') {
@@ -53,21 +74,33 @@
 
 	const segments = $derived.by<Segment[]>(() => {
 		if (events.length === 0) return [];
-		const durations = events.map((e) => {
+		const eventTimes = events.map((e) => {
+			const t = new Date(e.createdAt).getTime();
+			return Number.isFinite(t) ? t : 0;
+		});
+		const durations = events.map((e, i) => {
 			const data = e.data as { duration_ms?: number; durationMs?: number };
-			const d = Number(data?.duration_ms ?? data?.durationMs ?? 0);
-			return Number.isFinite(d) && d > 0 ? d : 1;
+			const explicit = Number(data?.duration_ms ?? data?.durationMs ?? 0);
+			if (Number.isFinite(explicit) && explicit > 0) return explicit;
+			if (i < events.length - 1) {
+				const gap = eventTimes[i + 1] - eventTimes[i];
+				if (Number.isFinite(gap) && gap > 0) {
+					return Math.min(gap, FALLBACK_CAP_MS);
+				}
+			}
+			return SHORT_FALLBACK_MS;
 		});
 		const total = durations.reduce((a, b) => a + b, 0) || 1;
 		return events.map((e, i) => {
-			const ts = new Date(e.createdAt).getTime();
-			const elapsed = sessionStartMs !== null && Number.isFinite(ts) ? ts - sessionStartMs : 0;
+			const ts = eventTimes[i];
+			const elapsed = sessionStartMs !== null ? ts - sessionStartMs : 0;
 			return {
 				id: String(e.id),
 				kind: eventKindFor(e.type),
 				widthPct: Math.max(0.3, (durations[i] / total) * 100),
 				title: friendlyTitle(e),
-				elapsedLabel: fmtElapsed(elapsed)
+				elapsedLabel: fmtElapsed(elapsed),
+				durationLabel: fmtDuration(durations[i])
 			};
 		});
 	});
@@ -118,7 +151,8 @@
 			<Tooltip.Content class="flex items-center gap-2 px-2 py-1 text-[11px]">
 				<EventTypePill kind={seg.kind} size="xs" />
 				<span class="font-medium">{seg.title}</span>
-				<span class="font-mono text-muted-foreground">{seg.elapsedLabel}</span>
+				<span class="font-mono text-muted-foreground">{seg.durationLabel}</span>
+				<span class="font-mono text-muted-foreground/70">@ {seg.elapsedLabel}</span>
 			</Tooltip.Content>
 		</Tooltip.Root>
 	{/each}
