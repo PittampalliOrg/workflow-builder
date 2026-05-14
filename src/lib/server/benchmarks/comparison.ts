@@ -29,6 +29,7 @@ export type AxisName =
 	| "skillNames"
 	| "hookNames"
 	| "pluginNames"
+	| "maxTurns"
 	| "concurrency"
 	| "evaluationConcurrency"
 	| "evaluatorResourceClass";
@@ -46,6 +47,7 @@ export type RunConfigSummary = {
 	skillNames: string[];
 	hookNames: string[];
 	pluginNames: string[];
+	maxTurns: number | null;
 	concurrency: number;
 	evaluationConcurrency: number;
 	evaluatorResourceClass: string;
@@ -94,6 +96,7 @@ const AXES: readonly AxisName[] = [
 	"skillNames",
 	"hookNames",
 	"pluginNames",
+	"maxTurns",
 	"concurrency",
 	"evaluationConcurrency",
 	"evaluatorResourceClass",
@@ -167,6 +170,7 @@ export function summarizeRunConfig(input: {
 	agentVersion: number;
 	model: string;
 	modelLabel: string | null;
+	maxTurns: number | null;
 	concurrency: number;
 	evaluationConcurrency: number;
 	evaluatorResourceClass: string;
@@ -188,6 +192,7 @@ export function summarizeRunConfig(input: {
 		skillNames: namesFromSkills(cfg.skills),
 		hookNames: namesFromHooks(cfg.hooks),
 		pluginNames: namesFromPlugins(cfg.plugins),
+		maxTurns: input.maxTurns,
 		concurrency: input.concurrency,
 		evaluationConcurrency: input.evaluationConcurrency,
 		evaluatorResourceClass: input.evaluatorResourceClass,
@@ -229,6 +234,8 @@ function readAxis(r: RunConfigSummary, axis: AxisName): unknown {
 			return r.hookNames;
 		case "pluginNames":
 			return r.pluginNames;
+		case "maxTurns":
+			return r.maxTurns;
 		case "concurrency":
 			return r.concurrency;
 		case "evaluationConcurrency":
@@ -330,6 +337,7 @@ export async function loadCompareData(
 				agentVersion: row.run.agentVersion,
 				model: row.run.modelNameOrPath,
 				modelLabel: row.run.modelConfigLabel,
+				maxTurns: row.run.maxTurns,
 				concurrency: row.run.concurrency,
 				evaluationConcurrency: row.run.evaluationConcurrency,
 				evaluatorResourceClass: row.run.evaluatorResourceClass,

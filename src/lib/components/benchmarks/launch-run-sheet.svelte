@@ -7,7 +7,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Activity, Bot, Check, Gauge, Loader2, Rocket, Search, Users } from '@lucide/svelte';
+	import { Activity, AlertTriangle, Bot, Check, Gauge, Grid3x3, Loader2, Plus, Rocket, Search, Trash2, Users } from '@lucide/svelte';
 	import type { RunnableAgent, SuiteFacet } from '$lib/types/benchmark-instance';
 
 	type CapacityDiagnostics = {
@@ -91,7 +91,7 @@
 	const DEFAULT_MAX_ACTIVE_INFERENCE = 56;
 	const MAX_COMPARISON_AGENTS = 4;
 
-	type LaunchMode = 'single' | 'agent-comparison';
+	type LaunchMode = 'single' | 'agent-comparison' | 'matrix';
 	let launchMode = $state<LaunchMode>('single');
 	let agentId = $state('');
 	let comparisonAgentIds = $state<string[]>([]);
@@ -102,6 +102,8 @@
 	let concurrency = $state(DEFAULT_INFERENCE_CONCURRENCY);
 	let evaluationConcurrency = $state(DEFAULT_EVALUATION_CONCURRENCY);
 	let timeoutSeconds = $state(7200);
+	// Empty input means "use agent default"; the API treats null as "no override".
+	let maxTurns = $state<number | null>(null);
 	let evaluatorResourceClass = $state<'standard' | 'large' | 'xlarge'>('standard');
 	const executionBackend = 'dapr-kueue';
 	let executionClass = $state<'benchmark-fast' | 'secure-gvisor'>('benchmark-fast');
@@ -110,6 +112,22 @@
 	let capacityDiagnostics = $state<CapacityDiagnostics | null>(null);
 	let capacityLoading = $state(false);
 	let capacityFetchSeq = 0;
+
+	// Matrix mode: each arm becomes its own benchmark_runs row sharing the
+	// same instanceIds + campaign tag, but with per-arm agent/model/maxTurns/
+	// label so the compare page can light up the differing axis.
+	type MatrixArm = {
+		id: string;
+		agentId: string;
+		modelNameOrPath: string;
+		maxTurns: number | null;
+		modelConfigLabel: string;
+		// True once the user has typed into this arm's label field. Auto-label
+		// stops rewriting it from that point so we don't stomp manual edits.
+		labelTouched: boolean;
+	};
+	let arms = $state<MatrixArm[]>([]);
+	let armAgentQuery = $state<Record<string, string>>({});
 
 	let submitting = $state(false);
 	let errorMessage = $state<string | null>(null);
@@ -121,7 +139,11 @@
 			.filter((agent): agent is RunnableAgent => Boolean(agent))
 	);
 	const capacityAgentId = $derived(
-		launchMode === 'agent-comparison' ? (comparisonAgentIds[0] ?? agentId) : agentId
+		launchMode === 'matrix'
+			? (arms[0]?.agentId ?? agentId)
+			: launchMode === 'agent-comparison'
+				? (comparisonAgentIds[0] ?? agentId)
+				: agentId
 	);
 	const capacityAgent = $derived(runnableAgents.find((a) => a.id === capacityAgentId) ?? null);
 	const visibleAgents = $derived.by(() => {
@@ -179,9 +201,39 @@
 	});
 
 	$effect(() => {
-		if (open && !comparisonLabelTouched && !comparisonLabel.trim()) {
-			comparisonLabel = defaultComparisonLabel();
+		if (open && launchMode === 'matrix' && arms.length === 0 && runnableAgents.length > 0) {
+			// Seed the matrix with two arms by default — one arm isn't a
+			// comparison, and the submit gate requires ≥2 anyway.
+			arms = [createArm(runnableAgents[0]), createArm(runnableAgents[0])];
 		}
+	});
+
+	// Auto-label arms whose labels haven't been hand-edited. Walks all arms,
+	// rewrites only those where the computed label differs from the current
+	// value AND `labelTouched` is false. The equality guard prevents an
+	// infinite effect loop.
+	$effect(() => {
+		if (launchMode !== 'matrix' || arms.length === 0) return;
+		let changed = false;
+		const next = arms.map((arm, idx) => {
+			if (arm.labelTouched) return arm;
+			const auto = autoLabelFor(arm, idx);
+			if (arm.modelConfigLabel === auto) return arm;
+			changed = true;
+			return { ...arm, modelConfigLabel: auto };
+		});
+		if (changed) arms = next;
+	});
+
+	$effect(() => {
+		// Auto-fill the campaign label whenever the comparison/matrix mode
+		// becomes active. Re-fires on `launchMode` changes so switching from
+		// agent-comparison → matrix updates the suffix (and vice-versa). The
+		// equality guard prevents an infinite re-trigger loop.
+		if (!open || comparisonLabelTouched) return;
+		if (launchMode !== 'agent-comparison' && launchMode !== 'matrix') return;
+		const expected = defaultComparisonLabel();
+		if (comparisonLabel !== expected) comparisonLabel = expected;
 	});
 
 	$effect(() => {
@@ -249,6 +301,9 @@
 		if (next === 'agent-comparison' && comparisonAgentIds.length === 0 && agentId) {
 			comparisonAgentIds = [agentId];
 		}
+		if (next === 'matrix' && arms.length === 0 && runnableAgents.length > 0) {
+			arms = [createArm(runnableAgents[0]), createArm(runnableAgents[0])];
+		}
 	}
 
 	function useMaxSafeConcurrency() {
@@ -307,7 +362,8 @@
 	function defaultComparisonLabel(): string {
 		const date = new Date().toISOString().slice(0, 10);
 		const suite = normalizeTag(suiteSlug) || 'swebench';
-		return `${suite}-agent-comparison-${date}`.slice(0, 64);
+		const kind = launchMode === 'matrix' ? 'matrix' : 'agent-comparison';
+		return `${suite}-${kind}-${date}`.slice(0, 64);
 	}
 
 	function toggleComparisonAgent(agent: RunnableAgent) {
@@ -319,6 +375,120 @@
 		comparisonAgentIds = [...comparisonAgentIds, agent.id];
 		if (!agentId) selectAgent(agent);
 	}
+
+	// --- Matrix mode helpers --------------------------------------------------
+
+	function newArmId(): string {
+		// Browser-native; no extra dependency. 8 chars is enough for keying.
+		return crypto.randomUUID().slice(0, 8);
+	}
+
+	function createArm(agent?: RunnableAgent): MatrixArm {
+		return {
+			id: newArmId(),
+			agentId: agent?.id ?? '',
+			modelNameOrPath: agent ? parseModelDefault(agent.modelSpec) : '',
+			maxTurns: null,
+			modelConfigLabel: '',
+			labelTouched: false
+		};
+	}
+
+	function addArm() {
+		if (arms.length >= MAX_COMPARISON_AGENTS) return;
+		const seed = runnableAgents[0];
+		arms = [...arms, createArm(seed)];
+	}
+
+	function removeArm(armId: string) {
+		if (arms.length <= 1) return;
+		arms = arms.filter((a) => a.id !== armId);
+	}
+
+	function setArmAgent(armId: string, agent: RunnableAgent) {
+		arms = arms.map((a) =>
+			a.id === armId
+				? {
+						...a,
+						agentId: agent.id,
+						// Auto-fill model from the picked agent's spec ONLY if the
+						// user hasn't typed their own override; otherwise keep it.
+						modelNameOrPath: a.modelNameOrPath.trim()
+							? a.modelNameOrPath
+							: parseModelDefault(agent.modelSpec)
+					}
+				: a
+		);
+	}
+
+	function updateArm<K extends keyof MatrixArm>(armId: string, key: K, value: MatrixArm[K]) {
+		arms = arms.map((a) => (a.id === armId ? { ...a, [key]: value } : a));
+	}
+
+	function handleArmLabelInput(armId: string, value: string) {
+		// Clearing the field re-engages auto-label so the user can recover
+		// without remounting the sheet.
+		const touched = value.trim().length > 0;
+		arms = arms.map((a) =>
+			a.id === armId ? { ...a, modelConfigLabel: value, labelTouched: touched } : a
+		);
+	}
+
+	function handleArmMaxTurnsInput(armId: string, value: string) {
+		const trimmed = value.trim();
+		if (!trimmed) {
+			updateArm(armId, 'maxTurns', null);
+			return;
+		}
+		const parsed = Number.parseInt(trimmed, 10);
+		if (!Number.isFinite(parsed) || parsed < 1) return;
+		updateArm(armId, 'maxTurns', parsed);
+	}
+
+	function shortAgentSlug(armAgentId: string): string {
+		const ag = runnableAgents.find((a) => a.id === armAgentId);
+		return (ag?.slug ?? ag?.name ?? 'agent').slice(0, 12);
+	}
+
+	function autoLabelFor(arm: MatrixArm, idx: number): string {
+		// Look across all arms to decide which axes vary, then build the
+		// label from the first 1-2 differing axes. Single-arm fall-through
+		// uses `arm<idx>` so labels remain unique by position.
+		const agentVaries = new Set(arms.map((a) => a.agentId)).size > 1;
+		const modelVaries =
+			new Set(arms.map((a) => a.modelNameOrPath.trim() || 'auto')).size > 1;
+		const maxTurnsVaries =
+			new Set(arms.map((a) => (a.maxTurns ?? 'default').toString())).size > 1;
+
+		const parts: string[] = [];
+		if (agentVaries) parts.push(shortAgentSlug(arm.agentId));
+		if (modelVaries) {
+			const m = (arm.modelNameOrPath.trim() || 'auto').slice(0, 16);
+			parts.push(m);
+		}
+		if (maxTurnsVaries) {
+			parts.push(arm.maxTurns == null ? 'mtdefault' : `mt${arm.maxTurns}`);
+		}
+		if (parts.length === 0) parts.push(`arm${idx + 1}`);
+		return normalizeTag(parts.slice(0, 2).join('-')) || `arm${idx + 1}`;
+	}
+
+	// Fingerprint each arm so we can block submit when two arms would create
+	// indistinguishable benchmark runs (same agent + model + maxTurns + label).
+	const armFingerprints = $derived(
+		arms.map(
+			(a) =>
+				`${a.agentId}|${a.modelNameOrPath.trim().toLowerCase()}|${a.maxTurns ?? 'default'}|${a.modelConfigLabel.trim().toLowerCase()}`
+		)
+	);
+	const hasDuplicateArms = $derived(
+		arms.length >= 2 && new Set(armFingerprints).size < armFingerprints.length
+	);
+	const matrixSubmitReady = $derived(
+		arms.length >= 2 &&
+			!hasDuplicateArms &&
+			arms.every((a) => a.agentId && a.modelConfigLabel.trim().length > 0)
+	);
 
 	function runTags(extraTags: string[] = []): string[] {
 		return [...new Set([...parseTags(tagsInput), ...extraTags, 'dapr-kueue'])];
@@ -336,6 +506,7 @@
 		if (instanceIds.length === 0 || submitting) return;
 		if (launchMode === 'single' && !agentId) return;
 		if (launchMode === 'agent-comparison' && selectedComparisonAgents.length < 2) return;
+		if (launchMode === 'matrix' && !matrixSubmitReady) return;
 		submitting = true;
 		errorMessage = null;
 		try {
@@ -357,6 +528,7 @@
 							concurrency,
 							evaluationConcurrency,
 							timeoutSeconds,
+							maxTurns,
 							evaluatorResourceClass,
 							tags: sharedTags,
 							requirePrevalidatedEnvironments,
@@ -404,6 +576,87 @@
 				}
 				throw new Error('No comparison runs were created');
 			}
+
+			if (launchMode === 'matrix') {
+				// Matrix mode: each arm becomes its own benchmark_runs row sharing
+				// the same instanceIds + campaign tag, but with per-arm agent /
+				// model / maxTurns / label so the compare page can light up the
+				// differing axis automatically via buildAxisDiff.
+				const createdRunIds: string[] = [];
+				const failures: string[] = [];
+				const campaignTag = comparisonTag;
+				const sharedTags = runTags([campaignTag, 'matrix-comparison']);
+				for (const arm of arms) {
+					const agent = runnableAgents.find((a) => a.id === arm.agentId);
+					if (!agent) {
+						failures.push(`arm ${arm.id}: agent not found`);
+						continue;
+					}
+					const res = await fetch('/api/benchmarks/runs', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							suiteSlug,
+							agentId: arm.agentId,
+							instanceIds,
+							modelNameOrPath:
+								arm.modelNameOrPath.trim() ||
+								parseModelDefault(agent.modelSpec) ||
+								undefined,
+							modelConfigLabel: arm.modelConfigLabel.trim() || campaignTag,
+							maxTurns: arm.maxTurns,
+							concurrency,
+							evaluationConcurrency,
+							timeoutSeconds,
+							evaluatorResourceClass,
+							tags: sharedTags,
+							requirePrevalidatedEnvironments,
+							executionBackend,
+							executionClass
+						})
+					});
+					const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+					const label = arm.modelConfigLabel.trim() || agent.name;
+					if (!res.ok) {
+						failures.push(
+							`${label}: ${
+								(body as { message?: string; error?: string }).message ??
+								(body as { error?: string }).error ??
+								`failed (${res.status})`
+							}`
+						);
+						continue;
+					}
+					const run = (body as { run?: { id: string } }).run;
+					const coordinatorStartError = (body as { coordinatorStartError?: string | null })
+						.coordinatorStartError;
+					if (coordinatorStartError) {
+						failures.push(`${label}: coordinator failed to start: ${coordinatorStartError}`);
+					}
+					if (run?.id) createdRunIds.push(run.id);
+				}
+				if (failures.length > 0 && createdRunIds.length < 2) {
+					throw new Error(failures.join('; '));
+				}
+				if (createdRunIds.length >= 2) {
+					onOpenChange(false);
+					reset();
+					await goto(
+						`/workspaces/${slug}/benchmarks/compare?runs=${createdRunIds
+							.map((id) => encodeURIComponent(id))
+							.join(',')}&tag=${encodeURIComponent(campaignTag)}`
+					);
+					return;
+				}
+				if (createdRunIds.length === 1) {
+					onOpenChange(false);
+					reset();
+					await goto(`/workspaces/${slug}/benchmarks/runs/${encodeURIComponent(createdRunIds[0])}`);
+					return;
+				}
+				throw new Error('No matrix runs were created');
+			}
+
 			const res = await fetch('/api/benchmarks/runs', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -416,6 +669,7 @@
 					concurrency,
 					evaluationConcurrency,
 					timeoutSeconds,
+					maxTurns,
 					evaluatorResourceClass,
 					tags: runTags(),
 					requirePrevalidatedEnvironments,
@@ -470,7 +724,7 @@
 		</Sheet.Header>
 
 		<div class="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-3">
-			<div class="grid grid-cols-2 gap-2">
+			<div class="grid grid-cols-3 gap-2">
 				<Button
 					type="button"
 					variant={launchMode === 'single' ? 'default' : 'outline'}
@@ -488,6 +742,15 @@
 				>
 					<Users class="size-3.5" />
 					Compare agents
+				</Button>
+				<Button
+					type="button"
+					variant={launchMode === 'matrix' ? 'default' : 'outline'}
+					class="justify-start"
+					onclick={() => setLaunchMode('matrix')}
+				>
+					<Grid3x3 class="size-3.5" />
+					Matrix
 				</Button>
 			</div>
 
@@ -530,6 +793,7 @@
 				{/if}
 			</div>
 
+			{#if launchMode !== 'matrix'}
 			<!-- Agent -->
 			<div class="space-y-1.5">
 				<Label for="launch-agent">{launchMode === 'agent-comparison' ? 'Agents' : 'Agent'}</Label>
@@ -636,6 +900,174 @@
 						{/if}
 					{/if}
 			</div>
+			{/if}
+
+			<!-- Matrix arms -->
+			{#if launchMode === 'matrix'}
+				<div class="space-y-3">
+					<div class="space-y-1.5">
+						<Label for="launch-matrix-campaign" class="text-xs">Comparison campaign</Label>
+						<Input
+							id="launch-matrix-campaign"
+							value={comparisonLabel}
+							oninput={(event) => {
+								comparisonLabelTouched = true;
+								comparisonLabel = (event.currentTarget as HTMLInputElement).value;
+							}}
+							placeholder={defaultComparisonLabel()}
+						/>
+						<div class="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+							<span>MLflow tag</span>
+							<Badge variant="secondary" class="font-mono text-[10px]">#{comparisonTag}</Badge>
+							<span>applied to every parent, instance, and eval run</span>
+						</div>
+					</div>
+
+					{#if runnableAgents.length === 0}
+						<Alert variant="destructive">
+							<AlertDescription>
+								No registered <code class="text-[11px]">dapr-agent-py</code> or
+								<code class="text-[11px]">adk-agent-py</code> agents in this workspace. Publish one
+								to launch a matrix.
+							</AlertDescription>
+						</Alert>
+					{:else}
+						<div class="flex items-center justify-between">
+							<Label class="text-xs">Arms ({arms.length}/{MAX_COMPARISON_AGENTS})</Label>
+							<span class="text-[10px] text-muted-foreground">
+								Varies: agent · model · maxTurns · label
+							</span>
+						</div>
+
+						<div class="space-y-2">
+							{#each arms as arm, idx (arm.id)}
+								{@const armAgent = runnableAgents.find((a) => a.id === arm.agentId) ?? null}
+								<div class="rounded-md border border-border bg-muted/20 p-3 space-y-2">
+									<div class="flex items-center justify-between">
+										<Badge variant="default" class="text-[10px]">Arm #{idx + 1}</Badge>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											class="h-6 px-2 text-[10px]"
+											onclick={() => removeArm(arm.id)}
+											disabled={arms.length <= 1}
+											aria-label="Remove this arm"
+										>
+											<Trash2 class="size-3" />
+											Remove
+										</Button>
+									</div>
+
+									<div class="space-y-1">
+										<Label class="text-[11px]" for="arm-{arm.id}-agent">Agent</Label>
+										<select
+											id="arm-{arm.id}-agent"
+											class="w-full h-9 rounded-md border border-border bg-background px-3 text-sm"
+											value={arm.agentId}
+											onchange={(event) => {
+												const target = event.currentTarget as HTMLSelectElement;
+												const next = runnableAgents.find((a) => a.id === target.value);
+												if (next) setArmAgent(arm.id, next);
+											}}
+										>
+											<option value="" disabled>Pick an agent…</option>
+											{#each runnableAgents as ag (ag.id)}
+												<option value={ag.id}>
+													{ag.name} · v{ag.currentVersion}{ag.modelSpec
+														? ` · ${ag.modelSpec}`
+														: ''}
+												</option>
+											{/each}
+										</select>
+									</div>
+
+									<div class="grid grid-cols-2 gap-2">
+										<div class="space-y-1">
+											<Label class="text-[11px]" for="arm-{arm.id}-model">Model</Label>
+											<Input
+												id="arm-{arm.id}-model"
+												value={arm.modelNameOrPath}
+												oninput={(event) =>
+													updateArm(
+														arm.id,
+														'modelNameOrPath',
+														(event.currentTarget as HTMLInputElement).value
+													)}
+												placeholder={armAgent?.modelSpec
+													? parseModelDefault(armAgent.modelSpec)
+													: 'auto'}
+											/>
+										</div>
+										<div class="space-y-1">
+											<Label class="text-[11px]" for="arm-{arm.id}-maxturns">Max turns</Label>
+											<Input
+												id="arm-{arm.id}-maxturns"
+												type="number"
+												min="1"
+												max="1000"
+												value={arm.maxTurns ?? ''}
+												oninput={(event) =>
+													handleArmMaxTurnsInput(
+														arm.id,
+														(event.currentTarget as HTMLInputElement).value
+													)}
+												placeholder="default"
+											/>
+										</div>
+									</div>
+
+									<div class="space-y-1">
+										<Label class="text-[11px]" for="arm-{arm.id}-label">Label</Label>
+										<Input
+											id="arm-{arm.id}-label"
+											value={arm.modelConfigLabel}
+											oninput={(event) =>
+												handleArmLabelInput(
+													arm.id,
+													(event.currentTarget as HTMLInputElement).value
+												)}
+											placeholder={autoLabelFor(arm, idx)}
+										/>
+										{#if !arm.labelTouched}
+											<p class="text-[9px] text-muted-foreground">
+												Auto-derived from differing fields. Type to override; clear to re-engage.
+											</p>
+										{/if}
+									</div>
+								</div>
+							{/each}
+
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="w-full"
+								onclick={addArm}
+								disabled={arms.length >= MAX_COMPARISON_AGENTS}
+							>
+								<Plus class="size-3.5" />
+								Add arm
+							</Button>
+						</div>
+
+						{#if hasDuplicateArms}
+							<Alert variant="destructive">
+								<AlertTriangle class="size-3.5" />
+								<AlertDescription>
+									Two or more arms have identical (agent, model, max turns, label). Differentiate
+									at least one field per arm before launching.
+								</AlertDescription>
+							</Alert>
+						{/if}
+
+						<p class="text-[10px] text-muted-foreground">
+							Each arm becomes its own benchmark run sharing the same instances + campaign tag.
+							Capacity estimate below uses arm #1 — other arms may differ.
+						</p>
+					{/if}
+				</div>
+			{/if}
 
 			<!-- Model name / path -->
 			{#if launchMode === 'single'}
@@ -652,20 +1084,22 @@
 				</div>
 			{/if}
 
-			<!-- Model config label -->
-			<div class="space-y-1.5">
-				<Label for="launch-label">Model config label <span class="text-muted-foreground text-[11px]">(optional)</span></Label>
-				<Input
-					id="launch-label"
-					bind:value={modelConfigLabel}
-					placeholder={launchMode === 'agent-comparison' ? comparisonTag : 'e.g. v1-mcp-toggle, no-skills, baseline'}
-				/>
-				<p class="text-[10px] text-muted-foreground">
-					{launchMode === 'agent-comparison'
-						? 'Applied consistently across the agent variants so the campaign tag and agent axis stay clear.'
-						: 'Used as the comparison axis label when diffing runs. Highly recommended for experiments.'}
-				</p>
-			</div>
+			<!-- Model config label (label is per-arm in matrix mode, so hide here) -->
+			{#if launchMode !== 'matrix'}
+				<div class="space-y-1.5">
+					<Label for="launch-label">Model config label <span class="text-muted-foreground text-[11px]">(optional)</span></Label>
+					<Input
+						id="launch-label"
+						bind:value={modelConfigLabel}
+						placeholder={launchMode === 'agent-comparison' ? comparisonTag : 'e.g. v1-mcp-toggle, no-skills, baseline'}
+					/>
+					<p class="text-[10px] text-muted-foreground">
+						{launchMode === 'agent-comparison'
+							? 'Applied consistently across the agent variants so the campaign tag and agent axis stay clear.'
+							: 'Used as the comparison axis label when diffing runs. Highly recommended for experiments.'}
+					</p>
+				</div>
+			{/if}
 
 			<!-- Tags -->
 			<div class="space-y-1.5">
@@ -786,6 +1220,35 @@
 				</p>
 			</div>
 
+			<!-- Max turns (single + compare-agents modes; matrix sets it per arm) -->
+			{#if launchMode !== 'matrix'}
+				<div class="space-y-1.5">
+					<Label for="launch-max-turns">
+						Max turns <span class="text-muted-foreground text-[11px]">(optional)</span>
+					</Label>
+					<Input
+						id="launch-max-turns"
+						type="number"
+						min="1"
+						max="1000"
+						value={maxTurns ?? ''}
+						oninput={(event) => {
+							const v = (event.currentTarget as HTMLInputElement).value.trim();
+							if (!v) {
+								maxTurns = null;
+								return;
+							}
+							const parsed = Number.parseInt(v, 10);
+							if (Number.isFinite(parsed) && parsed >= 1) maxTurns = parsed;
+						}}
+						placeholder="agent default"
+					/>
+					<p class="text-[10px] text-muted-foreground">
+						Caps agent reasoning turns per instance. Leave empty to use the agent's published default.
+					</p>
+				</div>
+			{/if}
+
 			<!-- Timeout & resource class -->
 			<div class="grid grid-cols-2 gap-3">
 				<div class="space-y-1.5">
@@ -842,7 +1305,11 @@
 				disabled={submitting ||
 					instanceIds.length === 0 ||
 					runnableAgents.length === 0 ||
-					(launchMode === 'single' ? !agentId : selectedComparisonAgents.length < 2)}
+					(launchMode === 'single'
+						? !agentId
+						: launchMode === 'agent-comparison'
+							? selectedComparisonAgents.length < 2
+							: !matrixSubmitReady)}
 			>
 				{#if submitting}
 					<Loader2 class="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -850,6 +1317,9 @@
 				{:else if launchMode === 'agent-comparison'}
 					<Users class="mr-1.5 h-3.5 w-3.5" />
 					Start comparison · {selectedComparisonAgents.length} agents × {instanceIds.length} instances
+				{:else if launchMode === 'matrix'}
+					<Grid3x3 class="mr-1.5 h-3.5 w-3.5" />
+					Start campaign · {arms.length} arms × {instanceIds.length} instances
 				{:else}
 					<Activity class="mr-1.5 h-3.5 w-3.5" />
 					Start run · {instanceIds.length} {instanceIds.length === 1 ? 'instance' : 'instances'}

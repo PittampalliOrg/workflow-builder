@@ -19,6 +19,7 @@
 		skillNames: 'Skills',
 		hookNames: 'Hooks',
 		pluginNames: 'Plugins',
+		maxTurns: 'Max turns',
 		concurrency: 'Concurrency',
 		evaluationConcurrency: 'Eval concurrency',
 		evaluatorResourceClass: 'Evaluator class'
@@ -36,7 +37,10 @@
 		)
 	);
 
-	function formatValue(value: unknown): string {
+	function formatValue(value: unknown, axisName?: AxisName): string {
+		// maxTurns=null means "use the agent's default", not "missing data".
+		// Render explicitly so the diff strip reads clearly.
+		if (value == null && axisName === 'maxTurns') return 'default';
 		if (value == null || value === '') return '—';
 		if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : '—';
 		return String(value);
@@ -78,7 +82,7 @@
 								<span class="mr-1 text-[9px] tabular-nums text-muted-foreground">
 									#{idx + 1}
 								</span>
-								{formatValue(value)}
+								{formatValue(value, axisName)}
 							</Badge>
 						{/each}
 					</div>
@@ -96,7 +100,7 @@
 				{#each sharedAxes as [axisName, diff] (axisName)}
 					<div class="grid grid-cols-[140px_minmax(0,1fr)] gap-3">
 						<span class="text-muted-foreground">{AXIS_LABELS[axisName]}</span>
-						<span class="font-mono">{formatValue(diff.values[0])}</span>
+						<span class="font-mono">{formatValue(diff.values[0], axisName)}</span>
 					</div>
 				{/each}
 			</div>

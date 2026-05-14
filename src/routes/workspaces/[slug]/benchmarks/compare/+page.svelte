@@ -189,6 +189,10 @@
 				return r.hookNames.join(', ') || '∅';
 			case 'pluginNames':
 				return r.pluginNames.join(', ') || '∅';
+			case 'maxTurns':
+				// null = agent default; render as a stable label so the
+				// stats-by-axis bar chart legend reads clearly.
+				return r.maxTurns ?? 'default';
 			case 'concurrency':
 				return r.concurrency;
 			case 'evaluationConcurrency':

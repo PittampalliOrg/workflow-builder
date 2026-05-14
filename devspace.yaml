@@ -1103,31 +1103,18 @@ dev:
         value: "true"
     ports:
       - port: "${SWEBENCH_COORDINATOR_LOCAL_PORT}:${SWEBENCH_COORDINATOR_CONTAINER_PORT}"
+    # Only override env that differs from the source Deployment (Deployment-swebench-coordinator.yaml).
+    # PYTHONUNBUFFERED, PYTHONDONTWRITEBYTECODE, OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT,
+    # WORKFLOW_BUILDER_URL, SWEBENCH_ARTIFACT_ROOT, SWEBENCH_ARTIFACTS_PVC, SWEBENCH_EVALUATOR_NAMESPACE,
+    # and SWEBENCH_EVALUATOR_IMAGE are inherited from the deployment template — appending duplicates here
+    # confused `kubectl set env` and made the last-wins ordering hide the canonical kustomize pin.
     env:
-      - name: PYTHONUNBUFFERED
-        value: "1"
-      - name: PYTHONDONTWRITEBYTECODE
-        value: "1"
-      - name: OTEL_SERVICE_NAME
-        value: "${SWEBENCH_COORDINATOR_APP_NAME}"
-      - name: OTEL_EXPORTER_OTLP_ENDPOINT
-        value: "http://otel-collector.observability.svc.cluster.local:4318"
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
       - name: DAPR_HTTP_PORT
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
-      - name: WORKFLOW_BUILDER_URL
-        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
-      - name: SWEBENCH_ARTIFACT_ROOT
-        value: "/artifacts"
-      - name: SWEBENCH_ARTIFACTS_PVC
-        value: "swebench-artifacts"
-      - name: SWEBENCH_EVALUATOR_NAMESPACE
-        value: "workflow-builder"
-      - name: SWEBENCH_EVALUATOR_IMAGE
-        value: ${SWEBENCH_EVALUATOR_IMAGE}
 
   dapr-agent-py:
     namespace: ${APP_NAME}
@@ -1216,8 +1203,7 @@ dev:
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
-      - name: WORKFLOW_BUILDER_URL
-        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
+      # WORKFLOW_BUILDER_URL inherited from Deployment-dapr-agent-py.yaml (same value).
       - name: WORKFLOW_BUILDER_APP_ID
         value: "workflow-builder"
       - name: OPENSHELL_AGENT_RUNTIME_API_BASE_URL
