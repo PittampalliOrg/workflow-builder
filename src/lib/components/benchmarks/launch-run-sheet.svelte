@@ -7,7 +7,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { Activity, Bot, Check, Gauge, Loader2, Rocket, Search } from '@lucide/svelte';
+	import { Activity, Bot, Check, Gauge, Loader2, Rocket, Search, Users } from '@lucide/svelte';
 	import type { RunnableAgent, SuiteFacet } from '$lib/types/benchmark-instance';
 
 	type CapacityDiagnostics = {
@@ -89,8 +89,14 @@
 	const MAX_INFERENCE_CONCURRENCY = 500;
 	const MAX_EVALUATION_CONCURRENCY = 128;
 	const DEFAULT_MAX_ACTIVE_INFERENCE = 56;
+	const MAX_COMPARISON_AGENTS = 4;
 
+	type LaunchMode = 'single' | 'agent-comparison';
+	let launchMode = $state<LaunchMode>('single');
 	let agentId = $state('');
+	let comparisonAgentIds = $state<string[]>([]);
+	let comparisonLabel = $state('');
+	let comparisonLabelTouched = $state(false);
 	let modelNameOrPath = $state('');
 	let modelConfigLabel = $state('');
 	let concurrency = $state(DEFAULT_INFERENCE_CONCURRENCY);
@@ -109,6 +115,15 @@
 	let errorMessage = $state<string | null>(null);
 
 	const selectedAgent = $derived(runnableAgents.find((a) => a.id === agentId) ?? null);
+	const selectedComparisonAgents = $derived(
+		comparisonAgentIds
+			.map((id) => runnableAgents.find((a) => a.id === id))
+			.filter((agent): agent is RunnableAgent => Boolean(agent))
+	);
+	const capacityAgentId = $derived(
+		launchMode === 'agent-comparison' ? (comparisonAgentIds[0] ?? agentId) : agentId
+	);
+	const capacityAgent = $derived(runnableAgents.find((a) => a.id === capacityAgentId) ?? null);
 	const visibleAgents = $derived.by(() => {
 		const query = agentQuery.trim().toLowerCase();
 		if (!query) return runnableAgents;
@@ -118,7 +133,7 @@
 			)
 		);
 	});
-	const selectedCapacity = $derived(selectedAgent?.benchmarkCapacity ?? null);
+	const selectedCapacity = $derived(capacityAgent?.benchmarkCapacity ?? null);
 	const maxActiveInference = $derived(
 		Math.max(1, selectedCapacity?.maxActiveSessions ?? DEFAULT_MAX_ACTIVE_INFERENCE)
 	);
@@ -158,7 +173,19 @@
 	});
 
 	$effect(() => {
-		if (!open || !agentId || instanceIds.length === 0) {
+		if (open && launchMode === 'agent-comparison' && comparisonAgentIds.length === 0 && agentId) {
+			comparisonAgentIds = [agentId];
+		}
+	});
+
+	$effect(() => {
+		if (open && !comparisonLabelTouched && !comparisonLabel.trim()) {
+			comparisonLabel = defaultComparisonLabel();
+		}
+	});
+
+	$effect(() => {
+		if (!open || !capacityAgentId || instanceIds.length === 0) {
 			capacityDiagnostics = null;
 			capacityLoading = false;
 			return;
@@ -173,7 +200,7 @@
 					headers: { 'Content-Type': 'application/json' },
 					signal: controller.signal,
 					body: JSON.stringify({
-						agentId,
+						agentId: capacityAgentId,
 						instanceIds,
 						requestedConcurrency: MAX_INFERENCE_CONCURRENCY,
 						evaluationConcurrency,
@@ -212,6 +239,16 @@
 	function selectAgent(agent: RunnableAgent) {
 		agentId = agent.id;
 		modelNameOrPath = parseModelDefault(agent.modelSpec);
+		if (launchMode === 'agent-comparison' && comparisonAgentIds.length === 0) {
+			comparisonAgentIds = [agent.id];
+		}
+	}
+
+	function setLaunchMode(next: LaunchMode) {
+		launchMode = next;
+		if (next === 'agent-comparison' && comparisonAgentIds.length === 0 && agentId) {
+			comparisonAgentIds = [agentId];
+		}
 	}
 
 	function useMaxSafeConcurrency() {
@@ -226,6 +263,7 @@
 
 	const previewIds = $derived(instanceIds.slice(0, 3));
 	const remainingCount = $derived(Math.max(0, instanceIds.length - previewIds.length));
+	const comparisonTag = $derived(normalizeTag(comparisonLabel) || defaultComparisonLabel());
 
 	const estimatedMinutes = $derived(() => {
 		// Rough wall-clock estimate. Assumes ~7 minutes per instance with bounded
@@ -257,6 +295,35 @@
 		return out;
 	}
 
+	function normalizeTag(input: string): string {
+		return input
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9_.-]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 64);
+	}
+
+	function defaultComparisonLabel(): string {
+		const date = new Date().toISOString().slice(0, 10);
+		const suite = normalizeTag(suiteSlug) || 'swebench';
+		return `${suite}-agent-comparison-${date}`.slice(0, 64);
+	}
+
+	function toggleComparisonAgent(agent: RunnableAgent) {
+		if (comparisonAgentIds.includes(agent.id)) {
+			comparisonAgentIds = comparisonAgentIds.filter((id) => id !== agent.id);
+			return;
+		}
+		if (comparisonAgentIds.length >= MAX_COMPARISON_AGENTS) return;
+		comparisonAgentIds = [...comparisonAgentIds, agent.id];
+		if (!agentId) selectAgent(agent);
+	}
+
+	function runTags(extraTags: string[] = []): string[] {
+		return [...new Set([...parseTags(tagsInput), ...extraTags, 'dapr-kueue'])];
+	}
+
 	function reset() {
 		errorMessage = null;
 		modelConfigLabel = '';
@@ -266,10 +333,77 @@
 	}
 
 	async function submit() {
-		if (instanceIds.length === 0 || !agentId || submitting) return;
+		if (instanceIds.length === 0 || submitting) return;
+		if (launchMode === 'single' && !agentId) return;
+		if (launchMode === 'agent-comparison' && selectedComparisonAgents.length < 2) return;
 		submitting = true;
 		errorMessage = null;
 		try {
+			if (launchMode === 'agent-comparison') {
+				const createdRunIds: string[] = [];
+				const failures: string[] = [];
+				const campaignTag = comparisonTag;
+				const sharedTags = runTags([campaignTag, 'agent-comparison']);
+				for (const agent of selectedComparisonAgents) {
+					const res = await fetch('/api/benchmarks/runs', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							suiteSlug,
+							agentId: agent.id,
+							instanceIds,
+							modelNameOrPath: parseModelDefault(agent.modelSpec) || undefined,
+							modelConfigLabel: modelConfigLabel.trim() || campaignTag,
+							concurrency,
+							evaluationConcurrency,
+							timeoutSeconds,
+							evaluatorResourceClass,
+							tags: sharedTags,
+							requirePrevalidatedEnvironments,
+							executionBackend,
+							executionClass
+						})
+					});
+					const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+					if (!res.ok) {
+						failures.push(
+							`${agent.name}: ${
+								(body as { message?: string; error?: string }).message ??
+								(body as { error?: string }).error ??
+								`failed (${res.status})`
+							}`
+						);
+						continue;
+					}
+					const run = (body as { run?: { id: string } }).run;
+					const coordinatorStartError = (body as { coordinatorStartError?: string | null })
+						.coordinatorStartError;
+					if (coordinatorStartError) {
+						failures.push(`${agent.name}: coordinator failed to start: ${coordinatorStartError}`);
+					}
+					if (run?.id) createdRunIds.push(run.id);
+				}
+				if (failures.length > 0 && createdRunIds.length < 2) {
+					throw new Error(failures.join('; '));
+				}
+				if (createdRunIds.length >= 2) {
+					onOpenChange(false);
+					reset();
+					await goto(
+						`/workspaces/${slug}/benchmarks/compare?runs=${createdRunIds
+							.map((id) => encodeURIComponent(id))
+							.join(',')}&tag=${encodeURIComponent(campaignTag)}`
+					);
+					return;
+				}
+				if (createdRunIds.length === 1) {
+					onOpenChange(false);
+					reset();
+					await goto(`/workspaces/${slug}/benchmarks/runs/${encodeURIComponent(createdRunIds[0])}`);
+					return;
+				}
+				throw new Error('No comparison runs were created');
+			}
 			const res = await fetch('/api/benchmarks/runs', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -283,7 +417,7 @@
 					evaluationConcurrency,
 					timeoutSeconds,
 					evaluatorResourceClass,
-					tags: [...new Set([...parseTags(tagsInput), 'dapr-kueue'])],
+					tags: runTags(),
 					requirePrevalidatedEnvironments,
 					executionBackend,
 					executionClass
@@ -330,12 +464,33 @@
 				<Rocket class="size-4" /> Launch benchmark run
 			</Sheet.Title>
 			<Sheet.Description>
-				Dispatches one parallel <code class="text-[11px]">durable/run</code> child workflow per
-				selected instance via the SWE-bench coordinator.
+				Dispatch selected instances through the SWE-bench coordinator as one run or as a
+				shared comparison campaign across agents.
 			</Sheet.Description>
 		</Sheet.Header>
 
 		<div class="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-3">
+			<div class="grid grid-cols-2 gap-2">
+				<Button
+					type="button"
+					variant={launchMode === 'single' ? 'default' : 'outline'}
+					class="justify-start"
+					onclick={() => setLaunchMode('single')}
+				>
+					<Rocket class="size-3.5" />
+					Single run
+				</Button>
+				<Button
+					type="button"
+					variant={launchMode === 'agent-comparison' ? 'default' : 'outline'}
+					class="justify-start"
+					onclick={() => setLaunchMode('agent-comparison')}
+				>
+					<Users class="size-3.5" />
+					Compare agents
+				</Button>
+			</div>
+
 			<!-- Target summary -->
 			<div class="rounded-md border border-border bg-muted/30 p-3 space-y-2">
 				<div class="flex items-center justify-between gap-2">
@@ -377,7 +532,7 @@
 
 			<!-- Agent -->
 			<div class="space-y-1.5">
-				<Label for="launch-agent">Agent</Label>
+				<Label for="launch-agent">{launchMode === 'agent-comparison' ? 'Agents' : 'Agent'}</Label>
 				{#if runnableAgents.length === 0}
 					<Alert variant="destructive">
 						<AlertDescription>
@@ -386,6 +541,25 @@
 						</AlertDescription>
 					</Alert>
 				{:else}
+					{#if launchMode === 'agent-comparison'}
+						<div class="space-y-1.5">
+							<Label for="launch-comparison-label" class="text-xs">Comparison campaign</Label>
+							<Input
+								id="launch-comparison-label"
+								value={comparisonLabel}
+								oninput={(event) => {
+									comparisonLabelTouched = true;
+									comparisonLabel = (event.currentTarget as HTMLInputElement).value;
+								}}
+								placeholder={defaultComparisonLabel()}
+							/>
+							<div class="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+								<span>MLflow tag</span>
+								<Badge variant="secondary" class="font-mono text-[10px]">#{comparisonTag}</Badge>
+								<span>applied to every parent, instance, and eval run</span>
+							</div>
+						</div>
+					{/if}
 					<div class="relative">
 						<Search class="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
 						<Input
@@ -402,14 +576,24 @@
 							</div>
 						{:else}
 							{#each visibleAgents as agent (agent.id)}
+								{@const comparisonSelected = comparisonAgentIds.includes(agent.id)}
+								{@const selected = launchMode === 'agent-comparison' ? comparisonSelected : agent.id === agentId}
 								<button
 									type="button"
 									class={[
 										'flex w-full items-center gap-2 border-b border-border/70 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-										agent.id === agentId ? 'bg-primary/10' : ''
+										selected ? 'bg-primary/10' : '',
+										launchMode === 'agent-comparison' &&
+										!comparisonSelected &&
+										comparisonAgentIds.length >= MAX_COMPARISON_AGENTS
+											? 'opacity-60'
+											: ''
 									].join(' ')}
-									aria-pressed={agent.id === agentId}
-									onclick={() => selectAgent(agent)}
+									aria-pressed={selected}
+									onclick={() =>
+										launchMode === 'agent-comparison'
+											? toggleComparisonAgent(agent)
+											: selectAgent(agent)}
 								>
 									<span class="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
 										<Bot class="size-3.5" />
@@ -420,28 +604,53 @@
 											{agent.runtime} · v{agent.currentVersion}{agent.modelSpec ? ` · ${agent.modelSpec}` : ''}
 										</span>
 									</span>
-									{#if agent.id === agentId}
+									{#if selected}
 										<Check class="size-4 shrink-0 text-primary" />
 									{/if}
 								</button>
 							{/each}
 						{/if}
-					</div>
-				{/if}
+						</div>
+						{#if launchMode === 'agent-comparison'}
+							<p class="text-[10px] text-muted-foreground">
+								Choose 2-{MAX_COMPARISON_AGENTS} agents. Each agent gets its own benchmark
+								parent run with the same instances and campaign tag, then opens the compare view.
+							</p>
+							{#if selectedComparisonAgents.length > 0}
+								<div class="flex flex-wrap gap-1">
+									{#each selectedComparisonAgents as agent (agent.id)}
+										<Badge variant="outline" class="gap-1 text-[10px]">
+											{agent.slug}
+											<button
+												type="button"
+												class="rounded px-0.5 hover:bg-muted"
+												aria-label="Remove {agent.name}"
+												onclick={() => toggleComparisonAgent(agent)}
+											>
+												×
+											</button>
+										</Badge>
+									{/each}
+								</div>
+							{/if}
+						{/if}
+					{/if}
 			</div>
 
 			<!-- Model name / path -->
-			<div class="space-y-1.5">
-				<Label for="launch-model">Model name or path</Label>
-				<Input
-					id="launch-model"
-					bind:value={modelNameOrPath}
-					placeholder={selectedAgent?.modelSpec ? parseModelDefault(selectedAgent.modelSpec) : 'auto'}
-				/>
-				<p class="text-[10px] text-muted-foreground">
-					Surfaces in <code>predictions.jsonl</code> as <code>model_name_or_path</code>.
-				</p>
-			</div>
+			{#if launchMode === 'single'}
+				<div class="space-y-1.5">
+					<Label for="launch-model">Model name or path</Label>
+					<Input
+						id="launch-model"
+						bind:value={modelNameOrPath}
+						placeholder={selectedAgent?.modelSpec ? parseModelDefault(selectedAgent.modelSpec) : 'auto'}
+					/>
+					<p class="text-[10px] text-muted-foreground">
+						Surfaces in <code>predictions.jsonl</code> as <code>model_name_or_path</code>.
+					</p>
+				</div>
+			{/if}
 
 			<!-- Model config label -->
 			<div class="space-y-1.5">
@@ -449,10 +658,12 @@
 				<Input
 					id="launch-label"
 					bind:value={modelConfigLabel}
-					placeholder="e.g. v1-mcp-toggle, no-skills, baseline"
+					placeholder={launchMode === 'agent-comparison' ? comparisonTag : 'e.g. v1-mcp-toggle, no-skills, baseline'}
 				/>
 				<p class="text-[10px] text-muted-foreground">
-					Used as the comparison axis label when diffing runs. Highly recommended for experiments.
+					{launchMode === 'agent-comparison'
+						? 'Applied consistently across the agent variants so the campaign tag and agent axis stay clear.'
+						: 'Used as the comparison axis label when diffing runs. Highly recommended for experiments.'}
 				</p>
 			</div>
 
@@ -469,6 +680,12 @@
 						{#each parseTags(tagsInput) as tag (tag)}
 							<Badge variant="secondary" class="font-mono text-[10px]">#{tag}</Badge>
 						{/each}
+					</div>
+				{/if}
+				{#if launchMode === 'agent-comparison'}
+					<div class="flex flex-wrap gap-1">
+						<Badge variant="secondary" class="font-mono text-[10px]">#{comparisonTag}</Badge>
+						<Badge variant="secondary" class="font-mono text-[10px]">#agent-comparison</Badge>
 					</div>
 				{/if}
 				<p class="text-[10px] text-muted-foreground">
@@ -622,11 +839,17 @@
 			</Button>
 			<Button
 				onclick={submit}
-				disabled={submitting || instanceIds.length === 0 || !agentId || runnableAgents.length === 0}
+				disabled={submitting ||
+					instanceIds.length === 0 ||
+					runnableAgents.length === 0 ||
+					(launchMode === 'single' ? !agentId : selectedComparisonAgents.length < 2)}
 			>
 				{#if submitting}
 					<Loader2 class="mr-1.5 h-3.5 w-3.5 animate-spin" />
 					Starting…
+				{:else if launchMode === 'agent-comparison'}
+					<Users class="mr-1.5 h-3.5 w-3.5" />
+					Start comparison · {selectedComparisonAgents.length} agents × {instanceIds.length} instances
 				{:else}
 					<Activity class="mr-1.5 h-3.5 w-3.5" />
 					Start run · {instanceIds.length} {instanceIds.length === 1 ? 'instance' : 'instances'}

@@ -314,7 +314,7 @@
 			<div class="flex items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
 				<Tag class="h-3 w-3 text-muted-foreground" />
 				<span class="text-muted-foreground">
-					Auto-picked {compare.runs.length} run{compare.runs.length === 1 ? '' : 's'} tagged
+					Campaign tag for these {compare.runs.length} run{compare.runs.length === 1 ? '' : 's'}:
 					<code class="rounded bg-muted px-1 font-mono">#{data.resolvedFromTag}</code>.
 				</span>
 			</div>

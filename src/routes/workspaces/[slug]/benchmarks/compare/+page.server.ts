@@ -16,14 +16,13 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 	// `?tag=foo` expands to the most-recent (up to 4) runs that share the tag.
 	// Useful for the launch flow: tag a matrix of runs with the same label,
 	// then `/compare?tag=foo` opens them side-by-side without typing run IDs.
-	const tag = url.searchParams.get("tag");
-	let resolvedFromTag: string | null = null;
+	const tag = url.searchParams.get("tag")?.trim() || null;
+	let resolvedFromTag: string | null = tag;
 	if (runIds.length === 0 && tag) {
 		const tagged = await listBenchmarkRuns(locals.session.projectId, 100, {
 			tag,
 		});
 		runIds = tagged.slice(0, 4).map((r) => r.id);
-		resolvedFromTag = tag;
 	}
 
 	if (runIds.length === 0) {
