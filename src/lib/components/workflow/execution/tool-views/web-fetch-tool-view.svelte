@@ -2,26 +2,13 @@
 	import { ToolCall, ToolCallHeader, ToolCallContent, ToolCallResult } from '$lib/components/ui/ai-elements/tool-call';
 	import Download from '@lucide/svelte/icons/download';
 	import { truncateSummary, formatFileSize } from './tool-utils';
+	import type { ToolViewProps } from './index';
 
-	interface Props {
-		phase: 'start' | 'end';
-		toolName: string;
-		args?: Record<string, unknown>;
-		output?: string;
-		success?: boolean;
-		error?: string;
-		state?: 'running' | 'completed' | 'error' | 'pending';
-	}
-
-	let { phase, toolName, args, output = '', success = true, error = '', state: stateOverride }: Props = $props();
+	let { phase, toolName, args, output = '', success = true, error = '', state: stateOverride, variant = 'card' }: ToolViewProps = $props();
 
 	let url = $derived((args?.url as string) ?? '');
 	let prompt = $derived((args?.prompt as string) ?? '');
 
-	/**
-	 * Extract hostname from URL for display.
-	 * Ported from WebFetchTool/UI.tsx getToolUseSummary pattern.
-	 */
 	let hostname = $derived.by(() => {
 		if (!url) return '';
 		try {
@@ -31,11 +18,6 @@
 		}
 	});
 
-	/**
-	 * Parse fetch result for display.
-	 * Ported from WebFetchTool/UI.tsx renderToolResultMessage:
-	 * "Received {formatFileSize(bytes)} ({code} {codeText})"
-	 */
 	let resultSummary = $derived.by(() => {
 		if (!output) return null;
 		try {
@@ -55,11 +37,6 @@
 
 	let state = $derived(stateOverride ?? (phase === 'start' ? 'running' as const : (success ? 'completed' as const : 'error' as const)));
 
-	/**
-	 * Label logic ported from WebFetchTool/UI.tsx:
-	 * - renderToolUseMessage (non-verbose): url
-	 * - renderToolResultMessage: "Received {size} ({code} {codeText})"
-	 */
 	let label = $derived.by(() => {
 		if (phase === 'start') {
 			return hostname || truncateSummary(url, 60) || toolName;
@@ -68,24 +45,53 @@
 	});
 </script>
 
-<ToolCall>
-	<ToolCallHeader {toolName} {label} {state} icon={Download} iconClass="text-teal-500/80" />
-	{#if phase === 'start' || (phase === 'end' && error)}
-		<ToolCallContent>
-			{#if phase === 'start'}
-				<div class="space-y-2 p-3">
-					<p class="text-[13px] font-mono text-foreground break-all">{url}</p>
-					{#if prompt}
-						<p class="text-[11px] text-muted-foreground">{prompt}</p>
-					{/if}
-				</div>
-			{:else if phase === 'end'}
-				{#if error}
-					<ToolCallResult error>
-						<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all p-3 font-mono">{error}</pre>
-					</ToolCallResult>
-				{/if}
-			{/if}
-		</ToolCallContent>
+{#snippet urlBlock()}
+	<div class="space-y-2 p-3">
+		<div class="text-[10px] uppercase tracking-wider text-muted-foreground">URL</div>
+		<p class="text-[13px] font-mono text-foreground break-all">{url}</p>
+		{#if prompt}
+			<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Prompt</div>
+			<p class="text-[12px] text-muted-foreground">{prompt}</p>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet errorBlock()}
+	{#if phase === 'end' && error}
+		<ToolCallResult error>
+			<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all p-3 font-mono">{error}</pre>
+		</ToolCallResult>
 	{/if}
-</ToolCall>
+{/snippet}
+
+{#if variant === 'panel'}
+	<div class="space-y-3">
+		{@render urlBlock()}
+		{#if phase === 'end' && resultSummary && !error}
+			<div class="px-3">
+				<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Result</div>
+				<p class="mt-1 text-[12px]">{resultSummary}</p>
+			</div>
+		{/if}
+		{@render errorBlock()}
+		{#if phase === 'end' && output && !error}
+			<div class="px-3 pb-3">
+				<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Raw output</div>
+				<pre class="mt-1 max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded bg-[#0d1117] p-3 text-[11px] font-mono text-zinc-300">{output}</pre>
+			</div>
+		{/if}
+	</div>
+{:else}
+	<ToolCall>
+		<ToolCallHeader {toolName} {label} {state} icon={Download} iconClass="text-teal-500/80" />
+		{#if phase === 'start' || (phase === 'end' && error)}
+			<ToolCallContent>
+				{#if phase === 'start'}
+					{@render urlBlock()}
+				{:else if phase === 'end'}
+					{@render errorBlock()}
+				{/if}
+			</ToolCallContent>
+		{/if}
+	</ToolCall>
+{/if}

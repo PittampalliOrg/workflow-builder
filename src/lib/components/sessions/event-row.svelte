@@ -11,22 +11,39 @@
 		elapsedMs?: number;
 		/** Number of events collapsed into this row (consecutive same-tool). */
 		batchCount?: number;
+		/** Token usage paired from the next agent.llm_usage / span.model_request_end
+		 *  with a matching tool_use_id. Surfaced as `(in/out)` next to tool rows
+		 *  so users can scan the cost of each tool call without expanding it. */
+		pairedTokens?: { input: number; output: number } | null;
 	}
 
-	const { event, selected = false, onClick, elapsedMs, batchCount = 1 }: Props = $props();
+	const {
+		event,
+		selected = false,
+		onClick,
+		elapsedMs,
+		batchCount = 1,
+		pairedTokens = null
+	}: Props = $props();
 
 	const kind = $derived(eventKindFor(event.type));
 
 	const preview = $derived.by(() => {
 		const d = event.data as Record<string, unknown>;
-		// User / Agent / Thinking: first chunk of text content.
+		// User / Agent / Thinking: first chunk of text content. Falls back to
+		// `data.preview` (set by stripFullPayload when `content` is replaced
+		// for the list/stream shape) so the row never shows an empty label.
 		if (kind === 'user' || kind === 'agent' || kind === 'thinking') {
-			const content = (d.content as Array<{ text?: string }>) ?? [];
+			const content = Array.isArray(d.content) ? (d.content as Array<{ text?: string }>) : [];
 			const joined = content
 				.map((c) => (typeof c?.text === 'string' ? c.text : ''))
 				.join(' ')
 				.trim();
-			return joined.slice(0, 80);
+			if (joined) return joined.slice(0, 200);
+			if (typeof d.preview === 'string' && d.preview.trim()) {
+				return d.preview.trim().slice(0, 200);
+			}
+			return kind === 'thinking' ? '(no thinking text)' : '(no content)';
 		}
 		// Tool use: tool name.
 		if (kind === 'tool') {
@@ -94,6 +111,12 @@
 	});
 
 	const tokens = $derived.by(() => {
+		// Paired-tokens win — when set, the parent already resolved the
+		// downstream model usage for this tool_use, which is the cost users
+		// actually want to see on a tool row (CMA parity).
+		if (pairedTokens) {
+			return `${fmtTokens(pairedTokens.input)} / ${fmtTokens(pairedTokens.output)}`;
+		}
 		const d = event.data as { usage?: { input_tokens?: number; output_tokens?: number } };
 		if (d?.usage) {
 			const i = d.usage.input_tokens;

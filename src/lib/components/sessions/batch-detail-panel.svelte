@@ -2,12 +2,17 @@
 	import { Button } from '$lib/components/ui/button';
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
-	import JsonView from './json-view.svelte';
+	import { EventRenderer } from '$lib/components/events';
+	import { findToolPair } from '$lib/utils/tool-pair';
 	import { ChevronDown, ChevronRight, Clock, X } from '@lucide/svelte';
 
 	interface Props {
 		/** Every event collapsed into this batch, in order. */
 		children: SessionEventEnvelope[];
+		/** All events in the session — used to resolve each batched tool_use to
+		 *  its matching tool_result via findToolPair. Without this, expanded
+		 *  rows can only render the input half. */
+		events?: SessionEventEnvelope[];
 		/** Session start time, ms — used to stamp elapsed on each child. */
 		sessionStartMs: number | null;
 		/** Debug mode: show raw JSON instead of `input`. */
@@ -15,7 +20,7 @@
 		onClose?: () => void;
 	}
 
-	const { children, sessionStartMs, debug = false, onClose }: Props = $props();
+	const { children, events = [], sessionStartMs, debug = false, onClose }: Props = $props();
 
 	const kind = $derived(
 		children.length > 0 ? eventKindFor(children[0].type) : 'tool',
@@ -66,7 +71,16 @@
 			}
 			return JSON.stringify(input).slice(0, 80);
 		}
+		const ip = d.input_preview;
+		if (typeof ip === 'string' && ip.trim()) return ip.trim();
 		return String(d.name ?? d.tool_name ?? ev.type);
+	}
+	function pairFor(ev: SessionEventEnvelope): SessionEventEnvelope | null {
+		if (events.length === 0) return null;
+		const p = findToolPair(events, ev);
+		if (p.start === ev) return p.end ?? null;
+		if (p.end === ev) return p.start ?? null;
+		return null;
 	}
 </script>
 
@@ -100,6 +114,7 @@
 				sessionStartMs !== null
 					? new Date(ev.createdAt).getTime() - sessionStartMs
 					: null}
+			{@const paired = isOpen ? pairFor(ev) : null}
 			<div class="border-b last:border-b-0">
 				<button
 					type="button"
@@ -128,16 +143,12 @@
 					{/if}
 				</button>
 				{#if isOpen}
-					<div class="space-y-2 border-t border-border/50 bg-muted/10 px-4 py-3">
-						<div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
-							<span>Tool use</span>
+					<div class="border-t border-border/50 bg-muted/10 px-4 py-3">
+						<div class="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
+							<span>Invocation #{i + 1}</span>
 							<code class="normal-case">{ev.id}</code>
 						</div>
-						{#if debug}
-							<JsonView value={ev.data} />
-						{:else}
-							<JsonView value={data.input ?? ev.data} />
-						{/if}
+						<EventRenderer event={ev} pairedResult={paired} variant="panel" {debug} />
 					</div>
 				{/if}
 			</div>

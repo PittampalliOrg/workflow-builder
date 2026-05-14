@@ -32,15 +32,12 @@
 		Video,
 		FileArchive,
 		Brain,
-		Bot,
 		Zap,
 		FileDiff,
 		RefreshCw,
 		MessagesSquare,
 		AlertTriangle,
-		Cable,
 		Gauge,
-		ShieldCheck,
 		ListTree,
 		ChevronRight,
 		ChevronLeft,
@@ -75,26 +72,10 @@
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import PlanReview from '$lib/components/workflow/execution/plan-review.svelte';
 	import SandboxCodeViewer from '$lib/components/sandbox/sandbox-code-viewer.svelte';
-	import { getToolComponent } from '$lib/components/workflow/execution/tool-views';
+	import { EventRenderer, ToolEventRenderer } from '$lib/components/events';
 	import { ChatContainerRoot, ChatContainerContent, ChatContainerScrollAnchor } from '$lib/components/ui/prompt-kit/chat-container';
 	import { ScrollButton } from '$lib/components/ui/prompt-kit/scroll-button';
 	import { ThinkingBar } from '$lib/components/ui/prompt-kit/thinking-bar';
-	import { Reasoning, ReasoningTrigger, ReasoningContent } from '$lib/components/ui/prompt-kit/reasoning';
-	import { Message, MessageAvatar, MessageContent } from '$lib/components/ui/prompt-kit/message';
-	import ProviderIcon from '$lib/components/ui/ai-elements/provider-icon.svelte';
-	import { Response as MarkdownResponse } from '$lib/components/ui/ai-elements/response/index.js';
-	import {
-		ChainOfThought,
-		ChainOfThoughtHeader,
-		ChainOfThoughtContent,
-		ChainOfThoughtStep
-	} from '$lib/components/ui/ai-elements/chain-of-thought/index.js';
-	import {
-		Task,
-		TaskTrigger,
-		TaskContent,
-		TaskItem
-	} from '$lib/components/ui/ai-elements/task/index.js';
 	import {
 		Context,
 		ContextTrigger,
@@ -2345,16 +2326,13 @@
 									data-turn-anchor={turnAnchor ?? undefined}
 								>
 								{#if item.kind === 'tool'}
-									{@const ToolComponent = getToolComponent(item.toolName)}
 									<div class="flex flex-col gap-2">
-										<ToolComponent
-											phase={item.phase}
-											toolName={item.toolName}
-											args={item.args}
-											output={item.output}
-											success={item.success}
-											error={item.error}
-											state={item.status === 'unknown' ? 'error' : item.status}
+										<ToolEventRenderer
+											pair={{ start: item.startEvent, end: item.endEvent }}
+											toolNameOverride={item.toolName}
+											argsOverride={item.args}
+											stateOverride={item.status === 'unknown' ? 'error' : item.status}
+											variant="card"
 										/>
 										{#if item.imageUrl}
 											<figure class="flex flex-col gap-1 rounded-md border border-border/40 bg-muted/20 p-2">
@@ -2375,144 +2353,7 @@
 										{/if}
 									</div>
 								{:else}
-									{@const event = item.event}
-									{@const evtType = eventType(event)}
-									{#if evtType === 'run_started'}
-										<div class="flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-4 py-3">
-											<Bot size={16} class="text-cyan-400" />
-											<span class="text-sm font-medium text-cyan-400">Agent started</span>
-											{#if event.data?.model}
-												<Badge variant="outline" class="ml-auto text-[10px]">{event.data.model}</Badge>
-											{/if}
-										</div>
-
-									{:else if evtType === 'llm_start'}
-										<!-- Global thinking indicator lives below the {#each} (always visible
-										     at the bottom while isRunning). This branch is intentionally empty
-										     to avoid a per-turn ThinkingBar above tool calls. -->
-
-									{:else if evtType === 'llm_complete'}
-										{@const content = event.data?.content ? String(event.data.content).trim() : ''}
-										{#if content}
-										<div class="flex items-start gap-3 rounded-lg border border-border/40 bg-muted/30 px-4 py-3">
-											<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-background">
-												<ProviderIcon model={agentModel} size={18} />
-											</div>
-											<div class="prose prose-sm dark:prose-invert max-w-none flex-1 text-sm leading-relaxed">
-												<MarkdownResponse {content} parseIncompleteMarkdown={true} />
-											</div>
-										</div>
-										{/if}
-										<!-- When only tool calls and no content, skip — tool_call_start events render them -->
-
-									{:else if evtType === 'run_complete'}
-										<div class="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/5 px-4 py-3">
-											<CheckCircle2 size={16} class="text-green-400" />
-											<span class="text-sm font-medium text-green-400">Agent completed</span>
-										</div>
-
-									{:else if evtType === 'run_error'}
-										<Task open={true}>
-											<TaskTrigger title="❌ Agent error" />
-											<TaskContent>
-												<TaskItem>
-													<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{event.data?.error ? String(event.data.error) : 'Unknown error'}</pre>
-												</TaskItem>
-											</TaskContent>
-										</Task>
-
-									{:else if evtType === 'agent.message'}
-										{@const data = (event.data ?? {}) as { content?: string | Array<{ text?: string }>; preview?: string }}
-										{@const text = typeof data.content === 'string'
-											? data.content
-											: Array.isArray(data.content)
-												? data.content.map(b => b?.text ?? '').filter(Boolean).join('\n\n')
-												: (data.preview ?? '')}
-										{#if text && text.trim()}
-											<div class="flex items-start gap-3 rounded-lg border border-border/40 bg-muted/30 px-4 py-3">
-												<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-background">
-													<ProviderIcon model={agentModel} size={18} />
-												</div>
-												<div class="prose prose-sm dark:prose-invert max-w-none flex-1 text-sm leading-relaxed">
-													<MarkdownResponse content={text} parseIncompleteMarkdown={true} />
-												</div>
-											</div>
-										{/if}
-
-									{:else if evtType === 'agent.thinking'}
-										{@const tdata = (event.data ?? {}) as { content?: Array<{ text?: string }> }}
-										{@const thinkingText = Array.isArray(tdata.content) ? tdata.content.map(b => b?.text ?? '').filter(Boolean).join('\n\n') : ''}
-										{#if thinkingText && thinkingText.trim()}
-											<Reasoning defaultOpen={false}>
-												<ReasoningTrigger />
-												<ReasoningContent>{thinkingText}</ReasoningContent>
-											</Reasoning>
-										{/if}
-
-									{:else if evtType === 'agent.llm_usage'}
-										{@const u = (event.data ?? {}) as { model?: string; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; ttft_ms?: number | null }}
-										{@const cacheRead = Number(u.cache_read_input_tokens ?? 0)}
-										{@const inputTok = Number(u.input_tokens ?? 0)}
-										{@const hitPct = cacheRead + inputTok > 0 ? Math.round((cacheRead / (cacheRead + inputTok)) * 100) : null}
-										<div class="flex items-center gap-2 rounded-md border border-slate-500/25 bg-slate-500/5 px-3 py-1.5 text-[11px] text-muted-foreground">
-											<Gauge size={12} class="text-slate-400" />
-											<span class="font-mono text-foreground/90">{u.model ?? '?'}</span>
-											<span>·</span>
-											<span>in={inputTok}</span>
-											<span>out={u.output_tokens ?? 0}</span>
-											{#if cacheRead > 0}
-												<span>·</span>
-												<span>cache {cacheRead}{hitPct != null ? ` (${hitPct}%)` : ''}</span>
-											{/if}
-											{#if u.ttft_ms != null}
-												<span>·</span>
-												<span>TTFT {Math.round(Number(u.ttft_ms))}ms</span>
-											{/if}
-										</div>
-
-									{:else if evtType === 'hook.decision'}
-										{@const h = (event.data ?? {}) as { hook_event?: string; matcher?: string; decision?: string; outcome?: string; duration_ms?: number }}
-										<div class="flex items-center gap-2 rounded-md border border-indigo-500/25 bg-indigo-500/5 px-3 py-1.5 text-[11px]">
-											<ShieldCheck size={12} class="text-indigo-400" />
-											<span class="font-mono text-indigo-200">{h.hook_event ?? 'hook'}</span>
-											{#if h.matcher}<span class="text-muted-foreground">({h.matcher})</span>{/if}
-											<span>·</span>
-											<span class="text-foreground/90">{h.decision ?? h.outcome ?? '?'}</span>
-											{#if h.duration_ms != null}<span class="ml-auto font-mono text-muted-foreground">{h.duration_ms}ms</span>{/if}
-										</div>
-
-									{:else if evtType === 'mcp.tool_call'}
-										{@const m = (event.data ?? {}) as { tool_name?: string; server?: string; duration_ms?: number; success?: boolean; error?: string }}
-										<div class="flex items-center gap-2 rounded-md border border-cyan-500/25 bg-cyan-500/5 px-3 py-1.5 text-[11px]">
-											<Cable size={12} class="text-cyan-400" />
-											<span class="font-mono text-cyan-200">{m.tool_name ?? 'tool'}</span>
-											{#if m.server}<span class="text-muted-foreground">@{m.server}</span>{/if}
-											{#if m.success === false}
-												<Badge variant="outline" class="text-[9px] border-red-500/30 text-red-300">failed</Badge>
-											{/if}
-											{#if m.duration_ms != null}<span class="ml-auto font-mono text-muted-foreground">{m.duration_ms}ms</span>{/if}
-										</div>
-
-									{:else if evtType === 'agent.circuit_breaker_tripped' || evtType === 'session.turn_timeout' || evtType === 'agent.thread_images_compacted' || evtType === 'session.error'}
-										{@const alertData = (event.data ?? {}) as Record<string, unknown>}
-										<div class="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-[11px]">
-											<AlertTriangle size={14} class="mt-0.5 shrink-0 text-red-400" />
-											<div class="min-w-0 flex-1">
-												<div class="font-medium text-red-300">
-													{evtType.replace(/^(agent|session)\./, '').replace(/_/g, ' ')}
-												</div>
-												{#if evtType === 'agent.circuit_breaker_tripped'}
-													<div class="text-muted-foreground">Reason: {String(alertData.reason ?? '?')} ({alertData.streak ?? '?'}/{alertData.threshold ?? '?'})</div>
-												{:else if evtType === 'session.turn_timeout'}
-													<div class="text-muted-foreground">Turn {alertData.turn ?? '?'} exceeded {alertData.timeout_seconds ?? '?'}s</div>
-												{:else if evtType === 'agent.thread_images_compacted'}
-													<div class="text-muted-foreground">Collapsed {alertData.collapsed ?? '?'} screenshot(s); kept last {alertData.kept ?? '?'}</div>
-												{:else if evtType === 'session.error'}
-													<div class="whitespace-pre-wrap text-muted-foreground">{String(alertData.error ?? '').slice(0, 400)}</div>
-												{/if}
-											</div>
-										</div>
-									{/if}
+									<EventRenderer event={item.event} variant="card" {agentModel} />
 								{/if}
 								</div>
 							{/each}

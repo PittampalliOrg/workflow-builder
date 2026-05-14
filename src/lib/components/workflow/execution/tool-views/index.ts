@@ -10,6 +10,8 @@ import AgentToolView from './agent-tool-view.svelte';
 import McpToolView from './mcp-tool-view.svelte';
 import GenericToolView from './generic-tool-view.svelte';
 
+export type ToolViewVariant = 'card' | 'panel';
+
 export interface ToolViewProps {
 	phase: 'start' | 'end';
 	toolName: string;
@@ -18,6 +20,13 @@ export interface ToolViewProps {
 	success?: boolean;
 	error?: string;
 	state?: 'running' | 'completed' | 'error' | 'pending';
+	/**
+	 * 'card' (default) — full ToolCall chrome with collapsible header. Used by the
+	 * workflow run-detail timeline tab where each row is its own card.
+	 * 'panel' — body-only render. Used by the sessions detail right pane, which
+	 * already supplies its own header. Always opens fully (no collapsed preview).
+	 */
+	variant?: ToolViewVariant;
 }
 
 /**

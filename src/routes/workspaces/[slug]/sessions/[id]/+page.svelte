@@ -29,6 +29,7 @@
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
+	import { findToolPair, findToolTokenUsage } from '$lib/utils/tool-pair';
 	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
 	import SessionTimelineBar from '$lib/components/sessions/session-timeline-bar.svelte';
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
@@ -335,6 +336,17 @@
 		if (list.length === 0) return null;
 		const explicit = list.find((e) => String(e.id) === selectedEventId);
 		return explicit ?? list[list.length - 1];
+	});
+	// Find the matching tool_use ↔ tool_result mate so EventDetailPanel can
+	// render both halves together (input + output) regardless of which row
+	// the user clicked. Returns null when the selected event isn't a tool
+	// event or the mate hasn't streamed in yet.
+	const selectedPairedResult = $derived.by(() => {
+		if (!selectedEvent) return null;
+		const pair = findToolPair(events, selectedEvent);
+		if (pair.start === selectedEvent) return pair.end ?? null;
+		if (pair.end === selectedEvent) return pair.start ?? null;
+		return null;
 	});
 	// Session duration — from createdAt to the most recent event (or now if
 	// still streaming). Used for the CMA-shape metadata pill.
@@ -1180,9 +1192,11 @@
 									sessionStartMs !== null
 										? new Date(batch.event.createdAt).getTime() - sessionStartMs
 										: undefined}
+								{@const tokens = findToolTokenUsage(events, batch.event)}
 								<EventRow
 									event={batch.event}
 									batchCount={batch.count}
+									pairedTokens={tokens}
 									selected={selectedEvent
 										? String(selectedEvent.id) === String(batch.event.id)
 										: false}
@@ -1227,6 +1241,7 @@
 					{#if selectedBatch && selectedBatch.count > 1}
 						<BatchDetailPanel
 							children={selectedBatch.children}
+							{events}
 							{sessionStartMs}
 							debug={viewMode === 'debug'}
 							onClose={() => (selectedEventId = null)}
@@ -1238,6 +1253,7 @@
 								: undefined}
 						<EventDetailPanel
 							event={selectedEvent}
+							pairedResult={selectedPairedResult}
 							elapsedMs={elapsed}
 							debug={viewMode === 'debug'}
 							onClose={() => (selectedEventId = null)}

@@ -193,7 +193,7 @@ function parseOutput(output: string): unknown {
 	}
 }
 
-function toolOutcome(event: ExecutionTimelineEvent) {
+export function toolOutcome(event: ExecutionTimelineEvent) {
 	const data = event.data ?? {};
 	const output = typeof data.output === 'string' ? data.output : '';
 	const error = typeof data.error === 'string' ? data.error : '';
@@ -215,7 +215,7 @@ function toolOutcome(event: ExecutionTimelineEvent) {
 	return { output, error, success };
 }
 
-function extractImageDataUrl(event: ExecutionTimelineEvent): string | undefined {
+export function extractImageDataUrl(event: ExecutionTimelineEvent): string | undefined {
 	// Anthropic content-block shape: data.content = [{type:'image', source:{type:'base64', media_type, data}}, ...].
 	// Returns the first image as a data: URL suitable for <img src=...>.
 	const content = event.data?.content;
@@ -235,7 +235,7 @@ function extractImageDataUrl(event: ExecutionTimelineEvent): string | undefined 
 	return undefined;
 }
 
-function extractStepMeta(event: ExecutionTimelineEvent): { stepNumber?: number; url?: string } {
+export function extractStepMeta(event: ExecutionTimelineEvent): { stepNumber?: number; url?: string } {
 	const data = event.data ?? {};
 	const stepNumber = typeof data.stepNumber === 'number' ? data.stepNumber : undefined;
 	const url = typeof data.url === 'string' && data.url.trim() ? data.url.trim() : undefined;
