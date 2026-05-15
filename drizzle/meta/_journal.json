@@ -477,6 +477,13 @@
 				"when": 1778868728000,
 				"tag": "0075_piece_metadata_catalog_metadata",
 				"breakpoints": true
+			},
+			{
+				"idx": 68,
+				"version": "7",
+				"when": 1778871089000,
+				"tag": "0076_piece_metadata_unique_catalog_key",
+				"breakpoints": true
 			}
 		]
 	}

@@ -18,6 +18,7 @@ import {
 	text,
 	timestamp,
 	unique,
+	uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -340,7 +341,7 @@ export const pieceMetadata = pgTable(
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
 	(table) => ({
-		nameVersionPlatformIdx: index(
+		nameVersionPlatformIdx: uniqueIndex(
 			"idx_piece_metadata_name_platform_id_version",
 		).on(table.name, table.version, table.platformId),
 		catalogDigestIdx: index("idx_piece_metadata_catalog_digest").on(
