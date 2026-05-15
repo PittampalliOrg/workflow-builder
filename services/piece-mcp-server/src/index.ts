@@ -24,6 +24,7 @@ import {
 	type PieceMetadataRow,
 	type RegisteredTool,
 } from "./piece-to-mcp.js";
+import { validateCatalogMetadata } from "./metadata-catalog.js";
 import {
 	runWithRequestAuthContext,
 	type RequestAuthContext,
@@ -143,29 +144,43 @@ async function fetchPieceMetadata(name: string): Promise<PieceMetadataRow> {
 	await client.connect();
 
 	try {
+		const normalizedName = normalizePieceName(name);
 		const result = await client.query<{
 			actions: Record<string, unknown> | null;
 			auth: unknown;
 			display_name: string | null;
+			catalog_schema_version: number | null;
+			catalog_digest: string | null;
+			catalog_source_image: string | null;
+			catalog_synced_at: string | null;
 		}>(
-			`SELECT actions, auth, display_name FROM piece_metadata
-			 WHERE name = $1 ORDER BY created_at DESC LIMIT 1`,
-			[normalizedName],
+			`SELECT actions, auth, display_name, catalog_schema_version, catalog_digest, catalog_source_image, catalog_synced_at
+			 FROM piece_metadata
+			 WHERE name IN ($1, $2)
+			 ORDER BY updated_at DESC
+			 LIMIT 1`,
+			[normalizedName, `@activepieces/piece-${normalizedName}`],
 		);
 
 		if (result.rows.length === 0) {
 			throw new Error(
 				`No metadata found for piece "${name}" in piece_metadata table. ` +
-					"Run: npx tsx scripts/sync-activepieces-pieces.ts",
+					"Run the piece-mcp-server metadata sync command before reconciling AP MCP services.",
 			);
 		}
 
 		const row = result.rows[0];
-		return {
+		const metadata = {
 			actions: row.actions as PieceMetadataRow["actions"],
 			auth: row.auth,
 			displayName: row.display_name,
+			catalogSchemaVersion: row.catalog_schema_version,
+			catalogDigest: row.catalog_digest,
+			catalogSourceImage: row.catalog_source_image,
+			catalogSyncedAt: row.catalog_synced_at,
 		};
+		validateCatalogMetadata({ pieceName: name, piece, row: metadata });
+		return metadata;
 	} finally {
 		await client.end();
 	}
@@ -330,7 +345,7 @@ async function main(): Promise<void> {
 	console.log(`[piece-mcp] Loading metadata for piece "${pieceName}"...`);
 	metadata = await fetchPieceMetadata(pieceName);
 	console.log(
-		`[piece-mcp] Loaded metadata: ${metadata.displayName ?? pieceName}`,
+		`[piece-mcp] Loaded metadata: ${metadata.displayName ?? pieceName} digest=${metadata.catalogDigest} source=${metadata.catalogSourceImage ?? "unknown"}`,
 	);
 
 	// Check for UI HTML file (Vite outputs to dist/ui/{name}/index.html)

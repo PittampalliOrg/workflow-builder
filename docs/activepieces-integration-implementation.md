@@ -101,20 +101,13 @@ File:
 Supporting type update:
 - `lib/workflow-definition.ts`
 
-### 7. Upstream Piece Sync Workflow
-Added a sync script to ingest upstream piece metadata from Activepieces API into local `piece_metadata`:
-- `scripts/sync-activepieces-pieces.ts`
-- package script: `pnpm sync:activepieces-pieces`
+### 7. Piece Metadata Sync Workflow
+`piece_metadata` is now populated by the pinned `piece-mcp-server` image, not by `fn-activepieces` or the retired root sync script. The MCP image owns the package registry used to serve tools and generates canonical action metadata with `inputSchema`, field summaries, required fields, auth flags, and catalog digests.
 
-Supports:
-- `--dry-run`
-- `--limit=<n>`
-- `--only=<comma-separated-piece-names>`
-- `--base-url=<url>`
-- `--api-key=<key>`
+Command:
+- `cd services/piece-mcp-server && DATABASE_URL=postgres://... pnpm sync:metadata`
 
-Example:
-- `pnpm sync:activepieces-pieces --dry-run --limit=20`
+GitOps runs the same command before `activepieces-mcps` reconciles Knative services.
 
 ## Authentication Migration Behavior
 When anonymous accounts are linked to real users, app connections are reassigned:
@@ -169,4 +162,4 @@ The app now stores and understands Activepieces-style app connections while reta
 ## Next Recommended Enhancements
 - Move runtime credential resolution to prefer `connection_external_id` end-to-end in router/executor services.
 - Add persistent `workflow_connection_ref` synchronization on workflow save for faster integrity checks and usage analytics.
-- Add background/cron sync for `piece_metadata` to track upstream updates continuously.
+- Keep the GitOps metadata sync job and `activepieces-mcps` reconciler on the same `PIECE_MCP_IMAGE` pin.

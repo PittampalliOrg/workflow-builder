@@ -14,12 +14,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 async function build() {
   try {
     await esbuild.build({
-      entryPoints: [resolve(__dirname, "src/index.ts")],
+      entryPoints: [
+        resolve(__dirname, "src/index.ts"),
+        resolve(__dirname, "src/sync-metadata.ts"),
+      ],
       bundle: true,
       platform: "node",
       target: "node22",
       format: "cjs",
-      outfile: resolve(__dirname, "dist/index.js"),
+      outdir: resolve(__dirname, "dist"),
       sourcemap: true,
       minify: false,
       keepNames: true,

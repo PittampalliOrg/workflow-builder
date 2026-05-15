@@ -17,7 +17,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import type { Action, Piece } from "@activepieces/pieces-framework";
-import { actionPropsToSchema, type JsonSchema } from "./prop-schema.js";
+import { type JsonSchema } from "./prop-schema.js";
 import { normalizeActionInput } from "./normalize-input.js";
 import { buildActionContext } from "./context-factory.js";
 import { resolveAuth } from "./auth-resolver.js";
@@ -72,8 +72,9 @@ type ActionDef = {
 	name: string;
 	displayName?: string;
 	description?: string;
-	props?: Record<string, unknown>;
+	inputSchema?: JsonSchema;
 	requireAuth?: boolean;
+	digest?: string;
 };
 
 /** Piece metadata row from DB. */
@@ -81,6 +82,10 @@ export type PieceMetadataRow = {
 	actions: Record<string, ActionDef> | null;
 	auth: unknown;
 	displayName: string | null;
+	catalogSchemaVersion: number | null;
+	catalogDigest: string | null;
+	catalogSourceImage: string | null;
+	catalogSyncedAt: string | null;
 };
 
 /** Registered tool info for health reporting. */
@@ -88,6 +93,21 @@ export type RegisteredTool = {
 	name: string;
 	description: string;
 };
+
+function actionInputSchema(actionKey: string, actionDef: ActionDef): JsonSchema {
+	const schema = actionDef.inputSchema;
+	if (
+		!schema ||
+		schema.type !== "object" ||
+		!schema.properties ||
+		typeof schema.properties !== "object"
+	) {
+		throw new Error(
+			`piece_metadata action "${actionKey}" is missing canonical inputSchema`,
+		);
+	}
+	return schema;
+}
 
 /**
  * Register all actions from an AP piece as MCP tools on the given Server.
@@ -139,12 +159,7 @@ export function registerPieceTools(
 			? `${displayName}: ${actionDef.description}`
 			: displayName;
 
-		// Convert props to JSON Schema
-		const props = (actionDef.props ?? {}) as Record<
-			string,
-			Record<string, unknown>
-		>;
-		const inputSchema = actionPropsToSchema(props);
+		const inputSchema = actionInputSchema(actionKey, actionDef);
 
 		toolDefs.push({
 			name: actionKey,
@@ -169,11 +184,13 @@ export function registerPieceTools(
 			const description = extAction.description
 				? `${displayName}: ${extAction.description}`
 				: displayName;
-			const props = (extAction.props ?? {}) as Record<
-				string,
-				Record<string, unknown>
-			>;
-			const inputSchema = actionPropsToSchema(props);
+			const actionDef = actions[extAction.name];
+			if (!actionDef) {
+				throw new Error(
+					`piece_metadata is missing extension action "${extAction.name}"`,
+				);
+			}
+			const inputSchema = actionInputSchema(extAction.name, actionDef);
 
 			toolDefs.push({
 				name: extAction.name,
@@ -334,12 +351,7 @@ export function registerPieceToolsWithUI(
 			? `${displayName}: ${actionDef.description}`
 			: displayName;
 
-		// Convert props to JSON Schema, then to Zod shape
-		const props = (actionDef.props ?? {}) as Record<
-			string,
-			Record<string, unknown>
-		>;
-		const jsonSchema = actionPropsToSchema(props);
+		const jsonSchema = actionInputSchema(actionKey, actionDef);
 		const zodShape = jsonSchemaToZodShape(jsonSchema);
 
 		// Register as an MCP App tool with UI metadata using server.registerTool directly
@@ -425,11 +437,13 @@ export function registerPieceToolsWithUI(
 		const description = extAction.description
 			? `${displayName}: ${extAction.description}`
 			: displayName;
-		const props = (extAction.props ?? {}) as Record<
-			string,
-			Record<string, unknown>
-		>;
-		const jsonSchema = actionPropsToSchema(props);
+		const actionDef = actions[extAction.name];
+		if (!actionDef) {
+			throw new Error(
+				`piece_metadata is missing extension action "${extAction.name}"`,
+			);
+		}
+		const jsonSchema = actionInputSchema(extAction.name, actionDef);
 		const zodShape = jsonSchemaToZodShape(jsonSchema);
 
 		const uiMeta = {

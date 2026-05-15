@@ -5,7 +5,7 @@
  * to JSON Schema for MCP tool inputSchema registration.
  */
 
-type JsonSchemaProperty = {
+export type JsonSchemaProperty = {
 	type?: string;
 	description?: string;
 	title?: string;
@@ -22,7 +22,7 @@ export type JsonSchema = {
 	required?: string[];
 };
 
-type ApPropDef = {
+export type ApPropDef = {
 	type?: string;
 	displayName?: string;
 	description?: string;

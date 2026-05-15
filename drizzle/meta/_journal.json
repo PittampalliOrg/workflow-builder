@@ -470,6 +470,13 @@
 				"when": 1778839200000,
 				"tag": "0074_backfill_session_mlflow_ids",
 				"breakpoints": true
+			},
+			{
+				"idx": 67,
+				"version": "7",
+				"when": 1778868728000,
+				"tag": "0075_piece_metadata_catalog_metadata",
+				"breakpoints": true
 			}
 		]
 	}

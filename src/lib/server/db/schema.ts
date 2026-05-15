@@ -332,6 +332,10 @@ export const pieceMetadata = pgTable(
 		categories: text("categories").array().notNull().default([]),
 		packageType: text("package_type").notNull(),
 		i18n: jsonb("i18n"),
+		catalogSchemaVersion: integer("catalog_schema_version"),
+		catalogDigest: text("catalog_digest"),
+		catalogSourceImage: text("catalog_source_image"),
+		catalogSyncedAt: timestamp("catalog_synced_at"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -339,6 +343,9 @@ export const pieceMetadata = pgTable(
 		nameVersionPlatformIdx: index(
 			"idx_piece_metadata_name_platform_id_version",
 		).on(table.name, table.version, table.platformId),
+		catalogDigestIdx: index("idx_piece_metadata_catalog_digest").on(
+			table.catalogDigest,
+		),
 	}),
 );
 

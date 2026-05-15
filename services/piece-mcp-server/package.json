@@ -8,6 +8,7 @@
 		"build:ui:microsoft-todo": "cd ui && INPUT=microsoft-todo/index.html vite build --outDir ../dist/ui --emptyOutDir false",
 		"build:all": "pnpm run build:ui:microsoft-todo && pnpm run build",
 		"start": "node dist/index.js",
+		"sync:metadata": "tsx src/sync-metadata.ts",
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {
