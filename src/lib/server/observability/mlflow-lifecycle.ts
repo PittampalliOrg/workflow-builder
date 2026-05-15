@@ -45,6 +45,7 @@ export type MlflowRunContext = {
   traceExperimentName?: string | null;
   runId: string;
   parentRunId?: string | null;
+  mlflowSessionId?: string | null;
   publicUrl: string | null;
   activeModelId?: string | null;
   activeModelName?: string | null;
@@ -1376,6 +1377,7 @@ export async function createInteractiveSessionMlflowRun(params: {
     traceExperimentName,
     runId,
     parentRunId: null,
+    mlflowSessionId,
     publicUrl,
     activeModelId,
     activeModelName: params.activeModelName ?? null,
@@ -1402,6 +1404,7 @@ export async function safeCreateInteractiveSessionMlflowRun(
 export async function createWorkflowAgentMlflowRun(params: {
   sessionId: string;
   parentRunId: string;
+  mlflowSessionId?: string | null;
   experimentId?: string | null;
   workflowExecutionId?: string | null;
   workflowId?: string | null;
@@ -1421,6 +1424,7 @@ export async function createWorkflowAgentMlflowRun(params: {
 }): Promise<MlflowRunContext | null> {
   if (!mlflowLifecycleEnabled()) return null;
   if (!params.parentRunId.trim()) return null;
+  const mlflowSessionId = params.mlflowSessionId?.trim() || params.sessionId;
   const fallbackExperiment =
     params.experimentId?.trim()
       ? null
@@ -1436,9 +1440,11 @@ export async function createWorkflowAgentMlflowRun(params: {
       tag("mlflow.parentRunId", params.parentRunId),
       tag("workflow_builder.kind", "workflow_agent_run"),
       tag("workflow_builder.session_id", params.sessionId),
+      tag("workflow_builder.mlflow_session_id", mlflowSessionId),
       tag("workflow_builder.workflow_execution_id", params.workflowExecutionId),
       tag("workflow_builder.trace_group_id", params.workflowExecutionId),
-      tag("session.id", params.sessionId),
+      tag("session.id", mlflowSessionId),
+      tag("agent.session.id", mlflowSessionId),
       tag("workflow.execution.id", params.workflowExecutionId),
       tag("workflow_builder.workflow_id", params.workflowId),
       tag("workflow_builder.node_id", params.nodeId),
@@ -1467,6 +1473,7 @@ export async function createWorkflowAgentMlflowRun(params: {
         mlflowExperimentId: experimentId,
         mlflowRunId: runId,
         mlflowParentRunId: params.parentRunId,
+        mlflowSessionId,
       })
       .where(eq(sessions.id, params.sessionId));
 
@@ -1480,6 +1487,7 @@ export async function createWorkflowAgentMlflowRun(params: {
         mlflowEntityType: "run",
         mlflowExperimentId: experimentId,
         mlflowRunId: runId,
+        mlflowSessionId,
         mlflowLoggedModelId: params.activeModelId ?? null,
         mlflowLoggedModelName: params.activeModelName ?? null,
         mlflowLoggedModelUri: params.activeModelUri ?? null,
@@ -1504,6 +1512,7 @@ export async function createWorkflowAgentMlflowRun(params: {
         set: {
           mlflowExperimentId: experimentId,
           mlflowRunId: runId,
+          mlflowSessionId,
           mlflowLoggedModelId: params.activeModelId ?? null,
           mlflowLoggedModelName: params.activeModelName ?? null,
           mlflowLoggedModelUri: params.activeModelUri ?? null,
@@ -1521,6 +1530,7 @@ export async function createWorkflowAgentMlflowRun(params: {
     traceExperimentName: params.traceExperimentName ?? fallbackExperiment?.experimentName ?? null,
     runId,
     parentRunId: params.parentRunId,
+    mlflowSessionId,
     publicUrl,
     activeModelId: params.activeModelId ?? null,
     activeModelName: params.activeModelName ?? null,

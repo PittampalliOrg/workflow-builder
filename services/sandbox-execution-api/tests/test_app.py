@@ -174,8 +174,10 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert pod_spec["activeDeadlineSeconds"] == 900 + 600
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
     assert pod_spec["initContainers"][0]["name"] == "seed-openshell-config"
+    assert pod_spec["initContainers"][0]["imagePullPolicy"] == "IfNotPresent"
     container = pod_spec["containers"][0]
     assert container["image"] == "ghcr.io/example/dapr-agent-py-sandbox:git-1"
+    assert container["imagePullPolicy"] == "IfNotPresent"
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
     assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
     assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
@@ -315,6 +317,51 @@ def test_agent_workflow_host_sandbox_stamps_kueue_priority_class() -> None:
     pod_labels = manifest["spec"]["podTemplate"]["metadata"]["labels"]
     assert pod_labels["kueue.x-k8s.io/priority-class"] == "interactive-agent"
     assert pod_labels["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+
+
+def test_agent_workflow_host_sandbox_always_pulls_mutable_latest_images() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:latest",
+        ),
+    )
+
+    pod_spec = manifest["spec"]["podTemplate"]["spec"]
+    assert pod_spec["initContainers"][0]["imagePullPolicy"] == "Always"
+    assert pod_spec["containers"][0]["imagePullPolicy"] == "Always"
+
+
+def test_agent_workflow_host_sandbox_caches_digest_images() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox@sha256:"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    )
+
+    pod_spec = manifest["spec"]["podTemplate"]["spec"]
+    assert pod_spec["initContainers"][0]["imagePullPolicy"] == "IfNotPresent"
+    assert pod_spec["containers"][0]["imagePullPolicy"] == "IfNotPresent"
 
 
 class _FakeCustom:

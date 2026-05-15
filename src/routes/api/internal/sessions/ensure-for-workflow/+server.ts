@@ -480,6 +480,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		sandboxName: incomingSandboxName,
 		workflowExecutionId,
 		parentExecutionId,
+		mlflowSessionId: sessionId,
 	});
 	if (initialMessage && initialMessage.trim()) {
 		await sendUserEvent(sessionId, {
@@ -640,6 +641,8 @@ function buildChildInput(params: {
 		params.mlflowContext || params.activeModelId || params.activeModelUri
 			? {
 					...(params.mlflowContext ?? {}),
+					mlflowSessionId:
+						params.mlflowContext?.mlflowSessionId ?? params.sessionId,
 					activeModelId:
 						params.mlflowContext?.activeModelId ?? params.activeModelId ?? null,
 					activeModelName:
@@ -664,6 +667,7 @@ function buildChildInput(params: {
 		instructionBundle: params.instructionBundle ?? null,
 		agentSlug: params.agentSlug ?? null,
 		agentAppId: params.agentAppId ?? null,
+		mlflowSessionId: mlflowContext?.mlflowSessionId ?? params.sessionId,
 		mlflowContext,
 		environmentConfig: params.environmentConfig,
 		workflowId: params.workflowId,
@@ -694,6 +698,7 @@ function buildChildInput(params: {
 			agentAppId: params.agentAppId ?? null,
 			mlflowRunId: mlflowContext?.runId ?? null,
 			mlflowParentRunId: mlflowContext?.parentRunId ?? null,
+			mlflowSessionId: mlflowContext?.mlflowSessionId ?? params.sessionId,
 			mlflowExperimentId: mlflowContext?.experimentId ?? null,
 			mlflowTraceExperimentId: mlflowContext?.traceExperimentId ?? null,
 			mlflowPublicUrl: mlflowContext?.publicUrl ?? null,
@@ -742,6 +747,10 @@ function parseMlflowContext(value: unknown): MlflowRunContext | null {
 		typeof input.parentRunId === "string" && input.parentRunId.trim()
 			? input.parentRunId.trim()
 			: null;
+	const mlflowSessionId =
+		typeof input.mlflowSessionId === "string" && input.mlflowSessionId.trim()
+			? input.mlflowSessionId.trim()
+			: null;
 	const publicUrl =
 		typeof input.publicUrl === "string" && input.publicUrl.trim()
 			? input.publicUrl.trim()
@@ -778,6 +787,7 @@ function parseMlflowContext(value: unknown): MlflowRunContext | null {
 		traceExperimentName,
 		runId,
 		parentRunId,
+		mlflowSessionId,
 		publicUrl,
 		activeModelId,
 		activeModelName,
@@ -800,6 +810,7 @@ function parseExistingSessionMlflowContext(
 		traceExperimentName: incomingMlflowContext?.traceExperimentName ?? null,
 		runId: session.mlflowRunId,
 		parentRunId: session.mlflowParentRunId ?? incomingMlflowContext?.runId ?? null,
+		mlflowSessionId: session.mlflowSessionId ?? session.id,
 		publicUrl: null,
 		activeModelId: incomingMlflowContext?.activeModelId ?? null,
 		activeModelName: incomingMlflowContext?.activeModelName ?? null,
@@ -829,6 +840,7 @@ async function maybeCreateSessionMlflowRun(params: {
 	return await safeCreateWorkflowAgentMlflowRun({
 		sessionId: params.sessionId,
 		parentRunId,
+		mlflowSessionId: params.sessionId,
 		experimentId: params.incomingMlflowContext?.experimentId ?? null,
 		workflowExecutionId: params.workflowExecutionId,
 		workflowId: params.workflowId,

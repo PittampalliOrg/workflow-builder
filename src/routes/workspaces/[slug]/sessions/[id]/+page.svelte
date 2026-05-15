@@ -270,6 +270,19 @@
 		children: SessionEventEnvelope[];
 		count: number;
 	};
+	type SessionMlflowGroup = {
+		experimentId: string | null;
+		mlflowSessionId: string | null;
+		sessionUrl: string | null;
+		runUrl: string | null;
+		traceSearchUrl: string | null;
+		links: Array<{
+			mlflowEntityType?: string | null;
+			mlflowRunId?: string | null;
+			mlflowPublicUrl?: string | null;
+			source?: string | null;
+		}>;
+	};
 	const batchedEvents = $derived.by<BatchedEvent[]>(() => {
 		if (viewMode === 'debug') {
 			return displayEvents.map((event) => ({ event, children: [event], count: 1 }));
@@ -375,6 +388,8 @@
 	let streamError = $state<string | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+	let mlflowGroup = $state<SessionMlflowGroup | null>(null);
+	let mlflowGroupKey = $state('');
 	let input = $state('');
 	let sending = $state(false);
 	let editingTitle = $state(false);
@@ -482,6 +497,11 @@
 		if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
 		return new Date(iso).toLocaleDateString();
 	}
+	function shortMlflowId(value: string | null | undefined): string {
+		const text = value?.trim() ?? '';
+		if (!text) return '—';
+		return text.length > 16 ? `${text.slice(0, 12)}…` : text;
+	}
 
 	async function copyAllEvents() {
 		const payload = displayEvents.map((e) => ({
@@ -552,6 +572,39 @@
 			loading = false;
 		}
 	}
+
+	async function loadMlflowGroup(id: string) {
+		try {
+			const res = await fetch(
+				`/api/observability/mlflow/sessions/${encodeURIComponent(id)}?format=json`
+			);
+			if (!res.ok) {
+				mlflowGroup = null;
+				return;
+			}
+			mlflowGroup = (await res.json()) as SessionMlflowGroup;
+		} catch {
+			mlflowGroup = null;
+		}
+	}
+
+	$effect(() => {
+		const key = session
+			? [
+					session.id,
+					session.mlflowExperimentId ?? '',
+					session.mlflowRunId ?? '',
+					session.mlflowSessionId ?? ''
+				].join(':')
+			: '';
+		if (key === mlflowGroupKey) return;
+		mlflowGroupKey = key;
+		if (!session || (!session.mlflowExperimentId && !session.mlflowRunId)) {
+			mlflowGroup = null;
+			return;
+		}
+		void loadMlflowGroup(session.id);
+	});
 
 	// Prev/next session navigation. We cache the caller's session-id list
 	// (most recent 50) once on load so the chevrons iterate without a
@@ -1447,24 +1500,53 @@
 							<Activity class="size-4" /> Observability
 						</CardTitle>
 					</CardHeader>
-					<CardContent class="text-xs space-y-1.5">
-						<a
-							href={`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}`}
-							target="_blank"
-							rel="noreferrer"
-							class="text-primary hover:underline flex items-center gap-1"
-						>
-							Open in MLflow <ExternalLink class="size-3" />
-						</a>
-						<a
-							href="/observability?sessionId={session.id}"
-							class="text-primary hover:underline block"
-						>
-							Trace explorer (ClickHouse) ↗
-						</a>
-						<div class="text-[10px] text-muted-foreground pt-1">
-							Spans emitted by the durable agent runtime — LLM calls, tool calls,
-							compaction events.
+					<CardContent class="text-xs space-y-3">
+						<div class="grid grid-cols-2 gap-2">
+							<div>
+								<div class="text-[10px] uppercase text-muted-foreground">MLflow session</div>
+								<code class="block truncate text-[11px]" title={session.mlflowSessionId ?? session.id}>
+									{shortMlflowId(mlflowGroup?.mlflowSessionId ?? session.mlflowSessionId ?? session.id)}
+								</code>
+							</div>
+							<div>
+								<div class="text-[10px] uppercase text-muted-foreground">Run</div>
+								<code class="block truncate text-[11px]" title={session.mlflowRunId ?? ''}>
+									{shortMlflowId(session.mlflowRunId)}
+								</code>
+							</div>
+						</div>
+						<div class="flex flex-wrap gap-2">
+							{#if session.mlflowExperimentId || session.mlflowRunId || mlflowGroup?.sessionUrl}
+								<a
+									href={mlflowGroup?.sessionUrl ??
+										`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}`}
+									target="_blank"
+									rel="noreferrer"
+									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-primary hover:bg-accent"
+									title="Open MLflow chat session"
+								>
+									Session <ExternalLink class="size-3" />
+								</a>
+							{/if}
+							{#if session.mlflowRunId}
+								<a
+									href={mlflowGroup?.runUrl ??
+										`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}?target=run`}
+									target="_blank"
+									rel="noreferrer"
+									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-primary hover:bg-accent"
+									title="Open MLflow run"
+								>
+									Run <ExternalLink class="size-3" />
+								</a>
+							{/if}
+							<a
+								href={`/observability?sessionId=${encodeURIComponent(session.id)}`}
+								class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+								title="Open local trace console"
+							>
+								Local traces
+							</a>
 						</div>
 					</CardContent>
 				</Card>

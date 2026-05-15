@@ -150,6 +150,29 @@ _CMA_EVENT_TYPE_MAP: dict[str, str] = {
 }
 
 
+def _tool_output_error(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        raw = value.get("error")
+        return str(raw).strip() if raw else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.lower().startswith("error:"):
+            return text[:1000]
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                return None
+            if isinstance(parsed, dict):
+                raw = parsed.get("error")
+                return str(raw).strip() if raw else None
+    return None
+
+
 def _cma_shape(
     event_type: str, data: dict[str, Any] | None
 ) -> tuple[str | None, dict[str, Any]]:
@@ -183,9 +206,16 @@ def _cma_shape(
         if output is not None:
             payload["output"] = output
         error = payload.pop("error", None)
+        if not error:
+            error = _tool_output_error(output)
         if error:
             payload["error"] = error
             payload.setdefault("is_error", True)
+            payload["success"] = False
+        elif event_type == "tool_call_error":
+            payload["success"] = False
+        else:
+            payload.setdefault("success", True)
         # `output_preview` / `oversized` / `size_bytes` pass through as-is.
     return cma_type, payload
 

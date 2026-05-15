@@ -463,6 +463,13 @@
 				"when": 1778778000000,
 				"tag": "0073_interactive_mlflow_sessions",
 				"breakpoints": true
+			},
+			{
+				"idx": 66,
+				"version": "7",
+				"when": 1778839200000,
+				"tag": "0074_backfill_session_mlflow_ids",
+				"breakpoints": true
 			}
 		]
 	}

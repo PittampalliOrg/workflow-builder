@@ -116,7 +116,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				session.mlflowExperimentId = mlflowRunContext.experimentId;
 				session.mlflowRunId = mlflowRunContext.runId;
 				session.mlflowParentRunId = mlflowRunContext.parentRunId ?? null;
-				session.mlflowSessionId = session.id;
+				session.mlflowSessionId = mlflowRunContext.mlflowSessionId ?? session.id;
 			}
 			if (typeof body.initialMessage === "string" && body.initialMessage.trim()) {
 				await sendUserEvent(session.id, {

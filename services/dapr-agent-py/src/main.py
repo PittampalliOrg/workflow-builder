@@ -241,6 +241,34 @@ def _prepare_payload_with_preview(
     return (value, False, size)
 
 
+def _tool_result_error(result: Any) -> str | None:
+    """Return a compact error string from tool output that encoded failure."""
+    if not isinstance(result, dict):
+        return None
+    direct = result.get("error")
+    if direct:
+        return str(direct).strip()[:1000]
+    content = result.get("content")
+    if isinstance(content, dict):
+        raw = content.get("error")
+        return str(raw).strip()[:1000] if raw else None
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if not text:
+        return None
+    if text.lower().startswith("error:"):
+        return text[:1000]
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(parsed, dict) and parsed.get("error"):
+            return str(parsed["error"]).strip()[:1000]
+    return None
+
+
 def _build_system_prompt(cwd: str, sandbox_name: str | None = None) -> str:
     """Build the system prompt with a structured <env> block.
 
@@ -2684,7 +2712,8 @@ class OpenShellDurableAgent(DurableAgent):
                   result = tool_result.model_dump()
               else:
                   result = super().run_tool(ctx, payload)
-              _exec_success = True
+              _exec_error = _tool_result_error(result)
+              _exec_success = _exec_error is None
           except Exception as exc:
               _exec_error = str(exc)
               if hooks_enabled():
@@ -2806,11 +2835,14 @@ class OpenShellDurableAgent(DurableAgent):
               )
               payload: dict[str, Any] = {
                   "toolName": tool_name,
-                  "success": True,
+                  "success": _exec_error is None,
                   "output": output_data,
                   "output_preview": (full_output[:500] if isinstance(full_output, str) else ""),
                   "duration_ms": _tool_elapsed_ms(),
               }
+              if _exec_error:
+                  payload["error"] = _exec_error
+                  payload["is_error"] = True
               if output_oversized:
                   payload["oversized"] = True
                   payload["size_bytes"] = output_size

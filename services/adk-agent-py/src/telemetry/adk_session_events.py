@@ -91,6 +91,24 @@ def _compact_value(value: Any) -> tuple[Any, str | None, bool, int]:
     return payload, preview, oversized, size
 
 
+def _tool_output_error(value: Any) -> str | None:
+    payload = _jsonable(value)
+    if isinstance(payload, Mapping):
+        return _clean_string(payload.get("error"))
+    if isinstance(payload, str):
+        text = payload.strip()
+        if text.lower().startswith("error:"):
+            return text[:1000]
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                return None
+            if isinstance(parsed, Mapping):
+                return _clean_string(parsed.get("error"))
+    return None
+
+
 def _session_id(ctx: Mapping[str, Any]) -> str | None:
     return (
         _clean_string(ctx.get("agent.session.id"))
@@ -258,7 +276,7 @@ def publish_adk_tool_result(
 ) -> None:
     output = tool_result.get("result")
     payload_output, output_preview, oversized, size_bytes = _compact_value(output)
-    error = _clean_string(tool_result.get("error"))
+    error = _clean_string(tool_result.get("error")) or _tool_output_error(output)
     payload: dict[str, Any] = {
         "tool_call_id": tool_result.get("tool_call_id"),
         "tool_name": tool_result.get("tool_name"),

@@ -369,11 +369,22 @@ def _agent_workflow_host_namespace() -> str:
     )
 
 
+def _image_pull_policy_for_agent_host(image: str) -> str:
+    """Pull mutable agent-host images every time, keep immutable refs cached."""
+    ref = (image or "").strip()
+    if "@sha256:" in ref:
+        return "IfNotPresent"
+    last_segment = ref.rsplit("/", 1)[-1]
+    if ":" not in last_segment or last_segment.rsplit(":", 1)[-1] == "latest":
+        return "Always"
+    return "IfNotPresent"
+
+
 def _openshell_seed_init_container(image: str) -> dict[str, Any]:
     return {
         "name": "seed-openshell-config",
         "image": image,
-        "imagePullPolicy": "IfNotPresent",
+        "imagePullPolicy": _image_pull_policy_for_agent_host(image),
         "command": ["sh", "-c"],
         "args": [
             """
@@ -469,6 +480,7 @@ def build_agent_workflow_host_sandbox_manifest(
     # the hash. UI cross-feature lookup still uses `agent-app-id`.
     session_label = _safe_name(request.sessionId, max_length=63)
     image = request.agentImage or class_config.agentHostImage
+    image_pull_policy = _image_pull_policy_for_agent_host(image)
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "serviceAccountName": class_config.serviceAccountName,
@@ -492,7 +504,7 @@ def build_agent_workflow_host_sandbox_manifest(
             {
                 "name": "dapr-agent-py",
                 "image": image,
-                "imagePullPolicy": "IfNotPresent",
+                "imagePullPolicy": image_pull_policy,
                 "ports": [{"name": "http", "containerPort": 8002}],
                 "env": [
                     {"name": "AGENT_SERVICE_NAME", "value": request.agentAppId},

@@ -306,6 +306,13 @@ describe("mlflow lifecycle helpers", () => {
 				body: expect.stringContaining('"mlflow.modelId","value":"m-agent-v1"'),
 			}),
 		]);
+		expect(runCreateCalls[1]).toEqual([
+			"http://mlflow.test/api/2.0/mlflow/runs/create",
+			expect.objectContaining({
+				method: "POST",
+				body: expect.stringContaining('"workflow_builder.mlflow_session_id","value":"session_1"'),
+			}),
+		]);
 		expect(dbMock.insertValues).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sourceKey: "workflow_execution:exec_1:run:workflow_run_1",
@@ -319,6 +326,7 @@ describe("mlflow lifecycle helpers", () => {
 				sourceKey: "session:session_1:run:agent_run_1",
 				entityType: "session",
 				mlflowRunId: "agent_run_1",
+				mlflowSessionId: "session_1",
 				mlflowLoggedModelId: "m-agent-v1",
 				mlflowLoggedModelName: "agent-v1",
 				mlflowLoggedModelUri: "models:/m-agent-v1",

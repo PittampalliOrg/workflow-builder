@@ -468,6 +468,7 @@
 			<th class="px-4 py-2.5 font-medium">Name</th>
 			<th class="px-4 py-2.5 font-medium">Status</th>
 			<th class="px-4 py-2.5 font-medium">Source</th>
+			<th class="px-4 py-2.5 font-medium">MLflow</th>
 			<th class="px-4 py-2.5 font-medium">Agent</th>
 			<th class="px-4 py-2.5 font-medium">Tokens</th>
 			<th class="px-4 py-2.5 font-medium">Duration</th>
@@ -517,6 +518,22 @@
 					</a>
 				{:else}
 					<Badge variant="secondary" class="text-[10px]">Direct</Badge>
+				{/if}
+			</td>
+			<td class="px-4 py-2.5">
+				{#if s.mlflowExperimentId || s.mlflowRunId}
+					<a
+						href={`/api/observability/mlflow/sessions/${encodeURIComponent(s.id)}`}
+						target="_blank"
+						rel="noreferrer"
+						onclick={(e) => e.stopPropagation()}
+						class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] text-primary hover:bg-accent"
+						title={`MLflow session ${s.mlflowSessionId ?? s.id}`}
+					>
+						Session <ExternalLink class="size-2.5" />
+					</a>
+				{:else}
+					<span class="text-xs text-muted-foreground">—</span>
 				{/if}
 			</td>
 			<td class="px-4 py-2.5">

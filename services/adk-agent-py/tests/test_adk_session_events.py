@@ -31,6 +31,23 @@ def test_llm_complete_still_maps_to_agent_message():
     assert payload["content"] == [{"type": "text", "text": "done"}]
 
 
+def test_tool_call_end_with_json_error_output_is_failed_result():
+    event_type, payload = _cma_shape(
+        "tool_call_end",
+        {
+            "toolName": "ReadSessionEvents",
+            "success": True,
+            "output": '{"error": "read_session_events failed"}',
+        },
+    )
+
+    assert event_type == "agent.tool_result"
+    assert payload["tool_name"] == "ReadSessionEvents"
+    assert payload["success"] is False
+    assert payload["is_error"] is True
+    assert payload["error"] == "read_session_events failed"
+
+
 def test_llm_start_and_usage_use_stable_source_ids(monkeypatch):
     published = []
     monkeypatch.setattr(
@@ -97,6 +114,30 @@ def test_tool_use_and_result_payloads_include_tool_call_id(monkeypatch):
     assert (
         published[1][1]["source_event_id"] == "adk:child-1:i1:tool:call-1:tool_result"
     )
+
+
+def test_adk_tool_result_with_error_output_is_failed(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        events,
+        "publish_session_event",
+        lambda *args, **kwargs: published.append((args, kwargs)),
+    )
+
+    events.publish_adk_tool_result(
+        _ctx(),
+        {
+            "tool_call_id": "call-1",
+            "tool_name": "ReadSessionEvents",
+            "result": {"error": "read_session_events failed"},
+        },
+        duration_ms=5.0,
+    )
+
+    payload = published[0][0][2]
+    assert payload["success"] is False
+    assert payload["is_error"] is True
+    assert payload["error"] == "read_session_events failed"
 
 
 def test_event_actions_map_to_adk_event_types(monkeypatch):

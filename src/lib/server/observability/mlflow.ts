@@ -31,6 +31,15 @@ function mlflowTraceRequestId(traceId: string): string {
   return value.startsWith("tr-") ? value : `tr-${value}`;
 }
 
+export function publicMlflowRunUrl(
+  experimentId: string | null | undefined,
+  runId: string | null | undefined,
+): string | null {
+  const base = publicMlflowUrl();
+  if (!base || !experimentId || !runId) return null;
+  return `${base}/#/experiments/${encodeURIComponent(experimentId)}/runs/${encodeURIComponent(runId)}`;
+}
+
 async function mlflowRequest<T>(path: string): Promise<T> {
   const base = trackingUri();
   if (!base) throw new Error("MLFLOW_TRACKING_URI is not configured");
@@ -245,6 +254,7 @@ export async function getMlflowTraceGroupForSession(sessionId: string) {
       mlflowExperimentId: sessions.mlflowExperimentId,
       mlflowRunId: sessions.mlflowRunId,
       mlflowParentRunId: sessions.mlflowParentRunId,
+      mlflowSessionId: sessions.mlflowSessionId,
     })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
@@ -263,9 +273,18 @@ export async function getMlflowTraceGroupForSession(sessionId: string) {
     .orderBy(desc(mlflowLineageLinks.updatedAt));
   const experimentId =
     session.mlflowExperimentId?.trim() || (await getMlflowTraceExperimentId());
+  const mlflowSessionId = session.mlflowSessionId?.trim() || session.id;
+  const sessionUrl = publicMlflowTraceSearchUrl(experimentId, {
+    sessionId: mlflowSessionId,
+  });
+  const runUrl = publicMlflowRunUrl(experimentId, session.mlflowRunId);
   return {
     session,
     experimentId,
+    mlflowSessionId,
+    sessionUrl,
+    runUrl,
+    traceSearchUrl: publicMlflowTraceSearchUrl(experimentId),
     links: links.map((link) => ({
       ...link,
       source: classifyLineageSource(link),
