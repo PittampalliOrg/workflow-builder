@@ -84,21 +84,36 @@
 		}
 	}
 
-	// When the user navigates to a different event, reset the full-payload
-	// fetch state so the next event starts with preview-only again, then
-	// auto-prefetch the full payload (and its pair) so the user doesn't
-	// have to click "Load full" on every selection. loadFull is deferred
-	// to a microtask so its synchronous state reads/writes (loadingFull,
-	// fullPayload) don't leak into this effect's reactive tracking
-	// context — otherwise the writes loop the effect (Svelte 5
-	// effect_update_depth_exceeded).
+	// Track the event id we last reset/loaded for. Plain (non-reactive) so
+	// reading/writing it doesn't create effect deps — it just persists
+	// across effect re-runs.
+	//
+	// Why this matters: on a live session the SSE store re-passes the
+	// `event` prop with a FRESH object identity on every tick (delta merge
+	// / array rebuild) even when it's the same logical event. The effect
+	// reads `event.id`, so it re-runs every tick. Without the id guard the
+	// body would null `fullPayload` and re-fetch every second — the panel
+	// flashes "Loading full payload…" then content, repeatedly: the
+	// flicker. We only want to reset + auto-load when the SELECTED event
+	// actually changes (by id).
+	//
+	// loadFull is deferred to a microtask so its synchronous state
+	// reads/writes don't leak into this effect's tracking context
+	// (otherwise Svelte 5 effect_update_depth_exceeded).
+	let loadedForEventId: string | null = null;
 	$effect(() => {
-		void event.id;
+		const id = event.id;
+		if (id === loadedForEventId) return;
+		loadedForEventId = id;
 		fullPayload = null;
 		pairedFullPayload = null;
 		loadingFull = false;
 		fullError = null;
-		const shouldLoad = hasPreviewShape || pairedHasPreviewShape;
+		const shouldLoad =
+			isPreviewShape(event.data as Record<string, unknown>) ||
+			(pairedResult
+				? isPreviewShape(pairedResult.data as Record<string, unknown>)
+				: false);
 		if (shouldLoad) {
 			queueMicrotask(() => {
 				void loadFull();
