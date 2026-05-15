@@ -185,7 +185,8 @@ def _cma_shape(
         return None, payload
 
     cma_type = _CMA_EVENT_TYPE_MAP.get(event_type, event_type)
-    payload["_internalType"] = event_type
+    if event_type != "session.runtime_config":
+        payload["_internalType"] = event_type
 
     if event_type == "llm_complete":
         content = payload.pop("content", "") or ""
@@ -344,7 +345,7 @@ def publish_session_event(
         return  # suppressed — session_workflow emits the canonical equivalent
 
     for key, value in _effective_audit_fields(instance_id).items():
-        if value is not None:
+        if cma_type != "session.runtime_config" and value is not None:
             cma_data.setdefault(key, value)
 
     # Stamp trace_id + span_id of the currently-active OTEL span onto the
@@ -355,11 +356,12 @@ def publish_session_event(
     try:
         from src.telemetry.session_tracing import get_current_trace_context
 
-        trace_id, span_id = get_current_trace_context()
-        if trace_id:
-            cma_data.setdefault("traceId", trace_id)
-        if span_id:
-            cma_data.setdefault("spanId", span_id)
+        if cma_type != "session.runtime_config":
+            trace_id, span_id = get_current_trace_context()
+            if trace_id:
+                cma_data.setdefault("traceId", trace_id)
+            if span_id:
+                cma_data.setdefault("spanId", span_id)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[session-ingest] trace-context stamp failed: %s", exc)
 

@@ -121,6 +121,7 @@ def register_session_workflow(
     same daprd placement → no extra hop.
     """
     from src.runner.session_workflow import session_workflow_factory
+    from src.runtime_config import record_runtime_config_activity
 
     rt = getattr(runner, "_workflow_runtime", None)
     if rt is None:
@@ -141,6 +142,7 @@ def register_session_workflow(
         declared_tools=declared_tools,
     )
     rt.register_workflow(session_workflow, name="session_workflow")
+    rt.register_activity(record_runtime_config_activity)
     logger.info(
         "[adk-runner] registered session_workflow → child=%s on shared WorkflowRuntime",
         diagrid_workflow_name,

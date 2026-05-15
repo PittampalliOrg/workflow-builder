@@ -82,6 +82,10 @@ function serverIdentityValues(server: Record<string, unknown>): Set<string> {
 	return values;
 }
 
+function requestedMcpConnectionId(server: Record<string, unknown>): string {
+	return String(server.mcpConnectionExternalId || server.mcp_connection_external_id || "").trim();
+}
+
 function hasDirectEndpoint(server: Record<string, unknown>): boolean {
 	return Boolean(
 		String(server.url || server.serverUrl || "").trim() ||
@@ -263,6 +267,7 @@ function buildServerConfig(
 		pieceName: row.pieceName,
 		serverKey: row.serverKey,
 		connectionExternalId: row.connectionExternalId || null,
+		mcpConnectionExternalId: row.id,
 		transport: transportFromMetadata(metadata),
 		url: qualifyMcpServerUrl(
 			{ sourceType: row.sourceType, registryRef: row.registryRef },
@@ -300,8 +305,10 @@ export function resolveMcpServerConfigsFromRows(params: {
 		if (hasDirectEndpoint(requested)) {
 			config = sanitizeRequestedServer(requested);
 		} else {
+			const connectionId = requestedMcpConnectionId(requested);
 			const identities = serverIdentityValues(requested);
 			const match = connectionConfigs.find(({ config: candidate, row }) => {
+				if (connectionId) return row.id === connectionId;
 				const candidateValues = new Set([
 					...serverIdentityValues(candidate),
 					...serverIdentityValues({

@@ -243,6 +243,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		agentAppId: targetAppId,
 		agentRuntimeClass: runtimeRoute.runtimeClass,
 		agentRuntimeIsolation: runtimeRoute.isolation,
+		runtimeConfigInspectionVersion: 1,
 		agentConfig: agentConfigForDispatch,
 		// Flat metadata the call_agent tool needs to dispatch peers by name.
 		callableAgents,

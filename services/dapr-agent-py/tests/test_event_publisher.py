@@ -36,3 +36,18 @@ def test_tool_call_end_with_error_text_output_is_failed_result():
     assert event_type == "agent.tool_result"
     assert payload["success"] is False
     assert payload["error"] == "Error: cell_id is required for replace and delete operations."
+
+
+def test_runtime_config_payload_is_not_wrapped_or_audit_stamped():
+    cloud_event = {
+        "specversion": "1.0",
+        "id": "session:sess-1:child-1:turn:1:runtime_config:hash",
+        "type": "io.workflow-builder.session.runtime_config.v1",
+        "data": {"configHash": "hash"},
+    }
+
+    event_type, payload = _cma_shape("session.runtime_config", cloud_event)
+
+    assert event_type == "session.runtime_config"
+    assert payload == cloud_event
+    assert "_internalType" not in payload

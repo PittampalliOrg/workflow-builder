@@ -227,8 +227,10 @@
 		'session.status_running',
 		'session.status_idle',
 		'session.status_rescheduled',
+		'session.runtime_config',
 		'session.turn_started',
 		'session.instructions_applied',
+		'session.config_updated',
 		'instance.metrics_summary',
 		'llm_start',
 		'llm_complete'
@@ -285,6 +287,36 @@
 			mlflowPublicUrl?: string | null;
 			source?: string | null;
 		}>;
+	};
+	type RuntimeConfigSource = 'memory' | 'state' | 'event' | 'settings';
+	type RuntimeConfigData = {
+		source?: RuntimeConfigSource;
+		sessionId?: string;
+		instanceId?: string;
+		turn?: number;
+		configRevision?: number;
+		configHash?: string;
+		agent?: Record<string, unknown>;
+		llm?: Record<string, unknown>;
+		execution?: Record<string, unknown>;
+		tools?: Record<string, unknown>;
+		mcp?: Record<string, unknown>;
+		skills?: unknown[];
+		instructions?: Record<string, unknown>;
+		mlflow?: Record<string, unknown>;
+		dapr?: Record<string, unknown>;
+		attributes?: Record<string, unknown>;
+	};
+	type RuntimeConfigCloudEvent = {
+		specversion: '1.0';
+		id: string;
+		source: string;
+		type: 'io.workflow-builder.session.runtime_config.v1';
+		subject: string;
+		datacontenttype: 'application/json';
+		dataschema?: string;
+		traceparent?: string;
+		data: RuntimeConfigData;
 	};
 	const batchedEvents = $derived.by<BatchedEvent[]>(() => {
 		if (viewMode === 'debug') {
@@ -393,6 +425,10 @@
 	let errorMessage = $state<string | null>(null);
 	let mlflowGroup = $state<SessionMlflowGroup | null>(null);
 	let mlflowGroupKey = $state('');
+	let runtimeConfig = $state<RuntimeConfigCloudEvent | null>(null);
+	let runtimeConfigKey = $state('');
+	let runtimeConfigLoading = $state(false);
+	let runtimeConfigError = $state<string | null>(null);
 	let input = $state('');
 	let sending = $state(false);
 	let editingTitle = $state(false);
@@ -504,6 +540,71 @@
 		const text = value?.trim() ?? '';
 		if (!text) return '—';
 		return text.length > 16 ? `${text.slice(0, 12)}…` : text;
+	}
+	function isRuntimeRecord(value: unknown): value is Record<string, unknown> {
+		return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+	}
+	function coerceRuntimeConfig(value: unknown): RuntimeConfigCloudEvent | null {
+		if (!isRuntimeRecord(value)) return null;
+		if (
+			value.specversion !== '1.0' ||
+			value.type !== 'io.workflow-builder.session.runtime_config.v1' ||
+			typeof value.id !== 'string' ||
+			!isRuntimeRecord(value.data)
+		) {
+			return null;
+		}
+		return value as RuntimeConfigCloudEvent;
+	}
+	function runtimeSection(name: keyof RuntimeConfigData): Record<string, unknown> {
+		const section = runtimeConfig?.data?.[name];
+		return isRuntimeRecord(section) ? section : {};
+	}
+	function runtimeText(value: unknown): string | null {
+		return typeof value === 'string' && value.trim() ? value.trim() : null;
+	}
+	function runtimeNumber(value: unknown): number | null {
+		return typeof value === 'number' && Number.isFinite(value) ? value : null;
+	}
+	function runtimeCount(section: Record<string, unknown>, key: string): number | null {
+		const direct = runtimeNumber(section[key]);
+		if (direct !== null) return direct;
+		const value = section[key.replace(/Count$/, 's')];
+		return Array.isArray(value) ? value.length : null;
+	}
+	function runtimeConfigJson(): string {
+		if (!runtimeConfig) return '';
+		try {
+			return JSON.stringify(runtimeConfig, null, 2);
+		} catch {
+			return String(runtimeConfig);
+		}
+	}
+	function applyRuntimeConfig(event: RuntimeConfigCloudEvent | null) {
+		if (!event || event.id === runtimeConfigKey) return;
+		runtimeConfig = event;
+		runtimeConfigKey = event.id;
+		runtimeConfigError = null;
+	}
+	async function loadRuntimeConfig() {
+		runtimeConfigLoading = true;
+		runtimeConfigError = null;
+		try {
+			const res = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/runtime-config`);
+			if (res.status === 404) {
+				runtimeConfig = null;
+				runtimeConfigKey = '';
+				return;
+			}
+			if (!res.ok) {
+				throw new Error(`HTTP ${res.status}`);
+			}
+			applyRuntimeConfig(coerceRuntimeConfig(await res.json().catch(() => null)));
+		} catch (err) {
+			runtimeConfigError = err instanceof Error ? err.message : String(err);
+		} finally {
+			runtimeConfigLoading = false;
+		}
 	}
 
 	async function copyAllEvents() {
@@ -699,6 +800,7 @@
 			void checkExpiringCreds();
 			void checkSandboxLiveness();
 			void loadNeighborSessions();
+			void loadRuntimeConfig();
 			void refreshRuntimeFlags();
 			runtimeTimer = setInterval(() => {
 				void refreshRuntimeFlags();
@@ -714,6 +816,11 @@
 			if (state.session) session = state.session;
 			queueScroll();
 		});
+	});
+
+	$effect(() => {
+		const latest = [...events].reverse().find((event) => event.type === 'session.runtime_config');
+		applyRuntimeConfig(coerceRuntimeConfig(latest?.data));
 	});
 
 	// Re-probe sandbox liveness whenever session transitions to terminated.
@@ -959,19 +1066,23 @@
 				};
 			case 'session.status_idle': {
 				const sr = (data as { stop_reason?: { type?: string } }).stop_reason;
-				const friendly =
-					sr?.type === 'end_turn'
-						? 'finished the turn'
-						: sr?.type === 'requires_action'
-							? 'needs your input'
-							: sr?.type === 'retries_exhausted'
-								? 'retries exhausted'
-								: 'idle';
-				return {
-					kind: 'status' as const,
-					text: `Agent ${friendly}`
-				};
-			}
+					const friendly =
+						sr?.type === 'end_turn'
+							? 'finished the turn'
+							: sr?.type === 'requires_action'
+								? 'needs your input'
+								: sr?.type === 'retries_exhausted'
+									? 'retries exhausted'
+									: sr?.type === 'interrupted'
+										? 'was interrupted'
+										: sr?.type === 'terminated'
+											? 'was terminated'
+											: 'idle';
+					return {
+						kind: 'status' as const,
+						text: `Agent ${friendly}`
+					};
+				}
 			case 'session.status_running':
 				return { kind: 'status' as const, text: 'Running…' };
 			case 'session.status_rescheduled':
@@ -1638,6 +1749,122 @@
 								Local traces
 							</a>
 						</div>
+					</CardContent>
+				</Card>
+
+				<Card>
+					<CardHeader class="pb-2">
+						<CardTitle class="text-sm flex items-center gap-2">
+							<Settings class="size-4" /> Active Runtime
+							{#if runtimeConfig?.data?.source}
+								<Badge variant="outline" class="ml-auto text-[9px]">
+									{runtimeConfig.data.source}
+								</Badge>
+							{/if}
+						</CardTitle>
+					</CardHeader>
+					<CardContent class="text-xs space-y-3">
+						{#if runtimeConfigLoading && !runtimeConfig}
+							<div class="space-y-1.5">
+								<Skeleton class="h-4" />
+								<Skeleton class="h-4" />
+								<Skeleton class="h-20" />
+							</div>
+						{:else if runtimeConfig}
+							{@const agentRuntime = runtimeSection('agent')}
+							{@const llmRuntime = runtimeSection('llm')}
+							{@const toolRuntime = runtimeSection('tools')}
+							{@const mcpRuntime = runtimeSection('mcp')}
+							{@const mlflowRuntime = runtimeSection('mlflow')}
+							{@const daprRuntime = runtimeSection('dapr')}
+							<div class="grid grid-cols-2 gap-2">
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">Model</div>
+									<code
+										class="block truncate text-[11px]"
+										title={runtimeText(llmRuntime.providerModel) ??
+											runtimeText(llmRuntime.modelSpec) ??
+											''}
+									>
+										{runtimeText(llmRuntime.providerModel) ??
+											runtimeText(llmRuntime.modelSpec) ??
+											'—'}
+									</code>
+								</div>
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">Provider</div>
+									<code class="block truncate text-[11px]" title={runtimeText(llmRuntime.provider) ?? ''}>
+										{runtimeText(llmRuntime.provider) ?? '—'}
+									</code>
+								</div>
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">Tools</div>
+									<code class="block truncate text-[11px]">
+										{runtimeCount(toolRuntime, 'toolCount') ??
+											runtimeCount(toolRuntime, 'declaredToolCount') ??
+											(Array.isArray(toolRuntime.declaredTools)
+												? toolRuntime.declaredTools.length
+												: '—')}
+									</code>
+								</div>
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">MCP</div>
+									<code class="block truncate text-[11px]">
+										{runtimeCount(mcpRuntime, 'serverCount') ?? 0} servers
+									</code>
+								</div>
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">Skills</div>
+									<code class="block truncate text-[11px]">
+										{Array.isArray(runtimeConfig.data.skills)
+											? runtimeConfig.data.skills.length
+											: 0}
+									</code>
+								</div>
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">Turn</div>
+									<code class="block truncate text-[11px]">
+										{runtimeConfig.data.turn ?? 0}
+									</code>
+								</div>
+							</div>
+							<div class="space-y-1">
+								<div class="text-[10px] uppercase text-muted-foreground">Runtime ids</div>
+								<code class="block truncate text-[11px]" title={runtimeText(daprRuntime.appId) ?? runtimeText(agentRuntime.appid) ?? ''}>
+									{runtimeText(daprRuntime.appId) ?? runtimeText(agentRuntime.appid) ?? '—'}
+								</code>
+								<code class="block truncate text-[11px]" title={runtimeConfig.data.instanceId ?? ''}>
+									{runtimeConfig.data.instanceId ?? '—'}
+								</code>
+							</div>
+							<div class="grid grid-cols-2 gap-2">
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">Config hash</div>
+									<code class="block truncate text-[11px]" title={runtimeConfig.data.configHash ?? ''}>
+										{runtimeConfig.data.configHash?.slice(0, 12) ?? '—'}
+									</code>
+								</div>
+								<div>
+									<div class="text-[10px] uppercase text-muted-foreground">MLflow run</div>
+									<code class="block truncate text-[11px]" title={runtimeText(mlflowRuntime.runId) ?? ''}>
+										{shortMlflowId(runtimeText(mlflowRuntime.runId))}
+									</code>
+								</div>
+							</div>
+							<details class="rounded-md border bg-background/50">
+								<summary class="cursor-pointer px-2 py-1.5 text-[11px] text-muted-foreground">
+									CloudEvents JSON
+								</summary>
+								<pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all border-t p-2 text-[10px]">{runtimeConfigJson()}</pre>
+							</details>
+						{:else}
+							<div class="text-muted-foreground">
+								No runtime snapshot yet.
+								{#if runtimeConfigError}
+									<span class="block text-[10px] text-rose-500">{runtimeConfigError}</span>
+								{/if}
+							</div>
+						{/if}
 					</CardContent>
 				</Card>
 

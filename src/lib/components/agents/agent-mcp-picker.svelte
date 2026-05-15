@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -23,6 +24,7 @@
 	let vaults = $state<VaultSummary[]>([]);
 	let credentialsByVault = $state<Record<string, VaultCredentialSummary[]>>({});
 	let projectConnections = $state<ProjectMcpConnection[]>([]);
+	let availabilityEntries = $state<McpAvailabilityEntry[]>([]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
@@ -40,6 +42,38 @@
 		serverUrl: string | null;
 		status: string;
 		metadata: Record<string, unknown> | null;
+	};
+
+	type McpAvailabilityEntry = {
+		pieceName: string;
+		canonicalPieceName: string;
+		displayName: string;
+		description: string | null;
+		categories: string[];
+		authType: string;
+		requiresAuth: boolean;
+		isOAuth2: boolean;
+		oauthAppConfigured: boolean;
+		actionCount: number;
+		registryRef: string;
+		serverUrl: string;
+		appConnections: Array<{
+			id: string;
+			externalId: string;
+			displayName: string;
+			type: string;
+			status: string;
+		}>;
+		mcpConnection: ProjectMcpConnection | null;
+		registered: boolean;
+		enabled: boolean;
+		ready: boolean;
+		authStatus: string;
+		authStatusLabel: string;
+		mcpConnectionExternalId: string | null;
+		serviceName: string | null;
+		namespace: string | null;
+		registrationReason: string | null;
 	};
 
 	const BROWSER_PRESETS: McpServerProfileConfig[] = [
@@ -71,14 +105,21 @@
 		try {
 			const [res, projectRes] = await Promise.all([
 				fetch('/api/v1/vaults'),
-				fetch('/api/mcp-connections')
+				fetch('/api/mcp-connections/availability')
 			]);
 			if (!res.ok) {
 				error = `Failed to load vaults (${res.status})`;
 				return;
 			}
 			if (projectRes.ok) {
-				projectConnections = await projectRes.json();
+				const body = (await projectRes.json()) as {
+					entries?: McpAvailabilityEntry[];
+					projectConnections?: ProjectMcpConnection[];
+				};
+				availabilityEntries = body.entries ?? [];
+				projectConnections = body.projectConnections ?? [];
+			} else {
+				error = `Failed to load MCP availability (${projectRes.status})`;
 			}
 			const data = (await res.json()) as { vaults: VaultSummary[] };
 			vaults = data.vaults ?? [];
@@ -102,6 +143,7 @@
 
 	function serverKey(server: McpServerProfileConfig): string {
 		return (
+			server.mcpConnectionExternalId ??
 			server.server_name ?? server.serverName ?? server.name ?? server.displayName ?? ''
 		);
 	}
@@ -132,19 +174,27 @@
 			sourceType: connection.sourceType,
 			pieceName: connection.pieceName,
 			serverKey: connection.serverKey,
+			mcpConnectionExternalId: connection.id,
 			transport: 'streamable_http'
 		};
 	}
 
 	function isProjectSelected(connection: ProjectMcpConnection): boolean {
+		return value.some((server) => isSameProjectServer(server, connection));
+	}
+
+	function isSameProjectServer(
+		server: McpServerProfileConfig,
+		connection: ProjectMcpConnection
+	): boolean {
 		const key = connectionServerName(connection);
-		return value.some((server) => serverKey(server) === key);
+		return server.mcpConnectionExternalId === connection.id || serverKey(server) === key;
 	}
 
 	function toggleProjectConnection(connection: ProjectMcpConnection, on: boolean) {
-		const key = connectionServerName(connection);
-		if (on) onChange([...value.filter((server) => serverKey(server) !== key), projectServerConfig(connection)]);
-		else onChange(value.filter((server) => serverKey(server) !== key));
+		const withoutConnection = value.filter((server) => !isSameProjectServer(server, connection));
+		if (on) onChange([...withoutConnection, projectServerConfig(connection)]);
+		else onChange(withoutConnection);
 	}
 
 	function isPresetSelected(preset: McpServerProfileConfig): boolean {
@@ -172,6 +222,42 @@
 	function removeServer(server: McpServerProfileConfig) {
 		const key = serverKey(server);
 		onChange(value.filter((s) => serverKey(s) !== key));
+	}
+
+	function normalizePiece(value: string | null | undefined): string {
+		return String(value || '')
+			.trim()
+			.toLowerCase()
+			.replace(/^@activepieces\/piece-/, '')
+			.replace(/[_\s]+/g, '-')
+			.replace(/-+/g, '-')
+			.replace(/^-|-$/g, '');
+	}
+
+	function availabilityForConnection(connection: ProjectMcpConnection): McpAvailabilityEntry | null {
+		if (connection.sourceType !== 'nimble_piece') return null;
+		const piece = normalizePiece(connection.pieceName);
+		return availabilityEntries.find((entry) => entry.pieceName === piece) ?? null;
+	}
+
+	const enabledProjectConnections = $derived.by(() =>
+		projectConnections.filter((connection) => connection.status === 'ENABLED')
+	);
+
+	const registeredUnavailableEntries = $derived.by(() =>
+		availabilityEntries.filter((entry) => entry.registered && !entry.enabled)
+	);
+
+	const effectiveProjectConnections = $derived.by(() =>
+		enabledProjectConnections.filter((connection) => {
+			const availability = availabilityForConnection(connection);
+			return !availability || availability.ready || availability.authStatus === 'NO_AUTH_REQUIRED';
+		})
+	);
+
+	function connectionsHref(): string {
+		const slug = String(page.params.slug || '').trim();
+		return slug ? `/workspaces/${slug}/connections?tab=mcp` : '/connections?tab=mcp';
 	}
 
 	function credentialForServer(
@@ -221,26 +307,43 @@
 
 	<div class="space-y-2">
 		<p class="text-xs font-medium text-muted-foreground">
-			Project MCP connections ({projectConnections.filter((c) => c.status === 'ENABLED').length})
+			Project MCP connections ({enabledProjectConnections.length})
 		</p>
 		{#if connectionMode === 'project'}
-			<div class="rounded border border-dashed p-3 text-xs text-muted-foreground">
-				This agent includes every enabled workspace MCP server. Use explicit mode to narrow the list.
+			<div class="rounded border border-dashed p-3 text-xs text-muted-foreground space-y-2">
+				<p>This agent includes every ready workspace MCP server. Use explicit mode to narrow the list.</p>
+				{#if effectiveProjectConnections.length > 0}
+					<div class="flex flex-wrap gap-1">
+						{#each effectiveProjectConnections as conn (conn.id)}
+							<Badge variant="outline" class="text-[10px]">{conn.displayName}</Badge>
+						{/each}
+					</div>
+				{:else}
+					<p>No ready workspace MCP servers are enabled.</p>
+				{/if}
 			</div>
 		{:else}
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-				{#each projectConnections.filter((c) => c.status === 'ENABLED') as conn (conn.id)}
+				{#each enabledProjectConnections as conn (conn.id)}
+					{@const availability = availabilityForConnection(conn)}
+					{@const selectable = !availability || availability.ready || availability.authStatus === 'NO_AUTH_REQUIRED'}
 					<label class="rounded border p-3 text-xs cursor-pointer hover:border-primary/50">
 						<span class="flex items-start gap-2">
 							<input
 								type="checkbox"
 								checked={isProjectSelected(conn)}
+								disabled={!selectable}
 								onchange={(e) =>
 									toggleProjectConnection(conn, (e.target as HTMLInputElement).checked)}
 							/>
 							<span class="min-w-0">
-								<span class="font-medium flex items-center gap-1">
+								<span class="font-medium flex items-center gap-1 flex-wrap">
 									<Plug class="size-3" /> {conn.displayName}
+									{#if availability}
+										<Badge variant={availability.ready ? 'secondary' : 'outline'} class="text-[10px]">
+											{availability.authStatusLabel}
+										</Badge>
+									{/if}
 								</span>
 								<span class="block text-[10px] text-muted-foreground truncate">
 									{conn.sourceType}{conn.pieceName ? ` · ${conn.pieceName}` : ''}
@@ -250,9 +353,24 @@
 					</label>
 				{/each}
 			</div>
-			{#if projectConnections.filter((c) => c.status === 'ENABLED').length === 0}
+			{#if enabledProjectConnections.length === 0}
 				<div class="rounded border border-dashed p-3 text-xs text-muted-foreground">
-					No enabled workspace MCP servers. Add them from the Connections page.
+					No enabled workspace MCP servers.
+				</div>
+			{/if}
+			{#if registeredUnavailableEntries.length > 0}
+				<div class="rounded border border-dashed p-3 text-xs text-muted-foreground space-y-2">
+					<div class="flex items-center justify-between gap-2">
+						<span>Registered MCP services available to enable</span>
+						<a class="underline" href={connectionsHref()}>Open Connections</a>
+					</div>
+					<div class="flex flex-wrap gap-1">
+						{#each registeredUnavailableEntries as entry (entry.pieceName)}
+							<Badge variant="outline" class="text-[10px]">
+								{entry.displayName} · {entry.authStatusLabel}
+							</Badge>
+						{/each}
+					</div>
 				</div>
 			{/if}
 		{/if}
@@ -263,8 +381,8 @@
 			MCP servers ({value.length})
 		</p>
 		<p class="text-[11px] text-muted-foreground">
-			Declare MCP servers by URL. Credentials come from attached vaults — the proxy matches them to
-			servers by URL at tool-call time.
+			Workspace MCP servers use app connections. Custom URL servers can use attached vault
+			credentials matched by MCP server URL.
 		</p>
 		{#if value.length === 0}
 			<div class="rounded border border-dashed p-3 text-xs text-muted-foreground">
@@ -287,6 +405,10 @@
 									{#if cred}
 										<Badge variant="secondary" class="text-[10px]">
 											<KeyRound class="size-3" /> {cred.displayName}
+										</Badge>
+									{:else if server.mcpConnectionExternalId}
+										<Badge variant="secondary" class="text-[10px]">
+											<KeyRound class="size-3" /> app connection
 										</Badge>
 									{:else if server.url}
 										<Badge variant="outline" class="text-[10px] text-amber-600">

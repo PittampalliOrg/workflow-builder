@@ -25,6 +25,19 @@ export type SandboxProvisionInput = {
 	keepAfterRun?: boolean;
 };
 
+export type SandboxProvisioner = (
+	input: SandboxProvisionInput,
+) => Promise<SandboxProvisionResult>;
+
+export type SandboxProvisionRetryOptions = {
+	attempts?: number;
+	retryDelayMs?: number;
+	provision?: SandboxProvisioner;
+};
+
+const DEFAULT_SANDBOX_PROVISION_ATTEMPTS = 2;
+const DEFAULT_SANDBOX_PROVISION_RETRY_DELAY_MS = 500;
+
 /**
  * Provision a per-session OpenShell sandbox via openshell-agent-runtime's
  * /api/workspaces/profile endpoint. Mirrors what the `workspace/profile`
@@ -86,6 +99,95 @@ export async function provisionSessionSandbox(
 		workspaceRef,
 		rootPath: rootPath ?? input.rootPath ?? "/sandbox",
 	};
+}
+
+export async function provisionSessionSandboxWithRetry(
+	input: SandboxProvisionInput,
+	options: SandboxProvisionRetryOptions = {},
+): Promise<SandboxProvisionResult> {
+	const provision = options.provision ?? provisionSessionSandbox;
+	const attempts = normalizeAttemptCount(
+		options.attempts ?? DEFAULT_SANDBOX_PROVISION_ATTEMPTS,
+	);
+	const retryDelayMs = Math.max(
+		0,
+		options.retryDelayMs ?? DEFAULT_SANDBOX_PROVISION_RETRY_DELAY_MS,
+	);
+	let lastError: unknown;
+
+	for (let attempt = 1; attempt <= attempts; attempt += 1) {
+		try {
+			return await provision(input);
+		} catch (err) {
+			lastError = err;
+			if (attempt >= attempts || !isRetryableSandboxProvisionError(err)) {
+				throw err;
+			}
+			console.warn(
+				`[sandbox-provision] workspace/profile failed on attempt ${attempt}/${attempts}; retrying:`,
+				describeSandboxProvisionError(err),
+			);
+			await sleep(retryDelayMs);
+		}
+	}
+
+	throw lastError instanceof Error
+		? lastError
+		: new Error("Sandbox provisioning failed");
+}
+
+export function sandboxProvisionFailureMessage(err: unknown): string {
+	return `OpenShell sandbox provisioning failed: ${describeSandboxProvisionError(err)}`;
+}
+
+export function describeSandboxProvisionError(err: unknown): string {
+	const message =
+		err instanceof Error
+			? err.message
+			: typeof err === "string"
+				? err
+				: (() => {
+						try {
+							return JSON.stringify(err);
+						} catch {
+							return String(err);
+						}
+					})();
+	const trimmed = (message ?? "").replace(/\u0000/g, "").trim();
+	return (trimmed || "Sandbox provisioning failed").slice(0, 1_000);
+}
+
+export function isRetryableSandboxProvisionError(err: unknown): boolean {
+	const message = describeSandboxProvisionError(err).toLowerCase();
+	return [
+		"internal",
+		"unavailable",
+		"deadline_exceeded",
+		"deadline exceeded",
+		"timed out",
+		"timeout",
+		"fetch failed",
+		"socket hang up",
+		"econnreset",
+		"other side closed",
+		"transport",
+		"stream closed",
+		"rst_stream",
+		"failed to decode protobuf",
+		"502",
+		"503",
+		"504",
+	].some((needle) => message.includes(needle));
+}
+
+function normalizeAttemptCount(attempts: number): number {
+	if (!Number.isFinite(attempts)) return DEFAULT_SANDBOX_PROVISION_ATTEMPTS;
+	return Math.max(1, Math.min(5, Math.floor(attempts)));
+}
+
+async function sleep(delayMs: number): Promise<void> {
+	if (delayMs <= 0) return;
+	await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function firstString(

@@ -18,6 +18,7 @@ export type McpServerProfileConfig = {
 	pieceName?: string | null;
 	serverKey?: string | null;
 	registryRef?: string | null;
+	mcpConnectionExternalId?: string | null;
 	connectionExternalId?: string | null;
 	transport?: string;
 	url?: string;

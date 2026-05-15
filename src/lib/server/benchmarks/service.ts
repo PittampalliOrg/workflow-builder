@@ -292,6 +292,7 @@ type BenchmarkSessionTurnInput = {
 	sessionId: string;
 	childInstanceId: string | null;
 	turn: number | null;
+	agentWorkflowMode?: string | null;
 };
 const DEFAULT_EVALUATION_CONCURRENCY = 24;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
@@ -660,21 +661,9 @@ export function benchmarkAgentRuntimeCleanupInstanceIds(
 	if (!row.runtimeAppId || !sessionId) return [];
 	const ids = new Set<string>([sessionId]);
 	const knownTurns = Array.isArray(turns) ? turns : turns ? [turns] : [];
-	const maxKnownTurn = knownTurns.reduce((max, turn) => {
-		return typeof turn.turn === "number" && turn.turn > max ? turn.turn : max;
-	}, 0);
-	const turnCount =
-		maxKnownTurn > 0
-			? maxKnownTurn
-			: typeof row.turnCount === "number" && row.turnCount > 0
-				? row.turnCount
-				: 1;
-	for (let turn = 1; turn <= Math.min(Math.floor(turnCount), 1000); turn += 1) {
-		ids.add(`${sessionId}:turn-${turn}`);
-	}
 	for (const turn of knownTurns) {
 		const child = turn.childInstanceId?.trim();
-		if (child) ids.add(child);
+		if (child && child !== sessionId) ids.add(child);
 	}
 	return [...ids];
 }
@@ -4811,6 +4800,10 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 								? data.child_instance_id
 								: null,
 					turn: Number.isFinite(rawTurn) ? rawTurn : null,
+					agentWorkflowMode:
+						typeof data.agentWorkflowMode === "string"
+							? data.agentWorkflowMode
+							: null,
 					};
 				});
 			for (const runtimeAppId of runtimeAppIds) {

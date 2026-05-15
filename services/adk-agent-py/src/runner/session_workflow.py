@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 from datetime import timedelta
 from typing import Any, Callable, Generator
 
@@ -45,6 +46,10 @@ from src.event_publisher import publish_session_event, scope_session, unscope_se
 from src.openshell_runtime import get_runtime
 from src.adapters.agent_config_builder import build_per_turn_agent_config
 from src.runner.image_compaction import compact_image_tool_results
+from src.runtime_config import (
+    record_runtime_config_activity,
+    summarize_declared_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +202,19 @@ def _first_resolved(*values: Any) -> str | None:
     return None
 
 
+def _sha256_text(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _runtime_config_inspection_version(input_data: dict[str, Any]) -> int:
+    try:
+        return int(input_data.get("runtimeConfigInspectionVersion") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _telemetry_context_value(input_data: dict[str, Any], *keys: str) -> str | None:
     candidates: list[Any] = []
 
@@ -347,6 +365,8 @@ def session_workflow_factory(
         max_turns = int(input_data.get("maxIterations") or agent_config.get("maxTurns") or 120)
         turn_timeout_seconds = _session_turn_timeout_seconds(input_data)
         sandbox_name, workspace_ref, cwd = _extract_runtime_context(input_data)
+        runtime_config_inspection_version = _runtime_config_inspection_version(input_data)
+        declared_tool_summaries = summarize_declared_tools(declared_tools or [])
 
         # Scope tools to this session for the lifetime of the workflow body.
         # Configure the singleton OpenShell runtime + push a ContextVar onto
@@ -430,6 +450,35 @@ def session_workflow_factory(
                 )
                 if telemetry_context.get("dapr.component"):
                     per_turn_config["component_name"] = telemetry_context["dapr.component"]
+                child_instance_id = f"{ctx.instance_id}-t{turn_index}"
+                if runtime_config_inspection_version >= 1:
+                    inspection_config = {
+                        key: value
+                        for key, value in per_turn_config.items()
+                        if key not in {"system_instruction", "tool_definitions"}
+                    }
+                    system_hash = _sha256_text(per_turn_config.get("system_instruction"))
+                    if system_hash:
+                        inspection_config["systemInstructionHash"] = system_hash
+                    inspection_input = dict(input_data)
+                    bundle = inspection_input.get("instructionBundle")
+                    if isinstance(bundle, dict):
+                        inspection_input["instructionBundle"] = {
+                            key: value
+                            for key, value in bundle.items()
+                            if key != "rendered"
+                        }
+                    yield ctx.call_activity(
+                        record_runtime_config_activity,
+                        input={
+                            "inputData": inspection_input,
+                            "perTurnConfig": inspection_config,
+                            "telemetryContext": telemetry_context,
+                            "declaredTools": declared_tool_summaries,
+                            "childInstanceId": child_instance_id,
+                            "turn": turn_index,
+                        },
+                    )
                 child_input = {
                     "agent_config": per_turn_config,
                     "messages": compact_image_tool_results(message_history),
@@ -441,7 +490,6 @@ def session_workflow_factory(
                     "_telemetry_context": telemetry_context,
                 }
 
-                child_instance_id = f"{ctx.instance_id}-t{turn_index}"
                 child_task = ctx.call_child_workflow(
                     workflow=diagrid_workflow_name,
                     input=child_input,

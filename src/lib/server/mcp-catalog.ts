@@ -69,6 +69,38 @@ export type AvailableMcpCatalogEntry = {
 	mcpConnection: ConfiguredMcpConnectionSummary | null;
 };
 
+export type RegisteredPieceMcpCatalogEntry = {
+	pieceName: string;
+	canonicalPieceName: string;
+	serviceName: string | null;
+	namespace: string | null;
+	version: string | null;
+	categories: string[];
+	reason: string | null;
+	registryRef: string;
+	serverUrl: string;
+};
+
+export type McpAvailabilityAuthStatus =
+	| 'READY'
+	| 'NO_AUTH_REQUIRED'
+	| 'CONNECT_REQUIRED'
+	| 'OAUTH_APP_MISSING'
+	| 'SERVER_NOT_REGISTERED';
+
+export type McpServerAvailabilityEntry = AvailableMcpCatalogEntry & {
+	registered: boolean;
+	enabled: boolean;
+	ready: boolean;
+	authStatus: McpAvailabilityAuthStatus;
+	authStatusLabel: string;
+	selectedAppConnection: AppConnectionCatalogSummary | null;
+	mcpConnectionExternalId: string | null;
+	serviceName: string | null;
+	namespace: string | null;
+	registrationReason: string | null;
+};
+
 type BuildProjectMcpCatalogEntryOptions = {
 	hostedProjectId?: string;
 	hostedToken?: string | null;
@@ -90,6 +122,16 @@ function trimTrailingSlash(value: string | null | undefined): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+	const text = typeof value === 'string' ? value.trim() : '';
+	return text || null;
+}
+
+function stringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.map((item) => String(item || '').trim()).filter(Boolean);
 }
 
 function firstAuthRecord(auth: unknown): Record<string, unknown> | null {
@@ -174,6 +216,119 @@ export function buildAvailablePieceMcpCatalogEntry(input: {
 		serverUrl: pieceMcpServerUrl(pieceName),
 		appConnections: input.appConnections ?? [],
 		mcpConnection: input.mcpConnection ?? null
+	};
+}
+
+export function parseRegisteredPieceMcpCatalog(
+	value: string | null | undefined
+): RegisteredPieceMcpCatalogEntry[] {
+	const text = value?.trim();
+	if (!text) return [];
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return [];
+	}
+	if (!isRecord(parsed)) return [];
+
+	const entries: RegisteredPieceMcpCatalogEntry[] = [];
+	for (const [key, raw] of Object.entries(parsed)) {
+		if (!isRecord(raw)) continue;
+		const rawPiece =
+			stringValue(raw.piece) ||
+			stringValue(raw.pieceName) ||
+			stringValue(raw.name) ||
+			key;
+		const pieceName = normalizePieceName(rawPiece);
+		if (!pieceName) continue;
+
+		const serverUrl =
+			stringValue(raw.mcpUrl) ||
+			stringValue(raw.serverUrl) ||
+			pieceMcpServerUrl(pieceName);
+		const serviceName = stringValue(raw.serviceName);
+		entries.push({
+			pieceName,
+			canonicalPieceName: `@activepieces/piece-${pieceName}`,
+			serviceName,
+			namespace: stringValue(raw.namespace),
+			version: stringValue(raw.version),
+			categories: stringArray(raw.categories),
+			reason: stringValue(raw.reason),
+			registryRef: serviceName || pieceMcpRegistryRef(pieceName),
+			serverUrl: normalizePieceMcpServerUrl(serverUrl)
+		});
+	}
+
+	return entries.sort((a, b) => a.pieceName.localeCompare(b.pieceName));
+}
+
+export function buildMcpServerAvailabilityEntry(input: {
+	pieceName: string;
+	displayName: string;
+	description?: string | null;
+	logoUrl?: string | null;
+	categories?: string[] | null;
+	auth?: unknown;
+	actions?: unknown;
+	oauthAppConfigured?: boolean;
+	appConnections?: AppConnectionCatalogSummary[];
+	mcpConnection?: ConfiguredMcpConnectionSummary | null;
+	registered?: RegisteredPieceMcpCatalogEntry | null;
+}): McpServerAvailabilityEntry | null {
+	const base = buildAvailablePieceMcpCatalogEntry(input);
+	if (!base) return null;
+
+	const registered = input.registered ?? null;
+	const mcpConnection = input.mcpConnection ?? null;
+	const enabled = mcpConnection?.status === 'ENABLED';
+	const selectedAppConnection =
+		mcpConnection?.connectionExternalId
+			? base.appConnections.find(
+					(conn) => conn.externalId === mcpConnection.connectionExternalId
+				) ?? null
+			: null;
+
+	let authStatus: McpAvailabilityAuthStatus;
+	let authStatusLabel: string;
+	if (!registered) {
+		authStatus = 'SERVER_NOT_REGISTERED';
+		authStatusLabel = 'Server not registered';
+	} else if (!base.requiresAuth) {
+		authStatus = 'NO_AUTH_REQUIRED';
+		authStatusLabel = 'No auth required';
+	} else if (selectedAppConnection) {
+		authStatus = 'READY';
+		authStatusLabel = `Connected: ${selectedAppConnection.displayName}`;
+	} else if (base.isOAuth2 && !base.oauthAppConfigured) {
+		authStatus = 'OAUTH_APP_MISSING';
+		authStatusLabel = 'OAuth app missing';
+	} else {
+		authStatus = 'CONNECT_REQUIRED';
+		authStatusLabel =
+			base.appConnections.length > 0 ? 'Choose connection' : 'Connect required';
+	}
+
+	const authReady = authStatus === 'READY' || authStatus === 'NO_AUTH_REQUIRED';
+
+	return {
+		...base,
+		serverUrl: registered?.serverUrl ?? base.serverUrl,
+		registryRef: registered?.registryRef ?? base.registryRef,
+		categories: base.categories.length > 0 ? base.categories : registered?.categories ?? [],
+		mcpConnection,
+		registered: Boolean(registered),
+		enabled,
+		ready: Boolean(registered && enabled && authReady),
+		authStatus,
+		authStatusLabel,
+		selectedAppConnection,
+		mcpConnectionExternalId: mcpConnection?.id ?? null,
+		serviceName: registered?.serviceName ?? null,
+		namespace: registered?.namespace ?? null,
+		registrationReason: registered?.reason ?? null
 	};
 }
 

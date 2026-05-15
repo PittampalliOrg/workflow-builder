@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	buildAvailablePieceMcpCatalogEntry,
+	buildMcpServerAvailabilityEntry,
 	buildHostedMcpGatewayInternalUrl,
-	buildProjectMcpCatalogEntry
+	buildProjectMcpCatalogEntry,
+	parseRegisteredPieceMcpCatalog
 } from './mcp-catalog';
 
 describe('project MCP catalog helpers', () => {
@@ -177,6 +179,89 @@ describe('project MCP catalog helpers', () => {
 					status: 'ACTIVE'
 				}
 			]
+		});
+	});
+
+	it('parses the activepieces MCP registered service catalog', () => {
+		expect(
+			parseRegisteredPieceMcpCatalog(
+				JSON.stringify({
+					github: {
+						serviceName: 'ap-github-service',
+						namespace: 'workflow-builder',
+						piece: '@activepieces/piece-github',
+						version: '0.0.0',
+						categories: ['DEVELOPER_TOOLS'],
+						reason: 'pinned',
+						mcpUrl: 'http://ap-github-service.workflow-builder.svc.cluster.local/mcp'
+					}
+				})
+			)
+		).toEqual([
+			{
+				pieceName: 'github',
+				canonicalPieceName: '@activepieces/piece-github',
+				serviceName: 'ap-github-service',
+				namespace: 'workflow-builder',
+				version: '0.0.0',
+				categories: ['DEVELOPER_TOOLS'],
+				reason: 'pinned',
+				registryRef: 'ap-github-service',
+				serverUrl: 'http://ap-github-service.workflow-builder.svc.cluster.local/mcp'
+			}
+		]);
+	});
+
+	it('marks registered OAuth MCP entries ready only when the project binding has an app connection', () => {
+		const registered = parseRegisteredPieceMcpCatalog(
+			JSON.stringify({
+				github: {
+					serviceName: 'ap-github-service',
+					namespace: 'workflow-builder',
+					piece: '@activepieces/piece-github',
+					reason: 'pinned',
+					mcpUrl: 'http://ap-github-service.workflow-builder.svc.cluster.local/mcp'
+				}
+			})
+		)[0];
+
+		expect(
+			buildMcpServerAvailabilityEntry({
+				pieceName: '@activepieces/piece-github',
+				displayName: 'GitHub',
+				auth: { type: 'OAUTH2' },
+				actions: { get_repository: {} },
+				oauthAppConfigured: true,
+				registered,
+				appConnections: [
+					{
+						id: 'app-1',
+						externalId: 'conn_github',
+						displayName: 'Main GitHub',
+						type: 'PLATFORM_OAUTH2',
+						status: 'ACTIVE'
+					}
+				],
+				mcpConnection: {
+					id: 'mcp-1',
+					displayName: 'GitHub',
+					sourceType: 'nimble_piece',
+					pieceName: 'github',
+					serverKey: null,
+					connectionExternalId: 'conn_github',
+					serverUrl: 'http://ap-github-service/mcp',
+					status: 'ENABLED',
+					metadata: null
+				}
+			})
+		).toMatchObject({
+			registered: true,
+			enabled: true,
+			ready: true,
+			authStatus: 'READY',
+			authStatusLabel: 'Connected: Main GitHub',
+			mcpConnectionExternalId: 'mcp-1',
+			serviceName: 'ap-github-service'
 		});
 	});
 });

@@ -667,6 +667,7 @@ function buildChildInput(params: {
 		instructionBundle: params.instructionBundle ?? null,
 		agentSlug: params.agentSlug ?? null,
 		agentAppId: params.agentAppId ?? null,
+		runtimeConfigInspectionVersion: 1,
 		mlflowSessionId: mlflowContext?.mlflowSessionId ?? params.sessionId,
 		mlflowContext,
 		environmentConfig: params.environmentConfig,

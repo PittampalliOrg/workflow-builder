@@ -53,6 +53,7 @@ from src.adapters.gemini_thought_signatures import (  # noqa: E402
 from src.adapters.gemini_model import build_default_model  # noqa: E402
 from src.adapters.mcp_translation import build_mcp_toolsets  # noqa: E402
 from src.runner.compose import build_runner, register_session_workflow  # noqa: E402
+from src.runtime_config import get_runtime_config_snapshot  # noqa: E402
 from src.session_config import external_control_event_as_user_event  # noqa: E402
 from src.tools import all_adk_tools  # noqa: E402
 
@@ -114,6 +115,14 @@ def healthz() -> dict[str, str]:
 @app.get("/readyz")
 def readyz() -> dict[str, object]:
     return {"status": "ok", "running": _runner.is_running}
+
+
+@app.get("/internal/runtime/instances/{instance_id}/config")
+def get_runtime_config_endpoint(instance_id: str) -> dict[str, Any]:
+    event = get_runtime_config_snapshot(instance_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Runtime config not found")
+    return event
 
 
 def _taskhub_call(method: str, request: Any) -> Any:

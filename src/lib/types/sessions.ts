@@ -7,7 +7,9 @@ export type SessionStatus =
 export type SessionStopReasonType =
 	| "end_turn"
 	| "requires_action"
-	| "retries_exhausted";
+	| "retries_exhausted"
+	| "interrupted"
+	| "terminated";
 
 export type SessionStopReason = {
 	type: SessionStopReasonType;

@@ -634,6 +634,12 @@
 				<TabsContent value="mcp-connections">
 					<div class="space-y-6">
 						<Card>
+							<CardContent class="py-3 text-xs text-muted-foreground">
+								Workspace Connections is the primary place to enable registered MCP services and bind app connection auth.
+								<a href="/connections?tab=mcp" class="underline">Open workspace MCP connections</a>.
+							</CardContent>
+						</Card>
+						<Card>
 							<CardHeader>
 								<CardTitle class="flex items-center gap-2 text-sm">
 									Add Custom MCP Server
@@ -647,7 +653,7 @@
 									</div>
 									<div class="flex-[2] space-y-1">
 										<Label class="text-[11px]">Server URL</Label>
-										<Input bind:value={mcpCustomUrl} placeholder="http://localhost:3100/mcp" class="font-mono text-xs" />
+										<Input bind:value={mcpCustomUrl} placeholder="https://example.com/mcp" class="font-mono text-xs" />
 									</div>
 									<Button size="sm" class="h-8" type="submit" disabled={mcpCreating || !mcpCustomName.trim() || !mcpCustomUrl.trim()}>
 										{#if mcpCreating}<Loader2 size={12} class="animate-spin" />{/if}

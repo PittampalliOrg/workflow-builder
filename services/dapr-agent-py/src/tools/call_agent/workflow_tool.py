@@ -8,12 +8,12 @@ final answer synchronously; the SDK wraps it as a ToolMessage and feeds
 it to the LLM in the same turn — no polling via ReadSessionEvents needed.
 
 Durability:
-- Parent's `yield ctx.call_child_workflow(call_peer_session_workflow, instance_id=det)`
-  is event-sourced; replay re-attaches to the same instance, never double-spawns.
-- The wrapper workflow (in main.py) itself yields an activity +
-  session_workflow, both durable.
-- Deterministic child instance id (`ca-<uuid:16>-<slug:20>`, ≤40 chars) fits
-  Dapr's 64-char instance-id cap.
+- Parent's `yield ctx.call_child_workflow(call_peer_session_workflow, instance_id=det:call)`
+  is event-sourced; replay re-attaches to the same wrapper, never double-spawns.
+- The wrapper workflow (in main.py) yields an activity + session_workflow,
+  both durable.
+- The peer session's own workflow instance remains the session id
+  (`ca-<uuid:16>-<slug:20>`, ≤40 chars), while the wrapper gets a short suffix.
 """
 
 from __future__ import annotations
@@ -96,9 +96,8 @@ def _schedule_peer_session(
             f"peer '{slug}' has no agentId (malformed registry entry)."
         )
 
-    # Deterministic child id; also used as the wrapper's Dapr instance id
-    # AND as the inner session_workflow's instance id (pinned inside the
-    # wrapper). Under 64 chars to fit Dapr's cap.
+    # Deterministic child session id. The wrapper uses a suffixed instance id
+    # so the inner session_workflow can own the bare session id.
     truncated_slug = slug[:20] if slug else "peer"
     child_instance_id = (
         _child_instance_id or f"ca-{uuid.uuid4().hex[:16]}-{truncated_slug}"
@@ -132,7 +131,7 @@ def _schedule_peer_session(
     return ctx.call_child_workflow(
         workflow="call_peer_session_workflow",
         input=workflow_input,
-        instance_id=child_instance_id,
+        instance_id=f"{child_instance_id}:call",
     )
 
 

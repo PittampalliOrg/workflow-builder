@@ -48,6 +48,21 @@ def test_tool_call_end_with_json_error_output_is_failed_result():
     assert payload["error"] == "read_session_events failed"
 
 
+def test_runtime_config_payload_is_not_wrapped_or_audit_stamped():
+    cloud_event = {
+        "specversion": "1.0",
+        "id": "session:sess-1:child-1:turn:1:runtime_config:hash",
+        "type": "io.workflow-builder.session.runtime_config.v1",
+        "data": {"configHash": "hash"},
+    }
+
+    event_type, payload = _cma_shape("session.runtime_config", cloud_event)
+
+    assert event_type == "session.runtime_config"
+    assert payload == cloud_event
+    assert "_internalType" not in payload
+
+
 def test_llm_start_and_usage_use_stable_source_ids(monkeypatch):
     published = []
     monkeypatch.setattr(

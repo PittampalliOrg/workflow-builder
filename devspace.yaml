@@ -393,6 +393,15 @@ dev:
       - op: replace
         path: spec.containers.name=${APP_NAME}.env.name=MLFLOW_ENABLED.value
         value: "true"
+      # Route BFF-created DevSpace sessions through the synced dapr-agent-py
+      # service instead of Kueue per-session host images, while keeping the
+      # normal /api/v1/sessions creation and event ingest path.
+      - op: replace
+        path: spec.containers.name=${APP_NAME}.env.name=AGENT_WORKFLOW_HOST_BACKEND.value
+        value: "disabled"
+      - op: replace
+        path: spec.containers.name=${APP_NAME}.env.name=AGENT_RUNTIME_POOL_APP_IDS_JSON.value
+        value: '{"coding":{"appId":"dapr-agent-py","slug":"dapr-agent-py","idleTtlSeconds":7200,"maxReplicas":1,"slotsPerReplica":12}}'
 
     # Port forwarding for development
     ports:

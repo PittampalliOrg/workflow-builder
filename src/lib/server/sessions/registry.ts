@@ -373,7 +373,18 @@ export async function attachWorkspaceSandbox(
 	const database = requireDb();
 	await database
 		.update(sessions)
-		.set({ workspaceSandboxName, updatedAt: new Date() })
+		.set({ workspaceSandboxName, errorMessage: null, updatedAt: new Date() })
+		.where(eq(sessions.id, id));
+}
+
+export async function recordSessionSandboxProvisioningError(
+	id: string,
+	errorMessage: string,
+): Promise<void> {
+	const database = requireDb();
+	await database
+		.update(sessions)
+		.set({ errorMessage, updatedAt: new Date() })
 		.where(eq(sessions.id, id));
 }
 

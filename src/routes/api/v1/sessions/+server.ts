@@ -4,11 +4,15 @@ import {
 	attachWorkspaceSandbox,
 	createSession,
 	listSessions,
+	recordSessionSandboxProvisioningError,
 	type CreateSessionInput,
 } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
-import { provisionSessionSandbox } from "$lib/server/sandboxes/provision";
+import {
+	provisionSessionSandboxWithRetry,
+	sandboxProvisionFailureMessage,
+} from "$lib/server/sandboxes/provision";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
 import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
@@ -134,37 +138,37 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		projectId: locals.session.projectId ?? null,
 	};
 
-		try {
-			const session = await createSession(input);
-			const resolvedAgent = await resolveAgentRef({
-				id: session.agentId,
-				version: session.agentVersion ?? undefined,
-			});
-			const mlflowRunContext = resolvedAgent
-				? await safeCreateInteractiveSessionMlflowRun({
-						sessionId: session.id,
-						title: session.title,
-						projectId: session.projectId,
-						userId: locals.session.userId,
-						agentId: resolvedAgent.id,
-						agentName: resolvedAgent.name,
-						agentSlug: resolvedAgent.slug,
-						agentVersion: resolvedAgent.version,
-						agentAppId: resolvedAgent.runtimeAppId,
-						activeModelId: resolvedAgent.mlflowModelVersion,
-						activeModelName: resolvedAgent.mlflowModelName,
-						activeModelUri: resolvedAgent.mlflowUri,
-						existingRunId: session.mlflowRunId,
-					})
-				: null;
-			if (mlflowRunContext) {
-				session.mlflowExperimentId = mlflowRunContext.experimentId;
-				session.mlflowRunId = mlflowRunContext.runId;
-				session.mlflowParentRunId = mlflowRunContext.parentRunId ?? null;
-				session.mlflowSessionId = mlflowRunContext.mlflowSessionId ?? session.id;
-			}
-			if (typeof body.initialMessage === "string" && body.initialMessage.trim()) {
-				await sendUserEvent(session.id, {
+	try {
+		const session = await createSession(input);
+		const resolvedAgent = await resolveAgentRef({
+			id: session.agentId,
+			version: session.agentVersion ?? undefined,
+		});
+		const mlflowRunContext = resolvedAgent
+			? await safeCreateInteractiveSessionMlflowRun({
+					sessionId: session.id,
+					title: session.title,
+					projectId: session.projectId,
+					userId: locals.session.userId,
+					agentId: resolvedAgent.id,
+					agentName: resolvedAgent.name,
+					agentSlug: resolvedAgent.slug,
+					agentVersion: resolvedAgent.version,
+					agentAppId: resolvedAgent.runtimeAppId,
+					activeModelId: resolvedAgent.mlflowModelVersion,
+					activeModelName: resolvedAgent.mlflowModelName,
+					activeModelUri: resolvedAgent.mlflowUri,
+					existingRunId: session.mlflowRunId,
+				})
+			: null;
+		if (mlflowRunContext) {
+			session.mlflowExperimentId = mlflowRunContext.experimentId;
+			session.mlflowRunId = mlflowRunContext.runId;
+			session.mlflowParentRunId = mlflowRunContext.parentRunId ?? null;
+			session.mlflowSessionId = mlflowRunContext.mlflowSessionId ?? session.id;
+		}
+		if (typeof body.initialMessage === "string" && body.initialMessage.trim()) {
+			await sendUserEvent(session.id, {
 				type: "user.message",
 				content: [{ type: "text", text: body.initialMessage }],
 			});
@@ -189,7 +193,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		if (provisioning === "eager") {
 			try {
-				const sandbox = await provisionSessionSandbox({
+				const sandbox = await provisionSessionSandboxWithRetry({
 					executionId: session.id,
 					name: session.title ?? `session-${session.id.slice(0, 8)}`,
 					sandboxTemplate:
@@ -200,13 +204,22 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				});
 				await attachWorkspaceSandbox(session.id, sandbox.sandboxName);
 				session.workspaceSandboxName = sandbox.sandboxName;
+				session.errorMessage = null;
 			} catch (sandboxErr) {
 				console.error("[sessions] sandbox provisioning failed:", sandboxErr);
-				// Surface on the session row but don't fail the whole create.
-				session.errorMessage =
-					sandboxErr instanceof Error
-						? sandboxErr.message
-						: "Sandbox provisioning failed";
+				// Persist the failure but don't fail the whole create. The UI can
+				// show why workspace tools are unavailable, and a later lazy bind
+				// or explicit retry can still attach a sandbox.
+				const message = sandboxProvisionFailureMessage(sandboxErr);
+				session.errorMessage = message;
+				try {
+					await recordSessionSandboxProvisioningError(session.id, message);
+				} catch (persistErr) {
+					console.error(
+						"[sessions] failed to persist sandbox provisioning error:",
+						persistErr,
+					);
+				}
 			}
 		}
 

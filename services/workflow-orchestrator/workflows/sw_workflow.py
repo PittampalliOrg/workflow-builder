@@ -1759,11 +1759,11 @@ def _run_native_durable_agent_child_workflow(
             app_id=bridge_app_id,
         )
         if is_benchmark_run:
-            # Benchmark runs already have two stronger timeout owners:
-            # session_workflow enforces the per-turn timeout, and the
-            # benchmark service terminates stalled instances. Adding a parent
-            # workflow timer here creates Scheduler reminders that can outlive
-            # the child completion event and leave the parent instance RUNNING.
+            # Benchmark runs already have a stronger timeout owner: the
+            # benchmark service terminates stalled session instances. Adding a
+            # parent workflow timer here creates Scheduler reminders that can
+            # outlive the child completion event and leave the parent instance
+            # RUNNING.
             child_result = yield from _child_workflow_result_without_parent_timeout(
                 child_task,
             )

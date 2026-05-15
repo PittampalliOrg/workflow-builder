@@ -37,6 +37,48 @@ function checkpointRemoteWarning(value: unknown): Record<string, unknown> | null
 	};
 }
 
+type NormalizedStopReason = {
+	type:
+		| "end_turn"
+		| "requires_action"
+		| "retries_exhausted"
+		| "interrupted"
+		| "terminated";
+	event_ids?: string[];
+};
+
+function normalizeStopReason(
+	value: unknown,
+): NormalizedStopReason | null {
+	const stopReasonData =
+		value && typeof value === "object"
+			? (value as { type?: string; event_ids?: unknown })
+			: null;
+	if (!stopReasonData) return null;
+	const t = String(stopReasonData.type ?? "end_turn");
+	const normalizedType =
+		t === "end_turn" ||
+		t === "requires_action" ||
+		t === "retries_exhausted" ||
+		t === "interrupted" ||
+		t === "terminated"
+			? (t as
+					| "end_turn"
+					| "requires_action"
+					| "retries_exhausted"
+					| "interrupted"
+					| "terminated")
+			: "end_turn";
+	return {
+		type: normalizedType,
+		event_ids: Array.isArray(stopReasonData.event_ids)
+			? (stopReasonData.event_ids as unknown[]).filter(
+					(v): v is string => typeof v === "string",
+				)
+			: undefined,
+	};
+}
+
 /**
  * Internal endpoint called by `dapr-agent-py`'s session_workflow to persist a
  * CMA-shape session event. Body:
@@ -85,26 +127,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (type === "session.status_starting" || type === "session.status_running") {
 		await updateSessionStatusUnlessTerminated(params.id, "running");
 	} else if (type === "session.status_idle") {
-		const stopReasonData =
-			data && typeof data.stop_reason === "object"
-				? (data.stop_reason as { type?: string; event_ids?: unknown })
-				: null;
-		const t = String(stopReasonData?.type ?? "end_turn");
-		const normalizedType =
-			t === "end_turn" || t === "requires_action" || t === "retries_exhausted"
-				? (t as "end_turn" | "requires_action" | "retries_exhausted")
-				: "end_turn";
+		const stopReason = normalizeStopReason(data.stop_reason);
 		await updateSessionStatusUnlessTerminated(params.id, "idle", {
-			stopReason: stopReasonData
-				? {
-						type: normalizedType,
-						event_ids: Array.isArray(stopReasonData.event_ids)
-							? (stopReasonData.event_ids as unknown[]).filter(
-									(v): v is string => typeof v === "string",
-								)
-							: undefined,
-					}
-				: null,
+			stopReason,
 		});
 		void safePatchInteractiveSessionMlflowTraces({
 			sessionId: params.id,
@@ -112,6 +137,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		});
 	} else if (type === "session.status_terminated") {
 		await updateSessionStatus(params.id, "terminated", {
+			stopReason: normalizeStopReason(data.stop_reason),
 			markCompleted: true,
 		});
 		void safePatchInteractiveSessionMlflowTraces({

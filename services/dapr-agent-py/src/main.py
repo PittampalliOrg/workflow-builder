@@ -15,10 +15,7 @@ import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import timedelta
 from typing import Any
-
-from dapr.ext.workflow import when_any as wf_when_any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -116,12 +113,26 @@ from src.session_config import (
     apply_session_control_events,
     external_control_event_as_user_event,
 )
+from src.session_native import (
+    build_continue_as_new_input,
+    logical_turn_id,
+    session_native_event_fields,
+    session_workflow_instance_id,
+    session_workflow_state_from_message,
+    should_continue_session_as_new,
+    terminal_stop_reason_from_events,
+)
 from src.effective_agent_config import (
     DEFAULT_LLM_COMPONENT,
     build_effective_agent_config,
     effective_audit_fields,
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
+)
+from src.runtime_config import (
+    SESSION_RUNTIME_CONFIG_EVENT_TYPE,
+    build_runtime_config_event,
+    runtime_config_state_key,
 )
 from src.instruction_bundle import (
     assign_canonical_bundle_prompt_template,
@@ -182,17 +193,6 @@ DEFAULT_MAX_ITERATIONS = int(os.environ.get("DAPR_AGENT_PY_MAX_ITERATIONS", "120
 EMPTY_RESPONSE_THRESHOLD = int(
     os.environ.get("DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD", "3")
 )
-# Per-turn timer for session_workflow's call_child_workflow — if the child
-# agent_workflow doesn't return within this many seconds, session_workflow
-# raises AgentError so session.error/status_terminated can publish instead
-# of the workflow hanging until pod idle-reap.
-SESSION_TURN_TIMEOUT_SECONDS = int(
-    os.environ.get("DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS", "600")
-)
-SESSION_TURN_HEARTBEAT_SECONDS = int(
-    os.environ.get("DAPR_AGENT_PY_SESSION_TURN_HEARTBEAT_SECONDS", "60")
-)
-
 # Absolute cap on a single session event envelope's serialized size. Postgres
 # jsonb has no hard limit other than TOAST (~1 GB), but bigger blobs fan out
 # into the SSE stream, the consolidation fetch, and the client's in-memory
@@ -1481,6 +1481,8 @@ class OpenShellDurableAgent(DurableAgent):
         self._openshell_context_by_instance: dict[str, dict[str, Any]] = {}
         self._agent_context_by_instance: dict[str, dict[str, Any]] = {}
         self._agent_context_lock = threading.RLock()
+        self._runtime_config_by_instance: dict[str, dict[str, Any]] = {}
+        self._runtime_config_by_session: dict[str, dict[str, Any]] = {}
         # Hooks/plugins: populated by plugins.integration.bootstrap(agent) at
         # service boot. Defaults keep the attributes safe to touch even when
         # DAPR_AGENT_PY_HOOKS_ENABLED=false.
@@ -1666,6 +1668,84 @@ class OpenShellDurableAgent(DurableAgent):
             "sandboxName": context.get("sandboxName"),
             "cwd": context.get("cwd"),
         }
+
+    def _record_runtime_config_for_instance(
+        self,
+        instance_id: str,
+        *,
+        agent_config: dict[str, Any] | None = None,
+        mcp_result: dict[str, Any] | None = None,
+        source: str = "memory",
+    ) -> dict[str, Any] | None:
+        instance_id = str(instance_id or "").strip()
+        if not instance_id:
+            return None
+        context = self._runtime_context_for_instance(instance_id)
+        session_id = (
+            str(context.get("sessionId") or "").strip()
+            or self._session_id_by_instance.get(instance_id)
+            or ""
+        )
+        if not session_id:
+            return None
+        effective_config = (
+            context.get("effectiveAgentConfig")
+            if isinstance(context.get("effectiveAgentConfig"), dict)
+            else {}
+        )
+        instruction_bundle = (
+            context.get("instructionBundle")
+            if isinstance(context.get("instructionBundle"), dict)
+            else {}
+        )
+        mlflow_context = (
+            context.get("mlflowContext")
+            if isinstance(context.get("mlflowContext"), dict)
+            else {}
+        )
+        event = build_runtime_config_event(
+            session_id=session_id,
+            instance_id=instance_id,
+            turn=context.get("turn"),
+            config_revision=context.get("configRevision"),
+            agent_config=agent_config or {},
+            context=context,
+            effective_config=effective_config,
+            instruction_bundle=instruction_bundle,
+            mcp_configs=self._mcp_configs_by_instance.get(instance_id) or {},
+            mcp_allowed_tools=self._mcp_allowed_tools_by_instance.get(instance_id) or {},
+            mcp_tools=self._mcp_tools_by_instance.get(instance_id) or {},
+            mcp_result=mcp_result or {},
+            skills=self._skills_by_instance.get(instance_id) or [],
+            mlflow_context=mlflow_context,
+            dapr_app_id=str(
+                context.get("agentAppId")
+                or os.environ.get("APP_ID")
+                or os.environ.get("DAPR_APP_ID")
+                or AGENT_SERVICE_NAME
+            ),
+            source=source,
+        )
+        self._runtime_config_by_instance[instance_id] = event
+        self._runtime_config_by_session[session_id] = event
+        try:
+            _save_agent_state_key(runtime_config_state_key(instance_id), event)
+            if session_id != instance_id:
+                _save_agent_state_key(runtime_config_state_key(session_id), event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[runtime-config] Failed to persist snapshot for %s: %s",
+                instance_id,
+                exc,
+            )
+        publish_session_event(
+            session_id,
+            SESSION_RUNTIME_CONFIG_EVENT_TYPE,
+            event,
+            source_event_id=event["id"],
+            instance_id=instance_id,
+        )
+        return event
 
     def summarize(self, ctx, payload: dict) -> dict:
         instance_id = str(getattr(ctx, "workflow_id", "") or "").strip()
@@ -3552,10 +3632,17 @@ class OpenShellDurableAgent(DurableAgent):
                     if started_at and first_tool_at
                     else None
                 )
+                metrics_turn = effective_fields.get("turn") or runtime_context.get("turn")
                 publish_session_event(
                     self._session_id_by_instance.get(instance_id),
                     "instance.metrics_summary",
                     {
+                        "turn": metrics_turn,
+                        "turnId": runtime_context.get("turnId"),
+                        "agentWorkflowMode": "session-native"
+                        if runtime_context.get("sessionId")
+                        else None,
+                        "workflowInstanceId": instance_id,
                         "turn_count": turn_count,
                         "tool_call_count": self._tool_call_count_by_instance.get(
                             instance_id,
@@ -3569,7 +3656,7 @@ class OpenShellDurableAgent(DurableAgent):
                         "ttft_first_tool_ms": ttft_first_tool_ms,
                         "max_iterations": max_iters or None,
                     },
-                    source_event_id=f"{instance_id}:metrics_summary",
+                    source_event_id=f"{instance_id}:turn:{metrics_turn or 'unknown'}:metrics_summary",
                     instance_id=instance_id,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -3818,7 +3905,9 @@ class OpenShellDurableAgent(DurableAgent):
 
         Every yield is Dapr event-sourced. Deterministic `sessionId`
         ensures retries re-attach to the same row + same session_workflow
-        instance rather than double-spawning.
+        instance rather than double-spawning. The wrapper workflow itself
+        uses a suffixed instance id, so the inner session_workflow owns the
+        bare session id.
         """
         row = yield ctx.call_activity(
             self.create_peer_session_row,
@@ -3829,17 +3918,6 @@ class OpenShellDurableAgent(DurableAgent):
                 f"create_peer_session_row returned unexpected payload: {row!r}"
             )
         session_id = row["sessionId"]
-        # The wrapper workflow's own Dapr instance_id IS session_id
-        # (CallAgentWorkflowTool passes the same deterministic value).
-        # We must NOT reuse it for session_workflow — Dapr keys workflow
-        # instances by id, and collision causes the dispatcher to replay
-        # both orchestrators against the same event stream (seen as
-        # "Ignoring unexpected taskCompleted event" warnings + the child
-        # stuck in "rescheduling"). Suffix with `:swf` so the inner
-        # session_workflow gets its own instance while sessions.id /
-        # NATS subject / event-log keys remain `session_id`. 64-char
-        # Dapr cap budget: ≤40 chars for base + 4 for suffix = 44.
-        swf_instance_id = f"{session_id}:swf"
         child_result = yield ctx.call_child_workflow(
             "session_workflow",
             input={
@@ -3863,7 +3941,7 @@ class OpenShellDurableAgent(DurableAgent):
                 ],
                 "autoTerminateAfterEndTurn": True,
             },
-            instance_id=swf_instance_id,
+            instance_id=session_id,
         )
         # session_workflow returns a dict with content/success/sessionId/turn.
         # Pass it through verbatim — the SDK serializes this as the CallAgent
@@ -3982,7 +4060,15 @@ class OpenShellDurableAgent(DurableAgent):
         )
         _sys.stderr.flush()
         if not mcp_configs:
-            return {"connected": [], "count": 0, "reason": "no_mcp_servers"}
+            result = {"connected": [], "count": 0, "reason": "no_mcp_servers"}
+            event = self._record_runtime_config_for_instance(
+                instance_id,
+                agent_config=agent_config,
+                mcp_result=result,
+            )
+            if event:
+                result["runtimeConfigEventId"] = event["id"]
+            return result
         self._mcp_configs_by_instance[instance_id] = mcp_configs
         self._mcp_allowed_tools_by_instance[instance_id] = mcp_allowed_tools
         # Eagerly connect so the very first call_llm on this instance finds
@@ -3991,22 +4077,38 @@ class OpenShellDurableAgent(DurableAgent):
         # same configs on a call_llm replay.
         try:
             if not self._ensure_mcp_client(instance_id):
-                return {
+                result = {
                     "connected": [],
                     "count": len(mcp_configs),
                     "error": "connect_failed",
                 }
+                event = self._record_runtime_config_for_instance(
+                    instance_id,
+                    agent_config=agent_config,
+                    mcp_result=result,
+                )
+                if event:
+                    result["runtimeConfigEventId"] = event["id"]
+                return result
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[mcp] seed_mcp_for_instance %s: MCP connect failed: %s",
                 instance_id,
                 exc,
             )
-            return {
+            result = {
                 "connected": [],
                 "count": len(mcp_configs),
                 "error": str(exc)[:200],
             }
+            event = self._record_runtime_config_for_instance(
+                instance_id,
+                agent_config=agent_config,
+                mcp_result=result,
+            )
+            if event:
+                result["runtimeConfigEventId"] = event["id"]
+            return result
         connected_tools = self._mcp_tools_by_instance.get(instance_id) or {}
         logger.info(
             "[mcp] seed_mcp_for_instance %s: %d server(s), %d tool(s)",
@@ -4014,18 +4116,28 @@ class OpenShellDurableAgent(DurableAgent):
             len(mcp_configs),
             len(connected_tools),
         )
-        return {
+        result = {
             "connected": sorted(mcp_configs.keys()),
             "tool_count": len(connected_tools),
             "count": len(mcp_configs),
         }
+        event = self._record_runtime_config_for_instance(
+            instance_id,
+            agent_config=agent_config,
+            mcp_result=result,
+        )
+        if event:
+            result["runtimeConfigEventId"] = event["id"]
+        return result
 
     @workflow_entry
     def session_workflow(self, ctx, message: dict):
-        """Multi-turn session loop wrapping ``agent_workflow`` as a child
-        workflow per turn. Mirrors the Claude Managed Agents session
-        primitive — stays alive across many user events via Dapr's
-        ``wait_for_external_event`` pattern.
+        """Multi-turn session loop that runs agent turns inside one Dapr
+        workflow instance per session.
+
+        The loop stays alive across user events via Dapr's
+        ``wait_for_external_event`` pattern. Agent state is keyed by the
+        session workflow instance id, so all turns share chat/tool history.
 
         Input shape::
 
@@ -4040,10 +4152,9 @@ class OpenShellDurableAgent(DurableAgent):
                 "dbExecutionId": "...",       # optional workflow-execution correlation
             }
 
-        The workflow does NOT handle permission policies or custom tools in
-        v1 — those surface as normal tool calls inside ``agent_workflow``.
-        The session-level loop adds: kickoff, multi-turn conversation,
-        interrupt (via external event), graceful terminate.
+        Tool calls still run inside the Dapr Agents turn loop; this wrapper
+        owns kickoff, multi-turn conversation, external-event input,
+        graceful terminate, and workflow-history compaction.
         """
         session_id = str(message.get("sessionId") or "")
         if not session_id:
@@ -4071,6 +4182,11 @@ class OpenShellDurableAgent(DurableAgent):
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[session-workflow] MLflow context destination skipped: %s", exc)
+        workflow_instance_id = session_workflow_instance_id(
+            getattr(ctx, "instance_id", None),
+            session_id,
+        )
+        continuation_state = session_workflow_state_from_message(message)
         pending = list(message.get("initialEvents") or [])
         # Workflow-bridge mode: when an orchestrator calls session_workflow as
         # a child workflow for a `durable/run` node, it wants a single-turn
@@ -4078,15 +4194,19 @@ class OpenShellDurableAgent(DurableAgent):
         # result, and self-terminate. UI-initiated sessions leave this unset
         # so the multi-turn loop continues across user events.
         auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
-        turn_timeout_seconds = _session_turn_timeout_seconds(message)
-        config_revision = 1
-        control_override_fields: set[str] = set()
+        config_revision = int(continuation_state["configRevision"])
+        control_override_fields: set[str] = set(
+            continuation_state["controlOverrideFields"]
+        )
 
         if not ctx.is_replaying:
             publish_session_event(
                 session_id,
                 "session.status_rescheduled",
-                {"vaultIds": vault_ids},
+                {
+                    "vaultIds": vault_ids,
+                    **session_native_event_fields(workflow_instance_id),
+                },
             )
             # Phase 4 v2: set an agent-aware MLflow trace name + agent tags
             # ONCE at session entry so the Sessions/Traces UI shows
@@ -4135,14 +4255,18 @@ class OpenShellDurableAgent(DurableAgent):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[session-workflow] trace-tag set failed: %s", exc)
 
-        turn_counter = 0
+        turn_counter = int(continuation_state["turnCounter"])
+        continuation_count = int(continuation_state["continuationCount"])
         while True:
             if not pending:
                 if not ctx.is_replaying:
                     publish_session_event(
                         session_id,
                         "session.status_idle",
-                        {"stop_reason": {"type": "end_turn"}},
+                        {
+                            "stop_reason": {"type": "end_turn"},
+                            **session_native_event_fields(workflow_instance_id),
+                        },
                     )
                 try:
                     batch = yield ctx.wait_for_external_event("session.user_events")
@@ -4201,14 +4325,23 @@ class OpenShellDurableAgent(DurableAgent):
                                 if isinstance(next_snapshot.get("llm"), dict)
                                 else None
                             ),
+                            **session_native_event_fields(workflow_instance_id),
                         },
                     )
                 if not pending:
                     continue
 
-            if any(ev.get("type") == "session.terminate" for ev in pending):
+            terminal_stop_reason = terminal_stop_reason_from_events(pending)
+            if terminal_stop_reason:
                 if not ctx.is_replaying:
-                    publish_session_event(session_id, "session.status_terminated", {})
+                    publish_session_event(
+                        session_id,
+                        "session.status_terminated",
+                        {
+                            "stop_reason": terminal_stop_reason,
+                            **session_native_event_fields(workflow_instance_id),
+                        },
+                    )
                 return
 
             # Extract the user.message text(s) + tool_confirmations / custom_tool_results.
@@ -4218,10 +4351,10 @@ class OpenShellDurableAgent(DurableAgent):
             task_text = _compose_turn_task(pending)
             pending = []
             turn_counter += 1
-            child_instance_id = f"{session_id}:turn-{turn_counter}"
+            turn_id = logical_turn_id(session_id, turn_counter)
             child_mlflow_context = dict(mlflow_context or {})
             child_mlflow_context.setdefault("mlflowSessionId", session_id)
-            child_mlflow_context["turnId"] = child_instance_id
+            child_mlflow_context["turnId"] = turn_id
             child_cwd = str(
                 message.get("cwd")
                 or agent_cfg.get("cwd")
@@ -4256,14 +4389,20 @@ class OpenShellDurableAgent(DurableAgent):
                 publish_session_event(
                     session_id,
                     "session.status_running",
-                    {"turn": turn_counter},
+                    {
+                        "turn": turn_counter,
+                        "turnId": turn_id,
+                        **session_native_event_fields(workflow_instance_id),
+                    },
                 )
                 publish_session_event(
                     session_id,
                     "session.instructions_applied",
                     {
                         "turn": turn_counter,
-                        "childInstanceId": child_instance_id,
+                        "turnId": turn_id,
+                        "childInstanceId": workflow_instance_id,
+                        **session_native_event_fields(workflow_instance_id),
                         "schemaVersion": instruction_bundle.get("schemaVersion"),
                         "instructionHash": instruction_bundle.get("instructionHash"),
                         **instruction_bundle_audit_payload(
@@ -4271,7 +4410,7 @@ class OpenShellDurableAgent(DurableAgent):
                             max_bytes=_MAX_INSTRUCTION_AUDIT_BYTES,
                         ),
                     },
-                    source_event_id=f"{child_instance_id}:instructions",
+                    source_event_id=f"{workflow_instance_id}:{turn_id}:instructions",
                 )
                 llm_snapshot = (
                     effective_config.get("llm")
@@ -4293,7 +4432,9 @@ class OpenShellDurableAgent(DurableAgent):
                     "session.turn_started",
                     {
                         "turn": turn_counter,
-                        "childInstanceId": child_instance_id,
+                        "turnId": turn_id,
+                        "childInstanceId": workflow_instance_id,
+                        **session_native_event_fields(workflow_instance_id),
                         "instructionHash": effective_config.get("instructionHash"),
                         "templateName": effective_config.get("templateName"),
                         "templateHash": effective_config.get("templateHash"),
@@ -4333,20 +4474,15 @@ class OpenShellDurableAgent(DurableAgent):
                 raw_message=message,
                 effective_agent_config=effective_config,
                 instruction_bundle=instruction_bundle,
-                child_instance_id=child_instance_id,
+                child_instance_id=workflow_instance_id,
+                turn_id=turn_id,
                 mlflow_context=child_mlflow_context,
             )
 
-            # Option-C MCP bridge: the agent_workflow body that would normally
-            # extract agentConfig.mcpServers and seed `_mcp_configs_by_instance`
-            # isn't being invoked for child workflows dispatched by name in
-            # dapr-agents 1.0.1 — `ctx.call_child_workflow(self.agent_workflow_name, ...)`
-            # dispatches through the durable-task registry, and our override
-            # body never runs. Seed the cache here directly (session_workflow
-            # IS our code and IS running) so `call_llm`'s `_ensure_mcp_client`
-            # path can still connect the MCP servers and surface their tools
-            # via get_llm_tools. Keyed on the CHILD workflow's instance_id so
-            # the per-turn call_llm activity picks up the right configs.
+            # Seed session-scoped runtime/MCP state through activities before
+            # the inline agent turn. The agent workflow also rebuilds this
+            # context deterministically, but the activity emits an inspection
+            # snapshot and pre-connects MCP clients before the first LLM call.
             child_metadata = _parse_metadata(child_input.get("_message_metadata"))
             child_llm = (
                 effective_config.get("llm")
@@ -4359,13 +4495,13 @@ class OpenShellDurableAgent(DurableAgent):
             )
             child_audit_fields = effective_audit_fields(effective_config)
             child_runtime_context = {
-                "executionId": db_execution_id or child_instance_id,
+                "executionId": db_execution_id or workflow_instance_id,
                 "workflowExecutionId": (
                     child_input.get("workflowExecutionId")
                     or child_input.get("dbExecutionId")
                     or child_metadata.get("workflowExecutionId")
                     or db_execution_id
-                    or child_instance_id
+                    or workflow_instance_id
                 ),
                 "workflowId": child_input.get("workflowId") or message.get("workflowId"),
                 "nodeId": child_input.get("nodeId") or message.get("nodeId"),
@@ -4406,6 +4542,7 @@ class OpenShellDurableAgent(DurableAgent):
                 "instructionHash": child_audit_fields.get("instructionHash"),
                 "templateName": child_audit_fields.get("templateName"),
                 "templateHash": child_audit_fields.get("templateHash"),
+                "turnId": turn_id,
                 "turn": child_audit_fields.get("turn"),
                 "configRevision": child_audit_fields.get("configRevision"),
                 "effectiveAgentConfig": effective_config,
@@ -4424,7 +4561,7 @@ class OpenShellDurableAgent(DurableAgent):
             yield ctx.call_activity(
                 self.seed_runtime_context_for_instance,
                 input={
-                    "instance_id": child_instance_id,
+                    "instance_id": workflow_instance_id,
                     "context": child_runtime_context,
                 },
             )
@@ -4439,7 +4576,7 @@ class OpenShellDurableAgent(DurableAgent):
                 yield ctx.call_activity(
                     self.seed_mcp_for_instance,
                     input={
-                        "instance_id": child_instance_id,
+                        "instance_id": workflow_instance_id,
                         "agentConfig": agent_cfg,
                     },
                 )
@@ -4454,86 +4591,11 @@ class OpenShellDurableAgent(DurableAgent):
                 )
 
             try:
-                # Apply the same retry policy agent_workflow uses internally
-                # (WorkflowRetryPolicy(max_attempts=8, 4s→45s backoff) — see
-                # the DurableAgent instantiation below). Without this, an
-                # agent_workflow turn that exhausts its internal retries
-                # would terminate the session with a single session.error
-                # event. Matching policy lets session_workflow retry the
-                # whole turn on transient agent-side failures, consistent
-                # with Dapr-native durability semantics for workflow-driven
-                # runs (Deploy A of the CMA-alignment plan).
-                # In dapr-agents 1.0.1 the base class registers
-                # agent_workflow under a namespaced name
-                # (dapr.agents.<AgentName>.workflow) via _named(); the
-                # bare "agent_workflow" string is no longer in the
-                # runtime registry. Use the property the SDK exposes for
-                # cross-workflow dispatch so this keeps working even if
-                # the naming scheme changes again.
-                # Per-turn timeout safety net: agent_workflow has its own
-                # empty-response circuit breaker in call_llm, but this guards
-                # against any other stuck-state (MCP hang, tool loop, etc.)
-                # by giving up after SESSION_TURN_TIMEOUT_SECONDS and
-                # propagating a timeout AgentError that triggers the
-                # session.error / status_terminated publish below.
-                child_task = ctx.call_child_workflow(
-                    self.agent_workflow_name,
-                    input=child_input,
-                    instance_id=child_instance_id,
-                    retry_policy=self._retry_policy,
-                )
-                heartbeat_seconds = _session_turn_heartbeat_seconds()
-                elapsed_seconds = 0
-                while True:
-                    remaining_seconds = max(turn_timeout_seconds - elapsed_seconds, 0)
-                    if remaining_seconds <= 0:
-                        if not ctx.is_replaying:
-                            try:
-                                publish_session_event(
-                                    session_id,
-                                    "session.turn_timeout",
-                                    {
-                                        "turn": turn_counter,
-                                        "timeout_seconds": turn_timeout_seconds,
-                                        "childInstanceId": child_instance_id,
-                                    },
-                                )
-                            except Exception:
-                                pass
-                        from dapr_agents.types.exceptions import AgentError
-                        raise AgentError(
-                            f"Session turn {turn_counter} exceeded "
-                            f"{turn_timeout_seconds}s timeout; "
-                            "terminating session to prevent indefinite hang. "
-                            "Check agent_workflow state for stuck LLM or tool calls."
-                        )
-                    wait_seconds = (
-                        min(heartbeat_seconds, remaining_seconds)
-                        if heartbeat_seconds > 0
-                        else remaining_seconds
-                    )
-                    timer_task = ctx.create_timer(timedelta(seconds=wait_seconds))
-                    winner = yield wf_when_any([child_task, timer_task])
-                    if winner is child_task:
-                        break
-                    elapsed_seconds += wait_seconds
-                    if elapsed_seconds >= turn_timeout_seconds:
-                        continue
-                    if heartbeat_seconds > 0 and not ctx.is_replaying:
-                        try:
-                            publish_session_event(
-                                session_id,
-                                "session.turn_heartbeat",
-                                {
-                                    "turn": turn_counter,
-                                    "elapsed_seconds": elapsed_seconds,
-                                    "timeout_seconds": turn_timeout_seconds,
-                                    "childInstanceId": child_instance_id,
-                                },
-                            )
-                        except Exception:
-                            pass
-                turn_result = child_task.get_result()
+                # Session-native cutover: run the Dapr Agents turn inside
+                # this session workflow instead of scheduling a per-turn child
+                # workflow. Activities below use ctx.instance_id, so chat and
+                # tool state are keyed by the stable session workflow id.
+                turn_result = yield from self.agent_workflow(ctx, child_input)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[session] %s turn %d failed: %s",
@@ -4545,12 +4607,17 @@ class OpenShellDurableAgent(DurableAgent):
                     publish_session_event(
                         session_id,
                         "session.error",
-                        {"turn": turn_counter, "error": str(exc)[:500]},
+                        {
+                            "turn": turn_counter,
+                            "turnId": turn_id,
+                            "error": str(exc)[:500],
+                            **session_native_event_fields(workflow_instance_id),
+                        },
                     )
                     publish_session_event(
                         session_id,
                         "session.status_terminated",
-                        {},
+                        session_native_event_fields(workflow_instance_id),
                     )
                 if auto_terminate:
                     return {
@@ -4559,6 +4626,8 @@ class OpenShellDurableAgent(DurableAgent):
                         "error": str(exc)[:500],
                         "sessionId": session_id,
                         "turn": turn_counter,
+                        "agentWorkflowMode": "session-native",
+                        "workflowInstanceId": workflow_instance_id,
                     }
                 return
 
@@ -4570,12 +4639,18 @@ class OpenShellDurableAgent(DurableAgent):
                     publish_session_event(
                         session_id,
                         "session.status_idle",
-                        {"stop_reason": {"type": "end_turn"}},
+                        {
+                            "stop_reason": {"type": "end_turn"},
+                            **session_native_event_fields(workflow_instance_id),
+                        },
                     )
                     publish_session_event(
                         session_id,
                         "session.status_terminated",
-                        {"reason": "auto_terminate_after_end_turn"},
+                        {
+                            "reason": "auto_terminate_after_end_turn",
+                            **session_native_event_fields(workflow_instance_id),
+                        },
                     )
                 result_dict = (
                     turn_result
@@ -4585,7 +4660,59 @@ class OpenShellDurableAgent(DurableAgent):
                 result_dict.setdefault("success", not bool(result_dict.get("error")))
                 result_dict.setdefault("sessionId", session_id)
                 result_dict.setdefault("turn", turn_counter)
+                result_dict.setdefault("agentWorkflowMode", "session-native")
+                result_dict.setdefault("workflowInstanceId", workflow_instance_id)
                 return result_dict
+
+            try:
+                from src.compaction import resolve_config as _resolve_compaction_cfg
+
+                compaction_cfg = _resolve_compaction_cfg({"agentConfig": agent_cfg})
+                compaction_runs = self._compaction_runs_by_instance.get(
+                    workflow_instance_id,
+                    0,
+                )
+                should_continue, continue_reason = should_continue_session_as_new(
+                    auto_terminate=auto_terminate,
+                    turn_counter=turn_counter,
+                    compaction_runs=compaction_runs,
+                    continue_as_new_turn_threshold=(
+                        compaction_cfg.continue_as_new_turn_threshold
+                    ),
+                    continue_as_new_after_compactions=(
+                        compaction_cfg.continue_as_new_after_compactions
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[session] continue_as_new policy check failed: %s", exc)
+                should_continue = False
+                continue_reason = None
+            if should_continue and continue_reason:
+                if not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.status_rescheduled",
+                        {
+                            "turn": turn_counter,
+                            "reason": "continue_as_new",
+                            "continueAsNewReason": continue_reason,
+                            **session_native_event_fields(workflow_instance_id),
+                        },
+                    )
+                ctx.continue_as_new(
+                    build_continue_as_new_input(
+                        message=message,
+                        agent_config=agent_cfg,
+                        pending_events=pending,
+                        turn_counter=turn_counter,
+                        config_revision=config_revision,
+                        control_override_fields=control_override_fields,
+                        continuation_count=continuation_count,
+                        reason=continue_reason,
+                    ),
+                    save_events=True,
+                )
+                return
 
 
 def _compose_turn_task(events: list[dict]) -> str:
@@ -4634,11 +4761,14 @@ def _freeze_session_child_input(
     effective_agent_config: dict | None = None,
     instruction_bundle: dict | None = None,
     child_instance_id: str | None = None,
+    turn_id: str | None = None,
     mlflow_context: dict | None = None,
 ) -> dict:
-    """Build the frozen input payload for a per-turn agent_workflow child
-    call. Reuses the message shape that sw_workflow already passes through,
-    so the existing agent_workflow code path is untouched.
+    """Build the frozen input payload for a session-native agent turn.
+
+    ``child_instance_id`` is retained as a legacy parameter name, but now
+    carries the stable session workflow instance id. ``turn_id`` is a logical
+    per-turn correlation id, not a Dapr workflow instance id.
     """
     # Sandbox plumbing — copy through whatever the BFF baked into the
     # session-start message; environmentConfig overrides for future turns.
@@ -4703,8 +4833,10 @@ def _freeze_session_child_input(
         metadata["mlflowSessionId"] = mlflow_session_id
         metadata["mlflowActiveModelId"] = mlflow_context.get("activeModelId")
         metadata["mlflowActiveModelUri"] = mlflow_context.get("activeModelUri")
+    if turn_id:
+        metadata["turnId"] = turn_id
     if child_instance_id:
-        metadata["turnId"] = child_instance_id
+        metadata["workflowInstanceId"] = child_instance_id
     if max_turns is not None:
         metadata["maxTurns"] = max_turns
     if max_iterations is not None:
@@ -4715,7 +4847,8 @@ def _freeze_session_child_input(
         "prompt": task,
         "sessionId": session_id,
         "mlflowSessionId": mlflow_session_id or session_id,
-        "turnId": child_instance_id,
+        "turnId": turn_id or child_instance_id,
+        "workflowInstanceId": child_instance_id,
         "executionId": db_execution_id,
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,
@@ -4746,34 +4879,6 @@ def _freeze_session_child_input(
     if max_iterations is not None:
         child_input["maxIterations"] = max_iterations
     return child_input
-
-
-def _session_turn_timeout_seconds(message: dict) -> int:
-    """Use workflow-provided timeoutMinutes for single-turn durable runs.
-
-    UI sessions do not set timeoutMinutes, so they keep the process default.
-    SWE-bench and other workflow-driven runs pass a larger timeout through the
-    orchestrator; the session wrapper should not preempt that run at 600s.
-    """
-    raw = message.get("timeoutMinutes") or message.get("timeout_minutes")
-    try:
-        minutes = int(raw)
-    except (TypeError, ValueError):
-        return SESSION_TURN_TIMEOUT_SECONDS
-    if minutes <= 0:
-        return SESSION_TURN_TIMEOUT_SECONDS
-    return max(SESSION_TURN_TIMEOUT_SECONDS, minutes * 60)
-
-
-def _session_turn_heartbeat_seconds() -> int:
-    """Periodically prove the session wrapper is alive while a turn is quiet."""
-    try:
-        seconds = int(SESSION_TURN_HEARTBEAT_SECONDS)
-    except (TypeError, ValueError):
-        return 60
-    if seconds <= 0:
-        return 0
-    return max(15, seconds)
 
 
 def _is_workflow_instance_missing_error(exc: Exception) -> bool:
@@ -5946,6 +6051,65 @@ async def get_plan(execution_id: str) -> dict:
     if isinstance(plan_data, str):
         return {"plan": plan_data}
     return {"plan": None}
+
+
+@app.get("/internal/runtime/instances/{instance_id}/config")
+def get_runtime_config(instance_id: str) -> dict[str, Any]:
+    """Return the latest CloudEvents runtime-config snapshot for an instance.
+
+    The primary lookup is the in-memory snapshot written by the setup/MCP
+    activity. State fallback keeps this endpoint useful after worker restarts.
+    Passing the base session id returns the latest turn snapshot for that
+    session when it is still in memory.
+    """
+    key = str(instance_id or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="instance_id is required")
+    event = (
+        agent._runtime_config_by_instance.get(key)
+        or agent._runtime_config_by_session.get(key)
+    )
+    if event:
+        return event
+    state_value = _read_agent_state_key(runtime_config_state_key(key))
+    if isinstance(state_value, dict):
+        return state_value
+    context = agent._runtime_context_for_instance(key)
+    session_id = str(context.get("sessionId") or key).strip()
+    if context and session_id:
+        event = build_runtime_config_event(
+            session_id=session_id,
+            instance_id=key,
+            turn=context.get("turn"),
+            config_revision=context.get("configRevision"),
+            context=context,
+            effective_config=(
+                context.get("effectiveAgentConfig")
+                if isinstance(context.get("effectiveAgentConfig"), dict)
+                else {}
+            ),
+            instruction_bundle=(
+                context.get("instructionBundle")
+                if isinstance(context.get("instructionBundle"), dict)
+                else {}
+            ),
+            mlflow_context=(
+                context.get("mlflowContext")
+                if isinstance(context.get("mlflowContext"), dict)
+                else {}
+            ),
+            dapr_app_id=str(
+                context.get("agentAppId")
+                or os.environ.get("APP_ID")
+                or os.environ.get("DAPR_APP_ID")
+                or AGENT_SERVICE_NAME
+            ),
+            source="memory",
+        )
+        agent._runtime_config_by_instance[key] = event
+        agent._runtime_config_by_session[session_id] = event
+        return event
+    raise HTTPException(status_code=404, detail="Runtime config not found")
 
 
 @app.post("/internal/sessions/spawn")

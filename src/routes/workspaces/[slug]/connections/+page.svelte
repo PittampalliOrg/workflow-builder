@@ -90,6 +90,24 @@
 		mcpConnection: McpConnection | null;
 	};
 
+	type McpAvailabilityEntry = CatalogEntry & {
+		registered: boolean;
+		enabled: boolean;
+		ready: boolean;
+		authStatus:
+			| 'READY'
+			| 'NO_AUTH_REQUIRED'
+			| 'CONNECT_REQUIRED'
+			| 'OAUTH_APP_MISSING'
+			| 'SERVER_NOT_REGISTERED';
+		authStatusLabel: string;
+		selectedAppConnection: CatalogAppConnection | null;
+		mcpConnectionExternalId: string | null;
+		serviceName: string | null;
+		namespace: string | null;
+		registrationReason: string | null;
+	};
+
 	type PendingOAuth = {
 		state: string;
 		connectionId: string;
@@ -104,10 +122,11 @@
 	let { data }: { data: PageData } = $props();
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
-	let activeTab = $state('apps');
+	let activeTab = $state(page.url.searchParams.get('tab') === 'mcp' ? 'mcp' : 'apps');
 	let appConnections = $state<AppConnection[]>([]);
 	let mcpConnections = $state<McpConnection[]>([]);
 	let catalogEntries = $state<CatalogEntry[]>([]);
+	let mcpAvailabilityEntries = $state<McpAvailabilityEntry[]>([]);
 	let vaults = $state<VaultSummary[]>([]);
 	let vaultCredentials = $state<VaultCredentialSummary[]>([]);
 	let loading = $state(true);
@@ -117,10 +136,12 @@
 	let appSearch = $state('');
 	let appStatus = $state('ALL');
 	let mcpSearch = $state('');
+	let appProviderSearch = $state('');
 	let selectedConnectionByPiece = $state<Record<string, string>>({});
 
 	let addDialogOpen = $state(false);
 	let selectedEntry = $state<CatalogEntry | null>(null);
+	let addMcpAfterSecretCreate = $state(false);
 	let secretValue = $state('');
 	let connectionName = $state('');
 
@@ -146,8 +167,8 @@
 		});
 	});
 
-	const filteredCatalog = $derived.by(() => {
-		const q = mcpSearch.trim().toLowerCase();
+	const filteredProviderCatalog = $derived.by(() => {
+		const q = appProviderSearch.trim().toLowerCase();
 		if (!q) return catalogEntries;
 		return catalogEntries.filter((entry) =>
 			[
@@ -155,6 +176,25 @@
 				entry.pieceName,
 				entry.description ?? '',
 				entry.authType,
+				...entry.categories
+			]
+				.join(' ')
+				.toLowerCase()
+				.includes(q)
+		);
+	});
+
+	const filteredMcpAvailability = $derived.by(() => {
+		const q = mcpSearch.trim().toLowerCase();
+		if (!q) return mcpAvailabilityEntries;
+		return mcpAvailabilityEntries.filter((entry) =>
+			[
+				entry.displayName,
+				entry.pieceName,
+				entry.description ?? '',
+				entry.authType,
+				entry.authStatusLabel,
+				entry.serviceName ?? '',
 				...entry.categories
 			]
 				.join(' ')
@@ -188,18 +228,23 @@
 		loading = true;
 		errorMessage = null;
 		try {
-			const [appsRes, mcpRes, catalogRes, vaultsRes] = await Promise.all([
+			const [appsRes, availabilityRes, catalogRes, vaultsRes] = await Promise.all([
 				fetch('/api/app-connections'),
-				fetch('/api/mcp-connections'),
+				fetch('/api/mcp-connections/availability'),
 				fetch('/api/mcp-connections/catalog'),
 				fetch('/api/v1/vaults')
 			]);
 			if (!appsRes.ok) throw new Error(`App connections failed (${appsRes.status})`);
-			if (!mcpRes.ok) throw new Error(`MCP connections failed (${mcpRes.status})`);
+			if (!availabilityRes.ok) throw new Error(`MCP availability failed (${availabilityRes.status})`);
 			if (!catalogRes.ok) throw new Error(`MCP catalog failed (${catalogRes.status})`);
 
 			appConnections = await appsRes.json();
-			mcpConnections = await mcpRes.json();
+			const availabilityBody = (await availabilityRes.json()) as {
+				entries?: McpAvailabilityEntry[];
+				projectConnections?: McpConnection[];
+			};
+			mcpAvailabilityEntries = availabilityBody.entries ?? [];
+			mcpConnections = availabilityBody.projectConnections ?? [];
 			const catalogBody = (await catalogRes.json()) as { entries?: CatalogEntry[] };
 			catalogEntries = catalogBody.entries ?? [];
 			if (vaultsRes.ok) {
@@ -239,10 +284,12 @@
 		selectedConnectionByPiece = next;
 	}
 
-	function openAddConnection(entry?: CatalogEntry) {
+	function openAddConnection(entry?: CatalogEntry, addMcp = false) {
 		selectedEntry = entry ?? null;
+		addMcpAfterSecretCreate = addMcp;
 		secretValue = '';
 		connectionName = entry ? `${entry.displayName}` : '';
+		appProviderSearch = '';
 		addDialogOpen = true;
 	}
 
@@ -261,7 +308,12 @@
 				})
 			});
 			if (!res.ok) throw new Error(await res.text());
-			toast.success('Connection created');
+			const connection = (await res.json()) as AppConnection;
+			if (addMcpAfterSecretCreate) {
+				await createPieceMcp(selectedEntry.canonicalPieceName, connection.externalId);
+				activeTab = 'mcp';
+			}
+			toast.success(addMcpAfterSecretCreate ? 'Connected and added MCP server' : 'Connection created');
 			addDialogOpen = false;
 			await loadAll();
 		} catch (err) {
@@ -462,6 +514,28 @@
 		return vaultCredentials.filter((cred) => cred.mcpServerUrl === url && !cred.isArchived);
 	}
 
+	function normalizePiece(value: string | null | undefined): string {
+		return String(value || '')
+			.trim()
+			.toLowerCase()
+			.replace(/^@activepieces\/piece-/, '')
+			.replace(/[_\s]+/g, '-')
+			.replace(/-+/g, '-')
+			.replace(/^-|-$/g, '');
+	}
+
+	function availabilityForConnection(conn: McpConnection): McpAvailabilityEntry | null {
+		if (conn.sourceType !== 'nimble_piece') return null;
+		const piece = normalizePiece(conn.pieceName);
+		return mcpAvailabilityEntries.find((entry) => entry.pieceName === piece) ?? null;
+	}
+
+	function authBadgeVariant(entry: McpAvailabilityEntry): 'default' | 'secondary' | 'outline' {
+		if (entry.ready || entry.authStatus === 'READY') return 'secondary';
+		if (entry.authStatus === 'NO_AUTH_REQUIRED') return 'outline';
+		return 'outline';
+	}
+
 	function formatDate(value: string | undefined): string {
 		if (!value) return '';
 		return new Date(value).toLocaleDateString();
@@ -580,12 +654,29 @@
 							<div class="p-4 text-sm text-muted-foreground">No MCP servers are enabled for this workspace.</div>
 						{:else}
 							{#each configuredMcp as conn (conn.id)}
+								{@const availability = availabilityForConnection(conn)}
 								<div class="p-3 flex items-center justify-between gap-3">
 									<div class="min-w-0">
 										<div class="flex items-center gap-2 flex-wrap">
 											<span class="font-medium text-sm">{conn.displayName}</span>
 											<Badge variant={conn.status === 'ENABLED' ? 'default' : 'outline'}>{conn.status}</Badge>
 											<Badge variant="outline">{conn.sourceType}</Badge>
+											{#if availability}
+												<Badge variant={authBadgeVariant(availability)}>
+													{availability.authStatusLabel}
+												</Badge>
+												{#if availability.registered}
+													<Badge variant="outline">
+														<CheckCircle2 class="size-3" />
+														Registered
+													</Badge>
+												{/if}
+											{:else if conn.connectionExternalId}
+												<Badge variant="secondary">
+													<KeyRound class="size-3" />
+													App connection
+												</Badge>
+											{/if}
 											{#if matchingVaultCredentials(conn.serverUrl).length > 0}
 												<Badge variant="secondary">
 													<ShieldCheck class="size-3" />
@@ -612,9 +703,17 @@
 				</section>
 
 				<section class="space-y-3">
-					<h2 class="text-sm font-semibold">Add Predefined MCP Server</h2>
+					<div class="flex items-center justify-between gap-3">
+						<div>
+							<h2 class="text-sm font-semibold">Registered MCP Services</h2>
+							<p class="text-xs text-muted-foreground">
+								These services are registered by the ActivePieces MCP reconciler and can be enabled for this workspace.
+							</p>
+						</div>
+						<Badge variant="outline">{filteredMcpAvailability.length}</Badge>
+					</div>
 					<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-						{#each filteredCatalog as entry (entry.pieceName)}
+						{#each filteredMcpAvailability as entry (entry.pieceName)}
 							<Card class="overflow-hidden">
 								<CardHeader class="pb-2">
 									<div class="flex items-start justify-between gap-3">
@@ -627,21 +726,36 @@
 												<p class="text-[11px] text-muted-foreground truncate">{entry.pieceName}</p>
 											</div>
 										</div>
-										{#if entry.mcpConnection}
+										{#if entry.ready}
+											<Badge variant="secondary"><CheckCircle2 class="size-3" /> Ready</Badge>
+										{:else if entry.mcpConnection}
 											<Badge variant={entry.mcpConnection.status === 'ENABLED' ? 'default' : 'outline'}>
 												{entry.mcpConnection.status}
 											</Badge>
+										{:else if entry.registered}
+											<Badge variant="outline">Available</Badge>
 										{/if}
 									</div>
 								</CardHeader>
 								<CardContent class="space-y-3">
 									<div class="flex items-center gap-1 flex-wrap">
+										{#if entry.registered}
+											<Badge variant="outline">{entry.registrationReason ?? 'registered'}</Badge>
+										{:else}
+											<Badge variant="outline">not registered</Badge>
+										{/if}
 										<Badge variant="outline">{entry.actionCount} tools</Badge>
 										<Badge variant="outline">{entry.authType}</Badge>
+										<Badge variant={authBadgeVariant(entry)}>{entry.authStatusLabel}</Badge>
 										{#if entry.isOAuth2 && entry.oauthAppConfigured}
 											<Badge variant="secondary"><CheckCircle2 class="size-3" /> OAuth app</Badge>
 										{/if}
 									</div>
+									{#if entry.serviceName}
+										<code class="block truncate text-[10px] text-muted-foreground">
+											{entry.serviceName}.{entry.namespace ?? 'workflow-builder'}
+										</code>
+									{/if}
 									{#if entry.requiresAuth}
 										{#if entry.appConnections.length > 0}
 											<NativeSelect
@@ -656,11 +770,11 @@
 													<option value={conn.externalId}>{conn.displayName}</option>
 												{/each}
 											</NativeSelect>
-											<Button class="w-full" onclick={() => addMcp(entry)} disabled={busy === `mcp:${entry.pieceName}`}>
+											<Button class="w-full" onclick={() => addMcp(entry)} disabled={!entry.registered || busy === `mcp:${entry.pieceName}`}>
 												<Plug class="size-4" /> {entry.mcpConnection ? 'Update MCP binding' : 'Add MCP'}
 											</Button>
 										{:else if entry.isOAuth2}
-											<Button class="w-full" onclick={() => beginOAuthConnection(entry, true)} disabled={!entry.oauthAppConfigured || busy === `oauth:${entry.pieceName}`}>
+											<Button class="w-full" onclick={() => beginOAuthConnection(entry, true)} disabled={!entry.registered || !entry.oauthAppConfigured || busy === `oauth:${entry.pieceName}`}>
 												{#if busy === `oauth:${entry.pieceName}`}<Loader2 class="size-4 animate-spin" />{:else}<KeyRound class="size-4" />{/if}
 												Connect & add
 											</Button>
@@ -670,18 +784,23 @@
 												</p>
 											{/if}
 										{:else}
-											<Button class="w-full" variant="outline" onclick={() => openAddConnection(entry)}>
-												<KeyRound class="size-4" /> Create app connection
+											<Button class="w-full" variant="outline" onclick={() => openAddConnection(entry, true)} disabled={!entry.registered}>
+												<KeyRound class="size-4" /> Connect & add
 											</Button>
 										{/if}
 									{:else}
-										<Button class="w-full" onclick={() => addMcp(entry)}>
+										<Button class="w-full" onclick={() => addMcp(entry)} disabled={!entry.registered}>
 											<Plug class="size-4" /> {entry.mcpConnection ? 'Refresh MCP' : 'Add MCP'}
 										</Button>
 									{/if}
 								</CardContent>
 							</Card>
 						{/each}
+						{#if filteredMcpAvailability.length === 0}
+							<div class="rounded-md border border-dashed p-4 text-sm text-muted-foreground md:col-span-2 xl:col-span-3">
+								No registered MCP services match this search.
+							</div>
+						{/if}
 					</div>
 				</section>
 
@@ -703,7 +822,7 @@
 						</div>
 						<p class="text-xs text-muted-foreground">
 							Authenticated custom servers use vault credentials with an exact matching MCP server URL.
-							<a href="/workspaces/{slug}/credentials" class="underline">Manage vault credentials</a>.
+							<a href={`/workspaces/${slug}/credentials`} class="underline">Manage vault credentials</a>.
 						</p>
 						{#if customUrl.trim()}
 							<p class="text-xs text-muted-foreground">
@@ -727,15 +846,16 @@
 		<div class="grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)] gap-4 min-h-[360px]">
 			<div class="border rounded-md overflow-hidden">
 				<div class="p-2 border-b">
-					<Input placeholder="Search providers" bind:value={mcpSearch} />
+					<Input placeholder="Search providers" bind:value={appProviderSearch} />
 				</div>
 				<div class="max-h-[320px] overflow-auto divide-y">
-					{#each filteredCatalog.filter((entry) => entry.requiresAuth) as entry (entry.pieceName)}
+					{#each filteredProviderCatalog.filter((entry) => entry.requiresAuth) as entry (entry.pieceName)}
 						<button
 							type="button"
 							class="w-full text-left p-2 hover:bg-muted/60 {selectedEntry?.pieceName === entry.pieceName ? 'bg-muted' : ''}"
 							onclick={() => {
 								selectedEntry = entry;
+								addMcpAfterSecretCreate = false;
 								connectionName = entry.displayName;
 								secretValue = '';
 							}}
@@ -786,7 +906,7 @@
 							<Input bind:value={secretValue} type="password" placeholder="Paste API key or token" />
 						</div>
 						<Button onclick={createSecretConnection} disabled={!connectionName.trim() || !secretValue.trim()}>
-							<KeyRound class="size-4" /> Create connection
+							<KeyRound class="size-4" /> {addMcpAfterSecretCreate ? 'Create and add MCP' : 'Create connection'}
 						</Button>
 					{/if}
 				{:else}

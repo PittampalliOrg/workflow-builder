@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
-	import { Check, HandIcon, AlertTriangle } from '@lucide/svelte';
+	import { Check, HandIcon, AlertTriangle, Square } from '@lucide/svelte';
 	import type { SessionStopReason } from '$lib/types/sessions';
 
 	interface Props {
@@ -34,6 +34,18 @@
 					icon: AlertTriangle,
 					text: 'Retries exhausted',
 					variant: 'destructive' as const
+				};
+			case 'interrupted':
+				return {
+					icon: Square,
+					text: 'Interrupted',
+					variant: 'outline' as const
+				};
+			case 'terminated':
+				return {
+					icon: Square,
+					text: 'Terminated',
+					variant: 'outline' as const
 				};
 			default:
 				return null;

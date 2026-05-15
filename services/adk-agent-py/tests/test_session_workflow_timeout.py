@@ -30,7 +30,10 @@ openshell_module.SandboxSession = object
 sys.modules.setdefault("openshell", openshell_module)
 
 from src.constants import SESSION_TURN_TIMEOUT_SECONDS  # noqa: E402
-from src.runner.session_workflow import _session_turn_timeout_seconds  # noqa: E402
+from src.runner.session_workflow import (  # noqa: E402
+    _runtime_config_inspection_version,
+    _session_turn_timeout_seconds,
+)
 
 
 def test_session_turn_timeout_defaults_to_runtime_constant():
@@ -47,3 +50,13 @@ def test_session_turn_timeout_honors_agent_config_timeout_minutes():
 
 def test_session_turn_timeout_never_shrinks_below_default():
     assert _session_turn_timeout_seconds({"timeoutMinutes": 1}) == SESSION_TURN_TIMEOUT_SECONDS
+
+
+def test_runtime_config_inspection_version_defaults_to_unversioned():
+    assert _runtime_config_inspection_version({}) == 0
+    assert _runtime_config_inspection_version({"runtimeConfigInspectionVersion": None}) == 0
+
+
+def test_runtime_config_inspection_version_enables_new_activity_for_new_inputs():
+    assert _runtime_config_inspection_version({"runtimeConfigInspectionVersion": 1}) == 1
+    assert _runtime_config_inspection_version({"runtimeConfigInspectionVersion": "1"}) == 1

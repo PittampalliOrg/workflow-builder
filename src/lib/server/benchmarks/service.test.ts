@@ -898,7 +898,7 @@ describe("SWE-bench workflow spec", () => {
 describe("SWE-bench terminal run cleanup", () => {
 	const now = new Date("2026-05-02T12:00:00Z");
 
-	it("terminates the session workflow and every known turn workflow", () => {
+	it("terminates the session workflow without synthesizing per-turn workflows", () => {
 		expect(
 			benchmarkAgentRuntimeCleanupInstanceIds(
 				{
@@ -908,25 +908,12 @@ describe("SWE-bench terminal run cleanup", () => {
 				},
 				{
 					sessionId: "session-1",
-					childInstanceId: "session-1:turn-12",
+					childInstanceId: "session-1",
 					turn: 12,
+					agentWorkflowMode: "session-native",
 				},
 			),
-		).toEqual([
-			"session-1",
-			"session-1:turn-1",
-			"session-1:turn-2",
-			"session-1:turn-3",
-			"session-1:turn-4",
-			"session-1:turn-5",
-			"session-1:turn-6",
-			"session-1:turn-7",
-			"session-1:turn-8",
-			"session-1:turn-9",
-			"session-1:turn-10",
-			"session-1:turn-11",
-			"session-1:turn-12",
-		]);
+		).toEqual(["session-1"]);
 
 		expect(
 			benchmarkAgentRuntimeCleanupInstanceIds({
@@ -934,16 +921,7 @@ describe("SWE-bench terminal run cleanup", () => {
 				sessionId: "session-2",
 				turnCount: 7,
 			}),
-		).toEqual([
-			"session-2",
-			"session-2:turn-1",
-			"session-2:turn-2",
-			"session-2:turn-3",
-			"session-2:turn-4",
-			"session-2:turn-5",
-			"session-2:turn-6",
-			"session-2:turn-7",
-		]);
+		).toEqual(["session-2"]);
 
 		expect(
 			benchmarkAgentRuntimeCleanupInstanceIds(
@@ -967,8 +945,6 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).toEqual([
 			"session-3",
-			"session-3:turn-1",
-			"session-3:turn-2",
 			"custom-child-a",
 			"custom-child-b",
 		]);

@@ -52,6 +52,7 @@ describe("agent MCP resolution", () => {
 				pieceName: "microsoft-outlook",
 				serverKey: null,
 				connectionExternalId: "conn_outlook",
+				mcpConnectionExternalId: "mcp_1",
 				transport: "streamable_http",
 				url: "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local/mcp",
 				headers: { "X-Connection-External-Id": "conn_outlook" },
@@ -96,6 +97,51 @@ describe("agent MCP resolution", () => {
 			"piece_github",
 			"custom_docs",
 		]);
+	});
+
+	it("prefers an explicit project MCP connection id over display-name matching", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_github_old",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					serverKey: null,
+					connectionExternalId: "conn_old",
+					displayName: "GitHub",
+					registryRef: "ap-github-service",
+					serverUrl: "http://ap-github-service:3100/mcp",
+					metadata: null,
+				},
+				{
+					id: "mcp_github_new",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					serverKey: null,
+					connectionExternalId: "conn_new",
+					displayName: "GitHub",
+					registryRef: "ap-github-service",
+					serverUrl: "http://ap-github-service:3100/mcp",
+					metadata: null,
+				},
+			],
+			requestedServers: [
+				{
+					displayName: "GitHub",
+					pieceName: "github",
+					mcpConnectionExternalId: "mcp_github_new",
+				},
+			],
+		});
+
+		expect(result.warnings).toEqual([]);
+		expect(result.mcpServers[0]).toMatchObject({
+			connectionExternalId: "conn_new",
+			mcpConnectionExternalId: "mcp_github_new",
+			headers: { "X-Connection-External-Id": "conn_new" },
+		});
 	});
 
 	it("resolves hosted workflow connections through the MCP gateway", () => {
