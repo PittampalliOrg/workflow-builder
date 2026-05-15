@@ -97,4 +97,43 @@ describe("agent MCP resolution", () => {
 			"custom_docs",
 		]);
 	});
+
+	it("resolves hosted workflow connections through the MCP gateway", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_hosted",
+					projectId: "project-1",
+					sourceType: "hosted_workflow",
+					pieceName: null,
+					serverKey: "workflow-tools",
+					connectionExternalId: null,
+					displayName: "Workflow Tools",
+					registryRef: "mcp-gateway",
+					serverUrl: "",
+					metadata: {
+						transport: "streamable_http",
+						endpointPath: "/api/v1/projects/:projectId/mcp-server/http",
+					},
+				},
+			],
+			includeProjectConnections: true,
+			hostedToken: "hosted-token",
+		});
+
+		expect(result).toEqual({
+			mcpServers: [
+				{
+					server_name: "hosted_workflow-tools",
+					name: "hosted_workflow-tools",
+					displayName: "Workflow Tools",
+					sourceType: "hosted_workflow",
+					transport: "streamable_http",
+					url: "http://mcp-gateway.workflow-builder.svc.cluster.local:8080/api/v1/projects/project-1/mcp-server/http",
+					headers: { Authorization: "Bearer hosted-token" },
+				},
+			],
+			warnings: [],
+		});
+	});
 });

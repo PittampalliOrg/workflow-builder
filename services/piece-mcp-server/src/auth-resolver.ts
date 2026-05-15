@@ -5,9 +5,7 @@
  *
  * Priority:
  * 1. Request-scoped X-Connection-External-Id → call internal decrypt API
- * 2. CONNECTION_EXTERNAL_ID env → call internal decrypt API
- * 3. CREDENTIALS_JSON env → parse inline JSON
- * 4. No auth → return undefined
+ * 2. No auth → return undefined
  *
  * Caches decrypted credentials for 5 minutes (OAuth2 tokens may refresh).
  */
@@ -88,33 +86,16 @@ export async function resolveAuth(): Promise<unknown> {
 	const contextExternalId = requestAuthContext
 		.getStore()
 		?.connectionExternalId?.trim();
-	const connectionExternalId =
-		contextExternalId || process.env.CONNECTION_EXTERNAL_ID?.trim();
-	if (connectionExternalId) {
-		const cacheKey = `connection:${connectionExternalId}`;
+	if (contextExternalId) {
+		const cacheKey = `connection:${contextExternalId}`;
 		const cached = cachedValue(cacheKey);
 		if (cached !== undefined) return cached;
 		return storeCachedValue(
 			cacheKey,
-			await fetchConnectionCredentials(connectionExternalId),
+			await fetchConnectionCredentials(contextExternalId),
 		);
 	}
 
-	const credentialsJson = process.env.CREDENTIALS_JSON;
-	if (credentialsJson) {
-		const cacheKey = "credentials_json";
-		const cached = cachedValue(cacheKey);
-		if (cached !== undefined) return cached;
-		try {
-			return storeCachedValue(cacheKey, JSON.parse(credentialsJson));
-		} catch (e) {
-			throw new Error(
-				`Failed to parse CREDENTIALS_JSON: ${e instanceof Error ? e.message : String(e)}`,
-			);
-		}
-	}
-
-	// Priority 4: No auth
 	return undefined;
 }
 

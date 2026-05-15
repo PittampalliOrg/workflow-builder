@@ -393,6 +393,7 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                 """
                 select
                   id,
+                  project_id,
                   source_type,
                   piece_name,
                   server_key,

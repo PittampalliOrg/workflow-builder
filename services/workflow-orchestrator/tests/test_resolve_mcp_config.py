@@ -234,3 +234,49 @@ def test_qualifies_direct_nimble_service_url_for_cross_namespace_agents():
         ],
         "warnings": [],
     }
+
+
+def test_resolves_hosted_workflow_connection_with_project_token(monkeypatch):
+    rows = [
+        {
+            "id": "mcp_hosted",
+            "project_id": "project-1",
+            "source_type": "hosted_workflow",
+            "piece_name": None,
+            "server_key": "workflow-tools",
+            "connection_external_id": None,
+            "display_name": "Workflow Tools",
+            "registry_ref": "mcp-gateway",
+            "server_url": "",
+            "metadata": {
+                "transport": "streamable_http",
+                "endpointPath": "/api/v1/projects/:projectId/mcp-server/http",
+            },
+        }
+    ]
+    monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(resolve_mcp_config, "_hosted_mcp_token", lambda project_id: f"token:{project_id}")
+    monkeypatch.setattr(
+        resolve_mcp_config.psycopg2,
+        "connect",
+        lambda _url: FakeConnection(rows),
+    )
+
+    result = resolve_mcp_config.resolve_agent_mcp_servers(
+        None,
+        {"projectId": "project-1", "includeProjectConnections": True},
+    )
+
+    assert result == {
+        "mcpServers": [
+            {
+                "server_name": "hosted_workflow-tools",
+                "displayName": "Workflow Tools",
+                "sourceType": "hosted_workflow",
+                "transport": "streamable_http",
+                "url": "http://mcp-gateway:8080/api/v1/projects/project-1/mcp-server/http",
+                "headers": {"Authorization": "Bearer token:project-1"},
+            }
+        ],
+        "warnings": [],
+    }
