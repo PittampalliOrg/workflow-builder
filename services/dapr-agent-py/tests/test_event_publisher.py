@@ -6,6 +6,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.event_publisher import _cma_shape  # noqa: E402
 
 
+class _ImmediateThread:
+    def __init__(self, target, args=(), daemon=None):
+        self.target = target
+        self.args = args
+
+    def start(self):
+        self.target(*self.args)
+
+
 def test_tool_call_end_with_json_error_output_is_failed_result():
     event_type, payload = _cma_shape(
         "tool_call_end",
@@ -51,3 +60,58 @@ def test_runtime_config_payload_is_not_wrapped_or_audit_stamped():
     assert event_type == "session.runtime_config"
     assert payload == cloud_event
     assert "_internalType" not in payload
+
+
+def test_publish_session_event_preserves_explicit_trace_context(monkeypatch):
+    from src import event_publisher
+
+    captured = []
+    monkeypatch.setattr(event_publisher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        event_publisher,
+        "_post_ingest",
+        lambda session_id, envelope: captured.append((session_id, envelope)),
+    )
+
+    publish_data = {
+        "traceId": "explicit-trace",
+        "spanId": "explicit-span",
+    }
+    event_publisher.publish_session_event(
+        "session-1",
+        "agent.llm_usage",
+        publish_data,
+        source_event_id="source-1",
+    )
+
+    assert captured[0][0] == "session-1"
+    assert captured[0][1]["data"]["traceId"] == "explicit-trace"
+    assert captured[0][1]["data"]["spanId"] == "explicit-span"
+
+
+def test_publish_session_event_stamps_missing_trace_context(monkeypatch):
+    from src import event_publisher
+    from src.telemetry import session_tracing
+
+    captured = []
+    monkeypatch.setattr(event_publisher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        event_publisher,
+        "_post_ingest",
+        lambda session_id, envelope: captured.append((session_id, envelope)),
+    )
+    monkeypatch.setattr(
+        session_tracing,
+        "get_current_trace_context",
+        lambda: ("ambient-trace", "ambient-span"),
+    )
+
+    event_publisher.publish_session_event(
+        "session-1",
+        "agent.llm_usage",
+        {},
+        source_event_id="source-2",
+    )
+
+    assert captured[0][1]["data"]["traceId"] == "ambient-trace"
+    assert captured[0][1]["data"]["spanId"] == "ambient-span"

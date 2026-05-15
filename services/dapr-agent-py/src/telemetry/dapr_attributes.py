@@ -107,6 +107,15 @@ def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
         AGENT_CONFIG_REVISION_ATTRIBUTE,
         PROMPT_VERSION_ATTRIBUTE,
         PROMPT_VERSION_ID_ATTRIBUTE,
+        "agent.session.id",
+        "workflow_builder.session_id",
+        "workflow_builder.mlflow_session_id",
+        "workflow_builder.turn_id",
+        "workflow_builder.trace_group_id",
+        "mlflow.run_id",
+        "mlflow.modelId",
+        "mlflow.model.uri",
+        "agent.mlflow_uri",
     )
 
     tags: dict[str, str] = {}
@@ -129,10 +138,24 @@ def trace_tags_from_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
     return tags
 
 
+def _mlflow_trace_id_from_span(span: Any) -> str | None:
+    try:
+        if span is None:
+            return None
+        ctx = span.get_span_context()
+        trace_id = getattr(ctx, "trace_id", 0) or 0
+        if not trace_id:
+            return None
+        return f"tr-{trace_id:032x}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def set_mlflow_trace_tags(
     tags: dict[str, Any],
     *,
     trace_name: str | None = None,
+    span: Any | None = None,
 ) -> None:
     """Promote a curated tag dict onto the active MLflow trace.
 
@@ -144,9 +167,9 @@ def set_mlflow_trace_tags(
     without that context.
 
     Strategy:
-      1. Try `mlflow.update_current_trace(tags=..., session_id=...)` —
-         cheap, works for `@mlflow.trace`-decorated paths.
-      2. If that fails OR we have an active OTel span, ALSO call
+      1. Try `mlflow.update_current_trace(tags=...)` only when the caller did
+         not pass an explicit span.
+      2. If we have an explicit or active OTel span, ALSO call
          `MlflowClient().set_trace_tag(trace_id, k, v)` per tag, using
          the OTel trace_id translated to MLflow's `tr-<hex>` format.
 
@@ -173,34 +196,34 @@ def set_mlflow_trace_tags(
         import mlflow  # type: ignore[import-not-found]
     except Exception:
         return
-    session_id = clean.pop(SESSION_ID_ATTRIBUTE, None)
+    session_id = clean.get(SESSION_ID_ATTRIBUTE)
 
-    # Try the fluent API first (works when MLflow tracing context is active).
-    try:
-        if session_id:
-            mlflow.update_current_trace(tags=clean, session_id=session_id)
-        else:
+    # Try the fluent API only when we are intentionally targeting the current
+    # MLflow trace. When the Dapr agent manually creates OTel spans, an
+    # explicit span is the only safe target; ambient context may still point at
+    # the HTTP spawn request or no trace at all.
+    if span is None:
+        try:
             mlflow.update_current_trace(tags=clean)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("update_current_trace failed (will fall back to client.set_trace_tag): %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "update_current_trace failed (will fall back to client.set_trace_tag): %s",
+                exc,
+            )
 
     # Always also call set_trace_tag via the OTel-derived trace_id —
     # the fluent API silently no-ops when context isn't active. This
     # belt-and-suspenders pass guarantees the tags land on the trace.
     try:
-        from opentelemetry import trace as ot_trace
-        span = ot_trace.get_current_span()
-        if span is None:
+        target_span = span
+        if target_span is None:
+            from opentelemetry import trace as ot_trace
+
+            target_span = ot_trace.get_current_span()
+        mlflow_trace_id = _mlflow_trace_id_from_span(target_span)
+        if not mlflow_trace_id:
             return
-        ctx = span.get_span_context()
-        if not ctx or ctx.trace_id == 0:
-            return
-        otel_trace_hex = format(ctx.trace_id, "032x")
-        mlflow_trace_id = f"tr-{otel_trace_hex}"
         client = mlflow.MlflowClient()
-        # Re-add session.id (we popped it earlier for the fluent kwarg).
-        if session_id:
-            clean[SESSION_ID_ATTRIBUTE] = session_id
         for k, v in clean.items():
             try:
                 client.set_trace_tag(mlflow_trace_id, k, v)
@@ -217,6 +240,10 @@ def set_mlflow_trace_tags(
                 "mlflow.trace.session": session_id,
                 "mlflow.sourceRun": clean.get("mlflow.run_id"),
                 "mlflow.modelId": clean.get("mlflow.modelId"),
+                "workflow_builder.turn_id": clean.get("workflow_builder.turn_id"),
+                "workflow_builder.trace_group_id": clean.get(
+                    "workflow_builder.trace_group_id"
+                ),
             },
         )
     except Exception as exc:  # noqa: BLE001

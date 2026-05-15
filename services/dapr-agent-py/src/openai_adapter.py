@@ -341,6 +341,7 @@ def _publish_llm_usage(
     duration_ms: float | None = None,
     error: str | None = None,
     prompt_cache_telemetry: dict[str, Any] | None = None,
+    trace_context: tuple[str | None, str | None] | None = None,
 ) -> None:
     try:
         from src.event_publisher import (
@@ -395,6 +396,12 @@ def _publish_llm_usage(
             )
         if error:
             payload["error"] = error[:200]
+        if trace_context:
+            trace_id, span_id = trace_context
+            if trace_id:
+                payload["traceId"] = trace_id
+            if span_id:
+                payload["spanId"] = span_id
         publish_session_event(
             sid,
             "agent.llm_usage",
@@ -424,9 +431,10 @@ def _call_openai_responses(
     import time as _time
 
     llm_span = None
+    llm_trace_context: tuple[str | None, str | None] | None = None
     llm_start = _time.monotonic()
     try:
-        from src.telemetry import start_llm_request_span
+        from src.telemetry import get_span_trace_context, start_llm_request_span
 
         llm_span = start_llm_request_span(
             model,
@@ -438,6 +446,7 @@ def _call_openai_responses(
             else None,
             messages_for_api=list(messages),
         )
+        llm_trace_context = get_span_trace_context(llm_span)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[telemetry] llm_request (openai) start failed: %s", exc)
     headers, auth_mode = _auth_headers()
@@ -558,6 +567,7 @@ def _call_openai_responses(
             success=False,
             error=detail,
             prompt_cache_telemetry=prompt_cache_telemetry,
+            trace_context=llm_trace_context,
         )
         raise RuntimeError(f"OpenAI Responses API failed ({exc.code}): {detail}") from exc
 
@@ -617,6 +627,7 @@ def _call_openai_responses(
         duration_ms=(_time.monotonic() - llm_start) * 1000.0,
         success=True,
         prompt_cache_telemetry=prompt_cache_telemetry,
+        trace_context=llm_trace_context,
     )
 
     # Surface usage on the result.metadata + stamp GenAI semconv attrs on the

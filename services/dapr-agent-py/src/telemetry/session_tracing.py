@@ -88,6 +88,11 @@ def _extract_ids_from_span(span: Any) -> tuple[str | None, str | None]:
         return None, None
 
 
+def get_span_trace_context(span: Any) -> tuple[str | None, str | None]:
+    """Return (trace_id_hex, span_id_hex) for a specific span."""
+    return _extract_ids_from_span(span)
+
+
 def get_current_trace_context() -> tuple[str | None, str | None]:
     """Return (trace_id_hex, span_id_hex) for the current agent-side context.
 
@@ -98,17 +103,12 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
     OTEL returns the non-recording default in almost all call sites. We
     resolve in priority order:
       1. Innermost tool handle (_tool_ctx)
-      2. Interaction handle (_interaction_ctx)
-      3. The most-recently-started unended span in _explicit_spans
+      2. The most-recently-started unended span in _explicit_spans
          (covers claude_code.llm_request / hook / tool.execution)
+      3. Interaction handle (_interaction_ctx)
       4. OTEL current span fallback (works if caller wraps in `use_span`)
     """
     handle = _tool_ctx.get()
-    if handle is not None:
-        tid, sid = _extract_ids_from_span(handle.span)
-        if tid:
-            return tid, sid
-    handle = _interaction_ctx.get()
     if handle is not None:
         tid, sid = _extract_ids_from_span(handle.span)
         if tid:
@@ -124,6 +124,11 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
             tid, sid = _extract_ids_from_span(latest.span)
             if tid:
                 return tid, sid
+    handle = _interaction_ctx.get()
+    if handle is not None:
+        tid, sid = _extract_ids_from_span(handle.span)
+        if tid:
+            return tid, sid
     try:
         from opentelemetry import trace as otel_trace
 
@@ -181,13 +186,6 @@ def start_interaction_span(user_prompt: str) -> Any:
     span = tracer.start_span("claude_code.interaction", attributes=attrs)
     beta.add_interaction_attributes(span, user_prompt)
 
-    # Promote curated attributes to MLflow trace tags so search filters
-    # like `tag.session.id = '...'` work. Phase 1 of plan
-    # research-the-most-popular-stateful-hinton.md. Best-effort: silent
-    # no-op when mlflow isn't initialised.
-    from .dapr_attributes import set_mlflow_trace_tags, trace_tags_from_attrs
-    set_mlflow_trace_tags(trace_tags_from_attrs(attrs))
-
     handle = _SpanHandle(
         span=span,
         start_time_ns=time.time_ns(),
@@ -195,6 +193,13 @@ def start_interaction_span(user_prompt: str) -> Any:
         attributes=attrs,
     )
     handle.token = _interaction_ctx.set(handle)
+
+    # Promote curated attributes to MLflow trace tags so search filters
+    # like `tag.session.id = '...'` work. Phase 1 of plan
+    # research-the-most-popular-stateful-hinton.md. Best-effort: silent
+    # no-op when mlflow isn't initialised.
+    from .dapr_attributes import set_mlflow_trace_tags, trace_tags_from_attrs
+    set_mlflow_trace_tags(trace_tags_from_attrs(attrs), span=span)
     return span
 
 

@@ -194,6 +194,68 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert exec_span_out.parent.span_id == tool_span.context.span_id
 
 
+def test_interaction_mlflow_tags_target_new_span(telemetry_with_in_memory, monkeypatch):
+    exporter, _ = telemetry_with_in_memory
+    calls = []
+
+    def fake_set_mlflow_trace_tags(tags, **kwargs):
+        calls.append((tags, kwargs))
+
+    monkeypatch.setattr(
+        "src.telemetry.dapr_attributes.set_mlflow_trace_tags",
+        fake_set_mlflow_trace_tags,
+    )
+
+    from src.telemetry import (
+        end_interaction_span,
+        set_session_context,
+        start_interaction_span,
+    )
+
+    set_session_context(
+        instance_id="session-local",
+        mlflow_session_id="session-mlflow",
+        mlflow_run_id="run_1",
+        mlflow_model_id="model_1",
+        turn_id="session-local:turn-1",
+        workflow_trace_group_id="session-local",
+    )
+    span = start_interaction_span("hello")
+    end_interaction_span()
+
+    assert calls
+    tags, kwargs = calls[0]
+    assert kwargs["span"] is span
+    assert tags["session.id"] == "session-mlflow"
+    assert tags["mlflow.run_id"] == "run_1"
+    assert tags["mlflow.modelId"] == "model_1"
+    assert tags["workflow_builder.turn_id"] == "session-local:turn-1"
+    assert _find_span(exporter, "claude_code.interaction") is not None
+
+
+def test_current_trace_context_prefers_active_llm_span(telemetry_with_in_memory):
+    exporter, _ = telemetry_with_in_memory
+    from src.telemetry import (
+        end_interaction_span,
+        end_llm_request_span,
+        start_interaction_span,
+        start_llm_request_span,
+    )
+    from src.telemetry.session_tracing import get_current_trace_context
+
+    interaction = start_interaction_span("hello")
+    llm = start_llm_request_span("gpt-5.4")
+    trace_id, span_id = get_current_trace_context()
+
+    assert trace_id == f"{llm.get_span_context().trace_id:032x}"
+    assert span_id == f"{llm.get_span_context().span_id:016x}"
+    assert trace_id == f"{interaction.get_span_context().trace_id:032x}"
+
+    end_llm_request_span(llm, success=True)
+    end_interaction_span()
+    assert _find_span(exporter, "claude_code.llm_request") is not None
+
+
 def test_user_prompt_logged_when_env_truthy(telemetry_with_in_memory, monkeypatch):
     exporter, _ = telemetry_with_in_memory
     monkeypatch.setenv("OTEL_LOG_USER_PROMPTS", "1")

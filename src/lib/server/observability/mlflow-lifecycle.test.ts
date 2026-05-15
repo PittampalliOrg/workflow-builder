@@ -61,6 +61,7 @@ import {
 	createInteractiveSessionMlflowRun,
 	createWorkflowExecutionMlflowRun,
 	mlflowArtifactLocationForLifecycleExperiment,
+	patchInteractiveSessionMlflowTraces,
 	patchMlflowTracesForSession,
 	precreateMlflowTrace,
 	registerAgentVersionInMlflow,
@@ -542,5 +543,92 @@ describe("mlflow lifecycle helpers", () => {
 				]),
 			);
 		}
+	});
+
+	it("patches interactive session traces discovered from session events and records lineage", async () => {
+		const eventTraceId = "33333333333333333333333333333333";
+		dbMock.select
+			.mockImplementationOnce(() => ({
+				from: () => ({
+					where: () => ({
+						limit: async () => [
+							{
+								mlflowExperimentId: "3",
+								mlflowRunId: "run_1",
+								mlflowSessionId: "mlflow-session-1",
+								projectId: "project_1",
+							},
+						],
+					}),
+				}),
+			}) as any)
+			.mockImplementationOnce(() => ({
+				from: () => ({
+					where: async () => [
+						{
+							mlflowLoggedModelId: "m-agent-v1",
+							mlflowModelVersion: null,
+						},
+					],
+				}),
+			}) as any)
+			.mockImplementationOnce(() => ({
+				from: () => ({
+					where: async () => [
+						{
+							data: {
+								traceId: eventTraceId,
+								nested: { mlflow_trace_id: `tr-${eventTraceId}` },
+							},
+						},
+					],
+				}),
+			}) as any);
+		const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+			if (url.endsWith("/api/3.0/mlflow/traces/search")) {
+				return new Response(JSON.stringify({ traces: [] }), { status: 200 });
+			}
+			if (url.includes(`/api/2.0/mlflow/traces/tr-${eventTraceId}`)) {
+				return new Response(JSON.stringify({}), { status: 200 });
+			}
+			throw new Error(`unexpected fetch ${url}`);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			patchInteractiveSessionMlflowTraces({
+				sessionId: "session_1",
+				status: "OK",
+				endTime: 12345,
+			}),
+		).resolves.toBe(1);
+
+		const patchCall = fetchMock.mock.calls.find(([url]) =>
+			String(url).includes(`/api/2.0/mlflow/traces/tr-${eventTraceId}`),
+		);
+		const patchBody = JSON.parse(String(patchCall?.[1]?.body ?? "{}"));
+		expect(patchBody.request_metadata).toEqual(
+			expect.arrayContaining([
+				{ key: "mlflow.trace.session", value: "mlflow-session-1" },
+				{ key: "mlflow.sourceRun", value: "run_1" },
+				{ key: "mlflow.modelId", value: "m-agent-v1" },
+			]),
+		);
+		expect(dbMock.insertValues).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sourceKey: `session:session_1:trace:tr-${eventTraceId}`,
+				entityType: "session",
+				entityId: "session_1",
+				projectId: "project_1",
+				mlflowEntityType: "trace",
+				mlflowExperimentId: "3",
+				mlflowRunId: "run_1",
+				mlflowSessionId: "mlflow-session-1",
+				mlflowTraceId: `tr-${eventTraceId}`,
+				mlflowLoggedModelId: "m-agent-v1",
+				mlflowPublicUrl:
+					`https://mlflow.example/#/experiments/3/traces?selectedEvaluationId=tr-${eventTraceId}`,
+			}),
+		);
 	});
 });

@@ -5,6 +5,7 @@ import { db } from "$lib/server/db";
 import {
   agentVersions,
   mlflowLineageLinks,
+  sessionEvents,
   sessions,
   workflows,
   workflowExecutions,
@@ -518,6 +519,7 @@ function escapeMlflowFilterValue(value: string): string {
 }
 
 function traceIdFromSearchItem(item: unknown): string | null {
+  if (!item || typeof item !== "object") return null;
   const obj = item as Record<string, unknown>;
   const info =
     (obj.trace_info as Record<string, unknown> | undefined) ??
@@ -528,6 +530,7 @@ function traceIdFromSearchItem(item: unknown): string | null {
 }
 
 function traceStateFromSearchItem(item: unknown): "OK" | "ERROR" | null {
+  if (!item || typeof item !== "object") return null;
   const obj = item as Record<string, unknown>;
   const info =
     (obj.trace_info as Record<string, unknown> | undefined) ??
@@ -539,6 +542,7 @@ function traceStateFromSearchItem(item: unknown): "OK" | "ERROR" | null {
 }
 
 function traceEndTimestampMsFromSearchItem(item: unknown): number {
+  if (!item || typeof item !== "object") return Date.now();
   const obj = item as Record<string, unknown>;
   const info =
     (obj.trace_info as Record<string, unknown> | undefined) ??
@@ -576,6 +580,55 @@ function traceEndTimestampMsFromSearchItem(item: unknown): number {
   return Date.now();
 }
 
+function publicMlflowTraceUrl(
+  experimentId: string | null | undefined,
+  traceId: string | null | undefined,
+): string | null {
+  const base = publicMlflowUrl();
+  if (!base || !experimentId || !traceId) return null;
+  const query = new URLSearchParams({ selectedEvaluationId: traceId });
+  return `${base}/#/experiments/${encodeURIComponent(experimentId)}/traces?${query.toString()}`;
+}
+
+const TRACE_ID_KEYS = new Set([
+  "traceid",
+  "trace_id",
+  "mlflowtraceid",
+  "mlflow_trace_id",
+]);
+
+function collectTraceIdsFromValue(
+  value: unknown,
+  out: Set<string>,
+  depth = 0,
+): void {
+  if (depth > 6 || value == null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectTraceIdsFromValue(item, out, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = key.replace(/[^a-zA-Z0-9_]/g, "").toLowerCase();
+    if (TRACE_ID_KEYS.has(normalizedKey) && typeof raw === "string") {
+      const traceId = normalizeMlflowTraceId(raw);
+      if (traceId) out.add(traceId);
+      continue;
+    }
+    collectTraceIdsFromValue(raw, out, depth + 1);
+  }
+}
+
+async function sessionEventTraceIds(sessionId: string): Promise<string[]> {
+  const rows = await db
+    .select({ data: sessionEvents.data })
+    .from(sessionEvents)
+    .where(eq(sessionEvents.sessionId, sessionId));
+  const ids = new Set<string>();
+  for (const row of rows) collectTraceIdsFromValue(row.data, ids);
+  return Array.from(ids);
+}
+
 function sessionTraceLookupValues(sessionId: string): string[] {
   const raw = sessionId.trim();
   const lower = raw.toLowerCase();
@@ -595,6 +648,7 @@ export async function patchMlflowTracesForSession(params: {
   modelId: string | null | undefined;
   status?: "OK" | "ERROR";
   endTime?: Date | number | null;
+  traceIds?: string[];
 }): Promise<number> {
   if (!mlflowLifecycleEnabled()) return 0;
   const sessionId = params.sessionId.trim();
@@ -602,6 +656,10 @@ export async function patchMlflowTracesForSession(params: {
   if (!sessionId || !experimentId) return 0;
 
   const matches = new Map<string, unknown>();
+  for (const rawTraceId of params.traceIds ?? []) {
+    const traceId = normalizeMlflowTraceId(rawTraceId);
+    if (traceId) matches.set(traceId, null);
+  }
   for (const value of sessionTraceLookupValues(sessionId)) {
     let pageToken: string | undefined;
     const filter = `metadata.\`mlflow.trace.session\` LIKE '%${escapeMlflowFilterValue(value)}%'`;
@@ -625,7 +683,7 @@ export async function patchMlflowTracesForSession(params: {
         }),
       });
       for (const item of payload.traces ?? []) {
-        const traceId = traceIdFromSearchItem(item);
+        const traceId = normalizeMlflowTraceId(traceIdFromSearchItem(item));
         if (traceId) matches.set(traceId, item);
       }
       pageToken = payload.next_page_token;
@@ -666,6 +724,58 @@ export async function patchMlflowTracesForSession(params: {
   return patched;
 }
 
+async function upsertInteractiveSessionTraceLineage(params: {
+  localSessionId: string;
+  mlflowSessionId: string;
+  experimentId: string;
+  runId: string | null | undefined;
+  modelId: string | null | undefined;
+  projectId: string | null | undefined;
+  traceIds: string[];
+}): Promise<void> {
+  const uniqueTraceIds = Array.from(
+    new Set(params.traceIds.map((id) => normalizeMlflowTraceId(id)).filter(Boolean)),
+  ) as string[];
+  for (const traceId of uniqueTraceIds) {
+    await db
+      .insert(mlflowLineageLinks)
+      .values({
+        sourceKey: `session:${params.localSessionId}:trace:${traceId}`,
+        entityType: "session",
+        entityId: params.localSessionId,
+        projectId: params.projectId ?? null,
+        mlflowEntityType: "trace",
+        mlflowExperimentId: params.experimentId,
+        mlflowRunId: params.runId ?? null,
+        mlflowSessionId: params.mlflowSessionId,
+        mlflowTraceId: traceId,
+        mlflowLoggedModelId: params.modelId ?? null,
+        mlflowModelVersion: params.modelId ?? null,
+        mlflowPublicUrl: publicMlflowTraceUrl(params.experimentId, traceId),
+        tags: {
+          source: "interactive_session_trace",
+          mlflowSessionId: params.mlflowSessionId,
+        },
+        metadata: {
+          patchedFromSessionEvents: true,
+        },
+      })
+      .onConflictDoUpdate({
+        target: mlflowLineageLinks.sourceKey,
+        set: {
+          mlflowExperimentId: params.experimentId,
+          mlflowRunId: params.runId ?? null,
+          mlflowSessionId: params.mlflowSessionId,
+          mlflowTraceId: traceId,
+          mlflowLoggedModelId: params.modelId ?? null,
+          mlflowModelVersion: params.modelId ?? null,
+          mlflowPublicUrl: publicMlflowTraceUrl(params.experimentId, traceId),
+          updatedAt: new Date(),
+        },
+      });
+  }
+}
+
 export async function patchInteractiveSessionMlflowTraces(params: {
   sessionId: string;
   status?: "OK" | "ERROR";
@@ -679,6 +789,7 @@ export async function patchInteractiveSessionMlflowTraces(params: {
       mlflowExperimentId: sessions.mlflowExperimentId,
       mlflowRunId: sessions.mlflowRunId,
       mlflowSessionId: sessions.mlflowSessionId,
+      projectId: sessions.projectId,
     })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
@@ -702,14 +813,29 @@ export async function patchInteractiveSessionMlflowTraces(params: {
   const modelLink =
     links.find((link) => link.mlflowLoggedModelId || link.mlflowModelVersion) ??
     null;
-  return patchMlflowTracesForSession({
-    sessionId: session.mlflowSessionId?.trim() || sessionId,
+  const mlflowSessionId = session.mlflowSessionId?.trim() || sessionId;
+  const traceIds = await sessionEventTraceIds(sessionId);
+  const patched = await patchMlflowTracesForSession({
+    sessionId: mlflowSessionId,
     experimentId,
     runId: session.mlflowRunId,
     modelId: modelLink?.mlflowLoggedModelId ?? modelLink?.mlflowModelVersion ?? null,
     status: params.status,
     endTime: params.endTime,
+    traceIds,
   });
+  if (traceIds.length > 0) {
+    await upsertInteractiveSessionTraceLineage({
+      localSessionId: sessionId,
+      mlflowSessionId,
+      experimentId,
+      runId: session.mlflowRunId,
+      modelId: modelLink?.mlflowLoggedModelId ?? modelLink?.mlflowModelVersion ?? null,
+      projectId: session.projectId,
+      traceIds,
+    });
+  }
+  return patched;
 }
 
 export async function safePatchInteractiveSessionMlflowTraces(

@@ -195,6 +195,30 @@ def test_openai_llm_usage_event_includes_effective_config_audit_fields(monkeypat
     ]
 
 
+def test_openai_llm_usage_event_preserves_llm_span_context(monkeypatch) -> None:
+    events: list[dict] = []
+    publisher = importlib.import_module("src.event_publisher")
+
+    monkeypatch.setattr(publisher, "get_scoped_session", lambda: ("sesn_1", "turn_1"))
+    monkeypatch.setattr(publisher, "get_scoped_audit_fields", lambda: {})
+
+    def capture(session_id: str, event_type: str, data: dict, *, instance_id=None, **_):
+        events.append(data)
+
+    monkeypatch.setattr(publisher, "publish_session_event", capture)
+
+    adapter._publish_llm_usage(
+        model="gpt-5.4",
+        usage={"input_tokens": 1, "output_tokens": 2},
+        ttft_ms=1.5,
+        success=True,
+        trace_context=("trace-1", "span-1"),
+    )
+
+    assert events[0]["traceId"] == "trace-1"
+    assert events[0]["spanId"] == "span-1"
+
+
 # ---------------------------------------------------------------------------
 # Prompt-cache telemetry parity (OpenAI side)
 # ---------------------------------------------------------------------------
