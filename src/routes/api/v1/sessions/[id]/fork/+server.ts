@@ -5,6 +5,10 @@ import { db } from "$lib/server/db";
 import { sessionEvents } from "$lib/server/db/schema";
 import { getSession, createSession } from "$lib/server/sessions/registry";
 import { appendEvent } from "$lib/server/sessions/events";
+import { resolveAgentRef } from "$lib/server/agents/registry";
+import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
+import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
+import type { AgentConfig } from "$lib/types/agents";
 
 /**
  * Fork a session from a specific event sequence. Creates a fresh session row
@@ -17,7 +21,13 @@ import { appendEvent } from "$lib/server/sessions/events";
  * the agent picks up the replayed user.message / tool_result queue.
  *
  * Body:
- *   { fromSequence: number, title?: string }
+ *   { fromSequence: number, title?: string, agentConfig? }
+ *
+ * If `agentConfig` is present AND it differs from the resolved source
+ * session's agent config, the fork is pointed at a `session-experiment`
+ * ephemeral agent (see `findOrCreateExperimentAgent`) instead of inheriting
+ * the source's agent. The event-replay logic is unchanged — only the new
+ * session row's agentId/agentVersion swap.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -39,10 +49,44 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const source = await getSession(params.id);
 	if (!source) return error(404, "Session not found");
 
-	// Create the forked session with the same agent/env/vaults.
+	let forkAgentId = source.agentId;
+	let forkAgentVersion = source.agentVersion ?? undefined;
+
+	const tweakedConfig = isAgentConfigShape(body.agentConfig)
+		? (body.agentConfig as AgentConfig)
+		: null;
+
+	if (tweakedConfig) {
+		const baseAgent = await resolveAgentRef({
+			id: source.agentId,
+			version: source.agentVersion ?? undefined,
+		});
+		if (baseAgent && !isAgentConfigEquivalent(baseAgent.config, tweakedConfig)) {
+			try {
+				const experiment = await findOrCreateExperimentAgent({
+					baseAgentId: baseAgent.id,
+					baseAgentSlug: baseAgent.slug,
+					baseAgentName: baseAgent.name,
+					agentConfig: tweakedConfig,
+					userId: locals.session.userId,
+					projectId: locals.session.projectId ?? null,
+				});
+				forkAgentId = experiment.agentId;
+				forkAgentVersion = experiment.agentVersion;
+			} catch (err) {
+				return error(
+					400,
+					err instanceof Error ? err.message : "Experiment agent create failed",
+				);
+			}
+		}
+	}
+
+	// Create the forked session against the chosen agent (same as source by
+	// default, or the experiment when agentConfig was provided + diverged).
 	const forked = await createSession({
-		agentId: source.agentId,
-		agentVersion: source.agentVersion ?? undefined,
+		agentId: forkAgentId,
+		agentVersion: forkAgentVersion,
 		environmentId: source.environmentId ?? undefined,
 		environmentVersion: source.environmentVersion ?? undefined,
 		vaultIds: source.vaultIds,
@@ -84,3 +128,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		{ status: 201 },
 	);
 };
+
+function isAgentConfigShape(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const v = value as Record<string, unknown>;
+	return (
+		typeof v.runtime === "string" ||
+		typeof v.modelSpec === "string" ||
+		typeof v.systemPrompt === "string" ||
+		Array.isArray(v.skills) ||
+		Array.isArray(v.mcpServers) ||
+		Array.isArray(v.builtinTools)
+	);
+}

@@ -54,6 +54,7 @@
 	import PromptStackEditor from '$lib/components/agents/prompt-stack-editor.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
+	import SessionConfigDrawer from '$lib/components/sessions/session-config-drawer.svelte';
 	import {
 		ArrowLeft,
 		ChevronDown,
@@ -111,6 +112,7 @@
 		dualWriteEnabled: boolean;
 	} | null>(null);
 	let registrySyncing = $state(false);
+	let runDrawerOpen = $state(false);
 
 	async function refreshRegistry() {
 		try {
@@ -375,6 +377,12 @@
 				</div>
 			</div>
 		</div>
+		{#if agent}
+			<Button size="sm" class="gap-1" onclick={() => (runDrawerOpen = true)}>
+				<Play class="size-4" />
+				Run
+			</Button>
+		{/if}
 		<Sheet bind:open={versionsOpen}>
 			<SheetTrigger>
 				<Button variant="outline" size="sm" onclick={loadVersions}>
@@ -1174,3 +1182,13 @@
 		</div>
 	{/if}
 </div>
+
+{#if agent}
+	<SessionConfigDrawer
+		bind:open={runDrawerOpen}
+		baseAgent={agent}
+		mode="create"
+		workspaceSlug={slug}
+		projectId={registryView?.team ?? null}
+	/>
+{/if}

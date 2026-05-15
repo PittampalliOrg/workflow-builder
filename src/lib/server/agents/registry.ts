@@ -261,9 +261,13 @@ export async function listAgents(
 	if (!filter.includeArchived) conditions.push(eq(agents.isArchived, false));
 	if (filter.projectId) conditions.push(eq(agents.projectId, filter.projectId));
 	if (!filter.includeEphemeral) {
-		// agents.tags is JSONB; use the @> containment operator.
+		// agents.tags is JSONB; use the @> containment operator. Both
+		// workflow-ephemeral (durable/run nodes) and session-experiment
+		// (SessionConfigDrawer tweaks) are filtered by default — they
+		// represent runs, not user-owned agents.
 		conditions.push(
 			sql`NOT (${agents.tags} @> '["workflow-ephemeral"]'::jsonb)`,
+			sql`NOT (${agents.tags} @> '["session-experiment"]'::jsonb)`,
 		);
 	}
 

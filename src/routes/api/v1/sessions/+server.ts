@@ -10,6 +10,9 @@ import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
 import { provisionSessionSandbox } from "$lib/server/sandboxes/provision";
 import { resolveAgentRef } from "$lib/server/agents/registry";
+import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
+import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
+import type { AgentConfig } from "$lib/types/agents";
 import { safeCreateInteractiveSessionMlflowRun } from "$lib/server/observability/mlflow-lifecycle";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
@@ -53,10 +56,18 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 /**
  * Create a session. Body:
  *   { agentId, agentVersion?, environmentId?, environmentVersion?,
- *     vaultIds?, title?, initialMessage? }
+ *     vaultIds?, title?, initialMessage?, agentConfig? }
  *
  * If `initialMessage` is present, it's appended as a `user.message` event
  * immediately so the session has a kickoff without a second round-trip.
+ *
+ * If `agentConfig` is present AND it differs from the resolved base agent's
+ * published config, the BFF auto-creates a `session-experiment`-tagged
+ * ephemeral agent row whose `agentVersions` config is the tweaked snapshot,
+ * and the session FK's the experiment agent instead of the base. Same
+ * agentConfig applied twice reuses the same experiment agent (slug keyed
+ * on baseSlug + configHash). Tweaks that match the published config are a
+ * no-op — the session points at the base agent directly.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -64,13 +75,47 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		string,
 		unknown
 	>;
-	const agentId = typeof body.agentId === "string" ? body.agentId : "";
-	if (!agentId) return error(400, "agentId is required");
+	const requestedAgentId = typeof body.agentId === "string" ? body.agentId : "";
+	if (!requestedAgentId) return error(400, "agentId is required");
+
+	let resolvedAgentId = requestedAgentId;
+	let resolvedAgentVersion =
+		typeof body.agentVersion === "number" ? body.agentVersion : undefined;
+
+	const tweakedConfig = isAgentConfigShape(body.agentConfig)
+		? (body.agentConfig as AgentConfig)
+		: null;
+
+	if (tweakedConfig) {
+		const baseAgent = await resolveAgentRef({
+			id: requestedAgentId,
+			version: resolvedAgentVersion,
+		});
+		if (!baseAgent) return error(404, "Base agent not found");
+		if (!isAgentConfigEquivalent(baseAgent.config, tweakedConfig)) {
+			try {
+				const experiment = await findOrCreateExperimentAgent({
+					baseAgentId: baseAgent.id,
+					baseAgentSlug: baseAgent.slug,
+					baseAgentName: baseAgent.name,
+					agentConfig: tweakedConfig,
+					userId: locals.session.userId,
+					projectId: locals.session.projectId ?? null,
+				});
+				resolvedAgentId = experiment.agentId;
+				resolvedAgentVersion = experiment.agentVersion;
+			} catch (err) {
+				return error(
+					400,
+					err instanceof Error ? err.message : "Experiment agent create failed",
+				);
+			}
+		}
+	}
 
 	const input: CreateSessionInput = {
-		agentId,
-		agentVersion:
-			typeof body.agentVersion === "number" ? body.agentVersion : undefined,
+		agentId: resolvedAgentId,
+		agentVersion: resolvedAgentVersion,
 		environmentId:
 			typeof body.environmentId === "string"
 				? (body.environmentId as string)
@@ -185,3 +230,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		);
 	}
 };
+
+function isAgentConfigShape(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	// Minimal duck-typing — the validateAgentConfig() inside ensureEphemeralAgent
+	// is the source of truth. Here we just gate the experiment-agent path on
+	// the body actually carrying a config-shaped object so unrelated payloads
+	// (e.g. just `{ agentId, initialMessage }`) bypass the path entirely.
+	const v = value as Record<string, unknown>;
+	return (
+		typeof v.runtime === "string" ||
+		typeof v.modelSpec === "string" ||
+		typeof v.systemPrompt === "string" ||
+		Array.isArray(v.skills) ||
+		Array.isArray(v.mcpServers) ||
+		Array.isArray(v.builtinTools)
+	);
+}

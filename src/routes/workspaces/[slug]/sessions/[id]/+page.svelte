@@ -40,6 +40,9 @@
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
+	import RotateCw from '@lucide/svelte/icons/rotate-cw';
+	import SessionConfigDrawer from '$lib/components/sessions/session-config-drawer.svelte';
+	import type { AgentDetail } from '$lib/types/agents';
 	import {
 		Reasoning,
 		ReasoningTrigger,
@@ -791,6 +794,60 @@
 
 	let forking = $state(false);
 
+	// SessionConfigDrawer state — for "Fork with edits". The drawer needs the
+	// session's effective base agent (id+config). Lazy-fetch on first open and
+	// cache; the agent rarely changes mid-session.
+	let forkDrawerOpen = $state(false);
+	let baseAgentForDrawer = $state<AgentDetail | null>(null);
+	let baseAgentLoading = $state(false);
+	let rerunning = $state(false);
+
+	async function ensureBaseAgentLoaded() {
+		if (baseAgentForDrawer || !session?.agentId) return;
+		baseAgentLoading = true;
+		try {
+			const res = await fetch(`/api/agents/${session.agentId}`);
+			if (res.ok) {
+				const body = (await res.json()) as { agent: AgentDetail };
+				baseAgentForDrawer = body.agent;
+			}
+		} finally {
+			baseAgentLoading = false;
+		}
+	}
+
+	async function openForkDrawer() {
+		await ensureBaseAgentLoaded();
+		forkDrawerOpen = true;
+	}
+
+	async function rerunSameConfig() {
+		if (rerunning || !session) return;
+		rerunning = true;
+		try {
+			const res = await fetch('/api/v1/sessions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					agentId: session.agentId,
+					agentVersion: session.agentVersion ?? undefined,
+					environmentId: session.environmentId ?? undefined,
+					vaultIds: session.vaultIds
+				})
+			});
+			if (!res.ok) {
+				console.error('[rerun] failed', await res.text());
+				return;
+			}
+			const body = (await res.json()) as { session: { id: string } };
+			if (body.session?.id) {
+				goto(`/workspaces/${slug}/sessions/${body.session.id}`);
+			}
+		} finally {
+			rerunning = false;
+		}
+	}
+
 	async function forkFromEvent(sequence: number) {
 		if (forking) return;
 		forking = true;
@@ -973,6 +1030,28 @@
 				triggerClass="h-7 w-[210px] text-xs"
 				onSelect={(modelSpec) => setModel(modelSpec)}
 			/>
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 gap-1"
+				disabled={rerunning}
+				onclick={rerunSameConfig}
+				title="Start a new session with the same agent + config"
+			>
+				{#if rerunning}<Loader2 class="size-3 animate-spin" />{:else}<RotateCw class="size-3" />{/if}
+				Re-run
+			</Button>
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 gap-1"
+				disabled={baseAgentLoading || forking}
+				onclick={openForkDrawer}
+				title="Fork this session with edits to the agent config"
+			>
+				{#if baseAgentLoading}<Loader2 class="size-3 animate-spin" />{:else}<GitBranchIcon class="size-3" />{/if}
+				Fork with edits
+			</Button>
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>
 					{#snippet child({ props })}
@@ -1450,13 +1529,24 @@
 							<Bot class="size-4" /> Agent
 						</CardTitle>
 					</CardHeader>
-					<CardContent class="text-xs space-y-1">
+					<CardContent class="text-xs space-y-1.5">
 						<div>
 							<a href="/workspaces/{slug}/agents/{session.agentId}" class="text-primary hover:underline">
-								{session.agentId}
+								{session.agentName ?? session.agentId}
 							</a>
 						</div>
-						<div class="text-muted-foreground">v{session.agentVersion ?? '—'}</div>
+						<div class="text-muted-foreground">
+							{session.agentSlug ?? '—'} · v{session.agentVersion ?? '—'}
+						</div>
+						{#if session.agentSlug?.startsWith('exp-')}
+							<Badge variant="outline" class="border-amber-500/40 text-amber-500 text-[10px]">
+								<Sparkles class="size-2.5 mr-1" /> Experiment
+							</Badge>
+						{:else if session.agentSlug?.startsWith('wf-')}
+							<Badge variant="outline" class="border-cyan-500/40 text-cyan-500 text-[10px]">
+								<Workflow class="size-2.5 mr-1" /> Workflow ephemeral
+							</Badge>
+						{/if}
 					</CardContent>
 				</Card>
 
@@ -1667,3 +1757,15 @@
 		</aside>
 	</div>
 </div>
+
+{#if baseAgentForDrawer && session}
+	<SessionConfigDrawer
+		bind:open={forkDrawerOpen}
+		baseAgent={baseAgentForDrawer}
+		mode="fork"
+		sessionId={session.id}
+		fromSequence={events[events.length - 1]?.sequence ?? 1}
+		workspaceSlug={slug}
+		projectId={session.projectId ?? null}
+	/>
+{/if}
