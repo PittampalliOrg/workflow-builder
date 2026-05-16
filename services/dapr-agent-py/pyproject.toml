@@ -24,7 +24,10 @@ dependencies = [
     "markdownify>=0.12",
     "ddgs>=7.0",
     "anthropic>=0.51",
-    "openshell==0.0.26",
+    # Keep the Python client in lockstep with the deployed OpenShell
+    # gateway/supervisor images. Protobuf schemas are not wire-compatible
+    # across the 0.0.26 -> 0.0.41 gap.
+    "openshell==0.0.41",
 ]
 
 [project.optional-dependencies]
