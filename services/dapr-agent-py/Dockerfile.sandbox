@@ -1,26 +1,8 @@
-ARG OPENSHELL_SANDBOX_IMAGE=ghcr.io/pittampalliorg/openshell-sandbox:git-c390487a6bbcdd1a69cc6d7eb331a4aadaa9692c
-
-FROM ghcr.io/astral-sh/uv:0.9.17 AS uv-bin
-
-FROM node:22-bookworm-slim AS node-bin
-
-FROM ${OPENSHELL_SANDBOX_IMAGE}
-
-USER root
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=uv-bin /uv /uvx /usr/local/bin/
-COPY --from=node-bin /usr/local/bin/node /usr/local/bin/
-COPY --from=node-bin /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim AS python-deps
 
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev
+RUN uv sync --frozen --no-dev
 COPY openshell_proto_0_0_42/ ./openshell_proto_0_0_42/
 RUN /app/.venv/bin/python - <<'PY'
 from pathlib import Path
@@ -33,10 +15,29 @@ for path in source.iterdir():
     if path.name != "README.md":
         shutil.copy2(path, target / path.name)
 PY
+
+FROM python:3.12-slim-trixie
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /sandbox /mnt/session/outputs
+
+WORKDIR /app
+COPY --from=python-deps /app/.venv /app/.venv
 COPY src/ src/
 
 ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 

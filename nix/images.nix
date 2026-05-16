@@ -422,7 +422,7 @@ let
       context = "services/dapr-agent-py";
       buildable = false;
       enabled = false;
-      blocker = "Depends on openshell-sandbox base image and uv Python dependency resolution.";
+      blocker = "Nix-native image build path still needs a uv Python dependency resolution strategy; Docker/Tekton builds are supported.";
     }
     {
       name = "dapr-agent-py-testing-sandbox";
