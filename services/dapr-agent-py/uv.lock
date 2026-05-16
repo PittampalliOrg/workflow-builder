@@ -541,7 +541,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.104" },
     { name = "markdownify", specifier = ">=0.12" },
     { name = "mlflow-skinny", specifier = ">=3.6" },
-    { name = "openshell", specifier = "==0.0.41" },
+    { name = "openshell", specifier = "==0.0.42" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.41b0" },
@@ -1707,7 +1707,7 @@ wheels = [
 
 [[package]]
 name = "openshell"
-version = "0.0.41"
+version = "0.0.42"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cloudpickle" },
@@ -1715,9 +1715,9 @@ dependencies = [
     { name = "protobuf" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/99/b91352a45ae221752cc1c0839a757e5477f0dd880577c1898e38502a2da6/openshell-0.0.41-py3-none-macosx_13_0_arm64.whl", hash = "sha256:b69ca4c8382e83cda543ae6700e6dbdf8829d0ab063712c2319003925d920c36", size = 15309771, upload-time = "2026-05-14T15:15:46.861Z" },
-    { url = "https://files.pythonhosted.org/packages/11/17/e2ab19ef5ac1e56dce2fb9ebce4316092425cc237081510e0a00314f98e5/openshell-0.0.41-py3-none-manylinux_2_39_aarch64.whl", hash = "sha256:f6d82e6578e501b13f17af90ed9d4c8b8aba1df909481bd6fc4382ff563e52f4", size = 18766420, upload-time = "2026-05-14T15:16:20.553Z" },
-    { url = "https://files.pythonhosted.org/packages/53/cc/cc1c56c5dfb9bc14929490d4c28cbd5161d808073d1a31367f66798aacdf/openshell-0.0.41-py3-none-manylinux_2_39_x86_64.whl", hash = "sha256:72b00a01318456e2c57b278949ed28947ff134b2e7ca5840aa9cb8845dc8d18e", size = 19491553, upload-time = "2026-05-14T15:16:52.06Z" },
+    { url = "https://files.pythonhosted.org/packages/56/4a/5409d604c6d4892bf7c44fb80e449955c67849211d3cc50b94aecc42181a/openshell-0.0.42-py3-none-macosx_13_0_arm64.whl", hash = "sha256:ee2fed2466533c527aab05e4a45b05ae9f3d98e98c374d1723950444ce06841b", size = 15308352, upload-time = "2026-05-15T15:13:14.701Z" },
+    { url = "https://files.pythonhosted.org/packages/74/07/1609dbfb385a5af78ef00197225548f56ac72e666a86e2763813608fd997/openshell-0.0.42-py3-none-manylinux_2_39_aarch64.whl", hash = "sha256:4dadac02e33bb7d3f4c40b2c786262d296653c0c3d1984392c5a2517bd2af30d", size = 18768516, upload-time = "2026-05-15T15:13:32.975Z" },
+    { url = "https://files.pythonhosted.org/packages/14/e3/28d060f02932c64cd3aa25877c16e995f9cff3212d5b18eb3ab8f005b6f3/openshell-0.0.42-py3-none-manylinux_2_39_x86_64.whl", hash = "sha256:3d83755a4dbc65815250d0d33e5d2aee1a4dde4f9e335a60a127533b61ac31ed", size = 19494618, upload-time = "2026-05-15T15:14:00.789Z" },
 ]
 
 [[package]]
