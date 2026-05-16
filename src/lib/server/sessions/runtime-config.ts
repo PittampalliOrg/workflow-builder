@@ -44,11 +44,17 @@ export type RuntimeConfigCloudEvent = {
 	};
 };
 
+export type GetSessionRuntimeConfigOptions = {
+	projectId?: string | null;
+};
+
 export async function getSessionRuntimeConfig(
 	sessionId: string,
+	options: GetSessionRuntimeConfigOptions = {},
 ): Promise<RuntimeConfigCloudEvent | null> {
 	const session = await getSession(sessionId);
 	if (!session) return null;
+	if (!sessionMatchesProject(session, options.projectId)) return null;
 	const instanceId = session.daprInstanceId ?? session.id;
 
 	const live = await readLiveRuntimeConfig(session, instanceId);
@@ -66,6 +72,16 @@ export async function getSessionRuntimeConfig(
 	);
 }
 
+function sessionMatchesProject(
+	session: SessionDetail,
+	projectId: string | null | undefined,
+): boolean {
+	if (projectId === undefined) return true;
+	const scopedProjectId = projectId?.trim() || null;
+	const sessionProjectId = session.projectId?.trim() || null;
+	return scopedProjectId === sessionProjectId;
+}
+
 async function readLiveRuntimeConfig(
 	session: SessionDetail,
 	instanceId: string,
@@ -75,7 +91,10 @@ async function readLiveRuntimeConfig(
 	const path = `/internal/runtime/instances/${encodeURIComponent(instanceId)}/config`;
 	let response: Response;
 	try {
-		if (target.runtimeSandboxName || target.appId.startsWith("agent-session-")) {
+		if (
+			target.runtimeSandboxName ||
+			target.appId.startsWith("agent-session-")
+		) {
 			const ready = await waitForAgentWorkflowHostAppReady({
 				agentAppId: target.appId,
 				timeoutSeconds: 2,
@@ -116,7 +135,9 @@ function runtimeConfigStateStores(): string[] {
 		"dapr-agent-py-statestore",
 	].filter((value, index, arr): value is string => {
 		const text = value?.trim();
-		return Boolean(text) && arr.findIndex((item) => item?.trim() === text) === index;
+		return (
+			Boolean(text) && arr.findIndex((item) => item?.trim() === text) === index
+		);
 	});
 }
 
@@ -175,7 +196,9 @@ async function buildSettingsRuntimeConfigEvent(
 	const runtimeAppId =
 		session.runtimeAppId ??
 		agent?.runtimeAppId ??
-		(session.agentSlug ? `agent-runtime-${session.agentSlug}` : "dapr-agent-py");
+		(session.agentSlug
+			? `agent-runtime-${session.agentSlug}`
+			: "dapr-agent-py");
 	const llm = compactRecord({
 		modelSpec: stringOrNull(config.modelSpec),
 		providerModel: stringOrNull(config.providerModel),
@@ -289,7 +312,9 @@ function withRuntimeConfigSource(
 	};
 }
 
-function coerceRuntimeConfigEvent(value: unknown): RuntimeConfigCloudEvent | null {
+function coerceRuntimeConfigEvent(
+	value: unknown,
+): RuntimeConfigCloudEvent | null {
 	const parsed = parsePossiblyStringifiedJson(value);
 	if (!isRecord(parsed)) return null;
 	if (
@@ -319,32 +344,30 @@ function parsePossiblyStringifiedJson(value: unknown): unknown {
 
 function sanitizeMcpServers(value: unknown): Array<Record<string, unknown>> {
 	if (!Array.isArray(value)) return [];
-	return value
-		.filter(isRecord)
-		.map((server, index) => {
-			const allowedTools = stringArray(
-				server.allowedTools ?? server.allowed_tools,
-			);
-			return compactRecord({
+	return value.filter(isRecord).map((server, index) => {
+		const allowedTools = stringArray(
+			server.allowedTools ?? server.allowed_tools,
+		);
+		return compactRecord({
+			serverName:
+				stringOrNull(server.serverName) ??
+				stringOrNull(server.name) ??
+				stringOrNull(server.displayName) ??
+				`mcp_server_${index + 1}`,
+			transport: stringOrNull(server.transport) ?? stringOrNull(server.type),
+			toolNames: allowedTools,
+			configHash: stableHash({
 				serverName:
-					stringOrNull(server.serverName) ??
-					stringOrNull(server.name) ??
-					stringOrNull(server.displayName) ??
-					`mcp_server_${index + 1}`,
-				transport: stringOrNull(server.transport) ?? stringOrNull(server.type),
-				toolNames: allowedTools,
-				configHash: stableHash({
-					serverName:
-						server.serverName ?? server.name ?? server.displayName ?? index,
-					transport: server.transport ?? server.type ?? null,
-					allowedTools,
-				}),
-				auth:
-					server.connectionExternalId || server.headers
-						? "external_reference"
-						: null,
-			});
+					server.serverName ?? server.name ?? server.displayName ?? index,
+				transport: server.transport ?? server.type ?? null,
+				allowedTools,
+			}),
+			auth:
+				server.connectionExternalId || server.headers
+					? "external_reference"
+					: null,
 		});
+	});
 }
 
 function inferProviderFromModel(model: string): string | null {
@@ -394,5 +417,7 @@ function stringOrNull(value: unknown): string | null {
 
 function stringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
-	return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))].sort();
+	return [
+		...new Set(value.map((item) => String(item).trim()).filter(Boolean)),
+	].sort();
 }

@@ -83,13 +83,19 @@ def _tool_summary(tool: Any) -> dict[str, Any]:
     if isinstance(tool, Mapping):
         name = _string(tool.get("name"))
         description = _string(tool.get("description"))
+        description_hash = _string(
+            tool.get("descriptionHash") or tool.get("description_hash")
+        )
         parameters = tool.get("parameters")
         class_name = _string(tool.get("className") or tool.get("type"))
+        schema_hash = _string(tool.get("schemaHash") or tool.get("schema_hash"))
     else:
         name = _string(getattr(tool, "name", None))
         description = _string(getattr(tool, "description", None))
+        description_hash = None
         class_name = type(tool).__name__
         parameters = None
+        schema_hash = None
         get_decl = getattr(tool, "_get_declaration", None)
         if callable(get_decl):
             try:
@@ -103,9 +109,13 @@ def _tool_summary(tool: Any) -> dict[str, Any]:
             except Exception:
                 parameters = None
     entry: dict[str, Any] = {"name": name, "className": class_name}
-    if description:
+    if description_hash:
+        entry["descriptionHash"] = description_hash
+    elif description:
         entry["descriptionHash"] = _stable_hash(description)
-    if parameters is not None:
+    if schema_hash:
+        entry["schemaHash"] = schema_hash
+    elif parameters is not None:
         entry["schemaHash"] = _stable_hash(parameters)
     return {key: value for key, value in entry.items() if value not in (None, "")}
 
@@ -123,6 +133,52 @@ def _instruction_hash(input_data: Mapping[str, Any]) -> str | None:
     rendered = _mapping(bundle.get("rendered"))
     system = _string(rendered.get("system"))
     return _stable_hash(system) if system else None
+
+
+def _redacted_mcp_servers(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    servers: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            continue
+        allowed_tools = _list_strings(
+            item.get("allowedTools") or item.get("allowed_tools")
+        )
+        server_name = (
+            _string(item.get("serverName"))
+            or _string(item.get("name"))
+            or _string(item.get("displayName"))
+            or f"mcp_server_{index + 1}"
+        )
+        transport = (
+            _string(item.get("transport") or item.get("type")) or "streamable_http"
+        )
+        auth = (
+            "external_reference"
+            if item.get("headers") or item.get("connectionExternalId")
+            else None
+        )
+        hash_input = {
+            "serverName": server_name,
+            "transport": transport,
+            "allowedTools": allowed_tools,
+            "auth": auth,
+        }
+        entry: dict[str, Any] = {
+            "serverName": server_name,
+            "transport": transport,
+            "configHash": _stable_hash(hash_input),
+        }
+        if allowed_tools:
+            entry["toolNames"] = allowed_tools
+        if auth:
+            entry["auth"] = auth
+        servers.append(entry)
+    return sorted(
+        servers,
+        key=lambda entry: json.dumps(entry, sort_keys=True),
+    )
 
 
 def _current_traceparent() -> str | None:
@@ -247,14 +303,15 @@ def build_adk_runtime_config_event(
         "toolCount": len(tool_summaries),
         "toolSchemaHash": _stable_hash(tool_summaries),
     }
-    raw_mcp_servers = agent_config.get("mcpServers")
-    mcp_server_count = len(raw_mcp_servers) if isinstance(raw_mcp_servers, list) else 0
+    mcp_servers = _redacted_mcp_servers(agent_config.get("mcpServers"))
     mcp = {
         "scope": "pod_bootstrap",
-        "serverCount": mcp_server_count,
+        "serverCount": len(mcp_servers),
         "toolCount": len(mcp_tools),
-        "configHash": _stable_hash(raw_mcp_servers or []),
+        "configHash": _stable_hash(mcp_servers),
     }
+    if mcp_servers:
+        mcp["servers"] = mcp_servers
     instruction_hash = _instruction_hash(input_data)
     config_hash = _stable_hash(
         {

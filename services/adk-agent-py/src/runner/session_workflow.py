@@ -366,7 +366,6 @@ def session_workflow_factory(
         turn_timeout_seconds = _session_turn_timeout_seconds(input_data)
         sandbox_name, workspace_ref, cwd = _extract_runtime_context(input_data)
         runtime_config_inspection_version = _runtime_config_inspection_version(input_data)
-        declared_tool_summaries = summarize_declared_tools(declared_tools or [])
 
         # Scope tools to this session for the lifetime of the workflow body.
         # Configure the singleton OpenShell runtime + push a ContextVar onto
@@ -452,6 +451,7 @@ def session_workflow_factory(
                     per_turn_config["component_name"] = telemetry_context["dapr.component"]
                 child_instance_id = f"{ctx.instance_id}-t{turn_index}"
                 if runtime_config_inspection_version >= 1:
+                    declared_tool_summaries = summarize_declared_tools(declared_tools or [])
                     inspection_config = {
                         key: value
                         for key, value in per_turn_config.items()

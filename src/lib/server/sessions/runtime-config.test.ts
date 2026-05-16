@@ -6,13 +6,16 @@ const resolveSessionRuntimeTargetMock = vi.fn();
 const daprFetchMock = vi.fn();
 const resolveAgentRefMock = vi.fn();
 const waitForAgentWorkflowHostAppReadyMock = vi.fn();
+const dbState = vi.hoisted(() => ({ db: null as unknown }));
 
 vi.mock("$env/dynamic/private", () => ({
 	env: {},
 }));
 
 vi.mock("$lib/server/db", () => ({
-	db: null,
+	get db() {
+		return dbState.db;
+	},
 }));
 
 vi.mock("$lib/server/sessions/registry", () => ({
@@ -47,6 +50,7 @@ describe("getSessionRuntimeConfig", () => {
 		daprFetchMock.mockReset();
 		resolveAgentRefMock.mockReset();
 		waitForAgentWorkflowHostAppReadyMock.mockReset();
+		dbState.db = null;
 
 		getSessionMock.mockResolvedValue(sampleSession());
 		resolveSessionRuntimeTargetMock.mockResolvedValue(null);
@@ -96,6 +100,27 @@ describe("getSessionRuntimeConfig", () => {
 		);
 	});
 
+	it("falls back from Dapr state to the latest runtime-config event", async () => {
+		const event = runtimeEvent("event-hash");
+		dbState.db = dbReturningRows([{ data: event }]);
+
+		const result = await getSessionRuntimeConfig("session-1");
+
+		expect(result?.id).toBe(event.id);
+		expect(result?.data.source).toBe("event");
+		expect(daprFetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not expose runtime config outside the scoped project", async () => {
+		const result = await getSessionRuntimeConfig("session-1", {
+			projectId: "project-2",
+		});
+
+		expect(result).toBeNull();
+		expect(resolveSessionRuntimeTargetMock).not.toHaveBeenCalled();
+		expect(daprFetchMock).not.toHaveBeenCalled();
+	});
+
 	it("builds a redacted settings fallback", async () => {
 		const result = await getSessionRuntimeConfig("session-1");
 		const encoded = JSON.stringify(result);
@@ -138,6 +163,18 @@ function runtimeEvent(configHash: string) {
 			dapr: { appId: "agent-runtime-coding-agent" },
 			attributes: { "session.id": "session-1" },
 		},
+	};
+}
+
+function dbReturningRows(rows: Array<Record<string, unknown>>) {
+	const query = {
+		from: vi.fn(() => query),
+		where: vi.fn(() => query),
+		orderBy: vi.fn(() => query),
+		limit: vi.fn(async () => rows),
+	};
+	return {
+		select: vi.fn(() => query),
 	};
 }
 

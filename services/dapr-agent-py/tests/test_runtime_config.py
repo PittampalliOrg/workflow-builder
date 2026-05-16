@@ -70,6 +70,26 @@ def test_runtime_config_attributes_map_otel_and_openinference_keys() -> None:
     assert attrs["session.id"] == "session-1"
 
 
+def test_runtime_config_mcp_error_is_sanitized() -> None:
+    event = build_runtime_config_event(
+        session_id="session-1",
+        instance_id="child-1",
+        turn=1,
+        config_revision=0,
+        context={"sessionId": "session-1"},
+        mcp_result={
+            "error": "failed to connect with Authorization=Bearer secret",
+            "errorType": "RuntimeError",
+        },
+    )
+    encoded = json.dumps(event, sort_keys=True)
+
+    assert event["data"]["mcp"]["error"] == "error"
+    assert event["data"]["mcp"]["errorType"] == "RuntimeError"
+    assert "Bearer secret" not in encoded
+    assert "Authorization" not in encoded
+
+
 def _event() -> dict:
     return build_runtime_config_event(
         session_id="session-1",

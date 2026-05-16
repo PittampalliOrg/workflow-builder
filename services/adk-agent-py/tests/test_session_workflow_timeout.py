@@ -30,6 +30,7 @@ openshell_module.SandboxSession = object
 sys.modules.setdefault("openshell", openshell_module)
 
 from src.constants import SESSION_TURN_TIMEOUT_SECONDS  # noqa: E402
+from src.runner import session_workflow as session_workflow_module  # noqa: E402
 from src.runner.session_workflow import (  # noqa: E402
     _runtime_config_inspection_version,
     _session_turn_timeout_seconds,
@@ -60,3 +61,27 @@ def test_runtime_config_inspection_version_defaults_to_unversioned():
 def test_runtime_config_inspection_version_enables_new_activity_for_new_inputs():
     assert _runtime_config_inspection_version({"runtimeConfigInspectionVersion": 1}) == 1
     assert _runtime_config_inspection_version({"runtimeConfigInspectionVersion": "1"}) == 1
+
+
+def test_unversioned_workflow_does_not_summarize_declared_tools(monkeypatch):
+    def fail_if_called(_tools):
+        raise AssertionError("declared tools should not be inspected for unversioned input")
+
+    monkeypatch.setattr(
+        session_workflow_module,
+        "summarize_declared_tools",
+        fail_if_called,
+    )
+    workflow = session_workflow_module.session_workflow_factory(
+        "agent_workflow",
+        declared_tools=[object()],
+    )
+    ctx = types.SimpleNamespace(
+        is_replaying=True,
+        instance_id="session-1",
+        wait_for_external_event=lambda name: {"wait_for": name},
+    )
+
+    yielded = next(workflow(ctx, {"sessionId": "session-1"}))
+
+    assert yielded == {"wait_for": "session.user_events"}

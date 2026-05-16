@@ -57,6 +57,20 @@ def _hash_if_present(value: Any) -> str | None:
     return stable_hash(value)
 
 
+def _safe_error(value: Any) -> str | None:
+    text = _string(value)
+    if not text:
+        return None
+    return text if text in {"connect_failed"} else "error"
+
+
+def _safe_error_type(value: Any) -> str | None:
+    text = _string(value)
+    if not text or len(text) > 80:
+        return None
+    return text if all(ch.isalnum() or ch in "._" for ch in text) else None
+
+
 def _current_traceparent() -> str | None:
     try:
         from opentelemetry import trace
@@ -289,7 +303,8 @@ def build_runtime_config_event(
         "serverCount": len(redacted_mcp_servers),
         "toolCount": len(mcp_tools or {}),
         "connected": connected,
-        "error": mcp_result.get("error"),
+        "error": _safe_error(mcp_result.get("error")),
+        "errorType": _safe_error_type(mcp_result.get("errorType")),
     }
     mcp = {key: value for key, value in mcp.items() if value not in (None, [], "")}
     if redacted_mcp_servers:

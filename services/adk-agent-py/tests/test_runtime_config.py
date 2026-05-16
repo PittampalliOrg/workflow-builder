@@ -24,6 +24,7 @@ def test_adk_runtime_config_event_is_cloudevents_shaped_and_redacted() -> None:
     assert event["subject"] == "sessions/session-1/turns/1"
     assert event["data"]["mcp"]["scope"] == "pod_bootstrap"
     assert event["data"]["mcp"]["serverCount"] == 1
+    assert event["data"]["mcp"]["servers"][0]["auth"] == "external_reference"
     assert event["data"]["tools"]["toolCount"] == 1
     assert event["data"]["instructions"]["systemInstructionHash"] == "system-hash"
     assert "hidden system prompt" not in encoded
@@ -31,6 +32,42 @@ def test_adk_runtime_config_event_is_cloudevents_shaped_and_redacted() -> None:
     assert "properties" not in encoded
     assert "system_instruction" not in encoded
     assert "tool_definitions" not in encoded
+
+
+def test_adk_mcp_config_hash_ignores_secret_values() -> None:
+    first_payload = _activity_payload()
+    second_payload = _activity_payload()
+    first_payload["inputData"]["agentConfig"]["mcpServers"][0]["headers"] = {
+        "Authorization": "Bearer secret-one"
+    }
+    second_payload["inputData"]["agentConfig"]["mcpServers"][0]["headers"] = {
+        "Authorization": "Bearer secret-two"
+    }
+
+    first = build_adk_runtime_config_event(
+        input_data=first_payload["inputData"],
+        per_turn_config=first_payload["perTurnConfig"],
+        telemetry_context=first_payload["telemetryContext"],
+        declared_tools=first_payload["declaredTools"],
+        child_instance_id="child-1",
+        turn=1,
+    )
+    second = build_adk_runtime_config_event(
+        input_data=second_payload["inputData"],
+        per_turn_config=second_payload["perTurnConfig"],
+        telemetry_context=second_payload["telemetryContext"],
+        declared_tools=second_payload["declaredTools"],
+        child_instance_id="child-1",
+        turn=1,
+    )
+
+    assert first["data"]["mcp"]["configHash"] == second["data"]["mcp"]["configHash"]
+    assert (
+        first["data"]["mcp"]["servers"][0]["configHash"]
+        == second["data"]["mcp"]["servers"][0]["configHash"]
+    )
+    assert "secret-one" not in json.dumps(first, sort_keys=True)
+    assert "secret-two" not in json.dumps(second, sort_keys=True)
 
 
 def test_adk_runtime_config_attributes_are_searchable() -> None:

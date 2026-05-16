@@ -4204,7 +4204,8 @@ class OpenShellDurableAgent(DurableAgent):
             result = {
                 "connected": [],
                 "count": len(mcp_configs),
-                "error": str(exc)[:200],
+                "error": "connect_failed",
+                "errorType": type(exc).__name__[:80],
             }
             event = self._record_runtime_config_for_instance(
                 instance_id,
