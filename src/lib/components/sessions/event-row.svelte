@@ -57,6 +57,14 @@
 			if (event.type === 'llm_start') {
 				return String(d.model ?? d.component ?? 'LLM started');
 			}
+			if (event.type === 'agent.context_usage') {
+				const active = Number(d.context_input_tokens ?? 0);
+				const parts = [`active ${fmtTokens(active)}`];
+				const ctxUsed = contextUsedPercentage(d);
+				if (ctxUsed !== null) parts.push(`ctx ${fmtPercent(ctxUsed)}`);
+				if (d.context_count_method) parts.push(String(d.context_count_method));
+				return parts.join(' · ');
+			}
 			const inTok = Number(d.input_tokens ?? 0);
 			const outTok = Number(d.output_tokens ?? 0);
 			const cacheRead = Number(d.cache_read_input_tokens ?? 0);
@@ -68,9 +76,8 @@
 				parts.push(`cache ${fmtTokens(cacheRead)} (${pct}%)`);
 			}
 			if (cacheCreate > 0) parts.push(`+${fmtTokens(cacheCreate)} cached`);
-			if (d.context_used_percentage !== undefined) {
-				parts.push(`ctx ${Math.round(Number(d.context_used_percentage))}%`);
-			}
+			const ctxUsed = contextUsedPercentage(d);
+			if (ctxUsed !== null) parts.push(`ctx ${fmtPercent(ctxUsed)}`);
 			return parts.join(' · ');
 		}
 		if (kind === 'status') {
@@ -141,6 +148,23 @@
 		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
 		if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
 		return String(n);
+	}
+
+	function fmtPercent(value: number): string {
+		if (!Number.isFinite(value)) return '0%';
+		const clamped = Math.max(0, Math.min(100, value));
+		if (clamped > 0 && clamped < 10) return `${clamped.toFixed(1).replace(/\.0$/, '')}%`;
+		return `${Math.round(clamped)}%`;
+	}
+
+	function contextUsedPercentage(d: Record<string, unknown>): number | null {
+		const input = Number(d.context_input_tokens ?? 0);
+		const window = Number(d.context_window_size ?? 0);
+		if (Number.isFinite(input) && Number.isFinite(window) && input >= 0 && window > 0) {
+			return (input / window) * 100;
+		}
+		if (d.context_used_percentage !== undefined) return Number(d.context_used_percentage);
+		return null;
 	}
 
 	function fmtDuration(ms: number): string {

@@ -5,6 +5,7 @@ from src.compaction.tokens import (
     AUTOCOMPACT_BUFFER_TOKENS,
     DEFAULT_WINDOW,
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+    active_context_usage_fields,
     get_auto_compact_threshold,
     context_usage_fields,
     get_context_window,
@@ -112,3 +113,48 @@ def test_context_usage_fields_clamp_at_window():
     assert fields["context_used_percentage"] == 100
     assert fields["context_remaining_percentage"] == 0
     assert fields["context_until_auto_compact_percentage"] == 0
+
+
+def test_active_context_usage_fields_are_state_derived_and_hash_stable():
+    messages = [
+        {"role": "user", "content": "Solve the issue"},
+        {"role": "assistant", "content": "I will inspect the repo"},
+    ]
+    system_messages = [{"role": "system", "content": "You are a coding agent"}]
+    tools = [
+        {
+            "name": "Read",
+            "description": "Read a file",
+            "input_schema": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+            },
+        }
+    ]
+
+    fields = active_context_usage_fields(
+        model="claude-sonnet-4-6",
+        messages=messages,
+        system_messages=system_messages,
+        tools=tools,
+    )
+    fields_again = active_context_usage_fields(
+        model="claude-sonnet-4-6",
+        messages=messages,
+        system_messages=system_messages,
+        tools=tools,
+    )
+
+    assert fields["context_source"] == "dapr_state"
+    assert fields["context_count_method"] == "local_advisory"
+    assert fields["context_count_scope"] == "active_request"
+    assert fields["context_message_count"] == 2
+    assert fields["context_system_message_count"] == 1
+    assert fields["context_tool_count"] == 1
+    assert fields["context_input_tokens"] == (
+        fields["context_message_tokens"]
+        + fields["context_system_tokens"]
+        + fields["context_tool_tokens"]
+    )
+    assert fields["context_request_hash"] == fields_again["context_request_hash"]
+    assert fields["context_window_size"] == 200_000

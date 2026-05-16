@@ -128,6 +128,9 @@ describe("getSessionRuntimeConfig", () => {
 		expect(result?.data.source).toBe("settings");
 		expect(result?.data.attributes["gen_ai.request.model"]).toBe("openai/o3");
 		expect(result?.data.attributes["agent.id"]).toBe("agent-1");
+		expect(result?.data.mlflow.experimentId).toBe("exp-1");
+		expect(result?.data.mlflow.runId).toBe("run-1");
+		expect(result?.data.attributes["mlflow.run_id"]).toBe("run-1");
 		expect(encoded).not.toContain("Bearer secret");
 		expect(encoded).not.toContain("hidden system prompt");
 		expect(encoded).not.toContain('"headers"');

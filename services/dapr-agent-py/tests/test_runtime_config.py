@@ -56,7 +56,9 @@ def test_runtime_config_redacts_prompts_mcp_auth_env_and_schemas() -> None:
 
 
 def test_runtime_config_attributes_map_otel_and_openinference_keys() -> None:
-    attrs = _event()["data"]["attributes"]
+    event = _event()
+    attrs = event["data"]["attributes"]
+    mlflow = event["data"]["mlflow"]
 
     assert attrs["gen_ai.provider.name"] == "openai"
     assert attrs["gen_ai.request.model"] == "openai/o3"
@@ -68,6 +70,20 @@ def test_runtime_config_attributes_map_otel_and_openinference_keys() -> None:
     assert attrs["dapr.workflow.instance_id"] == "child-1"
     assert attrs["workflow.execution.id"] == "workflow-exec-1"
     assert attrs["session.id"] == "session-1"
+    assert attrs["mlflow.run_id"] == "run-1"
+    assert attrs["mlflow.parent_run_id"] == "parent-run-1"
+    assert attrs["mlflow.model_id"] == "model-1"
+    assert attrs["mlflow.model.uri"] == "models:/agent/1"
+    assert mlflow == {
+        "experimentId": "exp-1",
+        "traceExperimentId": "trace-exp-1",
+        "runId": "run-1",
+        "parentRunId": "parent-run-1",
+        "mlflowSessionId": "mlflow-session-1",
+        "activeModelId": "model-1",
+        "activeModelName": "coding-agent",
+        "activeModelUri": "models:/agent/1",
+    }
 
 
 def test_runtime_config_mcp_error_is_sanitized() -> None:
@@ -140,6 +156,15 @@ def _event() -> dict:
         mcp_allowed_tools={"github": ["get_issue"]},
         mcp_tools={"get_issue": object()},
         mcp_result={"connected": ["github"]},
-        mlflow_context={"runId": "run-1"},
+        mlflow_context={
+            "experimentId": "exp-1",
+            "traceExperimentId": "trace-exp-1",
+            "runId": "run-1",
+            "parentRunId": "parent-run-1",
+            "mlflowSessionId": "mlflow-session-1",
+            "activeModelId": "model-1",
+            "activeModelName": "coding-agent",
+            "activeModelUri": "models:/agent/1",
+        },
         dapr_app_id="agent-runtime-coding-agent",
     )

@@ -162,6 +162,7 @@
 		}
 		if (kind === 'model') {
 			if (event.type === 'agent.llm_usage') return 'LLM usage';
+			if (event.type === 'agent.context_usage') return 'Context usage';
 			return 'Model request';
 		}
 		if (kind === 'status') return event.type.replace('session.status_', 'Status: ');

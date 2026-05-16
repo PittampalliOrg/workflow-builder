@@ -80,8 +80,30 @@
 		success?: boolean;
 		error?: string;
 	};
+	type ContextUsageData = {
+		model?: string;
+		context_source?: string;
+		context_count_method?: string;
+		context_window_size?: number;
+		context_input_tokens?: number;
+		context_used_percentage?: number;
+		context_remaining_percentage?: number;
+		context_auto_compact_threshold?: number;
+		context_until_auto_compact_percentage?: number;
+		context_message_tokens?: number;
+		context_system_tokens?: number;
+		context_tool_tokens?: number;
+		context_message_count?: number;
+		context_system_message_count?: number;
+		context_tool_count?: number;
+		turn?: number;
+		turnId?: string;
+	};
 
 	const llmUsage = $derived(event.type === 'agent.llm_usage' ? (data as LlmUsageData) : null);
+	const contextUsage = $derived(
+		event.type === 'agent.context_usage' ? (data as ContextUsageData) : null
+	);
 	const llmUsageHitPct = $derived.by(() => {
 		const u = llmUsage;
 		if (!u) return null;
@@ -91,23 +113,62 @@
 		if (denom <= 0) return null;
 		return Math.round((r / denom) * 100);
 	});
-	const llmContextUsage = $derived.by(() => {
-		const u = llmUsage;
-		if (!u || u.context_used_percentage == null) return null;
+	const llmContextUsage = $derived.by(() => contextStatsFor(llmUsage));
+	const activeContextUsage = $derived.by(() => contextStatsFor(contextUsage));
+
+	function contextStatsFor(
+		u:
+			| {
+					context_input_tokens?: number;
+					context_window_size?: number;
+					context_used_percentage?: number;
+					context_auto_compact_threshold?: number;
+					context_until_auto_compact_percentage?: number;
+			  }
+			| null
+	) {
+		if (!u) return null;
+		const input = Number(u.context_input_tokens ?? 0);
+		const window = Number(u.context_window_size ?? 0);
+		if (u.context_used_percentage == null && !(input > 0 && window > 0)) return null;
+		const used = percentFromRatio(input, window, Number(u.context_used_percentage ?? 0));
+		const threshold = Number(u.context_auto_compact_threshold ?? 0);
+		const untilCompact =
+			threshold > 0
+				? clampPercent(((threshold - input) / threshold) * 100)
+				: Number(u.context_until_auto_compact_percentage ?? 0);
 		return {
-			used: Number(u.context_used_percentage),
-			remaining: Number(u.context_remaining_percentage ?? (100 - Number(u.context_used_percentage))),
-			input: Number(u.context_input_tokens ?? 0),
-			window: Number(u.context_window_size ?? 0),
-			untilCompact: Number(u.context_until_auto_compact_percentage ?? 0)
+			used,
+			remaining: clampPercent(100 - used),
+			input,
+			window,
+			untilCompact
 		};
-	});
+	}
 
 	function fmtTokens(n: number | undefined): string {
 		const v = Number(n ?? 0);
 		if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
 		if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
 		return String(v);
+	}
+
+	function clampPercent(value: number): number {
+		if (!Number.isFinite(value)) return 0;
+		return Math.max(0, Math.min(100, value));
+	}
+
+	function percentFromRatio(input: number, window: number, fallback: number): number {
+		if (Number.isFinite(input) && Number.isFinite(window) && input >= 0 && window > 0) {
+			return clampPercent((input / window) * 100);
+		}
+		return clampPercent(fallback);
+	}
+
+	function fmtPercent(value: number): string {
+		const v = clampPercent(value);
+		if (v > 0 && v < 10) return `${v.toFixed(1).replace(/\.0$/, '')}%`;
+		return `${Math.round(v)}%`;
 	}
 
 	// For tool dispatch in panel variant, build the pair from event + pairedResult.
@@ -181,6 +242,54 @@
 	{:else if kind === 'tool' || kind === 'result'}
 		<ToolEventRenderer pair={toolPair} {variant} />
 
+	{:else if contextUsage}
+		<div class="space-y-3">
+			<div class="flex items-center gap-2">
+				<span class="text-[10px] uppercase tracking-wider text-muted-foreground">Active context</span>
+				<code class="text-xs">{contextUsage.model ?? 'unknown'}</code>
+			</div>
+			{#if activeContextUsage}
+				<div class="grid grid-cols-2 gap-3 text-xs">
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Used</div>
+						<div class="mt-1 font-mono">{fmtPercent(activeContextUsage.used)}</div>
+					</div>
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Until compact</div>
+						<div class="mt-1 font-mono">{fmtPercent(activeContextUsage.untilCompact)}</div>
+					</div>
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Messages</div>
+						<div class="mt-1 font-mono">
+							{contextUsage.context_message_count ?? 0}
+							{#if (contextUsage.context_system_message_count ?? 0) > 0}
+								<span class="text-muted-foreground"> + {contextUsage.context_system_message_count} system</span>
+							{/if}
+						</div>
+					</div>
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Tools</div>
+						<div class="mt-1 font-mono">{contextUsage.context_tool_count ?? 0}</div>
+					</div>
+				</div>
+				<div class="rounded border border-border/40 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+					<span class="font-mono text-foreground">{fmtTokens(activeContextUsage.input)}</span>
+					<span> / </span>
+					<span class="font-mono text-foreground">{fmtTokens(activeContextUsage.window)}</span>
+					<span> active tokens from </span>
+					<span class="font-mono text-foreground">{contextUsage.context_count_method ?? 'local_advisory'}</span>
+					<span>, </span>
+					<span class="font-mono text-foreground">{fmtPercent(activeContextUsage.remaining)}</span>
+					<span> remaining</span>
+				</div>
+			{/if}
+			<div class="grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
+				<div>Messages <span class="font-mono text-foreground">{fmtTokens(contextUsage.context_message_tokens)}</span></div>
+				<div>System <span class="font-mono text-foreground">{fmtTokens(contextUsage.context_system_tokens)}</span></div>
+				<div>Tools <span class="font-mono text-foreground">{fmtTokens(contextUsage.context_tool_tokens)}</span></div>
+			</div>
+		</div>
+
 	{:else if llmUsage}
 		<div class="space-y-3">
 			<div class="flex items-center gap-2">
@@ -218,11 +327,11 @@
 				{#if llmContextUsage}
 					<div>
 						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Context</div>
-						<div class="mt-1 font-mono">{llmContextUsage.used}% used</div>
+						<div class="mt-1 font-mono">{fmtPercent(llmContextUsage.used)} used</div>
 					</div>
 					<div>
 						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Until compact</div>
-						<div class="mt-1 font-mono">{llmContextUsage.untilCompact}%</div>
+						<div class="mt-1 font-mono">{fmtPercent(llmContextUsage.untilCompact)}</div>
 					</div>
 				{/if}
 				{#if (llmUsage.recovery_attempts ?? 0) > 0}
@@ -238,7 +347,7 @@
 					<span> / </span>
 					<span class="font-mono text-foreground">{fmtTokens(llmContextUsage.window)}</span>
 					<span> context tokens, </span>
-					<span class="font-mono text-foreground">{llmContextUsage.remaining}%</span>
+					<span class="font-mono text-foreground">{fmtPercent(llmContextUsage.remaining)}</span>
 					<span> remaining</span>
 				</div>
 			{/if}

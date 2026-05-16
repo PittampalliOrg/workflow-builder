@@ -145,3 +145,6 @@ def test_publish_session_event_stamps_context_usage_fields(monkeypatch):
     assert data["context_input_tokens"] == 100_000
     assert data["context_used_percentage"] == 50
     assert data["context_remaining_percentage"] == 50
+    assert data["context_source"] == "provider_usage"
+    assert data["context_count_method"] == "provider_usage"
+    assert data["context_count_scope"] == "last_provider_call"

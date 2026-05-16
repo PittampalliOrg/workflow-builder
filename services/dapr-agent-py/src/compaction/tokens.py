@@ -12,6 +12,8 @@ are cheap to recompute and automatically replay-safe.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any, Iterable
 
@@ -224,6 +226,123 @@ def heuristic_token_count(messages: Iterable[Any]) -> int:
     return total_chars // 4 + 8 * msg_count
 
 
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _jsonable(model_dump(mode="json"))
+        except TypeError:
+            return _jsonable(model_dump())
+        except Exception:
+            pass
+    return str(value)
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _tool_summary(tool: Any) -> dict[str, Any]:
+    if isinstance(tool, dict):
+        name = tool.get("name") or tool.get("tool_name")
+        description = tool.get("description")
+        schema = (
+            tool.get("input_schema")
+            or tool.get("parameters")
+            or tool.get("args_schema")
+            or tool.get("schema")
+        )
+    else:
+        name = getattr(tool, "name", None) or getattr(tool, "tool_name", None)
+        description = getattr(tool, "description", None)
+        schema = (
+            getattr(tool, "input_schema", None)
+            or getattr(tool, "parameters", None)
+            or getattr(tool, "args_schema", None)
+            or getattr(tool, "schema", None)
+        )
+    schema_json = _stable_json(schema or {"type": "object", "properties": {}})
+    return {
+        "name": str(name or ""),
+        "description": str(description or ""),
+        "schema_hash": hashlib.sha256(schema_json.encode("utf-8")).hexdigest(),
+        "schema_chars": len(schema_json),
+    }
+
+
+def heuristic_tool_token_count(tools: Iterable[Any]) -> int:
+    """Local advisory count for declared tool names/descriptions/schema size."""
+    total_chars = 0
+    tool_count = 0
+    for tool in tools:
+        summary = _tool_summary(tool)
+        total_chars += len(summary["name"]) + len(summary["description"]) + int(summary["schema_chars"])
+        tool_count += 1
+    # Tool declarations have framing overhead beyond raw JSON text.
+    return total_chars // 4 + 16 * tool_count
+
+
+def active_context_usage_fields(
+    *,
+    model: str | None,
+    messages: Iterable[Any],
+    system_messages: Iterable[Any] | None = None,
+    tools: Iterable[Any] | None = None,
+    window_override: int | None = None,
+    summary_reserve: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+    buffer_tokens: int = AUTOCOMPACT_BUFFER_TOKENS,
+) -> dict[str, Any]:
+    """Return local advisory fields for the active Dapr-state request.
+
+    This is intentionally separate from provider usage telemetry. It estimates
+    the request about to be sent without calling provider token-count APIs.
+    """
+    messages_list = list(messages)
+    system_list = list(system_messages or [])
+    tools_list = list(tools or [])
+    message_tokens = heuristic_token_count(messages_list)
+    system_tokens = heuristic_token_count(system_list)
+    tool_tokens = heuristic_tool_token_count(tools_list)
+    token_count = message_tokens + system_tokens + tool_tokens
+    fields = context_usage_fields(
+        model=model,
+        token_count=token_count,
+        window_override=window_override,
+        summary_reserve=summary_reserve,
+        buffer_tokens=buffer_tokens,
+    )
+    tool_summaries = [_tool_summary(tool) for tool in tools_list]
+    request_fingerprint = {
+        "model": model,
+        "messages": _jsonable(messages_list),
+        "system_messages": _jsonable(system_list),
+        "tools": tool_summaries,
+    }
+    request_hash = hashlib.sha256(_stable_json(request_fingerprint).encode("utf-8")).hexdigest()
+    fields.update(
+        {
+            "context_source": "dapr_state",
+            "context_count_method": "local_advisory",
+            "context_count_scope": "active_request",
+            "context_request_hash": request_hash,
+            "request_hash": request_hash,
+            "context_message_tokens": message_tokens,
+            "context_system_tokens": system_tokens,
+            "context_tool_tokens": tool_tokens,
+            "context_message_count": len(messages_list),
+            "context_system_message_count": len(system_list),
+            "context_tool_count": len(tools_list),
+        }
+    )
+    return fields
+
+
 def count_tokens(
     messages: Iterable[Any],
     *,
@@ -292,6 +411,8 @@ __all__ = [
     "get_effective_window",
     "get_auto_compact_threshold",
     "context_usage_fields",
+    "active_context_usage_fields",
+    "heuristic_tool_token_count",
     "heuristic_token_count",
     "count_tokens",
 ]

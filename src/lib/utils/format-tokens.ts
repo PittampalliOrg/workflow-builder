@@ -20,7 +20,7 @@ export function fmtTokens(n: number | undefined | null): string {
  */
 export function modelContextWindow(model: string | null | undefined): number {
 	if (!model) return 200_000;
-	if (model.includes("opus-4-7") || model.includes("opus-4-6")) return 200_000;
+	if (model.includes("opus-4-7") || model.includes("opus-4-6")) return 1_000_000;
 	if (model.includes("sonnet-4")) return 200_000;
 	if (model.includes("haiku-4")) return 200_000;
 	if (model.startsWith("gpt-5") || model.startsWith("gpt-4")) return 128_000;

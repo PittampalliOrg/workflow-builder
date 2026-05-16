@@ -364,6 +364,9 @@ def publish_session_event(
                 cache_read_input_tokens=cma_data.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=cma_data.get("cache_creation_input_tokens"),
             )
+            cma_data.setdefault("context_source", "provider_usage")
+            cma_data.setdefault("context_count_method", "provider_usage")
+            cma_data.setdefault("context_count_scope", "last_provider_call")
             for key, value in fields.items():
                 cma_data.setdefault(key, value)
         except Exception as exc:  # noqa: BLE001

@@ -219,6 +219,7 @@
 		'agent.tool_result',
 		'agent.mcp_tool_result',
 		'agent.custom_tool_result',
+		'agent.context_usage',
 		'agent.llm_usage',
 		'agent.iteration',
 		'agent.thread_context_compacted',

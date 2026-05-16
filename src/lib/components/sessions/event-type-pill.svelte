@@ -39,6 +39,7 @@
 		if (
 			type.startsWith('span.model_request') ||
 			type === 'agent.llm_usage' ||
+			type === 'agent.context_usage' ||
 			type === 'llm_start'
 		)
 			return 'model';

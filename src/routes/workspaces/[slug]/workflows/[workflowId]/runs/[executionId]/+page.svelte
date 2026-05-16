@@ -373,7 +373,7 @@
 				'agent.message', 'agent.thinking',
 				'agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use',
 				'agent.tool_result', 'agent.mcp_tool_result', 'agent.custom_tool_result',
-				'agent.llm_usage',
+				'agent.context_usage', 'agent.llm_usage',
 				'hook.decision', 'mcp.tool_call',
 				'agent.circuit_breaker_tripped', 'session.turn_timeout',
 				'agent.thread_images_compacted', 'session.error'
@@ -384,10 +384,9 @@
 		})
 	);
 
-	// Aggregate tokens from every agent.llm_usage event so the Context
-	// compound in the stats banner can show the total context-window
-	// consumption for the whole run, not just per-call. Updates reactively
-	// via $derived as new events stream in via SSE (no polling, no refresh).
+	// Aggregate provider spend from every agent.llm_usage event. Context-window
+	// usage is tracked separately from the latest active request; summing spend
+	// across calls is not the same as current model context.
 	type AggregatedUsage = {
 		inputTokens: number;
 		outputTokens: number;
@@ -416,16 +415,34 @@
 		}
 		return acc;
 	});
-	const usedTokens = $derived(
-		aggregatedUsage.inputTokens +
-		aggregatedUsage.outputTokens +
-		aggregatedUsage.cacheCreationTokens
+	const latestContextEvent = $derived.by<Record<string, unknown> | null>(() => {
+		for (let i = timelineEvents.length - 1; i >= 0; i -= 1) {
+			const event = timelineEvents[i];
+			if (event.type !== 'agent.context_usage' && event.type !== 'agent.llm_usage') continue;
+			const data = event.data as Record<string, unknown>;
+			if (Number(data.context_input_tokens ?? 0) > 0) return data;
+		}
+		return null;
+	});
+	const usedTokens = $derived(Number(latestContextEvent?.context_input_tokens ?? 0));
+	const maxTokens = $derived(
+		Number(latestContextEvent?.context_window_size ?? 0) ||
+			modelContextWindow(
+				(typeof latestContextEvent?.model === 'string' ? latestContextEvent.model : null) ??
+					aggregatedUsage.model
+			)
 	);
-	const maxTokens = $derived(modelContextWindow(aggregatedUsage.model));
+	const contextModel = $derived(
+		(typeof latestContextEvent?.model === 'string' ? latestContextEvent.model : null) ??
+			aggregatedUsage.model ??
+			'unknown'
+	);
 	const usage = $derived({
-		inputTokens: aggregatedUsage.inputTokens,
-		outputTokens: aggregatedUsage.outputTokens,
-		cachedInputTokens: aggregatedUsage.cacheReadTokens,
+		inputTokens: usedTokens,
+		outputTokens: latestContextEvent?.input_tokens ? Number(latestContextEvent.input_tokens) : 0,
+		cachedInputTokens: latestContextEvent?.cache_read_input_tokens
+			? Number(latestContextEvent.cache_read_input_tokens)
+			: 0,
 		reasoningTokens: aggregatedUsage.reasoningTokens
 	});
 
@@ -1308,6 +1325,7 @@
 			case 'agent.thinking':
 			case 'agent.thinking_delta':
 			case 'agent.tool_input_delta':
+			case 'agent.context_usage':
 			case 'agent.llm_usage':
 				return MessageSquare;
 			case 'hook.decision':
@@ -2173,12 +2191,11 @@
 								<span class="font-medium tabular-nums text-foreground transition-all">{timelineEvents.length}</span>
 								<span>events</span>
 							</div>
-							<!-- Aggregated context-window usage. Driven by a $derived
-							     that sums every agent.llm_usage event in timelineEvents,
-							     so it updates live as the SSE stream appends events. -->
+							<!-- Current context-window usage. Prefer active Dapr-state
+							     context, then fall back to latest provider usage. -->
 							{#if usedTokens > 0}
 								<div class="h-3 w-px bg-border"></div>
-								<Context {usedTokens} {maxTokens} {usage} modelId={aggregatedUsage.model ?? 'unknown'}>
+								<Context {usedTokens} {maxTokens} {usage} modelId={contextModel}>
 									<ContextTrigger variant="ghost" size="sm" class="h-6 gap-1 px-1.5 text-xs">
 										<Gauge class="size-3 text-muted-foreground/70" />
 										<span class="font-medium tabular-nums text-foreground">{fmtTokens(usedTokens)}</span>
@@ -2196,7 +2213,7 @@
 										</ContextContentBody>
 										<ContextContentFooter>
 											<span class="text-[10px] text-muted-foreground">
-												{aggregatedUsage.model ?? 'model pending'}
+												{contextModel}
 											</span>
 										</ContextContentFooter>
 									</ContextContent>

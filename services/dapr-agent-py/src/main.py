@@ -739,14 +739,18 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "cwd",
         "sessionId",
         "mlflowSessionId",
+        "mlflowExperimentId",
+        "mlflowTraceExperimentId",
+        "mlflowRunId",
+        "mlflowParentRunId",
+        "mlflowActiveModelId",
+        "mlflowActiveModelUri",
         "turnId",
         "workspaceRef",
         "llmComponent",
         "modelSpec",
         "provider",
         "providerModel",
-        "mlflowActiveModelId",
-        "mlflowActiveModelUri",
         "configHash",
         "instructionHash",
         "systemPrompt",
@@ -1574,11 +1578,19 @@ class OpenShellDurableAgent(DurableAgent):
             "agentRuntime",
             "workspaceRef",
             "mlflowSessionId",
+            "mlflowExperimentId",
+            "mlflowTraceExperimentId",
+            "mlflowRunId",
+            "mlflowParentRunId",
+            "mlflowActiveModelId",
+            "mlflowActiveModelUri",
             "turnId",
             "autoTerminateAfterEndTurn",
         ):
             if clean.get(key) is not None:
                 agent_context[key] = clean.get(key)
+        if isinstance(clean.get("mlflowContext"), dict):
+            agent_context["mlflowContext"] = dict(clean["mlflowContext"])
         if clean.get("llmComponent") is not None:
             agent_context["llmComponent"] = clean.get("llmComponent")
         agent_context.update(
@@ -2062,6 +2074,137 @@ class OpenShellDurableAgent(DurableAgent):
             )
         return tools
 
+    @staticmethod
+    def _message_role(message: Any) -> str | None:
+        if isinstance(message, dict):
+            role = message.get("role")
+        else:
+            role = getattr(message, "role", None)
+        return str(role) if role is not None else None
+
+    def _emit_active_context_usage(
+        self,
+        *,
+        session_id: str | None,
+        instance_id: str,
+        execution_id: str,
+        payload: dict[str, Any],
+        context: dict[str, Any],
+        component: str | None,
+    ) -> None:
+        """Emit local advisory context usage for the request about to hit the LLM."""
+        if not session_id or not instance_id:
+            return
+        try:
+            from src.compaction.tokens import active_context_usage_fields
+            from src.telemetry.genai_attrs import set_activity_attrs
+
+            entry = self._infra.get_state(instance_id)
+            chat_history = self._reconstruct_conversation_history(
+                instance_id,
+                entry=entry,
+            )
+            messages = self.prompting_helper.build_initial_messages(
+                user_input=payload.get("task") if isinstance(payload, dict) else None,
+                chat_history=chat_history,
+            )
+            system_messages = [
+                message
+                for message in messages
+                if self._message_role(message) == "system"
+            ]
+            active_messages = [
+                message
+                for message in messages
+                if self._message_role(message) != "system"
+            ]
+            tools = self.get_llm_tools()
+            model_id = (
+                context.get("providerModel")
+                or context.get("modelSpec")
+                or component
+            )
+            if component and "anthropic" in str(component):
+                try:
+                    from src.anthropic_adapter import _get_anthropic_model
+
+                    model_id = _get_anthropic_model(str(component))
+                except Exception:
+                    pass
+            fields = active_context_usage_fields(
+                model=str(model_id) if model_id else None,
+                messages=active_messages,
+                system_messages=system_messages,
+                tools=tools,
+            )
+            request_hash = str(fields.get("context_request_hash") or fields.get("request_hash") or "")
+            turn_id = context.get("turnId")
+            mlflow_context = (
+                context.get("mlflowContext")
+                if isinstance(context.get("mlflowContext"), dict)
+                else {}
+            )
+            event_data: dict[str, Any] = {
+                "schemaVersion": "workflow-builder.agent_context_usage.v1",
+                **fields,
+                "model": model_id,
+                "llmComponent": component,
+                "modelSpec": context.get("modelSpec"),
+                "providerModel": context.get("providerModel"),
+                "sessionId": session_id,
+                "instanceId": instance_id,
+                "workflowExecutionId": context.get("workflowExecutionId") or execution_id,
+                "executionId": execution_id,
+                "turn": context.get("turn"),
+                "turnId": turn_id,
+                "configHash": context.get("configHash"),
+                "instructionHash": context.get("instructionHash"),
+                "mlflowExperimentId": context.get("mlflowExperimentId")
+                or mlflow_context.get("experimentId"),
+                "mlflowTraceExperimentId": context.get("mlflowTraceExperimentId")
+                or mlflow_context.get("traceExperimentId"),
+                "mlflowRunId": context.get("mlflowRunId") or mlflow_context.get("runId"),
+                "mlflowParentRunId": context.get("mlflowParentRunId")
+                or mlflow_context.get("parentRunId"),
+                "mlflowSessionId": context.get("mlflowSessionId")
+                or mlflow_context.get("mlflowSessionId")
+                or session_id,
+                "mlflowActiveModelId": context.get("mlflowActiveModelId")
+                or mlflow_context.get("activeModelId"),
+                "mlflowActiveModelUri": context.get("mlflowActiveModelUri")
+                or mlflow_context.get("activeModelUri"),
+            }
+            set_activity_attrs(
+                extra={
+                    "llm.context.source": fields.get("context_source"),
+                    "llm.context.count_method": fields.get("context_count_method"),
+                    "llm.context.active_input_tokens": fields.get("context_input_tokens"),
+                    "llm.context.active_used_percentage": fields.get(
+                        "context_used_percentage"
+                    ),
+                    "llm.context.active_window_size": fields.get("context_window_size"),
+                    "llm.context.message_count": fields.get("context_message_count"),
+                    "llm.context.system_message_count": fields.get(
+                        "context_system_message_count"
+                    ),
+                    "llm.context.tool_count": fields.get("context_tool_count"),
+                }
+            )
+            source_event_id = (
+                f"{instance_id}:{turn_id or 'turn'}:context_usage:{request_hash}"
+                if request_hash
+                else None
+            )
+            publish_session_event(
+                session_id,
+                "agent.context_usage",
+                event_data,
+                source_event_id=source_event_id,
+                instance_id=instance_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[context-usage] active context emit failed: %s", exc)
+
     def call_llm(self, ctx, payload):
         """Publish llm_start/llm_complete streaming events with content."""
         import sys as _sys
@@ -2321,6 +2464,14 @@ class OpenShellDurableAgent(DurableAgent):
                         saved_tool_choice = self.execution.tool_choice
                         self.execution.tool_choice = None
                     self._active_llm_instance_id = inst_id
+                    self._emit_active_context_usage(
+                        session_id=sess_id,
+                        instance_id=inst_id,
+                        execution_id=exec_id,
+                        payload=payload if isinstance(payload, dict) else {},
+                        context=context,
+                        component=active_component or component,
+                    )
                     result = super().call_llm(ctx, payload)
                 finally:
                     self._active_llm_instance_id = previous_active_instance
@@ -4469,6 +4620,9 @@ class OpenShellDurableAgent(DurableAgent):
             child_sandbox_name = (
                 str(message.get("sandboxName") or "").strip() or None
             )
+            child_mlflow_session_id = str(
+                child_mlflow_context.get("mlflowSessionId") or session_id
+            ).strip()
             try:
                 turn_date = ctx.current_utc_datetime.date().isoformat()
             except Exception:
@@ -4640,6 +4794,16 @@ class OpenShellDurableAgent(DurableAgent):
                 "sandboxName": child_input.get("sandboxName") or None,
                 "cwd": child_input.get("cwd") or DEFAULT_CWD,
                 "sessionId": session_id,
+                "mlflowSessionId": child_mlflow_session_id or session_id,
+                "mlflowExperimentId": child_mlflow_context.get("experimentId"),
+                "mlflowTraceExperimentId": child_mlflow_context.get(
+                    "traceExperimentId"
+                ),
+                "mlflowRunId": child_mlflow_context.get("runId"),
+                "mlflowParentRunId": child_mlflow_context.get("parentRunId"),
+                "mlflowActiveModelId": child_mlflow_context.get("activeModelId"),
+                "mlflowActiveModelUri": child_mlflow_context.get("activeModelUri"),
+                "mlflowContext": child_mlflow_context,
                 "autoTerminateAfterEndTurn": auto_terminate,
                 "workspaceRef": child_input.get("workspaceRef") or None,
                 "llmComponent": child_llm_component,

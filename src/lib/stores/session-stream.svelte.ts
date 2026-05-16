@@ -255,6 +255,7 @@ export function createSessionStream(sessionId: string): SessionStreamStore {
 			"agent.mcp_tool_result",
 			"agent.thread_context_compacted",
 			"agent.thread_images_compacted",
+			"agent.context_usage",
 			"agent.llm_usage",
 			"agent.circuit_breaker_tripped",
 			"llm_start",
