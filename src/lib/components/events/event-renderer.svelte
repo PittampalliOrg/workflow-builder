@@ -68,6 +68,13 @@
 		output_tokens?: number;
 		cache_read_input_tokens?: number;
 		cache_creation_input_tokens?: number;
+		context_window_size?: number;
+		context_input_tokens?: number;
+		context_used_percentage?: number;
+		context_remaining_percentage?: number;
+		context_effective_window?: number;
+		context_auto_compact_threshold?: number;
+		context_until_auto_compact_percentage?: number;
 		ttft_ms?: number | null;
 		recovery_attempts?: number;
 		success?: boolean;
@@ -83,6 +90,17 @@
 		const denom = r + i;
 		if (denom <= 0) return null;
 		return Math.round((r / denom) * 100);
+	});
+	const llmContextUsage = $derived.by(() => {
+		const u = llmUsage;
+		if (!u || u.context_used_percentage == null) return null;
+		return {
+			used: Number(u.context_used_percentage),
+			remaining: Number(u.context_remaining_percentage ?? (100 - Number(u.context_used_percentage))),
+			input: Number(u.context_input_tokens ?? 0),
+			window: Number(u.context_window_size ?? 0),
+			untilCompact: Number(u.context_until_auto_compact_percentage ?? 0)
+		};
 	});
 
 	function fmtTokens(n: number | undefined): string {
@@ -197,6 +215,16 @@
 						<div class="mt-1 font-mono">{Math.round(Number(llmUsage.ttft_ms))}ms</div>
 					</div>
 				{/if}
+				{#if llmContextUsage}
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Context</div>
+						<div class="mt-1 font-mono">{llmContextUsage.used}% used</div>
+					</div>
+					<div>
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Until compact</div>
+						<div class="mt-1 font-mono">{llmContextUsage.untilCompact}%</div>
+					</div>
+				{/if}
 				{#if (llmUsage.recovery_attempts ?? 0) > 0}
 					<div>
 						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Recoveries</div>
@@ -204,6 +232,16 @@
 					</div>
 				{/if}
 			</div>
+			{#if llmContextUsage}
+				<div class="rounded border border-border/40 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+					<span class="font-mono text-foreground">{fmtTokens(llmContextUsage.input)}</span>
+					<span> / </span>
+					<span class="font-mono text-foreground">{fmtTokens(llmContextUsage.window)}</span>
+					<span> context tokens, </span>
+					<span class="font-mono text-foreground">{llmContextUsage.remaining}%</span>
+					<span> remaining</span>
+				</div>
+			{/if}
 			{#if llmUsage.error}
 				<div>
 					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Error</div>

@@ -159,6 +159,9 @@ from src.plugins import (
     current_snapshot as _current_hook_snapshot,
     install_instance_snapshot as _install_hook_snapshot,
 )
+from src.dependency_guard import assert_dapr_agents_version
+
+assert_dapr_agents_version()
 
 from dapr_agents.agents.configs import (
     AgentExecutionConfig,
@@ -1572,6 +1575,7 @@ class OpenShellDurableAgent(DurableAgent):
             "workspaceRef",
             "mlflowSessionId",
             "turnId",
+            "autoTerminateAfterEndTurn",
         ):
             if clean.get(key) is not None:
                 agent_context[key] = clean.get(key)
@@ -1747,8 +1751,58 @@ class OpenShellDurableAgent(DurableAgent):
         )
         return event
 
+    def save_tool_results(self, ctx, payload: dict) -> None:
+        from src.compaction.payloads import compact_save_tool_results_payload
+
+        compacted_payload, stats = compact_save_tool_results_payload(payload or {})
+        if stats.changed:
+            logger.info(
+                "[payload-compaction] bounded tool persistence for %s: %s",
+                compacted_payload.get("instance_id"),
+                stats.to_dict(),
+            )
+        return super().save_tool_results(ctx, compacted_payload)
+
+    def _bounded_summarize_conversation(self, instance_id: str, entry: Any) -> dict:
+        if not self.memory:
+            return {"skipped": True, "reason": "memory_disabled"}
+        messages = list(getattr(entry, "messages", []) or [])
+        if not messages:
+            logger.debug("No messages to summarize for instance_id=%s", instance_id)
+            return {}
+
+        from dapr_agents.agents.schemas import ConversationSummary
+        from src.compaction.payloads import build_bounded_summary_task
+
+        task = build_bounded_summary_task(
+            messages,
+            getattr(entry, "tool_history", None) or [],
+        )
+        summary_model = self.llm.generate(
+            messages=[{"role": "user", "content": task}],
+            response_format=ConversationSummary,
+        )
+        summary_content = (getattr(summary_model, "summary", "") or "").strip()
+        if not summary_content:
+            return {"skipped": True, "reason": "empty_summary"}
+
+        summary_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": summary_content,
+            "name": self.name,
+        }
+        self.memory.add_message(summary_message, workflow_instance_id=instance_id)
+        logger.info("Saved bounded summary to memory for instance_id=%s", instance_id)
+        if getattr(self, "text_formatter", None):
+            self.text_formatter.print_message(
+                {**summary_message, "name": f"{self.name}"}
+            )
+        return {"content": summary_content}
+
     def summarize(self, ctx, payload: dict) -> dict:
         instance_id = str(getattr(ctx, "workflow_id", "") or "").strip()
+        if not instance_id:
+            instance_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(instance_id)
         if is_swebench_execution_context(instance_id, context):
             logger.info(
@@ -1756,7 +1810,58 @@ class OpenShellDurableAgent(DurableAgent):
                 instance_id,
             )
             return {"skipped": True, "reason": "swebench_benchmark_turn"}
-        return super().summarize(ctx, payload)
+        session_id = (
+            str(context.get("sessionId") or "").strip()
+            or self._session_id_by_instance.get(instance_id)
+            or ""
+        )
+        auto_terminate = bool(context.get("autoTerminateAfterEndTurn"))
+        if session_id and not auto_terminate:
+            logger.info(
+                "[memory] skipping long-term summary for session-native interactive workflow %s",
+                instance_id,
+            )
+            return {
+                "skipped": True,
+                "reason": "session_native_compaction_owns_context",
+            }
+
+        try:
+            entry = self._infra.get_state(instance_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[memory] summary skipped: state load failed for %s: %s",
+                instance_id,
+                exc,
+            )
+            return {
+                "skipped": True,
+                "reason": "state_load_failed",
+                "error": str(exc)[:500],
+            }
+
+        try:
+            return self._bounded_summarize_conversation(instance_id, entry)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[memory] bounded conversation summary failed for %s: %s",
+                instance_id,
+                exc,
+            )
+            try:
+                publish_session_event(
+                    session_id or None,
+                    "agent.summary_failed",
+                    {"reason": "summary_failed", "error": str(exc)[:500]},
+                    instance_id=instance_id,
+                )
+            except Exception:
+                pass
+            return {
+                "skipped": True,
+                "reason": "summary_failed",
+                "error": str(exc)[:500],
+            }
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -4534,6 +4639,7 @@ class OpenShellDurableAgent(DurableAgent):
                 "sandboxName": child_input.get("sandboxName") or None,
                 "cwd": child_input.get("cwd") or DEFAULT_CWD,
                 "sessionId": session_id,
+                "autoTerminateAfterEndTurn": auto_terminate,
                 "workspaceRef": child_input.get("workspaceRef") or None,
                 "llmComponent": child_llm_component,
                 "modelSpec": child_audit_fields.get("modelSpec"),

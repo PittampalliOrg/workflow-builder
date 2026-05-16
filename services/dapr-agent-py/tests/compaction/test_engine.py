@@ -120,6 +120,8 @@ def test_compaction_triggers_when_threshold_crossed():
     # First message should be the compact boundary sentinel.
     msgs = agent._infra.entry.messages
     first = msgs[0]
+    first_role = first["role"] if isinstance(first, dict) else first.role
+    assert first_role == "user"
     content = first["content"] if isinstance(first, dict) else first.content
     assert content.startswith("__COMPACT_BOUNDARY__ ")
     meta = json.loads(content[len("__COMPACT_BOUNDARY__ "):])
@@ -129,6 +131,37 @@ def test_compaction_triggers_when_threshold_crossed():
     second_content = second["content"] if isinstance(second, dict) else second.content
     assert "<compact_summary>" in second_content
     assert "1. Summary body" in second_content
+
+
+def test_user_boundary_survives_system_message_stripping():
+    cfg = CompactionConfig(
+        enabled=True,
+        auto_compact_enabled=True,
+        auto_compact_window=50,
+        buffer_tokens=0,
+        summary_reserve=0,
+        preserve_last_n=1,
+    )
+
+    def _caller(component, messages, **kwargs):
+        return {"role": "assistant", "content": "<summary>survives</summary>"}
+
+    agent = _FakeAgent([{"role": "system", "content": "old stripped"}, _big_user(400)])
+    result = maybe_compact(
+        agent,
+        instance_id="inst-user-boundary",
+        execution_id="exec-user-boundary",
+        config=cfg,
+        model="claude-sonnet-4-6",
+        component="llm-anthropic-sonnet",
+        caller=_caller,
+        turn_index=2,
+    )
+
+    assert result.compacted is True
+    stripped = [m for m in agent._infra.entry.messages if m.get("role") != "system"]
+    assert stripped[0]["role"] == "user"
+    assert stripped[0]["content"].startswith("__COMPACT_BOUNDARY__ ")
 
 
 def test_idempotent_replay_skips_second_llm_call():

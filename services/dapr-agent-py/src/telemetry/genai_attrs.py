@@ -261,6 +261,30 @@ def set_genai_response_attrs(
         _safe_set(span, "gen_ai.usage.reasoning_tokens", norm["reasoning_tokens"])
         _safe_set(span, "llm.token_count.reasoning", norm["reasoning_tokens"])
 
+    if response_model and norm:
+        try:
+            from src.compaction.tokens import context_usage_fields
+
+            fields = context_usage_fields(
+                model=response_model,
+                input_tokens=norm.get("input_tokens"),
+                cache_read_input_tokens=norm.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=norm.get("cache_creation_input_tokens"),
+            )
+            attr_map = {
+                "context_window_size": "llm.context_window.size",
+                "context_input_tokens": "llm.context.input_tokens",
+                "context_used_percentage": "llm.context.used_percentage",
+                "context_remaining_percentage": "llm.context.remaining_percentage",
+                "context_effective_window": "llm.context.effective_window",
+                "context_auto_compact_threshold": "llm.context.auto_compact_threshold",
+                "context_until_auto_compact_percentage": "llm.context.until_auto_compact_percentage",
+            }
+            for field, attr in attr_map.items():
+                _safe_set(span, attr, fields.get(field))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[genai-attrs] context usage attrs failed: %s", exc)
+
 
 def set_activity_attrs(
     span: Any | None = None,

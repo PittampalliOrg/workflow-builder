@@ -51,9 +51,7 @@ def _msg_tool_call_ids(msg: Any) -> list[str]:
 
 
 def _is_compact_boundary(msg: Any) -> bool:
-    """Compact boundary markers are role=system, content begins with sentinel."""
-    if _msg_role(msg) != "system":
-        return False
+    """Compact boundary markers may be old role=system or new role=user."""
     content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
     if isinstance(content, str) and content.startswith("__COMPACT_BOUNDARY__ "):
         return True

@@ -67,7 +67,7 @@ def test_drops_assistant_whose_tool_results_are_missing():
 def test_does_not_cross_compact_boundary_backward():
     # If a compact boundary exists earlier, we must not extend backward past it.
     msgs = [
-        {"role": "system", "content": "__COMPACT_BOUNDARY__ {\"turn_index\": 0}"},
+        {"role": "user", "content": "__COMPACT_BOUNDARY__ {\"turn_index\": 0}"},
         {"role": "user", "content": "<compact_summary>prior</compact_summary>"},
         _a("new assistant", tool_calls=["z"]),
         _t("z", "z_result"),
@@ -77,6 +77,18 @@ def test_does_not_cross_compact_boundary_backward():
     assert len(tail) == 2
     assert tail[0]["role"] == "assistant"
     assert tail[1]["role"] == "tool"
+
+
+def test_old_system_boundary_still_stops_backward_walk():
+    msgs = [
+        {"role": "system", "content": "__COMPACT_BOUNDARY__ {\"turn_index\": 0}"},
+        {"role": "user", "content": "<compact_summary>prior</compact_summary>"},
+        _a("new assistant", tool_calls=["z"]),
+        _t("z", "z_result"),
+    ]
+    tail = select_preserved_tail(msgs, 2)
+    assert len(tail) == 2
+    assert tail[0]["role"] == "assistant"
 
 
 def test_empty_and_zero_n():

@@ -6,6 +6,7 @@ from src.compaction.tokens import (
     DEFAULT_WINDOW,
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
     get_auto_compact_threshold,
+    context_usage_fields,
     get_context_window,
     get_effective_window,
     heuristic_token_count,
@@ -83,3 +84,31 @@ def test_heuristic_token_count_handles_list_content():
     ]
     count = heuristic_token_count(msgs)
     assert count > 8  # non-trivial, greater than just the per-message overhead
+
+
+def test_context_usage_fields_match_claude_style_percentages():
+    fields = context_usage_fields(
+        model="claude-sonnet-4-6",
+        input_tokens=80_000,
+        cache_read_input_tokens=10_000,
+        cache_creation_input_tokens=10_000,
+    )
+
+    assert fields["context_window_size"] == 200_000
+    assert fields["context_input_tokens"] == 100_000
+    assert fields["context_used_percentage"] == 50
+    assert fields["context_remaining_percentage"] == 50
+    assert fields["context_effective_window"] == 180_000
+    assert fields["context_auto_compact_threshold"] == 167_000
+    assert fields["context_until_auto_compact_percentage"] == 40
+
+
+def test_context_usage_fields_clamp_at_window():
+    fields = context_usage_fields(
+        model="claude-sonnet-4-6",
+        token_count=250_000,
+    )
+
+    assert fields["context_used_percentage"] == 100
+    assert fields["context_remaining_percentage"] == 0
+    assert fields["context_until_auto_compact_percentage"] == 0

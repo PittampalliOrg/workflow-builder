@@ -30,6 +30,7 @@ from .microcompact import microcompact_messages
 from .pairing import select_preserved_tail
 from .prompts import format_compact_summary, get_compact_prompt
 from .tokens import (
+    context_usage_fields,
     count_tokens,
     get_auto_compact_threshold,
     heuristic_token_count,
@@ -89,8 +90,6 @@ def _find_latest_boundary_metadata(messages: list[Any]) -> Optional[dict[str, An
     """Scan from the end for the most recent compact boundary marker and return
     its parsed JSON metadata. Returns None if no boundary is present."""
     for m in reversed(messages):
-        if _msg_role(m) != "system":
-            continue
         content = _msg_content(m)
         if not isinstance(content, str) or not content.startswith(_BOUNDARY_SENTINEL):
             continue
@@ -124,7 +123,7 @@ def _build_boundary_marker(
 ) -> Any:
     return _make_message(
         agent,
-        role="system",
+        role="user",
         content=_BOUNDARY_SENTINEL + json.dumps(metadata, separators=(",", ":")),
     )
 
@@ -224,6 +223,21 @@ def _ptl_trim_head(transcript_messages: list[dict[str, Any]]) -> list[dict[str, 
             "content": "[...earlier transcript trimmed for PTL retry...]\n\n" + text[cut:],
         }
     return out
+
+
+def _context_fields_for_count(
+    *,
+    model: str | None,
+    token_count: int,
+    config: CompactionConfig,
+) -> dict[str, int]:
+    return context_usage_fields(
+        model=model,
+        token_count=token_count,
+        window_override=config.auto_compact_window,
+        summary_reserve=config.summary_reserve,
+        buffer_tokens=config.buffer_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +399,20 @@ def maybe_compact(
 
     # 4. Emit start event
     try:
+        start_context_fields = _context_fields_for_count(
+            model=model,
+            token_count=pre_count,
+            config=config,
+        )
         publish_session_event(
             session_id,
             "compaction_start",
-            {"preCount": pre_count, "threshold": threshold, "trigger": "auto"},
+            {
+                "preCount": pre_count,
+                "threshold": threshold,
+                "trigger": "auto",
+                **start_context_fields,
+            },
             instance_id=instance_id,
         )
     except Exception:
@@ -437,6 +461,11 @@ def maybe_compact(
                             "trigger": "auto",
                             "reason": f"pre_compact_blocked:{reason}",
                             "success": False,
+                            **_context_fields_for_count(
+                                model=model,
+                                token_count=pre_count,
+                                config=config,
+                            ),
                         },
                         instance_id=instance_id,
                     )
@@ -522,6 +551,11 @@ def maybe_compact(
                     "reason": "ptl_retries_exhausted",
                     "success": False,
                     "error": str(last_exc)[:500],
+                    **_context_fields_for_count(
+                        model=model,
+                        token_count=pre_count,
+                        config=config,
+                    ),
                 },
                 instance_id=instance_id,
             )
@@ -676,6 +710,11 @@ def maybe_compact(
                     "trigger": "auto",
                     "reason": "etag_conflict",
                     "success": False,
+                    **_context_fields_for_count(
+                        model=model,
+                        token_count=pre_count,
+                        config=config,
+                    ),
                 },
                 instance_id=instance_id,
             )
@@ -702,6 +741,11 @@ def maybe_compact(
                 "trigger": "auto",
                 "reason": "ok",
                 "success": True,
+                **_context_fields_for_count(
+                    model=model,
+                    token_count=post_count_estimate,
+                    config=config,
+                ),
             },
             instance_id=instance_id,
         )

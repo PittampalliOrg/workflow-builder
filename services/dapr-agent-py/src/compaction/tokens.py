@@ -108,6 +108,72 @@ def get_auto_compact_threshold(
     return max(0, effective - buffer_tokens)
 
 
+def _clamp_percentage(value: float) -> int:
+    try:
+        return max(0, min(100, int(round(value))))
+    except Exception:
+        return 0
+
+
+def context_usage_fields(
+    *,
+    model: str | None,
+    input_tokens: int | float | None = None,
+    cache_read_input_tokens: int | float | None = None,
+    cache_creation_input_tokens: int | float | None = None,
+    token_count: int | float | None = None,
+    window_override: int | None = None,
+    summary_reserve: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+    buffer_tokens: int = AUTOCOMPACT_BUFFER_TOKENS,
+) -> dict[str, int]:
+    """Return additive context-window telemetry fields.
+
+    `input_tokens` mirrors provider usage events. `token_count` lets the
+    compaction engine supply its pre/post conversation estimate directly.
+    """
+    def _int(value: int | float | None) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    prompt = _int(input_tokens)
+    cache_read = _int(cache_read_input_tokens)
+    cache_create = _int(cache_creation_input_tokens)
+    context_input = _int(token_count)
+    if context_input <= 0:
+        context_input = prompt + cache_read + cache_create
+
+    window = get_context_window(model)
+    used_percentage = _clamp_percentage((context_input / window) * 100) if window > 0 else 0
+    remaining_percentage = max(0, 100 - used_percentage)
+    effective = get_effective_window(
+        model,
+        window_override=window_override,
+        summary_reserve=summary_reserve,
+    )
+    threshold = get_auto_compact_threshold(
+        model,
+        window_override=window_override,
+        summary_reserve=summary_reserve,
+        buffer_tokens=buffer_tokens,
+    )
+    if threshold > 0:
+        until_auto = _clamp_percentage(((threshold - context_input) / threshold) * 100)
+    else:
+        until_auto = 0
+
+    return {
+        "context_window_size": window,
+        "context_input_tokens": context_input,
+        "context_used_percentage": used_percentage,
+        "context_remaining_percentage": remaining_percentage,
+        "context_effective_window": effective,
+        "context_auto_compact_threshold": threshold,
+        "context_until_auto_compact_percentage": until_auto,
+    }
+
+
 def _message_text(msg: Any) -> str:
     """Extract a flat text representation from a message (dict or Pydantic)."""
     if isinstance(msg, dict):
@@ -225,6 +291,7 @@ __all__ = [
     "get_context_window",
     "get_effective_window",
     "get_auto_compact_threshold",
+    "context_usage_fields",
     "heuristic_token_count",
     "count_tokens",
 ]

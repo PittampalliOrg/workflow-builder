@@ -68,6 +68,9 @@
 				parts.push(`cache ${fmtTokens(cacheRead)} (${pct}%)`);
 			}
 			if (cacheCreate > 0) parts.push(`+${fmtTokens(cacheCreate)} cached`);
+			if (d.context_used_percentage !== undefined) {
+				parts.push(`ctx ${Math.round(Number(d.context_used_percentage))}%`);
+			}
 			return parts.join(' · ');
 		}
 		if (kind === 'status') {

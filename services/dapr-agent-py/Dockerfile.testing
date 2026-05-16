@@ -21,7 +21,7 @@ RUN npm install -g \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
+RUN uv sync --frozen --no-dev
 COPY src/ src/
 
 EXPOSE 8002

@@ -8,7 +8,7 @@ root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
     sys.path.insert(0, root)
 
-from src.telemetry.genai_attrs import set_activity_attrs  # noqa: E402
+from src.telemetry.genai_attrs import set_activity_attrs, set_genai_response_attrs  # noqa: E402
 
 
 class FakeSpan:
@@ -46,3 +46,22 @@ def test_set_activity_attrs_stamps_workflow_and_agent_identity() -> None:
     assert span.attrs["agent.app_id"] == "agent-runtime-coding-agent"
     assert span.attrs["dapr.component"] == "llm-openai"
     assert span.attrs["tool.name"] == "read_file"
+
+
+def test_set_genai_response_attrs_stamps_context_percentages() -> None:
+    span = FakeSpan()
+
+    set_genai_response_attrs(
+        span,
+        response_model="claude-sonnet-4-6",
+        usage={
+            "input_tokens": 80_000,
+            "cache_read_input_tokens": 10_000,
+            "cache_creation_input_tokens": 10_000,
+        },
+    )
+
+    assert span.attrs["llm.context_window.size"] == 200_000
+    assert span.attrs["llm.context.input_tokens"] == 100_000
+    assert span.attrs["llm.context.used_percentage"] == 50
+    assert span.attrs["llm.context.remaining_percentage"] == 50

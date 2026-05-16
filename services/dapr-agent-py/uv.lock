@@ -535,7 +535,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.51" },
     { name = "dapr", specifier = ">=1.14" },
-    { name = "dapr-agents", specifier = ">=1.0.2" },
+    { name = "dapr-agents", specifier = "==1.0.2" },
     { name = "dapr-ext-workflow", specifier = ">=1.14" },
     { name = "ddgs", specifier = ">=7.0" },
     { name = "fastapi", specifier = ">=0.104" },

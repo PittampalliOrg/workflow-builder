@@ -115,3 +115,33 @@ def test_publish_session_event_stamps_missing_trace_context(monkeypatch):
 
     assert captured[0][1]["data"]["traceId"] == "ambient-trace"
     assert captured[0][1]["data"]["spanId"] == "ambient-span"
+
+
+def test_publish_session_event_stamps_context_usage_fields(monkeypatch):
+    from src import event_publisher
+
+    captured = []
+    monkeypatch.setattr(event_publisher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        event_publisher,
+        "_post_ingest",
+        lambda session_id, envelope: captured.append((session_id, envelope)),
+    )
+
+    event_publisher.publish_session_event(
+        "session-1",
+        "agent.llm_usage",
+        {
+            "model": "claude-sonnet-4-6",
+            "input_tokens": 80_000,
+            "cache_read_input_tokens": 10_000,
+            "cache_creation_input_tokens": 10_000,
+        },
+        source_event_id="source-context",
+    )
+
+    data = captured[0][1]["data"]
+    assert data["context_window_size"] == 200_000
+    assert data["context_input_tokens"] == 100_000
+    assert data["context_used_percentage"] == 50
+    assert data["context_remaining_percentage"] == 50

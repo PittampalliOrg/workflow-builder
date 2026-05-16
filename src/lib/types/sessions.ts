@@ -21,6 +21,13 @@ export type SessionUsage = {
 	output_tokens?: number;
 	cache_creation_input_tokens?: number;
 	cache_read_input_tokens?: number;
+	context_window_size?: number;
+	context_input_tokens?: number;
+	context_used_percentage?: number;
+	context_remaining_percentage?: number;
+	context_effective_window?: number;
+	context_auto_compact_threshold?: number;
+	context_until_auto_compact_percentage?: number;
 };
 
 export type SessionSummary = {

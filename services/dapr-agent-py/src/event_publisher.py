@@ -348,6 +348,27 @@ def publish_session_event(
         if cma_type != "session.runtime_config" and value is not None:
             cma_data.setdefault(key, value)
 
+    if cma_type == "agent.llm_usage":
+        try:
+            from src.compaction.tokens import context_usage_fields
+
+            model = (
+                cma_data.get("model")
+                or cma_data.get("providerModel")
+                or cma_data.get("modelSpec")
+                or cma_data.get("llmComponent")
+            )
+            fields = context_usage_fields(
+                model=str(model) if model else None,
+                input_tokens=cma_data.get("input_tokens") or cma_data.get("prompt_tokens"),
+                cache_read_input_tokens=cma_data.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=cma_data.get("cache_creation_input_tokens"),
+            )
+            for key, value in fields.items():
+                cma_data.setdefault(key, value)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[session-ingest] context telemetry stamp failed: %s", exc)
+
     # Stamp trace_id + span_id of the currently-active OTEL span onto the
     # envelope so the UI can deep-link any event row into Phoenix / ClickHouse
     # without needing a separate correlation step. Best-effort — if the OTEL
