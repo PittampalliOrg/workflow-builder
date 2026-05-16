@@ -753,6 +753,35 @@ const SANDBOX_GROUP = "agents.x-k8s.io";
 const SANDBOX_EXTENSIONS_GROUP = "extensions.agents.x-k8s.io";
 const SANDBOX_API_VERSION = "v1alpha1";
 
+export type AgentSandboxResource = {
+	apiVersion?: string;
+	kind?: string;
+	metadata?: {
+		name?: string;
+		namespace?: string;
+		labels?: Record<string, string>;
+		annotations?: Record<string, string>;
+		creationTimestamp?: string;
+		deletionTimestamp?: string;
+	};
+	spec?: Record<string, unknown>;
+	status?: {
+		phase?: string;
+		conditions?: Array<{
+			type?: string;
+			status?: string;
+			message?: string;
+		}>;
+	};
+};
+
+function sandboxPath(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): string {
+	return `/apis/${SANDBOX_GROUP}/${SANDBOX_API_VERSION}/namespaces/${namespace}/sandboxes/${name}`;
+}
+
 function sandboxTemplatePath(
 	name: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
@@ -854,6 +883,42 @@ export function browserAgentSandboxWarmPoolName(agentSlug: string): string {
 
 export function browserAgentMcpServiceName(agentSlug: string): string {
 	return `agent-runtime-${agentSlug}-mcp`;
+}
+
+export async function getKubernetesSandbox(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<AgentSandboxResource | null> {
+	const res = await kubeFetch(sandboxPath(name, namespace));
+	if (res.status === 404) return null;
+	if (!res.ok) {
+		throw new Error(
+			`get Sandbox ${name} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	return (await res.json()) as AgentSandboxResource;
+}
+
+export async function deleteKubernetesSandbox(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<"deleted" | "missing"> {
+	const res = await kubeFetch(sandboxPath(name, namespace), {
+		method: "DELETE",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			apiVersion: "v1",
+			kind: "DeleteOptions",
+			propagationPolicy: "Background",
+		}),
+	});
+	if (res.status === 404) return "missing";
+	if (!res.ok) {
+		throw new Error(
+			`delete Sandbox ${name} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	return "deleted";
 }
 
 export async function upsertSandboxTemplate(

@@ -79,7 +79,7 @@ class AgentWorkflowHostRequest(BaseModel):
     runId: str | None = None
     instanceId: str | None = None
     executionClass: str = Field(default="benchmark-fast")
-    timeoutSeconds: int = Field(default=7200, ge=60, le=86400)
+    timeoutSeconds: int | None = Field(default=None, ge=60, le=86400)
     agentImage: str | None = None
     waitReadySeconds: int = Field(default=0, ge=0, le=300)
     # Maps to kueue.x-k8s.io/priority-class on the pod template. Recognized
@@ -129,6 +129,12 @@ def _load_execution_classes() -> dict[str, ExecutionClassConfig]:
         base = merged.get(name, ExecutionClassConfig(localQueue=_safe_name(name)))
         merged[name] = base.model_copy(update=value)
     return merged
+
+
+def _agent_host_start_timeout_seconds(request: AgentWorkflowHostRequest) -> str:
+    if request.timeoutSeconds is None:
+        return os.environ.get("DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS", "900")
+    return str(min(request.timeoutSeconds, 1800))
 
 
 def _job_ttl_seconds(class_config: ExecutionClassConfig) -> int:
@@ -561,7 +567,7 @@ def build_agent_workflow_host_sandbox_manifest(
                     },
                     {
                         "name": "DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS",
-                        "value": str(min(request.timeoutSeconds, 1800)),
+                        "value": _agent_host_start_timeout_seconds(request),
                     },
                     {
                         "name": "DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS",
@@ -696,7 +702,8 @@ def build_agent_workflow_host_sandbox_manifest(
         ]
     if class_config.runtimeClassName:
         pod_spec["runtimeClassName"] = class_config.runtimeClassName
-    pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
+    if request.timeoutSeconds is not None:
+        pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
     pod_labels: dict[str, str] = {
         "app": "agent-workflow-host",
         KUEUE_QUEUE_LABEL: class_config.localQueue,

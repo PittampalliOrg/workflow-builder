@@ -185,6 +185,7 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS"] == "16"
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES"] == "48"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
+    assert env["DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS"] == "900"
     assert env["DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS"] == "60"
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
     assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"
@@ -204,6 +205,32 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+
+
+def test_agent_workflow_host_sandbox_without_timeout_has_no_active_deadline(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS", raising=False)
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    pod_spec = manifest["spec"]["podTemplate"]["spec"]
+    assert "activeDeadlineSeconds" not in pod_spec
+    container = pod_spec["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS"] == "900"
 
 
 def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> None:

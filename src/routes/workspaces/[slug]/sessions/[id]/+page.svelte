@@ -76,6 +76,7 @@
 		Sparkles,
 		Square,
 		Terminal,
+		Trash2,
 		User,
 		Workflow,
 		Wrench,
@@ -439,12 +440,11 @@
 	let expiringCreds = $state<
 		Array<{ vaultId: string; credId: string; displayName: string; expiresAt: string }>
 	>([]);
-	// Liveness of the per-session OpenShell sandbox. Sessions persist the
-	// sandbox name forever, but OpenShell GCs the sandbox after the session
-	// terminates — so links to /sandboxes/<name> often 404. We probe on load
-	// and re-probe on status change to mark the card as "terminated" instead
-	// of inviting the user to click a dead link.
+	// Liveness of the per-session runtime/workspace sandbox. Sessions persist
+	// sandbox names forever, but the backing pod/CR may be deleted separately.
 	let sandboxAlive = $state<'unknown' | 'alive' | 'terminated'>('unknown');
+	let sandboxDeleting = $state(false);
+	let sandboxDeleteError = $state<string | null>(null);
 	// CMA-style compact event list: a single selected event is expanded in
 	// the right-side detail panel. When null, we auto-select the newest
 	// event so the panel is never empty once events start flowing.
@@ -464,6 +464,17 @@
 		if (list.length === 0) return null;
 		const explicit = list.find((e) => String(e.id) === selectedEventId);
 		return explicit ?? list[list.length - 1];
+	});
+	const primarySandboxName = $derived(
+		session?.runtimeSandboxName ?? session?.workspaceSandboxName ?? session?.sandboxName ?? null
+	);
+	const hasDestroyableSessionSandbox = $derived(
+		Boolean(session?.runtimeSandboxName || session?.workspaceSandboxName)
+	);
+	const primarySandboxLabel = $derived.by(() => {
+		if (session?.runtimeSandboxName) return 'Session runtime sandbox';
+		if (session?.workspaceSandboxName) return 'Session sandbox';
+		return 'Sandbox runtime';
 	});
 	// Find the matching tool_use ↔ tool_result mate so EventDetailPanel can
 	// render both halves together (input + output) regardless of which row
@@ -740,7 +751,7 @@
 			sandboxAlive = 'unknown';
 			return;
 		}
-		const name = session.workspaceSandboxName ?? session.sandboxName;
+		const name = primarySandboxName;
 		if (!name) {
 			sandboxAlive = 'unknown';
 			return;
@@ -993,6 +1004,35 @@
 		if (!session) return;
 		const res = await fetch(`/api/v1/sessions/${sessionId}`, { method: 'PATCH' });
 		if (res.ok) goto(`/workspaces/${slug}/sessions`);
+	}
+
+	async function destroySessionSandbox() {
+		if (!session || !hasDestroyableSessionSandbox || sandboxDeleting) return;
+		const name = session.runtimeSandboxName ?? session.workspaceSandboxName;
+		if (!name) return;
+		if (!confirm(`Destroy sandbox ${name}?`)) return;
+		sandboxDeleting = true;
+		sandboxDeleteError = null;
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/sandbox`, {
+				method: 'DELETE'
+			});
+			const body = (await res.json().catch(() => ({}))) as {
+				message?: string;
+				error?: string;
+			};
+			if (!res.ok) {
+				sandboxDeleteError =
+					body.message ?? body.error ?? `Destroy sandbox failed (${res.status})`;
+				return;
+			}
+			sandboxAlive = 'terminated';
+			void checkSandboxLiveness();
+		} catch (err) {
+			sandboxDeleteError = err instanceof Error ? err.message : String(err);
+		} finally {
+			sandboxDeleting = false;
+		}
 	}
 
 	async function setModel(modelSpec: string) {
@@ -1896,58 +1936,98 @@
 					</Card>
 				{/if}
 
-				{#if session.workspaceSandboxName || session.sandboxName}
-					{@const sbxName = session.workspaceSandboxName ?? session.sandboxName}
-					<Card>
-						<CardHeader class="pb-2">
-							<CardTitle class="text-sm flex items-center gap-2">
-								<Container class="size-4" />
-								{session.workspaceSandboxName ? 'Session sandbox' : 'Sandbox runtime'}
-								{#if sandboxAlive === 'alive'}
-									<Badge
-										variant="outline"
-										class="text-[9px] gap-1 bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
+					{#if primarySandboxName}
+						{@const sbxName = primarySandboxName}
+						<Card>
+							<CardHeader class="pb-2">
+								<div class="flex items-start justify-between gap-2">
+									<CardTitle class="text-sm flex items-center gap-2 min-w-0">
+										<Container class="size-4 shrink-0" />
+										<span class="truncate">{primarySandboxLabel}</span>
+										{#if sandboxAlive === 'alive'}
+											<Badge
+												variant="outline"
+												class="text-[9px] gap-1 bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
+											>
+												<span class="size-1.5 rounded-full bg-green-500"></span>
+												live
+											</Badge>
+										{:else if sandboxAlive === 'terminated'}
+											<Badge variant="outline" class="text-[9px]">terminated</Badge>
+										{/if}
+									</CardTitle>
+									{#if hasDestroyableSessionSandbox}
+										<Button
+											variant="ghost"
+											size="icon"
+											class="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+											onclick={destroySessionSandbox}
+											disabled={sandboxDeleting || sandboxAlive === 'terminated'}
+											title="Destroy sandbox"
+											aria-label="Destroy sandbox"
+										>
+											{#if sandboxDeleting}
+												<Loader2 class="size-4 animate-spin" />
+											{:else}
+												<Trash2 class="size-4" />
+											{/if}
+										</Button>
+									{/if}
+								</div>
+							</CardHeader>
+							<CardContent class="text-xs space-y-1">
+								{#if sandboxAlive === 'terminated'}
+									<span class="font-mono text-muted-foreground line-through">{sbxName}</span>
+									<div class="text-muted-foreground text-[10px]">
+										The sandbox has been garbage-collected. Live terminal, files, and logs
+										are no longer available for this session.
+									</div>
+								{:else if session.runtimeSandboxName}
+									<div class="font-mono text-muted-foreground break-all">
+										{session.runtimeSandboxName}
+									</div>
+									<div class="text-muted-foreground text-[10px]">
+										Per-session runtime host for this interactive session.
+									</div>
+									{#if session.workspaceSandboxName}
+										<div class="text-muted-foreground text-[10px]">
+											Workspace:
+											<a
+												href="/sandboxes/{session.workspaceSandboxName}"
+												class="text-primary hover:underline font-mono"
+											>
+												{session.workspaceSandboxName}
+											</a>
+										</div>
+									{/if}
+								{:else if session.workspaceSandboxName}
+									<a
+										href="/sandboxes/{session.workspaceSandboxName}"
+										class="text-primary hover:underline font-mono"
 									>
-										<span class="size-1.5 rounded-full bg-green-500"></span>
-										live
-									</Badge>
-								{:else if sandboxAlive === 'terminated'}
-									<Badge variant="outline" class="text-[9px]">terminated</Badge>
+										{session.workspaceSandboxName}
+									</a>
+									<div class="text-muted-foreground text-[10px]">
+										Per-session OpenShell sandbox — open the terminal, browse files,
+										and inspect live logs.
+									</div>
+								{:else if session.sandboxName}
+									<a
+										href="/sandboxes/{session.sandboxName}"
+										class="text-primary hover:underline font-mono"
+									>
+										{session.sandboxName}
+									</a>
+									<div class="text-muted-foreground text-[10px]">
+										Runtime pod — this session ran on the shared {session.sandboxName} agent deployment.
+									</div>
 								{/if}
-							</CardTitle>
-						</CardHeader>
-						<CardContent class="text-xs space-y-1">
-							{#if sandboxAlive === 'terminated'}
-								<span class="font-mono text-muted-foreground line-through">{sbxName}</span>
-								<div class="text-muted-foreground text-[10px]">
-									The sandbox has been garbage-collected. Live terminal, files, and logs
-									are no longer available for this session.
-								</div>
-							{:else if session.workspaceSandboxName}
-								<a
-									href="/sandboxes/{session.workspaceSandboxName}"
-									class="text-primary hover:underline font-mono"
-								>
-									{session.workspaceSandboxName}
-								</a>
-								<div class="text-muted-foreground text-[10px]">
-									Per-session OpenShell sandbox — open the terminal, browse files,
-									and inspect live logs.
-								</div>
-							{:else if session.sandboxName}
-								<a
-									href="/sandboxes/{session.sandboxName}"
-									class="text-primary hover:underline font-mono"
-								>
-									{session.sandboxName}
-								</a>
-								<div class="text-muted-foreground text-[10px]">
-									Runtime pod — this session ran on the shared {session.sandboxName} agent deployment.
-								</div>
-							{/if}
-						</CardContent>
-					</Card>
-				{/if}
+								{#if sandboxDeleteError}
+									<div class="text-destructive text-[10px]">{sandboxDeleteError}</div>
+								{/if}
+							</CardContent>
+						</Card>
+					{/if}
 
 				<SessionResourcesPanel {sessionId} />
 				<SessionOutputsPanel {sessionId} />

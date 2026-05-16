@@ -96,6 +96,26 @@ export interface TraceContext {
 	baggage: string | null;
 }
 
+function agentWorkflowHostTimeoutSeconds(params: {
+	timeoutMinutes: number | null;
+	workflowExecutionId: string | null;
+	benchmarkRunId: string | null;
+}): number | null {
+	if (
+		typeof params.timeoutMinutes === "number" &&
+		Number.isFinite(params.timeoutMinutes)
+	) {
+		return Math.max(60, params.timeoutMinutes * 60);
+	}
+	// UI-direct interactive sessions are intentionally long-lived. Workflow and
+	// benchmark sessions still get a bounded default unless their durable/run
+	// config supplies an explicit timeout.
+	if (!params.workflowExecutionId && !params.benchmarkRunId) {
+		return null;
+	}
+	return 15 * 60;
+}
+
 /**
  * Extract W3C trace-context headers from an incoming SvelteKit request so
  * they can be forwarded to sandbox-execution-api and ultimately stamped onto
@@ -130,7 +150,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		);
 	}
 	const agentAppId = sessionHostAppId(params.sessionId);
-	const timeoutSeconds = Math.max(60, (params.timeoutMinutes ?? 15) * 60);
+	const timeoutSeconds = agentWorkflowHostTimeoutSeconds(params);
 	const waitReadySecondsRaw = Number(
 		env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
 			process.env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
@@ -188,7 +208,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 				env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
 				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
 				"benchmark-fast",
-			timeoutSeconds,
+			...(timeoutSeconds === null ? {} : { timeoutSeconds }),
 			waitReadySeconds,
 			priorityClass,
 			...(agentImage ? { agentImage } : {}),

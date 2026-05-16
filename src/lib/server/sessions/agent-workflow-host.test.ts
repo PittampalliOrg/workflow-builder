@@ -1,13 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import {
 	extractTraceContext,
+	maybeProvisionAgentWorkflowHost,
 	waitForAgentWorkflowHostAppReady,
 } from "./agent-workflow-host";
 
 vi.mock("$lib/server/kube/client", () => ({
 	getAgentWorkflowHostPod: vi.fn(),
 }));
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
+});
 
 describe("agent workflow host trace context", () => {
 	it("extracts W3C trace headers including baggage", () => {
@@ -72,5 +78,80 @@ describe("agent workflow host app readiness", () => {
 			"http://10.244.1.20:8002/healthz",
 			"http://10.244.1.20:8002/healthz",
 		]);
+	});
+});
+
+describe("agent workflow host provisioning", () => {
+	beforeEach(() => {
+		vi.unstubAllEnvs();
+		vi.stubEnv("AGENT_WORKFLOW_HOST_BACKEND", "kueue");
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-execution-api");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				return new Response(
+					JSON.stringify({
+						agentAppId: "agent-session-returned",
+						sandboxName: "agent-host-agent-session-returned",
+						status: "ready",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}) as unknown as typeof fetch,
+		);
+	});
+
+	it("omits timeoutSeconds for direct interactive session hosts", async () => {
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-direct-1",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: null,
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body).not.toHaveProperty("timeoutSeconds");
+	});
+
+	it("keeps workflow-driven hosts bounded when no timeout is provided", async () => {
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-workflow-1",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.timeoutSeconds).toBe(900);
+	});
+
+	it("honors explicit host timeouts", async () => {
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-direct-2",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: null,
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: 7,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.timeoutSeconds).toBe(420);
 	});
 });
