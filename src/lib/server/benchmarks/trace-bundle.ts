@@ -17,17 +17,21 @@ import type {
 	ObservabilityTraceSpan,
 } from "$lib/types/observability";
 import {
+	denormalizeMlflowTraceId,
 	downloadMlflowJsonArtifact,
 	ensureBenchmarkInstanceMlflowRun,
+	getMlflowNativeTrace,
 	logBatch,
 	logMlflowJsonArtifact,
+	normalizeMlflowTraceId,
 	publicMlflowTracesUrl,
 	publicWorkflowBuilderTraceUrl,
 } from "./mlflow";
-import type { MlflowTag } from "./mlflow";
+import type { MlflowNativeTrace, MlflowNativeTraceSpan, MlflowTag } from "./mlflow";
 
 export type SwebenchTraceBundleBackend =
 	| "mlflow_artifact"
+	| "mlflow_native"
 	| "clickhouse_derived"
 	| "clickhouse_raw"
 	| "none";
@@ -175,44 +179,62 @@ export async function loadSwebenchTraceBundle(params: {
 				row.mlflowRunId,
 				artifactPath,
 			);
+			let artifactFound = false;
 			if (artifact) {
-				return {
-					...artifact,
-					backend: "mlflow_artifact",
-					artifactPath,
-					canonicalTraceId:
-						artifact.canonicalTraceId ??
-						canonicalTraceId ??
-						artifact.traceIds?.[0] ??
-						null,
-					auxiliaryTraces:
-						artifact.auxiliaryTraces ??
-						(artifact.traceIds ?? [])
-							.filter((traceId) => traceId !== (artifact.canonicalTraceId ?? canonicalTraceId))
-							.map((traceId) => ({ traceId, status: "missing" as const })),
-					requiredContext:
-						artifact.requiredContext ??
-						defaultRequiredContext(
-							artifact.traceSpans ?? [],
-							artifact.llmSpans ?? [],
-							artifact.toolSpans ?? [],
-							artifact.canonicalTraceId ?? canonicalTraceId ?? null,
-						),
-					groups: artifact.groups ?? groupTraceSpans(artifact.traceSpans ?? []),
-					warnings: artifact.warnings ?? [],
-				};
+				artifactFound = true;
+				const artifactBackend = artifact.backend;
+				if (!repairArtifact || artifactBackend === "mlflow_native") {
+					return normalizeArtifactBundle(artifact, artifactPath, canonicalTraceId);
+				}
+				warnings.push(
+					`MLflow artifact ${artifactPath} used ${artifactBackend}; rebuilt from native MLflow traces`,
+				);
 			}
-			warnings.push(`MLflow artifact ${artifactPath} was missing; rebuilt from ClickHouse`);
+			if (!artifactFound) {
+				warnings.push(`MLflow artifact ${artifactPath} was missing; rebuilt from trace backends`);
+			}
 		} catch (err) {
-			warnings.push(`MLflow artifact read failed; rebuilt from ClickHouse: ${errorMessage(err)}`);
+			warnings.push(`MLflow artifact read failed; rebuilt from trace backends: ${errorMessage(err)}`);
 		}
 	}
 
-	const bundle = await buildSwebenchTraceBundleFromClickHouse(base, warnings);
+	const bundle = await buildSwebenchTraceBundle(base, warnings);
 	if (repairArtifact && bundle.traceIds.length > 0) {
 		await logTraceBundleArtifact(params.runId, params.instanceId, bundle);
 	}
 	return bundle;
+}
+
+function normalizeArtifactBundle(
+	artifact: SwebenchTraceBundle,
+	artifactPath: string,
+	canonicalTraceId: string | null,
+): SwebenchTraceBundle {
+	return {
+		...artifact,
+		backend: "mlflow_artifact",
+		artifactPath,
+		canonicalTraceId:
+			artifact.canonicalTraceId ??
+			canonicalTraceId ??
+			artifact.traceIds?.[0] ??
+			null,
+		auxiliaryTraces:
+			artifact.auxiliaryTraces ??
+			(artifact.traceIds ?? [])
+				.filter((traceId) => traceId !== (artifact.canonicalTraceId ?? canonicalTraceId))
+				.map((traceId) => ({ traceId, status: "missing" as const })),
+		requiredContext:
+			artifact.requiredContext ??
+			defaultRequiredContext(
+				artifact.traceSpans ?? [],
+				artifact.llmSpans ?? [],
+				artifact.toolSpans ?? [],
+				artifact.canonicalTraceId ?? canonicalTraceId ?? null,
+			),
+		groups: artifact.groups ?? groupTraceSpans(artifact.traceSpans ?? []),
+		warnings: artifact.warnings ?? [],
+	};
 }
 
 export async function materializeSwebenchTraceBundle(params: {
@@ -460,6 +482,74 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 	});
 }
 
+export async function buildSwebenchTraceBundle(
+	input: RawBuildInput,
+	warnings: string[] = [],
+): Promise<SwebenchTraceBundle> {
+	const native = await buildSwebenchTraceBundleFromMlflowNative(input, warnings);
+	if (native.summary.traceSpanCount > 0) return native;
+	return buildSwebenchTraceBundleFromClickHouse(input, warnings);
+}
+
+export async function buildSwebenchTraceBundleFromMlflowNative(
+	input: RawBuildInput,
+	warnings: string[] = [],
+): Promise<SwebenchTraceBundle> {
+	const mlflowTracesUrl = publicMlflowTracesUrl(
+		input.mlflowExperimentId,
+		input.canonicalTraceId ?? input.traceIds[0],
+	);
+	if (input.traceIds.length === 0) {
+		return createBundle(input, {
+			backend: "none",
+			mlflowTracesUrl,
+			traceSpans: [],
+			llmSpans: [],
+			toolSpans: [],
+			warnings,
+			derivedLlmSpanCount: 0,
+			derivedToolSpanCount: 0,
+		});
+	}
+
+	const traceSpans: ObservabilityTraceSpan[] = [];
+	for (const traceId of input.traceIds) {
+		try {
+			const native = await getMlflowNativeTrace(traceId);
+			if (!native?.trace?.spans?.length) continue;
+			traceSpans.push(...normalizeMlflowNativeTraceSpans(native, traceId));
+		} catch (err) {
+			warnings.push(`MLflow native trace read failed for ${traceId}: ${errorMessage(err)}`);
+		}
+	}
+	traceSpans.sort((a, b) => a.startTime.localeCompare(b.startTime));
+	const normalized = normalizeRawTraceSpans(traceSpans);
+	return createBundle(input, {
+		backend: traceSpans.length > 0 ? "mlflow_native" : "none",
+		mlflowTracesUrl,
+		traceSpans,
+		llmSpans: normalized.llmSpans,
+		toolSpans: normalized.toolSpans,
+		warnings,
+		derivedLlmSpanCount: normalized.llmSpans.length,
+		derivedToolSpanCount: normalized.toolSpans.length,
+	});
+}
+
+export function normalizeMlflowNativeTraceSpans(
+	native: MlflowNativeTrace,
+	requestedTraceId: string,
+): ObservabilityTraceSpan[] {
+	const traceInfoId = native.trace?.trace_info?.trace_id;
+	const bundleTraceId =
+		normalizeBundleTraceId(requestedTraceId) ??
+		denormalizeMlflowTraceId(traceInfoId) ??
+		String(traceInfoId ?? requestedTraceId);
+	return (native.trace?.spans ?? []).map((span) =>
+		normalizeMlflowNativeTraceSpan(span, bundleTraceId),
+	);
+}
+
 export function normalizeRawTraceSpans(traceSpans: ObservabilityTraceSpan[]): {
 	llmSpans: ObservabilityLlmSpan[];
 	toolSpans: ObservabilityToolSpan[];
@@ -691,6 +781,100 @@ function defaultRequiredContext(
 		auxiliaryTracesFound: 0,
 		auxiliaryTracesMissing: 0,
 	};
+}
+
+function normalizeMlflowNativeTraceSpan(
+	span: MlflowNativeTraceSpan,
+	traceId: string,
+): ObservabilityTraceSpan {
+	const attributes = mlflowAttributesToRecord(span.attributes ?? []);
+	const startMs = nanosToMillis(span.start_time_unix_nano);
+	const endMs = nanosToMillis(span.end_time_unix_nano);
+	const duration = startMs != null && endMs != null ? Math.max(0, endMs - startMs) : 0;
+	const statusCode = span.status?.code ?? null;
+	const statusMessage = span.status?.message ?? undefined;
+	return {
+		traceId,
+		spanId: span.span_id ?? `${span.name ?? "span"}:${String(span.start_time_unix_nano ?? "")}`,
+		parentSpanId: span.parent_id ?? span.parent_span_id ?? null,
+		operationName: span.name ?? "(unknown span)",
+		serviceName:
+			firstString(attributes, [
+				"service.name",
+				"service_name",
+				"telemetry.sdk.name",
+				"agent.app_id",
+				"agent.name",
+			]) ?? "mlflow",
+		startTime: startMs != null ? new Date(startMs).toISOString() : new Date(0).toISOString(),
+		duration,
+		status: statusCode === "STATUS_CODE_ERROR" ? "error" : "ok",
+		statusCode: statusCode ?? undefined,
+		statusMessage,
+		spanKind: firstString(attributes, ["span.kind"]) ?? undefined,
+		attributes,
+		resourceAttributes: {},
+		depth: 0,
+	};
+}
+
+function normalizeBundleTraceId(value: string): string | null {
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	return normalizeMlflowTraceId(trimmed)?.slice(3) ?? trimmed;
+}
+
+function nanosToMillis(value: unknown): number | null {
+	const n =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim()
+				? Number(value)
+				: NaN;
+	if (!Number.isFinite(n)) return null;
+	return n / 1_000_000;
+}
+
+function mlflowAttributesToRecord(
+	attributes: Array<{ key?: string; value?: unknown }>,
+): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const attr of attributes) {
+		if (!attr.key) continue;
+		out[attr.key] = mlflowAttributeValue(attr.value);
+	}
+	return out;
+}
+
+function mlflowAttributeValue(value: unknown): unknown {
+	if (!isRecord(value)) return value;
+	if ("string_value" in value) return value.string_value;
+	if ("int_value" in value) {
+		const n = Number(value.int_value);
+		return Number.isFinite(n) ? n : value.int_value;
+	}
+	if ("double_value" in value) {
+		const n = Number(value.double_value);
+		return Number.isFinite(n) ? n : value.double_value;
+	}
+	if ("bool_value" in value) return Boolean(value.bool_value);
+	if ("bytes_value" in value) return value.bytes_value;
+	if (isRecord(value.array_value)) {
+		const items = value.array_value.values;
+		return Array.isArray(items) ? items.map(mlflowAttributeValue) : [];
+	}
+	if (isRecord(value.kvlist_value)) {
+		const items = value.kvlist_value.values;
+		if (!Array.isArray(items)) return {};
+		const out: Record<string, unknown> = {};
+		for (const item of items) {
+			if (isRecord(item) && typeof item.key === "string") {
+				out[item.key] = mlflowAttributeValue(item.value);
+			}
+		}
+		return out;
+	}
+	return value;
 }
 
 function normalizeRawLlmSpan(

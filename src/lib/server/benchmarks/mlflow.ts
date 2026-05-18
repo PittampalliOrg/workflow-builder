@@ -29,6 +29,38 @@ export type MlflowArtifactInfo = {
 	isDir: boolean;
 	fileSize: number | null;
 };
+export type MlflowTraceAttributeValue = {
+	string_value?: string;
+	int_value?: number | string;
+	double_value?: number | string;
+	bool_value?: boolean;
+	bytes_value?: string;
+	array_value?: { values?: MlflowTraceAttributeValue[] };
+	kvlist_value?: { values?: Array<{ key?: string; value?: MlflowTraceAttributeValue }> };
+};
+export type MlflowNativeTraceSpan = {
+	name?: string;
+	trace_id?: string;
+	span_id?: string;
+	parent_id?: string | null;
+	parent_span_id?: string | null;
+	start_time_unix_nano?: number | string;
+	end_time_unix_nano?: number | string;
+	status?: { code?: string; message?: string };
+	attributes?: Array<{ key?: string; value?: MlflowTraceAttributeValue }>;
+};
+export type MlflowNativeTrace = {
+	trace?: {
+		trace_info?: {
+			trace_id?: string;
+			state?: string;
+			trace_location?: unknown;
+			tags?: Record<string, unknown> | Array<{ key?: string; value?: unknown }>;
+			trace_metadata?: Record<string, unknown> | Array<{ key?: string; value?: unknown }>;
+		};
+		spans?: MlflowNativeTraceSpan[];
+	};
+};
 
 const terminalRunStatuses = new Set(["completed", "failed", "cancelled"]);
 const terminalInstanceStatuses = new Set([
@@ -72,6 +104,11 @@ export function normalizeMlflowTraceId(value: unknown): string | null {
 		return `tr-${normalized}`;
 	}
 	return null;
+}
+
+export function denormalizeMlflowTraceId(value: unknown): string | null {
+	const normalized = normalizeMlflowTraceId(value);
+	return normalized ? normalized.slice(3) : null;
 }
 
 function resolveCanonicalMlflowTraceId(
@@ -136,10 +173,11 @@ export function publicWorkflowBuilderTraceUrl(
 async function mlflowRequest<T>(
 	path: string,
 	init: RequestInit = {},
+	options: { timeoutMs?: number } = {},
 ): Promise<T> {
 	const base = trackingUri();
 	if (!base) throw new Error("MLFLOW_TRACKING_URI is not configured");
-	const rawTimeoutMs = Number(env.MLFLOW_REQUEST_TIMEOUT_MS ?? 3000);
+	const rawTimeoutMs = Number(options.timeoutMs ?? env.MLFLOW_REQUEST_TIMEOUT_MS ?? 3000);
 	const timeoutMs = Number.isFinite(rawTimeoutMs) ? Math.max(500, rawTimeoutMs) : 3000;
 	const res = await fetch(`${base}${path}`, {
 		...init,
@@ -302,6 +340,22 @@ export async function downloadMlflowJsonArtifact<T>(
 	const text = await downloadMlflowTextArtifact(runId, artifactPath);
 	if (text == null) return null;
 	return JSON.parse(text) as T;
+}
+
+export async function getMlflowNativeTrace(traceId: string): Promise<MlflowNativeTrace | null> {
+	const normalizedTraceId = normalizeMlflowTraceId(traceId);
+	if (!normalizedTraceId) return null;
+	const qs = new URLSearchParams({ trace_id: normalizedTraceId });
+	const traceTimeoutMs = Math.max(
+		5000,
+		Number(env.MLFLOW_TRACE_REQUEST_TIMEOUT_MS ?? env.MLFLOW_REQUEST_TIMEOUT_MS ?? 0) || 0,
+	);
+	const payload = await mlflowRequest<MlflowNativeTrace>(
+		`/api/3.0/mlflow/traces/get?${qs.toString()}`,
+		{ method: "GET" },
+		{ timeoutMs: traceTimeoutMs },
+	);
+	return payload.trace ? payload : null;
 }
 
 export async function logMlflowTextArtifact(params: {
