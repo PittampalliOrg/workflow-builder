@@ -953,14 +953,31 @@ def safe_kubernetes_name(base: str, *, unique_key: str, max_length: int = 63) ->
 def _common_metadata(
     name: str, namespace: str, run_id: str, phase: str
 ) -> dict[str, Any]:
+    labels = {
+        "app.kubernetes.io/part-of": "swebench-evaluator",
+        "swebench.benchmark-run-id": safe_label_value(run_id),
+        "swebench.phase": phase,
+    }
+    # Kueue admission for the eval TaskRun pods. run-instance runs a full
+    # pytest suite inside a multi-GB image up to SWEBENCH_EVAL_MAX_PARALLEL
+    # concurrently; ungated those can OOM nodes. The label MUST live on the
+    # TaskRun metadata (Tekton propagates TaskRun labels onto the pod;
+    # podTemplate.metadata is dropped), so Kueue's pod integration admits the
+    # pod against the named queue — same mechanism the agent-host sandbox
+    # pods use. Env knobs forwarded by the coordinator (SWEBENCH_PIPELINE_*
+    # pattern); empty disables gating.
+    kueue_queue = os.environ.get("SWEBENCH_TEKTON_KUEUE_QUEUE_NAME", "").strip()
+    if kueue_queue:
+        labels["kueue.x-k8s.io/queue-name"] = kueue_queue
+        kueue_priority = os.environ.get(
+            "SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS", ""
+        ).strip()
+        if kueue_priority:
+            labels["kueue.x-k8s.io/priority-class"] = kueue_priority
     return {
         "name": name,
         "namespace": namespace,
-        "labels": {
-            "app.kubernetes.io/part-of": "swebench-evaluator",
-            "swebench.benchmark-run-id": safe_label_value(run_id),
-            "swebench.phase": phase,
-        },
+        "labels": labels,
     }
 
 
@@ -983,8 +1000,6 @@ def taskrun_execution_spec() -> dict[str, Any]:
     if service_account:
         spec["serviceAccountName"] = service_account
 
-    pod_template: dict[str, Any] = {}
-
     raw_pull_secrets = os.environ.get(
         "SWEBENCH_TEKTON_IMAGE_PULL_SECRETS",
         DEFAULT_TEKTON_IMAGE_PULL_SECRETS,
@@ -993,28 +1008,14 @@ def taskrun_execution_spec() -> dict[str, Any]:
         name.strip() for name in raw_pull_secrets.split(",") if name.strip()
     ]
     if pull_secret_names:
-        pod_template["imagePullSecrets"] = [
-            {"name": name} for name in pull_secret_names
-        ]
-
-    # Kueue admission control for the eval TaskRun pods. run-instance runs a
-    # full pytest suite inside a multi-GB image up to SWEBENCH_EVAL_MAX_PARALLEL
-    # concurrently; without admission gating those can OOM nodes. Kueue's pod
-    # integration manages any pod carrying the queue-name label — the same
-    # mechanism agent-host sandbox pods use (sandbox-execution-api
-    # KUEUE_QUEUE_LABEL / build_agent_workflow_host_sandbox_manifest).
-    kueue_queue = os.environ.get("SWEBENCH_TEKTON_KUEUE_QUEUE_NAME", "").strip()
-    if kueue_queue:
-        kueue_labels = {"kueue.x-k8s.io/queue-name": kueue_queue}
-        kueue_priority = os.environ.get(
-            "SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS", ""
-        ).strip()
-        if kueue_priority:
-            kueue_labels["kueue.x-k8s.io/priority-class"] = kueue_priority
-        pod_template["metadata"] = {"labels": kueue_labels}
-
-    if pod_template:
-        spec["podTemplate"] = pod_template
+        spec["podTemplate"] = {
+            "imagePullSecrets": [{"name": name} for name in pull_secret_names]
+        }
+    # Kueue queue-name/priority labels are intentionally NOT set here:
+    # Tekton's PodTemplate has no metadata/labels field and silently drops
+    # it, so a podTemplate label never reaches the pod. Pod labels for
+    # Kueue's pod integration are set on the TaskRun metadata.labels (see
+    # _common_metadata), which Tekton propagates onto the TaskRun pod.
     return spec
 
 
