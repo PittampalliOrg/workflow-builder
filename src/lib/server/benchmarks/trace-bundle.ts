@@ -233,8 +233,23 @@ function normalizeArtifactBundle(
 				artifact.canonicalTraceId ?? canonicalTraceId ?? null,
 			),
 		groups: artifact.groups ?? groupTraceSpans(artifact.traceSpans ?? []),
-		warnings: artifact.warnings ?? [],
+		warnings: sanitizedTraceBundleWarnings(artifact),
 	};
+}
+
+export function sanitizedTraceBundleWarnings(bundle: Pick<SwebenchTraceBundle, "warnings" | "backend" | "source">): string[] {
+	const warnings = bundle.warnings ?? [];
+	const sourceKind = bundle.source?.kind ?? bundle.backend;
+	if (sourceKind !== "mlflow_native") return warnings;
+	return warnings.filter((warning) => !isTransientArtifactRepairWarning(warning));
+}
+
+function isTransientArtifactRepairWarning(warning: string): boolean {
+	return (
+		/^MLflow artifact .+ used .+; rebuilt from native MLflow traces$/.test(warning) ||
+		/^MLflow artifact .+ was missing; rebuilt from trace backends$/.test(warning) ||
+		warning.startsWith("MLflow artifact read failed; rebuilt from trace backends:")
+	);
 }
 
 export async function materializeSwebenchTraceBundle(params: {
@@ -273,7 +288,11 @@ export async function logTraceBundleArtifact(
 		await logMlflowJsonArtifact({
 			runId: mlflowRunId,
 			artifactPath: bundle.artifactPath,
-			value: { ...bundle, backend: bundle.backend === "none" ? "none" : bundle.backend },
+			value: {
+				...bundle,
+				backend: bundle.backend === "none" ? "none" : bundle.backend,
+				warnings: sanitizedTraceBundleWarnings(bundle),
+			},
 		});
 	} catch (err) {
 		console.warn(

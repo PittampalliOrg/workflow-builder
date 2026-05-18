@@ -29,6 +29,7 @@ import {
 	buildSwebenchTraceBundleFromMlflowNative,
 	normalizeRawTraceSpans,
 	safeSwebenchTraceArtifactPath,
+	sanitizedTraceBundleWarnings,
 } from "./trace-bundle";
 
 const baseSpan = (overrides: Partial<ObservabilityTraceSpan>): ObservabilityTraceSpan => ({
@@ -59,6 +60,50 @@ describe("safeSwebenchTraceArtifactPath", () => {
 		expect(safeSwebenchTraceArtifactPath("../weird/id:value ")).toBe(
 			"traces/weird_id_value/trace-bundle.json",
 		);
+	});
+});
+
+describe("sanitizedTraceBundleWarnings", () => {
+	it("drops transient artifact repair warnings from native MLflow bundles", () => {
+		const warnings = sanitizedTraceBundleWarnings({
+			backend: "mlflow_artifact",
+			source: {
+				kind: "mlflow_native",
+				generatedAt: "2026-05-17T00:00:00.000Z",
+				mlflowRunId: "run",
+				derivedLlmSpanCount: 1,
+				derivedToolSpanCount: 1,
+				rawTraceSpanCount: 2,
+			},
+			warnings: [
+				"MLflow artifact traces/django/trace-bundle.json used clickhouse_raw; rebuilt from native MLflow traces",
+				"MLflow artifact traces/django/trace-bundle.json was missing; rebuilt from trace backends",
+				"MLflow native trace read failed for abc123: timeout",
+			],
+		});
+
+		expect(warnings).toEqual(["MLflow native trace read failed for abc123: timeout"]);
+	});
+
+	it("preserves warnings for non-native bundles", () => {
+		const warnings = [
+			"MLflow artifact traces/django/trace-bundle.json was missing; rebuilt from trace backends",
+		];
+
+		expect(
+			sanitizedTraceBundleWarnings({
+				backend: "clickhouse_raw",
+				source: {
+					kind: "clickhouse_raw",
+					generatedAt: "2026-05-17T00:00:00.000Z",
+					mlflowRunId: "run",
+					derivedLlmSpanCount: 0,
+					derivedToolSpanCount: 0,
+					rawTraceSpanCount: 1,
+				},
+				warnings,
+			}),
+		).toEqual(warnings);
 	});
 });
 
