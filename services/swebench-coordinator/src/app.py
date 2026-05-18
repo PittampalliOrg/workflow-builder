@@ -145,6 +145,15 @@ SWEBENCH_PACKAGE_REF = os.environ.get(
     "SWEBENCH_PACKAGE_REF",
     "git+https://github.com/PittampalliOrg/SWE-bench.git@main",
 )
+# Forwarded into the evaluator Job so entrypoint.taskrun_execution_spec()
+# (running inside that Job) can enroll the eval TaskRun pods into Kueue.
+# Cluster-specific, so no baked default — empty disables Kueue gating.
+SWEBENCH_TEKTON_KUEUE_QUEUE_NAME = os.environ.get(
+    "SWEBENCH_TEKTON_KUEUE_QUEUE_NAME", ""
+)
+SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS = os.environ.get(
+    "SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS", ""
+)
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
 EVALUATION_RESULTS_EVENT = "swebench.evaluation.results"
 EVALUATION_FAILED_EVENT = "swebench.evaluation.failed"
@@ -2191,6 +2200,14 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             ),
             client.V1EnvVar(name="SWEBENCH_PIPELINE_REF", value=SWEBENCH_PIPELINE_REF),
             client.V1EnvVar(name="SWEBENCH_PACKAGE_REF", value=SWEBENCH_PACKAGE_REF),
+            client.V1EnvVar(
+                name="SWEBENCH_TEKTON_KUEUE_QUEUE_NAME",
+                value=SWEBENCH_TEKTON_KUEUE_QUEUE_NAME,
+            ),
+            client.V1EnvVar(
+                name="SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS",
+                value=SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS,
+            ),
             client.V1EnvVar(
                 name="SWEBENCH_EVALUATION_TIMEOUT_SECONDS",
                 value=str(evaluation_timeout_seconds),

@@ -983,6 +983,8 @@ def taskrun_execution_spec() -> dict[str, Any]:
     if service_account:
         spec["serviceAccountName"] = service_account
 
+    pod_template: dict[str, Any] = {}
+
     raw_pull_secrets = os.environ.get(
         "SWEBENCH_TEKTON_IMAGE_PULL_SECRETS",
         DEFAULT_TEKTON_IMAGE_PULL_SECRETS,
@@ -991,9 +993,28 @@ def taskrun_execution_spec() -> dict[str, Any]:
         name.strip() for name in raw_pull_secrets.split(",") if name.strip()
     ]
     if pull_secret_names:
-        spec["podTemplate"] = {
-            "imagePullSecrets": [{"name": name} for name in pull_secret_names]
-        }
+        pod_template["imagePullSecrets"] = [
+            {"name": name} for name in pull_secret_names
+        ]
+
+    # Kueue admission control for the eval TaskRun pods. run-instance runs a
+    # full pytest suite inside a multi-GB image up to SWEBENCH_EVAL_MAX_PARALLEL
+    # concurrently; without admission gating those can OOM nodes. Kueue's pod
+    # integration manages any pod carrying the queue-name label — the same
+    # mechanism agent-host sandbox pods use (sandbox-execution-api
+    # KUEUE_QUEUE_LABEL / build_agent_workflow_host_sandbox_manifest).
+    kueue_queue = os.environ.get("SWEBENCH_TEKTON_KUEUE_QUEUE_NAME", "").strip()
+    if kueue_queue:
+        kueue_labels = {"kueue.x-k8s.io/queue-name": kueue_queue}
+        kueue_priority = os.environ.get(
+            "SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS", ""
+        ).strip()
+        if kueue_priority:
+            kueue_labels["kueue.x-k8s.io/priority-class"] = kueue_priority
+        pod_template["metadata"] = {"labels": kueue_labels}
+
+    if pod_template:
+        spec["podTemplate"] = pod_template
     return spec
 
 
