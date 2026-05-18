@@ -28,6 +28,49 @@ import {
 const MIGRATIONS_DIR = join(process.cwd(), "atlas/migrations");
 const ATLAS_SUM = "atlas.sum";
 
+function truthyEnv(value: string | undefined): boolean {
+	return ["1", "true", "yes", "on"].includes(value?.toLowerCase() ?? "");
+}
+
+function falsyEnv(value: string | undefined): boolean {
+	return ["0", "false", "no", "off"].includes(value?.toLowerCase() ?? "");
+}
+
+function shouldSkipStartupMigrations(): boolean {
+	// Hard opt-out, independent of environment.
+	if (truthyEnv(process.env.WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS)) return true;
+
+	// RUN_MIGRATIONS is the explicit control knob. The ryzen DevSpace wrapper
+	// (scripts/devspace-dev-ryzen.sh) exports RUN_MIGRATIONS=false because the
+	// dev DB schema is owned by drizzle-kit (`pnpm db:migrate`), not the in-app
+	// atlas/migrations pass. Honor it directly, in either direction, when set.
+	if (falsyEnv(process.env.RUN_MIGRATIONS)) return true;
+	if (truthyEnv(process.env.RUN_MIGRATIONS)) return false;
+
+	// Fallback heuristic when RUN_MIGRATIONS is unset: skip in ryzen DevSpace,
+	// where the synced tree ships atlas/migrations but schema is drizzle-owned.
+	return process.env.NODE_ENV === "development" && process.env.WORKFLOW_BUILDER_ENV === "ryzen";
+}
+
+// Postgres SQLSTATEs meaning "this object already exists". The in-app
+// atlas/migrations runner is a parallel tracker to drizzle-kit; on a DB whose
+// schema was built out-of-band (e.g. `pnpm db:migrate`) an untracked migration
+// file re-runs bare DDL and trips one of these. Treat it as already-applied and
+// reconcile the tracking table instead of bricking boot for every request.
+const ALREADY_EXISTS_SQLSTATES = new Set([
+	"42P07", // duplicate_table (table, index, sequence, view, matview)
+	"42701", // duplicate_column
+	"42710", // duplicate_object (constraint, trigger, type, opclass, ...)
+	"42P06", // duplicate_schema
+	"42723", // duplicate_function
+]);
+
+function isAlreadyExistsError(err: unknown): boolean {
+	const e = err as { code?: string; cause?: { code?: string } } | undefined;
+	const code = e?.code ?? e?.cause?.code;
+	return code != null && ALREADY_EXISTS_SQLSTATES.has(code);
+}
+
 // Migrations that predate the CMA refactor. On a first boot where the
 // tracking table is empty but `agents` already exists, we mark these as
 // applied so we don't try to re-run them.
@@ -53,8 +96,17 @@ const PRE_CMA_MIGRATIONS = new Set([
 	"20260418100000_add_named_agents.sql",
 ]);
 
-async function runMigrations(): Promise<{ applied: string[]; skipped: string[] }> {
-	if (!db) return { applied: [], skipped: [] };
+async function runMigrations(): Promise<{
+	applied: string[];
+	skipped: string[];
+	reconciled: string[];
+}> {
+	if (!db) return { applied: [], skipped: [], reconciled: [] };
+
+	if (shouldSkipStartupMigrations()) {
+		console.warn("[startup] in-app migration pass disabled by environment");
+		return { applied: [], skipped: [], reconciled: [] };
+	}
 
 	await db.execute(sql`
 		CREATE TABLE IF NOT EXISTS "_app_migrations" (
@@ -81,7 +133,7 @@ async function runMigrations(): Promise<{ applied: string[]; skipped: string[] }
 			console.warn(
 				`[startup] migrations directory not found at ${MIGRATIONS_DIR} — skipping in-app migration pass`,
 			);
-			return { applied: [], skipped: [] };
+			return { applied: [], skipped: [], reconciled: [] };
 		}
 		throw err;
 	}
@@ -109,6 +161,7 @@ async function runMigrations(): Promise<{ applied: string[]; skipped: string[] }
 
 	const applied: string[] = [];
 	const skipped: string[] = [];
+	const reconciled: string[] = [];
 	for (const file of files) {
 		if (trackedSet.has(file)) {
 			skipped.push(file);
@@ -125,11 +178,25 @@ async function runMigrations(): Promise<{ applied: string[]; skipped: string[] }
 			applied.push(file);
 			console.log(`[startup] applied migration ${file}`);
 		} catch (err) {
+			if (isAlreadyExistsError(err)) {
+				// Schema already present from an out-of-band path (this DB was
+				// built by drizzle-kit; atlas/migrations is a parallel tracker).
+				// Reconcile the tracking row and continue instead of bricking
+				// the entire boot — and therefore every request — for good.
+				await db.execute(
+					sql`INSERT INTO _app_migrations (migration_id) VALUES (${file}) ON CONFLICT DO NOTHING`,
+				);
+				reconciled.push(file);
+				console.warn(
+					`[startup] migration ${file}: schema already present (out-of-band) — marked applied`,
+				);
+				continue;
+			}
 			console.error(`[startup] migration ${file} failed:`, err);
 			throw err;
 		}
 	}
-	return { applied, skipped };
+	return { applied, skipped, reconciled };
 }
 
 async function runBackfills(): Promise<void> {
@@ -158,10 +225,10 @@ export function ensureStartupReady(): Promise<void> {
 	if (!startupPromise) {
 		startupPromise = (async () => {
 			try {
-				const { applied, skipped } = await runMigrations();
-				if (applied.length > 0) {
+				const { applied, skipped, reconciled } = await runMigrations();
+				if (applied.length > 0 || reconciled.length > 0) {
 					console.log(
-						`[startup] migrations: ${applied.length} applied, ${skipped.length} already up to date`,
+						`[startup] migrations: ${applied.length} applied, ${reconciled.length} reconciled (already present), ${skipped.length} already up to date`,
 					);
 				}
 				await runBackfills();
