@@ -1550,5 +1550,75 @@ def required_env(name: str) -> str:
     return value
 
 
+def _emit_crash_terminal_results(exc: BaseException) -> None:
+    """Last-resort durability: persist *why* the evaluator died.
+
+    main() has several paths that exit non-zero without ever calling
+    post_results() — most notably dispatch_run_instance_taskruns ->
+    _wait_for_next_completion raising TimeoutError, and any unhandled error
+    before the finalize TaskRun POSTs. When that happens the benchmark run
+    fails with only the coordinator's generic "Job has reached the specified
+    backoff limit" and no provenance/harness artifacts, because backoff_limit=0
+    gives no retry, the coordinator does not capture this pod's logs, and the
+    Job/TaskRuns are TTL/cron-deleted within ~15-60 min. Always post a terminal
+    failure callback carrying the real reason so it lands durably in
+    benchmark_run_instances.evaluation_error.
+    """
+    import traceback
+
+    traceback.print_exc()
+    run_id = os.environ.get("RUN_ID", "").strip()
+    instance_ids = [s for s in os.environ.get("INSTANCE_IDS", "").split() if s]
+    if not run_id or not instance_ids:
+        return
+    artifacts_root = pathlib.Path(
+        os.environ.get("SWEBENCH_ARTIFACT_ROOT", "/artifacts")
+    )
+    log_dir = artifacts_root / run_id / "harness"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    error = (
+        f"swebench-evaluator crashed: {type(exc).__name__}: {exc}\n"
+        + traceback.format_exc()
+    )[:1800]
+    _post_terminal_results(
+        run_id,
+        instance_ids,
+        artifacts_root,
+        log_dir,
+        error=error,
+        succeeded=False,
+    )
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # The --prepare-task / --finalize-task subcommands run inside Tekton
+    # TaskRuns; their failures are already surfaced to the orchestrator via
+    # taskrun_failure_reason(). Only the orchestrator pod's silent death
+    # destroys all evidence, so scope the rescue callback to that mode.
+    _is_subcommand = len(sys.argv) > 1 and sys.argv[1] in {
+        "--prepare-task",
+        "--finalize-task",
+    }
+    try:
+        _exit_code = main()
+    except SystemExit:
+        raise
+    except BaseException as _exc:  # noqa: BLE001 - last-resort durability
+        print(
+            f"[swebench-evaluator] fatal: {type(_exc).__name__}: {_exc}",
+            file=sys.stderr,
+        )
+        if not _is_subcommand:
+            try:
+                _emit_crash_terminal_results(_exc)
+            except Exception as _post_exc:  # noqa: BLE001
+                print(
+                    "[swebench-evaluator] failed to post terminal failure "
+                    f"callback: {_post_exc}",
+                    file=sys.stderr,
+                )
+        raise SystemExit(1)
+    raise SystemExit(_exit_code)
