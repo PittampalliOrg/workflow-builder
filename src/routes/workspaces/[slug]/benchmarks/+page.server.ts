@@ -235,24 +235,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const instances: BenchmarkInstanceRow[] = instanceRows.map((row) => {
 		const md = (row.testMetadata ?? {}) as Record<string, unknown>;
 		const versionField = metadataString(md, ["version"]);
-		const staticEnvironment = resolveSwebenchInferenceEnvironment(
-			{
-				suiteSlug: row.suiteSlug,
-				repo: row.repo,
-				baseCommit: row.baseCommit,
-				testMetadata: md,
-			},
-			{ mappings: staticEnvironmentMappings },
-		);
-		const exactStaticEnvironment = isExactValidatedSwebenchInferenceEnvironment(
-			{
-				suiteSlug: row.suiteSlug,
-				repo: row.repo,
-				baseCommit: row.baseCommit,
-				testMetadata: md,
-			},
-			{ mappings: staticEnvironmentMappings },
-		);
 		const dynamicEnvironmentSpecHash =
 			row.repo && row.baseCommit
 				? buildSwebenchEnvironmentSpec({
@@ -264,6 +246,26 @@ export const load: PageServerLoad = async ({ locals }) => {
 						testMetadata: md,
 					}).envSpecHash
 				: null;
+		const staticEnvironment = resolveSwebenchInferenceEnvironment(
+			{
+				suiteSlug: row.suiteSlug,
+				repo: row.repo,
+				baseCommit: row.baseCommit,
+				testMetadata: md,
+			},
+			dynamicEnvironmentSpecHash ?? "",
+			{ mappings: staticEnvironmentMappings },
+		);
+		const exactStaticEnvironment = isExactValidatedSwebenchInferenceEnvironment(
+			{
+				suiteSlug: row.suiteSlug,
+				repo: row.repo,
+				baseCommit: row.baseCommit,
+				testMetadata: md,
+			},
+			dynamicEnvironmentSpecHash ?? "",
+			{ mappings: staticEnvironmentMappings },
+		);
 		const buildStatus = dynamicEnvironmentSpecHash
 			? buildStatusByHash.get(dynamicEnvironmentSpecHash)
 			: null;

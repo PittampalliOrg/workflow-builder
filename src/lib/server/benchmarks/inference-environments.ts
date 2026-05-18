@@ -77,6 +77,11 @@ export type LoadSwebenchInferenceEnvironmentOptions = {
 
 export function resolveSwebenchInferenceEnvironment(
 	input: ResolveSwebenchInferenceEnvironmentInput,
+	// REQUIRED current buildSwebenchEnvironmentSpec().envSpecHash for the
+	// instance. A static mapping is only "validated" when its own envSpecHash
+	// equals this — no coarse fallback. Static and dynamic readiness are
+	// symmetric on the exact harness env spec.
+	expectedEnvSpecHash: string,
 	options: LoadSwebenchInferenceEnvironmentOptions = {},
 ): ResolvedSwebenchInferenceEnvironment {
 	const suite = input.suiteSlug.trim();
@@ -132,6 +137,24 @@ export function resolveSwebenchInferenceEnvironment(
 		};
 	}
 
+	if (
+		!expectedEnvSpecHash ||
+		!normalized.envSpecHash ||
+		normalized.envSpecHash !== expectedEnvSpecHash
+	) {
+		// Static pin was built for a different harness env spec than the one
+		// the eval harness will render (eval.sh). Refuse to mark it validated
+		// so a correct (dynamic) build is required before grading, rather than
+		// silently grading inside a stale image.
+		return {
+			...fallback("env_spec_hash_mismatch"),
+			environmentKey: normalized.environmentKey ?? undefined,
+			validationStatus: normalized.validationStatus ?? undefined,
+			validationLogRef: normalized.validationLogRef ?? undefined,
+			source: normalized.source ?? undefined,
+		};
+	}
+
 	return {
 		environmentStatus: "validated",
 		suite: normalized.suite ?? suite,
@@ -160,6 +183,7 @@ export function resolveSwebenchInferenceEnvironment(
 
 export function isExactValidatedSwebenchInferenceEnvironment(
 	input: ResolveSwebenchInferenceEnvironmentInput,
+	expectedEnvSpecHash: string,
 	options: LoadSwebenchInferenceEnvironmentOptions = {},
 ): boolean {
 	const suite = input.suiteSlug.trim();
@@ -192,6 +216,17 @@ export function isExactValidatedSwebenchInferenceEnvironment(
 		environmentSetupCommit &&
 		normalized.environmentSetupCommit &&
 		normalized.environmentSetupCommit !== environmentSetupCommit
+	) {
+		return false;
+	}
+	// Symmetric with the dynamic environment-image-builds path: a static pin
+	// is only "exact" when it was built for the current harness env spec.
+	// Coarse repo/baseCommit/version equality is insufficient — the spec (and
+	// the rendered eval.sh) can change while those identifiers stay equal.
+	if (
+		!expectedEnvSpecHash ||
+		!normalized.envSpecHash ||
+		normalized.envSpecHash !== expectedEnvSpecHash
 	) {
 		return false;
 	}

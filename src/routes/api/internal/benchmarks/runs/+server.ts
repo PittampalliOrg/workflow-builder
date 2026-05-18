@@ -203,20 +203,6 @@ async function selectPrevalidatedInstanceIds(
 	const staticReady = new Set<string>();
 	for (const candidate of candidates) {
 		if (!candidate.repo || !candidate.baseCommit) continue;
-		if (
-			isExactValidatedSwebenchInferenceEnvironment(
-				{
-					suiteSlug,
-					repo: candidate.repo,
-					baseCommit: candidate.baseCommit,
-					testMetadata: candidate.testMetadata,
-				},
-				{ mappings: staticMappings },
-			)
-		) {
-			staticReady.add(candidate.instanceId);
-			continue;
-		}
 		const spec = buildSwebenchEnvironmentSpec({
 			dataset: suite.datasetName,
 			suiteSlug,
@@ -225,6 +211,21 @@ async function selectPrevalidatedInstanceIds(
 			baseCommit: candidate.baseCommit,
 			testMetadata: candidate.testMetadata,
 		});
+		if (
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug,
+					repo: candidate.repo,
+					baseCommit: candidate.baseCommit,
+					testMetadata: candidate.testMetadata,
+				},
+				spec.envSpecHash,
+				{ mappings: staticMappings },
+			)
+		) {
+			staticReady.add(candidate.instanceId);
+			continue;
+		}
 		hashByInstance.set(candidate.instanceId, spec.envSpecHash);
 	}
 	if (hashByInstance.size === 0) return [];

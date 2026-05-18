@@ -865,6 +865,7 @@ async function benchmarkEnvironmentCoverage(
 				baseCommit: instance.baseCommit,
 				testMetadata: instance.testMetadata,
 			},
+			key,
 			{ mappings: staticMappings },
 		);
 		if (exactStaticEnvironment) bucket.validated.add(key);
@@ -971,19 +972,6 @@ async function assertPrevalidatedBenchmarkEnvironments(input: {
 	const missingHashes = new Map<string, string>();
 	const requiredHashes = new Set<string>();
 	for (const instance of input.instances) {
-		if (
-			isExactValidatedSwebenchInferenceEnvironment(
-				{
-					suiteSlug: input.suiteSlug,
-					repo: instance.repo,
-					baseCommit: instance.baseCommit,
-					testMetadata: instance.testMetadata,
-				},
-				{ mappings: staticMappings },
-			)
-		) {
-			continue;
-		}
 		if (!instance.repo?.trim() || !instance.baseCommit?.trim()) {
 			missingHashes.set(instance.instanceId, "missing environment identity");
 			continue;
@@ -996,6 +984,20 @@ async function assertPrevalidatedBenchmarkEnvironments(input: {
 			baseCommit: instance.baseCommit,
 			testMetadata: instance.testMetadata,
 		});
+		if (
+			isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug: input.suiteSlug,
+					repo: instance.repo,
+					baseCommit: instance.baseCommit,
+					testMetadata: instance.testMetadata,
+				},
+				spec.envSpecHash,
+				{ mappings: staticMappings },
+			)
+		) {
+			continue;
+		}
 		requiredHashes.add(spec.envSpecHash);
 		missingHashes.set(instance.instanceId, spec.envSpecHash);
 	}

@@ -48,6 +48,7 @@ describe("SWE-bench inference environment resolver", () => {
 				baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
 				testMetadata: { version: "1.7" },
 			},
+			"a".repeat(64),
 			{ env },
 		);
 
@@ -86,6 +87,7 @@ describe("SWE-bench inference environment resolver", () => {
 					baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
 					testMetadata: { version: "1.7" },
 				},
+				"a".repeat(64),
 				{ env },
 			),
 		).toBe(true);
@@ -98,6 +100,7 @@ describe("SWE-bench inference environment resolver", () => {
 					baseCommit: "different-base-commit",
 					testMetadata: { version: "1.7" },
 				},
+				"a".repeat(64),
 				{ env },
 			),
 		).toBe(false);
@@ -115,6 +118,7 @@ describe("SWE-bench inference environment resolver", () => {
 						environment_setup_commit: "metadata-only-env-setup",
 					},
 				},
+				"a".repeat(64),
 				{ env },
 			),
 		).toBe(true);
@@ -128,6 +132,7 @@ describe("SWE-bench inference environment resolver", () => {
 				baseCommit: "abc123",
 				testMetadata: { version: "3.2" },
 			},
+			"a".repeat(64),
 			{ env },
 		);
 
@@ -156,6 +161,7 @@ describe("SWE-bench inference environment resolver", () => {
 					digest:
 						"sha256:2222222222222222222222222222222222222222222222222222222222222222",
 					validationStatus: "validated",
+					envSpecHash: "c".repeat(64),
 				}),
 			);
 
@@ -166,6 +172,7 @@ describe("SWE-bench inference environment resolver", () => {
 					baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
 					testMetadata: { version: "1.7" },
 				},
+				"c".repeat(64),
 				{ env: { SWEBENCH_INFERENCE_ENVIRONMENTS_DIR: dir } },
 			);
 

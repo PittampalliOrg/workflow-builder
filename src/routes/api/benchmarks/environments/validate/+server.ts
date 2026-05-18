@@ -200,21 +200,6 @@ function classifyInstanceEnvironment(input: {
 	environmentKey: string | null;
 } {
 	const metadata = isRecord(input.row.testMetadata) ? input.row.testMetadata : {};
-	if (
-		input.row.repo &&
-		input.row.baseCommit &&
-		isExactValidatedSwebenchInferenceEnvironment(
-			{
-				suiteSlug: input.suiteSlug,
-				repo: input.row.repo,
-				baseCommit: input.row.baseCommit,
-				testMetadata: metadata,
-			},
-			{ mappings: input.mappings },
-		)
-	) {
-		return { status: "validated", envSpecHash: null, environmentKey: null };
-	}
 	if (!input.row.repo || !input.row.baseCommit) {
 		return { status: "failed", envSpecHash: null, environmentKey: null };
 	}
@@ -226,6 +211,24 @@ function classifyInstanceEnvironment(input: {
 		baseCommit: input.row.baseCommit,
 		testMetadata: metadata,
 	});
+	if (
+		isExactValidatedSwebenchInferenceEnvironment(
+			{
+				suiteSlug: input.suiteSlug,
+				repo: input.row.repo,
+				baseCommit: input.row.baseCommit,
+				testMetadata: metadata,
+			},
+			spec.envSpecHash,
+			{ mappings: input.mappings },
+		)
+	) {
+		return {
+			status: "validated",
+			envSpecHash: spec.envSpecHash,
+			environmentKey: spec.environmentKey,
+		};
+	}
 	const build = input.buildStatusByHash.get(spec.envSpecHash);
 	if (!build) {
 		return {
