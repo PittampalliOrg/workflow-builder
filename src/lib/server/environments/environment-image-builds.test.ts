@@ -295,6 +295,16 @@ describe("SWE-bench environment image build planning", () => {
 	});
 
 	it("keeps current static SWE-bench mappings even when legacy refresh is requested", async () => {
+		const exactSpec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+			},
+		});
 		vi.stubEnv(
 			"SWEBENCH_INFERENCE_ENVIRONMENTS_JSON",
 			JSON.stringify([
@@ -313,7 +323,7 @@ describe("SWE-bench environment image build planning", () => {
 					buildStrategy: "swebench-harness",
 					workspaceRoot: "/testbed",
 					condaEnvironment: "testbed",
-					envSpecHash: "a".repeat(64),
+					envSpecHash: exactSpec.envSpecHash,
 				},
 			]),
 		);

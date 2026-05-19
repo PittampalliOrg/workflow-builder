@@ -46,6 +46,7 @@ import {
 	swebenchInferenceEnvironmentPromptNotes,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
 import { buildStableWorkspaceRef } from "$lib/server/benchmarks/workspace-ref";
 import {
 	aggregateGraderResults,
@@ -2713,14 +2714,26 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
 }): Record<string, unknown> {
 	const instance = readSwebenchInput(params.input, params.taskConfig);
+	const suiteSlug = normalizeSwebenchSuiteSlug(instance.suiteSlug);
+	const environmentSpec = buildSwebenchEnvironmentSpec({
+		dataset: instance.datasetName,
+		suiteSlug,
+		instanceId: instance.instanceId,
+		repo: instance.repo,
+		baseCommit: instance.baseCommit,
+		testMetadata: instance.testMetadata,
+	});
 	const inferenceEnvironment =
 		params.inferenceEnvironment ??
-		resolveSwebenchInferenceEnvironment({
-			suiteSlug: instance.suiteSlug,
-			repo: instance.repo,
-			baseCommit: instance.baseCommit,
-			testMetadata: instance.testMetadata,
-		});
+		resolveSwebenchInferenceEnvironment(
+			{
+				suiteSlug,
+				repo: instance.repo,
+				baseCommit: instance.baseCommit,
+				testMetadata: instance.testMetadata,
+			},
+			environmentSpec.envSpecHash,
+		);
 	const agentInferenceEnvironment =
 		sanitizeSwebenchInferenceEnvironmentForAgent(inferenceEnvironment);
 	const timeoutSeconds = clampInteger(

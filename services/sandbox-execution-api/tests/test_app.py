@@ -32,13 +32,17 @@ def _request(execution_class: str = "benchmark-fast") -> ExecutionRequest:
     )
 
 
-def test_benchmark_fast_worker_job_is_not_kueue_managed() -> None:
+def test_benchmark_fast_worker_job_is_kueue_managed() -> None:
     request = _request()
     manifest = build_job_manifest(
         request,
         execution_id="hexec-123",
         namespace="sandbox-execution",
-        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            priorityClass="swebench-cohort",
+            priorityClassName="benchmark-workload",
+        ),
     )
     configmap = build_payload_configmap_manifest(
         request,
@@ -46,12 +50,20 @@ def test_benchmark_fast_worker_job_is_not_kueue_managed() -> None:
         namespace="sandbox-execution",
     )
 
-    assert "kueue.x-k8s.io/queue-name" not in manifest["metadata"]["labels"]
+    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    assert (
+        manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
+        == "swebench-cohort"
+    )
     assert manifest["spec"]["ttlSecondsAfterFinished"] == 300
     pod_spec = manifest["spec"]["template"]["spec"]
+    pod_labels = manifest["spec"]["template"]["metadata"]["labels"]
     container = pod_spec["containers"][0]
+    assert pod_labels["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    assert pod_labels["kueue.x-k8s.io/priority-class"] == "swebench-cohort"
     assert pod_spec["nodeSelector"] == {"stacks.io/swebench-pool": "dev-benchmark"}
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
+    assert pod_spec["priorityClassName"] == "benchmark-workload"
     assert pod_spec["imagePullSecrets"] == [{"name": "ghcr-pull-credentials"}]
     assert "runtimeClassName" not in pod_spec
     assert container["image"] == "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
@@ -113,7 +125,7 @@ def test_job_ttl_can_be_overridden_by_env(monkeypatch) -> None:
     assert manifest["spec"]["ttlSecondsAfterFinished"] == 600
 
 
-def test_secure_gvisor_sets_runtime_class_without_queueing_worker_job() -> None:
+def test_secure_gvisor_sets_runtime_class_and_queue_on_worker_job() -> None:
     manifest = build_job_manifest(
         _request("secure-gvisor"),
         execution_id="hexec-123",
@@ -121,11 +133,41 @@ def test_secure_gvisor_sets_runtime_class_without_queueing_worker_job() -> None:
         class_config=ExecutionClassConfig(
             localQueue="secure-gvisor",
             runtimeClassName="gvisor",
+            priorityClass="swebench-cohort",
         ),
     )
 
-    assert "kueue.x-k8s.io/queue-name" not in manifest["metadata"]["labels"]
+    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "secure-gvisor"
+    assert (
+        manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
+        == "swebench-cohort"
+    )
     assert manifest["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor"
+
+
+def test_worker_job_priority_label_can_be_overridden_by_request() -> None:
+    request = _request()
+    request.priorityClass = "interactive-agent"
+    manifest = build_job_manifest(
+        request,
+        execution_id="hexec-123",
+        namespace="sandbox-execution",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            priorityClass="swebench-cohort",
+        ),
+    )
+
+    assert (
+        manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
+        == "interactive-agent"
+    )
+    assert (
+        manifest["spec"]["template"]["metadata"]["labels"][
+            "kueue.x-k8s.io/priority-class"
+        ]
+        == "interactive-agent"
+    )
 
 
 def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> None:

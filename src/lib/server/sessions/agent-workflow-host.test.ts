@@ -117,6 +117,8 @@ describe("agent workflow host provisioning", () => {
 			unknown
 		>;
 		expect(body).not.toHaveProperty("timeoutSeconds");
+		expect(body.executionClass).toBe("interactive-agent");
+		expect(body.priorityClass).toBe("interactive-agent");
 	});
 
 	it("keeps workflow-driven hosts bounded when no timeout is provided", async () => {
@@ -135,6 +137,7 @@ describe("agent workflow host provisioning", () => {
 			unknown
 		>;
 		expect(body.timeoutSeconds).toBe(900);
+		expect(body.executionClass).toBe("interactive-agent");
 	});
 
 	it("honors explicit host timeouts", async () => {
@@ -153,5 +156,46 @@ describe("agent workflow host provisioning", () => {
 			unknown
 		>;
 		expect(body.timeoutSeconds).toBe(420);
+	});
+
+	it("uses benchmark queue and priority defaults for benchmark sessions", async () => {
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-benchmark-1",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: "run-1",
+			benchmarkInstanceId: "sympy__sympy-20590",
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.executionClass).toBe("benchmark-fast");
+		expect(body.priorityClass).toBe("swebench-cohort");
+	});
+
+	it("lets env override benchmark host queue class", async () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS", "secure-gvisor");
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_PRIORITY_CLASS", "interactive-agent");
+
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-benchmark-2",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: "run-1",
+			benchmarkInstanceId: "sympy__sympy-20590",
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.executionClass).toBe("secure-gvisor");
+		expect(body.priorityClass).toBe("interactive-agent");
 	});
 });

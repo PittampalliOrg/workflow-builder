@@ -1,5 +1,6 @@
 import { env } from "$env/dynamic/public";
 
+import { DEFAULT_HEADLAMP_URL } from "$lib/headlamp/links";
 import { getDeploymentMetadata } from "$lib/server/gitops/deployment-metadata";
 import { getPromotionStrategies } from "$lib/server/promoter";
 
@@ -10,6 +11,7 @@ export type GitopsPageLinks = {
 	stacksRepo: string;
 	workflowBuilderRepo: string;
 	argoCdBase: string;
+	headlampBase: string;
 	ghcrOrg: string;
 	releasePinsPath: string;
 };
@@ -24,11 +26,13 @@ export const load: PageServerLoad = async () => {
 		"https://tekton-dashboard-hub.tail286401.ts.net";
 	const argoCdBase =
 		env.PUBLIC_ARGOCD_URL?.trim() || "https://argocd-hub.tail286401.ts.net";
+	const headlampBase = env.PUBLIC_HEADLAMP_URL?.trim() || DEFAULT_HEADLAMP_URL;
 	const links: GitopsPageLinks = {
 		tektonBase,
 		stacksRepo: "https://github.com/PittampalliOrg/stacks",
 		workflowBuilderRepo: "https://github.com/PittampalliOrg/workflow-builder",
 		argoCdBase,
+		headlampBase,
 		ghcrOrg: "https://github.com/orgs/PittampalliOrg/packages/container/package",
 		releasePinsPath:
 			"packages/components/hub-spoke-appsets/release-pins/workflow-builder-images.yaml",

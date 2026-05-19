@@ -130,6 +130,7 @@ def test_taskrun_execution_spec_defaults_to_ghcr_pull_secret(monkeypatch):
 
     monkeypatch.delenv("SWEBENCH_TEKTON_SERVICE_ACCOUNT", raising=False)
     monkeypatch.delenv("SWEBENCH_TEKTON_IMAGE_PULL_SECRETS", raising=False)
+    monkeypatch.delenv("SWEBENCH_TEKTON_POD_PRIORITY_CLASS", raising=False)
 
     assert entrypoint.taskrun_execution_spec() == {
         "podTemplate": {"imagePullSecrets": [{"name": "ghcr-pull-credentials"}]}
@@ -144,6 +145,7 @@ def test_taskrun_execution_spec_accepts_service_account_and_secret_list(monkeypa
         "SWEBENCH_TEKTON_IMAGE_PULL_SECRETS",
         "workflow-builder-ghcr-pull-credentials, ghcr-pull-credentials",
     )
+    monkeypatch.setenv("SWEBENCH_TEKTON_POD_PRIORITY_CLASS", "benchmark-workload")
 
     assert entrypoint.taskrun_execution_spec() == {
         "serviceAccountName": "swebench-runner",
@@ -151,7 +153,8 @@ def test_taskrun_execution_spec_accepts_service_account_and_secret_list(monkeypa
             "imagePullSecrets": [
                 {"name": "workflow-builder-ghcr-pull-credentials"},
                 {"name": "ghcr-pull-credentials"},
-            ]
+            ],
+            "priorityClassName": "benchmark-workload",
         },
     }
 

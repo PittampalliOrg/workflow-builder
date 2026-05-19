@@ -1,10 +1,18 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
+	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
+	import { DEFAULT_HEADLAMP_URL, headlampCustomResourceUrl, headlampResourceUrl } from '$lib/headlamp/links';
 
 	type RuntimeStatus = {
 		name?: string;
+		namespace?: string;
 		exists?: boolean;
+		phase?: 'Pending' | 'Sleeping' | 'Starting' | 'Active' | 'Failed' | string;
+		replicas?: number;
+		readyReplicas?: number;
+		desiredReplicas?: number;
+		sandboxTemplateRef?: string;
 		spec?: {
 			agentSlug?: string;
 			appId?: string;
@@ -37,6 +45,34 @@
 	let err = $state<string | null>(null);
 	let busy = $state<'wake' | 'sleep' | null>(null);
 	let timer: ReturnType<typeof setInterval> | null = null;
+	const phase = $derived(status?.status?.phase ?? status?.phase);
+	const replicas = $derived(status?.status?.replicas ?? status?.replicas ?? 0);
+	const readyReplicas = $derived(
+		status?.status?.readyReplicas ?? status?.readyReplicas ?? 0
+	);
+	const lastActiveAt = $derived(status?.status?.lastActiveAt);
+	const poolHeadlampUrl = $derived(
+		status?.name
+			? headlampCustomResourceUrl({
+					headlampBase: DEFAULT_HEADLAMP_URL,
+					cluster: 'ryzen',
+					crd: 'sandboxwarmpools.extensions.agents.x-k8s.io',
+					namespace: status.namespace ?? 'workflow-builder',
+					name: status.name
+				})
+			: null
+	);
+	const podHeadlampUrl = $derived(
+		status?.pod?.name
+			? headlampResourceUrl({
+					headlampBase: DEFAULT_HEADLAMP_URL,
+					cluster: 'ryzen',
+					kind: 'Pod',
+					namespace: status.namespace ?? 'workflow-builder',
+					name: status.pod.name
+				})
+			: null
+	);
 
 	async function refresh() {
 		try {
@@ -123,12 +159,12 @@
 	<div class="flex items-center justify-between">
 		<div class="flex items-center gap-2">
 			<span class="text-sm font-semibold">Runtime</span>
-			{#if status?.status?.phase}
+			{#if phase}
 				<span
 					class="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs font-medium"
 				>
-					<span class={`h-1.5 w-1.5 rounded-full ${phaseColor(status.status.phase)}`}></span>
-					{status.status.phase}
+					<span class={`h-1.5 w-1.5 rounded-full ${phaseColor(phase)}`}></span>
+					{phase}
 				</span>
 			{:else if loading}
 				<span class="text-xs text-muted-foreground">loading…</span>
@@ -155,22 +191,22 @@
 		</p>
 	{/if}
 
-	{#if status?.spec}
+	{#if status?.spec || status?.exists}
 		<dl class="grid grid-cols-3 gap-x-2 gap-y-1 text-xs">
 			<dt class="text-muted-foreground">App id</dt>
-			<dd class="col-span-2 font-mono">{status.spec.appId ?? `agent-runtime-${slug}`}</dd>
+			<dd class="col-span-2 font-mono">{status.spec?.appId ?? `agent-runtime-${slug}`}</dd>
 
 			<dt class="text-muted-foreground">Image</dt>
 			<dd
 				class="col-span-2 font-mono break-all text-[11px]"
-				title={status.spec.environment?.imageTag}
+				title={status.spec?.environment?.imageTag}
 			>
-				{status.spec.environment?.imageTag?.split('/').pop() ?? '—'}
+				{status.spec?.environment?.imageTag?.split('/').pop() ?? '—'}
 			</dd>
 
 			<dt class="text-muted-foreground">MCPs</dt>
 			<dd class="col-span-2">
-				{#if status.spec.mcpServers?.length}
+				{#if status.spec?.mcpServers?.length}
 					{status.spec.mcpServers.map((s) => s.name).join(', ')}
 				{:else}
 					<span class="text-muted-foreground">none</span>
@@ -192,8 +228,36 @@
 
 			<dt class="text-muted-foreground">Replicas</dt>
 			<dd class="col-span-2">
-				{status.status?.readyReplicas ?? 0}/{status.status?.replicas ?? 0}
+				{readyReplicas}/{replicas}
 			</dd>
+
+			{#if poolHeadlampUrl}
+				<dt class="text-muted-foreground">Headlamp</dt>
+				<dd class="col-span-2 flex flex-wrap gap-1">
+					<a
+						href={poolHeadlampUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+						title="Open SandboxWarmPool in Headlamp"
+					>
+						<HeadlampLogo class="h-3 w-3" />
+						Pool
+					</a>
+					{#if podHeadlampUrl}
+						<a
+							href={podHeadlampUrl}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+							title="Open active runtime Pod in Headlamp"
+						>
+							<HeadlampLogo class="h-3 w-3" />
+							Pod
+						</a>
+					{/if}
+				</dd>
+			{/if}
 
 			{#if status.pod?.containers?.length}
 				<dt class="text-muted-foreground">Containers</dt>
@@ -218,11 +282,11 @@
 			{/if}
 
 			<dt class="text-muted-foreground">Last active</dt>
-			<dd class="col-span-2">{relativeTime(status.status?.lastActiveAt)}</dd>
+			<dd class="col-span-2">{relativeTime(lastActiveAt)}</dd>
 
 			<dt class="text-muted-foreground">Idle TTL</dt>
 			<dd class="col-span-2">
-				{((status.spec.lifecycle?.idleTtlSeconds ?? 1800) / 60).toFixed(0)} min
+				{((status.spec?.lifecycle?.idleTtlSeconds ?? 1800) / 60).toFixed(0)} min
 			</dd>
 		</dl>
 	{/if}
@@ -236,7 +300,7 @@
 			<Button
 				size="sm"
 				variant="outline"
-				disabled={busy !== null || status?.status?.phase === 'Active'}
+				disabled={busy !== null || phase === 'Active'}
 				onclick={wake}
 			>
 				{busy === 'wake' ? 'Waking…' : 'Wake'}
@@ -245,7 +309,7 @@
 				<Button
 					size="sm"
 					variant="outline"
-					disabled={busy !== null || (status?.status?.replicas ?? 0) === 0}
+					disabled={busy !== null || replicas === 0}
 					onclick={sleep}
 				>
 					{busy === 'sleep' ? 'Sleeping…' : 'Sleep now'}

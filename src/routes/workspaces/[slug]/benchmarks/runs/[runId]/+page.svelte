@@ -28,7 +28,9 @@
 	import CumulativeResolvedSparkline from '$lib/components/benchmarks/cumulative-resolved-sparkline.svelte';
 	import RunInstanceTable from '$lib/components/benchmarks/run-instance-table.svelte';
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
+	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
 	import MetricWaterfall from '$lib/components/metrics/MetricWaterfall.svelte';
+	import { headlampResourceUrl } from '$lib/headlamp/links';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
 	import type { WorkloadSnapshot } from '$lib/server/kueueviz';
 	import {
@@ -61,6 +63,18 @@
 	const isActive = $derived(isActiveRunStatus(run?.status));
 	const canRetryCleanup = $derived(
 		!!run && ['cancelled', 'failed', 'completed'].includes(run.status)
+	);
+	const evaluatorHeadlampUrl = $derived(
+		run?.evaluatorJobName
+			? headlampResourceUrl({
+					headlampBase: data.headlampBase,
+					cluster: data.headlampCluster,
+					kind: 'Job',
+					namespace: 'workflow-builder',
+					name: run.evaluatorJobName,
+					logs: true
+				})
+			: null
 	);
 
 	// Live workloads stream — used to surface "Queue" status next to each
@@ -328,9 +342,16 @@
 						</a>
 					{/if}
 					{#if run.evaluatorJobName}
-						<span class="text-muted-foreground">
+						<a
+							href={evaluatorHeadlampUrl ?? undefined}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+						>
+							<HeadlampLogo class="h-3 w-3" />
 							evaluator <span class="font-mono">{run.evaluatorJobName}</span>
-						</span>
+							<ExternalLink class="h-3 w-3" />
+						</a>
 					{/if}
 					{#if run.predictionsPath}
 						<span class="break-all text-muted-foreground">
@@ -746,6 +767,8 @@
 	{runId}
 	instanceId={drawerInstanceId}
 	workspaceSlug={slug}
+	headlampBase={data.headlampBase}
+	headlampCluster={data.headlampCluster}
 	onOpenChange={closeDrawer}
 	onTerminated={() => refresh({ silent: true })}
 />

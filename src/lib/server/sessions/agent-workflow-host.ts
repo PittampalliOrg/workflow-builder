@@ -116,6 +116,44 @@ function agentWorkflowHostTimeoutSeconds(params: {
 	return 15 * 60;
 }
 
+function agentWorkflowHostExecutionClass(params: {
+	benchmarkRunId: string | null;
+}): string {
+	if (params.benchmarkRunId) {
+		return (
+			env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
+			process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
+			env.BENCHMARK_EXECUTION_CLASS ??
+			process.env.BENCHMARK_EXECUTION_CLASS ??
+			"benchmark-fast"
+		);
+	}
+	return (
+		env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
+		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
+		"interactive-agent"
+	);
+}
+
+function agentWorkflowHostPriorityClass(params: {
+	benchmarkRunId: string | null;
+	priorityClass?: string | null;
+}): string {
+	if (params.priorityClass?.trim()) return params.priorityClass.trim();
+	if (params.benchmarkRunId) {
+		return (
+			env.BENCHMARK_AGENT_WORKFLOW_HOST_PRIORITY_CLASS ??
+			process.env.BENCHMARK_AGENT_WORKFLOW_HOST_PRIORITY_CLASS ??
+			"swebench-cohort"
+		);
+	}
+	return (
+		env.AGENT_WORKFLOW_HOST_PRIORITY_CLASS ??
+		process.env.AGENT_WORKFLOW_HOST_PRIORITY_CLASS ??
+		"interactive-agent"
+	);
+}
+
 /**
  * Extract W3C trace-context headers from an incoming SvelteKit request so
  * they can be forwarded to sandbox-execution-api and ultimately stamped onto
@@ -159,11 +197,10 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	const waitReadySeconds = Number.isFinite(waitReadySecondsRaw)
 		? Math.max(0, Math.min(55, waitReadySecondsRaw))
 		: 45;
-	const priorityClass =
-		params.priorityClass?.trim() ||
-		env.AGENT_WORKFLOW_HOST_PRIORITY_CLASS ||
-		process.env.AGENT_WORKFLOW_HOST_PRIORITY_CLASS ||
-		"interactive-agent";
+	const priorityClass = agentWorkflowHostPriorityClass({
+		benchmarkRunId: params.benchmarkRunId,
+		priorityClass: params.priorityClass,
+	});
 	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
 	const traceHeaders: Record<string, string> = {};
 	if (params.traceContext?.traceparent) {
@@ -204,10 +241,9 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			runId: params.benchmarkRunId ?? undefined,
 			instanceId:
 				params.benchmarkInstanceId ?? params.workflowExecutionId ?? params.sessionId,
-			executionClass:
-				env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
-				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
-				"benchmark-fast",
+			executionClass: agentWorkflowHostExecutionClass({
+				benchmarkRunId: params.benchmarkRunId,
+			}),
 			...(timeoutSeconds === null ? {} : { timeoutSeconds }),
 			waitReadySeconds,
 			priorityClass,

@@ -3,6 +3,8 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
+	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
+	import { DEFAULT_HEADLAMP_URL, headlampResourceUrl, type HeadlampCluster } from '$lib/headlamp/links';
 	import {
 		Activity,
 		Bot,
@@ -63,6 +65,7 @@
 			mlflowRunId: string | null;
 			mlflowUrl: string | null;
 			mlflowTracesUrl: string | null;
+			hostJobName: string | null;
 			sandboxName: string | null;
 			workspaceRef: string | null;
 			logsPath: string | null;
@@ -96,6 +99,8 @@
 		runId: string | null;
 		instanceId: string | null;
 		workspaceSlug: string;
+		headlampBase?: string;
+		headlampCluster?: HeadlampCluster;
 		onOpenChange: (next: boolean) => void;
 		onTerminated?: () => void;
 	};
@@ -105,6 +110,8 @@
 		runId,
 		instanceId,
 		workspaceSlug,
+		headlampBase = DEFAULT_HEADLAMP_URL,
+		headlampCluster = 'ryzen',
 		onOpenChange,
 		onTerminated
 	}: Props = $props();
@@ -145,6 +152,18 @@
 	const canTerminate = $derived(
 		!!detail &&
 			['queued', 'inferencing', 'evaluating'].includes(detail.runInstance.status)
+	);
+	const hostJobHeadlampUrl = $derived(
+		detail?.runInstance.hostJobName
+			? headlampResourceUrl({
+					headlampBase,
+					cluster: headlampCluster,
+					kind: 'Job',
+					namespace: 'workflow-builder',
+					name: detail.runInstance.hostJobName,
+					logs: true
+				})
+			: null
 	);
 
 	// --- Resizable panel ---
@@ -446,6 +465,20 @@
 									title="Open MLflow traces"
 								>
 									Traces
+									<ExternalLink class="h-2.5 w-2.5" />
+								</a>
+							{/if}
+							{#if hostJobHeadlampUrl && detail.runInstance.hostJobName}
+								<a
+									href={hostJobHeadlampUrl}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+									title="Open benchmark instance Job logs in Headlamp"
+								>
+									<HeadlampLogo class="h-3 w-3" />
+									Job
+									<span class="max-w-36 truncate font-mono">{detail.runInstance.hostJobName}</span>
 									<ExternalLink class="h-2.5 w-2.5" />
 								</a>
 							{/if}

@@ -322,6 +322,7 @@ function agentHostResourceProfileFromEnv():
 	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
 	if (!raw?.trim()) return null;
 	const executionClass =
+		process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
 		process.env.BENCHMARK_EXECUTION_CLASS?.trim() ||
 		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
 		null;
@@ -466,6 +467,7 @@ function kueueClusterQueueNameFromEnv(): string | null {
 	}
 	return (
 		process.env.BENCHMARK_KUEUE_CLUSTER_QUEUE?.trim() ||
+		process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
 		process.env.BENCHMARK_EXECUTION_CLASS?.trim() ||
 		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
 		null
