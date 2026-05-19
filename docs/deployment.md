@@ -42,22 +42,23 @@ It is not the authoritative cluster deployment state.
 
 Use this to change the real cluster:
 
-1. build images
-2. push image tags to the in-cluster registry
-3. update `stacks/main`
+1. push source changes to the normal GitHub repo when a new image is needed
+2. let the hub Tekton outer-loop build and publish `ghcr.io/pittampalliorg/<image>:git-<sha>`
+3. update `stacks/main` image pins or manifests
 4. let ArgoCD reconcile
 
-On `ryzen`, changing only this repo does not change the real cluster until the corresponding `stacks/main` change lands.
+On `ryzen`, changing only this repo does not change the real cluster until the corresponding `stacks/main` change is delivered with `idpbuilder stacks sync` or `cluster-update`.
 
 ## Build and Promotion Model
 
-The cluster uses a GitOps and in-cluster build flow:
+The cluster uses a GitOps and hub-build flow:
 
 - app repos contain source
 - Tekton builds images in the hub cluster
-- Gitea stores the built image tags
+- GHCR stores promoted built image tags and digests
 - `stacks/main` pins the live image refs
 - ArgoCD reconciles the runtime from `stacks/main`
+- ryzen local manifest iteration uses `idpbuilder stacks sync`, which snapshots `stacks/main` into local Gitea and refreshes only affected ArgoCD apps
 
 If the live cluster does not match local code, first check whether the image tags and manifests in `stacks/main` were updated.
 
@@ -92,14 +93,17 @@ tool-heavy GPT-5.4 workflows such as spreadsheet generation because it keeps
 tool-call latency bounded.
 
 For XLSX workflows, `openshell-agent-runtime` must use a runtime script or
-configuration that maps:
+configuration that maps the sandbox template name to the intended sandbox image
+ref through `SANDBOX_TEMPLATE_IMAGES_JSON`, for example:
 
 ```text
-dapr-agent-xlsx -> gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox-xlsx:latest
+dapr-agent-xlsx -> <registry>/openshell-sandbox-xlsx:<tag>
 ```
 
-That sandbox image should contain spreadsheet dependencies in the image. Do not
-rely on runtime package installation inside the agent workflow.
+That sandbox image should contain spreadsheet dependencies in the image. Update
+the image mapping in `stacks/main` and deliver it to ryzen with
+`idpbuilder stacks sync`; do not rely on runtime package installation inside the
+agent workflow.
 
 For hooks + plugins support, the `dapr-agent-py` and
 `dapr-agent-py-testing` Deployments set:
