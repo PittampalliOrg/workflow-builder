@@ -21,6 +21,7 @@
 	import { getCapacityOverview, getSchedulingLatency } from './data.remote';
 	import type {
 		CapacityBlockedWorkload,
+		CapacityContributorSnapshot,
 		CapacityObserverSnapshot,
 		CapacityQueueSnapshot,
 		CapacitySessionSnapshot
@@ -90,6 +91,38 @@
 		if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
 		return Math.max(0, Math.min(100, (value / total) * 100));
 	}
+
+	function overPercent(value: number, total: number) {
+		if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
+		return value > total ? ((value - total) / total) * 100 : 0;
+	}
+
+	function resourceLabel(resource: string) {
+		if (resource === 'cpu') return 'CPU';
+		if (resource === 'memory') return 'Memory';
+		if (resource === 'ephemeral-storage') return 'Ephemeral storage';
+		if (resource === 'pods') return 'Pods';
+		return resource;
+	}
+
+	function resourceValue(contributor: CapacityContributorSnapshot, resource: string) {
+		return contributor.resources?.[resource] ?? 0;
+	}
+
+	function contributorScore(contributor: CapacityContributorSnapshot) {
+		return (
+			resourceValue(contributor, 'cpu') * 1000 +
+			resourceValue(contributor, 'memory') / (1024 ** 3) * 25 +
+			resourceValue(contributor, 'ephemeral-storage') / (1024 ** 3) +
+			resourceValue(contributor, 'pods') * 10
+		);
+	}
+
+	const topContributors = $derived.by<CapacityContributorSnapshot[]>(() => {
+		return [...(observer?.contributors ?? [])]
+			.sort((a, b) => contributorScore(b) - contributorScore(a))
+			.slice(0, 8);
+	});
 
 	function queueSnapshot(name: string): CapacityQueueSnapshot | null {
 		return observer?.queues.find((queue) => queue.name === name) ?? null;
@@ -189,64 +222,151 @@
 	{/if}
 
 	{#if observer}
-		<section class="grid gap-3 xl:grid-cols-[1fr_auto]">
+		<section class="space-y-3">
+			<header class="flex flex-wrap items-end justify-between gap-2">
+				<div>
+					<h2 class="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Worker Capacity</h2>
+					<p class="mt-1 text-xs text-muted-foreground">
+						Live pod requests on schedulable <span class="font-mono">{observer.flavor}</span> workers, with the protected reserve and Kueue admission budget shown separately.
+					</p>
+				</div>
+				<div class="flex flex-wrap items-center gap-1.5">
+					<Badge variant="outline" class="font-mono text-[10px]">
+						<Server class="size-3" />
+						{observer.cluster}
+					</Badge>
+					<Badge variant="outline" class="font-mono text-[10px]">
+						{observer.nodePressure.schedulableWorkers ?? 0} schedulable workers
+					</Badge>
+					{#if observer.nodePressure.controlPlaneMatches}
+						<Badge variant="destructive" class="font-mono text-[10px]">
+							{observer.nodePressure.controlPlaneMatches} control-plane match
+						</Badge>
+					{/if}
+				</div>
+			</header>
+
 			<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
 				{#each observer.resources as resource (resource.flavor + ':' + resource.resource)}
+					{@const active = resource.requested + resource.criticalReserve}
 					<div class="rounded-md border bg-card p-3">
-						<div class="mb-2 flex items-start justify-between gap-2">
+						<div class="flex items-start justify-between gap-2">
 							<div>
-								<div class="text-[11px] uppercase text-muted-foreground">{resource.resource}</div>
-								<div class="font-mono text-sm font-semibold">
-									{formatQuantityForResource(resource.resource, resource.requested)}
-									<span class="text-xs font-normal text-muted-foreground">
-										/ {formatQuantityForResource(resource.resource, resource.renderedBudget)}
+								<div class="text-[11px] uppercase text-muted-foreground">{resourceLabel(resource.resource)}</div>
+								<div class="mt-1 flex items-baseline gap-1.5">
+									<span class="font-mono text-lg font-semibold">
+										{formatQuantityForResource(resource.resource, resource.headroom)}
 									</span>
+									<span class="text-[11px] text-muted-foreground">free</span>
 								</div>
 							</div>
-							<Badge variant="outline" class="text-[10px]">{resource.flavor}</Badge>
+							<Badge variant={resource.requested > resource.renderedBudget ? 'destructive' : 'outline'} class="text-[10px]">
+								{Math.round(percent(resource.requested, resource.renderedBudget))}% of Kueue budget
+							</Badge>
 						</div>
-						<UsageBar
-							used={percent(resource.requested, resource.renderedBudget)}
-							reserved={0}
-							label="requested"
-							usedAbsLabel={formatQuantityForResource(resource.resource, resource.requested)}
-							nominalLabel={formatQuantityForResource(resource.resource, resource.renderedBudget)}
-							hideHeader
-						/>
-						<div class="mt-2 flex justify-between gap-2 text-[10px] text-muted-foreground">
-							<span>reserve {formatQuantityForResource(resource.resource, resource.criticalReserve)}</span>
-							<span>headroom {formatQuantityForResource(resource.resource, resource.headroom)}</span>
+
+						<div class="mt-3">
+							<UsageBar
+								used={percent(resource.requested, resource.allocatable)}
+								reserved={percent(resource.criticalReserve, resource.allocatable)}
+								over={overPercent(active, resource.allocatable)}
+								label="worker allocation"
+								usedAbsLabel={formatQuantityForResource(resource.resource, resource.requested)}
+								reservedAbsLabel={formatQuantityForResource(resource.resource, resource.criticalReserve)}
+								nominalLabel={formatQuantityForResource(resource.resource, resource.allocatable)}
+							/>
+						</div>
+
+						<div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[10px]">
+							<span class="text-muted-foreground">Live requested</span>
+							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.requested)}</span>
+							<span class="text-muted-foreground">Protected reserve</span>
+							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.criticalReserve)}</span>
+							<span class="text-muted-foreground">Actual critical</span>
+							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.criticalRequested)}</span>
+							<span class="text-muted-foreground">Kueue budget</span>
+							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.renderedBudget)}</span>
 						</div>
 					</div>
 				{/each}
 			</div>
-			<div class="grid min-w-[260px] gap-2 rounded-md border bg-card p-3">
-				<div class="flex items-center justify-between gap-2">
-					<div class="flex items-center gap-2 text-sm font-medium">
-						<Server class="size-4 text-muted-foreground" />
-						<span>{observer.cluster}</span>
+
+			<div class="grid gap-3 xl:grid-cols-[1fr_320px]">
+				<div class="rounded-md border bg-card">
+					<div class="flex items-center justify-between gap-2 border-b px-3 py-2">
+						<h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Top live request contributors</h3>
+						<span class="text-[10px] text-muted-foreground">{topContributors.length} shown</span>
 					</div>
-					<Badge variant="outline" class="text-[10px]">{observer.flavor}</Badge>
-				</div>
-				<div class="grid grid-cols-2 gap-2 text-[11px]">
-					{#each observer.criticalHealth as item (item.name)}
-						<div class="flex items-center justify-between gap-2 rounded border px-2 py-1.5">
-							<span class="capitalize text-muted-foreground">{item.name}</span>
-							<span class="inline-flex items-center gap-1 font-mono">
-								{#if item.status === 'healthy'}
-									<CheckCircle2 class="size-3 text-emerald-500" />
-								{:else}
-									<AlertTriangle class="size-3 text-amber-500" />
-								{/if}
-								{item.ready}/{item.total}
-							</span>
+					{#if topContributors.length === 0}
+						<div class="px-3 py-4 text-xs text-muted-foreground">No worker pod requests reported.</div>
+					{:else}
+						<div class="divide-y text-xs">
+							<div class="hidden grid-cols-[minmax(0,1fr)_72px_88px_56px_96px] gap-3 px-3 py-1.5 text-[10px] uppercase text-muted-foreground md:grid">
+								<span>Contributor</span>
+								<span class="text-right">CPU</span>
+								<span class="text-right">Memory</span>
+								<span class="text-right">Pods</span>
+								<span class="text-right">Storage</span>
+							</div>
+							{#each topContributors as contributor (contributor.key)}
+								<div class="grid gap-2 px-3 py-2 md:grid-cols-[minmax(0,1fr)_72px_88px_56px_96px] md:items-center md:gap-3">
+									<div class="min-w-0">
+										<div class="flex min-w-0 items-center gap-1.5">
+											<span class="truncate font-mono" title={contributor.name}>{contributor.name}</span>
+											<Badge variant={contributor.kind === 'critical' ? 'secondary' : 'outline'} class="shrink-0 text-[9px]">
+												{contributor.kind}
+											</Badge>
+											{#if contributor.queue}
+												<Badge variant="outline" class="hidden shrink-0 text-[9px] sm:inline-flex">{contributor.queue}</Badge>
+											{/if}
+										</div>
+										<div class="mt-0.5 truncate text-[10px] text-muted-foreground">
+											{contributor.namespace} · {contributor.podCount} pod{contributor.podCount === 1 ? '' : 's'}
+										</div>
+									</div>
+									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('cpu', resourceValue(contributor, 'cpu'))}</span>
+									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('memory', resourceValue(contributor, 'memory'))}</span>
+									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('pods', resourceValue(contributor, 'pods'))}</span>
+									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('ephemeral-storage', resourceValue(contributor, 'ephemeral-storage'))}</span>
+								</div>
+							{/each}
 						</div>
-					{/each}
+					{/if}
 				</div>
-				<div class="flex flex-wrap gap-1 text-[10px] text-muted-foreground">
-					<span>{observer.nodePressure.schedulableWorkers ?? 0} workers</span>
-					<span>{observer.nodePressure.unschedulableWorkers ?? 0} unschedulable</span>
-					<span>{observer.recentPreemptions} preemptions</span>
+
+				<div class="grid gap-2 rounded-md border bg-card p-3">
+					<div class="flex items-center justify-between gap-2">
+						<div class="flex items-center gap-2 text-sm font-medium">
+							<Server class="size-4 text-muted-foreground" />
+							<span>Critical health</span>
+						</div>
+						<Badge variant="outline" class="text-[10px]">{observer.flavor}</Badge>
+					</div>
+					<div class="grid grid-cols-2 gap-2 text-[11px]">
+						{#each observer.criticalHealth as item (item.name)}
+							<div class="flex items-center justify-between gap-2 rounded border px-2 py-1.5">
+								<span class="capitalize text-muted-foreground">{item.name}</span>
+								<span class="inline-flex items-center gap-1 font-mono">
+									{#if item.status === 'healthy'}
+										<CheckCircle2 class="size-3 text-emerald-500" />
+									{:else}
+										<AlertTriangle class="size-3 text-amber-500" />
+									{/if}
+									{item.ready}/{item.total}
+								</span>
+							</div>
+						{/each}
+					</div>
+					<div class="flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+						<span>{observer.nodePressure.unschedulableWorkers ?? 0} unschedulable</span>
+						<span>{observer.nodePressure.diskPressureWorkers ?? 0} disk pressure</span>
+						<span>{observer.recentPreemptions} preemptions</span>
+					</div>
+					{#if observer.warnings.length > 0}
+						<div class="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-300">
+							{observer.warnings[0]}
+						</div>
+					{/if}
 				</div>
 			</div>
 		</section>
