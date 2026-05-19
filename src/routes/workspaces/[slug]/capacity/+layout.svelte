@@ -40,24 +40,24 @@
 	]);
 </script>
 
-<div class="h-full overflow-y-auto space-y-4 p-4 md:p-6">
+<div class="h-full min-w-0 space-y-4 overflow-y-auto p-4 md:p-6">
 	<header class="space-y-1">
 		<h1 class="text-xl font-semibold flex items-center gap-2">
 			<Gauge class="size-5" /> Capacity
 		</h1>
 		<p class="text-xs text-muted-foreground">
-			Live view of Kueue ClusterQueues, Workloads, and ResourceFlavors. Streamed from the
-			cluster's
-			<code class="font-mono text-[11px]">kueue-kueueviz-backend</code>.
+			Live Kueue queue state from <code class="font-mono text-[11px]">kueue-kueueviz-backend</code>,
+			combined with worker headroom from
+			<code class="font-mono text-[11px]">capacity-observer</code>.
 		</p>
 	</header>
 
-	<nav class="flex gap-1 border-b text-sm" aria-label="Capacity sections">
+	<nav class="flex gap-1 overflow-x-auto border-b text-sm whitespace-nowrap" aria-label="Capacity sections">
 		{#each tabs as tab (tab.id)}
 			{@const active = pathname.startsWith(tab.href)}
 			<a
 				href={tab.href}
-				class="flex items-center gap-1.5 border-b-2 px-3 py-2 transition-colors {active
+				class="flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 transition-colors {active
 					? 'border-primary text-foreground font-medium'
 					: 'border-transparent text-muted-foreground hover:text-foreground'}"
 			>

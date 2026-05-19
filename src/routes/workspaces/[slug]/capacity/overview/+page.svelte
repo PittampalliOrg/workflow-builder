@@ -261,7 +261,7 @@
 								</div>
 							</div>
 							<Badge variant={resource.requested > resource.renderedBudget ? 'destructive' : 'outline'} class="text-[10px]">
-								{Math.round(percent(resource.requested, resource.renderedBudget))}% of Kueue budget
+								{Math.round(percent(resource.requested, resource.renderedBudget))}% budget used
 							</Badge>
 						</div>
 
