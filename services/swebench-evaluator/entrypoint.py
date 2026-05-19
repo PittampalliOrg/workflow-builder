@@ -1007,10 +1007,14 @@ def taskrun_execution_spec() -> dict[str, Any]:
     pull_secret_names = [
         name.strip() for name in raw_pull_secrets.split(",") if name.strip()
     ]
+    pod_template: dict[str, Any] = {}
     if pull_secret_names:
-        spec["podTemplate"] = {
-            "imagePullSecrets": [{"name": name} for name in pull_secret_names]
-        }
+        pod_template["imagePullSecrets"] = [{"name": name} for name in pull_secret_names]
+    pod_priority_class = os.environ.get("SWEBENCH_TEKTON_POD_PRIORITY_CLASS", "").strip()
+    if pod_priority_class:
+        pod_template["priorityClassName"] = pod_priority_class
+    if pod_template:
+        spec["podTemplate"] = pod_template
     # Kueue queue-name/priority labels are intentionally NOT set here:
     # Tekton's PodTemplate has no metadata/labels field and silently drops
     # it, so a podTemplate label never reaches the pod. Pod labels for

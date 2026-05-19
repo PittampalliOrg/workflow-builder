@@ -12,6 +12,7 @@
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default observable OpenShell inner loop
 #   bash scripts/devspace-dev-ryzen.sh --profile sw-workflow-dev  # CNCF Serverless Workflow 1.0 development
 #   bash scripts/devspace-dev-ryzen.sh --profile swebench-dev  # SWE-bench benchmark/evaluator coordination loop
+#   bash scripts/devspace-dev-ryzen.sh --profile swebench-dev-with-dapr-agent-py  # Future clusters with dapr-agent-py Deployment
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the SvelteKit app only
 #   devspace dev --profile workflow-ui-only  # Raw fastest loop: workflow-builder only
@@ -26,7 +27,7 @@
 #
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
-#     swebench-coordinator, dapr-agent-py, fn-activepieces, and mcp-gateway.
+#     swebench-coordinator, fn-activepieces, and mcp-gateway.
 #   - swebench-evaluator is a Job image launched by swebench-coordinator rather
 #     than a standing Deployment; build it with `devspace run build-swebench-evaluator-dev-image`
 #     and point SWEBENCH_EVALUATOR_IMAGE at that tag when needed.
@@ -305,6 +306,12 @@ dev:
         # Add node_modules/.bin to PATH
         export PATH="/app/node_modules/.bin:$PATH"
 
+        # Vite/SvelteKit SSR module runner may request absolute /node_modules
+        # ids while the DevSpace working tree lives under /app.
+        if [ ! -e "/node_modules" ]; then
+          ln -s /app/node_modules /node_modules
+        fi
+
         echo "Starting SvelteKit development server..."
         exec vite dev --host 0.0.0.0 --port ${CONTAINER_PORT}
 
@@ -393,15 +400,14 @@ dev:
       - op: replace
         path: spec.containers.name=${APP_NAME}.env.name=MLFLOW_ENABLED.value
         value: "true"
-      # Route BFF-created DevSpace sessions through the synced dapr-agent-py
-      # service instead of Kueue per-session host images, while keeping the
-      # normal /api/v1/sessions creation and event ingest path.
+      # Match current ryzen: use the Kueue-backed per-session host path. The
+      # legacy dapr-agent-py Deployment is not present on this cluster.
       - op: replace
         path: spec.containers.name=${APP_NAME}.env.name=AGENT_WORKFLOW_HOST_BACKEND.value
-        value: "disabled"
+        value: "kueue"
       - op: replace
         path: spec.containers.name=${APP_NAME}.env.name=AGENT_RUNTIME_POOL_APP_IDS_JSON.value
-        value: '{"coding":{"appId":"dapr-agent-py","slug":"dapr-agent-py","idleTtlSeconds":7200,"maxReplicas":1,"slotsPerReplica":12}}'
+        value: "{}"
 
     # Port forwarding for development
     ports:
@@ -470,6 +476,8 @@ dev:
       - name: AUTH_TRUST_HOST
         value: "true"
       - name: WORKFLOW_BUILDER_DISABLE_NODE_OTEL
+        value: "true"
+      - name: WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS
         value: "true"
       - name: MASTRA_AGENT_API_BASE_URL
         value: ""
@@ -1256,10 +1264,7 @@ pipelines:
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
           swebench-dev)
-            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py"
-            ;;
-          full-agent-stack)
-            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator"
             ;;
           *)
             printf '%s\n' "${ARGO_APPS}"
@@ -1285,10 +1290,7 @@ pipelines:
             printf '%s\n' "workflow-builder workflow-orchestrator function-router"
             ;;
           swebench-dev)
-            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py"
-            ;;
-          full-agent-stack)
-            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py"
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router swebench-coordinator"
             ;;
           *)
             printf '%s\n' "${PRODUCTION_DEPLOYMENTS}"
@@ -1393,7 +1395,27 @@ pipelines:
         done
       }
 
+      preflight_selected_deployments() {
+        missing=""
+        echo "==> Preflight: selected production deployments: ${RECOVERY_DEPLOYMENTS}"
+        for dep in ${RECOVERY_DEPLOYMENTS}; do
+          if kubectl get deployment "$dep" --namespace "$WL_NS" >/dev/null 2>&1; then
+            ready="$(kubectl get deployment "$dep" --namespace "$WL_NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+            desired="$(kubectl get deployment "$dep" --namespace "$WL_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+            echo "    found deployment/${dep} (${ready:-0}/${desired:-0} ready)"
+          else
+            missing="${missing} ${dep}"
+          fi
+        done
+        if [ -n "$missing" ]; then
+          echo "Missing required deployment(s):${missing}" >&2
+          echo "No ArgoCD pause or scale-down action was performed." >&2
+          exit 1
+        fi
+      }
+
       # ── Pause ArgoCD for active apps ──
+      preflight_selected_deployments
       for app in ${ACTIVE_APPS}; do
         if kubectl get application "$app" --namespace "$ARGO_NS" >/dev/null 2>&1; then
           echo "==> Pausing ArgoCD reconciliation for $app"
@@ -1477,8 +1499,7 @@ hooks:
           ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
           function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
           sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-          swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py" ;;
-          full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
+          swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
           *) ACTIVE_APPS="${ARGO_APPS}" ;;
         esac
         for app in ${ACTIVE_APPS}; do
@@ -1532,8 +1553,7 @@ commands:
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py" ;;
-      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
+      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
     for app in ${ACTIVE_APPS}; do
@@ -1547,8 +1567,7 @@ commands:
       ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
       function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
       sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
-      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator dapr-agent-py" ;;
-      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator dapr-agent-py" ;;
+      swebench-dev) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router swebench-coordinator" ;;
       *) ACTIVE_APPS="${ARGO_APPS}" ;;
     esac
     for app in ${ACTIVE_APPS}; do
@@ -1650,7 +1669,7 @@ commands:
     done
     echo "==> Done: ${IMAGES}"
   build-dev-base-images: |-
-    echo "==> Triggering Tekton base-image builds for workflow-builder and dapr-agent-py"
+    echo "==> Triggering Tekton base-image build for workflow-builder"
     GIT_SHA="${GIT_SHA:-$(git ls-remote https://gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder.git HEAD | awk '{print $1}')}"
     if [ -z "${GIT_SHA}" ]; then
       echo "Could not resolve git SHA from Gitea mirror" >&2
@@ -1901,11 +1920,29 @@ profiles:
       Starts: workflow-builder (benchmark API + run state), workflow-orchestrator
               and function-router (agent inference workflow), and swebench-coordinator
               (parent/child SWE-bench workflows and evaluator Job creation).
-              Also replaces dapr-agent-py so local agent telemetry changes can be
-              validated against the same ryzen MLflow trace experiment.
       The evaluator itself is a Kubernetes Job image; use
       `devspace run build-swebench-evaluator-dev-image` when iterating on that image,
       then override SWEBENCH_EVALUATOR_IMAGE if the coordinator should launch the dev tag.
+    patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder workflow-orchestrator function-router swebench-coordinator"
+      - op: remove
+        path: dev.ai-chatbot
+      - op: remove
+        path: dev.fn-activepieces
+      - op: remove
+        path: dev.mcp-gateway
+      - op: remove
+        path: dev.dapr-agent-py
+
+  - name: swebench-dev-with-dapr-agent-py
+    description: >
+      SWE-bench benchmark execution loop for clusters where dapr-agent-py still
+      exists as a long-lived Deployment.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default

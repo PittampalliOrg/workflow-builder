@@ -15,10 +15,12 @@
 	import CopyButton from "$lib/components/gitops/CopyButton.svelte";
 	import EnvCard from "$lib/components/gitops/EnvCard.svelte";
 	import ArgoCDLogo from "$lib/components/gitops/icons/ArgoCDLogo.svelte";
+	import HeadlampLogo from "$lib/components/gitops/icons/HeadlampLogo.svelte";
 	import TektonLogo from "$lib/components/gitops/icons/TektonLogo.svelte";
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
 	import { argoGates, releasePrGate, type GateState } from "$lib/gitops/gates";
+	import { headlampResourceUrl, type HeadlampCluster } from "$lib/headlamp/links";
 	import {
 		ENVIRONMENTS,
 		summarizeRow,
@@ -162,6 +164,27 @@
 		for (const env of ENVIRONMENTS) {
 			const url = argoAppUrlFor(env);
 			if (url) out.push({ env, url });
+		}
+		return out;
+	});
+	const headlampDeploymentUrls = $derived.by(() => {
+		if (row.specialCase === "sandbox-only") return [];
+		const out: Array<{ env: EnvName; url: string }> = [];
+		for (const env of visibleEnvs) {
+			const cell = row.envs[env];
+			if (!cell) continue;
+			const url = headlampResourceUrl({
+				headlampBase: links.headlampBase,
+				cluster: env as HeadlampCluster,
+				kind: "Deployment",
+				namespace: "workflow-builder",
+				name: row.service,
+			});
+			if (!url) continue;
+			out.push({
+				env,
+				url,
+			});
 		}
 		return out;
 	});
@@ -386,6 +409,21 @@
 					>
 						<ArgoCDLogo class="size-3.5" />
 						ArgoCD · {link.env}
+						<ExternalLink class="size-3" />
+					</Button>
+				{/each}
+				{#each headlampDeploymentUrls as link (link.env)}
+					<Button
+						variant="outline"
+						size="sm"
+						href={link.url}
+						class="h-7 gap-1.5 text-xs"
+						target="_blank"
+						rel="noreferrer"
+						title={`Open ${row.service} Deployment in Headlamp for ${link.env}`}
+					>
+						<HeadlampLogo class="size-3.5" />
+						Headlamp · {link.env}
 						<ExternalLink class="size-3" />
 					</Button>
 				{/each}

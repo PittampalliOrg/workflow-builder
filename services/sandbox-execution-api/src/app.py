@@ -51,12 +51,16 @@ class ExecutionRequest(BaseModel):
     mlflowContext: dict[str, Any] | None = None
     traceContext: dict[str, str] | None = None
     inferenceEnvironment: dict[str, Any] = Field(default_factory=dict)
+    # Maps to kueue.x-k8s.io/priority-class on the Job and pod template.
+    priorityClass: str | None = None
     callback: ExecutionCallback
 
 
 class ExecutionClassConfig(BaseModel):
     localQueue: str
     runtimeClassName: str | None = None
+    priorityClass: str | None = None
+    priorityClassName: str | None = None
     workerImage: str = DEFAULT_WORKER_IMAGE
     serviceAccountName: str = "sandbox-execution-worker"
     imagePullSecrets: list[str] = Field(default_factory=lambda: ["ghcr-pull-credentials"])
@@ -307,6 +311,14 @@ def build_job_manifest(
         ]
     if class_config.runtimeClassName:
         pod_spec["runtimeClassName"] = class_config.runtimeClassName
+    if class_config.priorityClassName:
+        pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
+    kueue_labels: dict[str, str] = {
+        KUEUE_QUEUE_LABEL: class_config.localQueue,
+    }
+    kueue_priority = request.priorityClass or class_config.priorityClass
+    if kueue_priority:
+        kueue_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(kueue_priority)
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -318,6 +330,7 @@ def build_job_manifest(
                 "benchmark-run-id": run_label,
                 "benchmark-instance-id": instance_label,
                 "sandbox-execution-class": _safe_name(request.executionClass),
+                **kueue_labels,
             },
         },
         "spec": {
@@ -330,6 +343,8 @@ def build_job_manifest(
                         "app": "sandbox-execution-worker",
                         "benchmark-run-id": run_label,
                         "benchmark-instance-id": instance_label,
+                        "sandbox-execution-class": _safe_name(request.executionClass),
+                        **kueue_labels,
                     }
                 },
                 "spec": pod_spec,
@@ -702,6 +717,8 @@ def build_agent_workflow_host_sandbox_manifest(
         ]
     if class_config.runtimeClassName:
         pod_spec["runtimeClassName"] = class_config.runtimeClassName
+    if class_config.priorityClassName:
+        pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
     if request.timeoutSeconds is not None:
         pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
     pod_labels: dict[str, str] = {

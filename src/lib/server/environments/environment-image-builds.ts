@@ -370,14 +370,17 @@ function defaultSwebenchEnvironmentTuning(
 export function plannedSwebenchInferenceEnvironment(
 	input: EnsureSwebenchEnvironmentInput,
 ): ResolvedSwebenchInferenceEnvironment {
-	const resolved = resolveSwebenchInferenceEnvironment({
-		suiteSlug: input.suiteSlug,
-		repo: input.repo,
-		baseCommit: input.baseCommit,
-		testMetadata: input.testMetadata,
-	});
-	if (resolved.environmentStatus === "validated") return resolved;
 	const spec = buildSwebenchEnvironmentSpec(input);
+	const resolved = resolveSwebenchInferenceEnvironment(
+		{
+			suiteSlug: input.suiteSlug,
+			repo: input.repo,
+			baseCommit: input.baseCommit,
+			testMetadata: input.testMetadata,
+		},
+		spec.envSpecHash,
+	);
+	if (resolved.environmentStatus === "validated") return resolved;
 	return {
 		environmentStatus: "building",
 		suite: input.suiteSlug,
@@ -431,29 +434,35 @@ export async function plannedSwebenchInferenceEnvironmentWithBuild(
 export async function ensureSwebenchEnvironment(
 	input: EnsureSwebenchEnvironmentInput,
 ): Promise<EnvironmentPrepareResult> {
-	const staticResolved = resolveSwebenchInferenceEnvironment({
-		suiteSlug: input.suiteSlug,
-		repo: input.repo,
-		baseCommit: input.baseCommit,
-		testMetadata: input.testMetadata,
-	});
+	const spec = buildSwebenchEnvironmentSpec(input);
+	const staticResolved = resolveSwebenchInferenceEnvironment(
+		{
+			suiteSlug: input.suiteSlug,
+			repo: input.repo,
+			baseCommit: input.baseCommit,
+			testMetadata: input.testMetadata,
+		},
+		spec.envSpecHash,
+	);
 	if (
 		staticResolved.environmentStatus === "validated" &&
 		!(
 			input.forceRefreshLegacyStatic === true &&
 			(isLegacyStaticSwebenchEnvironment(staticResolved) ||
-				!isExactValidatedSwebenchInferenceEnvironment({
-					suiteSlug: input.suiteSlug,
-					repo: input.repo,
-					baseCommit: input.baseCommit,
-					testMetadata: input.testMetadata,
-				}))
+				!isExactValidatedSwebenchInferenceEnvironment(
+					{
+						suiteSlug: input.suiteSlug,
+						repo: input.repo,
+						baseCommit: input.baseCommit,
+						testMetadata: input.testMetadata,
+					},
+					spec.envSpecHash,
+				))
 		)
 	) {
 		return validatedResult(staticResolved, "static_mapping");
 	}
 
-	const spec = buildSwebenchEnvironmentSpec(input);
 	const database = requireDb();
 	const existing = await getBuildBySpecHash(spec.envSpecHash);
 	if (existing) {

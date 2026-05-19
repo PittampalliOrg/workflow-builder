@@ -40,6 +40,11 @@ const DEFAULT_PULL_SECRETS = [
 
 const DEFAULT_SERVICE_ACCOUNT = "agent-runtime";
 const DEFAULT_OPENSHELL_GATEWAY_NAME = "ryzen-internal";
+const KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name";
+const KUEUE_PRIORITY_CLASS_LABEL = "kueue.x-k8s.io/priority-class";
+const DEFAULT_WARM_POOL_QUEUE = "background-warm";
+const DEFAULT_WARM_POOL_WORKLOAD_PRIORITY = "background-warm";
+const DEFAULT_WARM_POOL_POD_PRIORITY = "background-workload";
 
 const OPENSHELL_SEED_SCRIPT = `set -eu
 CONFIG_ROOT="\${XDG_CONFIG_HOME}/openshell"
@@ -73,6 +78,30 @@ function resolveLlmComponent(modelSpec: string | null | undefined): string {
 	if (!trimmed) return DEFAULT_LLM_COMPONENT;
 	const match = AGENT_MODEL_OPTIONS.find((o) => o.value === trimmed);
 	return match?.component ?? DEFAULT_LLM_COMPONENT;
+}
+
+function warmPoolQueueName(): string {
+	return (
+		process.env.AGENT_WARM_POOL_KUEUE_QUEUE?.trim() ||
+		process.env.AGENT_RUNTIME_WARM_POOL_KUEUE_QUEUE?.trim() ||
+		DEFAULT_WARM_POOL_QUEUE
+	);
+}
+
+function warmPoolWorkloadPriorityClass(): string {
+	return (
+		process.env.AGENT_WARM_POOL_KUEUE_PRIORITY_CLASS?.trim() ||
+		process.env.AGENT_RUNTIME_WARM_POOL_KUEUE_PRIORITY_CLASS?.trim() ||
+		DEFAULT_WARM_POOL_WORKLOAD_PRIORITY
+	);
+}
+
+function warmPoolPodPriorityClassName(): string {
+	return (
+		process.env.AGENT_WARM_POOL_POD_PRIORITY_CLASS?.trim() ||
+		process.env.AGENT_RUNTIME_WARM_POOL_POD_PRIORITY_CLASS?.trim() ||
+		DEFAULT_WARM_POOL_POD_PRIORITY
+	);
 }
 
 export type BuildBrowserSandboxTemplateInput = {
@@ -130,6 +159,8 @@ export function buildBrowserSandboxTemplate(
 		"agents.x-k8s.io/app-id": input.appId,
 		"agents.x-k8s.io/runtime-class": input.runtimeClass,
 		"agents.x-k8s.io/runtime-isolation": input.runtimeIsolation,
+		[KUEUE_QUEUE_LABEL]: warmPoolQueueName(),
+		[KUEUE_PRIORITY_CLASS_LABEL]: warmPoolWorkloadPriorityClass(),
 	};
 
 	const podAnnotations: Record<string, string> = {
@@ -298,6 +329,7 @@ export function buildBrowserSandboxTemplate(
 
 	const podSpec: Record<string, unknown> = {
 		serviceAccountName,
+		priorityClassName: warmPoolPodPriorityClassName(),
 		terminationGracePeriodSeconds: 60,
 		// daprd's secretstores.kubernetes initializer uses
 		// rest.InClusterConfig() (probes the projected SA token at

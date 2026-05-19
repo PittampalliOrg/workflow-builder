@@ -1,10 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
+	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
+	import { DEFAULT_HEADLAMP_URL, headlampCustomResourceUrl, headlampResourceUrl } from '$lib/headlamp/links';
 
 	type Runtime = {
 		name: string;
-		slug: string;
+		namespace?: string;
+		slug: string | null;
 		appId: string;
 		phase: string;
 		replicas: number;
@@ -14,6 +17,7 @@
 		mcpServers: string[];
 		idleTtlSeconds: number;
 		browserSidecarEnabled?: boolean;
+		pod?: { name: string; containers: Array<{ name: string; ready: boolean }> } | null;
 	};
 
 	let runtimes = $state<Runtime[]>([]);
@@ -74,6 +78,27 @@
 		const hr = Math.floor(min / 60);
 		if (hr < 24) return `${hr}h ago`;
 		return `${Math.floor(hr / 24)}d ago`;
+	}
+
+	function runtimePoolUrl(rt: Runtime): string | null {
+		return headlampCustomResourceUrl({
+			headlampBase: DEFAULT_HEADLAMP_URL,
+			cluster: 'ryzen',
+			crd: 'sandboxwarmpools.extensions.agents.x-k8s.io',
+			namespace: rt.namespace ?? 'workflow-builder',
+			name: rt.name
+		});
+	}
+
+	function runtimePodUrl(rt: Runtime): string | null {
+		if (!rt.pod?.name) return null;
+		return headlampResourceUrl({
+			headlampBase: DEFAULT_HEADLAMP_URL,
+			cluster: 'ryzen',
+			kind: 'Pod',
+			namespace: rt.namespace ?? 'workflow-builder',
+			name: rt.pod.name
+		});
 	}
 
 	const filtered = $derived(
@@ -170,6 +195,7 @@
 					<th class="px-3 py-2 font-medium">Replicas</th>
 					<th class="px-3 py-2 font-medium">MCPs</th>
 					<th class="px-3 py-2 font-medium w-8" title="Browser sidecar (chromium + playwright-mcp)">🌐</th>
+					<th class="px-3 py-2 font-medium">K8s</th>
 					<th class="px-3 py-2 font-medium">Last active</th>
 					<th class="px-3 py-2 font-medium">Idle TTL</th>
 					<th class="px-3 py-2 font-medium text-right">Actions</th>
@@ -196,6 +222,32 @@
 								<span class="text-muted-foreground/40">—</span>
 							{/if}
 						</td>
+						<td class="px-3 py-2 text-xs">
+							<div class="flex flex-wrap gap-1">
+								<a
+									href={runtimePoolUrl(rt) ?? undefined}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+									title="Open SandboxWarmPool in Headlamp"
+								>
+									<HeadlampLogo class="h-3 w-3" />
+									Pool
+								</a>
+								{#if runtimePodUrl(rt)}
+									<a
+										href={runtimePodUrl(rt) ?? undefined}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+										title="Open active runtime Pod in Headlamp"
+									>
+										<HeadlampLogo class="h-3 w-3" />
+										Pod
+									</a>
+								{/if}
+							</div>
+						</td>
 						<td class="px-3 py-2 text-xs">{relativeTime(rt.lastActiveAt)}</td>
 						<td class="px-3 py-2 text-xs">{(rt.idleTtlSeconds / 60).toFixed(0)}m</td>
 						<td class="px-3 py-2 text-right">
@@ -203,18 +255,18 @@
 								<Button
 									size="sm"
 									variant="outline"
-									disabled={busy[rt.slug] !== undefined && busy[rt.slug] !== null}
-									onclick={() => action(rt.slug, 'wake')}
+									disabled={!rt.slug || (busy[rt.slug] !== undefined && busy[rt.slug] !== null)}
+									onclick={() => rt.slug && action(rt.slug, 'wake')}
 								>
-									{busy[rt.slug] === 'wake' ? '…' : 'Wake'}
+									{rt.slug && busy[rt.slug] === 'wake' ? '…' : 'Wake'}
 								</Button>
 								<Button
 									size="sm"
 									variant="outline"
-									disabled={busy[rt.slug] !== undefined && busy[rt.slug] !== null}
-									onclick={() => action(rt.slug, 'sleep')}
+									disabled={!rt.slug || (busy[rt.slug] !== undefined && busy[rt.slug] !== null)}
+									onclick={() => rt.slug && action(rt.slug, 'sleep')}
 								>
-									{busy[rt.slug] === 'sleep' ? '…' : 'Sleep'}
+									{rt.slug && busy[rt.slug] === 'sleep' ? '…' : 'Sleep'}
 								</Button>
 							</div>
 						</td>
@@ -222,7 +274,7 @@
 				{/each}
 				{#if filtered.length === 0}
 					<tr>
-						<td colspan="8" class="px-3 py-6 text-center text-sm text-muted-foreground">
+						<td colspan="9" class="px-3 py-6 text-center text-sm text-muted-foreground">
 							{loading ? 'Loading…' : 'No runtimes match this filter.'}
 						</td>
 					</tr>

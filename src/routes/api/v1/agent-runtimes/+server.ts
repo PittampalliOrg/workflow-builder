@@ -1,7 +1,10 @@
 import type { RequestHandler } from "./$types";
 import { error, json } from "@sveltejs/kit";
 
-import { listSandboxWarmPools } from "$lib/server/kube/client";
+import {
+	getAgentRuntimePod,
+	listSandboxWarmPools,
+} from "$lib/server/kube/client";
 import { db } from "$lib/server/db";
 import { agents } from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
@@ -36,16 +39,17 @@ export const GET: RequestHandler = async ({ locals }) => {
 	);
 
 	const pools = await listSandboxWarmPools();
-	const rows = pools
+	const rows = await Promise.all(pools
 		.filter((p) => {
 			if (!projectId) return true;
 			const slug = p.metadata.labels?.["agents.x-k8s.io/slug"];
 			return slug ? slugSet.has(slug) : false;
 		})
-		.map((p) => {
+		.map(async (p) => {
 			const desired = p.spec?.replicas ?? 0;
 			const replicas = p.status?.replicas ?? 0;
 			const ready = p.status?.readyReplicas ?? 0;
+			const slug = p.metadata.labels?.["agents.x-k8s.io/slug"] ?? null;
 			const phase =
 				desired === 0 && replicas === 0
 					? "Sleeping"
@@ -54,16 +58,30 @@ export const GET: RequestHandler = async ({ locals }) => {
 						: desired > 0
 							? "Starting"
 							: "Unknown";
+			const pod =
+				phase === "Active" && slug
+					? await getAgentRuntimePod(slug).catch(() => null)
+					: null;
 			return {
 				name: p.metadata.name,
-				slug: p.metadata.labels?.["agents.x-k8s.io/slug"] ?? null,
+				namespace: p.metadata.namespace ?? "workflow-builder",
+				slug,
+				appId: slug ? `agent-runtime-${slug}` : p.metadata.name,
 				phase,
 				desiredReplicas: desired,
 				replicas,
 				readyReplicas: ready,
 				sandboxTemplateRef: p.spec.sandboxTemplateRef.name,
+				lastActiveAt: null,
+				imageTag: null,
+				mcpServers: [],
+				idleTtlSeconds: 1800,
+				browserSidecarEnabled: pod
+					? pod.containers.some((c) => c.name === "playwright-mcp")
+					: false,
+				pod: pod ? { name: pod.name, containers: pod.containers } : null,
 			};
-		});
+		}));
 
 	return json({ runtimes: rows });
 };
