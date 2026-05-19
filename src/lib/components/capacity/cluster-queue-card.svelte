@@ -9,6 +9,10 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Layers, Network } from '@lucide/svelte';
 	import type { ClusterQueueSnapshot, WorkloadSnapshot } from '$lib/server/kueueviz';
+	import type {
+		CapacityQueueSnapshot as ObserverQueueSnapshot,
+		CapacitySessionSnapshot
+	} from '$lib/types/capacity';
 	import UsageBar from './usage-bar.svelte';
 	import WorkloadStatusBadge from './workload-status-badge.svelte';
 	import { formatQuantityForResource, quantityRatios } from './quantity';
@@ -17,9 +21,17 @@
 		clusterQueue: ClusterQueueSnapshot;
 		recentWorkloads: WorkloadSnapshot[];
 		viewAllHref: string;
+		observerQueue?: ObserverQueueSnapshot | null;
+		sessionCapacity?: CapacitySessionSnapshot | null;
 	};
 
-	let { clusterQueue, recentWorkloads, viewAllHref }: Props = $props();
+	let {
+		clusterQueue,
+		recentWorkloads,
+		viewAllHref,
+		observerQueue = null,
+		sessionCapacity = null
+	}: Props = $props();
 
 	const totalActive = $derived(
 		clusterQueue.admittedWorkloads +
@@ -76,6 +88,8 @@
 		}
 		return Array.from(map.entries());
 	});
+
+	const waitP95 = $derived(observerQueue?.admissionWaitP95Seconds ?? null);
 </script>
 
 <Card>
@@ -89,6 +103,11 @@
 						<Badge variant="outline" class="text-[10px]">
 							<Network class="size-3" />
 							{clusterQueue.cohort}
+						</Badge>
+					{/if}
+					{#if sessionCapacity?.fits !== null && sessionCapacity?.fits !== undefined}
+						<Badge variant="outline" class="text-[10px]">
+							fits {sessionCapacity.fits}
 						</Badge>
 					{/if}
 				</CardTitle>
@@ -109,6 +128,12 @@
 					<span class="text-muted-foreground">Reserving</span>
 					<span class="font-mono font-semibold tabular-nums">{clusterQueue.reservingWorkloads}</span>
 				</div>
+				{#if waitP95 !== null}
+					<div class="flex items-center gap-2">
+						<span class="text-muted-foreground">Wait P95</span>
+						<span class="font-mono font-semibold tabular-nums">{Math.round(waitP95)}s</span>
+					</div>
+				{/if}
 			</div>
 		</div>
 	</CardHeader>

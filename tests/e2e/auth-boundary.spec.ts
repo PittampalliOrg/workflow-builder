@@ -39,6 +39,9 @@ const PROTECTED_ENDPOINTS: Array<{
 	// Live limits
 	{ method: "GET", path: "/api/v1/limits/live" },
 
+	// Capacity cockpit
+	{ method: "GET", path: "/api/capacity/overview" },
+
 	// Workflow-spawned sessions index
 	{ method: "GET", path: "/api/workflows/executions/exec_test/sessions" },
 ];

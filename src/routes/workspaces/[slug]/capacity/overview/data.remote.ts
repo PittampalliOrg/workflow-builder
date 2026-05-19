@@ -3,6 +3,8 @@ import {
 	queryHistogramPercentiles,
 	queryTimeSeries
 } from '$lib/server/otel/metrics';
+import { fetchCapacityObserverSnapshot } from '$lib/server/capacity/observer';
+import type { CapacityOverviewSummary } from '$lib/types/capacity';
 
 const WINDOW_SECONDS = 300; // 5 min — recent enough to feel "now", smooth enough to avoid jitter
 const BUCKET_SECONDS = 30;
@@ -72,3 +74,9 @@ export const getSchedulingLatency = query(
 		}
 	}
 );
+
+export const getCapacityOverview = query(async (): Promise<CapacityOverviewSummary> => {
+	return {
+		observer: await fetchCapacityObserverSnapshot()
+	};
+});

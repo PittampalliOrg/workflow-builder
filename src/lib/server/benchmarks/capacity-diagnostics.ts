@@ -10,6 +10,11 @@ import {
 	listDaprComponents,
 	type DaprComponent,
 } from "$lib/server/kube/client";
+import {
+	fetchCapacityObserverSnapshot,
+	summarizeCapacityObserverForQueue,
+} from "$lib/server/capacity/observer";
+import type { CapacityObserverResult } from "$lib/types/capacity";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
 import { loadBenchmarkResourceCapacityDiagnostics } from "./resource-leases";
@@ -117,6 +122,7 @@ export type BenchmarkCapacityDiagnostics = {
 	modelCaps: {
 		modelMaxActiveRequests: number | null;
 	};
+	sharedCapacity: ReturnType<typeof summarizeCapacityObserverForQueue>;
 	workflowLifecycle: BenchmarkWorkflowLifecycleDiagnostics;
 	capReason: string | null;
 	computedAt: string;
@@ -311,6 +317,7 @@ function diagnosticsFromCapacity(params: {
 		ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>
 	>;
 	workflowLifecycle?: BenchmarkWorkflowLifecycleDiagnostics | null;
+	sharedCapacity?: CapacityObserverResult | null;
 }): BenchmarkCapacityDiagnostics {
 	const capacity = params.capacity;
 	const sandboxCapacity = isRecord(capacity.sandboxCapacity)
@@ -436,6 +443,26 @@ function diagnosticsFromCapacity(params: {
 		modelCaps: {
 			modelMaxActiveRequests: positiveInt(capacity.modelMaxActiveRequests),
 		},
+		sharedCapacity: summarizeCapacityObserverForQueue({
+			result:
+				params.sharedCapacity ?? {
+					available: false,
+					snapshot: null,
+					error: "capacity_observer_not_queried",
+				},
+			queueName:
+				typeof sandboxCapacity.kueueClusterQueueName === "string"
+					? sandboxCapacity.kueueClusterQueueName
+					: typeof capacity.runtimeClass === "string"
+						? capacity.runtimeClass
+						: null,
+			executionClass:
+				typeof capacity.runtimeClass === "string"
+					? capacity.runtimeClass
+					: typeof capacity.executionClass === "string"
+						? capacity.executionClass
+						: null,
+		}),
 		workflowLifecycle:
 			params.workflowLifecycle ??
 			buildWorkflowLifecycleDiagnostics({
@@ -474,13 +501,14 @@ export async function getBenchmarkRunCapacityDiagnostics(
 	const capacity = capacityFromSummary(run.summary);
 	const selectedInstanceCount = instanceCount(run.selectedInstanceIds);
 	const liveSandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
-	const [resources, workflowLifecycle] = await Promise.all([
+	const [resources, workflowLifecycle, sharedCapacity] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run,
 			resources: DIAGNOSTIC_RESOURCES,
 			liveSandboxCapacity,
 		}),
 		loadWorkflowLifecycleDiagnostics(run.agentRuntimeAppId),
+		fetchCapacityObserverSnapshot(),
 	]);
 	return diagnosticsFromCapacity({
 		run,
@@ -488,6 +516,7 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		selectedInstanceCount,
 		resources,
 		workflowLifecycle,
+		sharedCapacity,
 	});
 }
 
@@ -572,13 +601,14 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		createdAt: new Date(),
 		updatedAt: new Date(),
 	} as typeof benchmarkRuns.$inferSelect;
-	const [resources, workflowLifecycle] = await Promise.all([
+	const [resources, workflowLifecycle, sharedCapacity] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run: pseudoRun,
 			resources: DIAGNOSTIC_RESOURCES,
 			liveSandboxCapacity: sandboxCapacity,
 		}),
 		loadWorkflowLifecycleDiagnostics(runtimeRoute.appId),
+		fetchCapacityObserverSnapshot(),
 	]);
 	return diagnosticsFromCapacity({
 		run: pseudoRun,
@@ -586,5 +616,6 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		selectedInstanceCount,
 		resources,
 		workflowLifecycle,
+		sharedCapacity,
 	});
 }
