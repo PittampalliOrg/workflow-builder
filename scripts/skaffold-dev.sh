@@ -53,7 +53,10 @@ resume_argo() {
   bash skaffold/hooks/argo-resume.sh ${ARGO_APPS} || true
 }
 
-trap resume_argo EXIT INT TERM
+# EXIT fires on normal exit, INT/TERM, and `set -e` errors. INT/TERM go
+# through the shell's default handler which exits — which fires EXIT, which
+# calls resume_argo once (guarded by `resumed` flag).
+trap resume_argo EXIT
 
 printf '==> Pausing ArgoCD for: %s\n' "${ARGO_APPS}"
 bash skaffold/hooks/argo-pause.sh ${ARGO_APPS}
@@ -61,5 +64,21 @@ bash skaffold/hooks/argo-pause.sh ${ARGO_APPS}
 # Comma-separated for `skaffold -m`.
 mod_csv="$(IFS=,; echo "${modules[*]}")"
 
-printf '==> skaffold dev -m %s\n' "${mod_csv}"
-exec skaffold dev -m "${mod_csv}" "${SKAFFOLD_DEV_EXTRA_ARGS:-}"
+# Split SKAFFOLD_DEV_EXTRA_ARGS on whitespace into an array. An empty/unset
+# var must NOT become an empty positional arg — skaffold parses that as an
+# unknown subcommand.
+extra_args=()
+if [ -n "${SKAFFOLD_DEV_EXTRA_ARGS:-}" ]; then
+  # shellcheck disable=SC2206  # intentional word-split
+  extra_args=(${SKAFFOLD_DEV_EXTRA_ARGS})
+fi
+
+# --cleanup=false: don't `kubectl delete deployment workflow-builder` on exit.
+# Without this, Skaffold deletes the dev Deployment on Ctrl-C, and there's a
+# 10-60s window with no workflow-builder until Argo's selfHeal reconciles.
+# With cleanup off, the dev Deployment stays put; Argo's `refresh=hard`
+# annotation (set by argo-resume.sh) makes Argo swap the image back to the
+# prod tag in-place.
+printf '==> skaffold dev -m %s --cleanup=false %s\n' "${mod_csv}" "${SKAFFOLD_DEV_EXTRA_ARGS:-}"
+# Don't `exec` — that replaces the bash process and skips the EXIT trap.
+skaffold dev -m "${mod_csv}" --cleanup=false "${extra_args[@]}"

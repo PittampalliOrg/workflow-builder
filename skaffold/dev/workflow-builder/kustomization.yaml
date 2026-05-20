@@ -1,34 +1,42 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Extend the prod manifest folder so every resource (Dapr Components,
-# ExternalSecrets, ConfigMaps, Services, Subscriptions, Resiliency,
-# Configuration, init container, PostgreSQL StatefulSet, ServiceAccount,
-# ClusterRole, Ingress, ...) comes along unchanged. The dev pod runs with
-# identical secrets/sidecars/networking to the prod pod, just a hot-reloading
-# container.
+# Narrow scope: only the workflow-builder Deployment.
 #
-# kustomize build requires --load-restrictor=LoadRestrictionsNone for this
+# Why not extend the whole prod kustomization folder: the ArgoCD Application
+# applies inline kustomize patches + image rewrites (e.g.
+# docker.io/library/postgres → gitea.cnoe.localtest.me:8443/.../postgres,
+# ExternalSecret remoteRef rewrites per cluster) which our local Skaffold
+# render can't see. Re-deploying the full folder via Skaffold would either
+# clobber Argo's render (image-pull errors for postgres, pgbouncer, etc.) or
+# require us to mirror every Application-level patch here.
+#
+# Instead, deploy only the patched Deployment over the live, Argo-managed
+# pod. All other resources (Services, ConfigMaps, ExternalSecrets, Dapr
+# Components, Subscriptions, init-container postgres image, ...) stay as
+# Argo deployed them — Skaffold's kubectl apply doesn't see them.
+#
+# kustomize build requires --load-restrictor=LoadRestrictionsNone for the
 # parent-directory reference — skaffold/workflow-builder.skaffold.yaml passes
 # the flag via manifests.kustomize.buildArgs.
 
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/workflow-builder
+  - ../../../../../stacks/main/packages/components/active-development/manifests/workflow-builder/Deployment-workflow-builder.yaml
 
-# The Deployment image swap lives in the strategic-merge patch
-# (deployment-dev-patch.yaml `containers[].image`), not in a kustomize
-# `images:` block. Reason: the parent prod kustomization already rewrites
-# `workflow-builder` → `ghcr.io/pittampalliorg/workflow-builder:git-<sha>`
-# before our child overlay runs, so a child `images:` block keyed on
-# `name: workflow-builder` would no-op. Patching the image directly is
-# robust against future parent-rewrite changes.
+# The init container `wait-for-execution-read-model` uses
+# `docker.io/library/postgres:15.3-alpine3.18`. Mirror the Application-level
+# image rewrite (from the ArgoCD App's spec.source.kustomize.images) so
+# kind-ryzen pulls from the in-cluster Gitea mirror instead of docker.io.
+images:
+  - name: docker.io/library/postgres
+    newName: gitea.cnoe.localtest.me:8443/giteaadmin/postgres
+    newTag: 15.3-alpine3.18
 
-# Strategic-merge patch on the Deployment: swap image to `workflow-builder-dev`
-# (Skaffold then rewrites this to its built tag+digest), NODE_ENV→development,
-# container securityContext (so root can run pnpm install), and dev-only env
-# vars.
+# Strategic-merge patch: swap image to `workflow-builder-dev` (Skaffold then
+# rewrites to its built tag+digest), NODE_ENV→development, container
+# securityContext (so root can run pnpm install), and dev-only env vars.
 patches:
   - target:
       kind: Deployment
