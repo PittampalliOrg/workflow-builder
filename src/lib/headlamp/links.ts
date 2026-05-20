@@ -2,6 +2,9 @@ export const DEFAULT_HEADLAMP_URL = "https://headlamp-hub.tail286401.ts.net";
 export const DEFAULT_HEADLAMP_EMBED_BASE = "/headlamp";
 
 export const HEADLAMP_CLUSTERS = ["hub", "ryzen", "dev", "staging"] as const;
+export const HEADLAMP_EMBED_CHROME_QUERY_PARAM = "wb_chrome";
+export const HEADLAMP_EMBED_CHROME_UNIFIED = "unified";
+export const HEADLAMP_EMBED_CHROME_NATIVE = "native";
 
 export type HeadlampCluster = (typeof HEADLAMP_CLUSTERS)[number];
 
@@ -44,6 +47,12 @@ function appendPath(base: string, path: string): string {
 	const normalizedPath = normalizeEmbeddedHeadlampPath(path);
 	if (normalizedPath === "/") return `${base}/`;
 	return `${base}${normalizedPath}`;
+}
+
+function sanitizedSearch(parsed: URL): string {
+	parsed.searchParams.delete(HEADLAMP_EMBED_CHROME_QUERY_PARAM);
+	const search = parsed.searchParams.toString();
+	return search ? `?${search}` : "";
 }
 
 export function normalizeHeadlampCluster(value: string | null | undefined): HeadlampCluster {
@@ -90,7 +99,7 @@ export function normalizeEmbeddedHeadlampPath(value: string | null | undefined):
 		return "/";
 	}
 
-	return `${pathname}${parsed.search}`;
+	return `${pathname}${sanitizedSearch(parsed)}`;
 }
 
 export function isValidEmbeddedHeadlampPath(value: string | null | undefined): boolean {
@@ -238,6 +247,19 @@ export function headlampEmbedSrc(input: {
 	path: string | null | undefined;
 }): string {
 	return appendPath(trimEmbedBase(input.embedBase), normalizeEmbeddedHeadlampPath(input.path));
+}
+
+export function stripHeadlampEmbedParams(path: string | null | undefined): string {
+	return normalizeEmbeddedHeadlampPath(path);
+}
+
+export function withHeadlampEmbedChrome(input: {
+	src: string;
+	chrome: typeof HEADLAMP_EMBED_CHROME_UNIFIED | typeof HEADLAMP_EMBED_CHROME_NATIVE;
+}): string {
+	const parsed = new URL(input.src, "http://workflow-builder.local");
+	parsed.searchParams.set(HEADLAMP_EMBED_CHROME_QUERY_PARAM, input.chrome);
+	return `${parsed.pathname}${parsed.search}`;
 }
 
 export function embeddedHeadlampWorkspaceUrl(input: {

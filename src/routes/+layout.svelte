@@ -24,6 +24,9 @@
 	setContext('build-workflow', buildWorkflow);
 
 	let isAuthPage = $derived(page.url.pathname.startsWith('/auth'));
+	let isImmersiveToolPage = $derived(
+		/^\/workspaces\/[^/]+\/kubernetes(\/|$)/.test(page.url.pathname)
+	);
 	let routeKey = $derived(page.url.pathname);
 
 	// Initialize theme from server data (cookie) or system preference.
@@ -96,12 +99,14 @@
 	{/key}
 {:else}
 	<div class="flex h-full">
-		<Sidebar
-			collapsed={ui.sidebarCollapsed}
-			onToggle={ui.toggleSidebar}
-			user={data.user}
-			platformRole={data.platformRole}
-		/>
+		{#if !isImmersiveToolPage}
+			<Sidebar
+				collapsed={ui.sidebarCollapsed}
+				onToggle={ui.toggleSidebar}
+				user={data.user}
+				platformRole={data.platformRole}
+			/>
+		{/if}
 		<main class="flex-1 overflow-hidden">
 			{#key routeKey}
 				{@render children()}

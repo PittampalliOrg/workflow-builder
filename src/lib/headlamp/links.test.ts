@@ -13,6 +13,7 @@ import {
 	headlampResourceUrl,
 	normalizeEmbeddedHeadlampPath,
 	normalizeHeadlampCluster,
+	withHeadlampEmbedChrome,
 } from "./links";
 
 describe("headlampResourceUrl", () => {
@@ -189,6 +190,18 @@ describe("Headlamp path normalization", () => {
 		);
 		expect(headlampExternalUrl({ path: "/headlamp/c/ryzen/" })).toBe(
 			`${DEFAULT_HEADLAMP_URL}/c/ryzen/`,
+		);
+	});
+
+	it("adds and strips embed-only chrome state", () => {
+		expect(
+			withHeadlampEmbedChrome({
+				src: "/headlamp/c/dev/jobs/workflow-builder/eval?view=logs",
+				chrome: "unified",
+			}),
+		).toBe("/headlamp/c/dev/jobs/workflow-builder/eval?view=logs&wb_chrome=unified");
+		expect(normalizeEmbeddedHeadlampPath("/headlamp/c/dev/?view=logs&wb_chrome=unified")).toBe(
+			"/c/dev/?view=logs",
 		);
 	});
 });
