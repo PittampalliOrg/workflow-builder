@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Narrow scope: only the mcp-gateway Deployment. See
+# skaffold/dev/workflow-builder/kustomization.yaml for the rationale.
+
+namespace: workflow-builder
+
+resources:
+  - ../../../../../stacks/main/packages/components/active-development/manifests/mcp-gateway/Deployment-mcp-gateway.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: mcp-gateway
+    path: deployment-dev-patch.yaml

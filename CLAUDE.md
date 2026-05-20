@@ -64,18 +64,35 @@ pnpm test:e2e         # Playwright E2E tests
 
 ## Dev Loop (Skaffold, ryzen cluster)
 
-Skaffold is the in-cluster dev loop. devspace.yaml is kept as a fallback during migration (see PR 1–4 in `/home/vpittamp/.claude/plans/i-want-to-consider-enchanted-codd.md`); use Skaffold when possible.
+Skaffold is the in-cluster dev loop. devspace.yaml is kept as a fallback during migration (see `/home/vpittamp/.claude/plans/i-want-to-consider-enchanted-codd.md`); use Skaffold when possible.
 
 ```bash
-pnpm dev:skaffold     # Inner loop: HMR file-sync into a Skaffold-owned dev pod.
-                      # Wrapper script pauses ArgoCD on entry, resumes on Ctrl-C.
-                      # Browser at https://workflow-builder-ryzen.tail286401.ts.net
-                      # or http://localhost:3002 (port-forward).
-pnpm deploy:skaffold  # Outer loop: build prod Dockerfile → push to gitea-ryzen →
-                      # commit new newTag into stacks-repo kustomization →
-                      # git push → ArgoCD selfHeal reconciles.
-pnpm build:skaffold   # Build + push prod image only (no kustomization commit).
+# Inner loop (HMR file-sync into a Skaffold-owned dev pod):
+pnpm dev:skaffold                              # workflow-builder (default)
+pnpm dev:skaffold:orchestrator                 # workflow-orchestrator
+pnpm dev:skaffold:all                          # all 6 modules
+bash scripts/skaffold-dev.sh function-router   # any single module by name
+bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator  # subset
+
+# Outer loop (build prod image → push → commit kustomize pin → Argo deploys):
+pnpm deploy:skaffold                           # workflow-builder
+pnpm deploy:skaffold:orchestrator              # workflow-orchestrator
+skaffold run -m fn-activepieces                # any module
+skaffold build -m workflow-builder             # build+push only (no pin commit)
 ```
+
+Module set:
+
+| Module | Type | Local→Container port |
+|---|---|---|
+| workflow-builder | SvelteKit BFF (Node 22) | 3002→3000 |
+| workflow-orchestrator | Python/FastAPI Dapr workflow | 3013→8080 |
+| function-router | Node BFF→backend router | 3014→8080 |
+| fn-activepieces | Node Activepieces piece executor | 3016→8080 |
+| mcp-gateway | Node hosted MCP endpoint | 3018→8080 |
+| swebench-coordinator | Python SWE-bench coordinator | 3019→8080 |
+
+**`fn-system` is excluded** — it's a Knative Service (scale-to-0; not a regular Deployment). Inner-loop file-sync into a transient Knative pod is impractical. Use the cluster's existing fn-system (Argo-managed) as a dependency, or fall back to devspace.yaml for fn-system-specific work.
 
 Inner-loop notes:
 - The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=gitea-ryzen.tail286401.ts.net/giteaadmin` so the dev image gets pushed to gitea-ryzen (where kind-ryzen nodes can pull). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.

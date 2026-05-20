@@ -18,9 +18,14 @@ set -euo pipefail
 
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
+# Known module set — kept in sync with skaffold.yaml's `requires:` list.
+ALL_MODULES=(workflow-builder workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator)
+
 modules=("$@")
 if [ "${#modules[@]}" -eq 0 ]; then
   modules=(workflow-builder)
+elif [ "${modules[0]}" = "ALL" ] || [ "${modules[0]}" = "all" ]; then
+  modules=("${ALL_MODULES[@]}")
 fi
 
 # Argo apps default to the same names as the skaffold module list (matches our

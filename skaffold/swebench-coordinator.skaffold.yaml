@@ -1,0 +1,79 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: swebench-coordinator
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true
+  artifacts:
+    - image: swebench-coordinator-dev
+      context: ..
+      docker:
+        dockerfile: skaffold/dev/swebench-coordinator/Dockerfile.dev
+      sync:
+        manual:
+          - src: "services/swebench-coordinator/src/**/*.py"
+            dest: /app/src
+            strip: services/swebench-coordinator/src/
+          - src: "services/swebench-coordinator/pyproject.toml"
+            dest: /app
+            strip: services/swebench-coordinator/
+
+manifests:
+  kustomize:
+    paths:
+      - dev/swebench-coordinator
+    buildArgs:
+      - --load-restrictor=LoadRestrictionsNone
+
+deploy:
+  kubectl:
+    defaultNamespace: workflow-builder
+
+portForward:
+  - resourceType: deployment
+    resourceName: swebench-coordinator
+    namespace: workflow-builder
+    port: 8080
+    localPort: 3019
+
+profiles:
+  - name: run
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-coordinator
+          context: ../services/swebench-coordinator
+          docker:
+            dockerfile: Dockerfile
+          hooks:
+            after:
+              - command:
+                  - bash
+                  - skaffold/hooks/commit-pin.sh
+                  - swebench-coordinator
+                os: [linux, darwin]
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}

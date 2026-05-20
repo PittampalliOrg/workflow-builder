@@ -4,18 +4,44 @@ metadata:
   name: workflow-builder-root
 
 # Root config: composes one Skaffold module per microservice via `requires:`.
-# Usage:
-#   skaffold dev   -m workflow-builder              # single-service HMR (Argo paused)
-#   skaffold run   -m workflow-builder              # build + push + commit kustomize pin
-#   skaffold build -m workflow-builder              # build + push only (no commit)
 #
-# PR 1 (this PR): workflow-builder module only.
-# PR 2: + workflow-orchestrator, function-router
-# PR 3: + fn-system, fn-activepieces, mcp-gateway, swebench-coordinator
+# Inner loop (HMR file-sync into Skaffold-owned dev pods):
+#   bash scripts/skaffold-dev.sh                            # default: workflow-builder
+#   bash scripts/skaffold-dev.sh workflow-orchestrator
+#   bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator function-router
+#   bash scripts/skaffold-dev.sh ALL                        # all 6 modules (heavy)
 #
-# devspace.yaml stays in-tree as a fallback during the transition. See
-# CLAUDE.md "Dev loop" section for the cutover criteria.
+# Outer loop (build + push + commit kustomize pin to stacks repo, Argo deploys):
+#   skaffold run -m workflow-builder
+#   skaffold build -m workflow-builder                      # build+push only
+#
+# Modules included:
+#   workflow-builder       SvelteKit BFF
+#   workflow-orchestrator  Python/FastAPI Dapr workflow engine
+#   function-router        Node BFF→backend router (Dapr svc invoke)
+#   fn-activepieces        Node Activepieces piece executor
+#   mcp-gateway            Node hosted MCP endpoint
+#   swebench-coordinator   Python SWE-bench evaluator coordinator
+#
+# Excluded:
+#   fn-system              Knative Service (scale-to-0; not a regular Deployment).
+#                          Inner-loop file-sync into a transient Knative pod is
+#                          impractical; use devspace.yaml or treat fn-system as
+#                          an external dependency for now.
+#
+# devspace.yaml stays in-tree as a fallback. See CLAUDE.md "Dev loop" section
+# for the cutover plan.
 
 requires:
   - configs: [workflow-builder]
     path: skaffold/workflow-builder.skaffold.yaml
+  - configs: [workflow-orchestrator]
+    path: skaffold/workflow-orchestrator.skaffold.yaml
+  - configs: [function-router]
+    path: skaffold/function-router.skaffold.yaml
+  - configs: [fn-activepieces]
+    path: skaffold/fn-activepieces.skaffold.yaml
+  - configs: [mcp-gateway]
+    path: skaffold/mcp-gateway.skaffold.yaml
+  - configs: [swebench-coordinator]
+    path: skaffold/swebench-coordinator.skaffold.yaml

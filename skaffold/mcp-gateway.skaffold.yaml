@@ -1,0 +1,87 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: mcp-gateway
+
+# Node/Express service. See skaffold/workflow-builder.skaffold.yaml for the
+# inner-loop/outer-loop pattern; this module mirrors it.
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true
+  artifacts:
+    - image: mcp-gateway-dev
+      context: ..
+      docker:
+        dockerfile: skaffold/dev/mcp-gateway/Dockerfile.dev
+        buildArgs:
+          PNPM_VERSION: "9.12.3"
+      sync:
+        manual:
+          - src: "services/mcp-gateway/src/**/*"
+            dest: /app
+            strip: services/mcp-gateway/
+          - src: "services/mcp-gateway/config/**/*"
+            dest: /app
+            strip: services/mcp-gateway/
+          - src: "services/mcp-gateway/tsconfig.json"
+            dest: /app
+            strip: services/mcp-gateway/
+
+manifests:
+  kustomize:
+    paths:
+      - dev/mcp-gateway
+    buildArgs:
+      - --load-restrictor=LoadRestrictionsNone
+
+deploy:
+  kubectl:
+    defaultNamespace: workflow-builder
+
+portForward:
+  - resourceType: deployment
+    resourceName: mcp-gateway
+    namespace: workflow-builder
+    port: 8080
+    localPort: 3018
+
+profiles:
+  - name: run
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/mcp-gateway
+          context: ..
+          docker:
+            dockerfile: services/mcp-gateway/Dockerfile
+          hooks:
+            after:
+              - command:
+                  - bash
+                  - skaffold/hooks/commit-pin.sh
+                  - mcp-gateway
+                os: [linux, darwin]
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}

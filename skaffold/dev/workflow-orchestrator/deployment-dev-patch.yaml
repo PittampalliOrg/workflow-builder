@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workflow-orchestrator
+  namespace: workflow-builder
+  annotations:
+    skaffold.dev/managed: "true"
+spec:
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        skaffold.dev/managed: "true"
+    spec:
+      containers:
+        - name: workflow-orchestrator
+          image: workflow-orchestrator-dev
+          imagePullPolicy: Always
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: workflow-orchestrator-dev
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=development,service.namespace=workflow-builder,service.version=dev"
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+      securityContext:
+        fsGroup: 1001
+        runAsNonRoot: false

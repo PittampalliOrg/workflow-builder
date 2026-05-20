@@ -1,0 +1,87 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: function-router
+
+# Node/Express service. See skaffold/workflow-builder.skaffold.yaml for the
+# inner-loop/outer-loop pattern; this module mirrors it.
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true
+  artifacts:
+    - image: function-router-dev
+      context: ..
+      docker:
+        dockerfile: skaffold/dev/function-router/Dockerfile.dev
+        buildArgs:
+          PNPM_VERSION: "9.12.3"
+      sync:
+        manual:
+          - src: "services/function-router/src/**/*"
+            dest: /app
+            strip: services/function-router/
+          - src: "services/function-router/config/**/*"
+            dest: /app
+            strip: services/function-router/
+          - src: "services/function-router/tsconfig.json"
+            dest: /app
+            strip: services/function-router/
+
+manifests:
+  kustomize:
+    paths:
+      - dev/function-router
+    buildArgs:
+      - --load-restrictor=LoadRestrictionsNone
+
+deploy:
+  kubectl:
+    defaultNamespace: workflow-builder
+
+portForward:
+  - resourceType: deployment
+    resourceName: function-router
+    namespace: workflow-builder
+    port: 8080
+    localPort: 3014
+
+profiles:
+  - name: run
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/function-router
+          context: ..
+          docker:
+            dockerfile: services/function-router/Dockerfile
+          hooks:
+            after:
+              - command:
+                  - bash
+                  - skaffold/hooks/commit-pin.sh
+                  - function-router
+                os: [linux, darwin]
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}

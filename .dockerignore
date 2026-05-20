@@ -47,6 +47,14 @@ test-results
 !static/**
 
 # Function-router is built from the repo root because its Dockerfile copies
-# services/function-router paths.
+# services/function-router paths. Same for workflow-orchestrator (Skaffold dev).
 !services/
 !services/function-router/**
+!services/workflow-orchestrator/**
+
+# Exclude python venv + caches from services/ (devspace leftovers; bloats
+# Skaffold build context to >100MB if included)
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc

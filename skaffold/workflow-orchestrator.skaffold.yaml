@@ -1,0 +1,91 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: workflow-orchestrator
+
+# Python/FastAPI/Dapr Workflow orchestrator. See
+# skaffold/workflow-builder.skaffold.yaml for the inner-loop/outer-loop
+# pattern; this module mirrors it.
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true
+  artifacts:
+    - image: workflow-orchestrator-dev
+      # Build context is the repo root so Dockerfile.dev can COPY from
+      # services/workflow-orchestrator/.
+      context: ..
+      docker:
+        dockerfile: skaffold/dev/workflow-orchestrator/Dockerfile.dev
+      sync:
+        manual:
+          - src: "services/workflow-orchestrator/**/*.py"
+            dest: /app
+            strip: services/workflow-orchestrator/
+          - src: "services/workflow-orchestrator/**/*.toml"
+            dest: /app
+            strip: services/workflow-orchestrator/
+          - src: "services/workflow-orchestrator/**/*.json"
+            dest: /app
+            strip: services/workflow-orchestrator/
+          - src: "services/workflow-orchestrator/**/*.yaml"
+            dest: /app
+            strip: services/workflow-orchestrator/
+
+manifests:
+  kustomize:
+    paths:
+      - dev/workflow-orchestrator
+    buildArgs:
+      - --load-restrictor=LoadRestrictionsNone
+
+deploy:
+  kubectl:
+    defaultNamespace: workflow-builder
+
+portForward:
+  - resourceType: deployment
+    resourceName: workflow-orchestrator
+    namespace: workflow-builder
+    port: 8080
+    localPort: 3013
+
+profiles:
+  - name: run
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-orchestrator
+          context: ../services/workflow-orchestrator
+          docker:
+            dockerfile: Dockerfile
+          hooks:
+            after:
+              - command:
+                  - bash
+                  - skaffold/hooks/commit-pin.sh
+                  - workflow-orchestrator
+                os: [linux, darwin]
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}

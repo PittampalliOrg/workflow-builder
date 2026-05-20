@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1.7
+# Dev image for `skaffold dev -m workflow-orchestrator`.
+# Source-of-truth at image-build time; sync delivers subsequent file changes.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dependency layer (cached unless requirements.txt changes).
+COPY services/workflow-orchestrator/requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    && pip install -r /tmp/requirements.txt
+
+# Source layer — sync rules deliver per-file updates on top of these baked copies.
+COPY services/workflow-orchestrator/ ./
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8080 \
+    HOST=0.0.0.0 \
+    MIN_DAPR_RUNTIME_VERSION=1.17.0 \
+    ENFORCE_MIN_DAPR_VERSION=false
+
+EXPOSE 8080
+
+# `uvicorn --reload --reload-dir /app` watches the filesystem and restarts on
+# .py changes. Skaffold sync drops new files in /app; uvicorn picks them up.
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app"]
