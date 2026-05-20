@@ -1,23 +1,46 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import {
-		Card,
-		CardContent,
-		CardHeader
-	} from '$lib/components/ui/card';
-	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Activity, AlertTriangle, CheckCircle2, Clock3, ListChecks, Server } from '@lucide/svelte';
+	import {
+		Activity,
+		AlertTriangle,
+		CheckCircle2,
+		Clock3,
+		ExternalLink,
+		ListChecks,
+		RefreshCw,
+		Server
+	} from '@lucide/svelte';
 	import { createClusterQueueStream } from '$lib/stores/kueueviz/cluster-queues.svelte';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
 	import { createResourceFlavorStream } from '$lib/stores/kueueviz/resource-flavors.svelte';
-	import ClusterQueueCard from '$lib/components/capacity/cluster-queue-card.svelte';
-	import ResourceFlavorStrip from '$lib/components/capacity/resource-flavor-strip.svelte';
 	import StatusPill from '$lib/components/capacity/status-pill.svelte';
-	import UsageBar from '$lib/components/capacity/usage-bar.svelte';
+	import ResourceFlavorStrip from '$lib/components/capacity/resource-flavor-strip.svelte';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
 	import MetricSparkline from '$lib/components/metrics/MetricSparkline.svelte';
+	import CapacityGauge from '$lib/components/capacity/overview/capacity-gauge.svelte';
+	import GaugeResourceToggle, {
+		type GaugeResource
+	} from '$lib/components/capacity/overview/gauge-resource-toggle.svelte';
+	import QueueHeadroomRow from '$lib/components/capacity/overview/queue-headroom-row.svelte';
+	import HeadroomForecast from '$lib/components/capacity/overview/headroom-forecast.svelte';
+	import QueueRail from '$lib/components/capacity/overview/queue-rail.svelte';
+	import QueueTile from '$lib/components/capacity/overview/queue-tile.svelte';
+	import ContributorHeatmap from '$lib/components/capacity/overview/contributor-heatmap.svelte';
+	import ContributorDetailSheet from '$lib/components/capacity/overview/contributor-detail-sheet.svelte';
+	import CapacityTrendsPanel, {
+		type HistoryPoint
+	} from '$lib/components/capacity/overview/capacity-trends-panel.svelte';
+	import PendingDurationHistogram from '$lib/components/capacity/overview/pending-duration-histogram.svelte';
+	import WorkloadDistributionDonut from '$lib/components/capacity/overview/workload-distribution-donut.svelte';
+	import type { TrendsWindow } from '$lib/components/capacity/overview/trends-window-toggle.svelte';
+	import {
+		headlampClusterUrl,
+		headlampKueueUrl,
+		headlampResourceUrl,
+		normalizeHeadlampCluster
+	} from '$lib/headlamp/links';
 	import { getCapacityOverview, getSchedulingLatency } from './data.remote';
 	import type {
 		CapacityBlockedWorkload,
@@ -42,6 +65,181 @@
 		capacityQuery.current?.observer.available === false ? capacityQuery.current.observer.error : null
 	);
 
+	// --- Resource toggle (persisted) ---------------------------------------
+	const DEFAULT_RESOURCE: GaugeResource = 'cpu';
+	let primaryResource = $state<GaugeResource>(DEFAULT_RESOURCE);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		try {
+			const stored = window.localStorage.getItem('capacity.gauge.resource');
+			if (
+				stored === 'cpu' ||
+				stored === 'memory' ||
+				stored === 'pods' ||
+				stored === 'ephemeral-storage'
+			) {
+				primaryResource = stored;
+			}
+		} catch {
+			// ignore
+		}
+	});
+
+	// --- Trends window (persisted) -----------------------------------------
+	let trendsWindow = $state<TrendsWindow>('5m');
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		try {
+			const stored = window.localStorage.getItem('capacity.trends.window');
+			if (stored === '5m' || stored === '15m' || stored === '60m') {
+				trendsWindow = stored;
+			}
+		} catch {
+			// ignore
+		}
+	});
+
+	// --- Selected blocked-workload bucket (filter pending list) ------------
+	let blockedBucket = $state<'lt30s' | 'lt2m' | 'lt10m' | 'gte10m' | null>(null);
+
+	// --- Contributor detail sheet state ------------------------------------
+	let selectedContributor = $state<CapacityContributorSnapshot | null>(null);
+	let sheetOpen = $state(false);
+
+	// --- 5s refresh with Page-Visibility pause -----------------------------
+	let lastRefreshAt = $state<number | null>(null);
+	let isRefreshing = $state(false);
+
+	async function tick() {
+		isRefreshing = true;
+		try {
+			await Promise.all([capacityQuery.refresh(), schedulingQuery.refresh()]);
+			lastRefreshAt = Date.now();
+		} finally {
+			isRefreshing = false;
+		}
+	}
+
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		let timer: ReturnType<typeof setInterval> | null = null;
+		const start = () => {
+			if (timer !== null) return;
+			timer = setInterval(tick, 5000);
+		};
+		const stop = () => {
+			if (timer !== null) {
+				clearInterval(timer);
+				timer = null;
+			}
+		};
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') {
+				void tick();
+				start();
+			} else {
+				stop();
+			}
+		};
+		onVisibility();
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			stop();
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
+	});
+
+	// --- Capacity history (for forecast + trends panel) --------------------
+	// One rolling ring buffer for everything the page needs to draw a
+	// time-series against. Resource-agnostic fields (workload counts,
+	// scheduling-latency P50/P95) survive a resource-toggle flip; resource-
+	// specific fields (`requested`, `headroomPct`) are blanked when the
+	// gauge resource changes because slopes don't translate across units.
+	// Max buffer size = 720 (60 min @ 5 s); the trends panel windows this
+	// further at render time so we don't need separate buffers per window.
+	let history = $state<HistoryPoint[]>([]);
+	const HISTORY_MAX = 720;
+
+	// Per-contributor weighted-share trend, keyed by contributor.key. Each
+	// array holds at most TREND_MAX samples and the heatmap + sheet pluck
+	// from it directly. Survives resource flips (heatmap shows ALL resources
+	// at once, not the selected one).
+	const TREND_MAX = 60;
+	let contributorTrends = $state<Record<string, number[]>>({});
+
+	function contributorScore(c: CapacityContributorSnapshot): number {
+		return (
+			(c.resources?.cpu ?? 0) * 1000 +
+			((c.resources?.memory ?? 0) / 1024 ** 3) * 25 +
+			(c.resources?.['ephemeral-storage'] ?? 0) / 1024 ** 3 +
+			(c.resources?.pods ?? 0) * 10
+		);
+	}
+
+	$effect(() => {
+		const snap = observer;
+		const resource = primaryResource;
+		const sched = schedulingQuery.current;
+		const tot = totals;
+		if (!snap) return;
+		const row = snap.resources.find((r) => r.resource === resource);
+		if (!row) return;
+		const sampledAt = new Date(snap.sampledAt).getTime() || Date.now();
+		const headroomPct =
+			row.renderedBudget > 0
+				? Math.max(0, Math.min(100, (row.headroom / row.renderedBudget) * 100))
+				: null;
+		const sample: HistoryPoint = {
+			t: sampledAt,
+			requested: row.requested,
+			schedulingP50Ms: sched?.p50Ms ?? null,
+			schedulingP95Ms: sched?.p95Ms ?? null,
+			admittedCount: tot.admitted,
+			pendingCount: tot.pending,
+			reservingCount: tot.reserving,
+			headroomPct
+		};
+		const last = history.at(-1);
+		if (last && last.t === sample.t) return;
+		const next = [...history, sample];
+		if (next.length > HISTORY_MAX) next.splice(0, next.length - HISTORY_MAX);
+		history = next;
+
+		// Update per-contributor trends from THIS snapshot's contributors.
+		const all = snap.contributors ?? [];
+		// Compute a max for normalisation so the sparkline trend is share-style
+		// (0..1 of the heaviest contributor in this tick).
+		const scores = all.map(contributorScore);
+		const maxScore = Math.max(1, ...scores);
+		const updates: Record<string, number[]> = { ...contributorTrends };
+		for (let i = 0; i < all.length; i += 1) {
+			const c = all[i];
+			const key = c.key;
+			const value = scores[i] / maxScore;
+			const series = updates[key] ? [...updates[key], value] : [value];
+			if (series.length > TREND_MAX) series.splice(0, series.length - TREND_MAX);
+			updates[key] = series;
+		}
+		contributorTrends = updates;
+	});
+
+	// On resource flip: blank requested + headroomPct in past entries (so
+	// the trend chart shows a gap) but keep workload counts + latency.
+	$effect(() => {
+		primaryResource;
+		history = history.map((p) => ({ ...p, requested: null, headroomPct: null }));
+	});
+
+	// Tracking which contributor is currently open in the sheet so its
+	// per-key trend stays attached when the buffer updates.
+	const selectedContributorTrend = $derived(
+		selectedContributor ? contributorTrends[selectedContributor.key] ?? [] : []
+	);
+
+	// --- Derived signals ----------------------------------------------------
+	const cluster = $derived(normalizeHeadlampCluster(observer?.cluster));
+	const headlampClusterHref = $derived(headlampClusterUrl({ cluster }));
+
 	const sparklinePoints = $derived(
 		(schedulingQuery.current?.sparkline ?? []).map((p) => ({
 			t: new Date(p.t),
@@ -49,8 +247,6 @@
 		}))
 	);
 
-	// Aggregate connection state — show the worst of the three so the
-	// user sees "Reconnecting" if any feed is degraded.
 	const aggregateStatus = $derived.by(() => {
 		const statuses = [queues.status, workloads.status, flavors.status];
 		if (statuses.includes('connecting')) return 'connecting';
@@ -58,7 +254,6 @@
 		if (statuses.includes('closed')) return 'closed';
 		return 'open';
 	});
-
 	const aggregateError = $derived(queues.error ?? workloads.error ?? flavors.error);
 	const aggregateUpdate = $derived.by(() => {
 		const updates = [queues.lastUpdate, workloads.lastUpdate, flavors.lastUpdate].filter(
@@ -67,14 +262,6 @@
 		if (updates.length === 0) return null;
 		return updates.sort().at(-1) ?? null;
 	});
-
-	function recentForQueue(name: string) {
-		return workloads.data
-			.filter((wl) => wl.clusterQueueName === name || wl.queueName === name)
-			.filter((wl) => wl.active)
-			.sort((a, b) => (a.creationTimestamp < b.creationTimestamp ? 1 : -1))
-			.slice(0, 3);
-	}
 
 	const totals = $derived.by(() => {
 		const counts = { admitted: 0, pending: 0, reserving: 0, finished: 0 };
@@ -87,45 +274,25 @@
 		return counts;
 	});
 
-	function percent(value: number, total: number) {
-		if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
-		return Math.max(0, Math.min(100, (value / total) * 100));
-	}
+	const primaryResourceRow = $derived(
+		observer?.resources.find((r) => r.resource === primaryResource) ?? null
+	);
 
-	function overPercent(value: number, total: number) {
-		if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
-		return value > total ? ((value - total) / total) * 100 : 0;
-	}
+	const primaryOver = $derived(
+		primaryResourceRow
+			? Math.max(0, primaryResourceRow.requested - primaryResourceRow.renderedBudget)
+			: 0
+	);
 
-	function resourceLabel(resource: string) {
-		if (resource === 'cpu') return 'CPU';
-		if (resource === 'memory') return 'Memory';
-		if (resource === 'ephemeral-storage') return 'Ephemeral storage';
-		if (resource === 'pods') return 'Pods';
-		return resource;
-	}
-
-	function resourceValue(contributor: CapacityContributorSnapshot, resource: string) {
-		return contributor.resources?.[resource] ?? 0;
-	}
-
-	function contributorScore(contributor: CapacityContributorSnapshot) {
-		return (
-			resourceValue(contributor, 'cpu') * 1000 +
-			resourceValue(contributor, 'memory') / (1024 ** 3) * 25 +
-			resourceValue(contributor, 'ephemeral-storage') / (1024 ** 3) +
-			resourceValue(contributor, 'pods') * 10
-		);
-	}
-
-	const topContributors = $derived.by<CapacityContributorSnapshot[]>(() => {
-		return [...(observer?.contributors ?? [])]
-			.sort((a, b) => contributorScore(b) - contributorScore(a))
-			.slice(0, 8);
-	});
+	const RESOURCE_LABELS: Record<GaugeResource, string> = {
+		cpu: 'CPU',
+		memory: 'Memory',
+		pods: 'Pods',
+		'ephemeral-storage': 'Storage'
+	};
 
 	function queueSnapshot(name: string): CapacityQueueSnapshot | null {
-		return observer?.queues.find((queue) => queue.name === name) ?? null;
+		return observer?.queues.find((q) => q.name === name) ?? null;
 	}
 
 	function sessionSnapshot(name: string): CapacitySessionSnapshot | null {
@@ -134,6 +301,14 @@
 				(entry) => entry.queue === name || entry.executionClass === name
 			) ?? null
 		);
+	}
+
+	function recentForQueue(name: string) {
+		return workloads.data
+			.filter((wl) => wl.clusterQueueName === name || wl.queueName === name)
+			.filter((wl) => wl.active)
+			.sort((a, b) => (a.creationTimestamp < b.creationTimestamp ? 1 : -1))
+			.slice(0, 3);
 	}
 
 	function workloadReason(wl: (typeof workloads.data)[number]) {
@@ -161,24 +336,120 @@
 				)
 			}));
 	});
+
+	// Filtered list shown under <PendingDurationHistogram>. The histogram
+	// emits a bucket selection; we narrow the list to that bucket so the
+	// click feels causal.
+	const blockedWorkloadsFiltered = $derived.by<CapacityBlockedWorkload[]>(() => {
+		if (!blockedBucket) return blockedWorkloads;
+		const inBucket = (s: number) => {
+			if (blockedBucket === 'lt30s') return s < 30;
+			if (blockedBucket === 'lt2m') return s >= 30 && s < 120;
+			if (blockedBucket === 'lt10m') return s >= 120 && s < 600;
+			return s >= 600;
+		};
+		return blockedWorkloads.filter((wl) => inBucket(wl.pendingSeconds));
+	});
+
+	// Project history → HeadroomForecast Sample shape, filtering out the
+	// null `requested` entries that linger after a resource flip.
+	const forecastSamples = $derived(
+		history
+			.filter((p): p is HistoryPoint & { requested: number } => p.requested !== null)
+			.map((p) => ({ t: p.t, requested: p.requested }))
+	);
+
+	const hasUnhealthy = $derived(
+		!!observer?.criticalHealth.some((item) => item.status !== 'healthy')
+	);
+
+	const autoOpenAccordion = $derived(
+		blockedWorkloads.length > 0 || (observer?.warnings.length ?? 0) > 0 || hasUnhealthy
+	);
+
+	// --- Refresh badge formatting -----------------------------------------
+	let now = $state(Date.now());
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const id = setInterval(() => {
+			now = Date.now();
+		}, 1000);
+		return () => clearInterval(id);
+	});
+
+	const refreshAgeSeconds = $derived(
+		lastRefreshAt ? Math.max(0, Math.floor((now - lastRefreshAt) / 1000)) : null
+	);
+
+	function refreshAgeLabel(seconds: number | null): string {
+		if (seconds === null) return '—';
+		if (seconds < 2) return 'just now';
+		if (seconds < 60) return `${seconds}s ago`;
+		return `${Math.floor(seconds / 60)}m ago`;
+	}
+
+	const firstLoad = $derived(capacityQuery.current === undefined && observer === null);
+
+	// --- Headlamp helpers (per-row) ---------------------------------------
+	function blockedHeadlampUrl(wl: CapacityBlockedWorkload): string | null {
+		return headlampKueueUrl({
+			cluster,
+			kind: 'Workload',
+			namespace: wl.namespace,
+			name: wl.name
+		});
+	}
+
+	function flavorHeadlampUrl(name: string): string | null {
+		return headlampKueueUrl({
+			cluster,
+			kind: 'ResourceFlavor',
+			name
+		});
+	}
 </script>
 
-<div class="space-y-6">
+<div class="space-y-4">
+	<!-- ============================================================
+	     Zone A — header strip
+	     ============================================================ -->
 	<div class="flex flex-wrap items-center justify-between gap-2">
-		<div class="flex items-center gap-3">
+		<div class="flex items-center gap-2">
 			<StatusPill
 				status={aggregateStatus}
 				lastUpdate={aggregateUpdate}
 				error={aggregateError}
 			/>
+			{#if observer?.cluster}
+				{#if headlampClusterHref}
+					<a
+						href={headlampClusterHref}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-mono text-muted-foreground hover:text-foreground"
+						title="Open cluster in Headlamp"
+					>
+						<Server class="size-3" />
+						{observer.cluster}
+						<ExternalLink class="size-2.5" />
+					</a>
+				{:else}
+					<Badge variant="outline" class="font-mono text-[10px]">
+						<Server class="size-3" />
+						{observer.cluster}
+					</Badge>
+				{/if}
+			{/if}
 			<a
 				href={`/workspaces/${slug}/capacity/workloads`}
-				class="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+				class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
 			>
-				<ListChecks class="size-3" /> {workloads.data.length} workload{workloads.data.length === 1 ? '' : 's'} tracked
+				<ListChecks class="size-3" />
+				{workloads.data.length} workload{workloads.data.length === 1 ? '' : 's'}
 			</a>
 		</div>
-		<div class="flex items-center gap-1">
+
+		<div class="flex flex-wrap items-center gap-1.5">
 			{#if schedulingQuery.current?.hasData}
 				{@const snap = schedulingQuery.current}
 				<Badge
@@ -195,10 +466,24 @@
 			{/if}
 			<Badge variant="outline" class="font-mono text-[10px]">
 				<Activity class="size-3" />
-				{totals.admitted} admitted
+				{totals.admitted} adm
 			</Badge>
-			<Badge variant="outline" class="font-mono text-[10px]">{totals.pending} pending</Badge>
-			<Badge variant="outline" class="font-mono text-[10px]">{totals.reserving} reserving</Badge>
+			<Badge variant="outline" class="font-mono text-[10px]">{totals.pending} pend</Badge>
+			<Badge variant="outline" class="font-mono text-[10px]">{totals.reserving} res</Badge>
+
+			<button
+				type="button"
+				onclick={() => void tick()}
+				class="ml-1 inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+				disabled={isRefreshing}
+				title="Refresh observer snapshot now"
+			>
+				<RefreshCw class="size-3 {isRefreshing ? 'animate-spin' : ''}" />
+				<span>Live · 5s</span>
+				<span class="font-mono text-muted-foreground/80">
+					{refreshAgeLabel(refreshAgeSeconds)}
+				</span>
+			</button>
 		</div>
 	</div>
 
@@ -221,237 +506,348 @@
 		</Alert>
 	{/if}
 
-	{#if observer}
-		<section class="space-y-3">
-			<header class="flex flex-wrap items-end justify-between gap-2">
-				<div>
-					<h2 class="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Worker Capacity</h2>
-					<p class="mt-1 text-xs text-muted-foreground">
-						Live pod requests on schedulable <span class="font-mono">{observer.flavor}</span> workers, with the protected reserve and Kueue admission budget shown separately.
-					</p>
+	<!-- ============================================================
+	     Zone B — Cluster cockpit (gauge + headroom list)
+	     ============================================================ -->
+	<section class="grid gap-4 rounded-md border bg-card p-4 md:grid-cols-[260px_1fr]">
+		<div class="flex flex-col items-center gap-3">
+			{#if primaryResourceRow}
+				<CapacityGauge
+					used={primaryResourceRow.requested}
+					nominal={primaryResourceRow.renderedBudget}
+					over={primaryOver}
+					primaryLabel={RESOURCE_LABELS[primaryResource]}
+					secondaryLabel={`${formatQuantityForResource(primaryResource, primaryResourceRow.requested)} / ${formatQuantityForResource(primaryResource, primaryResourceRow.renderedBudget)}`}
+					tertiaryLabel={observer?.cluster ? `cohort agent-platform` : undefined}
+					size={200}
+					strokeWidth={16}
+				/>
+			{:else}
+				<div class="flex h-[200px] w-[200px] items-center justify-center text-xs text-muted-foreground">
+					{#if firstLoad}Loading…{:else}No data{/if}
 				</div>
-				<div class="flex flex-wrap items-center gap-1.5">
-					<Badge variant="outline" class="font-mono text-[10px]">
-						<Server class="size-3" />
-						{observer.cluster}
-					</Badge>
-					<Badge variant="outline" class="font-mono text-[10px]">
-						{observer.nodePressure.schedulableWorkers ?? 0} schedulable workers
-					</Badge>
-					{#if observer.nodePressure.controlPlaneMatches}
-						<Badge variant="destructive" class="font-mono text-[10px]">
-							{observer.nodePressure.controlPlaneMatches} control-plane match
-						</Badge>
-					{/if}
-				</div>
+			{/if}
+
+			<GaugeResourceToggle
+				value={primaryResource}
+				onChange={(next) => (primaryResource = next)}
+			/>
+
+			{#if primaryResourceRow}
+				<dl class="mt-1 grid w-full grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+					<dt class="text-muted-foreground">Allocatable</dt>
+					<dd class="text-right font-mono tabular-nums">
+						{formatQuantityForResource(primaryResource, primaryResourceRow.allocatable)}
+					</dd>
+					<dt class="text-muted-foreground">Reserve</dt>
+					<dd class="text-right font-mono tabular-nums">
+						{formatQuantityForResource(primaryResource, primaryResourceRow.criticalReserve)}
+					</dd>
+					<dt class="text-muted-foreground">Kueue budget</dt>
+					<dd class="text-right font-mono tabular-nums">
+						{formatQuantityForResource(primaryResource, primaryResourceRow.renderedBudget)}
+					</dd>
+					<dt class="text-muted-foreground">Headroom</dt>
+					<dd class="text-right font-mono tabular-nums">
+						{formatQuantityForResource(primaryResource, primaryResourceRow.headroom)}
+					</dd>
+				</dl>
+			{/if}
+		</div>
+
+		<div class="min-w-0">
+			<header class="flex items-baseline justify-between gap-2">
+				<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+					Queues ({queues.data.length}) · Headroom
+				</h2>
+				<span class="text-[10px] text-muted-foreground">{RESOURCE_LABELS[primaryResource]}</span>
 			</header>
 
-			<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-				{#each observer.resources as resource (resource.flavor + ':' + resource.resource)}
-					{@const active = resource.requested + resource.criticalReserve}
-					<div class="rounded-md border bg-card p-3">
-						<div class="flex items-start justify-between gap-2">
-							<div>
-								<div class="text-[11px] uppercase text-muted-foreground">{resourceLabel(resource.resource)}</div>
-								<div class="mt-1 flex items-baseline gap-1.5">
-									<span class="font-mono text-lg font-semibold">
-										{formatQuantityForResource(resource.resource, resource.headroom)}
-									</span>
-									<span class="text-[11px] text-muted-foreground">free</span>
-								</div>
-							</div>
-							<Badge variant={resource.requested > resource.renderedBudget ? 'destructive' : 'outline'} class="text-[10px]">
-								{Math.round(percent(resource.requested, resource.renderedBudget))}% budget used
-							</Badge>
-						</div>
-
-						<div class="mt-3">
-							<UsageBar
-								used={percent(resource.requested, resource.allocatable)}
-								reserved={percent(resource.criticalReserve, resource.allocatable)}
-								over={overPercent(active, resource.allocatable)}
-								label="worker allocation"
-								usedAbsLabel={formatQuantityForResource(resource.resource, resource.requested)}
-								reservedAbsLabel={formatQuantityForResource(resource.resource, resource.criticalReserve)}
-								nominalLabel={formatQuantityForResource(resource.resource, resource.allocatable)}
-							/>
-						</div>
-
-						<div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[10px]">
-							<span class="text-muted-foreground">Live requested</span>
-							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.requested)}</span>
-							<span class="text-muted-foreground">Protected reserve</span>
-							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.criticalReserve)}</span>
-							<span class="text-muted-foreground">Actual critical</span>
-							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.criticalRequested)}</span>
-							<span class="text-muted-foreground">Kueue budget</span>
-							<span class="text-right font-mono">{formatQuantityForResource(resource.resource, resource.renderedBudget)}</span>
-						</div>
-					</div>
-				{/each}
-			</div>
-
-			<div class="grid gap-3 xl:grid-cols-[1fr_320px]">
-				<div class="rounded-md border bg-card">
-					<div class="flex items-center justify-between gap-2 border-b px-3 py-2">
-						<h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Top live request contributors</h3>
-						<span class="text-[10px] text-muted-foreground">{topContributors.length} shown</span>
-					</div>
-					{#if topContributors.length === 0}
-						<div class="px-3 py-4 text-xs text-muted-foreground">No worker pod requests reported.</div>
-					{:else}
-						<div class="divide-y text-xs">
-							<div class="hidden grid-cols-[minmax(0,1fr)_72px_88px_56px_96px] gap-3 px-3 py-1.5 text-[10px] uppercase text-muted-foreground md:grid">
-								<span>Contributor</span>
-								<span class="text-right">CPU</span>
-								<span class="text-right">Memory</span>
-								<span class="text-right">Pods</span>
-								<span class="text-right">Storage</span>
-							</div>
-							{#each topContributors as contributor (contributor.key)}
-								<div class="grid gap-2 px-3 py-2 md:grid-cols-[minmax(0,1fr)_72px_88px_56px_96px] md:items-center md:gap-3">
-									<div class="min-w-0">
-										<div class="flex min-w-0 items-center gap-1.5">
-											<span class="truncate font-mono" title={contributor.name}>{contributor.name}</span>
-											<Badge variant={contributor.kind === 'critical' ? 'secondary' : 'outline'} class="shrink-0 text-[9px]">
-												{contributor.kind}
-											</Badge>
-											{#if contributor.queue}
-												<Badge variant="outline" class="hidden shrink-0 text-[9px] sm:inline-flex">{contributor.queue}</Badge>
-											{/if}
-										</div>
-										<div class="mt-0.5 truncate text-[10px] text-muted-foreground">
-											{contributor.namespace} · {contributor.podCount} pod{contributor.podCount === 1 ? '' : 's'}
-										</div>
-									</div>
-									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('cpu', resourceValue(contributor, 'cpu'))}</span>
-									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('memory', resourceValue(contributor, 'memory'))}</span>
-									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('pods', resourceValue(contributor, 'pods'))}</span>
-									<span class="font-mono tabular-nums md:text-right">{formatQuantityForResource('ephemeral-storage', resourceValue(contributor, 'ephemeral-storage'))}</span>
-								</div>
-							{/each}
-						</div>
-					{/if}
-				</div>
-
-				<div class="grid gap-2 rounded-md border bg-card p-3">
-					<div class="flex items-center justify-between gap-2">
-						<div class="flex items-center gap-2 text-sm font-medium">
-							<Server class="size-4 text-muted-foreground" />
-							<span>Critical health</span>
-						</div>
-						<Badge variant="outline" class="text-[10px]">{observer.flavor}</Badge>
-					</div>
-					<div class="grid grid-cols-2 gap-2 text-[11px]">
-						{#each observer.criticalHealth as item (item.name)}
-							<div class="flex items-center justify-between gap-2 rounded border px-2 py-1.5">
-								<span class="capitalize text-muted-foreground">{item.name}</span>
-								<span class="inline-flex items-center gap-1 font-mono">
-									{#if item.status === 'healthy'}
-										<CheckCircle2 class="size-3 text-emerald-500" />
-									{:else}
-										<AlertTriangle class="size-3 text-amber-500" />
-									{/if}
-									{item.ready}/{item.total}
-								</span>
-							</div>
-						{/each}
-					</div>
-					<div class="flex flex-wrap gap-1 text-[10px] text-muted-foreground">
-						<span>{observer.nodePressure.unschedulableWorkers ?? 0} unschedulable</span>
-						<span>{observer.nodePressure.diskPressureWorkers ?? 0} disk pressure</span>
-						<span>{observer.recentPreemptions} preemptions</span>
-					</div>
-					{#if observer.warnings.length > 0}
-						<div class="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-300">
-							{observer.warnings[0]}
-						</div>
-					{/if}
-				</div>
-			</div>
-		</section>
-	{/if}
-
-	<section class="space-y-3">
-		<header class="flex items-baseline justify-between gap-2">
-			<h2 class="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Cluster Queues</h2>
-			{#if queues.data.length > 0}
-				<span class="text-[11px] text-muted-foreground tabular-nums">{queues.data.length} queue{queues.data.length === 1 ? '' : 's'}</span>
-			{/if}
-		</header>
-		{#if queues.status !== 'open' && queues.data.length === 0}
-			<div class="grid gap-4 md:grid-cols-2">
-				{#each [0, 1] as i (i)}
-					<Card>
-						<CardHeader class="pb-2">
-							<Skeleton class="h-4 w-32" />
-						</CardHeader>
-						<CardContent class="space-y-3">
-							<Skeleton class="h-2 w-full" />
-							<Skeleton class="h-2 w-full" />
-							<Skeleton class="h-2 w-3/4" />
-						</CardContent>
-					</Card>
-				{/each}
-			</div>
-		{:else if queues.data.length === 0}
-			<Card>
-				<CardContent class="py-8 text-center text-xs text-muted-foreground">
-					No ClusterQueues registered in the cluster yet.
-				</CardContent>
-			</Card>
-		{:else}
-			<div class="grid gap-4 md:grid-cols-2">
+			<div class="mt-2 divide-y">
 				{#each queues.data as cq (cq.name)}
-					<ClusterQueueCard
-						clusterQueue={cq}
-						recentWorkloads={recentForQueue(cq.name)}
-						viewAllHref={`/workspaces/${slug}/capacity/workloads?queue=${encodeURIComponent(cq.name)}`}
+					<QueueHeadroomRow
+						queue={cq}
+						observerQueue={queueSnapshot(cq.name)}
+						resource={primaryResource}
+						{cluster}
+						{slug}
+					/>
+				{:else}
+					<p class="py-3 text-xs text-muted-foreground">
+						{firstLoad ? 'Loading queues…' : 'No ClusterQueues registered.'}
+					</p>
+				{/each}
+			</div>
+
+			{#if primaryResourceRow}
+				<div class="mt-3 border-t pt-3">
+					<HeadroomForecast
+						samples={forecastSamples}
+						headroom={primaryResourceRow.headroom}
+						resource={primaryResource}
+					/>
+				</div>
+			{/if}
+		</div>
+	</section>
+
+	<!-- ============================================================
+	     Zone B.5 — Trends (collapsible)
+	     ============================================================ -->
+	<CapacityTrendsPanel
+		{history}
+		window={trendsWindow}
+		resource={primaryResource}
+		onWindowChange={(next) => (trendsWindow = next)}
+	/>
+
+	<!-- ============================================================
+	     Zone C — Queue tiles rail
+	     ============================================================ -->
+	<section class="space-y-2">
+		<header class="flex items-baseline justify-between gap-2">
+			<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+				Cluster Queues
+			</h2>
+			<span class="text-[10px] text-muted-foreground">
+				gauges show {RESOURCE_LABELS[primaryResource]}
+			</span>
+		</header>
+
+		{#if queues.data.length === 0}
+			<div class="rounded-md border bg-card py-8 text-center text-xs text-muted-foreground">
+				{firstLoad ? 'Loading…' : 'No ClusterQueues registered in the cluster yet.'}
+			</div>
+		{:else}
+			<QueueRail>
+				{#each queues.data as cq (cq.name)}
+					<QueueTile
+						queue={cq}
 						observerQueue={queueSnapshot(cq.name)}
 						sessionCapacity={sessionSnapshot(cq.name)}
+						recentWorkloads={recentForQueue(cq.name)}
+						{primaryResource}
+						{cluster}
+						{slug}
 					/>
 				{/each}
-			</div>
+			</QueueRail>
 		{/if}
 	</section>
 
-	<section class="space-y-3">
-		<header class="flex items-baseline justify-between gap-2">
-			<h2 class="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Blocked Workloads</h2>
-			{#if blockedWorkloads.length > 0}
-				<span class="text-[11px] text-muted-foreground tabular-nums">{blockedWorkloads.length} shown</span>
-			{/if}
-		</header>
-		<Card>
-			<CardContent class="p-0">
+	<!-- ============================================================
+	     More signals — collapsible
+	     ============================================================ -->
+	<details
+		class="group rounded-md border bg-card open:bg-card"
+		open={autoOpenAccordion}
+	>
+		<summary
+			class="flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+		>
+			<span class="flex items-center gap-2">
+				More signals
+				{#if blockedWorkloads.length > 0}
+					<Badge variant="outline" class="border-amber-500/40 text-[10px]">
+						{blockedWorkloads.length} blocked
+					</Badge>
+				{/if}
+				{#if observer && observer.warnings.length > 0}
+					<Badge variant="outline" class="border-amber-500/40 text-[10px]">
+						{observer.warnings.length} warning{observer.warnings.length === 1 ? '' : 's'}
+					</Badge>
+				{/if}
+				{#if hasUnhealthy}
+					<Badge variant="outline" class="border-rose-500/40 text-[10px]">unhealthy</Badge>
+				{/if}
+			</span>
+			<span class="text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:hidden">
+				expand
+			</span>
+			<span
+				class="hidden text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:inline"
+			>
+				collapse
+			</span>
+		</summary>
+
+		<div class="space-y-5 border-t px-4 py-4">
+			<!-- Blocked workloads -->
+			<section class="space-y-2">
+				<header class="flex items-baseline justify-between gap-2">
+					<h3 class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+						Blocked Workloads
+					</h3>
+					{#if blockedWorkloads.length > 0}
+						<span class="text-[10px] tabular-nums text-muted-foreground">
+							{blockedWorkloadsFiltered.length} of {blockedWorkloads.length} shown
+						</span>
+					{/if}
+				</header>
+				<PendingDurationHistogram
+					workloads={blockedWorkloads}
+					selected={blockedBucket}
+					onSelect={(next) => (blockedBucket = next)}
+				/>
 				{#if blockedWorkloads.length === 0}
-					<div class="py-6 text-center text-xs text-muted-foreground">No pending or reserving workloads.</div>
+					<p class="text-xs text-muted-foreground">No pending or reserving workloads.</p>
+				{:else if blockedWorkloadsFiltered.length === 0}
+					<p class="text-xs text-muted-foreground">No workloads match the selected bucket.</p>
 				{:else}
-					<ul class="divide-y">
-						{#each blockedWorkloads as wl (wl.namespace + ':' + wl.name)}
-							<li class="grid gap-2 px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_120px_120px_90px] md:items-center">
+					<ul class="divide-y rounded border">
+						{#each blockedWorkloadsFiltered as wl (wl.namespace + ':' + wl.name)}
+							{@const url = blockedHeadlampUrl(wl)}
+							<li
+								class="grid items-center gap-2 px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_120px_120px_90px_24px]"
+							>
 								<a
 									href={`/workspaces/${slug}/capacity/workloads?queue=${encodeURIComponent(wl.queue)}`}
-									class="min-w-0 font-mono hover:underline"
+									class="min-w-0 truncate font-mono hover:underline"
 									title={wl.name}
 								>
 									{wl.name}
 								</a>
 								<span class="font-mono text-muted-foreground">{wl.queue || '—'}</span>
-								<span class="truncate text-muted-foreground" title={wl.message || wl.reason}>{wl.reason}</span>
+								<span class="truncate text-muted-foreground" title={wl.message || wl.reason}>
+									{wl.reason}
+								</span>
 								<span class="inline-flex items-center gap-1 font-mono text-muted-foreground">
 									<Clock3 class="size-3" />
 									{Math.round(wl.pendingSeconds)}s
+								</span>
+								<span class="flex justify-end">
+									{#if url}
+										<a
+											href={url}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="text-muted-foreground/70 hover:text-foreground"
+											title="Open Workload in Headlamp"
+										>
+											<ExternalLink class="size-3" />
+										</a>
+									{/if}
 								</span>
 							</li>
 						{/each}
 					</ul>
 				{/if}
-			</CardContent>
-		</Card>
-	</section>
+			</section>
 
-	<section>
-		<ResourceFlavorStrip flavors={flavors.data} />
-	</section>
+			<!-- Contributors heatmap -->
+			{#if observer}
+				<section class="space-y-2">
+					<header class="flex items-baseline justify-between gap-2">
+						<h3 class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+							Top live request contributors
+						</h3>
+						<span class="text-[10px] text-muted-foreground">
+							share of <span class="font-mono">{observer.flavor}</span> allocatable
+						</span>
+					</header>
+					<ContributorHeatmap
+						contributors={observer.contributors ?? []}
+						resources={observer.resources}
+						{cluster}
+						trends={contributorTrends}
+						onSelect={(c) => {
+							selectedContributor = c;
+							sheetOpen = true;
+						}}
+					/>
+				</section>
+			{/if}
+
+			<!-- Critical health -->
+			{#if observer}
+				<section class="space-y-2">
+					<header class="flex items-baseline justify-between gap-2">
+						<h3 class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+							Critical health
+						</h3>
+						<span class="text-[10px] text-muted-foreground">
+							{observer.nodePressure.schedulableWorkers ?? 0} schedulable ·
+							{observer.nodePressure.unschedulableWorkers ?? 0} unschedulable ·
+							{observer.nodePressure.diskPressureWorkers ?? 0} disk pressure ·
+							{observer.recentPreemptions} preempts
+						</span>
+					</header>
+					<ul class="flex flex-wrap gap-2 text-[11px]">
+						{#each observer.criticalHealth as item (item.name)}
+							<li
+								class="inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono {item.status ===
+								'healthy'
+									? ''
+									: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'}"
+							>
+								{#if item.status === 'healthy'}
+									<CheckCircle2 class="size-3 text-emerald-500" />
+								{:else}
+									<AlertTriangle class="size-3 text-amber-500" />
+								{/if}
+								<span class="capitalize">{item.name}</span>
+								<span class="text-muted-foreground tabular-nums">{item.ready}/{item.total}</span>
+							</li>
+						{/each}
+					</ul>
+					{#if observer.warnings.length > 0}
+						<div
+							class="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300"
+						>
+							{observer.warnings[0]}
+						</div>
+					{/if}
+				</section>
+			{/if}
+
+			<!-- Resource flavors + workload distribution -->
+			<section class="space-y-2">
+				<header class="flex items-baseline justify-between gap-2">
+					<h3 class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+						Resource Flavors
+					</h3>
+					<a
+						href={`/workspaces/${slug}/capacity/flavors`}
+						class="text-[10px] text-primary hover:underline"
+					>
+						View all →
+					</a>
+				</header>
+				<div class="grid gap-3 md:grid-cols-[1fr_320px]">
+					<ResourceFlavorStrip flavors={flavors.data} />
+					<WorkloadDistributionDonut queues={queues.data} />
+				</div>
+				{#if flavors.data.length > 0}
+					<div class="flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+						{#each flavors.data as f (f.name)}
+							{@const url = flavorHeadlampUrl(f.name)}
+							{#if url}
+								<a
+									href={url}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono hover:text-foreground"
+								>
+									{f.name}
+									<ExternalLink class="size-2.5" />
+								</a>
+							{/if}
+						{/each}
+					</div>
+				{/if}
+			</section>
+		</div>
+	</details>
 </div>
+
+<ContributorDetailSheet
+	open={sheetOpen}
+	contributor={selectedContributor}
+	resources={observer?.resources ?? []}
+	{cluster}
+	trend={selectedContributorTrend}
+	onOpenChange={(next) => {
+		sheetOpen = next;
+		if (!next) selectedContributor = null;
+	}}
+/>

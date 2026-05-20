@@ -73,3 +73,54 @@ export function headlampCustomResourceUrl(input: {
 	if (!base || !crd || !namespace || !name) return null;
 	return `${base}/c/${encodeURIComponent(input.cluster)}/customresources/${encodeURIComponent(crd)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
 }
+
+export type KueueResourceKind =
+	| "ClusterQueue"
+	| "LocalQueue"
+	| "Workload"
+	| "ResourceFlavor"
+	| "Cohort";
+
+const KUEUE_CRDS: Record<KueueResourceKind, string> = {
+	ClusterQueue: "clusterqueues.kueue.x-k8s.io",
+	LocalQueue: "localqueues.kueue.x-k8s.io",
+	Workload: "workloads.kueue.x-k8s.io",
+	ResourceFlavor: "resourceflavors.kueue.x-k8s.io",
+	Cohort: "cohorts.kueue.x-k8s.io",
+};
+
+// Headlamp uses "-" as the namespace placeholder for cluster-scoped CRs.
+const CLUSTER_SCOPED_KUEUE: ReadonlySet<KueueResourceKind> = new Set([
+	"ClusterQueue",
+	"ResourceFlavor",
+	"Cohort",
+]);
+
+export function headlampKueueUrl(input: {
+	headlampBase?: string | null;
+	cluster: HeadlampCluster;
+	kind: KueueResourceKind;
+	namespace?: string | null;
+	name: string | null | undefined;
+}): string | null {
+	const namespace = CLUSTER_SCOPED_KUEUE.has(input.kind)
+		? "-"
+		: input.namespace?.trim() || null;
+	return headlampCustomResourceUrl({
+		headlampBase: input.headlampBase,
+		cluster: input.cluster,
+		crd: KUEUE_CRDS[input.kind],
+		namespace,
+		name: input.name,
+	});
+}
+
+// Headlamp cluster index (used for the cluster badge in the Capacity Overview).
+export function headlampClusterUrl(input: {
+	headlampBase?: string | null;
+	cluster: HeadlampCluster;
+}): string | null {
+	const base = trimBase(input.headlampBase);
+	if (!base) return null;
+	return `${base}/c/${encodeURIComponent(input.cluster)}/`;
+}

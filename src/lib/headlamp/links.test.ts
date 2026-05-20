@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
 	DEFAULT_HEADLAMP_URL,
+	headlampClusterUrl,
 	headlampCustomResourceUrl,
+	headlampKueueUrl,
 	headlampResourceUrl,
 	normalizeHeadlampCluster,
 } from "./links";
@@ -88,6 +90,83 @@ describe("headlampCustomResourceUrl", () => {
 		).toBe(
 			`${DEFAULT_HEADLAMP_URL}/c/ryzen/customresources/sandboxwarmpools.extensions.agents.x-k8s.io/workflow-builder/agent-runtime-browser`,
 		);
+	});
+});
+
+describe("headlampKueueUrl", () => {
+	it("uses '-' namespace for cluster-scoped Kueue CRs", () => {
+		expect(
+			headlampKueueUrl({
+				cluster: "ryzen",
+				kind: "ClusterQueue",
+				name: "interactive-agent",
+			}),
+		).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/customresources/clusterqueues.kueue.x-k8s.io/-/interactive-agent`,
+		);
+		expect(
+			headlampKueueUrl({
+				cluster: "ryzen",
+				kind: "ResourceFlavor",
+				name: "dev-benchmark",
+			}),
+		).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/customresources/resourceflavors.kueue.x-k8s.io/-/dev-benchmark`,
+		);
+		expect(
+			headlampKueueUrl({
+				cluster: "ryzen",
+				kind: "Cohort",
+				name: "agent-platform",
+			}),
+		).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/customresources/cohorts.kueue.x-k8s.io/-/agent-platform`,
+		);
+	});
+
+	it("requires a namespace for namespaced Kueue CRs", () => {
+		expect(
+			headlampKueueUrl({
+				cluster: "ryzen",
+				kind: "Workload",
+				namespace: "workflow-builder",
+				name: "job-abc-12345",
+			}),
+		).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/customresources/workloads.kueue.x-k8s.io/workflow-builder/job-abc-12345`,
+		);
+		expect(
+			headlampKueueUrl({
+				cluster: "ryzen",
+				kind: "LocalQueue",
+				namespace: "workflow-builder",
+				name: "default-queue",
+			}),
+		).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/customresources/localqueues.kueue.x-k8s.io/workflow-builder/default-queue`,
+		);
+		expect(
+			headlampKueueUrl({
+				cluster: "ryzen",
+				kind: "Workload",
+				namespace: null,
+				name: "lonely",
+			}),
+		).toBeNull();
+	});
+});
+
+describe("headlampClusterUrl", () => {
+	it("builds the cluster index URL", () => {
+		expect(headlampClusterUrl({ cluster: "ryzen" })).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/`,
+		);
+		expect(
+			headlampClusterUrl({
+				headlampBase: "https://headlamp.example/",
+				cluster: "dev",
+			}),
+		).toBe("https://headlamp.example/c/dev/");
 	});
 });
 
