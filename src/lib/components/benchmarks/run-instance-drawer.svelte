@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
-	import { DEFAULT_HEADLAMP_URL, headlampResourceUrl, type HeadlampCluster } from '$lib/headlamp/links';
+	import { embeddedHeadlampResourceUrl, type HeadlampCluster } from '$lib/headlamp/links';
 	import {
 		Activity,
 		Bot,
@@ -99,7 +99,6 @@
 		runId: string | null;
 		instanceId: string | null;
 		workspaceSlug: string;
-		headlampBase?: string;
 		headlampCluster?: HeadlampCluster;
 		onOpenChange: (next: boolean) => void;
 		onTerminated?: () => void;
@@ -110,7 +109,6 @@
 		runId,
 		instanceId,
 		workspaceSlug,
-		headlampBase = DEFAULT_HEADLAMP_URL,
 		headlampCluster = 'ryzen',
 		onOpenChange,
 		onTerminated
@@ -155,8 +153,8 @@
 	);
 	const hostJobHeadlampUrl = $derived(
 		detail?.runInstance.hostJobName
-			? headlampResourceUrl({
-					headlampBase,
+			? embeddedHeadlampResourceUrl({
+					workspaceSlug,
 					cluster: headlampCluster,
 					kind: 'Job',
 					namespace: 'workflow-builder',
@@ -471,8 +469,6 @@
 							{#if hostJobHeadlampUrl && detail.runInstance.hostJobName}
 								<a
 									href={hostJobHeadlampUrl}
-									target="_blank"
-									rel="noopener noreferrer"
 									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
 									title="Open benchmark instance Job logs in Headlamp"
 								>

@@ -20,7 +20,7 @@
 		quantityRatios
 	} from '$lib/components/capacity/quantity';
 	import {
-		headlampKueueUrl,
+		embeddedHeadlampKueueUrl,
 		normalizeHeadlampCluster,
 		type HeadlampCluster
 	} from '$lib/headlamp/links';
@@ -108,7 +108,8 @@
 	const overAbs = $derived(Math.max(0, primary.usedAbs - primary.nominalAbs));
 
 	const headlampUrl = $derived(
-		headlampKueueUrl({
+		embeddedHeadlampKueueUrl({
+			workspaceSlug: slug,
 			cluster: normalizeHeadlampCluster(cluster),
 			kind: 'ClusterQueue',
 			name: queue.name
@@ -116,7 +117,8 @@
 	);
 
 	function workloadHeadlampUrl(wl: WorkloadSnapshot): string | null {
-		return headlampKueueUrl({
+		return embeddedHeadlampKueueUrl({
+			workspaceSlug: slug,
 			cluster: normalizeHeadlampCluster(cluster),
 			kind: 'Workload',
 			namespace: wl.namespace,
@@ -174,8 +176,6 @@
 		{#if headlampUrl}
 			<a
 				href={headlampUrl}
-				target="_blank"
-				rel="noopener noreferrer"
 				class="shrink-0 text-muted-foreground/70 hover:text-foreground"
 				title={`Open ${queue.name} in Headlamp`}
 			>
@@ -280,8 +280,6 @@
 						<WorkloadStatusBadge status={wl.status} />
 						<a
 							href={wlUrl ?? detailHref}
-							target={wlUrl ? '_blank' : undefined}
-							rel={wlUrl ? 'noopener noreferrer' : undefined}
 							class="min-w-0 truncate font-mono hover:underline"
 							title={wl.name}
 						>

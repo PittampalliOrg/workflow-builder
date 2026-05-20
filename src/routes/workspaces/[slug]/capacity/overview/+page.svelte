@@ -36,9 +36,8 @@
 	import WorkloadDistributionDonut from '$lib/components/capacity/overview/workload-distribution-donut.svelte';
 	import type { TrendsWindow } from '$lib/components/capacity/overview/trends-window-toggle.svelte';
 	import {
-		headlampClusterUrl,
-		headlampKueueUrl,
-		headlampResourceUrl,
+		embeddedHeadlampClusterUrl,
+		embeddedHeadlampKueueUrl,
 		normalizeHeadlampCluster
 	} from '$lib/headlamp/links';
 	import { getCapacityOverview, getSchedulingLatency } from './data.remote';
@@ -248,7 +247,7 @@
 
 	// --- Derived signals ----------------------------------------------------
 	const cluster = $derived(normalizeHeadlampCluster(observer?.cluster));
-	const headlampClusterHref = $derived(headlampClusterUrl({ cluster }));
+	const headlampClusterHref = $derived(embeddedHeadlampClusterUrl({ workspaceSlug: slug, cluster }));
 
 	const sparklinePoints = $derived(
 		(schedulingQuery.current?.sparkline ?? []).map((p) => ({
@@ -402,7 +401,8 @@
 
 	// --- Headlamp helpers (per-row) ---------------------------------------
 	function blockedHeadlampUrl(wl: CapacityBlockedWorkload): string | null {
-		return headlampKueueUrl({
+		return embeddedHeadlampKueueUrl({
+			workspaceSlug: slug,
 			cluster,
 			kind: 'Workload',
 			namespace: wl.namespace,
@@ -411,7 +411,8 @@
 	}
 
 	function flavorHeadlampUrl(name: string): string | null {
-		return headlampKueueUrl({
+		return embeddedHeadlampKueueUrl({
+			workspaceSlug: slug,
 			cluster,
 			kind: 'ResourceFlavor',
 			name
@@ -434,8 +435,6 @@
 				{#if headlampClusterHref}
 					<a
 						href={headlampClusterHref}
-						target="_blank"
-						rel="noopener noreferrer"
 						class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-mono text-muted-foreground hover:text-foreground"
 						title="Open cluster in Headlamp"
 					>
@@ -701,8 +700,6 @@
 									{#if url}
 										<a
 											href={url}
-											target="_blank"
-											rel="noopener noreferrer"
 											class="text-muted-foreground/70 hover:text-foreground"
 											title="Open Workload in Headlamp"
 										>
@@ -732,6 +729,7 @@
 						resources={observer.resources}
 						{cluster}
 						trends={contributorTrends}
+						{slug}
 						onSelect={(c) => {
 							selectedContributor = c;
 							sheetOpen = true;
@@ -806,8 +804,6 @@
 							{#if url}
 								<a
 									href={url}
-									target="_blank"
-									rel="noopener noreferrer"
 									class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono hover:text-foreground"
 								>
 									{f.name}
@@ -827,6 +823,7 @@
 	contributor={selectedContributor}
 	resources={observer?.resources ?? []}
 	{cluster}
+	{slug}
 	trend={selectedContributorTrend}
 	onOpenChange={(next) => {
 		sheetOpen = next;

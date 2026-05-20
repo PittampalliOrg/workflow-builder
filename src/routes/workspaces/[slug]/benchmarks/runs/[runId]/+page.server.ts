@@ -1,8 +1,6 @@
 import { error } from "@sveltejs/kit";
 import { env as privateEnv } from "$env/dynamic/private";
-import { env as publicEnv } from "$env/dynamic/public";
 import {
-	DEFAULT_HEADLAMP_URL,
 	normalizeHeadlampCluster,
 	type HeadlampCluster,
 } from "$lib/headlamp/links";
@@ -26,7 +24,6 @@ export type RunDetailPageData = {
 	capacityDiagnostics: Awaited<ReturnType<typeof getBenchmarkRunCapacityDiagnostics>>;
 	phaseAttribution: RunPhaseAttribution | null;
 	failureContext: RunFailureContext | null;
-	headlampBase: string;
 	headlampCluster: HeadlampCluster;
 };
 
@@ -59,7 +56,6 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		capacityDiagnostics,
 		phaseAttribution,
 		failureContext,
-		headlampBase: publicEnv.PUBLIC_HEADLAMP_URL?.trim() || DEFAULT_HEADLAMP_URL,
 		headlampCluster: normalizeHeadlampCluster(privateEnv.WORKFLOW_BUILDER_ENV),
 		runStats:
 			runStats ??
