@@ -74,13 +74,6 @@ profiles:
           context: ..
           docker:
             dockerfile: services/mcp-gateway/Dockerfile
-          hooks:
-            after:
-              - command:
-                  - bash
-                  - skaffold/hooks/commit-pin.sh
-                  - mcp-gateway
-                os: [linux, darwin]
     manifests:
       rawYaml: []
     deploy:

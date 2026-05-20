@@ -75,11 +75,18 @@ bash scripts/skaffold-dev.sh function-router   # any single module by name
 bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator  # subset
 
 # Outer loop (build prod image → push → commit kustomize pin → Argo deploys):
-pnpm deploy:skaffold                           # workflow-builder
-pnpm deploy:skaffold:orchestrator              # workflow-orchestrator
-skaffold run -m fn-activepieces                # any module
-skaffold build -m workflow-builder             # build+push only (no pin commit)
+pnpm deploy:skaffold                                # workflow-builder
+pnpm deploy:skaffold:orchestrator                   # workflow-orchestrator
+bash scripts/skaffold-deploy.sh fn-activepieces     # any single service
+bash scripts/skaffold-deploy.sh workflow-builder workflow-orchestrator  # batch
+skaffold build -m workflow-builder                  # build+push only (no pin commit)
 ```
+
+The outer-loop uses `scripts/skaffold-deploy.sh` rather than `skaffold run` because:
+- `skaffold run -m <svc>` also redeploys the dev kustomize overlay (which Argo immediately reverts but causes pod restarts).
+- Skaffold artifact `hooks.after` doesn't fire on cache hits, so `skaffold run` would silently miss commit-pin when re-pushing the same SHA.
+
+The wrapper invokes `skaffold build --file-output`, parses the resolved tag, and unconditionally runs `commit-pin.sh` with it. Commit-pin maintains a dedicated clone at `~/.cache/skaffold/stacks-ryzen` (tracking gitea-ryzen, NOT the developer's primary stacks/main worktree which tracks GitHub origin).
 
 Module set:
 

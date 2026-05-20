@@ -78,13 +78,6 @@ profiles:
           context: ../services/workflow-orchestrator
           docker:
             dockerfile: Dockerfile
-          hooks:
-            after:
-              - command:
-                  - bash
-                  - skaffold/hooks/commit-pin.sh
-                  - workflow-orchestrator
-                os: [linux, darwin]
     manifests:
       rawYaml: []
     deploy:

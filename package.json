@@ -26,8 +26,8 @@
 		"dev:skaffold": "bash scripts/skaffold-dev.sh workflow-builder",
 		"dev:skaffold:orchestrator": "bash scripts/skaffold-dev.sh workflow-orchestrator",
 		"dev:skaffold:all": "bash scripts/skaffold-dev.sh ALL",
-		"deploy:skaffold": "skaffold run -m workflow-builder",
-		"deploy:skaffold:orchestrator": "skaffold run -m workflow-orchestrator",
+		"deploy:skaffold": "bash scripts/skaffold-deploy.sh workflow-builder",
+		"deploy:skaffold:orchestrator": "bash scripts/skaffold-deploy.sh workflow-orchestrator",
 		"build:skaffold": "skaffold build -m workflow-builder"
 	},
 	"devDependencies": {

@@ -66,13 +66,6 @@ profiles:
           context: ../services/swebench-coordinator
           docker:
             dockerfile: Dockerfile
-          hooks:
-            after:
-              - command:
-                  - bash
-                  - skaffold/hooks/commit-pin.sh
-                  - swebench-coordinator
-                os: [linux, darwin]
     manifests:
       rawYaml: []
     deploy:

@@ -74,13 +74,6 @@ profiles:
           context: ..
           docker:
             dockerfile: services/function-router/Dockerfile
-          hooks:
-            after:
-              - command:
-                  - bash
-                  - skaffold/hooks/commit-pin.sh
-                  - function-router
-                os: [linux, darwin]
     manifests:
       rawYaml: []
     deploy:

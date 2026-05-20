@@ -130,16 +130,12 @@ profiles:
           docker:
             dockerfile: Dockerfile
           # No sync — prod image, full rebuild on every change.
-          hooks:
-            after:
-              # After build+push, write the new tag into the stacks-repo
-              # kustomization and git-push. ArgoCD selfHeal reconciles.
-              # $SKAFFOLD_IMAGE is set by Skaffold to <repo>:<tag>@<digest>.
-              - command:
-                  - bash
-                  - skaffold/hooks/commit-pin.sh
-                  - workflow-builder
-                os: [linux, darwin]
+          # NOTE: don't add `hooks.after` here — Skaffold skips artifact hooks
+          # on cache hits, so we'd silently miss commit-pin when re-running
+          # with the same source. The wrapper `scripts/skaffold-deploy.sh`
+          # parses `skaffold build --file-output` and unconditionally invokes
+          # `skaffold/hooks/commit-pin.sh` instead. Prefer that wrapper over
+          # direct `skaffold run` / `skaffold build` for the outer loop.
     # Do not render or deploy in `run` mode — the kustomize pin commit + Argo
     # selfHeal handle the rollout.
     manifests:
