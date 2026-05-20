@@ -22,6 +22,15 @@
 		tertiaryLabel?: string;
 		size?: number;
 		strokeWidth?: number;
+		/**
+		 * Optional threshold marker drawn as a small radial tick on the arc.
+		 * Use this to surface a secondary cap (e.g. Kueue admission ceiling)
+		 * inside the primary capacity gauge. Same units as `nominal`; ignored
+		 * unless 0 < capMark < nominal.
+		 */
+		capMark?: number;
+		/** Short label shown next to the tick (e.g. "Kueue"). */
+		capMarkLabel?: string;
 	};
 
 	let {
@@ -32,7 +41,9 @@
 		secondaryLabel,
 		tertiaryLabel,
 		size = 220,
-		strokeWidth = 18
+		strokeWidth = 18,
+		capMark = 0,
+		capMarkLabel
 	}: Props = $props();
 
 	const VIEWBOX = 100;
@@ -90,6 +101,31 @@
 	const usedPath = $derived(
 		ratio > 0 ? arcPath(START_ANGLE, usedEndAngle) : null
 	);
+
+	// Optional cap-marker tick. Only render when capMark is meaningfully
+	// between 0 and the gauge's nominal — otherwise it lands at the start
+	// or end of the arc where it adds no value.
+	const capRatio = $derived(
+		safeNominal > 0 && capMark > 0 && capMark < safeNominal
+			? capMark / safeNominal
+			: 0
+	);
+	const capAngle = $derived(START_ANGLE + capRatio * SWEEP_DEGREES);
+	const capPercent = $derived(Math.round(capRatio * 100));
+	// Tick extends slightly past the arc on both sides so it reads against
+	// either the background or the used portion.
+	const capTickInner = $derived.by(() => {
+		if (capRatio <= 0) return null;
+		const rad = ((capAngle - 90) * Math.PI) / 180;
+		const inner = RADIUS - STROKE * 0.9;
+		return [CX + inner * Math.cos(rad), CY + inner * Math.sin(rad)];
+	});
+	const capTickOuter = $derived.by(() => {
+		if (capRatio <= 0) return null;
+		const rad = ((capAngle - 90) * Math.PI) / 180;
+		const outer = RADIUS + STROKE * 0.9;
+		return [CX + outer * Math.cos(rad), CY + outer * Math.sin(rad)];
+	});
 </script>
 
 <div class="flex flex-col items-center gap-2" style="width: {size}px;">
@@ -121,6 +157,21 @@
 					stroke-linecap="round"
 					class="{toneClass} transition-[d] duration-500 ease-out"
 				/>
+			{/if}
+			<!-- cap marker (optional secondary threshold tick) -->
+			{#if capTickInner && capTickOuter}
+				<line
+					x1={capTickInner[0]}
+					y1={capTickInner[1]}
+					x2={capTickOuter[0]}
+					y2={capTickOuter[1]}
+					stroke="currentColor"
+					stroke-width={STROKE * 0.18}
+					stroke-linecap="round"
+					class="text-foreground/80"
+				>
+					<title>{capMarkLabel ?? 'cap'} at {capPercent}%</title>
+				</line>
 			{/if}
 		</svg>
 

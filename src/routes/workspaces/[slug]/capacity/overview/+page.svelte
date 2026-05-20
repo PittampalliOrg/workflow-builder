@@ -292,9 +292,12 @@
 		observer?.resources.find((r) => r.resource === primaryResource) ?? null
 	);
 
+	// "Over" now means cluster-allocatable over-subscription (a real OOM
+	// risk), not Kueue cap exceedance (which is by design + intentional).
+	// The Kueue cap is surfaced as the gauge's capMark tick instead.
 	const primaryOver = $derived(
 		primaryResourceRow
-			? Math.max(0, primaryResourceRow.requested - primaryResourceRow.renderedBudget)
+			? Math.max(0, primaryResourceRow.requested - primaryResourceRow.allocatable)
 			: 0
 	);
 
@@ -526,12 +529,22 @@
 	<section class="grid gap-4 rounded-md border bg-card p-4 md:grid-cols-[260px_1fr]">
 		<div class="flex flex-col items-center gap-3">
 			{#if primaryResourceRow}
+				<!--
+				  Gauge denominator is `allocatable` (real cluster capacity) so the
+				  reading matches the operator's mental model (~30-45% on ryzen)
+				  rather than the intentionally-tight Kueue admission cap (which
+				  reads >100% by design — see kueue-capacity/RATIONALE.md).
+				  The Kueue cap is shown as a tick on the arc so admission-cap
+				  context isn't lost.
+				-->
 				<CapacityGauge
 					used={primaryResourceRow.requested}
-					nominal={primaryResourceRow.renderedBudget}
+					nominal={primaryResourceRow.allocatable}
 					over={primaryOver}
+					capMark={primaryResourceRow.renderedBudget}
+					capMarkLabel="Kueue cap"
 					primaryLabel={RESOURCE_LABELS[primaryResource]}
-					secondaryLabel={`${formatQuantityForResource(primaryResource, primaryResourceRow.requested)} / ${formatQuantityForResource(primaryResource, primaryResourceRow.renderedBudget)}`}
+					secondaryLabel={`${formatQuantityForResource(primaryResource, primaryResourceRow.requested)} / ${formatQuantityForResource(primaryResource, primaryResourceRow.allocatable)}`}
 					tertiaryLabel={observer?.cluster ? `cohort agent-platform` : undefined}
 					size={160}
 					strokeWidth={14}
@@ -548,21 +561,31 @@
 			/>
 
 			{#if primaryResourceRow}
+				{@const realHeadroom = Math.max(
+					0,
+					primaryResourceRow.allocatable - primaryResourceRow.requested
+				)}
 				<dl class="mt-1 grid w-full grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
 					<dt class="text-muted-foreground">Allocatable</dt>
 					<dd class="text-right font-mono tabular-nums">
 						{formatQuantityForResource(primaryResource, primaryResourceRow.allocatable)}
 					</dd>
+					<dt class="text-muted-foreground">Real headroom</dt>
+					<dd class="text-right font-mono tabular-nums text-foreground/90">
+						{formatQuantityForResource(primaryResource, realHeadroom)}
+					</dd>
 					<dt class="text-muted-foreground">Reserve</dt>
 					<dd class="text-right font-mono tabular-nums">
 						{formatQuantityForResource(primaryResource, primaryResourceRow.criticalReserve)}
 					</dd>
-					<dt class="text-muted-foreground">Kueue budget</dt>
+					<dt class="text-muted-foreground" title="Kueue admission cap (intentionally tight per RATIONALE.md)">Kueue cap</dt>
 					<dd class="text-right font-mono tabular-nums">
 						{formatQuantityForResource(primaryResource, primaryResourceRow.renderedBudget)}
 					</dd>
-					<dt class="text-muted-foreground">Headroom</dt>
-					<dd class="text-right font-mono tabular-nums">
+					<dt class="text-muted-foreground" title="Kueue budget − requested (negative = at admission cap, normal on ryzen)">
+						Kueue headroom
+					</dt>
+					<dd class="text-right font-mono tabular-nums text-muted-foreground">
 						{formatQuantityForResource(primaryResource, primaryResourceRow.headroom)}
 					</dd>
 				</dl>
