@@ -1,0 +1,21 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: workflow-builder-root
+
+# Root config: composes one Skaffold module per microservice via `requires:`.
+# Usage:
+#   skaffold dev   -m workflow-builder              # single-service HMR (Argo paused)
+#   skaffold run   -m workflow-builder              # build + push + commit kustomize pin
+#   skaffold build -m workflow-builder              # build + push only (no commit)
+#
+# PR 1 (this PR): workflow-builder module only.
+# PR 2: + workflow-orchestrator, function-router
+# PR 3: + fn-system, fn-activepieces, mcp-gateway, swebench-coordinator
+#
+# devspace.yaml stays in-tree as a fallback during the transition. See
+# CLAUDE.md "Dev loop" section for the cutover criteria.
+
+requires:
+  - configs: [workflow-builder]
+    path: skaffold/workflow-builder.skaffold.yaml

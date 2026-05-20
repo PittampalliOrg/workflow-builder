@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+# Dev image for `skaffold dev -m workflow-builder`.
+#
+# Skaffold's mental model: image is source of truth at pod start time; sync
+# delivers SUBSEQUENT changes (no initial sync into a running pod). So src/,
+# lib/, etc. must be baked in. Sync rules in workflow-builder.skaffold.yaml
+# determine which files trigger sync-only updates vs full image rebuild.
+#
+# Layer order is cache-optimised: pnpm install (slowest, rarely changes) →
+# rarely-edited config files → frequently-edited app source.
+
+ARG PNPM_VERSION=9.12.3
+
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Run as root so Skaffold's `kubectl exec -- tar` sync can write into /app.
+# (devspace.yaml does the same via the runAsUser: 0 securityContext patch.)
+USER root
+
+# Enable pnpm via corepack.
+ARG PNPM_VERSION
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+
+# Dependency layer: changing package.json or pnpm-lock.yaml busts this layer
+# and forces Skaffold to rebuild + redeploy the pod (matches devspace
+# onUpload.exec install behaviour).
+COPY package.json ./
+COPY pnpm-lock.yaml ./
+COPY .npmrc ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --ignore-scripts
+
+# Project config layer (rarely changes).
+COPY svelte.config.js vite.config.ts tsconfig.json components.json drizzle.config.ts server-prod.js ./
+
+# App source layer (changes most often). Sync rules in
+# workflow-builder.skaffold.yaml deliver per-file updates on top of these
+# baked copies without rebuilding the image.
+COPY drizzle ./drizzle
+COPY scripts ./scripts
+COPY static ./static
+COPY lib ./lib
+COPY src ./src
+
+ENV NODE_ENV=development
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+ENV npm_config_store_dir=/app/.pnpm-store
+
+EXPOSE 3000 24678
+
+# vite is installed under node_modules/.bin by pnpm above.
+# --host 0.0.0.0 binds inside the pod; the Service forwards from cluster
+# traffic. --port 3000 matches the prod container's exposed port so the
+# Service/Ingress need no changes.
+CMD ["sh", "-c", "exec /app/node_modules/.bin/vite dev --host 0.0.0.0 --port 3000"]

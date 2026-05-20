@@ -1,0 +1,148 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: workflow-builder
+
+# Inner loop (`skaffold dev`):
+#   Build a thin dev image (node:22-alpine + pnpm install baked from
+#   package.json/pnpm-lock.yaml), render the dev kustomize overlay (which
+#   extends the prod manifest folder in stacks/main/, so every Dapr Component,
+#   ExternalSecret, Service, ConfigMap, init container, etc. comes along
+#   unchanged), deploy via kubectl, then watch src/ and friends for changes —
+#   Skaffold syncs matched paths into the running pod via tar; Vite's
+#   filesystem watcher picks them up and HMR pushes to the browser.
+#
+#   ArgoCD pause/resume is handled by `scripts/skaffold-dev.sh` (which traps
+#   SIGINT/SIGTERM/EXIT and calls hooks/argo-pause.sh + hooks/argo-resume.sh).
+#   Don't run `skaffold dev` directly during normal use — use the wrapper.
+#
+# Outer loop (`skaffold run` / `skaffold build`, see `run` profile below):
+#   Build the production multi-stage Dockerfile at repo root, push to
+#   gitea-ryzen, then a build-artifact `after` hook writes the new newTag into
+#   stacks/main/.../active-development/manifests/workflow-builder/kustomization.yaml
+#   and git-pushes. ArgoCD (automated.selfHeal=true) reconciles within ~30s.
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    # `inputDigest` is the natural fit (content-addressable, no cache misses),
+    # but Skaffold v2.17 has an open issue where its build-context tar walker
+    # mis-parses repos with allowlist-style .dockerignore (the COPY argument
+    # validation fails before docker even sees the context). Use `gitCommit`
+    # for the dev image — Skaffold still cache-keys on file hashes for sync.
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true   # uncommitted dev edits don't bust the cache
+  artifacts:
+    - image: workflow-builder-dev
+      # Paths in this module yaml are relative to the file (skaffold/). The
+      # build context is the repo root (workflow-builder/main), so we walk
+      # up one level. Dockerfile path is then relative to the context.
+      context: ..
+      docker:
+        dockerfile: skaffold/dev/workflow-builder/Dockerfile.dev
+        buildArgs:
+          PNPM_VERSION: "9.12.3"
+      sync:
+        manual:
+          # Source paths — fast HMR (no rebuild). Mirrors devspace.yaml:319-381
+          # excludePaths inverse. Files NOT listed here (package.json,
+          # pnpm-lock.yaml, Dockerfile.dev, .npmrc) trigger a full rebuild
+          # when changed, matching devspace's onUpload.exec install pattern.
+          - src: "src/**/*"
+            dest: /app
+          - src: "static/**/*"
+            dest: /app
+          - src: "drizzle/**/*"
+            dest: /app
+          - src: "lib/**/*"
+            dest: /app
+          - src: "scripts/**/*.ts"
+            dest: /app
+          - src: "scripts/**/*.js"
+            dest: /app
+          - src: "scripts/**/*.mjs"
+            dest: /app
+          - src: "scripts/fixtures/**/*"
+            dest: /app
+          - src: "vite.config.ts"
+            dest: /app
+          - src: "svelte.config.js"
+            dest: /app
+          - src: "tsconfig.json"
+            dest: /app
+          - src: "components.json"
+            dest: /app
+          - src: "drizzle.config.ts"
+            dest: /app
+          - src: "server-prod.js"
+            dest: /app
+
+manifests:
+  kustomize:
+    paths:
+      # Relative to this module file (skaffold/) → skaffold/dev/workflow-builder.
+      - dev/workflow-builder
+    buildArgs:
+      # The dev overlay's `resources:` references
+      # ../../../../../stacks/main/... — kustomize's default load restrictor
+      # forbids parent-directory references.
+      - --load-restrictor=LoadRestrictionsNone
+
+deploy:
+  kubectl:
+    defaultNamespace: workflow-builder
+
+portForward:
+  - resourceType: deployment
+    resourceName: workflow-builder
+    namespace: workflow-builder
+    port: 3000
+    localPort: 3002
+
+profiles:
+  - name: run
+    # Auto-activate on `skaffold run` / `skaffold build` — no `-p run` needed.
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          # Matches the existing git-<sha> tag scheme in the stacks repo.
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder
+          # Same context jump as the dev artifact above — repo root, not the
+          # module file dir.
+          context: ..
+          docker:
+            dockerfile: Dockerfile
+          # No sync — prod image, full rebuild on every change.
+          hooks:
+            after:
+              # After build+push, write the new tag into the stacks-repo
+              # kustomization and git-push. ArgoCD selfHeal reconciles.
+              # $SKAFFOLD_IMAGE is set by Skaffold to <repo>:<tag>@<digest>.
+              - command:
+                  - bash
+                  - skaffold/hooks/commit-pin.sh
+                  - workflow-builder
+                os: [linux, darwin]
+    # Do not render or deploy in `run` mode — the kustomize pin commit + Argo
+    # selfHeal handle the rollout.
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}

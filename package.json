@@ -22,7 +22,10 @@
 		"db:seed-samples": "tsx scripts/seed-sample-workflows.ts",
 		"dev:purge-stale-workflows": "tsx scripts/dev-purge-stale-workflows.ts",
 		"session-native:cutover-purge": "tsx scripts/session-native-cutover-purge.ts",
-		"sync-oauth-apps": "tsx scripts/sync-oauth-apps.ts"
+		"sync-oauth-apps": "tsx scripts/sync-oauth-apps.ts",
+		"dev:skaffold": "bash scripts/skaffold-dev.sh workflow-builder",
+		"deploy:skaffold": "skaffold run -m workflow-builder",
+		"build:skaffold": "skaffold build -m workflow-builder"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.12.0",

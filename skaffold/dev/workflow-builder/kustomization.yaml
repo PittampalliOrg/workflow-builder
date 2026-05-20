@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Extend the prod manifest folder so every resource (Dapr Components,
+# ExternalSecrets, ConfigMaps, Services, Subscriptions, Resiliency,
+# Configuration, init container, PostgreSQL StatefulSet, ServiceAccount,
+# ClusterRole, Ingress, ...) comes along unchanged. The dev pod runs with
+# identical secrets/sidecars/networking to the prod pod, just a hot-reloading
+# container.
+#
+# kustomize build requires --load-restrictor=LoadRestrictionsNone for this
+# parent-directory reference — skaffold/workflow-builder.skaffold.yaml passes
+# the flag via manifests.kustomize.buildArgs.
+
+namespace: workflow-builder
+
+resources:
+  - ../../../../../stacks/main/packages/components/active-development/manifests/workflow-builder
+
+# The Deployment image swap lives in the strategic-merge patch
+# (deployment-dev-patch.yaml `containers[].image`), not in a kustomize
+# `images:` block. Reason: the parent prod kustomization already rewrites
+# `workflow-builder` → `ghcr.io/pittampalliorg/workflow-builder:git-<sha>`
+# before our child overlay runs, so a child `images:` block keyed on
+# `name: workflow-builder` would no-op. Patching the image directly is
+# robust against future parent-rewrite changes.
+
+# Strategic-merge patch on the Deployment: swap image to `workflow-builder-dev`
+# (Skaffold then rewrites this to its built tag+digest), NODE_ENV→development,
+# container securityContext (so root can run pnpm install), and dev-only env
+# vars.
+patches:
+  - target:
+      kind: Deployment
+      name: workflow-builder
+    path: deployment-dev-patch.yaml

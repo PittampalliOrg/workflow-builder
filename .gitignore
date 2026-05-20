@@ -48,6 +48,9 @@ __pycache__/
 # devspace
 .devspace/
 
+# skaffold
+.skaffold/
+
 # codex
 .codex-tmp/
 

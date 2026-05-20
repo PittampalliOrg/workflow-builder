@@ -52,7 +52,7 @@ Per-session sandbox pods (chromium + OpenShell workspace containers) live in `op
 ## Key Commands
 
 ```bash
-pnpm dev              # Start SvelteKit dev server
+pnpm dev              # Start SvelteKit dev server (local, no cluster)
 pnpm build            # Production build
 pnpm check            # Svelte type checking
 pnpm db:generate      # Generate Drizzle migrations
@@ -61,6 +61,31 @@ pnpm db:migrate       # Run migrations
 pnpm db:studio        # Drizzle Studio
 pnpm test:e2e         # Playwright E2E tests
 ```
+
+## Dev Loop (Skaffold, ryzen cluster)
+
+Skaffold is the in-cluster dev loop. devspace.yaml is kept as a fallback during migration (see PR 1–4 in `/home/vpittamp/.claude/plans/i-want-to-consider-enchanted-codd.md`); use Skaffold when possible.
+
+```bash
+pnpm dev:skaffold     # Inner loop: HMR file-sync into a Skaffold-owned dev pod.
+                      # Wrapper script pauses ArgoCD on entry, resumes on Ctrl-C.
+                      # Browser at https://workflow-builder-ryzen.tail286401.ts.net
+                      # or http://localhost:3002 (port-forward).
+pnpm deploy:skaffold  # Outer loop: build prod Dockerfile → push to gitea-ryzen →
+                      # commit new newTag into stacks-repo kustomization →
+                      # git push → ArgoCD selfHeal reconciles.
+pnpm build:skaffold   # Build + push prod image only (no kustomization commit).
+```
+
+Inner-loop notes:
+- The wrapper `scripts/skaffold-dev.sh` traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
+- File sync rules in `skaffold/workflow-builder.skaffold.yaml` mirror devspace's `excludePaths`. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
+- The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../active-development/manifests/workflow-builder` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
+
+Outer-loop notes:
+- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via `kustomize edit set image` to `stacks/main/.../active-development/manifests/workflow-builder/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
+- No `kubectl set image` — the live cluster is mutated only by ArgoCD.
+- Set `STACKS_REPO_DIR=/path/to/stacks/main` if your stacks checkout is outside the default `../../stacks/main`.
 
 ## Services Overview
 

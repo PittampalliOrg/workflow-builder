@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workflow-builder
+  namespace: workflow-builder
+  annotations:
+    skaffold.dev/managed: "true"
+spec:
+  # Reduce to 1 replica during dev — saves resources, and Skaffold's port
+  # forward + sync target a single pod.
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        skaffold.dev/managed: "true"
+    spec:
+      containers:
+        - name: workflow-builder
+          # Image is the Skaffold artifact alias `workflow-builder-dev`.
+          # Skaffold rewrites this to the built tag+digest at deploy time.
+          # We set it here in the patch (not via kustomize `images:`) because
+          # the parent prod kustomization already rewrote
+          # `workflow-builder` → `ghcr.io/.../workflow-builder:git-<sha>`
+          # before this overlay runs.
+          image: workflow-builder-dev
+          # `imagePullPolicy: Always` for the dev image: Skaffold pushes a new
+          # content-addressed tag each rebuild, so cache-by-digest still works,
+          # but Always avoids any "stale cached layers on the node" surprise.
+          imagePullPolicy: Always
+          # Strategic-merge: env entries with the same `name` override the
+          # base; new entries are appended.
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: OTEL_SERVICE_NAME
+              value: workflow-builder-dev
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=development,service.namespace=workflow-builder-dev,service.version=dev"
+            - name: WORKFLOW_BUILDER_DISABLE_NODE_OTEL
+              value: "true"
+            - name: WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS
+              value: "true"
+            - name: npm_config_store_dir
+              value: /app/.pnpm-store
+          securityContext:
+            # vite dev + pnpm install need to write under /app, which is
+            # root-owned in the dev image. Match devspace.yaml:388-394.
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+      securityContext:
+        fsGroup: 1001
+        runAsNonRoot: false
