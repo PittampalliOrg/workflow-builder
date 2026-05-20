@@ -114,7 +114,39 @@ describe("embedded Headlamp URLs", () => {
 		);
 	});
 
-	it("builds embedded Kueue and cluster links", () => {
+	it("builds embedded Pod, Kueue, and cluster links used by Workflow Builder surfaces", () => {
+		expect(
+			embeddedHeadlampResourceUrl({
+				workspaceSlug: "ops",
+				cluster: "ryzen",
+				kind: "Pod",
+				namespace: "workflow-builder",
+				name: "runtime-pod",
+			}),
+		).toBe(
+			"/workspaces/ops/kubernetes?path=%2Fc%2Fryzen%2Fpods%2Fworkflow-builder%2Fruntime-pod",
+		);
+		expect(
+			embeddedHeadlampKueueUrl({
+				workspaceSlug: "ops",
+				cluster: "ryzen",
+				kind: "Workload",
+				namespace: "workflow-builder",
+				name: "agent-run",
+			}),
+		).toBe(
+			"/workspaces/ops/kubernetes?path=%2Fc%2Fryzen%2Fcustomresources%2Fworkloads.kueue.x-k8s.io%2Fworkflow-builder%2Fagent-run",
+		);
+		expect(
+			embeddedHeadlampKueueUrl({
+				workspaceSlug: "ops",
+				cluster: "ryzen",
+				kind: "ClusterQueue",
+				name: "interactive-agent",
+			}),
+		).toBe(
+			"/workspaces/ops/kubernetes?path=%2Fc%2Fryzen%2Fcustomresources%2Fclusterqueues.kueue.x-k8s.io%2F-%2Finteractive-agent",
+		);
 		expect(
 			embeddedHeadlampKueueUrl({
 				workspaceSlug: "ops",
