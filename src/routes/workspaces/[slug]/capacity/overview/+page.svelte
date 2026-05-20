@@ -223,11 +223,17 @@
 		contributorTrends = updates;
 	});
 
-	// On resource flip: blank requested + headroomPct in past entries (so
-	// the trend chart shows a gap) but keep workload counts + latency.
+	// On resource flip: reset the buffer. The plan called for preserving
+	// resource-agnostic series (workload counts + latency) across a flip,
+	// but the "read + mutate history" form caused a Svelte 5 effect cycle
+	// (this $effect reads `history` via .map AND writes to it, while the
+	// builder effect above reads `history` via .at(-1) AND writes to it —
+	// each effect's write triggers the other's re-run). The simpler
+	// reset-on-flip matches the pre-change behaviour and avoids the cycle;
+	// the trends panel just warms back up over the next sample window.
 	$effect(() => {
 		primaryResource;
-		history = history.map((p) => ({ ...p, requested: null, headroomPct: null }));
+		history = [];
 	});
 
 	// Tracking which contributor is currently open in the sheet so its
