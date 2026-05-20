@@ -25,7 +25,7 @@
 
 	let isAuthPage = $derived(page.url.pathname.startsWith('/auth'));
 	let isImmersiveToolPage = $derived(
-		/^\/workspaces\/[^/]+\/kubernetes(\/|$)/.test(page.url.pathname)
+		/^\/workspaces\/[^/]+\/(?:kubernetes|mlflow|argocd)(\/|$)/.test(page.url.pathname)
 	);
 	let routeKey = $derived(page.url.pathname);
 

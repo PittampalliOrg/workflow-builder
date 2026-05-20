@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+
+import {
+	DEFAULT_ARGOCD_EMBED_BASE,
+	DEFAULT_MLFLOW_EMBED_BASE,
+	argocdEmbedSrc,
+	argocdExternalUrl,
+	mlflowEmbedSrc,
+	mlflowExternalUrl,
+	normalizeEmbeddedAppPath,
+	withEmbeddedAppChrome,
+} from "./links";
+
+describe("normalizeEmbeddedAppPath", () => {
+	it("keeps path, query, and hash while stripping embed chrome params", () => {
+		expect(
+			normalizeEmbeddedAppPath({
+				value: "/mlflow/#/experiments?x=1",
+				embedBase: DEFAULT_MLFLOW_EMBED_BASE,
+			}),
+		).toBe("/#/experiments?x=1");
+		expect(
+			normalizeEmbeddedAppPath({
+				value: "/argocd/applications?search=workflow-builder&wb_chrome=unified",
+				embedBase: DEFAULT_ARGOCD_EMBED_BASE,
+			}),
+		).toBe("/applications?search=workflow-builder");
+	});
+
+	it("accepts absolute upstream URLs", () => {
+		expect(
+			normalizeEmbeddedAppPath({
+				value: "https://argocd-hub.tail286401.ts.net/applications/argocd/dev-workflow-builder",
+				embedBase: DEFAULT_ARGOCD_EMBED_BASE,
+			}),
+		).toBe("/applications/argocd/dev-workflow-builder");
+	});
+
+	it("rejects unsafe or relative values", () => {
+		expect(normalizeEmbeddedAppPath({ value: "applications", embedBase: "/argocd" })).toBe("/");
+		expect(normalizeEmbeddedAppPath({ value: "//example.test/x", embedBase: "/argocd" })).toBe(
+			"/",
+		);
+		expect(normalizeEmbeddedAppPath({ value: "/a\\b", embedBase: "/argocd" })).toBe("/");
+	});
+});
+
+describe("embedded app links", () => {
+	it("builds same-origin MLflow and Argo CD iframe sources", () => {
+		expect(mlflowEmbedSrc({ path: "/#/traces" })).toBe("/mlflow/#/traces");
+		expect(argocdEmbedSrc({ path: "/applications?search=workflow-builder" })).toBe(
+			"/argocd/applications?search=workflow-builder",
+		);
+	});
+
+	it("builds external links without workflow-builder chrome params", () => {
+		expect(
+			mlflowExternalUrl({
+				mlflowBase: "https://mlflow.example/",
+				path: "/mlflow/#/experiments?wb_chrome=unified",
+			}),
+		).toBe("https://mlflow.example/#/experiments");
+		expect(
+			argocdExternalUrl({
+				argocdBase: "https://argocd.example/",
+				path: "/argocd/applications?search=dev",
+			}),
+		).toBe("https://argocd.example/applications?search=dev");
+	});
+
+	it("preserves hash when adding chrome mode", () => {
+		expect(withEmbeddedAppChrome({ src: "/mlflow/#/traces", chrome: "unified" })).toBe(
+			"/mlflow/?wb_chrome=unified#/traces",
+		);
+	});
+});

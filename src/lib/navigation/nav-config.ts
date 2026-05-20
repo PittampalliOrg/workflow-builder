@@ -278,6 +278,22 @@ export const NAV_GROUPS: NavGroup[] = [
 				visibility: { workspaceScoped: true, adminOnly: true },
 			},
 			{
+				id: "mlflow",
+				label: "MLflow",
+				icon: BarChart3,
+				href: ({ slug }) => `/workspaces/${slug}/mlflow`,
+				match: /^\/workspaces\/[^/]+\/mlflow(\/|$)/,
+				visibility: { workspaceScoped: true, adminOnly: true },
+			},
+			{
+				id: "argocd",
+				label: "Argo CD",
+				icon: GitBranch,
+				href: ({ slug }) => `/workspaces/${slug}/argocd`,
+				match: /^\/workspaces\/[^/]+\/argocd(\/|$)/,
+				visibility: { workspaceScoped: true, adminOnly: true },
+			},
+			{
 				id: "sandboxes",
 				label: "Sandboxes",
 				icon: Container,
