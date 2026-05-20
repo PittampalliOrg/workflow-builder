@@ -104,7 +104,6 @@
 
 	function toggleNativeChrome() {
 		nativeChrome = !nativeChrome;
-		frameKey += 1;
 	}
 
 	function syncFromFrame() {
@@ -274,7 +273,7 @@
 		</header>
 
 		<div class="min-h-0 flex-1 bg-background">
-			{#key `${frameKey}:${nativeChrome}`}
+			{#key frameKey}
 				<iframe
 					bind:this={iframeEl}
 					title={frameTitle}
