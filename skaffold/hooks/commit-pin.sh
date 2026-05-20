@@ -64,10 +64,30 @@ git -C "${stacks_dir}" commit -m "chore(${service}): pin ryzen dev image to ${ta
 
 Co-Authored-By: Skaffold <noreply@anthropic.com>"
 
-# Push to whatever remote the current branch tracks. Caller must have a
-# working remote (typically the ryzen Gitea via the 'origin' remote).
+# Push to the Gitea remote that ArgoCD on ryzen actually reads from.
+# Default: `gitea-ryzen` (or fall back to `gitea`, then `origin`). Override
+# via $STACKS_REMOTE.
+#
+# NOTE: pushing to gitea-ryzen does NOT propagate to GitHub `origin`. For
+# dev iterations on ryzen this is by design — the kustomize pin reflects an
+# in-progress dev image, not a release-quality SHA. A separate PR / Tekton
+# pipeline path handles GitHub origin/main.
 branch="$(git -C "${stacks_dir}" rev-parse --abbrev-ref HEAD)"
-git -C "${stacks_dir}" push origin "${branch}"
+remote="${STACKS_REMOTE:-}"
+if [ -z "${remote}" ]; then
+  for candidate in gitea-ryzen gitea origin; do
+    if git -C "${stacks_dir}" remote get-url "${candidate}" >/dev/null 2>&1; then
+      remote="${candidate}"
+      break
+    fi
+  done
+fi
+if [ -z "${remote}" ]; then
+  echo "commit-pin: no git remote found (looked for gitea-ryzen/gitea/origin); set STACKS_REMOTE=" >&2
+  exit 1
+fi
+echo "commit-pin: pushing to remote: ${remote}"
+git -C "${stacks_dir}" push "${remote}" "${branch}"
 
 echo "commit-pin: ✓ pushed ${service} → ${tag} on ${branch}"
 
