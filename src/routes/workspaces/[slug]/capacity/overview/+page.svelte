@@ -25,10 +25,10 @@
 	} from '$lib/components/capacity/overview/gauge-resource-toggle.svelte';
 	import QueueHeadroomRow from '$lib/components/capacity/overview/queue-headroom-row.svelte';
 	import HeadroomForecast from '$lib/components/capacity/overview/headroom-forecast.svelte';
-	import QueueRail from '$lib/components/capacity/overview/queue-rail.svelte';
-	import QueueTile from '$lib/components/capacity/overview/queue-tile.svelte';
+	import QueueDetailSheet from '$lib/components/capacity/overview/queue-detail-sheet.svelte';
 	import ContributorHeatmap from '$lib/components/capacity/overview/contributor-heatmap.svelte';
 	import ContributorDetailSheet from '$lib/components/capacity/overview/contributor-detail-sheet.svelte';
+	import type { ClusterQueueSnapshot } from '$lib/server/kueueviz';
 	import CapacityTrendsPanel, {
 		type HistoryPoint
 	} from '$lib/components/capacity/overview/capacity-trends-panel.svelte';
@@ -105,6 +105,10 @@
 	// --- Contributor detail sheet state ------------------------------------
 	let selectedContributor = $state<CapacityContributorSnapshot | null>(null);
 	let sheetOpen = $state(false);
+
+	// --- Queue detail sheet state ------------------------------------------
+	let selectedQueue = $state<ClusterQueueSnapshot | null>(null);
+	let queueSheetOpen = $state(false);
 
 	// --- 5s refresh with Page-Visibility pause -----------------------------
 	let lastRefreshAt = $state<number | null>(null);
@@ -525,11 +529,11 @@
 					primaryLabel={RESOURCE_LABELS[primaryResource]}
 					secondaryLabel={`${formatQuantityForResource(primaryResource, primaryResourceRow.requested)} / ${formatQuantityForResource(primaryResource, primaryResourceRow.renderedBudget)}`}
 					tertiaryLabel={observer?.cluster ? `cohort agent-platform` : undefined}
-					size={200}
-					strokeWidth={16}
+					size={160}
+					strokeWidth={14}
 				/>
 			{:else}
-				<div class="flex h-[200px] w-[200px] items-center justify-center text-xs text-muted-foreground">
+				<div class="flex h-[160px] w-[160px] items-center justify-center text-xs text-muted-foreground">
 					{#if firstLoad}Loading…{:else}No data{/if}
 				</div>
 			{/if}
@@ -566,10 +570,12 @@
 				<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
 					Queues ({queues.data.length}) · Headroom
 				</h2>
-				<span class="text-[10px] text-muted-foreground">{RESOURCE_LABELS[primaryResource]}</span>
+				<span class="text-[10px] text-muted-foreground">
+					{RESOURCE_LABELS[primaryResource]} · click for detail
+				</span>
 			</header>
 
-			<div class="mt-2 divide-y">
+			<div class="mt-2 max-h-[340px] divide-y overflow-y-auto">
 				{#each queues.data as cq (cq.name)}
 					<QueueHeadroomRow
 						queue={cq}
@@ -577,6 +583,10 @@
 						resource={primaryResource}
 						{cluster}
 						{slug}
+						onSelect={(q) => {
+							selectedQueue = q;
+							queueSheetOpen = true;
+						}}
 					/>
 				{:else}
 					<p class="py-3 text-xs text-muted-foreground">
@@ -606,40 +616,6 @@
 		resource={primaryResource}
 		onWindowChange={(next) => (trendsWindow = next)}
 	/>
-
-	<!-- ============================================================
-	     Zone C — Queue tiles rail
-	     ============================================================ -->
-	<section class="space-y-2">
-		<header class="flex items-baseline justify-between gap-2">
-			<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-				Cluster Queues
-			</h2>
-			<span class="text-[10px] text-muted-foreground">
-				gauges show {RESOURCE_LABELS[primaryResource]}
-			</span>
-		</header>
-
-		{#if queues.data.length === 0}
-			<div class="rounded-md border bg-card py-8 text-center text-xs text-muted-foreground">
-				{firstLoad ? 'Loading…' : 'No ClusterQueues registered in the cluster yet.'}
-			</div>
-		{:else}
-			<QueueRail>
-				{#each queues.data as cq (cq.name)}
-					<QueueTile
-						queue={cq}
-						observerQueue={queueSnapshot(cq.name)}
-						sessionCapacity={sessionSnapshot(cq.name)}
-						recentWorkloads={recentForQueue(cq.name)}
-						{primaryResource}
-						{cluster}
-						{slug}
-					/>
-				{/each}
-			</QueueRail>
-		{/if}
-	</section>
 
 	<!-- ============================================================
 	     More signals — collapsible
@@ -855,5 +831,20 @@
 	onOpenChange={(next) => {
 		sheetOpen = next;
 		if (!next) selectedContributor = null;
+	}}
+/>
+
+<QueueDetailSheet
+	open={queueSheetOpen}
+	queue={selectedQueue}
+	observerQueue={selectedQueue ? queueSnapshot(selectedQueue.name) : null}
+	sessionCapacity={selectedQueue ? sessionSnapshot(selectedQueue.name) : null}
+	recentWorkloads={selectedQueue ? recentForQueue(selectedQueue.name) : []}
+	{primaryResource}
+	{cluster}
+	{slug}
+	onOpenChange={(next) => {
+		queueSheetOpen = next;
+		if (!next) selectedQueue = null;
 	}}
 />

@@ -35,6 +35,12 @@
 		primaryResource: GaugeResource;
 		cluster: HeadlampCluster;
 		slug: string;
+		/**
+		 * Override the outer container width. Default matches the legacy
+		 * rail layout (240px fixed, snap-start). Pass an empty string when
+		 * embedding in a Sheet so the tile expands to its container.
+		 */
+		layoutClass?: string;
 	};
 
 	let {
@@ -44,7 +50,8 @@
 		recentWorkloads,
 		primaryResource,
 		cluster,
-		slug
+		slug,
+		layoutClass = 'w-[240px] shrink-0 snap-start'
 	}: Props = $props();
 
 	const ALL_RESOURCES: GaugeResource[] = ['cpu', 'memory', 'pods', 'ephemeral-storage'];
@@ -136,7 +143,7 @@
 </script>
 
 <article
-	class="group flex h-full w-[240px] shrink-0 snap-start flex-col rounded-md border bg-card p-3 shadow-sm transition-shadow hover:border-primary/40 hover:shadow-md focus-within:ring-2 focus-within:ring-primary/30"
+	class="group flex h-full flex-col rounded-md border bg-card p-3 shadow-sm transition-shadow hover:border-primary/40 hover:shadow-md focus-within:ring-2 focus-within:ring-primary/30 {layoutClass}"
 >
 	<header class="flex items-start justify-between gap-2">
 		<div class="min-w-0 space-y-1">

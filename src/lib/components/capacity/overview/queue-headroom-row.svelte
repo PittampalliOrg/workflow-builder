@@ -4,7 +4,7 @@
 	 * compressed UsageBar for the active gauge resource, used/nominal labels,
 	 * and a Headlamp deep-link.
 	 */
-	import { ExternalLink, Hourglass } from '@lucide/svelte';
+	import { ChevronRight, Hourglass } from '@lucide/svelte';
 	import type { ClusterQueueSnapshot } from '$lib/server/kueueviz';
 	import type { CapacityQueueSnapshot } from '$lib/types/capacity';
 	import {
@@ -13,11 +13,7 @@
 		quantityRatios
 	} from '$lib/components/capacity/quantity';
 	import UsageBar from '$lib/components/capacity/usage-bar.svelte';
-	import {
-		headlampKueueUrl,
-		normalizeHeadlampCluster,
-		type HeadlampCluster
-	} from '$lib/headlamp/links';
+	import { type HeadlampCluster } from '$lib/headlamp/links';
 	import type { GaugeResource } from './gauge-resource-toggle.svelte';
 
 	type Props = {
@@ -26,9 +22,16 @@
 		resource: GaugeResource;
 		cluster: HeadlampCluster;
 		slug: string;
+		/**
+		 * Fires when the row is clicked. Parent opens the per-queue detail
+		 * sheet. The Headlamp link + "view workloads" link that used to live
+		 * inline have moved into the sheet so the row stays a single click
+		 * target (nested interactive elements are an a11y/HTML pitfall).
+		 */
+		onSelect?: (queue: ClusterQueueSnapshot) => void;
 	};
 
-	let { queue, observerQueue = null, resource, cluster, slug }: Props = $props();
+	let { queue, observerQueue = null, resource, onSelect }: Props = $props();
 
 	const resourceRow = $derived.by(() => {
 		// Prefer the observer-derived resource numbers (account for over-borrowing
@@ -76,30 +79,19 @@
 		};
 	});
 
-	const headlampUrl = $derived(
-		headlampKueueUrl({
-			cluster: normalizeHeadlampCluster(cluster),
-			kind: 'ClusterQueue',
-			name: queue.name
-		})
-	);
-
-	const detailHref = $derived(
-		`/workspaces/${slug}/capacity/workloads?queue=${encodeURIComponent(queue.name)}`
-	);
-
 	const waitP95 = $derived(observerQueue?.admissionWaitP95Seconds ?? null);
 </script>
 
-<div class="grid grid-cols-[minmax(0,1fr)_140px_auto] items-center gap-3 py-1.5">
+<button
+	type="button"
+	class="grid w-full grid-cols-[minmax(0,1fr)_140px_auto_auto] items-center gap-3 rounded px-2 py-1.5 text-left transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+	onclick={() => onSelect?.(queue)}
+	aria-label={`Open ${queue.name} detail`}
+>
 	<div class="flex min-w-0 items-center gap-2">
-		<a
-			href={detailHref}
-			class="min-w-0 truncate font-mono text-xs hover:underline"
-			title={`${queue.name} — view workloads`}
-		>
+		<span class="min-w-0 truncate font-mono text-xs" title={queue.name}>
 			{queue.name}
-		</a>
+		</span>
 		{#if waitP95 !== null && waitP95 > 0}
 			<span
 				class="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0 text-[9px] font-mono text-amber-700 dark:text-amber-400"
@@ -128,16 +120,7 @@
 		<span class="font-mono text-muted-foreground">
 			{formatQuantityForResource(resource, resourceRow.nominalAbs)}
 		</span>
-		{#if headlampUrl}
-			<a
-				href={headlampUrl}
-				target="_blank"
-				rel="noopener noreferrer"
-				class="text-muted-foreground/70 hover:text-foreground"
-				title={`Open ${queue.name} in Headlamp`}
-			>
-				<ExternalLink class="size-3" />
-			</a>
-		{/if}
 	</div>
-</div>
+
+	<ChevronRight class="size-3.5 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" />
+</button>
