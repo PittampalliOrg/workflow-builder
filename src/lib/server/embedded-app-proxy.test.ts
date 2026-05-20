@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	buildEmbeddedAppProxyRequestHeaders,
 	buildEmbeddedAppProxyResponseHeaders,
 	buildEmbeddedAppUpstreamRequestUrl,
 } from "./embedded-app-proxy";
@@ -24,6 +25,33 @@ describe("buildEmbeddedAppUpstreamRequestUrl", () => {
 				embedBase: "/mlflow",
 			}),
 		).toBe("https://hub.example/observe/static-files/main.js");
+	});
+});
+
+describe("buildEmbeddedAppProxyRequestHeaders", () => {
+	it("does not forward Workflow Builder credentials to embedded app upstreams", () => {
+		const headers = buildEmbeddedAppProxyRequestHeaders({
+			request: new Request("https://workflow-builder.local/argocd/applications", {
+				headers: {
+					authorization: "Bearer workflow-builder-token",
+					cookie: "wb_access_token=token",
+				},
+			}),
+			requestUrl: new URL("https://workflow-builder.local/argocd/applications"),
+		});
+
+		expect(headers.get("authorization")).toBeNull();
+		expect(headers.get("cookie")).toBeNull();
+	});
+
+	it("injects configured upstream authorization", () => {
+		const headers = buildEmbeddedAppProxyRequestHeaders({
+			request: new Request("https://workflow-builder.local/argocd/applications"),
+			requestUrl: new URL("https://workflow-builder.local/argocd/applications"),
+			upstreamAuthorization: "Bearer argocd-token",
+		});
+
+		expect(headers.get("authorization")).toBe("Bearer argocd-token");
 	});
 });
 

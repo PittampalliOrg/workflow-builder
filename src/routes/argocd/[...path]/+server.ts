@@ -21,13 +21,23 @@ function upstreamBaseUrl(): URL {
 	}
 }
 
+function upstreamAuthorization(): string | null {
+	const token = env.ARGOCD_EMBEDDED_AUTH_TOKEN?.trim();
+	if (!token) return null;
+	return token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}`;
+}
+
 const proxy: RequestHandler = async ({ locals, request, url }) => {
 	await requirePlatformAdmin(locals);
 	const upstreamBase = upstreamBaseUrl();
 
 	const init: RequestInit & { duplex?: "half" } = {
 		method: request.method,
-		headers: buildEmbeddedAppProxyRequestHeaders({ request, requestUrl: url }),
+		headers: buildEmbeddedAppProxyRequestHeaders({
+			request,
+			requestUrl: url,
+			upstreamAuthorization: upstreamAuthorization(),
+		}),
 		redirect: "manual",
 	};
 	if (request.method !== "GET" && request.method !== "HEAD") {

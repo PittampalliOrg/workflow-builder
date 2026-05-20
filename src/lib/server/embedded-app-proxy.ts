@@ -40,12 +40,17 @@ export function buildEmbeddedAppUpstreamRequestUrl(input: {
 export function buildEmbeddedAppProxyRequestHeaders(input: {
 	request: Request;
 	requestUrl: URL;
+	upstreamAuthorization?: string | null;
 }): Headers {
 	const headers = new Headers(input.request.headers);
 	for (const header of HOP_BY_HOP_HEADERS) headers.delete(header);
 	headers.delete("accept-encoding");
+	headers.delete("authorization");
+	headers.delete("cookie");
 	headers.set("x-forwarded-host", input.requestUrl.host);
 	headers.set("x-forwarded-proto", input.requestUrl.protocol.replace(":", ""));
+	const upstreamAuthorization = input.upstreamAuthorization?.trim();
+	if (upstreamAuthorization) headers.set("authorization", upstreamAuthorization);
 	return headers;
 }
 
