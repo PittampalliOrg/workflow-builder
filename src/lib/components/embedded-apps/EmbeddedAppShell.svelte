@@ -95,7 +95,6 @@
 		currentPath = normalizePath(nextPath);
 		nativeChrome = false;
 		replaceOuterUrl(currentPath);
-		frameKey += 1;
 	}
 
 	function reloadFrame() {
