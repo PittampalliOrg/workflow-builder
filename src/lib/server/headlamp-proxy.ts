@@ -20,7 +20,8 @@ export function buildHeadlampUpstreamRequestUrl(input: {
 }): string {
 	const upstream = new URL(input.upstreamBase);
 	const embedBase = (input.embedBase ?? DEFAULT_HEADLAMP_EMBED_BASE).replace(/\/+$/, "");
-	const requestPath = input.requestUrl.pathname;
+	const requestPath =
+		input.requestUrl.pathname === embedBase ? `${embedBase}/` : input.requestUrl.pathname;
 	const upstreamPath = upstream.pathname.replace(/\/+$/, "");
 	const requestPathForBase = upstreamPath.endsWith(embedBase)
 		? requestPath.replace(new RegExp(`^${embedBase}(?=/|$)`), "") || "/"

@@ -16,6 +16,21 @@ describe("Headlamp proxy helpers", () => {
 		).toBe("https://headlamp-hub.tail286401.ts.net/headlamp/c/ryzen/pods?x=1");
 	});
 
+	it("adds the trailing slash required by Headlamp's embedded base route", () => {
+		expect(
+			buildHeadlampUpstreamRequestUrl({
+				requestUrl: new URL("https://workflow-builder.local/headlamp"),
+				upstreamBase: new URL("http://headlamp-hub-egress.tailscale.svc.cluster.local/"),
+			}),
+		).toBe("http://headlamp-hub-egress.tailscale.svc.cluster.local/headlamp/");
+		expect(
+			buildHeadlampUpstreamRequestUrl({
+				requestUrl: new URL("https://workflow-builder.local/headlamp"),
+				upstreamBase: new URL("http://headlamp-hub-egress.tailscale.svc.cluster.local/headlamp"),
+			}),
+		).toBe("http://headlamp-hub-egress.tailscale.svc.cluster.local/headlamp/");
+	});
+
 	it("forwards /headlamp paths to root-based upstreams without duplicating slashes", () => {
 		expect(
 			buildHeadlampUpstreamRequestUrl({
