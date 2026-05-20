@@ -63,8 +63,69 @@ resume_argo() {
 # calls resume_argo once (guarded by `resumed` flag).
 trap resume_argo EXIT
 
+# --- Stale-pause detector ---------------------------------------------------
+# Surface (don't block) apps that are already paused, almost always the
+# fingerprint of a prior `skaffold dev` session that was kill -9'd or that
+# crashed before its EXIT trap could fire. The pause itself is idempotent and
+# the EXIT trap will resume on clean Ctrl-C, so we don't prompt — but we do
+# want to make this visible at session start so it stops being a silent hours-
+# long Argo outage.
+already_paused=()
+for app in ${ARGO_APPS}; do
+  cur=$(kubectl get application "${app}" -n "${ns}" \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}' \
+    2>/dev/null || true)
+  if [ "${cur}" = "true" ]; then
+    already_paused+=("${app}")
+  fi
+done
+
+if [ ${#already_paused[@]} -gt 0 ]; then
+  workload_ns="${NAMESPACE:-workflow-builder}"
+  printf '\n  ⚠  Already paused (prior skaffold-dev session likely didn'\''t clean up):\n'
+  for app in "${already_paused[@]}"; do
+    img=$(kubectl -n "${workload_ns}" get deploy "${app}" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo unknown)
+    printf '       %-22s live=%s\n' "${app}" "${img}"
+  done
+  printf '       Continuing — pause is idempotent, and this trap will resume on Ctrl-C.\n'
+  printf '       If you do NOT want to take over this pause, Ctrl-C now and run:\n'
+  printf '         ARGO_APPS="%s" bash skaffold/hooks/argo-resume.sh\n\n' "${already_paused[*]}"
+fi
+
 printf '==> Pausing ArgoCD for: %s\n' "${ARGO_APPS}"
 bash skaffold/hooks/argo-pause.sh ${ARGO_APPS}
+
+# --- Port-forward banner ----------------------------------------------------
+# Parse each module's portForward.{port,localPort} so we can show a single
+# upfront table — saves the developer from scrolling Skaffold's verbose log
+# to find "where did the BFF land". Parser is regex-only on purpose: avoids
+# a yaml dependency, and our modules only ever have one portForward entry.
+printf '\n  Port forwards (active during this session):\n'
+printf '       %-22s %-10s %-10s %s\n' MODULE LOCAL CONTAINER URL
+for mod in "${modules[@]}"; do
+  yaml="skaffold/${mod}.skaffold.yaml"
+  [ -f "${yaml}" ] || continue
+  parsed=$(python3 -c '
+import sys, re
+text = open(sys.argv[1]).read()
+m = re.search(r"(?m)^portForward:\s*\n((?:[ \t]+.*\n?)+)", text)
+if not m:
+    sys.exit(0)
+block = m.group(1)
+local = re.search(r"(?m)^\s+localPort:\s*(\d+)", block)
+port  = re.search(r"(?m)^\s+port:\s*(\d+)",      block)
+if local and port:
+    print(local.group(1), port.group(1))
+' "${yaml}" 2>/dev/null || true)
+  if [ -n "${parsed}" ]; then
+    local_port="${parsed%% *}"
+    cont_port="${parsed##* }"
+    printf '       %-22s %-10s %-10s http://localhost:%s\n' \
+      "${mod}" "${local_port}" "${cont_port}" "${local_port}"
+  fi
+done
+printf '\n'
 
 # Comma-separated for `skaffold -m`.
 mod_csv="$(IFS=,; echo "${modules[*]}")"
