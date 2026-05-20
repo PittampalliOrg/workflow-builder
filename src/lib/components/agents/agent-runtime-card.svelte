@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
-	import { DEFAULT_HEADLAMP_URL, headlampCustomResourceUrl, headlampResourceUrl } from '$lib/headlamp/links';
+	import { embeddedHeadlampCustomResourceUrl, embeddedHeadlampResourceUrl } from '$lib/headlamp/links';
 
 	type RuntimeStatus = {
 		name?: string;
@@ -36,9 +36,10 @@
 
 	let {
 		slug,
+		workspaceSlug,
 		isAdmin = false,
 		canManage = true
-	}: { slug: string; isAdmin?: boolean; canManage?: boolean } = $props();
+	}: { slug: string; workspaceSlug?: string; isAdmin?: boolean; canManage?: boolean } = $props();
 
 	let status = $state<RuntimeStatus | null>(null);
 	let loading = $state(true);
@@ -53,8 +54,8 @@
 	const lastActiveAt = $derived(status?.status?.lastActiveAt);
 	const poolHeadlampUrl = $derived(
 		status?.name
-			? headlampCustomResourceUrl({
-					headlampBase: DEFAULT_HEADLAMP_URL,
+			? embeddedHeadlampCustomResourceUrl({
+					workspaceSlug: workspaceSlug ?? 'default',
 					cluster: 'ryzen',
 					crd: 'sandboxwarmpools.extensions.agents.x-k8s.io',
 					namespace: status.namespace ?? 'workflow-builder',
@@ -64,8 +65,8 @@
 	);
 	const podHeadlampUrl = $derived(
 		status?.pod?.name
-			? headlampResourceUrl({
-					headlampBase: DEFAULT_HEADLAMP_URL,
+			? embeddedHeadlampResourceUrl({
+					workspaceSlug: workspaceSlug ?? 'default',
 					cluster: 'ryzen',
 					kind: 'Pod',
 					namespace: status.namespace ?? 'workflow-builder',
@@ -236,8 +237,6 @@
 				<dd class="col-span-2 flex flex-wrap gap-1">
 					<a
 						href={poolHeadlampUrl}
-						target="_blank"
-						rel="noopener noreferrer"
 						class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
 						title="Open SandboxWarmPool in Headlamp"
 					>
@@ -247,8 +246,6 @@
 					{#if podHeadlampUrl}
 						<a
 							href={podHeadlampUrl}
-							target="_blank"
-							rel="noopener noreferrer"
 							class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
 							title="Open active runtime Pod in Headlamp"
 						>

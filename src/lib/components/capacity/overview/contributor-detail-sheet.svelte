@@ -22,7 +22,7 @@
 	} from '$lib/types/capacity';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
 	import {
-		headlampResourceUrl,
+		embeddedHeadlampResourceUrl,
 		normalizeHeadlampCluster,
 		type HeadlampCluster
 	} from '$lib/headlamp/links';
@@ -32,6 +32,7 @@
 		contributor: CapacityContributorSnapshot | null;
 		resources: CapacityResourceSnapshot[];
 		cluster: HeadlampCluster;
+		slug: string;
 		/**
 		 * Series of weighted-share % values, oldest → newest, for the small
 		 * trend sparkline. Caller is responsible for keeping this aligned
@@ -46,6 +47,7 @@
 		contributor,
 		resources,
 		cluster,
+		slug,
 		trend,
 		onOpenChange
 	}: Props = $props();
@@ -86,7 +88,8 @@
 
 	const podHeadlampHref = $derived.by(() => {
 		if (!contributor || !contributor.namespace) return null;
-		return headlampResourceUrl({
+		return embeddedHeadlampResourceUrl({
+			workspaceSlug: slug,
 			cluster: normalizeHeadlampCluster(cluster),
 			kind: 'Pod',
 			namespace: contributor.namespace,
@@ -218,8 +221,6 @@
 					<section class="mt-5">
 						<a
 							href={podHeadlampHref}
-							target="_blank"
-							rel="noopener noreferrer"
 							class="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
 						>
 							<ExternalLink class="size-3.5" />

@@ -30,7 +30,7 @@
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
 	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
 	import MetricWaterfall from '$lib/components/metrics/MetricWaterfall.svelte';
-	import { headlampResourceUrl } from '$lib/headlamp/links';
+	import { embeddedHeadlampResourceUrl } from '$lib/headlamp/links';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
 	import type { WorkloadSnapshot } from '$lib/server/kueueviz';
 	import {
@@ -66,8 +66,8 @@
 	);
 	const evaluatorHeadlampUrl = $derived(
 		run?.evaluatorJobName
-			? headlampResourceUrl({
-					headlampBase: data.headlampBase,
+			? embeddedHeadlampResourceUrl({
+					workspaceSlug: slug,
 					cluster: data.headlampCluster,
 					kind: 'Job',
 					namespace: 'workflow-builder',
@@ -344,8 +344,6 @@
 					{#if run.evaluatorJobName}
 						<a
 							href={evaluatorHeadlampUrl ?? undefined}
-							target="_blank"
-							rel="noopener noreferrer"
 							class="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
 						>
 							<HeadlampLogo class="h-3 w-3" />
@@ -770,7 +768,6 @@
 	{runId}
 	instanceId={drawerInstanceId}
 	workspaceSlug={slug}
-	headlampBase={data.headlampBase}
 	headlampCluster={data.headlampCluster}
 	onOpenChange={closeDrawer}
 	onTerminated={() => refresh({ silent: true })}

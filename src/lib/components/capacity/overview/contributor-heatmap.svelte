@@ -17,7 +17,7 @@
 	} from '$lib/types/capacity';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
 	import {
-		headlampResourceUrl,
+		embeddedHeadlampResourceUrl,
 		normalizeHeadlampCluster,
 		type HeadlampCluster
 	} from '$lib/headlamp/links';
@@ -26,6 +26,7 @@
 		contributors: CapacityContributorSnapshot[];
 		resources: CapacityResourceSnapshot[];
 		cluster: HeadlampCluster;
+		slug: string;
 		max?: number;
 		/**
 		 * Optional per-contributor share-% history, keyed by `contributor.key`.
@@ -44,6 +45,7 @@
 		contributors,
 		resources,
 		cluster,
+		slug,
 		max = 12,
 		trends,
 		onSelect
@@ -120,7 +122,8 @@
 		// for higher pod counts there's no single pod URL — fall through to
 		// the Pods list filtered to this namespace.
 		if (!c.namespace) return null;
-		return headlampResourceUrl({
+		return embeddedHeadlampResourceUrl({
+			workspaceSlug: slug,
 			cluster: normalizeHeadlampCluster(cluster),
 			kind: 'Pod',
 			namespace: c.namespace,
@@ -248,8 +251,6 @@
 							{#if url}
 								<a
 									href={url}
-									target="_blank"
-									rel="noopener noreferrer"
 									class="text-muted-foreground/70 hover:text-foreground"
 									title={`Open ${c.name} in Headlamp`}
 									onclick={(e) => e.stopPropagation()}

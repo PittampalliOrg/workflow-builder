@@ -18,7 +18,7 @@
 		CapacitySessionSnapshot
 	} from '$lib/types/capacity';
 	import {
-		headlampKueueUrl,
+		embeddedHeadlampKueueUrl,
 		normalizeHeadlampCluster,
 		type HeadlampCluster
 	} from '$lib/headlamp/links';
@@ -51,7 +51,8 @@
 
 	const headlampUrl = $derived(
 		queue
-			? headlampKueueUrl({
+			? embeddedHeadlampKueueUrl({
+					workspaceSlug: slug,
 					cluster: normalizeHeadlampCluster(cluster),
 					kind: 'ClusterQueue',
 					name: queue.name
@@ -89,8 +90,6 @@
 				{#if headlampUrl}
 					<a
 						href={headlampUrl}
-						target="_blank"
-						rel="noopener noreferrer"
 						class="inline-flex items-center gap-1 text-primary hover:underline"
 					>
 						<ExternalLink class="size-3" />

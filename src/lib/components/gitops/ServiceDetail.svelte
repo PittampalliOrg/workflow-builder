@@ -20,7 +20,11 @@
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
 	import { argoGates, releasePrGate, type GateState } from "$lib/gitops/gates";
-	import { headlampResourceUrl, type HeadlampCluster } from "$lib/headlamp/links";
+	import {
+		embeddedHeadlampResourceUrl,
+		headlampResourceUrl,
+		type HeadlampCluster,
+	} from "$lib/headlamp/links";
 	import {
 		ENVIRONMENTS,
 		summarizeRow,
@@ -169,21 +173,30 @@
 	});
 	const headlampDeploymentUrls = $derived.by(() => {
 		if (row.specialCase === "sandbox-only") return [];
-		const out: Array<{ env: EnvName; url: string }> = [];
+		const out: Array<{ env: EnvName; url: string; external: boolean }> = [];
 		for (const env of visibleEnvs) {
 			const cell = row.envs[env];
 			if (!cell) continue;
-			const url = headlampResourceUrl({
-				headlampBase: links.headlampBase,
+			const resource = {
 				cluster: env as HeadlampCluster,
-				kind: "Deployment",
+				kind: "Deployment" as const,
 				namespace: "workflow-builder",
 				name: row.service,
-			});
+			};
+			const url =
+				embeddedHeadlampResourceUrl({
+					workspaceSlug: links.headlampWorkspaceSlug,
+					...resource,
+				}) ??
+				headlampResourceUrl({
+					headlampBase: links.headlampBase,
+					...resource,
+				});
 			if (!url) continue;
 			out.push({
 				env,
 				url,
+				external: !url.startsWith("/"),
 			});
 		}
 		return out;
@@ -418,8 +431,8 @@
 						size="sm"
 						href={link.url}
 						class="h-7 gap-1.5 text-xs"
-						target="_blank"
-						rel="noreferrer"
+						target={link.external ? "_blank" : undefined}
+						rel={link.external ? "noreferrer" : undefined}
 						title={`Open ${row.service} Deployment in Headlamp for ${link.env}`}
 					>
 						<HeadlampLogo class="size-3.5" />
