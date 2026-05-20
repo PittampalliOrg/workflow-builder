@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/state';
-	import { Gauge, Layers, ListChecks, Tag } from '@lucide/svelte';
+	import { Gauge, ListChecks } from '@lucide/svelte';
 
 	type Props = {
 		children: Snippet;
@@ -24,18 +24,6 @@
 			label: 'Workloads',
 			icon: ListChecks,
 			href: `/workspaces/${slug}/capacity/workloads`
-		},
-		{
-			id: 'queues',
-			label: 'Queues',
-			icon: Layers,
-			href: `/workspaces/${slug}/capacity/queues`
-		},
-		{
-			id: 'flavors',
-			label: 'Flavors',
-			icon: Tag,
-			href: `/workspaces/${slug}/capacity/flavors`
 		}
 	]);
 </script>
@@ -46,9 +34,7 @@
 			<Gauge class="size-5" /> Capacity
 		</h1>
 		<p class="text-xs text-muted-foreground">
-			Live Kueue queue state from <code class="font-mono text-[11px]">kueue-kueueviz-backend</code>,
-			combined with worker headroom from
-			<code class="font-mono text-[11px]">capacity-observer</code>.
+			Live queue admission state and worker headroom.
 		</p>
 	</header>
 

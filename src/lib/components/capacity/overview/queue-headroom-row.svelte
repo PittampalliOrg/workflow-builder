@@ -80,14 +80,46 @@
 	});
 
 	const waitP95 = $derived(observerQueue?.admissionWaitP95Seconds ?? null);
+
+	// Status dot tone matches UsageBar thresholds (<70 / 70-89 / ≥90 %).
+	// When the queue has pending workloads, the dot pulses amber regardless
+	// of utilization — admission backpressure is the headline signal.
+	const dotTone = $derived.by(() => {
+		const pct = resourceRow.usedPct + resourceRow.reservedPct;
+		if (pct >= 90 || resourceRow.overPct > 0) return 'rose';
+		if (pct >= 70) return 'amber';
+		return 'emerald';
+	});
+	const pending = $derived(queue.pendingWorkloads + queue.reservingWorkloads);
+	const dotClass = $derived(
+		pending > 0
+			? 'bg-amber-500 animate-pulse'
+			: dotTone === 'rose'
+				? 'bg-rose-500'
+				: dotTone === 'amber'
+					? 'bg-amber-500'
+					: 'bg-emerald-500'
+	);
+
+	const showCounts = $derived(
+		queue.admittedWorkloads > 0 || queue.pendingWorkloads > 0 || queue.reservingWorkloads > 0
+	);
 </script>
 
 <button
 	type="button"
-	class="grid w-full grid-cols-[minmax(0,1fr)_140px_auto_auto] items-center gap-3 rounded px-2 py-1.5 text-left transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+	class="grid w-full grid-cols-[auto_minmax(0,1fr)_140px_auto_auto_auto] items-center gap-3 rounded px-2 py-1.5 text-left transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
 	onclick={() => onSelect?.(queue)}
 	aria-label={`Open ${queue.name} detail`}
 >
+	<span
+		class="size-2 shrink-0 rounded-full {dotClass}"
+		aria-hidden="true"
+		title={pending > 0
+			? `${pending} pending / reserving`
+			: `${Math.round(resourceRow.usedPct + resourceRow.reservedPct)}% utilized`}
+	></span>
+
 	<div class="flex min-w-0 items-center gap-2">
 		<span class="min-w-0 truncate font-mono text-xs" title={queue.name}>
 			{queue.name}
@@ -121,6 +153,21 @@
 			{formatQuantityForResource(resource, resourceRow.nominalAbs)}
 		</span>
 	</div>
+
+	{#if showCounts}
+		<span
+			class="inline-flex shrink-0 items-center gap-1 rounded border bg-muted/30 px-1.5 py-0 text-[9px] font-mono tabular-nums"
+			title={`${queue.admittedWorkloads} admitted · ${queue.pendingWorkloads} pending · ${queue.reservingWorkloads} reserving`}
+		>
+			<span class="text-emerald-600 dark:text-emerald-400">{queue.admittedWorkloads}</span>
+			<span class="text-muted-foreground/40">·</span>
+			<span class="text-amber-600 dark:text-amber-400">{queue.pendingWorkloads}</span>
+			<span class="text-muted-foreground/40">·</span>
+			<span class="text-sky-600 dark:text-sky-400">{queue.reservingWorkloads}</span>
+		</span>
+	{:else}
+		<span class="w-[1px]"></span>
+	{/if}
 
 	<ChevronRight class="size-3.5 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" />
 </button>
