@@ -33,6 +33,16 @@ export ARGO_APPS
 ns="${ARGO_NS:-argocd}"
 export ARGO_NS="${ns}"
 
+# Default image registry: kind-on-ryzen pulls dev images from gitea-ryzen.
+# Without this, Skaffold prepends docker.io/library/ to bare artifact names
+# (e.g. `workflow-builder-dev`) and the push to Docker Hub fails. Same
+# registry path devspace.yaml uses (DEVSPACE_IMAGE_REGISTRY).
+# Override via env var for other clusters / mirrors.
+if [ -z "${SKAFFOLD_DEFAULT_REPO:-}" ]; then
+  SKAFFOLD_DEFAULT_REPO="gitea-ryzen.tail286401.ts.net/giteaadmin"
+fi
+export SKAFFOLD_DEFAULT_REPO
+
 resumed=0
 resume_argo() {
   if [ "${resumed}" -ne 0 ]; then

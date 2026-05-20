@@ -78,7 +78,8 @@ pnpm build:skaffold   # Build + push prod image only (no kustomization commit).
 ```
 
 Inner-loop notes:
-- The wrapper `scripts/skaffold-dev.sh` traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
+- The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=gitea-ryzen.tail286401.ts.net/giteaadmin` so the dev image gets pushed to gitea-ryzen (where kind-ryzen nodes can pull). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.
+- The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
 - File sync rules in `skaffold/workflow-builder.skaffold.yaml` mirror devspace's `excludePaths`. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
 - The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../active-development/manifests/workflow-builder` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
 
