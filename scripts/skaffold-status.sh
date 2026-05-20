@@ -216,9 +216,10 @@ if [ "${drift_count}" -gt 0 ]; then
   printf '       Otherwise: check the ArgoCD app status + last sync result.\n'
 fi
 if [ "${name_mismatch_count}" -gt 0 ]; then
-  printf '  ⚠  %d kustomization entry(ies) have name fields that don'\''t match the module slug.\n' "${name_mismatch_count}"
-  printf '       commit-pin.sh expects `- name: <slug>`; the long form (gitea-ryzen.../...) wont match.\n'
-  printf '       Fix by renaming the `name:` field in the affected kustomization.yaml.\n'
+  printf '  ℹ  %d kustomization entry(ies) use a long-form `name:` (e.g. gitea-ryzen.../<svc>) instead of\n' "${name_mismatch_count}"
+  printf '       the short slug. This is necessary when the underlying Deployment references the long\n'
+  printf '       form (kustomize matches images by exact `name`). commit-pin.sh handles both shapes —\n'
+  printf '       informational only; no fix needed.\n'
 fi
 if [ "${paused_count}" -eq 0 ] && [ "${drift_count}" -eq 0 ] && [ "${name_mismatch_count}" -eq 0 ]; then
   printf '  ✓  All modules are active, in sync with the gitea-ryzen pin, and have well-formed name fields.\n'
