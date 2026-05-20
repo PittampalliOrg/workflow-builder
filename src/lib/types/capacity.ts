@@ -65,6 +65,25 @@ export type CapacityCriticalHealth = {
   status: "healthy" | "degraded" | "unavailable" | string;
 };
 
+/**
+ * Linux Pressure Stall Information from kubelet's /stats/summary endpoint.
+ * `some` = time when ANY task was stalled; `full` = time when ALL tasks
+ * were stalled. Each is a `% of wallclock` over the trailing 10s/60s/300s
+ * window. Populated post K8s 1.36 + cgroup v2 + psi=1 kernel arg; absent
+ * (or empty) on older clusters — UI should treat as optional.
+ */
+export type CapacityPsiBlock = {
+  some?: { avg10?: number; avg60?: number; avg300?: number };
+  full?: { avg10?: number; avg60?: number; avg300?: number };
+};
+
+export type CapacityPsiSnapshot = {
+  cpu?: CapacityPsiBlock;
+  memory?: CapacityPsiBlock;
+  io?: CapacityPsiBlock;
+  perNode?: Record<string, { cpu?: CapacityPsiBlock; memory?: CapacityPsiBlock; io?: CapacityPsiBlock }>;
+};
+
 export type CapacityObserverSnapshot = {
   sampledAt: string;
   cluster: string;
@@ -78,6 +97,8 @@ export type CapacityObserverSnapshot = {
   nodePressure: Record<string, number>;
   criticalHealth: CapacityCriticalHealth[];
   recentPreemptions: number;
+  /** Phase C: kubelet PSI metrics. Empty object on K8s < 1.36 or scrape failure. */
+  psi?: CapacityPsiSnapshot;
   warnings: string[];
   observer?: {
     ok: boolean;

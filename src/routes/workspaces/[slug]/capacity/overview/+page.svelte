@@ -25,6 +25,7 @@
 	} from '$lib/components/capacity/overview/gauge-resource-toggle.svelte';
 	import QueueHeadroomRow from '$lib/components/capacity/overview/queue-headroom-row.svelte';
 	import HeadroomForecast from '$lib/components/capacity/overview/headroom-forecast.svelte';
+	import PressurePanel from '$lib/components/capacity/overview/pressure-panel.svelte';
 	import QueueDetailSheet from '$lib/components/capacity/overview/queue-detail-sheet.svelte';
 	import ContributorHeatmap from '$lib/components/capacity/overview/contributor-heatmap.svelte';
 	import ContributorDetailSheet from '$lib/components/capacity/overview/contributor-detail-sheet.svelte';
@@ -192,6 +193,7 @@
 			row.renderedBudget > 0
 				? Math.max(0, Math.min(100, (row.headroom / row.renderedBudget) * 100))
 				: null;
+		const psi = snap.psi ?? {};
 		const sample: HistoryPoint = {
 			t: sampledAt,
 			requested: row.requested,
@@ -200,7 +202,10 @@
 			admittedCount: tot.admitted,
 			pendingCount: tot.pending,
 			reservingCount: tot.reserving,
-			headroomPct
+			headroomPct,
+			psiCpuSome60: psi.cpu?.some?.avg60 ?? null,
+			psiMemorySome60: psi.memory?.some?.avg60 ?? null,
+			psiIoSome60: psi.io?.some?.avg60 ?? null
 		};
 		const last = history.at(-1);
 		if (last && last.t === sample.t) return;
@@ -603,6 +608,10 @@
 					/>
 				</div>
 			{/if}
+
+			<div class="mt-3">
+				<PressurePanel psi={observer?.psi} {history} />
+			</div>
 		</div>
 	</section>
 

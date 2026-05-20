@@ -34,6 +34,14 @@
 		reservingCount: number;
 		/** Cluster-wide headroom % for the currently-selected gauge resource. */
 		headroomPct: number | null;
+		/**
+		 * Phase C: PSI `some.avg60` per resource (% of 60s window with ANY
+		 * task stalled). Null until kubelet returns data — first ~10s after
+		 * page-load + on K8s < 1.36 / no scrape permission.
+		 */
+		psiCpuSome60: number | null;
+		psiMemorySome60: number | null;
+		psiIoSome60: number | null;
 	};
 
 	type Props = {
