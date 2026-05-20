@@ -26,6 +26,7 @@
 	import QueueHeadroomRow from '$lib/components/capacity/overview/queue-headroom-row.svelte';
 	import HeadroomForecast from '$lib/components/capacity/overview/headroom-forecast.svelte';
 	import PressurePanel from '$lib/components/capacity/overview/pressure-panel.svelte';
+	import AdmissionHealthBanner from '$lib/components/capacity/overview/admission-health-banner.svelte';
 	import QueueDetailSheet from '$lib/components/capacity/overview/queue-detail-sheet.svelte';
 	import ContributorHeatmap from '$lib/components/capacity/overview/contributor-heatmap.svelte';
 	import ContributorDetailSheet from '$lib/components/capacity/overview/contributor-detail-sheet.svelte';
@@ -464,6 +465,7 @@
 				<ListChecks class="size-3" />
 				{workloads.data.length} workload{workloads.data.length === 1 ? '' : 's'}
 			</a>
+			<AdmissionHealthBanner health={observer?.admissionHealth} />
 		</div>
 
 		<div class="flex flex-wrap items-center gap-1.5">

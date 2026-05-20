@@ -22,6 +22,10 @@ export type CapacityQueueSnapshot = {
   name: string;
   cohort: string | null;
   flavor: string;
+  /** Kueue Active=True/False (undefined on old observer payloads). */
+  active?: boolean;
+  activeReason?: string;
+  activeMessage?: string;
   admittedWorkloads: number;
   pendingWorkloads: number;
   reservingWorkloads: number;
@@ -84,6 +88,20 @@ export type CapacityPsiSnapshot = {
   perNode?: Record<string, { cpu?: CapacityPsiBlock; memory?: CapacityPsiBlock; io?: CapacityPsiBlock }>;
 };
 
+/**
+ * Cluster-wide ClusterQueue admission health roll-up. Surfaces Kueue's
+ * `status.conditions[type=Active]` per CQ so an operator can see at a
+ * glance whether Kueue is willing to admit work at all — a CQ that
+ * goes inactive (missing flavor / inactive AdmissionCheck / etc.) is
+ * the kind of failure that otherwise looks like "queue full" until
+ * someone runs `kubectl get clusterqueue`.
+ */
+export type CapacityAdmissionHealth = {
+  totalQueues: number;
+  activeQueues: number;
+  inactiveQueues: Array<{ name: string; reason: string; message: string }>;
+};
+
 export type CapacityObserverSnapshot = {
   sampledAt: string;
   cluster: string;
@@ -99,6 +117,8 @@ export type CapacityObserverSnapshot = {
   recentPreemptions: number;
   /** Phase C: kubelet PSI metrics. Empty object on K8s < 1.36 or scrape failure. */
   psi?: CapacityPsiSnapshot;
+  /** ClusterQueue admission health roll-up — drives the Zone A admission banner. */
+  admissionHealth?: CapacityAdmissionHealth;
   warnings: string[];
   observer?: {
     ok: boolean;
