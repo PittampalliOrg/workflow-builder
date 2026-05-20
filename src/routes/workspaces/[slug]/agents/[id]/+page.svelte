@@ -991,7 +991,7 @@
 									one Deployment per agent, scaled to zero when idle.
 								</p>
 								<div class="mt-2">
-									<AgentRuntimeCard slug={agent.slug} canManage={true} />
+									<AgentRuntimeCard slug={agent.slug} workspaceSlug={slug} canManage={true} />
 								</div>
 							</div>
 						</div>

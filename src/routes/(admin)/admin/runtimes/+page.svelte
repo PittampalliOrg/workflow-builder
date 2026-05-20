@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import HeadlampLogo from '$lib/components/gitops/icons/HeadlampLogo.svelte';
-	import { DEFAULT_HEADLAMP_URL, headlampCustomResourceUrl, headlampResourceUrl } from '$lib/headlamp/links';
+	import { embeddedHeadlampCustomResourceUrl, embeddedHeadlampResourceUrl } from '$lib/headlamp/links';
 
 	type Runtime = {
 		name: string;
@@ -81,8 +81,8 @@
 	}
 
 	function runtimePoolUrl(rt: Runtime): string | null {
-		return headlampCustomResourceUrl({
-			headlampBase: DEFAULT_HEADLAMP_URL,
+		return embeddedHeadlampCustomResourceUrl({
+			workspaceSlug: 'default',
 			cluster: 'ryzen',
 			crd: 'sandboxwarmpools.extensions.agents.x-k8s.io',
 			namespace: rt.namespace ?? 'workflow-builder',
@@ -92,8 +92,8 @@
 
 	function runtimePodUrl(rt: Runtime): string | null {
 		if (!rt.pod?.name) return null;
-		return headlampResourceUrl({
-			headlampBase: DEFAULT_HEADLAMP_URL,
+		return embeddedHeadlampResourceUrl({
+			workspaceSlug: 'default',
 			cluster: 'ryzen',
 			kind: 'Pod',
 			namespace: rt.namespace ?? 'workflow-builder',
@@ -226,8 +226,6 @@
 							<div class="flex flex-wrap gap-1">
 								<a
 									href={runtimePoolUrl(rt) ?? undefined}
-									target="_blank"
-									rel="noopener noreferrer"
 									class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
 									title="Open SandboxWarmPool in Headlamp"
 								>
@@ -237,8 +235,6 @@
 								{#if runtimePodUrl(rt)}
 									<a
 										href={runtimePodUrl(rt) ?? undefined}
-										target="_blank"
-										rel="noopener noreferrer"
 										class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
 										title="Open active runtime Pod in Headlamp"
 									>

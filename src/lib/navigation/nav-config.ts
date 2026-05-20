@@ -270,6 +270,14 @@ export const NAV_GROUPS: NavGroup[] = [
 				visibility: { workspaceScoped: true },
 			},
 			{
+				id: "kubernetes",
+				label: "Kubernetes",
+				icon: Server,
+				href: ({ slug }) => `/workspaces/${slug}/kubernetes`,
+				match: /^\/workspaces\/[^/]+\/kubernetes(\/|$)/,
+				visibility: { workspaceScoped: true, adminOnly: true },
+			},
+			{
 				id: "sandboxes",
 				label: "Sandboxes",
 				icon: Container,

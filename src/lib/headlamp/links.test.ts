@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
 	DEFAULT_HEADLAMP_URL,
+	embeddedHeadlampClusterUrl,
+	embeddedHeadlampKueueUrl,
+	embeddedHeadlampResourceUrl,
 	headlampClusterUrl,
 	headlampCustomResourceUrl,
+	headlampEmbedSrc,
+	headlampExternalUrl,
 	headlampKueueUrl,
 	headlampResourceUrl,
+	normalizeEmbeddedHeadlampPath,
 	normalizeHeadlampCluster,
 } from "./links";
 
@@ -75,6 +81,83 @@ describe("headlampResourceUrl", () => {
 				logs: true,
 			}),
 		).toBe(`${DEFAULT_HEADLAMP_URL}/c/ryzen/pods/workflow-builder/pod-1`);
+	});
+});
+
+describe("embedded Headlamp URLs", () => {
+	it("wraps Headlamp resource paths in the workspace Kubernetes route", () => {
+		expect(
+			embeddedHeadlampResourceUrl({
+				workspaceSlug: "default-project",
+				cluster: "ryzen",
+				kind: "Deployment",
+				namespace: "workflow-builder",
+				name: "workflow-builder",
+			}),
+		).toBe(
+			"/workspaces/default-project/kubernetes?path=%2Fc%2Fryzen%2Fdeployments%2Fworkflow-builder%2Fworkflow-builder",
+		);
+	});
+
+	it("preserves Headlamp query strings inside the path parameter", () => {
+		expect(
+			embeddedHeadlampResourceUrl({
+				workspaceSlug: "default-project",
+				cluster: "dev",
+				kind: "Job",
+				namespace: "workflow-builder",
+				name: "eval",
+				logs: true,
+			}),
+		).toBe(
+			"/workspaces/default-project/kubernetes?path=%2Fc%2Fdev%2Fjobs%2Fworkflow-builder%2Feval%3Fview%3Dlogs",
+		);
+	});
+
+	it("builds embedded Kueue and cluster links", () => {
+		expect(
+			embeddedHeadlampKueueUrl({
+				workspaceSlug: "ops",
+				cluster: "ryzen",
+				kind: "ResourceFlavor",
+				name: "ryzen-workers",
+			}),
+		).toBe(
+			"/workspaces/ops/kubernetes?path=%2Fc%2Fryzen%2Fcustomresources%2Fresourceflavors.kueue.x-k8s.io%2F-%2Fryzen-workers",
+		);
+		expect(embeddedHeadlampClusterUrl({ workspaceSlug: "ops", cluster: "hub" })).toBe(
+			"/workspaces/ops/kubernetes?path=%2Fc%2Fhub%2F",
+		);
+	});
+});
+
+describe("Headlamp path normalization", () => {
+	it("accepts cluster-scoped Headlamp paths and strips the embed base", () => {
+		expect(normalizeEmbeddedHeadlampPath("/c/ryzen/pods/workflow-builder/pod-1")).toBe(
+			"/c/ryzen/pods/workflow-builder/pod-1",
+		);
+		expect(normalizeEmbeddedHeadlampPath("/headlamp/c/dev/")).toBe("/c/dev/");
+		expect(
+			normalizeEmbeddedHeadlampPath(
+				"https://headlamp-hub.tail286401.ts.net/headlamp/c/staging/?drawer=events",
+			),
+		).toBe("/c/staging/?drawer=events");
+	});
+
+	it("normalizes invalid embedded paths to the cluster index", () => {
+		expect(normalizeEmbeddedHeadlampPath("/api/private")).toBe("/");
+		expect(normalizeEmbeddedHeadlampPath("//evil.example/c/ryzen")).toBe("/");
+		expect(normalizeEmbeddedHeadlampPath("/c/prod/pods/default/x")).toBe("/");
+	});
+
+	it("builds iframe and external URLs from normalized paths", () => {
+		expect(headlampEmbedSrc({ path: "/c/ryzen/" })).toBe("/headlamp/c/ryzen/");
+		expect(headlampEmbedSrc({ embedBase: "/embedded/", path: "/headlamp/c/dev/" })).toBe(
+			"/embedded/c/dev/",
+		);
+		expect(headlampExternalUrl({ path: "/headlamp/c/ryzen/" })).toBe(
+			`${DEFAULT_HEADLAMP_URL}/c/ryzen/`,
+		);
 	});
 });
 
