@@ -17,6 +17,7 @@ truncated to 60KB (`truncate_content`).
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import logging
@@ -87,11 +88,15 @@ def instrument_state_store() -> None:
     if getattr(StateStoreService, "_wb_state_instrumented", False):
         return
 
-    tracer = get_tracer()
-    if tracer is None:
-        return
-
     def _span(self: Any, op: str, key_label: str):
+        # Resolve the tracer LAZILY, per call. instrument_state_store() runs
+        # during telemetry init BEFORE providers._ready flips True, so a tracer
+        # fetched here at patch time would be None and silently no-op forever.
+        # Fetching at call time means spans start emitting as soon as telemetry
+        # is ready, regardless of instrumentation ordering.
+        tracer = get_tracer()
+        if tracer is None:
+            return contextlib.nullcontext(None)
         return tracer.start_as_current_span(
             f"state.{op}",
             attributes={
