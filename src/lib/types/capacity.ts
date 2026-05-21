@@ -42,6 +42,31 @@ export type CapacitySessionSnapshot = {
   fits: number | null;
 };
 
+export type CapacityOwnerHint = {
+  source?: string;
+  sessionId?: string;
+  agentAppId?: string;
+  benchmarkRunId?: string;
+  benchmarkInstanceId?: string;
+};
+
+export type CapacityOwnerKind =
+  | "workflowRun"
+  | "session"
+  | "agent"
+  | "benchmarkRun"
+  | "benchmarkInstance";
+
+export type CapacityOwnerRef = {
+  kind: CapacityOwnerKind;
+  id: string;
+  label: string;
+  href: string;
+  secondaryLabel?: string;
+  source?: string;
+  confidence?: "direct" | "derived" | "inferred";
+};
+
 export type CapacityBlockedWorkload = {
   namespace: string;
   name: string;
@@ -50,6 +75,8 @@ export type CapacityBlockedWorkload = {
   reason: string;
   message: string;
   pendingSeconds: number;
+  ownerHints?: CapacityOwnerHint[];
+  owners?: CapacityOwnerRef[];
 };
 
 export type CapacityContributorSnapshot = {
@@ -60,6 +87,8 @@ export type CapacityContributorSnapshot = {
   queue: string | null;
   podCount: number;
   resources: Record<string, number>;
+  ownerHints?: CapacityOwnerHint[];
+  owners?: CapacityOwnerRef[];
 };
 
 export type CapacityCriticalHealth = {

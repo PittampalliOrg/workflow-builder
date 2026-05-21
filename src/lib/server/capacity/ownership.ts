@@ -1,0 +1,353 @@
+import { createHash } from 'node:crypto';
+import { and, desc, eq, inArray } from 'drizzle-orm';
+import { db } from '$lib/server/db';
+import {
+	agents,
+	benchmarkRunInstances,
+	benchmarkRuns,
+	sessions,
+	workflowExecutions,
+	workflows
+} from '$lib/server/db/schema';
+import type {
+	CapacityBlockedWorkload,
+	CapacityContributorSnapshot,
+	CapacityObserverSnapshot,
+	CapacityOwnerHint,
+	CapacityOwnerRef
+} from '$lib/types/capacity';
+
+type SessionOwnershipRow = {
+	sessionId: string;
+	sessionTitle: string | null;
+	sessionRuntimeAppId: string | null;
+	agentId: string;
+	agentName: string;
+	agentSlug: string | null;
+	workflowExecutionId: string | null;
+	workflowId: string | null;
+	workflowName: string | null;
+};
+
+type BenchmarkOwnershipRow = {
+	runId: string;
+	runStatus: string;
+	runInstanceRowId: string;
+	instanceId: string;
+};
+
+type OwnershipContext = {
+	projectId: string | null | undefined;
+	workspaceSlug: string;
+};
+
+export async function enrichCapacitySnapshotOwnership(
+	snapshot: CapacityObserverSnapshot,
+	context: OwnershipContext
+): Promise<CapacityObserverSnapshot> {
+	if (!db || !context.projectId) return snapshot;
+	const hints = collectHints(snapshot);
+	if (hints.length === 0) return snapshot;
+
+	const sessionIds = uniqueNonEmpty(hints.map((hint) => hint.sessionId));
+	const agentAppIds = uniqueNonEmpty(hints.map((hint) => hint.agentAppId));
+	const benchmarkRunIds = uniqueNonEmpty(hints.map((hint) => hint.benchmarkRunId));
+	const benchmarkInstanceIds = uniqueNonEmpty(hints.map((hint) => hint.benchmarkInstanceId));
+
+	const [sessionRows, benchmarkRows] = await Promise.all([
+		resolveSessionRows({
+			projectId: context.projectId,
+			sessionIds,
+			agentAppIds
+		}),
+		resolveBenchmarkRows({
+			projectId: context.projectId,
+			runIds: benchmarkRunIds,
+			instanceIds: benchmarkInstanceIds
+		})
+	]);
+
+	const sessionById = new Map(sessionRows.map((row) => [row.sessionId, row]));
+	const sessionByAppId = new Map<string, SessionOwnershipRow>();
+	for (const row of sessionRows) {
+		if (row.sessionRuntimeAppId) sessionByAppId.set(row.sessionRuntimeAppId, row);
+		sessionByAppId.set(sessionHostAppId(row.sessionId), row);
+	}
+
+	const benchmarkByRunId = new Map<string, BenchmarkOwnershipRow>();
+	const benchmarkByInstanceId = new Map<string, BenchmarkOwnershipRow>();
+	for (const row of benchmarkRows) {
+		benchmarkByRunId.set(row.runId, row);
+		benchmarkByRunId.set(normalizeHostExecutionLabelValue(row.runId), row);
+		benchmarkByInstanceId.set(row.instanceId, row);
+		benchmarkByInstanceId.set(normalizeHostExecutionLabelValue(row.instanceId), row);
+	}
+
+	const ownersForHints = (itemHints: CapacityOwnerHint[] | undefined): CapacityOwnerRef[] => {
+		const refs: CapacityOwnerRef[] = [];
+		for (const hint of itemHints ?? []) {
+			const sessionRow =
+				(hint.sessionId ? sessionById.get(hint.sessionId) : undefined) ??
+				(hint.agentAppId ? sessionByAppId.get(hint.agentAppId) : undefined);
+			if (sessionRow) {
+				refs.push(...sessionOwners(sessionRow, context.workspaceSlug, hint));
+			}
+
+			const benchmarkRow =
+				(hint.benchmarkRunId ? benchmarkByRunId.get(hint.benchmarkRunId) : undefined) ??
+				(hint.benchmarkInstanceId
+					? benchmarkByInstanceId.get(hint.benchmarkInstanceId)
+					: undefined);
+			if (benchmarkRow) {
+				refs.push(...benchmarkOwners(benchmarkRow, context.workspaceSlug, hint));
+			}
+		}
+		return dedupeOwners(refs);
+	};
+
+	return {
+		...snapshot,
+		blockedWorkloads: snapshot.blockedWorkloads.map((item) => ({
+			...item,
+			owners: ownersForHints(item.ownerHints)
+		})),
+		contributors: snapshot.contributors?.map((item) => ({
+			...item,
+			owners: ownersForHints(item.ownerHints)
+		}))
+	};
+}
+
+function collectHints(snapshot: CapacityObserverSnapshot): CapacityOwnerHint[] {
+	return [
+		...snapshot.blockedWorkloads.flatMap((item) => item.ownerHints ?? []),
+		...(snapshot.contributors ?? []).flatMap((item) => item.ownerHints ?? [])
+	].filter(hasAnyHint);
+}
+
+function hasAnyHint(hint: CapacityOwnerHint): boolean {
+	return Boolean(
+		hint.sessionId?.trim() ||
+			hint.agentAppId?.trim() ||
+			hint.benchmarkRunId?.trim() ||
+			hint.benchmarkInstanceId?.trim()
+	);
+}
+
+async function resolveSessionRows(params: {
+	projectId: string;
+	sessionIds: string[];
+	agentAppIds: string[];
+}): Promise<SessionOwnershipRow[]> {
+	const rows = new Map<string, SessionOwnershipRow>();
+	const append = (next: SessionOwnershipRow[]) => {
+		for (const row of next) rows.set(row.sessionId, row);
+	};
+
+	if (params.sessionIds.length > 0) {
+		append(await selectSessionOwnershipRows(params.projectId, inArray(sessions.id, params.sessionIds)));
+	}
+	if (params.agentAppIds.length > 0) {
+		append(
+			await selectSessionOwnershipRows(
+				params.projectId,
+				inArray(sessions.runtimeAppId, params.agentAppIds)
+			)
+		);
+	}
+
+	const unresolvedAppIds = params.agentAppIds.filter((id) => {
+		for (const row of rows.values()) {
+			if (row.sessionRuntimeAppId === id || sessionHostAppId(row.sessionId) === id) return false;
+		}
+		return true;
+	});
+	if (unresolvedAppIds.length > 0) {
+		const recentRows = await selectRecentSessionOwnershipRows(params.projectId);
+		append(recentRows.filter((row) => unresolvedAppIds.includes(sessionHostAppId(row.sessionId))));
+	}
+
+	return [...rows.values()];
+}
+
+async function selectSessionOwnershipRows(projectId: string, condition: Parameters<typeof and>[0]) {
+	if (!db) return [];
+	return (await db
+		.select({
+			sessionId: sessions.id,
+			sessionTitle: sessions.title,
+			sessionRuntimeAppId: sessions.runtimeAppId,
+			agentId: agents.id,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			workflowExecutionId: sessions.workflowExecutionId,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name
+		})
+		.from(sessions)
+		.innerJoin(agents, eq(agents.id, sessions.agentId))
+		.leftJoin(workflowExecutions, eq(workflowExecutions.id, sessions.workflowExecutionId))
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.where(and(eq(sessions.projectId, projectId), condition))) as SessionOwnershipRow[];
+}
+
+async function selectRecentSessionOwnershipRows(projectId: string) {
+	if (!db) return [];
+	return (await db
+		.select({
+			sessionId: sessions.id,
+			sessionTitle: sessions.title,
+			sessionRuntimeAppId: sessions.runtimeAppId,
+			agentId: agents.id,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			workflowExecutionId: sessions.workflowExecutionId,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name
+		})
+		.from(sessions)
+		.innerJoin(agents, eq(agents.id, sessions.agentId))
+		.leftJoin(workflowExecutions, eq(workflowExecutions.id, sessions.workflowExecutionId))
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.where(eq(sessions.projectId, projectId))
+		.orderBy(desc(sessions.updatedAt))
+		.limit(300)) as SessionOwnershipRow[];
+}
+
+async function resolveBenchmarkRows(params: {
+	projectId: string;
+	runIds: string[];
+	instanceIds: string[];
+}): Promise<BenchmarkOwnershipRow[]> {
+	if (!db || (params.runIds.length === 0 && params.instanceIds.length === 0)) return [];
+	const rows = (await db
+		.select({
+			runId: benchmarkRuns.id,
+			runStatus: benchmarkRuns.status,
+			runInstanceRowId: benchmarkRunInstances.id,
+			instanceId: benchmarkRunInstances.instanceId
+		})
+		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+		.where(eq(benchmarkRuns.projectId, params.projectId))
+		.orderBy(desc(benchmarkRunInstances.updatedAt))
+		.limit(500)) as BenchmarkOwnershipRow[];
+
+	const runLabels = new Set(params.runIds);
+	const instanceLabels = new Set(params.instanceIds);
+	return rows.filter(
+		(row) =>
+			runLabels.has(row.runId) ||
+			runLabels.has(normalizeHostExecutionLabelValue(row.runId)) ||
+			instanceLabels.has(row.instanceId) ||
+			instanceLabels.has(normalizeHostExecutionLabelValue(row.instanceId))
+	);
+}
+
+function sessionOwners(
+	row: SessionOwnershipRow,
+	workspaceSlug: string,
+	hint: CapacityOwnerHint
+): CapacityOwnerRef[] {
+	const owners: CapacityOwnerRef[] = [];
+	if (row.workflowExecutionId && row.workflowId) {
+		owners.push({
+			kind: 'workflowRun',
+			id: row.workflowExecutionId,
+			label: row.workflowName ? `${row.workflowName} run` : shortId(row.workflowExecutionId),
+			href: `/workspaces/${workspaceSlug}/workflows/${row.workflowId}/runs/${row.workflowExecutionId}`,
+			secondaryLabel: shortId(row.workflowExecutionId),
+			source: hint.source,
+			confidence: hint.sessionId === row.sessionId ? 'direct' : 'derived'
+		});
+	}
+	owners.push({
+		kind: 'session',
+		id: row.sessionId,
+		label: row.sessionTitle?.trim() || shortId(row.sessionId),
+		href: `/workspaces/${workspaceSlug}/sessions/${row.sessionId}`,
+		source: hint.source,
+		confidence: hint.sessionId === row.sessionId ? 'direct' : 'derived'
+	});
+	owners.push({
+		kind: 'agent',
+		id: row.agentId,
+		label: row.agentName || row.agentSlug || shortId(row.agentId),
+		href: `/workspaces/${workspaceSlug}/agents/${row.agentId}`,
+		secondaryLabel: row.agentSlug ?? undefined,
+		source: hint.source,
+		confidence: 'derived'
+	});
+	return owners;
+}
+
+function benchmarkOwners(
+	row: BenchmarkOwnershipRow,
+	workspaceSlug: string,
+	hint: CapacityOwnerHint
+): CapacityOwnerRef[] {
+	return [
+		{
+			kind: 'benchmarkRun',
+			id: row.runId,
+			label: `Benchmark ${shortId(row.runId)}`,
+			href: `/workspaces/${workspaceSlug}/benchmarks/runs/${row.runId}`,
+			secondaryLabel: row.runStatus,
+			source: hint.source,
+			confidence: hint.benchmarkRunId === row.runId ? 'direct' : 'inferred'
+		},
+		{
+			kind: 'benchmarkInstance',
+			id: row.runInstanceRowId,
+			label: row.instanceId,
+			href: `/workspaces/${workspaceSlug}/benchmarks/runs/${row.runId}`,
+			source: hint.source,
+			confidence: hint.benchmarkInstanceId === row.instanceId ? 'direct' : 'inferred'
+		}
+	];
+}
+
+function dedupeOwners(owners: CapacityOwnerRef[]): CapacityOwnerRef[] {
+	const seen = new Set<string>();
+	const out: CapacityOwnerRef[] = [];
+	for (const owner of owners) {
+		const key = `${owner.kind}:${owner.id}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(owner);
+	}
+	const order = ['workflowRun', 'session', 'agent', 'benchmarkRun', 'benchmarkInstance'];
+	return out.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
+	return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value))];
+}
+
+export function sessionHostAppId(sessionId: string): string {
+	const digest = createHash('sha256').update(sessionId).digest('hex').slice(0, 20);
+	return `agent-session-${digest}`;
+}
+
+export function normalizeHostExecutionLabelValue(value: string): string {
+	return (
+		value
+			.toLowerCase()
+			.replace(/[^a-z0-9-]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 63)
+			.replace(/-+$/g, '') || 'execution'
+	);
+}
+
+function shortId(id: string): string {
+	return id.length <= 12 ? id : `${id.slice(0, 8)}...`;
+}
+
+export const __capacityOwnershipForTest = {
+	normalizeHostExecutionLabelValue,
+	sessionHostAppId,
+	sessionOwners,
+	benchmarkOwners,
+	dedupeOwners
+};

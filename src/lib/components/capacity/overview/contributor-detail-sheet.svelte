@@ -21,6 +21,7 @@
 		CapacityResourceSnapshot
 	} from '$lib/types/capacity';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
+	import CapacityOwnerLinks from './capacity-owner-links.svelte';
 	import {
 		embeddedHeadlampResourceUrl,
 		normalizeHeadlampCluster,
@@ -216,6 +217,15 @@
 						</p>
 					{/if}
 				</section>
+
+				{#if contributor.owners?.length}
+					<section class="mt-5 space-y-2">
+						<h3 class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+							Related
+						</h3>
+						<CapacityOwnerLinks owners={contributor.owners} max={5} />
+					</section>
+				{/if}
 
 				{#if podHeadlampHref}
 					<section class="mt-5">

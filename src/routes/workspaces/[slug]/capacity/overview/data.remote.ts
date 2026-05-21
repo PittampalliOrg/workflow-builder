@@ -1,10 +1,11 @@
-import { query } from '$app/server';
+import { getRequestEvent, query } from '$app/server';
 import {
 	queryHistogramPercentiles,
 	queryTimeSeries
 } from '$lib/server/otel/metrics';
 import { fetchCapacityObserverSnapshot } from '$lib/server/capacity/observer';
 import { buildCapacityCoverageSummary } from '$lib/server/capacity/coverage';
+import { enrichCapacitySnapshotOwnership } from '$lib/server/capacity/ownership';
 import type { CapacityOverviewSummary } from '$lib/types/capacity';
 
 const WINDOW_SECONDS = 300; // 5 min — recent enough to feel "now", smooth enough to avoid jitter
@@ -156,6 +157,13 @@ export const getCapacityPsiTrends = query(async (): Promise<CapacityPsiTrendsSna
 
 export const getCapacityOverview = query(async (): Promise<CapacityOverviewSummary> => {
 	const observer = await fetchCapacityObserverSnapshot();
+	if (observer.available) {
+		const event = getRequestEvent();
+		observer.snapshot = await enrichCapacitySnapshotOwnership(observer.snapshot, {
+			projectId: event.locals.session?.projectId,
+			workspaceSlug: event.params.slug ?? 'default'
+		});
+	}
 	return {
 		observer,
 		coverage: buildCapacityCoverageSummary(observer)

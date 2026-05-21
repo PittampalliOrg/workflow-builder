@@ -30,6 +30,7 @@
 	import QueueDetailSheet from '$lib/components/capacity/overview/queue-detail-sheet.svelte';
 	import ContributorHeatmap from '$lib/components/capacity/overview/contributor-heatmap.svelte';
 	import ContributorDetailSheet from '$lib/components/capacity/overview/contributor-detail-sheet.svelte';
+	import CapacityOwnerLinks from '$lib/components/capacity/overview/capacity-owner-links.svelte';
 	import type { ClusterQueueSnapshot } from '$lib/server/kueueviz';
 	import CapacityTrendsPanel, {
 		type HistoryPoint
@@ -746,7 +747,7 @@
 						{#each blockedWorkloadsFiltered as wl (wl.namespace + ':' + wl.name)}
 							{@const url = blockedHeadlampUrl(wl)}
 							<li
-								class="grid items-center gap-2 px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_120px_120px_90px_24px]"
+								class="grid items-center gap-2 px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_120px_120px_140px_90px_24px]"
 							>
 								<a
 									href={`/workspaces/${slug}/capacity/workloads?queue=${encodeURIComponent(wl.queue)}`}
@@ -759,6 +760,7 @@
 								<span class="truncate text-muted-foreground" title={wl.message || wl.reason}>
 									{wl.reason}
 								</span>
+								<CapacityOwnerLinks owners={wl.owners} max={2} compact />
 								<span class="inline-flex items-center gap-1 font-mono text-muted-foreground">
 									<Clock3 class="size-3" />
 									{Math.round(wl.pendingSeconds)}s

@@ -11,6 +11,7 @@
 	 */
 	import { ExternalLink } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
+	import CapacityOwnerLinks from './capacity-owner-links.svelte';
 	import type {
 		CapacityContributorSnapshot,
 		CapacityResourceSnapshot
@@ -194,6 +195,9 @@
 										{c.namespace} · {c.podCount} pod{c.podCount === 1 ? '' : 's'}
 									</div>
 								</button>
+								<div class="mt-1">
+									<CapacityOwnerLinks owners={c.owners} max={2} compact />
+								</div>
 							{:else}
 								<div class="flex min-w-0 items-center gap-1.5">
 									<span class="truncate font-mono" title={c.name}>{c.name}</span>
@@ -211,6 +215,9 @@
 								</div>
 								<div class="mt-0.5 truncate text-[10px] text-muted-foreground">
 									{c.namespace} · {c.podCount} pod{c.podCount === 1 ? '' : 's'}
+								</div>
+								<div class="mt-1">
+									<CapacityOwnerLinks owners={c.owners} max={2} compact />
 								</div>
 							{/if}
 						</td>
