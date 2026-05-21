@@ -67,6 +67,7 @@
 	let frameKey = $state(0);
 	let nativeChrome = $state(false);
 	let iframeEl = $state<HTMLIFrameElement | null>(null);
+	let pendingNavigationPath = $state<string | null>(null);
 
 	const iframeSrc = $derived(
 		withEmbeddedAppChrome({
@@ -91,17 +92,48 @@
 		window.history.replaceState(window.history.state, "", `${next.pathname}?${next.searchParams}`);
 	}
 
+	function pathMatchesPendingNavigation(actualPath: string, expectedPath: string) {
+		try {
+			const actual = new URL(actualPath, "http://workflow-builder.local");
+			const expected = new URL(expectedPath, "http://workflow-builder.local");
+			if (actual.pathname !== expected.pathname) return false;
+			if (expected.hash && actual.hash !== expected.hash) return false;
+			for (const [key, value] of expected.searchParams) {
+				if (actual.searchParams.get(key) !== value) return false;
+			}
+			const defaultQueryParams = new Set([
+				"showFavorites",
+				"proj",
+				"sync",
+				"autoSync",
+				"health",
+				"namespace",
+				"cluster",
+				"labels",
+			]);
+			for (const [key] of actual.searchParams) {
+				if (!expected.searchParams.has(key) && !defaultQueryParams.has(key)) return false;
+			}
+			return true;
+		} catch {
+			return actualPath === expectedPath;
+		}
+	}
+
 	function navigateTo(nextPath: string) {
 		currentPath = normalizePath(nextPath);
 		nativeChrome = false;
+		pendingNavigationPath = currentPath;
 		replaceOuterUrl(currentPath);
 	}
 
 	function reloadFrame() {
+		pendingNavigationPath = null;
 		frameKey += 1;
 	}
 
 	function toggleNativeChrome() {
+		pendingNavigationPath = null;
 		nativeChrome = !nativeChrome;
 	}
 
@@ -110,6 +142,14 @@
 			const location = iframeEl?.contentWindow?.location;
 			if (!location) return;
 			const nextPath = normalizePath(`${location.pathname}${location.search}${location.hash}`);
+			if (pendingNavigationPath) {
+				if (pathMatchesPendingNavigation(nextPath, pendingNavigationPath)) {
+					pendingNavigationPath = null;
+				} else {
+					applyUnifiedChrome();
+					return;
+				}
+			}
 			if (nextPath !== currentPath) {
 				currentPath = nextPath;
 				replaceOuterUrl(nextPath);
