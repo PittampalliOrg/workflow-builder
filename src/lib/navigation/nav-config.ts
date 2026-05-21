@@ -270,6 +270,15 @@ export const NAV_GROUPS: NavGroup[] = [
 				visibility: { workspaceScoped: true },
 			},
 			{
+				id: "service-graph",
+				label: "Service graph",
+				icon: Network,
+				href: ({ slug }) => `/workspaces/${slug}/service-graph`,
+				match: /^\/workspaces\/[^/]+\/service-graph(\/|$)/,
+				badge: "new",
+				visibility: { workspaceScoped: true },
+			},
+			{
 				id: "kubernetes",
 				label: "Kubernetes",
 				icon: Server,
