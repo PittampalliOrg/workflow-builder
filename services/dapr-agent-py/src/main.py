@@ -5362,6 +5362,26 @@ runner = AgentRunner()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s starting", AGENT_SERVICE_NAME)
+    # Re-run state-store instrumentation here (idempotent) as well as at
+    # import-time init_telemetry(). The import-time call runs before logging is
+    # configured AND before dapr_agents is fully loaded, so its patch can miss
+    # the StateStoreService class the activity worker threads actually call.
+    # Re-applying at lifespan startup — after imports + logging are settled —
+    # guarantees the patch binds. Logged at WARNING so it's visible in pod logs.
+    try:
+        from src.telemetry.state_tracing import instrument_state_store
+        from src.telemetry.providers import is_telemetry_ready
+
+        instrument_state_store()
+        from dapr_agents.storage.daprstores.stateservice import StateStoreService
+
+        logger.warning(
+            "[state-tracing] lifespan re-instrument: patched=%s telemetry_ready=%s",
+            getattr(StateStoreService, "_wb_state_instrumented", False),
+            is_telemetry_ready(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[state-tracing] lifespan re-instrument failed: %s", exc)
     # Bootstrap MCP tools from the env-var manifest (DAPR_AGENT_PY_BOOTSTRAP_MCP_SERVERS_JSON).
     # Runs inside FastAPI's event loop so MCPClient's anyio transports work
     # correctly; skips cleanly if the env var is empty. Registers tools on

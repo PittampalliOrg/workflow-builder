@@ -29,6 +29,9 @@ from .providers import get_tracer
 
 logger = logging.getLogger(__name__)
 
+# Tracks which state ops have logged their first-invocation diagnostic.
+_fired_ops: set[str] = set()
+
 
 def _state_content_enabled() -> bool:
     """Capture state values when the broad beta flag OR a dedicated narrow flag is
@@ -109,9 +112,22 @@ def instrument_state_store() -> None:
             },
         )
 
+    def _diag_first_call(op: str) -> None:
+        # One-shot WARNING so pod logs prove the wrapper actually fires in the
+        # live process (distinguishes "patch never bound" from "patched but the
+        # call path / tracer differs"). Cheap: a single set membership check.
+        if op not in _fired_ops:
+            _fired_ops.add(op)
+            logger.warning(
+                "[state-tracing] wrapper fired: op=%s tracer=%s",
+                op,
+                "yes" if get_tracer() is not None else "none",
+            )
+
     def wrap_read(orig, op: str):
         @functools.wraps(orig)
         def fn(self, *args, **kwargs):
+            _diag_first_call(op)
             key = kwargs.get("key", kwargs.get("keys", args[0] if args else None))
             with _span(self, op, _key_label(self, key)) as span:
                 result = orig(self, *args, **kwargs)
@@ -123,6 +139,7 @@ def instrument_state_store() -> None:
     def wrap_write(orig, op: str):
         @functools.wraps(orig)
         def fn(self, *args, **kwargs):
+            _diag_first_call(op)
             key = kwargs.get("key", kwargs.get("keys", args[0] if args else None))
             value = kwargs.get(
                 "value", kwargs.get("items", kwargs.get("operations", args[0] if args else None))
@@ -148,4 +165,4 @@ def instrument_state_store() -> None:
         setattr(StateStoreService, name, wrapped)
 
     StateStoreService._wb_state_instrumented = True
-    logger.info("[state-tracing] StateStoreService instrumented for content capture")
+    logger.warning("[state-tracing] StateStoreService instrumented for content capture")
