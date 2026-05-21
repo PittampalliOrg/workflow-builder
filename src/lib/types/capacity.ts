@@ -87,6 +87,7 @@ export type CapacityContributorSnapshot = {
   queue: string | null;
   podCount: number;
   resources: Record<string, number>;
+  observedResources?: Record<string, number>;
   ownerHints?: CapacityOwnerHint[];
   owners?: CapacityOwnerRef[];
 };
@@ -215,5 +216,65 @@ export type CapacityObserverResult =
 
 export type CapacityOverviewSummary = {
   observer: CapacityObserverResult;
-  coverage: CapacityCoverageSummary;
+  businessWork: CapacityBusinessWorkSummary;
+  coverage?: CapacityCoverageSummary;
+};
+
+export type CapacityBusinessWorkKind =
+  | "workflowRun"
+  | "session"
+  | "agent"
+  | "benchmarkRun"
+  | "benchmarkInstance"
+  | "infrastructure";
+
+export type CapacityBusinessWorkItem = {
+  key: string;
+  kind: CapacityBusinessWorkKind;
+  id: string;
+  title: string;
+  status: string;
+  href?: string;
+  active: boolean;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  ageSeconds?: number | null;
+  durationSeconds?: number | null;
+  model?: string | null;
+  provider?: string | null;
+  owners: CapacityOwnerRef[];
+  requestedResources: Record<string, number>;
+  observedResources: Record<string, number>;
+  resourceSeconds?: Record<string, number>;
+  podCount: number;
+  contributorCount: number;
+  blockedWorkloadCount: number;
+  queues: string[];
+  namespaces: string[];
+  contributorKeys: string[];
+  pressure: {
+    cpuPct?: number | null;
+    memoryPct?: number | null;
+    podsPct?: number | null;
+    storagePct?: number | null;
+  };
+  telemetry: {
+    requested: boolean;
+    observed: boolean;
+  };
+};
+
+export type CapacityBusinessWorkSummary = {
+  active: CapacityBusinessWorkItem[];
+  recent: CapacityBusinessWorkItem[];
+  infrastructure: CapacityBusinessWorkItem[];
+  totals: {
+    activeWork: number;
+    recentWork: number;
+    unattributedInfrastructure: number;
+    requestedResources: Record<string, number>;
+    observedResources: Record<string, number>;
+    blockedWorkloads: number;
+  };
+  generatedAt: string;
 };

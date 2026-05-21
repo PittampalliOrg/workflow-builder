@@ -57,4 +57,37 @@ describe('capacity ownership helpers', () => {
 			'agent:agent-1'
 		]);
 	});
+
+	it('expands benchmark ownership into run session agent bench and case links', () => {
+		const owners = __capacityOwnershipForTest.benchmarkOwners(
+			{
+				runId: 'run-1',
+				runStatus: 'running',
+				runInstanceRowId: 'case-row-1',
+				instanceId: 'sympy__sympy-20590',
+				agentId: 'agent-1',
+				agentName: 'DeepSeek Smoke',
+				agentSlug: 'deepseek-smoke',
+				workflowExecutionId: 'exec-1',
+				workflowId: 'workflow-1',
+				workflowName: 'SWE-bench instance runner',
+				sessionId: 'session-1',
+				sessionTitle: 'SWE-bench solve'
+			},
+			'dev',
+			{ benchmarkInstanceId: 'sympy__sympy-20590', source: 'pod' }
+		);
+
+		expect(owners.map((owner) => owner.kind)).toEqual([
+			'workflowRun',
+			'session',
+			'agent',
+			'benchmarkRun',
+			'benchmarkInstance'
+		]);
+		expect(owners[0].href).toBe('/workspaces/dev/workflows/workflow-1/runs/exec-1');
+		expect(owners[1].href).toBe('/workspaces/dev/sessions/session-1');
+		expect(owners[2].href).toBe('/workspaces/dev/agents/agent-1');
+		expect(owners[3].href).toBe('/workspaces/dev/benchmarks/runs/run-1');
+	});
 });
