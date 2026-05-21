@@ -202,6 +202,7 @@
 					<a
 						{...props}
 						href={`/workspaces/${workspaceSlug}/workflows`}
+						data-sveltekit-reload
 						class="mr-1 flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground md:mr-0 md:mb-2"
 						aria-label="Back to Workflow Builder"
 					>
