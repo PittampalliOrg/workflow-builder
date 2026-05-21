@@ -134,7 +134,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.94.0"
+version = "0.104.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -146,9 +146,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/d7/11a649b986da06aaeb81334632f1843d70e3797f54ca4a9c5d604b7987d0/anthropic-0.94.0.tar.gz", hash = "sha256:dde8c57de73538c5136c1bca9b16da92e75446b53a73562cc911574e4934435c", size = 654236, upload-time = "2026-04-10T22:27:59.853Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/01/8bfa68b886aa436775325a108700f7da39e290870199ce9251934de3e4aa/anthropic-0.104.0.tar.gz", hash = "sha256:1ae8ef4709e90cc2068c8e8a63c1ecb63cc5360d325a4bef8b296aad76148be3", size = 849329, upload-time = "2026-05-21T20:02:05.346Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/ac/7185750e8688f6ff79b0e3d6a61372c88b81ba81fcda8798c70598e18aca/anthropic-0.94.0-py3-none-any.whl", hash = "sha256:42550b401eed8fcd7f6654234560f99c428306301bca726d32bca4bfb6feb748", size = 627519, upload-time = "2026-04-10T22:27:57.541Z" },
+    { url = "https://files.pythonhosted.org/packages/72/6c/595f1893352dbb4d88f1c2f0983296638783936b2063564aca9abb189990/anthropic-0.104.0-py3-none-any.whl", hash = "sha256:18f73ba3429aab237cdd146a486d20b4da3c008fb4a3ba83f237b27793e884c7", size = 832920, upload-time = "2026-05-21T20:02:07.853Z" },
 ]
 
 [[package]]
@@ -535,7 +535,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.51" },
     { name = "dapr", specifier = ">=1.14" },
-    { name = "dapr-agents", specifier = "==1.0.2" },
+    { name = "dapr-agents", specifier = "==1.0.3" },
     { name = "dapr-ext-workflow", specifier = ">=1.14" },
     { name = "ddgs", specifier = ">=7.0" },
     { name = "fastapi", specifier = ">=0.104" },
@@ -556,10 +556,11 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "dapr-agents"
-version = "1.0.2"
+version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "anthropic" },
     { name = "azure-identity" },
     { name = "cachetools" },
     { name = "cloudevents" },
@@ -599,9 +600,9 @@ dependencies = [
     { name = "websockets" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/29/6c/a70b2a3d65ae5a29a6eec6ea40dce28e2bce3a0e6be5a1a5cc313c367f22/dapr_agents-1.0.2.tar.gz", hash = "sha256:4c5a1ded57be59e31942df2f0c96b1fb3f45c6c00fab48c24932072d3f621ff3", size = 2484840, upload-time = "2026-04-30T15:18:48.945Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/5d/199e377cb446c3c454da93e97081d50d464f97983d1411da3fbb6ca6fa49/dapr_agents-1.0.3.tar.gz", hash = "sha256:7836f6318b841fdd5c67086635cc767b55061fd80fed7204ccb43f34359d61de", size = 2562487, upload-time = "2026-05-19T20:52:17.589Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/d0/39cffbcbb5cbd6422a08de1af30d98c0c35bff30415289375ca202e29f57/dapr_agents-1.0.2-py3-none-any.whl", hash = "sha256:ee371e37307ec4e895fa4ba2dd6fb473353d54d52768fcb7ed75f28b89483591", size = 440066, upload-time = "2026-04-30T15:18:46.844Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/ec/aa8e06075cb33c700c5b549a95d5f1e13dd8c0e4fd27921f49bd39e25ded/dapr_agents-1.0.3-py3-none-any.whl", hash = "sha256:45fc10e1e1b260ec6110d89207b3b67e4797a722e73a0a132100203fa8a22f4e", size = 479985, upload-time = "2026-05-19T20:52:16.152Z" },
 ]
 
 [[package]]
