@@ -405,6 +405,10 @@
 			hasUnhealthy ||
 			hasTelemetryIncomplete
 	);
+	let moreSignalsOpen = $state(false);
+	$effect(() => {
+		if (autoOpenAccordion) moreSignalsOpen = true;
+	});
 
 	// --- Refresh badge formatting -----------------------------------------
 	let now = $state(Date.now());
@@ -679,7 +683,7 @@
 	     ============================================================ -->
 	<details
 		class="group rounded-md border bg-card open:bg-card"
-		open={autoOpenAccordion}
+		bind:open={moreSignalsOpen}
 	>
 		<summary
 			class="flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
