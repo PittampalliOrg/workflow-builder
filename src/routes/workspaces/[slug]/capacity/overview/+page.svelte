@@ -14,9 +14,7 @@
 	} from '@lucide/svelte';
 	import { createClusterQueueStream } from '$lib/stores/kueueviz/cluster-queues.svelte';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
-	import { createResourceFlavorStream } from '$lib/stores/kueueviz/resource-flavors.svelte';
 	import StatusPill from '$lib/components/capacity/status-pill.svelte';
-	import ResourceFlavorStrip from '$lib/components/capacity/resource-flavor-strip.svelte';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
 	import MetricSparkline from '$lib/components/metrics/MetricSparkline.svelte';
 	import CapacityGauge from '$lib/components/capacity/overview/capacity-gauge.svelte';
@@ -36,17 +34,21 @@
 		type HistoryPoint
 	} from '$lib/components/capacity/overview/capacity-trends-panel.svelte';
 	import PendingDurationHistogram from '$lib/components/capacity/overview/pending-duration-histogram.svelte';
-	import WorkloadDistributionDonut from '$lib/components/capacity/overview/workload-distribution-donut.svelte';
-	import CapacityCoveragePanel from '$lib/components/capacity/overview/capacity-coverage-panel.svelte';
 	import type { TrendsWindow } from '$lib/components/capacity/overview/trends-window-toggle.svelte';
 	import {
 		embeddedHeadlampClusterUrl,
-		embeddedHeadlampKueueUrl,
 		normalizeHeadlampCluster
 	} from '$lib/headlamp/links';
-	import { getCapacityOverview, getCapacityPsiTrends, getSchedulingLatency } from './data.remote';
+	import {
+		getCapacityOverview,
+		getCapacityOwnerTimeline,
+		getCapacityPsiTrends,
+		getCapacityTrends,
+		getSchedulingLatency
+	} from './data.remote';
 	import type {
 		CapacityBlockedWorkload,
+		CapacityBusinessWorkItem,
 		CapacityContributorSnapshot,
 		CapacityObserverSnapshot,
 		CapacityQueueSnapshot,
@@ -57,18 +59,31 @@
 
 	const queues = createClusterQueueStream();
 	const workloads = createWorkloadStream();
-	const flavors = createResourceFlavorStream();
-	const schedulingQuery = getSchedulingLatency();
-	const psiTrendsQuery = getCapacityPsiTrends();
 	const capacityQuery = getCapacityOverview();
 
 	const observer = $derived<CapacityObserverSnapshot | null>(
 		capacityQuery.current?.observer.available ? capacityQuery.current.observer.snapshot : null
 	);
-	const coverage = $derived(capacityQuery.current?.coverage ?? null);
+
+	// Trend charts query ClickHouse for the cluster the observer is reporting
+	// (the hub ClickHouse holds every spoke's metrics keyed by k8s.cluster.name).
+	// Deterministic single source: the observed cluster. The cluster identity is
+	// static, so once resolved we keep it — a transient observer-snapshot timeout
+	// shouldn't blank the trends (and we never silently fall back to a default).
+	let metricsCluster = $state<string | null>(null);
+	$effect(() => {
+		if (observer?.cluster) metricsCluster = observer.cluster;
+	});
+	const schedulingQuery = $derived(metricsCluster ? getSchedulingLatency(metricsCluster) : undefined);
+	const psiTrendsQuery = $derived(metricsCluster ? getCapacityPsiTrends(metricsCluster) : undefined);
+	const trendsQuery = $derived(metricsCluster ? getCapacityTrends(metricsCluster) : undefined);
 	const observerError = $derived(
 		capacityQuery.current?.observer.available === false ? capacityQuery.current.observer.error : null
 	);
+	const businessWork = $derived(capacityQuery.current?.businessWork ?? null);
+	const activeWork = $derived(businessWork?.active ?? []);
+	const recentWork = $derived(businessWork?.recent ?? []);
+	const infrastructureWork = $derived(businessWork?.infrastructure ?? []);
 
 	// --- Resource toggle (persisted) ---------------------------------------
 	const DEFAULT_RESOURCE: GaugeResource = 'cpu';
@@ -89,6 +104,43 @@
 			// ignore
 		}
 	});
+
+	// Per-owner timeline for the focused resource (drives the stacked-by-owner
+	// utilization chart). Re-queries when the cluster or resource changes.
+	const ownerTimelineQuery = $derived(
+		metricsCluster
+			? getCapacityOwnerTimeline({ cluster: metricsCluster, resource: primaryResource })
+			: undefined
+	);
+
+	// Resolve an owner-metric (owner_kind, owner_id) to a linked entity, reusing
+	// the hrefs/titles the businessWork enrichment already computed (owner_id
+	// matches the businessWork item id). Falls back to the raw id when the owner
+	// isn't in the current active/recent set.
+	const OWNER_KIND_MAP: Record<string, string> = {
+		benchmark_instance: 'benchmarkInstance',
+		benchmark_run: 'benchmarkRun',
+		workflow_run: 'workflowRun',
+		session: 'session',
+		agent: 'agent'
+	};
+	// The observer normalizes ids for metric labels (e.g. `django__django-15863`
+	// → `django-django-15863`), so match on a normalized form rather than ===.
+	const normId = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+	function resolveOwner(kind: string, id: string): { label: string; href?: string; kind: string } {
+		const mapped = OWNER_KIND_MAP[kind] ?? kind;
+		const target = normId(id);
+		const items = [
+			...(businessWork?.active ?? []),
+			...(businessWork?.recent ?? []),
+			...(businessWork?.infrastructure ?? [])
+		];
+		const item =
+			items.find((w) => w.kind === mapped && w.id === id) ??
+			items.find((w) => w.kind === mapped && normId(w.id) === target);
+		if (item) return { label: item.title, href: item.href, kind: item.kind };
+		return { label: id, kind: mapped };
+	}
 
 	// --- Trends window (persisted) -----------------------------------------
 	let trendsWindow = $state<TrendsWindow>('5m');
@@ -122,7 +174,13 @@
 	async function tick() {
 		isRefreshing = true;
 		try {
-			await Promise.all([capacityQuery.refresh(), schedulingQuery.refresh(), psiTrendsQuery.refresh()]);
+			await Promise.all([
+				capacityQuery.refresh(),
+				schedulingQuery?.refresh(),
+				psiTrendsQuery?.refresh(),
+				trendsQuery?.refresh(),
+				ownerTimelineQuery?.refresh()
+			]);
 			lastRefreshAt = Date.now();
 		} finally {
 			isRefreshing = false;
@@ -188,7 +246,7 @@
 	$effect(() => {
 		const snap = observer;
 		const resource = primaryResource;
-		const sched = schedulingQuery.current;
+		const sched = schedulingQuery?.current;
 		const tot = totals;
 		if (!snap) return;
 		const row = snap.resources.find((r) => r.resource === resource);
@@ -268,22 +326,22 @@
 	const headlampClusterHref = $derived(embeddedHeadlampClusterUrl({ workspaceSlug: slug, cluster }));
 
 	const sparklinePoints = $derived(
-		(schedulingQuery.current?.sparkline ?? []).map((p) => ({
+		(schedulingQuery?.current?.sparkline ?? []).map((p) => ({
 			t: new Date(p.t),
 			value: p.valueMs
 		}))
 	);
 
 	const aggregateStatus = $derived.by(() => {
-		const statuses = [queues.status, workloads.status, flavors.status];
+		const statuses = [queues.status, workloads.status];
 		if (statuses.includes('connecting')) return 'connecting';
 		if (statuses.includes('degraded')) return 'degraded';
 		if (statuses.includes('closed')) return 'closed';
 		return 'open';
 	});
-	const aggregateError = $derived(queues.error ?? workloads.error ?? flavors.error);
+	const aggregateError = $derived(queues.error ?? workloads.error);
 	const aggregateUpdate = $derived.by(() => {
-		const updates = [queues.lastUpdate, workloads.lastUpdate, flavors.lastUpdate].filter(
+		const updates = [queues.lastUpdate, workloads.lastUpdate].filter(
 			(u): u is string => Boolean(u)
 		);
 		if (updates.length === 0) return null;
@@ -434,24 +492,28 @@
 
 	const firstLoad = $derived(capacityQuery.current === undefined && observer === null);
 
-	// --- Headlamp helpers (per-row) ---------------------------------------
-	function blockedHeadlampUrl(wl: CapacityBlockedWorkload): string | null {
-		return embeddedHeadlampKueueUrl({
-			workspaceSlug: slug,
-			cluster,
-			kind: 'Workload',
-			namespace: wl.namespace,
-			name: wl.name
-		});
+	function workKindLabel(kind: CapacityBusinessWorkItem['kind']): string {
+		if (kind === 'workflowRun') return 'Workflow';
+		if (kind === 'benchmarkRun') return 'Benchmark';
+		if (kind === 'benchmarkInstance') return 'Case';
+		if (kind === 'infrastructure') return 'Infra';
+		return kind.charAt(0).toUpperCase() + kind.slice(1);
 	}
 
-	function flavorHeadlampUrl(name: string): string | null {
-		return embeddedHeadlampKueueUrl({
-			workspaceSlug: slug,
-			cluster,
-			kind: 'ResourceFlavor',
-			name
-		});
+	function durationLabel(seconds: number | null | undefined): string {
+		if (seconds === null || seconds === undefined) return '—';
+		if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
+		if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+		return `${(seconds / 3600).toFixed(seconds < 10 * 3600 ? 1 : 0)}h`;
+	}
+
+	function resourceLabel(resources: Record<string, number> | undefined, resource: GaugeResource): string {
+		return formatQuantityForResource(resource, resources?.[resource] ?? 0);
+	}
+
+	// --- Headlamp helpers (per-row) ---------------------------------------
+	function blockedHeadlampUrl(wl: CapacityBlockedWorkload): string | null {
+		return null;
 	}
 </script>
 
@@ -495,15 +557,15 @@
 		</div>
 
 		<div class="flex flex-wrap items-center gap-1.5">
-			{#if schedulingQuery.current?.hasData}
+			{#if schedulingQuery?.current?.hasData}
 				{@const snap = schedulingQuery.current}
 				<Badge
 					variant="outline"
 					class="font-mono text-[10px] inline-flex items-center gap-1.5"
-					title={`Dapr workflow scheduling latency over the last ${snap.windowSeconds / 60}m. P50/P95 measure the lag between CreateWorkflowInstance and the runtime picking it up — rising P95 = sidecar concurrency caps saturated.`}
+					title={`Dapr workflow scheduling latency over the last ${(snap?.windowSeconds ?? 300) / 60}m. P50/P95 measure the lag between CreateWorkflowInstance and the runtime picking it up — rising P95 = sidecar concurrency caps saturated.`}
 				>
 					<span class="text-muted-foreground">sched P95:</span>
-					<span>{snap.p95Ms !== null ? `${Math.round(snap.p95Ms)}ms` : '—'}</span>
+					<span>{snap?.p95Ms != null ? `${Math.round(snap.p95Ms)}ms` : '—'}</span>
 					{#if sparklinePoints.length > 1}
 						<MetricSparkline points={sparklinePoints} height={14} width={48} />
 					{/if}
@@ -552,116 +614,92 @@
 	{/if}
 
 	<!-- ============================================================
-	     Zone B — Cluster cockpit (gauge + headroom list)
+	     Zone B — Active business work
 	     ============================================================ -->
-	<section class="grid gap-4 rounded-md border bg-card p-4 md:grid-cols-[260px_1fr]">
-		<div class="flex flex-col items-center gap-3">
-			{#if primaryResourceRow}
-				<!--
-				  Gauge denominator is `allocatable` (real cluster capacity) so the
-				  reading matches the operator's mental model (~30-45% on ryzen)
-				  rather than the intentionally-tight Kueue admission cap (which
-				  reads >100% by design — see kueue-capacity/RATIONALE.md).
-				  The Kueue cap is shown as a tick on the arc so admission-cap
-				  context isn't lost.
-				-->
-				<CapacityGauge
-					used={primaryResourceRow.requested}
-					nominal={primaryResourceRow.allocatable}
-					over={primaryOver}
-					capMark={primaryResourceRow.renderedBudget}
-					capMarkLabel="Kueue cap"
-					primaryLabel={RESOURCE_LABELS[primaryResource]}
-					secondaryLabel={`${formatQuantityForResource(primaryResource, primaryResourceRow.requested)} / ${formatQuantityForResource(primaryResource, primaryResourceRow.allocatable)}`}
-					tertiaryLabel={observer?.cluster ? `cohort agent-platform` : undefined}
-					size={160}
-					strokeWidth={14}
-				/>
-			{:else}
-				<div class="flex h-[160px] w-[160px] items-center justify-center text-xs text-muted-foreground">
-					{#if firstLoad}Loading…{:else}No data{/if}
+	<section class="grid gap-4 rounded-md border bg-card p-4 lg:grid-cols-[300px_1fr]">
+		<div class="space-y-3">
+			<header>
+				<h2 class="text-sm font-semibold">Active work</h2>
+				<p class="text-xs text-muted-foreground">
+					Workflows, sessions, agents, benchmark runs, and benchmark cases consuming capacity now.
+				</p>
+			</header>
+			<div class="grid grid-cols-2 gap-2 text-xs">
+				<div class="rounded border bg-background p-3">
+					<div class="text-[10px] uppercase tracking-wide text-muted-foreground">Running</div>
+					<div class="mt-1 text-2xl font-semibold tabular-nums">{activeWork.length}</div>
 				</div>
-			{/if}
-
-			<GaugeResourceToggle
-				value={primaryResource}
-				onChange={(next) => (primaryResource = next)}
-			/>
-
-			{#if primaryResourceRow}
-				{@const realHeadroom = Math.max(
-					0,
-					primaryResourceRow.allocatable - primaryResourceRow.requested
-				)}
-				<dl class="mt-1 grid w-full grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
-					<dt class="text-muted-foreground">Allocatable</dt>
-					<dd class="text-right font-mono tabular-nums">
-						{formatQuantityForResource(primaryResource, primaryResourceRow.allocatable)}
-					</dd>
-					<dt class="text-muted-foreground">Real headroom</dt>
-					<dd class="text-right font-mono tabular-nums text-foreground/90">
-						{formatQuantityForResource(primaryResource, realHeadroom)}
-					</dd>
-					<dt class="text-muted-foreground">Reserve</dt>
-					<dd class="text-right font-mono tabular-nums">
-						{formatQuantityForResource(primaryResource, primaryResourceRow.criticalReserve)}
-					</dd>
-					<dt class="text-muted-foreground" title="Kueue admission cap (intentionally tight per RATIONALE.md)">Kueue cap</dt>
-					<dd class="text-right font-mono tabular-nums">
-						{formatQuantityForResource(primaryResource, primaryResourceRow.renderedBudget)}
-					</dd>
-					<dt class="text-muted-foreground" title="Kueue budget − requested (negative = at admission cap, normal on ryzen)">
-						Kueue headroom
-					</dt>
-					<dd class="text-right font-mono tabular-nums text-muted-foreground">
-						{formatQuantityForResource(primaryResource, primaryResourceRow.headroom)}
-					</dd>
-				</dl>
-			{/if}
+				<div class="rounded border bg-background p-3">
+					<div class="text-[10px] uppercase tracking-wide text-muted-foreground">Blocked</div>
+					<div class="mt-1 text-2xl font-semibold tabular-nums">
+						{businessWork?.totals.blockedWorkloads ?? blockedWorkloads.length}
+					</div>
+				</div>
+			</div>
+			<div class="rounded border bg-background p-3">
+				<div class="mb-2 flex items-center justify-between gap-2">
+					<span class="text-[10px] uppercase tracking-wide text-muted-foreground">Requested</span>
+					<GaugeResourceToggle
+						value={primaryResource}
+						onChange={(next) => (primaryResource = next)}
+					/>
+				</div>
+				<div class="font-mono text-xl tabular-nums">
+					{resourceLabel(businessWork?.totals.requestedResources, primaryResource)}
+				</div>
+				<div class="mt-1 text-[11px] text-muted-foreground">
+					actual {resourceLabel(businessWork?.totals.observedResources, primaryResource)}
+					{#if !businessWork?.totals.observedResources?.[primaryResource]}
+						<span class="text-muted-foreground/70"> · telemetry pending</span>
+					{/if}
+				</div>
+			</div>
+			<PressurePanel psi={observer?.psi} {history} />
 		</div>
 
 		<div class="min-w-0">
-			<header class="flex items-baseline justify-between gap-2">
-				<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-					Queues ({queues.data.length}) · Headroom
-				</h2>
-				<span class="text-[10px] text-muted-foreground">
-					{RESOURCE_LABELS[primaryResource]} · click for detail
-				</span>
-			</header>
-
-			<div class="mt-2 max-h-[340px] divide-y overflow-y-auto">
-				{#each queues.data as cq (cq.name)}
-					<QueueHeadroomRow
-						queue={cq}
-						observerQueue={queueSnapshot(cq.name)}
-						resource={primaryResource}
-						{cluster}
-						{slug}
-						onSelect={(q) => {
-							selectedQueue = q;
-							queueSheetOpen = true;
-						}}
-					/>
+			<div class="divide-y rounded border">
+				{#each activeWork as item (item.key)}
+					<div class="grid gap-3 px-3 py-3 text-xs md:grid-cols-[minmax(0,1.4fr)_120px_110px_160px_130px] md:items-center">
+						<div class="min-w-0">
+							<div class="flex min-w-0 items-center gap-2">
+								<Badge variant="outline" class="shrink-0 text-[10px]">{workKindLabel(item.kind)}</Badge>
+								{#if item.href}
+									<a href={item.href} class="truncate font-medium hover:underline">{item.title}</a>
+								{:else}
+									<span class="truncate font-medium">{item.title}</span>
+								{/if}
+							</div>
+							<div class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+								<span class="font-mono">{item.status}</span>
+								{#if item.model}
+									<span class="truncate">{item.provider ? `${item.provider}/` : ''}{item.model}</span>
+								{/if}
+								{#if item.queues.length > 0}
+									<span class="font-mono">{item.queues.join(', ')}</span>
+								{/if}
+							</div>
+						</div>
+						<div class="font-mono text-muted-foreground">
+							<Clock3 class="mr-1 inline size-3" />{durationLabel(item.durationSeconds ?? item.ageSeconds)}
+						</div>
+						<div class="font-mono tabular-nums">
+							{resourceLabel(item.requestedResources, primaryResource)}
+							<div class="text-[10px] text-muted-foreground">requested</div>
+						</div>
+						<div class="font-mono tabular-nums">
+							{resourceLabel(item.observedResources, primaryResource)}
+							<div class="text-[10px] text-muted-foreground">
+								{item.telemetry.observed ? 'actual' : 'actual unavailable'}
+							</div>
+						</div>
+						<CapacityOwnerLinks owners={item.owners} max={5} />
+					</div>
 				{:else}
-					<p class="py-3 text-xs text-muted-foreground">
-						{firstLoad ? 'Loading queues…' : 'No ClusterQueues registered.'}
-					</p>
+					<div class="px-3 py-8 text-center text-sm text-muted-foreground">
+						{firstLoad ? 'Loading active work…' : 'No active business work is consuming capacity.'}
+					</div>
 				{/each}
-			</div>
-
-			{#if primaryResourceRow}
-				<div class="mt-3 border-t pt-3">
-					<HeadroomForecast
-						samples={forecastSamples}
-						headroom={primaryResourceRow.headroom}
-						resource={primaryResource}
-					/>
-				</div>
-			{/if}
-
-			<div class="mt-3">
-				<PressurePanel psi={observer?.psi} {history} />
 			</div>
 		</div>
 	</section>
@@ -671,13 +709,49 @@
 	     ============================================================ -->
 	<CapacityTrendsPanel
 		{history}
-		psiTrends={psiTrendsQuery.current ?? null}
+		psiTrends={psiTrendsQuery?.current ?? null}
+		capacityTrends={trendsQuery?.current ?? null}
+		ownerTimeline={ownerTimelineQuery?.current ?? null}
+		{resolveOwner}
 		window={trendsWindow}
 		resource={primaryResource}
 		onWindowChange={(next) => (trendsWindow = next)}
 	/>
 
-	<CapacityCoveragePanel {coverage} />
+	<section class="rounded-md border bg-card p-4">
+		<header class="mb-3 flex items-baseline justify-between gap-2">
+			<h2 class="text-sm font-semibold">Recent work</h2>
+			<span class="text-[11px] text-muted-foreground">
+				{recentWork.length} completed item{recentWork.length === 1 ? '' : 's'}
+			</span>
+		</header>
+		{#if recentWork.length === 0}
+			<p class="text-xs text-muted-foreground">No recent workflow, session, or benchmark history.</p>
+		{:else}
+			<div class="divide-y rounded border">
+				{#each recentWork as item (item.key)}
+					<div class="grid gap-2 px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_120px_100px_180px] md:items-center">
+						<div class="min-w-0">
+							<div class="flex min-w-0 items-center gap-2">
+								<Badge variant="outline" class="shrink-0 text-[10px]">{workKindLabel(item.kind)}</Badge>
+								{#if item.href}
+									<a href={item.href} class="truncate font-medium hover:underline">{item.title}</a>
+								{:else}
+									<span class="truncate font-medium">{item.title}</span>
+								{/if}
+							</div>
+							{#if item.model}
+								<div class="mt-1 truncate text-[11px] text-muted-foreground">{item.model}</div>
+							{/if}
+						</div>
+						<span class="font-mono text-muted-foreground">{item.status}</span>
+						<span class="font-mono text-muted-foreground">{durationLabel(item.durationSeconds)}</span>
+						<CapacityOwnerLinks owners={item.owners} max={3} compact />
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</section>
 
 	<!-- ============================================================
 	     More signals — collapsible
@@ -721,6 +795,63 @@
 		</summary>
 
 		<div class="space-y-5 border-t px-4 py-4">
+			<section class="space-y-3">
+				<header class="flex items-baseline justify-between gap-2">
+					<h3 class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+						Infrastructure details
+					</h3>
+					<span class="text-[10px] text-muted-foreground">
+						{queues.data.length} queues · {infrastructureWork.length} unattributed live group{infrastructureWork.length === 1 ? '' : 's'}
+					</span>
+				</header>
+				<div class="grid gap-4 md:grid-cols-[240px_1fr]">
+					<div class="flex flex-col items-center gap-3 rounded border bg-background p-3">
+						{#if primaryResourceRow}
+							<CapacityGauge
+								used={primaryResourceRow.requested}
+								nominal={primaryResourceRow.allocatable}
+								over={primaryOver}
+								capMark={primaryResourceRow.renderedBudget}
+								capMarkLabel="Kueue cap"
+								primaryLabel={RESOURCE_LABELS[primaryResource]}
+								secondaryLabel={`${formatQuantityForResource(primaryResource, primaryResourceRow.requested)} / ${formatQuantityForResource(primaryResource, primaryResourceRow.allocatable)}`}
+								tertiaryLabel={observer?.cluster ? `cohort agent-platform` : undefined}
+								size={140}
+								strokeWidth={12}
+							/>
+							<HeadroomForecast
+								samples={forecastSamples}
+								headroom={primaryResourceRow.headroom}
+								resource={primaryResource}
+							/>
+						{:else}
+							<div class="flex h-[140px] items-center justify-center text-xs text-muted-foreground">
+								{firstLoad ? 'Loading…' : 'No data'}
+							</div>
+						{/if}
+					</div>
+					<div class="max-h-[300px] divide-y overflow-y-auto rounded border">
+						{#each queues.data as cq (cq.name)}
+							<QueueHeadroomRow
+								queue={cq}
+								observerQueue={queueSnapshot(cq.name)}
+								resource={primaryResource}
+								{cluster}
+								{slug}
+								onSelect={(q) => {
+									selectedQueue = q;
+									queueSheetOpen = true;
+								}}
+							/>
+						{:else}
+							<p class="p-3 text-xs text-muted-foreground">
+								{firstLoad ? 'Loading queues…' : 'No ClusterQueues registered.'}
+							</p>
+						{/each}
+					</div>
+				</div>
+			</section>
+
 			<!-- Blocked workloads -->
 			<section class="space-y-2">
 				<header class="flex items-baseline justify-between gap-2">
@@ -880,40 +1011,6 @@
 				</section>
 			{/if}
 
-			<!-- Resource flavors + workload distribution -->
-			<section class="space-y-2">
-				<header class="flex items-baseline justify-between gap-2">
-					<h3 class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-						Resource Flavors
-					</h3>
-					<a
-						href={`/workspaces/${slug}/capacity/flavors`}
-						class="text-[10px] text-primary hover:underline"
-					>
-						View all →
-					</a>
-				</header>
-				<div class="grid gap-3 md:grid-cols-[1fr_320px]">
-					<ResourceFlavorStrip flavors={flavors.data} />
-					<WorkloadDistributionDonut queues={queues.data} />
-				</div>
-				{#if flavors.data.length > 0}
-					<div class="flex flex-wrap gap-2 text-[10px] text-muted-foreground">
-						{#each flavors.data as f (f.name)}
-							{@const url = flavorHeadlampUrl(f.name)}
-							{#if url}
-								<a
-									href={url}
-									class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono hover:text-foreground"
-								>
-									{f.name}
-									<ExternalLink class="size-2.5" />
-								</a>
-							{/if}
-						{/each}
-					</div>
-				{/if}
-			</section>
 		</div>
 	</details>
 </div>

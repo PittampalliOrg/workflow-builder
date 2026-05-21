@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print a one-screen status table for every Skaffold-managed module.
+# Print a one-screen status table for every active Skaffold-managed module.
 #
 # For each module shows:
 #   - ARGO    Whether the gitea-ryzen ArgoCD Application is paused
@@ -15,7 +15,8 @@
 #             would fail), "MISSING" (Deployment not found).
 #
 # Usage:
-#   bash scripts/skaffold-status.sh                       # all modules
+#   bash scripts/skaffold-status.sh                       # active modules
+#   bash scripts/skaffold-status.sh --all                 # active + inactive modules
 #   bash scripts/skaffold-status.sh workflow-builder      # single module
 #   pnpm skaffold:status                                  # via package.json
 #
@@ -26,13 +27,19 @@ set -euo pipefail
 
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
-# Keep in sync with scripts/skaffold-dev.sh's ALL_MODULES.
-ALL_MODULES=(workflow-builder workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator)
+# Keep in sync with scripts/skaffold-dev.sh's module sets.
+ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
+INACTIVE_MODULES=(fn-activepieces)
+ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
 
 modules=("$@")
 if [ "${#modules[@]}" -eq 0 ] \
-   || [ "${modules[0]}" = "ALL" ] \
-   || [ "${modules[0]}" = "all" ]; then
+   || [ "${modules[0]}" = "ACTIVE" ] \
+   || [ "${modules[0]}" = "active" ]; then
+  modules=("${ACTIVE_MODULES[@]}")
+elif [ "${modules[0]}" = "ALL" ] \
+   || [ "${modules[0]}" = "all" ] \
+   || [ "${modules[0]}" = "--all" ]; then
   modules=("${ALL_MODULES[@]}")
 fi
 
@@ -120,14 +127,24 @@ print_row() {
 declare -i paused_count=0
 declare -i drift_count=0
 declare -i name_mismatch_count=0
+declare -i inactive_count=0
 
 printf '\n'
-printf '  %-22s %-22s %-60s %-50s %s\n' MODULE ARGO LIVE PINNED DRIFT
-printf '  %-22s %-22s %-60s %-50s %s\n' "$(printf -- '-%.0s' {1..22})" \
-  "$(printf -- '-%.0s' {1..22})" "$(printf -- '-%.0s' {1..60})" \
-  "$(printf -- '-%.0s' {1..50})" "-----"
+printf '  %-22s %-9s %-22s %-60s %-50s %s\n' MODULE STATE ARGO LIVE PINNED DRIFT
+printf '  %-22s %-9s %-22s %-60s %-50s %s\n' "$(printf -- '-%.0s' {1..22})" \
+  "$(printf -- '-%.0s' {1..9})" "$(printf -- '-%.0s' {1..22})" \
+  "$(printf -- '-%.0s' {1..60})" "$(printf -- '-%.0s' {1..50})" "-----"
 
 for mod in "${modules[@]}"; do
+  module_state="active"
+  for inactive in "${INACTIVE_MODULES[@]}"; do
+    if [ "${inactive}" = "${mod}" ]; then
+      module_state="inactive"
+      inactive_count=$((inactive_count + 1))
+      break
+    fi
+  done
+
   # Argo state: skip-reconcile + sync + health
   argo_raw=$(kubectl get application "${mod}" -n "${argo_ns}" \
     -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}{"|"}{.status.sync.status}{"|"}{.status.health.status}' \
@@ -200,7 +217,8 @@ for mod in "${modules[@]}"; do
     name_mismatch_count=$((name_mismatch_count + 1))
   fi
 
-  print_row "${mod}" "${argo_state}" "${live_display}" "${pinned_display}" "${drift}"
+  printf '  %-22s %-9s %-22s %-60s %-50s %s\n' \
+    "${mod}" "${module_state}" "${argo_state}" "${live_display}" "${pinned_display}" "${drift}"
 done
 
 # --- summary + hints --------------------------------------------------------
@@ -221,7 +239,11 @@ if [ "${name_mismatch_count}" -gt 0 ]; then
   printf '       form (kustomize matches images by exact `name`). commit-pin.sh handles both shapes —\n'
   printf '       informational only; no fix needed.\n'
 fi
-if [ "${paused_count}" -eq 0 ] && [ "${drift_count}" -eq 0 ] && [ "${name_mismatch_count}" -eq 0 ]; then
+if [ "${inactive_count}" -gt 0 ]; then
+  printf '  ℹ  %d inactive module(s) shown. Inactive modules are excluded from default status and\n' "${inactive_count}"
+  printf '       from `skaffold-dev.sh ALL`; run them only with SKAFFOLD_ALLOW_INACTIVE=1.\n'
+fi
+if [ "${paused_count}" -eq 0 ] && [ "${drift_count}" -eq 0 ] && [ "${name_mismatch_count}" -eq 0 ] && [ "${inactive_count}" -eq 0 ]; then
   printf '  ✓  All modules are active, in sync with the gitea-ryzen pin, and have well-formed name fields.\n'
 fi
 printf '\n'

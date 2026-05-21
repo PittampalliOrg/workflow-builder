@@ -7,6 +7,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const TERMINAL_PATH_RE = /^\/api\/sandboxes\/([^/]+)\/terminal\/([^/]+)$/;
+const OPENSHELL_SESSION_TERMINAL_PATH_RE =
+	/^\/api\/openshell\/sessions\/([^/]+)\/terminal\/([^/]+)$/;
 const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
 
 // Preflight origin: the BFF hits itself for the resolver endpoint that
@@ -20,8 +22,17 @@ const K8S_PORT = process.env.KUBERNETES_SERVICE_PORT || '443';
 
 function getUpstreamWsUrl() {
 	return (
+		process.env.OPENSHELL_AGENT_RUNTIME_WS_BASE_URL ||
 		process.env.OPENSHELL_AGENT_RUNTIME_WS_URL ||
 		'ws://openshell-agent-runtime.openshell.svc.cluster.local:8084'
+	);
+}
+
+function getOpenShellRuntimeToken() {
+	return (
+		process.env.OPENSHELL_AGENT_RUNTIME_INTERNAL_TOKEN ||
+		process.env.INTERNAL_API_TOKEN ||
+		''
 	);
 }
 
@@ -46,6 +57,17 @@ server.on('upgrade', (req, socket, head) => {
 		handleShellUpgrade(req, socket, head, shellMatch[1], url.searchParams.get('container') || 'chromium');
 		return;
 	}
+	const openshellSessionMatch = url.pathname.match(OPENSHELL_SESSION_TERMINAL_PATH_RE);
+	if (openshellSessionMatch) {
+		handleOpenShellSessionTerminalUpgrade(
+			req,
+			socket,
+			head,
+			openshellSessionMatch[1],
+			openshellSessionMatch[2]
+		);
+		return;
+	}
 	const match = url.pathname.match(TERMINAL_PATH_RE);
 	if (!match) {
 		socket.destroy();
@@ -54,10 +76,97 @@ server.on('upgrade', (req, socket, head) => {
 
 	const sandboxName = decodeURIComponent(match[1]);
 	const sessionId = decodeURIComponent(match[2]);
-	const upstreamUrl = `${getUpstreamWsUrl()}/terminal/${encodeURIComponent(sandboxName)}/${encodeURIComponent(sessionId)}`;
+	handleOpenShellSandboxTerminalUpgrade(req, socket, head, sandboxName, sessionId);
+});
+
+async function resolveSandboxTerminal(req, sandboxName, terminalId) {
+	const resolverUrl =
+		`${SHELL_RESOLVER_ORIGIN}/api/sandboxes/${encodeURIComponent(sandboxName)}` +
+		`/terminal/${encodeURIComponent(terminalId)}/resolve`;
+	const res = await fetch(resolverUrl, {
+		method: 'POST',
+		headers: {
+			...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+			...(req.headers.authorization ? { authorization: req.headers.authorization } : {})
+		}
+	});
+	if (!res.ok) return { error: res.status };
+	return res.json();
+}
+
+async function resolveOpenShellTerminal(req, sessionId, terminalId) {
+	const resolverUrl =
+		`${SHELL_RESOLVER_ORIGIN}/api/openshell/sessions/${encodeURIComponent(sessionId)}` +
+		`/terminal/${encodeURIComponent(terminalId)}/resolve`;
+	const res = await fetch(resolverUrl, {
+		method: 'POST',
+		headers: {
+			...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+			...(req.headers.authorization ? { authorization: req.headers.authorization } : {})
+		}
+	});
+	if (!res.ok) return { error: res.status };
+	return res.json();
+}
+
+function writeWsPreflightError(socket, status) {
+	const code = status === 401 ? 401 : status === 404 ? 404 : status === 409 ? 409 : 503;
+	const name =
+		code === 401
+			? 'Unauthorized'
+			: code === 404
+				? 'Not Found'
+				: code === 409
+					? 'Conflict'
+					: 'Service Unavailable';
+	socket.write(`HTTP/1.1 ${code} ${name}\r\n\r\n`);
+	socket.destroy();
+}
+
+function handleOpenShellSandboxTerminalUpgrade(req, socket, head, sandboxName, terminalId) {
+	(async () => {
+		const res = await resolveSandboxTerminal(req, sandboxName, terminalId);
+		if (res.error) {
+			writeWsPreflightError(socket, res.error);
+			return;
+		}
+		proxyOpenShellTerminal(req, socket, head, res.sandboxName, terminalId);
+	})().catch(() => {
+		try {
+			socket.destroy();
+		} catch {
+			/* noop */
+		}
+	});
+}
+
+function handleOpenShellSessionTerminalUpgrade(req, socket, head, sessionIdRaw, terminalIdRaw) {
+	const sessionId = decodeURIComponent(sessionIdRaw);
+	const terminalId = decodeURIComponent(terminalIdRaw);
+	(async () => {
+		const res = await resolveOpenShellTerminal(req, sessionId, terminalId);
+		if (res.error) {
+			writeWsPreflightError(socket, res.error);
+			return;
+		}
+		proxyOpenShellTerminal(req, socket, head, res.sandboxName, terminalId);
+	})().catch(() => {
+		try {
+			socket.destroy();
+		} catch {
+			/* noop */
+		}
+	});
+}
+
+function proxyOpenShellTerminal(req, socket, head, sandboxName, sessionId) {
+	const upstreamUrl = `${getUpstreamWsUrl().replace(/\/$/, '')}/terminal/${encodeURIComponent(sandboxName)}/${encodeURIComponent(sessionId)}`;
+	const token = getOpenShellRuntimeToken();
 
 	wss.handleUpgrade(req, socket, head, (browserWs) => {
-		const upstream = new WebSocket(upstreamUrl);
+		const upstream = new WebSocket(upstreamUrl, {
+			headers: token ? { 'X-Internal-Token': token } : {}
+		});
 		const pendingMessages = [];
 
 		browserWs.on('message', (data, isBinary) => {
@@ -104,7 +213,7 @@ server.on('upgrade', (req, socket, head) => {
 			}
 		});
 	});
-});
+}
 
 server.listen(PORT, HOST, () => {
 	console.log(`Listening on http://${HOST}:${PORT}`);

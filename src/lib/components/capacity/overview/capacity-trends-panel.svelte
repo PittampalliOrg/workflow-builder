@@ -12,10 +12,13 @@
 	 * LayerChart v2 supports but adds complexity we don't need on first pass).
 	 */
 	import * as Chart from '$lib/components/ui/chart';
-	import { AreaChart, LineChart, Spline, Area, AnnotationLine } from 'layerchart';
+	import { AreaChart, LineChart, Spline, Area, AnnotationLine, AnnotationRange } from 'layerchart';
 	import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/components/ui/collapsible';
 	import { ChevronDown, ChevronRight, LineChart as LineChartIcon } from '@lucide/svelte';
 	import TrendsWindowToggle, { type TrendsWindow } from './trends-window-toggle.svelte';
+	import CapacityCandlestick, { type Candle } from './capacity-candlestick.svelte';
+	import CapacityOwnerStack, { type ResolvedOwner } from './capacity-owner-stack.svelte';
+	import type { CapacityOwnerTimeline } from '../../../../routes/workspaces/[slug]/capacity/overview/data.remote';
 	import type { GaugeResource } from './gauge-resource-toggle.svelte';
 
 	export type HistoryPoint = {
@@ -54,15 +57,43 @@
 		hasData: boolean;
 	};
 
+	/**
+	 * ClickHouse-backed trends (durable; populate instantly). Preferred over the
+	 * in-memory `history` buffer for the headroom / workloads / latency charts —
+	 * the buffer resets on reload + resource flip and pauses when the tab is
+	 * hidden, so on a quiet/backgrounded tab it never crosses the render
+	 * threshold. Falls back to the buffer when ClickHouse has no data.
+	 */
+	export type CapacityTrendsSnapshot = {
+		utilizationPctByResource: Record<string, Array<{ t: string; value: number }>>;
+		admitted: Array<{ t: string; value: number }>;
+		pending: Array<{ t: string; value: number }>;
+		reserving: Array<{ t: string; value: number }>;
+		latencyAvgMs: Array<{ t: string; value: number }>;
+		hasData: boolean;
+	};
+
 	type Props = {
 		history: HistoryPoint[];
 		psiTrends?: CapacityPsiTrendsSnapshot | null;
+		capacityTrends?: CapacityTrendsSnapshot | null;
+		ownerTimeline?: CapacityOwnerTimeline | null;
+		resolveOwner?: (kind: string, id: string) => ResolvedOwner;
 		window: TrendsWindow;
 		resource: GaugeResource;
 		onWindowChange: (next: TrendsWindow) => void;
 	};
 
-	let { history, psiTrends = null, window: windowSel, resource, onWindowChange }: Props = $props();
+	let {
+		history,
+		psiTrends = null,
+		capacityTrends = null,
+		ownerTimeline = null,
+		resolveOwner = (kind, id) => ({ label: id, kind }),
+		window: windowSel,
+		resource,
+		onWindowChange
+	}: Props = $props();
 
 	const WINDOW_MS: Record<TrendsWindow, number> = {
 		'5m': 5 * 60 * 1000,
@@ -135,6 +166,95 @@
 		}));
 	});
 
+	// --- ClickHouse-preferred series (fall back to client buffer) ----------
+	const cutoffMs = $derived(Date.now() - WINDOW_MS[windowSel]);
+
+	// Utilization % (requested ÷ allocatable) per the selected resource, from
+	// ClickHouse. Rises as workloads consume capacity. ClickHouse is the source
+	// of truth here; no buffer fallback (the buffer only held the old headroom
+	// metric).
+	const utilizationWindowed = $derived.by<Array<{ ts: Date; value: number }>>(() => {
+		const ch = capacityTrends?.utilizationPctByResource?.[resource];
+		if (!ch || ch.length === 0) return [];
+		return ch
+			.map((p) => ({ t: new Date(p.t).getTime(), value: p.value }))
+			.filter((p) => Number.isFinite(p.t) && p.t >= cutoffMs)
+			.map((p) => ({ ts: new Date(p.t), value: p.value }));
+	});
+
+	// Candlestick: bucket the utilization% points into ~12 OHLC candles across
+	// the window so each candle shows how capacity utilization churned within
+	// the bucket as workloads activated (up candle = more capacity consumed).
+	const candles = $derived.by<Candle[]>(() => {
+		const pts = utilizationWindowed;
+		if (pts.length < 2) return [];
+		const span = WINDOW_MS[windowSel];
+		const candleMs = Math.max(30_000, Math.floor(span / 12));
+		const byBucket = new Map<number, Candle>();
+		for (const p of pts) {
+			const t = p.ts.getTime();
+			const key = Math.floor(t / candleMs) * candleMs;
+			const existing = byBucket.get(key);
+			if (!existing) {
+				byBucket.set(key, { t: key, open: p.value, high: p.value, low: p.value, close: p.value });
+			} else {
+				existing.high = Math.max(existing.high, p.value);
+				existing.low = Math.min(existing.low, p.value);
+				existing.close = p.value; // points are time-ordered → last is close
+			}
+		}
+		return [...byBucket.values()].sort((a, b) => a.t - b.t);
+	});
+
+	type WorkloadRow = { ts: Date; admitted: number; pending: number; reserving: number };
+	const workloadsWindowed = $derived.by<WorkloadRow[]>(() => {
+		const ct = capacityTrends;
+		if (ct?.hasData && (ct.admitted.length || ct.pending.length || ct.reserving.length)) {
+			const byTs = new Map<number, WorkloadRow>();
+			const merge = (pts: Array<{ t: string; value: number }>, key: 'admitted' | 'pending' | 'reserving') => {
+				for (const p of pts) {
+					const t = new Date(p.t).getTime();
+					if (!Number.isFinite(t) || t < cutoffMs) continue;
+					const row = byTs.get(t) ?? { ts: new Date(t), admitted: 0, pending: 0, reserving: 0 };
+					row[key] = p.value;
+					byTs.set(t, row);
+				}
+			};
+			merge(ct.admitted, 'admitted');
+			merge(ct.pending, 'pending');
+			merge(ct.reserving, 'reserving');
+			return [...byTs.values()].sort((a, b) => a.ts.getTime() - b.ts.getTime());
+		}
+		return windowed.map((p) => ({
+			ts: p.ts,
+			admitted: p.admittedCount,
+			pending: p.pendingCount,
+			reserving: p.reservingCount
+		}));
+	});
+
+	// Latency: ClickHouse gives an avg-per-bucket line; the buffer gives P50/P95.
+	const latencyClickhouse = $derived.by<Array<{ ts: Date; value: number }>>(() => {
+		const ch = capacityTrends?.latencyAvgMs;
+		if (capacityTrends?.hasData && ch && ch.length > 0) {
+			return ch
+				.map((p) => ({ t: new Date(p.t).getTime(), value: p.value }))
+				.filter((p) => Number.isFinite(p.t) && p.t >= cutoffMs)
+				.map((p) => ({ ts: new Date(p.t), value: p.value }));
+		}
+		return [];
+	});
+
+	const sampleCount = $derived(
+		Math.max(
+			windowed.length,
+			utilizationWindowed.length,
+			workloadsWindowed.length,
+			latencyClickhouse.length,
+			psiWindowed.length
+		)
+	);
+
 	let open = $state(false);
 
 	const latencyConfig = {
@@ -149,7 +269,11 @@
 	} satisfies Chart.ChartConfig;
 
 	const headroomConfig = {
-		headroom: { label: 'Headroom %', color: 'var(--chart-1)' }
+		headroom: { label: 'Utilization %', color: 'var(--chart-1)' }
+	} satisfies Chart.ChartConfig;
+
+	const latencyAvgConfig = {
+		latency: { label: 'avg latency', color: 'var(--chart-1)' }
 	} satisfies Chart.ChartConfig;
 
 	const psiConfig = {
@@ -177,15 +301,15 @@
 			<span class="font-medium">Trends</span>
 			<span class="text-[11px] text-muted-foreground">
 				last {windowSel}
-				{#if windowed.length > 0}
-					· {windowed.length} sample{windowed.length === 1 ? '' : 's'}
+				{#if sampleCount > 0}
+					· {sampleCount} sample{sampleCount === 1 ? '' : 's'}
 				{/if}
 			</span>
 		</div>
 		{#if open}
 			<div
-				onclickcapture={(e) => e.stopPropagation()}
-				onkeydowncapture={(e) => {
+				onclick={(e) => e.stopPropagation()}
+				onkeydown={(e) => {
 					if (e.key === ' ' || e.key === 'Enter') e.stopPropagation();
 				}}
 				role="none"
@@ -202,14 +326,37 @@
 					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
 						Scheduling latency (ms)
 					</h4>
-					{#if windowed.length > 0}
+					{#if latencyClickhouse.length > 0}
+						{@const last = latencyClickhouse[latencyClickhouse.length - 1]}
+						<span class="text-[10px] tabular-nums text-muted-foreground">
+							avg <span class="font-mono text-foreground">{Math.round(last.value)}</span>ms
+						</span>
+					{:else if windowed.length > 0}
 						{@const last = windowed[windowed.length - 1]}
 						<span class="text-[10px] tabular-nums text-muted-foreground">
 							P95 <span class="font-mono text-foreground">{last.schedulingP95Ms ?? '—'}</span>
 						</span>
 					{/if}
 				</div>
-				{#if windowed.filter((p) => p.schedulingP95Ms !== null).length < 2}
+				{#if latencyClickhouse.length >= 2}
+					<div style:height="120px">
+						<Chart.Container config={latencyAvgConfig} class="h-full w-full">
+							<LineChart
+								data={latencyClickhouse}
+								x="ts"
+								series={[{ key: 'latency', value: (d: { value: number }) => d.value, color: 'var(--chart-1)' }]}
+								legend={false}
+							>
+								{#snippet marks()}
+									<Spline seriesKey="latency" stroke="var(--chart-1)" stroke-width={1.75} />
+								{/snippet}
+								{#snippet tooltip()}
+									<Chart.Tooltip />
+								{/snippet}
+							</LineChart>
+						</Chart.Container>
+					</div>
+				{:else if windowed.filter((p) => p.schedulingP95Ms !== null).length < 2}
 					<p class="py-6 text-center text-[11px] text-muted-foreground/70">
 						Waiting for scheduling samples…
 					</p>
@@ -254,14 +401,14 @@
 					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
 						Active workloads
 					</h4>
-					{#if windowed.length > 0}
-						{@const last = windowed[windowed.length - 1]}
+					{#if workloadsWindowed.length > 0}
+						{@const last = workloadsWindowed[workloadsWindowed.length - 1]}
 						<span class="text-[10px] tabular-nums text-muted-foreground">
-							{last.admittedCount + last.pendingCount + last.reservingCount} now
+							{last.admitted + last.pending + last.reserving} now
 						</span>
 					{/if}
 				</div>
-				{#if windowed.length < 2}
+				{#if workloadsWindowed.length < 2}
 					<p class="py-6 text-center text-[11px] text-muted-foreground/70">
 						Waiting for workload samples…
 					</p>
@@ -269,13 +416,13 @@
 					<div style:height="120px">
 						<Chart.Container config={workloadsConfig} class="h-full w-full">
 							<AreaChart
-								data={windowed}
+								data={workloadsWindowed}
 								x="ts"
 								seriesLayout="stack"
 								series={[
-									{ key: 'admitted', value: (d: Row) => d.admittedCount, color: 'rgb(16 185 129)' },
-									{ key: 'pending', value: (d: Row) => d.pendingCount, color: 'rgb(245 158 11)' },
-									{ key: 'reserving', value: (d: Row) => d.reservingCount, color: 'rgb(14 165 233)' }
+									{ key: 'admitted', value: (d: WorkloadRow) => d.admitted, color: 'rgb(16 185 129)' },
+									{ key: 'pending', value: (d: WorkloadRow) => d.pending, color: 'rgb(245 158 11)' },
+									{ key: 'reserving', value: (d: WorkloadRow) => d.reserving, color: 'rgb(14 165 233)' }
 								]}
 								legend={false}
 							>
@@ -288,55 +435,81 @@
 				{/if}
 			</div>
 
-			<!-- Chart C: cluster headroom % -->
+			<!-- Chart C: cluster utilization % (requested ÷ allocatable) -->
 			<div class="rounded-md border bg-background p-3">
 				<div class="mb-2 flex items-baseline justify-between">
 					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-						{RESOURCE_LABELS[resource]} headroom %
+						{RESOURCE_LABELS[resource]} utilization %
 					</h4>
-					{#if windowed.length > 0}
-						{@const last = windowed[windowed.length - 1]}
+					{#if utilizationWindowed.length > 0}
+						{@const last = utilizationWindowed[utilizationWindowed.length - 1]}
 						<span class="text-[10px] tabular-nums text-muted-foreground">
-							<span class="font-mono text-foreground">
-								{last.headroomPct === null ? '—' : last.headroomPct.toFixed(1)}
-							</span>%
+							<span
+								class="font-mono {last.value >= 90
+									? 'text-rose-500'
+									: last.value >= 70
+										? 'text-amber-500'
+										: 'text-foreground'}">{last.value.toFixed(1)}</span
+							>%
 						</span>
 					{/if}
 				</div>
-				{#if windowed.filter((p) => p.headroomPct !== null).length < 2}
+				{#if ownerTimeline?.hasData}
+					<!-- Stacked by owner: each band is a session/workflow/benchmark
+					     consuming this resource; hover lists them, legend links out. -->
+					<CapacityOwnerStack timeline={ownerTimeline} {resolveOwner} height={120} />
+				{:else if utilizationWindowed.length < 2}
 					<p class="py-6 text-center text-[11px] text-muted-foreground/70">
-						Waiting for headroom samples…
+						Waiting for utilization samples…
 					</p>
 				{:else}
 					<div style:height="120px">
 						<Chart.Container config={headroomConfig} class="h-full w-full">
 							<LineChart
-								data={windowed}
+								data={utilizationWindowed}
 								x="ts"
 								yDomain={[0, 100]}
 								series={[
-									{ key: 'headroom', value: (d: Row) => d.headroomPct, color: 'var(--chart-1)' }
+									{ key: 'headroom', value: (d: { value: number }) => d.value, color: 'var(--chart-1)' }
 								]}
 								legend={false}
 							>
 								{#snippet marks()}
+									<!-- Bold threshold zone bands: emerald <70% · amber 70–90% · rose ≥90%. -->
+									<AnnotationRange y={[0, 70]} class="fill-emerald-500/10" />
+									<AnnotationRange y={[70, 90]} class="fill-amber-500/15" />
+									<AnnotationRange y={[90, 100]} class="fill-rose-500/20" />
+									<!-- Threshold-zoned line: color tracks the danger zone the
+									     utilization is currently in (one Spline per zone). -->
 									<Spline
 										seriesKey="headroom"
-										defined={(d: Row) => d.headroomPct !== null}
-										stroke="var(--chart-1)"
-										stroke-width={1.5}
+										defined={(d: { value: number }) => d.value < 70}
+										stroke="rgb(16 185 129)"
+										stroke-width={1.75}
+									/>
+									<Spline
+										seriesKey="headroom"
+										defined={(d: { value: number }) => d.value >= 70 && d.value < 90}
+										stroke="rgb(245 158 11)"
+										stroke-width={1.75}
+									/>
+									<Spline
+										seriesKey="headroom"
+										defined={(d: { value: number }) => d.value >= 90}
+										stroke="rgb(244 63 94)"
+										stroke-width={1.75}
 									/>
 								{/snippet}
 								{#snippet aboveMarks()}
 									<AnnotationLine
-										y={30}
+										y={70}
 										stroke="rgb(245 158 11)"
 										stroke-width={1}
 										stroke-dasharray="3 2"
 										opacity={0.5}
 									/>
 									<AnnotationLine
-										y={10}
+										y={90}
 										stroke="rgb(239 68 68)"
 										stroke-width={1}
 										stroke-dasharray="3 2"
@@ -430,6 +603,26 @@
 						{psiTrends?.hasData ? 'ClickHouse metrics' : 'live snapshot history'}
 					</p>
 				{/if}
+			</div>
+
+			<!-- Chart E: utilization % OHLC candlestick (capacity consumed over time) -->
+			<div class="rounded-md border bg-background p-3">
+				<div class="mb-2 flex items-baseline justify-between">
+					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+						{RESOURCE_LABELS[resource]} utilization range (OHLC)
+					</h4>
+					{#if candles.length > 0}
+						{@const last = candles[candles.length - 1]}
+						<span class="text-[10px] tabular-nums text-muted-foreground">
+							<span
+								class="font-mono {last.close >= last.open ? 'text-emerald-500' : 'text-rose-500'}"
+							>{last.close.toFixed(0)}</span>%
+						</span>
+					{/if}
+				</div>
+				<div style:height="120px">
+					<CapacityCandlestick {candles} valueMax={100} height={120} zones={{ warn: 70, crit: 90 }} />
+				</div>
 			</div>
 		</div>
 	</CollapsibleContent>

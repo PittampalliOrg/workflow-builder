@@ -342,6 +342,34 @@ def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> No
     )
 
 
+def test_agent_workflow_host_sandbox_propagates_capacity_owner_labels() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="SW_SESSION_Mixed",
+            agentAppId="agent-session-abc123",
+            runId="Run_Mixed/1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    owner_labels = {
+        "benchmark-run-id": "run-mixed-1",
+        "benchmark-instance-id": "sympy-sympy-20590",
+        "agent-app-id": "agent-session-abc123",
+        "workflow-builder.cnoe.io/session-id": "sw-session-mixed",
+    }
+    assert manifest["metadata"]["labels"] | owner_labels == manifest["metadata"]["labels"]
+    pod_labels = manifest["spec"]["podTemplate"]["metadata"]["labels"]
+    assert pod_labels | owner_labels == pod_labels
+
+
 def test_agent_workflow_host_sandbox_omits_trace_annotations_when_unset() -> None:
     manifest = build_agent_workflow_host_sandbox_manifest(
         AgentWorkflowHostRequest(

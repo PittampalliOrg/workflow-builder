@@ -34,6 +34,14 @@ type BenchmarkOwnershipRow = {
 	runStatus: string;
 	runInstanceRowId: string;
 	instanceId: string;
+	agentId: string | null;
+	agentName: string | null;
+	agentSlug: string | null;
+	workflowExecutionId: string | null;
+	workflowId: string | null;
+	workflowName: string | null;
+	sessionId: string | null;
+	sessionTitle: string | null;
 };
 
 type OwnershipContext = {
@@ -225,10 +233,22 @@ async function resolveBenchmarkRows(params: {
 			runId: benchmarkRuns.id,
 			runStatus: benchmarkRuns.status,
 			runInstanceRowId: benchmarkRunInstances.id,
-			instanceId: benchmarkRunInstances.instanceId
+			instanceId: benchmarkRunInstances.instanceId,
+			agentId: agents.id,
+			agentName: agents.name,
+			agentSlug: agents.slug,
+			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+			sessionId: benchmarkRunInstances.sessionId,
+			sessionTitle: sessions.title
 		})
 		.from(benchmarkRunInstances)
 		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+		.leftJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+		.leftJoin(workflowExecutions, eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId))
+		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.leftJoin(sessions, eq(sessions.id, benchmarkRunInstances.sessionId))
 		.where(eq(benchmarkRuns.projectId, params.projectId))
 		.orderBy(desc(benchmarkRunInstances.updatedAt))
 		.limit(500)) as BenchmarkOwnershipRow[];
@@ -286,7 +306,38 @@ function benchmarkOwners(
 	workspaceSlug: string,
 	hint: CapacityOwnerHint
 ): CapacityOwnerRef[] {
-	return [
+	const owners: CapacityOwnerRef[] = [];
+	if (row.workflowExecutionId && row.workflowId) {
+		owners.push({
+			kind: 'workflowRun',
+			id: row.workflowExecutionId,
+			label: row.workflowName ? `${row.workflowName} run` : shortId(row.workflowExecutionId),
+			href: `/workspaces/${workspaceSlug}/workflows/${row.workflowId}/runs/${row.workflowExecutionId}`,
+			source: hint.source,
+			confidence: 'inferred'
+		});
+	}
+	if (row.sessionId) {
+		owners.push({
+			kind: 'session',
+			id: row.sessionId,
+			label: row.sessionTitle?.trim() || shortId(row.sessionId),
+			href: `/workspaces/${workspaceSlug}/sessions/${row.sessionId}`,
+			source: hint.source,
+			confidence: 'inferred'
+		});
+	}
+	if (row.agentId) {
+		owners.push({
+			kind: 'agent',
+			id: row.agentId,
+			label: row.agentName || row.agentSlug || shortId(row.agentId),
+			href: `/workspaces/${workspaceSlug}/agents/${row.agentId}`,
+			source: hint.source,
+			confidence: 'inferred'
+		});
+	}
+	owners.push(
 		{
 			kind: 'benchmarkRun',
 			id: row.runId,
@@ -304,7 +355,8 @@ function benchmarkOwners(
 			source: hint.source,
 			confidence: hint.benchmarkInstanceId === row.instanceId ? 'direct' : 'inferred'
 		}
-	];
+	);
+	return owners;
 }
 
 function dedupeOwners(owners: CapacityOwnerRef[]): CapacityOwnerRef[] {

@@ -1434,6 +1434,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 reuseExecutionWorkspace: args.reuseExecutionWorkspace,
                 keepAfterRun: args.keepAfterRun,
                 ttlSeconds: args.ttlSeconds,
+                managedBy: args.managedBy,
+                capacityOwnerLabels: args.capacityOwnerLabels,
                 sandboxPolicy: args.sandboxPolicy,
                 // Forward the CMA-shape package manifest so openshell-agent-
                 // runtime can install declared deps before the first agent

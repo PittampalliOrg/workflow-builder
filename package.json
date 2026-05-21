@@ -29,7 +29,8 @@
 		"deploy:skaffold": "bash scripts/skaffold-deploy.sh workflow-builder",
 		"deploy:skaffold:orchestrator": "bash scripts/skaffold-deploy.sh workflow-orchestrator",
 		"build:skaffold": "skaffold build -m workflow-builder",
-		"skaffold:status": "bash scripts/skaffold-status.sh"
+		"skaffold:status": "bash scripts/skaffold-status.sh",
+		"skaffold:doctor": "bash scripts/skaffold-doctor.sh"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.12.0",

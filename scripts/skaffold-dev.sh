@@ -18,15 +18,48 @@ set -euo pipefail
 
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
-# Known module set — kept in sync with skaffold.yaml's `requires:` list.
-ALL_MODULES=(workflow-builder workflow-orchestrator function-router fn-activepieces mcp-gateway swebench-coordinator)
+# Module sets — kept in sync with skaffold.yaml's `requires:` list.
+#
+# fn-activepieces remains wired in Skaffold for recovery/parity work, but the
+# current ryzen cluster does not expose it as a regular Argo Application and
+# Deployment. Keep it out of normal "all" sessions until that app path is live
+# again; set SKAFFOLD_ALLOW_INACTIVE=1 to opt into it deliberately.
+ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
+INACTIVE_MODULES=(fn-activepieces)
+ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
+
+contains_module() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [ "${item}" = "${needle}" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 modules=("$@")
 if [ "${#modules[@]}" -eq 0 ]; then
   modules=(workflow-builder)
 elif [ "${modules[0]}" = "ALL" ] || [ "${modules[0]}" = "all" ]; then
-  modules=("${ALL_MODULES[@]}")
+  modules=("${ACTIVE_MODULES[@]}")
 fi
+
+for mod in "${modules[@]}"; do
+  if ! contains_module "${mod}" "${ALL_MODULES[@]}"; then
+    echo "skaffold-dev: unknown module '${mod}'" >&2
+    echo "skaffold-dev: active modules: ${ACTIVE_MODULES[*]}" >&2
+    echo "skaffold-dev: inactive modules: ${INACTIVE_MODULES[*]}" >&2
+    exit 64
+  fi
+  if contains_module "${mod}" "${INACTIVE_MODULES[@]}" && [ "${SKAFFOLD_ALLOW_INACTIVE:-0}" != "1" ]; then
+    echo "skaffold-dev: '${mod}' is configured but currently inactive on ryzen" >&2
+    echo "skaffold-dev: set SKAFFOLD_ALLOW_INACTIVE=1 to run it deliberately" >&2
+    exit 65
+  fi
+done
 
 # Argo apps default to the same names as the skaffold module list (matches our
 # convention: one module = one Argo app). Override via $ARGO_APPS.
@@ -58,10 +91,29 @@ resume_argo() {
   bash skaffold/hooks/argo-resume.sh ${ARGO_APPS} || true
 }
 
+print_resume_summary() {
+  printf '\n  Post-session ArgoCD summary:\n'
+  printf '       %-22s %-8s %-8s %-8s %s\n' APP SKIP SYNC HEALTH LIVE
+  local app skip sync health live argo_raw rest
+  for app in ${ARGO_APPS}; do
+    argo_raw=$(kubectl get application "${app}" -n "${ns}" \
+      -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}{"|"}{.status.sync.status}{"|"}{.status.health.status}' \
+      2>/dev/null || echo "|missing|")
+    skip="${argo_raw%%|*}"
+    rest="${argo_raw#*|}"
+    sync="${rest%%|*}"
+    health="${rest##*|}"
+    live=$(kubectl -n "${NAMESPACE:-workflow-builder}" get deploy "${app}" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "no-deployment")
+    printf '       %-22s %-8s %-8s %-8s %s\n' \
+      "${app}" "${skip:-false}" "${sync:-unknown}" "${health:-unknown}" "${live}"
+  done
+}
+
 # EXIT fires on normal exit, INT/TERM, and `set -e` errors. INT/TERM go
 # through the shell's default handler which exits — which fires EXIT, which
 # calls resume_argo once (guarded by `resumed` flag).
-trap resume_argo EXIT
+trap 'status=$?; resume_argo; exit ${status}' EXIT
 
 # --- Stale-pause detector ---------------------------------------------------
 # Surface (don't block) apps that are already paused, almost always the
@@ -147,4 +199,12 @@ fi
 # prod tag in-place.
 printf '==> skaffold dev -m %s --cleanup=false %s\n' "${mod_csv}" "${SKAFFOLD_DEV_EXTRA_ARGS:-}"
 # Don't `exec` — that replaces the bash process and skips the EXIT trap.
+set +e
 skaffold dev -m "${mod_csv}" --cleanup=false "${extra_args[@]}"
+skaffold_status=$?
+set -e
+
+trap - EXIT
+resume_argo
+print_resume_summary
+exit "${skaffold_status}"

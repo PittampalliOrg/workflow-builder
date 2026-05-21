@@ -177,9 +177,12 @@
 		{#if !collapsed}
 			<a
 				href="/workspaces/{activeSlug}/workflows"
-				class="text-xs font-semibold tracking-tight text-foreground"
+				class="flex items-center gap-2 text-xs font-semibold tracking-tight text-foreground"
 			>
-				Workflow Builder
+				<span>Workflow Builder</span>
+				<span class="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+					Sync test live
+				</span>
 			</a>
 		{/if}
 		<Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" onclick={onToggle}>

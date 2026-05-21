@@ -39,6 +39,7 @@
 	import SessionCapacityCard from '$lib/components/capacity/session-capacity-card.svelte';
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
+	import OpenShellTerminalTabs from '$lib/components/sessions/openshell-terminal-tabs.svelte';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 	import SessionConfigDrawer from '$lib/components/sessions/session-config-drawer.svelte';
@@ -165,7 +166,7 @@
 	// MCP-driven snapshot + console of the agent's chromium sidecar.
 	// Shell: web terminal via Kubernetes pods/exec into a chosen pod
 	// container. The last two tabs are gated by runtime flags.
-	let viewMode = $state<'transcript' | 'debug' | 'browser-state' | 'shell'>('transcript');
+	let viewMode = $state<'transcript' | 'debug' | 'browser-state' | 'shell' | 'openshell-terminal'>('transcript');
 
 	// Runtime flags (polled) that drive which extra tabs are visible.
 	let runtimeFlags = $state<{
@@ -199,6 +200,9 @@
 				viewMode = 'transcript';
 			}
 			if (viewMode === 'shell' && !runtimeFlags.shellAvailable) {
+				viewMode = 'transcript';
+			}
+			if (viewMode === 'openshell-terminal' && !session?.workspaceSandboxName && !session?.runtimeSandboxName) {
 				viewMode = 'transcript';
 			}
 		} catch {
@@ -1421,6 +1425,16 @@
 							Shell
 						</button>
 					{/if}
+					{#if session?.workspaceSandboxName || session?.runtimeSandboxName}
+						<button
+							type="button"
+							title="Open the OpenShell terminal attached to this session"
+							class="px-3 py-1 text-xs rounded {viewMode === 'openshell-terminal' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+							onclick={() => (viewMode = 'openshell-terminal')}
+						>
+							OpenShell
+						</button>
+					{/if}
 				</div>
 
 				<DropdownMenu.Root bind:open={eventFilterOpen}>
@@ -1525,6 +1539,13 @@
 					<PodShellPanel
 						sessionId={session?.id ?? sessionId}
 						containers={runtimeFlags?.shellContainers ?? []}
+					/>
+				</div>
+			{:else if viewMode === 'openshell-terminal' && (session?.workspaceSandboxName || session?.runtimeSandboxName)}
+				<div class="flex-1 overflow-hidden p-3">
+					<OpenShellTerminalTabs
+						sessionId={session?.id ?? sessionId}
+						sandboxName={session.workspaceSandboxName ?? session.runtimeSandboxName ?? ''}
 					/>
 				</div>
 			{:else}
