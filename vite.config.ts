@@ -15,8 +15,10 @@ function wsUpgradeProxy(): Plugin {
 					const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
 					const isTerminal =
 						pathname.startsWith('/api/sandboxes/') && pathname.includes('/terminal/');
+					const isOpenShellSessionTerminal =
+						pathname.startsWith('/api/openshell/sessions/') && pathname.includes('/terminal/');
 					const isShell = /^\/api\/v1\/sessions\/[^/]+\/shell$/.test(pathname);
-					if (!isTerminal && !isShell) return;
+					if (!isTerminal && !isOpenShellSessionTerminal && !isShell) return;
 					const modPath = isShell
 						? '/src/lib/server/ws-kube-exec-proxy.ts'
 						: '/src/lib/server/ws-terminal-proxy.ts';

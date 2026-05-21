@@ -6,12 +6,13 @@ replaces devspace as the going-forward inner+outer loop; `devspace.yaml`
 stays in-tree only as a fallback for `fn-system` (Knative) and one-off
 parity checks.
 
-There are two loops:
+There are two loops, plus the existing idpbuilder manifest sync path:
 
 | Loop | Command | What happens |
 |---|---|---|
 | **Inner** | `pnpm dev:skaffold` | Build a thin dev image (Node 22 / Python 3.12 + baked deps), deploy as the workflow-builder Deployment overlay (Argo paused for the session), then file-sync `src/`/`lib/`/etc. into the running pod on every save. Vite HMRs the browser; uvicorn `--reload` restarts the Python service. |
 | **Outer** | `pnpm deploy:skaffold` | Build the prod multi-stage Dockerfile, push to gitea-ryzen, then a wrapper commits the new tag into `stacks/main/.../active-development/manifests/<service>/kustomization.yaml` on **gitea-ryzen** (not GitHub origin). ArgoCD's `automated.selfHeal=true` reconciles within ~30s. |
+| **Manifest sync** | `idpbuilder stacks sync` / `clu` | Snapshot the selected local stacks worktree into in-cluster Gitea, compute affected ArgoCD Applications, hard-refresh them, and wait for them to observe the pushed revision. Skaffold does not replace this path. |
 
 The wrappers (`scripts/skaffold-dev.sh`, `scripts/skaffold-deploy.sh`) do
 several things that bare `skaffold dev` / `skaffold run` do not. Always use
@@ -24,12 +25,17 @@ inner-loop file-sync into a transient Knative pod is impractical. Use
 the cluster's Argo-managed fn-system as a dependency, or fall back to
 devspace for fn-system-specific work.
 
+`fn-activepieces` remains configured for parity/recovery work, but the
+current ryzen cluster does not expose it as a regular Argo Application and
+Deployment. Default `ALL` sessions exclude it; run it only deliberately with
+`SKAFFOLD_ALLOW_INACTIVE=1 bash scripts/skaffold-dev.sh fn-activepieces`.
+
 | Module | Type | Local→Container | Skaffold yaml |
 |---|---|---|---|
 | `workflow-builder` | SvelteKit BFF (Node 22) | 3002 → 3000 | `workflow-builder.skaffold.yaml` |
 | `workflow-orchestrator` | Python/FastAPI Dapr workflow | 3013 → 8080 | `workflow-orchestrator.skaffold.yaml` |
 | `function-router` | Node Express | 3014 → 8080 | `function-router.skaffold.yaml` |
-| `fn-activepieces` | Node Express | 3016 → 8080 | `fn-activepieces.skaffold.yaml` |
+| `fn-activepieces` | Node Express | 3016 → 8080 | `fn-activepieces.skaffold.yaml` (inactive by default) |
 | `mcp-gateway` | Node Express | 3018 → 8080 | `mcp-gateway.skaffold.yaml` |
 | `swebench-coordinator` | Python/FastAPI | 3019 → 8080 | `swebench-coordinator.skaffold.yaml` |
 
@@ -39,7 +45,7 @@ devspace for fn-system-specific work.
 # Inner loop ---------------------------------------------------------------
 pnpm dev:skaffold                              # workflow-builder (default)
 pnpm dev:skaffold:orchestrator                 # workflow-orchestrator
-pnpm dev:skaffold:all                          # all 6 modules
+pnpm dev:skaffold:all                          # active modules
 bash scripts/skaffold-dev.sh function-router   # any single module
 bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator  # subset
 
@@ -51,6 +57,7 @@ bash scripts/skaffold-deploy.sh workflow-builder workflow-orchestrator
 
 # Status / recovery --------------------------------------------------------
 pnpm skaffold:status                                # see cluster vs pinned tag drift
+pnpm skaffold:doctor                                # preflight Skaffold + idpbuilder readiness
 ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh   # un-pause
 ```
 
@@ -71,6 +78,23 @@ A one-screen view of every module:
 
 Read-only. Fetches the gitea-ryzen tip into the cache clone but never
 resets it. Safe to run during an active `skaffold dev` session.
+
+## `pnpm skaffold:doctor`
+
+A broader read-only preflight for humans and LLM coding agents. It checks:
+
+- required local commands (`kubectl`, `skaffold`, `idpbuilder`, `git`, `python3`)
+- current kubectl context (`admin@ryzen` expected)
+- Skaffold module Argo pause state, live Deployment image, and gitea-ryzen pin
+- the stacks checkout used by idpbuilder (`STACKS_DIR` or `/home/vpittamp/repos/PittampalliOrg/stacks/main`)
+- `idpbuilder stacks status`
+- `idpbuilder stacks sync --print-refresh-plan` for the selected stacks worktree
+- `clhot --ci-one-shot --check --json`
+
+Use `pnpm --silent skaffold:doctor -- --json` or
+`bash scripts/skaffold-doctor.sh --json` when an agent needs a machine-readable
+decision point before starting an inner loop, resuming Argo, or asking for a
+manifest sync. The doctor is intentionally read-only; it never pushes to Gitea.
 
 ## The stacks-repo lineage divergence (important)
 
@@ -98,6 +122,14 @@ The outer-loop commit-pin therefore **never touches the local
 
 Override the cache dir with `STACKS_REPO_DIR=/abs/path` (for an alternate
 checkout) or the remote with `STACKS_REMOTE_URL=…`.
+
+This cache clone is separate from idpbuilder's sync cache. `idpbuilder stacks
+sync` snapshots the chosen local stacks worktree into in-cluster Gitea and then
+refreshes affected apps. Skaffold's commit-pin is narrower: it writes only the
+resolved image tag for a ryzen service into `gitea-ryzen/main`. For manifest
+edits, use idpbuilder/`clu`; for live source hot reload, use Skaffold; for
+promoted dev/staging releases, use the GHCR release-pins and GitOps Promoter
+path.
 
 ## Why the wrappers
 

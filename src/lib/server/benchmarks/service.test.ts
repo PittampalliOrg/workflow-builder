@@ -479,6 +479,10 @@ describe("SWE-bench workflow spec", () => {
 		expect(workspaceProfile.with.sandboxImage).toBe(
 			validatedInferenceEnvironment().sandboxImage,
 		);
+		expect(workspaceProfile.with.capacityOwnerLabels).toEqual({
+			"benchmark-run-id": "run-1",
+			"benchmark-instance-id": "sympy-sympy-20590",
+		});
 		expect(String(checkoutStep.with.command)).toContain("set -eu\n");
 		expect(String(checkoutStep.with.command)).not.toContain("pipefail");
 		expect(String(checkoutStep.with.command)).toContain(

@@ -5545,6 +5545,10 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		commandTimeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
 		timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS + 300_000,
 		sandboxImage: inferenceEnvironment.sandboxImage,
+		capacityOwnerLabels: {
+			"benchmark-run-id": benchmarkRunLabelValue(params.runId ?? workspaceRef),
+			"benchmark-instance-id": benchmarkInstanceLabelValue(params.instanceId),
+		},
 		environmentConfig: agentVisibleEnvironmentConfig,
 	};
 	const extractPatchCommand = [

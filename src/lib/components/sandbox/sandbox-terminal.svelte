@@ -7,6 +7,7 @@
 		sandboxName: string;
 		sessionId: string;
 		active?: boolean;
+		wsPath?: string;
 	}
 
 	interface TerminalFitAddon {
@@ -15,7 +16,7 @@
 		dispose: () => void;
 	}
 
-	let { sandboxName, sessionId, active = true }: Props = $props();
+	let { sandboxName, sessionId, active = true, wsPath }: Props = $props();
 
 	let terminal = $state<Terminal>();
 	let terminalFrame: HTMLDivElement | null = null;
@@ -67,6 +68,7 @@
 
 	function getWsUrl(): string {
 		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		if (wsPath) return `${proto}//${location.host}${wsPath}`;
 		return `${proto}//${location.host}/api/sandboxes/${encodeURIComponent(sandboxName)}/terminal/${encodeURIComponent(sessionId)}`;
 	}
 

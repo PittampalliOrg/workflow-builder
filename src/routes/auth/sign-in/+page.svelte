@@ -53,6 +53,9 @@
 		<div class="space-y-2 text-center">
 			<h1 class="text-2xl font-semibold tracking-tight">Sign in</h1>
 			<p class="text-sm text-muted-foreground">Workflow Builder</p>
+			<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+				Skaffold sync test: UI update is live
+			</div>
 		</div>
 
 		{#if error}

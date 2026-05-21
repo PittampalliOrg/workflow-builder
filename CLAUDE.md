@@ -70,7 +70,7 @@ Skaffold is the in-cluster dev loop. devspace.yaml is kept as a fallback during 
 # Inner loop (HMR file-sync into a Skaffold-owned dev pod):
 pnpm dev:skaffold                              # workflow-builder (default)
 pnpm dev:skaffold:orchestrator                 # workflow-orchestrator
-pnpm dev:skaffold:all                          # all 6 modules
+pnpm dev:skaffold:all                          # active modules
 bash scripts/skaffold-dev.sh function-router   # any single module by name
 bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator  # subset
 
@@ -80,6 +80,10 @@ pnpm deploy:skaffold:orchestrator                   # workflow-orchestrator
 bash scripts/skaffold-deploy.sh fn-activepieces     # any single service
 bash scripts/skaffold-deploy.sh workflow-builder workflow-orchestrator  # batch
 skaffold build -m workflow-builder                  # build+push only (no pin commit)
+
+# Read-only preflight:
+pnpm skaffold:doctor                                # Skaffold + idpbuilder readiness
+pnpm --silent skaffold:doctor -- --json             # machine-readable agent output
 ```
 
 The outer-loop uses `scripts/skaffold-deploy.sh` rather than `skaffold run` because:
@@ -95,22 +99,25 @@ Module set:
 | workflow-builder | SvelteKit BFF (Node 22) | 3002→3000 |
 | workflow-orchestrator | Python/FastAPI Dapr workflow | 3013→8080 |
 | function-router | Node BFF→backend router | 3014→8080 |
-| fn-activepieces | Node Activepieces piece executor | 3016→8080 |
 | mcp-gateway | Node hosted MCP endpoint | 3018→8080 |
 | swebench-coordinator | Python SWE-bench coordinator | 3019→8080 |
+| fn-activepieces | Node Activepieces piece executor | 3016→8080, inactive by default |
 
 **`fn-system` is excluded** — it's a Knative Service (scale-to-0; not a regular Deployment). Inner-loop file-sync into a transient Knative pod is impractical. Use the cluster's existing fn-system (Argo-managed) as a dependency, or fall back to devspace.yaml for fn-system-specific work.
+
+**`fn-activepieces` is inactive by default** — Skaffold config remains in-tree, but the current ryzen cluster does not expose it as a regular Argo Application/Deployment. Default `ALL` sessions skip it; use `SKAFFOLD_ALLOW_INACTIVE=1 bash scripts/skaffold-dev.sh fn-activepieces` only when deliberately restoring/testing that path.
 
 Inner-loop notes:
 - The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=gitea-ryzen.tail286401.ts.net/giteaadmin` so the dev image gets pushed to gitea-ryzen (where kind-ryzen nodes can pull). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.
 - The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
 - File sync rules in `skaffold/workflow-builder.skaffold.yaml` mirror devspace's `excludePaths`. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
 - The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../active-development/manifests/workflow-builder` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
+- `pnpm skaffold:doctor` checks both sides of the hybrid loop: Skaffold live drift and the ryzen idpbuilder/Gitea sync path (`idpbuilder stacks status`, `idpbuilder stacks sync --print-refresh-plan`, and `clhot --ci-one-shot --check`).
 
 Outer-loop notes:
-- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via `kustomize edit set image` to `stacks/main/.../active-development/manifests/workflow-builder/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
+- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to `gitea-ryzen/main` under `packages/components/active-development/manifests/<service>/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
 - No `kubectl set image` — the live cluster is mutated only by ArgoCD.
-- Set `STACKS_REPO_DIR=/path/to/stacks/main` if your stacks checkout is outside the default `../../stacks/main`.
+- This is separate from `idpbuilder stacks sync`: idpbuilder snapshots a selected local stacks worktree into in-cluster Gitea and refreshes affected apps, while Skaffold commit-pin only updates a resolved ryzen image tag. Use idpbuilder/`clu` for manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
 
 ## Services Overview
 

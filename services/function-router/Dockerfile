@@ -12,8 +12,9 @@ RUN npm install -g pnpm
 # Copy package files
 COPY services/function-router/package.json ./
 
-# Install dependencies
-RUN pnpm install --prod=false
+# Install dependencies. The bundled build does not need package postinstall
+# scripts, and pnpm v10 fails the build when they are not pre-approved.
+RUN pnpm install --prod=false --ignore-scripts
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder
