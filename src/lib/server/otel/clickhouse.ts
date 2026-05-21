@@ -50,6 +50,24 @@ export function sanitizeTraceIds(traceIds: string[]): string[] {
 		.map((id) => id.trim());
 }
 
+/**
+ * Build an `AND (ServiceName ...)` clause for the service-graph drill-down so we
+ * fetch only the selected service(s)' rows. Expands the collapsed `agent-session`
+ * topology node back to the per-session `agent-session-<hex>` service names.
+ */
+export function serviceNameClause(serviceNames?: string[]): string {
+	if (!serviceNames || serviceNames.length === 0) return '';
+	const exact = serviceNames
+		.filter((n) => n && n !== 'agent-session')
+		.map((n) => `'${escapeClickHouseString(n)}'`);
+	const parts: string[] = [];
+	if (exact.length) parts.push(`ServiceName IN (${exact.join(', ')})`);
+	if (serviceNames.includes('agent-session')) {
+		parts.push(`(ServiceName = 'agent-session' OR ServiceName LIKE 'agent-session-%')`);
+	}
+	return parts.length ? `AND (${parts.join(' OR ')})` : '';
+}
+
 export function mapObservabilityLog(row: Record<string, unknown>): ObservabilityLogEntry {
 	return {
 		timestamp: row.Timestamp as string,
@@ -285,11 +303,14 @@ export async function getTraceLogs(traceId: string): Promise<ObservabilityLogEnt
 	);
 }
 
-export async function getMultiTraceLogs(traceIds: string[]): Promise<ObservabilityLogEntry[]> {
+export async function getMultiTraceLogs(
+	traceIds: string[],
+	serviceNames?: string[]
+): Promise<ObservabilityLogEntry[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryObservabilityLogs(`WHERE TraceId IN (${inClause})`);
+	return queryObservabilityLogs(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
 }
 
 export async function getSessionLogs(sessionId: string): Promise<ObservabilityLogEntry[]> {
@@ -316,11 +337,14 @@ export async function getTraceSpans(traceId: string): Promise<ObservabilityTrace
 	return queryTraceSpans(`WHERE TraceId = '${escapeClickHouseString(traceId)}'`);
 }
 
-export async function getMultiTraceSpans(traceIds: string[]): Promise<ObservabilityTraceSpan[]> {
+export async function getMultiTraceSpans(
+	traceIds: string[],
+	serviceNames?: string[]
+): Promise<ObservabilityTraceSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryTraceSpans(`WHERE TraceId IN (${inClause})`);
+	return queryTraceSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
 }
 
 export async function getSessionTraceSpans(sessionId: string): Promise<ObservabilityTraceSpan[]> {
@@ -341,21 +365,23 @@ export async function getTraceToolSpans(traceId: string): Promise<ObservabilityT
 }
 
 export async function getMultiTraceLlmSpans(
-	traceIds: string[]
+	traceIds: string[],
+	serviceNames?: string[]
 ): Promise<ObservabilityLlmSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryObservabilityLlmSpans(`WHERE TraceId IN (${inClause})`);
+	return queryObservabilityLlmSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
 }
 
 export async function getMultiTraceToolSpans(
-	traceIds: string[]
+	traceIds: string[],
+	serviceNames?: string[]
 ): Promise<ObservabilityToolSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryObservabilityToolSpans(`WHERE TraceId IN (${inClause})`);
+	return queryObservabilityToolSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
 }
 
 export async function getSessionLlmSpans(sessionId: string): Promise<ObservabilityLlmSpan[]> {

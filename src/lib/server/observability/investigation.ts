@@ -5,6 +5,10 @@ import {
 	workflowExecutions
 } from '$lib/server/db/schema';
 import {
+	getMultiTraceLlmSpans,
+	getMultiTraceLogs,
+	getMultiTraceSpans,
+	getMultiTraceToolSpans,
 	getSessionLlmSpans,
 	getSessionLogs,
 	getSessionToolSpans,
@@ -12,7 +16,8 @@ import {
 	getTraceLlmSpans,
 	getTraceLogs,
 	getTraceSpans,
-	getTraceToolSpans
+	getTraceToolSpans,
+	sanitizeTraceIds
 } from '$lib/server/otel/clickhouse';
 import type {
 	ObservabilityAgentDecisionDiagram,
@@ -993,6 +998,65 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 			status: sessionSteps.status,
 			startedAt: sessionSteps.startedAt ?? traceSpans[0]?.startTime ?? null,
 			completedAt: sessionSteps.completedAt ?? traceSpans.at(-1)?.startTime ?? null
+		}),
+		traceSpans,
+		logs,
+		llmSpans,
+		toolSpans,
+		agentDecisionSummary: agentDecisionModel.summary,
+		agentDecisions: agentDecisionModel.turns,
+		agentDecisionDiagram: agentDecisionModel.diagram,
+		workflowSteps: steps,
+		events,
+		issues
+	};
+}
+
+/**
+ * Build an investigation payload scoped to ONE execution's trace set. Unlike
+ * buildSessionInvestigation, this fetches by TraceId (indexed, fast) instead of
+ * scanning otel_traces by session.id, and stays precisely scoped to the run the
+ * caller is looking at. Used by the service-graph drill-down.
+ */
+export async function buildExecutionInvestigation(
+	executionId: string,
+	traceIds: string[],
+	serviceNames?: string[]
+): Promise<ObservabilityInvestigationPayload> {
+	const ids = sanitizeTraceIds(traceIds);
+	const [stepInfo, traceBackend] = await Promise.all([
+		getWorkflowSteps(executionId),
+		Promise.all([
+			getMultiTraceSpans(ids, serviceNames),
+			getMultiTraceLogs(ids, serviceNames),
+			getMultiTraceLlmSpans(ids, serviceNames),
+			getMultiTraceToolSpans(ids, serviceNames)
+		]).then(([traceSpans, logs, llmSpans, toolSpans]) => ({ traceSpans, logs, llmSpans, toolSpans }))
+	]);
+	const { steps, status, startedAt, completedAt } = stepInfo;
+	const { traceSpans, logs, llmSpans, toolSpans } = traceBackend;
+	const sessionId =
+		traceSpans.find((s) => typeof s.attributes?.['session.id'] === 'string')?.attributes?.[
+			'session.id'
+		]?.toString() ?? null;
+
+	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
+	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
+	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
+	return {
+		summary: buildSummary({
+			scope: 'session',
+			sessionId,
+			traceSpans,
+			logs,
+			llmSpans,
+			toolSpans,
+			steps,
+			events,
+			issues,
+			status,
+			startedAt,
+			completedAt
 		}),
 		traceSpans,
 		logs,
