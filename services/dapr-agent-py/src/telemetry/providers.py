@@ -415,9 +415,21 @@ def _attach_inbound_trace_context() -> None:
 
 
 def get_tracer():
-    """Return the claude_code tracer, or None when telemetry is disabled."""
+    """Return the claude_code tracer, or None when telemetry is disabled.
+
+    Use the TracerProvider we built in init_telemetry() DIRECTLY rather than the
+    ambient global. OpenTelemetry's `set_tracer_provider()` is a one-shot: if any
+    component (durabletask / Dapr SDK / MLflow / FastAPI instrumentor) set a
+    provider before us, our `set_tracer_provider(tp)` is silently ignored and the
+    global provider has no OTLP exporter — so every `trace.get_tracer()` span
+    (claude_code.*, state.*) is created but never exported. DaprAgentsInstrumentor
+    avoids this by being handed `tracer_provider=tp` explicitly, which is why its
+    spans reach the collector. Mirror that: prefer our saved provider.
+    """
     if not _ready:
         return None
+    if _tracer_provider is not None:
+        return _tracer_provider.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
     from opentelemetry import trace
 
     return trace.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
