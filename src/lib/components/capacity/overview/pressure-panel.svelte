@@ -88,6 +88,19 @@
 	}
 
 	const psiPresent = $derived(!!psi && (psi.cpu || psi.memory || psi.io));
+	const coverage = $derived(psi?.coverage ?? null);
+	const coverageHealthy = $derived(Boolean(coverage && coverage.complete));
+	const perNodeRows = $derived.by(() => {
+		const perNode = psi?.perNode ?? {};
+		return Object.entries(perNode)
+			.map(([node, blocks]) => ({
+				node,
+				cpu: blocks.cpu?.some?.avg60 ?? null,
+				memory: blocks.memory?.some?.avg60 ?? null,
+				io: blocks.io?.some?.avg60 ?? null
+			}))
+			.sort((a, b) => a.node.localeCompare(b.node));
+	});
 
 	function perNodeTooltip(historyKey: Row['historyKey']): string {
 		const perNode = psi?.perNode;
@@ -113,9 +126,21 @@
 			<Activity class="size-3.5" />
 			Node pressure (PSI)
 		</h3>
-		<span class="text-[10px] text-muted-foreground">
-			% of 60s stalled · K8s 1.36 kubelet
-		</span>
+		<div class="flex items-center gap-1.5">
+			{#if coverage}
+				<Badge
+					variant="outline"
+					class="font-mono text-[10px] {coverageHealthy
+						? 'border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+						: 'border-amber-500/40 text-amber-700 dark:text-amber-300'}"
+				>
+					{coverage.sampledNodes.length}/{coverage.expectedNodes.length} nodes
+				</Badge>
+			{/if}
+			<span class="text-[10px] text-muted-foreground">
+				% of 60s stalled · K8s 1.36 kubelet
+			</span>
+		</div>
 	</div>
 
 	{#if !psiPresent}
@@ -149,5 +174,29 @@
 		<p class="mt-1.5 text-[10px] text-muted-foreground/70">
 			Hover a row for per-node breakdown. Memory ≥ 10% = approaching Docker memory wall.
 		</p>
+		{#if coverage?.missingNodes.length}
+			<div class="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-300">
+				Missing PSI:
+				<span class="font-mono">{coverage.missingNodes.join(', ')}</span>
+			</div>
+		{/if}
+		{#if perNodeRows.length > 0}
+			<div class="mt-2 overflow-hidden rounded border">
+				<div class="grid grid-cols-[minmax(0,1fr)_54px_54px_54px] bg-muted/40 px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+					<span>Node</span>
+					<span class="text-right">CPU</span>
+					<span class="text-right">Mem</span>
+					<span class="text-right">IO</span>
+				</div>
+				{#each perNodeRows as node (node.node)}
+					<div class="grid grid-cols-[minmax(0,1fr)_54px_54px_54px] border-t px-2 py-1 text-[10px]">
+						<span class="truncate font-mono text-muted-foreground" title={node.node}>{node.node}</span>
+						<span class="text-right font-mono tabular-nums">{formatPct(node.cpu)}</span>
+						<span class="text-right font-mono tabular-nums">{formatPct(node.memory)}</span>
+						<span class="text-right font-mono tabular-nums">{formatPct(node.io)}</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
 	{/if}
 </div>

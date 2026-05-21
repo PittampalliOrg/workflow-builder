@@ -42,16 +42,27 @@
 		psiCpuSome60: number | null;
 		psiMemorySome60: number | null;
 		psiIoSome60: number | null;
+		psiCoverageRatioPct: number | null;
+	};
+
+	export type CapacityPsiTrendsSnapshot = {
+		source: 'clickhouse' | 'unavailable';
+		cpuSomeAvg60Pct: Array<{ t: string; value: number }>;
+		memorySomeAvg60Pct: Array<{ t: string; value: number }>;
+		ioSomeAvg60Pct: Array<{ t: string; value: number }>;
+		coverageRatioPct: Array<{ t: string; value: number }>;
+		hasData: boolean;
 	};
 
 	type Props = {
 		history: HistoryPoint[];
+		psiTrends?: CapacityPsiTrendsSnapshot | null;
 		window: TrendsWindow;
 		resource: GaugeResource;
 		onWindowChange: (next: TrendsWindow) => void;
 	};
 
-	let { history, window: windowSel, resource, onWindowChange }: Props = $props();
+	let { history, psiTrends = null, window: windowSel, resource, onWindowChange }: Props = $props();
 
 	const WINDOW_MS: Record<TrendsWindow, number> = {
 		'5m': 5 * 60 * 1000,
@@ -72,6 +83,58 @@
 		return history.filter((p) => p.t >= cutoff).map((p) => ({ ...p, ts: new Date(p.t) }));
 	});
 
+	const psiWindowed = $derived.by(() => {
+		const cutoff = Date.now() - WINDOW_MS[windowSel];
+		if (psiTrends?.hasData) {
+			const byTs = new Map<
+				string,
+				{
+					t: number;
+					ts: Date;
+					psiCpuSome60: number | null;
+					psiMemorySome60: number | null;
+					psiIoSome60: number | null;
+					psiCoverageRatioPct: number | null;
+				}
+			>();
+			const merge = (
+				points: Array<{ t: string; value: number }>,
+				key: 'psiCpuSome60' | 'psiMemorySome60' | 'psiIoSome60' | 'psiCoverageRatioPct'
+			) => {
+				for (const point of points) {
+					const t = new Date(point.t).getTime();
+					if (!Number.isFinite(t) || t < cutoff) continue;
+					const id = String(t);
+					const row =
+						byTs.get(id) ??
+						{
+							t,
+							ts: new Date(t),
+							psiCpuSome60: null,
+							psiMemorySome60: null,
+							psiIoSome60: null,
+							psiCoverageRatioPct: null
+						};
+					row[key] = point.value;
+					byTs.set(id, row);
+				}
+			};
+			merge(psiTrends.cpuSomeAvg60Pct, 'psiCpuSome60');
+			merge(psiTrends.memorySomeAvg60Pct, 'psiMemorySome60');
+			merge(psiTrends.ioSomeAvg60Pct, 'psiIoSome60');
+			merge(psiTrends.coverageRatioPct, 'psiCoverageRatioPct');
+			return [...byTs.values()].sort((a, b) => a.t - b.t);
+		}
+		return windowed.map((p) => ({
+			t: p.t,
+			ts: p.ts,
+			psiCpuSome60: p.psiCpuSome60,
+			psiMemorySome60: p.psiMemorySome60,
+			psiIoSome60: p.psiIoSome60,
+			psiCoverageRatioPct: p.psiCoverageRatioPct
+		}));
+	});
+
 	let open = $state(false);
 
 	const latencyConfig = {
@@ -89,7 +152,15 @@
 		headroom: { label: 'Headroom %', color: 'var(--chart-1)' }
 	} satisfies Chart.ChartConfig;
 
+	const psiConfig = {
+		cpu: { label: 'CPU PSI', color: 'rgb(14 165 233)' },
+		memory: { label: 'Memory PSI', color: 'rgb(244 63 94)' },
+		io: { label: 'IO PSI', color: 'rgb(245 158 11)' },
+		coverage: { label: 'Coverage %', color: 'rgb(16 185 129)' }
+	} satisfies Chart.ChartConfig;
+
 	type Row = (typeof windowed)[number];
+	type PsiRow = (typeof psiWindowed)[number];
 </script>
 
 <Collapsible bind:open class="rounded-md border bg-card">
@@ -124,7 +195,7 @@
 		{/if}
 	</CollapsibleTrigger>
 	<CollapsibleContent>
-		<div class="grid gap-3 border-t p-3 md:grid-cols-3">
+		<div class="grid gap-3 border-t p-3 md:grid-cols-2 xl:grid-cols-4">
 			<!-- Chart A: scheduling latency P50/P95 -->
 			<div class="rounded-md border bg-background p-3">
 				<div class="mb-2 flex items-baseline justify-between">
@@ -278,6 +349,86 @@
 							</LineChart>
 						</Chart.Container>
 					</div>
+				{/if}
+			</div>
+
+			<!-- Chart D: persisted PSI + coverage when ClickHouse has samples; live history otherwise -->
+			<div class="rounded-md border bg-background p-3">
+				<div class="mb-2 flex items-baseline justify-between">
+					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+						PSI + telemetry
+					</h4>
+					{#if psiWindowed.length > 0}
+						{@const last = psiWindowed[psiWindowed.length - 1]}
+						<span class="text-[10px] tabular-nums text-muted-foreground">
+							mem <span class="font-mono text-foreground">{last.psiMemorySome60?.toFixed(1) ?? '—'}</span>%
+						</span>
+					{/if}
+				</div>
+				{#if psiWindowed.filter((p) => p.psiCpuSome60 !== null || p.psiMemorySome60 !== null || p.psiIoSome60 !== null || p.psiCoverageRatioPct !== null).length < 2}
+					<p class="py-6 text-center text-[11px] text-muted-foreground/70">
+						Waiting for PSI trend samples…
+					</p>
+				{:else}
+					<div style:height="120px">
+						<Chart.Container config={psiConfig} class="h-full w-full">
+							<LineChart
+								data={psiWindowed}
+								x="ts"
+								yDomain={[0, 100]}
+								series={[
+									{ key: 'cpu', value: (d: PsiRow) => d.psiCpuSome60, color: 'rgb(14 165 233)' },
+									{ key: 'memory', value: (d: PsiRow) => d.psiMemorySome60, color: 'rgb(244 63 94)' },
+									{ key: 'io', value: (d: PsiRow) => d.psiIoSome60, color: 'rgb(245 158 11)' },
+									{ key: 'coverage', value: (d: PsiRow) => d.psiCoverageRatioPct, color: 'rgb(16 185 129)' }
+								]}
+								legend={false}
+							>
+								{#snippet marks()}
+									<Spline
+										seriesKey="cpu"
+										defined={(d: PsiRow) => d.psiCpuSome60 !== null}
+										stroke="rgb(14 165 233)"
+										stroke-width={1.2}
+									/>
+									<Spline
+										seriesKey="memory"
+										defined={(d: PsiRow) => d.psiMemorySome60 !== null}
+										stroke="rgb(244 63 94)"
+										stroke-width={1.35}
+									/>
+									<Spline
+										seriesKey="io"
+										defined={(d: PsiRow) => d.psiIoSome60 !== null}
+										stroke="rgb(245 158 11)"
+										stroke-width={1.2}
+									/>
+									<Spline
+										seriesKey="coverage"
+										defined={(d: PsiRow) => d.psiCoverageRatioPct !== null}
+										stroke="rgb(16 185 129)"
+										stroke-width={1}
+										stroke-dasharray="3 2"
+									/>
+								{/snippet}
+								{#snippet aboveMarks()}
+									<AnnotationLine
+										y={10}
+										stroke="rgb(244 63 94)"
+										stroke-width={1}
+										stroke-dasharray="3 2"
+										opacity={0.45}
+									/>
+								{/snippet}
+								{#snippet tooltip()}
+									<Chart.Tooltip />
+								{/snippet}
+							</LineChart>
+						</Chart.Container>
+					</div>
+					<p class="mt-1 text-[10px] text-muted-foreground">
+						{psiTrends?.hasData ? 'ClickHouse metrics' : 'live snapshot history'}
+					</p>
 				{/if}
 			</div>
 		</div>

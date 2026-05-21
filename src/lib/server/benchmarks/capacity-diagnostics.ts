@@ -14,6 +14,7 @@ import {
 	fetchCapacityObserverSnapshot,
 	summarizeCapacityObserverForQueue,
 } from "$lib/server/capacity/observer";
+import { buildCapacityCoverageSummary } from "$lib/server/capacity/coverage";
 import type { CapacityObserverResult } from "$lib/types/capacity";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
@@ -126,6 +127,7 @@ export type BenchmarkCapacityDiagnostics = {
 		modelMaxActiveRequests: number | null;
 	};
 	sharedCapacity: ReturnType<typeof summarizeCapacityObserverForQueue>;
+	coverage: ReturnType<typeof buildCapacityCoverageSummary>;
 	workflowLifecycle: BenchmarkWorkflowLifecycleDiagnostics;
 	capReason: string | null;
 	computedAt: string;
@@ -478,6 +480,7 @@ function diagnosticsFromCapacity(params: {
 						? capacity.executionClass
 						: null,
 		}),
+		coverage: buildCapacityCoverageSummary(params.sharedCapacity),
 		workflowLifecycle:
 			params.workflowLifecycle ??
 			buildWorkflowLifecycleDiagnostics({

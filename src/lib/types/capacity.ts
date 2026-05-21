@@ -77,8 +77,16 @@ export type CapacityCriticalHealth = {
  * (or empty) on older clusters — UI should treat as optional.
  */
 export type CapacityPsiBlock = {
-  some?: { avg10?: number; avg60?: number; avg300?: number };
-  full?: { avg10?: number; avg60?: number; avg300?: number };
+  some?: { avg10?: number; avg60?: number; avg300?: number; total?: number };
+  full?: { avg10?: number; avg60?: number; avg300?: number; total?: number };
+};
+
+export type CapacityPsiCoverage = {
+  expectedNodes: string[];
+  sampledNodes: string[];
+  missingNodes: string[];
+  complete: boolean;
+  errorsByNode: Record<string, string>;
 };
 
 export type CapacityPsiSnapshot = {
@@ -86,6 +94,7 @@ export type CapacityPsiSnapshot = {
   memory?: CapacityPsiBlock;
   io?: CapacityPsiBlock;
   perNode?: Record<string, { cpu?: CapacityPsiBlock; memory?: CapacityPsiBlock; io?: CapacityPsiBlock }>;
+  coverage?: CapacityPsiCoverage;
 };
 
 /**
@@ -100,6 +109,43 @@ export type CapacityAdmissionHealth = {
   totalQueues: number;
   activeQueues: number;
   inactiveQueues: Array<{ name: string; reason: string; message: string }>;
+};
+
+export type CapacityCoverageStatus =
+  | "kueue_managed"
+  | "critical_system"
+  | "supplemental_lease"
+  | "track_only"
+  | "gap"
+  | "unknown";
+
+export type CapacityCoveragePath = {
+  id: string;
+  label: string;
+  description: string;
+  status: CapacityCoverageStatus;
+  podProducing: boolean;
+  queue: string | null;
+  priorityClass: string | null;
+  controller: string;
+  evidence: string;
+};
+
+export type CapacityKubernetes136Feature = {
+  id: string;
+  label: string;
+  status: "available" | "configured" | "candidate" | "needs_audit" | "not_required" | "track_only" | "unknown";
+  required: boolean;
+  message: string;
+};
+
+export type CapacityCoverageSummary = {
+  generatedAt: string;
+  counts: Record<CapacityCoverageStatus, number>;
+  paths: CapacityCoveragePath[];
+  gaps: CapacityCoveragePath[];
+  criticalSystem: CapacityCoveragePath[];
+  kubernetes136: CapacityKubernetes136Feature[];
 };
 
 export type CapacityObserverSnapshot = {
@@ -140,4 +186,5 @@ export type CapacityObserverResult =
 
 export type CapacityOverviewSummary = {
   observer: CapacityObserverResult;
+  coverage: CapacityCoverageSummary;
 };

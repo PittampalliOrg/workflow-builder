@@ -36,13 +36,14 @@
 	} from '$lib/components/capacity/overview/capacity-trends-panel.svelte';
 	import PendingDurationHistogram from '$lib/components/capacity/overview/pending-duration-histogram.svelte';
 	import WorkloadDistributionDonut from '$lib/components/capacity/overview/workload-distribution-donut.svelte';
+	import CapacityCoveragePanel from '$lib/components/capacity/overview/capacity-coverage-panel.svelte';
 	import type { TrendsWindow } from '$lib/components/capacity/overview/trends-window-toggle.svelte';
 	import {
 		embeddedHeadlampClusterUrl,
 		embeddedHeadlampKueueUrl,
 		normalizeHeadlampCluster
 	} from '$lib/headlamp/links';
-	import { getCapacityOverview, getSchedulingLatency } from './data.remote';
+	import { getCapacityOverview, getCapacityPsiTrends, getSchedulingLatency } from './data.remote';
 	import type {
 		CapacityBlockedWorkload,
 		CapacityContributorSnapshot,
@@ -57,11 +58,13 @@
 	const workloads = createWorkloadStream();
 	const flavors = createResourceFlavorStream();
 	const schedulingQuery = getSchedulingLatency();
+	const psiTrendsQuery = getCapacityPsiTrends();
 	const capacityQuery = getCapacityOverview();
 
 	const observer = $derived<CapacityObserverSnapshot | null>(
 		capacityQuery.current?.observer.available ? capacityQuery.current.observer.snapshot : null
 	);
+	const coverage = $derived(capacityQuery.current?.coverage ?? null);
 	const observerError = $derived(
 		capacityQuery.current?.observer.available === false ? capacityQuery.current.observer.error : null
 	);
@@ -118,7 +121,7 @@
 	async function tick() {
 		isRefreshing = true;
 		try {
-			await Promise.all([capacityQuery.refresh(), schedulingQuery.refresh()]);
+			await Promise.all([capacityQuery.refresh(), schedulingQuery.refresh(), psiTrendsQuery.refresh()]);
 			lastRefreshAt = Date.now();
 		} finally {
 			isRefreshing = false;
@@ -195,6 +198,13 @@
 				? Math.max(0, Math.min(100, (row.headroom / row.renderedBudget) * 100))
 				: null;
 		const psi = snap.psi ?? {};
+		const psiCoverage = psi.coverage;
+		const psiCoverageRatioPct =
+			psiCoverage && psiCoverage.expectedNodes.length > 0
+				? (psiCoverage.sampledNodes.length / psiCoverage.expectedNodes.length) * 100
+				: psiCoverage
+					? 100
+					: null;
 		const sample: HistoryPoint = {
 			t: sampledAt,
 			requested: row.requested,
@@ -206,7 +216,8 @@
 			headroomPct,
 			psiCpuSome60: psi.cpu?.some?.avg60 ?? null,
 			psiMemorySome60: psi.memory?.some?.avg60 ?? null,
-			psiIoSome60: psi.io?.some?.avg60 ?? null
+			psiIoSome60: psi.io?.some?.avg60 ?? null,
+			psiCoverageRatioPct
 		};
 		const last = history.at(-1);
 		if (last && last.t === sample.t) return;
@@ -381,8 +392,18 @@
 		!!observer?.criticalHealth.some((item) => item.status !== 'healthy')
 	);
 
+	const psiCoverage = $derived(observer?.psi?.coverage ?? null);
+	const hasTelemetryIncomplete = $derived(Boolean(psiCoverage && !psiCoverage.complete));
+	const telemetryCoverageText = $derived.by(() => {
+		if (!psiCoverage) return 'PSI unknown';
+		return `${psiCoverage.sampledNodes.length}/${psiCoverage.expectedNodes.length} kubelet PSI`;
+	});
+
 	const autoOpenAccordion = $derived(
-		blockedWorkloads.length > 0 || (observer?.warnings.length ?? 0) > 0 || hasUnhealthy
+		blockedWorkloads.length > 0 ||
+			(observer?.warnings.length ?? 0) > 0 ||
+			hasUnhealthy ||
+			hasTelemetryIncomplete
 	);
 
 	// --- Refresh badge formatting -----------------------------------------
@@ -645,10 +666,13 @@
 	     ============================================================ -->
 	<CapacityTrendsPanel
 		{history}
+		psiTrends={psiTrendsQuery.current ?? null}
 		window={trendsWindow}
 		resource={primaryResource}
 		onWindowChange={(next) => (trendsWindow = next)}
 	/>
+
+	<CapacityCoveragePanel {coverage} />
 
 	<!-- ============================================================
 	     More signals — collapsible
@@ -672,10 +696,15 @@
 						{observer.warnings.length} warning{observer.warnings.length === 1 ? '' : 's'}
 					</Badge>
 				{/if}
-				{#if hasUnhealthy}
-					<Badge variant="outline" class="border-rose-500/40 text-[10px]">unhealthy</Badge>
-				{/if}
-			</span>
+			{#if hasUnhealthy}
+				<Badge variant="outline" class="border-rose-500/40 text-[10px]">unhealthy</Badge>
+			{/if}
+			{#if hasTelemetryIncomplete}
+				<Badge variant="outline" class="border-amber-500/40 text-[10px]">
+					telemetry degraded
+				</Badge>
+			{/if}
+		</span>
 			<span class="text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:hidden">
 				expand
 			</span>
@@ -783,7 +812,7 @@
 							{observer.nodePressure.schedulableWorkers ?? 0} schedulable ·
 							{observer.nodePressure.unschedulableWorkers ?? 0} unschedulable ·
 							{observer.nodePressure.diskPressureWorkers ?? 0} disk pressure ·
-							{observer.recentPreemptions} preempts
+							{observer.recentPreemptions} preempts · {telemetryCoverageText}
 						</span>
 					</header>
 					<ul class="flex flex-wrap gap-2 text-[11px]">
@@ -803,7 +832,38 @@
 								<span class="text-muted-foreground tabular-nums">{item.ready}/{item.total}</span>
 							</li>
 						{/each}
+						<li
+							class="inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono {psiCoverage?.complete ===
+							false
+								? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+								: ''}"
+						>
+							{#if psiCoverage?.complete === false}
+								<AlertTriangle class="size-3 text-amber-500" />
+							{:else}
+								<CheckCircle2 class="size-3 text-emerald-500" />
+							{/if}
+							<span>kubelet PSI</span>
+							<span class="text-muted-foreground tabular-nums">
+								{psiCoverage ? `${psiCoverage.sampledNodes.length}/${psiCoverage.expectedNodes.length}` : '—'}
+							</span>
+						</li>
 					</ul>
+					{#if psiCoverage?.missingNodes.length}
+						<div
+							class="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300"
+						>
+							Missing kubelet PSI from
+							<span class="font-mono">{psiCoverage.missingNodes.join(', ')}</span>
+							{#if Object.keys(psiCoverage.errorsByNode).length > 0}
+								<span class="text-amber-700/80 dark:text-amber-300/80">
+									· {Object.entries(psiCoverage.errorsByNode)
+										.map(([node, error]) => `${node}: ${error}`)
+										.join('; ')}
+								</span>
+							{/if}
+						</div>
+					{/if}
 					{#if observer.warnings.length > 0}
 						<div
 							class="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300"

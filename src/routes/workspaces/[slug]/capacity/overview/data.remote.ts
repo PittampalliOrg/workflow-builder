@@ -4,6 +4,7 @@ import {
 	queryTimeSeries
 } from '$lib/server/otel/metrics';
 import { fetchCapacityObserverSnapshot } from '$lib/server/capacity/observer';
+import { buildCapacityCoverageSummary } from '$lib/server/capacity/coverage';
 import type { CapacityOverviewSummary } from '$lib/types/capacity';
 
 const WINDOW_SECONDS = 300; // 5 min — recent enough to feel "now", smooth enough to avoid jitter
@@ -17,6 +18,20 @@ export type SchedulingLatencySnapshot = {
 	p95Ms: number | null;
 	samples: number;
 	sparkline: Array<{ t: string; valueMs: number }>;
+	hasData: boolean;
+};
+
+export type CapacityPsiTrendPoint = { t: string; value: number };
+
+export type CapacityPsiTrendsSnapshot = {
+	cluster: string;
+	windowSeconds: number;
+	bucketSeconds: number;
+	source: 'clickhouse' | 'unavailable';
+	cpuSomeAvg60Pct: CapacityPsiTrendPoint[];
+	memorySomeAvg60Pct: CapacityPsiTrendPoint[];
+	ioSomeAvg60Pct: CapacityPsiTrendPoint[];
+	coverageRatioPct: CapacityPsiTrendPoint[];
 	hasData: boolean;
 };
 
@@ -75,8 +90,74 @@ export const getSchedulingLatency = query(
 	}
 );
 
+export const getCapacityPsiTrends = query(async (): Promise<CapacityPsiTrendsSnapshot> => {
+	const to = new Date();
+	const from = new Date(to.getTime() - WINDOW_SECONDS * 1000);
+	const filters = { cluster: METRICS_DEFAULT_CLUSTER };
+	const empty = {
+		cluster: METRICS_DEFAULT_CLUSTER,
+		windowSeconds: WINDOW_SECONDS,
+		bucketSeconds: BUCKET_SECONDS,
+		source: 'unavailable' as const,
+		cpuSomeAvg60Pct: [],
+		memorySomeAvg60Pct: [],
+		ioSomeAvg60Pct: [],
+		coverageRatioPct: [],
+		hasData: false
+	};
+	try {
+		const [cpu, memory, io, coverage] = await Promise.all([
+			queryTimeSeries(
+				'capacity_observer_psi_some_avg60_pct',
+				BUCKET_SECONDS,
+				{ from, to },
+				{ ...filters, attribute: { resource: 'cpu' } },
+				'max'
+			),
+			queryTimeSeries(
+				'capacity_observer_psi_some_avg60_pct',
+				BUCKET_SECONDS,
+				{ from, to },
+				{ ...filters, attribute: { resource: 'memory' } },
+				'max'
+			),
+			queryTimeSeries(
+				'capacity_observer_psi_some_avg60_pct',
+				BUCKET_SECONDS,
+				{ from, to },
+				{ ...filters, attribute: { resource: 'io' } },
+				'max'
+			),
+			queryTimeSeries(
+				'capacity_observer_psi_coverage_ratio',
+				BUCKET_SECONDS,
+				{ from, to },
+				filters,
+				'min'
+			)
+		]);
+		const mapPoints = (points: typeof cpu, scale = 1) =>
+			points.map((point) => ({ t: point.t.toISOString(), value: point.value * scale }));
+		return {
+			cluster: METRICS_DEFAULT_CLUSTER,
+			windowSeconds: WINDOW_SECONDS,
+			bucketSeconds: BUCKET_SECONDS,
+			source: 'clickhouse',
+			cpuSomeAvg60Pct: mapPoints(cpu),
+			memorySomeAvg60Pct: mapPoints(memory),
+			ioSomeAvg60Pct: mapPoints(io),
+			coverageRatioPct: mapPoints(coverage, 100),
+			hasData: cpu.length + memory.length + io.length + coverage.length > 0
+		};
+	} catch {
+		return empty;
+	}
+});
+
 export const getCapacityOverview = query(async (): Promise<CapacityOverviewSummary> => {
+	const observer = await fetchCapacityObserverSnapshot();
 	return {
-		observer: await fetchCapacityObserverSnapshot()
+		observer,
+		coverage: buildCapacityCoverageSummary(observer)
 	};
 });
