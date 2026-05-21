@@ -87,6 +87,85 @@ export interface ServiceGraphPayload {
 	nodes: ServiceGraphNode[];
 	edges: ServiceGraphEdge[];
 	meta: ServiceGraphMeta;
+	/** Per-node/edge insight overlays + critical path (execution scope only). */
+	insights?: ServiceGraphInsights;
+}
+
+// ---------------------------------------------------------------------------
+// Selection (click a node or edge to drill in)
+// ---------------------------------------------------------------------------
+
+export type GraphSelection =
+	| { kind: 'node'; id: string; nodeKind: ServiceGraphNodeKind }
+	| { kind: 'edge'; id: string; source: string; target: string };
+
+/** `node:<id>` or `edge:<source>__<target>`. nodeKind rides in a separate query param. */
+export function serializeSelection(sel: GraphSelection): string {
+	return sel.kind === 'node' ? `node:${sel.id}` : `edge:${sel.source}__${sel.target}`;
+}
+
+export function parseSelection(
+	raw: string | null | undefined,
+	nodeKind?: string | null
+): GraphSelection | null {
+	if (!raw) return null;
+	if (raw.startsWith('node:')) {
+		const id = raw.slice(5);
+		if (!id) return null;
+		return { kind: 'node', id, nodeKind: (nodeKind as ServiceGraphNodeKind) ?? 'service' };
+	}
+	if (raw.startsWith('edge:')) {
+		const rest = raw.slice(5);
+		const idx = rest.indexOf('__');
+		if (idx < 0) return null;
+		const source = rest.slice(0, idx);
+		const target = rest.slice(idx + 2);
+		if (!source || !target) return null;
+		return { kind: 'edge', id: rest, source, target };
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
+// Insight overlays
+// ---------------------------------------------------------------------------
+
+export interface TokenTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheCreate: number;
+	total: number;
+}
+
+export interface TimingBreakdown {
+	coldStartMs: number;
+	routingMs: number;
+	credentialFetchMs: number;
+	executionMs: number;
+	wasColdStart: boolean;
+}
+
+export interface ErrorSample {
+	message: string;
+	spanId?: string;
+	traceId?: string;
+}
+
+export interface NodeInsight {
+	tokens?: TokenTotals;
+	costUsd?: number;
+	timing?: TimingBreakdown;
+	/** Attempts beyond the first (retries). */
+	retries?: number;
+	errorSamples?: ErrorSample[];
+}
+
+export interface ServiceGraphInsights {
+	nodes: Record<string, NodeInsight>;
+	edges: Record<string, NodeInsight>;
+	/** Ordered node ids on the slowest end-to-end path. */
+	criticalPath?: string[];
 }
 
 /** Parsed, validated query for `buildServiceGraph`. */

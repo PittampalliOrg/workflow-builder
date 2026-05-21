@@ -11,12 +11,19 @@
 	} from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
 	import { createLayoutConfig, layoutWorkflowGraph } from '$lib/utils/layout';
-	import type { ServiceGraphPayload } from '$lib/types/service-graph';
+	import type { GraphSelection, ServiceGraphNode as SGNode, ServiceGraphPayload } from '$lib/types/service-graph';
 	import ServiceGraphNode from './service-graph-node.svelte';
 	import ServiceGraphEdge from './service-graph-edge.svelte';
 
-	let { payload, loading = false }: { payload: ServiceGraphPayload | null; loading?: boolean } =
-		$props();
+	let {
+		payload,
+		loading = false,
+		onSelect
+	}: {
+		payload: ServiceGraphPayload | null;
+		loading?: boolean;
+		onSelect?: (sel: GraphSelection | null) => void;
+	} = $props();
 
 	const nodeTypes: NodeTypes = { metric: ServiceGraphNode };
 	const edgeTypes: EdgeTypes = { metric: ServiceGraphEdge };
@@ -29,7 +36,8 @@
 
 	let colorMode = $derived<'light' | 'dark' | 'system'>('system');
 
-	// Re-layout whenever the payload identity changes.
+	// Re-layout whenever the payload identity changes. Insight + critical-path are
+	// part of the payload, so they're baked here (no relayout on selection).
 	$effect(() => {
 		const p = payload;
 		if (!p || p.nodes.length === 0) {
@@ -39,20 +47,25 @@
 		}
 
 		const maxRate = Math.max(1, ...p.edges.map((e) => e.red.rate));
+		const path = p.insights?.criticalPath ?? [];
+		const criticalNodes = new Set(path);
+		const criticalEdges = new Set<string>();
+		for (let i = 0; i < path.length - 1; i++) criticalEdges.add(`${path[i]}__${path[i + 1]}`);
+
 		const rawNodes: Node[] = p.nodes.map((n) => ({
 			id: n.id,
 			type: 'metric',
 			position: { x: 0, y: 0 },
 			width: NODE_W,
 			height: NODE_H,
-			data: { node: n }
+			data: { node: n, insight: p.insights?.nodes[n.id] ?? null, onCritical: criticalNodes.has(n.id) }
 		}));
 		const edges: Edge[] = p.edges.map((e) => ({
 			id: e.id,
 			source: e.source,
 			target: e.target,
 			type: 'metric',
-			data: { edge: e, maxRate, scope: p.scope }
+			data: { edge: e, maxRate, scope: p.scope, onCritical: criticalEdges.has(e.id) }
 		}));
 
 		const preset = p.nodes.length > 25 ? 'review' : 'flow';
@@ -95,6 +108,11 @@
 		minZoom={0.1}
 		maxZoom={2}
 		fitView
+		onnodeclick={({ node }) =>
+			onSelect?.({ kind: 'node', id: node.id, nodeKind: (node.data.node as SGNode).kind })}
+		onedgeclick={({ edge }) =>
+			onSelect?.({ kind: 'edge', id: edge.id, source: edge.source, target: edge.target })}
+		onpaneclick={() => onSelect?.(null)}
 	>
 		<Controls showLock={false} />
 		<Background

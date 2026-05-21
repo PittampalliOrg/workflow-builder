@@ -163,6 +163,14 @@ def init_telemetry() -> bool:
         except Exception as exc:  # noqa: BLE001
             logger.warning("DaprAgentsInstrumentor failed: %s", exc)
 
+        # --- State-store content capture (db.key always; value behind the flag) ---
+        try:
+            from .state_tracing import instrument_state_store
+
+            instrument_state_store()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("state-store instrumentation failed: %s", exc)
+
         _ready = True
         logger.info(
             "Telemetry initialized: traces+metrics+logs -> %s (metric interval %dms)",

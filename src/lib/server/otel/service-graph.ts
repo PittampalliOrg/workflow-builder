@@ -22,20 +22,25 @@
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { workflowExecutionLogs, workflowExecutions, workflows } from '$lib/server/db/schema';
-import type { ObservabilityTraceSpan } from '$lib/types/observability';
+import type { ObservabilityLlmSpan, ObservabilityTraceSpan } from '$lib/types/observability';
 import {
 	CLICKHOUSE_DB,
 	escapeClickHouseString,
 	extractExecutionTraceIds,
 	findCorrelatedTraceIds,
+	getMultiTraceLlmSpans,
 	getMultiTraceSpans,
 	queryClickHouse,
 	sanitizeTraceIds
 } from '$lib/server/otel/clickhouse';
+import { costFor } from '$lib/server/pricing/model-pricing';
 import {
 	emptyServiceGraph,
+	type NodeInsight,
 	type RedMetrics,
 	type ServiceGraphEdge,
+	type ServiceGraphInsights,
+	type ServiceGraphMode,
 	type ServiceGraphNode,
 	type ServiceGraphNodeKind,
 	type ServiceGraphPayload,
@@ -73,7 +78,7 @@ function percentiles(values: number[]): { p50: number; p95: number; p99: number 
  * (`agent-session-<20hex>`). Collapse them into one topology node so the graph
  * stays readable; the per-session detail lives in the existing trace explorer.
  */
-function collapseServiceName(name: string): string {
+export function collapseServiceName(name: string): string {
 	return name.replace(/^agent-session-[0-9a-f]{8,}$/i, 'agent-session');
 }
 
@@ -215,7 +220,7 @@ function isError(span: ObservabilityTraceSpan): boolean {
 	return span.statusCode === ERROR_STATUS;
 }
 
-function virtualPeer(span: ObservabilityTraceSpan): { id: string; kind: ServiceGraphNodeKind; label: string } | null {
+export function virtualPeer(span: ObservabilityTraceSpan): { id: string; kind: ServiceGraphNodeKind; label: string } | null {
 	const attrs = span.attributes ?? {};
 	const dbSystem = attrs['db.system'] ?? attrs['db.namespace'];
 	if (dbSystem) return { id: `db:${String(dbSystem)}`, kind: 'db', label: String(dbSystem) };
@@ -494,7 +499,7 @@ function nodeLabel(node: WorkflowNodeJson): string {
 async function buildStepGraphSingleExec(
 	execution: ExecutionRow,
 	workflow: typeof workflows.$inferSelect
-): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[] }> {
+): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; logs: StepLogRow[] }> {
 	const wfNodes = (workflow.nodes ?? []) as WorkflowNodeJson[];
 	const wfEdges = (workflow.edges ?? []) as WorkflowEdgeJson[];
 	const logs = db
@@ -557,7 +562,7 @@ async function buildStepGraphSingleExec(
 			}
 		});
 	}
-	return { nodes, edges };
+	return { nodes, edges, logs };
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +656,205 @@ async function buildStepGraphWindowed(
 }
 
 // ---------------------------------------------------------------------------
+// insight enrichment (execution scope): tokens/cost, timing, retries, errors, critical path
+// ---------------------------------------------------------------------------
+
+const WORKFLOW_NODE_ATTR = 'workflow.node.id';
+type StepLogRow = typeof workflowExecutionLogs.$inferSelect;
+
+/**
+ * Map each spanId → the workflow node id of its nearest ancestor span that carries
+ * `workflow.node.id`. Lets us attribute low-level LLM/error spans (which only have
+ * http/gen_ai attrs) to the step that owns them.
+ */
+function buildSpanNodeMap(spans: ObservabilityTraceSpan[]): Map<string, string> {
+	const byId = new Map(spans.map((s) => [s.spanId, s]));
+	const memo = new Map<string, string | undefined>();
+	const resolve = (spanId: string, seen: Set<string>): string | undefined => {
+		if (memo.has(spanId)) return memo.get(spanId);
+		const span = byId.get(spanId);
+		if (!span || seen.has(spanId)) return undefined;
+		seen.add(spanId);
+		const own = span.attributes?.[WORKFLOW_NODE_ATTR];
+		let nodeId = own != null && String(own) ? String(own) : undefined;
+		if (!nodeId && span.parentSpanId) nodeId = resolve(span.parentSpanId, seen);
+		memo.set(spanId, nodeId);
+		return nodeId;
+	};
+	const out = new Map<string, string>();
+	for (const s of spans) {
+		const n = resolve(s.spanId, new Set());
+		if (n) out.set(s.spanId, n);
+	}
+	return out;
+}
+
+interface InsightInput {
+	mode: ServiceGraphMode;
+	spans: ObservabilityTraceSpan[];
+	llmSpans: ObservabilityLlmSpan[];
+	logs?: StepLogRow[];
+	nodes: ServiceGraphNode[];
+	edges: ServiceGraphEdge[];
+}
+
+/** Build per-node insight overlays (tokens/cost/timing/retries/errors) + critical path. Pure. */
+function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
+	const { mode, spans, llmSpans, logs, nodes, edges } = input;
+	const nodeInsights: Record<string, NodeInsight> = {};
+	const ensure = (id: string): NodeInsight => (nodeInsights[id] ??= {});
+	const spanNode = mode === 'step' ? buildSpanNodeMap(spans) : null;
+	const keyFor = (serviceName: string, spanId: string): string | undefined =>
+		mode === 'service' ? collapseServiceName(serviceName) : spanNode?.get(spanId);
+
+	// tokens + cost (LLM spans → service node or step node)
+	for (const s of llmSpans) {
+		const key = keyFor(s.serviceName, s.spanId);
+		if (!key) continue;
+		const ins = ensure(key);
+		const t = (ins.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, total: 0 });
+		const inputTokens = s.promptTokens ?? 0;
+		const outputTokens = s.completionTokens ?? 0;
+		const cacheReadTokens = s.cacheReadInputTokens ?? 0;
+		const cacheCreateTokens = s.cacheCreationInputTokens ?? 0;
+		t.input += inputTokens;
+		t.output += outputTokens;
+		t.cacheRead += cacheReadTokens;
+		t.cacheCreate += cacheCreateTokens;
+		t.total += s.totalTokens ?? inputTokens + outputTokens;
+		ins.costUsd =
+			(ins.costUsd ?? 0) +
+			costFor(s.modelName, { inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens });
+	}
+
+	// timing breakdown + retries (step mode, from workflow_execution_logs)
+	if (mode === 'step' && logs) {
+		const byNode = new Map<string, StepLogRow[]>();
+		for (const r of logs) {
+			const list = byNode.get(r.nodeId) ?? [];
+			list.push(r);
+			byNode.set(r.nodeId, list);
+		}
+		for (const [nodeId, rows] of byNode) {
+			const ins = ensure(nodeId);
+			ins.retries = Math.max(0, rows.length - 1);
+			const sum = (f: (r: StepLogRow) => number) => rows.reduce((acc, r) => acc + f(r), 0);
+			ins.timing = {
+				coldStartMs: sum((r) => r.coldStartMs ?? 0),
+				routingMs: sum((r) => r.routingMs ?? 0),
+				credentialFetchMs: sum((r) => r.credentialFetchMs ?? 0),
+				executionMs: sum((r) => toNum(r.executionMs ?? r.duration)),
+				wasColdStart: rows.some((r) => r.wasColdStart === true)
+			};
+		}
+	}
+
+	// error samples (cap 3 per node)
+	for (const s of spans) {
+		if (s.statusCode !== ERROR_STATUS) continue;
+		const key = keyFor(s.serviceName, s.spanId);
+		if (!key) continue;
+		const samples = (ensure(key).errorSamples ??= []);
+		if (samples.length < 3) {
+			samples.push({
+				message: s.statusMessage || s.operationName || 'error',
+				spanId: s.spanId,
+				traceId: s.traceId
+			});
+		}
+	}
+
+	return { nodes: nodeInsights, edges: {}, criticalPath: computeCriticalPath(nodes, edges) };
+}
+
+/**
+ * Slowest end-to-end path through the graph. Node weight = self/own latency
+ * (selfMs ?? p95); edge weight = edge p95. Memoized DFS with an on-stack guard so
+ * retry-induced cycles (service mode) don't loop. Returns ordered node ids.
+ */
+export function computeCriticalPath(nodes: ServiceGraphNode[], edges: ServiceGraphEdge[]): string[] {
+	if (nodes.length === 0) return [];
+	const nodeById = new Map(nodes.map((n) => [n.id, n]));
+	const outgoing = new Map<string, ServiceGraphEdge[]>();
+	const indeg = new Map<string, number>();
+	for (const n of nodes) {
+		outgoing.set(n.id, []);
+		indeg.set(n.id, 0);
+	}
+	for (const e of edges) {
+		if (!nodeById.has(e.source) || !nodeById.has(e.target) || e.source === e.target) continue;
+		outgoing.get(e.source)!.push(e);
+		indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1);
+	}
+	const nodeWeight = (id: string) => {
+		const n = nodeById.get(id);
+		return n ? (n.red.selfMs ?? n.red.p95 ?? 0) : 0;
+	};
+	const memo = new Map<string, { cost: number; path: string[] }>();
+	const onStack = new Set<string>();
+	const best = (id: string): { cost: number; path: string[] } => {
+		const cached = memo.get(id);
+		if (cached) return cached;
+		if (onStack.has(id)) return { cost: 0, path: [] }; // break cycle
+		onStack.add(id);
+		let bestCost = 0;
+		let bestPath: string[] = [];
+		for (const e of outgoing.get(id) ?? []) {
+			const child = best(e.target);
+			const c = (e.red.p95 ?? 0) + child.cost;
+			if (c > bestCost) {
+				bestCost = c;
+				bestPath = [e.target, ...child.path];
+			}
+		}
+		onStack.delete(id);
+		const result = { cost: nodeWeight(id) + bestCost, path: bestPath };
+		memo.set(id, result);
+		return result;
+	};
+	const entries = nodes
+		.filter((n) => (indeg.get(n.id) ?? 0) === 0 || n.id === 'user')
+		.map((n) => n.id);
+	const starts = entries.length > 0 ? entries : nodes.map((n) => n.id);
+	let top = { cost: -1, path: [] as string[] };
+	let topStart = '';
+	for (const s of starts) {
+		const r = best(s);
+		if (r.cost > top.cost) {
+			top = r;
+			topStart = s;
+		}
+	}
+	return topStart ? [topStart, ...top.path] : [];
+}
+
+/** Best-effort insight computation (fetches LLM spans; falls back to critical path only). */
+async function computeExecutionInsights(params: {
+	mode: ServiceGraphMode;
+	traceIds: string[];
+	spans?: ObservabilityTraceSpan[];
+	logs?: StepLogRow[];
+	nodes: ServiceGraphNode[];
+	edges: ServiceGraphEdge[];
+}): Promise<ServiceGraphInsights> {
+	try {
+		const spans =
+			params.spans ?? (params.traceIds.length ? await getMultiTraceSpans(params.traceIds) : []);
+		const llmSpans = params.traceIds.length ? await getMultiTraceLlmSpans(params.traceIds) : [];
+		return buildExecutionInsights({
+			mode: params.mode,
+			spans,
+			llmSpans,
+			logs: params.logs,
+			nodes: params.nodes,
+			edges: params.edges
+		});
+	} catch {
+		return { nodes: {}, edges: {}, criticalPath: computeCriticalPath(params.nodes, params.edges) };
+	}
+}
+
+// ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
 
@@ -674,10 +878,18 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 			}
 			const spans = await getMultiTraceSpans(traceIds);
 			const { nodes, edges } = buildServiceGraphFromSpans(spans);
+			const insights = await computeExecutionInsights({
+				mode: 'service',
+				traceIds,
+				spans,
+				nodes,
+				edges
+			});
 			return {
 				...base,
 				nodes,
 				edges,
+				insights,
 				meta: { spanCount: spans.length, traceCount: traceIds.length, warnings: [] }
 			};
 		}
@@ -703,8 +915,22 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 		if (query.mode === 'step' && query.scope === 'execution') {
 			if (!execution) return emptyServiceGraph(query, { warnings: ['Execution not found'] });
 			if (!workflow) return emptyServiceGraph(query, { warnings: ['Workflow not found'] });
-			const { nodes, edges } = await buildStepGraphSingleExec(execution, workflow);
-			return { ...base, nodes, edges, meta: { spanCount: 0, traceCount: 0, warnings: [] } };
+			const { nodes, edges, logs } = await buildStepGraphSingleExec(execution, workflow);
+			const traceIds = await resolveExecutionTraceIds(execution);
+			const insights = await computeExecutionInsights({
+				mode: 'step',
+				traceIds,
+				logs,
+				nodes,
+				edges
+			});
+			return {
+				...base,
+				nodes,
+				edges,
+				insights,
+				meta: { spanCount: 0, traceCount: traceIds.length, warnings: [] }
+			};
 		}
 
 		// step × window

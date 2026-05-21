@@ -2,14 +2,22 @@
 	import { BaseEdge, EdgeLabel, getBezierPath, type EdgeProps } from '@xyflow/svelte';
 	import type { ServiceGraphEdge } from '$lib/types/service-graph';
 
-	let { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps =
-		$props();
+	let {
+		id,
+		sourceX,
+		sourceY,
+		targetX,
+		targetY,
+		sourcePosition,
+		targetPosition,
+		data,
+		selected
+	}: EdgeProps = $props();
 
 	let edge = $derived(data?.edge as ServiceGraphEdge);
-	// Canvas passes the graph-wide max rate so thickness is relative (works for
-	// both per-second windowed rates and raw single-execution counts).
 	let maxRate = $derived((data?.maxRate as number) || 1);
 	let scope = $derived((data?.scope as string) || 'window');
+	let onCritical = $derived(Boolean(data?.onCritical));
 
 	let [edgePath, labelX, labelY] = $derived(
 		getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
@@ -18,21 +26,23 @@
 	// Thickness ∝ rate (Grafana drives edge width off request rate).
 	let strokeWidth = $derived.by(() => {
 		const frac = Math.min(1, (edge?.red.rate ?? 0) / maxRate);
-		return Math.max(1.25, 1.25 + frac * 7);
+		const base = Math.max(1.25, 1.25 + frac * 7);
+		return onCritical || selected ? base + 1.5 : base;
 	});
 
-	// Color ∝ error rate: primary → destructive ramp (Grafana colors by errors).
+	// Color ∝ error rate: primary → destructive ramp; critical path uses an accent.
 	let stroke = $derived.by(() => {
+		if (selected) return 'var(--primary)';
 		const pct = Math.round((edge?.red.errorRate ?? 0) * 100);
 		if ((edge?.red.total ?? 0) === 0) return 'var(--border)';
+		if (onCritical && pct === 0) return 'color-mix(in oklch, var(--primary) 85%, var(--foreground))';
 		if (pct === 0) return 'color-mix(in oklch, var(--primary) 70%, var(--muted-foreground))';
 		return `color-mix(in oklch, var(--destructive) ${Math.max(20, pct)}%, var(--primary))`;
 	});
 
 	function fmtMs(ms: number): string {
 		if (!ms) return '0ms';
-		if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-		return `${Math.round(ms)}ms`;
+		return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 	}
 	let rateText = $derived(
 		scope === 'execution'
@@ -48,13 +58,13 @@
 	{id}
 	path={edgePath}
 	markerEnd="url(#arrowclosed)"
-	style="stroke: {stroke}; stroke-width: {strokeWidth};"
-	class="wb-sg-edge"
+	style="stroke: {stroke}; stroke-width: {strokeWidth}; {onCritical ? 'stroke-dasharray: 7 5;' : ''}"
+	class="wb-sg-edge {onCritical ? 'wb-sg-edge--critical' : ''}"
 />
 
 <EdgeLabel x={labelX} y={labelY} class="!bg-transparent !p-0">
 	<div class="wb-sg-edge__tip nodrag nopan">
-		<div class="wb-sg-edge__rate">{rateText}</div>
+		<div class="wb-sg-edge__rate" class:wb-sg-edge__rate--crit={onCritical}>{rateText}</div>
 		<div class="wb-sg-edge__detail">
 			<span class:wb-sg-edge__err={errorPct > 0}>{errorPct}% err</span>
 			<span>p50 {fmtMs(edge?.red.p50 ?? 0)}</span>
@@ -82,7 +92,10 @@
 		padding: 0 6px;
 		font-variant-numeric: tabular-nums;
 	}
-	/* Latency/error detail reveals only on edge hover to avoid clutter. */
+	.wb-sg-edge__rate--crit {
+		border-color: var(--primary);
+		color: var(--primary);
+	}
 	.wb-sg-edge__detail {
 		display: none;
 		gap: 6px;
@@ -102,7 +115,10 @@
 	:global(.svelte-flow__edge:hover) .wb-sg-edge__detail {
 		display: flex;
 	}
-	:global(.svelte-flow__edge:hover) .wb-sg-edge {
+	:global(.svelte-flow__edge:hover) :global(.wb-sg-edge) {
 		filter: drop-shadow(0 0 3px var(--primary));
+	}
+	:global(.wb-sg-edge--critical) {
+		filter: drop-shadow(0 0 4px color-mix(in oklch, var(--primary) 50%, transparent));
 	}
 </style>
