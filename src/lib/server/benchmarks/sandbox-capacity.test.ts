@@ -350,6 +350,14 @@ describe("sandbox scheduler capacity", () => {
 					],
 				},
 				status: {
+					conditions: [
+						{
+							type: "Active",
+							status: "True",
+							reason: "Ready",
+							message: "Can admit new workloads",
+						},
+					],
 					flavorsUsage: [
 						{
 							name: "dev-benchmark",
@@ -388,12 +396,63 @@ describe("sandbox scheduler capacity", () => {
 
 		expect(snapshot).toMatchObject({
 			kueueClusterQueueName: "benchmark-fast",
+			kueueClusterQueueActive: true,
+			kueueClusterQueueReason: "Ready",
 			kueueCpuLimitedCapacity: 120,
 			kueueEphemeralStorageLimitedCapacity: 216,
 			kueuePodLimitedCapacity: 216,
 			kueueAvailableSandboxSlots: 120,
 			availableSandboxSlots: 120,
 			schedulableSandboxCapacity: 120,
+		});
+	});
+
+	it("extracts inactive Kueue cluster queue admission health", () => {
+		const kueueCapacity = kueueCapacityFromClusterQueue(
+			{
+				metadata: { name: "benchmark-fast" },
+				spec: {
+					resourceGroups: [
+						{
+							flavors: [
+								{
+									name: "dev-benchmark",
+									resources: [
+										{ name: "cpu", nominalQuota: "8" },
+										{ name: "memory", nominalQuota: "18Gi" },
+										{ name: "ephemeral-storage", nominalQuota: "96Gi" },
+										{ name: "pods", nominalQuota: "32" },
+									],
+								},
+							],
+						},
+					],
+				},
+				status: {
+					conditions: [
+						{
+							type: "Active",
+							status: "False",
+							reason: "AdmissionCheckInactive",
+							message:
+								"Can't admit new workloads: references inactive AdmissionCheck(s): psi-memory-pressure.",
+						},
+					],
+				},
+			},
+			{
+				cpuMilli: 100,
+				memoryBytes: 256 * 1024 * 1024,
+				ephemeralStorageBytes: 1024 * 1024 * 1024,
+			},
+		);
+
+		expect(kueueCapacity).toMatchObject({
+			clusterQueueName: "benchmark-fast",
+			clusterQueueActive: false,
+			clusterQueueReason: "AdmissionCheckInactive",
+			clusterQueueMessage:
+				"Can't admit new workloads: references inactive AdmissionCheck(s): psi-memory-pressure.",
 		});
 	});
 

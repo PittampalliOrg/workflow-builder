@@ -101,6 +101,9 @@ export type BenchmarkCapacityDiagnostics = {
 		nodeFsAvailableBytes: number | null;
 		nodeFsEvictionReserveBytes: number | null;
 		kueueClusterQueueName: string | null;
+		kueueClusterQueueActive: boolean | null;
+		kueueClusterQueueReason: string | null;
+		kueueClusterQueueMessage: string | null;
 		kueueAvailableSandboxSlots: number | null;
 		kueueCpuLimitedCapacity: number | null;
 		kueueMemoryLimitedCapacity: number | null;
@@ -386,6 +389,18 @@ function diagnosticsFromCapacity(params: {
 			kueueClusterQueueName:
 				typeof sandboxCapacity.kueueClusterQueueName === "string"
 					? sandboxCapacity.kueueClusterQueueName
+					: null,
+			kueueClusterQueueActive:
+				typeof sandboxCapacity.kueueClusterQueueActive === "boolean"
+					? sandboxCapacity.kueueClusterQueueActive
+					: null,
+			kueueClusterQueueReason:
+				typeof sandboxCapacity.kueueClusterQueueReason === "string"
+					? sandboxCapacity.kueueClusterQueueReason
+					: null,
+			kueueClusterQueueMessage:
+				typeof sandboxCapacity.kueueClusterQueueMessage === "string"
+					? sandboxCapacity.kueueClusterQueueMessage
 					: null,
 			kueueAvailableSandboxSlots: nonNegativeInt(
 				sandboxCapacity.kueueAvailableSandboxSlots,

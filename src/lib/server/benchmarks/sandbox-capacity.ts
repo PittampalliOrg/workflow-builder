@@ -39,6 +39,9 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	nodeFsEvictionReserveBytes: number;
 	nodeFsLimitedCapacity: number | null;
 	kueueClusterQueueName: string | null;
+	kueueClusterQueueActive: boolean | null;
+	kueueClusterQueueReason: string | null;
+	kueueClusterQueueMessage: string | null;
 	kueueAvailableSandboxSlots: number | null;
 	kueueCpuLimitedCapacity: number | null;
 	kueueMemoryLimitedCapacity: number | null;
@@ -62,6 +65,9 @@ export type BenchmarkSandboxCapacitySnapshot = {
 
 export type BenchmarkKueueCapacitySnapshot = {
 	clusterQueueName: string;
+	clusterQueueActive: boolean | null;
+	clusterQueueReason: string | null;
+	clusterQueueMessage: string | null;
 	availableSandboxSlots: number;
 	cpuLimitedCapacity: number | null;
 	memoryLimitedCapacity: number | null;
@@ -510,6 +516,28 @@ function finiteCapacityMin(values: Array<number | null>): number | null {
 	return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
+function clusterQueueActiveCondition(status: Record<string, unknown> | null): {
+	active: boolean | null;
+	reason: string | null;
+	message: string | null;
+} {
+	const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
+	for (const condition of conditions) {
+		if (!condition || typeof condition !== "object" || Array.isArray(condition)) {
+			continue;
+		}
+		const record = condition as Record<string, unknown>;
+		if (record.type !== "Active") continue;
+		const rawStatus = typeof record.status === "string" ? record.status : "";
+		return {
+			active: rawStatus === "True" ? true : rawStatus === "False" ? false : null,
+			reason: typeof record.reason === "string" ? record.reason : null,
+			message: typeof record.message === "string" ? record.message : null,
+		};
+	}
+	return { active: null, reason: null, message: null };
+}
+
 export function kueueCapacityFromClusterQueue(
 	clusterQueue: unknown,
 	sandboxRequest: BenchmarkSandboxResourceProfile,
@@ -527,6 +555,7 @@ export function kueueCapacityFromClusterQueue(
 		typeof metadata?.name === "string" ? metadata.name : "benchmark-fast";
 	const spec = recordValue(root.spec);
 	const status = recordValue(root.status);
+	const activeCondition = clusterQueueActiveCondition(status);
 	const quotas = new Map<string, number>();
 	const resourceGroups: unknown[] = Array.isArray(spec?.resourceGroups)
 		? spec.resourceGroups
@@ -623,6 +652,9 @@ export function kueueCapacityFromClusterQueue(
 		: null;
 	return {
 		clusterQueueName,
+		clusterQueueActive: activeCondition.active,
+		clusterQueueReason: activeCondition.reason,
+		clusterQueueMessage: activeCondition.message,
 		availableSandboxSlots,
 		cpuLimitedCapacity,
 		memoryLimitedCapacity,
@@ -883,6 +915,9 @@ export function estimateSchedulableSandboxCapacity(params: {
 		nodeFsEvictionReserveBytes: nodeFsReserveBytes,
 		nodeFsLimitedCapacity,
 		kueueClusterQueueName: kueueCapacity?.clusterQueueName ?? null,
+		kueueClusterQueueActive: kueueCapacity?.clusterQueueActive ?? null,
+		kueueClusterQueueReason: kueueCapacity?.clusterQueueReason ?? null,
+		kueueClusterQueueMessage: kueueCapacity?.clusterQueueMessage ?? null,
 		kueueAvailableSandboxSlots: kueueCapacity?.availableSandboxSlots ?? null,
 		kueueCpuLimitedCapacity: kueueCapacity?.cpuLimitedCapacity ?? null,
 		kueueMemoryLimitedCapacity: kueueCapacity?.memoryLimitedCapacity ?? null,
@@ -994,6 +1029,9 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			nodeFsEvictionReserveBytes: nodeFsEvictionReserveBytes(),
 			nodeFsLimitedCapacity: null,
 			kueueClusterQueueName: null,
+			kueueClusterQueueActive: null,
+			kueueClusterQueueReason: null,
+			kueueClusterQueueMessage: null,
 			kueueAvailableSandboxSlots: null,
 			kueueCpuLimitedCapacity: null,
 			kueueMemoryLimitedCapacity: null,

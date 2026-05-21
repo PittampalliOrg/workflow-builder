@@ -61,7 +61,10 @@ import {
 	type ValidBenchmarkAgent,
 } from "./agents";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
-import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
+import {
+	loadSchedulableSandboxCapacitySnapshot,
+	type BenchmarkSandboxCapacitySnapshot,
+} from "./sandbox-capacity";
 import { aggregateBenchmarkInstanceTimings } from "./timings";
 import {
 	buildSwebenchDatasetJsonl,
@@ -157,6 +160,43 @@ async function assertBenchmarkOrchestratorReady(): Promise<void> {
 			detail || `HTTP ${status}`
 		}`.slice(0, 1000),
 	);
+}
+
+export function benchmarkLaunchPreflightError(params: {
+	executionBackend: BenchmarkExecutionBackend;
+	sandboxCapacity: BenchmarkSandboxCapacitySnapshot | null;
+}): string | null {
+	if (params.executionBackend !== "dapr-kueue" && params.executionBackend !== "host") {
+		return null;
+	}
+	const { sandboxCapacity } = params;
+	if (!sandboxCapacity) return null;
+	if (sandboxCapacity.error) {
+		return `SWE-bench Kueue preflight could not read sandbox capacity: ${sandboxCapacity.error}`;
+	}
+	const queueName = sandboxCapacity.kueueClusterQueueName ?? "benchmark-fast";
+	if (!sandboxCapacity.kueueClusterQueueName) {
+		return "SWE-bench Kueue preflight could not read ClusterQueue benchmark-fast";
+	}
+	if (sandboxCapacity.kueueClusterQueueActive !== true) {
+		const reason = sandboxCapacity.kueueClusterQueueReason
+			? ` (${sandboxCapacity.kueueClusterQueueReason})`
+			: "";
+		const message = sandboxCapacity.kueueClusterQueueMessage
+			? `: ${sandboxCapacity.kueueClusterQueueMessage}`
+			: "";
+		return `SWE-bench Kueue preflight blocked launch because ClusterQueue ${queueName} is not Active${reason}${message}`;
+	}
+	if (
+		sandboxCapacity.schedulableKueueInstanceCapacity != null &&
+		sandboxCapacity.schedulableKueueInstanceCapacity <= 0
+	) {
+		return `SWE-bench Kueue preflight blocked launch because ClusterQueue ${queueName} has zero full-instance capacity`;
+	}
+	if (sandboxCapacity.schedulableSandboxCapacity <= 0) {
+		return "SWE-bench Kueue preflight blocked launch because no schedulable sandbox worker capacity is available; check ResourceFlavor node labels and worker readiness";
+	}
+	return null;
 }
 
 function ensureBenchmarkInstanceMlflowRunInBackground(params: {
@@ -1092,6 +1132,13 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		input.executionClass ?? benchmarkExecutionClass(),
 	);
 	const sandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
+	const launchPreflightError = benchmarkLaunchPreflightError({
+		executionBackend,
+		sandboxCapacity,
+	});
+	if (launchPreflightError) {
+		throw error(409, launchPreflightError);
+	}
 	const capacity = estimateBenchmarkRuntimeCapacity({
 		runtimeClass: runtimeRoute.runtimeClass,
 		runtimeIsolation: runtimeRoute.isolation,

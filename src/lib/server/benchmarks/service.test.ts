@@ -11,6 +11,7 @@ import {
 	benchmarkSessionHostAppId,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
+	benchmarkLaunchPreflightError,
 	completedBenchmarkRunHasDurableWorkflowTarget,
 	collectBenchmarkTraceIds,
 	cleanupBenchmarkTerminalResourcesAfterDurableClosure,
@@ -26,6 +27,7 @@ import {
 	shouldRunFullBenchmarkRunRecompute,
 	shouldTerminateCompletedBenchmarkSessionProjection,
 } from "./service";
+import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
 import {
 	buildSwebenchDatasetJsonl,
 	findMissingSwebenchMetadata,
@@ -60,6 +62,125 @@ function validatedInferenceEnvironment(
 		...overrides,
 	};
 }
+
+function sandboxCapacity(
+	overrides: Partial<BenchmarkSandboxCapacitySnapshot> = {},
+): BenchmarkSandboxCapacitySnapshot {
+	return {
+		sampledAt: "2026-05-21T00:00:00.000Z",
+		namespace: "openshell",
+		podScope: "all-namespaces",
+		nodeCount: 6,
+		allocatableCpuMilli: 96000,
+		allocatableMemoryBytes: 192 * 1024 * 1024 * 1024,
+		allocatableEphemeralStorageBytes: 1024 * 1024 * 1024 * 1024,
+		requestedCpuMilli: 0,
+		requestedMemoryBytes: 0,
+		requestedEphemeralStorageBytes: 0,
+		pendingSwebenchCpuMilli: 0,
+		pendingSwebenchMemoryBytes: 0,
+		pendingSwebenchEphemeralStorageBytes: 0,
+		availableCpuMilli: 96000,
+		availableMemoryBytes: 192 * 1024 * 1024 * 1024,
+		availableEphemeralStorageBytes: 1024 * 1024 * 1024 * 1024,
+		sandboxRequestCpuMilli: 100,
+		sandboxRequestMemoryBytes: 256 * 1024 * 1024,
+		sandboxRequestEphemeralStorageBytes: 1024 * 1024 * 1024,
+		availableSandboxSlots: 32,
+		totalSchedulableSandboxCapacity: 32,
+		schedulableSandboxCapacity: 32,
+		cpuLimitedCapacity: 960,
+		memoryLimitedCapacity: 768,
+		ephemeralStorageLimitedCapacity: 1024,
+		nodeFsAvailableBytes: null,
+		nodeFsCapacityBytes: null,
+		nodeFsEvictionReserveBytes: 24 * 1024 * 1024 * 1024,
+		nodeFsLimitedCapacity: null,
+		kueueClusterQueueName: "benchmark-fast",
+		kueueClusterQueueActive: true,
+		kueueClusterQueueReason: "Ready",
+		kueueClusterQueueMessage: "Can admit new workloads",
+		kueueAvailableSandboxSlots: 32,
+		kueueCpuLimitedCapacity: 80,
+		kueueMemoryLimitedCapacity: 72,
+		kueueEphemeralStorageLimitedCapacity: 37,
+		kueuePodLimitedCapacity: 32,
+		kueueInstanceRequestCpuMilli: 350,
+		kueueInstanceRequestMemoryBytes: 805306368,
+		kueueInstanceRequestEphemeralStorageBytes: 5947523072,
+		kueueInstancePodCount: 2,
+		kueueAvailableInstanceSlots: 16,
+		kueueInstanceCpuLimitedCapacity: 22,
+		kueueInstanceMemoryLimitedCapacity: 24,
+		kueueInstanceEphemeralStorageLimitedCapacity: 17,
+		kueueInstancePodLimitedCapacity: 16,
+		schedulableKueueInstanceCapacity: 16,
+		activeSwebenchPods: 0,
+		pendingSwebenchPods: 0,
+		diskPressureNodeCount: 0,
+		...overrides,
+	};
+}
+
+describe("SWE-bench launch preflight", () => {
+	it("allows healthy Kueue-backed launches", () => {
+		expect(
+			benchmarkLaunchPreflightError({
+				executionBackend: "dapr-kueue",
+				sandboxCapacity: sandboxCapacity(),
+			}),
+		).toBeNull();
+	});
+
+	it("rejects inactive Kueue ClusterQueues before creating a run", () => {
+		expect(
+			benchmarkLaunchPreflightError({
+				executionBackend: "dapr-kueue",
+				sandboxCapacity: sandboxCapacity({
+					kueueClusterQueueActive: false,
+					kueueClusterQueueReason: "AdmissionCheckInactive",
+					kueueClusterQueueMessage:
+						"references inactive AdmissionCheck(s): psi-memory-pressure",
+				}),
+			}),
+		).toContain("AdmissionCheckInactive");
+	});
+
+	it("rejects zero Kueue full-instance capacity", () => {
+		expect(
+			benchmarkLaunchPreflightError({
+				executionBackend: "dapr-kueue",
+				sandboxCapacity: sandboxCapacity({
+					schedulableKueueInstanceCapacity: 0,
+				}),
+			}),
+		).toContain("zero full-instance capacity");
+	});
+
+	it("rejects ResourceFlavor/node-selector capacity gaps", () => {
+		expect(
+			benchmarkLaunchPreflightError({
+				executionBackend: "dapr-kueue",
+				sandboxCapacity: sandboxCapacity({
+					schedulableKueueInstanceCapacity: null,
+					schedulableSandboxCapacity: 0,
+				}),
+			}),
+		).toContain("ResourceFlavor node labels");
+	});
+
+	it("does not block legacy Dapr launches", () => {
+		expect(
+			benchmarkLaunchPreflightError({
+				executionBackend: "legacy-dapr",
+				sandboxCapacity: sandboxCapacity({
+					kueueClusterQueueActive: false,
+					schedulableSandboxCapacity: 0,
+				}),
+			}),
+		).toBeNull();
+	});
+});
 
 describe("SWE-bench DB metadata", () => {
 	it("detects missing or incomplete imported instance metadata", () => {
