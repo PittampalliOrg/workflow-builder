@@ -519,6 +519,7 @@ async function postJsonWithContentTrace(
       });
       return { httpResponse, responseText };
     } catch (error) {
+      setSpanOutputOnSpan(span, dispatchErrorPayload(error, path));
       span.recordException(error as Error);
       span.setStatus({
         code: SpanStatusCode.ERROR,
@@ -529,6 +530,28 @@ async function postJsonWithContentTrace(
       span.end();
     }
   });
+}
+
+export function dispatchErrorPayload(
+  error: unknown,
+  targetPath?: string | null,
+): Record<string, unknown> {
+  const errorRecord =
+    error instanceof Error
+      ? {
+          name: error.name,
+          message: error.message,
+        }
+      : {
+          name: typeof error,
+          message: String(error),
+        };
+  return {
+    success: false,
+    error: errorRecord.message,
+    errorType: errorRecord.name,
+    ...(targetPath ? { targetPath } : {}),
+  };
 }
 
 function firstStringField(

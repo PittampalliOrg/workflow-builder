@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWorkspaceCommandPayload,
+  dispatchErrorPayload,
   resolveWorkspaceUtilityTimeoutMs,
 } from "./execute.js";
 
@@ -68,5 +69,18 @@ describe("workspace utility timeout routing", () => {
         commandTimeoutMs: undefined,
       }),
     ).toBe(3_600_000);
+  });
+});
+
+describe("dispatch content tracing", () => {
+  it("summarizes thrown downstream dispatch errors as output payloads", () => {
+    expect(
+      dispatchErrorPayload(new Error("fetch failed"), "/api/workspaces/profile"),
+    ).toEqual({
+      success: false,
+      error: "fetch failed",
+      errorType: "Error",
+      targetPath: "/api/workspaces/profile",
+    });
   });
 });
