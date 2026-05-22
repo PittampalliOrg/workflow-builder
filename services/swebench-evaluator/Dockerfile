@@ -14,8 +14,11 @@ RUN apt-get update \
 # Tekton TaskRuns and watches them to terminal. The TaskRuns reuse this image,
 # so the harness is installed once at image-build time rather than with
 # apt/pip inside every prepare/finalize pod.
+# Pin kubernetes<36: client 36.0.0 has a load_incluster_config() regression that
+# 401s against the apiserver (used here for create_namespaced_custom_object).
+# Same fix as swebench-coordinator / sandbox-execution-api.
 RUN pip install --no-cache-dir \
-	"kubernetes>=29.0.0" \
+	"kubernetes>=29.0.0,<36" \
 	mlflow==3.10.1 \
 	requests \
 	"${SWEBENCH_PACKAGE_REF}"
