@@ -25,6 +25,7 @@ from src.concurrency import (
     instance_start_batch_delay_seconds,
     instance_start_batch_size,
 )
+from src.content_tracing import content_span, set_current_span_io, set_span_io
 
 try:
     from dapr.ext.workflow import when_all as wf_when_all
@@ -293,39 +294,46 @@ def _bff(
 ) -> Any:
     if not INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN is required")
-    res = requests.request(
-        method,
-        f"{WORKFLOW_BUILDER_URL}{path}",
-        headers={
-            "X-Internal-Token": INTERNAL_API_TOKEN,
-            "Content-Type": "application/json",
-        },
-        json=json_body,
-        timeout=timeout,
-    )
-    if res.status_code >= 400:
-        raise RuntimeError(
-            f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+    with content_span(f"coordinator.bff {method} {path}") as _sp:
+        set_span_io(_sp, "input", {"method": method, "path": path, "body": json_body})
+        res = requests.request(
+            method,
+            f"{WORKFLOW_BUILDER_URL}{path}",
+            headers={
+                "X-Internal-Token": INTERNAL_API_TOKEN,
+                "Content-Type": "application/json",
+            },
+            json=json_body,
+            timeout=timeout,
         )
-    if not res.text:
-        return {}
-    return res.json()
+        if res.status_code >= 400:
+            set_span_io(_sp, "output", {"status": res.status_code, "error": res.text[:800]})
+            raise RuntimeError(
+                f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+            )
+        result = {} if not res.text else res.json()
+        set_span_io(_sp, "output", result)
+        return result
 
 
 def _bff_text(method: str, path: str, *, timeout: int = 60) -> str:
     if not INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN is required")
-    res = requests.request(
-        method,
-        f"{WORKFLOW_BUILDER_URL}{path}",
-        headers={"X-Internal-Token": INTERNAL_API_TOKEN},
-        timeout=timeout,
-    )
-    if res.status_code >= 400:
-        raise RuntimeError(
-            f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+    with content_span(f"coordinator.bff {method} {path}") as _sp:
+        set_span_io(_sp, "input", {"method": method, "path": path})
+        res = requests.request(
+            method,
+            f"{WORKFLOW_BUILDER_URL}{path}",
+            headers={"X-Internal-Token": INTERNAL_API_TOKEN},
+            timeout=timeout,
         )
-    return res.text
+        if res.status_code >= 400:
+            set_span_io(_sp, "output", {"status": res.status_code, "error": res.text[:800]})
+            raise RuntimeError(
+                f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+            )
+        set_span_io(_sp, "output", res.text)
+        return res.text
 
 
 def _bff_retry_settings(
@@ -2152,6 +2160,22 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds=evaluation_timeout_seconds,
     )
     instance_image_map = _instance_image_map_for_run(run, instance_ids)
+    # Stamp the Kueue evaluator-Job intent for the Service Graph drawer.
+    set_current_span_io(
+        "input",
+        {
+            "runId": run["id"],
+            "jobName": job_name,
+            "instanceCount": len(instance_ids),
+            "instanceIds": instance_ids,
+            "resourceProfile": resource_profile,
+            "predictionsPath": predictions_path,
+            "datasetPath": dataset_path,
+            "evaluationMaxParallel": evaluation_max_parallel,
+            "jobDeadlineSeconds": job_deadline_seconds,
+            "kueueQueueName": os.environ.get("SWEBENCH_TEKTON_KUEUE_QUEUE_NAME"),
+        },
+    )
     try:
         from kubernetes.client.rest import ApiException
 
