@@ -315,6 +315,11 @@ def _build_telemetry_context(
     attrs: dict[str, Any] = {
         "workflow.id": workflow_id,
         "workflow.execution.id": workflow_execution_id,
+        "workflow.activity.correlation_id": _telemetry_context_value(
+            input_data,
+            "workflowActivityCorrelationId",
+            "workflow_activity_correlation_id",
+        ),
         "workflow.node.id": node_id,
         "workflow.node.name": node_name,
         "workflow.node.type": "agent",

@@ -32,7 +32,7 @@ from typing import Any
 
 import requests
 
-from tracing import set_current_span_attrs, start_activity_span
+from tracing import apply_workflow_activity_context, set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
     Returns a dict matching ``/api/internal/sessions/ensure-for-workflow``:
         { sessionId, agentId, agentVersion, childInput, reused }
     """
-    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else None
+    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    otel = apply_workflow_activity_context(otel)
     set_current_span_attrs({
         "session.id": input_data.get("sessionId"),
         "workflow.id": input_data.get("workflowId"),

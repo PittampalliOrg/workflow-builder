@@ -660,6 +660,7 @@ async function buildStepGraphWindowed(
 // ---------------------------------------------------------------------------
 
 const WORKFLOW_NODE_ATTR = 'workflow.node.id';
+const WORKFLOW_ACTIVITY_ATTR = 'workflow.activity.correlation_id';
 type StepLogRow = typeof workflowExecutionLogs.$inferSelect;
 
 /**
@@ -761,6 +762,35 @@ function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
 				spanId: s.spanId,
 				traceId: s.traceId
 			});
+		}
+	}
+
+	// workflow activity metadata (step mode): semantic activity ids plus Dapr
+	// task ids observed on native durabletask spans for the selected node.
+	if (mode === 'step' && spanNode) {
+		for (const s of spans) {
+			const key = spanNode.get(s.spanId);
+			if (!key) continue;
+			const attrs = s.attributes ?? {};
+			const activity = (ensure(key).workflowActivity ??= {
+				correlationIds: [],
+				daprTaskIds: [],
+				relatedSpanIds: [],
+				servicesTouched: []
+			});
+			const correlationId = attrs[WORKFLOW_ACTIVITY_ATTR];
+			if (correlationId != null) {
+				const text = String(correlationId);
+				if (text && !activity.correlationIds.includes(text)) activity.correlationIds.push(text);
+			}
+			const daprTaskId = attrs['durabletask.task.task_id'];
+			if (daprTaskId != null) {
+				const text = String(daprTaskId);
+				if (text && !activity.daprTaskIds.includes(text)) activity.daprTaskIds.push(text);
+			}
+			if (!activity.relatedSpanIds.includes(s.spanId)) activity.relatedSpanIds.push(s.spanId);
+			const service = collapseServiceName(s.serviceName);
+			if (service && !activity.servicesTouched.includes(service)) activity.servicesTouched.push(service);
 		}
 	}
 

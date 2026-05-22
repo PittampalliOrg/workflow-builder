@@ -69,6 +69,7 @@ describe("buildWorkflowTimeline", () => {
 					"node-extract",
 					"workflow.node.extract_patch",
 					{
+						"workflow.activity.correlation_id": "exec-1:extract_patch:1",
 						"workflow.node.id": "extract_patch",
 						"workflow.node.name": "Extract patch",
 						"workflow.node.action_type": "workspace/command",
@@ -114,10 +115,50 @@ describe("buildWorkflowTimeline", () => {
 
 		expect(items.map((item) => item.nodeId)).toEqual(["profile", "extract_patch"]);
 		const extract = items[1];
+		expect(extract.correlationId).toBe("exec-1:extract_patch:1");
 		expect(extract.durableTaskId).toBe("8");
+		expect(extract.daprTaskIds).toEqual(["8"]);
+		expect(extract.correlationSources).toEqual(
+			expect.arrayContaining(["workflow_node", "dapr_task"]),
+		);
 		expect(extract.relatedSpanIds).toContain("native-extract");
 		expect(extract.inputSpanId).toBe("app-extract");
 		expect(extract.outputSpanId).toBe("app-extract");
+	});
+
+	it("uses semantic activity correlation before time overlap for native Dapr spans", () => {
+		const items = buildWorkflowTimeline({
+			workflowSteps: [],
+			traceSpans: [
+				span(
+					"node-a",
+					"workflow.node.step_a",
+					{
+						"workflow.activity.correlation_id": "exec-1:step_a:0",
+						"workflow.node.id": "step_a",
+						"workflow.node.sequence": 0,
+					},
+					1_000,
+					100,
+				),
+				span(
+					"native-a",
+					"activity||execute_action",
+					{
+						"workflow.activity.correlation_id": "exec-1:step_a:0",
+						"durabletask.task.task_id": "4",
+						"durabletask.task.name": "execute_action",
+					},
+					10_000,
+					100,
+				),
+			],
+		});
+
+		expect(items).toHaveLength(1);
+		expect(items[0].correlationId).toBe("exec-1:step_a:0");
+		expect(items[0].daprTaskIds).toEqual(["4"]);
+		expect(items[0].relatedSpanIds).toEqual(expect.arrayContaining(["node-a", "native-a"]));
 	});
 
 	it("keeps native-only Dapr activities in task id order", () => {

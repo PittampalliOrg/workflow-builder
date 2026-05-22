@@ -62,6 +62,7 @@ import {
   bindWorkflowSessionContext,
   buildWorkflowSessionId,
   sessionIdFromHeaders,
+  workflowActivityContextFromHeaders,
 } from "../observability/workflow-session.js";
 import type {
   ExecuteRequest,
@@ -1155,12 +1156,18 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = parseResult.data as ExecuteRequest;
+    const workflowActivityContext = workflowActivityContextFromHeaders(request.headers);
     // Stamp the routed action input as `input.value` (redacted) for the drawer.
     const requestPayload = executeRequestForSpan(body);
     const routeAttributes = {
       "workflow.id": body.workflow_id,
       "workflow.node.id": body.node_id,
       "workflow.node.name": body.node_name,
+      "workflow.node.sequence": workflowActivityContext.nodeSequence ?? undefined,
+      "workflow.node.action_type":
+        workflowActivityContext.actionType ?? body.function_slug ?? body.function_id,
+      "workflow.activity.correlation_id":
+        workflowActivityContext.activityCorrelationId ?? undefined,
       "workflow.execution.id": body.db_execution_id ?? body.execution_id,
     };
     const spanTargets = spanTargetsForRequest(request);
@@ -1179,9 +1186,18 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     if (resolvedSessionId) {
       bindWorkflowSessionContext({
         sessionId: resolvedSessionId,
-        workflowExecutionId: body.db_execution_id || body.execution_id,
+        workflowExecutionId:
+          workflowActivityContext.workflowExecutionId ??
+          body.db_execution_id ??
+          body.execution_id,
         workflowId: body.workflow_id,
         traceGroupId: body.db_execution_id || body.execution_id,
+        activityCorrelationId: workflowActivityContext.activityCorrelationId,
+        nodeId: workflowActivityContext.nodeId ?? body.node_id,
+        nodeName: workflowActivityContext.nodeName ?? body.node_name,
+        nodeSequence: workflowActivityContext.nodeSequence,
+        actionType:
+          workflowActivityContext.actionType ?? body.function_slug ?? body.function_id,
       });
     }
     const functionSlug = body.function_slug || body.function_id;

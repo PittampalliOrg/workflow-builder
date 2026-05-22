@@ -4,12 +4,18 @@ const SESSION_ID_ATTRIBUTE = "session.id";
 const WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id";
 const WORKFLOW_ID_ATTRIBUTE = "workflow.id";
 const WORKFLOW_TRACE_GROUP_ATTRIBUTE = "workflow_builder.trace_group_id";
+const WORKFLOW_ACTIVITY_ATTRIBUTE = "workflow.activity.correlation_id";
 
 type WorkflowSessionContext = {
   sessionId?: string | null;
   workflowExecutionId?: string | null;
   workflowId?: string | null;
   traceGroupId?: string | null;
+  activityCorrelationId?: string | null;
+  nodeId?: string | null;
+  nodeName?: string | null;
+  nodeSequence?: string | number | null;
+  actionType?: string | null;
 };
 
 export function buildWorkflowSessionId(
@@ -27,7 +33,7 @@ function clean(value: string | null | undefined): string | null {
 export function bindWorkflowSessionContext(
   input: string | WorkflowSessionContext,
 ): Context {
-  const workflowContext =
+  const workflowContext: WorkflowSessionContext =
     typeof input === "string"
       ? {
           sessionId: input,
@@ -43,6 +49,12 @@ export function bindWorkflowSessionContext(
             clean(input.traceGroupId) ??
             clean(input.workflowExecutionId) ??
             clean(input.sessionId),
+          activityCorrelationId: clean(input.activityCorrelationId),
+          nodeId: clean(input.nodeId),
+          nodeName: clean(input.nodeName),
+          nodeSequence:
+            input.nodeSequence == null ? null : clean(String(input.nodeSequence)),
+          actionType: clean(input.actionType),
         };
   const activeContext = context.active();
   const currentSpan = trace.getSpan(activeContext);
@@ -51,6 +63,12 @@ export function bindWorkflowSessionContext(
     [WORKFLOW_EXECUTION_ATTRIBUTE]: workflowContext.workflowExecutionId,
     [WORKFLOW_ID_ATTRIBUTE]: workflowContext.workflowId,
     [WORKFLOW_TRACE_GROUP_ATTRIBUTE]: workflowContext.traceGroupId,
+    [WORKFLOW_ACTIVITY_ATTRIBUTE]: workflowContext.activityCorrelationId,
+    "workflow.node.id": workflowContext.nodeId,
+    "workflow.node.name": workflowContext.nodeName,
+    "workflow.node.sequence":
+      workflowContext.nodeSequence == null ? null : String(workflowContext.nodeSequence),
+    "workflow.node.action_type": workflowContext.actionType,
   };
   for (const [key, value] of Object.entries(attrs)) {
     if (value) currentSpan?.setAttribute(key, value);
@@ -71,6 +89,40 @@ export function bindWorkflowSessionContext(
   return propagation.setBaggage(activeContext, baggage);
 }
 
+function parseBaggageHeader(value: unknown): Record<string, string> {
+  if (typeof value !== "string") return {};
+  const out: Record<string, string> = {};
+  for (const part of value.split(",")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const key = part.slice(0, eq).trim();
+    const raw = part.slice(eq + 1).trim();
+    if (!key || !raw) continue;
+    try {
+      out[key] = decodeURIComponent(raw);
+    } catch {
+      out[key] = raw;
+    }
+  }
+  return out;
+}
+
+export function workflowActivityContextFromHeaders(
+  headers: Record<string, unknown>,
+): Partial<WorkflowSessionContext> {
+  const baggage = parseBaggageHeader(headers.baggage);
+  return {
+    sessionId: baggage[SESSION_ID_ATTRIBUTE],
+    workflowExecutionId: baggage[WORKFLOW_EXECUTION_ATTRIBUTE],
+    workflowId: baggage[WORKFLOW_ID_ATTRIBUTE],
+    activityCorrelationId: baggage[WORKFLOW_ACTIVITY_ATTRIBUTE],
+    nodeId: baggage["workflow.node.id"],
+    nodeName: baggage["workflow.node.name"],
+    nodeSequence: baggage["workflow.node.sequence"],
+    actionType: baggage["workflow.node.action_type"],
+  };
+}
+
 export function sessionIdFromHeaders(
   headers: Record<string, unknown>,
 ): string | null {
@@ -78,18 +130,6 @@ export function sessionIdFromHeaders(
   if (typeof explicit === "string" && explicit.trim().length > 0) {
     return explicit.trim();
   }
-  const baggageHeader = headers.baggage;
-  if (typeof baggageHeader !== "string") return null;
-  for (const part of baggageHeader.split(",")) {
-    const [rawKey, rawValue] = part.split("=", 2);
-    if (!rawKey || !rawValue) continue;
-    if (
-      rawKey.trim().toLowerCase() === SESSION_ID_ATTRIBUTE ||
-      rawKey.trim().toLowerCase() === WORKFLOW_EXECUTION_ATTRIBUTE
-    ) {
-      const decoded = decodeURIComponent(rawValue.trim());
-      return decoded.length > 0 ? decoded : null;
-    }
-  }
-  return null;
+  const baggage = parseBaggageHeader(headers.baggage);
+  return baggage[SESSION_ID_ATTRIBUTE] ?? baggage[WORKFLOW_EXECUTION_ATTRIBUTE] ?? null;
 }

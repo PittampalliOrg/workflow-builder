@@ -223,6 +223,7 @@ def _attributes(
         "dapr.workflow.instance_id": instance_id,
         "workflow.execution.id": context.get("workflowExecutionId")
         or context.get("executionId"),
+        "workflow.activity.correlation_id": context.get("workflowActivityCorrelationId"),
         "workflow.id": context.get("workflowId"),
         "workflow.node.id": context.get("nodeId"),
         "session.id": session_id,

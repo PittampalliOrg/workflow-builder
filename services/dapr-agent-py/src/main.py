@@ -728,6 +728,7 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "executionId",
         "workflowId",
         "workflowExecutionId",
+        "workflowActivityCorrelationId",
         "nodeId",
         "nodeName",
         "agentId",
@@ -767,6 +768,7 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
     fallback_fields = {
         "workflowId": value.get("workflow_id"),
         "workflowExecutionId": value.get("workflow_execution_id") or value.get("dbExecutionId"),
+        "workflowActivityCorrelationId": value.get("workflow_activity_correlation_id"),
         "nodeId": value.get("workflowNodeId") or value.get("workflow_node_id"),
         "nodeName": value.get("workflowNodeName") or value.get("workflow_node_name"),
         "agentId": instruction_agent.get("id") or effective_config.get("id") or agent_config.get("id"),
@@ -885,6 +887,13 @@ def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
         "workflow_trace_group_id": context.get("workflowTraceGroupId")
         or context.get("workflowExecutionId")
         or mlflow_context.get("traceGroupId"),
+        "extra": {
+            "workflow.activity.correlation_id": context.get(
+                "workflowActivityCorrelationId"
+            )
+        }
+        if context.get("workflowActivityCorrelationId")
+        else None,
     }
 
 
@@ -3812,6 +3821,10 @@ class OpenShellDurableAgent(DurableAgent):
                 or execution_id
             ),
             "workflowId": message.get("workflowId") or metadata.get("workflowId"),
+            "workflowActivityCorrelationId": (
+                message.get("workflowActivityCorrelationId")
+                or metadata.get("workflowActivityCorrelationId")
+            ),
             "nodeId": message.get("nodeId") or metadata.get("nodeId"),
             "nodeName": (
                 message.get("nodeName")
@@ -4764,6 +4777,11 @@ class OpenShellDurableAgent(DurableAgent):
                     or workflow_instance_id
                 ),
                 "workflowId": child_input.get("workflowId") or message.get("workflowId"),
+                "workflowActivityCorrelationId": (
+                    child_input.get("workflowActivityCorrelationId")
+                    or child_metadata.get("workflowActivityCorrelationId")
+                    or message.get("workflowActivityCorrelationId")
+                ),
                 "nodeId": child_input.get("nodeId") or message.get("nodeId"),
                 "nodeName": (
                     child_input.get("nodeName")
@@ -5071,6 +5089,7 @@ def _freeze_session_child_input(
     }
     for key in (
         "workflowId",
+        "workflowActivityCorrelationId",
         "nodeId",
         "nodeName",
         "agentId",
@@ -5123,6 +5142,7 @@ def _freeze_session_child_input(
         "executionId": db_execution_id,
         "dbExecutionId": db_execution_id,
         "workflowExecutionId": db_execution_id,
+        "workflowActivityCorrelationId": raw_message.get("workflowActivityCorrelationId"),
         "workflowId": raw_message.get("workflowId"),
         "nodeId": raw_message.get("nodeId"),
         "nodeName": raw_message.get("nodeName") or raw_message.get("nodeId"),

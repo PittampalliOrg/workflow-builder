@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { X, Coins, DollarSign, RefreshCcw, AlertTriangle, Timer, Snowflake } from '@lucide/svelte';
+	import { X, Coins, DollarSign, RefreshCcw, AlertTriangle, Timer, Snowflake, Workflow } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import DrilldownBody from './drilldown/drilldown-body.svelte';
 	import {
@@ -152,7 +152,17 @@
 			{#if timing?.wasColdStart}
 				<span class="wb-pill" title="cold start"><Snowflake size={11} /> cold</span>
 			{/if}
+			{#if insight?.workflowActivity?.correlationIds.length}
+				<span class="wb-pill" title="workflow activity correlations"><Workflow size={11} /> {insight.workflowActivity.correlationIds.length}</span>
+			{/if}
 		</div>
+		{#if insight?.workflowActivity}
+			<div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+				{#if insight.workflowActivity.correlationIds[0]}<span>activity {insight.workflowActivity.correlationIds[0]}</span>{/if}
+				{#if insight.workflowActivity.daprTaskIds.length}<span>Dapr tasks {insight.workflowActivity.daprTaskIds.join(', ')}</span>{/if}
+				{#if insight.workflowActivity.servicesTouched.length}<span>{insight.workflowActivity.servicesTouched.join(' -> ')}</span>{/if}
+			</div>
+		{/if}
 		{#if timing && (timing.coldStartMs || timing.routingMs || timing.credentialFetchMs || timing.executionMs)}
 			<div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
 				{#if timing.coldStartMs}<span>cold {fmtMs(timing.coldStartMs)}</span>{/if}

@@ -156,6 +156,12 @@ export interface NodeInsight {
 	tokens?: TokenTotals;
 	costUsd?: number;
 	timing?: TimingBreakdown;
+	workflowActivity?: {
+		correlationIds: string[];
+		daprTaskIds: string[];
+		relatedSpanIds: string[];
+		servicesTouched: string[];
+	};
 	/** Attempts beyond the first (retries). */
 	retries?: number;
 	errorSamples?: ErrorSample[];

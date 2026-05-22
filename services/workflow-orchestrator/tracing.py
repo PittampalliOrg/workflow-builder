@@ -5,6 +5,7 @@ import logging
 import os
 import hashlib
 import time
+from urllib.parse import quote
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,7 +18,20 @@ logger = logging.getLogger(__name__)
 _TRACING_INITIALIZED = False
 SESSION_ID_ATTRIBUTE = "session.id"
 WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id"
+WORKFLOW_ACTIVITY_ATTRIBUTE = "workflow.activity.correlation_id"
 MLFLOW_FINALIZE_ROOT_SPAN_ENV = "WORKFLOW_ORCHESTRATOR_MLFLOW_FINALIZE_ROOT_SPAN"
+
+WORKFLOW_ACTIVITY_BAGGAGE_KEYS = (
+    WORKFLOW_ACTIVITY_ATTRIBUTE,
+    "workflow.node.id",
+    "workflow.node.name",
+    "workflow.node.sequence",
+    "workflow.node.action_type",
+    WORKFLOW_EXECUTION_ATTRIBUTE,
+    "workflow.id",
+    SESSION_ID_ATTRIBUTE,
+)
+_BAGGAGE_VALUE_SAFE_CHARS = "!#$%&'()*+-./:<=>?@[]^_`{|}~"
 
 
 def _parse_headers(value: str | None) -> dict[str, str] | None:
@@ -51,6 +65,74 @@ def _parse_baggage_header(value: str | None) -> dict[str, str]:
         value_part = v.strip()
         if key:
             out[key] = value_part
+    return out
+
+
+def _format_baggage_header(values: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, raw_value in values.items():
+        if not key or raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        parts.append(f"{key}={quote(value, safe=_BAGGAGE_VALUE_SAFE_CHARS)}")
+    return ",".join(parts)
+
+
+def workflow_activity_attrs_from_carrier(
+    carrier: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Extract canonical workflow activity attributes from a W3C carrier."""
+    if not isinstance(carrier, dict):
+        return {}
+    baggage = carrier.get("baggage")
+    baggage_map = _parse_baggage_header(baggage if isinstance(baggage, str) else None)
+    attrs: dict[str, Any] = {}
+    for key in WORKFLOW_ACTIVITY_BAGGAGE_KEYS:
+        value = carrier.get(key)
+        if value is None:
+            value = baggage_map.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            attrs[key] = text
+    return attrs
+
+
+def merge_workflow_activity_context(
+    carrier: dict[str, Any] | None,
+    attributes: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Return an OTel carrier with semantic workflow activity baggage merged in.
+
+    This deliberately preserves the engine-owned trace fields. Dapr task IDs are
+    correlated from durabletask spans after the fact; the propagated carrier only
+    holds semantic workflow/node identity.
+    """
+    base = carrier if isinstance(carrier, dict) else {}
+    out: dict[str, str] = {}
+    for key in ("traceparent", "tracestate", "traceId", "trace_id", "parentTraceId"):
+        value = base.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+
+    merged_baggage = _parse_baggage_header(
+        base.get("baggage") if isinstance(base.get("baggage"), str) else None
+    )
+    for key, raw_value in (attributes or {}).items():
+        if key not in WORKFLOW_ACTIVITY_BAGGAGE_KEYS:
+            continue
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if value:
+            merged_baggage[key] = value
+            out[key] = value
+    baggage_header = _format_baggage_header(merged_baggage)
+    if baggage_header:
+        out["baggage"] = baggage_header
     return out
 
 
@@ -483,6 +565,7 @@ def emit_mlflow_workflow_node_span(input_data: dict[str, Any]) -> dict[str, Any]
         span_attrs: dict[str, Any] = {
             "gen_ai.operation.name": "workflow.node",
             "mlflow.spanType": "CHAIN",
+            WORKFLOW_ACTIVITY_ATTRIBUTE: input_data.get("activityCorrelationId"),
             "workflow.id": workflow_id,
             "workflow.name": workflow_name,
             "workflow.execution.id": display_execution_id,
@@ -1047,6 +1130,25 @@ def start_activity_span(
                 except Exception:
                     pass
         yield span
+
+
+def apply_workflow_activity_context(
+    carrier: dict[str, Any] | None,
+    attributes: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Stamp workflow activity attrs on the active span and return merged carrier."""
+    merged = merge_workflow_activity_context(carrier, attributes)
+    span_attrs = workflow_activity_attrs_from_carrier(merged)
+    if attributes:
+        span_attrs.update(
+            {
+                key: value
+                for key, value in attributes.items()
+                if key in WORKFLOW_ACTIVITY_BAGGAGE_KEYS and value is not None
+            }
+        )
+    set_current_span_attrs(span_attrs)
+    return merged
 
 
 def set_current_span_attrs(attributes: dict[str, Any] | None) -> None:

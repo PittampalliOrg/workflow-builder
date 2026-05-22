@@ -610,6 +610,34 @@ def test_sw_workflow_trace_context_is_isolated_per_execution():
     assert first["baggage"] == "caller.id=smoke"
 
 
+def test_workflow_activity_context_merges_baggage_without_overwriting_traceparent():
+    from tracing import merge_workflow_activity_context
+
+    carrier = {
+        "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        "tracestate": "vendor=value",
+        "baggage": "caller.id=smoke",
+    }
+
+    merged = merge_workflow_activity_context(
+        carrier,
+        {
+            "workflow.activity.correlation_id": "exec_1:node_a:0",
+            "workflow.node.id": "node_a",
+            "workflow.node.sequence": 0,
+            "workflow.execution.id": "exec_1",
+            "workflow.id": "wf_1",
+            "session.id": "exec_1",
+        },
+    )
+
+    assert merged["traceparent"] == carrier["traceparent"]
+    assert merged["tracestate"] == "vendor=value"
+    assert "caller.id=smoke" in merged["baggage"]
+    assert "workflow.activity.correlation_id=exec_1:node_a:0" in merged["baggage"]
+    assert "workflow.node.sequence=0" in merged["baggage"]
+
+
 def test_mark_workflow_execution_started_persists_primary_trace_id(monkeypatch):
     executed = {}
 
@@ -884,6 +912,35 @@ def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup
 
     assert stop.value.value["success"] is False
     assert stop.value.value["phase"] == "failed"
+
+
+def test_sw_workflow_dispatches_task_activity_otel_context(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(
+        ctx,
+        _terminal_workflow_input(
+            [
+                {
+                    "profile": {
+                        "call": "workspace/profile",
+                        "with": {"sandboxTemplate": "default-sandbox"},
+                    }
+                }
+            ]
+        ),
+    )
+
+    execution = next(workflow_gen)
+
+    assert execution["activity"] == "execute_action"
+    otel = execution["input"]["_otel"]
+    assert otel["traceId"] == "1234567890abcdef1234567890abcdef"
+    assert otel["workflow.activity.correlation_id"] == "db_exec_123:profile:0"
+    assert otel["workflow.node.id"] == "profile"
+    assert otel["workflow.node.sequence"] == "0"
+    assert "workflow.activity.correlation_id=db_exec_123:profile:0" in otel["baggage"]
+    assert "workflow.node.action_type=workspace/profile" in otel["baggage"]
 
 
 def test_sw_workflow_parse_failure_schedules_error_finalizer_when_trace_exists(monkeypatch):

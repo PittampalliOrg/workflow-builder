@@ -63,6 +63,7 @@ from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
 from activities.finalize_mlflow_trace_root import finalize_mlflow_trace_root
 from activities.emit_mlflow_node_span import emit_mlflow_node_span
+from tracing import merge_workflow_activity_context
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +399,78 @@ def _string_or_none(value: Any) -> str | None:
     return text or None
 
 
+def _action_type_for_task(
+    task_type: TaskType,
+    task_data: dict[str, Any],
+    tc: "TaskContext",
+) -> str:
+    action_type = str(task_type.value)
+    try:
+        if task_type == TaskType.CALL:
+            resolved = _resolve_function_call(task_data, tc.workflow)
+            action_type = str(
+                resolved.get("actionType")
+                or resolved.get("functionName")
+                or action_type
+            )
+        elif task_type == TaskType.RUN:
+            run_config = task_data.get("run") if isinstance(task_data, dict) else None
+            if isinstance(run_config, dict) and "workflow" in run_config:
+                child_input = (
+                    run_config.get("workflow", {}).get("input", {})
+                    if isinstance(run_config.get("workflow"), dict)
+                    else {}
+                )
+                if isinstance(child_input, dict) and child_input.get("actionType"):
+                    action_type = str(child_input.get("actionType"))
+    except Exception:
+        pass
+    return action_type
+
+
+def _workflow_activity_attrs(
+    *,
+    tc: "TaskContext",
+    task_name: str,
+    task_type: TaskType,
+    task_data: dict[str, Any],
+    task_sequence: int,
+) -> dict[str, Any]:
+    display_execution_id = tc.db_execution_id or tc.execution_id
+    return {
+        "workflow.activity.correlation_id": (
+            f"{display_execution_id}:{task_name}:{task_sequence}"
+        ),
+        "workflow.node.id": task_name,
+        "workflow.node.name": task_name,
+        "workflow.node.sequence": task_sequence,
+        "workflow.node.action_type": _action_type_for_task(task_type, task_data, tc),
+        "workflow.execution.id": display_execution_id,
+        "workflow.id": tc.workflow_id,
+        "session.id": display_execution_id,
+    }
+
+
+def _workflow_activity_otel_context(
+    *,
+    tc: "TaskContext",
+    task_name: str,
+    task_type: TaskType,
+    task_data: dict[str, Any],
+    task_sequence: int,
+) -> dict[str, str]:
+    return merge_workflow_activity_context(
+        tc.workflow_otel_ctx,
+        _workflow_activity_attrs(
+            tc=tc,
+            task_name=task_name,
+            task_type=task_type,
+            task_data=task_data,
+            task_sequence=task_sequence,
+        ),
+    )
+
+
 def _canonical_agent_context(
     *,
     flattened_args: dict[str, Any],
@@ -472,27 +545,7 @@ def _mlflow_node_span_input(
     duration_ms: int | None = None,
     task_sequence: int | None = None,
 ) -> dict[str, Any]:
-    action_type = str(task_type.value)
-    try:
-        if task_type == TaskType.CALL:
-            resolved = _resolve_function_call(task_data, tc.workflow)
-            action_type = str(
-                resolved.get("actionType")
-                or resolved.get("functionName")
-                or action_type
-            )
-        elif task_type == TaskType.RUN:
-            run_config = task_data.get("run") if isinstance(task_data, dict) else None
-            if isinstance(run_config, dict) and "workflow" in run_config:
-                child_input = (
-                    run_config.get("workflow", {}).get("input", {})
-                    if isinstance(run_config.get("workflow"), dict)
-                    else {}
-                )
-                if isinstance(child_input, dict) and child_input.get("actionType"):
-                    action_type = str(child_input.get("actionType"))
-    except Exception:
-        pass
+    action_type = _action_type_for_task(task_type, task_data, tc)
 
     return {
         "status": status,
@@ -506,6 +559,11 @@ def _mlflow_node_span_input(
         "nodeName": task_name,
         "nodeType": task_type.value,
         "actionType": action_type,
+        "activityCorrelationId": (
+            f"{tc.db_execution_id or tc.execution_id}:{task_name}:{task_sequence}"
+            if task_sequence is not None
+            else None
+        ),
         "taskSequence": task_sequence,
         "durationMs": duration_ms,
         "resultSizeChars": _json_size_chars(result) if error is None else None,
@@ -725,6 +783,7 @@ class TaskContext:
 
         # OTEL context
         self.otel_ctx: dict[str, str] = {}
+        self.workflow_otel_ctx: dict[str, str] = {}
         self.trace_id: str | None = None
         self.mlflow_node_spans_enabled = False
         self.mlflow_context: dict[str, Any] = {}
@@ -1517,6 +1576,9 @@ def _run_native_durable_agent_child_workflow(
         "parentExecutionId": ctx.instance_id,
         "executionId": canonical_context["workflowExecutionId"],
         "workflowExecutionId": canonical_context["workflowExecutionId"],
+        "workflowActivityCorrelationId": tc.otel_ctx.get(
+            "workflow.activity.correlation_id"
+        ),
         "workflowId": canonical_context["workflowId"],
         "nodeId": canonical_context["nodeId"],
         "nodeName": canonical_context["nodeName"],
@@ -1548,6 +1610,9 @@ def _run_native_durable_agent_child_workflow(
             "triggering_workflow_instance_id": ctx.instance_id,
             "executionId": canonical_context["workflowExecutionId"],
             "workflowExecutionId": canonical_context["workflowExecutionId"],
+            "workflowActivityCorrelationId": tc.otel_ctx.get(
+                "workflow.activity.correlation_id"
+            ),
             "workflowId": canonical_context["workflowId"],
             "nodeId": canonical_context["nodeId"],
             "nodeName": canonical_context["nodeName"],
@@ -1718,6 +1783,9 @@ def _run_native_durable_agent_child_workflow(
             "workflowId": canonical_context["workflowId"],
             "workflowExecutionId": canonical_context["workflowExecutionId"],
             "dbExecutionId": canonical_context["workflowExecutionId"],
+            "workflowActivityCorrelationId": tc.otel_ctx.get(
+                "workflow.activity.correlation_id"
+            ),
             "nodeId": canonical_context["nodeId"],
             "nodeName": canonical_context["nodeName"],
             "agentId": bridge_result.get("agentId") or canonical_context["agentId"],
@@ -1732,6 +1800,8 @@ def _run_native_durable_agent_child_workflow(
             or canonical_context["workspaceRef"],
             "mlflowContext": bridge_child_input.get("mlflowContext")
             or child_input.get("mlflowContext"),
+            "_otel_span_context": tc.otel_ctx,
+            "_otel": tc.otel_ctx,
             "_message_metadata": {
                 **(
                     bridge_child_input.get("_message_metadata")
@@ -1741,6 +1811,9 @@ def _run_native_durable_agent_child_workflow(
                 **child_input["_message_metadata"],
                 "mlflowContext": bridge_child_input.get("mlflowContext")
                 or child_input.get("mlflowContext"),
+                "workflowActivityCorrelationId": tc.otel_ctx.get(
+                    "workflow.activity.correlation_id"
+                ),
             },
         }
         bridge_app_id = target["app_id"]
@@ -3088,7 +3161,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         if isinstance(input_data.get("mlflowContext"), dict)
         else {}
     )
-    otel_ctx = input_data.get("_otel") or {}
+    otel_ctx = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
     trace_id = _trace_id_from_otel(otel_ctx)
     features = input_data.get("features") if isinstance(input_data.get("features"), dict) else {}
     mlflow_node_spans_enabled = _as_bool(
@@ -3141,6 +3214,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         integrations=integrations,
     )
     tc.otel_ctx = otel_ctx
+    tc.workflow_otel_ctx = otel_ctx
     tc.trace_id = trace_id
     tc.mlflow_node_spans_enabled = mlflow_node_spans_enabled
     tc.mlflow_context = mlflow_context
@@ -3247,6 +3321,13 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         while task_index < total_tasks:
             task_name, task_data = tasks[task_index]
             task_type = get_task_type(task_data)
+            tc.otel_ctx = _workflow_activity_otel_context(
+                tc=tc,
+                task_name=task_name,
+                task_type=task_type,
+                task_data=task_data,
+                task_sequence=task_index,
+            )
 
             # Update status (field names match legacy WorkflowCustomStatus for UI compat)
             ctx.set_custom_status(json.dumps({
@@ -3366,11 +3447,13 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             if then_directive == "end" or then_directive == "exit":
                 _log_info(ctx, "[SW Workflow] Flow directive: %s at task: %s", then_directive, task_name)
+                tc.otel_ctx = tc.workflow_otel_ctx
                 break
             elif then_directive and then_directive != "continue":
                 # Jump to named task
                 target_index = task_name_to_index.get(then_directive)
                 if target_index is not None:
+                    tc.otel_ctx = tc.workflow_otel_ctx
                     task_index = target_index
                     continue
                 else:
@@ -3379,6 +3462,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         then_directive,
                     )
 
+            tc.otel_ctx = tc.workflow_otel_ctx
             task_index += 1
 
         # Workflow completed successfully
@@ -3462,6 +3546,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         ).model_dump(by_alias=True)
 
     except Exception as e:
+        tc.otel_ctx = tc.workflow_otel_ctx
         duration_ms = _elapsed_ms(ctx, start_time_ms)
         error_msg = str(e)
         logger.error("[SW Workflow] Failed: %s - %s", workflow_name, error_msg)

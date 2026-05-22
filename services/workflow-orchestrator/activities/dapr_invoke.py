@@ -58,6 +58,7 @@ def dapr_invoke(
     payload: dict,
     *,
     timeout: int = 300,
+    metadata: dict[str, str] | None = None,
 ) -> tuple[int, dict, str]:
     """Invoke a Dapr service method, returning (status_code, json_body, raw_text).
 
@@ -66,6 +67,11 @@ def dapr_invoke(
     distinguish timeouts can pattern-match on the error string.
     """
     span = _dapr_invoke_span(app_id, method_name, payload)
+    dapr_metadata = (
+        tuple((str(k), str(v)) for k, v in metadata.items() if v)
+        if isinstance(metadata, dict)
+        else None
+    )
     try:
         with DaprClient() as client:
             response = client.invoke_method(
@@ -74,6 +80,7 @@ def dapr_invoke(
                 data=json.dumps(payload),
                 http_verb="POST",
                 timeout=timeout,
+                metadata=dapr_metadata,
             )
             text = response.text() if hasattr(response, "text") else response.data.decode("utf-8")
             try:
@@ -134,9 +141,16 @@ def dapr_invoke_or_raise(
     *,
     timeout: int = 300,
     service_label: str = "",
+    metadata: dict[str, str] | None = None,
 ) -> dict:
     """Invoke a Dapr service method, returning the JSON body or raising RuntimeError."""
-    status, body, text = dapr_invoke(app_id, method_name, payload, timeout=timeout)
+    status, body, text = dapr_invoke(
+        app_id,
+        method_name,
+        payload,
+        timeout=timeout,
+        metadata=metadata,
+    )
     if status >= 400:
         body_preview = text[:1200] if text else "<empty>"
         raise RuntimeError(

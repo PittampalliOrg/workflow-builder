@@ -196,6 +196,12 @@ export type ObservabilityWorkflowTimelineKind =
 	| 'child_workflow'
 	| 'system';
 
+export type ObservabilityWorkflowCorrelationSource =
+	| 'workflow_node'
+	| 'workflow_logs'
+	| 'dapr_task'
+	| 'time_overlap';
+
 export interface ObservabilityWorkflowTimelineItem {
 	id: string;
 	sequence: number | null;
@@ -212,6 +218,9 @@ export interface ObservabilityWorkflowTimelineItem {
 	traceId: string | null;
 	spanId: string | null;
 	relatedSpanIds: string[];
+	correlationId: string | null;
+	daprTaskIds: string[];
+	correlationSources: ObservabilityWorkflowCorrelationSource[];
 	durableTaskId: string | null;
 	durableTaskName: string | null;
 	serviceName: string | null;

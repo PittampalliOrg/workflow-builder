@@ -22,7 +22,7 @@ from activities.dapr_invoke import dapr_invoke
 from content_tracing import io_attributes
 from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
-from tracing import set_current_span_attrs, start_activity_span
+from tracing import apply_workflow_activity_context, set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,8 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     connection_external_id = input_data.get("connectionExternalId")
     ap_project_id = input_data.get("apProjectId")
     ap_platform_id = input_data.get("apPlatformId")
-    otel = input_data.get("_otel") or {}
+    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    otel = apply_workflow_activity_context(otel)
 
     # Ensure config is never None
     # Support both flat (node.config) and nested (node.data.config) formats
@@ -148,7 +149,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     attrs = {
         "workflow.instance_id": execution_id,
         "workflow.id": workflow_id,
+        "workflow.execution.id": db_execution_id or execution_id,
         "workflow.db_execution_id": db_execution_id,
+        "workflow.node.id": node.get("id"),
+        "workflow.node.name": node_name,
+        "workflow.node.action_type": action_type,
         "node.id": node.get("id"),
         "node.name": node_name,
         "action.type": action_type,
@@ -209,6 +214,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 "execute",
                 request_payload,
                 timeout=http_timeout,
+                metadata={
+                    key: value
+                    for key, value in otel.items()
+                    if key in ("traceparent", "tracestate", "baggage")
+                },
             )
 
             if status >= 400:

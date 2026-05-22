@@ -1,6 +1,7 @@
 import type {
 	ObservabilityTraceSpan,
 	ObservabilityWorkflowStep,
+	ObservabilityWorkflowCorrelationSource,
 	ObservabilityWorkflowTimelineItem,
 	ObservabilityWorkflowTimelineKind
 } from '$lib/types/observability';
@@ -25,6 +26,9 @@ interface TimelineDraft {
 	traceId: string | null;
 	spanId: string | null;
 	relatedSpanIds: string[];
+	correlationId: string | null;
+	daprTaskIds: string[];
+	correlationSources: ObservabilityWorkflowCorrelationSource[];
 	durableTaskId: string | null;
 	durableTaskName: string | null;
 	serviceName: string | null;
@@ -123,6 +127,10 @@ function actionTypeForSpan(span: ObservabilityTraceSpan): string | null {
 	);
 }
 
+function correlationIdForSpan(span: ObservabilityTraceSpan): string | null {
+	return attr(span, 'workflow.activity.correlation_id');
+}
+
 function classifyNativeSpan(span: ObservabilityTraceSpan): ObservabilityWorkflowTimelineKind {
 	const op = span.operationName.toLowerCase();
 	const name = normalizeActivityName(nativeActivityName(span));
@@ -188,6 +196,9 @@ function newDraft(params: {
 		traceId: null,
 		spanId: null,
 		relatedSpanIds: [],
+		correlationId: null,
+		daprTaskIds: [],
+		correlationSources: [],
 		durableTaskId: null,
 		durableTaskName: null,
 		serviceName: null,
@@ -221,17 +232,25 @@ function mergeTimes(draft: TimelineDraft, startedAt: string | null, completedAt:
 function mergeSpan(
 	draft: TimelineDraft,
 	span: ObservabilityTraceSpan,
-	spanById: Map<string, ObservabilityTraceSpan>
+	spanById: Map<string, ObservabilityTraceSpan>,
+	source?: ObservabilityWorkflowCorrelationSource
 ): void {
 	if (!draft.relatedSpanIds.includes(span.spanId)) draft.relatedSpanIds.push(span.spanId);
+	if (source && !draft.correlationSources.includes(source)) draft.correlationSources.push(source);
 	if (!draft.traceId) draft.traceId = span.traceId;
 	if (!draft.spanId) draft.spanId = span.spanId;
 	if (!draft.serviceName) draft.serviceName = span.serviceName;
 	draft.status = mergeStatus(draft.status, statusFromSpan(span));
 	mergeTimes(draft, span.startTime, endTime(span));
 
+	const correlationId = correlationIdForSpan(span);
+	if (correlationId && !draft.correlationId) draft.correlationId = correlationId;
 	const durableTaskId = attr(span, 'durabletask.task.task_id');
-	if (durableTaskId && !draft.durableTaskId) draft.durableTaskId = durableTaskId;
+	if (durableTaskId) {
+		if (!draft.daprTaskIds.includes(durableTaskId)) draft.daprTaskIds.push(durableTaskId);
+		if (!draft.durableTaskId) draft.durableTaskId = durableTaskId;
+		if (!draft.correlationSources.includes('dapr_task')) draft.correlationSources.push('dapr_task');
+	}
 	const durableTaskName = attr(span, 'durabletask.task.name') ?? nativeActivityName(span);
 	if (durableTaskName && !draft.durableTaskName) draft.durableTaskName = durableTaskName;
 	if (draft.sequence == null) {
@@ -253,6 +272,7 @@ function mergeSpan(
 }
 
 function mergeStep(draft: TimelineDraft, step: ObservabilityWorkflowStep): void {
+	if (!draft.correlationSources.includes('workflow_logs')) draft.correlationSources.push('workflow_logs');
 	draft.nodeId ??= step.stepName;
 	draft.nodeName ??= step.label;
 	draft.actionType ??= step.actionType || null;
@@ -276,7 +296,12 @@ function findNativeTarget(
 	native: ObservabilityTraceSpan,
 	drafts: TimelineDraft[],
 	spanById: Map<string, ObservabilityTraceSpan>
-): TimelineDraft | null {
+): { draft: TimelineDraft; source: ObservabilityWorkflowCorrelationSource } | null {
+	const correlationId = correlationIdForSpan(native);
+	if (correlationId) {
+		const matches = drafts.filter((draft) => draft.correlationId === correlationId);
+		if (matches.length === 1) return { draft: matches[0], source: 'dapr_task' };
+	}
 	const nativeName = normalizeActivityName(nativeActivityName(native));
 	if (!nativeName) return null;
 	const matches = drafts.filter((draft) => {
@@ -287,7 +312,7 @@ function findNativeTarget(
 			return normalizeActivityName(span.operationName)?.includes(nativeName) === true;
 		});
 	});
-	return matches.length === 1 ? matches[0] : null;
+	return matches.length === 1 ? { draft: matches[0], source: 'time_overlap' } : null;
 }
 
 function finalSortValue(item: TimelineDraft): number {
@@ -349,7 +374,7 @@ export function buildWorkflowTimeline(args: {
 			draft.workflowSequence = workflowSequence;
 			draft.sequence = workflowSequence;
 		}
-		mergeSpan(draft, span, spanById);
+		mergeSpan(draft, span, spanById, 'workflow_node');
 	}
 
 	for (const span of args.traceSpans) {
@@ -362,7 +387,7 @@ export function buildWorkflowTimeline(args: {
 
 		const target = findNativeTarget(span, [...drafts.values()], spanById);
 		if (target) {
-			mergeSpan(target, span, spanById);
+			mergeSpan(target.draft, span, spanById, target.source);
 			continue;
 		}
 
@@ -383,7 +408,7 @@ export function buildWorkflowTimeline(args: {
 			sequence: numeric(durableTaskId),
 			status: statusFromSpan(span)
 		});
-		mergeSpan(draft, span, spanById);
+		mergeSpan(draft, span, spanById, 'dapr_task');
 	}
 
 	for (const span of args.traceSpans) {
@@ -420,6 +445,9 @@ export function buildWorkflowTimeline(args: {
 			traceId: draft.traceId,
 			spanId: draft.spanId,
 			relatedSpanIds: draft.relatedSpanIds,
+			correlationId: draft.correlationId,
+			daprTaskIds: draft.daprTaskIds,
+			correlationSources: draft.correlationSources,
 			durableTaskId: draft.durableTaskId,
 			durableTaskName: draft.durableTaskName,
 			serviceName: draft.serviceName,

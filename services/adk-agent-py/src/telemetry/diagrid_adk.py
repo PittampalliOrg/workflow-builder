@@ -178,6 +178,9 @@ def _stamp_current_activity(
         mlflow_span_type=mlflow_span_type,
         extra={
             "workflow.activity": activity,
+            "workflow.activity.correlation_id": ctx.get(
+                "workflow.activity.correlation_id"
+            ),
             "workflow.node.id": ctx.get("workflow.node.id"),
             "workflow.node.name": ctx.get("workflow.node.name"),
             "workflow.node.type": ctx.get("workflow.node.type"),

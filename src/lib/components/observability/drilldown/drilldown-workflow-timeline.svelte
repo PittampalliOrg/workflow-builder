@@ -105,9 +105,10 @@
 							<div class="wb-timeline-row__detail">
 								<div class="flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
 									<span class="wb-meta">{kindLabel(item.kind)}</span>
+									{#if item.correlationId}<span class="wb-meta">Activity {shortId(item.correlationId)}</span>{/if}
 									{#if item.actionType}<span class="wb-meta">{item.actionType}</span>{/if}
 									{#if item.serviceName}<span class="wb-meta">{item.serviceName}</span>{/if}
-									{#if item.durableTaskId}<span class="wb-meta">Dapr task {item.durableTaskId}</span>{/if}
+									{#if item.daprTaskIds.length}<span class="wb-meta">Dapr tasks {item.daprTaskIds.join(', ')}</span>{/if}
 									{#if item.relatedSpanIds.length}<span class="wb-meta">{item.relatedSpanIds.length} spans</span>{/if}
 								</div>
 								{#if input !== undefined || output !== undefined}
@@ -120,6 +121,10 @@
 									{#if item.nodeId}
 										<span class="text-muted-foreground">Node</span>
 										<span class="truncate font-mono">{item.nodeId}</span>
+									{/if}
+									{#if item.correlationId}
+										<span class="text-muted-foreground">Activity</span>
+										<span class="truncate font-mono">{item.correlationId}</span>
 									{/if}
 									{#if item.durableTaskName}
 										<span class="text-muted-foreground">Dapr name</span>
