@@ -30,10 +30,13 @@ function toNullableNumber(value: unknown): number | null {
 }
 
 export async function queryClickHouse(sql: string): Promise<Record<string, unknown>[]> {
-	const res = await fetch(
-		`${CLICKHOUSE_URL}/?user=${encodeURIComponent(CLICKHOUSE_USER)}&password=${encodeURIComponent(CLICKHOUSE_PASSWORD)}`,
-		{ method: 'POST', body: `${sql} FORMAT JSONEachRow` }
-	);
+	const res = await fetch(CLICKHOUSE_URL, {
+		method: 'POST',
+		headers: {
+			Authorization: `Basic ${Buffer.from(`${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}`).toString('base64')}`
+		},
+		body: `${sql} FORMAT JSONEachRow`
+	});
 	if (!res.ok) throw new Error(`ClickHouse error: ${res.status}`);
 	const text = await res.text();
 	if (!text.trim()) return [];
