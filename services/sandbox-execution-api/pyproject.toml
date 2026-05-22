@@ -6,7 +6,11 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
-    "kubernetes>=31.0.0",
+    # Pin <36: kubernetes-python-client 36.0.0 has a load_incluster_config()
+    # regression that sends an unusable in-cluster auth header → 401 from the
+    # apiserver, breaking Sandbox CR creation (agent-host provisioning). 35.x
+    # works against k8s 1.36 apiservers. Revisit when 36.x fixes it.
+    "kubernetes>=31.0.0,<36",
     "pydantic>=2.10.0",
     "requests>=2.31.0",
 ]
