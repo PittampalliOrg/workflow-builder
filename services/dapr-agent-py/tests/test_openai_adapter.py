@@ -473,3 +473,77 @@ def test_call_openai_responses_omits_cache_key_when_not_provided(monkeypatch) ->
     )
 
     assert "prompt_cache_key" not in bodies[0]
+
+
+class _Tool:
+    name = "Read"
+    description = "Read a file"
+    args_model = None
+
+
+def test_call_openai_responses_disables_parallel_tool_calls_by_default(monkeypatch) -> None:
+    bodies: list[dict] = []
+
+    monkeypatch.delenv("OPENAI_PARALLEL_TOOL_CALLS", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        adapter,
+        "_auth_headers",
+        lambda: ({"Authorization": "Bearer sk-test"}, "openai-api-key"),
+    )
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "resp_test",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "ok"}],
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_openai_responses(
+        "llm-openai-gpt5",
+        [{"role": "user", "content": "hi"}],
+        None,
+        [_Tool()],
+    )
+
+    assert bodies[0]["parallel_tool_calls"] is False
+
+
+def test_call_openai_responses_allows_parallel_tool_calls_by_env_opt_in(monkeypatch) -> None:
+    bodies: list[dict] = []
+
+    monkeypatch.setenv("OPENAI_PARALLEL_TOOL_CALLS", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        adapter,
+        "_auth_headers",
+        lambda: ({"Authorization": "Bearer sk-test"}, "openai-api-key"),
+    )
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "resp_test",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "ok"}],
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_openai_responses(
+        "llm-openai-gpt5",
+        [{"role": "user", "content": "hi"}],
+        None,
+        [_Tool()],
+    )
+
+    assert bodies[0]["parallel_tool_calls"] is True

@@ -39,6 +39,11 @@ def _get_openai_model(component: str) -> str:
     return COMPONENT_MODEL_MAP.get(component, os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-5.4"))
 
 
+def _openai_parallel_tool_calls_enabled() -> bool:
+    raw = os.environ.get("OPENAI_PARALLEL_TOOL_CALLS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _tool_schema(tool: Any) -> dict[str, Any]:
     schema: dict[str, Any] = {"type": "object", "properties": {}}
     if hasattr(tool, "args_model") and tool.args_model:
@@ -473,7 +478,7 @@ def _call_openai_responses(
     converted_tools = _convert_tools_for_openai(tools)
     if converted_tools:
         request_body["tools"] = converted_tools
-        request_body["parallel_tool_calls"] = True
+        request_body["parallel_tool_calls"] = _openai_parallel_tool_calls_enabled()
     # Greppable per-turn line that mirrors the Anthropic adapter's. `mode=prefix`
     # and `cache_ttl=auto` distinguish the OpenAI side; production logs grep the
     # same way for both providers. `breakpoints` is 1 (implicit prefix-match)

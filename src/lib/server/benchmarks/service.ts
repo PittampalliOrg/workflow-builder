@@ -2648,6 +2648,7 @@ export const __benchmarkSandboxCleanupForTest = {
 	benchmarkRunLabelValue,
 	collectBenchmarkSandboxNamesFromValues,
 	collectOpenShellSandboxNamesFromKubeItems,
+	hostSandboxExecutionResourceTargetsForTest,
 	isOpenShellSandboxNotFound,
 	matchesBenchmarkRunSandboxName,
 	shouldDeleteBenchmarkSandboxName,
@@ -2784,6 +2785,7 @@ async function deleteHostSandboxExecutionResourcesForBenchmarkRun(
 	await deleteHostSandboxExecutionResources(
 		`benchmark-run-id=${benchmarkRunLabelValue(runId)}`,
 		cleanup,
+		(sandboxName) => shouldDeleteBenchmarkSandboxName(runId, sandboxName),
 	);
 }
 
@@ -2798,36 +2800,23 @@ async function deleteHostSandboxExecutionResourcesForBenchmarkInstance(
 			`benchmark-instance-id=${benchmarkInstanceLabelValue(instanceId)}`,
 		].join(","),
 		cleanup,
+		(sandboxName) => shouldDeleteBenchmarkSandboxName(runId, sandboxName),
 	);
 }
 
 async function deleteHostSandboxExecutionResources(
 	rawLabelSelector: string,
 	cleanup: BenchmarkSandboxCleanupResult,
+	shouldDeleteSandboxName?: (name: string) => boolean,
 ) {
 	const namespace = hostSandboxExecutionNamespace();
 	const ns = encodeURIComponent(namespace);
 	const labelSelector = encodeURIComponent(rawLabelSelector);
-	const targets = [
-		{
-			kind: "job",
-			listPath: `/apis/batch/v1/namespaces/${ns}/jobs?labelSelector=${labelSelector}`,
-			itemPath: (name: string) =>
-				`/apis/batch/v1/namespaces/${ns}/jobs/${encodeURIComponent(name)}`,
-		},
-		{
-			kind: "pod",
-			listPath: `/api/v1/namespaces/${ns}/pods?labelSelector=${labelSelector}`,
-			itemPath: (name: string) =>
-				`/api/v1/namespaces/${ns}/pods/${encodeURIComponent(name)}`,
-		},
-		{
-			kind: "configmap",
-			listPath: `/api/v1/namespaces/${ns}/configmaps?labelSelector=${labelSelector}`,
-			itemPath: (name: string) =>
-				`/api/v1/namespaces/${ns}/configmaps/${encodeURIComponent(name)}`,
-		},
-	];
+	const targets = hostSandboxExecutionResourceTargets(
+		ns,
+		labelSelector,
+		shouldDeleteSandboxName,
+	);
 	for (const target of targets) {
 		let names: string[] = [];
 		try {
@@ -2839,6 +2828,7 @@ async function deleteHostSandboxExecutionResources(
 			});
 			continue;
 		}
+		if (target.shouldDelete) names = names.filter(target.shouldDelete);
 		cleanup.hostExecution.attempted += names.length;
 		for (const name of names) {
 			const resource = `${target.kind}/${name}`;
@@ -2854,6 +2844,56 @@ async function deleteHostSandboxExecutionResources(
 			}
 		}
 	}
+}
+
+function hostSandboxExecutionResourceTargets(
+	encodedNamespace: string,
+	encodedLabelSelector: string,
+	shouldDeleteSandboxName?: (name: string) => boolean,
+): Array<{
+	kind: string;
+	listPath: string;
+	itemPath: (name: string) => string;
+	shouldDelete?: (name: string) => boolean;
+}> {
+	return [
+		{
+			kind: "sandbox",
+			listPath: `/apis/agents.x-k8s.io/v1alpha1/namespaces/${encodedNamespace}/sandboxes?labelSelector=${encodedLabelSelector}`,
+			itemPath: (name: string) =>
+				`/apis/agents.x-k8s.io/v1alpha1/namespaces/${encodedNamespace}/sandboxes/${encodeURIComponent(name)}`,
+			shouldDelete: shouldDeleteSandboxName,
+		},
+		{
+			kind: "job",
+			listPath: `/apis/batch/v1/namespaces/${encodedNamespace}/jobs?labelSelector=${encodedLabelSelector}`,
+			itemPath: (name: string) =>
+				`/apis/batch/v1/namespaces/${encodedNamespace}/jobs/${encodeURIComponent(name)}`,
+		},
+		{
+			kind: "pod",
+			listPath: `/api/v1/namespaces/${encodedNamespace}/pods?labelSelector=${encodedLabelSelector}`,
+			itemPath: (name: string) =>
+				`/api/v1/namespaces/${encodedNamespace}/pods/${encodeURIComponent(name)}`,
+		},
+		{
+			kind: "configmap",
+			listPath: `/api/v1/namespaces/${encodedNamespace}/configmaps?labelSelector=${encodedLabelSelector}`,
+			itemPath: (name: string) =>
+				`/api/v1/namespaces/${encodedNamespace}/configmaps/${encodeURIComponent(name)}`,
+		},
+	];
+}
+
+function hostSandboxExecutionResourceTargetsForTest(
+	namespace = "workflow-builder",
+	labelSelector = "benchmark-run-id=run-1",
+) {
+	return hostSandboxExecutionResourceTargets(
+		encodeURIComponent(namespace),
+		encodeURIComponent(labelSelector),
+		(name) => shouldDeleteBenchmarkSandboxName("run-1", name),
+	);
 }
 
 async function listKubeResourceNames(path: string): Promise<string[]> {
@@ -2936,6 +2976,7 @@ async function loadBenchmarkRunSandboxNames(runId: string): Promise<string[]> {
 			.select({
 				sandboxName: sessions.sandboxName,
 				workspaceSandboxName: sessions.workspaceSandboxName,
+				runtimeSandboxName: sessions.runtimeSandboxName,
 			})
 			.from(sessions)
 			.where(
@@ -2947,6 +2988,7 @@ async function loadBenchmarkRunSandboxNames(runId: string): Promise<string[]> {
 			values.push({
 				sandboxName: row.sandboxName,
 				workspaceSandboxName: row.workspaceSandboxName,
+				runtimeSandboxName: row.runtimeSandboxName,
 			});
 		}
 	}
@@ -3062,6 +3104,8 @@ function collectBenchmarkSandboxNamesFromValues(values: unknown[]): string[] {
 			"sandbox_name",
 			"workspaceSandboxName",
 			"workspace_sandbox_name",
+			"runtimeSandboxName",
+			"runtime_sandbox_name",
 			"workspaceRef",
 			"workspace_ref",
 		])) {

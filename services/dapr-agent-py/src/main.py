@@ -170,6 +170,7 @@ from dapr_agents.agents.configs import (
     AgentStateConfig,
     RuntimeConfigKey,
     RuntimeSubscriptionConfig,
+    ToolExecutionMode,
     WorkflowRetryPolicy,
 )
 from dapr_agents.agents.schemas import TriggerAction
@@ -2564,6 +2565,41 @@ class OpenShellDurableAgent(DurableAgent):
                 tool_calls = [
                     t.get("function", {}).get("name", "") for t in tc if isinstance(t, dict)
                 ]
+                try:
+                    for idx, t in enumerate(tc):
+                        if not isinstance(t, dict):
+                            continue
+                        function = t.get("function")
+                        if not isinstance(function, dict):
+                            function = {}
+                        call_id = str(t.get("id") or "")
+                        name = str(function.get("name") or "")
+                        logger.info(
+                            "[tool-dispatch] scheduled instance=%s session=%s order=%d tool=%s call_id=%s mode=%s",
+                            inst_id,
+                            sess_id,
+                            idx,
+                            name,
+                            call_id,
+                            getattr(self.execution, "tool_execution_mode", None),
+                        )
+                        publish_session_event(
+                            sess_id,
+                            "tool_activity.scheduled",
+                            {
+                                "toolName": name,
+                                "toolCallId": call_id,
+                                "order": idx,
+                                "executionMode": str(
+                                    getattr(self.execution, "tool_execution_mode", "")
+                                ),
+                                "workflowInstanceId": inst_id,
+                            },
+                            source_event_id=f"{call_id}:activity_scheduled" if call_id else None,
+                            instance_id=inst_id,
+                        )
+                except Exception:
+                    pass
         # Circuit-breaker bookkeeping on the success path: a response that
         # carries text content OR tool_calls resets the empty-streak counter;
         # a response with neither increments it. See EMPTY_RESPONSE_THRESHOLD.
@@ -2657,6 +2693,27 @@ class OpenShellDurableAgent(DurableAgent):
         tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
         func = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
         tool_name = func.get("name", "unknown") if isinstance(func, dict) else "unknown"
+        logger.info(
+            "[tool-dispatch] run_tool entry instance=%s session=%s tool=%s call_id=%s",
+            inst_id,
+            sess_id,
+            tool_name,
+            tool_call_id,
+        )
+        try:
+            publish_session_event(
+                sess_id,
+                "tool_activity.started",
+                {
+                    "toolName": tool_name,
+                    "toolCallId": tool_call_id,
+                    "workflowInstanceId": inst_id,
+                },
+                source_event_id=f"{tool_call_id}:activity_started" if tool_call_id else None,
+                instance_id=inst_id,
+            )
+        except Exception:
+            pass
         tool_args = {}
         raw_args = func.get("arguments", "")
         if isinstance(raw_args, str) and raw_args.strip():
@@ -5226,7 +5283,10 @@ agent = OpenShellDurableAgent(
     style_guidelines=["Be professional and direct"],
     llm=DaprChatClient(component_name=DEFAULT_LLM_COMPONENT),
     tools=all_tools,
-    execution=AgentExecutionConfig(max_iterations=DEFAULT_MAX_ITERATIONS),
+    execution=AgentExecutionConfig(
+        max_iterations=DEFAULT_MAX_ITERATIONS,
+        tool_execution_mode=ToolExecutionMode.SEQUENTIAL,
+    ),
     configuration=config,
     state=state_config,
     pubsub=pubsub_config,

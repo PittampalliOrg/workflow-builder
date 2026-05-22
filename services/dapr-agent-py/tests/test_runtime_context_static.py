@@ -33,3 +33,19 @@ def test_call_llm_emits_active_context_usage_before_provider_call() -> None:
     assert source.index("self._emit_active_context_usage(") < source.index(
         "result = super().call_llm(ctx, payload)"
     )
+
+
+def test_durable_agent_uses_sequential_tool_execution() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert "ToolExecutionMode" in source
+    assert "tool_execution_mode=ToolExecutionMode.SEQUENTIAL" in source
+
+
+def test_tool_dispatch_evidence_events_are_emitted() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert '"tool_activity.scheduled"' in source
+    assert '"tool_activity.started"' in source
+    assert "[tool-dispatch] scheduled" in source
+    assert "[tool-dispatch] run_tool entry" in source

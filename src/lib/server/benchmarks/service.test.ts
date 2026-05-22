@@ -1357,10 +1357,20 @@ describe("SWE-bench terminal run cleanup", () => {
 				},
 				{ sandboxName: "dapr-agent-py" },
 				{ sandbox_name: "agent-runtime-pool-coding" },
+				{
+					runtimeSandboxName:
+						"swebench-abcdef1234-codexcap20x20260504014703",
+				},
+				{
+					runtime_sandbox_name:
+						"swebench-abcdef5678-codexcap20x20260504014703",
+				},
 				{ workspaceSandboxName: "manual-debug-sandbox" },
 			]);
 
 		expect(names).toContain("swebench-1234567890-codexcap20x20260504014703");
+		expect(names).toContain("swebench-abcdef1234-codexcap20x20260504014703");
+		expect(names).toContain("swebench-abcdef5678-codexcap20x20260504014703");
 		expect(
 			__benchmarkSandboxCleanupForTest.shouldDeleteBenchmarkSandboxName(
 				runId,
@@ -1390,6 +1400,24 @@ describe("SWE-bench terminal run cleanup", () => {
 				'Error: status: NotFound, message: "sandbox not found"',
 			),
 		).toBe(true);
+	});
+
+	it("includes labeled Sandbox CRs in host execution cleanup targets", () => {
+		const targets =
+			__benchmarkSandboxCleanupForTest.hostSandboxExecutionResourceTargetsForTest(
+				"workflow-builder",
+				"benchmark-run-id=run-1",
+			);
+		const sandboxTarget = targets.find((target) => target.kind === "sandbox");
+
+		expect(sandboxTarget?.listPath).toBe(
+			"/apis/agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxes?labelSelector=benchmark-run-id%3Drun-1",
+		);
+		expect(sandboxTarget?.itemPath("swebench-abc-run-1")).toBe(
+			"/apis/agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxes/swebench-abc-run-1",
+		);
+		expect(sandboxTarget?.shouldDelete?.("swebench-abc-run-1")).toBe(true);
+		expect(sandboxTarget?.shouldDelete?.("manual-debug-sandbox")).toBe(false);
 	});
 
 	it("scopes live OpenShell pod discovery to the benchmark run", () => {
