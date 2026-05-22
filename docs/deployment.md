@@ -58,7 +58,7 @@ The cluster uses a GitOps and hub-build flow:
 - GHCR stores promoted built image tags and digests
 - `stacks/main` pins the live image refs
 - ArgoCD reconciles the runtime from `stacks/main`
-- ryzen local manifest iteration uses `idpbuilder stacks sync`, which snapshots `stacks/main` into local Gitea and refreshes only affected ArgoCD apps
+- ryzen local manifest iteration uses `idpbuilder stacks sync`, which snapshots `stacks/main` into local Gitea and refreshes only affected ArgoCD apps; current syncs preserve active-development image pins by default, require explicit `--seed-images=true` for bootstrap rewrites, and serialize mutating sync/watch sessions with a per cluster/repo/branch lock
 
 If the live cluster does not match local code, first check whether the image tags and manifests in `stacks/main` were updated.
 

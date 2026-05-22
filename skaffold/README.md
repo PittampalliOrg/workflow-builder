@@ -12,7 +12,7 @@ There are two loops, plus the existing idpbuilder manifest sync path:
 |---|---|---|
 | **Inner** | `pnpm dev:skaffold` | Build a thin dev image (Node 22 / Python 3.12 + baked deps), deploy as the workflow-builder Deployment overlay (Argo paused for the session), then file-sync `src/`/`lib/`/etc. into the running pod on every save. Vite HMRs the browser; uvicorn `--reload` restarts the Python service. |
 | **Outer** | `pnpm deploy:skaffold` | Build the prod multi-stage Dockerfile, push to gitea-ryzen, then a wrapper commits the new tag into `stacks/main/.../active-development/manifests/<service>/kustomization.yaml` on **gitea-ryzen** (not GitHub origin). ArgoCD's `automated.selfHeal=true` reconciles within ~30s. |
-| **Manifest sync** | `idpbuilder stacks sync` / `clu` | Snapshot the selected local stacks worktree into in-cluster Gitea, compute affected ArgoCD Applications, hard-refresh them, and wait for them to observe the pushed revision. Skaffold does not replace this path. |
+| **Manifest sync** | `idpbuilder stacks sync` / `clu` | Snapshot the selected local stacks worktree into in-cluster Gitea, compute affected ArgoCD Applications, hard-refresh them, and wait for them to observe the pushed revision. Current idpbuilder preserves active-development image pins by default and locks one mutating sync/watch per cluster/repo/branch. Skaffold does not replace this path. |
 
 The wrappers (`scripts/skaffold-dev.sh`, `scripts/skaffold-deploy.sh`) do
 several things that bare `skaffold dev` / `skaffold run` do not. Always use
@@ -88,6 +88,7 @@ A broader read-only preflight for humans and LLM coding agents. It checks:
 - Skaffold module Argo pause state, live Deployment image, and gitea-ryzen pin
 - the stacks checkout used by idpbuilder (`STACKS_DIR` or `/home/vpittamp/repos/PittampalliOrg/stacks/main`)
 - `idpbuilder stacks status`
+- whether the installed idpbuilder exposes the hardened `--seed-images` opt-in flag
 - `idpbuilder stacks sync --print-refresh-plan` for the selected stacks worktree
 - `clhot --ci-one-shot --check --json`
 
@@ -130,6 +131,13 @@ resolved image tag for a ryzen service into `gitea-ryzen/main`. For manifest
 edits, use idpbuilder/`clu`; for live source hot reload, use Skaffold; for
 promoted dev/staging releases, use the GHCR release-pins and GitOps Promoter
 path.
+
+Current idpbuilder syncs preserve active-development image pins unless
+`--seed-images=true` is passed explicitly. Mutating sync and watch mode also
+share a nonblocking lock keyed by cluster/repo/branch, so a second mutating sync
+should fail fast instead of racing. If a wait reports that sync to one commit
+was superseded by another, inspect the newer Gitea tip or active watcher before
+retrying.
 
 ## Why the wrappers
 

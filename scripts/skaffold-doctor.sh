@@ -41,7 +41,8 @@ Usage: bash scripts/skaffold-doctor.sh [--json] [--all] [--skip-clhot] [--skip-r
 
 Read-only preflight for the ryzen Skaffold loop. Checks command availability,
 kubectl context, module Argo/Deployment state, gitea-ryzen pin drift, idpbuilder
-stack status, and the read-only idpbuilder affected-app refresh plan.
+stack status, hardened sync flag availability, and the read-only idpbuilder
+affected-app refresh plan.
 EOF
       exit 0
       ;;
@@ -213,6 +214,14 @@ fi
 if [ "${cache_ok}" != true ]; then
   issue_json_lines+=("$(printf 'could not read gitea-ryzen stacks cache: %s' "${cache_error}" | json_string)")
 fi
+idpbuilder_sync_seed_flag=false
+if command -v idpbuilder >/dev/null 2>&1; then
+  if idpbuilder stacks sync --help 2>/dev/null | rg -q -- '--seed-images'; then
+    idpbuilder_sync_seed_flag=true
+  else
+    warning_json_lines+=("$(printf 'installed idpbuilder does not expose --seed-images; upgrade before mutating ryzen syncs so active-development image pins are preserved by default' | json_string)")
+  fi
+fi
 
 for mod in "${modules[@]}"; do
   state="active"
@@ -348,12 +357,12 @@ if [ "${skip_clhot}" = false ] && [ -f "${stacks_dir}/deployment/scripts/cluster
   fi
 fi
 
-python3 - "$tmp_json" "$kubectl_context" "$expected_repo" "$stacks_dir" "$stacks_repo_ok" "$cache_ok" "$idpbuilder_status_ok" "$refresh_plan_ok" "$clhot_ok" "$commands_json" "$idpbuilder_status_text" "$refresh_plan_text" "$clhot_text" "${module_json_lines[@]}" --issues "${issue_json_lines[@]}" --warnings "${warning_json_lines[@]}" <<'PY'
+python3 - "$tmp_json" "$kubectl_context" "$expected_repo" "$stacks_dir" "$stacks_repo_ok" "$cache_ok" "$idpbuilder_status_ok" "$refresh_plan_ok" "$clhot_ok" "$commands_json" "$idpbuilder_sync_seed_flag" "$idpbuilder_status_text" "$refresh_plan_text" "$clhot_text" "${module_json_lines[@]}" --issues "${issue_json_lines[@]}" --warnings "${warning_json_lines[@]}" <<'PY'
 import json, sys
-out, context, repo, stacks_dir, stacks_ok, cache_ok, idp_ok, plan_ok, clhot_ok, commands_json, idp_text, plan_text, clhot_text = sys.argv[1:14]
+out, context, repo, stacks_dir, stacks_ok, cache_ok, idp_ok, plan_ok, clhot_ok, commands_json, seed_flag, idp_text, plan_text, clhot_text = sys.argv[1:15]
 issues_sep = sys.argv.index("--issues")
 warnings_sep = sys.argv.index("--warnings")
-modules = [json.loads(x) for x in sys.argv[14:issues_sep]]
+modules = [json.loads(x) for x in sys.argv[15:issues_sep]]
 issues = [json.loads(x) for x in sys.argv[issues_sep + 1:warnings_sep]]
 warnings = [json.loads(x) for x in sys.argv[warnings_sep + 1:]]
 commands = json.loads(commands_json)
@@ -388,6 +397,7 @@ data = {
         "statusText": idp_text,
         "refreshPlanOk": plan_ok == "true",
         "refreshPlanText": plan_text,
+        "supportsSeedImagesFlag": seed_flag == "true",
     },
     "clhot": {
         "ok": clhot_ok == "true",
@@ -427,6 +437,7 @@ for mod in data["modules"]:
     ))
 print()
 print(f"  idpbuilder stacks status: {'ok' if data['idpbuilder']['statusOk'] else 'failed'}")
+print(f"  idpbuilder seed-images flag: {'available' if data['idpbuilder']['supportsSeedImagesFlag'] else 'missing'}")
 print(f"  idpbuilder refresh plan: {'ok' if data['idpbuilder']['refreshPlanOk'] else 'skipped/failed'}")
 print(f"  clhot one-shot: {'ok' if data['clhot']['ok'] else 'skipped/failed'}")
 if data["issues"]:

@@ -112,12 +112,12 @@ Inner-loop notes:
 - The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
 - File sync rules in `skaffold/workflow-builder.skaffold.yaml` mirror devspace's `excludePaths`. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
 - The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../active-development/manifests/workflow-builder` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
-- `pnpm skaffold:doctor` checks both sides of the hybrid loop: Skaffold live drift and the ryzen idpbuilder/Gitea sync path (`idpbuilder stacks status`, `idpbuilder stacks sync --print-refresh-plan`, and `clhot --ci-one-shot --check`).
+- `pnpm skaffold:doctor` checks both sides of the hybrid loop: Skaffold live drift and the ryzen idpbuilder/Gitea sync path (`idpbuilder stacks status`, hardened `--seed-images` flag availability, `idpbuilder stacks sync --print-refresh-plan`, and `clhot --ci-one-shot --check`).
 
 Outer-loop notes:
 - Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to `gitea-ryzen/main` under `packages/components/active-development/manifests/<service>/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
 - No `kubectl set image` — the live cluster is mutated only by ArgoCD.
-- This is separate from `idpbuilder stacks sync`: idpbuilder snapshots a selected local stacks worktree into in-cluster Gitea and refreshes affected apps, while Skaffold commit-pin only updates a resolved ryzen image tag. Use idpbuilder/`clu` for manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
+- This is separate from `idpbuilder stacks sync`: idpbuilder snapshots a selected local stacks worktree into in-cluster Gitea and refreshes affected apps, while Skaffold commit-pin only updates a resolved ryzen image tag. Current idpbuilder preserves active-development image pins by default and uses a per cluster/repo/branch lock for mutating sync/watch sessions; pass `--seed-images=true` only for deliberate bootstrap rewrites. Use idpbuilder/`clu` for manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
 
 ## Services Overview
 
