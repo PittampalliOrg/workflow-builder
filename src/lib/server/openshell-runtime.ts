@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { daprFetch } from '$lib/server/dapr-client';
 
 export function getOpenShellRuntimeUrl(): string {
 	return (
@@ -34,5 +35,5 @@ export async function openshellRuntimeFetch(
 	if (token && !headers.has('X-Internal-Token')) {
 		headers.set('X-Internal-Token', token);
 	}
-	return fetch(`${baseUrl}${normalizedPath}`, { ...options, headers });
+	return daprFetch(`${baseUrl}${normalizedPath}`, { ...options, headers, maxRetries: 0 });
 }

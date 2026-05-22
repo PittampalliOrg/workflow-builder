@@ -16,8 +16,16 @@
  */
 
 import { DaprClient, HttpMethod } from "@dapr/dapr";
-import type { FastifyInstance } from "fastify";
-import { fetch as undiciFetch, Agent as UndiciAgent, Pool } from "undici";
+import {
+  context,
+  propagation,
+  type Span,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { Agent as UndiciAgent, Pool } from "undici";
 import { z } from "zod";
 
 const longRunningAgent = new UndiciAgent({
@@ -29,7 +37,12 @@ import {
   fetchRawConnectionValue,
 } from "../core/credential-service.js";
 import { resolveCodeFunctionExecution } from "../core/code-functions.js";
-import { setSpanInput, setSpanOutput } from "../observability/content.js";
+import {
+  setSpanInput,
+  setSpanInputOnSpan,
+  setSpanOutput,
+  setSpanOutputOnSpan,
+} from "../observability/content.js";
 import {
   logExecutionComplete,
   logExecutionStart,
@@ -331,6 +344,191 @@ function parseJsonResponse(responseText: string): unknown {
   } catch {
     return null;
   }
+}
+
+const dispatchTracer = trace.getTracer("function-router.dispatch");
+const requestServerSpans = new WeakMap<object, Span>();
+
+type DispatchRequestInit = Omit<RequestInit, "dispatcher"> & {
+  dispatcher?: unknown;
+};
+
+function payloadForSpan(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  return parseJsonResponse(value) ?? value;
+}
+
+function urlPath(value: string): string | undefined {
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+function urlHost(value: string): string | undefined {
+  try {
+    return new URL(value).host;
+  } catch {
+    return undefined;
+  }
+}
+
+function setActiveHttpRouteAttributes(
+  path: string,
+  attributes: Record<string, string | number | boolean | undefined> = {},
+): void {
+  setHttpRouteAttributesOnSpan(trace.getActiveSpan(), path, attributes);
+}
+
+function setHttpRouteAttributesOnSpan(
+  span: Span | undefined,
+  path: string,
+  attributes: Record<string, string | number | boolean | undefined> = {},
+): void {
+  if (!span) return;
+  try {
+    span.setAttribute("http.route", path);
+    span.setAttribute("http.target", path);
+    span.setAttribute("url.path", path);
+    for (const [key, value] of Object.entries(attributes)) {
+      if (value !== undefined) {
+        span.setAttribute(key, value);
+      }
+    }
+  } catch {
+    // Observability must never break request handling.
+  }
+}
+
+function rememberRequestServerSpan(request: FastifyRequest): void {
+  const span = trace.getActiveSpan();
+  if (span) {
+    requestServerSpans.set(request.raw, span);
+  }
+}
+
+function spanTargetsForRequest(request: FastifyRequest): Span[] {
+  const targets = new Set<Span>();
+  const active = trace.getActiveSpan();
+  const server = requestServerSpans.get(request.raw);
+  if (active) targets.add(active);
+  if (server) targets.add(server);
+  return [...targets];
+}
+
+function executeRequestForSpan(body: ExecuteRequest): Record<string, unknown> {
+  return {
+    function_slug: body.function_slug ?? body.function_id,
+    execution_id: body.execution_id,
+    db_execution_id: body.db_execution_id ?? undefined,
+    workflow_id: body.workflow_id,
+    node_id: body.node_id,
+    node_name: body.node_name,
+    input: body.input,
+    node_outputs: body.node_outputs,
+    connection_external_id: body.connection_external_id ?? undefined,
+    ap_project_id: body.ap_project_id ?? undefined,
+    ap_platform_id: body.ap_platform_id ?? undefined,
+  };
+}
+
+function mutableHeadersFrom(input: unknown): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (!input) return headers;
+
+  if (typeof Headers !== "undefined" && input instanceof Headers) {
+    input.forEach((value, key) => {
+      headers[key] = value;
+    });
+    return headers;
+  }
+
+  if (Array.isArray(input)) {
+    for (const entry of input) {
+      if (Array.isArray(entry) && entry.length >= 2) {
+        headers[String(entry[0])] = String(entry[1]);
+      }
+    }
+    return headers;
+  }
+
+  if (typeof input === "object") {
+    for (const [key, value] of Object.entries(
+      input as Record<string, unknown>,
+    )) {
+      if (typeof value === "string") {
+        headers[key] = value;
+      } else if (Array.isArray(value)) {
+        headers[key] = value.map(String).join(",");
+      } else if (value != null) {
+        headers[key] = String(value);
+      }
+    }
+  }
+
+  return headers;
+}
+
+async function postJsonWithContentTrace(
+  targetUrl: string,
+  init: DispatchRequestInit,
+  attributes: Record<string, string | number | boolean | undefined>,
+): Promise<{
+  httpResponse: Response;
+  responseText: string;
+}> {
+  const path = urlPath(targetUrl);
+  const span = dispatchTracer.startSpan(`POST ${path ?? targetUrl}`, {
+    kind: SpanKind.CLIENT,
+    attributes: {
+      "http.request.method": "POST",
+      "http.method": "POST",
+      "url.full": targetUrl,
+      "http.url": targetUrl,
+      ...(path ? { "url.path": path, "http.target": path } : {}),
+      ...(urlHost(targetUrl) ? { "server.address": urlHost(targetUrl) } : {}),
+      ...Object.fromEntries(
+        Object.entries(attributes).filter((entry) => entry[1] !== undefined),
+      ),
+    },
+  });
+
+  return await context.with(trace.setSpan(context.active(), span), async () => {
+    setSpanInputOnSpan(span, payloadForSpan(init.body));
+    const headers = mutableHeadersFrom(init.headers);
+    propagation.inject(context.active(), headers);
+    const spanContext = span.spanContext();
+    headers.traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${spanContext.traceFlags
+      .toString(16)
+      .padStart(2, "0")}`;
+    try {
+      const httpResponse = await fetch(targetUrl, {
+        ...init,
+        headers,
+      } as RequestInit);
+      span.setAttribute("http.response.status_code", httpResponse.status);
+      span.setAttribute("http.status_code", httpResponse.status);
+      const responseText = await httpResponse.text();
+      setSpanOutputOnSpan(span, responseText);
+      span.setStatus({
+        code: httpResponse.ok ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+        message: httpResponse.ok ? undefined : `HTTP ${httpResponse.status}`,
+      });
+      return { httpResponse, responseText };
+    } catch (error) {
+      span.recordException(error as Error);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      span.end();
+    }
+  });
 }
 
 function firstStringField(
@@ -883,11 +1081,24 @@ function buildLoopPolicyInput(
 }
 
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
+  app.addHook("onRequest", async (request) => {
+    if (request.raw.url?.startsWith("/execute")) {
+      rememberRequestServerSpan(request);
+    }
+  });
+
   // Stamp `output.value` (redacted) onto the active span for every response
   // this plugin's routes emit, so the Service Graph drawer shows the payload
   // function-router actually returned — not just HTTP status + duration.
-  app.addHook("onSend", async (_request, _reply, payload) => {
-    setSpanOutput(payload);
+  app.addHook("onSend", async (request, _reply, payload) => {
+    const targets = spanTargetsForRequest(request);
+    if (targets.length === 0) {
+      setSpanOutput(payload);
+    } else {
+      for (const span of targets) {
+        setSpanOutputOnSpan(span, payload);
+      }
+    }
     return payload;
   });
 
@@ -922,7 +1133,23 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
     const body = parseResult.data as ExecuteRequest;
     // Stamp the routed action input as `input.value` (redacted) for the drawer.
-    setSpanInput(body.input);
+    const requestPayload = executeRequestForSpan(body);
+    const routeAttributes = {
+      "workflow.id": body.workflow_id,
+      "workflow.node.id": body.node_id,
+      "workflow.node.name": body.node_name,
+      "workflow.execution.id": body.db_execution_id ?? body.execution_id,
+    };
+    const spanTargets = spanTargetsForRequest(request);
+    if (spanTargets.length === 0) {
+      setSpanInput(requestPayload);
+      setActiveHttpRouteAttributes("/execute", routeAttributes);
+    } else {
+      for (const span of spanTargets) {
+        setSpanInputOnSpan(span, requestPayload);
+        setHttpRouteAttributesOnSpan(span, "/execute", routeAttributes);
+      }
+    }
     const resolvedSessionId =
       buildWorkflowSessionId(body.db_execution_id || body.execution_id) ||
       sessionIdFromHeaders(request.headers);
@@ -1831,6 +2058,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             }
 
             let httpResponse: Response;
+            let responseText = "";
             if (isWorkspaceCreatePullRequest) {
               const { createGiteaPullRequest } = await import(
                 "../core/gitea-repository.js"
@@ -1880,21 +2108,35 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   headers: { "Content-Type": "application/json" },
                 },
               );
+              responseText = await httpResponse.text();
             } else {
               console.log(
                 `[Execute Route] Dispatching ${functionSlug} to ${targetUrl} with timeout=${requestTimeoutMs}ms`,
               );
               const requestDispatchStartedAt = Date.now();
-              httpResponse = await undiciFetch(targetUrl, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  ...forwardedTraceHeaders,
+              const tracedResponse = await postJsonWithContentTrace(
+                targetUrl,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...forwardedTraceHeaders,
+                  },
+                  body: requestBody,
+                  signal: controller.signal,
+                  dispatcher: longRunningAgent,
                 },
-                body: requestBody,
-                signal: controller.signal,
-                dispatcher: longRunningAgent,
-              });
+                {
+                  "function.slug": functionSlug,
+                  "workflow.id": body.workflow_id,
+                  "workflow.node.id": body.node_id,
+                  "workflow.node.name": body.node_name,
+                  "workflow.execution.id":
+                    body.db_execution_id ?? body.execution_id,
+                },
+              );
+              httpResponse = tracedResponse.httpResponse;
+              responseText = tracedResponse.responseText;
               console.log(
                 `[Execute Route] ${functionSlug} received response headers from ${targetUrl} in ${Date.now() - requestDispatchStartedAt}ms`,
               );
@@ -1903,7 +2145,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             clearTimeout(timeoutId);
             timing.executionMs = Date.now() - executionStartTime;
 
-            const responseText = await httpResponse.text();
             const parsed = parseJsonResponse(responseText);
             const parsedMastra =
               parsed && typeof parsed === "object"
@@ -2315,7 +2556,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               const executionStartTime = Date.now();
 
               try {
-                const httpResponse = await undiciFetch(
+                const tracedResponse = await postJsonWithContentTrace(
                   `${functionUrl}/execute`,
                   {
                     method: "POST",
@@ -2327,12 +2568,22 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     signal: controller.signal,
                     dispatcher: longRunningAgent,
                   },
+                  {
+                    "function.slug": functionSlug,
+                    "function.target.app_id": target.appId,
+                    "workflow.id": body.workflow_id,
+                    "workflow.node.id": body.node_id,
+                    "workflow.node.name": body.node_name,
+                    "workflow.execution.id":
+                      body.db_execution_id ?? body.execution_id,
+                  },
                 );
+                const httpResponse = tracedResponse.httpResponse;
 
                 clearTimeout(timeoutId);
                 timing.executionMs = Date.now() - executionStartTime;
 
-                const responseText = await httpResponse.text();
+                const responseText = tracedResponse.responseText;
                 const parsed = parseJsonResponse(responseText);
 
                 if (isPlainObject(parsed)) {
@@ -2468,7 +2719,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               `[Execute Route] HTTP timeout budget for ${target.appId}: ${requestTimeoutMs}ms`,
             );
             try {
-              const httpResponse = await undiciFetch(
+              const tracedResponse = await postJsonWithContentTrace(
                 `${functionUrl}${requestPath}`,
                 {
                   method: "POST",
@@ -2480,7 +2731,17 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   signal: controller.signal,
                   dispatcher: longRunningAgent,
                 },
+                {
+                  "function.slug": functionSlug,
+                  "function.target.app_id": target.appId,
+                  "workflow.id": body.workflow_id,
+                  "workflow.node.id": body.node_id,
+                  "workflow.node.name": body.node_name,
+                  "workflow.execution.id":
+                    body.db_execution_id ?? body.execution_id,
+                },
               );
+              const httpResponse = tracedResponse.httpResponse;
 
               clearTimeout(timeoutId);
               timing.executionMs = Date.now() - executionStartTime;
@@ -2491,7 +2752,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               // response and propagate it back to the orchestrator as a normal
               // (HTTP 200) function-router response, so the orchestrator can surface
               // `error` instead of failing with RequestException.
-              const responseText = await httpResponse.text();
+              const responseText = tracedResponse.responseText;
               const parsed = parseJsonResponse(responseText);
 
               if (isPlainObject(parsed)) {

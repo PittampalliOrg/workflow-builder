@@ -18,6 +18,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import Fastify from "fastify";
 import { z } from "zod";
+import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 type McpPropertyType =
 	| "TEXT"
@@ -215,6 +216,11 @@ async function main() {
 		allowedHeaders: ["Content-Type", "Authorization"],
 	});
 
+	app.addHook("onSend", async (_request, _reply, payload) => {
+		setSpanOutput(payload);
+		return payload;
+	});
+
 	app.get("/health", async () => ({ status: "healthy" }));
 
 	app.post<{
@@ -223,6 +229,7 @@ async function main() {
 		Body: unknown;
 	}>("/api/v1/projects/:projectId/mcp-server/http", async (req, reply) => {
 		const projectId = req.params.projectId;
+		setSpanInput({ projectId, body: req.body });
 
 		const mcp = await fetchMcpServer(projectId);
 		if (mcp.status !== "ENABLED") {
@@ -256,6 +263,12 @@ async function main() {
 				schemaObj,
 				{ title: toolName },
 				async (args) => {
+					setSpanInput({
+						projectId,
+						workflowId: flow.id,
+						toolName,
+						input: args,
+					});
 					const started = await startToolExecution({
 						projectId,
 						workflowId: flow.id,
@@ -264,10 +277,10 @@ async function main() {
 					});
 
 					if (!flow.trigger.returnsResponse) {
-						return {
+						const output = {
 							content: [
 								{
-									type: "text",
+									type: "text" as const,
 									text:
 										`Started workflow "${flow.name}".\n\n` +
 										"Execution:\n" +
@@ -283,13 +296,15 @@ async function main() {
 								},
 							],
 						};
+						setSpanOutput(output);
+						return output;
 					}
 
 					const response = await pollForResponse(started.runId);
-					return {
+					const output = {
 						content: [
 							{
-								type: "text",
+								type: "text" as const,
 								text:
 									`Workflow "${flow.name}" responded.\n\n` +
 									"Response:\n" +
@@ -297,6 +312,8 @@ async function main() {
 							},
 						],
 					};
+					setSpanOutput(output);
+					return output;
 				},
 			);
 		}

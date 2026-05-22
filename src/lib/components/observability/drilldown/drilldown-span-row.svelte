@@ -10,6 +10,7 @@
 		fmtMs
 	} from '$lib/utils/span-presentation';
 	import DrilldownIo from './drilldown-io.svelte';
+	import type { DrilldownIoFallback } from './io-fallback';
 
 	let {
 		span,
@@ -18,6 +19,7 @@
 		expanded,
 		selected,
 		globalMaxMs,
+		ioFallback,
 		onToggle,
 		onSelect
 	}: {
@@ -27,6 +29,7 @@
 		expanded: boolean;
 		selected: boolean;
 		globalMaxMs: number;
+		ioFallback?: DrilldownIoFallback | null;
 		onToggle: () => void;
 		onSelect: () => void;
 	} = $props();
@@ -66,6 +69,18 @@
 
 	let inputVal = $derived(span.attributes?.['input.value']);
 	let outputVal = $derived(span.attributes?.['output.value']);
+	let fallbackInput = $derived(inputVal == null ? ioFallback?.input?.value : undefined);
+	let fallbackOutput = $derived(outputVal == null ? ioFallback?.output?.value : undefined);
+	let fallbackInputSource = $derived(
+		ioFallback?.input?.sourceRelation === 'ancestor'
+			? `ancestor ${ioFallback.input.sourceLabel}`
+			: `descendant ${ioFallback?.input?.sourceLabel ?? 'span'}`
+	);
+	let fallbackOutputSource = $derived(
+		ioFallback?.output?.sourceRelation === 'ancestor'
+			? `ancestor ${ioFallback.output.sourceLabel}`
+			: `descendant ${ioFallback?.output?.sourceLabel ?? 'span'}`
+	);
 	let attrEntries = $derived(
 		Object.entries(span.attributes ?? {})
 			.filter(([k]) => k !== 'input.value' && k !== 'output.value')
@@ -101,6 +116,8 @@
 		<div class="wb-row__detail" style="margin-left: {depth * 14 + 19}px">
 			{#if inputVal != null}<DrilldownIo label="Input" value={inputVal} />{/if}
 			{#if outputVal != null}<DrilldownIo label="Output" value={outputVal} />{/if}
+			{#if fallbackInput !== undefined}<DrilldownIo label={`Input from ${fallbackInputSource}`} value={fallbackInput} />{/if}
+			{#if fallbackOutput !== undefined}<DrilldownIo label={`Output from ${fallbackOutputSource}`} value={fallbackOutput} />{/if}
 			<dl class="wb-detail-grid">
 				{#each detailRows as row}
 					<dt>{row.label}</dt>

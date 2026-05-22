@@ -13,6 +13,8 @@ from dapr.ext.workflow import DaprWorkflowClient
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
+from src.content_tracing import content_span, set_current_span_io, set_span_io
+
 try:
     from dapr.ext.workflow import when_all as wf_when_all
 except Exception:  # pragma: no cover - depends on dapr-ext-workflow version
@@ -23,6 +25,80 @@ logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+
+_otel_ready = False
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _otel_disabled_by() -> str | None:
+    if _env_flag_enabled("OTEL_SDK_DISABLED"):
+        return "OTEL_SDK_DISABLED"
+    traces_exporter = os.environ.get("OTEL_TRACES_EXPORTER", "").strip().lower()
+    if traces_exporter in {"none", "false", "off", "disabled"}:
+        return "OTEL_TRACES_EXPORTER"
+    return None
+
+
+def _otel_trace_endpoint(endpoint: str) -> str:
+    trimmed = endpoint.rstrip("/")
+    if trimmed.endswith("/v1/traces"):
+        return trimmed
+    return f"{trimmed}/v1/traces"
+
+
+def _otel_resource_attributes() -> dict[str, str]:
+    attributes: dict[str, str] = {}
+    raw = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            attributes[key] = value
+    attributes.setdefault(
+        "service.name", os.environ.get("OTEL_SERVICE_NAME", "evaluation-coordinator")
+    )
+    attributes.setdefault("service.namespace", "workflow-builder")
+    attributes.setdefault("openinference.project.name", "workflow-builder")
+    return attributes
+
+
+def _init_otel() -> None:
+    global _otel_ready
+    disabled_by = _otel_disabled_by()
+    if disabled_by:
+        logger.info("%s disables tracing, skipping OpenTelemetry", disabled_by)
+        return
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, skipping tracing")
+        return
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.requests import RequestsInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        provider = TracerProvider(resource=Resource.create(_otel_resource_attributes()))
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint)))
+        )
+        trace.set_tracer_provider(provider)
+        RequestsInstrumentor().instrument()
+        _otel_ready = True
+        logger.info("OpenTelemetry tracing initialized -> %s", endpoint)
+    except Exception as exc:
+        logger.warning("OpenTelemetry init failed: %s", exc)
+
+
+_init_otel()
 
 WORKFLOW_BUILDER_URL = os.environ.get(
     "WORKFLOW_BUILDER_URL",
@@ -63,21 +139,39 @@ def _bff(
 ) -> Any:
     if not INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN is required")
-    res = requests.request(
-        method,
-        f"{WORKFLOW_BUILDER_URL}{path}",
-        headers={
-            "X-Internal-Token": INTERNAL_API_TOKEN,
-            "Content-Type": "application/json",
-        },
-        json=json_body,
-        timeout=timeout,
-    )
-    if res.status_code >= 400:
-        raise RuntimeError(f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}")
-    if not res.text:
-        return {}
-    return res.json()
+    with content_span(f"evaluation-coordinator.bff {method} {path}") as span:
+        set_span_io(
+            span,
+            "input",
+            {"method": method, "path": path, "body": json_body},
+        )
+        res = requests.request(
+            method,
+            f"{WORKFLOW_BUILDER_URL}{path}",
+            headers={
+                "X-Internal-Token": INTERNAL_API_TOKEN,
+                "Content-Type": "application/json",
+            },
+            json=json_body,
+            timeout=timeout,
+        )
+        if not res.text:
+            response_body: Any = {}
+        else:
+            try:
+                response_body = res.json()
+            except Exception:
+                response_body = res.text
+        set_span_io(
+            span,
+            "output",
+            {"status_code": res.status_code, "body": response_body},
+        )
+        if res.status_code >= 400:
+            raise RuntimeError(
+                f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
+            )
+        return response_body
 
 
 def _bff_with_retry(
@@ -276,6 +370,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="evaluation-coordinator", lifespan=lifespan)
 
+if _otel_ready:
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz")
+        logger.info("FastAPI OpenTelemetry instrumentation applied")
+    except Exception as exc:
+        logger.warning("FastAPI OpenTelemetry instrumentation failed: %s", exc)
+
 
 @app.get("/healthz")
 def healthz():
@@ -285,6 +388,7 @@ def healthz():
 @app.post("/api/v1/evaluation-runs")
 def start_evaluation_run(body: StartRunRequest, request: Request):
     _require_internal(request)
+    set_current_span_io("input", body.model_dump())
     instance_id = f"evaluation-run-{body.runId}"
     try:
         DaprWorkflowClient().schedule_new_workflow(
@@ -295,7 +399,9 @@ def start_evaluation_run(body: StartRunRequest, request: Request):
     except Exception as exc:
         logger.exception("Failed to schedule evaluation run workflow %s", instance_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"success": True, "executionId": instance_id}
+    response = {"success": True, "executionId": instance_id}
+    set_current_span_io("output", response)
+    return response
 
 
 @app.post("/api/v1/evaluation-runs/{run_id}/cancel")
@@ -305,7 +411,10 @@ def cancel_evaluation_run(
     body: CancelRunRequest = CancelRunRequest(),
 ):
     _require_internal(request)
+    set_current_span_io("input", {"runId": run_id, "body": body.model_dump() if body else {}})
     instance_id = f"evaluation-run-{run_id}"
     reason = body.reason if body else "cancelled"
     DaprWorkflowClient().terminate_workflow(instance_id=instance_id, output=reason)
-    return {"success": True, "executionId": instance_id}
+    response = {"success": True, "executionId": instance_id}
+    set_current_span_io("output", response)
+    return response

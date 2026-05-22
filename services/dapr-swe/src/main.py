@@ -203,6 +203,12 @@ async def execute_action(request: Request) -> dict:
     - Function-router: full body with function_slug or input.actionType
     """
     body = await request.json()
+    try:
+        from src.tracing import set_current_span_io
+
+        set_current_span_io("input", body)
+    except Exception:
+        pass
 
     # Resolve function slug from multiple possible locations
     function_slug = (
@@ -225,12 +231,19 @@ async def execute_action(request: Request) -> dict:
     logger.info("EXECUTE DEBUG owner=%s repo=%s", input_data.get("owner"), input_data.get("repo"))
     handler = ACTION_HANDLERS.get(function_slug)
     if not handler:
-        return {"success": False, "error": f"Unknown action: {function_slug}", "data": {}}
+        response = {"success": False, "error": f"Unknown action: {function_slug}", "data": {}}
+        try:
+            from src.tracing import set_current_span_io
+
+            set_current_span_io("output", response)
+        except Exception:
+            pass
+        return response
 
     try:
         import asyncio
 
-        from src.tracing import trace_activity_with_parent
+        from src.tracing import set_current_span_io, set_span_io, trace_activity_with_parent
 
         # Extract W3C trace context from incoming HTTP headers so that
         # dapr-swe spans become children of the orchestrator trace.
@@ -254,11 +267,30 @@ async def execute_action(request: Request) -> dict:
                 "workflow.db_execution_id": db_execution_id,
                 "workflow.id": workflow_id,
                 "workflow.instance_id": instance_id,
-            }, headers=trace_headers or None):
-                return handler(input_data, node_outputs)
+            }, headers=trace_headers or None) as span:
+                set_span_io(
+                    span,
+                    "input",
+                    {
+                        "function_slug": function_slug,
+                        "input": input_data,
+                        "node_outputs": node_outputs,
+                    },
+                )
+                output = handler(input_data, node_outputs)
+                set_span_io(span, "output", output)
+                return output
 
         result = await asyncio.to_thread(_run)
+        set_current_span_io("output", result)
         return result
     except Exception as e:
         logger.exception("Action handler %s failed", function_slug)
-        return {"success": False, "error": str(e), "data": {}}
+        response = {"success": False, "error": str(e), "data": {}}
+        try:
+            from src.tracing import set_current_span_io
+
+            set_current_span_io("output", response)
+        except Exception:
+            pass
+        return response

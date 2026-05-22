@@ -1,3 +1,4 @@
+import { otelLogMixin } from "./otel.js";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import ts from "typescript";
 import { z } from "zod";
+import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -542,6 +544,7 @@ async function main() {
 	const app = Fastify({
 		logger: {
 			level: process.env.LOG_LEVEL || "info",
+			mixin: otelLogMixin,
 		},
 		bodyLimit: 20 * 1024 * 1024,
 	});
@@ -549,6 +552,11 @@ async function main() {
 	await app.register(cors, {
 		origin: true,
 		methods: ["GET", "POST", "OPTIONS"],
+	});
+
+	app.addHook("onSend", async (_request, _reply, payload) => {
+		setSpanOutput(payload);
+		return payload;
 	});
 
 	app.get("/health", async () => ({ status: "healthy", service: "code-runtime" }));
@@ -583,6 +591,15 @@ async function main() {
 		}
 
 		const body = parseResult.data;
+		setSpanInput({
+			language: body.language,
+			handler: body.handler,
+			path: body.path,
+			input: body.input,
+			search_value: body.search_value,
+			dependencies: body.dependencies,
+			timeout_ms: body.timeout_ms,
+		});
 		try {
 			const timeoutMs = body.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 			const result =
@@ -635,6 +652,14 @@ async function main() {
 		}
 
 		const body = parseResult.data;
+		setSpanInput({
+			language: body.language,
+			entrypoint: body.entrypoint,
+			path: body.path,
+			args: body.args,
+			dependencies: body.dependencies,
+			timeout_ms: body.timeout_ms,
+		});
 		const startedAt = Date.now();
 
 		try {

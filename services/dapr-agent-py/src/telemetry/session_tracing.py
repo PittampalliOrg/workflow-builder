@@ -19,6 +19,7 @@ propagation for the span tree — the contextvars only store a
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,17 @@ from .attributes import get_telemetry_attributes
 from .providers import get_tracer
 
 logger = logging.getLogger(__name__)
+
+_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "password",
+    "secret",
+)
+_SENSITIVE_KEY_EXACT = {"access_token", "auth_token", "refresh_token", "token"}
 
 
 @dataclass
@@ -86,6 +98,64 @@ def _extract_ids_from_span(span: Any) -> tuple[str | None, str | None]:
         return f"{trace_id:032x}", f"{span_id:016x}"
     except Exception:  # noqa: BLE001
         return None, None
+
+
+def _redact_for_span(value: Any) -> Any:
+    """Best-effort recursive redaction before copying content into span attrs."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            key_norm = key_text.replace("-", "_").lower()
+            if (
+                key_norm in _SENSITIVE_KEY_EXACT
+                or key_norm.endswith("_token")
+                or any(part in key_norm for part in _SENSITIVE_KEY_PARTS)
+            ):
+                redacted[key_text] = "[REDACTED]"
+            else:
+                redacted[key_text] = _redact_for_span(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_for_span(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_for_span(item) for item in value]
+    return value
+
+
+def _safe_json_loads(value: str | None) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def _set_io_value(span: Any, prefix: str, value: Any) -> None:
+    """Set generic Service Graph content attrs on a span.
+
+    The richer claude_code.* attrs remain the source of detailed agent telemetry.
+    These generic aliases make the Service Graph drill-down show content using
+    the same `input.value` / `output.value` contract as the BFF, router, and
+    state-store wrappers.
+    """
+    if span is None or value is None or not beta.is_beta_tracing_enabled():
+        return
+    try:
+        safe_value = _redact_for_span(value)
+        serialized = json.dumps(safe_value, default=str, ensure_ascii=False)
+        content, truncated = beta.truncate_content(serialized)
+        if not content:
+            return
+        attr = f"{prefix}.value"
+        span.set_attribute(attr, content)
+        span.set_attribute(f"{prefix}.mime_type", "application/json")
+        if truncated:
+            span.set_attribute(f"{attr}_truncated", True)
+            span.set_attribute(f"{attr}_original_length", len(serialized))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("set %s.value failed: %s", prefix, exc)
 
 
 def get_span_trace_context(span: Any) -> tuple[str | None, str | None]:
@@ -185,6 +255,7 @@ def start_interaction_span(user_prompt: str) -> Any:
 
     span = tracer.start_span("claude_code.interaction", attributes=attrs)
     beta.add_interaction_attributes(span, user_prompt)
+    _set_io_value(span, "input", {"user_prompt": user_prompt})
 
     handle = _SpanHandle(
         span=span,
@@ -284,6 +355,17 @@ def start_llm_request_span(
         tools_json=tools_json,
         messages_for_api=messages_for_api,
     )
+    _set_io_value(
+        span,
+        "input",
+        {
+            "model": model,
+            "query_source": query_source,
+            "system_prompt": system_prompt,
+            "messages": messages_for_api,
+            "tools": _safe_json_loads(tools_json),
+        },
+    )
 
     handle = _SpanHandle(
         span=span,
@@ -345,6 +427,23 @@ def end_llm_request_span(
         model_output=model_output,
         thinking_output=thinking_output,
     )
+    _set_io_value(
+        span,
+        "output",
+        {
+            "success": success,
+            "status_code": status_code,
+            "error": error,
+            "attempt": attempt,
+            "has_tool_call": has_tool_call,
+            "model_output": model_output,
+            "thinking_output": thinking_output,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+        },
+    )
 
     try:
         for k, v in end_attrs.items():
@@ -387,6 +486,7 @@ def start_tool_span(
     )
     if tool_input:
         beta.add_tool_input_attributes(span, tool_name, tool_input)
+        _set_io_value(span, "input", {"tool_name": tool_name, "input": _safe_json_loads(tool_input)})
 
     handle = _SpanHandle(
         span=span,
@@ -410,6 +510,14 @@ def end_tool_span(
     if tool_result is not None:
         beta.add_tool_result_attributes(
             end_attrs, str(handle.attributes.get("tool_name") or "unknown"), tool_result
+        )
+        _set_io_value(
+            handle.span,
+            "output",
+            {
+                "tool_name": str(handle.attributes.get("tool_name") or "unknown"),
+                "result": _safe_json_loads(tool_result),
+            },
         )
     if result_tokens is not None:
         end_attrs["result_tokens"] = result_tokens
@@ -532,6 +640,7 @@ def end_tool_execution_span(
         # glance preview surfaced in MLflow Traces / Phoenix.
         end_attrs["tool_output_preview"] = tool_output[:8000]
         end_attrs["tool_output_length"] = len(tool_output)
+        _set_io_value(span, "output", {"tool_output": tool_output})
     try:
         for k, v in end_attrs.items():
             span.set_attribute(k, v)

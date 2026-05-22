@@ -22,6 +22,7 @@ import { normalizeActionInput } from "./normalize-input.js";
 import { buildActionContext } from "./context-factory.js";
 import { resolveAuth } from "./auth-resolver.js";
 import { extensionsFor } from "./extensions/index.js";
+import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 /**
  * Convert a JSON Schema object to a Zod raw shape for use with McpServer.registerTool().
@@ -226,10 +227,11 @@ export function registerPieceTools(
 	// Register CallTool handler
 	server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const { name, arguments: args } = request.params;
+		setSpanInput({ toolName: name, input: args ?? {} });
 
 		const handler = toolHandlers.get(name);
 		if (!handler) {
-			return {
+			const output = {
 				content: [
 					{
 						type: "text" as const,
@@ -238,6 +240,8 @@ export function registerPieceTools(
 				],
 				isError: true,
 			};
+			setSpanOutput(output);
+			return output;
 		}
 
 		const { requireAuth, runtimeAction } = handler;
@@ -248,7 +252,7 @@ export function registerPieceTools(
 			if (requireAuth) {
 				auth = await resolveAuth();
 				if (auth == null) {
-					return {
+					const output = {
 						content: [
 							{
 								type: "text" as const,
@@ -257,6 +261,8 @@ export function registerPieceTools(
 						],
 						isError: true,
 					};
+					setSpanOutput(output);
+					return output;
 				}
 			}
 
@@ -275,6 +281,7 @@ export function registerPieceTools(
 
 			// Execute the action
 			const result = await runtimeAction.run(context);
+			setSpanOutput(result);
 
 			// Format result as MCP text content
 			const resultText =
@@ -286,7 +293,7 @@ export function registerPieceTools(
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(`[piece-mcp] Tool "${name}" failed:`, error);
-			return {
+			const output = {
 				content: [
 					{
 						type: "text" as const,
@@ -295,6 +302,8 @@ export function registerPieceTools(
 				],
 				isError: true,
 			};
+			setSpanOutput(output);
+			return output;
 		}
 	});
 
@@ -372,13 +381,14 @@ export function registerPieceToolsWithUI(
 			} as any,
 			async (args: Record<string, unknown>) => {
 				const requireAuth = actionDef.requireAuth !== false;
+				setSpanInput({ toolName: actionKey, input: args });
 
 				try {
 					let auth: unknown;
 					if (requireAuth) {
 						auth = await resolveAuth();
 						if (auth == null) {
-							return {
+							const output = {
 								content: [
 									{
 										type: "text" as const,
@@ -387,6 +397,8 @@ export function registerPieceToolsWithUI(
 								],
 								isError: true,
 							};
+							setSpanOutput(output);
+							return output;
 						}
 					}
 
@@ -402,6 +414,7 @@ export function registerPieceToolsWithUI(
 					});
 
 					const result = await runtimeAction.run(context);
+					setSpanOutput(result);
 
 					return {
 						content: [
@@ -415,7 +428,7 @@ export function registerPieceToolsWithUI(
 					const message =
 						error instanceof Error ? error.message : String(error);
 					console.error(`[piece-mcp] Tool "${actionKey}" failed:`, error);
-					return {
+					const output = {
 						content: [
 							{
 								type: "text" as const,
@@ -424,6 +437,8 @@ export function registerPieceToolsWithUI(
 						],
 						isError: true,
 					};
+					setSpanOutput(output);
+					return output;
 				}
 			},
 		);
@@ -466,12 +481,13 @@ export function registerPieceToolsWithUI(
 				// Always require auth for extensions — see registerPieceTools for
 				// the CJS-import-timing rationale.
 				const requireAuth = true;
+				setSpanInput({ toolName: extAction.name, input: args });
 				try {
 					let auth: unknown;
 					if (requireAuth) {
 						auth = await resolveAuth();
 						if (auth == null) {
-							return {
+							const output = {
 								content: [
 									{
 										type: "text" as const,
@@ -480,6 +496,8 @@ export function registerPieceToolsWithUI(
 								],
 								isError: true,
 							};
+							setSpanOutput(output);
+							return output;
 						}
 					}
 
@@ -495,6 +513,7 @@ export function registerPieceToolsWithUI(
 						actionName: extAction.name,
 					});
 					const result = await extAction.run(context);
+					setSpanOutput(result);
 					return {
 						content: [
 							{
@@ -513,7 +532,7 @@ export function registerPieceToolsWithUI(
 						`[piece-mcp] Extension tool "${extAction.name}" failed:`,
 						error,
 					);
-					return {
+					const output = {
 						content: [
 							{
 								type: "text" as const,
@@ -522,6 +541,8 @@ export function registerPieceToolsWithUI(
 						],
 						isError: true,
 					};
+					setSpanOutput(output);
+					return output;
 				}
 			},
 		);

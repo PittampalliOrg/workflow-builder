@@ -9,7 +9,7 @@ import {
 	benchmarkRunInstances,
 	type BenchmarkArtifactKind,
 } from "$lib/server/db/schema";
-import { getDaprSidecarUrl } from "$lib/server/dapr-client";
+import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 
 const DEFAULT_LOCAL_ROOT = "/artifacts";
 const DEFAULT_BINDING_NAME = "swebench-artifacts";
@@ -246,7 +246,7 @@ async function invokeDaprBlobBinding(
 	const bindingName = env.SWEBENCH_ARTIFACT_DAPR_BINDING || DEFAULT_BINDING_NAME;
 	const payload: Record<string, unknown> = { operation, metadata };
 	if (body) payload.data = Buffer.from(body).toString("base64");
-	const response = await fetch(
+	const response = await daprFetch(
 		`${getDaprSidecarUrl()}/v1.0/bindings/${encodeURIComponent(bindingName)}`,
 		{
 			method: "POST",

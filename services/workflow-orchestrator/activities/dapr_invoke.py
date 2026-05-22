@@ -9,6 +9,47 @@ from __future__ import annotations
 import json
 
 from dapr.clients import DaprClient
+from content_tracing import io_attributes
+
+
+def _set_span_attrs(span, attributes: dict | None) -> None:
+    if not span or not attributes:
+        return
+    for key, value in attributes.items():
+        if value is None:
+            continue
+        try:
+            span.set_attribute(str(key), value)
+        except Exception:
+            pass
+
+
+def _dapr_invoke_span(app_id: str, method_name: str, payload: dict):
+    try:
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer("workflow-orchestrator.dapr-invoke")
+        span = tracer.start_span(f"dapr.invoke {app_id}/{method_name}")
+        _set_span_attrs(
+            span,
+            {
+                "dapr.operation": "dapr.service.invoke",
+                "dapr.target_service": app_id,
+                "dapr.method": method_name,
+                "http.request.method": "POST",
+                **io_attributes(
+                    "input",
+                    {
+                        "app_id": app_id,
+                        "method": method_name,
+                        "body": payload,
+                    },
+                ),
+            },
+        )
+        return span
+    except Exception:
+        return None
 
 
 def dapr_invoke(
@@ -24,6 +65,7 @@ def dapr_invoke(
     are normalized to (500, {"error": msg}, msg). Callers that need to
     distinguish timeouts can pattern-match on the error string.
     """
+    span = _dapr_invoke_span(app_id, method_name, payload)
     try:
         with DaprClient() as client:
             response = client.invoke_method(
@@ -38,10 +80,51 @@ def dapr_invoke(
                 body = json.loads(text) if text else {}
             except (json.JSONDecodeError, ValueError):
                 body = {}
+            _set_span_attrs(
+                span,
+                {
+                    "http.response.status_code": 200,
+                    **io_attributes(
+                        "output",
+                        {
+                            "status": 200,
+                            "body": body if body else text,
+                        },
+                    ),
+                },
+            )
             return 200, body, text
     except Exception as exc:
         error_msg = str(exc)
+        _set_span_attrs(
+            span,
+            {
+                "http.response.status_code": 500,
+                "error.message": error_msg[:500],
+                **io_attributes(
+                    "output",
+                    {
+                        "status": 500,
+                        "error": error_msg,
+                    },
+                ),
+            },
+        )
+        try:
+            from opentelemetry.trace import Status, StatusCode
+
+            if span:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, error_msg[:500]))
+        except Exception:
+            pass
         return 500, {"error": error_msg}, error_msg
+    finally:
+        if span:
+            try:
+                span.end()
+            except Exception:
+                pass
 
 
 def dapr_invoke_or_raise(

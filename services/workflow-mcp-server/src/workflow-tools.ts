@@ -16,6 +16,7 @@ import { nanoid } from "nanoid";
 import * as db from "./db.js";
 import type { UiSession } from "./ui/session.js";
 import { registerUiTools } from "./ui/tools.js";
+import { setSpanOutput } from "./observability/content.js";
 
 export type RegisteredTool = {
   name: string;
@@ -79,6 +80,7 @@ const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 /** Helper: JSON text response */
 function textResult(data: unknown) {
+  setSpanOutput(data);
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
   };
@@ -86,6 +88,7 @@ function textResult(data: unknown) {
 
 /** Helper: error response */
 function errorResult(msg: string) {
+  setSpanOutput({ error: msg });
   return {
     content: [{ type: "text" as const, text: msg }],
     isError: true,

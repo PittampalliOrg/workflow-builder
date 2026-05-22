@@ -1,4 +1,6 @@
 import { env } from "$env/dynamic/private";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { setSpanValue } from "$lib/server/observability/content";
 
 /** Get the Dapr sidecar base URL (localhost) */
 export function getDaprSidecarUrl(): string {
@@ -14,6 +16,146 @@ interface DaprRequestOptions extends RequestInit {
   maxRetries?: number;
 }
 
+type DaprFetchTarget = {
+  operation: string;
+  service?: string;
+  component?: string;
+  path: string;
+  url: string;
+};
+
+const tracer = trace.getTracer("workflow-builder.dapr-client");
+
+function describeDaprFetch(url: string): DaprFetchTarget {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+
+    if (parts[0] === "v1.0" && parts[1] === "state") {
+      return {
+        operation: parts.length > 3 ? "dapr.state.get" : "dapr.state.bulk",
+        component: parts[2],
+        path: parts.length > 3 ? "/v1.0/state/:store/:key" : "/v1.0/state/:store",
+        url,
+      };
+    }
+
+    if (parts[0] === "v1.0" && parts[1] === "invoke") {
+      return {
+        operation: "dapr.service.invoke",
+        service: parts[2],
+        path: `/v1.0/invoke/${parts[2] ?? ":app"}/method/${parts.slice(4).join("/") || ":method"}`,
+        url,
+      };
+    }
+
+    if (parts[0] === "v1.0" && parts[1] === "bindings") {
+      return {
+        operation: "dapr.binding.invoke",
+        component: parts[2],
+        path: "/v1.0/bindings/:name",
+        url,
+      };
+    }
+
+    if (parts[0] === "v1.0" && parts[1] === "configuration") {
+      return {
+        operation: "dapr.configuration.get",
+        component: parts[2],
+        path: "/v1.0/configuration/:store",
+        url,
+      };
+    }
+
+    if (parts[0] === "v1.0" && parts[1] === "secrets") {
+      return {
+        operation: "dapr.secret.get",
+        component: parts[2],
+        path: "/v1.0/secrets/:store/:key",
+        url,
+      };
+    }
+
+    if (parts[0] === "v1.0" && parts[1] === "workflows") {
+      return {
+        operation: "dapr.workflow",
+        component: parts[2],
+        path: "/v1.0/workflows/:component/:instance",
+        url,
+      };
+    }
+
+    return {
+      operation: "http.fetch",
+      service: parsed.hostname,
+      path: parsed.pathname || "/",
+      url,
+    };
+  } catch {
+    return {
+      operation: "http.fetch",
+      path: url,
+      url,
+    };
+  }
+}
+
+function requestBodyForSpan(body: BodyInit | null | undefined): unknown {
+  if (body == null) return undefined;
+  if (typeof body === "string") {
+    const trimmed = body.trim();
+    if (!trimmed) return "";
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return body;
+    }
+  }
+  if (body instanceof URLSearchParams) return Object.fromEntries(body);
+  if (body instanceof ArrayBuffer) return `[ArrayBuffer ${body.byteLength} bytes]`;
+  if (ArrayBuffer.isView(body)) {
+    return `[${body.constructor.name} ${body.byteLength} bytes]`;
+  }
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    return Object.fromEntries(body.entries());
+  }
+  return `[${body.constructor.name || "Body"}]`;
+}
+
+export async function responseBodyForSpan(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("event-stream")) {
+    return {
+      status: response.status,
+      contentType,
+      body: "[streaming response omitted]",
+    };
+  }
+  if (
+    !contentType.includes("json") &&
+    !contentType.startsWith("text/")
+  ) {
+    return {
+      status: response.status,
+      contentType,
+      body: contentType ? "[non-text response]" : "",
+    };
+  }
+
+  const text = await response.clone().text();
+  if (!text.trim()) {
+    return { status: response.status, body: "" };
+  }
+  if (contentType.includes("json")) {
+    try {
+      return { status: response.status, body: JSON.parse(text) };
+    } catch {
+      return { status: response.status, body: text };
+    }
+  }
+  return { status: response.status, body: text };
+}
+
 /**
  * Make a request to a Dapr service with retry logic.
  * Mirrors the retry behavior from the Next.js workflow-builder dapr-client.ts.
@@ -24,33 +166,83 @@ export async function daprFetch(
 ): Promise<Response> {
   const { maxRetries = DEFAULT_MAX_RETRIES, ...fetchOptions } = options;
   const method = (fetchOptions.method || "GET").toUpperCase();
+  const target = describeDaprFetch(url);
 
-  let lastError: Error | undefined;
+  return tracer.startActiveSpan(
+    `workflow-builder.daprFetch ${method} ${target.operation}`,
+    async (span) => {
+      span.setAttribute("http.request.method", method);
+      span.setAttribute("url.full", target.url);
+      span.setAttribute("url.path", target.path);
+      span.setAttribute("dapr.operation", target.operation);
+      if (target.service) span.setAttribute("dapr.target_service", target.service);
+      if (target.component) span.setAttribute("dapr.component", target.component);
+      setSpanValue(span, "input", {
+        method,
+        target,
+        body: requestBodyForSpan(fetchOptions.body),
+      });
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await fetch(url, fetchOptions);
+      let lastError: Error | undefined;
 
-      if (
-        RETRYABLE_STATUS_CODES.has(response.status) &&
-        SAFE_METHODS.has(method) &&
-        attempt < maxRetries
-      ) {
-        await new Promise((r) => setTimeout(r, attempt * 250));
-        continue;
+      try {
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          span.setAttribute("dapr.fetch.attempt", attempt + 1);
+          try {
+            const response = await fetch(url, fetchOptions);
+
+            if (
+              RETRYABLE_STATUS_CODES.has(response.status) &&
+              SAFE_METHODS.has(method) &&
+              attempt < maxRetries
+            ) {
+              await new Promise((r) => setTimeout(r, attempt * 250));
+              continue;
+            }
+
+            span.setAttribute("http.response.status_code", response.status);
+            try {
+              setSpanValue(span, "output", await responseBodyForSpan(response));
+            } catch {
+              setSpanValue(span, "output", {
+                status: response.status,
+                body: "[response capture failed]",
+              });
+            }
+            if (!response.ok) {
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: `HTTP ${response.status}`,
+              });
+            }
+            return response;
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (attempt < maxRetries && SAFE_METHODS.has(method)) {
+              await new Promise((r) => setTimeout(r, attempt * 250));
+              continue;
+            }
+          }
+        }
+
+        throw lastError || new Error("daprFetch failed after retries");
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        setSpanValue(span, "output", {
+          ok: false,
+          error: err.message,
+          method,
+          target,
+          attempts: maxRetries + 1,
+        });
+        span.recordException(err);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+        throw error;
+      } finally {
+        span.end();
       }
-
-      return response;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (attempt < maxRetries && SAFE_METHODS.has(method)) {
-        await new Promise((r) => setTimeout(r, attempt * 250));
-        continue;
-      }
-    }
-  }
-
-  throw lastError || new Error("daprFetch failed after retries");
+    },
+  );
 }
 
 /** Get the workflow orchestrator base URL */

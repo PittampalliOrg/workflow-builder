@@ -1964,3 +1964,47 @@ def test_start_benchmark_run_is_idempotent_when_workflow_exists(monkeypatch):
         "executionId": "swebench-run-run_1",
         "alreadyStarted": True,
     }
+
+
+def test_activity_wrapper_stamps_redacted_input_and_output(monkeypatch):
+    app = load_app(monkeypatch)
+    stamped: list[tuple[str, object]] = []
+    monkeypatch.setattr(app, "set_current_span_io", lambda prefix, value: stamped.append((prefix, value)))
+
+    def activity(_ctx, data):
+        return {"ok": True, "token": "server-secret", "echo": data["command"]}
+
+    wrapped = app._activity_with_content_io(activity)
+
+    assert wrapped(None, {"command": "run", "apiKey": "client-secret"}) == {
+        "ok": True,
+        "token": "server-secret",
+        "echo": "run",
+    }
+    assert wrapped.__name__ == "activity"
+    assert stamped == [
+        ("input", {"command": "run", "apiKey": "client-secret"}),
+        ("output", {"ok": True, "token": "server-secret", "echo": "run"}),
+    ]
+
+
+def test_activity_wrapper_stamps_error_output(monkeypatch):
+    app = load_app(monkeypatch)
+    stamped: list[tuple[str, object]] = []
+    monkeypatch.setattr(app, "set_current_span_io", lambda prefix, value: stamped.append((prefix, value)))
+
+    def activity(_ctx, _data):
+        raise RuntimeError("failed")
+
+    wrapped = app._activity_with_content_io(activity)
+
+    try:
+        wrapped(None, {"runId": "run_1"})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected activity error")
+    assert stamped == [
+        ("input", {"runId": "run_1"}),
+        ("output", {"error": "failed", "errorType": "RuntimeError"}),
+    ]

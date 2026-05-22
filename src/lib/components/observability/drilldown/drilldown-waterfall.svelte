@@ -2,6 +2,7 @@
 	import { ChevronsDownUp, ChevronsUpDown } from '@lucide/svelte';
 	import type { ObservabilityTraceSpan } from '$lib/types/observability';
 	import DrilldownSpanRow from './drilldown-span-row.svelte';
+	import { buildIoFallbackBySpanId } from './io-fallback';
 
 	let { spans }: { spans: ObservabilityTraceSpan[] } = $props();
 
@@ -31,6 +32,7 @@
 
 	let globalMaxMs = $derived(Math.max(1, ...spans.map((s) => s.duration)));
 	let hasChildren = (id: string) => (tree.childrenOf.get(id)?.length ?? 0) > 0;
+	let ioFallbackBySpanId = $derived(buildIoFallbackBySpanId(spans));
 
 	let expanded = $state(new Set<string>());
 	let selectedSpanId = $state<string | null>(null);
@@ -108,6 +110,7 @@
 				expanded={expanded.has(row.span.spanId)}
 				selected={selectedSpanId === row.span.spanId}
 				{globalMaxMs}
+				ioFallback={ioFallbackBySpanId.get(row.span.spanId) ?? null}
 				onToggle={() => toggle(row.span.spanId)}
 				onSelect={() => select(row.span.spanId)}
 			/>

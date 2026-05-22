@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { workflowPlanArtifacts } from '$lib/server/db/schema';
 import { desc, eq } from 'drizzle-orm';
+import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
 
 /**
  * GET /api/workflows/executions/[executionId]/plan
@@ -13,9 +14,6 @@ import { desc, eq } from 'drizzle-orm';
  */
 export const GET: RequestHandler = async ({ params }) => {
 	const { executionId } = params;
-
-	const DAPR_HOST = process.env.DAPR_HOST || '127.0.0.1';
-	const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || '3500';
 
 	try {
 		if (db) {
@@ -35,8 +33,8 @@ export const GET: RequestHandler = async ({ params }) => {
 
 		// Use Dapr service invocation to call dapr-agent-py's /plan endpoint
 		// This works regardless of state store scoping since we invoke the service directly
-		const invokeUrl = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/invoke/dapr-agent-py.openshell/method/plan/${encodeURIComponent(executionId)}`;
-		const res = await fetch(invokeUrl, {
+		const invokeUrl = `${getDaprSidecarUrl()}/v1.0/invoke/dapr-agent-py.openshell/method/plan/${encodeURIComponent(executionId)}`;
+		const res = await daprFetch(invokeUrl, {
 			headers: { 'Content-Type': 'application/json' }
 		});
 

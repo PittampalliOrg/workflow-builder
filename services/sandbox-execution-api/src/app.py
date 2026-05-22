@@ -13,6 +13,8 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from src.content_tracing import set_current_span_io
+
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 KUEUE_PRIORITY_CLASS_LABEL = "kueue.x-k8s.io/priority-class"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
@@ -31,7 +33,95 @@ WORKER_ENV_PASSTHROUGH = (
 DEFAULT_WORKER_IMAGE = "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
 
 logger = logging.getLogger("sandbox-execution-api")
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+_otel_ready = False
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _otel_disabled_by() -> str | None:
+    if _env_flag_enabled("OTEL_SDK_DISABLED"):
+        return "OTEL_SDK_DISABLED"
+    traces_exporter = os.environ.get("OTEL_TRACES_EXPORTER", "").strip().lower()
+    if traces_exporter in {"none", "false", "off", "disabled"}:
+        return "OTEL_TRACES_EXPORTER"
+    return None
+
+
+def _otel_trace_endpoint(endpoint: str) -> str:
+    trimmed = endpoint.rstrip("/")
+    if trimmed.endswith("/v1/traces"):
+        return trimmed
+    return f"{trimmed}/v1/traces"
+
+
+def _otel_resource_attributes() -> dict[str, str]:
+    attributes: dict[str, str] = {}
+    raw = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            attributes[key] = value
+    attributes.setdefault(
+        "service.name", os.environ.get("OTEL_SERVICE_NAME", "sandbox-execution-api")
+    )
+    attributes.setdefault("service.namespace", "workflow-builder")
+    attributes.setdefault("openinference.project.name", "workflow-builder")
+    return attributes
+
+
+def _init_otel() -> None:
+    global _otel_ready
+    disabled_by = _otel_disabled_by()
+    if disabled_by:
+        logger.info("%s disables tracing, skipping OpenTelemetry", disabled_by)
+        return
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, skipping tracing")
+        return
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.requests import RequestsInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        provider = TracerProvider(resource=Resource.create(_otel_resource_attributes()))
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint)))
+        )
+        trace.set_tracer_provider(provider)
+        RequestsInstrumentor().instrument()
+        _otel_ready = True
+        logger.info("OpenTelemetry tracing initialized -> %s", endpoint)
+    except Exception as exc:
+        logger.warning("OpenTelemetry init failed: %s", exc)
+
+
+_init_otel()
+
 app = FastAPI(title="sandbox-execution-api")
+
+if _otel_ready:
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz")
+        logger.info("FastAPI OpenTelemetry instrumentation applied")
+    except Exception as exc:
+        logger.warning("FastAPI OpenTelemetry instrumentation failed: %s", exc)
 
 
 class ExecutionCallback(BaseModel):
@@ -1033,6 +1123,7 @@ def healthz() -> dict[str, Any]:
 @app.post("/api/v1/executions", status_code=status.HTTP_202_ACCEPTED)
 def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]:
     _require_internal(request)
+    set_current_span_io("input", body.model_dump())
     classes = _load_execution_classes()
     class_config = classes.get(body.executionClass)
     if class_config is None:
@@ -1100,7 +1191,7 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
                     }
                 },
             )
-    return {
+    response = {
         "executionId": execution_id,
         "jobName": manifest["metadata"]["name"],
         "status": "queued",
@@ -1108,6 +1199,8 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
         "localQueue": class_config.localQueue,
         "runtimeClassName": class_config.runtimeClassName,
     }
+    set_current_span_io("output", response)
+    return response
 
 
 @app.post("/api/v1/agent-workflow-hosts", status_code=status.HTTP_202_ACCEPTED)
@@ -1116,6 +1209,7 @@ def submit_agent_workflow_host(
     body: AgentWorkflowHostRequest,
 ) -> dict[str, Any]:
     _require_internal(request)
+    set_current_span_io("input", body.model_dump())
     classes = _load_execution_classes()
     class_config = classes.get(body.executionClass)
     if class_config is None:
@@ -1166,7 +1260,7 @@ def submit_agent_workflow_host(
         )
     else:
         readiness_status = "queued"
-    return {
+    response = {
         "agentAppId": body.agentAppId,
         "sessionId": body.sessionId,
         "sandboxName": sandbox_name,
@@ -1178,3 +1272,5 @@ def submit_agent_workflow_host(
         "localQueue": class_config.localQueue,
         "runtimeClassName": class_config.runtimeClassName,
     }
+    set_current_span_io("output", response)
+    return response

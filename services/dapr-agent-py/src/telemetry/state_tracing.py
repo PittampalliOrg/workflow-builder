@@ -6,8 +6,8 @@ The auto-instrumented `/dapr.proto.runtime.v1.Dapr/SaveState|GetState` gRPC span
 store and the agent-registry store) in an application span that records:
 
   - `db.key`        — always (the qualified state key)
-  - `input.value`   — the saved value (writes), gated behind ENABLE_BETA_TRACING_DETAILED
-  - `output.value`  — the loaded value (reads), same gating
+  - `input.value`   — the state request envelope, including write values
+  - `output.value`  — the loaded value or write acknowledgement/error envelope
 
 The underlying gRPC SaveState/GetState span becomes a child of this span, so the
 service-graph drill-down (which already renders input.value/output.value +
@@ -22,6 +22,7 @@ import functools
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from .beta import _is_env_truthy, is_beta_tracing_enabled, truncate_content
@@ -31,6 +32,20 @@ logger = logging.getLogger(__name__)
 
 # Tracks which state ops have logged their first-invocation diagnostic.
 _fired_ops: set[str] = set()
+_REDACTED = "[REDACTED]"
+_MAX_REDACT_DEPTH = 12
+_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "password",
+    "secret",
+)
+_SENSITIVE_KEY_EXACT = {"access_token", "auth_token", "refresh_token", "token"}
+_SENSITIVE_KEY_RE = re.compile(r"(x-api-key|private[_-]?key|session[_-]?token)", re.IGNORECASE)
+_MISSING = object()
 
 
 def _state_content_enabled() -> bool:
@@ -46,9 +61,32 @@ def _to_json(value: Any) -> str:
     try:
         if hasattr(value, "model_dump"):
             value = value.model_dump()
-        return json.dumps(value, default=str)
+        return json.dumps(_redact_for_span(value), default=str)
     except Exception:
         return str(value)
+
+
+def _redact_for_span(value: Any, depth: int = 0) -> Any:
+    if depth > _MAX_REDACT_DEPTH:
+        return "[redaction-depth-exceeded]"
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            key_norm = key_text.replace("-", "_").lower()
+            if (
+                key_norm in _SENSITIVE_KEY_EXACT
+                or key_norm.endswith("_token")
+                or _SENSITIVE_KEY_RE.search(key_text)
+                or any(part in key_norm for part in _SENSITIVE_KEY_PARTS)
+            ):
+                redacted[key_text] = _REDACTED
+            else:
+                redacted[key_text] = _redact_for_span(item, depth + 1)
+        return redacted
+    if isinstance(value, (list, tuple)):
+        return [_redact_for_span(item, depth + 1) for item in value]
+    return value
 
 
 def _set_io(span: Any, attr: str, value: Any) -> None:
@@ -79,6 +117,38 @@ def _key_label(self: Any, key: Any) -> str:
         return str(self._qualify(key))
     except Exception:
         return str(key)
+
+
+def _read_request_payload(op: str, key_label: str) -> dict[str, Any]:
+    return {"operation": op, "key": key_label}
+
+
+def _write_request_payload(op: str, key_label: str, value: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"operation": op}
+    if key_label:
+        payload["key"] = key_label
+    if value is not _MISSING:
+        payload["value"] = value
+    return payload
+
+
+def _write_value_from_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    for name in ("value", "items", "operations"):
+        if name in kwargs:
+            return kwargs[name]
+    if len(args) > 1:
+        return args[1]
+    if args:
+        return args[0]
+    return _MISSING
+
+
+def _write_output_payload(result: Any = None, *, error: BaseException | None = None) -> dict[str, Any]:
+    if error is not None:
+        return {"ok": False, "error": str(error)}
+    if result is None:
+        return {"ok": True}
+    return {"ok": True, "result": result}
 
 
 def instrument_state_store() -> None:
@@ -129,8 +199,14 @@ def instrument_state_store() -> None:
         def fn(self, *args, **kwargs):
             _diag_first_call(op)
             key = kwargs.get("key", kwargs.get("keys", args[0] if args else None))
-            with _span(self, op, _key_label(self, key)) as span:
-                result = orig(self, *args, **kwargs)
+            key_label = _key_label(self, key)
+            with _span(self, op, key_label) as span:
+                _set_io(span, "input.value", _read_request_payload(op, key_label))
+                try:
+                    result = orig(self, *args, **kwargs)
+                except Exception as exc:
+                    _set_io(span, "output.value", {"ok": False, "error": str(exc)})
+                    raise
                 _set_io(span, "output.value", result)
                 return result
 
@@ -141,12 +217,35 @@ def instrument_state_store() -> None:
         def fn(self, *args, **kwargs):
             _diag_first_call(op)
             key = kwargs.get("key", kwargs.get("keys", args[0] if args else None))
-            value = kwargs.get(
-                "value", kwargs.get("items", kwargs.get("operations", args[0] if args else None))
-            )
-            with _span(self, op, _key_label(self, key)) as span:
-                _set_io(span, "input.value", value)
-                return orig(self, *args, **kwargs)
+            key_label = _key_label(self, key)
+            value = _write_value_from_call(args, kwargs)
+            with _span(self, op, key_label) as span:
+                _set_io(span, "input.value", _write_request_payload(op, key_label, value))
+                try:
+                    result = orig(self, *args, **kwargs)
+                except Exception as exc:
+                    _set_io(span, "output.value", _write_output_payload(error=exc))
+                    raise
+                _set_io(span, "output.value", _write_output_payload(result))
+                return result
+
+        return fn
+
+    def wrap_delete(orig, op: str):
+        @functools.wraps(orig)
+        def fn(self, *args, **kwargs):
+            _diag_first_call(op)
+            key = kwargs.get("key", kwargs.get("keys", args[0] if args else None))
+            key_label = _key_label(self, key)
+            with _span(self, op, key_label) as span:
+                _set_io(span, "input.value", _read_request_payload(op, key_label))
+                try:
+                    result = orig(self, *args, **kwargs)
+                except Exception as exc:
+                    _set_io(span, "output.value", _write_output_payload(error=exc))
+                    raise
+                _set_io(span, "output.value", _write_output_payload(result))
+                return result
 
         return fn
 
@@ -155,13 +254,19 @@ def instrument_state_store() -> None:
         ("load_with_etag", "read"),
         ("load_many", "read"),
         ("save", "write"),
+        ("delete", "delete"),
         ("save_many", "write"),
         ("execute_transaction", "write"),
     ):
         orig = getattr(StateStoreService, name, None)
         if orig is None:
             continue
-        wrapped = wrap_read(orig, name) if kind == "read" else wrap_write(orig, name)
+        if kind == "read":
+            wrapped = wrap_read(orig, name)
+        elif kind == "delete":
+            wrapped = wrap_delete(orig, name)
+        else:
+            wrapped = wrap_write(orig, name)
         setattr(StateStoreService, name, wrapped)
 
     StateStoreService._wb_state_instrumented = True

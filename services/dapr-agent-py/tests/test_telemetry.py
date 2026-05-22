@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import types
+import json
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -433,6 +434,161 @@ def test_beta_tracing_adds_content_when_flag_set(monkeypatch, telemetry_with_in_
     interaction = _find_span(exporter, "claude_code.interaction")
     # Beta attrs populated only when flag is set.
     assert "new_context" in interaction.attributes
+    assert json.loads(interaction.attributes["input.value"]) == {
+        "user_prompt": "what is 2+2"
+    }
+
+
+def test_beta_tracing_aliases_llm_and_tool_content_for_service_graph(
+    monkeypatch, telemetry_with_in_memory
+):
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setenv("ENABLE_BETA_TRACING_DETAILED", "1")
+    from src.telemetry import (
+        end_interaction_span,
+        end_llm_request_span,
+        end_tool_span,
+        start_interaction_span,
+        start_llm_request_span,
+        start_tool_span,
+    )
+
+    start_interaction_span("use the tool")
+    llm = start_llm_request_span(
+        "test-model",
+        query_source="unit",
+        system_prompt="system secret_token should be redacted by key only",
+        messages_for_api=[
+            {
+                "role": "user",
+                "content": "hello",
+                "api_key": "should-not-appear",
+            }
+        ],
+        tools_json='[{"name":"Bash","input_schema":{"type":"object"}}]',
+    )
+    end_llm_request_span(
+        llm,
+        success=True,
+        status_code=200,
+        model_output="done",
+        input_tokens=3,
+        output_tokens=2,
+        cache_read_tokens=1,
+    )
+    start_tool_span(
+        "Bash",
+        tool_input='{"command":"echo hi","password":"should-not-appear"}',
+    )
+    end_tool_span(tool_result='{"stdout":"hi"}', result_tokens=1)
+    end_interaction_span()
+
+    llm_span = _find_span(exporter, "claude_code.llm_request")
+    llm_input = json.loads(llm_span.attributes["input.value"])
+    assert llm_input["model"] == "test-model"
+    assert llm_input["messages"][0]["api_key"] == "[REDACTED]"
+    assert llm_input["tools"][0]["name"] == "Bash"
+    assert json.loads(llm_span.attributes["output.value"])["model_output"] == "done"
+    assert json.loads(llm_span.attributes["output.value"])["input_tokens"] == 3
+    assert json.loads(llm_span.attributes["output.value"])["cache_read_tokens"] == 1
+
+    tool_span = _find_span(exporter, "claude_code.tool")
+    tool_input = json.loads(tool_span.attributes["input.value"])
+    assert tool_input["tool_name"] == "Bash"
+    assert tool_input["input"]["password"] == "[REDACTED]"
+    assert json.loads(tool_span.attributes["output.value"])["result"] == {"stdout": "hi"}
+
+
+def test_state_tracing_redacts_content_before_serialization():
+    from src.telemetry.state_tracing import _to_json
+
+    payload = {
+        "api_key": "should-not-appear",
+        "input_tokens": 123,
+        "nested": {
+            "password": "should-not-appear",
+            "refresh_token": "should-not-appear",
+        },
+    }
+
+    serialized = json.loads(_to_json(payload))
+    assert serialized == {
+        "api_key": "[REDACTED]",
+        "input_tokens": 123,
+        "nested": {
+            "password": "[REDACTED]",
+            "refresh_token": "[REDACTED]",
+        },
+    }
+
+
+def test_state_tracing_stamps_request_and_response_content(
+    monkeypatch, telemetry_with_in_memory
+):
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setenv("ENABLE_STATE_CONTENT_TRACING", "1")
+
+    fake_dapr_agents = types.ModuleType("dapr_agents")
+    fake_storage = types.ModuleType("dapr_agents.storage")
+    fake_daprstores = types.ModuleType("dapr_agents.storage.daprstores")
+    fake_stateservice = types.ModuleType("dapr_agents.storage.daprstores.stateservice")
+
+    class FakeStateStoreService:
+        store_name = "agent-registry"
+
+        def _qualify(self, key):
+            return f"agents:default:{key}"
+
+        def load(self, key):
+            return {"api_key": "should-not-appear", "value": 7}
+
+        def save(self, key, value):
+            return None
+
+        def delete(self, key):
+            return None
+
+    fake_stateservice.StateStoreService = FakeStateStoreService
+    monkeypatch.setitem(sys.modules, "dapr_agents", fake_dapr_agents)
+    monkeypatch.setitem(sys.modules, "dapr_agents.storage", fake_storage)
+    monkeypatch.setitem(sys.modules, "dapr_agents.storage.daprstores", fake_daprstores)
+    monkeypatch.setitem(
+        sys.modules,
+        "dapr_agents.storage.daprstores.stateservice",
+        fake_stateservice,
+    )
+
+    from src.telemetry.state_tracing import instrument_state_store
+
+    instrument_state_store()
+    store = FakeStateStoreService()
+
+    assert store.load("session-1") == {"api_key": "should-not-appear", "value": 7}
+    assert store.save("session-1", {"password": "should-not-appear", "value": 8}) is None
+    assert store.delete("session-1") is None
+
+    load_span = _find_span(exporter, "state.load")
+    save_span = _find_span(exporter, "state.save")
+    delete_span = _find_span(exporter, "state.delete")
+    assert json.loads(load_span.attributes["input.value"]) == {
+        "operation": "load",
+        "key": "agents:default:session-1",
+    }
+    assert json.loads(load_span.attributes["output.value"]) == {
+        "api_key": "[REDACTED]",
+        "value": 7,
+    }
+    assert json.loads(save_span.attributes["input.value"]) == {
+        "operation": "save",
+        "key": "agents:default:session-1",
+        "value": {"password": "[REDACTED]", "value": 8},
+    }
+    assert json.loads(save_span.attributes["output.value"]) == {"ok": True}
+    assert json.loads(delete_span.attributes["input.value"]) == {
+        "operation": "delete",
+        "key": "agents:default:session-1",
+    }
+    assert json.loads(delete_span.attributes["output.value"]) == {"ok": True}
 
 
 def test_beta_tracing_absent_when_flag_unset(telemetry_with_in_memory):

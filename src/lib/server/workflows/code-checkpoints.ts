@@ -11,6 +11,7 @@ import {
 	type WorkflowCodeCheckpoint,
 	type WorkflowCodeCheckpointStatus
 } from '$lib/server/db/schema';
+import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 
 const execFileAsync = promisify(execFile);
@@ -133,12 +134,13 @@ function parseTimestamp(value: unknown): Date | null {
 
 async function daprConfigurationValues(keys: string[]) {
 	const store = env.DAPR_CONFIG_STORE || 'azureappconfig-workflow-runtime';
-	const host = env.DAPR_HOST || '127.0.0.1';
-	const port = env.DAPR_HTTP_PORT || '3500';
-	const url = new URL(`http://${host}:${port}/v1.0/configuration/${store}`);
+	const url = new URL(`${getDaprSidecarUrl()}/v1.0/configuration/${store}`);
 	for (const key of keys) url.searchParams.append('key', key);
 	try {
-		const response = await fetch(url, { signal: AbortSignal.timeout(3_000) });
+		const response = await daprFetch(url.toString(), {
+			signal: AbortSignal.timeout(3_000),
+			maxRetries: 0
+		});
 		if (!response.ok) return {};
 		const payload = (await response.json()) as Record<
 			string,
@@ -157,12 +159,10 @@ async function daprConfigurationValues(keys: string[]) {
 async function daprSecretValue(secretName: string) {
 	if (!secretName.trim()) return '';
 	const store = env.DAPR_SECRETS_STORE || 'azure-keyvault';
-	const host = env.DAPR_HOST || '127.0.0.1';
-	const port = env.DAPR_HTTP_PORT || '3500';
 	try {
-		const response = await fetch(
-			`http://${host}:${port}/v1.0/secrets/${store}/${encodeURIComponent(secretName)}`,
-			{ signal: AbortSignal.timeout(3_000) }
+		const response = await daprFetch(
+			`${getDaprSidecarUrl()}/v1.0/secrets/${store}/${encodeURIComponent(secretName)}`,
+			{ signal: AbortSignal.timeout(3_000), maxRetries: 0 }
 		);
 		if (!response.ok) return '';
 		const payload = (await response.json()) as Record<string, string>;

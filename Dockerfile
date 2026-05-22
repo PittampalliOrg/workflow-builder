@@ -27,6 +27,8 @@ ENV NODE_ENV=production
 ENV PORT=3000
 RUN addgroup -S nodejs && adduser -S sveltekit -G nodejs
 COPY --from=builder --chown=sveltekit:nodejs /app/build ./build
+COPY --from=builder --chown=sveltekit:nodejs /app/.svelte-kit/output/server/instrumentation.server.js ./instrumentation.server.js
+COPY --from=builder --chown=sveltekit:nodejs /app/.svelte-kit/output/server/chunks ./chunks
 COPY --from=builder --chown=sveltekit:nodejs /app/server-prod.js ./
 COPY --from=builder --chown=sveltekit:nodejs /app/package.json ./
 COPY --from=prod-deps --chown=sveltekit:nodejs /app/node_modules ./node_modules

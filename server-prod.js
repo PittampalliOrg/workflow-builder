@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import process from 'node:process';
+import './instrumentation.server.js';
 import { handler } from './build/handler.js';
 import { WebSocketServer, WebSocket } from 'ws';
 

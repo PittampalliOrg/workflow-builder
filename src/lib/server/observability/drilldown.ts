@@ -78,6 +78,25 @@ function collectDescendants(
 	return out;
 }
 
+/** Include same-trace ancestors so wrapper spans that carry payload content stay visible. */
+function includeAncestors(
+	ids: Set<string>,
+	spans: ObservabilityTraceSpan[]
+): Set<string> {
+	const out = new Set<string>(ids);
+	const byId = new Map(spans.map((span) => [span.spanId, span]));
+	const queue = [...ids];
+	while (queue.length) {
+		const span = byId.get(queue.shift()!);
+		const parentId = span?.parentSpanId;
+		if (parentId && byId.has(parentId) && !out.has(parentId)) {
+			out.add(parentId);
+			queue.push(parentId);
+		}
+	}
+	return out;
+}
+
 interface ScopeResult {
 	/** Retained span ids (waterfall + membership for llm/tool/log/evidence). */
 	retained: Set<string>;
@@ -153,7 +172,7 @@ function scopeSpans(
 		}
 	}
 
-	return { retained: collectDescendants(seeds, childrenOf), serviceScope, stepIds };
+	return { retained: collectDescendants(includeAncestors(seeds, spans), childrenOf), serviceScope, stepIds };
 }
 
 export function filterInvestigationToSelection(

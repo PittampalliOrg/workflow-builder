@@ -3,9 +3,11 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { activeSpanRegistryProcessor } from './lib/server/observability/http-server-spans.js';
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const serviceName = process.env.OTEL_SERVICE_NAME || 'workflow-builder';
@@ -92,15 +94,20 @@ function installConsoleOtelBridge(): void {
 
 if (endpoint) {
 	process.env.OTEL_LOGS_EXPORTER ??= 'otlp';
+	const traceExporter = new OTLPTraceExporter({
+		url: normalizeEndpoint('traces')
+	});
 	const sdk = new NodeSDK({
 		resource: resourceFromAttributes({
 			[ATTR_SERVICE_NAME]: serviceName,
 			[ATTR_SERVICE_VERSION]: process.env.npm_package_version || '0.0.1',
 			'deployment.environment': process.env.NODE_ENV || 'development'
 		}),
-		traceExporter: new OTLPTraceExporter({
-			url: normalizeEndpoint('traces')
-		}),
+		traceExporter,
+		spanProcessors: [
+			activeSpanRegistryProcessor,
+			new BatchSpanProcessor(traceExporter)
+		],
 		metricReader: new PeriodicExportingMetricReader({
 			exporter: new OTLPMetricExporter({
 				url: normalizeEndpoint('metrics')

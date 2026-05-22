@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.util
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -1821,3 +1823,90 @@ def test_durable_run_rejects_profile_skill_changes_when_narrowing_disabled():
 
     with pytest.raises(RuntimeError, match="cannot be modified"):
         next(workflow_gen)
+
+
+def test_activity_wrapper_stamps_redacted_input_and_output(monkeypatch):
+    stamped: list[dict[str, object]] = []
+    monkeypatch.setattr(APP, "set_current_span_attrs", lambda attrs: stamped.append(attrs))
+
+    def activity(_ctx, data):
+        return {"ok": True, "token": "server-secret", "echo": data["command"]}
+
+    wrapped = APP._activity_with_content_io(activity)
+
+    assert wrapped(None, {"command": "run", "apiKey": "client-secret"}) == {
+        "ok": True,
+        "token": "server-secret",
+        "echo": "run",
+    }
+    assert wrapped.__name__ == "activity"
+    assert len(stamped) == 2
+    assert json.loads(stamped[0]["input.value"]) == {
+        "command": "run",
+        "apiKey": "[REDACTED]",
+    }
+    assert json.loads(stamped[1]["output.value"]) == {
+        "ok": True,
+        "token": "[REDACTED]",
+        "echo": "run",
+    }
+
+
+def test_activity_wrapper_stamps_error_output(monkeypatch):
+    stamped: list[dict[str, object]] = []
+    monkeypatch.setattr(APP, "set_current_span_attrs", lambda attrs: stamped.append(attrs))
+
+    def activity(_ctx, _data):
+        raise RuntimeError("failed")
+
+    wrapped = APP._activity_with_content_io(activity)
+
+    with pytest.raises(RuntimeError, match="failed"):
+        wrapped(None, {"runId": "run_1"})
+    assert len(stamped) == 2
+    assert json.loads(stamped[0]["input.value"]) == {"runId": "run_1"}
+    assert json.loads(stamped[1]["output.value"]) == {
+        "error": "failed",
+        "errorType": "RuntimeError",
+    }
+
+
+def test_agent_events_subscription_stamps_output_on_server_span(monkeypatch):
+    stamped: list[dict[str, object]] = []
+    monkeypatch.setattr(APP, "set_current_span_attrs", lambda attrs: stamped.append(attrs))
+    monkeypatch.setattr(
+        APP,
+        "start_activity_span",
+        lambda *_args, **_kwargs: contextlib.nullcontext(None),
+    )
+
+    class FakeSpanContext:
+        is_valid = True
+
+    class FakeSpan:
+        def __init__(self):
+            self.attributes: dict[str, object] = {}
+
+        def get_span_context(self):
+            return FakeSpanContext()
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+    server_span = FakeSpan()
+    monkeypatch.setattr(APP, "_current_otel_span", lambda: server_span)
+
+    event = APP.CloudEvent(
+        type="com.dapr.event.sent",
+        source="openshell-agent-runtime",
+        data={"type": "sandbox.list_snapshot", "count": 0},
+    )
+
+    result = APP.agent_events_subscription(event)
+
+    assert result == {
+        "status": "SUCCESS",
+        "result": {"status": "ignored", "event_type": "sandbox.list_snapshot"},
+    }
+    assert json.loads(server_span.attributes["output.value"]) == result
+    assert json.loads(stamped[-1]["output.value"]) == result

@@ -15,6 +15,7 @@ from typing import Any
 import psycopg2
 from dapr.clients import DaprClient
 
+from content_tracing import io_attributes
 from core.config import config
 from .metadata import (
     activity_metadata,
@@ -24,7 +25,7 @@ from .metadata import (
     schema_object,
     schema_string,
 )
-from tracing import start_activity_span, inject_current_context
+from tracing import set_current_span_attrs, start_activity_span, inject_current_context
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,13 @@ def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     **(trace_ctx or {}),
                     **metadata,
                 }
+                set_current_span_attrs(
+                    {
+                        "messaging.system": "dapr",
+                        "messaging.destination.name": topic,
+                        **io_attributes("input", event_payload),
+                    }
+                )
 
                 client.publish_event(
                     pubsub_name=PUBSUB_NAME,
@@ -234,22 +242,26 @@ def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
             logger.info(f"[Publish Event] Successfully published {event_type} to {topic}")
 
-            return {
+            result = {
                 "success": True,
                 "topic": topic,
                 "eventType": event_type,
             }
+            set_current_span_attrs(io_attributes("output", result))
+            return result
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"[Publish Event] Failed to publish {event_type} to {topic}: {e}")
 
-            return {
+            result = {
                 "success": False,
                 "topic": topic,
                 "eventType": event_type,
                 "error": f"Failed to publish event: {error_msg}",
             }
+            set_current_span_attrs(io_attributes("output", result))
+            return result
 
 
 @activity_metadata(

@@ -28,6 +28,7 @@ import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 from collections.abc import Callable
 
@@ -47,6 +48,7 @@ from workflows.sw_workflow import sw_workflow
 from workflows.sw_workflow import wfr
 from activities.call_agent_service import terminate_durable_runs_by_parent_execution
 from activities.metadata import get_activity_metadata
+from content_tracing import io_attributes
 
 # OpenTelemetry
 from tracing import (
@@ -55,6 +57,8 @@ from tracing import (
     attach_workflow_session,
     extract_session_id,
     workflow_session_id,
+    set_current_span_attrs,
+    start_activity_span,
 )
 
 # Configuration from centralized config module
@@ -307,6 +311,37 @@ def _current_trace_context() -> dict[str, str]:
         }
     except Exception:
         return {}
+
+
+def _current_otel_span() -> Any | None:
+    try:
+        from opentelemetry import trace as ot_trace
+
+        return ot_trace.get_current_span()
+    except Exception:
+        return None
+
+
+def _set_span_attrs(span: Any | None, attributes: dict[str, Any] | None) -> None:
+    if span is None or not attributes:
+        return
+    try:
+        span_context = span.get_span_context()
+        if span_context is None or not getattr(span_context, "is_valid", False):
+            return
+    except Exception:
+        return
+    for key, value in attributes.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value:
+            continue
+        if isinstance(value, (list, tuple)) and not value:
+            continue
+        try:
+            span.set_attribute(str(key), value)
+        except Exception:
+            pass
 
 
 def _generate_trace_context() -> dict[str, str]:
@@ -1030,8 +1065,6 @@ async def lifespan(app: FastAPI):
     logger.info("=== Workflow Orchestrator Service (Python) ===")
     logger.info(f"Log Level: {LOG_LEVEL}")
 
-    # Initialize OpenTelemetry (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT).
-    setup_tracing("workflow-orchestrator", app)
     _check_min_dapr_runtime_version()
     _assert_execution_read_model_columns()
 
@@ -1094,6 +1127,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Initialize OpenTelemetry before the ASGI middleware stack is built so
+# FastAPI inbound spans exist for request handlers.
+setup_tracing("workflow-orchestrator", app)
 
 
 # --- Request / Response Models ---
@@ -1249,9 +1286,35 @@ _activity_registry: list[Any] = []
 _activity_registry_seen: set[str] = set()
 
 
+def _activity_with_content_io(fn: Any) -> Any:
+    """Enrich durabletask's outer activity span with activity input/output."""
+
+    @wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any):
+        data = args[1] if len(args) > 1 else kwargs.get("data", kwargs.get("input_data"))
+        set_current_span_attrs(io_attributes("input", data))
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            set_current_span_attrs(
+                io_attributes(
+                    "output",
+                    {
+                        "error": str(exc),
+                        "errorType": exc.__class__.__name__,
+                    },
+                )
+            )
+            raise
+        set_current_span_attrs(io_attributes("output", result))
+        return result
+
+    return wrapped
+
+
 def _register_activity(fn: Any) -> None:
     """Register an activity with both Dapr and the introspection registry."""
-    wfr.register_activity(fn)
+    wfr.register_activity(_activity_with_content_io(fn))
     if fn.__name__ not in _activity_registry_seen:
         _activity_registry_seen.add(fn.__name__)
         _activity_registry.append(fn)
@@ -3779,34 +3842,68 @@ def agent_events_subscription(event: CloudEvent):
     child-workflow results rather than this callback path.
     """
     logger.info(f"[Subscription] Received agent event: {event.type}")
+    event_payload_for_trace = jsonable_encoder(event)
+    actual_event_type = event.data.get("type", event.type)
+    span_attrs = {
+        "messaging.system": "dapr",
+        "messaging.destination.name": "workflow.stream",
+        "event.type": actual_event_type,
+        **io_attributes("input", event_payload_for_trace),
+    }
+    set_current_span_attrs(span_attrs)
+    server_span = _current_otel_span()
 
+    def traced_result(result: dict[str, Any]) -> dict[str, Any]:
+        output_attrs = io_attributes("output", result)
+        _set_span_attrs(server_span, output_attrs)
+        set_current_span_attrs(output_attrs)
+        return result
+
+    with start_activity_span(
+        "workflow-orchestrator.subscription /subscriptions/agent-events",
+        _current_trace_context(),
+        span_attrs,
+    ):
+        return _handle_agent_events_subscription(event, actual_event_type, traced_result)
+
+
+def _handle_agent_events_subscription(
+    event: CloudEvent,
+    actual_event_type: str,
+    traced_result: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
     # Forward agent completion events to parent workflows
     from dapr.ext.workflow import DaprWorkflowClient
 
     event_data = event.data
-    actual_event_type = event_data.get("type", event.type)
 
     completion_event_types = {"agent_completed", "execution_completed"}
     if actual_event_type not in completion_event_types:
-        return {"status": "SUCCESS", "result": {"status": "ignored", "event_type": actual_event_type}}
+        return traced_result(
+            {"status": "SUCCESS", "result": {"status": "ignored", "event_type": actual_event_type}}
+        )
 
     try:
         inner_data = event_data.get("data", {})
         parent_execution_id = inner_data.get("parent_execution_id")
 
         if not parent_execution_id:
-            return {"status": "SUCCESS", "result": {"status": "ignored", "reason": "no_parent_execution_id"}}
+            return traced_result(
+                {"status": "SUCCESS", "result": {"status": "ignored", "reason": "no_parent_execution_id"}}
+            )
 
         workflow_id = event_data.get("workflowId", "")
         if "__msagent__" in workflow_id or "__dapr__" in workflow_id:
-            return {
-                "status": "SUCCESS",
-                "result": {
-                    "status": "ignored",
-                    "reason": "native-child-workflow",
-                    "workflowId": workflow_id,
-                },
-            }
+            return traced_result(
+                {
+                    "status": "SUCCESS",
+                    "result": {
+                        "status": "ignored",
+                        "reason": "native-child-workflow",
+                        "workflowId": workflow_id,
+                    },
+                }
+            )
         external_event_name = f"agent_completed_{workflow_id}"
 
         event_payload = {
@@ -3825,10 +3922,12 @@ def agent_events_subscription(event: CloudEvent):
             data=event_payload,
         )
 
-        return {"status": "SUCCESS", "result": {"status": "forwarded", "event_type": actual_event_type}}
+        return traced_result(
+            {"status": "SUCCESS", "result": {"status": "forwarded", "event_type": actual_event_type}}
+        )
     except Exception as e:
         logger.error(f"[Agent Events] Failed to handle event: {e}")
-        return {"status": "SUCCESS", "result": {"status": "error", "error": str(e)}}
+        return traced_result({"status": "SUCCESS", "result": {"status": "error", "error": str(e)}})
 
 
 @app.options("/subscriptions/agent-events")

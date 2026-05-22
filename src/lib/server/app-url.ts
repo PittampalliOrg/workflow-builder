@@ -1,5 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { env as publicEnv } from '$env/dynamic/public';
+import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
 
 let cachedAppUrl = '';
 
@@ -20,11 +21,10 @@ export async function getAppUrl(url?: URL, request?: Request): Promise<string> {
 
 	// 1. Try Dapr configuration store
 	try {
-		const daprPort = env.DAPR_HTTP_PORT || '3500';
 		const configStore = env.DAPR_CONFIG_STORE || 'azureappconfig-workflow-builder';
-		const res = await fetch(
-			`http://localhost:${daprPort}/v1.0/configuration/${configStore}?key=PUBLIC_APP_URL`,
-			{ signal: AbortSignal.timeout(2000) }
+		const res = await daprFetch(
+			`${getDaprSidecarUrl()}/v1.0/configuration/${configStore}?key=PUBLIC_APP_URL`,
+			{ signal: AbortSignal.timeout(2000), maxRetries: 0 }
 		);
 		if (res.ok) {
 			const data = await res.json();

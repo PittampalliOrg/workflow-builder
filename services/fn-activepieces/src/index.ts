@@ -17,6 +17,7 @@ import { fetchOptions, type OptionsRequest } from "./options-executor.js";
 import { PIECES, listPieceNames } from "./piece-registry.js";
 import { registerPieceActivities, type ApActivityMeta } from "./dapr-activities.js";
 import { getCatalog, getCatalogFunction, toActionMetadata, type ActionMetadata } from "./catalog.js";
+import { setSpanInput, setSpanOutput } from "./observability/content.js";
 import type { ExecuteRequest, ExecuteResponse } from "./types.js";
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
@@ -88,6 +89,11 @@ async function main() {
 		origin: true,
 		methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 		credentials: true,
+	});
+
+	app.addHook("onSend", async (_request, _reply, payload) => {
+		setSpanOutput(payload);
+		return payload;
 	});
 
 	// Health routes
@@ -186,6 +192,13 @@ async function main() {
 		}
 
 		const body = parseResult.data as OptionsRequest;
+		setSpanInput({
+			pieceName: body.pieceName,
+			actionName: body.actionName,
+			propertyName: body.propertyName,
+			input: body.input,
+			searchValue: body.searchValue,
+		});
 		console.log(
 			`[fn-activepieces] Fetching options for ${body.pieceName}/${body.actionName}.${body.propertyName}`,
 		);
@@ -229,6 +242,14 @@ async function main() {
 		}
 
 		const body = parseResult.data as ExecuteRequest;
+		setSpanInput({
+			step: body.step,
+			workflow_id: body.workflow_id,
+			node_id: body.node_id,
+			input: body.input,
+			node_outputs: body.node_outputs,
+			metadata: body.metadata,
+		});
 		const startTime = Date.now();
 
 		console.log(`[fn-activepieces] Received request for step: ${body.step}`);

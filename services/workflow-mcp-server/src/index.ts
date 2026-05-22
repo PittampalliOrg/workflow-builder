@@ -29,9 +29,11 @@ import {
 	type RegisteredTool,
 } from "./workflow-tools.js";
 import { UiSession } from "./ui/session.js";
+import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 const PORT = parseInt(process.env.PORT || "3200", 10);
 const HOST = process.env.HOST || "0.0.0.0";
+const RESPONSE_CAPTURE_MAX_BYTES = 60_000;
 
 // Session-scoped transports
 const sessions = new Map<string, StreamableHTTPServerTransport>();
@@ -56,8 +58,74 @@ function sendJson(
 	status: number,
 	data: unknown,
 ): void {
+	setSpanOutput(data);
 	res.writeHead(status, { "Content-Type": "application/json" });
 	res.end(JSON.stringify(data));
+}
+
+function installResponseCapture(res: http.ServerResponse): void {
+	const originalWrite = res.write.bind(res) as (...args: any[]) => boolean;
+	const originalEnd = res.end.bind(res) as (
+		...args: any[]
+	) => http.ServerResponse;
+	const chunks: Buffer[] = [];
+	let capturedBytes = 0;
+	let finished = false;
+
+	const capture = (chunk: unknown, encoding?: BufferEncoding): void => {
+		if (chunk == null || capturedBytes >= RESPONSE_CAPTURE_MAX_BYTES) return;
+		const buffer = Buffer.isBuffer(chunk)
+			? chunk
+			: ArrayBuffer.isView(chunk)
+				? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+				: chunk instanceof ArrayBuffer
+					? Buffer.from(chunk)
+					: Buffer.from(String(chunk), encoding);
+		const remaining = RESPONSE_CAPTURE_MAX_BYTES - capturedBytes;
+		const selected =
+			buffer.byteLength > remaining ? buffer.subarray(0, remaining) : buffer;
+		chunks.push(selected);
+		capturedBytes += selected.byteLength;
+	};
+
+	res.write = ((
+		chunk: unknown,
+		encodingOrCallback?:
+			| BufferEncoding
+			| ((error?: Error | null) => void),
+		callback?: (error?: Error | null) => void,
+	) => {
+		capture(
+			chunk,
+			typeof encodingOrCallback === "string" ? encodingOrCallback : undefined,
+		);
+		return typeof encodingOrCallback === "function"
+			? originalWrite(chunk, encodingOrCallback)
+			: originalWrite(chunk, encodingOrCallback, callback);
+	}) as typeof res.write;
+
+	res.end = ((
+		chunk?: unknown,
+		encodingOrCallback?: BufferEncoding | (() => void),
+		callback?: () => void,
+	) => {
+		if (finished) {
+			return typeof encodingOrCallback === "function"
+				? originalEnd(chunk, encodingOrCallback)
+				: originalEnd(chunk, encodingOrCallback, callback);
+		}
+		finished = true;
+		capture(
+			chunk,
+			typeof encodingOrCallback === "string" ? encodingOrCallback : undefined,
+		);
+		if (chunks.length > 0) {
+			setSpanOutput(Buffer.concat(chunks).toString("utf-8"));
+		}
+		return typeof encodingOrCallback === "function"
+			? originalEnd(chunk, encodingOrCallback)
+			: originalEnd(chunk, encodingOrCallback, callback);
+	}) as typeof res.end;
 }
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
@@ -97,6 +165,7 @@ async function handleRequest(
 	res: http.ServerResponse,
 ): Promise<void> {
 	setCorsHeaders(res);
+	installResponseCapture(res);
 
 	const url = req.url ?? "/";
 	const method = req.method ?? "GET";
@@ -143,6 +212,7 @@ async function handleMcpPost(
 	let transport: StreamableHTTPServerTransport;
 
 	const body = await parseBody(req);
+	setSpanInput({ sessionId, body });
 
 	if (sessionId && sessions.has(sessionId)) {
 		transport = sessions.get(sessionId)!;
@@ -190,6 +260,7 @@ async function handleMcpGet(
 	res: http.ServerResponse,
 ): Promise<void> {
 	const sessionId = req.headers["mcp-session-id"] as string | undefined;
+	setSpanInput({ method: "GET", path: "/mcp", sessionId });
 	if (!sessionId || !sessions.has(sessionId)) {
 		sendJson(res, 404, { error: "Session not found" });
 		return;
@@ -203,6 +274,7 @@ async function handleMcpDelete(
 	res: http.ServerResponse,
 ): Promise<void> {
 	const sessionId = req.headers["mcp-session-id"] as string | undefined;
+	setSpanInput({ method: "DELETE", path: "/mcp", sessionId });
 	if (!sessionId || !sessions.has(sessionId)) {
 		sendJson(res, 404, { error: "Session not found" });
 		return;

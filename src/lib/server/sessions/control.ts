@@ -30,12 +30,13 @@ export async function raiseSessionEvent(
 	const daprEndpoint = getDaprSidecarUrl();
 	const res =
 		target.runtimeSandboxName || target.appId.startsWith("agent-session-")
-			? await fetch(
+			? await daprFetch(
 					`${(await waitForAgentWorkflowHostAppReady({ agentAppId: target.appId })).baseUrl}/internal/sessions/raise-event`,
 					{
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify({ instanceId, eventName, payload: eventData }),
+						maxRetries: 0,
 					},
 				)
 			: await daprFetch(

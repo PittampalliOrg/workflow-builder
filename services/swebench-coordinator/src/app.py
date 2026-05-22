@@ -10,6 +10,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from functools import wraps
 from typing import Any
 from urllib.parse import quote
 
@@ -562,6 +563,30 @@ def _orchestrator_not_ready_retry_seconds() -> int:
 
 def _load_run_activity(ctx, data: dict[str, Any]) -> dict[str, Any]:
     return _compact_run_for_workflow(_load_run(data["runId"]))
+
+
+def _activity_with_content_io(fn: Any) -> Any:
+    """Enrich durabletask's outer activity span with activity input/output."""
+
+    @wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any):
+        data = args[1] if len(args) > 1 else kwargs.get("data", kwargs.get("input_data"))
+        set_current_span_io("input", data)
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            set_current_span_io(
+                "output",
+                {
+                    "error": str(exc),
+                    "errorType": exc.__class__.__name__,
+                },
+            )
+            raise
+        set_current_span_io("output", result)
+        return result
+
+    return wrapped
 
 
 def _mlflow_enabled() -> bool:
@@ -3596,7 +3621,7 @@ async def lifespan(app: FastAPI):
         _delete_evaluator_job,
         _run_mlflow_swebench_eval,
     ):
-        wfr.register_activity(activity)
+        wfr.register_activity(_activity_with_content_io(activity))
     wfr.start()
     logger.info("SWE-bench coordinator workflow runtime started")
     yield

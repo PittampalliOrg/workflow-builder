@@ -280,10 +280,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		directRuntimeBaseUrl = ready.baseUrl;
 	}
 	const res = await (directRuntimeBaseUrl
-		? fetch(`${directRuntimeBaseUrl}/internal/sessions/spawn`, {
+		? daprFetch(`${directRuntimeBaseUrl}/internal/sessions/spawn`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ instanceId, payload }),
+				maxRetries: 0,
 			})
 		: daprFetch(
 				`${daprEndpoint}/v1.0/invoke/${encodeURIComponent(invokeTarget)}/method/internal/sessions/spawn`,
@@ -339,12 +340,13 @@ export async function raiseSessionUserEvents(
 	});
 	const res =
 		target?.runtimeSandboxName || target?.appId.startsWith("agent-session-")
-			? await fetch(
+			? await daprFetch(
 					`${(await waitForAgentWorkflowHostAppReady({ agentAppId: target.appId })).baseUrl}/internal/sessions/raise-event`,
 					{
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
 						body,
+						maxRetries: 0,
 					},
 				)
 			: await daprFetch(
