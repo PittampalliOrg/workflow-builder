@@ -130,6 +130,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "connection_external_id": connection_external_id,
         "ap_project_id": ap_project_id,
         "ap_platform_id": ap_platform_id,
+        "_otel": otel,
     }
 
     # Only include node_outputs for WB workflows (not AP flows).

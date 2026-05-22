@@ -121,6 +121,12 @@ def merge_workflow_activity_context(
     merged_baggage = _parse_baggage_header(
         base.get("baggage") if isinstance(base.get("baggage"), str) else None
     )
+    for key in WORKFLOW_ACTIVITY_BAGGAGE_KEYS:
+        value = base.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+            if key not in merged_baggage:
+                merged_baggage[key] = value.strip()
     for key, raw_value in (attributes or {}).items():
         if key not in WORKFLOW_ACTIVITY_BAGGAGE_KEYS:
             continue

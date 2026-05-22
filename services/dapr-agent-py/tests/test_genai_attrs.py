@@ -27,6 +27,7 @@ def test_set_activity_attrs_stamps_workflow_and_agent_identity() -> None:
         workflow_id="wf_123",
         workflow_execution_id="exec_123",
         workflow_instance_id="sw-test-exec-exec_123",
+        workflow_activity_correlation_id="exec_123:node_a:0",
         session_id="session_123",
         agent_id="agent_123",
         agent_version=7,
@@ -39,6 +40,7 @@ def test_set_activity_attrs_stamps_workflow_and_agent_identity() -> None:
     assert span.attrs["workflow.id"] == "wf_123"
     assert span.attrs["workflow.execution.id"] == "exec_123"
     assert span.attrs["workflow.instance_id"] == "sw-test-exec-exec_123"
+    assert span.attrs["workflow.activity.correlation_id"] == "exec_123:node_a:0"
     assert span.attrs["session.id"] == "session_123"
     assert span.attrs["agent.id"] == "agent_123"
     assert span.attrs["agent.version"] == 7

@@ -53,6 +53,27 @@ const CLIENT_KINDS = new Set(['Client', 'Producer']);
 const SERVER_KINDS = new Set(['Server', 'Consumer']);
 const ERROR_STATUS = 'Error';
 
+export function isBenignControlPlaneError(span: ObservabilityTraceSpan): boolean {
+	if (span.statusCode !== ERROR_STATUS) return false;
+	const operation = span.operationName || '';
+	const message = span.statusMessage || '';
+	if (operation.includes('SubscribeTopicEventsAlpha1') && message.includes('context canceled')) {
+		return true;
+	}
+	if (operation.includes('GetConfiguration') && message.includes('configuration stores not configured')) {
+		return true;
+	}
+	if (
+		span.serviceName === 'workflow-builder' &&
+		span.spanKind === 'Client' &&
+		operation.startsWith('DELETE ') &&
+		!message
+	) {
+		return true;
+	}
+	return false;
+}
+
 // ---------------------------------------------------------------------------
 // small numeric helpers
 // ---------------------------------------------------------------------------
@@ -217,7 +238,7 @@ export async function resolveExecutionTraceIds(execution: ExecutionRow): Promise
 // ---------------------------------------------------------------------------
 
 function isError(span: ObservabilityTraceSpan): boolean {
-	return span.statusCode === ERROR_STATUS;
+	return span.statusCode === ERROR_STATUS && !isBenignControlPlaneError(span);
 }
 
 export function virtualPeer(span: ObservabilityTraceSpan): { id: string; kind: ServiceGraphNodeKind; label: string } | null {
@@ -752,7 +773,7 @@ function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
 
 	// error samples (cap 3 per node)
 	for (const s of spans) {
-		if (s.statusCode !== ERROR_STATUS) continue;
+		if (!isError(s)) continue;
 		const key = keyFor(s.serviceName, s.spanId);
 		if (!key) continue;
 		const samples = (ensure(key).errorSamples ??= []);

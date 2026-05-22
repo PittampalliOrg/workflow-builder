@@ -292,6 +292,7 @@ def set_activity_attrs(
     workflow_id: str | None = None,
     workflow_execution_id: str | None = None,
     workflow_instance_id: str | None = None,
+    workflow_activity_correlation_id: str | None = None,
     workflow_node_id: str | None = None,
     workflow_node_name: str | None = None,
     session_id: str | None = None,
@@ -315,6 +316,12 @@ def set_activity_attrs(
         _safe_set(span, "workflow.execution.id", workflow_execution_id)
     if workflow_instance_id:
         _safe_set(span, "workflow.instance_id", workflow_instance_id)
+    if workflow_activity_correlation_id:
+        _safe_set(
+            span,
+            "workflow.activity.correlation_id",
+            workflow_activity_correlation_id,
+        )
     if workflow_node_id:
         _safe_set(span, "workflow.node.id", workflow_node_id)
     if workflow_node_name:

@@ -41,6 +41,7 @@ export type ExecuteRequest = {
 	connection_external_id?: string;
 	ap_project_id?: string;
 	ap_platform_id?: string;
+	_otel?: Record<string, unknown>;
 };
 
 /**

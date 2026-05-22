@@ -69,6 +69,7 @@ def test_runtime_config_attributes_map_otel_and_openinference_keys() -> None:
     assert attrs["dapr.app_id"] == "agent-runtime-coding-agent"
     assert attrs["dapr.workflow.instance_id"] == "child-1"
     assert attrs["workflow.execution.id"] == "workflow-exec-1"
+    assert attrs["workflow.activity.correlation_id"] == "workflow-exec-1:node-1:0"
     assert attrs["session.id"] == "session-1"
     assert attrs["mlflow.run_id"] == "run-1"
     assert attrs["mlflow.parent_run_id"] == "parent-run-1"
@@ -130,6 +131,7 @@ def _event() -> dict:
             "agentSlug": "coding-agent",
             "agentAppId": "agent-runtime-coding-agent",
             "workflowExecutionId": "workflow-exec-1",
+            "workflowActivityCorrelationId": "workflow-exec-1:node-1:0",
             "workflowId": "workflow-1",
             "nodeId": "node-1",
             "modelSpec": "openai/o3",

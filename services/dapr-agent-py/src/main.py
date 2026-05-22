@@ -2308,6 +2308,9 @@ class OpenShellDurableAgent(DurableAgent):
                 workflow_id=context.get("workflowId"),
                 workflow_execution_id=exec_id,
                 workflow_instance_id=inst_id,
+                workflow_activity_correlation_id=context.get(
+                    "workflowActivityCorrelationId"
+                ),
                 workflow_node_id=context.get("nodeId"),
                 workflow_node_name=context.get("nodeName"),
                 session_id=context.get("sessionId") or exec_id,
@@ -2690,6 +2693,9 @@ class OpenShellDurableAgent(DurableAgent):
                 workflow_id=context.get("workflowId"),
                 workflow_execution_id=exec_id,
                 workflow_instance_id=inst_id,
+                workflow_activity_correlation_id=context.get(
+                    "workflowActivityCorrelationId"
+                ),
                 workflow_node_id=context.get("nodeId"),
                 workflow_node_name=context.get("nodeName"),
                 session_id=context.get("sessionId") or sess_id or exec_id,

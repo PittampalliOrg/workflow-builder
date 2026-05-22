@@ -747,6 +747,54 @@ def test_workflow_activity_context_merges_baggage_without_overwriting_traceparen
     assert "workflow.node.sequence=0" in merged["baggage"]
 
 
+def test_execute_action_includes_otel_body_fallback(monkeypatch):
+    execute_action_module = _load_module(
+        "workflow_orchestrator_execute_action_test", "activities/execute_action.py"
+    )
+    captured = {}
+
+    def fake_dapr_invoke(app_id, method, payload, **kwargs):
+        captured["app_id"] = app_id
+        captured["method"] = method
+        captured["payload"] = payload
+        captured["metadata"] = kwargs.get("metadata")
+        return 200, {"success": True, "data": {"ok": True}}, "{}"
+
+    monkeypatch.setattr(execute_action_module, "dapr_invoke", fake_dapr_invoke)
+
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {
+                "id": "profile",
+                "label": "Profile",
+                "config": {
+                    "actionType": "workspace/profile",
+                    "input": {"workspaceRef": "ws-1"},
+                },
+            },
+            "nodeOutputs": {},
+            "executionId": "sw-test-exec",
+            "workflowId": "wf-1",
+            "dbExecutionId": "exec-1",
+            "_otel": {
+                "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                "baggage": "workflow.activity.correlation_id=exec-1:profile:0",
+                "workflow.activity.correlation_id": "exec-1:profile:0",
+            },
+        },
+    )
+
+    assert result["success"] is True
+    assert captured["payload"]["_otel"]["workflow.activity.correlation_id"] == (
+        "exec-1:profile:0"
+    )
+    assert captured["metadata"]["traceparent"].startswith("00-0af765")
+    assert "workflow.activity.correlation_id=exec-1:profile:0" in captured["metadata"][
+        "baggage"
+    ]
+
+
 def test_mark_workflow_execution_started_persists_primary_trace_id(monkeypatch):
     executed = {}
 

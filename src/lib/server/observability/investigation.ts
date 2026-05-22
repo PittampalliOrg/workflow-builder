@@ -19,6 +19,7 @@ import {
 	getTraceToolSpans,
 	sanitizeTraceIds
 } from '$lib/server/otel/clickhouse';
+import { isBenignControlPlaneError } from '$lib/server/otel/service-graph';
 import { buildWorkflowTimeline } from '$lib/server/observability/workflow-timeline';
 import type {
 	ObservabilityAgentDecisionDiagram,
@@ -616,7 +617,7 @@ function buildIssues(
 	}
 
 	for (const span of traceSpans) {
-		if (span.status === 'error') {
+		if (span.status === 'error' && !isBenignControlPlaneError(span)) {
 			issues.push({
 				id: `issue-span-${span.traceId}-${span.spanId}`,
 				label: `${span.operationName} failed`,
@@ -701,7 +702,8 @@ function buildEvents(args: {
 			subtitle: span.serviceName,
 			preview: summarizeSpan(span),
 			serviceName: span.serviceName,
-			severity: span.status === 'error' ? 'error' : 'info',
+			severity:
+				span.status === 'error' && !isBenignControlPlaneError(span) ? 'error' : 'info',
 			traceId: span.traceId,
 			spanId: span.spanId,
 			durationMs: span.duration,

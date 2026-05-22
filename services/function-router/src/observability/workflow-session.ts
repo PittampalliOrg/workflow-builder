@@ -89,6 +89,11 @@ export function bindWorkflowSessionContext(
   return propagation.setBaggage(activeContext, baggage);
 }
 
+function scalar(value: unknown): string | undefined {
+  const cleaned = clean(typeof value === "string" ? value : null);
+  return cleaned ?? undefined;
+}
+
 function parseBaggageHeader(value: unknown): Record<string, string> {
   if (typeof value !== "string") return {};
   const out: Record<string, string> = {};
@@ -107,29 +112,63 @@ function parseBaggageHeader(value: unknown): Record<string, string> {
   return out;
 }
 
+function workflowActivityContextFromCarrier(
+  carrier: Record<string, unknown>,
+): Partial<WorkflowSessionContext> {
+  const baggage = parseBaggageHeader(carrier.baggage);
+  return {
+    sessionId: baggage[SESSION_ID_ATTRIBUTE] ?? scalar(carrier[SESSION_ID_ATTRIBUTE]),
+    workflowExecutionId:
+      baggage[WORKFLOW_EXECUTION_ATTRIBUTE] ??
+      scalar(carrier[WORKFLOW_EXECUTION_ATTRIBUTE]),
+    workflowId: baggage[WORKFLOW_ID_ATTRIBUTE] ?? scalar(carrier[WORKFLOW_ID_ATTRIBUTE]),
+    traceGroupId:
+      baggage[WORKFLOW_TRACE_GROUP_ATTRIBUTE] ??
+      scalar(carrier[WORKFLOW_TRACE_GROUP_ATTRIBUTE]),
+    activityCorrelationId:
+      baggage[WORKFLOW_ACTIVITY_ATTRIBUTE] ??
+      scalar(carrier[WORKFLOW_ACTIVITY_ATTRIBUTE]),
+    nodeId: baggage["workflow.node.id"] ?? scalar(carrier["workflow.node.id"]),
+    nodeName: baggage["workflow.node.name"] ?? scalar(carrier["workflow.node.name"]),
+    nodeSequence:
+      baggage["workflow.node.sequence"] ?? scalar(carrier["workflow.node.sequence"]),
+    actionType:
+      baggage["workflow.node.action_type"] ??
+      scalar(carrier["workflow.node.action_type"]),
+  };
+}
+
 export function workflowActivityContextFromHeaders(
   headers: Record<string, unknown>,
+  fallbackCarrier?: Record<string, unknown> | null,
 ): Partial<WorkflowSessionContext> {
-  const baggage = parseBaggageHeader(headers.baggage);
+  const primary = workflowActivityContextFromCarrier(headers);
+  const fallback = fallbackCarrier
+    ? workflowActivityContextFromCarrier(fallbackCarrier)
+    : {};
   return {
-    sessionId: baggage[SESSION_ID_ATTRIBUTE],
-    workflowExecutionId: baggage[WORKFLOW_EXECUTION_ATTRIBUTE],
-    workflowId: baggage[WORKFLOW_ID_ATTRIBUTE],
-    activityCorrelationId: baggage[WORKFLOW_ACTIVITY_ATTRIBUTE],
-    nodeId: baggage["workflow.node.id"],
-    nodeName: baggage["workflow.node.name"],
-    nodeSequence: baggage["workflow.node.sequence"],
-    actionType: baggage["workflow.node.action_type"],
+    sessionId: primary.sessionId ?? fallback.sessionId,
+    workflowExecutionId:
+      primary.workflowExecutionId ?? fallback.workflowExecutionId,
+    workflowId: primary.workflowId ?? fallback.workflowId,
+    traceGroupId: primary.traceGroupId ?? fallback.traceGroupId,
+    activityCorrelationId:
+      primary.activityCorrelationId ?? fallback.activityCorrelationId,
+    nodeId: primary.nodeId ?? fallback.nodeId,
+    nodeName: primary.nodeName ?? fallback.nodeName,
+    nodeSequence: primary.nodeSequence ?? fallback.nodeSequence,
+    actionType: primary.actionType ?? fallback.actionType,
   };
 }
 
 export function sessionIdFromHeaders(
   headers: Record<string, unknown>,
+  fallbackCarrier?: Record<string, unknown> | null,
 ): string | null {
   const explicit = headers["x-workflow-session-id"];
   if (typeof explicit === "string" && explicit.trim().length > 0) {
     return explicit.trim();
   }
-  const baggage = parseBaggageHeader(headers.baggage);
-  return baggage[SESSION_ID_ATTRIBUTE] ?? baggage[WORKFLOW_EXECUTION_ATTRIBUTE] ?? null;
+  const context = workflowActivityContextFromHeaders(headers, fallbackCarrier);
+  return context.sessionId ?? context.workflowExecutionId ?? null;
 }

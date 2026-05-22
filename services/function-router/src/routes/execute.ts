@@ -131,6 +131,7 @@ const ExecuteRequestSchema = z.object({
   connection_external_id: z.string().nullable().optional(),
   ap_project_id: z.string().nullable().optional(),
   ap_platform_id: z.string().nullable().optional(),
+  _otel: z.record(z.string(), z.unknown()).optional(),
 });
 
 function parseConnectionExternalIdFromAuthTemplate(
@@ -1156,7 +1157,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = parseResult.data as ExecuteRequest;
-    const workflowActivityContext = workflowActivityContextFromHeaders(request.headers);
+    const bodyOtel =
+      body._otel && typeof body._otel === "object" ? body._otel : undefined;
+    const workflowActivityContext = workflowActivityContextFromHeaders(
+      request.headers,
+      bodyOtel,
+    );
     // Stamp the routed action input as `input.value` (redacted) for the drawer.
     const requestPayload = executeRequestForSpan(body);
     const routeAttributes = {
@@ -1182,7 +1188,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
     const resolvedSessionId =
       buildWorkflowSessionId(body.db_execution_id || body.execution_id) ||
-      sessionIdFromHeaders(request.headers);
+      sessionIdFromHeaders(request.headers, bodyOtel);
     if (resolvedSessionId) {
       bindWorkflowSessionContext({
         sessionId: resolvedSessionId,
@@ -1230,7 +1236,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     const forwardedTraceHeaders = Object.fromEntries(
       (["traceparent", "tracestate", "baggage"] as const)
         .map((headerName) => {
-          const value = request.headers[headerName];
+          const value = request.headers[headerName] ?? bodyOtel?.[headerName];
           return [
             headerName,
             typeof value === "string" ? value.trim() : "",
