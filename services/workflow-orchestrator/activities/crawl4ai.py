@@ -28,7 +28,8 @@ from typing import Any
 
 import requests
 
-from tracing import start_activity_span
+from content_tracing import io_attributes
+from tracing import set_current_span_attrs, start_activity_span
 
 
 CRAWL4AI_ADAPTER_URL = os.environ.get(
@@ -65,6 +66,7 @@ def crawl4ai_start_job(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "crawl4ai.job_id": payload["jobId"],
     }
     with start_activity_span("activity.crawl4ai_start_job", otel, attrs):
+        set_current_span_attrs(io_attributes("input", payload))
         response = requests.post(
             f"{CRAWL4AI_ADAPTER_URL}/crawl/jobs",
             json=payload,
@@ -77,6 +79,7 @@ def crawl4ai_start_job(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         # Always echo back our deterministic id so the polling activity uses it.
         if not result.get("jobId"):
             result["jobId"] = payload["jobId"]
+        set_current_span_attrs(io_attributes("output", result))
         return result
 
 
@@ -93,6 +96,7 @@ def crawl4ai_get_job_status(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "node.id": input_data.get("nodeId"),
     }
     with start_activity_span("activity.crawl4ai_get_job_status", otel, attrs):
+        set_current_span_attrs(io_attributes("input", {"jobId": job_id}))
         response = requests.get(
             f"{CRAWL4AI_ADAPTER_URL}/crawl/jobs/{job_id}",
             timeout=30,
@@ -101,4 +105,7 @@ def crawl4ai_get_job_status(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         result = response.json()
         if not isinstance(result, dict):
             raise RuntimeError("crawl4ai-adapter returned a non-object status response")
+        # The completed status payload carries the crawled markdown + the
+        # schema-extracted `data` — the actual research content. Capture it.
+        set_current_span_attrs(io_attributes("output", result))
         return result
