@@ -2862,7 +2862,12 @@ function hostSandboxExecutionResourceTargets(
 			listPath: `/apis/agents.x-k8s.io/v1alpha1/namespaces/${encodedNamespace}/sandboxes?labelSelector=${encodedLabelSelector}`,
 			itemPath: (name: string) =>
 				`/apis/agents.x-k8s.io/v1alpha1/namespaces/${encodedNamespace}/sandboxes/${encodeURIComponent(name)}`,
-			shouldDelete: shouldDeleteSandboxName,
+			shouldDelete: shouldDeleteSandboxName
+				? (name: string) =>
+						shouldDeleteSandboxName(name) ||
+						isAgentRuntimeSandboxName(name) ||
+						isAgentHostSessionSandboxName(name)
+				: undefined,
 		},
 		{
 			kind: "job",
@@ -3138,6 +3143,10 @@ function matchesBenchmarkRunSandboxName(runId: string, sandboxName: string): boo
 
 	const runIdPrefix = normalizedRunId.slice(0, 10);
 	return runIdPrefix.length >= 8 && normalizedName.includes(runIdPrefix);
+}
+
+function isAgentHostSessionSandboxName(name: string): boolean {
+	return normalizeSandboxNamePart(name).startsWith("agent-host-agent-session-");
 }
 
 function normalizeSandboxNamePart(value: string): string {

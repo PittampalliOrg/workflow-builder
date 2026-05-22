@@ -1417,7 +1417,18 @@ describe("SWE-bench terminal run cleanup", () => {
 			"/apis/agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxes/swebench-abc-run-1",
 		);
 		expect(sandboxTarget?.shouldDelete?.("swebench-abc-run-1")).toBe(true);
+		expect(
+			sandboxTarget?.shouldDelete?.(
+				"agent-host-agent-session-84878d7810889fb79a9d",
+			),
+		).toBe(true);
 		expect(sandboxTarget?.shouldDelete?.("manual-debug-sandbox")).toBe(false);
+		expect(
+			__benchmarkSandboxCleanupForTest.shouldDeleteBenchmarkSandboxName(
+				"run-1",
+				"agent-host-agent-session-84878d7810889fb79a9d",
+			),
+		).toBe(false);
 	});
 
 	it("scopes live OpenShell pod discovery to the benchmark run", () => {

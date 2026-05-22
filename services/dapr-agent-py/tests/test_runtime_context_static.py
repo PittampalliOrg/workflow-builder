@@ -40,6 +40,9 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
 
     assert "ToolExecutionMode" in source
     assert "tool_execution_mode=ToolExecutionMode.SEQUENTIAL" in source
+    assert "def _agent_workflow_strict_sequential" in source
+    assert "[tool-dispatch] yielding sequential activity" in source
+    assert "yield from self._agent_workflow_strict_sequential(" in source
 
 
 def test_tool_dispatch_evidence_events_are_emitted() -> None:

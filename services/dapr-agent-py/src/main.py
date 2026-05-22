@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
@@ -178,8 +179,10 @@ from dapr_agents.agents.durable import DurableAgent
 from dapr_agents.llm.dapr import DaprChatClient
 from dapr_agents.storage.daprstores.stateservice import StateStoreService
 from dapr_agents.tool.mcp import MCPClient
+from dapr_agents.tool.workflow.agent_tool import AgentWorkflowTool
+from dapr_agents.tool.workflow.tool_context import WorkflowContextInjectedTool
 from dapr_agents.tool.utils.serialization import serialize_tool_result
-from dapr_agents.types import ToolMessage
+from dapr_agents.types import AgentError, DaprWorkflowStatus, ToolMessage
 from dapr_agents.workflow.decorators import message_router, workflow_entry
 from dapr_agents.workflow.runners import AgentRunner
 
@@ -1547,6 +1550,222 @@ class OpenShellDurableAgent(DurableAgent):
         self._first_tool_at_by_instance: dict[str, float] = {}
         self._workflow_started_at_by_instance: dict[str, float] = {}
         self._max_iterations_by_instance: dict[str, int] = {}
+
+    def _agent_workflow_strict_sequential(self, ctx, message: dict):
+        """Run the standard durable-agent loop while scheduling tools one at a time.
+
+        dapr-agents' built-in SEQUENTIAL mode still materializes every
+        ctx.call_activity(...) task before awaiting the first one. Under load,
+        Dapr observes that as a same-turn scheduling burst. This repo-owned
+        wrapper creates and yields each tool activity only after the previous
+        tool result has returned.
+        """
+        task = message.get("task")
+        metadata = message.get("_message_metadata", {}) or {}
+        otel_span_context = message.get("_otel_span_context")
+        if "workflow_instance_id" in message:
+            metadata["triggering_workflow_instance_id"] = message[
+                "workflow_instance_id"
+            ]
+
+        trigger_instance_id = metadata.get("triggering_workflow_instance_id")
+        source = metadata.get("source") or "direct"
+
+        logger.info("Initial message from %s -> %s", source, self.name)
+
+        yield ctx.call_activity(
+            self._activity_name(self.record_initial_entry),
+            input={
+                "instance_id": ctx.instance_id,
+                "source": source,
+                "triggering_workflow_instance_id": trigger_instance_id,
+                "trace_context": otel_span_context,
+            },
+            retry_policy=self._retry_policy,
+        )
+
+        if self.registry:
+            yield ctx.call_activity(
+                self._activity_name(self.load_tools),
+                retry_policy=self._retry_policy,
+            )
+
+        final_message: dict[str, Any] = {}
+        turn = 0
+        workflow_exc: Exception | None = None
+
+        try:
+            if self._orchestration_strategy or self.executor is not None:
+                return (yield from super().agent_workflow(ctx, message))
+
+            for turn in range(1, self.execution.max_iterations + 1):
+                assistant_response: dict[str, Any] = yield ctx.call_activity(
+                    self._activity_name(self.call_llm),
+                    input={
+                        "task": task,
+                        "instance_id": ctx.instance_id,
+                        "time": ctx.current_utc_datetime.isoformat(),
+                        "source": source,
+                    },
+                    retry_policy=self._retry_policy,
+                )
+                tool_calls = assistant_response.get("tool_calls") or []
+                if not tool_calls:
+                    final_message = assistant_response
+                    logger.debug(
+                        "Agent %s produced final response on turn %d (instance=%s)",
+                        self.name,
+                        turn,
+                        ctx.instance_id,
+                    )
+                    break
+
+                ordered: list[dict[str, Any] | None] = [None] * len(tool_calls)
+                tool_calls_by_id: dict[str, dict[str, Any]] = {}
+
+                for idx, tc in enumerate(tool_calls):
+                    fn_name = tc["function"]["name"]
+                    dispatch_time = ctx.current_utc_datetime.isoformat()
+                    tool_obj = self.tool_executor.get_tool(fn_name)
+
+                    if tool_obj and isinstance(tool_obj, WorkflowContextInjectedTool):
+                        raw_args = tc["function"].get("arguments", "")
+                        try:
+                            args = json.loads(raw_args) if raw_args else {}
+                        except json.JSONDecodeError as exc:
+                            raise AgentError(
+                                f"Failed to decode tool arguments for '{fn_name}': {exc}"
+                            ) from exc
+                        call_kwargs = {
+                            "ctx": ctx,
+                            "_source_agent": self.name,
+                            **args,
+                        }
+                        is_agent_call = isinstance(tool_obj, AgentWorkflowTool)
+                        child_instance_id = None
+                        if is_agent_call:
+                            child_instance_id = str(uuid.uuid4())
+                            call_kwargs["_child_instance_id"] = child_instance_id
+                        logger.info(
+                            "[tool-dispatch] yielding sequential workflow tool instance=%s order=%d tool=%s call_id=%s",
+                            ctx.instance_id,
+                            idx,
+                            fn_name,
+                            tc.get("id"),
+                        )
+                        workflow_result = yield tool_obj(**call_kwargs)
+                        ordered[idx] = ToolMessage(
+                            content=serialize_tool_result(workflow_result),
+                            role="tool",
+                            name=fn_name,
+                            tool_call_id=tc["id"],
+                        ).model_dump()
+                        tool_calls_by_id[tc["id"]] = {
+                            "tool_call": tc,
+                            "is_agent_call": is_agent_call,
+                            "child_instance_id": child_instance_id,
+                            "dispatch_time": dispatch_time,
+                        }
+                    else:
+                        logger.info(
+                            "[tool-dispatch] yielding sequential activity instance=%s order=%d tool=%s call_id=%s",
+                            ctx.instance_id,
+                            idx,
+                            fn_name,
+                            tc.get("id"),
+                        )
+                        ordered[idx] = yield ctx.call_activity(
+                            self._activity_name(self.run_tool),
+                            input={
+                                "tool_call": tc,
+                                "instance_id": ctx.instance_id,
+                                "time": dispatch_time,
+                                "order": idx,
+                            },
+                            retry_policy=self._retry_policy,
+                        )
+                        tool_calls_by_id[tc["id"]] = {
+                            "tool_call": tc,
+                            "is_agent_call": False,
+                            "dispatch_time": dispatch_time,
+                        }
+
+                tool_results = [tr for tr in ordered if tr is not None]
+                yield ctx.call_activity(
+                    self._activity_name(self.save_tool_results),
+                    input={
+                        "tool_results": tool_results,
+                        "instance_id": ctx.instance_id,
+                        "tool_calls_by_id": tool_calls_by_id,
+                    },
+                    retry_policy=self._retry_policy,
+                )
+                task = None
+            else:
+                base = final_message.get("content") or ""
+                if base:
+                    base = base.rstrip() + "\n\n"
+                base += (
+                    "I reached the maximum number of reasoning steps before I could finish. "
+                    "Please rephrase or provide more detail so I can try again."
+                )
+                final_message = {"role": "assistant", "content": base}
+                logger.warning(
+                    "Agent %s hit max iterations (%d) without a final response (instance=%s)",
+                    self.name,
+                    self.execution.max_iterations,
+                    ctx.instance_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Agent %s workflow failed: %s", self.name, exc)
+            workflow_exc = exc
+            final_message = {"role": "assistant", "content": f"Error: {str(exc)}"}
+
+        if self.broadcast_topic_name and self.orchestrator:
+            yield ctx.call_activity(
+                self._activity_name(self.broadcast_to_team),
+                input={"message": final_message},
+                retry_policy=self._retry_policy,
+            )
+
+        if self.memory is not None:
+            yield ctx.call_activity(
+                self._activity_name(self.summarize),
+                input={},
+                retry_policy=self._retry_policy,
+            )
+
+        yield ctx.call_activity(
+            self._activity_name(self.finalize_workflow),
+            input={
+                "instance_id": ctx.instance_id,
+                "final_output": final_message.get("content", ""),
+                "end_time": ctx.current_utc_datetime.isoformat(),
+                "triggering_workflow_instance_id": trigger_instance_id,
+            },
+            retry_policy=self._retry_policy,
+        )
+
+        if workflow_exc is not None:
+            verdict = DaprWorkflowStatus.FAILED
+        elif turn == self.execution.max_iterations:
+            ctx.set_custom_status("max_iterations_reached")
+            verdict = DaprWorkflowStatus.COMPLETED
+        else:
+            verdict = DaprWorkflowStatus.COMPLETED
+        logger.info(
+            "Workflow %s finalized for agent %s with verdict=%s",
+            ctx.instance_id,
+            self.name,
+            verdict,
+        )
+
+        if workflow_exc is not None:
+            raise AgentError(
+                f"Agent {self.name} workflow failed: {workflow_exc}"
+            ) from workflow_exc
+
+        return final_message
 
     def _activity_instance_id(self, ctx: Any, payload: Any) -> str:
         if isinstance(payload, dict):
@@ -4014,7 +4233,16 @@ class OpenShellDurableAgent(DurableAgent):
             # capture it; session_workflow relies on it flowing out as the
             # per-turn result (and CallAgent's tool_result content ultimately
             # comes from this dict's "content" field).
-            agent_workflow_result = yield from super().agent_workflow(ctx, message)
+            if (
+                getattr(self.execution, "tool_execution_mode", None)
+                == ToolExecutionMode.SEQUENTIAL
+                and not getattr(self, "_hooks", None)
+            ):
+                agent_workflow_result = yield from self._agent_workflow_strict_sequential(
+                    ctx, message
+                )
+            else:
+                agent_workflow_result = yield from super().agent_workflow(ctx, message)
             workflow_terminal = True
 
             # After agent completes, check for PLAN.md and persist full content
