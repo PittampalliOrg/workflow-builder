@@ -505,6 +505,115 @@ def test_idempotent_schedule_purges_terminal_before_start(monkeypatch):
     assert calls == ["get:instance-1:False", "purge:instance-1", "start"]
 
 
+def test_terminate_workflow_requests_parent_before_legacy_child_cleanup(monkeypatch):
+    calls: list[str] = []
+
+    def fake_workflow_post(instance_id: str, suffix: str):
+        calls.append(f"parent:{instance_id}:{suffix}")
+
+    def fake_child_cleanup(parent_execution_id: str, **_kwargs):
+        calls.append(f"legacy-child:{parent_execution_id}")
+        return {"success": True}
+
+    monkeypatch.setattr(APP, "_workflow_http_post", fake_workflow_post)
+    monkeypatch.setattr(
+        APP,
+        "terminate_durable_runs_by_parent_execution",
+        fake_child_cleanup,
+    )
+
+    result = APP.terminate_workflow(
+        "instance-1",
+        APP.TerminateRequest(reason="operator cleanup"),
+    )
+
+    assert calls == [
+        "parent:instance-1:/terminate",
+        "legacy-child:instance-1",
+    ]
+    assert result["parentTerminationRequested"] is True
+    assert result["nativeChildCascade"] is True
+    assert result["childTermination"] == {"success": True}
+
+
+def test_terminate_workflow_reports_status_unknown_for_transient_parent_error(
+    monkeypatch,
+):
+    calls: list[str] = []
+
+    def fake_workflow_post(_instance_id: str, _suffix: str):
+        calls.append("parent")
+        raise RuntimeError("Dapr workflow terminate failed with HTTP 503: busy")
+
+    def fake_child_cleanup(parent_execution_id: str, **_kwargs):
+        calls.append(f"legacy-child:{parent_execution_id}")
+        return {"success": True}
+
+    monkeypatch.setattr(APP, "_workflow_http_post", fake_workflow_post)
+    monkeypatch.setattr(
+        APP,
+        "terminate_durable_runs_by_parent_execution",
+        fake_child_cleanup,
+    )
+
+    result = APP.terminate_workflow("instance-1", APP.TerminateRequest())
+
+    assert calls == ["parent", "legacy-child:instance-1"]
+    assert result["parentTerminationRequested"] is True
+    assert result["terminationStatusUnknown"] is True
+
+
+def test_delete_workflow_actor_reminders_rejects_non_new_event_names():
+    with pytest.raises(APP.HTTPException) as exc:
+        APP.delete_workflow_actor_reminders(
+            "instance-1",
+            APP.ReminderDeleteRequest(reminderNames=["delete-all"]),
+        )
+
+    assert exc.value.status_code == 400
+
+
+def test_delete_workflow_actor_reminders_rejects_mismatched_actor_id():
+    with pytest.raises(APP.HTTPException) as exc:
+        APP.delete_workflow_actor_reminders(
+            "instance-1",
+            APP.ReminderDeleteRequest(
+                actorId="instance-2",
+                reminderNames=["new-event-abc"],
+            ),
+        )
+
+    assert exc.value.status_code == 400
+
+
+def test_delete_workflow_actor_reminders_calls_actor_reminder_delete(monkeypatch):
+    calls: list[str] = []
+
+    class FakeResponse:
+        ok = True
+        status_code = 204
+        text = ""
+
+    def fake_delete(url: str, **_kwargs):
+        calls.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr(APP.requests, "delete", fake_delete, raising=False)
+
+    result = APP.delete_workflow_actor_reminders(
+        "instance-1",
+        APP.ReminderDeleteRequest(
+            reminderNames=["new-event-abc"],
+            reason="operator recovery",
+        ),
+    )
+
+    assert result["deleted"] == ["new-event-abc"]
+    assert result["failed"] == []
+    assert "/v1.0/actors/" in calls[0]
+    assert "/instance-1/reminders/new-event-abc" in calls[0]
+
+
 def test_existing_live_execution_instance_returns_running_dapr_id(monkeypatch):
     class FakeCursor:
         def __enter__(self):

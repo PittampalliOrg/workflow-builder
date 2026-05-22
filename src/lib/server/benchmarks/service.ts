@@ -334,6 +334,40 @@ type BenchmarkSessionTurnInput = {
 	turn: number | null;
 	agentWorkflowMode?: string | null;
 };
+
+type BenchmarkAgentRuntimeTarget = {
+	runtimeAppId: string;
+	instanceId: string;
+};
+
+type BenchmarkDurableCascadeCleanupResult = {
+	allClosed: boolean;
+	parentClosed: boolean;
+	agentRuntimeClosed: boolean;
+};
+
+type BenchmarkDurableCascadeCleanupDeps = {
+	getParentStatus: (instanceId: string) => Promise<unknown>;
+	terminateParent: (
+		instanceId: string,
+		reason: string,
+	) => Promise<DurableTerminationResult>;
+	waitParentClosed: (instanceId: string) => Promise<boolean>;
+	getAgentRuntimeStatus: (
+		runtimeAppId: string,
+		instanceId: string,
+	) => Promise<unknown>;
+	waitAgentRuntimeClosed: (
+		runtimeAppId: string,
+		instanceId: string,
+	) => Promise<boolean>;
+	purgeParent: (instanceId: string) => Promise<void>;
+	purgeAgentRuntime: (
+		runtimeAppId: string,
+		instanceId: string,
+	) => Promise<void>;
+	sleep: (ms: number) => Promise<void>;
+};
 const DEFAULT_EVALUATION_CONCURRENCY = 24;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const SWEBENCH_FALLBACK_WORKSPACE_ROOT = "/sandbox";
@@ -2023,150 +2057,24 @@ async function finalizeBenchmarkWorkflowExecutions(
 		}
 		agentRuntimeInstances.set(runtimeAppId, instances);
 	}
-	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
-	const workflowTerminations = new Map<string, DurableTerminationResult>();
 	const agentRuntimeTargets = [...agentRuntimeInstances.entries()].flatMap(
 		([runtimeAppId, instanceIds]) =>
 			[...instanceIds].map((instanceId) => ({ runtimeAppId, instanceId })),
 	);
-
-	await runWithConcurrency(
+	const durableCleanup = await cleanupBenchmarkDurableWorkflowCascade({
+		parentInstanceIds: [...daprInstanceIds],
 		agentRuntimeTargets,
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			let status: unknown = null;
-			try {
-				status = await getBenchmarkAgentRuntimeInstanceStatus(
-					runtimeAppId,
-					instanceId,
-				);
-			} catch (err) {
-				console.warn(
-					`Failed to preflight benchmark agent runtime status ${runtimeAppId}/${instanceId}:`,
-					err instanceof Error ? err.message : err,
-				);
-			}
-			if (status === DURABLE_RUNTIME_MISSING_STATUS) {
-				agentRuntimeTerminations.set(
-					`${runtimeAppId}\0${instanceId}`,
-					"alreadyGone",
-				);
-				return;
-			}
-			if (isTerminalDurableRuntimeStatus(status)) {
-				agentRuntimeTerminations.set(
-					`${runtimeAppId}\0${instanceId}`,
-					"terminated",
-				);
-				return;
-			}
-			const termination = await terminateBenchmarkAgentRuntimeInstance(
-				runtimeAppId,
-				instanceId,
-				reason,
-			);
-			agentRuntimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
-			if (termination === "failed") allDurableInstancesClosed = false;
-		},
-	);
-
-	let agentRuntimeDurableInstancesClosed = true;
-	await runWithConcurrency(
-		agentRuntimeTargets,
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async ({ runtimeAppId, instanceId }) => {
-			const termination =
-				agentRuntimeTerminations.get(`${runtimeAppId}\0${instanceId}`) ??
-				"terminated";
-			if (termination === "failed") {
-				agentRuntimeDurableInstancesClosed = false;
-				return;
-			}
-			const closed =
-				termination === "alreadyGone" ||
-				(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
-			if (!closed) {
-				agentRuntimeDurableInstancesClosed = false;
-				allDurableInstancesClosed = false;
-			}
-		},
-	);
-
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			let status: unknown = null;
-			try {
-				status = await getBenchmarkWorkflowInstanceStatus(instanceId);
-			} catch (err) {
-				console.warn(
-					`Failed to preflight benchmark workflow status ${instanceId}:`,
-					err instanceof Error ? err.message : err,
-				);
-			}
-			if (status === DURABLE_RUNTIME_MISSING_STATUS) {
-				workflowTerminations.set(instanceId, "alreadyGone");
-				return;
-			}
-			if (isTerminalDurableRuntimeStatus(status)) {
-				workflowTerminations.set(instanceId, "terminated");
-				return;
-			}
-			const termination = await terminateBenchmarkWorkflowInstance(
-				instanceId,
-				reason,
-			);
-			workflowTerminations.set(instanceId, termination);
-			if (termination === "failed") allDurableInstancesClosed = false;
-		},
-	);
-
-	let parentDurableInstancesClosed = true;
-	await runWithConcurrency(
-		[...daprInstanceIds],
-		BENCHMARK_TERMINATION_CONCURRENCY,
-		async (instanceId) => {
-			const termination = workflowTerminations.get(instanceId) ?? "terminated";
-			if (termination === "failed") {
-				parentDurableInstancesClosed = false;
-				return;
-			}
-			const closed =
-				termination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(instanceId));
-			if (!closed) {
-				parentDurableInstancesClosed = false;
-				allDurableInstancesClosed = false;
-			}
-		},
-	);
+		reason,
+		purge: shouldPurgeBenchmarkDaprWorkflowsOnCleanup(),
+		purgeGraceMs: benchmarkTerminalPurgeGraceMs(),
+	});
+	allDurableInstancesClosed = durableCleanup.allClosed;
 
 	if (!allDurableInstancesClosed) {
 		console.warn(
-			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; parentClosed=${parentDurableInstancesClosed} agentRuntimeClosed=${agentRuntimeDurableInstancesClosed}; leaving session/execution rows active for retry`,
+			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed} agentRuntimeClosed=${durableCleanup.agentRuntimeClosed}; leaving session/execution rows active for retry`,
 		);
 		return false;
-	}
-	if (shouldPurgeBenchmarkDaprWorkflowsOnCleanup()) {
-		const purgeGraceMs = benchmarkTerminalPurgeGraceMs();
-		if (purgeGraceMs > 0) {
-			await sleep(purgeGraceMs);
-		}
-		await runWithConcurrency(
-			agentRuntimeTargets,
-			BENCHMARK_TERMINATION_CONCURRENCY,
-			async ({ runtimeAppId, instanceId }) => {
-				await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
-			},
-		);
-		await runWithConcurrency(
-			[...daprInstanceIds],
-			BENCHMARK_TERMINATION_CONCURRENCY,
-			async (instanceId) => {
-				await purgeBenchmarkWorkflowInstance(instanceId);
-			},
-		);
 	}
 	if (sessionIds.size > 0) {
 		await database
@@ -2385,6 +2293,150 @@ async function terminateAndWaitBenchmarkWorkflowInstance(
 
 type DurableTerminationResult = "terminated" | "alreadyGone" | "failed";
 
+const benchmarkDurableCascadeCleanupDeps: BenchmarkDurableCascadeCleanupDeps = {
+	getParentStatus: getBenchmarkWorkflowInstanceStatus,
+	terminateParent: terminateBenchmarkWorkflowInstance,
+	waitParentClosed: waitForBenchmarkWorkflowInstanceClosed,
+	getAgentRuntimeStatus: getBenchmarkAgentRuntimeInstanceStatus,
+	waitAgentRuntimeClosed: waitForBenchmarkAgentRuntimeInstanceClosed,
+	purgeParent: purgeBenchmarkWorkflowInstance,
+	purgeAgentRuntime: purgeBenchmarkAgentRuntimeInstance,
+	sleep,
+};
+
+async function cleanupBenchmarkDurableWorkflowCascade(params: {
+	parentInstanceIds: string[];
+	agentRuntimeTargets: BenchmarkAgentRuntimeTarget[];
+	reason: string;
+	purge: boolean;
+	purgeGraceMs: number;
+	concurrency?: number;
+	deps?: BenchmarkDurableCascadeCleanupDeps;
+}): Promise<BenchmarkDurableCascadeCleanupResult> {
+	const deps = params.deps ?? benchmarkDurableCascadeCleanupDeps;
+	const concurrency = params.concurrency ?? BENCHMARK_TERMINATION_CONCURRENCY;
+	const parentInstanceIds = [...new Set(params.parentInstanceIds.filter(Boolean))];
+	const agentRuntimeTargets = dedupeBenchmarkAgentRuntimeTargets(
+		params.agentRuntimeTargets,
+	);
+	const agentRuntimePreflightStatuses = new Map<string, unknown>();
+	const parentTerminations = new Map<string, DurableTerminationResult>();
+	let allClosed = true;
+	let parentClosed = true;
+	let agentRuntimeClosed = true;
+
+	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
+		try {
+			agentRuntimePreflightStatuses.set(
+				benchmarkAgentRuntimeTargetKey(target),
+				await deps.getAgentRuntimeStatus(target.runtimeAppId, target.instanceId),
+			);
+		} catch (err) {
+			console.warn(
+				`Failed to preflight benchmark agent runtime status ${target.runtimeAppId}/${target.instanceId}:`,
+				err instanceof Error ? err.message : err,
+			);
+			agentRuntimePreflightStatuses.set(benchmarkAgentRuntimeTargetKey(target), null);
+		}
+	});
+
+	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+		let status: unknown = null;
+		try {
+			status = await deps.getParentStatus(instanceId);
+		} catch (err) {
+			console.warn(
+				`Failed to preflight benchmark workflow status ${instanceId}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+			parentTerminations.set(instanceId, "alreadyGone");
+			return;
+		}
+		if (isTerminalDurableRuntimeStatus(status)) {
+			parentTerminations.set(instanceId, "terminated");
+			return;
+		}
+		const termination = await deps.terminateParent(instanceId, params.reason);
+		parentTerminations.set(instanceId, termination);
+		if (termination === "failed") {
+			parentClosed = false;
+			allClosed = false;
+		}
+	});
+
+	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+		const termination = parentTerminations.get(instanceId) ?? "terminated";
+		if (termination === "failed") {
+			parentClosed = false;
+			return;
+		}
+		const closed =
+			termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
+		if (!closed) {
+			parentClosed = false;
+			allClosed = false;
+		}
+	});
+
+	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
+		const preflightStatus = agentRuntimePreflightStatuses.get(
+			benchmarkAgentRuntimeTargetKey(target),
+		);
+		if (
+			preflightStatus === DURABLE_RUNTIME_MISSING_STATUS ||
+			isTerminalDurableRuntimeStatus(preflightStatus)
+		) {
+			return;
+		}
+		const closed = await deps.waitAgentRuntimeClosed(
+			target.runtimeAppId,
+			target.instanceId,
+		);
+		if (!closed) {
+			agentRuntimeClosed = false;
+			allClosed = false;
+		}
+	});
+
+	if (!allClosed || !params.purge) {
+		return { allClosed, parentClosed, agentRuntimeClosed };
+	}
+
+	if (params.purgeGraceMs > 0) {
+		await deps.sleep(params.purgeGraceMs);
+	}
+	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
+		await deps.purgeAgentRuntime(target.runtimeAppId, target.instanceId);
+	});
+	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+		await deps.purgeParent(instanceId);
+	});
+	return { allClosed, parentClosed, agentRuntimeClosed };
+}
+
+function benchmarkAgentRuntimeTargetKey(target: BenchmarkAgentRuntimeTarget): string {
+	return `${target.runtimeAppId}\0${target.instanceId}`;
+}
+
+function dedupeBenchmarkAgentRuntimeTargets(
+	targets: BenchmarkAgentRuntimeTarget[],
+): BenchmarkAgentRuntimeTarget[] {
+	const seen = new Set<string>();
+	const deduped: BenchmarkAgentRuntimeTarget[] = [];
+	for (const target of targets) {
+		const runtimeAppId = target.runtimeAppId.trim();
+		const instanceId = target.instanceId.trim();
+		if (!runtimeAppId || !instanceId) continue;
+		const key = benchmarkAgentRuntimeTargetKey({ runtimeAppId, instanceId });
+		if (seen.has(key)) continue;
+		seen.add(key);
+		deduped.push({ runtimeAppId, instanceId });
+	}
+	return deduped;
+}
+
 async function getBenchmarkWorkflowInstanceStatus(
 	instanceId: string,
 ): Promise<unknown> {
@@ -2502,52 +2554,6 @@ async function purgeBenchmarkWorkflowInstance(instanceId: string) {
 	}
 }
 
-async function terminateAndPurgeBenchmarkAgentRuntimeInstance(
-	runtimeAppId: string,
-	instanceId: string,
-	reason: string,
-): Promise<boolean> {
-	const closed = await terminateAndWaitBenchmarkAgentRuntimeInstance(
-		runtimeAppId,
-		instanceId,
-		reason,
-	);
-	if (closed && shouldPurgeBenchmarkDaprWorkflowsOnCleanup()) {
-		await purgeBenchmarkAgentRuntimeInstance(runtimeAppId, instanceId);
-	}
-	return closed;
-}
-
-async function terminateAndWaitBenchmarkAgentRuntimeInstance(
-	runtimeAppId: string,
-	instanceId: string,
-	reason: string,
-): Promise<boolean> {
-	let status: unknown = null;
-	try {
-		status = await getBenchmarkAgentRuntimeInstanceStatus(
-			runtimeAppId,
-			instanceId,
-		);
-	} catch (err) {
-		console.warn(
-			`Failed to preflight benchmark agent runtime status ${runtimeAppId}/${instanceId}:`,
-			err instanceof Error ? err.message : err,
-		);
-	}
-	if (status === DURABLE_RUNTIME_MISSING_STATUS) return true;
-	if (isTerminalDurableRuntimeStatus(status)) return true;
-	const termination = await terminateBenchmarkAgentRuntimeInstance(
-		runtimeAppId,
-		instanceId,
-		reason,
-	);
-	const closed =
-		termination === "alreadyGone" ||
-		(await waitForBenchmarkAgentRuntimeInstanceClosed(runtimeAppId, instanceId));
-	return closed;
-}
-
 async function getBenchmarkAgentRuntimeInstanceStatus(
 	runtimeAppId: string,
 	instanceId: string,
@@ -2578,56 +2584,6 @@ async function getBenchmarkAgentRuntimeInstanceStatus(
 		if (isBenignDaprTerminationMiss(err)) return DURABLE_RUNTIME_MISSING_STATUS;
 		if (isTransientDaprServiceInvokeError(err)) return null;
 		throw err;
-	}
-}
-
-async function terminateBenchmarkAgentRuntimeInstance(
-	runtimeAppId: string,
-	instanceId: string,
-	reason: string,
-): Promise<DurableTerminationResult> {
-	try {
-		const res = await daprFetch(
-			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(instanceId)}/terminate`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ reason }),
-				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
-				maxRetries: 0,
-			},
-		);
-		if (!res.ok) {
-			const detail = await res.text().catch(() => "");
-			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
-				return "alreadyGone";
-			}
-			if (
-				res.status >= 500 &&
-				(isRecoverableDaprWorkflowTerminateError(detail) ||
-					isTransientDaprServiceInvokeError(detail))
-			) {
-				return "terminated";
-			}
-			console.warn(
-				`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
-			);
-			return "failed";
-		}
-		return "terminated";
-	} catch (err) {
-		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
-		if (
-			isRecoverableDaprWorkflowTerminateError(err) ||
-			isTransientDaprServiceInvokeError(err)
-		) {
-			return "terminated";
-		}
-		console.warn(
-			`Failed to terminate benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
-			err,
-		);
-		return "failed";
 	}
 }
 
@@ -2703,6 +2659,7 @@ export const __benchmarkDurableRuntimeForTest = {
 	benchmarkTerminatedSessionExecutionStatus,
 	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
+	cleanupBenchmarkDurableWorkflowCascade,
 };
 
 async function cleanupBenchmarkRunSandboxes(runId: string, reason: string) {
@@ -4874,60 +4831,14 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			([runtimeAppId, instanceIds]) =>
 				instanceIds.map((instanceId) => ({ runtimeAppId, instanceId })),
 		);
-		if (runtimeTargets.length > 0) {
-			const runtimeTerminations = new Map<string, DurableTerminationResult>();
-			await runWithConcurrency(
-				runtimeTargets,
-				BENCHMARK_TERMINATION_CONCURRENCY,
-				async ({ runtimeAppId, instanceId }) => {
-					const termination = await terminateBenchmarkAgentRuntimeInstance(
-						runtimeAppId,
-						instanceId,
-						reason,
-					);
-					runtimeTerminations.set(`${runtimeAppId}\0${instanceId}`, termination);
-					if (termination === "failed") allDurableInstancesClosed = false;
-				},
-			);
-
-			await runWithConcurrency(
-				runtimeTargets,
-				BENCHMARK_TERMINATION_CONCURRENCY,
-				async ({ runtimeAppId, instanceId }) => {
-					const termination =
-						runtimeTerminations.get(`${runtimeAppId}\0${instanceId}`) ??
-						"terminated";
-					if (termination === "failed") return;
-					const closed =
-						termination === "alreadyGone" ||
-						(await waitForBenchmarkAgentRuntimeInstanceClosed(
-							runtimeAppId,
-							instanceId,
-						));
-					if (!closed) allDurableInstancesClosed = false;
-				},
-			);
-		}
-
-		let parentTermination: DurableTerminationResult | null = null;
-		if (parentDaprInstanceId) {
-			parentTermination = await terminateBenchmarkWorkflowInstance(
-				parentDaprInstanceId,
-				reason,
-			);
-			if (parentTermination === "failed") allDurableInstancesClosed = false;
-		}
-
-		let parentDurableInstanceClosed = true;
-		if (parentDaprInstanceId && parentTermination !== "failed") {
-			parentDurableInstanceClosed =
-				parentTermination === "alreadyGone" ||
-				(await waitForBenchmarkWorkflowInstanceClosed(parentDaprInstanceId));
-			if (!parentDurableInstanceClosed) allDurableInstancesClosed = false;
-		}
-		if (parentTermination === "failed") {
-			parentDurableInstanceClosed = false;
-		}
+		const durableCleanup = await cleanupBenchmarkDurableWorkflowCascade({
+			parentInstanceIds: parentDaprInstanceId ? [parentDaprInstanceId] : [],
+			agentRuntimeTargets: runtimeTargets,
+			reason,
+			purge: shouldPurgeBenchmarkDaprWorkflowsOnCleanup(),
+			purgeGraceMs: 0,
+		});
+		allDurableInstancesClosed = durableCleanup.allClosed;
 
 		if (!allDurableInstancesClosed) {
 			const cleanup: BenchmarkSandboxCleanupResult = {
@@ -4954,16 +4865,9 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 				await recordBenchmarkSandboxCleanup(runInstance.runId, cleanup);
 			}
 			console.warn(
-				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${parentDurableInstanceClosed}; leaving session/execution rows active for retry`,
+				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed}; leaving session/execution rows active for retry`,
 			);
 			return false;
-		}
-
-		if (
-			parentDaprInstanceId &&
-			shouldPurgeBenchmarkDaprWorkflowsOnCleanup()
-		) {
-			await purgeBenchmarkWorkflowInstance(parentDaprInstanceId);
 		}
 		// Purge is intentionally gated on confirmed terminal state. Dapr uses
 		// Scheduler reminders for workflow events, and terminal purge removes those

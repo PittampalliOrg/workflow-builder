@@ -50,6 +50,8 @@ from activities.call_agent_service import terminate_durable_runs_by_parent_execu
 from activities.metadata import get_activity_metadata
 from content_tracing import io_attributes
 
+REQUESTS_TIMEOUT = getattr(requests, "Timeout", TimeoutError)
+
 # OpenTelemetry
 from tracing import (
     setup_tracing,
@@ -512,6 +514,7 @@ _TRANSIENT_WORKFLOW_RUNTIME_ERROR_MARKERS = (
     "statuscode.unavailable",
     "deadline exceeded",
 )
+WORKFLOW_ACTOR_TYPE = "dapr.internal.workflow-builder.workflow-orchestrator.workflow"
 
 
 def _dapr_http_sidecar_url() -> str:
@@ -534,6 +537,20 @@ def _workflow_http_timeout_seconds() -> float:
 def _workflow_http_url(instance_id: str, suffix: str = "") -> str:
     encoded_id = urllib.parse.quote(instance_id, safe="")
     return f"{_dapr_http_sidecar_url()}/v1.0/workflows/dapr/{encoded_id}{suffix}"
+
+
+def _actor_reminder_http_url(
+    actor_type: str,
+    actor_id: str,
+    reminder_name: str,
+) -> str:
+    encoded_type = urllib.parse.quote(actor_type, safe="")
+    encoded_id = urllib.parse.quote(actor_id, safe="")
+    encoded_name = urllib.parse.quote(reminder_name, safe="")
+    return (
+        f"{_dapr_http_sidecar_url()}/v1.0/actors/"
+        f"{encoded_type}/{encoded_id}/reminders/{encoded_name}"
+    )
 
 
 def _workflow_http_error_is_missing(status_code: int, detail: str) -> bool:
@@ -1152,6 +1169,14 @@ class RaiseEventRequest(BaseModel):
 class TerminateRequest(BaseModel):
     """Request to terminate a workflow."""
     reason: str | None = None
+
+
+class ReminderDeleteRequest(BaseModel):
+    """Targeted internal recovery request for Dapr workflow actor reminders."""
+    reminderNames: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    actorType: str | None = None
+    actorId: str | None = None
 
 
 class CloudEvent(BaseModel):
@@ -3339,46 +3364,33 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
             + (f" Reason: {request.reason}" if request.reason else "")
         )
 
-        child_termination = None
-        try:
-            child_termination = terminate_durable_runs_by_parent_execution(
-                parent_execution_id=instance_id,
-                reason=request.reason,
-                cleanup_workspace=True,
-            )
-            logger.info(
-                "[Workflow Routes] Child durable run termination summary: "
-                f"{child_termination}"
-            )
-        except Exception as child_err:
-            logger.warning(
-                f"[Workflow Routes] Child durable run termination failed: {child_err}"
-            )
+        external_child_cleanup = None
+        response_metadata = {
+            "success": True,
+            "instanceId": instance_id,
+            "parentTerminationRequested": False,
+            "nativeChildCascade": True,
+            "childCleanupSkippedReason": (
+                "Dapr child workflows are terminated by the native parent-child cascade"
+            ),
+        }
 
         try:
             _workflow_http_post(instance_id, "/terminate")
-        except requests.Timeout:
+            response_metadata["parentTerminationRequested"] = True
+        except REQUESTS_TIMEOUT:
             logger.warning(
                 "[Workflow Routes] Terminate request timed out for %s; polling status will confirm closure",
                 instance_id,
             )
-            return {
-                "success": True,
-                "instanceId": instance_id,
-                "terminationStatusUnknown": True,
-                "childTermination": child_termination,
-            }
+            response_metadata["parentTerminationRequested"] = True
+            response_metadata["terminationStatusUnknown"] = True
         except FileNotFoundError:
             logger.info(
                 "[Workflow Routes] Terminate skipped for %s: already gone",
                 instance_id,
             )
-            return {
-                "success": True,
-                "instanceId": instance_id,
-                "alreadyGone": True,
-                "childTermination": child_termination,
-            }
+            response_metadata["alreadyGone"] = True
         except Exception as terminate_err:
             if _is_workflow_terminate_status_unknown_error(terminate_err):
                 logger.warning(
@@ -3386,23 +3398,126 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
                     instance_id,
                     terminate_err,
                 )
-                return {
-                    "success": True,
-                    "instanceId": instance_id,
-                    "terminationStatusUnknown": True,
-                    "childTermination": child_termination,
-                }
-            raise
+                response_metadata["parentTerminationRequested"] = True
+                response_metadata["terminationStatusUnknown"] = True
+            else:
+                raise
 
-        return {
-            "success": True,
-            "instanceId": instance_id,
-            "childTermination": child_termination,
-        }
+        if not response_metadata.get("alreadyGone"):
+            try:
+                external_child_cleanup = terminate_durable_runs_by_parent_execution(
+                    parent_execution_id=instance_id,
+                    reason=request.reason,
+                    cleanup_workspace=True,
+                )
+                logger.info(
+                    "[Workflow Routes] External durable run cleanup summary: "
+                    f"{external_child_cleanup}"
+                )
+            except Exception as child_err:
+                logger.warning(
+                    "[Workflow Routes] External durable run cleanup failed after parent terminate request: %s",
+                    child_err,
+                )
+                external_child_cleanup = {
+                    "success": False,
+                    "error": str(child_err),
+                }
+
+        response_metadata["childTermination"] = external_child_cleanup
+        response_metadata["externalChildCleanup"] = external_child_cleanup
+        return response_metadata
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to terminate workflow: {e}")
         _raise_workflow_route_error("terminate_workflow", e)
+
+
+@app.post("/api/internal/workflow-ops/instances/{instance_id}/reminders/delete")
+def delete_workflow_actor_reminders(
+    instance_id: str,
+    request: ReminderDeleteRequest,
+):
+    """
+    Delete explicit Dapr Scheduler actor reminders for one workflow actor.
+
+    This is an operator recovery hook for the rare orphan new-event reminder
+    loop. It intentionally accepts only the workflow actor for this instance
+    and explicit new-event-* reminder names.
+    """
+    actor_id = (request.actorId or instance_id or "").strip()
+    actor_type = (request.actorType or WORKFLOW_ACTOR_TYPE).strip()
+    if actor_id != instance_id:
+        raise HTTPException(
+            status_code=400,
+            detail="actorId must match the workflow instance id",
+        )
+    if actor_type != WORKFLOW_ACTOR_TYPE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"actorType must be {WORKFLOW_ACTOR_TYPE}",
+        )
+
+    reminder_names = [str(name or "").strip() for name in request.reminderNames]
+    reminder_names = [name for name in reminder_names if name]
+    if not reminder_names:
+        raise HTTPException(status_code=400, detail="reminderNames is required")
+    invalid_names = [
+        name
+        for name in reminder_names
+        if not name.startswith("new-event-")
+        or "/" in name
+        or "\\" in name
+        or any(ord(ch) < 32 for ch in name)
+    ]
+    if invalid_names:
+        raise HTTPException(
+            status_code=400,
+            detail="Only explicit new-event-* reminder names may be deleted",
+        )
+
+    deleted: list[str] = []
+    failed: list[dict[str, Any]] = []
+    for reminder_name in reminder_names:
+        url = _actor_reminder_http_url(actor_type, actor_id, reminder_name)
+        try:
+            response = requests.delete(
+                url,
+                headers=_dapr_api_token_headers(),
+                timeout=_workflow_http_timeout_seconds(),
+            )
+            if response.ok or response.status_code == 404:
+                deleted.append(reminder_name)
+                continue
+            failed.append(
+                {
+                    "reminderName": reminder_name,
+                    "status": response.status_code,
+                    "error": (response.text or "")[:500],
+                }
+            )
+        except Exception as exc:
+            failed.append(
+                {
+                    "reminderName": reminder_name,
+                    "error": str(exc),
+                }
+            )
+
+    logger.warning(
+        "[Workflow Routes] Targeted reminder recovery for %s deleted=%s failed=%s reason=%s",
+        instance_id,
+        deleted,
+        failed,
+        request.reason,
+    )
+    return {
+        "instanceId": instance_id,
+        "actorType": actor_type,
+        "actorId": actor_id,
+        "deleted": deleted,
+        "failed": failed,
+    }
 
 
 @app.delete("/api/v2/workflows/{instance_id}")

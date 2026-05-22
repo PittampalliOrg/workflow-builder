@@ -78,6 +78,11 @@
 	let recursivePurge = $state(false);
 	let eventName = $state('');
 	let eventDataJson = $state('{}');
+	let reminderNamesText = $state('');
+	let reminderReason = $state('operator recovery');
+	let reminderDeletePending = $state(false);
+	let reminderDeleteMessage = $state<string | null>(null);
+	let reminderDeleteError = $state<string | null>(null);
 	let selectedAgentRunId = $state('');
 	let agentDetail = $state<AgentRunDetail | null>(null);
 	let agentLoading = $state(false);
@@ -111,6 +116,9 @@
 				return sortNewestFirst ? rightTime - leftTime : leftTime - rightTime;
 			})
 	);
+	const childRelationships = $derived(detail.relationships.filter((relationship) => relationship.relationship === 'child'));
+	const purgeEligible = $derived(isTerminal(runtimeStatus()));
+	const terminationRequested = $derived(actionMessage?.toLowerCase().includes('terminate') === true);
 
 	onMount(() => {
 		if (location.hash === '#run-new-from') openReplayDialog();
@@ -266,12 +274,52 @@
 				await goto(`/admin/instances/${encodeURIComponent(body.newInstanceId)}`);
 				return;
 			}
-			actionMessage = `${operation[0].toUpperCase()}${operation.slice(1)} requested`;
+			actionMessage =
+				operation === 'terminate'
+					? 'terminate requested'
+					: operation === 'purge'
+						? 'purge requested'
+						: `${operation[0].toUpperCase()}${operation.slice(1)} requested`;
 			await refresh();
 		} catch (err) {
 			actionError = err instanceof Error ? err.message : `Failed to ${operation} workflow`;
 		} finally {
 			actionPending = null;
+		}
+	}
+
+	async function deleteReminders() {
+		if (!confirm(`Delete targeted Dapr reminders for ${detail.instanceId}?`)) return;
+		reminderDeletePending = true;
+		reminderDeleteError = null;
+		reminderDeleteMessage = null;
+		try {
+			const reminderNames = reminderNamesText
+				.split(/[\n,]+/)
+				.map((name) => name.trim())
+				.filter(Boolean);
+			const response = await fetch(
+				`/api/workflow-ops/instances/${encodeURIComponent(detail.instanceId)}/reminders/delete`,
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						reminderNames,
+						reason: reminderReason,
+						actorId: detail.instanceId
+					})
+				}
+			);
+			const body = await response.json().catch(() => ({}));
+			if (!response.ok) throw new Error(body.message ?? 'Failed to delete targeted reminders');
+			const deleted = Array.isArray(body.deleted) ? body.deleted.length : 0;
+			const failed = Array.isArray(body.failed) ? body.failed.length : 0;
+			reminderDeleteMessage = `targeted reminders deleted: ${deleted}${failed ? `, failed: ${failed}` : ''}`;
+			await refresh();
+		} catch (err) {
+			reminderDeleteError = err instanceof Error ? err.message : 'Failed to delete targeted reminders';
+		} finally {
+			reminderDeletePending = false;
 		}
 	}
 
@@ -481,6 +529,77 @@
 				<InspectablePayload value={executionOutput} maxHeight="max-h-56" />
 			</div>
 		</section>
+
+		{#if isActive(runtimeStatus()) || terminationRequested}
+			<section class="mt-4 rounded-md border border-border p-4">
+				<div class="flex flex-wrap items-start justify-between gap-3">
+					<div>
+						<h2 class="text-sm font-semibold">Dapr Recovery</h2>
+						<div class="mt-1 text-xs text-muted-foreground">
+							{#if terminationRequested && isActive(runtimeStatus())}
+								terminate requested · waiting for durable closure · purge skipped until terminal
+							{:else if isActive(runtimeStatus())}
+								waiting for durable closure · purge skipped until terminal
+							{:else}
+								targeted reminder recovery
+							{/if}
+						</div>
+					</div>
+					<Badge variant={purgeEligible ? 'secondary' : 'outline'}>
+						{purgeEligible ? 'Purge eligible' : 'Purge blocked'}
+					</Badge>
+				</div>
+
+				<div class="mt-4 grid gap-3 md:grid-cols-3">
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">Parent instance</div>
+						<div class="mt-1 break-all font-mono text-xs">{detail.instanceId}</div>
+					</div>
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">Terminal state</div>
+						<div class="mt-1 text-sm">{purgeEligible ? 'confirmed' : runtimeStatus()}</div>
+					</div>
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">Child relationships</div>
+						<div class="mt-1 text-sm">{childRelationships.length}</div>
+					</div>
+				</div>
+
+				{#if childRelationships.length > 0}
+					<div class="mt-3 flex flex-wrap gap-2">
+						{#each childRelationships as relationship (relationship.instanceId + relationship.appId)}
+							<Badge variant={statusVariant(relationship.status)}>
+								{relationship.appId}: {relationship.status}
+							</Badge>
+						{/each}
+					</div>
+				{/if}
+
+				<div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px_auto]">
+					<textarea
+						class="min-h-20 w-full rounded-md border border-border bg-background p-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+						bind:value={reminderNamesText}
+						placeholder="new-event-..."
+						aria-label="Dapr reminder names"
+					></textarea>
+					<Input bind:value={reminderReason} aria-label="Reminder recovery reason" />
+					<Button
+						variant="destructive"
+						disabled={reminderDeletePending || !reminderNamesText.trim()}
+						onclick={deleteReminders}
+					>
+						{#if reminderDeletePending}<Loader2 size={13} class="mr-1.5 animate-spin" />{/if}
+						Delete reminders
+					</Button>
+				</div>
+				{#if reminderDeleteMessage}
+					<div class="mt-3 rounded-md border border-border bg-muted px-3 py-2 text-sm">{reminderDeleteMessage}</div>
+				{/if}
+				{#if reminderDeleteError}
+					<div class="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{reminderDeleteError}</div>
+				{/if}
+			</section>
+		{/if}
 
 		<Tabs bind:value={activeTab} class="mt-5 space-y-4">
 			<TabsList>

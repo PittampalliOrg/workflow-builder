@@ -1194,6 +1194,144 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBeNull();
 	});
 
+	it("requests parent termination before waiting on child/session-host workflow closure", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [
+					{ runtimeAppId: "agent-session-host", instanceId: "session-1" },
+				],
+				reason: "operator cleanup",
+				purge: true,
+				purgeGraceMs: 0,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async (id: string) => {
+						calls.push(`parent-status:${id}`);
+						return "RUNNING";
+					},
+					terminateParent: async (id: string) => {
+						calls.push(`parent-terminate:${id}`);
+						return "terminated";
+					},
+					waitParentClosed: async (id: string) => {
+						calls.push(`parent-wait:${id}`);
+						return true;
+					},
+					getAgentRuntimeStatus: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-status:${runtimeAppId}/${id}`);
+						return "RUNNING";
+					},
+					waitAgentRuntimeClosed: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-wait:${runtimeAppId}/${id}`);
+						return true;
+					},
+					purgeParent: async (id: string) => {
+						calls.push(`parent-purge:${id}`);
+					},
+					purgeAgentRuntime: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-purge:${runtimeAppId}/${id}`);
+					},
+					sleep: async () => {
+						calls.push("sleep");
+					},
+				},
+			});
+
+		expect(result).toEqual({
+			allClosed: true,
+			parentClosed: true,
+			agentRuntimeClosed: true,
+		});
+		expect(calls).toEqual([
+			"child-status:agent-session-host/session-1",
+			"parent-status:parent-1",
+			"parent-terminate:parent-1",
+			"parent-wait:parent-1",
+			"child-wait:agent-session-host/session-1",
+			"child-purge:agent-session-host/session-1",
+			"parent-purge:parent-1",
+		]);
+	});
+
+	it("skips purge when parent workflow closure is not confirmed", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [
+					{ runtimeAppId: "agent-session-host", instanceId: "session-1" },
+				],
+				reason: "operator cleanup",
+				purge: true,
+				purgeGraceMs: 0,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async () => "RUNNING",
+					terminateParent: async () => {
+						calls.push("parent-terminate");
+						return "terminated";
+					},
+					waitParentClosed: async () => {
+						calls.push("parent-wait");
+						return false;
+					},
+					getAgentRuntimeStatus: async () => "RUNNING",
+					waitAgentRuntimeClosed: async () => {
+						calls.push("child-wait");
+						return true;
+					},
+					purgeParent: async () => {
+						calls.push("parent-purge");
+					},
+					purgeAgentRuntime: async () => {
+						calls.push("child-purge");
+					},
+					sleep: async () => {
+						calls.push("sleep");
+					},
+				},
+			});
+
+		expect(result.allClosed).toBe(false);
+		expect(result.parentClosed).toBe(false);
+		expect(calls).toEqual(["parent-terminate", "parent-wait", "child-wait"]);
+	});
+
+	it("treats missing child/session-host workflows as already closed", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [
+					{ runtimeAppId: "agent-session-host", instanceId: "missing-session" },
+				],
+				reason: "operator cleanup",
+				purge: false,
+				purgeGraceMs: 0,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async () => "TERMINATED",
+					terminateParent: async () => {
+						throw new Error("parent should not be terminated");
+					},
+					waitParentClosed: async () => true,
+					getAgentRuntimeStatus: async () => "__missing__",
+					waitAgentRuntimeClosed: async () => {
+						calls.push("child-wait");
+						return false;
+					},
+					purgeParent: async () => undefined,
+					purgeAgentRuntime: async () => undefined,
+					sleep: async () => undefined,
+				},
+			});
+
+		expect(result.allClosed).toBe(true);
+		expect(calls).toEqual([]);
+	});
+
 	it("extracts max-iteration stop reasons from session metrics", () => {
 		expect(
 			extractAgentStopReason(

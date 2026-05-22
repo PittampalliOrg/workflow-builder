@@ -269,6 +269,23 @@ type OperationOptions = {
 	recursive?: boolean;
 };
 
+export const WORKFLOW_ORCHESTRATOR_ACTOR_TYPE =
+	'dapr.internal.workflow-builder.workflow-orchestrator.workflow';
+
+export type WorkflowActorReminderDeleteInput = {
+	reminderNames: unknown;
+	reason?: unknown;
+	actorType?: unknown;
+	actorId?: unknown;
+};
+
+export type WorkflowActorReminderDeleteRequest = {
+	reminderNames: string[];
+	reason?: string;
+	actorType: typeof WORKFLOW_ORCHESTRATOR_ACTOR_TYPE;
+	actorId: string;
+};
+
 function toIso(value: Date | string | null | undefined): string | null {
 	if (!value) return null;
 	if (value instanceof Date) return value.toISOString();
@@ -355,6 +372,62 @@ function throwUpstreamError(status: number, body: unknown, fallback: string): ne
 					? payload.detail
 					: fallback;
 	throw error(status, { message });
+}
+
+export function validateWorkflowActorReminderDeleteInput(
+	instanceId: string,
+	input: WorkflowActorReminderDeleteInput
+): WorkflowActorReminderDeleteRequest {
+	const actorId = typeof input.actorId === 'string' && input.actorId.trim() ? input.actorId.trim() : instanceId;
+	if (actorId !== instanceId) {
+		throw error(400, { message: 'actorId must match the selected workflow instance id' });
+	}
+	const actorType =
+		typeof input.actorType === 'string' && input.actorType.trim()
+			? input.actorType.trim()
+			: WORKFLOW_ORCHESTRATOR_ACTOR_TYPE;
+	if (actorType !== WORKFLOW_ORCHESTRATOR_ACTOR_TYPE) {
+		throw error(400, { message: `actorType must be ${WORKFLOW_ORCHESTRATOR_ACTOR_TYPE}` });
+	}
+	if (!Array.isArray(input.reminderNames)) {
+		throw error(400, { message: 'reminderNames must be an array' });
+	}
+	const reminderNames = input.reminderNames
+		.map((name) => (typeof name === 'string' ? name.trim() : ''))
+		.filter(Boolean);
+	if (reminderNames.length === 0) {
+		throw error(400, { message: 'At least one reminder name is required' });
+	}
+	const invalid = reminderNames.find(
+		(name) =>
+			!name.startsWith('new-event-') ||
+			name.includes('/') ||
+			name.includes('\\') ||
+			/[^\x20-\x7e]/.test(name)
+	);
+	if (invalid) {
+		throw error(400, { message: 'Only explicit new-event-* reminder names may be deleted' });
+	}
+	const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim() : undefined;
+	return {
+		reminderNames,
+		reason,
+		actorType: WORKFLOW_ORCHESTRATOR_ACTOR_TYPE,
+		actorId
+	};
+}
+
+export async function deleteWorkflowActorReminders(
+	instanceId: string,
+	input: WorkflowActorReminderDeleteInput
+): Promise<unknown> {
+	const payload = validateWorkflowActorReminderDeleteInput(instanceId, input);
+	const encoded = encodeURIComponent(instanceId);
+	return orchestratorJson(`/api/internal/workflow-ops/instances/${encoded}/reminders/delete`, {
+		method: 'POST',
+		body: JSON.stringify(payload),
+		signal: AbortSignal.timeout(20_000)
+	});
 }
 
 async function orchestratorJson(path: string, init: RequestInit = {}): Promise<unknown> {
