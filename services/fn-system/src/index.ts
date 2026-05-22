@@ -12,6 +12,7 @@
  */
 
 import { otelLogMixin } from "./otel.js";
+import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 import cors from "@fastify/cors";
 import Fastify from "fastify";
@@ -171,6 +172,8 @@ async function main() {
 		}
 
 		const body = parseResult.data as ExecuteRequest;
+		// Stamp the step input as `input.value` (redacted) for the Service Graph drawer.
+		setSpanInput(body.input);
 		const startTime = Date.now();
 
 		let result: { success: boolean; data?: unknown; error?: string };
@@ -267,6 +270,8 @@ async function main() {
 			duration_ms,
 		};
 
+		// Stamp the step result as `output.value` (redacted) for the drawer.
+		setSpanOutput(response);
 		const statusCode = result.success ? 200 : 500;
 		return reply.status(statusCode).send(response);
 	});

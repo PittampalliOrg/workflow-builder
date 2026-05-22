@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from activities.dapr_invoke import dapr_invoke
+from content_tracing import io_attributes
 from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
 from tracing import set_current_span_attrs, start_activity_span
@@ -176,6 +177,10 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     try:
         with start_activity_span("activity.execute_action", otel, attrs):
+            # Stamp the resolved action input as `input.value` so the Service
+            # Graph drawer shows what was actually requested (gated + redacted).
+            set_current_span_attrs(io_attributes("input", action_input))
+
             # Use per-node timeoutMs if available, otherwise default to 5 min.
             # Add 30s overhead for routing / serialization.
             node_timeout_ms = None
@@ -221,6 +226,9 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     "activity.error": error_msg[:500],
                     "activity.duration_ms": duration_ms,
                 })
+                set_current_span_attrs(
+                    io_attributes("output", result if isinstance(result, dict) else resp_text)
+                )
                 return {
                     "success": False,
                     "error": error_msg,
@@ -262,6 +270,10 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 "activity.result_size_chars": data_size,
                 "activity.has_pause": bool(result.get("pause")),
             })
+
+            # Stamp the function result payload as `output.value` for the
+            # Service Graph drawer (gated + redacted).
+            set_current_span_attrs(io_attributes("output", data))
 
             # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
             if result.get("pause"):

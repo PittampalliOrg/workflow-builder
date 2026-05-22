@@ -29,6 +29,7 @@ import {
   fetchRawConnectionValue,
 } from "../core/credential-service.js";
 import { resolveCodeFunctionExecution } from "../core/code-functions.js";
+import { setSpanInput, setSpanOutput } from "../observability/content.js";
 import {
   logExecutionComplete,
   logExecutionStart,
@@ -882,6 +883,14 @@ function buildLoopPolicyInput(
 }
 
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
+  // Stamp `output.value` (redacted) onto the active span for every response
+  // this plugin's routes emit, so the Service Graph drawer shows the payload
+  // function-router actually returned — not just HTTP status + duration.
+  app.addHook("onSend", async (_request, _reply, payload) => {
+    setSpanOutput(payload);
+    return payload;
+  });
+
   const retiredAgentPrefixes = new Set([
     "durable",
     "dapr-agent",
@@ -912,6 +921,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = parseResult.data as ExecuteRequest;
+    // Stamp the routed action input as `input.value` (redacted) for the drawer.
+    setSpanInput(body.input);
     const resolvedSessionId =
       buildWorkflowSessionId(body.db_execution_id || body.execution_id) ||
       sessionIdFromHeaders(request.headers);
