@@ -1,8 +1,11 @@
 import { error } from "@sveltejs/kit";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import { isPlaywrightMcpEntry } from "$lib/server/agents/mcp-sidecar";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
+import { responseBodyForSpan } from "$lib/server/dapr-client";
+import { setSpanValue } from "$lib/server/observability/content";
 import type { AgentConfig } from "$lib/types/agents";
 
 /**
@@ -73,6 +76,66 @@ function sandboxExecutionApiUrl(): string | null {
 		""
 	).trim();
 	return raw ? raw.replace(/\/+$/, "") : null;
+}
+
+const hostProvisionTracer = trace.getTracer("workflow-builder.agent-workflow-host");
+
+async function postAgentWorkflowHost(
+	baseUrl: string,
+	headers: Record<string, string>,
+	requestBody: Record<string, unknown>,
+): Promise<{ response: Response; body: Record<string, unknown> }> {
+	const url = `${baseUrl}/api/v1/agent-workflow-hosts`;
+	return hostProvisionTracer.startActiveSpan(
+		"workflow-builder.agentWorkflowHost POST /api/v1/agent-workflow-hosts",
+		async (span) => {
+			span.setAttribute("http.request.method", "POST");
+			span.setAttribute("url.full", url);
+			span.setAttribute("url.path", "/api/v1/agent-workflow-hosts");
+			span.setAttribute("http.route", "/api/v1/agent-workflow-hosts");
+			span.setAttribute("workflow_builder.backend", "sandbox-execution-api");
+			setSpanValue(span, "input", requestBody);
+			try {
+				const response = await fetch(url, {
+					method: "POST",
+					headers,
+					body: JSON.stringify(requestBody),
+				});
+				span.setAttribute("http.response.status_code", response.status);
+				try {
+					setSpanValue(span, "output", await responseBodyForSpan(response));
+				} catch {
+					setSpanValue(span, "output", {
+						status: response.status,
+						body: "[response capture failed]",
+					});
+				}
+				if (!response.ok) {
+					span.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: `HTTP ${response.status}`,
+					});
+				}
+				const body = (await response.json().catch(() => ({}))) as Record<
+					string,
+					unknown
+				>;
+				return { response, body };
+			} catch (caught) {
+				const err = caught instanceof Error ? caught : new Error(String(caught));
+				setSpanValue(span, "output", {
+					ok: false,
+					error: err.message,
+					target: "/api/v1/agent-workflow-hosts",
+				});
+				span.recordException(err);
+				span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+				throw caught;
+			} finally {
+				span.end();
+			}
+		},
+	);
 }
 
 export interface AgentWorkflowHostResult {
@@ -228,29 +291,29 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		}
 		return null;
 	})();
-	const response = await fetch(`${baseUrl}/api/v1/agent-workflow-hosts`, {
-		method: "POST",
-		headers: {
+	const requestBody = {
+		sessionId: params.sessionId,
+		agentAppId,
+		runId: params.benchmarkRunId ?? undefined,
+		instanceId:
+			params.benchmarkInstanceId ?? params.workflowExecutionId ?? params.sessionId,
+		executionClass: agentWorkflowHostExecutionClass({
+			benchmarkRunId: params.benchmarkRunId,
+		}),
+		...(timeoutSeconds === null ? {} : { timeoutSeconds }),
+		waitReadySeconds,
+		priorityClass,
+		...(agentImage ? { agentImage } : {}),
+	};
+	const { response, body } = await postAgentWorkflowHost(
+		baseUrl,
+		{
 			"Content-Type": "application/json",
 			...(token ? { Authorization: `Bearer ${token}` } : {}),
 			...traceHeaders,
 		},
-		body: JSON.stringify({
-			sessionId: params.sessionId,
-			agentAppId,
-			runId: params.benchmarkRunId ?? undefined,
-			instanceId:
-				params.benchmarkInstanceId ?? params.workflowExecutionId ?? params.sessionId,
-			executionClass: agentWorkflowHostExecutionClass({
-				benchmarkRunId: params.benchmarkRunId,
-			}),
-			...(timeoutSeconds === null ? {} : { timeoutSeconds }),
-			waitReadySeconds,
-			priorityClass,
-			...(agentImage ? { agentImage } : {}),
-		}),
-	});
-	const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+		requestBody,
+	);
 	if (!response.ok) {
 		throw error(
 			503,
