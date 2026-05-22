@@ -12,8 +12,9 @@ RUN npm install -g pnpm
 # Copy package files
 COPY services/fn-activepieces/package.json ./
 
-# Install dependencies (production only to keep image smaller)
-RUN pnpm install --prod
+# Install dependencies (production only to keep image smaller). pnpm 10+ fails
+# clean builds when transitive packages have unapproved lifecycle scripts.
+RUN pnpm install --prod --ignore-scripts
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder
@@ -24,7 +25,7 @@ RUN npm install -g pnpm
 
 # Copy all deps (including dev for build)
 COPY services/fn-activepieces/package.json ./
-RUN pnpm install --prod=false
+RUN pnpm install --prod=false --ignore-scripts
 
 # Copy source code
 COPY services/fn-activepieces/ ./
