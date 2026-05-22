@@ -190,6 +190,37 @@ export interface ObservabilityWorkflowStep {
 	routedTo?: string | null;
 }
 
+export type ObservabilityWorkflowTimelineKind =
+	| 'workflow_node'
+	| 'dapr_activity'
+	| 'child_workflow'
+	| 'system';
+
+export interface ObservabilityWorkflowTimelineItem {
+	id: string;
+	sequence: number | null;
+	kind: ObservabilityWorkflowTimelineKind;
+	title: string;
+	subtitle: string | null;
+	status: 'success' | 'error' | 'running' | 'pending' | 'unknown';
+	startedAt: string | null;
+	completedAt: string | null;
+	durationMs: number | null;
+	nodeId: string | null;
+	nodeName: string | null;
+	actionType: string | null;
+	traceId: string | null;
+	spanId: string | null;
+	relatedSpanIds: string[];
+	durableTaskId: string | null;
+	durableTaskName: string | null;
+	serviceName: string | null;
+	inputSpanId: string | null;
+	outputSpanId: string | null;
+	hasInput: boolean;
+	hasOutput: boolean;
+}
+
 export type ObservabilityInvestigationEventType =
 	| 'workflow_step'
 	| 'trace_span'
@@ -270,6 +301,7 @@ export interface ObservabilityInvestigationPayload {
 	agentDecisions: ObservabilityAgentDecisionTurn[];
 	agentDecisionDiagram: ObservabilityAgentDecisionDiagram | null;
 	workflowSteps: ObservabilityWorkflowStep[];
+	workflowTimeline: ObservabilityWorkflowTimelineItem[];
 	events: ObservabilityInvestigationEvent[];
 	issues: ObservabilityIssueMarker[];
 }

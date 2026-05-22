@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
-	import { Activity, Sparkles, Wrench, Globe, FileText, AlertTriangle, Loader2 } from '@lucide/svelte';
+	import { Activity, Sparkles, Wrench, Globe, FileText, AlertTriangle, Loader2, ListTree } from '@lucide/svelte';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import type { NodeInsight, RedMetrics } from '$lib/types/service-graph';
 	import { categorizeSpan } from '$lib/utils/span-presentation';
@@ -10,6 +10,7 @@
 	import DrilldownTools from './drilldown-tools.svelte';
 	import DrilldownRequests from './drilldown-requests.svelte';
 	import DrilldownLogs from './drilldown-logs.svelte';
+	import DrilldownWorkflowTimeline from './drilldown-workflow-timeline.svelte';
 
 	let {
 		payload,
@@ -39,10 +40,12 @@
 	let llmCount = $derived(llmSpansCat.length);
 	let toolCount = $derived(toolSpansCat.length);
 	let logCount = $derived(payload?.logs?.length ?? 0);
+	let workflowTimelineCount = $derived(payload?.workflowTimeline?.length ?? 0);
 
-	type TabId = 'timeline' | 'llm' | 'tools' | 'requests' | 'logs';
+	type TabId = 'workflow' | 'timeline' | 'llm' | 'tools' | 'requests' | 'logs';
 	let tabs = $derived.by(() => {
 		const t: { id: TabId; label: string; icon: typeof Activity; count: number }[] = [];
+		if (workflowTimelineCount) t.push({ id: 'workflow', label: 'Workflow', icon: ListTree, count: workflowTimelineCount });
 		t.push({ id: 'timeline', label: 'Timeline', icon: Activity, count: spans.length });
 		if (llmCount) t.push({ id: 'llm', label: 'LLM', icon: Sparkles, count: llmCount });
 		if (toolCount) t.push({ id: 'tools', label: 'Tools', icon: Wrench, count: toolCount });
@@ -51,7 +54,7 @@
 		return t;
 	});
 
-	let activeTab = $state<TabId>('timeline');
+	let activeTab = $state<TabId>('workflow');
 	// Reset to a valid tab when the payload (and thus available tabs) changes.
 	$effect(() => {
 		if (!tabs.some((t) => t.id === activeTab)) activeTab = 'timeline';
@@ -102,6 +105,11 @@
 					{/each}
 				</TabsList>
 				<div class="min-h-0 flex-1 overflow-hidden">
+					{#if workflowTimelineCount}
+						<TabsContent value="workflow" class="h-full data-[state=inactive]:hidden">
+							<DrilldownWorkflowTimeline items={payload.workflowTimeline} {spans} />
+						</TabsContent>
+					{/if}
 					<TabsContent value="timeline" class="h-full data-[state=inactive]:hidden">
 						<DrilldownWaterfall {spans} />
 					</TabsContent>

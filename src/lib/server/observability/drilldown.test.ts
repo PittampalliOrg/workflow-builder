@@ -62,6 +62,7 @@ function payload(traceSpans: ObservabilityTraceSpan[]): ObservabilityInvestigati
 		agentDecisions: [],
 		agentDecisionDiagram: null,
 		workflowSteps: [],
+		workflowTimeline: [],
 		events: [],
 		issues: [],
 	};

@@ -195,6 +195,13 @@ export function filterInvestigationToSelection(
 			? stepMatch(st.stepName) || stepMatch(st.id)
 			: serviceScope != null && svcMatch(st.routedTo)
 	);
+	const workflowTimeline = payload.workflowTimeline.filter((item) => {
+		if (stepIds.size > 0) {
+			return stepMatch(item.nodeId) || stepMatch(item.nodeName) || item.relatedSpanIds.some((id) => retained.has(id));
+		}
+		if (serviceScope != null) return svcMatch(item.serviceName) || item.relatedSpanIds.some((id) => retained.has(id));
+		return item.relatedSpanIds.some((id) => retained.has(id)) || (item.spanId != null && retained.has(item.spanId));
+	});
 
 	const agentDecisions = payload.agentDecisions.filter(
 		(d) => inSet(d.evidence?.spanId) || svcMatch(d.serviceName)
@@ -215,6 +222,7 @@ export function filterInvestigationToSelection(
 		workflowSteps,
 		agentDecisions,
 		issues,
+		workflowTimeline,
 		events
 	};
 }

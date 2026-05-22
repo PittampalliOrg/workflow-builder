@@ -19,6 +19,7 @@ import {
 	getTraceToolSpans,
 	sanitizeTraceIds
 } from '$lib/server/otel/clickhouse';
+import { buildWorkflowTimeline } from '$lib/server/observability/workflow-timeline';
 import type {
 	ObservabilityAgentDecisionDiagram,
 	ObservabilityAgentDecisionDiagramEdge,
@@ -898,6 +899,7 @@ export async function buildSessionInvestigation(sessionOrExecutionId: string): P
 	];
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
+	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });
 	return {
 		summary: buildSummary({
 			scope: 'session',
@@ -921,6 +923,7 @@ export async function buildSessionInvestigation(sessionOrExecutionId: string): P
 		agentDecisions: agentDecisionModel.turns,
 		agentDecisionDiagram: agentDecisionModel.diagram,
 		workflowSteps: steps,
+		workflowTimeline,
 		events,
 		issues
 	};
@@ -984,6 +987,7 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 	];
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
+	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });
 	return {
 		summary: buildSummary({
 			scope: 'trace',
@@ -1007,6 +1011,7 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 		agentDecisions: agentDecisionModel.turns,
 		agentDecisionDiagram: agentDecisionModel.diagram,
 		workflowSteps: steps,
+		workflowTimeline,
 		events,
 		issues
 	};
@@ -1043,6 +1048,7 @@ export async function buildExecutionInvestigation(
 	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
+	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });
 	return {
 		summary: buildSummary({
 			scope: 'session',
@@ -1066,6 +1072,7 @@ export async function buildExecutionInvestigation(
 		agentDecisions: agentDecisionModel.turns,
 		agentDecisionDiagram: agentDecisionModel.diagram,
 		workflowSteps: steps,
+		workflowTimeline,
 		events,
 		issues
 	};
