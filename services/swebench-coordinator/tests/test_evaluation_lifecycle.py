@@ -404,6 +404,7 @@ def test_mlflow_trace_link_uses_rest_fallback(monkeypatch):
 def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     app = load_app(monkeypatch)
     app.INTERNAL_API_TOKEN = "token"
+    stamped: list[tuple[str, object]] = []
     terminated: list[tuple[str, str | None]] = []
     status_updates: list[dict[str, str]] = []
     lease_releases: list[dict[str, str]] = []
@@ -414,6 +415,11 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
             terminated.append((instance_id, output))
 
     monkeypatch.setattr(app, "DaprWorkflowClient", RecordingWorkflowClient)
+    monkeypatch.setattr(
+        app,
+        "set_current_span_io",
+        lambda prefix, value: stamped.append((prefix, value)),
+    )
     monkeypatch.setattr(app, "_delete_evaluator_job", lambda *_args, **_kwargs: {"success": True})
     monkeypatch.setattr(
         app,
@@ -468,6 +474,13 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
             "error": "operator stop",
         }
     ]
+    assert stamped[0] == (
+        "input",
+        {"runId": "run_1", "body": {"reason": "operator stop"}},
+    )
+    assert stamped[-1][0] == "output"
+    assert stamped[-1][1]["success"] is True
+    assert stamped[-1][1]["executionId"] == "swebench-run-run_1"
     assert lease_releases == []
     assert terminal_cleanups == [{"runId": "run_1"}]
     assert result["leaseRelease"]["success"] is True
@@ -1947,12 +1960,18 @@ def test_registered_child_workflow_target_validation(monkeypatch):
 def test_start_benchmark_run_is_idempotent_when_workflow_exists(monkeypatch):
     app = load_app(monkeypatch)
     app.INTERNAL_API_TOKEN = "token"
+    stamped: list[tuple[str, object]] = []
 
     class ExistingWorkflowClient:
         def schedule_new_workflow(self, *_args, **_kwargs):
             raise RuntimeError("workflow instance already exists")
 
     monkeypatch.setattr(app, "DaprWorkflowClient", ExistingWorkflowClient)
+    monkeypatch.setattr(
+        app,
+        "set_current_span_io",
+        lambda prefix, value: stamped.append((prefix, value)),
+    )
 
     response = app.start_benchmark_run(
         app.StartRunRequest(runId="run_1"),
@@ -1964,6 +1983,68 @@ def test_start_benchmark_run_is_idempotent_when_workflow_exists(monkeypatch):
         "executionId": "swebench-run-run_1",
         "alreadyStarted": True,
     }
+    assert stamped == [
+        ("input", {"runId": "run_1"}),
+        ("output", response),
+    ]
+
+
+def test_start_benchmark_run_stamps_http_io(monkeypatch):
+    app = load_app(monkeypatch)
+    app.INTERNAL_API_TOKEN = "token"
+    stamped: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        app,
+        "set_current_span_io",
+        lambda prefix, value: stamped.append((prefix, value)),
+    )
+
+    response = app.start_benchmark_run(
+        app.StartRunRequest(runId="run_2"),
+        Obj(headers={"x-internal-token": "token"}),
+    )
+
+    assert response == {"success": True, "executionId": "swebench-run-run_2"}
+    assert stamped == [
+        ("input", {"runId": "run_2"}),
+        ("output", response),
+    ]
+
+
+def test_evaluation_event_stamps_http_io(monkeypatch):
+    app = load_app(monkeypatch)
+    app.INTERNAL_API_TOKEN = "token"
+    stamped: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        app,
+        "set_current_span_io",
+        lambda prefix, value: stamped.append((prefix, value)),
+    )
+
+    response = app.post_evaluation_event(
+        "run_1",
+        app.EvaluationEventRequest(eventType="results", jobName="job-1"),
+        Obj(headers={"x-internal-token": "token"}),
+    )
+
+    assert response == {
+        "success": True,
+        "instanceId": "swebench-eval-run_1",
+        "eventName": app.EVALUATION_RESULTS_EVENT,
+    }
+    assert stamped == [
+        (
+            "input",
+            {
+                "runId": "run_1",
+                "body": {
+                    "eventType": "results",
+                    "jobName": "job-1",
+                },
+            },
+        ),
+        ("output", response),
+    ]
 
 
 def test_activity_wrapper_stamps_redacted_input_and_output(monkeypatch):

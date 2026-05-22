@@ -278,6 +278,12 @@ class EvaluationEventRequest(BaseModel):
     postedAt: str | None = None
 
 
+def _dump_model(model: Any, *, exclude_none: bool = False) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_none=exclude_none)
+    return model.dict(exclude_none=exclude_none)
+
+
 def _require_internal(request: Request) -> None:
     token = request.headers.get("x-internal-token") or request.headers.get(
         "authorization", ""
@@ -3648,6 +3654,7 @@ def healthz():
 @app.post("/api/v1/benchmark-runs")
 def start_benchmark_run(body: StartRunRequest, request: Request):
     _require_internal(request)
+    set_current_span_io("input", _dump_model(body))
     instance_id = _run_workflow_id(body.runId)
     try:
         DaprWorkflowClient().schedule_new_workflow(
@@ -3661,10 +3668,22 @@ def start_benchmark_run(body: StartRunRequest, request: Request):
                 "SWE-bench run workflow %s is already started; treating start as idempotent",
                 instance_id,
             )
-            return {"success": True, "executionId": instance_id, "alreadyStarted": True}
+            response = {
+                "success": True,
+                "executionId": instance_id,
+                "alreadyStarted": True,
+            }
+            set_current_span_io("output", response)
+            return response
         logger.exception("Failed to schedule SWE-bench run workflow %s", instance_id)
+        set_current_span_io(
+            "output",
+            {"success": False, "executionId": instance_id, "error": str(exc)},
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"success": True, "executionId": instance_id}
+    response = {"success": True, "executionId": instance_id}
+    set_current_span_io("output", response)
+    return response
 
 
 @app.post("/api/v1/benchmark-runs/{run_id}/cancel")
@@ -3672,6 +3691,7 @@ def cancel_benchmark_run(
     run_id: str, request: Request, body: CancelRunRequest = CancelRunRequest()
 ):
     _require_internal(request)
+    set_current_span_io("input", {"runId": run_id, "body": _dump_model(body) if body else {}})
     run_instance_id = _run_workflow_id(run_id)
     preflight_instance_id = _preflight_workflow_id(run_id)
     evaluation_instance_id = _evaluator_workflow_id(run_id)
@@ -3729,7 +3749,7 @@ def cancel_benchmark_run(
             run_id,
             exc,
         )
-    return {
+    response = {
         "success": True,
         "executionId": run_instance_id,
         "preflightExecutionId": preflight_instance_id,
@@ -3740,12 +3760,19 @@ def cancel_benchmark_run(
         "statusUpdate": status_result,
         "leaseRelease": lease_release,
     }
+    set_current_span_io("output", response)
+    return response
 
 
 @app.post("/api/v1/benchmark-runs/{run_id}/evaluation-events")
 def post_evaluation_event(run_id: str, body: EvaluationEventRequest, request: Request):
     _require_internal(request)
+    set_current_span_io("input", {"runId": run_id, "body": _dump_model(body)})
     if body.eventType not in {"results", "failed"}:
+        set_current_span_io(
+            "output",
+            {"success": False, "error": "eventType must be results or failed"},
+        )
         raise HTTPException(
             status_code=400, detail="eventType must be results or failed"
         )
@@ -3755,10 +3782,7 @@ def post_evaluation_event(run_id: str, body: EvaluationEventRequest, request: Re
         else EVALUATION_FAILED_EVENT
     )
     instance_id = _evaluator_workflow_id(run_id)
-    if hasattr(body, "model_dump"):
-        payload = body.model_dump(exclude_none=True)
-    else:  # pragma: no cover - pydantic v1 compatibility
-        payload = body.dict(exclude_none=True)
+    payload = _dump_model(body, exclude_none=True)
     payload["runId"] = run_id
     try:
         DaprWorkflowClient().raise_workflow_event(
@@ -3774,14 +3798,27 @@ def post_evaluation_event(run_id: str, body: EvaluationEventRequest, request: Re
                 instance_id,
                 exc,
             )
-            return {
+            response = {
                 "success": True,
                 "instanceId": instance_id,
                 "eventName": event_name,
                 "ignored": True,
             }
+            set_current_span_io("output", response)
+            return response
         logger.exception(
             "Failed to raise evaluation event %s for %s", event_name, instance_id
         )
+        set_current_span_io(
+            "output",
+            {
+                "success": False,
+                "instanceId": instance_id,
+                "eventName": event_name,
+                "error": str(exc),
+            },
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"success": True, "instanceId": instance_id, "eventName": event_name}
+    response = {"success": True, "instanceId": instance_id, "eventName": event_name}
+    set_current_span_io("output", response)
+    return response
