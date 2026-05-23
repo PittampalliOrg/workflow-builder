@@ -49,6 +49,13 @@ def main() -> int:
     )
     timeout_seconds = evaluation_timeout_seconds()
     max_parallel = evaluation_max_parallel()
+    requested_max_parallel = os.environ.get("SWEBENCH_EVAL_REQUESTED_MAX_PARALLEL", "").strip()
+    capacity_reason = os.environ.get("SWEBENCH_EVAL_CAPACITY_REASON", "").strip()
+    print(
+        "[swebench-evaluator] concurrency "
+        f"requested={requested_max_parallel or max_parallel} "
+        f"effective={max_parallel} reason={capacity_reason or 'none'}"
+    )
     workflow_builder_url = os.environ.get("WORKFLOW_BUILDER_URL", "")
     artifact_mode = evaluator_artifact_mode()
 

@@ -970,6 +970,14 @@ export async function syncBenchmarkInstanceMlflow(params: {
 				metric("evaluation_duration_ms", timings.evaluation_duration_ms),
 				metric("workflow_duration_ms", timings.workflow_duration_ms),
 				metric("sandbox_startup_ms", timings.sandbox_startup_ms),
+				metric(
+					"sandbox_readiness_wait_ready_ms",
+					timings.sandbox_readiness_wait_ready_ms,
+				),
+				metric(
+					"sandbox_readiness_create_sandbox_ms",
+					timings.sandbox_readiness_create_sandbox_ms,
+				),
 				metric("repo_checkout_ms", timings.repo_checkout_ms),
 				metric("agent_solve_ms", timings.agent_solve_ms),
 				metric("patch_extraction_ms", timings.patch_extraction_ms),

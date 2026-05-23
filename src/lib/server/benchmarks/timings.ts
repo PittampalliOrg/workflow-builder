@@ -18,7 +18,7 @@ type DurationStats = {
 	max: number | null;
 };
 
-type TimingPatch = Record<string, number | string | boolean | null>;
+type TimingPatch = Record<string, unknown>;
 
 const TIMING_INSTRUMENTATION_VERSION = 1;
 
@@ -50,6 +50,60 @@ function logDurationMs(log: Pick<WorkflowExecutionLog, "duration" | "startedAt" 
 		return elapsed >= 0 ? elapsed : null;
 	}
 	return null;
+}
+
+function findSandboxReadiness(
+	value: unknown,
+	depth = 0,
+): Record<string, unknown> | null {
+	if (!isRecord(value) || depth > 5) return null;
+	if (isRecord(value.sandboxReadiness)) return value.sandboxReadiness;
+	const workspaceProfile = value.workspaceProfile;
+	if (isRecord(workspaceProfile) && isRecord(workspaceProfile.sandboxReadiness)) {
+		return workspaceProfile.sandboxReadiness;
+	}
+	const sandbox = value.sandbox;
+	const details = isRecord(sandbox) ? sandbox.details : null;
+	if (isRecord(details) && isRecord(details.readiness)) return details.readiness;
+	for (const key of ["data", "result", "output", "value"]) {
+		const nested = findSandboxReadiness(value[key], depth + 1);
+		if (nested) return nested;
+	}
+	return null;
+}
+
+function addSandboxReadinessTiming(
+	patch: TimingPatch,
+	readiness: Record<string, unknown>,
+): void {
+	patch.sandbox_readiness = readiness;
+	const phases = isRecord(readiness.phaseDurationsMs)
+		? readiness.phaseDurationsMs
+		: {};
+	for (const [phase, value] of Object.entries(phases)) {
+		const ms = durationMs(value);
+		if (ms == null) continue;
+		const key = phase
+			.replace(/[^a-zA-Z0-9]+/g, "_")
+			.replace(/^_+|_+$/g, "")
+			.toLowerCase();
+		if (key) patch[`sandbox_readiness_${key}_ms`] = ms;
+	}
+	const snapshot = isRecord(readiness.lastSnapshot) ? readiness.lastSnapshot : null;
+	if (snapshot) {
+		for (const [source, target] of [
+			["sandboxPhase", "sandbox_readiness_sandbox_phase"],
+			["podPhase", "sandbox_readiness_pod_phase"],
+			["nodeName", "sandbox_readiness_node"],
+			["podName", "sandbox_readiness_pod_name"],
+		] as const) {
+			const value = snapshot[source];
+			if (typeof value === "string" && value.trim()) patch[target] = value;
+		}
+	}
+	if (typeof readiness.error === "string" && readiness.error.trim()) {
+		patch.sandbox_readiness_error = readiness.error.trim().slice(0, 1000);
+	}
 }
 
 function elapsedMs(start?: Date | null, end?: Date | null): number | null {
@@ -206,7 +260,7 @@ export function buildWorkflowTimingPatchForTest(
 	input: {
 		runInstance?: Pick<BenchmarkRunInstance, "startedAt" | "inferenceCompletedAt"> | null;
 		execution?: Pick<typeof workflowExecutions.$inferSelect, "startedAt" | "completedAt" | "duration"> | null;
-		logs: Array<Pick<WorkflowExecutionLog, "nodeId" | "duration" | "startedAt" | "completedAt">>;
+		logs: Array<Pick<WorkflowExecutionLog, "nodeId" | "duration" | "startedAt" | "completedAt" | "output">>;
 	},
 ): TimingPatch {
 	return buildWorkflowTimingPatch(input);
@@ -215,7 +269,7 @@ export function buildWorkflowTimingPatchForTest(
 function buildWorkflowTimingPatch(input: {
 	runInstance?: Pick<BenchmarkRunInstance, "startedAt" | "inferenceCompletedAt"> | null;
 	execution?: Pick<typeof workflowExecutions.$inferSelect, "startedAt" | "completedAt" | "duration"> | null;
-	logs: Array<Pick<WorkflowExecutionLog, "nodeId" | "duration" | "startedAt" | "completedAt">>;
+	logs: Array<Pick<WorkflowExecutionLog, "nodeId" | "duration" | "startedAt" | "completedAt" | "output">>;
 }): TimingPatch {
 	const patch: TimingPatch = {
 		instrumentation_version: TIMING_INSTRUMENTATION_VERSION,
@@ -237,6 +291,10 @@ function buildWorkflowTimingPatch(input: {
 		if (duration == null) continue;
 		const existing = byNode.get(log.nodeId);
 		byNode.set(log.nodeId, existing == null ? duration : existing + duration);
+		if (log.nodeId === "workspace_profile") {
+			const readiness = findSandboxReadiness(log.output);
+			if (readiness) addSandboxReadinessTiming(patch, readiness);
+		}
 	}
 	if (byNode.size > 0) patch.workflow_logged_step_count = byNode.size;
 	const mappings: Array<[string, string[]]> = [
@@ -369,6 +427,7 @@ export async function aggregateBenchmarkInstanceTimings(
 				duration: workflowExecutionLogs.duration,
 				startedAt: workflowExecutionLogs.startedAt,
 				completedAt: workflowExecutionLogs.completedAt,
+				output: workflowExecutionLogs.output,
 			})
 			.from(workflowExecutionLogs)
 			.where(eq(workflowExecutionLogs.executionId, row.workflowExecutionId))

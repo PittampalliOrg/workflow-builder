@@ -68,6 +68,7 @@ import {
 } from "./sandbox-capacity";
 import { fetchCapacityObserverSnapshot } from "$lib/server/capacity/observer";
 import { summarizeBenchmarkClusterPressure } from "./cluster-pressure";
+import { estimateBenchmarkEvaluationCapacity } from "./evaluation-capacity";
 import { aggregateBenchmarkInstanceTimings } from "./timings";
 import {
 	buildSwebenchDatasetJsonl,
@@ -1209,11 +1210,26 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 			`SWE-bench launch is paused by capacity pressure: ${capacity.capReason ?? "cluster_pressure"}`,
 		);
 	}
-	const { evaluationConcurrency } = effectiveBenchmarkConcurrency({
+	const requestedEvaluationConcurrency = effectiveBenchmarkConcurrency({
 		instanceCount: instanceIds.length,
 		concurrency: capacity.effectiveConcurrency,
 		evaluationConcurrency: input.evaluationConcurrency,
+	}).evaluationConcurrency;
+	const evaluationCapacity = await estimateBenchmarkEvaluationCapacity({
+		instanceCount: instanceIds.length,
+		evaluationConcurrency: requestedEvaluationConcurrency,
+		clusterPressure,
 	});
+	const evaluationConcurrency = evaluationCapacity.effectiveEvaluationConcurrency;
+	const capacityWithEvaluation = {
+		...capacity,
+		requestedEvaluationConcurrency:
+			evaluationCapacity.requestedEvaluationConcurrency,
+		effectiveEvaluationConcurrency:
+			evaluationCapacity.effectiveEvaluationConcurrency,
+		evaluationConcurrencyReason: evaluationCapacity.reason,
+		evaluatorCapacity: evaluationCapacity,
+	};
 	const concurrency = capacity.effectiveConcurrency;
 	const timeoutSeconds = clampInteger(
 		input.timeoutSeconds,
@@ -1286,7 +1302,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 				summary: {
 					total: instanceIds.length,
 					resolvedRate: 0,
-					capacity,
+					capacity: capacityWithEvaluation,
 					execution: {
 						backend: executionBackend,
 						class: executionClass,

@@ -68,9 +68,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function podIsReady(pod: KubePod): boolean {
+	const deletionTimestamp = (
+		pod.metadata as { deletionTimestamp?: string | null } | undefined
+	)?.deletionTimestamp;
 	return (
 		pod.status?.phase === "Running" &&
-		pod.metadata?.deletionTimestamp == null &&
+		deletionTimestamp == null &&
 		pod.status.conditions?.some(
 			(condition) => condition.type === "Ready" && condition.status === "True",
 		) === true
@@ -108,11 +111,23 @@ function daprLogWindowSeconds(): number {
 
 function parseReadyz(body: unknown): number | null {
 	if (!isRecord(body)) return null;
-	return (
+	const direct =
 		nonNegativeInt(body.workflowConnectedWorkers) ??
 		nonNegativeInt(body.connectedWorkflowWorkers) ??
-		nonNegativeInt(body.connectedWorkers)
-	);
+		nonNegativeInt(body.connectedWorkers);
+	if (direct != null) return direct;
+	for (const value of Object.values(body)) {
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				const nested = parseReadyz(item);
+				if (nested != null) return nested;
+			}
+		} else {
+			const nested = parseReadyz(value);
+			if (nested != null) return nested;
+		}
+	}
+	return null;
 }
 
 async function loadPodConnectedWorkers(
@@ -129,11 +144,11 @@ async function loadPodConnectedWorkers(
 			error: "pod has no IP",
 		};
 	}
-	try {
-		const res = await fetch(`http://${podIP}:${readyzPort()}/readyz`, {
-		method: "GET",
-		signal: AbortSignal.timeout(5_000),
-		});
+		try {
+			const res = await fetch(`http://${podIP}:${readyzPort()}/readyz`, {
+				method: "GET",
+				signal: AbortSignal.timeout(5_000),
+			});
 		if (!res.ok) {
 			return {
 				podName,
@@ -143,12 +158,17 @@ async function loadPodConnectedWorkers(
 				error: `/readyz returned HTTP ${res.status}`,
 			};
 		}
+		const body = await res.json().catch(() => null);
+		const connectedWorkflowWorkers = parseReadyz(body);
 		return {
 			podName,
 			ready: podIsReady(pod),
 			podIP,
-			connectedWorkflowWorkers: parseReadyz(await res.json().catch(() => null)),
-			error: null,
+			connectedWorkflowWorkers,
+			error:
+				connectedWorkflowWorkers == null
+					? "/readyz did not expose workflowConnectedWorkers"
+					: null,
 		};
 	} catch (err) {
 		return {
@@ -331,13 +351,15 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 			deployment?.status?.availableReplicas,
 		);
 		const connectedWorkerPods = connectedWorkers.connectedWorkerPods;
+		const effectiveSidecars =
+			connectedWorkerPods ?? readyReplicas ?? replicas ?? availableReplicas;
 		const workflowCapacity =
-			connectedWorkerPods != null && config.workflowLimitPerSidecar
-				? connectedWorkerPods * config.workflowLimitPerSidecar
+			effectiveSidecars != null && config.workflowLimitPerSidecar
+				? effectiveSidecars * config.workflowLimitPerSidecar
 				: null;
 		const activityCapacity =
-			connectedWorkerPods != null && config.activityLimitPerSidecar
-				? connectedWorkerPods * config.activityLimitPerSidecar
+			effectiveSidecars != null && config.activityLimitPerSidecar
+				? effectiveSidecars * config.activityLimitPerSidecar
 				: null;
 		let logCounts: { actorErrors: number | null; reminderErrors: number | null };
 		try {

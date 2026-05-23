@@ -2149,8 +2149,20 @@ def _put_bff_artifact(
 
 
 def _evaluation_max_parallel(run: dict[str, Any]) -> int:
+    capacity = _capacity_snapshot(run)
     return bounded_swebench_evaluation_concurrency(
         run.get("evaluationConcurrency")
+        or capacity.get("effectiveEvaluationConcurrency")
+        or os.environ.get("SWEBENCH_EVAL_MAX_PARALLEL")
+        or os.environ.get("SWEBENCH_MAX_WORKERS")
+    )
+
+
+def _requested_evaluation_max_parallel(run: dict[str, Any]) -> int:
+    capacity = _capacity_snapshot(run)
+    return bounded_swebench_evaluation_concurrency(
+        capacity.get("requestedEvaluationConcurrency")
+        or run.get("evaluationConcurrency")
         or os.environ.get("SWEBENCH_EVAL_MAX_PARALLEL")
         or os.environ.get("SWEBENCH_MAX_WORKERS")
     )
@@ -2206,10 +2218,20 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     resource_profile = _evaluator_resource_profile(run.get("evaluatorResourceClass"))
     evaluation_timeout_seconds = max(60, int(run.get("timeoutSeconds") or 7200))
     evaluation_max_parallel = _evaluation_max_parallel(run)
+    requested_evaluation_max_parallel = _requested_evaluation_max_parallel(run)
+    evaluation_capacity = _capacity_snapshot(run).get("evaluatorCapacity") or {}
+    evaluation_capacity_reason = _capacity_snapshot(run).get("evaluationConcurrencyReason")
     job_deadline_seconds = _evaluation_deadline_seconds(
         instance_count=len(instance_ids),
         evaluation_max_parallel=evaluation_max_parallel,
         timeout_seconds=evaluation_timeout_seconds,
+    )
+    logger.info(
+        "SWE-bench evaluator concurrency for run %s: requested=%s effective=%s reason=%s",
+        run["id"],
+        requested_evaluation_max_parallel,
+        evaluation_max_parallel,
+        evaluation_capacity_reason or "none",
     )
     instance_image_map = _instance_image_map_for_run(run, instance_ids)
     # Stamp the Kueue evaluator-Job intent for the Service Graph drawer.
@@ -2224,6 +2246,9 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             "predictionsPath": predictions_path,
             "datasetPath": dataset_path,
             "evaluationMaxParallel": evaluation_max_parallel,
+            "requestedEvaluationMaxParallel": requested_evaluation_max_parallel,
+            "evaluationConcurrencyReason": evaluation_capacity_reason,
+            "evaluationCapacity": evaluation_capacity,
             "jobDeadlineSeconds": job_deadline_seconds,
             "kueueQueueName": os.environ.get("SWEBENCH_TEKTON_KUEUE_QUEUE_NAME"),
         },
@@ -2291,6 +2316,14 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
             client.V1EnvVar(
                 name="SWEBENCH_EVAL_MAX_PARALLEL",
                 value=str(evaluation_max_parallel),
+            ),
+            client.V1EnvVar(
+                name="SWEBENCH_EVAL_REQUESTED_MAX_PARALLEL",
+                value=str(requested_evaluation_max_parallel),
+            ),
+            client.V1EnvVar(
+                name="SWEBENCH_EVAL_CAPACITY_REASON",
+                value=str(evaluation_capacity_reason or ""),
             ),
             client.V1EnvVar(
                 name="SWEBENCH_EVALUATOR_ARTIFACT_MODE",

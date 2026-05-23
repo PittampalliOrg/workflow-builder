@@ -40,7 +40,7 @@ describe("Dapr workflow capacity diagnostics", () => {
 			metadata: {
 				name: "workflow-orchestrator-old",
 				deletionTimestamp: "2026-05-23T19:30:00Z",
-			},
+			} as never,
 			status: {
 				phase: "Running",
 				conditions: [{ type: "Ready", status: "True" }],
@@ -59,5 +59,14 @@ describe("Dapr workflow capacity diagnostics", () => {
 
 		process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS = "0";
 		expect(__daprWorkflowCapacityForTest.daprLogWindowSeconds()).toBe(300);
+	});
+
+	it("parses connected workflow workers from nested readyz payloads", () => {
+		expect(
+			__daprWorkflowCapacityForTest.parseReadyz({
+				status: "ready",
+				taskhub: { ready: true, workflowConnectedWorkers: 2 },
+			}),
+		).toBe(2);
 	});
 });

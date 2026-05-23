@@ -18,6 +18,10 @@ import { buildCapacityCoverageSummary } from "$lib/server/capacity/coverage";
 import type { CapacityObserverResult } from "$lib/types/capacity";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
 import { loadParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
+import {
+	estimateBenchmarkEvaluationCapacity,
+	type BenchmarkEvaluationCapacitySnapshot,
+} from "./evaluation-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
 import { loadBenchmarkResourceCapacityDiagnostics } from "./resource-leases";
 import { resolveBenchmarkAgent } from "./service";
@@ -153,6 +157,12 @@ export type BenchmarkCapacityDiagnostics = {
 	};
 	modelCaps: {
 		modelMaxActiveRequests: number | null;
+	};
+	evaluator: {
+		requestedEvaluationConcurrency: number | null;
+		effectiveEvaluationConcurrency: number | null;
+		reason: string | null;
+		capacity: BenchmarkEvaluationCapacitySnapshot | null;
 	};
 	clusterPressure: BenchmarkClusterPressureSnapshot | null;
 	sharedCapacity: ReturnType<typeof summarizeCapacityObserverForQueue>;
@@ -555,6 +565,21 @@ function diagnosticsFromCapacity(params: {
 		modelCaps: {
 			modelMaxActiveRequests: positiveInt(capacity.modelMaxActiveRequests),
 		},
+		evaluator: {
+			requestedEvaluationConcurrency: positiveInt(
+				capacity.requestedEvaluationConcurrency,
+			),
+			effectiveEvaluationConcurrency: positiveInt(
+				capacity.effectiveEvaluationConcurrency,
+			),
+			reason:
+				typeof capacity.evaluationConcurrencyReason === "string"
+					? capacity.evaluationConcurrencyReason
+					: null,
+			capacity: isRecord(capacity.evaluatorCapacity)
+				? (capacity.evaluatorCapacity as BenchmarkEvaluationCapacitySnapshot)
+				: null,
+		},
 		clusterPressure,
 		sharedCapacity: summarizeCapacityObserverForQueue({
 			result:
@@ -628,7 +653,7 @@ export async function getBenchmarkRunCapacityDiagnostics(
 					? liveSandboxCapacity.kueueClusterQueueName
 					: null,
 	});
-	const mergedCapacity = {
+	const mergedCapacity: Record<string, unknown> = {
 		...capacity,
 		parentWorkflowRuntime,
 		parentWorkflowReplicas: parentWorkflowRuntime.replicas,
@@ -647,6 +672,21 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		daprRuntimePressure: parentWorkflowRuntime.daprRuntimePressure,
 		clusterPressure,
 	};
+	if (!isRecord(mergedCapacity.evaluatorCapacity)) {
+		const evaluatorCapacity = await estimateBenchmarkEvaluationCapacity({
+			instanceCount: selectedInstanceCount,
+			evaluationConcurrency: run.evaluationConcurrency,
+			clusterPressure,
+		});
+		Object.assign(mergedCapacity, {
+			requestedEvaluationConcurrency:
+				evaluatorCapacity.requestedEvaluationConcurrency,
+			effectiveEvaluationConcurrency:
+				evaluatorCapacity.effectiveEvaluationConcurrency,
+			evaluationConcurrencyReason: evaluatorCapacity.reason,
+			evaluatorCapacity,
+		});
+	}
 	const [resources, workflowLifecycle] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run,
@@ -719,6 +759,20 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		agentSlug: agent.slug,
 		executionBackend: input.executionBackend,
 	});
+	const evaluatorCapacity = await estimateBenchmarkEvaluationCapacity({
+		instanceCount: selectedInstanceCount,
+		evaluationConcurrency: input.evaluationConcurrency,
+		clusterPressure,
+	});
+	const capacityWithEvaluation = {
+		...capacity,
+		requestedEvaluationConcurrency:
+			evaluatorCapacity.requestedEvaluationConcurrency,
+		effectiveEvaluationConcurrency:
+			evaluatorCapacity.effectiveEvaluationConcurrency,
+		evaluationConcurrencyReason: evaluatorCapacity.reason,
+		evaluatorCapacity,
+	};
 	const pseudoRun = {
 		id: "launch-candidate",
 		projectId: input.projectId,
@@ -740,7 +794,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 			(_, index) => String(index),
 		),
 		concurrency: capacity.effectiveConcurrency,
-		evaluationConcurrency: positiveInt(input.evaluationConcurrency) ?? 24,
+		evaluationConcurrency: evaluatorCapacity.effectiveEvaluationConcurrency,
 		timeoutSeconds: 7200,
 		maxTurns: null,
 		evaluatorResourceClass: "standard",
@@ -751,7 +805,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		mlflowRunId: null,
 		mlflowDatasetId: null,
 		mlflowEvalRunId: null,
-		summary: { capacity },
+		summary: { capacity: capacityWithEvaluation },
 		tags: [],
 		error: null,
 		cancelRequestedAt: null,
@@ -770,7 +824,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 	]);
 	return diagnosticsFromCapacity({
 		run: pseudoRun,
-		capacity,
+		capacity: capacityWithEvaluation,
 		selectedInstanceCount,
 		resources,
 		workflowLifecycle,

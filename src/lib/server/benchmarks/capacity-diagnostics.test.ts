@@ -54,6 +54,9 @@ describe("benchmark capacity diagnostics", () => {
 						diskPressureNodeCount: 1,
 					},
 					modelMaxActiveRequests: 64,
+					requestedEvaluationConcurrency: 24,
+					effectiveEvaluationConcurrency: 6,
+					evaluationConcurrencyReason: "kueue_eval_capacity",
 					clusterPressure: {
 						available: true,
 						pressure: false,
@@ -134,6 +137,11 @@ describe("benchmark capacity diagnostics", () => {
 			},
 			modelCaps: {
 				modelMaxActiveRequests: 64,
+			},
+			evaluator: {
+				requestedEvaluationConcurrency: 24,
+				effectiveEvaluationConcurrency: 6,
+				reason: "kueue_eval_capacity",
 			},
 			clusterPressure: {
 				available: true,

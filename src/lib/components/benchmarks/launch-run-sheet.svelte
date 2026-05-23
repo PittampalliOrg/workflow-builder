@@ -28,6 +28,11 @@
 		daprWorkflow: {
 			effectiveCapacity: number | null;
 		};
+		evaluator?: {
+			requestedEvaluationConcurrency: number | null;
+			effectiveEvaluationConcurrency: number | null;
+			reason: string | null;
+		};
 		parentWorkflow: {
 			replicas: number | null;
 			readyReplicas: number | null;
@@ -1202,6 +1207,11 @@
 						{/if}
 						{#if capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== null && capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== undefined}
 							<span>· kueue {capacityDiagnostics.sandbox.kueueAvailableSandboxSlots}</span>
+						{/if}
+						{#if capacityDiagnostics.evaluator?.effectiveEvaluationConcurrency}
+							<span>
+								· eval {capacityDiagnostics.evaluator.requestedEvaluationConcurrency ?? '—'}→{capacityDiagnostics.evaluator.effectiveEvaluationConcurrency}
+							</span>
 						{/if}
 						{#if capacityDiagnostics.sandbox.diskPressureNodeCount}
 							<span class="text-amber-600">

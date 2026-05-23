@@ -132,18 +132,32 @@ describe("benchmark timing rollups", () => {
 					duration: "45000",
 					startedAt: at("2026-05-03T11:59:50Z"),
 					completedAt: at("2026-05-03T12:00:35Z"),
+					output: {
+						workspaceProfile: {
+							sandboxReadiness: {
+								phaseDurationsMs: { create_sandbox: 12_000, wait_ready: 30_000 },
+								lastSnapshot: {
+									sandboxPhase: "Ready",
+									podPhase: "Running",
+									nodeName: "worker-a",
+								},
+							},
+						},
+					},
 				},
 				{
 					nodeId: "checkout_repo",
 					duration: "90000",
 					startedAt: at("2026-05-03T12:00:35Z"),
 					completedAt: at("2026-05-03T12:02:05Z"),
+					output: null,
 				},
 				{
 					nodeId: "solve",
 					duration: "150000",
 					startedAt: at("2026-05-03T12:02:05Z"),
 					completedAt: at("2026-05-03T12:04:35Z"),
+					output: null,
 				},
 			],
 		});
@@ -154,6 +168,10 @@ describe("benchmark timing rollups", () => {
 			workflow_logged_step_count: 3,
 			workspace_profile_duration_ms: 45_000,
 			sandbox_startup_ms: 45_000,
+			sandbox_readiness_create_sandbox_ms: 12_000,
+			sandbox_readiness_wait_ready_ms: 30_000,
+			sandbox_readiness_pod_phase: "Running",
+			sandbox_readiness_node: "worker-a",
 			checkout_repo_duration_ms: 90_000,
 			repo_checkout_ms: 90_000,
 			solve_duration_ms: 150_000,

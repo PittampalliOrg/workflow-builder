@@ -396,6 +396,11 @@
 							{#if capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== null && capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== undefined}
 								<span>kueue {capacityDiagnostics.sandbox.kueueAvailableSandboxSlots}</span>
 							{/if}
+							{#if capacityDiagnostics.evaluator?.effectiveEvaluationConcurrency}
+								<span>
+									eval {capacityDiagnostics.evaluator.requestedEvaluationConcurrency ?? '—'}→{capacityDiagnostics.evaluator.effectiveEvaluationConcurrency}
+								</span>
+							{/if}
 							{#if capacityDiagnostics.sharedCapacity?.available}
 								<span>shared fits {capacityDiagnostics.sharedCapacity.fitsAdditionalSessions ?? '—'}</span>
 							{/if}
