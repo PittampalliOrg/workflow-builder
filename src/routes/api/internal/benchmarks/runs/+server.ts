@@ -9,7 +9,10 @@ import {
 	benchmarkSuites,
 	environmentImageBuilds,
 } from "$lib/server/db/schema";
-import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import {
+	buildSwebenchEnvironmentSpec,
+	syncEnvironmentBuild,
+} from "$lib/server/environments/environment-image-builds";
 import {
 	isExactValidatedSwebenchInferenceEnvironment,
 	loadSwebenchInferenceEnvironmentMappings,
@@ -229,6 +232,7 @@ async function selectPrevalidatedInstanceIds(
 		hashByInstance.set(candidate.instanceId, spec.envSpecHash);
 	}
 	if (hashByInstance.size === 0) return [];
+	await syncSelectableEnvironmentBuilds(Array.from(hashByInstance.values()));
 	const validatedBuilds = await database
 		.select({ envSpecHash: environmentImageBuilds.envSpecHash })
 		.from(environmentImageBuilds)
@@ -257,4 +261,43 @@ async function selectPrevalidatedInstanceIds(
 		if (selected.length >= limit) break;
 	}
 	return selected;
+}
+
+async function syncSelectableEnvironmentBuilds(envSpecHashes: string[]) {
+	const database = db;
+	if (!database || envSpecHashes.length === 0) return;
+	const limit = readPositiveEnvInt("SWEBENCH_RANDOM_SELECTION_SYNC_BUILDS_LIMIT", 32);
+	if (limit <= 0) return;
+	const rows = await database
+		.select()
+		.from(environmentImageBuilds)
+		.where(
+			and(
+				inArray(environmentImageBuilds.envSpecHash, envSpecHashes),
+				inArray(environmentImageBuilds.status, ["queued", "building"]),
+			),
+		)
+		.orderBy(asc(environmentImageBuilds.updatedAt))
+		.limit(limit);
+	for (const row of rows) {
+		try {
+			await syncEnvironmentBuild(row);
+		} catch (err) {
+			console.warn(
+				"[benchmarks] failed to sync selectable SWE-bench environment build",
+				{
+					buildId: row.id,
+					pipelineRunName: row.pipelineRunName,
+					error: err instanceof Error ? err.message : String(err),
+				},
+			);
+		}
+	}
+}
+
+function readPositiveEnvInt(name: string, fallback: number): number {
+	const raw = process.env[name];
+	if (!raw) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }

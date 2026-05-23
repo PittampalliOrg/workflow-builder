@@ -32,17 +32,20 @@ The capacity-oriented dev shape is:
 - Tailscale exposes the API through the spoke ProxyGroup; workflow-builder app
   access remains a promoted spoke workload.
 
-The May 2026 rebuild started with conservative 72/168-instance ramps. The
-current staged Kueue target is 336 concurrent inference sandboxes on the six
-benchmark workers:
+The May 2026 rebuild intentionally keeps benchmark Kueue quota below raw node
+capacity until higher-concurrency canaries prove the rest of the stack. The
+current `benchmark-fast` nominal quota is 24 CPU and 96 pods, with 12 CPU and
+48 pods of bounded cohort borrowing.
 
 ```text
-84 benchmark-fast CPU quota / 250m sandbox CPU request = 336 sandboxes
+96 nominal pods - 3 browserstation pods = 93 pods
+93 pods / 3 pods per full SWE-bench instance = 31 nominal full instances
 ```
 
-This leaves about 7.8 allocatable CPU outside Kueue on the six-worker pool
-(91.8 CPU allocatable total). Memory, pod count, and ephemeral-storage quotas
-are not the limiting resources at the current 4Gi sandbox ephemeral request.
+The same profile can reach about 47 full instances if it borrows its configured
+48-pod headroom and competing lower-priority queues are idle. Do not treat that
+as deterministic capacity unless the capacity snapshot reports borrowed quota
+and the competing queue state.
 
 ## PipelineRun Guardrails
 
@@ -381,7 +384,8 @@ Dev currently runs the Kueue-backed auto-capacity inference profile:
 - `BENCHMARK_EXECUTION_BACKEND=dapr-kueue`
 - `AGENT_WORKFLOW_HOST_BACKEND=kueue`
 - `BENCHMARK_EXECUTION_CLASS=benchmark-fast`
-- `benchmark-fast` ClusterQueue staged quota: 84 CPU, 160Gi memory, 1536Gi ephemeral-storage, 384 pods
+- `benchmark-fast` ClusterQueue nominal quota: 24 CPU, 60Gi memory, 272Gi ephemeral-storage, 96 pods
+- `benchmark-fast` bounded borrowing: 12 CPU, 30Gi memory, 136Gi ephemeral-storage, 48 pods
 - sandbox request profile: 250m CPU, 256Mi memory, 4Gi ephemeral-storage
 - no separate `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` cap; Dapr workflow capacity derives from runtime sidecar capacity
 - no separate `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` cap in the Kueue path
@@ -424,24 +428,32 @@ evaluation callback did not persist per-instance harness results.
 
 ### Estimating Maximum Concurrency
 
-For the current dev deployment, the practical inference ceiling is:
+For the current dev deployment, deterministic nominal inference capacity is:
 
 ```text
 min(
-  84 CPU Kueue quota / 250m sandbox CPU request = 336,
-  1536Gi Kueue ephemeral quota / 4Gi sandbox ephemeral request = 384,
-  384 Kueue pod quota,
+  24 CPU Kueue quota / 450m full-instance CPU request = 53,
+  272Gi Kueue ephemeral quota / 6.54Gi full-instance ephemeral request = 41,
+  (96 Kueue pod quota - 3 browserstation pods) / 3 pods per instance = 31,
   live schedulable sandbox slots,
   selected instance count,
   requested concurrency
-) = 336 when the cluster is otherwise idle and launch diagnostics agree
+) = 31 when the cluster is otherwise idle and launch diagnostics agree
 ```
 
-The six-worker pool has about 91.8 allocatable CPU. The 84 CPU Kueue quota is a
-staged safety value that leaves about 7.8 CPU for daprd, node agents, and
-system overhead. Going above 336 should be done as a separate ramp after
-validating nodefs/imagefs, DiskPressure, Dapr scheduler health, and provider
-tail latency at 336.
+If `benchmark-fast` borrows its full configured headroom, pod quota rises to
+141 available benchmark pods after browserstation, or about 47 full instances.
+Going above that requires a GitOps quota change. The six-worker pool reports
+about 91.8 allocatable CPU, 177Gi memory, 1.8Ti ephemeral storage, and 660 pod
+slots, so the next quota expansion should be deliberate and should preserve
+reserve for daprd, node agents, image pulls, cleanup jobs, and unrelated
+platform workloads.
+
+Random high-concurrency runs also require enough exact prevalidated inference
+images. The random selector only admits instances whose computed environment
+spec hash has a validated image. If the selector returns fewer instances than
+the requested limit while Kueue headroom is available, check and sync
+`environment_image_builds` before treating dev Kueue as the limiter.
 
 Because the 24-run had 8 stalled inferences that held slots until the
 `BENCHMARK_INFERENCE_STALL_SECONDS=480` detector fired, extrapolate wall-clock

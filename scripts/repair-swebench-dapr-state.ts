@@ -1,5 +1,6 @@
 import postgres from "postgres";
 import {
+	extractSwebenchParentInstanceIdsFromStateKeys,
 	selectSwebenchDaprStateKeysForRepair,
 	swebenchDaprRepairDecision,
 } from "../src/lib/server/benchmarks/dapr-state-repair";
@@ -73,7 +74,7 @@ async function activeBenchmarkCounts(sql: postgres.Sql) {
 	const [leases] = await sql<{ count: number }[]>`
 		SELECT COUNT(*)::int AS count
 		FROM benchmark_resource_leases
-		WHERE status = 'active'
+		WHERE released_at IS NULL
 	`;
 	return {
 		activeRunCount: runs?.count ?? 0,
@@ -84,13 +85,19 @@ async function activeBenchmarkCounts(sql: postgres.Sql) {
 async function loadCandidates(sql: postgres.Sql, args: Args): Promise<Candidate[]> {
 	const parentRows = args.instanceId
 		? [{ instance_id: args.instanceId }]
-		: await sql<{ instance_id: string }[]>`
-				SELECT DISTINCT split_part(key, '||', 2) AS instance_id
-				FROM wfstate_state
-				WHERE split_part(key, '||', 2) LIKE 'sw-swebench-instance-exec-%'
-				ORDER BY instance_id
-				LIMIT ${args.limit}
-			`;
+		: extractSwebenchParentInstanceIdsFromStateKeys(
+				(
+					await sql<{ key: string }[]>`
+						SELECT key
+						FROM wfstate_state
+						WHERE key LIKE '%||sw-swebench-instance-exec-%||%'
+							OR key LIKE '%||sw-swebench-instance-exec-%__durable__%'
+						ORDER BY updated_at NULLS LAST, created_at
+					`
+				).map((row) => row.key),
+			)
+				.slice(0, args.limit)
+				.map((instance_id) => ({ instance_id }));
 	const candidates: Candidate[] = [];
 	for (const row of parentRows) {
 		const instanceId = row.instance_id;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	extractSwebenchParentInstanceIdsFromStateKeys,
 	selectSwebenchDaprStateKeysForRepair,
 	swebenchDaprRepairDecision,
 } from "./dapr-state-repair";
@@ -54,6 +55,17 @@ describe("benchmark-scoped Dapr state repair", () => {
 			reason: "non_swebench_instance",
 			benchmarkOwned: false,
 		});
+	});
+
+	it("extracts SWE-bench parent ids from parent and deterministic child wfstate keys", () => {
+		expect(
+			extractSwebenchParentInstanceIdsFromStateKeys([
+				"workflow-orchestrator||dapr.internal.workflow-builder.workflow-orchestrator.workflow||sw-swebench-instance-exec-c7||metadata",
+				"agent-session-host||dapr.internal.workflow-builder.agent-session-host.workflow||sw-swebench-instance-exec-c7__durable__solve__run__0||history-000001",
+				"agent-session-host||dapr.internal.workflow-builder.agent-session-host.workflow||sw-swebench-instance-exec-c10__durable__solve__run__0__tool__1||metadata",
+				"workflow-orchestrator||dapr.internal.workflow-builder.workflow-orchestrator.workflow||manual-workflow-1||metadata",
+			]),
+		).toEqual(["sw-swebench-instance-exec-c10", "sw-swebench-instance-exec-c7"]);
 	});
 
 	it("selects only parent and deterministic child/session wfstate keys", () => {

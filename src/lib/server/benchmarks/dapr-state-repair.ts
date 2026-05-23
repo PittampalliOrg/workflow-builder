@@ -19,6 +19,28 @@ export function isSwebenchParentWorkflowInstanceId(instanceId: string): boolean 
 	return instanceId.trim().startsWith(SWEBENCH_PARENT_INSTANCE_PREFIX);
 }
 
+export function extractSwebenchParentInstanceIdsFromStateKeys(keys: string[]): string[] {
+	const ids = new Set<string>();
+	for (const key of keys) {
+		const parts = key.split("||");
+		const rawInstanceId = parts[2]?.trim();
+		const instanceId = rawInstanceId?.includes("__durable__")
+			? rawInstanceId.slice(0, rawInstanceId.indexOf("__durable__"))
+			: rawInstanceId;
+		if (instanceId && isSwebenchParentWorkflowInstanceId(instanceId)) {
+			ids.add(instanceId);
+			continue;
+		}
+		const match = key.match(
+			/\|\|(sw-swebench-instance-exec-[^|]+?)__durable__/,
+		);
+		if (match?.[1] && isSwebenchParentWorkflowInstanceId(match[1])) {
+			ids.add(match[1]);
+		}
+	}
+	return [...ids].sort();
+}
+
 export function swebenchDaprRepairDecision(
 	input: SwebenchDaprRepairDecisionInput,
 ): SwebenchDaprRepairDecision {
