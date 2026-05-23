@@ -243,7 +243,7 @@ EVALUATOR_RESOURCE_PROFILES: dict[str, dict[str, dict[str, dict[str, str]]]] = {
     # client + watch loop + a handful of MLflow logs.
     "standard": {
         "evaluator": {
-            "requests": {"cpu": "0", "memory": "0"},
+            "requests": {"cpu": "50m", "memory": "128Mi"},
             "limits": {"cpu": "1", "memory": "512Mi"},
         },
     },

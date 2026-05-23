@@ -674,6 +674,8 @@ def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     token_source = env_sources["INTERNAL_API_TOKEN"].secret_key_ref
     assert token_source.name == "workflow-builder-secrets"
     assert token_source.key == "INTERNAL_API_TOKEN"
+    assert evaluator.resources.requests == {"cpu": "50m", "memory": "128Mi"}
+    assert evaluator.resources.limits == {"cpu": "1", "memory": "512Mi"}
     assert len(job_name) <= 63
 
 
