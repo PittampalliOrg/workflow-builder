@@ -1,4 +1,18 @@
 import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
+import type { ParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
+
+export type BenchmarkCapacityLimiter =
+	| "selected_instance_count"
+	| "runtime_capacity"
+	| "dapr_parent_capacity"
+	| "dapr_workflow_capacity"
+	| "dapr_runtime_pressure"
+	| "global_max"
+	| "agent_workflow_capacity"
+	| "sandbox_capacity"
+	| "kueue_capacity"
+	| "sandbox_schedulable_capacity"
+	| "model_capacity";
 
 export type BenchmarkRuntimeCapacitySnapshot = {
 	capacityMode: "manual" | "auto" | "kueue";
@@ -10,6 +24,20 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	perSidecarWorkflowLimit: number;
 	daprWorkflowLimitPerSidecar: number;
 	daprWorkflowEffectiveCapacity: number;
+	parentWorkflowRuntime: ParentWorkflowRuntimeSnapshot | null;
+	parentWorkflowReplicas: number | null;
+	parentWorkflowReadyReplicas: number | null;
+	parentWorkflowConnectedWorkers: number | null;
+	parentWorkflowLimitPerSidecar: number | null;
+	parentActivityLimitPerSidecar: number | null;
+	parentWorkflowEffectiveCapacity: number | null;
+	parentActivityEffectiveCapacity: number | null;
+	daprRuntimeVersion: string | null;
+	daprSchedulerPods: number | null;
+	daprSchedulerReadyPods: number | null;
+	daprRecentActorErrorCount: number | null;
+	daprRecentReminderErrorCount: number | null;
+	daprRuntimePressure: boolean;
 	agentWorkflowMaxActiveTurns: number | null;
 	runtimeSlots: number;
 	slotsPerReplica: number;
@@ -21,6 +49,8 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	schedulableSandboxCapacity: number | null;
 	sandboxCapacity: BenchmarkSandboxCapacitySnapshot | null;
 	modelMaxActiveRequests: number | null;
+	capacityLimiters: BenchmarkCapacityLimiter[];
+	primaryLimiter: BenchmarkCapacityLimiter | null;
 	capReason: string | null;
 };
 
@@ -36,6 +66,7 @@ export type BenchmarkRuntimeCapacityInput = {
 	agentWorkflowMaxActiveTurns?: number | null;
 	schedulableSandboxCapacity?: number | null;
 	sandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
+	parentWorkflowRuntime?: ParentWorkflowRuntimeSnapshot | null;
 	modelMaxActiveRequests?: number | null;
 	executionBackend?: string | null;
 };
@@ -193,6 +224,10 @@ export function estimateBenchmarkRuntimeCapacity(
 		1,
 		replicas * daprWorkflowLimitPerSidecar,
 	);
+	const parentWorkflowRuntime = input.parentWorkflowRuntime ?? null;
+	const parentWorkflowEffectiveCapacity = positiveInt(
+		parentWorkflowRuntime?.effectiveWorkflowCapacity,
+	);
 	const configuredMaxActiveSessions = positiveInt(input.maxActiveSessions);
 	const agentWorkflowMaxActiveTurns =
 		positiveInt(input.agentWorkflowMaxActiveTurns) ??
@@ -271,6 +306,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		requested,
 		selectedCount,
 		mode === "kueue" ? Number.POSITIVE_INFINITY : runtimeMax,
+		parentWorkflowEffectiveCapacity ?? Number.POSITIVE_INFINITY,
 		globalMax,
 		agentWorkflowMaxActiveTurns ?? Number.POSITIVE_INFINITY,
 		mode === "kueue"
@@ -278,7 +314,7 @@ export function estimateBenchmarkRuntimeCapacity(
 			: (sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY),
 		modelMax ?? Number.POSITIVE_INFINITY,
 	);
-	const reasons: string[] = [];
+	const reasons: BenchmarkCapacityLimiter[] = [];
 	if (requested > selectedCount && effective === selectedCount) {
 		reasons.push("selected_instance_count");
 	}
@@ -286,10 +322,20 @@ export function estimateBenchmarkRuntimeCapacity(
 		reasons.push("runtime_capacity");
 	}
 	if (
+		parentWorkflowEffectiveCapacity != null &&
+		requested > parentWorkflowEffectiveCapacity &&
+		effective === parentWorkflowEffectiveCapacity
+	) {
+		reasons.push("dapr_parent_capacity");
+	}
+	if (
 		requested > daprWorkflowEffectiveCapacity &&
 		effective === daprWorkflowEffectiveCapacity
 	) {
 		reasons.push("dapr_workflow_capacity");
+	}
+	if (parentWorkflowRuntime?.daprRuntimePressure) {
+		reasons.push("dapr_runtime_pressure");
 	}
 	if (
 		mode !== "kueue" &&
@@ -316,7 +362,7 @@ export function estimateBenchmarkRuntimeCapacity(
 	) {
 		reasons.push(
 			usingKueueInstanceCapacity
-				? "kueue_instance_schedulable_capacity"
+				? "kueue_capacity"
 				: "sandbox_schedulable_capacity",
 		);
 	}
@@ -334,6 +380,36 @@ export function estimateBenchmarkRuntimeCapacity(
 		perSidecarWorkflowLimit: daprWorkflowLimitPerSidecar,
 		daprWorkflowLimitPerSidecar,
 		daprWorkflowEffectiveCapacity,
+		parentWorkflowRuntime,
+		parentWorkflowReplicas: positiveInt(parentWorkflowRuntime?.replicas),
+		parentWorkflowReadyReplicas: nonNegativeInt(
+			parentWorkflowRuntime?.readyReplicas,
+		),
+		parentWorkflowConnectedWorkers: nonNegativeInt(
+			parentWorkflowRuntime?.connectedWorkflowWorkers,
+		),
+		parentWorkflowLimitPerSidecar: positiveInt(
+			parentWorkflowRuntime?.workflowLimitPerSidecar,
+		),
+		parentActivityLimitPerSidecar: positiveInt(
+			parentWorkflowRuntime?.activityLimitPerSidecar,
+		),
+		parentWorkflowEffectiveCapacity,
+		parentActivityEffectiveCapacity: positiveInt(
+			parentWorkflowRuntime?.effectiveActivityCapacity,
+		),
+		daprRuntimeVersion: parentWorkflowRuntime?.daprRuntimeVersion ?? null,
+		daprSchedulerPods: nonNegativeInt(parentWorkflowRuntime?.schedulerPods),
+		daprSchedulerReadyPods: nonNegativeInt(
+			parentWorkflowRuntime?.schedulerReadyPods,
+		),
+		daprRecentActorErrorCount: nonNegativeInt(
+			parentWorkflowRuntime?.recentActorErrorCount,
+		),
+		daprRecentReminderErrorCount: nonNegativeInt(
+			parentWorkflowRuntime?.recentReminderErrorCount,
+		),
+		daprRuntimePressure: parentWorkflowRuntime?.daprRuntimePressure === true,
 		agentWorkflowMaxActiveTurns,
 		runtimeSlots,
 		slotsPerReplica,
@@ -358,6 +434,8 @@ export function estimateBenchmarkRuntimeCapacity(
 		schedulableSandboxCapacity,
 		sandboxCapacity: input.sandboxCapacity ?? null,
 		modelMaxActiveRequests: modelMax,
+		capacityLimiters: reasons,
+		primaryLimiter: reasons[0] ?? null,
 		capReason: reasons.length > 0 ? reasons.join("+") : null,
 	};
 }

@@ -61,6 +61,7 @@ import {
 	type ValidBenchmarkAgent,
 } from "./agents";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
+import { loadParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
 import {
 	loadSchedulableSandboxCapacitySnapshot,
 	type BenchmarkSandboxCapacitySnapshot,
@@ -1166,6 +1167,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		input.executionClass ?? benchmarkExecutionClass(),
 	);
 	const sandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
+	const parentWorkflowRuntime = await loadParentWorkflowRuntimeSnapshot();
 	const launchPreflightError = benchmarkLaunchPreflightError({
 		executionBackend,
 		sandboxCapacity,
@@ -1181,6 +1183,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
 		maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
 		sandboxCapacity,
+		parentWorkflowRuntime,
 		requestedInstanceCount: instanceIds.length,
 		requestedConcurrency: input.concurrency,
 		executionBackend,

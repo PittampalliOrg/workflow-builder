@@ -28,6 +28,18 @@
 		daprWorkflow: {
 			effectiveCapacity: number | null;
 		};
+		parentWorkflow: {
+			replicas: number | null;
+			readyReplicas: number | null;
+			connectedWorkers: number | null;
+			effectiveWorkflowCapacity: number | null;
+			daprRuntimeVersion: string | null;
+			schedulerReadyPods: number | null;
+			schedulerPods: number | null;
+			recentActorErrorCount: number | null;
+			recentReminderErrorCount: number | null;
+			daprRuntimePressure: boolean;
+		};
 		sandbox: {
 			schedulableSandboxCapacity: number | null;
 			ephemeralStorageLimitedCapacity: number | null;
@@ -1168,6 +1180,19 @@
 							= {capacityDiagnostics.runtime.slots ?? '—'} slots
 						</span>
 						<span>· dapr {capacityDiagnostics.daprWorkflow.effectiveCapacity ?? '—'}</span>
+						<span>
+							· parent {capacityDiagnostics.parentWorkflow.replicas ?? '—'}×
+							{capacityDiagnostics.parentWorkflow.connectedWorkers ?? '—'} workers =
+							{capacityDiagnostics.parentWorkflow.effectiveWorkflowCapacity ?? '—'}
+						</span>
+						{#if capacityDiagnostics.parentWorkflow.daprRuntimeVersion}
+							<span>· dapr {capacityDiagnostics.parentWorkflow.daprRuntimeVersion}</span>
+						{/if}
+						{#if capacityDiagnostics.parentWorkflow.schedulerPods !== null}
+							<span>
+								· scheduler {capacityDiagnostics.parentWorkflow.schedulerReadyPods ?? '—'}/{capacityDiagnostics.parentWorkflow.schedulerPods}
+							</span>
+						{/if}
 						<span>· sandbox headroom {capacityDiagnostics.sandbox.schedulableSandboxCapacity ?? '—'}</span>
 						{#if capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity !== null}
 							<span>· storage {capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity}</span>
@@ -1186,6 +1211,11 @@
 						{#if capacityDiagnostics.blockedBy.length > 0}
 							<span class="text-amber-600">
 								· blocked by {capacityDiagnostics.blockedBy.map((r) => r.replace(/_/g, ' ')).join(', ')}
+							</span>
+						{/if}
+						{#if capacityDiagnostics.parentWorkflow.daprRuntimePressure}
+							<span class="text-amber-600">
+								· dapr pressure actor {capacityDiagnostics.parentWorkflow.recentActorErrorCount ?? '—'} reminder {capacityDiagnostics.parentWorkflow.recentReminderErrorCount ?? '—'}
 							</span>
 						{/if}
 						{#if capacityDiagnostics.workflowLifecycle?.issue === 'dapr_actor_state_store_mismatch'}

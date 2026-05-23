@@ -17,6 +17,7 @@ import {
 import { buildCapacityCoverageSummary } from "$lib/server/capacity/coverage";
 import type { CapacityObserverResult } from "$lib/types/capacity";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
+import { loadParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
 import { loadBenchmarkResourceCapacityDiagnostics } from "./resource-leases";
 import { resolveBenchmarkAgent } from "./service";
@@ -89,6 +90,23 @@ export type BenchmarkCapacityDiagnostics = {
 		perSidecarLimit: number | null;
 		effectiveCapacity: number | null;
 		agentWorkflowMaxActiveTurns: number | null;
+	};
+	parentWorkflow: {
+		appId: string | null;
+		replicas: number | null;
+		readyReplicas: number | null;
+		connectedWorkers: number | null;
+		workflowLimitPerSidecar: number | null;
+		activityLimitPerSidecar: number | null;
+		effectiveWorkflowCapacity: number | null;
+		effectiveActivityCapacity: number | null;
+		daprRuntimeVersion: string | null;
+		schedulerPods: number | null;
+		schedulerReadyPods: number | null;
+		recentActorErrorCount: number | null;
+		recentReminderErrorCount: number | null;
+		daprRuntimePressure: boolean;
+		error: string | null;
 	};
 	sandbox: {
 		configuredMaxActiveSandboxes: number | null;
@@ -328,6 +346,9 @@ function diagnosticsFromCapacity(params: {
 	const sandboxCapacity = isRecord(capacity.sandboxCapacity)
 		? capacity.sandboxCapacity
 		: {};
+	const parentRuntime = isRecord(capacity.parentWorkflowRuntime)
+		? capacity.parentWorkflowRuntime
+		: {};
 	const blockedBy = params.resources
 		.filter((resource) => resource.blocked)
 		.map((resource) => resource.resourceType);
@@ -366,6 +387,44 @@ function diagnosticsFromCapacity(params: {
 			agentWorkflowMaxActiveTurns: positiveInt(
 				capacity.agentWorkflowMaxActiveTurns,
 			),
+		},
+		parentWorkflow: {
+			appId:
+				typeof parentRuntime.parentAppId === "string"
+					? parentRuntime.parentAppId
+					: "workflow-orchestrator",
+			replicas: positiveInt(capacity.parentWorkflowReplicas),
+			readyReplicas: nonNegativeInt(capacity.parentWorkflowReadyReplicas),
+			connectedWorkers: nonNegativeInt(
+				capacity.parentWorkflowConnectedWorkers,
+			),
+			workflowLimitPerSidecar: positiveInt(
+				capacity.parentWorkflowLimitPerSidecar,
+			),
+			activityLimitPerSidecar: positiveInt(
+				capacity.parentActivityLimitPerSidecar,
+			),
+			effectiveWorkflowCapacity: positiveInt(
+				capacity.parentWorkflowEffectiveCapacity,
+			),
+			effectiveActivityCapacity: positiveInt(
+				capacity.parentActivityEffectiveCapacity,
+			),
+			daprRuntimeVersion:
+				typeof capacity.daprRuntimeVersion === "string"
+					? capacity.daprRuntimeVersion
+					: null,
+			schedulerPods: nonNegativeInt(capacity.daprSchedulerPods),
+			schedulerReadyPods: nonNegativeInt(capacity.daprSchedulerReadyPods),
+			recentActorErrorCount: nonNegativeInt(
+				capacity.daprRecentActorErrorCount,
+			),
+			recentReminderErrorCount: nonNegativeInt(
+				capacity.daprRecentReminderErrorCount,
+			),
+			daprRuntimePressure: capacity.daprRuntimePressure === true,
+			error:
+				typeof parentRuntime.error === "string" ? parentRuntime.error : null,
 		},
 		sandbox: {
 			configuredMaxActiveSandboxes: nonNegativeInt(
@@ -518,7 +577,27 @@ export async function getBenchmarkRunCapacityDiagnostics(
 	if (!run) return null;
 	const capacity = capacityFromSummary(run.summary);
 	const selectedInstanceCount = instanceCount(run.selectedInstanceIds);
-	const liveSandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
+	const [liveSandboxCapacity, parentWorkflowRuntime] = await Promise.all([
+		loadSchedulableSandboxCapacitySnapshot(),
+		loadParentWorkflowRuntimeSnapshot(),
+	]);
+	const mergedCapacity = {
+		...capacity,
+		parentWorkflowRuntime,
+		parentWorkflowReplicas: parentWorkflowRuntime.replicas,
+		parentWorkflowReadyReplicas: parentWorkflowRuntime.readyReplicas,
+		parentWorkflowConnectedWorkers: parentWorkflowRuntime.connectedWorkflowWorkers,
+		parentWorkflowLimitPerSidecar: parentWorkflowRuntime.workflowLimitPerSidecar,
+		parentActivityLimitPerSidecar: parentWorkflowRuntime.activityLimitPerSidecar,
+		parentWorkflowEffectiveCapacity: parentWorkflowRuntime.effectiveWorkflowCapacity,
+		parentActivityEffectiveCapacity: parentWorkflowRuntime.effectiveActivityCapacity,
+		daprRuntimeVersion: parentWorkflowRuntime.daprRuntimeVersion,
+		daprSchedulerPods: parentWorkflowRuntime.schedulerPods,
+		daprSchedulerReadyPods: parentWorkflowRuntime.schedulerReadyPods,
+		daprRecentActorErrorCount: parentWorkflowRuntime.recentActorErrorCount,
+		daprRecentReminderErrorCount: parentWorkflowRuntime.recentReminderErrorCount,
+		daprRuntimePressure: parentWorkflowRuntime.daprRuntimePressure,
+	};
 	const [resources, workflowLifecycle, sharedCapacity] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run,
@@ -530,7 +609,7 @@ export async function getBenchmarkRunCapacityDiagnostics(
 	]);
 	return diagnosticsFromCapacity({
 		run,
-		capacity,
+		capacity: mergedCapacity,
 		selectedInstanceCount,
 		resources,
 		workflowLifecycle,
@@ -565,7 +644,10 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		runtimeAppId: agent.runtimeAppId,
 		config: agent.config,
 	});
-	const sandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
+	const [sandboxCapacity, parentWorkflowRuntime] = await Promise.all([
+		loadSchedulableSandboxCapacitySnapshot(),
+		loadParentWorkflowRuntimeSnapshot(),
+	]);
 	const capacity = estimateBenchmarkRuntimeCapacity({
 		runtimeClass: runtimeRoute.runtimeClass,
 		runtimeIsolation: runtimeRoute.isolation,
@@ -574,6 +656,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
 		maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
 		sandboxCapacity,
+		parentWorkflowRuntime,
 		requestedInstanceCount: selectedInstanceCount,
 		requestedConcurrency: input.requestedConcurrency,
 		executionBackend: input.executionBackend,

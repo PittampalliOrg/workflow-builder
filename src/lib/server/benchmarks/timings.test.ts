@@ -72,6 +72,49 @@ describe("benchmark timing rollups", () => {
 		});
 	});
 
+	it("records first tool scheduled-to-start latency and missing-start watchdog state", () => {
+		const startedPatch = buildSessionTimingPatchForTest([
+			{
+				type: "tool_activity.scheduled",
+				data: { tool: "BashRun" },
+				createdAt: at("2026-05-03T12:00:10Z"),
+			},
+			{
+				type: "tool_activity.started",
+				data: { tool: "BashRun" },
+				createdAt: at("2026-05-03T12:00:42Z"),
+			},
+		]);
+
+		expect(startedPatch).toMatchObject({
+			first_tool_scheduled_at: "2026-05-03T12:00:10.000Z",
+			first_tool_started_at: "2026-05-03T12:00:42.000Z",
+			first_tool_scheduled_to_started_ms: 32_000,
+			first_tool_scheduled_without_started: false,
+		});
+
+		const stuckPatch = buildSessionTimingPatchForTest(
+			[
+				{
+					type: "tool_activity.scheduled",
+					data: { tool: "BashRun" },
+					createdAt: at("2026-05-03T12:00:10Z"),
+				},
+				{
+					type: "session.turn_heartbeat",
+					data: {},
+					createdAt: at("2026-05-03T12:01:10Z"),
+				},
+			],
+			{ now: at("2026-05-03T12:01:10Z") },
+		);
+
+		expect(stuckPatch).toMatchObject({
+			first_tool_scheduled_without_started: true,
+			first_tool_scheduled_without_started_ms: 60_000,
+		});
+	});
+
 	it("maps SWE-bench workflow step logs into phase timings", () => {
 		const patch = buildWorkflowTimingPatchForTest({
 			runInstance: {

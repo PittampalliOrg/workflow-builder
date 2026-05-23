@@ -2892,7 +2892,22 @@ def _validated_environment(
 def _capacity_snapshot(run: dict[str, Any]) -> dict[str, Any]:
     summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
     capacity = summary.get("capacity") if isinstance(summary, dict) else None
-    return capacity if isinstance(capacity, dict) else {}
+    snapshot = dict(capacity) if isinstance(capacity, dict) else {}
+    concurrency = bounded_swebench_run_concurrency(run)
+    burst_size = instance_start_batch_size(concurrency)
+    stagger_seconds = instance_start_batch_delay_seconds()
+    snapshot["startupBurst"] = {
+        "requestedConcurrency": snapshot.get("requestedConcurrency")
+        or run.get("concurrency"),
+        "effectiveConcurrency": concurrency,
+        "coordinatorBurstSize": burst_size,
+        "startStaggerSeconds": stagger_seconds,
+        "selectedInstanceCount": len(run.get("selectedInstanceIds") or []),
+        "launchMode": "full_concurrency"
+        if burst_size >= concurrency and stagger_seconds == 0
+        else "paced",
+    }
+    return snapshot
 
 
 def _preflight_summary(
@@ -3278,7 +3293,7 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
             )
         instance_ids = list(run.get("selectedInstanceIds") or [])
         concurrency = bounded_swebench_run_concurrency(run)
-        start_batch_size = instance_start_batch_size()
+        start_batch_size = instance_start_batch_size(concurrency)
         start_batch_delay_seconds = instance_start_batch_delay_seconds()
         timeout_seconds = int(run.get("timeoutSeconds") or 7200)
         deadline = ctx.current_utc_datetime + timedelta(seconds=timeout_seconds + 300)

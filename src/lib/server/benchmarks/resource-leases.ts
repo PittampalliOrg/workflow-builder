@@ -254,6 +254,7 @@ function daprWorkflowCapacityLimit(
 	effective: number,
 ): number {
 	const candidates = [
+		capacityNumber(capacity, "parentWorkflowEffectiveCapacity"),
 		envOptionalPositiveInt(
 			"BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS",
 			"BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS",
@@ -282,6 +283,7 @@ function resourceCapacity(
 	liveSandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null,
 ): { capacityKey: string; limit: number } {
 	const capacity = capacitySummary(run);
+	const parentWorkflowRuntime = recordValue(capacity.parentWorkflowRuntime);
 	const runConcurrency = Math.max(1, positiveInt(run.concurrency) ?? 1);
 	const effective = Math.max(
 		1,
@@ -310,7 +312,10 @@ function resourceCapacity(
 			};
 		case "dapr_workflow_slot":
 			return {
-				capacityKey: run.agentRuntimeAppId || "agent-runtime",
+				capacityKey:
+					typeof parentWorkflowRuntime?.parentAppId === "string"
+						? parentWorkflowRuntime.parentAppId
+						: "workflow-orchestrator",
 				limit: daprWorkflowCapacityLimit(capacity, effective),
 			};
 		case "evaluator_slot":

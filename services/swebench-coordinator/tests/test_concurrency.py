@@ -48,14 +48,15 @@ def test_instance_start_batch_defaults(monkeypatch):
     monkeypatch.delenv(
         "SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS", raising=False
     )
-    assert instance_start_batch_size() == 10
+    assert instance_start_batch_size(16) == 16
+    assert instance_start_batch_size() == 1
     assert instance_start_batch_delay_seconds() == 5
 
 
 def test_instance_start_batch_honors_env(monkeypatch):
     monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE", "4")
     monkeypatch.setenv("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS", "0")
-    assert instance_start_batch_size() == 4
+    assert instance_start_batch_size(16) == 4
     assert instance_start_batch_delay_seconds() == 0
 
 

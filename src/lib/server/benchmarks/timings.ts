@@ -143,6 +143,16 @@ function buildSessionTimingPatch(
 	const heartbeat = [...ordered]
 		.reverse()
 		.find((event) => event.type === "session.turn_heartbeat");
+	const firstToolScheduled = ordered.find(
+		(event) => event.type === "tool_activity.scheduled",
+	);
+	const firstToolStarted = firstToolScheduled
+		? ordered.find(
+				(event) =>
+					event.type === "tool_activity.started" &&
+					event.createdAt >= firstToolScheduled.createdAt,
+			)
+		: null;
 
 	if (turnStart) {
 		patch.turn_started_at = turnStart.createdAt.toISOString();
@@ -165,6 +175,24 @@ function buildSessionTimingPatch(
 		const elapsedSeconds = finiteNumber(data.elapsed_seconds ?? data.elapsedSeconds);
 		if (elapsedSeconds != null && elapsedSeconds >= 0) {
 			patch.latest_turn_heartbeat_seconds = Math.round(elapsedSeconds);
+		}
+	}
+	if (firstToolScheduled) {
+		patch.first_tool_scheduled_at = firstToolScheduled.createdAt.toISOString();
+		if (firstToolStarted) {
+			patch.first_tool_started_at = firstToolStarted.createdAt.toISOString();
+			patch.first_tool_scheduled_to_started_ms = elapsedMs(
+				firstToolScheduled.createdAt,
+				firstToolStarted.createdAt,
+			);
+			patch.first_tool_scheduled_without_started = false;
+		} else {
+			const observedUntil = latestEvent?.createdAt ?? options.now ?? new Date();
+			patch.first_tool_scheduled_without_started = true;
+			patch.first_tool_scheduled_without_started_ms = elapsedMs(
+				firstToolScheduled.createdAt,
+				observedUntil,
+			);
 		}
 	}
 	if (latestEvent) {
@@ -268,6 +296,8 @@ export async function aggregateBenchmarkSessionTimings(
 					"agent.tool_result",
 					"session.turn_started",
 					"session.turn_heartbeat",
+					"tool_activity.scheduled",
+					"tool_activity.started",
 					"session.status_terminated",
 					"session.status_errored",
 				]),
@@ -308,6 +338,8 @@ export async function aggregateBenchmarkInstanceTimings(
 						"agent.tool_result",
 						"session.turn_started",
 						"session.turn_heartbeat",
+						"tool_activity.scheduled",
+						"tool_activity.started",
 						"session.status_terminated",
 						"session.status_errored",
 					]),

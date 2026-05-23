@@ -30,11 +30,19 @@ def max_inference_concurrency() -> int:
     ) or DEFAULT_MAX_INFERENCE_CONCURRENCY
 
 
-def instance_start_batch_size() -> int:
-    return (
-        _positive_int(os.environ.get("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE"))
-        or 10
+def instance_start_batch_size(concurrency: Any = None) -> int:
+    """Return the launch burst size for a SWE-bench run.
+
+    A missing or non-positive env value means "burst up to the run's computed
+    concurrency". Positive env values remain available for diagnostic pacing.
+    """
+
+    configured = _positive_int(
+        os.environ.get("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE")
     )
+    if configured is not None:
+        return configured
+    return _positive_int(concurrency) or 1
 
 
 def instance_start_batch_delay_seconds() -> int:

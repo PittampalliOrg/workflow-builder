@@ -162,7 +162,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			effectiveConcurrency: 128,
 			runtimeSlots: 168,
 			schedulableSandboxCapacity: 336,
-			capReason: "kueue_instance_schedulable_capacity",
+			capReason: "kueue_capacity",
 		});
 	});
 
@@ -422,6 +422,53 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			effectiveConcurrency: 8,
 		});
 		expect(capacity.capReason).toContain("dapr_workflow_capacity");
+	});
+
+	it("accounts for parent workflow capacity independently from child runtime capacity", () => {
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 8,
+			slotsPerReplica: 12,
+			requestedInstanceCount: 50,
+			requestedConcurrency: 50,
+			parentWorkflowRuntime: {
+				parentAppId: "workflow-orchestrator",
+				namespace: "workflow-builder",
+				configName: "workflow-builder-tracing",
+				replicas: 2,
+				readyReplicas: 2,
+				availableReplicas: 2,
+				connectedWorkflowWorkers: 2,
+				workflowLimitPerSidecar: 16,
+				activityLimitPerSidecar: 64,
+				effectiveWorkflowCapacity: 32,
+				effectiveActivityCapacity: 128,
+				daprRuntimeVersion: "1.17.7",
+				schedulerPods: 3,
+				schedulerReadyPods: 3,
+				recentActorErrorCount: 0,
+				recentReminderErrorCount: 0,
+				logWindowSeconds: 1800,
+				daprRuntimePressure: false,
+				error: null,
+			},
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 32,
+			parentWorkflowReplicas: 2,
+			parentWorkflowConnectedWorkers: 2,
+			parentWorkflowLimitPerSidecar: 16,
+			parentWorkflowEffectiveCapacity: 32,
+			parentActivityEffectiveCapacity: 128,
+			daprRuntimeVersion: "1.17.7",
+			daprSchedulerPods: 3,
+			capReason: "dapr_parent_capacity",
+			primaryLimiter: "dapr_parent_capacity",
+		});
+		expect(capacity.capacityLimiters).toContain("dapr_parent_capacity");
 	});
 
 	it("honors an active agent workflow cap independently from scheduler capacity", () => {

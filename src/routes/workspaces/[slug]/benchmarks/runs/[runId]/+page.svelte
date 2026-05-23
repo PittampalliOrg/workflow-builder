@@ -376,6 +376,16 @@
 								= {capacityDiagnostics.runtime.slots ?? '—'} slots
 							</span>
 							<span>dapr {capacityDiagnostics.daprWorkflow.effectiveCapacity ?? '—'} slots</span>
+							<span>
+								parent {capacityDiagnostics.parentWorkflow.replicas ?? '—'} replicas ·
+								{capacityDiagnostics.parentWorkflow.connectedWorkers ?? '—'} workers ·
+								{capacityDiagnostics.parentWorkflow.effectiveWorkflowCapacity ?? '—'} slots
+							</span>
+							{#if capacityDiagnostics.parentWorkflow.schedulerPods !== null}
+								<span>
+									scheduler {capacityDiagnostics.parentWorkflow.schedulerReadyPods ?? '—'}/{capacityDiagnostics.parentWorkflow.schedulerPods}
+								</span>
+							{/if}
 							<span>sandbox headroom {capacityDiagnostics.sandbox.schedulableSandboxCapacity ?? '—'}</span>
 							{#if capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity !== null}
 								<span>storage {capacityDiagnostics.sandbox.ephemeralStorageLimitedCapacity}</span>
@@ -396,6 +406,11 @@
 							{/if}
 							{#if capacityDiagnostics.modelCaps.modelMaxActiveRequests}
 								<span>model cap {capacityDiagnostics.modelCaps.modelMaxActiveRequests}</span>
+							{/if}
+							{#if capacityDiagnostics.parentWorkflow.daprRuntimePressure}
+								<span class="text-amber-600">
+									dapr pressure actor {capacityDiagnostics.parentWorkflow.recentActorErrorCount ?? '—'} reminder {capacityDiagnostics.parentWorkflow.recentReminderErrorCount ?? '—'}
+								</span>
 							{/if}
 						</div>
 					</div>

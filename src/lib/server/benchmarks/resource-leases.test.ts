@@ -45,7 +45,7 @@ describe("benchmark resource lease capacity", () => {
 				"dapr_workflow_slot",
 			),
 		).toMatchObject({
-			capacityKey: "agent-runtime-pool-coding",
+			capacityKey: "workflow-orchestrator",
 			limit: 10,
 		});
 		expect(
@@ -75,7 +75,7 @@ describe("benchmark resource lease capacity", () => {
 				"dapr_workflow_slot",
 			),
 		).toMatchObject({
-			capacityKey: "agent-runtime-pool-coding",
+			capacityKey: "workflow-orchestrator",
 			limit: 6,
 		});
 	});
@@ -100,8 +100,31 @@ describe("benchmark resource lease capacity", () => {
 				"dapr_workflow_slot",
 			),
 		).toMatchObject({
-			capacityKey: "agent-runtime-pool-coding",
+			capacityKey: "workflow-orchestrator",
 			limit: 80,
+		});
+	});
+
+	it("caps Dapr workflow admission with parent workflow capacity across runs", () => {
+		expect(
+			__benchmarkResourceLeasesForTest.resourceCapacity(
+				{
+					...(run as Record<string, unknown>),
+					concurrency: 50,
+					summary: {
+						capacity: {
+							effectiveConcurrency: 32,
+							parentWorkflowEffectiveCapacity: 32,
+							daprWorkflowEffectiveCapacity: 120,
+							runtimeSlots: 120,
+						},
+					},
+				} as never,
+				"dapr_workflow_slot",
+			),
+		).toMatchObject({
+			capacityKey: "workflow-orchestrator",
+			limit: 32,
 		});
 	});
 
