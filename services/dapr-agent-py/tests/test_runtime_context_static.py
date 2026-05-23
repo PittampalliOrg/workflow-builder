@@ -52,3 +52,13 @@ def test_tool_dispatch_evidence_events_are_emitted() -> None:
     assert '"tool_activity.started"' in source
     assert "[tool-dispatch] scheduled" in source
     assert "[tool-dispatch] run_tool entry" in source
+
+
+def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert "agent_turn_instance_id = (" in source
+    assert 'if auto_terminate:' in source
+    assert 'turn_result = yield ctx.call_child_workflow(' in source
+    assert 'else:\n                    # Session-native cutover' in source
+    assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source

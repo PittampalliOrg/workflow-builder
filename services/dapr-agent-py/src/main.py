@@ -4931,6 +4931,11 @@ class OpenShellDurableAgent(DurableAgent):
                 turn_date = ctx.current_utc_datetime.date().isoformat()
             except Exception:
                 turn_date = None
+            agent_turn_instance_id = (
+                f"{workflow_instance_id}:turn-{turn_counter}"
+                if auto_terminate
+                else workflow_instance_id
+            )
             instruction_bundle = _compose_turn_instruction_bundle(
                 agent_config=agent_cfg,
                 message=message,
@@ -4965,7 +4970,7 @@ class OpenShellDurableAgent(DurableAgent):
                     {
                         "turn": turn_counter,
                         "turnId": turn_id,
-                        "childInstanceId": workflow_instance_id,
+                        "childInstanceId": agent_turn_instance_id,
                         **session_native_event_fields(workflow_instance_id),
                         "schemaVersion": instruction_bundle.get("schemaVersion"),
                         "instructionHash": instruction_bundle.get("instructionHash"),
@@ -4997,7 +5002,7 @@ class OpenShellDurableAgent(DurableAgent):
                     {
                         "turn": turn_counter,
                         "turnId": turn_id,
-                        "childInstanceId": workflow_instance_id,
+                        "childInstanceId": agent_turn_instance_id,
                         **session_native_event_fields(workflow_instance_id),
                         "instructionHash": effective_config.get("instructionHash"),
                         "templateName": effective_config.get("templateName"),
@@ -5038,7 +5043,7 @@ class OpenShellDurableAgent(DurableAgent):
                 raw_message=message,
                 effective_agent_config=effective_config,
                 instruction_bundle=instruction_bundle,
-                child_instance_id=workflow_instance_id,
+                child_instance_id=agent_turn_instance_id,
                 turn_id=turn_id,
                 mlflow_context=child_mlflow_context,
             )
@@ -5059,13 +5064,13 @@ class OpenShellDurableAgent(DurableAgent):
             )
             child_audit_fields = effective_audit_fields(effective_config)
             child_runtime_context = {
-                "executionId": db_execution_id or workflow_instance_id,
+                "executionId": db_execution_id or agent_turn_instance_id,
                 "workflowExecutionId": (
                     child_input.get("workflowExecutionId")
                     or child_input.get("dbExecutionId")
                     or child_metadata.get("workflowExecutionId")
                     or db_execution_id
-                    or workflow_instance_id
+                    or agent_turn_instance_id
                 ),
                 "workflowId": child_input.get("workflowId") or message.get("workflowId"),
                 "workflowActivityCorrelationId": (
@@ -5141,7 +5146,7 @@ class OpenShellDurableAgent(DurableAgent):
             yield ctx.call_activity(
                 self.seed_runtime_context_for_instance,
                 input={
-                    "instance_id": workflow_instance_id,
+                    "instance_id": agent_turn_instance_id,
                     "context": child_runtime_context,
                 },
             )
@@ -5156,7 +5161,7 @@ class OpenShellDurableAgent(DurableAgent):
                 yield ctx.call_activity(
                     self.seed_mcp_for_instance,
                     input={
-                        "instance_id": workflow_instance_id,
+                        "instance_id": agent_turn_instance_id,
                         "agentConfig": agent_cfg,
                     },
                 )
@@ -5171,11 +5176,23 @@ class OpenShellDurableAgent(DurableAgent):
                 )
 
             try:
-                # Session-native cutover: run the Dapr Agents turn inside
-                # this session workflow instead of scheduling a per-turn child
-                # workflow. Activities below use ctx.instance_id, so chat and
-                # tool state are keyed by the stable session workflow id.
-                turn_result = yield from self.agent_workflow(ctx, child_input)
+                if auto_terminate:
+                    # One-shot workflow-bridge turns are called by a parent
+                    # workflow and replay under heavier sub-orchestration churn.
+                    # Keep that history isolated from the session wrapper so the
+                    # wrapper only records seed activities plus one child call.
+                    turn_result = yield ctx.call_child_workflow(
+                        getattr(self, "agent_workflow_name", "agent_workflow"),
+                        input=child_input,
+                        instance_id=agent_turn_instance_id,
+                        retry_policy=self._retry_policy,
+                    )
+                else:
+                    # Session-native cutover: run the Dapr Agents turn inside
+                    # this session workflow instead of scheduling a per-turn child
+                    # workflow. Activities below use ctx.instance_id, so chat and
+                    # tool state are keyed by the stable session workflow id.
+                    turn_result = yield from self.agent_workflow(ctx, child_input)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[session] %s turn %d failed: %s",
