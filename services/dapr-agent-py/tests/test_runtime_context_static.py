@@ -41,7 +41,10 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "ToolExecutionMode" in source
     assert "tool_execution_mode=ToolExecutionMode.SEQUENTIAL" in source
     assert "def _agent_workflow_strict_sequential" in source
-    assert "[tool-dispatch] yielding sequential activity" in source
+    assert "def run_tool_activity_workflow" in source
+    assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
+    assert "[tool-dispatch] yielding sequential tool child workflow" in source
+    assert 'ctx.call_child_workflow(\n                            "run_tool_activity_workflow"' in source
     assert "yield from self._agent_workflow_strict_sequential(" in source
 
 

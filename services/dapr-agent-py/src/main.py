@@ -1667,21 +1667,28 @@ class OpenShellDurableAgent(DurableAgent):
                             "dispatch_time": dispatch_time,
                         }
                     else:
+                        call_id = str(tc.get("id") or idx)
+                        safe_call_id = re.sub(r"[^A-Za-z0-9_-]+", "-", call_id)[:48]
+                        tool_child_instance_id = (
+                            f"{ctx.instance_id}:tool-{turn}-{idx}-{safe_call_id}"
+                        )
                         logger.info(
-                            "[tool-dispatch] yielding sequential activity instance=%s order=%d tool=%s call_id=%s",
+                            "[tool-dispatch] yielding sequential tool child workflow instance=%s child=%s order=%d tool=%s call_id=%s",
                             ctx.instance_id,
+                            tool_child_instance_id,
                             idx,
                             fn_name,
-                            tc.get("id"),
+                            call_id,
                         )
-                        ordered[idx] = yield ctx.call_activity(
-                            self._activity_name(self.run_tool),
+                        ordered[idx] = yield ctx.call_child_workflow(
+                            "run_tool_activity_workflow",
                             input={
                                 "tool_call": tc,
                                 "instance_id": ctx.instance_id,
                                 "time": dispatch_time,
                                 "order": idx,
                             },
+                            instance_id=tool_child_instance_id,
                             retry_policy=self._retry_policy,
                         )
                         tool_calls_by_id[tc["id"]] = {
@@ -1766,6 +1773,22 @@ class OpenShellDurableAgent(DurableAgent):
             ) from workflow_exc
 
         return final_message
+
+    def run_tool_activity_workflow(self, ctx, payload: dict):
+        """Isolate one tool activity behind a tiny child workflow.
+
+        The parent turn workflow schedules tools strictly one at a time. Under
+        load, Dapr can occasionally orphan a direct activity task after replay;
+        this child boundary keeps each tool's activity history small and
+        deterministic while preserving the side-effect boundary in run_tool.
+        """
+        return (
+            yield ctx.call_activity(
+                self._activity_name(self.run_tool),
+                input=payload,
+                retry_policy=self._retry_policy,
+            )
+        )
 
     def _activity_instance_id(self, ctx: Any, payload: Any) -> str:
         if isinstance(payload, dict):
@@ -4427,6 +4450,7 @@ class OpenShellDurableAgent(DurableAgent):
         super().register_workflows(runtime)
         runtime.register_workflow(self.session_workflow)
         runtime.register_workflow(self.call_peer_session_workflow)
+        runtime.register_workflow(self.run_tool_activity_workflow)
         runtime.register_activity(self.create_peer_session_row)
         # Activity that populates self._mcp_configs_by_instance[instance_id]
         # for a given turn's child workflow. Yielded by session_workflow
