@@ -4583,6 +4583,14 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		.returning();
 	if (updated) {
 		await aggregateBenchmarkInstanceTimings(updated.id);
+		if (updated.status === "inferred") {
+			await releaseBenchmarkResourceLeases({
+				runId: updated.runId,
+				instanceId: updated.instanceId,
+				phase: "inference",
+				reason: "benchmark instance inference completed",
+			});
+		}
 	}
 	await recomputeRunSummary(params.runId);
 	if (updated) {
