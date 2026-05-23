@@ -81,7 +81,7 @@ def test_load_custom_objects_api_adds_bearer_prefix(monkeypatch):
 
     class FakeConfiguration:
         def __init__(self):
-            self.api_key = {"authorization": "token"}
+            self.api_key = {"authorization": "bearer token"}
             self.api_key_prefix = {}
 
         @classmethod
@@ -111,6 +111,7 @@ def test_load_custom_objects_api_adds_bearer_prefix(monkeypatch):
     api = entrypoint.load_custom_objects_api()
 
     assert isinstance(api, FakeCustomObjectsApi)
+    assert fake_config.api_key["authorization"] == "token"
     assert fake_config.api_key_prefix["authorization"] == "Bearer"
     assert set_default_calls == [fake_config]
 

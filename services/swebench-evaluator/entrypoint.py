@@ -1270,8 +1270,12 @@ def load_custom_objects_api():
     except Exception:
         config.load_kube_config()
     auth_token = client.Configuration.get_default_copy().api_key.get("authorization")
-    if auth_token and not str(auth_token).lower().startswith("bearer "):
+    if auth_token:
         cfg = client.Configuration.get_default_copy()
+        auth_value = str(auth_token)
+        if auth_value.lower().startswith("bearer "):
+            auth_value = auth_value.split(None, 1)[1]
+        cfg.api_key["authorization"] = auth_value
         cfg.api_key_prefix["authorization"] = "Bearer"
         client.Configuration.set_default(cfg)
     return client.CustomObjectsApi()
