@@ -552,6 +552,14 @@ def _run() -> int:
         previous_terminal_instance_status: str | None = None
         while time.monotonic() < deadline:
             if _termination_requested.is_set():
+                if previous_terminal_instance_status:
+                    _log(
+                        "host execution worker terminated after benchmark instance "
+                        "reached terminal inference state; leaving terminal result intact "
+                        f"execution={execution_id} daprInstance={instance_id} "
+                        f"inferenceStatus={previous_terminal_instance_status}"
+                    )
+                    return 0
                 _cancel_started_workflow(
                     payload,
                     execution_id=execution_id,

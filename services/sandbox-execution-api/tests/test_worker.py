@@ -447,3 +447,55 @@ def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tm
     assert terminated == [("sw-1", "host execution worker terminated")]
     assert callbacks[-1]["status"] == "cancelled"
     assert callbacks[-1]["daprInstanceId"] == "sw-1"
+
+
+def test_run_does_not_overwrite_terminal_instance_when_cleanup_terminates_worker(
+    monkeypatch, tmp_path
+) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback/execution"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    monkeypatch.setattr(
+        worker,
+        "_workflow_status",
+        lambda _instance_id: {"runtimeStatus": "RUNNING"},
+    )
+    monkeypatch.setattr(
+        worker,
+        "_sync_instance",
+        lambda _payload: {"status": "evaluating", "inferenceStatus": "inferred"},
+    )
+    callbacks: list[dict[str, object]] = []
+    terminated: list[tuple[str, str]] = []
+    monkeypatch.setattr(worker, "_post_callback", lambda _payload, body: callbacks.append(body))
+    monkeypatch.setattr(
+        worker,
+        "_terminate_workflow",
+        lambda instance_id, reason: terminated.append((instance_id, reason)),
+    )
+
+    def fake_sleep(_seconds):
+        worker._termination_requested.set()
+
+    monkeypatch.setattr(worker, "_sleep", fake_sleep)
+    worker._termination_requested.clear()
+
+    try:
+        assert worker._run() == 0
+    finally:
+        worker._termination_requested.clear()
+
+    assert terminated == []
+    assert callbacks == [
+        {"status": "running", "hostExecutionId": "hexec_1", "daprInstanceId": "sw-1"}
+    ]
