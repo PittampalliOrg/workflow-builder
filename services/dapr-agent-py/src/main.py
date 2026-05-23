@@ -88,6 +88,16 @@ def _one_shot_turn_child_workflow_enabled(
     return not is_swebench_execution_context(instance_id, context)
 
 
+def _tool_child_workflow_enabled(
+    instance_id: str,
+    context: dict[str, Any] | None,
+) -> bool:
+    explicit = _env_bool("DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED")
+    if explicit is not None:
+        return explicit
+    return not is_swebench_execution_context(instance_id, context)
+
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
 # ---------------------------------------------------------------------------
@@ -1636,6 +1646,12 @@ class OpenShellDurableAgent(DurableAgent):
             if self._orchestration_strategy or self.executor is not None:
                 return (yield from super().agent_workflow(ctx, message))
 
+            runtime_context = self._runtime_context_for_instance(ctx.instance_id)
+            use_tool_child_workflow = _tool_child_workflow_enabled(
+                ctx.instance_id,
+                runtime_context,
+            )
+
             for turn in range(1, self.execution.max_iterations + 1):
                 assistant_response: dict[str, Any] = yield ctx.call_activity(
                     self._activity_name(self.call_llm),
@@ -1706,29 +1722,44 @@ class OpenShellDurableAgent(DurableAgent):
                         }
                     else:
                         call_id = str(tc.get("id") or idx)
-                        safe_call_id = re.sub(r"[^A-Za-z0-9_-]+", "-", call_id)[:48]
-                        tool_child_instance_id = (
-                            f"{ctx.instance_id}__tool__{turn}__{idx}__{safe_call_id}"
-                        )
-                        logger.info(
-                            "[tool-dispatch] yielding sequential tool child workflow instance=%s child=%s order=%d tool=%s call_id=%s",
-                            ctx.instance_id,
-                            tool_child_instance_id,
-                            idx,
-                            fn_name,
-                            call_id,
-                        )
-                        ordered[idx] = yield ctx.call_child_workflow(
-                            "run_tool_activity_workflow",
-                            input={
-                                "tool_call": tc,
-                                "instance_id": ctx.instance_id,
-                                "time": dispatch_time,
-                                "order": idx,
-                            },
-                            instance_id=tool_child_instance_id,
-                            retry_policy=self._retry_policy,
-                        )
+                        tool_payload = {
+                            "tool_call": tc,
+                            "instance_id": ctx.instance_id,
+                            "time": dispatch_time,
+                            "order": idx,
+                        }
+                        if use_tool_child_workflow:
+                            safe_call_id = re.sub(r"[^A-Za-z0-9_-]+", "-", call_id)[:48]
+                            tool_child_instance_id = (
+                                f"{ctx.instance_id}__tool__{turn}__{idx}__{safe_call_id}"
+                            )
+                            logger.info(
+                                "[tool-dispatch] yielding sequential tool child workflow instance=%s child=%s order=%d tool=%s call_id=%s",
+                                ctx.instance_id,
+                                tool_child_instance_id,
+                                idx,
+                                fn_name,
+                                call_id,
+                            )
+                            ordered[idx] = yield ctx.call_child_workflow(
+                                "run_tool_activity_workflow",
+                                input=tool_payload,
+                                instance_id=tool_child_instance_id,
+                                retry_policy=self._retry_policy,
+                            )
+                        else:
+                            logger.info(
+                                "[tool-dispatch] yielding sequential inline tool activity instance=%s order=%d tool=%s call_id=%s",
+                                ctx.instance_id,
+                                idx,
+                                fn_name,
+                                call_id,
+                            )
+                            ordered[idx] = yield ctx.call_activity(
+                                self._activity_name(self.run_tool),
+                                input=tool_payload,
+                                retry_policy=self._retry_policy,
+                            )
                         tool_calls_by_id[tc["id"]] = {
                             "tool_call": tc,
                             "is_agent_call": False,
@@ -5214,18 +5245,20 @@ class OpenShellDurableAgent(DurableAgent):
                 "permissionMode": agent_cfg.get("permissionMode"),
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
             }
-            if use_child_turn_workflow:
-                settle_seconds = _session_bridge_startup_settle_seconds()
-                if settle_seconds:
-                    if not ctx.is_replaying:
-                        logger.info(
-                            "[session] %s turn %d: settling one-shot runtime for %ds before child workflow",
-                            session_id,
-                            turn_counter,
-                            settle_seconds,
-                        )
-                    yield ctx.create_timer(timedelta(seconds=settle_seconds))
-            else:
+            settle_seconds = _session_bridge_startup_settle_seconds() if auto_terminate else 0
+            if settle_seconds:
+                mode = "child workflow" if use_child_turn_workflow else "inline workflow"
+                if not ctx.is_replaying:
+                    logger.info(
+                        "[session] %s turn %d: settling one-shot runtime for %ds before %s",
+                        session_id,
+                        turn_counter,
+                        settle_seconds,
+                        mode,
+                    )
+                yield ctx.create_timer(timedelta(seconds=settle_seconds))
+
+            if not use_child_turn_workflow:
                 yield ctx.call_activity(
                     self.seed_runtime_context_for_instance,
                     input={
