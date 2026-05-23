@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -49,6 +50,20 @@ def _configure_durabletask_grpc_defaults() -> None:
 
 
 _configure_durabletask_grpc_defaults()
+
+
+def _session_bridge_startup_settle_seconds() -> int:
+    """Return the one-shot session bridge settle delay, capped to a small window."""
+    try:
+        raw = int(
+            os.environ.get(
+                "DAPR_AGENT_SESSION_BRIDGE_STARTUP_SETTLE_SECONDS",
+                "15",
+            )
+        )
+    except ValueError:
+        raw = 15
+    return max(0, min(raw, 60))
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
@@ -1670,7 +1685,7 @@ class OpenShellDurableAgent(DurableAgent):
                         call_id = str(tc.get("id") or idx)
                         safe_call_id = re.sub(r"[^A-Za-z0-9_-]+", "-", call_id)[:48]
                         tool_child_instance_id = (
-                            f"{ctx.instance_id}:tool-{turn}-{idx}-{safe_call_id}"
+                            f"{ctx.instance_id}__tool__{turn}__{idx}__{safe_call_id}"
                         )
                         logger.info(
                             "[tool-dispatch] yielding sequential tool child workflow instance=%s child=%s order=%d tool=%s call_id=%s",
@@ -4956,7 +4971,7 @@ class OpenShellDurableAgent(DurableAgent):
             except Exception:
                 turn_date = None
             agent_turn_instance_id = (
-                f"{workflow_instance_id}:turn-{turn_counter}"
+                f"{workflow_instance_id}__turn__{turn_counter}"
                 if auto_terminate
                 else workflow_instance_id
             )
@@ -5167,37 +5182,49 @@ class OpenShellDurableAgent(DurableAgent):
                 "permissionMode": agent_cfg.get("permissionMode"),
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
             }
-            yield ctx.call_activity(
-                self.seed_runtime_context_for_instance,
-                input={
-                    "instance_id": agent_turn_instance_id,
-                    "context": child_runtime_context,
-                },
-            )
-
-            # Dapr-compliant MCP bridge: yield to the `seed_mcp_for_instance`
-            # activity so the side-effect (populating self._mcp_configs_by_instance
-            # + pre-connecting MCP clients) happens in a place where side
-            # effects are allowed. Orchestrator bodies re-run deterministically
-            # on every replay — direct `self.*` mutations from here have no
-            # durable history and get dropped.
-            try:
+            if auto_terminate:
+                settle_seconds = _session_bridge_startup_settle_seconds()
+                if settle_seconds:
+                    if not ctx.is_replaying:
+                        logger.info(
+                            "[session] %s turn %d: settling one-shot runtime for %ds before child workflow",
+                            session_id,
+                            turn_counter,
+                            settle_seconds,
+                        )
+                    yield ctx.create_timer(timedelta(seconds=settle_seconds))
+            else:
                 yield ctx.call_activity(
-                    self.seed_mcp_for_instance,
+                    self.seed_runtime_context_for_instance,
                     input={
                         "instance_id": agent_turn_instance_id,
-                        "agentConfig": agent_cfg,
+                        "context": child_runtime_context,
                     },
                 )
-            except Exception as exc:  # noqa: BLE001
-                # Non-fatal: if MCP seeding fails we still try the turn;
-                # the agent just won't have MCP tools for this turn.
-                logger.warning(
-                    "[session] %s turn %d: seed_mcp_for_instance failed: %s",
-                    session_id,
-                    turn_counter,
-                    exc,
-                )
+
+                # Dapr-compliant MCP bridge: yield to the `seed_mcp_for_instance`
+                # activity so the side-effect (populating self._mcp_configs_by_instance
+                # + pre-connecting MCP clients) happens in a place where side
+                # effects are allowed. Orchestrator bodies re-run deterministically
+                # on every replay — direct `self.*` mutations from here have no
+                # durable history and get dropped.
+                try:
+                    yield ctx.call_activity(
+                        self.seed_mcp_for_instance,
+                        input={
+                            "instance_id": agent_turn_instance_id,
+                            "agentConfig": agent_cfg,
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Non-fatal: if MCP seeding fails we still try the turn;
+                    # the agent just won't have MCP tools for this turn.
+                    logger.warning(
+                        "[session] %s turn %d: seed_mcp_for_instance failed: %s",
+                        session_id,
+                        turn_counter,
+                        exc,
+                    )
 
             try:
                 if auto_terminate:

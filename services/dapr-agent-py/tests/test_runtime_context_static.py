@@ -44,6 +44,7 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "def run_tool_activity_workflow" in source
     assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
     assert "[tool-dispatch] yielding sequential tool child workflow" in source
+    assert 'f"{ctx.instance_id}__tool__{turn}__{idx}__{safe_call_id}"' in source
     assert 'ctx.call_child_workflow(\n                            "run_tool_activity_workflow"' in source
     assert "yield from self._agent_workflow_strict_sequential(" in source
 
@@ -61,6 +62,9 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     source = MAIN_SOURCE.read_text()
 
     assert "agent_turn_instance_id = (" in source
+    assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
+    assert "_session_bridge_startup_settle_seconds()" in source
+    assert "ctx.create_timer(timedelta(seconds=settle_seconds))" in source
     assert 'if auto_terminate:' in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source
     assert 'else:\n                    # Session-native cutover' in source
