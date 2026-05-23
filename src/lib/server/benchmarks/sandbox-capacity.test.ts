@@ -456,16 +456,16 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
-	it("reports Kueue full-instance capacity for sandbox plus agent host jobs", () => {
+	it("reports Kueue full-instance capacity for sandbox, worker, and agent host jobs", () => {
 		const sandboxRequest = {
 			cpuMilli: 250,
 			memoryBytes: 256 * 1024 * 1024,
 			ephemeralStorageBytes: 4 * 1024 * 1024 * 1024,
 		};
 		const instanceRequest = {
-			cpuMilli: 500,
-			memoryBytes: 1280 * 1024 * 1024,
-			ephemeralStorageBytes: 8 * 1024 * 1024 * 1024,
+			cpuMilli: 600,
+			memoryBytes: 1536 * 1024 * 1024,
+			ephemeralStorageBytes: 9 * 1024 * 1024 * 1024,
 		};
 		const kueueCapacity = kueueCapacityFromClusterQueue(
 			{
@@ -502,7 +502,7 @@ describe("sandbox scheduler capacity", () => {
 				},
 			},
 			sandboxRequest,
-			{ instanceRequest, instancePodCount: 2 },
+			{ instanceRequest, instancePodCount: 3 },
 		);
 		const snapshot = estimateSchedulableSandboxCapacity({
 			nodes: [
@@ -520,12 +520,12 @@ describe("sandbox scheduler capacity", () => {
 
 		expect(snapshot).toMatchObject({
 			kueueAvailableSandboxSlots: 336,
-			kueueAvailableInstanceSlots: 128,
-			kueueInstanceCpuLimitedCapacity: 168,
-			kueueInstanceMemoryLimitedCapacity: 128,
-			kueueInstanceEphemeralStorageLimitedCapacity: 192,
-			kueueInstancePodLimitedCapacity: 192,
-			schedulableKueueInstanceCapacity: 128,
+			kueueAvailableInstanceSlots: 106,
+			kueueInstanceCpuLimitedCapacity: 140,
+			kueueInstanceMemoryLimitedCapacity: 106,
+			kueueInstanceEphemeralStorageLimitedCapacity: 170,
+			kueueInstancePodLimitedCapacity: 128,
+			schedulableKueueInstanceCapacity: 106,
 		});
 	});
 

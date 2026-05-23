@@ -65,6 +65,29 @@ def _session_bridge_startup_settle_seconds() -> int:
         raw = 60
     return max(0, min(raw, 60))
 
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _one_shot_turn_child_workflow_enabled(
+    instance_id: str,
+    context: dict[str, Any] | None,
+) -> bool:
+    explicit = _env_bool("DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED")
+    if explicit is not None:
+        return explicit
+    return not is_swebench_execution_context(instance_id, context)
+
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
 # ---------------------------------------------------------------------------
@@ -4970,9 +4993,18 @@ class OpenShellDurableAgent(DurableAgent):
                 turn_date = ctx.current_utc_datetime.date().isoformat()
             except Exception:
                 turn_date = None
+            one_shot_context = {
+                "sessionId": session_id,
+                "executionId": db_execution_id,
+                "workspaceRef": message.get("workspaceRef"),
+            }
+            use_child_turn_workflow = auto_terminate and _one_shot_turn_child_workflow_enabled(
+                workflow_instance_id,
+                one_shot_context,
+            )
             agent_turn_instance_id = (
                 f"{workflow_instance_id}__turn__{turn_counter}"
-                if auto_terminate
+                if use_child_turn_workflow
                 else workflow_instance_id
             )
             instruction_bundle = _compose_turn_instruction_bundle(
@@ -5182,7 +5214,7 @@ class OpenShellDurableAgent(DurableAgent):
                 "permissionMode": agent_cfg.get("permissionMode"),
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
             }
-            if auto_terminate:
+            if use_child_turn_workflow:
                 settle_seconds = _session_bridge_startup_settle_seconds()
                 if settle_seconds:
                     if not ctx.is_replaying:
@@ -5227,11 +5259,14 @@ class OpenShellDurableAgent(DurableAgent):
                     )
 
             try:
-                if auto_terminate:
+                if use_child_turn_workflow:
                     # One-shot workflow-bridge turns are called by a parent
                     # workflow and replay under heavier sub-orchestration churn.
-                    # Keep that history isolated from the session wrapper so the
-                    # wrapper only records seed activities plus one child call.
+                    # Keep this non-benchmark history isolated from the session
+                    # wrapper so the wrapper only records seed activities plus
+                    # one child call. Benchmark one-shot turns run inline by
+                    # default to avoid an extra Dapr actor layer while the
+                    # benchmark fleet is starting many short-lived app IDs.
                     turn_result = yield ctx.call_child_workflow(
                         getattr(self, "agent_workflow_name", "agent_workflow"),
                         input=child_input,

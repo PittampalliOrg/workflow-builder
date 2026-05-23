@@ -212,6 +212,40 @@ Capacity diagnostics are exposed in two places:
 The launch sheet's `Max safe` control uses the launch-candidate diagnostics
 instead of the static default of 10.
 
+## Dev Maximization Note
+
+As of the May 2026 c7/c10/c12 ladder, dev's raw six-worker pool is not the
+first limiter. Each benchmark instance consumes three Kueue-admitted pods:
+
+1. the sandbox-execution worker Job;
+2. the OpenShell sandbox pod;
+3. the per-session agent-host pod.
+
+For the `benchmark-fast` profile those requests are about 450m CPU, 1Gi
+memory, 6.54Gi ephemeral storage, and 3 pods per active instance. With the
+current `benchmark-fast` nominal quota of 24 CPU, 60Gi memory, 272Gi ephemeral
+storage, and 96 pods, and browserstation reserving 3 pods in the same
+ClusterQueue, nominal safe admission is pod-count limited at about 31 full
+instances. If the cohort can borrow its full configured headroom, the same
+math rises to about 47 full instances, still pod-count limited.
+
+The BFF should treat nominal Kueue quota as the deterministic default and only
+use borrowing as an explicit policy once it can report the cohort borrowing
+source and competing queue usage in the capacity snapshot. The staged dev
+ladder after c12 is therefore c16 -> c24 -> c30 before enabling a borrowing
+probe. A c40+ probe should either document that it is relying on cohort
+borrowing or first increase the `benchmark-fast` dev profile share.
+
+The c12 failure mode was not Kueue starvation: all parents left `PENDING`,
+all sessions were created, and all Kueue Workloads were admitted. One
+SWE-bench turn scheduled a second tool but never emitted
+`tool_activity.started` after the one-shot per-turn child workflow actor was
+cancelled during Dapr placement churn. Benchmark one-shot session turns now run
+the agent turn inline inside `session_workflow` by default, avoiding that extra
+child actor layer while preserving the previous child-turn path for
+non-benchmark one-shot callers or explicit
+`DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=true`.
+
 ## Kueue Execution Plane Backend
 
 Dev uses the Kueue-backed Dapr path: `BENCHMARK_EXECUTION_BACKEND=dapr-kueue`,

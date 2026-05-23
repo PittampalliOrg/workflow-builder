@@ -61,12 +61,16 @@ def test_tool_dispatch_evidence_events_are_emitted() -> None:
 def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     source = MAIN_SOURCE.read_text()
 
+    assert "def _one_shot_turn_child_workflow_enabled(" in source
+    assert '"DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' in source
+    assert "return not is_swebench_execution_context(instance_id, context)" in source
     assert "agent_turn_instance_id = (" in source
     assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
+    assert "if use_child_turn_workflow" in source
     assert "_session_bridge_startup_settle_seconds()" in source
     assert '"DAPR_AGENT_SESSION_BRIDGE_STARTUP_SETTLE_SECONDS",\n                "60",' in source
     assert "ctx.create_timer(timedelta(seconds=settle_seconds))" in source
-    assert 'if auto_terminate:' in source
+    assert "if use_child_turn_workflow:" in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source
     assert 'else:\n                    # Session-native cutover' in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source
