@@ -64,6 +64,7 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     assert "agent_turn_instance_id = (" in source
     assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
     assert "_session_bridge_startup_settle_seconds()" in source
+    assert '"DAPR_AGENT_SESSION_BRIDGE_STARTUP_SETTLE_SECONDS",\n                "60",' in source
     assert "ctx.create_timer(timedelta(seconds=settle_seconds))" in source
     assert 'if auto_terminate:' in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source

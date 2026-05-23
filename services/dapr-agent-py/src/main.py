@@ -58,11 +58,11 @@ def _session_bridge_startup_settle_seconds() -> int:
         raw = int(
             os.environ.get(
                 "DAPR_AGENT_SESSION_BRIDGE_STARTUP_SETTLE_SECONDS",
-                "15",
+                "60",
             )
         )
     except ValueError:
-        raw = 15
+        raw = 60
     return max(0, min(raw, 60))
 
 # ---------------------------------------------------------------------------
