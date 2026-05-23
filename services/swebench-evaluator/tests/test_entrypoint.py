@@ -83,6 +83,7 @@ def test_load_custom_objects_api_adds_bearer_prefix(monkeypatch):
         def __init__(self):
             self.api_key = {"authorization": "bearer token"}
             self.api_key_prefix = {}
+            self.access_token = None
 
         @classmethod
         def get_default_copy(cls):
@@ -113,6 +114,7 @@ def test_load_custom_objects_api_adds_bearer_prefix(monkeypatch):
     assert isinstance(api, FakeCustomObjectsApi)
     assert fake_config.api_key["authorization"] == "token"
     assert fake_config.api_key_prefix["authorization"] == "Bearer"
+    assert fake_config.access_token == "token"
     assert set_default_calls == [fake_config]
 
 

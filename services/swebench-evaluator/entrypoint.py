@@ -1277,6 +1277,8 @@ def load_custom_objects_api():
             auth_value = auth_value.split(None, 1)[1]
         cfg.api_key["authorization"] = auth_value
         cfg.api_key_prefix["authorization"] = "Bearer"
+        if hasattr(cfg, "access_token"):
+            cfg.access_token = auth_value
         client.Configuration.set_default(cfg)
     return client.CustomObjectsApi()
 
