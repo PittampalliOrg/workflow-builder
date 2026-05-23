@@ -40,7 +40,7 @@ export type ParentWorkflowRuntimeSnapshot = {
 const DEFAULT_NAMESPACE = "workflow-builder";
 const DEFAULT_PARENT_APP_ID = "workflow-orchestrator";
 const DEFAULT_CONFIGURATION = "workflow-builder-tracing";
-const DAPR_LOG_WINDOW_SECONDS = 30 * 60;
+const DEFAULT_DAPR_LOG_WINDOW_SECONDS = 5 * 60;
 const DEFAULT_READYZ_PORT = 8080;
 
 function positiveInt(value: unknown): number | null {
@@ -70,6 +70,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function podIsReady(pod: KubePod): boolean {
 	return (
 		pod.status?.phase === "Running" &&
+		pod.metadata?.deletionTimestamp == null &&
 		pod.status.conditions?.some(
 			(condition) => condition.type === "Ready" && condition.status === "True",
 		) === true
@@ -96,6 +97,13 @@ function readyzPort(): number {
 	return positiveInt(process.env.BENCHMARK_PARENT_WORKFLOW_READYZ_PORT) ??
 		positiveInt(process.env.WORKFLOW_ORCHESTRATOR_PORT) ??
 		DEFAULT_READYZ_PORT;
+}
+
+function daprLogWindowSeconds(): number {
+	return (
+		positiveInt(process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS) ??
+		DEFAULT_DAPR_LOG_WINDOW_SECONDS
+	);
 }
 
 function parseReadyz(body: unknown): number | null {
@@ -256,15 +264,16 @@ function countLogMatches(logs: string): {
 async function countRecentDaprLogErrors(params: {
 	namespace: string;
 	pods: KubePod[];
+	windowSeconds: number;
 }): Promise<{ actorErrors: number | null; reminderErrors: number | null }> {
 	let actorErrors = 0;
 	let reminderErrors = 0;
-	for (const pod of params.pods) {
+	for (const pod of params.pods.filter(podIsReady)) {
 		const name = pod.metadata?.name;
 		if (!name) continue;
 		const query = new URLSearchParams({
 			container: "daprd",
-			sinceSeconds: String(DAPR_LOG_WINDOW_SECONDS),
+			sinceSeconds: String(params.windowSeconds),
 			tailLines: "2000",
 		});
 		const res = await kubeApiFetch(
@@ -290,11 +299,12 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 	const namespace = params.namespace ?? DEFAULT_NAMESPACE;
 	const parentAppId = params.parentAppId ?? DEFAULT_PARENT_APP_ID;
 	const configName = params.configName ?? DEFAULT_CONFIGURATION;
+	const logWindowSeconds = daprLogWindowSeconds();
 	const base = {
 		parentAppId,
 		namespace,
 		configName,
-		logWindowSeconds: DAPR_LOG_WINDOW_SECONDS,
+		logWindowSeconds,
 	};
 
 	try {
@@ -334,6 +344,7 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 			logCounts = await countRecentDaprLogErrors({
 				namespace,
 				pods: parentPods,
+				windowSeconds: logWindowSeconds,
 			});
 		} catch (err) {
 			console.warn("[bench-capacity] daprd log scan unavailable", err);
@@ -394,5 +405,7 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 
 export const __daprWorkflowCapacityForTest = {
 	countLogMatches,
+	daprLogWindowSeconds,
+	podIsReady,
 	parseReadyz,
 };
