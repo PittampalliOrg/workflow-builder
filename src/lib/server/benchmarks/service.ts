@@ -4584,6 +4584,12 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	if (updated) {
 		await aggregateBenchmarkInstanceTimings(updated.id);
 		if (updated.status === "inferred") {
+			await cleanupBenchmarkInstanceSandbox({
+				runId: updated.runId,
+				instanceId: updated.instanceId,
+				sandboxName: updated.sandboxName,
+				reason: "benchmark instance inference completed",
+			});
 			await releaseBenchmarkResourceLeases({
 				runId: updated.runId,
 				instanceId: updated.instanceId,
