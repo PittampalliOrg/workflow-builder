@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
@@ -19,6 +19,7 @@ KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 KUEUE_PRIORITY_CLASS_LABEL = "kueue.x-k8s.io/priority-class"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
 DEFAULT_JOB_TTL_SECONDS = 300
+DEFAULT_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS = 1800
 DEFAULT_AGENT_HOST_IMAGE = "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:latest"
 WORKER_ENV_PASSTHROUGH = (
     "SANDBOX_EXECUTION_CALLBACK_ATTEMPTS",
@@ -229,6 +230,25 @@ def _agent_host_start_timeout_seconds(request: AgentWorkflowHostRequest) -> str:
     if request.timeoutSeconds is None:
         return os.environ.get("DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS", "900")
     return str(min(request.timeoutSeconds, 1800))
+
+
+def _agent_host_shutdown_buffer_seconds() -> int:
+    raw = os.environ.get("SANDBOX_EXECUTION_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS", "")
+    try:
+        value = int(raw) if raw.strip() else DEFAULT_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS
+    except ValueError:
+        value = DEFAULT_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS
+    return max(0, min(86400, value))
+
+
+def _agent_host_shutdown_time(request: AgentWorkflowHostRequest) -> str | None:
+    if request.timeoutSeconds is None:
+        return None
+    shutdown_after_seconds = request.timeoutSeconds + _agent_host_shutdown_buffer_seconds()
+    return (
+        datetime.now(UTC)
+        + timedelta(seconds=shutdown_after_seconds)
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _job_ttl_seconds(class_config: ExecutionClassConfig) -> int:
@@ -891,20 +911,25 @@ def build_agent_workflow_host_sandbox_manifest(
     }
     if sandbox_metadata_annotations:
         sandbox_metadata["annotations"] = sandbox_metadata_annotations
+    sandbox_spec: dict[str, Any] = {
+        "replicas": 1,
+        "podTemplate": {
+            "metadata": {
+                "labels": pod_labels,
+                "annotations": pod_annotations,
+            },
+            "spec": pod_spec,
+        },
+    }
+    shutdown_time = _agent_host_shutdown_time(request)
+    if shutdown_time:
+        sandbox_spec["shutdownPolicy"] = "Delete"
+        sandbox_spec["shutdownTime"] = shutdown_time
     return {
         "apiVersion": "agents.x-k8s.io/v1alpha1",
         "kind": "Sandbox",
         "metadata": sandbox_metadata,
-        "spec": {
-            "replicas": 1,
-            "podTemplate": {
-                "metadata": {
-                    "labels": pod_labels,
-                    "annotations": pod_annotations,
-                },
-                "spec": pod_spec,
-            },
-        },
+        "spec": sandbox_spec,
     }
 
 

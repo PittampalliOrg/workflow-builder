@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -171,6 +172,7 @@ def test_worker_job_priority_label_can_be_overridden_by_request() -> None:
 
 
 def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> None:
+    before = datetime.now(UTC)
     manifest = build_agent_workflow_host_sandbox_manifest(
         AgentWorkflowHostRequest(
             sessionId="sw-session-1",
@@ -190,6 +192,12 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert manifest["apiVersion"] == "agents.x-k8s.io/v1alpha1"
     assert manifest["kind"] == "Sandbox"
     assert manifest["spec"]["replicas"] == 1
+    assert manifest["spec"]["shutdownPolicy"] == "Delete"
+    shutdown_time = datetime.fromisoformat(
+        manifest["spec"]["shutdownTime"].replace("Z", "+00:00")
+    )
+    assert before + timedelta(seconds=900 + 1800 - 1) <= shutdown_time
+    assert shutdown_time <= datetime.now(UTC) + timedelta(seconds=900 + 1800 + 1)
     # Kueue Plain Pod admission requires the queue label on the podTemplate,
     # not on the parent Sandbox metadata.
     assert "kueue.x-k8s.io/queue-name" not in manifest["metadata"]["labels"]
@@ -270,9 +278,40 @@ def test_agent_workflow_host_sandbox_without_timeout_has_no_active_deadline(
 
     pod_spec = manifest["spec"]["podTemplate"]["spec"]
     assert "activeDeadlineSeconds" not in pod_spec
+    assert "shutdownPolicy" not in manifest["spec"]
+    assert "shutdownTime" not in manifest["spec"]
     container = pod_spec["containers"][0]
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
     assert env["DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS"] == "900"
+
+
+def test_agent_workflow_host_sandbox_shutdown_buffer_can_be_tuned(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS", "60")
+    before = datetime.now(UTC)
+
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    shutdown_time = datetime.fromisoformat(
+        manifest["spec"]["shutdownTime"].replace("Z", "+00:00")
+    )
+    assert before + timedelta(seconds=900 + 60 - 1) <= shutdown_time
+    assert shutdown_time <= datetime.now(UTC) + timedelta(seconds=900 + 60 + 1)
 
 
 def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> None:
