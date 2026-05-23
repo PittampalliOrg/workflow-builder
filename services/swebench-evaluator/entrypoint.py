@@ -1269,6 +1269,11 @@ def load_custom_objects_api():
         config.load_incluster_config()
     except Exception:
         config.load_kube_config()
+    auth_token = client.Configuration.get_default_copy().api_key.get("authorization")
+    if auth_token and not str(auth_token).lower().startswith("bearer "):
+        cfg = client.Configuration.get_default_copy()
+        cfg.api_key_prefix["authorization"] = "Bearer"
+        client.Configuration.set_default(cfg)
     return client.CustomObjectsApi()
 
 

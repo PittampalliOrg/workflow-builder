@@ -75,6 +75,46 @@ def test_taskrun_names_keep_long_instances_unique():
     assert second.startswith("swebench-run-nz4f1-pvj8gfohb1rig-x-scikit-learn")
 
 
+def test_load_custom_objects_api_adds_bearer_prefix(monkeypatch):
+    entrypoint = load_entrypoint()
+    set_default_calls = []
+
+    class FakeConfiguration:
+        def __init__(self):
+            self.api_key = {"authorization": "token"}
+            self.api_key_prefix = {}
+
+        @classmethod
+        def get_default_copy(cls):
+            return fake_config
+
+        @classmethod
+        def set_default(cls, cfg):
+            set_default_calls.append(cfg)
+
+    class FakeCustomObjectsApi:
+        pass
+
+    fake_config = FakeConfiguration()
+    monkeypatch.setitem(
+        sys.modules,
+        "kubernetes",
+        types.SimpleNamespace(
+            client=types.SimpleNamespace(
+                Configuration=FakeConfiguration,
+                CustomObjectsApi=FakeCustomObjectsApi,
+            ),
+            config=types.SimpleNamespace(load_incluster_config=lambda: None),
+        ),
+    )
+
+    api = entrypoint.load_custom_objects_api()
+
+    assert isinstance(api, FakeCustomObjectsApi)
+    assert fake_config.api_key_prefix["authorization"] == "Bearer"
+    assert set_default_calls == [fake_config]
+
+
 def test_post_results_retries_transient_bff_failure(monkeypatch):
     entrypoint = load_entrypoint()
     calls: list[dict[str, object]] = []
