@@ -339,7 +339,7 @@ describe("sandbox scheduler capacity", () => {
 								{
 									name: "dev-benchmark",
 									resources: [
-										{ name: "cpu", nominalQuota: "72" },
+										{ name: "cpu", nominalQuota: "72", borrowingLimit: "12" },
 										{ name: "memory", nominalQuota: "160Gi" },
 										{ name: "ephemeral-storage", nominalQuota: "1536Gi" },
 										{ name: "pods", nominalQuota: "384" },
@@ -402,6 +402,7 @@ describe("sandbox scheduler capacity", () => {
 			kueueEphemeralStorageLimitedCapacity: 216,
 			kueuePodLimitedCapacity: 216,
 			kueueAvailableSandboxSlots: 120,
+			kueueBorrowAvailableSandboxSlots: 168,
 			availableSandboxSlots: 120,
 			schedulableSandboxCapacity: 120,
 		});

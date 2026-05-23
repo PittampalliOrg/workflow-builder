@@ -1,5 +1,6 @@
 import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
 import type { ParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
+import type { BenchmarkClusterPressureSnapshot } from "./cluster-pressure";
 
 export type BenchmarkCapacityLimiter =
 	| "selected_instance_count"
@@ -12,11 +13,18 @@ export type BenchmarkCapacityLimiter =
 	| "sandbox_capacity"
 	| "kueue_capacity"
 	| "sandbox_schedulable_capacity"
-	| "model_capacity";
+	| "model_capacity"
+	| "cluster_pressure"
+	| "psi_memory_pressure"
+	| "psi_io_pressure"
+	| "psi_cpu_pressure"
+	| "disk_pressure";
 
 export type BenchmarkRuntimeCapacitySnapshot = {
 	capacityMode: "manual" | "auto" | "kueue";
 	requestedConcurrency: number;
+	deterministicConcurrency: number;
+	pressureAdjustedConcurrency: number;
 	effectiveConcurrency: number;
 	runtimeClass: string;
 	runtimeAppId: string;
@@ -28,6 +36,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	parentWorkflowReplicas: number | null;
 	parentWorkflowReadyReplicas: number | null;
 	parentWorkflowConnectedWorkers: number | null;
+	parentWorkflowConnectedWorkerPods: number | null;
 	parentWorkflowLimitPerSidecar: number | null;
 	parentActivityLimitPerSidecar: number | null;
 	parentWorkflowEffectiveCapacity: number | null;
@@ -48,6 +57,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	maxActiveSandboxes: number | null;
 	schedulableSandboxCapacity: number | null;
 	sandboxCapacity: BenchmarkSandboxCapacitySnapshot | null;
+	clusterPressure: BenchmarkClusterPressureSnapshot | null;
 	modelMaxActiveRequests: number | null;
 	capacityLimiters: BenchmarkCapacityLimiter[];
 	primaryLimiter: BenchmarkCapacityLimiter | null;
@@ -66,8 +76,12 @@ export type BenchmarkRuntimeCapacityInput = {
 	agentWorkflowMaxActiveTurns?: number | null;
 	schedulableSandboxCapacity?: number | null;
 	sandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
+	clusterPressure?: BenchmarkClusterPressureSnapshot | null;
 	parentWorkflowRuntime?: ParentWorkflowRuntimeSnapshot | null;
 	modelMaxActiveRequests?: number | null;
+	modelNameOrPath?: string | null;
+	modelConfigLabel?: string | null;
+	agentSlug?: string | null;
 	executionBackend?: string | null;
 };
 
@@ -120,6 +134,46 @@ function envOptionalPositiveInt(...names: string[]): number | null {
 		if (value) return value;
 	}
 	return null;
+}
+
+function normalizedModelKey(value: string | null | undefined): string | null {
+	if (!value?.trim()) return null;
+	return value.trim().toLowerCase();
+}
+
+function configuredModelMaxActiveRequests(input: BenchmarkRuntimeCapacityInput) {
+	const raw = process.env.BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS_JSON;
+	const keys = [
+		input.modelNameOrPath,
+		input.modelConfigLabel,
+		input.agentSlug,
+	]
+		.map(normalizedModelKey)
+		.filter((entry): entry is string => !!entry);
+	if (raw?.trim() && keys.length > 0) {
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				const record = Object.fromEntries(
+					Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
+						key.toLowerCase(),
+						value,
+					]),
+				);
+				for (const key of keys) {
+					const value = positiveInt(record[key]);
+					if (value) return value;
+				}
+			}
+		} catch {
+			// Ignore invalid optional capacity config; global caps still apply.
+		}
+	}
+	return (
+		positiveInt(input.modelMaxActiveRequests) ??
+		positiveInt(process.env.BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS) ??
+		positiveInt(process.env.BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS)
+	);
 }
 
 function isKueueExecutionBackend(value: unknown): boolean {
@@ -286,9 +340,7 @@ export function estimateBenchmarkRuntimeCapacity(
 						Number.POSITIVE_INFINITY,
 				);
 	const modelMax =
-		positiveInt(input.modelMaxActiveRequests) ??
-		positiveInt(process.env.BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS) ??
-		positiveInt(process.env.BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS);
+		configuredModelMaxActiveRequests(input);
 	const derivedActiveInferenceLimit = finiteMin([
 		configuredGlobalMax,
 		runtimeMax,
@@ -302,7 +354,7 @@ export function estimateBenchmarkRuntimeCapacity(
 			: mode === "auto"
 				? (configuredGlobalMax ?? derivedActiveInferenceLimit ?? runtimeMax)
 				: (configuredGlobalMax ?? DEFAULT_MAX_ACTIVE_INFERENCE_INSTANCES);
-	const effective = Math.min(
+	const deterministic = Math.min(
 		requested,
 		selectedCount,
 		mode === "kueue" ? Number.POSITIVE_INFINITY : runtimeMax,
@@ -314,51 +366,76 @@ export function estimateBenchmarkRuntimeCapacity(
 			: (sandboxRunHeadroomLimit ?? Number.POSITIVE_INFINITY),
 		modelMax ?? Number.POSITIVE_INFINITY,
 	);
+	const pressureReasons: BenchmarkCapacityLimiter[] = [];
+	const clusterPressure = input.clusterPressure ?? null;
+	if (clusterPressure?.pressure) {
+		for (const reason of clusterPressure.reasons) {
+			if (!pressureReasons.includes(reason)) pressureReasons.push(reason);
+		}
+	}
+	if (input.sandboxCapacity?.diskPressureNodeCount) {
+		if (!pressureReasons.includes("disk_pressure")) {
+			pressureReasons.push("disk_pressure");
+		}
+	}
+	if (parentWorkflowRuntime?.daprRuntimePressure) {
+		pressureReasons.push("dapr_runtime_pressure");
+	}
+	if (input.sandboxCapacity?.kueueClusterQueueActive === false) {
+		pressureReasons.push("kueue_capacity");
+	}
+	const hardPressure =
+		clusterPressure?.hardBlock === true ||
+		parentWorkflowRuntime?.daprRuntimePressure === true ||
+		(input.sandboxCapacity?.diskPressureNodeCount ?? 0) > 0 ||
+		input.sandboxCapacity?.kueueClusterQueueActive === false;
+	const pressureFactor = clusterPressure?.reductionFactor ?? 1;
+	const pressureAdjusted = hardPressure
+		? 0
+		: Math.max(1, Math.floor(deterministic * pressureFactor));
+	const effective = Math.min(deterministic, pressureAdjusted);
 	const reasons: BenchmarkCapacityLimiter[] = [];
-	if (requested > selectedCount && effective === selectedCount) {
+	if (requested > selectedCount && deterministic === selectedCount) {
 		reasons.push("selected_instance_count");
 	}
-	if (requested > runtimeMax && effective === runtimeMax) {
+	if (requested > runtimeMax && deterministic === runtimeMax) {
 		reasons.push("runtime_capacity");
 	}
 	if (
 		parentWorkflowEffectiveCapacity != null &&
 		requested > parentWorkflowEffectiveCapacity &&
-		effective === parentWorkflowEffectiveCapacity
+		deterministic === parentWorkflowEffectiveCapacity
 	) {
 		reasons.push("dapr_parent_capacity");
 	}
 	if (
 		requested > daprWorkflowEffectiveCapacity &&
-		effective === daprWorkflowEffectiveCapacity
+		deterministic === daprWorkflowEffectiveCapacity
 	) {
 		reasons.push("dapr_workflow_capacity");
-	}
-	if (parentWorkflowRuntime?.daprRuntimePressure) {
-		reasons.push("dapr_runtime_pressure");
 	}
 	if (
 		mode !== "kueue" &&
 		(mode === "manual" || configuredGlobalMax != null) &&
 		requested > globalMax &&
-		effective === globalMax
+		deterministic === globalMax
 	) {
 		reasons.push("global_max");
 	}
 	if (
 		agentWorkflowMaxActiveTurns &&
 		requested > agentWorkflowMaxActiveTurns &&
-		effective === agentWorkflowMaxActiveTurns
+		deterministic === agentWorkflowMaxActiveTurns
 	) {
 		reasons.push("agent_workflow_capacity");
 	}
-	if (sandboxMax && requested > sandboxMax && effective === sandboxMax) {
+	if (sandboxMax && requested > sandboxMax && deterministic === sandboxMax) {
 		reasons.push("sandbox_capacity");
 	}
 	if (
 		schedulableCapacityForRun != null &&
 		requested > schedulableCapacityForRun &&
-		effective === schedulableCapacityForRun
+		deterministic === schedulableCapacityForRun
 	) {
 		reasons.push(
 			usingKueueInstanceCapacity
@@ -366,13 +443,18 @@ export function estimateBenchmarkRuntimeCapacity(
 				: "sandbox_schedulable_capacity",
 		);
 	}
-	if (modelMax && requested > modelMax && effective === modelMax) {
+	if (modelMax && requested > modelMax && deterministic === modelMax) {
 		reasons.push("model_capacity");
+	}
+	for (const reason of pressureReasons) {
+		if (!reasons.includes(reason)) reasons.push(reason);
 	}
 
 	return {
 		capacityMode: mode,
 		requestedConcurrency: requested,
+		deterministicConcurrency: deterministic,
+		pressureAdjustedConcurrency: pressureAdjusted,
 		effectiveConcurrency: effective,
 		runtimeClass,
 		runtimeAppId,
@@ -387,6 +469,9 @@ export function estimateBenchmarkRuntimeCapacity(
 		),
 		parentWorkflowConnectedWorkers: nonNegativeInt(
 			parentWorkflowRuntime?.connectedWorkflowWorkers,
+		),
+		parentWorkflowConnectedWorkerPods: nonNegativeInt(
+			parentWorkflowRuntime?.connectedWorkerPods,
 		),
 		parentWorkflowLimitPerSidecar: positiveInt(
 			parentWorkflowRuntime?.workflowLimitPerSidecar,
@@ -433,6 +518,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		maxActiveSandboxes: sandboxActiveLimit,
 		schedulableSandboxCapacity,
 		sandboxCapacity: input.sandboxCapacity ?? null,
+		clusterPressure,
 		modelMaxActiveRequests: modelMax,
 		capacityLimiters: reasons,
 		primaryLimiter: reasons[0] ?? null,

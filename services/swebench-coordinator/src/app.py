@@ -1837,6 +1837,27 @@ def _persist_preflight_results(ctx, data: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _check_capacity_gate(ctx, data: dict[str, Any]) -> dict[str, Any]:
+    run_id = data["runId"]
+    try:
+        return _compact_bff_response(
+            _bff_with_retry(
+                "GET",
+                f"/api/internal/benchmarks/runs/{run_id}/capacity-gate",
+                timeout=30,
+                attempts=2,
+                delay_seconds=5,
+            )
+        )
+    except Exception as exc:
+        return {
+            "admitNewStarts": False,
+            "reason": "capacity_gate_unavailable",
+            "retryAfterSeconds": LEASE_RETRY_SECONDS,
+            "error": str(exc)[:800],
+        }
+
+
 def _acquire_instance_leases(ctx, data: dict[str, Any]) -> dict[str, Any]:
     run_id = data["runId"]
     instance_id = data["instanceId"]
@@ -3303,6 +3324,20 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
         starts_in_batch = 0
         while pending_instance_ids or active_instances:
             while pending_instance_ids and len(active_instances) < concurrency:
+                gate = yield ctx.call_activity(
+                    _check_capacity_gate,
+                    input={"runId": run_id},
+                )
+                if isinstance(gate, dict) and not gate.get("admitNewStarts", True):
+                    try:
+                        retry_seconds = max(
+                            1,
+                            int(gate.get("retryAfterSeconds") or LEASE_RETRY_SECONDS),
+                        )
+                    except (TypeError, ValueError):
+                        retry_seconds = LEASE_RETRY_SECONDS
+                    yield ctx.create_timer(timedelta(seconds=retry_seconds))
+                    continue
                 available_slots = max(1, concurrency - len(active_instances))
                 batch_count = min(
                     available_slots,
@@ -3626,6 +3661,7 @@ async def lifespan(app: FastAPI):
         _prepare_instance_environment,
         _load_environment_status,
         _persist_preflight_results,
+        _check_capacity_gate,
         _acquire_instance_leases,
         _release_instance_leases,
         _release_run_leases,

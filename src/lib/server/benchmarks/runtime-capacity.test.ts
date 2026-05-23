@@ -209,8 +209,92 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		expect(capacity).toMatchObject({
 			capacityMode: "kueue",
 			effectiveConcurrency: 48,
+			deterministicConcurrency: 48,
+			pressureAdjustedConcurrency: 48,
 			modelMaxActiveRequests: 48,
 			capReason: "model_capacity",
+		});
+	});
+
+	it("honors per-model provider caps before falling back to global caps", () => {
+		vi.stubEnv(
+			"BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS_JSON",
+			JSON.stringify({
+				"anthropic/claude-opus-4-7": 8,
+				"deepseek/deepseek-v4-pro": 24,
+			}),
+		);
+		vi.stubEnv("BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS", "64");
+
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 4,
+			slotsPerReplica: 8,
+			requestedInstanceCount: 120,
+			requestedConcurrency: 120,
+			modelNameOrPath: "deepseek/deepseek-v4-pro",
+			executionBackend: "dapr-kueue",
+		});
+
+		expect(capacity).toMatchObject({
+			effectiveConcurrency: 24,
+			modelMaxActiveRequests: 24,
+			capReason: "model_capacity",
+		});
+	});
+
+	it("reduces Kueue-backed fan-out under non-blocking cluster pressure", () => {
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 8,
+			slotsPerReplica: 12,
+			requestedInstanceCount: 100,
+			requestedConcurrency: 80,
+			executionBackend: "dapr-kueue",
+			clusterPressure: {
+				pressure: true,
+				hardBlock: false,
+				reductionFactor: 0.5,
+				reasons: ["psi_memory_pressure"],
+			} as never,
+		});
+
+		expect(capacity).toMatchObject({
+			capacityMode: "kueue",
+			deterministicConcurrency: 80,
+			pressureAdjustedConcurrency: 40,
+			effectiveConcurrency: 40,
+			capReason: "psi_memory_pressure",
+		});
+	});
+
+	it("blocks new starts under hard cluster pressure", () => {
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 8,
+			slotsPerReplica: 12,
+			requestedInstanceCount: 100,
+			requestedConcurrency: 80,
+			executionBackend: "dapr-kueue",
+			clusterPressure: {
+				pressure: true,
+				hardBlock: true,
+				reductionFactor: 1,
+				reasons: ["psi_io_pressure"],
+			} as never,
+		});
+
+		expect(capacity).toMatchObject({
+			deterministicConcurrency: 80,
+			pressureAdjustedConcurrency: 0,
+			effectiveConcurrency: 0,
+			capReason: "psi_io_pressure",
 		});
 	});
 
@@ -438,10 +522,12 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 				namespace: "workflow-builder",
 				configName: "workflow-builder-tracing",
 				replicas: 2,
-				readyReplicas: 2,
-				availableReplicas: 2,
-				connectedWorkflowWorkers: 2,
-				workflowLimitPerSidecar: 16,
+					readyReplicas: 2,
+					availableReplicas: 2,
+					connectedWorkflowWorkers: 2,
+					connectedWorkerPods: 2,
+					podWorkers: [],
+					workflowLimitPerSidecar: 16,
 				activityLimitPerSidecar: 64,
 				effectiveWorkflowCapacity: 32,
 				effectiveActivityCapacity: 128,

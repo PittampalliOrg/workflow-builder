@@ -13,6 +13,8 @@ describe("benchmark capacity diagnostics", () => {
 				selectedInstanceCount: 3,
 				capacity: {
 					requestedConcurrency: 72,
+					deterministicConcurrency: 56,
+					pressureAdjustedConcurrency: 56,
 					effectiveConcurrency: 56,
 					runtimeClass: "coding",
 					runtimeAppId: "agent-runtime-pool-coding",
@@ -29,6 +31,7 @@ describe("benchmark capacity diagnostics", () => {
 					parentWorkflowReplicas: 2,
 					parentWorkflowReadyReplicas: 2,
 					parentWorkflowConnectedWorkers: 2,
+					parentWorkflowConnectedWorkerPods: 2,
 					parentWorkflowLimitPerSidecar: 128,
 					parentActivityLimitPerSidecar: 512,
 					parentWorkflowEffectiveCapacity: 256,
@@ -51,6 +54,13 @@ describe("benchmark capacity diagnostics", () => {
 						diskPressureNodeCount: 1,
 					},
 					modelMaxActiveRequests: 64,
+					clusterPressure: {
+						available: true,
+						pressure: false,
+						hardBlock: false,
+						reductionFactor: 1,
+						reasons: [],
+					},
 					capReason: "global_max",
 				},
 				resources: [
@@ -77,6 +87,8 @@ describe("benchmark capacity diagnostics", () => {
 
 		expect(diagnostics).toMatchObject({
 			requestedConcurrency: 72,
+			deterministicConcurrency: 56,
+			pressureAdjustedConcurrency: 56,
 			storedEffectiveConcurrency: 56,
 			selectedInstanceCount: 3,
 			blockedBy: ["inference_slot"],
@@ -98,6 +110,7 @@ describe("benchmark capacity diagnostics", () => {
 				replicas: 2,
 				readyReplicas: 2,
 				connectedWorkers: 2,
+				connectedWorkerPods: 2,
 				workflowLimitPerSidecar: 128,
 				activityLimitPerSidecar: 512,
 				effectiveWorkflowCapacity: 256,
@@ -121,6 +134,10 @@ describe("benchmark capacity diagnostics", () => {
 			},
 			modelCaps: {
 				modelMaxActiveRequests: 64,
+			},
+			clusterPressure: {
+				available: true,
+				pressure: false,
 			},
 			workflowLifecycle: {
 				issue: "dapr_component_diagnostics_unavailable",

@@ -66,6 +66,8 @@ import {
 	loadSchedulableSandboxCapacitySnapshot,
 	type BenchmarkSandboxCapacitySnapshot,
 } from "./sandbox-capacity";
+import { fetchCapacityObserverSnapshot } from "$lib/server/capacity/observer";
+import { summarizeBenchmarkClusterPressure } from "./cluster-pressure";
 import { aggregateBenchmarkInstanceTimings } from "./timings";
 import {
 	buildSwebenchDatasetJsonl,
@@ -1166,8 +1168,12 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	const executionClass = normalizeBenchmarkExecutionClass(
 		input.executionClass ?? benchmarkExecutionClass(),
 	);
-	const sandboxCapacity = await loadSchedulableSandboxCapacitySnapshot();
-	const parentWorkflowRuntime = await loadParentWorkflowRuntimeSnapshot();
+	const [sandboxCapacity, parentWorkflowRuntime, capacityObserver] =
+		await Promise.all([
+			loadSchedulableSandboxCapacitySnapshot(),
+			loadParentWorkflowRuntimeSnapshot(),
+			fetchCapacityObserverSnapshot(),
+		]);
 	const launchPreflightError = benchmarkLaunchPreflightError({
 		executionBackend,
 		sandboxCapacity,
@@ -1175,6 +1181,10 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	if (launchPreflightError) {
 		throw error(409, launchPreflightError);
 	}
+	const clusterPressure = summarizeBenchmarkClusterPressure({
+		result: capacityObserver,
+		queueName: sandboxCapacity?.kueueClusterQueueName ?? executionClass,
+	});
 	const capacity = estimateBenchmarkRuntimeCapacity({
 		runtimeClass: runtimeRoute.runtimeClass,
 		runtimeIsolation: runtimeRoute.isolation,
@@ -1183,11 +1193,22 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
 		maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
 		sandboxCapacity,
+		clusterPressure,
 		parentWorkflowRuntime,
 		requestedInstanceCount: instanceIds.length,
 		requestedConcurrency: input.concurrency,
+		modelNameOrPath:
+			input.modelNameOrPath ?? input.modelConfigLabel ?? agent.modelSpec,
+		modelConfigLabel: input.modelConfigLabel,
+		agentSlug: agent.slug,
 		executionBackend,
 	});
+	if (capacity.effectiveConcurrency < 1) {
+		throw error(
+			409,
+			`SWE-bench launch is paused by capacity pressure: ${capacity.capReason ?? "cluster_pressure"}`,
+		);
+	}
 	const { evaluationConcurrency } = effectiveBenchmarkConcurrency({
 		instanceCount: instanceIds.length,
 		concurrency: capacity.effectiveConcurrency,

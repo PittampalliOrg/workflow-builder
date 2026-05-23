@@ -1,10 +1,17 @@
-import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
 import {
 	kubeApiFetch,
 	listDeployments,
 	listPods,
 	type KubePod,
 } from "$lib/server/kube/client";
+
+export type ParentWorkflowPodWorkerSnapshot = {
+	podName: string;
+	ready: boolean;
+	podIP: string | null;
+	connectedWorkflowWorkers: number | null;
+	error: string | null;
+};
 
 export type ParentWorkflowRuntimeSnapshot = {
 	parentAppId: string;
@@ -14,6 +21,8 @@ export type ParentWorkflowRuntimeSnapshot = {
 	readyReplicas: number | null;
 	availableReplicas: number | null;
 	connectedWorkflowWorkers: number | null;
+	connectedWorkerPods: number | null;
+	podWorkers: ParentWorkflowPodWorkerSnapshot[];
 	workflowLimitPerSidecar: number | null;
 	activityLimitPerSidecar: number | null;
 	effectiveWorkflowCapacity: number | null;
@@ -32,6 +41,7 @@ const DEFAULT_NAMESPACE = "workflow-builder";
 const DEFAULT_PARENT_APP_ID = "workflow-orchestrator";
 const DEFAULT_CONFIGURATION = "workflow-builder-tracing";
 const DAPR_LOG_WINDOW_SECONDS = 30 * 60;
+const DEFAULT_READYZ_PORT = 8080;
 
 function positiveInt(value: unknown): number | null {
 	const parsed =
@@ -82,6 +92,12 @@ function parseDaprVersionFromPod(pod: KubePod): string | null {
 	return tag.replace(/^v/, "");
 }
 
+function readyzPort(): number {
+	return positiveInt(process.env.BENCHMARK_PARENT_WORKFLOW_READYZ_PORT) ??
+		positiveInt(process.env.WORKFLOW_ORCHESTRATOR_PORT) ??
+		DEFAULT_READYZ_PORT;
+}
+
 function parseReadyz(body: unknown): number | null {
 	if (!isRecord(body)) return null;
 	return (
@@ -91,16 +107,76 @@ function parseReadyz(body: unknown): number | null {
 	);
 }
 
-async function loadConnectedWorkers(): Promise<number | null> {
-	const res = await daprFetch(`${getOrchestratorUrl()}/readyz`, {
-		method: "GET",
-		maxRetries: 0,
-		signal: AbortSignal.timeout(5_000),
-	});
-	if (!res.ok) {
-		throw new Error(`workflow-orchestrator /readyz returned HTTP ${res.status}`);
+async function loadPodConnectedWorkers(
+	pod: KubePod,
+): Promise<ParentWorkflowPodWorkerSnapshot> {
+	const podName = pod.metadata?.name ?? "unknown";
+	const podIP = pod.status?.podIP ?? null;
+	if (!podIP) {
+		return {
+			podName,
+			ready: podIsReady(pod),
+			podIP: null,
+			connectedWorkflowWorkers: null,
+			error: "pod has no IP",
+		};
 	}
-	return parseReadyz(await res.json().catch(() => null));
+	try {
+		const res = await fetch(`http://${podIP}:${readyzPort()}/readyz`, {
+		method: "GET",
+		signal: AbortSignal.timeout(5_000),
+		});
+		if (!res.ok) {
+			return {
+				podName,
+				ready: podIsReady(pod),
+				podIP,
+				connectedWorkflowWorkers: null,
+				error: `/readyz returned HTTP ${res.status}`,
+			};
+		}
+		return {
+			podName,
+			ready: podIsReady(pod),
+			podIP,
+			connectedWorkflowWorkers: parseReadyz(await res.json().catch(() => null)),
+			error: null,
+		};
+	} catch (err) {
+		return {
+			podName,
+			ready: podIsReady(pod),
+			podIP,
+			connectedWorkflowWorkers: null,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+async function loadConnectedWorkers(
+	pods: KubePod[],
+): Promise<{
+	connectedWorkflowWorkers: number | null;
+	connectedWorkerPods: number | null;
+	podWorkers: ParentWorkflowPodWorkerSnapshot[];
+}> {
+	const readyPods = pods.filter(podIsReady);
+	const podWorkers = await Promise.all(readyPods.map(loadPodConnectedWorkers));
+	const knownWorkers = podWorkers
+		.map((entry) => entry.connectedWorkflowWorkers)
+		.filter((entry): entry is number => entry !== null);
+	return {
+		connectedWorkflowWorkers:
+			knownWorkers.length > 0
+				? knownWorkers.reduce((sum, value) => sum + value, 0)
+				: null,
+		connectedWorkerPods:
+			knownWorkers.length > 0
+				? podWorkers.filter((entry) => (entry.connectedWorkflowWorkers ?? 0) > 0)
+						.length
+				: null,
+		podWorkers,
+	};
 }
 
 async function loadDaprConfiguration(params: {
@@ -222,24 +298,20 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 	};
 
 	try {
-		const [deployments, pods, config, connectedWorkers, scheduler] =
-			await Promise.all([
+		const [deployments, pods, config, scheduler] = await Promise.all([
 				listDeployments(namespace),
 				listPods(namespace),
 				loadDaprConfiguration({ namespace, configName }),
-				loadConnectedWorkers().catch((err) => {
-					console.warn("[bench-capacity] orchestrator /readyz unavailable", err);
-					return null;
-				}),
 				countSchedulerPods().catch((err) => {
 					console.warn("[bench-capacity] Dapr scheduler pod count unavailable", err);
 					return { schedulerPods: null, schedulerReadyPods: null };
 				}),
-			]);
+		]);
 		const deployment = deployments.find(
 			(item) => item.metadata?.name === parentAppId,
 		);
 		const parentPods = pods.filter((pod) => podMatchesApp(pod, parentAppId));
+		const connectedWorkers = await loadConnectedWorkers(parentPods);
 		const replicas =
 			positiveInt(deployment?.spec?.replicas) ??
 			positiveInt(deployment?.status?.replicas) ??
@@ -248,13 +320,14 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 		const availableReplicas = nonNegativeInt(
 			deployment?.status?.availableReplicas,
 		);
+		const connectedWorkerPods = connectedWorkers.connectedWorkerPods;
 		const workflowCapacity =
-			replicas && config.workflowLimitPerSidecar
-				? replicas * config.workflowLimitPerSidecar
+			connectedWorkerPods != null && config.workflowLimitPerSidecar
+				? connectedWorkerPods * config.workflowLimitPerSidecar
 				: null;
 		const activityCapacity =
-			replicas && config.activityLimitPerSidecar
-				? replicas * config.activityLimitPerSidecar
+			connectedWorkerPods != null && config.activityLimitPerSidecar
+				? connectedWorkerPods * config.activityLimitPerSidecar
 				: null;
 		let logCounts: { actorErrors: number | null; reminderErrors: number | null };
 		try {
@@ -272,15 +345,17 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 			(logCounts.actorErrors ?? 0) > 0 ||
 			(logCounts.reminderErrors ?? 0) > 0 ||
 			(replicas != null &&
-				connectedWorkers != null &&
-				connectedWorkers < Math.min(replicas, readyReplicas ?? replicas));
+				connectedWorkerPods != null &&
+				connectedWorkerPods < Math.min(replicas, readyReplicas ?? replicas));
 
 		return {
 			...base,
 			replicas,
 			readyReplicas,
 			availableReplicas,
-			connectedWorkflowWorkers: connectedWorkers,
+			connectedWorkflowWorkers: connectedWorkers.connectedWorkflowWorkers,
+			connectedWorkerPods,
+			podWorkers: connectedWorkers.podWorkers,
 			workflowLimitPerSidecar: config.workflowLimitPerSidecar,
 			activityLimitPerSidecar: config.activityLimitPerSidecar,
 			effectiveWorkflowCapacity: workflowCapacity,
@@ -300,6 +375,8 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 			readyReplicas: null,
 			availableReplicas: null,
 			connectedWorkflowWorkers: null,
+			connectedWorkerPods: null,
+			podWorkers: [],
 			workflowLimitPerSidecar: null,
 			activityLimitPerSidecar: null,
 			effectiveWorkflowCapacity: null,
@@ -317,4 +394,5 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 
 export const __daprWorkflowCapacityForTest = {
 	countLogMatches,
+	parseReadyz,
 };

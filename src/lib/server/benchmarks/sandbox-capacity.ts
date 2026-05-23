@@ -43,6 +43,7 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	kueueClusterQueueReason: string | null;
 	kueueClusterQueueMessage: string | null;
 	kueueAvailableSandboxSlots: number | null;
+	kueueBorrowAvailableSandboxSlots: number | null;
 	kueueCpuLimitedCapacity: number | null;
 	kueueMemoryLimitedCapacity: number | null;
 	kueueEphemeralStorageLimitedCapacity: number | null;
@@ -52,6 +53,7 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	kueueInstanceRequestEphemeralStorageBytes: number | null;
 	kueueInstancePodCount: number | null;
 	kueueAvailableInstanceSlots: number | null;
+	kueueBorrowAvailableInstanceSlots: number | null;
 	kueueInstanceCpuLimitedCapacity: number | null;
 	kueueInstanceMemoryLimitedCapacity: number | null;
 	kueueInstanceEphemeralStorageLimitedCapacity: number | null;
@@ -77,11 +79,13 @@ export type BenchmarkKueueCapacitySnapshot = {
 	availableMemoryBytes: number | null;
 	availableEphemeralStorageBytes: number | null;
 	availablePods: number | null;
+	borrowAvailableSandboxSlots: number | null;
 	instanceRequestCpuMilli: number | null;
 	instanceRequestMemoryBytes: number | null;
 	instanceRequestEphemeralStorageBytes: number | null;
 	instancePodCount: number | null;
 	availableInstanceSlots: number | null;
+	borrowAvailableInstanceSlots: number | null;
 	instanceCpuLimitedCapacity: number | null;
 	instanceMemoryLimitedCapacity: number | null;
 	instanceEphemeralStorageLimitedCapacity: number | null;
@@ -613,6 +617,7 @@ export function kueueCapacityFromClusterQueue(
 	const status = recordValue(root.status);
 	const activeCondition = clusterQueueActiveCondition(status);
 	const quotas = new Map<string, number>();
+	const borrowingLimits = new Map<string, number>();
 	const resourceGroups: unknown[] = Array.isArray(spec?.resourceGroups)
 		? spec.resourceGroups
 		: [];
@@ -626,6 +631,16 @@ export function kueueCapacityFromClusterQueue(
 			const resources = resourceMapFromEntries(flavorRecord?.resources);
 			for (const [name, value] of resources) {
 				quotas.set(name, (quotas.get(name) ?? 0) + value);
+			}
+			if (Array.isArray(flavorRecord?.resources)) {
+				for (const entry of flavorRecord.resources) {
+					const record = recordValue(entry);
+					const name = typeof record?.name === "string" ? record.name : null;
+					if (!name) continue;
+					const value = resourceQuantity(name, record?.borrowingLimit);
+					if (value == null) continue;
+					borrowingLimits.set(name, (borrowingLimits.get(name) ?? 0) + value);
+				}
 			}
 		}
 	}
@@ -645,10 +660,22 @@ export function kueueCapacityFromClusterQueue(
 		if (quota == null) return null;
 		return Math.max(0, quota - (usage.get(name) ?? 0));
 	}
+	function borrowRemaining(name: string): number | null {
+		const quota = quotas.get(name);
+		if (quota == null) return null;
+		return Math.max(
+			0,
+			quota + (borrowingLimits.get(name) ?? 0) - (usage.get(name) ?? 0),
+		);
+	}
 	const availableCpuMilli = remaining("cpu");
 	const availableMemoryBytes = remaining("memory");
 	const availableEphemeralStorageBytes = remaining("ephemeral-storage");
 	const availablePods = remaining("pods");
+	const borrowAvailableCpuMilli = borrowRemaining("cpu");
+	const borrowAvailableMemoryBytes = borrowRemaining("memory");
+	const borrowAvailableEphemeralStorageBytes = borrowRemaining("ephemeral-storage");
+	const borrowAvailablePods = borrowRemaining("pods");
 	const cpuLimitedCapacity =
 		availableCpuMilli == null
 			? null
@@ -673,6 +700,22 @@ export function kueueCapacityFromClusterQueue(
 		podLimitedCapacity,
 	]);
 	if (availableSandboxSlots == null) return null;
+	const borrowAvailableSandboxSlots = finiteCapacityMin([
+		borrowAvailableCpuMilli == null
+			? null
+			: Math.floor(borrowAvailableCpuMilli / sandboxRequest.cpuMilli),
+		borrowAvailableMemoryBytes == null
+			? null
+			: Math.floor(borrowAvailableMemoryBytes / sandboxRequest.memoryBytes),
+		borrowAvailableEphemeralStorageBytes == null ||
+		sandboxRequest.ephemeralStorageBytes <= 0
+			? null
+			: Math.floor(
+					borrowAvailableEphemeralStorageBytes /
+						sandboxRequest.ephemeralStorageBytes,
+				),
+		borrowAvailablePods,
+	]);
 	const instanceRequest = options?.instanceRequest ?? null;
 	const instancePodCount = positiveInt(options?.instancePodCount) ?? 2;
 	const instanceCpuLimitedCapacity =
@@ -706,6 +749,31 @@ export function kueueCapacityFromClusterQueue(
 				instancePodLimitedCapacity,
 			])
 		: null;
+	const borrowAvailableInstanceSlots = instanceRequest
+		? finiteCapacityMin([
+				borrowAvailableCpuMilli == null
+					? null
+					: Math.floor(
+							borrowAvailableCpuMilli / Math.max(1, instanceRequest.cpuMilli),
+						),
+				borrowAvailableMemoryBytes == null
+					? null
+					: Math.floor(
+							borrowAvailableMemoryBytes /
+								Math.max(1, instanceRequest.memoryBytes),
+						),
+				borrowAvailableEphemeralStorageBytes == null ||
+				instanceRequest.ephemeralStorageBytes <= 0
+					? null
+					: Math.floor(
+							borrowAvailableEphemeralStorageBytes /
+								instanceRequest.ephemeralStorageBytes,
+						),
+				borrowAvailablePods == null
+					? null
+					: Math.floor(borrowAvailablePods / instancePodCount),
+			])
+		: null;
 	return {
 		clusterQueueName,
 		clusterQueueActive: activeCondition.active,
@@ -717,15 +785,17 @@ export function kueueCapacityFromClusterQueue(
 		ephemeralStorageLimitedCapacity,
 		podLimitedCapacity,
 		availableCpuMilli,
-		availableMemoryBytes,
-		availableEphemeralStorageBytes,
-		availablePods,
+			availableMemoryBytes,
+			availableEphemeralStorageBytes,
+			availablePods,
+			borrowAvailableSandboxSlots,
 		instanceRequestCpuMilli: instanceRequest?.cpuMilli ?? null,
 		instanceRequestMemoryBytes: instanceRequest?.memoryBytes ?? null,
 		instanceRequestEphemeralStorageBytes:
 			instanceRequest?.ephemeralStorageBytes ?? null,
-		instancePodCount: instanceRequest ? instancePodCount : null,
-		availableInstanceSlots,
+			instancePodCount: instanceRequest ? instancePodCount : null,
+			availableInstanceSlots,
+			borrowAvailableInstanceSlots,
 		instanceCpuLimitedCapacity,
 		instanceMemoryLimitedCapacity,
 		instanceEphemeralStorageLimitedCapacity,
@@ -976,6 +1046,8 @@ export function estimateSchedulableSandboxCapacity(params: {
 		kueueClusterQueueReason: kueueCapacity?.clusterQueueReason ?? null,
 		kueueClusterQueueMessage: kueueCapacity?.clusterQueueMessage ?? null,
 		kueueAvailableSandboxSlots: kueueCapacity?.availableSandboxSlots ?? null,
+		kueueBorrowAvailableSandboxSlots:
+			kueueCapacity?.borrowAvailableSandboxSlots ?? null,
 		kueueCpuLimitedCapacity: kueueCapacity?.cpuLimitedCapacity ?? null,
 		kueueMemoryLimitedCapacity: kueueCapacity?.memoryLimitedCapacity ?? null,
 		kueueEphemeralStorageLimitedCapacity:
@@ -995,6 +1067,8 @@ export function estimateSchedulableSandboxCapacity(params: {
 			null,
 		kueueInstancePodCount: kueueCapacity?.instancePodCount ?? null,
 		kueueAvailableInstanceSlots: kueueCapacity?.availableInstanceSlots ?? null,
+		kueueBorrowAvailableInstanceSlots:
+			kueueCapacity?.borrowAvailableInstanceSlots ?? null,
 		kueueInstanceCpuLimitedCapacity:
 			kueueCapacity?.instanceCpuLimitedCapacity ??
 			kueueInstanceCpuLimitedCapacity,
@@ -1092,6 +1166,7 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			kueueClusterQueueReason: null,
 			kueueClusterQueueMessage: null,
 			kueueAvailableSandboxSlots: null,
+			kueueBorrowAvailableSandboxSlots: null,
 			kueueCpuLimitedCapacity: null,
 			kueueMemoryLimitedCapacity: null,
 			kueueEphemeralStorageLimitedCapacity: null,
@@ -1103,6 +1178,7 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 				kueueInstanceRequest?.ephemeralStorageBytes ?? null,
 			kueueInstancePodCount,
 			kueueAvailableInstanceSlots: null,
+			kueueBorrowAvailableInstanceSlots: null,
 			kueueInstanceCpuLimitedCapacity: null,
 			kueueInstanceMemoryLimitedCapacity: null,
 			kueueInstanceEphemeralStorageLimitedCapacity: null,

@@ -21,6 +21,10 @@ import { loadParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
 import { loadBenchmarkResourceCapacityDiagnostics } from "./resource-leases";
 import { resolveBenchmarkAgent } from "./service";
+import {
+	summarizeBenchmarkClusterPressure,
+	type BenchmarkClusterPressureSnapshot,
+} from "./cluster-pressure";
 
 const DIAGNOSTIC_RESOURCES = [
 	"inference_slot",
@@ -72,6 +76,8 @@ function instanceCount(value: unknown): number {
 
 export type BenchmarkCapacityDiagnostics = {
 	requestedConcurrency: number;
+	deterministicConcurrency: number;
+	pressureAdjustedConcurrency: number;
 	storedEffectiveConcurrency: number;
 	selectedInstanceCount: number;
 	blockedBy: BenchmarkResourceLeaseType[];
@@ -96,6 +102,8 @@ export type BenchmarkCapacityDiagnostics = {
 		replicas: number | null;
 		readyReplicas: number | null;
 		connectedWorkers: number | null;
+		connectedWorkerPods: number | null;
+		podWorkers: unknown[];
 		workflowLimitPerSidecar: number | null;
 		activityLimitPerSidecar: number | null;
 		effectiveWorkflowCapacity: number | null;
@@ -124,6 +132,7 @@ export type BenchmarkCapacityDiagnostics = {
 		kueueClusterQueueReason: string | null;
 		kueueClusterQueueMessage: string | null;
 		kueueAvailableSandboxSlots: number | null;
+		kueueBorrowAvailableSandboxSlots: number | null;
 		kueueCpuLimitedCapacity: number | null;
 		kueueMemoryLimitedCapacity: number | null;
 		kueueEphemeralStorageLimitedCapacity: number | null;
@@ -133,6 +142,7 @@ export type BenchmarkCapacityDiagnostics = {
 		kueueInstanceRequestEphemeralStorageBytes: number | null;
 		kueueInstancePodCount: number | null;
 		kueueAvailableInstanceSlots: number | null;
+		kueueBorrowAvailableInstanceSlots: number | null;
 		kueueInstanceCpuLimitedCapacity: number | null;
 		kueueInstanceMemoryLimitedCapacity: number | null;
 		kueueInstanceEphemeralStorageLimitedCapacity: number | null;
@@ -144,6 +154,7 @@ export type BenchmarkCapacityDiagnostics = {
 	modelCaps: {
 		modelMaxActiveRequests: number | null;
 	};
+	clusterPressure: BenchmarkClusterPressureSnapshot | null;
 	sharedCapacity: ReturnType<typeof summarizeCapacityObserverForQueue>;
 	coverage: ReturnType<typeof buildCapacityCoverageSummary>;
 	workflowLifecycle: BenchmarkWorkflowLifecycleDiagnostics;
@@ -346,6 +357,9 @@ function diagnosticsFromCapacity(params: {
 	const sandboxCapacity = isRecord(capacity.sandboxCapacity)
 		? capacity.sandboxCapacity
 		: {};
+	const clusterPressure = isRecord(capacity.clusterPressure)
+		? (capacity.clusterPressure as BenchmarkClusterPressureSnapshot)
+		: null;
 	const parentRuntime = isRecord(capacity.parentWorkflowRuntime)
 		? capacity.parentWorkflowRuntime
 		: {};
@@ -357,6 +371,16 @@ function diagnosticsFromCapacity(params: {
 		requestedConcurrency:
 			positiveInt(capacity.requestedConcurrency) ??
 			positiveInt(params.run.concurrency) ??
+			1,
+		deterministicConcurrency:
+			nonNegativeInt(capacity.deterministicConcurrency) ??
+			nonNegativeInt(capacity.effectiveConcurrency) ??
+			nonNegativeInt(params.run.concurrency) ??
+			1,
+		pressureAdjustedConcurrency:
+			nonNegativeInt(capacity.pressureAdjustedConcurrency) ??
+			nonNegativeInt(capacity.effectiveConcurrency) ??
+			nonNegativeInt(params.run.concurrency) ??
 			1,
 		storedEffectiveConcurrency:
 			nonNegativeInt(capacity.effectiveConcurrency) ??
@@ -398,6 +422,12 @@ function diagnosticsFromCapacity(params: {
 			connectedWorkers: nonNegativeInt(
 				capacity.parentWorkflowConnectedWorkers,
 			),
+			connectedWorkerPods: nonNegativeInt(
+				capacity.parentWorkflowConnectedWorkerPods,
+			),
+			podWorkers: Array.isArray(parentRuntime.podWorkers)
+				? parentRuntime.podWorkers
+				: [],
 			workflowLimitPerSidecar: positiveInt(
 				capacity.parentWorkflowLimitPerSidecar,
 			),
@@ -466,6 +496,9 @@ function diagnosticsFromCapacity(params: {
 			kueueAvailableSandboxSlots: nonNegativeInt(
 				sandboxCapacity.kueueAvailableSandboxSlots,
 			),
+			kueueBorrowAvailableSandboxSlots: nonNegativeInt(
+				sandboxCapacity.kueueBorrowAvailableSandboxSlots,
+			),
 			kueueCpuLimitedCapacity: nonNegativeInt(
 				sandboxCapacity.kueueCpuLimitedCapacity,
 			),
@@ -493,6 +526,9 @@ function diagnosticsFromCapacity(params: {
 			kueueAvailableInstanceSlots: nonNegativeInt(
 				sandboxCapacity.kueueAvailableInstanceSlots,
 			),
+			kueueBorrowAvailableInstanceSlots: nonNegativeInt(
+				sandboxCapacity.kueueBorrowAvailableInstanceSlots,
+			),
 			kueueInstanceCpuLimitedCapacity: nonNegativeInt(
 				sandboxCapacity.kueueInstanceCpuLimitedCapacity,
 			),
@@ -519,6 +555,7 @@ function diagnosticsFromCapacity(params: {
 		modelCaps: {
 			modelMaxActiveRequests: positiveInt(capacity.modelMaxActiveRequests),
 		},
+		clusterPressure,
 		sharedCapacity: summarizeCapacityObserverForQueue({
 			result:
 				params.sharedCapacity ?? {
@@ -581,12 +618,23 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		loadSchedulableSandboxCapacitySnapshot(),
 		loadParentWorkflowRuntimeSnapshot(),
 	]);
+	const sharedCapacity = await fetchCapacityObserverSnapshot();
+	const clusterPressure = summarizeBenchmarkClusterPressure({
+		result: sharedCapacity,
+		queueName:
+			typeof capacity.executionClass === "string"
+				? capacity.executionClass
+				: typeof liveSandboxCapacity?.kueueClusterQueueName === "string"
+					? liveSandboxCapacity.kueueClusterQueueName
+					: null,
+	});
 	const mergedCapacity = {
 		...capacity,
 		parentWorkflowRuntime,
 		parentWorkflowReplicas: parentWorkflowRuntime.replicas,
 		parentWorkflowReadyReplicas: parentWorkflowRuntime.readyReplicas,
 		parentWorkflowConnectedWorkers: parentWorkflowRuntime.connectedWorkflowWorkers,
+		parentWorkflowConnectedWorkerPods: parentWorkflowRuntime.connectedWorkerPods,
 		parentWorkflowLimitPerSidecar: parentWorkflowRuntime.workflowLimitPerSidecar,
 		parentActivityLimitPerSidecar: parentWorkflowRuntime.activityLimitPerSidecar,
 		parentWorkflowEffectiveCapacity: parentWorkflowRuntime.effectiveWorkflowCapacity,
@@ -597,15 +645,15 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		daprRecentActorErrorCount: parentWorkflowRuntime.recentActorErrorCount,
 		daprRecentReminderErrorCount: parentWorkflowRuntime.recentReminderErrorCount,
 		daprRuntimePressure: parentWorkflowRuntime.daprRuntimePressure,
+		clusterPressure,
 	};
-	const [resources, workflowLifecycle, sharedCapacity] = await Promise.all([
+	const [resources, workflowLifecycle] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run,
 			resources: DIAGNOSTIC_RESOURCES,
 			liveSandboxCapacity,
 		}),
 		loadWorkflowLifecycleDiagnostics(run.agentRuntimeAppId),
-		fetchCapacityObserverSnapshot(),
 	]);
 	return diagnosticsFromCapacity({
 		run,
@@ -648,6 +696,11 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		loadSchedulableSandboxCapacitySnapshot(),
 		loadParentWorkflowRuntimeSnapshot(),
 	]);
+	const sharedCapacity = await fetchCapacityObserverSnapshot();
+	const clusterPressure = summarizeBenchmarkClusterPressure({
+		result: sharedCapacity,
+		queueName: sandboxCapacity?.kueueClusterQueueName,
+	});
 	const capacity = estimateBenchmarkRuntimeCapacity({
 		runtimeClass: runtimeRoute.runtimeClass,
 		runtimeIsolation: runtimeRoute.isolation,
@@ -656,9 +709,14 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
 		maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
 		sandboxCapacity,
+		clusterPressure,
 		parentWorkflowRuntime,
 		requestedInstanceCount: selectedInstanceCount,
 		requestedConcurrency: input.requestedConcurrency,
+		modelNameOrPath:
+			input.modelNameOrPath ?? input.modelConfigLabel ?? agent.modelSpec,
+		modelConfigLabel: input.modelConfigLabel,
+		agentSlug: agent.slug,
 		executionBackend: input.executionBackend,
 	});
 	const pseudoRun = {
@@ -702,14 +760,13 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		createdAt: new Date(),
 		updatedAt: new Date(),
 	} as typeof benchmarkRuns.$inferSelect;
-	const [resources, workflowLifecycle, sharedCapacity] = await Promise.all([
+	const [resources, workflowLifecycle] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run: pseudoRun,
 			resources: DIAGNOSTIC_RESOURCES,
 			liveSandboxCapacity: sandboxCapacity,
 		}),
 		loadWorkflowLifecycleDiagnostics(runtimeRoute.appId),
-		fetchCapacityObserverSnapshot(),
 	]);
 	return diagnosticsFromCapacity({
 		run: pseudoRun,
