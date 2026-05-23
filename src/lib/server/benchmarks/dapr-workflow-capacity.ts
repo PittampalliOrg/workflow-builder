@@ -164,7 +164,13 @@ function countLogMatches(logs: string): {
 	let actorErrors = 0;
 	let reminderErrors = 0;
 	for (const line of logs.split(/\r?\n/)) {
-		if (!/(error|failed|failure|abort|lock|panic)/i.test(line)) continue;
+		if (
+			!/(level=(error|fatal)|ERR_|panic|deadline|unable|no such instance|\bfailed\b|\bfailure\b|\babort(?:ed)?\b|\blocked\b|\block timeout\b)/i.test(
+				line,
+			)
+		) {
+			continue;
+		}
 		if (/actor/i.test(line)) actorErrors += 1;
 		if (/reminder|scheduler/i.test(line)) reminderErrors += 1;
 	}
@@ -308,3 +314,7 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 		};
 	}
 }
+
+export const __daprWorkflowCapacityForTest = {
+	countLogMatches,
+};
