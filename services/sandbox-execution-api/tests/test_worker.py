@@ -404,7 +404,7 @@ def test_run_propagates_terminal_status_during_startup(monkeypatch, tmp_path) ->
     ]
 
 
-def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tmp_path) -> None:
+def test_run_leaves_started_workflow_when_shutdown_requested(monkeypatch, tmp_path) -> None:
     payload = {
         "executionId": "hexec_1",
         "workflowExecutionId": "exec_1",
@@ -440,13 +440,14 @@ def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tm
     worker._termination_requested.clear()
 
     try:
-        assert worker._run() == 1
+        assert worker._run() == 0
     finally:
         worker._termination_requested.clear()
 
-    assert terminated == [("sw-1", "host execution worker terminated")]
-    assert callbacks[-1]["status"] == "cancelled"
-    assert callbacks[-1]["daprInstanceId"] == "sw-1"
+    assert terminated == []
+    assert callbacks == [
+        {"status": "running", "hostExecutionId": "hexec_1", "daprInstanceId": "sw-1"}
+    ]
 
 
 def test_run_does_not_overwrite_terminal_instance_when_cleanup_terminates_worker(

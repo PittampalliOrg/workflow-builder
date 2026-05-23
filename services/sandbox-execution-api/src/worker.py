@@ -437,6 +437,63 @@ def _cancel_started_workflow(
     _post_callback(payload, callback_body)
 
 
+def _defer_started_workflow_after_worker_termination(
+    payload: dict[str, Any],
+    *,
+    execution_id: str,
+    instance_id: str,
+) -> int:
+    terminal_instance_status = _terminal_instance_status(_sync_instance(payload))
+    if terminal_instance_status:
+        _log(
+            "host execution worker terminated after benchmark instance reached "
+            "terminal inference state; leaving terminal result intact "
+            f"execution={execution_id} daprInstance={instance_id} "
+            f"inferenceStatus={terminal_instance_status}"
+        )
+        return 0
+
+    try:
+        last_status = _workflow_status(instance_id)
+    except Exception as exc:
+        _log(
+            "host execution worker terminated while workflow status was unavailable; "
+            "leaving child workflow for coordinator sync or timeout "
+            f"execution={execution_id} daprInstance={instance_id} error={exc}"
+        )
+        return 0
+
+    runtime_status = str(last_status.get("runtimeStatus") or "").upper()
+    if runtime_status in TERMINAL_RUNTIME_STATUSES:
+        status = TERMINAL_RUNTIME_STATUSES[runtime_status]
+        _post_callback(
+            payload,
+            {
+                "status": status,
+                "hostExecutionId": execution_id,
+                "daprInstanceId": instance_id,
+                "output": last_status.get("output")
+                if "output" in last_status
+                else last_status.get("outputs"),
+                "error": last_status.get("error"),
+            },
+        )
+        _log(
+            "terminal callback posted during worker termination "
+            f"execution={execution_id} daprInstance={instance_id} "
+            f"runtimeStatus={runtime_status} status={status}"
+        )
+        return 0 if status == "success" else 1
+
+    _log(
+        "host execution worker terminated while child workflow was still active; "
+        "leaving workflow for coordinator sync or timeout "
+        f"execution={execution_id} daprInstance={instance_id} "
+        f"runtimeStatus={runtime_status or '<empty>'}"
+    )
+    return 0
+
+
 def _run() -> int:
     _install_signal_handlers()
     payload = _load_payload()
@@ -461,13 +518,11 @@ def _run() -> int:
         instance_id = _start_workflow(payload)
         _log(f"workflow started execution={execution_id} daprInstance={instance_id}")
         if _termination_requested.is_set():
-            _cancel_started_workflow(
+            return _defer_started_workflow_after_worker_termination(
                 payload,
                 execution_id=execution_id,
                 instance_id=instance_id,
-                reason="host execution worker terminated after workflow start",
             )
-            return 1
         startup_status, startup_detail = _wait_for_workflow_start_ready(
             payload,
             execution_id=execution_id,
@@ -529,13 +584,11 @@ def _run() -> int:
             )
             return 0 if status == "success" else 1
         if startup_status == "terminated":
-            _cancel_started_workflow(
+            return _defer_started_workflow_after_worker_termination(
                 payload,
                 execution_id=execution_id,
                 instance_id=instance_id,
-                reason="host execution worker terminated after workflow start",
             )
-            return 1
         _post_callback(
             payload,
             {
@@ -553,20 +606,16 @@ def _run() -> int:
         while time.monotonic() < deadline:
             if _termination_requested.is_set():
                 if previous_terminal_instance_status:
-                    _log(
-                        "host execution worker terminated after benchmark instance "
-                        "reached terminal inference state; leaving terminal result intact "
-                        f"execution={execution_id} daprInstance={instance_id} "
-                        f"inferenceStatus={previous_terminal_instance_status}"
+                    return _defer_started_workflow_after_worker_termination(
+                        payload,
+                        execution_id=execution_id,
+                        instance_id=instance_id,
                     )
-                    return 0
-                _cancel_started_workflow(
+                return _defer_started_workflow_after_worker_termination(
                     payload,
                     execution_id=execution_id,
                     instance_id=instance_id,
-                    reason="host execution worker terminated",
                 )
-                return 1
             last_status = _workflow_status(instance_id)
             runtime_status = str(last_status.get("runtimeStatus") or "").upper()
             if runtime_status != previous_runtime_status:
@@ -608,13 +657,11 @@ def _run() -> int:
                     previous_terminal_instance_status = terminal_instance_status
             _sleep(poll_seconds)
         if _termination_requested.is_set():
-            _cancel_started_workflow(
+            return _defer_started_workflow_after_worker_termination(
                 payload,
                 execution_id=execution_id,
                 instance_id=instance_id,
-                reason="host execution worker terminated",
             )
-            return 1
         _post_callback(
             payload,
             {
