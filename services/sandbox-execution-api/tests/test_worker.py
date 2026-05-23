@@ -279,6 +279,131 @@ def test_run_waits_for_dapr_terminal_after_bff_sync_reports_terminal_inference(
     assert terminated == []
 
 
+def test_run_requeues_when_workflow_stays_pending_at_startup(monkeypatch, tmp_path) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback/execution"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setenv("SANDBOX_EXECUTION_WORKFLOW_PENDING_TIMEOUT_SECONDS", "0")
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    monkeypatch.setattr(
+        worker,
+        "_workflow_status",
+        lambda _instance_id: {"runtimeStatus": "PENDING"},
+    )
+    monkeypatch.setattr(
+        worker,
+        "_orchestrator_readyz",
+        lambda: {"workflowConnectedWorkers": 0, "taskhub": {"ready": False}},
+    )
+    callbacks: list[dict[str, object]] = []
+    terminated: list[tuple[str, str]] = []
+    monkeypatch.setattr(worker, "_post_callback", lambda _payload, body: callbacks.append(body))
+    monkeypatch.setattr(
+        worker,
+        "_terminate_workflow",
+        lambda instance_id, reason: terminated.append((instance_id, reason)),
+    )
+
+    assert worker._run() == 0
+    assert callbacks == [
+        {
+            "status": "transient",
+            "hostExecutionId": "hexec_1",
+            "daprInstanceId": "sw-1",
+            "error": "workflow_start_pending_timeout",
+            "terminationReason": "workflow_start_pending_timeout",
+            "retryable": True,
+            "retryAfterSeconds": 15,
+            "output": {
+                "reason": "workflow_start_pending_timeout",
+                "startup": {
+                    "workflowStatus": {"runtimeStatus": "PENDING"},
+                    "readyz": {
+                        "workflowConnectedWorkers": 0,
+                        "taskhub": {"ready": False},
+                    },
+                },
+            },
+        }
+    ]
+    assert terminated == [("sw-1", "workflow_start_pending_timeout")]
+
+
+def test_run_posts_running_callback_after_startup_running(monkeypatch, tmp_path) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback/execution"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    statuses = iter([
+        {"runtimeStatus": "RUNNING"},
+        {"runtimeStatus": "COMPLETED", "output": {"ok": True}},
+    ])
+    monkeypatch.setattr(worker, "_workflow_status", lambda _instance_id: next(statuses))
+    callbacks: list[dict[str, object]] = []
+    monkeypatch.setattr(worker, "_post_callback", lambda _payload, body: callbacks.append(body))
+    monkeypatch.setattr(worker, "_sync_instance", lambda _payload: None)
+
+    assert worker._run() == 0
+    assert callbacks[0] == {
+        "status": "running",
+        "hostExecutionId": "hexec_1",
+        "daprInstanceId": "sw-1",
+    }
+    assert callbacks[1]["status"] == "success"
+
+
+def test_run_propagates_terminal_status_during_startup(monkeypatch, tmp_path) -> None:
+    payload = {
+        "executionId": "hexec_1",
+        "workflowExecutionId": "exec_1",
+        "workflow": {"id": "wf"},
+        "workflowId": "wf",
+        "timeoutSeconds": 60,
+        "callback": {"path": "/callback/execution"},
+    }
+    payload_path = tmp_path / "request.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("EXECUTION_REQUEST_PATH", str(payload_path))
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "_start_workflow", lambda _payload: "sw-1")
+    monkeypatch.setattr(
+        worker,
+        "_workflow_status",
+        lambda _instance_id: {"runtimeStatus": "FAILED", "error": "boom"},
+    )
+    callbacks: list[dict[str, object]] = []
+    monkeypatch.setattr(worker, "_post_callback", lambda _payload, body: callbacks.append(body))
+
+    assert worker._run() == 1
+    assert callbacks == [
+        {
+            "status": "error",
+            "hostExecutionId": "hexec_1",
+            "daprInstanceId": "sw-1",
+            "output": None,
+            "error": "boom",
+        }
+    ]
+
+
 def test_run_terminates_started_workflow_when_shutdown_requested(monkeypatch, tmp_path) -> None:
     payload = {
         "executionId": "hexec_1",

@@ -123,7 +123,7 @@ const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
 const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
-const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = true;
+const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = false;
 const ORCHESTRATOR_READY_TIMEOUT_MS = 5_000;
 const ORCHESTRATOR_START_TIMEOUT_MS = 75_000;
 const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
@@ -2407,11 +2407,11 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	if (params.purgeGraceMs > 0) {
 		await deps.sleep(params.purgeGraceMs);
 	}
-	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
-		await deps.purgeAgentRuntime(target.runtimeAppId, target.instanceId);
-	});
 	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
 		await deps.purgeParent(instanceId);
+	});
+	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
+		await deps.purgeAgentRuntime(target.runtimeAppId, target.instanceId);
 	});
 	return { allClosed, parentClosed, agentRuntimeClosed };
 }
@@ -2660,6 +2660,7 @@ export const __benchmarkDurableRuntimeForTest = {
 	benchmarkTerminatedSessionExecutionStatus,
 	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
+	shouldPurgeBenchmarkDaprWorkflowsOnCleanup,
 	cleanupBenchmarkDurableWorkflowCascade,
 };
 
@@ -4074,6 +4075,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 export type HostBenchmarkExecutionStatus =
 	| "pending"
 	| "running"
+	| "retry"
 	| "success"
 	| "error"
 	| "timeout"
@@ -4094,6 +4096,12 @@ function normalizeHostBenchmarkExecutionStatus(
 		case "admitted":
 		case "active":
 			return "running";
+		case "retry":
+		case "retryable":
+		case "requeue":
+		case "transient":
+		case "transient-error":
+			return "retry";
 		case "success":
 		case "succeeded":
 		case "completed":
@@ -4120,6 +4128,8 @@ function workflowExecutionStatusForHostStatus(
 			return "pending";
 		case "running":
 			return "running";
+		case "retry":
+			return "cancelled";
 		case "success":
 			return "success";
 		case "cancelled":
@@ -4138,6 +4148,8 @@ function workflowExecutionPhaseForHostStatus(
 			return "pending";
 		case "running":
 			return "running";
+		case "retry":
+			return "retryable";
 		case "success":
 			return "completed";
 		case "cancelled":
@@ -4171,7 +4183,7 @@ function benchmarkTerminatedSessionExecutionStatus(
 function isHostBenchmarkExecutionTerminal(
 	status: HostBenchmarkExecutionStatus,
 ): status is CompletedExecutionStatus {
-	return status !== "pending" && status !== "running";
+	return status !== "pending" && status !== "running" && status !== "retry";
 }
 
 export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
@@ -4188,6 +4200,7 @@ export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
 	traceIds?: string[] | null;
 	inferenceEnvironment?: Record<string, unknown> | null;
 	terminationReason?: string | null;
+	retryAfterSeconds?: number | null;
 }) {
 	const database = requireDb();
 	let status = normalizeHostBenchmarkExecutionStatus(params.status);
@@ -4230,6 +4243,13 @@ export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
 	}
 
 	const now = new Date();
+	const executionIr = row.execution.executionIr as Record<string, unknown>;
+	const dispatch =
+		executionIr.dispatch &&
+		typeof executionIr.dispatch === "object" &&
+		!Array.isArray(executionIr.dispatch)
+			? (executionIr.dispatch as Record<string, unknown>)
+			: {};
 	const output =
 		params.output === undefined
 			? row.execution.output
@@ -4251,13 +4271,58 @@ export async function applyBenchmarkInstanceHostExecutionUpdate(params: {
 					traceIds: params.traceIds ?? undefined,
 					inferenceEnvironment: params.inferenceEnvironment ?? undefined,
 				};
-	const executionIr = row.execution.executionIr as Record<string, unknown>;
-	const dispatch =
-		executionIr.dispatch &&
-		typeof executionIr.dispatch === "object" &&
-		!Array.isArray(executionIr.dispatch)
-			? (executionIr.dispatch as Record<string, unknown>)
-			: {};
+	if (status === "retry") {
+		const reason =
+			params.terminationReason?.trim() ||
+			params.error?.trim() ||
+			"host execution workflow start is retryable";
+		await database
+			.update(workflowExecutions)
+			.set({
+				status: "cancelled",
+				phase: "retryable",
+				daprInstanceId:
+					params.daprInstanceId?.trim() || row.execution.daprInstanceId,
+				output,
+				error: reason.slice(0, 1000),
+				executionIr: {
+					...executionIr,
+					dispatch: {
+						...dispatch,
+						backend: "host",
+						hostExecutionId: params.hostExecutionId ?? dispatch.hostExecutionId,
+						jobName: params.jobName ?? dispatch.jobName,
+						lastStatus: status,
+						lastUpdateAt: now.toISOString(),
+						retryAfterSeconds: params.retryAfterSeconds ?? undefined,
+					},
+				},
+				completedAt: row.execution.completedAt ?? now,
+			})
+			.where(eq(workflowExecutions.id, row.execution.id));
+		const [updated] = await database
+			.update(benchmarkRunInstances)
+			.set({
+				status: "queued",
+				inferenceStatus: "queued",
+				workflowExecutionId: null,
+				daprInstanceId: null,
+				error: null,
+				inferenceError: null,
+				terminationReason: reason,
+				updatedAt: now,
+			})
+			.where(eq(benchmarkRunInstances.id, row.runInstance.id))
+			.returning();
+		await releaseBenchmarkResourceLeases({
+			runId: row.runInstance.runId,
+			instanceId: row.runInstance.instanceId,
+			phase: "inference",
+			reason,
+		});
+		return updated ?? row.runInstance;
+	}
+
 	await database
 		.update(workflowExecutions)
 		.set({

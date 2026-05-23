@@ -1250,9 +1250,15 @@ describe("SWE-bench terminal run cleanup", () => {
 			"parent-terminate:parent-1",
 			"parent-wait:parent-1",
 			"child-wait:agent-session-host/session-1",
-			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",
+			"child-purge:agent-session-host/session-1",
 		]);
+	});
+
+	it("keeps benchmark Dapr histories by default", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.shouldPurgeBenchmarkDaprWorkflowsOnCleanup(),
+		).toBe(false);
 	});
 
 	it("skips purge when parent workflow closure is not confirmed", async () => {

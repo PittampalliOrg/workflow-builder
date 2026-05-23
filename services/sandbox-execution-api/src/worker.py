@@ -333,6 +333,72 @@ def _workflow_status(instance_id: str) -> dict[str, Any]:
     return body
 
 
+def _orchestrator_readyz() -> dict[str, Any]:
+    try:
+        res = requests.get(f"{_orchestrator_url()}/readyz", timeout=10)
+        body: dict[str, Any]
+        try:
+            raw = res.json()
+            body = raw if isinstance(raw, dict) else {"body": raw}
+        except Exception:
+            body = {"body": res.text[:1000]}
+        body["httpStatus"] = res.status_code
+        return body
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _pending_start_timeout_seconds() -> float:
+    return max(
+        0.0,
+        float(_env("SANDBOX_EXECUTION_WORKFLOW_PENDING_TIMEOUT_SECONDS", "30")),
+    )
+
+
+def _pending_start_poll_seconds() -> float:
+    return max(
+        0.5,
+        float(_env("SANDBOX_EXECUTION_WORKFLOW_PENDING_POLL_SECONDS", "2")),
+    )
+
+
+def _wait_for_workflow_start_ready(
+    payload: dict[str, Any],
+    *,
+    execution_id: str,
+    instance_id: str,
+) -> tuple[str, dict[str, Any]]:
+    timeout_seconds = _pending_start_timeout_seconds()
+    deadline = time.monotonic() + timeout_seconds
+    last_status: dict[str, Any] = {}
+    while True:
+        last_status = _workflow_status(instance_id)
+        runtime_status = str(last_status.get("runtimeStatus") or "").upper()
+        if runtime_status == "RUNNING":
+            return "running", last_status
+        if runtime_status in TERMINAL_RUNTIME_STATUSES:
+            return "terminal", last_status
+        if runtime_status and runtime_status != "PENDING":
+            _log(
+                "workflow startup observed non-running status "
+                f"execution={execution_id} daprInstance={instance_id} "
+                f"runtimeStatus={runtime_status}"
+            )
+        if timeout_seconds <= 0 or time.monotonic() >= deadline:
+            readyz = _orchestrator_readyz()
+            _log(
+                "workflow remained pending beyond startup threshold "
+                f"execution={execution_id} daprInstance={instance_id} "
+                f"timeoutSeconds={timeout_seconds} "
+                f"runtimeStatus={runtime_status or '<empty>'} "
+                f"readyz={json.dumps(readyz, default=str)[:1200]}"
+            )
+            return "pending-timeout", {"workflowStatus": last_status, "readyz": readyz}
+        if _termination_requested.is_set():
+            return "terminated", last_status
+        _sleep(min(_pending_start_poll_seconds(), max(0.0, deadline - time.monotonic())))
+
+
 def _terminate_workflow(instance_id: str, reason: str) -> None:
     res = requests.post(
         f"{_orchestrator_url()}/api/v2/workflows/{instance_id}/terminate",
@@ -395,6 +461,74 @@ def _run() -> int:
         instance_id = _start_workflow(payload)
         _log(f"workflow started execution={execution_id} daprInstance={instance_id}")
         if _termination_requested.is_set():
+            _cancel_started_workflow(
+                payload,
+                execution_id=execution_id,
+                instance_id=instance_id,
+                reason="host execution worker terminated after workflow start",
+            )
+            return 1
+        startup_status, startup_detail = _wait_for_workflow_start_ready(
+            payload,
+            execution_id=execution_id,
+            instance_id=instance_id,
+        )
+        if startup_status == "pending-timeout":
+            reason = "workflow_start_pending_timeout"
+            termination_error: str | None = None
+            try:
+                _terminate_workflow(instance_id, reason)
+            except Exception as exc:
+                termination_error = str(exc)
+                _log(f"workflow termination failed for pending {instance_id}: {exc}")
+            output = {
+                "reason": reason,
+                "startup": startup_detail,
+            }
+            if termination_error:
+                output["terminationError"] = termination_error
+            _post_callback(
+                payload,
+                {
+                    "status": "transient",
+                    "hostExecutionId": execution_id,
+                    "daprInstanceId": instance_id,
+                    "error": reason,
+                    "terminationReason": reason,
+                    "retryable": True,
+                    "retryAfterSeconds": int(
+                        _env("SANDBOX_EXECUTION_WORKFLOW_PENDING_RETRY_SECONDS", "15")
+                    ),
+                    "output": output,
+                },
+            )
+            _log(
+                "transient callback posted "
+                f"execution={execution_id} daprInstance={instance_id} reason={reason}"
+            )
+            return 0
+        if startup_status == "terminal":
+            runtime_status = str(startup_detail.get("runtimeStatus") or "").upper()
+            status = TERMINAL_RUNTIME_STATUSES[runtime_status]
+            _post_callback(
+                payload,
+                {
+                    "status": status,
+                    "hostExecutionId": execution_id,
+                    "daprInstanceId": instance_id,
+                    "output": startup_detail.get("output")
+                    if "output" in startup_detail
+                    else startup_detail.get("outputs"),
+                    "error": startup_detail.get("error"),
+                },
+            )
+            _log(
+                "terminal callback posted during startup "
+                f"execution={execution_id} daprInstance={instance_id} "
+                f"runtimeStatus={runtime_status} status={status}"
+            )
+            return 0 if status == "success" else 1
+        if startup_status == "terminated":
             _cancel_started_workflow(
                 payload,
                 execution_id=execution_id,

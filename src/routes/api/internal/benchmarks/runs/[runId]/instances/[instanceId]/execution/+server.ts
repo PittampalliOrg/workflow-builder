@@ -45,6 +45,10 @@ export const POST: RequestHandler = async ({ request, params }) => {
 			typeof body.terminationReason === "string"
 				? body.terminationReason
 				: null,
+		retryAfterSeconds:
+			typeof body.retryAfterSeconds === "number"
+				? body.retryAfterSeconds
+				: null,
 	});
 	if (!instance) return error(404, "Benchmark instance not found");
 	return json({ success: true, instance });
