@@ -331,3 +331,31 @@ def test_dispatch_run_instance_taskruns_polls_active_when_slot_pool_is_full(
     assert waited == [["run-a", "run-b"], ["run-b", "run-c"], ["run-c"]]
     assert released == ["a", "b", "c"]
     assert sorted(result) == ["run-a", "run-b", "run-c"]
+
+
+def test_collect_results_preserves_stage_failure_when_report_missing(tmp_path):
+    entrypoint = load_entrypoint()
+    run_dir = tmp_path / "run_1"
+
+    results = entrypoint.collect_results(
+        run_dir,
+        ["django__django-11133"],
+        missing_report_error="prepare TaskRun failed: dataset.jsonl missing",
+    )
+
+    assert results == [
+        {
+            "instance_id": "django__django-11133",
+            "resolved": False,
+            "status": "error",
+            "error": "prepare TaskRun failed: dataset.jsonl missing",
+            "logs_path": str(run_dir / "django__django-11133"),
+            "harness_result": {
+                "resolved": False,
+                "status": "error",
+                "error": "prepare TaskRun failed: dataset.jsonl missing",
+                "source": "swebench-evaluator",
+                "missing_report_json": True,
+            },
+        }
+    ]

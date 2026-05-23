@@ -149,7 +149,11 @@ def _post_terminal_results(
     succeeded: bool,
 ) -> int:
     run_dir = artifacts_root / run_id
-    results = collect_results(run_dir, instance_ids)
+    results = collect_results(
+        run_dir,
+        instance_ids,
+        missing_report_error=error,
+    )
     log_mlflow_evaluation(run_id, results, log_dir, error)
     post_results(run_id, results, error=error)
     return 0 if succeeded else 1
@@ -1367,19 +1371,33 @@ def taskrun_failure_reason(tr: dict[str, Any]) -> str:
 
 
 def collect_results(
-    run_dir: pathlib.Path, instance_ids: list[str]
+    run_dir: pathlib.Path,
+    instance_ids: list[str],
+    *,
+    missing_report_error: str | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for iid in instance_ids:
         report_path = run_dir / iid / "report.json"
         if not report_path.exists():
+            error = (
+                missing_report_error
+                or "No report.json produced by Tekton run-instance Task"
+            )
             results.append(
                 {
                     "instance_id": iid,
                     "resolved": False,
                     "status": "error",
-                    "error": "No report.json produced by Tekton run-instance Task",
+                    "error": error,
                     "logs_path": str(run_dir / iid),
+                    "harness_result": {
+                        "resolved": False,
+                        "status": "error",
+                        "error": error,
+                        "source": "swebench-evaluator",
+                        "missing_report_json": True,
+                    },
                 }
             )
             continue
