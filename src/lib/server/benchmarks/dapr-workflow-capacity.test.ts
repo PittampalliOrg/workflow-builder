@@ -39,6 +39,17 @@ describe("Dapr workflow capacity diagnostics", () => {
 		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
 	});
 
+	it("does not count recoverable actor churn while newly-created session hosts join placement", () => {
+		const counts = __daprWorkflowCapacityForTest.countLogMatches(
+			[
+				'time="2026-05-24T21:54:21Z" level=error msg="Timed out waiting for actor in-flight lock claims to be released, force cancelling remaining claims" scope=dapr.runtime.actors.loops.disseminator.inflight.lock',
+				`time="2026-05-24T21:54:21Z" level=warning msg="Workflow actor 'sw-swebench-instance-exec-abc': execution failed with a recoverable error and will be retried later: 'failed to invoke 'CreateWorkflowInstance' on remote app 'agent-session-abc' (the app may not be available): context canceled'" scope=dapr.runtime.actors.targets.orchestrator`,
+			].join("\n"),
+		);
+
+		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+	});
+
 	it("ignores terminating pods for readiness-sensitive pressure checks", () => {
 		const ready = __daprWorkflowCapacityForTest.podIsReady({
 			metadata: { name: "workflow-orchestrator-current" },

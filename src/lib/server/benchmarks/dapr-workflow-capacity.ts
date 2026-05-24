@@ -302,6 +302,17 @@ function countLogMatches(logs: string): {
 			continue;
 		}
 		if (
+			/Workflow actor .*execution failed with a recoverable error and will be retried later/i.test(
+				line,
+			) &&
+			/context canceled|the app may not be available/i.test(line)
+		) {
+			continue;
+		}
+		if (/Timed out waiting for actor in-flight lock claims to be released/i.test(line)) {
+			continue;
+		}
+		if (
 			!/(level=(error|fatal)|ERR_|panic|deadline|unable|no such instance|\bfailed\b|\bfailure\b|\babort(?:ed)?\b|\blocked\b|\block timeout\b)/i.test(
 				line,
 			)
