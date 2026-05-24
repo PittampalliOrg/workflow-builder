@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
 from typing import Any
 from urllib.error import HTTPError
@@ -392,7 +393,7 @@ def _gateway_request(url: str, body: dict[str, Any]) -> urllib.request.Request:
     )
 
 
-def _retry_after_seconds(exc: HTTPError) -> float:
+def _retry_after_seconds(exc: HTTPError) -> float | None:
     retry_after = None
     if exc.headers:
         retry_after = exc.headers.get("Retry-After") or exc.headers.get("retry-after")
@@ -401,7 +402,56 @@ def _retry_after_seconds(exc: HTTPError) -> float:
             return max(0.0, float(retry_after))
         except ValueError:
             pass
-    return 1.0
+    return None
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _transient_retry_codes() -> set[int]:
+    raw = os.environ.get(
+        "DAPR_AGENT_PY_GATEWAY_TRANSIENT_RETRY_STATUS_CODES",
+        "408,425,500,502,503,504,529",
+    )
+    codes: set[int] = set()
+    for part in raw.split(","):
+        try:
+            codes.add(int(part.strip()))
+        except ValueError:
+            continue
+    return codes
+
+
+def _transient_backoff_seconds(exc: HTTPError, attempt: int) -> float:
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None:
+        return retry_after
+
+    initial = max(
+        0.0,
+        _env_float("DAPR_AGENT_PY_GATEWAY_TRANSIENT_INITIAL_BACKOFF_SECONDS", 8.0),
+    )
+    maximum = max(
+        initial,
+        _env_float("DAPR_AGENT_PY_GATEWAY_TRANSIENT_MAX_BACKOFF_SECONDS", 60.0),
+    )
+    jitter_fraction = max(
+        0.0,
+        _env_float("DAPR_AGENT_PY_GATEWAY_TRANSIENT_JITTER_FRACTION", 0.35),
+    )
+    base = min(maximum, initial * (2 ** max(0, attempt - 1)))
+    return base + random.uniform(0.0, base * jitter_fraction)
 
 
 def _call_gateway_chat(
@@ -465,8 +515,11 @@ def _call_gateway_chat(
     )
 
     started = time.monotonic()
-    rate_limit_retries = int(os.environ.get("DAPR_AGENT_PY_GATEWAY_RATE_LIMIT_RETRIES", "3"))
-    attempt = 0
+    rate_limit_retries = _env_int("DAPR_AGENT_PY_GATEWAY_RATE_LIMIT_RETRIES", 3)
+    transient_retries = _env_int("DAPR_AGENT_PY_GATEWAY_TRANSIENT_RETRIES", 5)
+    transient_retry_codes = _transient_retry_codes()
+    rate_attempt = 0
+    transient_attempt = 0
     data: dict[str, Any]
     while True:
         req = _gateway_request(url, body)
@@ -477,15 +530,32 @@ def _call_gateway_chat(
             break
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-            if exc.code == 429 and attempt < rate_limit_retries:
+            if exc.code == 429 and rate_attempt < rate_limit_retries:
                 delay = _retry_after_seconds(exc)
-                attempt += 1
+                if delay is None:
+                    delay = _env_float("DAPR_AGENT_PY_GATEWAY_RATE_LIMIT_BACKOFF_SECONDS", 1.0)
+                rate_attempt += 1
                 logger.warning(
                     "[gateway-adapter] 429 from route=%s; retry in %.1fs (attempt %d/%d): %s",
                     route,
                     delay,
-                    attempt,
+                    rate_attempt,
                     rate_limit_retries,
+                    detail[:300],
+                )
+                time.sleep(delay)
+                continue
+            if exc.code in transient_retry_codes and transient_attempt < transient_retries:
+                transient_attempt += 1
+                delay = _transient_backoff_seconds(exc, transient_attempt)
+                logger.warning(
+                    "[gateway-adapter] transient HTTP %d from route=%s; retry in %.1fs "
+                    "(attempt %d/%d): %s",
+                    exc.code,
+                    route,
+                    delay,
+                    transient_attempt,
+                    transient_retries,
                     detail[:300],
                 )
                 time.sleep(delay)
