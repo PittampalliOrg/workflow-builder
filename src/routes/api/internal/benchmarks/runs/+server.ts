@@ -13,6 +13,10 @@ import {
 } from "$lib/server/benchmarks/service";
 import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 import { selectExactReadySwebenchInstanceIds } from "$lib/server/benchmarks/environment-validation";
+import {
+	benchmarkLaunchControlPlaneError,
+	loadBenchmarkLaunchControlPlaneStability,
+} from "$lib/server/benchmarks/launch-stability";
 
 export const POST: RequestHandler = async ({ request }) => {
 	requireInternal(request);
@@ -44,9 +48,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 	if (body.previewOnly === true || body.dryRun === true) {
+		const launchControlPlane =
+			await loadBenchmarkLaunchControlPlaneStability();
 		return json({
 			preview: true,
 			...selection,
+			launchControlPlane,
+			launchControlPlaneError:
+				benchmarkLaunchControlPlaneError(launchControlPlane),
 		});
 	}
 	const allowPartialSelection = body.allowPartialSelection === true;

@@ -69,6 +69,10 @@ import {
 import { fetchCapacityObserverSnapshot } from "$lib/server/capacity/observer";
 import { summarizeBenchmarkClusterPressure } from "./cluster-pressure";
 import { estimateBenchmarkEvaluationCapacity } from "./evaluation-capacity";
+import {
+	benchmarkLaunchControlPlaneError,
+	loadBenchmarkLaunchControlPlaneStability,
+} from "./launch-stability";
 import { aggregateBenchmarkInstanceTimings } from "./timings";
 import {
 	buildSwebenchDatasetJsonl,
@@ -1174,12 +1178,23 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	const executionClass = normalizeBenchmarkExecutionClass(
 		input.executionClass ?? benchmarkExecutionClass(),
 	);
-	const [sandboxCapacity, parentWorkflowRuntime, capacityObserver] =
+	const [
+		sandboxCapacity,
+		parentWorkflowRuntime,
+		capacityObserver,
+		launchControlPlane,
+	] =
 		await Promise.all([
 			loadSchedulableSandboxCapacitySnapshot(),
 			loadParentWorkflowRuntimeSnapshot(),
 			fetchCapacityObserverSnapshot(),
+			loadBenchmarkLaunchControlPlaneStability(),
 		]);
+	const launchControlPlaneError =
+		benchmarkLaunchControlPlaneError(launchControlPlane);
+	if (launchControlPlaneError) {
+		throw error(409, launchControlPlaneError);
+	}
 	const launchPreflightError = benchmarkLaunchPreflightError({
 		executionBackend,
 		sandboxCapacity,
@@ -1234,6 +1249,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 			evaluationCapacity.effectiveEvaluationConcurrency,
 		evaluationConcurrencyReason: evaluationCapacity.reason,
 		evaluatorCapacity: evaluationCapacity,
+		launchControlPlane,
 	};
 	const concurrency = capacity.effectiveConcurrency;
 	const timeoutSeconds = clampInteger(
