@@ -93,7 +93,9 @@ def _init_otel() -> None:
         return
     try:
         from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
         from opentelemetry.instrumentation.requests import RequestsInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
@@ -101,7 +103,9 @@ def _init_otel() -> None:
 
         provider = TracerProvider(resource=Resource.create(_otel_resource_attributes()))
         provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint)))
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint))
+            )
         )
         trace.set_tracer_provider(provider)
         RequestsInstrumentor().instrument()
@@ -154,7 +158,9 @@ class ExecutionClassConfig(BaseModel):
     priorityClassName: str | None = None
     workerImage: str = DEFAULT_WORKER_IMAGE
     serviceAccountName: str = "sandbox-execution-worker"
-    imagePullSecrets: list[str] = Field(default_factory=lambda: ["ghcr-pull-credentials"])
+    imagePullSecrets: list[str] = Field(
+        default_factory=lambda: ["ghcr-pull-credentials"]
+    )
     nodeSelector: dict[str, str] = Field(
         default_factory=lambda: DEFAULT_NODE_SELECTOR.copy()
     )
@@ -165,6 +171,7 @@ class ExecutionClassConfig(BaseModel):
     agentHostCpu: str = "500m"
     agentHostMemory: str = "1Gi"
     agentHostEphemeralStorage: str = "2Gi"
+    agentHostNonterminalTimeoutAction: str | None = None
     ttlSecondsAfterFinished: int | None = Field(default=None, ge=0, le=86400)
 
 
@@ -244,11 +251,15 @@ def _agent_host_shutdown_buffer_seconds() -> int:
 def _agent_host_shutdown_time(request: AgentWorkflowHostRequest) -> str | None:
     if request.timeoutSeconds is None:
         return None
-    shutdown_after_seconds = request.timeoutSeconds + _agent_host_shutdown_buffer_seconds()
+    shutdown_after_seconds = (
+        request.timeoutSeconds + _agent_host_shutdown_buffer_seconds()
+    )
     return (
-        datetime.now(UTC)
-        + timedelta(seconds=shutdown_after_seconds)
-    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        (datetime.now(UTC) + timedelta(seconds=shutdown_after_seconds))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _job_ttl_seconds(class_config: ExecutionClassConfig) -> int:
@@ -491,7 +502,9 @@ def _require_internal(request: Request) -> None:
         return
     token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
     if token != expected:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token"
+        )
 
 
 def _agent_workflow_host_namespace() -> str:
@@ -654,7 +667,10 @@ def build_agent_workflow_host_sandbox_manifest(
                     {"name": "AGENT_SERVICE_NAME", "value": request.agentAppId},
                     {"name": "AGENT_SLUG", "value": request.agentAppId},
                     {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
-                    {"name": "DAPR_LLM_COMPONENT_DEFAULT", "value": "llm-anthropic-opus"},
+                    {
+                        "name": "DAPR_LLM_COMPONENT_DEFAULT",
+                        "value": "llm-anthropic-opus",
+                    },
                     {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "true"},
                     {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "true"},
                     {
@@ -742,6 +758,14 @@ def build_agent_workflow_host_sandbox_manifest(
                             "0",
                         ),
                     },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION",
+                        "value": class_config.agentHostNonterminalTimeoutAction
+                        or os.environ.get(
+                            "DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION",
+                            "warn",
+                        ),
+                    },
                     # W3C trace-context, sourced from the parent BFF request
                     # via Sandbox metadata.annotations. dapr-agent-py reads
                     # this and uses it as the parent context for spans the
@@ -752,8 +776,7 @@ def build_agent_workflow_host_sandbox_manifest(
                         "valueFrom": {
                             "fieldRef": {
                                 "fieldPath": (
-                                    "metadata.annotations["
-                                    f"'{TRACEPARENT_ANNOTATION}']"
+                                    f"metadata.annotations['{TRACEPARENT_ANNOTATION}']"
                                 ),
                             },
                         },
@@ -763,8 +786,7 @@ def build_agent_workflow_host_sandbox_manifest(
                         "valueFrom": {
                             "fieldRef": {
                                 "fieldPath": (
-                                    "metadata.annotations["
-                                    f"'{TRACESTATE_ANNOTATION}']"
+                                    f"metadata.annotations['{TRACESTATE_ANNOTATION}']"
                                 ),
                             },
                         },
@@ -774,8 +796,7 @@ def build_agent_workflow_host_sandbox_manifest(
                         "valueFrom": {
                             "fieldRef": {
                                 "fieldPath": (
-                                    "metadata.annotations["
-                                    f"'{BAGGAGE_ANNOTATION}']"
+                                    f"metadata.annotations['{BAGGAGE_ANNOTATION}']"
                                 ),
                             },
                         },
@@ -829,7 +850,10 @@ def build_agent_workflow_host_sandbox_manifest(
         "volumes": [
             {"name": "openshell-config", "emptyDir": {}},
             {"name": "sandbox", "emptyDir": {}},
-            {"name": "openshell-client-tls", "secret": {"secretName": "openshell-client-tls"}},
+            {
+                "name": "openshell-client-tls",
+                "secret": {"secretName": "openshell-client-tls"},
+            },
             {
                 "name": "openshell-client-ca",
                 "secret": {"secretName": "openshell-server-client-ca"},
@@ -897,9 +921,7 @@ def build_agent_workflow_host_sandbox_manifest(
             "DAPR_PLACEMENT_HOST_ADDRESS",
             "dapr-placement-server.dapr-system.svc.cluster.local:50005",
         ),
-        "dapr.io/max-body-size": os.environ.get(
-            "DAPR_MAX_BODY_SIZE", "16Mi"
-        ),
+        "dapr.io/max-body-size": os.environ.get("DAPR_MAX_BODY_SIZE", "16Mi"),
         "dapr.io/graceful-shutdown-seconds": "60",
         "dapr.io/sidecar-readiness-probe-delay-seconds": "0",
         "dapr.io/sidecar-readiness-probe-period-seconds": "1",

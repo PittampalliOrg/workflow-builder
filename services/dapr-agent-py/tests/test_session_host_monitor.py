@@ -9,6 +9,7 @@ if root not in sys.path:
 
 from src.session_host_monitor import (
     decide_missing_workflow_action,
+    normalize_nonterminal_timeout_action,
     terminal_hold_seconds_for_status,
 )
 
@@ -54,3 +55,17 @@ def test_terminal_hold_applies_only_to_completed_workflows() -> None:
     assert terminal_hold_seconds_for_status("FAILED", 1800) == 0
     assert terminal_hold_seconds_for_status("TERMINATED", 1800) == 0
     assert terminal_hold_seconds_for_status("COMPLETED", -1) == 0
+
+
+def test_nonterminal_timeout_action_defaults_to_warn() -> None:
+    assert normalize_nonterminal_timeout_action(None) == "warn"
+    assert normalize_nonterminal_timeout_action("") == "warn"
+    assert normalize_nonterminal_timeout_action("warn") == "warn"
+    assert normalize_nonterminal_timeout_action("unexpected") == "warn"
+
+
+def test_nonterminal_timeout_action_accepts_terminate_aliases() -> None:
+    assert normalize_nonterminal_timeout_action("terminate") == "terminate"
+    assert normalize_nonterminal_timeout_action("TERMINATE") == "terminate"
+    assert normalize_nonterminal_timeout_action("exit") == "terminate"
+    assert normalize_nonterminal_timeout_action("fail") == "terminate"

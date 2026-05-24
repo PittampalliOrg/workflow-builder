@@ -29,3 +29,10 @@ def terminal_hold_seconds_for_status(
     if runtime_status.upper() != "COMPLETED":
         return 0
     return max(0, configured_seconds)
+
+
+def normalize_nonterminal_timeout_action(value: str | None) -> str:
+    action = (value or "").strip().lower()
+    if action in {"terminate", "terminated", "exit", "fail"}:
+        return "terminate"
+    return "warn"

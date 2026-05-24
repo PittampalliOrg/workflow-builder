@@ -51,7 +51,9 @@ def test_benchmark_fast_worker_job_is_kueue_managed() -> None:
         namespace="sandbox-execution",
     )
 
-    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    assert (
+        manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "benchmark-fast"
+    )
     assert (
         manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
         == "swebench-cohort"
@@ -138,7 +140,9 @@ def test_secure_gvisor_sets_runtime_class_and_queue_on_worker_job() -> None:
         ),
     )
 
-    assert manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "secure-gvisor"
+    assert (
+        manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "secure-gvisor"
+    )
     assert (
         manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
         == "swebench-cohort"
@@ -241,6 +245,7 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
     assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"
     assert env["DAPR_AGENT_SESSION_HOST_TERMINAL_HOLD_SECONDS"] == "0"
+    assert env["DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION"] == "warn"
     env_from = container["envFrom"]
     assert {
         "configMapRef": {
@@ -285,6 +290,24 @@ def test_agent_workflow_host_sandbox_uses_adk_config_only_for_adk_image() -> Non
             "optional": True,
         }
     } in env_from
+
+
+def test_agent_workflow_host_sandbox_uses_class_nonterminal_timeout_action() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostNonterminalTimeoutAction="terminate",
+        ),
+    )
+
+    container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION"] == "terminate"
 
 
 def test_agent_workflow_host_sandbox_without_timeout_has_no_active_deadline(
@@ -434,7 +457,9 @@ def test_agent_workflow_host_sandbox_propagates_capacity_owner_labels() -> None:
         "agent-app-id": "agent-session-abc123",
         "workflow-builder.cnoe.io/session-id": "sw-session-mixed",
     }
-    assert manifest["metadata"]["labels"] | owner_labels == manifest["metadata"]["labels"]
+    assert (
+        manifest["metadata"]["labels"] | owner_labels == manifest["metadata"]["labels"]
+    )
     pod_labels = manifest["spec"]["podTemplate"]["metadata"]["labels"]
     assert pod_labels | owner_labels == pod_labels
 
@@ -694,7 +719,9 @@ def test_component_scope_patch_uses_json_patch_append(monkeypatch) -> None:
     assert len(fake.patches) == 1
 
 
-def test_component_scope_patch_leaves_unscoped_component_unmodified(monkeypatch) -> None:
+def test_component_scope_patch_leaves_unscoped_component_unmodified(
+    monkeypatch,
+) -> None:
     class FakeCustom:
         def get_namespaced_custom_object(self, **_kwargs):
             return {}

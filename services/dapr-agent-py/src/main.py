@@ -274,6 +274,7 @@ from src.event_publisher import publish_session_event, scope_session, unscope_se
 from src.mcp_retry import connect_mcp_client_with_retries
 from src.session_host_monitor import (
     decide_missing_workflow_action,
+    normalize_nonterminal_timeout_action,
     terminal_hold_seconds_for_status,
 )
 from src.session_outputs import scan_and_upload as _scan_session_outputs
@@ -6269,15 +6270,19 @@ def _run_session_host_monitor(instance_id: str) -> None:
         0,
         minimum=0,
     )
+    nonterminal_timeout_action = normalize_nonterminal_timeout_action(
+        _session_host_env("DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION", "warn")
+    )
     started_at = time.monotonic()
     first_seen_at: float | None = None
     missing_since: float | None = None
     sidecar_unavailable_since: float | None = None
     logger.info(
-        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss missing_grace=%ss sidecar_ready_timeout=%ss terminal_hold=%ss",
+        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss idle_action=%s missing_grace=%ss sidecar_ready_timeout=%ss terminal_hold=%ss",
         instance_id,
         start_timeout,
         idle_timeout,
+        nonterminal_timeout_action,
         missing_grace_seconds,
         sidecar_ready_timeout,
         terminal_hold_seconds,
@@ -6313,13 +6318,6 @@ def _run_session_host_monitor(instance_id: str) -> None:
             time.sleep(poll_seconds)
             continue
         sidecar_unavailable_since = None
-        if first_seen_at is not None and time.monotonic() - first_seen_at > idle_timeout:
-            logger.warning(
-                "[session-host] workflow %s stayed non-terminal for %ss after first observation; continuing to monitor",
-                instance_id,
-                idle_timeout,
-            )
-            first_seen_at = time.monotonic()
         workflow_missing = False
         try:
             state = _workflow_http_get_instance(instance_id)
@@ -6380,6 +6378,35 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     exit_code,
                 )
                 _session_host_exit(instance_id, exit_code)
+            now = time.monotonic()
+            if now - first_seen_at > idle_timeout:
+                if nonterminal_timeout_action == "terminate":
+                    logger.error(
+                        "[session-host] workflow %s stayed non-terminal for %ss after first observation; terminating workflow and exiting",
+                        instance_id,
+                        idle_timeout,
+                    )
+                    try:
+                        _workflow_http_post(instance_id, "/terminate")
+                    except FileNotFoundError:
+                        logger.warning(
+                            "[session-host] workflow %s disappeared during idle-timeout termination",
+                            instance_id,
+                        )
+                        _session_host_exit(instance_id, 0)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[session-host] terminate after idle timeout failed for %s: %s",
+                            instance_id,
+                            exc,
+                        )
+                    _session_host_exit(instance_id, 1)
+                logger.warning(
+                    "[session-host] workflow %s stayed non-terminal for %ss after first observation; continuing to monitor",
+                    instance_id,
+                    idle_timeout,
+                )
+                first_seen_at = now
         time.sleep(poll_seconds)
 
 
