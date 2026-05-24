@@ -20,6 +20,7 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
+from durabletask import task as durable_task
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from google.protobuf import wrappers_pb2
@@ -102,6 +103,15 @@ def _env_bool(name: str) -> bool | None:
     return None
 
 
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = default if raw is None else int(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def _one_shot_turn_child_workflow_enabled(
     instance_id: str,
     context: dict[str, Any] | None,
@@ -125,6 +135,83 @@ def _tool_child_workflow_enabled(
         if swebench_explicit is not None:
             return swebench_explicit
     return True
+
+
+def _tool_child_workflow_retry_attempts(
+    instance_id: str,
+    context: dict[str, Any] | None,
+) -> int:
+    default_attempts = _env_int(
+        "DAPR_AGENT_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS",
+        2,
+        minimum=1,
+        maximum=5,
+    )
+    if is_swebench_execution_context(instance_id, context):
+        return _env_int(
+            "DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS",
+            default_attempts,
+            minimum=1,
+            maximum=5,
+        )
+    return default_attempts
+
+
+def _tool_call_timeout_hint_seconds(payload: dict[str, Any]) -> int | None:
+    tool_call = payload.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return None
+    function = tool_call.get("function")
+    if not isinstance(function, dict):
+        return None
+    tool_name = str(function.get("name") or "")
+    if tool_name.lower() != "bash":
+        return None
+    raw_args = function.get("arguments")
+    if not isinstance(raw_args, str) or not raw_args.strip():
+        return None
+    try:
+        args = json.loads(raw_args)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    raw_timeout = args.get("timeout")
+    if raw_timeout is None:
+        return None
+    try:
+        timeout_ms = int(raw_timeout)
+    except (TypeError, ValueError):
+        return None
+    if timeout_ms <= 0:
+        return None
+    return max(1, (timeout_ms + 999) // 1000)
+
+
+def _tool_child_workflow_timeout_seconds(
+    instance_id: str,
+    context: dict[str, Any] | None,
+    payload: dict[str, Any],
+) -> int:
+    default_timeout = _env_int(
+        "DAPR_AGENT_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS",
+        660,
+        minimum=0,
+        maximum=3600,
+    )
+    if is_swebench_execution_context(instance_id, context):
+        default_timeout = _env_int(
+            "DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS",
+            default_timeout,
+            minimum=0,
+            maximum=3600,
+        )
+    if default_timeout <= 0:
+        return 0
+    timeout_hint = _tool_call_timeout_hint_seconds(payload)
+    if timeout_hint is not None:
+        default_timeout = max(default_timeout, timeout_hint + 60)
+    return max(60, min(3600, default_timeout))
 
 
 # ---------------------------------------------------------------------------
@@ -1773,11 +1860,14 @@ class OpenShellDurableAgent(DurableAgent):
                                 fn_name,
                                 call_id,
                             )
-                            ordered[idx] = yield ctx.call_child_workflow(
-                                "run_tool_activity_workflow",
-                                input=tool_payload,
-                                instance_id=tool_child_instance_id,
-                                retry_policy=self._retry_policy,
+                            ordered[idx] = yield from self._run_tool_child_workflow_with_watchdog(
+                                ctx,
+                                tool_payload=tool_payload,
+                                child_instance_id=tool_child_instance_id,
+                                order=idx,
+                                tool_name=fn_name,
+                                call_id=call_id,
+                                runtime_context=runtime_context,
                             )
                         else:
                             logger.info(
@@ -1875,6 +1965,77 @@ class OpenShellDurableAgent(DurableAgent):
 
         return final_message
 
+    def _run_tool_child_workflow_with_watchdog(
+        self,
+        ctx,
+        *,
+        tool_payload: dict[str, Any],
+        child_instance_id: str,
+        order: int,
+        tool_name: str,
+        call_id: str,
+        runtime_context: dict[str, Any] | None,
+    ):
+        timeout_seconds = _tool_child_workflow_timeout_seconds(
+            ctx.instance_id,
+            runtime_context,
+            tool_payload,
+        )
+        max_attempts = _tool_child_workflow_retry_attempts(
+            ctx.instance_id,
+            runtime_context,
+        )
+        for attempt in range(max_attempts):
+            attempt_instance_id = (
+                child_instance_id
+                if attempt == 0
+                else f"{child_instance_id}__attempt__{attempt}"
+            )
+            child_task = ctx.call_child_workflow(
+                "run_tool_activity_workflow",
+                input=tool_payload,
+                instance_id=attempt_instance_id,
+                retry_policy=self._retry_policy,
+            )
+            if timeout_seconds <= 0:
+                return (yield child_task)
+
+            timer_task = ctx.create_timer(timedelta(seconds=timeout_seconds))
+            winner = yield durable_task.when_any([child_task, timer_task])
+            if winner is child_task:
+                return child_task.get_result()
+
+            if not ctx.is_replaying:
+                logger.warning(
+                    "[tool-dispatch] tool child workflow timed out instance=%s child=%s attempt=%d/%d timeout=%ss order=%d tool=%s call_id=%s",
+                    ctx.instance_id,
+                    attempt_instance_id,
+                    attempt + 1,
+                    max_attempts,
+                    timeout_seconds,
+                    order,
+                    tool_name,
+                    call_id,
+                )
+            yield ctx.call_activity(
+                self._activity_name(self.terminate_tool_child_workflow_instance),
+                input={
+                    "childInstanceId": attempt_instance_id,
+                    "parentInstanceId": ctx.instance_id,
+                    "order": order,
+                    "toolName": tool_name,
+                    "toolCallId": call_id,
+                    "attempt": attempt,
+                    "timeoutSeconds": timeout_seconds,
+                },
+                retry_policy=self._retry_policy,
+            )
+
+        raise AgentError(
+            "Tool child workflow did not complete before watchdog timeout "
+            f"after {max_attempts} attempt(s): tool={tool_name} call_id={call_id}"
+        )
+
     def run_tool_activity_workflow(self, ctx, payload: dict):
         """Isolate one tool activity behind a tiny child workflow.
 
@@ -1890,6 +2051,52 @@ class OpenShellDurableAgent(DurableAgent):
                 retry_policy=self._retry_policy,
             )
         )
+
+    def terminate_tool_child_workflow_instance(self, ctx, payload: dict):
+        child_instance_id = str(payload.get("childInstanceId") or "").strip()
+        if not child_instance_id:
+            return {"success": False, "error": "missing childInstanceId"}
+        try:
+            _workflow_http_post(child_instance_id, "/terminate")
+            logger.warning(
+                "[tool-dispatch] requested termination for stuck tool child workflow child=%s parent=%s order=%s tool=%s call_id=%s attempt=%s timeout=%s",
+                child_instance_id,
+                payload.get("parentInstanceId"),
+                payload.get("order"),
+                payload.get("toolName"),
+                payload.get("toolCallId"),
+                payload.get("attempt"),
+                payload.get("timeoutSeconds"),
+            )
+            return {"success": True, "childInstanceId": child_instance_id}
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, FileNotFoundError) or _is_workflow_instance_missing_error(exc):
+                logger.info(
+                    "[tool-dispatch] terminate skipped for tool child workflow %s: already gone",
+                    child_instance_id,
+                )
+                return {
+                    "success": True,
+                    "childInstanceId": child_instance_id,
+                    "alreadyGone": True,
+                }
+            if _is_workflow_terminate_status_unknown_error(exc):
+                logger.warning(
+                    "[tool-dispatch] terminate status unknown for tool child workflow %s: %s",
+                    child_instance_id,
+                    exc,
+                )
+                return {
+                    "success": True,
+                    "childInstanceId": child_instance_id,
+                    "terminationStatusUnknown": True,
+                }
+            logger.warning(
+                "[tool-dispatch] failed to terminate stuck tool child workflow %s: %s",
+                child_instance_id,
+                exc,
+            )
+            raise
 
     def _activity_instance_id(self, ctx: Any, payload: Any) -> str:
         if isinstance(payload, dict):
@@ -4567,6 +4774,7 @@ class OpenShellDurableAgent(DurableAgent):
         # only re-runs on worker failure).
         runtime.register_activity(self.seed_mcp_for_instance)
         runtime.register_activity(self.seed_runtime_context_for_instance)
+        runtime.register_activity(self.terminate_tool_child_workflow_instance)
 
     @workflow_entry
     def call_peer_session_workflow(self, ctx, message: dict):

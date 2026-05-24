@@ -52,11 +52,20 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED"' in source
     assert "return not is_swebench_execution_context(instance_id, context)" not in source
     assert "return True" in source
+    assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' in source
+    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' in source
+    assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS"' in source
+    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS"' in source
     assert "use_tool_child_workflow = _tool_child_workflow_enabled(" in source
+    assert "def _run_tool_child_workflow_with_watchdog(" in source
+    assert "durable_task.when_any([child_task, timer_task])" in source
+    assert "ctx.create_timer(timedelta(seconds=timeout_seconds))" in source
+    assert "terminate_tool_child_workflow_instance" in source
     assert "[tool-dispatch] yielding sequential tool child workflow" in source
+    assert "[tool-dispatch] tool child workflow timed out" in source
     assert "[tool-dispatch] yielding sequential inline tool activity" in source
     assert 'f"{ctx.instance_id}__tool__{turn}__{idx}__{safe_call_id}"' in source
-    assert 'ctx.call_child_workflow(\n                                "run_tool_activity_workflow"' in source
+    assert 'ctx.call_child_workflow(\n                "run_tool_activity_workflow"' in source
     assert "self._activity_name(self.run_tool)" in source
     assert "yield from self._agent_workflow_strict_sequential(" in source
 
