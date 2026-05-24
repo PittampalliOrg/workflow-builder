@@ -101,6 +101,11 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     assert "ctx.create_timer(timedelta(seconds=startup_delay_seconds))" in source
     assert "if not use_child_turn_workflow:" in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source
+    child_turn_call = source.split('if use_child_turn_workflow:', 1)[1].split(
+        'else:\n                    # Session-native cutover',
+        1,
+    )[0]
+    assert "retry_policy=" not in child_turn_call
     assert "while SWE-bench still disables per-tool child workflows" not in source
     assert 'else:\n                    # Session-native cutover' in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source

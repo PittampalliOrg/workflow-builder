@@ -5554,11 +5554,13 @@ class OpenShellDurableAgent(DurableAgent):
                     # workflow and replay under heavier sub-orchestration churn.
                     # Keep the agent loop isolated from the session wrapper so
                     # the wrapper records seed activities plus one child call.
+                    # The LLM/tool activities already own bounded retries; retrying
+                    # the whole child turn can revive terminal AgentError paths like
+                    # the empty-response circuit breaker.
                     turn_result = yield ctx.call_child_workflow(
                         getattr(self, "agent_workflow_name", "agent_workflow"),
                         input=child_input,
                         instance_id=agent_turn_instance_id,
-                        retry_policy=self._retry_policy,
                     )
                 else:
                     # Session-native cutover: run the Dapr Agents turn inside

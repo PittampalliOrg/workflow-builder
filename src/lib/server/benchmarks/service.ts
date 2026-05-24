@@ -125,7 +125,7 @@ const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;
 const BENCHMARK_TERMINATION_CONCURRENCY = 32;
 const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
-const BENCHMARK_TERMINATION_WAIT_SECONDS = 120;
+const BENCHMARK_TERMINATION_WAIT_SECONDS = 45;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = false;
 const ORCHESTRATOR_READY_TIMEOUT_MS = 5_000;
@@ -4582,7 +4582,10 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 	) {
 		const res = await daprFetch(
 			`${getOrchestratorUrl()}/api/v2/workflows/${row.execution.daprInstanceId}/status`,
-			{ maxRetries: 1 },
+			{
+				maxRetries: 0,
+				signal: AbortSignal.timeout(5_000),
+			},
 		).catch(() => null);
 		if (res?.ok) {
 			const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -5164,31 +5167,8 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		allDurableInstancesClosed = durableCleanup.allClosed;
 
 		if (!allDurableInstancesClosed) {
-			const cleanup: BenchmarkSandboxCleanupResult = {
-				reason,
-				retainRequested: shouldKeepSwebenchSandboxAfterRun(),
-				attempted: [],
-				deleted: [],
-				notFound: [],
-				skipped: [],
-				errors: [],
-				hostExecution: {
-					attempted: 0,
-					deleted: 0,
-					notFound: 0,
-					errors: [],
-				},
-			};
-			await deleteHostSandboxExecutionResourcesForBenchmarkInstance(
-				runInstance.runId,
-				runInstance.instanceId,
-				cleanup,
-			);
-			if (cleanup.hostExecution.attempted > 0 || cleanup.hostExecution.errors.length > 0) {
-				await recordBenchmarkSandboxCleanup(runInstance.runId, cleanup);
-			}
 			console.warn(
-				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed}; leaving session/execution rows active for retry`,
+				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed}; leaving session/execution rows, host resources, sandboxes, and leases active for retry`,
 			);
 			return false;
 		}
