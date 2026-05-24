@@ -1,8 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const environmentMocks = vi.hoisted(() => ({
+	ensureSwebenchEnvironment: vi.fn(),
+}));
+
+vi.mock("$lib/server/environments/environment-image-builds", () => ({
+	buildSwebenchEnvironmentSpec: vi.fn(),
+	ensureSwebenchEnvironment: environmentMocks.ensureSwebenchEnvironment,
+	syncEnvironmentBuild: vi.fn(),
+}));
+
 import {
 	buildExactReadySelection,
+	submitSwebenchEnvironmentValidationBuilds,
 	type SwebenchEnvironmentPlan,
 } from "./environment-validation";
+
+beforeEach(() => {
+	environmentMocks.ensureSwebenchEnvironment.mockReset();
+});
 
 function plan(
 	statuses: Array<["validated" | "building" | "not_built" | "failed", string]>,
@@ -84,5 +100,49 @@ describe("SWE-bench environment validation selection", () => {
 		expect(selection.missingExactInstanceIds).toEqual(["queued", "failed"]);
 		expect(selection.missingValidatedCount).toBe(2);
 		expect(selection.primaryLimiter).toBe("selected_instance_count");
+	});
+
+	it("stops submitting validation builds when the dynamic build cap is reached", async () => {
+		environmentMocks.ensureSwebenchEnvironment
+			.mockResolvedValueOnce({
+				status: "building",
+				environmentStatus: "building",
+				environmentKey: "one-env",
+				envSpecHash: "one-hash",
+				buildId: "build-one",
+				pipelineRunName: "swe-env-one",
+				pipelineRunNamespace: "tekton-pipelines",
+			})
+			.mockResolvedValueOnce({
+				status: "failed",
+				environmentStatus: "failed",
+				environmentKey: "two-env",
+				envSpecHash: "two-hash",
+				reason: "dynamic_build_capacity_exhausted",
+				error: "SWE-bench inference image build submission is throttled",
+			});
+
+		const submission = await submitSwebenchEnvironmentValidationBuilds({
+			plan: plan([
+				["not_built", "one"],
+				["not_built", "two"],
+				["not_built", "three"],
+				["not_built", "four"],
+			]),
+			limit: 4,
+			targetValidatedCount: 4,
+			allowBuild: true,
+		});
+
+		expect(environmentMocks.ensureSwebenchEnvironment).toHaveBeenCalledTimes(2);
+		expect(submission.selected.map((item) => item.row.instanceId)).toEqual([
+			"one",
+			"two",
+		]);
+		expect(submission.submitted).toBe(1);
+		expect(submission.results[1]).toMatchObject({
+			instanceId: "two",
+			reason: "dynamic_build_capacity_exhausted",
+		});
 	});
 });

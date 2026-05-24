@@ -275,12 +275,14 @@ export async function submitSwebenchEnvironmentValidationBuilds(input: {
 			Boolean(item.row.repo) &&
 			Boolean(item.row.baseCommit),
 	);
-	const selected =
+	const candidates =
 		input.allowBuild === false
 			? []
 			: eligible.slice(0, Math.min(input.limit, requestedBuildCount));
+	const selected: PlannedSwebenchEnvironment[] = [];
 	const results: EnvironmentValidationSubmission[] = [];
-	for (const item of selected) {
+	for (const item of candidates) {
+		selected.push(item);
 		const result = await ensureSwebenchEnvironment({
 			dataset: input.plan.suite.datasetName,
 			suiteSlug: input.plan.suiteSlug,
@@ -302,6 +304,7 @@ export async function submitSwebenchEnvironmentValidationBuilds(input: {
 			error: result.error ?? null,
 			reason: result.reason ?? null,
 		});
+		if (result.reason === "dynamic_build_capacity_exhausted") break;
 	}
 	return {
 		selected,
