@@ -4,6 +4,7 @@ import { __daprWorkflowCapacityForTest } from "./dapr-workflow-capacity";
 describe("Dapr workflow capacity diagnostics", () => {
 	afterEach(() => {
 		delete process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS;
+		delete process.env.BENCHMARK_AGENT_HOST_STARTUP_GRACE_SECONDS;
 	});
 
 	it("does not count normal actor placement logs as runtime pressure", () => {
@@ -133,6 +134,32 @@ describe("Dapr workflow capacity diagnostics", () => {
 
 		process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS = "0";
 		expect(__daprWorkflowCapacityForTest.daprLogWindowSeconds()).toBe(300);
+	});
+
+	it("applies startup grace before treating young agent hosts as pressure", () => {
+		const now = Date.parse("2026-05-24T23:46:35Z");
+		const youngPod = {
+			metadata: {
+				name: "agent-host-agent-session-young",
+				creationTimestamp: "2026-05-24T23:46:04Z",
+			},
+			status: { phase: "Running" },
+		} as never;
+		const oldPod = {
+			metadata: {
+				name: "agent-host-agent-session-old",
+				creationTimestamp: "2026-05-24T23:44:04Z",
+			},
+			status: { phase: "Running" },
+		} as never;
+
+		expect(__daprWorkflowCapacityForTest.agentHostStartupGraceSeconds()).toBe(90);
+		expect(__daprWorkflowCapacityForTest.podAgeSeconds(youngPod, now)).toBe(31);
+		expect(__daprWorkflowCapacityForTest.podPastStartupGrace(youngPod, 90, now)).toBe(false);
+		expect(__daprWorkflowCapacityForTest.podPastStartupGrace(oldPod, 90, now)).toBe(true);
+
+		process.env.BENCHMARK_AGENT_HOST_STARTUP_GRACE_SECONDS = "15";
+		expect(__daprWorkflowCapacityForTest.agentHostStartupGraceSeconds()).toBe(15);
 	});
 
 	it("parses connected workflow workers from nested readyz payloads", () => {

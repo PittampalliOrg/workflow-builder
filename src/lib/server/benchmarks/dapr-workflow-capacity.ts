@@ -49,6 +49,7 @@ const DEFAULT_NAMESPACE = "workflow-builder";
 const DEFAULT_PARENT_APP_ID = "workflow-orchestrator";
 const DEFAULT_CONFIGURATION = "workflow-builder-tracing";
 const DEFAULT_DAPR_LOG_WINDOW_SECONDS = 5 * 60;
+const DEFAULT_AGENT_HOST_STARTUP_GRACE_SECONDS = 90;
 const DEFAULT_READYZ_PORT = 8080;
 
 function positiveInt(value: unknown): number | null {
@@ -100,6 +101,25 @@ function podIsDeleting(pod: KubePod): boolean {
 
 function podIsActive(pod: KubePod): boolean {
 	return !podIsDeleting(pod) && pod.status?.phase === "Running";
+}
+
+function podAgeSeconds(pod: KubePod, now = Date.now()): number | null {
+	const timestamp = pod.metadata?.creationTimestamp ?? pod.status?.startTime;
+	if (!timestamp) return null;
+	const parsed = Date.parse(timestamp);
+	return Number.isFinite(parsed) ? Math.max(0, Math.floor((now - parsed) / 1000)) : null;
+}
+
+function agentHostStartupGraceSeconds(): number {
+	return (
+		positiveInt(process.env.BENCHMARK_AGENT_HOST_STARTUP_GRACE_SECONDS) ??
+		DEFAULT_AGENT_HOST_STARTUP_GRACE_SECONDS
+	);
+}
+
+function podPastStartupGrace(pod: KubePod, graceSeconds: number, now = Date.now()): boolean {
+	const age = podAgeSeconds(pod, now);
+	return age == null || age >= graceSeconds;
 }
 
 function podIsAgentHost(pod: KubePod): boolean {
@@ -412,13 +432,21 @@ export async function loadAgentHostDaprRuntimeSnapshot(
 	const logWindowSeconds = daprLogWindowSeconds();
 	try {
 		const pods = await listPods(namespace);
+		const startupGraceSeconds = agentHostStartupGraceSeconds();
+		const now = Date.now();
 		const activePods = pods.filter((pod) => podIsAgentHost(pod) && podIsActive(pod));
 		const unhealthyPods = activePods
-			.filter((pod) => !podIsReady(pod))
+			.filter(
+				(pod) =>
+					!podIsReady(pod) && podPastStartupGrace(pod, startupGraceSeconds, now),
+			)
 			.map((pod) => pod.metadata?.name ?? "unknown");
 		const appContainerOomKilledPods = activePods
 			.filter(appContainerWasOomKilled)
 			.map((pod) => pod.metadata?.name ?? "unknown");
+		const logScanPods = activePods.filter((pod) =>
+			podPastStartupGrace(pod, startupGraceSeconds, now),
+		);
 		let logCounts: {
 			actorErrors: number | null;
 			reminderErrors: number | null;
@@ -426,11 +454,9 @@ export async function loadAgentHostDaprRuntimeSnapshot(
 		try {
 			logCounts = await countRecentDaprLogErrors({
 				namespace,
-				pods: activePods,
+				pods: logScanPods,
 				windowSeconds: logWindowSeconds,
 				includeUnready: true,
-				ignoreRecoverableActorChurn: false,
-				ignoreActorLockTimeouts: false,
 			});
 		} catch (err) {
 			console.warn("[bench-capacity] agent-host daprd log scan unavailable", err);
@@ -582,9 +608,12 @@ export async function loadParentWorkflowRuntimeSnapshot(
 }
 
 export const __daprWorkflowCapacityForTest = {
+	agentHostStartupGraceSeconds,
 	appContainerWasOomKilled,
 	countLogMatches,
 	daprLogWindowSeconds,
+	podAgeSeconds,
+	podPastStartupGrace,
 	podIsAgentHost,
 	podIsReady,
 	parseReadyz,
