@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import hashlib
 import json
 import os
 import posixpath
@@ -64,6 +65,29 @@ def _session_bridge_startup_settle_seconds() -> int:
     except ValueError:
         raw = 60
     return max(0, min(raw, 60))
+
+
+def _session_bridge_startup_jitter_seconds(
+    instance_id: str,
+    context: dict[str, Any] | None,
+) -> int:
+    """Return deterministic one-shot startup jitter for bursty benchmark sessions."""
+    is_swebench = is_swebench_execution_context(instance_id, context)
+    default_max_jitter = 120 if is_swebench else 0
+    raw = None
+    if is_swebench:
+        raw = os.environ.get("DAPR_AGENT_SWEBENCH_SESSION_BRIDGE_STARTUP_JITTER_SECONDS")
+    if raw is None:
+        raw = os.environ.get("DAPR_AGENT_SESSION_BRIDGE_STARTUP_JITTER_SECONDS")
+    try:
+        max_jitter = default_max_jitter if raw is None else int(raw)
+    except ValueError:
+        max_jitter = default_max_jitter
+    max_jitter = max(0, min(max_jitter, 300))
+    if max_jitter <= 0:
+        return 0
+    digest = hashlib.sha256(str(instance_id or "").encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") % (max_jitter + 1)
 
 
 def _env_bool(name: str) -> bool | None:
@@ -5256,17 +5280,28 @@ class OpenShellDurableAgent(DurableAgent):
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
             }
             settle_seconds = _session_bridge_startup_settle_seconds() if auto_terminate else 0
-            if settle_seconds:
+            jitter_seconds = (
+                _session_bridge_startup_jitter_seconds(
+                    workflow_instance_id,
+                    child_runtime_context,
+                )
+                if auto_terminate
+                else 0
+            )
+            startup_delay_seconds = settle_seconds + jitter_seconds
+            if startup_delay_seconds:
                 mode = "child workflow" if use_child_turn_workflow else "inline workflow"
                 if not ctx.is_replaying:
                     logger.info(
-                        "[session] %s turn %d: settling one-shot runtime for %ds before %s",
+                        "[session] %s turn %d: settling one-shot runtime for %ds before %s (base=%ds jitter=%ds)",
                         session_id,
                         turn_counter,
-                        settle_seconds,
+                        startup_delay_seconds,
                         mode,
+                        settle_seconds,
+                        jitter_seconds,
                     )
-                yield ctx.create_timer(timedelta(seconds=settle_seconds))
+                yield ctx.create_timer(timedelta(seconds=startup_delay_seconds))
 
             if not use_child_turn_workflow:
                 yield ctx.call_activity(
