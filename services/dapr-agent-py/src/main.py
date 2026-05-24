@@ -98,6 +98,23 @@ def _tool_child_workflow_enabled(
     return not is_swebench_execution_context(instance_id, context)
 
 
+def _is_swebench_one_shot_turn(
+    workflow_instance_id: str,
+    session_id: str,
+    context: dict[str, Any] | None,
+) -> bool:
+    """Return true for benchmark-owned session bridge turns.
+
+    Keep this based on durable input IDs only. Reading mutable process state
+    here can make the session wrapper replay a different child-vs-inline branch
+    after the startup timer.
+    """
+    return is_swebench_execution_context(
+        workflow_instance_id,
+        context,
+    ) or is_swebench_execution_context(session_id, context)
+
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
 # ---------------------------------------------------------------------------
@@ -1646,7 +1663,7 @@ class OpenShellDurableAgent(DurableAgent):
         workflow_exc: Exception | None = None
 
         try:
-            if self._orchestration_strategy or self.executor is not None:
+            if self._orchestration_strategy:
                 return (yield from super().agent_workflow(ctx, message))
 
             runtime_context = self._runtime_context_for_instance(ctx.instance_id)
@@ -4331,7 +4348,10 @@ class OpenShellDurableAgent(DurableAgent):
             if (
                 getattr(self.execution, "tool_execution_mode", None)
                 == ToolExecutionMode.SEQUENTIAL
-                and not getattr(self, "_hooks", None)
+                and (
+                    is_swebench_execution_context(instance_id, runtime_context)
+                    or not getattr(self, "_hooks", None)
+                )
             ):
                 agent_workflow_result = yield from self._agent_workflow_strict_sequential(
                     ctx, message
@@ -5032,10 +5052,21 @@ class OpenShellDurableAgent(DurableAgent):
                 "executionId": db_execution_id,
                 "workspaceRef": message.get("workspaceRef"),
             }
-            use_child_turn_workflow = auto_terminate and _one_shot_turn_child_workflow_enabled(
+            swebench_one_shot_turn = auto_terminate and _is_swebench_one_shot_turn(
                 workflow_instance_id,
+                session_id,
                 one_shot_context,
             )
+            if swebench_one_shot_turn:
+                use_child_turn_workflow = False
+            else:
+                use_child_turn_workflow = (
+                    auto_terminate
+                    and _one_shot_turn_child_workflow_enabled(
+                        workflow_instance_id,
+                        one_shot_context,
+                    )
+                )
             agent_turn_instance_id = (
                 f"{workflow_instance_id}__turn__{turn_counter}"
                 if use_child_turn_workflow

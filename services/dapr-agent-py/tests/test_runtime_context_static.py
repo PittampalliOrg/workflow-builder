@@ -42,6 +42,9 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "tool_execution_mode=ToolExecutionMode.SEQUENTIAL" in source
     assert "def _agent_workflow_strict_sequential" in source
     assert "Always record this activity in durable history" in source
+    assert "if self._orchestration_strategy:" in source
+    assert "if self._orchestration_strategy or self.executor is not None" not in source
+    assert "is_swebench_execution_context(instance_id, runtime_context)" in source
     assert "def run_tool_activity_workflow" in source
     assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
     assert "def _tool_child_workflow_enabled(" in source
@@ -71,6 +74,10 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     assert "def _one_shot_turn_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' in source
     assert "return not is_swebench_execution_context(instance_id, context)" in source
+    assert "def _is_swebench_one_shot_turn(" in source
+    assert "swebench_one_shot_turn = auto_terminate and _is_swebench_one_shot_turn(" in source
+    assert "if swebench_one_shot_turn:" in source
+    assert "use_child_turn_workflow = False" in source
     assert "agent_turn_instance_id = (" in source
     assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
     assert "if use_child_turn_workflow" in source
