@@ -3558,6 +3558,20 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                         },
                     )
                     continue
+                if status == "queued":
+                    if instance_id and instance_id not in pending_instance_ids:
+                        pending_instance_ids.insert(0, instance_id)
+                    yield ctx.call_activity(
+                        _release_instance_leases,
+                        input={
+                            "runId": run_id,
+                            "instanceId": instance_id,
+                            "holderId": entry.get("holderId"),
+                            "phase": "inference",
+                            "reason": "instance workflow requeued",
+                        },
+                    )
+                    continue
                 if ctx.current_utc_datetime >= deadline:
                     try:
                         yield ctx.call_activity(

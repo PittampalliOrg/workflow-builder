@@ -4669,6 +4669,27 @@ export function benchmarkInferenceStallSeconds(maxTurns?: number | null): number
 	);
 }
 
+export function benchmarkInferenceStallRetryLimit(): number {
+	return clampInteger(
+		env.BENCHMARK_INFERENCE_STALL_RETRY_LIMIT ??
+			process.env.BENCHMARK_INFERENCE_STALL_RETRY_LIMIT,
+		0,
+		5,
+		1,
+	);
+}
+
+export function benchmarkInferenceStallRetryCount(
+	terminationReason?: string | null,
+): number {
+	const match = String(terminationReason ?? "").match(
+		/^no_session_progress_retry_(\d+)$/,
+	);
+	if (!match) return 0;
+	const parsed = Number.parseInt(match[1] ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function shouldKeepSwebenchSandboxAfterRun(): boolean {
 	return parseBooleanFlag(
 		env.SWEBENCH_KEEP_SANDBOX_AFTER_RUN ??
@@ -4738,7 +4759,7 @@ function benchmarkInstanceProgressEventTypesForSession(
 
 async function timeoutBenchmarkInstanceIfStalled(
 	runInstance: typeof benchmarkRunInstances.$inferSelect,
-	run?: Pick<typeof benchmarkRuns.$inferSelect, "maxTurns"> | null,
+	run?: Pick<typeof benchmarkRuns.$inferSelect, "maxTurns" | "status"> | null,
 ) {
 	if (
 		runInstance.status !== "inferencing" ||
@@ -4811,6 +4832,12 @@ async function timeoutBenchmarkInstanceIfStalled(
 
 	const message = `Inference stalled: no session progress for ${stallSeconds}s`;
 	const now = new Date();
+	const stallRetryCount = benchmarkInferenceStallRetryCount(
+		runInstance.terminationReason,
+	);
+	const shouldRetryStall =
+		stallRetryCount < benchmarkInferenceStallRetryLimit() &&
+		(!run?.status || !BENCHMARK_RUN_TERMINAL_STATUSES.has(run.status));
 	const executionRows = runInstance.workflowExecutionId
 		? await database
 				.select({
@@ -4851,6 +4878,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 		session?.id ?? runInstance.sessionId,
 		message,
 		now,
+		shouldRetryStall ? "cancelled" : "failed",
 	);
 	if (!workflowsClosed) {
 		const [touched] = await database
@@ -4864,6 +4892,53 @@ async function timeoutBenchmarkInstanceIfStalled(
 			.where(eq(benchmarkRunInstances.id, runInstance.id))
 			.returning();
 		return touched ?? runInstance;
+	}
+	if (shouldRetryStall) {
+		const nextReason = `no_session_progress_retry_${stallRetryCount + 1}`;
+		await cleanupBenchmarkInstanceSandbox({
+			runId: runInstance.runId,
+			instanceId: runInstance.instanceId,
+			sandboxName: runtimeLinks.sandboxName ?? runInstance.sandboxName,
+			reason: `${message}; requeueing stalled inference`,
+		});
+		await releaseBenchmarkResourceLeases({
+			runId: runInstance.runId,
+			instanceId: runInstance.instanceId,
+			phase: "inference",
+			reason: "stalled instance requeued after durable cleanup",
+		});
+		const [updated] = await database
+			.update(benchmarkRunInstances)
+			.set({
+				status: "queued",
+				inferenceStatus: "queued",
+				workflowExecutionId: null,
+				daprInstanceId: null,
+				sessionId: null,
+				sandboxName: null,
+				workspaceRef: null,
+				modelPatch: null,
+				patchSha256: null,
+				patchBytes: null,
+				usage: {},
+				timings: {},
+				traceIds: [],
+				error: null,
+				inferenceError: null,
+				inferenceCompletedAt: null,
+				startedAt: null,
+				turnCount: null,
+				toolCallCount: null,
+				terminationReason: nextReason,
+				ttftFirstMs: null,
+				ttftFirstToolMs: null,
+				toolHistogram: {},
+				updatedAt: now,
+			})
+			.where(eq(benchmarkRunInstances.id, runInstance.id))
+			.returning();
+		await recomputeRunSummary(runInstance.runId);
+		return updated ?? runInstance;
 	}
 	const [updated] = await database
 		.update(benchmarkRunInstances)

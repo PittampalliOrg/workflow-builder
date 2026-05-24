@@ -3,6 +3,8 @@ import {
 	__benchmarkDurableRuntimeForTest,
 	__benchmarkSandboxCleanupForTest,
 	benchmarkInferenceStallSeconds,
+	benchmarkInferenceStallRetryCount,
+	benchmarkInferenceStallRetryLimit,
 	benchmarkInferenceStallState,
 	benchmarkInstanceStartReuseResult,
 	benchmarkAgentRuntimeCleanupInstanceIds,
@@ -400,6 +402,16 @@ describe("SWE-bench workflow spec", () => {
 		vi.stubEnv("BENCHMARK_SHORT_RUN_INFERENCE_STALL_SECONDS", "900");
 		expect(benchmarkInferenceStallSeconds(1)).toBe(900);
 		expect(benchmarkInferenceStallSeconds(2)).toBe(2400);
+	});
+
+	it("bounds stalled inference retries by termination reason", () => {
+		expect(benchmarkInferenceStallRetryLimit()).toBe(1);
+		expect(benchmarkInferenceStallRetryCount(null)).toBe(0);
+		expect(benchmarkInferenceStallRetryCount("no_session_progress")).toBe(0);
+		expect(benchmarkInferenceStallRetryCount("no_session_progress_retry_2")).toBe(2);
+
+		vi.stubEnv("BENCHMARK_INFERENCE_STALL_RETRY_LIMIT", "3");
+		expect(benchmarkInferenceStallRetryLimit()).toBe(3);
 	});
 
 	it("finalizes lifecycle aggregation after inference leaves active states", () => {

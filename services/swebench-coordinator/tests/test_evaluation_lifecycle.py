@@ -568,6 +568,15 @@ class FakeWorkflowCtx:
         return marker
 
 
+def admit_new_starts(workflow, run_id: str = "run_1"):
+    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+        "activity",
+        "_check_capacity_gate",
+        {"runId": run_id},
+    )
+    return workflow.send({"admitNewStarts": True})
+
+
 def test_ensure_evaluator_job_treats_already_exists_as_success(monkeypatch):
     app = load_app(monkeypatch)
 
@@ -1372,6 +1381,17 @@ def test_preflight_workflow_persists_validated_environment_map(monkeypatch):
         "sandboxImage": "ghcr.io/example/swebench:env@sha256:" + ("1" * 64),
         "validationStatus": "validated",
     }
+    capacity_snapshot = {
+        "effectiveConcurrency": 5,
+        "startupBurst": {
+            "requestedConcurrency": None,
+            "effectiveConcurrency": 5,
+            "coordinatorBurstSize": 5,
+            "startStaggerSeconds": 5,
+            "selectedInstanceCount": 1,
+            "launchMode": "paced",
+        },
+    }
     workflow = app.swebench_environment_preflight_workflow(ctx, {"runId": "run_1"})
 
     assert next(workflow) == ("activity", "_load_run_activity", {"runId": "run_1"})
@@ -1407,9 +1427,7 @@ def test_preflight_workflow_persists_validated_environment_map(monkeypatch):
         "_persist_preflight_results",
         {
             "runId": "run_1",
-            "inferenceEnvironmentsByInstanceId": {
-                "sympy__sympy-20590": environment
-            },
+            "inferenceEnvironmentsByInstanceId": {"sympy__sympy-20590": environment},
             "preflightSummary": {
                 "status": "validated",
                 "instanceCount": 1,
@@ -1427,9 +1445,9 @@ def test_preflight_workflow_persists_validated_environment_map(monkeypatch):
                         "instanceIds": ["sympy__sympy-20590"],
                     }
                 ],
-                "capacitySnapshot": {"effectiveConcurrency": 5},
+                "capacitySnapshot": capacity_snapshot,
             },
-            "capacitySnapshot": {"effectiveConcurrency": 5},
+            "capacitySnapshot": capacity_snapshot,
         },
     )
     try:
@@ -1617,7 +1635,7 @@ def test_run_workflow_acquires_and_releases_instance_leases(monkeypatch):
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
-    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+    assert admit_new_starts(workflow) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-12754"},
@@ -1676,7 +1694,7 @@ def test_run_workflow_releases_lease_when_start_skips_instance(monkeypatch):
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
-    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+    assert admit_new_starts(workflow) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-12754"},
@@ -1730,7 +1748,7 @@ def test_run_workflow_requeues_when_orchestrator_start_is_retryable(monkeypatch)
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
-    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+    assert admit_new_starts(workflow) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-12754"},
@@ -1761,6 +1779,71 @@ def test_run_workflow_requeues_when_orchestrator_start_is_retryable(monkeypatch)
     assert workflow.send({"released": 1}) == ("timer", 15)
 
 
+def test_run_workflow_requeues_when_instance_sync_reports_queued(monkeypatch):
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "wf_when_any", None)
+    ctx = FakeWorkflowCtx()
+    workflow = app.swebench_run_workflow(ctx, {"runId": "run_1"})
+
+    assert next(workflow)[0] == "child"
+    assert workflow.send({"validatedInstances": 1}) == (
+        "activity",
+        "_load_run_activity",
+        {"runId": "run_1"},
+    )
+    run = {
+        "id": "run_1",
+        "selectedInstanceIds": ["django__django-12754"],
+        "concurrency": 1,
+        "timeoutSeconds": 60,
+        "evaluationConcurrency": 1,
+    }
+    assert workflow.send(run) == (
+        "activity",
+        "_mark_run_status",
+        {"runId": "run_1", "status": "inferencing"},
+    )
+    assert admit_new_starts(workflow) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"admitted": True, "holderId": "lease-holder"}) == (
+        "activity",
+        "_start_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send({"success": True}) == (
+        "activity",
+        "_sync_instance",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+    assert workflow.send(
+        {"instance": {"instanceId": "django__django-12754", "status": "queued"}}
+    ) == (
+        "activity",
+        "_release_instance_leases",
+        {
+            "runId": "run_1",
+            "instanceId": "django__django-12754",
+            "holderId": "lease-holder",
+            "phase": "inference",
+            "reason": "instance workflow requeued",
+        },
+    )
+    assert workflow.send({"released": 1}) == ("timer", 30)
+    assert workflow.send(None) == (
+        "activity",
+        "_check_capacity_gate",
+        {"runId": "run_1"},
+    )
+    assert workflow.send({"admitNewStarts": True}) == (
+        "activity",
+        "_acquire_instance_leases",
+        {"runId": "run_1", "instanceId": "django__django-12754"},
+    )
+
+
 def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypatch):
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "wf_when_any", None)
@@ -1785,7 +1868,7 @@ def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypa
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
-    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+    assert admit_new_starts(workflow) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-12754"},
@@ -1804,6 +1887,11 @@ def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypa
         for call in ctx.calls
     )
     assert workflow.send(None) == (
+        "activity",
+        "_check_capacity_gate",
+        {"runId": "run_1"},
+    )
+    assert workflow.send({"admitNewStarts": True}) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-12754"},
@@ -1836,7 +1924,7 @@ def test_run_workflow_batches_instance_child_starts(monkeypatch):
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
-    assert workflow.send({"success": True, "run": {"status": "inferencing"}}) == (
+    assert admit_new_starts(workflow) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-12754"},
@@ -1862,6 +1950,11 @@ def test_run_workflow_batches_instance_child_starts(monkeypatch):
     )
 
     assert workflow.send(None) == (
+        "activity",
+        "_check_capacity_gate",
+        {"runId": "run_1"},
+    )
+    assert workflow.send({"admitNewStarts": True}) == (
         "activity",
         "_acquire_instance_leases",
         {"runId": "run_1", "instanceId": "django__django-13012"},
@@ -1898,7 +1991,7 @@ def test_run_workflow_can_start_instances_in_parallel_batches(monkeypatch):
         "_mark_run_status",
         {"runId": "run_1", "status": "inferencing"},
     )
-    batch = workflow.send({"success": True, "run": {"status": "inferencing"}})
+    batch = admit_new_starts(workflow)
 
     assert batch == [
         (
