@@ -88,7 +88,11 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
 
     assert "def _one_shot_turn_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' in source
-    assert "return not is_swebench_execution_context(instance_id, context)" in source
+    one_shot_gate = source.split("def _one_shot_turn_child_workflow_enabled(", 1)[
+        1
+    ].split("\n\ndef _tool_child_workflow_enabled", 1)[0]
+    assert "return True" in one_shot_gate
+    assert "is_swebench_execution_context(" not in one_shot_gate
     assert "def _is_swebench_one_shot_turn(" not in source
     assert "swebench_one_shot_turn" not in source
     assert "use_child_turn_workflow = False" not in source
