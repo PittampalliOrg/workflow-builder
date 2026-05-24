@@ -240,6 +240,7 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS"] == "60"
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
     assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"
+    assert env["DAPR_AGENT_SESSION_HOST_TERMINAL_HOLD_SECONDS"] == "0"
     env_from = container["envFrom"]
     assert {
         "configMapRef": {

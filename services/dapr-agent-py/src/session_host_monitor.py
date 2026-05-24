@@ -20,3 +20,12 @@ def decide_missing_workflow_action(
     if first_seen_at is not None and now - started_missing_at > missing_grace_seconds:
         return MissingWorkflowDecision(missing_since=started_missing_at, exit_code=0)
     return MissingWorkflowDecision(missing_since=started_missing_at)
+
+
+def terminal_hold_seconds_for_status(
+    runtime_status: str,
+    configured_seconds: int,
+) -> int:
+    if runtime_status.upper() != "COMPLETED":
+        return 0
+    return max(0, configured_seconds)

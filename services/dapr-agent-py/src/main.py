@@ -272,7 +272,10 @@ from src.code_checkpoint import (
 )
 from src.event_publisher import publish_session_event, scope_session, unscope_session
 from src.mcp_retry import connect_mcp_client_with_retries
-from src.session_host_monitor import decide_missing_workflow_action
+from src.session_host_monitor import (
+    decide_missing_workflow_action,
+    terminal_hold_seconds_for_status,
+)
 from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.session_config import (
     apply_session_control_events,
@@ -6209,6 +6212,36 @@ def _session_host_exit(instance_id: str, exit_code: int) -> None:
     os._exit(exit_code)
 
 
+def _hold_session_host_after_terminal(
+    instance_id: str,
+    runtime_status: str,
+    hold_seconds: int,
+    poll_seconds: int,
+) -> None:
+    if hold_seconds <= 0:
+        return
+    logger.info(
+        "[session-host] workflow %s terminal status=%s; holding pod for %ss before sidecar shutdown",
+        instance_id,
+        runtime_status,
+        hold_seconds,
+    )
+    deadline = time.monotonic() + hold_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        sidecar_error = _dapr_sidecar_health_error()
+        if sidecar_error is not None:
+            logger.warning(
+                "[session-host] ending terminal hold for %s because dapr sidecar became unavailable: %s",
+                instance_id,
+                sidecar_error,
+            )
+            return
+        time.sleep(min(max(1, poll_seconds), remaining))
+
+
 def _run_session_host_monitor(instance_id: str) -> None:
     start_timeout = _session_host_int(
         "DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS",
@@ -6231,17 +6264,23 @@ def _run_session_host_monitor(instance_id: str) -> None:
         "DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS",
         120,
     )
+    terminal_hold_seconds = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_TERMINAL_HOLD_SECONDS",
+        0,
+        minimum=0,
+    )
     started_at = time.monotonic()
     first_seen_at: float | None = None
     missing_since: float | None = None
     sidecar_unavailable_since: float | None = None
     logger.info(
-        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss missing_grace=%ss sidecar_ready_timeout=%ss",
+        "[session-host] monitoring workflow instance %s start_timeout=%ss idle_timeout=%ss missing_grace=%ss sidecar_ready_timeout=%ss terminal_hold=%ss",
         instance_id,
         start_timeout,
         idle_timeout,
         missing_grace_seconds,
         sidecar_ready_timeout,
+        terminal_hold_seconds,
     )
     while True:
         elapsed = time.monotonic() - started_at
@@ -6324,6 +6363,16 @@ def _run_session_host_monitor(instance_id: str) -> None:
             ).upper()
             if _terminal_status(runtime_status):
                 exit_code = 0 if runtime_status == "COMPLETED" else 1
+                hold_seconds = terminal_hold_seconds_for_status(
+                    runtime_status,
+                    terminal_hold_seconds,
+                )
+                _hold_session_host_after_terminal(
+                    instance_id,
+                    runtime_status,
+                    hold_seconds,
+                    poll_seconds,
+                )
                 logger.info(
                     "[session-host] workflow %s terminal status=%s; exiting code=%s",
                     instance_id,

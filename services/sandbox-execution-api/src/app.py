@@ -735,6 +735,13 @@ def build_agent_workflow_host_sandbox_manifest(
                             "true",
                         ),
                     },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_TERMINAL_HOLD_SECONDS",
+                        "value": os.environ.get(
+                            "SANDBOX_EXECUTION_AGENT_HOST_TERMINAL_HOLD_SECONDS",
+                            "0",
+                        ),
+                    },
                     # W3C trace-context, sourced from the parent BFF request
                     # via Sandbox metadata.annotations. dapr-agent-py reads
                     # this and uses it as the parent context for spans the
