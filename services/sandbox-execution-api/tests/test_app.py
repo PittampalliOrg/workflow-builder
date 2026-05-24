@@ -251,10 +251,38 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
             "name": "adk-agent-py-config",
             "optional": True,
         }
-    } in env_from
+    } not in env_from
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+
+
+def test_agent_workflow_host_sandbox_uses_adk_config_only_for_adk_image() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            agentImage="ghcr.io/example/adk-agent-py-sandbox:git-1",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+
+    container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    assert container["image"] == "ghcr.io/example/adk-agent-py-sandbox:git-1"
+    env_from = container["envFrom"]
+    assert {
+        "configMapRef": {
+            "name": "dapr-agent-py-config",
+            "optional": True,
+        }
+    } in env_from
+    assert {
+        "configMapRef": {
+            "name": "adk-agent-py-config",
+            "optional": True,
+        }
+    } in env_from
 
 
 def test_agent_workflow_host_sandbox_without_timeout_has_no_active_deadline(

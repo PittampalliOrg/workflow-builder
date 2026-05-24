@@ -612,6 +612,19 @@ def build_agent_workflow_host_sandbox_manifest(
     session_label = _safe_name(request.sessionId, max_length=63)
     image = request.agentImage or class_config.agentHostImage
     image_pull_policy = _image_pull_policy_for_agent_host(image)
+    env_from = [
+        {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
+    ]
+    if "adk-agent-py" in image:
+        env_from.append(
+            {"configMapRef": {"name": "adk-agent-py-config", "optional": True}}
+        )
+    env_from.extend(
+        [
+            {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
+            {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
+        ]
+    )
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "serviceAccountName": class_config.serviceAccountName,
@@ -778,12 +791,7 @@ def build_agent_workflow_host_sandbox_manifest(
                         },
                     },
                 ],
-                "envFrom": [
-                    {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
-                    {"configMapRef": {"name": "adk-agent-py-config", "optional": True}},
-                    {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
-                    {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
-                ],
+                "envFrom": env_from,
                 "resources": {
                     "requests": {
                         "cpu": class_config.agentHostCpu,
