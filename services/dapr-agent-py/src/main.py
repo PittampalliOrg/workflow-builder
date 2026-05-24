@@ -85,7 +85,8 @@ def _one_shot_turn_child_workflow_enabled(
     explicit = _env_bool("DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED")
     if explicit is not None:
         return explicit
-    return not is_swebench_execution_context(instance_id, context)
+    _ = instance_id, context
+    return True
 
 
 def _tool_child_workflow_enabled(
@@ -96,23 +97,6 @@ def _tool_child_workflow_enabled(
     if explicit is not None:
         return explicit
     return not is_swebench_execution_context(instance_id, context)
-
-
-def _is_swebench_one_shot_turn(
-    workflow_instance_id: str,
-    session_id: str,
-    context: dict[str, Any] | None,
-) -> bool:
-    """Return true for benchmark-owned session bridge turns.
-
-    Keep this based on durable input IDs only. Reading mutable process state
-    here can make the session wrapper replay a different child-vs-inline branch
-    after the startup timer.
-    """
-    return is_swebench_execution_context(
-        workflow_instance_id,
-        context,
-    ) or is_swebench_execution_context(session_id, context)
 
 
 # ---------------------------------------------------------------------------
@@ -5052,21 +5036,13 @@ class OpenShellDurableAgent(DurableAgent):
                 "executionId": db_execution_id,
                 "workspaceRef": message.get("workspaceRef"),
             }
-            swebench_one_shot_turn = auto_terminate and _is_swebench_one_shot_turn(
-                workflow_instance_id,
-                session_id,
-                one_shot_context,
-            )
-            if swebench_one_shot_turn:
-                use_child_turn_workflow = False
-            else:
-                use_child_turn_workflow = (
-                    auto_terminate
-                    and _one_shot_turn_child_workflow_enabled(
-                        workflow_instance_id,
-                        one_shot_context,
-                    )
+            use_child_turn_workflow = (
+                auto_terminate
+                and _one_shot_turn_child_workflow_enabled(
+                    workflow_instance_id,
+                    one_shot_context,
                 )
+            )
             agent_turn_instance_id = (
                 f"{workflow_instance_id}__turn__{turn_counter}"
                 if use_child_turn_workflow
@@ -5329,11 +5305,9 @@ class OpenShellDurableAgent(DurableAgent):
                 if use_child_turn_workflow:
                     # One-shot workflow-bridge turns are called by a parent
                     # workflow and replay under heavier sub-orchestration churn.
-                    # Keep this non-benchmark history isolated from the session
-                    # wrapper so the wrapper only records seed activities plus
-                    # one child call. Benchmark one-shot turns run inline by
-                    # default to avoid an extra Dapr actor layer while the
-                    # benchmark fleet is starting many short-lived app IDs.
+                    # Keep the agent loop isolated from the session wrapper so
+                    # the wrapper records seed activities plus one child call,
+                    # while SWE-bench still disables per-tool child workflows.
                     turn_result = yield ctx.call_child_workflow(
                         getattr(self, "agent_workflow_name", "agent_workflow"),
                         input=child_input,

@@ -73,11 +73,10 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
 
     assert "def _one_shot_turn_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' in source
-    assert "return not is_swebench_execution_context(instance_id, context)" in source
-    assert "def _is_swebench_one_shot_turn(" in source
-    assert "swebench_one_shot_turn = auto_terminate and _is_swebench_one_shot_turn(" in source
-    assert "if swebench_one_shot_turn:" in source
-    assert "use_child_turn_workflow = False" in source
+    assert "return True" in source
+    assert "def _is_swebench_one_shot_turn(" not in source
+    assert "swebench_one_shot_turn" not in source
+    assert "use_child_turn_workflow = False" not in source
     assert "agent_turn_instance_id = (" in source
     assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
     assert "if use_child_turn_workflow" in source
@@ -87,5 +86,6 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     assert "ctx.create_timer(timedelta(seconds=settle_seconds))" in source
     assert "if not use_child_turn_workflow:" in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source
+    assert "while SWE-bench still disables per-tool child workflows" in source
     assert 'else:\n                    # Session-native cutover' in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source

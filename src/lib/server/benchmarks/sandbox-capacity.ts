@@ -323,45 +323,61 @@ function addResourceProfiles(
 	};
 }
 
+function executionClassConfigFromEnv(
+	preferAgentHostClass = false,
+): Record<string, unknown> | null {
+	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
+	if (!raw?.trim()) return null;
+	const classNames = preferAgentHostClass
+		? [
+				process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
+				process.env.BENCHMARK_EXECUTION_CLASS,
+				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
+			]
+		: [
+				process.env.BENCHMARK_EXECUTION_CLASS,
+				process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
+				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
+			];
+	const executionClass =
+		classNames
+			.map((value) => value?.trim())
+			.find((value): value is string => !!value) ?? null;
+	if (!executionClass) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		const classes = recordValue(parsed);
+		return recordValue(classes?.[executionClass]);
+	} catch {
+		return null;
+	}
+}
+
 function agentHostResourceProfileFromEnv():
 	| BenchmarkSandboxResourceProfile
 	| null {
 	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
-	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
-	if (!raw?.trim()) return null;
-	const executionClass =
-		process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
-		process.env.BENCHMARK_EXECUTION_CLASS?.trim() ||
-		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
-		null;
-	if (!executionClass) return null;
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		const classes = recordValue(parsed);
-		const config = recordValue(classes?.[executionClass]);
-		if (!config) return null;
-		const cpuMilli = parseCpuMilli(config.agentHostCpu);
-		const memoryBytes = parseMemoryBytes(config.agentHostMemory);
-		const ephemeralStorageBytes = parseMemoryBytes(
-			config.agentHostEphemeralStorage,
-		);
-		if (
-			cpuMilli == null &&
-			memoryBytes == null &&
-			ephemeralStorageBytes == null
-		) {
-			return null;
-		}
-		return {
-			cpuMilli: cpuMilli ?? 0,
-			memoryBytes: memoryBytes ?? 0,
-			ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
-		};
-	} catch {
+	const config = executionClassConfigFromEnv(true);
+	if (!config) return null;
+	const cpuMilli = parseCpuMilli(config.agentHostCpu);
+	const memoryBytes = parseMemoryBytes(config.agentHostMemory);
+	const ephemeralStorageBytes = parseMemoryBytes(
+		config.agentHostEphemeralStorage,
+	);
+	if (
+		cpuMilli == null &&
+		memoryBytes == null &&
+		ephemeralStorageBytes == null
+	) {
 		return null;
 	}
+	return {
+		cpuMilli: cpuMilli ?? 0,
+		memoryBytes: memoryBytes ?? 0,
+		ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
+	};
 }
 
 function executionWorkerResourceProfileFromEnv():
@@ -370,37 +386,23 @@ function executionWorkerResourceProfileFromEnv():
 	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
-	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
-	if (!raw?.trim()) return null;
-	const executionClass =
-		process.env.BENCHMARK_EXECUTION_CLASS?.trim() ||
-		process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
-		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS?.trim() ||
-		null;
-	if (!executionClass) return null;
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		const classes = recordValue(parsed);
-		const config = recordValue(classes?.[executionClass]);
-		if (!config) return null;
-		const cpuMilli = parseCpuMilli(config.cpu);
-		const memoryBytes = parseMemoryBytes(config.memory);
-		const ephemeralStorageBytes = parseMemoryBytes(config.ephemeralStorage);
-		if (
-			cpuMilli == null &&
-			memoryBytes == null &&
-			ephemeralStorageBytes == null
-		) {
-			return null;
-		}
-		return {
-			cpuMilli: cpuMilli ?? 0,
-			memoryBytes: memoryBytes ?? 0,
-			ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
-		};
-	} catch {
+	const config = executionClassConfigFromEnv(false);
+	if (!config) return null;
+	const cpuMilli = parseCpuMilli(config.cpu);
+	const memoryBytes = parseMemoryBytes(config.memory);
+	const ephemeralStorageBytes = parseMemoryBytes(config.ephemeralStorage);
+	if (
+		cpuMilli == null &&
+		memoryBytes == null &&
+		ephemeralStorageBytes == null
+	) {
 		return null;
 	}
+	return {
+		cpuMilli: cpuMilli ?? 0,
+		memoryBytes: memoryBytes ?? 0,
+		ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
+	};
 }
 
 function kueueInstanceResourceProfileFromEnv(
@@ -419,13 +421,18 @@ function kueueInstanceResourceProfileFromEnv(
 	);
 }
 
-function kueueInstancePodCountFromEnv(
+export function kueueInstancePodCountFromEnv(
 	instanceRequest: BenchmarkSandboxResourceProfile | null,
 ): number | null {
 	if (!instanceRequest) return null;
 	const configured = positiveInt(process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT);
 	if (configured) return configured;
-	return 3;
+	const config = executionClassConfigFromEnv(true);
+	const agentHostImage =
+		typeof config?.agentHostImage === "string"
+			? config.agentHostImage.trim()
+			: "";
+	return agentHostImage ? 2 : 1;
 }
 
 function nodeFsEvictionReserveBytes(): number {

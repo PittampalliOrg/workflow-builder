@@ -217,37 +217,33 @@ instead of the static default of 10.
 
 ## Dev Maximization Note
 
-As of the May 2026 c7/c10/c12 ladder, dev's raw six-worker pool is not the
-first limiter. Each benchmark instance consumes three Kueue-admitted pods:
+As of the May 2026 c32/c40 ladder, dev's raw six-worker pool is not the
+first limiter. Each benchmark instance consumes two Kueue-admitted pods:
 
-1. the sandbox-execution worker Job;
-2. the OpenShell sandbox pod;
-3. the per-session agent-host pod.
+1. the OpenShell sandbox pod;
+2. the per-session agent-host pod.
 
 For the `benchmark-fast` profile those requests are about 450m CPU, 1Gi
-memory, 6.54Gi ephemeral storage, and 3 pods per active instance. With the
-current `benchmark-fast` nominal quota of 24 CPU, 60Gi memory, 272Gi ephemeral
-storage, and 96 pods, and browserstation reserving 3 pods in the same
-ClusterQueue, nominal safe admission is pod-count limited at about 31 full
-instances. If the cohort can borrow its full configured headroom, the same
-math rises to about 47 full instances, still pod-count limited.
+memory, 6.54Gi ephemeral storage, and 2 pods per active instance. The BFF
+derives this pod count from `SANDBOX_EXECUTION_CLASSES_JSON.<class>.agentHostImage`
+unless `BENCHMARK_KUEUE_INSTANCE_POD_COUNT` explicitly overrides it, matching
+the live Kueue capacity observer.
 
-The BFF should treat nominal Kueue quota as the deterministic default and only
-use borrowing as an explicit policy once it can report the cohort borrowing
-source and competing queue usage in the capacity snapshot. The staged dev
-ladder after c12 is therefore c16 -> c24 -> c30 before enabling a borrowing
-probe. A c40+ probe should either document that it is relying on cohort
-borrowing or first increase the `benchmark-fast` dev profile share.
+The BFF should treat nominal Kueue quota as the deterministic default and
+include borrowing diagnostics separately so operators can tell whether a run is
+using only the cohort's share or relying on reclaimable headroom from another
+queue.
 
 The c12 failure mode was not Kueue starvation: all parents left `PENDING`,
 all sessions were created, and all Kueue Workloads were admitted. One
 SWE-bench turn scheduled a second tool but never emitted
 `tool_activity.started` after the one-shot per-turn child workflow actor was
-cancelled during Dapr placement churn. Benchmark one-shot session turns now run
-the agent turn inline inside `session_workflow` by default, avoiding that extra
-child actor layer while preserving the previous child-turn path for
-non-benchmark one-shot callers or explicit
-`DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=true`.
+cancelled during Dapr placement churn. Tool execution now stays inline for
+SWE-bench, but the one-shot agent turn runs behind a child `agent_workflow`
+boundary so the session wrapper does not replay through the agent loop's
+runtime seed activities. Operators can still force inline one-shot turns with
+`DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=false` for a targeted
+canary.
 
 ## Kueue Execution Plane Backend
 

@@ -3,6 +3,7 @@ import type { KubeNode, KubePod } from "$lib/server/kube/client";
 import {
 	estimateSchedulableSandboxCapacity,
 	kueueCapacityFromClusterQueue,
+	kueueInstancePodCountFromEnv,
 	parseCpuMilli,
 	parseMemoryBytes,
 } from "./sandbox-capacity";
@@ -528,6 +529,51 @@ describe("sandbox scheduler capacity", () => {
 			kueueInstancePodLimitedCapacity: 128,
 			schedulableKueueInstanceCapacity: 106,
 		});
+	});
+
+	it("defaults Kueue full-instance pod count to the live sandbox plus agent-host shape", () => {
+		const previous = {
+			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
+			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
+			BENCHMARK_KUEUE_INSTANCE_POD_COUNT:
+				process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT,
+			SANDBOX_EXECUTION_CLASSES_JSON:
+				process.env.SANDBOX_EXECUTION_CLASSES_JSON,
+		};
+		const instanceRequest = {
+			cpuMilli: 450,
+			memoryBytes: 1024 * 1024 * 1024,
+			ephemeralStorageBytes: 6 * 1024 * 1024 * 1024,
+		};
+		try {
+			process.env.BENCHMARK_EXECUTION_BACKEND = "dapr-kueue";
+			process.env.BENCHMARK_EXECUTION_CLASS = "benchmark-fast";
+			delete process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT;
+			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
+				"benchmark-fast": {
+					agentHostImage: "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:git-test",
+				},
+			});
+
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
+
+			process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT = "3";
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
+
+			delete process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT;
+			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
+				"benchmark-fast": {},
+			});
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(1);
+		} finally {
+			for (const [key, value] of Object.entries(previous)) {
+				if (value == null) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
 	});
 
 	it("does not block launches when live node filesystem stats are unavailable", () => {
