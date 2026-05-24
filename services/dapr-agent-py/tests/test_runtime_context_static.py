@@ -49,7 +49,9 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
     assert "def _tool_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED"' in source
-    assert "return not is_swebench_execution_context(instance_id, context)" in source
+    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED"' in source
+    assert "return not is_swebench_execution_context(instance_id, context)" not in source
+    assert "return True" in source
     assert "use_tool_child_workflow = _tool_child_workflow_enabled(" in source
     assert "[tool-dispatch] yielding sequential tool child workflow" in source
     assert "[tool-dispatch] yielding sequential inline tool activity" in source
@@ -90,6 +92,6 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     assert "ctx.create_timer(timedelta(seconds=startup_delay_seconds))" in source
     assert "if not use_child_turn_workflow:" in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source
-    assert "while SWE-bench still disables per-tool child workflows" in source
+    assert "while SWE-bench still disables per-tool child workflows" not in source
     assert 'else:\n                    # Session-native cutover' in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source

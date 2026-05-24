@@ -120,7 +120,11 @@ def _tool_child_workflow_enabled(
     explicit = _env_bool("DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED")
     if explicit is not None:
         return explicit
-    return not is_swebench_execution_context(instance_id, context)
+    if is_swebench_execution_context(instance_id, context):
+        swebench_explicit = _env_bool("DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED")
+        if swebench_explicit is not None:
+            return swebench_explicit
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -5341,8 +5345,7 @@ class OpenShellDurableAgent(DurableAgent):
                     # One-shot workflow-bridge turns are called by a parent
                     # workflow and replay under heavier sub-orchestration churn.
                     # Keep the agent loop isolated from the session wrapper so
-                    # the wrapper records seed activities plus one child call,
-                    # while SWE-bench still disables per-tool child workflows.
+                    # the wrapper records seed activities plus one child call.
                     turn_result = yield ctx.call_child_workflow(
                         getattr(self, "agent_workflow_name", "agent_workflow"),
                         input=child_input,
