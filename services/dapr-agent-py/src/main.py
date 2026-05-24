@@ -119,7 +119,13 @@ def _one_shot_turn_child_workflow_enabled(
     explicit = _env_bool("DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED")
     if explicit is not None:
         return explicit
-    _ = instance_id, context
+    if is_swebench_execution_context(instance_id, context):
+        swebench_explicit = _env_bool(
+            "DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"
+        )
+        if swebench_explicit is not None:
+            return swebench_explicit
+        return False
     return True
 
 

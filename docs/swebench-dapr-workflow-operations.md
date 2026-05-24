@@ -30,6 +30,9 @@ The important upstream constraints for benchmark operations are:
 - Workflow code must replay deterministically. Do not change the order or shape
   of workflow, activity, or child-workflow calls for an in-flight app id unless
   the change uses Dapr workflow patching/versioning.
+- Keep orchestration bodies free of direct I/O, random values, current wall
+  time, and mutable process-global decisions. Put side effects behind
+  activities so replay observes the same action history.
 - All replicas for a workflow app id must register the same workflows and
   activities. Rollouts that briefly mix registrations can stall or fail replay.
 - Workflow state remains in the actor state store after terminal completion
@@ -91,6 +94,12 @@ capacity monitoring for the actor state store and Scheduler embedded etcd.
 - Keep session-host pods bounded. For benchmark hosts, a nonterminal workflow
   that stays active past the idle timeout should be terminated and the pod
   should exit nonzero so Kueue/runtime slots are not held indefinitely.
+- For SWE-bench one-shot agent hosts, prefer the inline session turn path over
+  a nested child `agent_workflow`. The inline path keeps seed activities and
+  the agent turn in one deterministic `session_workflow` history and avoids
+  high-concurrency sub-orchestration replay churn. Set
+  `DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=true` only for a
+  focused canary that proves the nested path is needed.
 - Keep interactive sessions on warning behavior unless a user-facing timeout is
   explicitly desired.
 - Treat model max-iteration, no-patch, and empty-patch outcomes as model

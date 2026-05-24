@@ -313,6 +313,33 @@ function countLogMatches(logs: string): {
 			continue;
 		}
 		if (
+			/Workflow actor .*cannot add event to workflow as state has been purged\. Ignoring event/i.test(
+				line,
+			)
+		) {
+			continue;
+		}
+		if (
+			/failed to submit termination request to sub-orchestration/i.test(line) &&
+			/no such instance exists/i.test(line)
+		) {
+			continue;
+		}
+		if (
+			/Workflow actor .*execution failed with a recoverable error and will be retried later/i.test(
+				line,
+			) &&
+			/execution aborted/i.test(line)
+		) {
+			continue;
+		}
+		if (
+			/failed to invoke scheduled actor reminder named:/i.test(line) &&
+			/execution aborted/i.test(line)
+		) {
+			continue;
+		}
+		if (
 			!/(level=(error|fatal)|ERR_|panic|deadline|unable|no such instance|\bfailed\b|\bfailure\b|\babort(?:ed)?\b|\blocked\b|\block timeout\b)/i.test(
 				line,
 			)

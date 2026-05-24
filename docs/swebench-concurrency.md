@@ -85,6 +85,13 @@ explicit cache warm plans for high-value Verified repos, and failure grouping
 by dependency phase so slow or flaky images do not hide runtime capacity
 issues.
 
+When exact-ready coverage is below a target run size, use the existing exact
+cache as a model/runtime proof and mark the launch with `allowPartialSelection`.
+That is valid for proving the agent path if every selected instance is distinct
+and exact-ready. It is not evidence that the missing instances are ready or that
+the cluster can run the full requested count; continue the build campaign after
+the proof run and rerun the larger target only after the cache reaches coverage.
+
 ## PSI Metrics
 
 Kubernetes 1.36 makes kubelet PSI metrics stable and enabled by default when

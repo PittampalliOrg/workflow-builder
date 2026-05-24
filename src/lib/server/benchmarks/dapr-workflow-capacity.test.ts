@@ -50,6 +50,19 @@ describe("Dapr workflow capacity diagnostics", () => {
 		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
 	});
 
+	it("does not count expected post-cancel workflow purge chatter as runtime pressure", () => {
+		const counts = __daprWorkflowCapacityForTest.countLogMatches(
+			[
+				`time="2026-05-24T22:22:40Z" level=error msg="orchestration-processor: failed to process work item: failed to submit termination request to sub-orchestration: rpc error: code = Internal desc = error invoke actor method: no such instance exists" scope=dapr.wfengine.durabletask.backend`,
+				`time="2026-05-24T22:22:40Z" level=error msg="Workflow actor 'sw-swebench-instance-exec-abc__durable__solve__run__0': cannot add event to workflow as state has been purged. Ignoring event." scope=dapr.runtime.actors.targets.orchestrator`,
+				`time="2026-05-24T22:22:40Z" level=warning msg="Workflow actor 'sw-swebench-instance-exec-abc': execution failed with a recoverable error and will be retried later: 'execution aborted'" scope=dapr.runtime.actors.targets.orchestrator`,
+				`time="2026-05-24T22:22:40Z" level=error msg="failed to invoke scheduled actor reminder named: new-event-et-123 due to: rpc error: code = Unknown desc = execution aborted" scope=dapr.runtime.scheduler.cluster`,
+			].join("\n"),
+		);
+
+		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+	});
+
 	it("ignores terminating pods for readiness-sensitive pressure checks", () => {
 		const ready = __daprWorkflowCapacityForTest.podIsReady({
 			metadata: { name: "workflow-orchestrator-current" },
