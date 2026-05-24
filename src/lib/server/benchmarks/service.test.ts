@@ -1208,7 +1208,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBeNull();
 	});
 
-	it("requests parent termination before waiting on child/session-host workflow closure", async () => {
+	it("terminates child/session-host workflows before parent workflows", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1237,6 +1237,10 @@ describe("SWE-bench terminal run cleanup", () => {
 						calls.push(`child-status:${runtimeAppId}/${id}`);
 						return "RUNNING";
 					},
+					terminateAgentRuntime: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-terminate:${runtimeAppId}/${id}`);
+						return "terminated";
+					},
 					waitAgentRuntimeClosed: async (runtimeAppId: string, id: string) => {
 						calls.push(`child-wait:${runtimeAppId}/${id}`);
 						return true;
@@ -1260,12 +1264,13 @@ describe("SWE-bench terminal run cleanup", () => {
 		});
 		expect(calls).toEqual([
 			"child-status:agent-session-host/session-1",
+			"child-terminate:agent-session-host/session-1",
+			"child-wait:agent-session-host/session-1",
 			"parent-status:parent-1",
 			"parent-terminate:parent-1",
 			"parent-wait:parent-1",
-			"child-wait:agent-session-host/session-1",
-			"parent-purge:parent-1",
 			"child-purge:agent-session-host/session-1",
+			"parent-purge:parent-1",
 		]);
 	});
 
@@ -1298,6 +1303,10 @@ describe("SWE-bench terminal run cleanup", () => {
 						return false;
 					},
 					getAgentRuntimeStatus: async () => "RUNNING",
+					terminateAgentRuntime: async () => {
+						calls.push("child-terminate");
+						return "terminated";
+					},
 					waitAgentRuntimeClosed: async () => {
 						calls.push("child-wait");
 						return true;
@@ -1316,7 +1325,12 @@ describe("SWE-bench terminal run cleanup", () => {
 
 		expect(result.allClosed).toBe(false);
 		expect(result.parentClosed).toBe(false);
-		expect(calls).toEqual(["parent-terminate", "parent-wait", "child-wait"]);
+		expect(calls).toEqual([
+			"child-terminate",
+			"child-wait",
+			"parent-terminate",
+			"parent-wait",
+		]);
 	});
 
 	it("treats missing child/session-host workflows as already closed", async () => {
@@ -1338,6 +1352,9 @@ describe("SWE-bench terminal run cleanup", () => {
 					},
 					waitParentClosed: async () => true,
 					getAgentRuntimeStatus: async () => "__missing__",
+					terminateAgentRuntime: async () => {
+						throw new Error("child should not be terminated");
+					},
 					waitAgentRuntimeClosed: async () => {
 						calls.push("child-wait");
 						return false;
