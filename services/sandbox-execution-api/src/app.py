@@ -738,6 +738,14 @@ def build_agent_workflow_host_sandbox_manifest(
                         "value": request.sessionId,
                     },
                     {
+                        "name": "DAPR_AGENT_SESSION_HOST_BENCHMARK_RUN_ID",
+                        "value": request.runId or "",
+                    },
+                    {
+                        "name": "DAPR_AGENT_SESSION_HOST_BENCHMARK_INSTANCE_ID",
+                        "value": request.instanceId or "",
+                    },
+                    {
                         "name": "DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS",
                         "value": _agent_host_start_timeout_seconds(request),
                     },

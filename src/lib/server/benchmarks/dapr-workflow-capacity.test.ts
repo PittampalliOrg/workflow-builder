@@ -50,6 +50,21 @@ describe("Dapr workflow capacity diagnostics", () => {
 		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
 	});
 
+	it("counts recoverable actor churn on active agent hosts when strict scanning is requested", () => {
+		const counts = __daprWorkflowCapacityForTest.countLogMatches(
+			[
+				'time="2026-05-24T22:43:14Z" level=error msg="Timed out waiting for actor in-flight lock claims to be released, force cancelling remaining claims" scope=dapr.runtime.actors.loops.disseminator.inflight.lock',
+				`time="2026-05-24T22:43:14Z" level=warning msg="Workflow actor 'sw-swebench-instance-exec-abc__durable__solve__run__0': execution failed with a recoverable error and will be retried later: 'failed to invoke activity actor 'sw-swebench-instance-exec-abc__durable__solve__run__0::30::1' to execute 'dapr.agents.agent-session-abc.call_llm': context canceled'" scope=dapr.runtime.actors.targets.orchestrator`,
+			].join("\n"),
+			{
+				ignoreActorLockTimeouts: false,
+				ignoreRecoverableActorChurn: false,
+			},
+		);
+
+		expect(counts).toEqual({ actorErrors: 2, reminderErrors: 0 });
+	});
+
 	it("does not count expected post-cancel workflow purge chatter as runtime pressure", () => {
 		const counts = __daprWorkflowCapacityForTest.countLogMatches(
 			[

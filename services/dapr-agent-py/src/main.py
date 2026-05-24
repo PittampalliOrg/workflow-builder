@@ -6180,6 +6180,60 @@ def _session_host_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _report_session_host_inference_failure(
+    *,
+    status: str,
+    error: str,
+    termination_reason: str,
+) -> None:
+    run_id = _session_host_env("DAPR_AGENT_SESSION_HOST_BENCHMARK_RUN_ID")
+    instance_id = _session_host_env("DAPR_AGENT_SESSION_HOST_BENCHMARK_INSTANCE_ID")
+    base_url = os.environ.get(
+        "WORKFLOW_BUILDER_URL",
+        "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+    ).strip()
+    token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+    if not run_id or not instance_id or not base_url or not token:
+        return
+    url = (
+        f"{base_url.rstrip('/')}/api/internal/benchmarks/runs/"
+        f"{urllib.parse.quote(run_id, safe='')}/instances/"
+        f"{urllib.parse.quote(instance_id, safe='')}/inference-failure"
+    )
+    body = json.dumps(
+        {
+            "status": status,
+            "error": error,
+            "terminationReason": termination_reason,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            response.read()
+        logger.info(
+            "[session-host] reported benchmark inference failure run=%s instance=%s reason=%s",
+            run_id,
+            instance_id,
+            termination_reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[session-host] failed to report benchmark inference failure run=%s instance=%s: %s",
+            run_id,
+            instance_id,
+            exc,
+        )
+
+
 def _start_session_host_monitor() -> None:
     instance_id = _session_host_env("DAPR_AGENT_SESSION_HOST_INSTANCE_ID")
     if not instance_id:
@@ -6296,10 +6350,15 @@ def _run_session_host_monitor(instance_id: str) -> None:
     while True:
         elapsed = time.monotonic() - started_at
         if first_seen_at is None and elapsed > start_timeout:
-            logger.error(
-                "[session-host] workflow %s was not observed within %ss; exiting",
-                instance_id,
-                start_timeout,
+            message = (
+                f"[session-host] workflow {instance_id} was not observed within "
+                f"{start_timeout}s; exiting"
+            )
+            logger.error(message)
+            _report_session_host_inference_failure(
+                status="timeout",
+                error=message,
+                termination_reason="session_host_start_timeout",
             )
             _session_host_exit(instance_id, 1)
         sidecar_error = _dapr_sidecar_health_error()
@@ -6309,11 +6368,16 @@ def _run_session_host_monitor(instance_id: str) -> None:
                 sidecar_unavailable_since = now
             unavailable_seconds = now - sidecar_unavailable_since
             if unavailable_seconds > sidecar_ready_timeout:
-                logger.error(
-                    "[session-host] dapr sidecar stayed unavailable for %ss while monitoring %s: %s; exiting",
-                    int(unavailable_seconds),
-                    instance_id,
-                    sidecar_error,
+                message = (
+                    "[session-host] dapr sidecar stayed unavailable for "
+                    f"{int(unavailable_seconds)}s while monitoring {instance_id}: "
+                    f"{sidecar_error}; exiting"
+                )
+                logger.error(message)
+                _report_session_host_inference_failure(
+                    status="error",
+                    error=message,
+                    termination_reason="session_host_sidecar_unavailable",
                 )
                 _session_host_exit(instance_id, 1)
             logger.warning(
@@ -6383,15 +6447,29 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     runtime_status,
                     exit_code,
                 )
+                if exit_code != 0:
+                    _report_session_host_inference_failure(
+                        status=(
+                            "cancelled"
+                            if runtime_status in {"CANCELED", "TERMINATED"}
+                            else "error"
+                        ),
+                        error=(
+                            f"[session-host] workflow {instance_id} terminal "
+                            f"status={runtime_status}"
+                        ),
+                        termination_reason="session_host_workflow_terminal",
+                    )
                 _session_host_exit(instance_id, exit_code)
             now = time.monotonic()
             if now - first_seen_at > idle_timeout:
                 if nonterminal_timeout_action == "terminate":
-                    logger.error(
-                        "[session-host] workflow %s stayed non-terminal for %ss after first observation; terminating workflow and exiting",
-                        instance_id,
-                        idle_timeout,
+                    message = (
+                        f"[session-host] workflow {instance_id} stayed non-terminal "
+                        f"for {idle_timeout}s after first observation; terminating "
+                        "workflow and exiting"
                     )
+                    logger.error(message)
                     try:
                         _workflow_http_post(instance_id, "/terminate")
                     except FileNotFoundError:
@@ -6406,6 +6484,11 @@ def _run_session_host_monitor(instance_id: str) -> None:
                             instance_id,
                             exc,
                         )
+                    _report_session_host_inference_failure(
+                        status="timeout",
+                        error=message,
+                        termination_reason="session_host_nonterminal_timeout",
+                    )
                     _session_host_exit(instance_id, 1)
                 logger.warning(
                     "[session-host] workflow %s stayed non-terminal for %ss after first observation; continuing to monitor",

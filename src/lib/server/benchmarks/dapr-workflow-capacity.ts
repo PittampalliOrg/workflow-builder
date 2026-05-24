@@ -286,10 +286,19 @@ async function countSchedulerPods(): Promise<{
 	};
 }
 
-function countLogMatches(logs: string): {
+function countLogMatches(
+	logs: string,
+	options: {
+		ignoreRecoverableActorChurn?: boolean;
+		ignoreActorLockTimeouts?: boolean;
+	} = {},
+): {
 	actorErrors: number;
 	reminderErrors: number;
 } {
+	const ignoreRecoverableActorChurn =
+		options.ignoreRecoverableActorChurn ?? true;
+	const ignoreActorLockTimeouts = options.ignoreActorLockTimeouts ?? true;
 	let actorErrors = 0;
 	let reminderErrors = 0;
 	for (const line of logs.split(/\r?\n/)) {
@@ -302,6 +311,7 @@ function countLogMatches(logs: string): {
 			continue;
 		}
 		if (
+			ignoreRecoverableActorChurn &&
 			/Workflow actor .*execution failed with a recoverable error and will be retried later/i.test(
 				line,
 			) &&
@@ -310,6 +320,8 @@ function countLogMatches(logs: string): {
 			continue;
 		}
 		if (/Timed out waiting for actor in-flight lock claims to be released/i.test(line)) {
+			if (ignoreActorLockTimeouts) continue;
+			actorErrors += 1;
 			continue;
 		}
 		if (
@@ -357,6 +369,8 @@ async function countRecentDaprLogErrors(params: {
 	pods: KubePod[];
 	windowSeconds: number;
 	includeUnready?: boolean;
+	ignoreRecoverableActorChurn?: boolean;
+	ignoreActorLockTimeouts?: boolean;
 }): Promise<{ actorErrors: number | null; reminderErrors: number | null }> {
 	let actorErrors = 0;
 	let reminderErrors = 0;
@@ -379,7 +393,10 @@ async function countRecentDaprLogErrors(params: {
 		if (!res.ok) {
 			throw new Error(`read daprd logs for ${name} failed: HTTP ${res.status}`);
 		}
-		const counts = countLogMatches(await res.text());
+		const counts = countLogMatches(await res.text(), {
+			ignoreRecoverableActorChurn: params.ignoreRecoverableActorChurn,
+			ignoreActorLockTimeouts: params.ignoreActorLockTimeouts,
+		});
 		actorErrors += counts.actorErrors;
 		reminderErrors += counts.reminderErrors;
 	}
@@ -412,6 +429,8 @@ export async function loadAgentHostDaprRuntimeSnapshot(
 				pods: activePods,
 				windowSeconds: logWindowSeconds,
 				includeUnready: true,
+				ignoreRecoverableActorChurn: false,
+				ignoreActorLockTimeouts: false,
 			});
 		} catch (err) {
 			console.warn("[bench-capacity] agent-host daprd log scan unavailable", err);

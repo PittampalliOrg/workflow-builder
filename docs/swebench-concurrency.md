@@ -34,20 +34,22 @@ The capacity-oriented dev shape is:
 
 The May 2026 rebuild intentionally keeps benchmark Kueue quota below raw node
 capacity until higher-concurrency canaries prove the rest of the stack. The
-current `benchmark-fast` nominal quota is 24 CPU and 96 pods, with 12 CPU and
-48 pods of bounded cohort borrowing. Memory and ephemeral-storage quotas are
-part of the same admission budget; on the 2026-05-24 DeepSeek proof run,
-ephemeral-storage was the first Kueue limiter, not pod count.
+current `benchmark-fast` nominal quota is 24 CPU, 60Gi memory, 272Gi
+ephemeral-storage, and 96 pods, with bounded cohort borrowing. Memory,
+ephemeral-storage, and pod quotas are part of the same admission budget; on the
+2026-05-24 DeepSeek proof run, memory was the first Kueue limiter for full
+OpenShell plus agent-host instances, not pod count or PSI pressure.
 
 ```text
+60Gi nominal memory / 1.75Gi full-instance request = 34 full instances
 272Gi nominal ephemeral-storage / 6.54Gi full-instance request = 41 full instances
 96 nominal pods / 2 pods per full Kueue-backed instance = 48 full instances
 ```
 
-The same profile can reach about 62 full instances if it borrows its configured
-136Gi ephemeral-storage headroom and competing lower-priority queues are idle.
-Do not treat that as deterministic capacity unless the capacity snapshot
-reports borrowed quota and the competing queue state.
+The same profile can reach about 51 full instances if it borrows its configured
+30Gi memory headroom and competing lower-priority queues are idle. Do not treat
+that as deterministic capacity unless the capacity snapshot reports borrowed
+quota and the competing queue state.
 
 ## Image Build And Cache Strategy
 
@@ -115,6 +117,24 @@ The dev capacity observer already samples worker-node PSI and stores
 admission. Use kubelet Summary API or `/metrics/cadvisor` PSI directly for
 debug drills when a run has first-tool latency, OOMKills, or slow sandbox
 readiness without Kubernetes node-pressure conditions.
+
+Do not replace Kueue quota with PSI thresholds. Kueue remains the deterministic
+admission source for CPU, memory, ephemeral-storage, and pod count. PSI should
+be a live derating and debugging signal layered on top of Kueue:
+
+- Launch concurrency should default to exact selected count capped by Kueue
+  full-instance slots, Dapr parent workflow capacity, active leases, model caps,
+  and evaluator Kueue slots.
+- PSI should reduce or pause new starts when the cluster is admitted on paper
+  but tasks are stalling in practice.
+- Static PSI values in code are fail-safe watermarks, not desired steady-state
+  concurrency settings. Prefer observed Kueue headroom, live leases, and PSI
+  trends over fixed `BENCHMARK_MAX_ACTIVE_*` caps; leave the static caps unset
+  except for emergency ceilings or diagnostic canaries.
+- For dev as of 2026-05-24, `benchmark-fast` was Kueue-memory limited for full
+  SWE-bench instances while PSI memory pressure stayed near zero. That means
+  raising concurrency should happen by adding exact-ready images and queue
+  quota only after successful canaries, not by overriding PSI thresholds.
 
 ## PipelineRun Guardrails
 

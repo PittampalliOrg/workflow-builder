@@ -240,6 +240,8 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS"] == "16"
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES"] == "48"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
+    assert env["DAPR_AGENT_SESSION_HOST_BENCHMARK_RUN_ID"] == "run_1"
+    assert env["DAPR_AGENT_SESSION_HOST_BENCHMARK_INSTANCE_ID"] == "sympy__sympy-20590"
     assert env["DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS"] == "900"
     assert env["DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS"] == "60"
     assert env["DAPR_AGENT_SESSION_HOST_SIDECAR_READY_TIMEOUT_SECONDS"] == "120"
