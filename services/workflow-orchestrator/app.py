@@ -534,6 +534,20 @@ def _workflow_http_timeout_seconds() -> float:
         return 15.0
 
 
+def _workflow_terminate_client_fallback_timeout_seconds() -> int:
+    try:
+        raw_timeout = os.environ.get(
+            "WORKFLOW_TERMINATE_CLIENT_FALLBACK_TIMEOUT_SECONDS",
+            "5",
+        )
+        return max(
+            1,
+            int(raw_timeout),
+        )
+    except ValueError:
+        return 5
+
+
 def _workflow_http_url(instance_id: str, suffix: str = "") -> str:
     encoded_id = urllib.parse.quote(instance_id, safe="")
     return f"{_dapr_http_sidecar_url()}/v1.0/workflows/dapr/{encoded_id}{suffix}"
@@ -3369,6 +3383,7 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
             "success": True,
             "instanceId": instance_id,
             "parentTerminationRequested": False,
+            "clientTerminationRequested": False,
             "nativeChildCascade": True,
             "childCleanupSkippedReason": (
                 "Dapr child workflows are terminated by the native parent-child cascade"
@@ -3402,6 +3417,44 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
                 response_metadata["terminationStatusUnknown"] = True
             else:
                 raise
+
+        if not response_metadata.get("alreadyGone"):
+            try:
+                _terminate_workflow_with_timeout(
+                    get_workflow_client(),
+                    instance_id,
+                    _workflow_terminate_client_fallback_timeout_seconds(),
+                )
+                response_metadata["clientTerminationRequested"] = True
+            except TimeoutError:
+                logger.warning(
+                    "[Workflow Routes] DaprWorkflowClient terminate timed out for %s; polling status will confirm closure",
+                    instance_id,
+                )
+                response_metadata["clientTerminationRequested"] = True
+                response_metadata["terminationStatusUnknown"] = True
+            except Exception as client_err:
+                if _is_workflow_instance_missing_error(client_err):
+                    logger.info(
+                        "[Workflow Routes] DaprWorkflowClient terminate skipped for %s: already gone",
+                        instance_id,
+                    )
+                    response_metadata["alreadyGone"] = True
+                elif _is_workflow_terminate_status_unknown_error(client_err):
+                    logger.warning(
+                        "[Workflow Routes] DaprWorkflowClient terminate returned a transient workflow error for %s; polling status will confirm closure: %s",
+                        instance_id,
+                        client_err,
+                    )
+                    response_metadata["clientTerminationRequested"] = True
+                    response_metadata["terminationStatusUnknown"] = True
+                else:
+                    logger.warning(
+                        "[Workflow Routes] DaprWorkflowClient terminate failed for %s after HTTP terminate request: %s",
+                        instance_id,
+                        client_err,
+                    )
+                    response_metadata["clientTerminationError"] = str(client_err)
 
         if not response_metadata.get("alreadyGone"):
             try:
