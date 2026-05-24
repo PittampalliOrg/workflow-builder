@@ -1632,11 +1632,14 @@ class OpenShellDurableAgent(DurableAgent):
             retry_policy=self._retry_policy,
         )
 
-        if self.registry:
-            yield ctx.call_activity(
-                self._activity_name(self.load_tools),
-                retry_policy=self._retry_policy,
-            )
+        # Always record this activity in durable history. ``load_tools`` is
+        # idempotent and returns [] when no registry is present; branching on
+        # the mutable in-process registry can make replay skip an activity that
+        # the first execution scheduled.
+        yield ctx.call_activity(
+            self._activity_name(self.load_tools),
+            retry_policy=self._retry_policy,
+        )
 
         final_message: dict[str, Any] = {}
         turn = 0
