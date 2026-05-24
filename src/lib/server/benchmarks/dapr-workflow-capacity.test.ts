@@ -28,6 +28,17 @@ describe("Dapr workflow capacity diagnostics", () => {
 		expect(counts).toEqual({ actorErrors: 2, reminderErrors: 1 });
 	});
 
+	it("does not count scheduler stream shutdown noise from planned restarts", () => {
+		const counts = __daprWorkflowCapacityForTest.countLogMatches(
+			[
+				'time="2026-05-24T15:34:08Z" level=error msg="Scheduler stream disconnected: rpc error: code = Unknown desc = server is closing" scope=dapr.runtime.scheduler.cluster',
+				'time="2026-05-24T15:34:12Z" level=error msg="Scheduler stream disconnected: rpc error: code = Canceled desc = grpc: the client connection is closing" scope=dapr.runtime.scheduler.cluster',
+			].join("\n"),
+		);
+
+		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+	});
+
 	it("ignores terminating pods for readiness-sensitive pressure checks", () => {
 		const ready = __daprWorkflowCapacityForTest.podIsReady({
 			metadata: { name: "workflow-orchestrator-current" },

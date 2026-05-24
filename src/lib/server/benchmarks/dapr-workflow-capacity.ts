@@ -269,6 +269,14 @@ function countLogMatches(logs: string): {
 	let reminderErrors = 0;
 	for (const line of logs.split(/\r?\n/)) {
 		if (
+			/Scheduler stream disconnected/i.test(line) &&
+			/(server is closing|client connection is closing|context canceled|transport is closing)/i.test(
+				line,
+			)
+		) {
+			continue;
+		}
+		if (
 			!/(level=(error|fatal)|ERR_|panic|deadline|unable|no such instance|\bfailed\b|\bfailure\b|\babort(?:ed)?\b|\blocked\b|\block timeout\b)/i.test(
 				line,
 			)
