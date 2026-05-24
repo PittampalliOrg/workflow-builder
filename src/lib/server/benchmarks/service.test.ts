@@ -1468,6 +1468,19 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(false);
 	});
 
+	it("keeps host execution resources after successful instance inference", () => {
+		expect(
+			__benchmarkSandboxCleanupForTest.benchmarkInstanceCleanupDeletesHostExecutionResources(
+				{ completedInference: true },
+			),
+		).toBe(false);
+		expect(
+			__benchmarkSandboxCleanupForTest.benchmarkInstanceCleanupDeletesHostExecutionResources(
+				{ completedInference: false },
+			),
+		).toBe(true);
+	});
+
 	it("scopes live OpenShell pod discovery to the benchmark run", () => {
 		const runId = "1AZ8GqVDZgzekfnwHmsur";
 		const names =

@@ -2762,6 +2762,7 @@ type BenchmarkSandboxCleanupResult = {
 export const __benchmarkSandboxCleanupForTest = {
 	benchmarkInstanceLabelValue,
 	benchmarkRunLabelValue,
+	benchmarkInstanceCleanupDeletesHostExecutionResources,
 	collectBenchmarkSandboxNamesFromValues,
 	collectOpenShellSandboxNamesFromKubeItems,
 	hostSandboxExecutionResourceTargetsForTest,
@@ -2828,6 +2829,7 @@ async function cleanupBenchmarkInstanceSandbox(params: {
 	instanceId: string;
 	sandboxName?: string | null;
 	reason: string;
+	deleteHostExecutionResources?: boolean;
 }) {
 	const retainRequested = shouldKeepSwebenchSandboxAfterRun();
 	const cleanup: BenchmarkSandboxCleanupResult = {
@@ -2845,11 +2847,13 @@ async function cleanupBenchmarkInstanceSandbox(params: {
 			errors: [],
 		},
 	};
-	await deleteHostSandboxExecutionResourcesForBenchmarkInstance(
-		params.runId,
-		params.instanceId,
-		cleanup,
-	);
+	if (params.deleteHostExecutionResources !== false) {
+		await deleteHostSandboxExecutionResourcesForBenchmarkInstance(
+			params.runId,
+			params.instanceId,
+			cleanup,
+		);
+	}
 	const sandboxName = params.sandboxName?.trim();
 	if (!sandboxName) {
 		await recordBenchmarkSandboxCleanup(params.runId, cleanup);
@@ -2864,6 +2868,12 @@ async function cleanupBenchmarkInstanceSandbox(params: {
 	await deleteOpenShellSandboxForBenchmark(sandboxName, cleanup);
 	await recordBenchmarkSandboxCleanup(params.runId, cleanup);
 	return cleanup;
+}
+
+function benchmarkInstanceCleanupDeletesHostExecutionResources(params: {
+	completedInference: boolean;
+}): boolean {
+	return !params.completedInference;
 }
 
 function hostSandboxExecutionNamespace(): string {
@@ -4705,6 +4715,12 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 				instanceId: updated.instanceId,
 				sandboxName: updated.sandboxName,
 				reason: "benchmark instance inference completed",
+				// Completed session-host sidecars stay up until run-level cleanup so
+				// Dapr placement/scheduler state remains stable during the cohort.
+				deleteHostExecutionResources:
+					benchmarkInstanceCleanupDeletesHostExecutionResources({
+						completedInference: true,
+					}),
 			});
 			await releaseBenchmarkResourceLeases({
 				runId: updated.runId,
