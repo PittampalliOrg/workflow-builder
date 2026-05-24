@@ -285,7 +285,7 @@ first limiter. Each benchmark instance consumes two Kueue-admitted pods:
 1. the OpenShell sandbox pod;
 2. the per-session agent-host pod.
 
-For the `benchmark-fast` profile those requests are about 450m CPU, 1Gi
+For the `benchmark-fast` profile those requests are about 450m CPU, 1536Mi
 memory, 6.54Gi ephemeral storage, and 2 pods per active instance. The BFF
 derives this pod count from `SANDBOX_EXECUTION_CLASSES_JSON.<class>.agentHostImage`
 unless `BENCHMARK_KUEUE_INSTANCE_POD_COUNT` explicitly overrides it, matching
@@ -328,7 +328,7 @@ suspension/admission. The pod uses the requested execution class:
 Both classes keep the benchmark worker node selector
 `stacks.io/swebench-pool=dev-benchmark`, hostname topology spread, and the
 configured sandbox and agent-host resource requests. The current
-`benchmark-fast` admission profile is about 450m CPU, 1280Mi memory, and
+`benchmark-fast` admission profile is about 450m CPU, 1536Mi memory, and
 6.54Gi ephemeral-storage per full Kueue-backed SWE-bench instance. The host
 execution worker reports state back through
 `POST /api/internal/benchmarks/runs/<runId>/instances/<instanceId>/execution`.
@@ -445,7 +445,7 @@ Dev currently runs the Kueue-backed auto-capacity inference profile:
 - `benchmark-fast` ClusterQueue nominal quota: 24 CPU, 60Gi memory, 272Gi ephemeral-storage, 96 pods
 - `benchmark-fast` bounded borrowing: 12 CPU, 30Gi memory, 136Gi ephemeral-storage, 48 pods
 - sandbox request profile: 100m CPU, 512Mi memory, 2600Mi ephemeral-storage
-- agent-host request profile: 250m CPU, 512Mi memory, 3Gi ephemeral-storage
+- agent-host request profile: 250m CPU, 1Gi memory, 3Gi ephemeral-storage
 - no separate `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` cap; Dapr workflow capacity derives from runtime sidecar capacity
 - no separate `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` cap in the Kueue path
 - no separate `BENCHMARK_MAX_ACTIVE_SANDBOXES` cap; Kueue and live schedulable headroom cap admission
