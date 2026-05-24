@@ -262,6 +262,36 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert container["resources"]["requests"]["cpu"] == "500m"
     assert container["resources"]["requests"]["memory"] == "1Gi"
     assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+    assert container["resources"]["limits"]["memory"] == "1Gi"
+    assert container["resources"]["limits"]["ephemeral-storage"] == "2Gi"
+    assert "cpu" not in container["resources"]["limits"]
+
+
+def test_agent_workflow_host_sandbox_can_override_resource_limits() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostCpu="500m",
+            agentHostMemory="1Gi",
+            agentHostEphemeralStorage="2Gi",
+            agentHostCpuLimit="1500m",
+            agentHostMemoryLimit="2Gi",
+            agentHostEphemeralStorageLimit="4Gi",
+        ),
+    )
+
+    container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "500m"
+    assert container["resources"]["requests"]["memory"] == "1Gi"
+    assert container["resources"]["requests"]["ephemeral-storage"] == "2Gi"
+    assert container["resources"]["limits"]["cpu"] == "1500m"
+    assert container["resources"]["limits"]["memory"] == "2Gi"
+    assert container["resources"]["limits"]["ephemeral-storage"] == "4Gi"
 
 
 def test_agent_workflow_host_sandbox_uses_adk_config_only_for_adk_image() -> None:

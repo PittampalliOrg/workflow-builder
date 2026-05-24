@@ -171,6 +171,9 @@ class ExecutionClassConfig(BaseModel):
     agentHostCpu: str = "500m"
     agentHostMemory: str = "1Gi"
     agentHostEphemeralStorage: str = "2Gi"
+    agentHostCpuLimit: str | None = None
+    agentHostMemoryLimit: str | None = None
+    agentHostEphemeralStorageLimit: str | None = None
     agentHostNonterminalTimeoutAction: str | None = None
     ttlSecondsAfterFinished: int | None = Field(default=None, ge=0, le=86400)
 
@@ -237,6 +240,21 @@ def _agent_host_start_timeout_seconds(request: AgentWorkflowHostRequest) -> str:
     if request.timeoutSeconds is None:
         return os.environ.get("DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS", "900")
     return str(min(request.timeoutSeconds, 1800))
+
+
+def _agent_host_resource_limits(
+    class_config: ExecutionClassConfig,
+) -> dict[str, str]:
+    limits = {
+        "memory": class_config.agentHostMemoryLimit or class_config.agentHostMemory,
+        "ephemeral-storage": (
+            class_config.agentHostEphemeralStorageLimit
+            or class_config.agentHostEphemeralStorage
+        ),
+    }
+    if class_config.agentHostCpuLimit:
+        limits["cpu"] = class_config.agentHostCpuLimit
+    return limits
 
 
 def _agent_host_shutdown_buffer_seconds() -> int:
@@ -825,7 +843,8 @@ def build_agent_workflow_host_sandbox_manifest(
                         "cpu": class_config.agentHostCpu,
                         "memory": class_config.agentHostMemory,
                         "ephemeral-storage": class_config.agentHostEphemeralStorage,
-                    }
+                    },
+                    "limits": _agent_host_resource_limits(class_config),
                 },
                 "startupProbe": {
                     "httpGet": {"path": "/healthz", "port": 8002},

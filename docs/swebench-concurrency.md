@@ -286,7 +286,10 @@ first limiter. Each benchmark instance consumes two Kueue-admitted pods:
 2. the per-session agent-host pod.
 
 For the `benchmark-fast` profile those requests are about 450m CPU, 1792Mi
-memory, 6.54Gi ephemeral storage, and 2 pods per active instance. The BFF
+memory, 6.54Gi ephemeral storage, and 2 pods per active instance. The agent-host
+container must set an explicit memory limit at least equal to its configured
+request; otherwise the namespace `LimitRange` default limit can be lower than
+the request and Kubernetes will reject the pod before Kueue can run it. The BFF
 derives this pod count from `SANDBOX_EXECUTION_CLASSES_JSON.<class>.agentHostImage`
 unless `BENCHMARK_KUEUE_INSTANCE_POD_COUNT` explicitly overrides it, matching
 the live Kueue capacity observer.
