@@ -1,5 +1,8 @@
 import type { BenchmarkSandboxCapacitySnapshot } from "./sandbox-capacity";
-import type { ParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
+import type {
+	AgentHostDaprRuntimeSnapshot,
+	ParentWorkflowRuntimeSnapshot,
+} from "./dapr-workflow-capacity";
 import type { BenchmarkClusterPressureSnapshot } from "./cluster-pressure";
 
 export type BenchmarkCapacityLimiter =
@@ -8,6 +11,7 @@ export type BenchmarkCapacityLimiter =
 	| "dapr_parent_capacity"
 	| "dapr_workflow_capacity"
 	| "dapr_runtime_pressure"
+	| "agent_host_pressure"
 	| "global_max"
 	| "agent_workflow_capacity"
 	| "sandbox_capacity"
@@ -33,6 +37,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	daprWorkflowLimitPerSidecar: number;
 	daprWorkflowEffectiveCapacity: number;
 	parentWorkflowRuntime: ParentWorkflowRuntimeSnapshot | null;
+	agentHostRuntime: AgentHostDaprRuntimeSnapshot | null;
 	parentWorkflowReplicas: number | null;
 	parentWorkflowReadyReplicas: number | null;
 	parentWorkflowConnectedWorkers: number | null;
@@ -41,6 +46,12 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	parentActivityLimitPerSidecar: number | null;
 	parentWorkflowEffectiveCapacity: number | null;
 	parentActivityEffectiveCapacity: number | null;
+	agentHostActivePods: number | null;
+	agentHostUnhealthyPods: string[];
+	agentHostOomKilledPods: string[];
+	agentHostRecentActorErrorCount: number | null;
+	agentHostRecentReminderErrorCount: number | null;
+	agentHostDaprRuntimePressure: boolean;
 	daprRuntimeVersion: string | null;
 	daprSchedulerPods: number | null;
 	daprSchedulerReadyPods: number | null;
@@ -78,6 +89,7 @@ export type BenchmarkRuntimeCapacityInput = {
 	sandboxCapacity?: BenchmarkSandboxCapacitySnapshot | null;
 	clusterPressure?: BenchmarkClusterPressureSnapshot | null;
 	parentWorkflowRuntime?: ParentWorkflowRuntimeSnapshot | null;
+	agentHostRuntime?: AgentHostDaprRuntimeSnapshot | null;
 	modelMaxActiveRequests?: number | null;
 	modelNameOrPath?: string | null;
 	modelConfigLabel?: string | null;
@@ -143,11 +155,7 @@ function normalizedModelKey(value: string | null | undefined): string | null {
 
 function configuredModelMaxActiveRequests(input: BenchmarkRuntimeCapacityInput) {
 	const raw = process.env.BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS_JSON;
-	const keys = [
-		input.modelNameOrPath,
-		input.modelConfigLabel,
-		input.agentSlug,
-	]
+	const keys = [input.modelNameOrPath, input.modelConfigLabel, input.agentSlug]
 		.map(normalizedModelKey)
 		.filter((entry): entry is string => !!entry);
 	if (raw?.trim() && keys.length > 0) {
@@ -178,10 +186,7 @@ function configuredModelMaxActiveRequests(input: BenchmarkRuntimeCapacityInput) 
 
 function isKueueExecutionBackend(value: unknown): boolean {
 	if (typeof value !== "string" || !value.trim()) return false;
-	const normalized = value
-		.trim()
-		.toLowerCase()
-		.replace(/_/g, "-");
+	const normalized = value.trim().toLowerCase().replace(/_/g, "-");
 	return (
 		normalized === "dapr-kueue" ||
 		normalized === "kueue-dapr" ||
@@ -193,13 +198,9 @@ function isKueueExecutionBackend(value: unknown): boolean {
 	);
 }
 
-function capacityMode(
-	input: BenchmarkRuntimeCapacityInput,
-): "manual" | "auto" | "kueue" {
+function capacityMode(input: BenchmarkRuntimeCapacityInput): "manual" | "auto" | "kueue" {
 	if (isKueueExecutionBackend(input.executionBackend)) return "kueue";
-	const normalized = (process.env.BENCHMARK_CAPACITY_MODE ?? "")
-		.trim()
-		.toLowerCase();
+	const normalized = (process.env.BENCHMARK_CAPACITY_MODE ?? "").trim().toLowerCase();
 	return normalized === "auto" || normalized === "dynamic" ? "auto" : "manual";
 }
 
@@ -249,8 +250,7 @@ function requestedConcurrency(value: unknown): number {
 function runtimeReplicas(input: BenchmarkRuntimeCapacityInput): number {
 	if (input.runtimeIsolation === "shared") {
 		return (
-			positiveInt(input.poolMaxReplicas) ??
-			envPositiveInt("AGENT_RUNTIME_POOL_MAX_REPLICAS", 2)
+			positiveInt(input.poolMaxReplicas) ?? envPositiveInt("AGENT_RUNTIME_POOL_MAX_REPLICAS", 2)
 		);
 	}
 	return 1;
@@ -268,17 +268,13 @@ export function estimateBenchmarkRuntimeCapacity(
 	const selectedCount = Math.max(1, Math.floor(input.requestedInstanceCount));
 	const replicas = runtimeReplicas(input);
 	const slotsPerReplica =
-		positiveInt(input.slotsPerReplica) ??
-		slotsByRuntimeClass()[runtimeClass] ??
-		1;
+		positiveInt(input.slotsPerReplica) ?? slotsByRuntimeClass()[runtimeClass] ?? 1;
 	const daprWorkflowLimitPerSidecar =
 		configuredDaprWorkflowLimitPerSidecar(runtimeClass) ?? slotsPerReplica;
 	const runtimeSlots = Math.max(1, replicas * slotsPerReplica);
-	const daprWorkflowEffectiveCapacity = Math.max(
-		1,
-		replicas * daprWorkflowLimitPerSidecar,
-	);
+	const daprWorkflowEffectiveCapacity = Math.max(1, replicas * daprWorkflowLimitPerSidecar);
 	const parentWorkflowRuntime = input.parentWorkflowRuntime ?? null;
+	const agentHostRuntime = input.agentHostRuntime ?? null;
 	const parentWorkflowEffectiveCapacity = positiveInt(
 		parentWorkflowRuntime?.effectiveWorkflowCapacity,
 	);
@@ -295,9 +291,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		configuredMaxActiveSessions ?? Number.POSITIVE_INFINITY,
 	);
 	const mode = capacityMode(input);
-	const configuredGlobalMax = positiveInt(
-		process.env.BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES,
-	);
+	const configuredGlobalMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES);
 	const sandboxMax = positiveInt(process.env.BENCHMARK_MAX_ACTIVE_SANDBOXES);
 	const schedulableSandboxCapacity = nonNegativeInt(
 		input.schedulableSandboxCapacity ??
@@ -310,8 +304,7 @@ export function estimateBenchmarkRuntimeCapacity(
 			? undefined
 			: input.sandboxCapacity?.schedulableKueueInstanceCapacity,
 	);
-	const usingKueueInstanceCapacity =
-		mode === "kueue" && schedulableKueueInstanceCapacity != null;
+	const usingKueueInstanceCapacity = mode === "kueue" && schedulableKueueInstanceCapacity != null;
 	const schedulableCapacityForRun =
 		mode === "kueue"
 			? (schedulableKueueInstanceCapacity ?? schedulableSandboxCapacity)
@@ -335,12 +328,9 @@ export function estimateBenchmarkRuntimeCapacity(
 			? null
 			: Math.min(
 					sandboxMax ?? Number.POSITIVE_INFINITY,
-					totalSchedulableSandboxCapacity ??
-						schedulableSandboxCapacity ??
-						Number.POSITIVE_INFINITY,
+					totalSchedulableSandboxCapacity ?? schedulableSandboxCapacity ?? Number.POSITIVE_INFINITY,
 				);
-	const modelMax =
-		configuredModelMaxActiveRequests(input);
+	const modelMax = configuredModelMaxActiveRequests(input);
 	const derivedActiveInferenceLimit = finiteMin([
 		configuredGlobalMax,
 		runtimeMax,
@@ -381,12 +371,16 @@ export function estimateBenchmarkRuntimeCapacity(
 	if (parentWorkflowRuntime?.daprRuntimePressure) {
 		pressureReasons.push("dapr_runtime_pressure");
 	}
+	if (agentHostRuntime?.daprRuntimePressure) {
+		pressureReasons.push("agent_host_pressure");
+	}
 	if (input.sandboxCapacity?.kueueClusterQueueActive === false) {
 		pressureReasons.push("kueue_capacity");
 	}
 	const hardPressure =
 		clusterPressure?.hardBlock === true ||
 		parentWorkflowRuntime?.daprRuntimePressure === true ||
+		agentHostRuntime?.daprRuntimePressure === true ||
 		(input.sandboxCapacity?.diskPressureNodeCount ?? 0) > 0 ||
 		input.sandboxCapacity?.kueueClusterQueueActive === false;
 	const pressureFactor = clusterPressure?.reductionFactor ?? 1;
@@ -437,11 +431,7 @@ export function estimateBenchmarkRuntimeCapacity(
 		requested > schedulableCapacityForRun &&
 		deterministic === schedulableCapacityForRun
 	) {
-		reasons.push(
-			usingKueueInstanceCapacity
-				? "kueue_capacity"
-				: "sandbox_schedulable_capacity",
-		);
+		reasons.push(usingKueueInstanceCapacity ? "kueue_capacity" : "sandbox_schedulable_capacity");
 	}
 	if (modelMax && requested > modelMax && deterministic === modelMax) {
 		reasons.push("model_capacity");
@@ -463,37 +453,26 @@ export function estimateBenchmarkRuntimeCapacity(
 		daprWorkflowLimitPerSidecar,
 		daprWorkflowEffectiveCapacity,
 		parentWorkflowRuntime,
+		agentHostRuntime,
 		parentWorkflowReplicas: positiveInt(parentWorkflowRuntime?.replicas),
-		parentWorkflowReadyReplicas: nonNegativeInt(
-			parentWorkflowRuntime?.readyReplicas,
-		),
-		parentWorkflowConnectedWorkers: nonNegativeInt(
-			parentWorkflowRuntime?.connectedWorkflowWorkers,
-		),
-		parentWorkflowConnectedWorkerPods: nonNegativeInt(
-			parentWorkflowRuntime?.connectedWorkerPods,
-		),
-		parentWorkflowLimitPerSidecar: positiveInt(
-			parentWorkflowRuntime?.workflowLimitPerSidecar,
-		),
-		parentActivityLimitPerSidecar: positiveInt(
-			parentWorkflowRuntime?.activityLimitPerSidecar,
-		),
+		parentWorkflowReadyReplicas: nonNegativeInt(parentWorkflowRuntime?.readyReplicas),
+		parentWorkflowConnectedWorkers: nonNegativeInt(parentWorkflowRuntime?.connectedWorkflowWorkers),
+		parentWorkflowConnectedWorkerPods: nonNegativeInt(parentWorkflowRuntime?.connectedWorkerPods),
+		parentWorkflowLimitPerSidecar: positiveInt(parentWorkflowRuntime?.workflowLimitPerSidecar),
+		parentActivityLimitPerSidecar: positiveInt(parentWorkflowRuntime?.activityLimitPerSidecar),
 		parentWorkflowEffectiveCapacity,
-		parentActivityEffectiveCapacity: positiveInt(
-			parentWorkflowRuntime?.effectiveActivityCapacity,
-		),
+		parentActivityEffectiveCapacity: positiveInt(parentWorkflowRuntime?.effectiveActivityCapacity),
+		agentHostActivePods: nonNegativeInt(agentHostRuntime?.activePods),
+		agentHostUnhealthyPods: agentHostRuntime?.unhealthyPods ?? [],
+		agentHostOomKilledPods: agentHostRuntime?.appContainerOomKilledPods ?? [],
+		agentHostRecentActorErrorCount: nonNegativeInt(agentHostRuntime?.recentActorErrorCount),
+		agentHostRecentReminderErrorCount: nonNegativeInt(agentHostRuntime?.recentReminderErrorCount),
+		agentHostDaprRuntimePressure: agentHostRuntime?.daprRuntimePressure === true,
 		daprRuntimeVersion: parentWorkflowRuntime?.daprRuntimeVersion ?? null,
 		daprSchedulerPods: nonNegativeInt(parentWorkflowRuntime?.schedulerPods),
-		daprSchedulerReadyPods: nonNegativeInt(
-			parentWorkflowRuntime?.schedulerReadyPods,
-		),
-		daprRecentActorErrorCount: nonNegativeInt(
-			parentWorkflowRuntime?.recentActorErrorCount,
-		),
-		daprRecentReminderErrorCount: nonNegativeInt(
-			parentWorkflowRuntime?.recentReminderErrorCount,
-		),
+		daprSchedulerReadyPods: nonNegativeInt(parentWorkflowRuntime?.schedulerReadyPods),
+		daprRecentActorErrorCount: nonNegativeInt(parentWorkflowRuntime?.recentActorErrorCount),
+		daprRecentReminderErrorCount: nonNegativeInt(parentWorkflowRuntime?.recentReminderErrorCount),
 		daprRuntimePressure: parentWorkflowRuntime?.daprRuntimePressure === true,
 		agentWorkflowMaxActiveTurns,
 		runtimeSlots,

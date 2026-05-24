@@ -1,9 +1,4 @@
-import {
-	kubeApiFetch,
-	listDeployments,
-	listPods,
-	type KubePod,
-} from "$lib/server/kube/client";
+import { kubeApiFetch, listDeployments, listPods, type KubePod } from "$lib/server/kube/client";
 
 export type ParentWorkflowPodWorkerSnapshot = {
 	podName: string;
@@ -34,6 +29,19 @@ export type ParentWorkflowRuntimeSnapshot = {
 	recentReminderErrorCount: number | null;
 	logWindowSeconds: number;
 	daprRuntimePressure: boolean;
+	error: string | null;
+};
+
+export type AgentHostDaprRuntimeSnapshot = {
+	namespace: string;
+	activePods: number;
+	unhealthyPods: string[];
+	appContainerOomKilledPods: string[];
+	recentActorErrorCount: number | null;
+	recentReminderErrorCount: number | null;
+	logWindowSeconds: number;
+	daprRuntimePressure: boolean;
+	pressureReasons: string[];
 	error: string | null;
 };
 
@@ -68,9 +76,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function podIsReady(pod: KubePod): boolean {
-	const deletionTimestamp = (
-		pod.metadata as { deletionTimestamp?: string | null } | undefined
-	)?.deletionTimestamp;
+	const deletionTimestamp = (pod.metadata as { deletionTimestamp?: string | null } | undefined)
+		?.deletionTimestamp;
 	return (
 		pod.status?.phase === "Running" &&
 		deletionTimestamp == null &&
@@ -85,10 +92,39 @@ function podMatchesApp(pod: KubePod, appId: string): boolean {
 	return labels.app === appId || labels["app.kubernetes.io/name"] === appId;
 }
 
-function parseDaprVersionFromPod(pod: KubePod): string | null {
-	const status = pod.status?.containerStatuses?.find(
-		(container) => container.name === "daprd",
+function podIsDeleting(pod: KubePod): boolean {
+	return (
+		(pod.metadata as { deletionTimestamp?: string | null } | undefined)?.deletionTimestamp != null
 	);
+}
+
+function podIsActive(pod: KubePod): boolean {
+	return !podIsDeleting(pod) && pod.status?.phase === "Running";
+}
+
+function podIsAgentHost(pod: KubePod): boolean {
+	const name = pod.metadata?.name ?? "";
+	const labels = pod.metadata?.labels ?? {};
+	return (
+		name.startsWith("agent-host-agent-session-") ||
+		labels["app.kubernetes.io/component"] === "agent-host" ||
+		labels["workflow-builder.io/runtime-kind"] === "agent-host"
+	);
+}
+
+function appContainerWasOomKilled(pod: KubePod): boolean {
+	return (
+		pod.status?.containerStatuses?.some(
+			(status) =>
+				status.name !== "daprd" &&
+				(status.state?.terminated?.reason === "OOMKilled" ||
+					status.lastState?.terminated?.reason === "OOMKilled"),
+		) === true
+	);
+}
+
+function parseDaprVersionFromPod(pod: KubePod): string | null {
+	const status = pod.status?.containerStatuses?.find((container) => container.name === "daprd");
 	const image = status?.image ?? status?.imageID ?? null;
 	if (!image) return null;
 	const tag = image.match(/(?:^|[/@:])daprd[:@]([^@\s]+)/)?.[1] ?? null;
@@ -97,15 +133,16 @@ function parseDaprVersionFromPod(pod: KubePod): string | null {
 }
 
 function readyzPort(): number {
-	return positiveInt(process.env.BENCHMARK_PARENT_WORKFLOW_READYZ_PORT) ??
+	return (
+		positiveInt(process.env.BENCHMARK_PARENT_WORKFLOW_READYZ_PORT) ??
 		positiveInt(process.env.WORKFLOW_ORCHESTRATOR_PORT) ??
-		DEFAULT_READYZ_PORT;
+		DEFAULT_READYZ_PORT
+	);
 }
 
 function daprLogWindowSeconds(): number {
 	return (
-		positiveInt(process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS) ??
-		DEFAULT_DAPR_LOG_WINDOW_SECONDS
+		positiveInt(process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS) ?? DEFAULT_DAPR_LOG_WINDOW_SECONDS
 	);
 }
 
@@ -130,9 +167,7 @@ function parseReadyz(body: unknown): number | null {
 	return null;
 }
 
-async function loadPodConnectedWorkers(
-	pod: KubePod,
-): Promise<ParentWorkflowPodWorkerSnapshot> {
+async function loadPodConnectedWorkers(pod: KubePod): Promise<ParentWorkflowPodWorkerSnapshot> {
 	const podName = pod.metadata?.name ?? "unknown";
 	const podIP = pod.status?.podIP ?? null;
 	if (!podIP) {
@@ -144,11 +179,11 @@ async function loadPodConnectedWorkers(
 			error: "pod has no IP",
 		};
 	}
-		try {
-			const res = await fetch(`http://${podIP}:${readyzPort()}/readyz`, {
-				method: "GET",
-				signal: AbortSignal.timeout(5_000),
-			});
+	try {
+		const res = await fetch(`http://${podIP}:${readyzPort()}/readyz`, {
+			method: "GET",
+			signal: AbortSignal.timeout(5_000),
+		});
 		if (!res.ok) {
 			return {
 				podName,
@@ -166,9 +201,7 @@ async function loadPodConnectedWorkers(
 			podIP,
 			connectedWorkflowWorkers,
 			error:
-				connectedWorkflowWorkers == null
-					? "/readyz did not expose workflowConnectedWorkers"
-					: null,
+				connectedWorkflowWorkers == null ? "/readyz did not expose workflowConnectedWorkers" : null,
 		};
 	} catch (err) {
 		return {
@@ -181,9 +214,7 @@ async function loadPodConnectedWorkers(
 	}
 }
 
-async function loadConnectedWorkers(
-	pods: KubePod[],
-): Promise<{
+async function loadConnectedWorkers(pods: KubePod[]): Promise<{
 	connectedWorkflowWorkers: number | null;
 	connectedWorkerPods: number | null;
 	podWorkers: ParentWorkflowPodWorkerSnapshot[];
@@ -195,22 +226,16 @@ async function loadConnectedWorkers(
 		.filter((entry): entry is number => entry !== null);
 	return {
 		connectedWorkflowWorkers:
-			knownWorkers.length > 0
-				? knownWorkers.reduce((sum, value) => sum + value, 0)
-				: null,
+			knownWorkers.length > 0 ? knownWorkers.reduce((sum, value) => sum + value, 0) : null,
 		connectedWorkerPods:
 			knownWorkers.length > 0
-				? podWorkers.filter((entry) => (entry.connectedWorkflowWorkers ?? 0) > 0)
-						.length
+				? podWorkers.filter((entry) => (entry.connectedWorkflowWorkers ?? 0) > 0).length
 				: null,
 		podWorkers,
 	};
 }
 
-async function loadDaprConfiguration(params: {
-	namespace: string;
-	configName: string;
-}): Promise<{
+async function loadDaprConfiguration(params: { namespace: string; configName: string }): Promise<{
 	workflowLimitPerSidecar: number | null;
 	activityLimitPerSidecar: number | null;
 }> {
@@ -293,10 +318,14 @@ async function countRecentDaprLogErrors(params: {
 	namespace: string;
 	pods: KubePod[];
 	windowSeconds: number;
+	includeUnready?: boolean;
 }): Promise<{ actorErrors: number | null; reminderErrors: number | null }> {
 	let actorErrors = 0;
 	let reminderErrors = 0;
-	for (const pod of params.pods.filter(podIsReady)) {
+	const pods = params.includeUnready
+		? params.pods.filter(podIsActive)
+		: params.pods.filter(podIsReady);
+	for (const pod of pods) {
 		const name = pod.metadata?.name;
 		if (!name) continue;
 		const query = new URLSearchParams({
@@ -319,11 +348,78 @@ async function countRecentDaprLogErrors(params: {
 	return { actorErrors, reminderErrors };
 }
 
-export async function loadParentWorkflowRuntimeSnapshot(params: {
-	namespace?: string;
-	parentAppId?: string;
-	configName?: string;
-} = {}): Promise<ParentWorkflowRuntimeSnapshot> {
+export async function loadAgentHostDaprRuntimeSnapshot(
+	params: {
+		namespace?: string;
+	} = {},
+): Promise<AgentHostDaprRuntimeSnapshot> {
+	const namespace = params.namespace ?? DEFAULT_NAMESPACE;
+	const logWindowSeconds = daprLogWindowSeconds();
+	try {
+		const pods = await listPods(namespace);
+		const activePods = pods.filter((pod) => podIsAgentHost(pod) && podIsActive(pod));
+		const unhealthyPods = activePods
+			.filter((pod) => !podIsReady(pod))
+			.map((pod) => pod.metadata?.name ?? "unknown");
+		const appContainerOomKilledPods = activePods
+			.filter(appContainerWasOomKilled)
+			.map((pod) => pod.metadata?.name ?? "unknown");
+		let logCounts: {
+			actorErrors: number | null;
+			reminderErrors: number | null;
+		};
+		try {
+			logCounts = await countRecentDaprLogErrors({
+				namespace,
+				pods: activePods,
+				windowSeconds: logWindowSeconds,
+				includeUnready: true,
+			});
+		} catch (err) {
+			console.warn("[bench-capacity] agent-host daprd log scan unavailable", err);
+			logCounts = { actorErrors: null, reminderErrors: null };
+		}
+		const pressureReasons = [
+			...(unhealthyPods.length > 0 ? ["agent_host_unhealthy"] : []),
+			...(appContainerOomKilledPods.length > 0 ? ["agent_host_oom_killed"] : []),
+			...((logCounts.actorErrors ?? 0) > 0 ? ["agent_host_actor_errors"] : []),
+			...((logCounts.reminderErrors ?? 0) > 0 ? ["agent_host_reminder_errors"] : []),
+		];
+		return {
+			namespace,
+			activePods: activePods.length,
+			unhealthyPods,
+			appContainerOomKilledPods,
+			recentActorErrorCount: logCounts.actorErrors,
+			recentReminderErrorCount: logCounts.reminderErrors,
+			logWindowSeconds,
+			daprRuntimePressure: pressureReasons.length > 0,
+			pressureReasons,
+			error: null,
+		};
+	} catch (err) {
+		return {
+			namespace,
+			activePods: 0,
+			unhealthyPods: [],
+			appContainerOomKilledPods: [],
+			recentActorErrorCount: null,
+			recentReminderErrorCount: null,
+			logWindowSeconds,
+			daprRuntimePressure: false,
+			pressureReasons: [],
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+export async function loadParentWorkflowRuntimeSnapshot(
+	params: {
+		namespace?: string;
+		parentAppId?: string;
+		configName?: string;
+	} = {},
+): Promise<ParentWorkflowRuntimeSnapshot> {
 	const namespace = params.namespace ?? DEFAULT_NAMESPACE;
 	const parentAppId = params.parentAppId ?? DEFAULT_PARENT_APP_ID;
 	const configName = params.configName ?? DEFAULT_CONFIGURATION;
@@ -337,30 +433,23 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 
 	try {
 		const [deployments, pods, config, scheduler] = await Promise.all([
-				listDeployments(namespace),
-				listPods(namespace),
-				loadDaprConfiguration({ namespace, configName }),
-				countSchedulerPods().catch((err) => {
-					console.warn("[bench-capacity] Dapr scheduler pod count unavailable", err);
-					return { schedulerPods: null, schedulerReadyPods: null };
-				}),
+			listDeployments(namespace),
+			listPods(namespace),
+			loadDaprConfiguration({ namespace, configName }),
+			countSchedulerPods().catch((err) => {
+				console.warn("[bench-capacity] Dapr scheduler pod count unavailable", err);
+				return { schedulerPods: null, schedulerReadyPods: null };
+			}),
 		]);
-		const deployment = deployments.find(
-			(item) => item.metadata?.name === parentAppId,
-		);
+		const deployment = deployments.find((item) => item.metadata?.name === parentAppId);
 		const parentPods = pods.filter((pod) => podMatchesApp(pod, parentAppId));
 		const connectedWorkers = await loadConnectedWorkers(parentPods);
 		const replicas =
-			positiveInt(deployment?.spec?.replicas) ??
-			positiveInt(deployment?.status?.replicas) ??
-			null;
+			positiveInt(deployment?.spec?.replicas) ?? positiveInt(deployment?.status?.replicas) ?? null;
 		const readyReplicas = nonNegativeInt(deployment?.status?.readyReplicas);
-		const availableReplicas = nonNegativeInt(
-			deployment?.status?.availableReplicas,
-		);
+		const availableReplicas = nonNegativeInt(deployment?.status?.availableReplicas);
 		const connectedWorkerPods = connectedWorkers.connectedWorkerPods;
-		const effectiveSidecars =
-			connectedWorkerPods ?? readyReplicas ?? replicas ?? availableReplicas;
+		const effectiveSidecars = connectedWorkerPods ?? readyReplicas ?? replicas ?? availableReplicas;
 		const workflowCapacity =
 			effectiveSidecars != null && config.workflowLimitPerSidecar
 				? effectiveSidecars * config.workflowLimitPerSidecar
@@ -369,7 +458,10 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 			effectiveSidecars != null && config.activityLimitPerSidecar
 				? effectiveSidecars * config.activityLimitPerSidecar
 				: null;
-		let logCounts: { actorErrors: number | null; reminderErrors: number | null };
+		let logCounts: {
+			actorErrors: number | null;
+			reminderErrors: number | null;
+		};
 		try {
 			logCounts = await countRecentDaprLogErrors({
 				namespace,
@@ -380,8 +472,7 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 			console.warn("[bench-capacity] daprd log scan unavailable", err);
 			logCounts = { actorErrors: null, reminderErrors: null };
 		}
-		const daprRuntimeVersion =
-			parentPods.map(parseDaprVersionFromPod).find(Boolean) ?? null;
+		const daprRuntimeVersion = parentPods.map(parseDaprVersionFromPod).find(Boolean) ?? null;
 		const daprRuntimePressure =
 			(logCounts.actorErrors ?? 0) > 0 ||
 			(logCounts.reminderErrors ?? 0) > 0 ||
@@ -434,8 +525,10 @@ export async function loadParentWorkflowRuntimeSnapshot(params: {
 }
 
 export const __daprWorkflowCapacityForTest = {
+	appContainerWasOomKilled,
 	countLogMatches,
 	daprLogWindowSeconds,
+	podIsAgentHost,
 	podIsReady,
 	parseReadyz,
 };

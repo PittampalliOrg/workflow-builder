@@ -35,17 +35,79 @@ The capacity-oriented dev shape is:
 The May 2026 rebuild intentionally keeps benchmark Kueue quota below raw node
 capacity until higher-concurrency canaries prove the rest of the stack. The
 current `benchmark-fast` nominal quota is 24 CPU and 96 pods, with 12 CPU and
-48 pods of bounded cohort borrowing.
+48 pods of bounded cohort borrowing. Memory and ephemeral-storage quotas are
+part of the same admission budget; on the 2026-05-24 DeepSeek proof run,
+ephemeral-storage was the first Kueue limiter, not pod count.
 
 ```text
-96 nominal pods - 3 browserstation pods = 93 pods
-93 pods / 3 pods per full SWE-bench instance = 31 nominal full instances
+272Gi nominal ephemeral-storage / 6.54Gi full-instance request = 41 full instances
+96 nominal pods / 2 pods per full Kueue-backed instance = 48 full instances
 ```
 
-The same profile can reach about 47 full instances if it borrows its configured
-48-pod headroom and competing lower-priority queues are idle. Do not treat that
-as deterministic capacity unless the capacity snapshot reports borrowed quota
-and the competing queue state.
+The same profile can reach about 62 full instances if it borrows its configured
+136Gi ephemeral-storage headroom and competing lower-priority queues are idle.
+Do not treat that as deterministic capacity unless the capacity snapshot
+reports borrowed quota and the competing queue state.
+
+## Image Build And Cache Strategy
+
+SWE-bench inference images are exact environment artifacts. A launch should use
+an instance only when the image is validated for the current suite, repo,
+version, base commit, digest, and computed `envSpecHash`. Coarse keys such as
+repo/version/base commit are not sufficient because harness environment
+generation can change without changing those fields.
+
+The normal build path is hub Tekton, not the dev spoke. When preflight finds a
+missing exact image, workflow-builder submits a `swe-env-<envSpecHash-prefix>`
+PipelineRun to hub through `SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE=hub` and
+`SWEBENCH_INFERENCE_BUILD_HUB_KUBECONFIG`. The validated result is stored in
+`environment_image_builds` and exposed back to dev through the inference
+environment ConfigMap mounted at `SWEBENCH_INFERENCE_ENVIRONMENTS_DIR`.
+
+Cache behavior is intentionally layered:
+
+- The durable cache key is the environment spec hash; reuse is safe only when
+  that hash and digest match.
+- Build concurrency is capped by `SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE` so hub
+  image builds do not starve GitOps or benchmark runtime work.
+- `SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS` and
+  `SWEBENCH_INFERENCE_BUILD_CACHE_SHARD_NODES` spread build cache affinity
+  across hub build nodes. This improves reuse for repeated repo/version images
+  while avoiding a single hot cache node.
+- Static ConfigMap pins are useful for fast launch selection, but DB rows from
+  successful dynamic builds are the source of truth for new exact-ready
+  coverage.
+
+Follow-up build work should focus on raising exact-ready coverage before
+raising dev runtime concurrency. The useful next optimizations are cache hit
+metrics by repo/version/envSpecHash, build-duration histograms per shard,
+explicit cache warm plans for high-value Verified repos, and failure grouping
+by dependency phase so slow or flaky images do not hide runtime capacity
+issues.
+
+## PSI Metrics
+
+Kubernetes 1.36 makes kubelet PSI metrics stable and enabled by default when
+the Linux nodes support PSI and cgroup v2. PSI reports stalled wall-clock time
+for CPU, memory, and I/O at node, pod, and container scope. The useful values
+are `some` and `full` pressure over `avg10`, `avg60`, and `avg300` windows plus
+cumulative totals.
+
+For benchmark capacity, PSI is a better launch signal than utilization alone:
+
+- CPU `some` pressure can explain slow first-tool or long LLM/tool turn latency
+  even when CPU utilization is below 100%.
+- Memory `some` or `full` pressure should reduce admission before kubelet
+  reaches `MemoryPressure` or the agent app is OOMKilled.
+- I/O `full` pressure is a hard stop candidate for SWE-bench because image
+  pulls, repo checkout, patch generation, and test discovery all become
+  scheduler-amplified when storage stalls.
+
+The dev capacity observer already samples worker-node PSI and stores
+`clusterPressure` in each launch capacity snapshot. Keep using that path for
+admission. Use kubelet Summary API or `/metrics/cadvisor` PSI directly for
+debug drills when a run has first-tool latency, OOMKills, or slow sandbox
+readiness without Kubernetes node-pressure conditions.
 
 ## PipelineRun Guardrails
 
@@ -258,16 +320,17 @@ The sandbox-execution-api creates Kueue-managed Kubernetes workloads by setting
 the `kueue.x-k8s.io/queue-name` label and leaves Kueue to manage
 suspension/admission. The pod uses the requested execution class:
 
-| Execution class | Queue | RuntimeClass | Intended use |
-| --- | --- | --- | --- |
-| `benchmark-fast` | `benchmark-fast` | unset | runc/OpenShell parity path for trusted SWE-bench throughput comparisons. |
-| `secure-gvisor` | `secure-gvisor` | `secure-gvisor` | gVisor-isolated path for less trusted agent code once Talos exposes the runtime. |
+| Execution class  | Queue            | RuntimeClass    | Intended use                                                                     |
+| ---------------- | ---------------- | --------------- | -------------------------------------------------------------------------------- |
+| `benchmark-fast` | `benchmark-fast` | unset           | runc/OpenShell parity path for trusted SWE-bench throughput comparisons.         |
+| `secure-gvisor`  | `secure-gvisor`  | `secure-gvisor` | gVisor-isolated path for less trusted agent code once Talos exposes the runtime. |
 
 Both classes keep the benchmark worker node selector
 `stacks.io/swebench-pool=dev-benchmark`, hostname topology spread, and the
-configured sandbox resource requests. The current `benchmark-fast` admission
-profile is 250m CPU, 256Mi memory, and 4Gi ephemeral-storage. The host execution
-worker reports state back through
+configured sandbox and agent-host resource requests. The current
+`benchmark-fast` admission profile is about 450m CPU, 1280Mi memory, and
+6.54Gi ephemeral-storage per full Kueue-backed SWE-bench instance. The host
+execution worker reports state back through
 `POST /api/internal/benchmarks/runs/<runId>/instances/<instanceId>/execution`.
 Terminal success updates the existing `workflow_executions` row and reuses the
 normal `syncBenchmarkInstanceFromExecution` path, so benchmark summaries,
@@ -287,43 +350,43 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 `src/lib/server/benchmarks/runtime-capacity.ts`, and
 `src/lib/server/benchmarks/service.ts`.
 
-| Variable or constant | Default | Dev GitOps value | Effect |
-| --- | ---: | ---: | --- |
-| `DEFAULT_INFERENCE_CONCURRENCY` | `10` | n/a | Launch sheet initial inference request. |
-| `DEFAULT_EVALUATION_CONCURRENCY` | `24` | n/a | Launch sheet initial evaluation request and BFF fallback. |
-| `MAX_INFERENCE_CONCURRENCY` | `500` | n/a | Launch sheet slider maximum. Backend still clamps by selected instances and live capacity. |
-| `MAX_EVALUATION_CONCURRENCY` | `128` | n/a | Launch sheet evaluation slider maximum. Backend/evaluator also clamp to 128. |
-| `BENCHMARK_CAPACITY_MODE` | `manual` | `auto` | `manual` preserves the historical global default cap; `auto` derives capacity from live/runtime limits and treats explicit caps as safety rails. |
-| `BENCHMARK_DEFAULT_CONCURRENCY` | `10` | `10` | BFF fallback requested inference concurrency when the request omits or passes an invalid value. |
-| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` | `56` in manual mode, derived in auto mode | unset | Global active inference hard cap across benchmark resource leases. In Kueue/auto mode, leave unset unless an emergency ceiling is needed. |
-| `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` | unset | unset | Optional hard cap for Dapr agent child workflows. Prefer leaving unset so `dapr_workflow_slot` capacity derives from runtime sidecar capacity. |
-| `BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS` | unset | unset | Backward-compatible alias for `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`. |
-| `BENCHMARK_MAX_ACTIVE_SANDBOXES` | unset | unset | Configured OpenShell sandbox cap. Per-run admission also considers remaining live Kueue and schedulable headroom; stored global lease capacity should use configured cap plus total schedulable capacity. |
-| `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS` | unset | unset | Optional per-model request cap for `model_slot` leases. Prefer unset unless a provider has a lower quota than the cluster can otherwise run. |
-| `BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS` | unset | unset | Backward-compatible alias for `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`. |
-| `BENCHMARK_RESOURCE_LEASE_SECONDS` | `max(900, timeoutSeconds + 900)` | unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures. |
-| `BENCHMARK_LEASE_RETRY_SECONDS` | `15` | unset | Retry-after returned when the BFF resource-lease gate denies capacity. |
-| `BENCHMARK_INFERENCE_STALL_SECONDS` | `480` | `2400` | Marks stale inference progress; not a dispatch cap. |
-| `BENCHMARK_EXECUTION_BACKEND` | `host` | `dapr-kueue` | Kueue-backed Dapr/OpenShell inference path. `legacy-dapr` is accepted only for rollback tests. |
-| `BENCHMARK_EXECUTION_CLASS` | `benchmark-fast` | `benchmark-fast` | Execution class; supported initial values are `benchmark-fast` and `secure-gvisor`. |
-| `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL` | unset | sandbox-execution-api service URL | Host execution API base URL required by the Kueue backend. |
-| `SANDBOX_EXECUTION_API_TOKEN` / `HOST_EXECUTION_API_TOKEN` | `INTERNAL_API_TOKEN` fallback | unset | Bearer token used by the BFF when calling the host execution API. |
-| `MLFLOW_ENABLED` | true | true | Enables benchmark tracking metadata. Start-path behavior should remain non-blocking when tracking is unavailable. |
-| `MLFLOW_FAILURE_MODE` | `best_effort` | `best_effort` | In best-effort mode, MLflow creation failures are logged and do not block benchmark instance start. |
-| `MLFLOW_REQUEST_TIMEOUT_MS` | `30000` | `30000` | Per-request timeout for MLflow calls. A timeout should not prevent Dapr workflow dispatch. |
+| Variable or constant                                       |                                   Default |                  Dev GitOps value | Effect                                                                                                                                                                                                    |
+| ---------------------------------------------------------- | ----------------------------------------: | --------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEFAULT_INFERENCE_CONCURRENCY`                            |                                      `10` |                               n/a | Launch sheet initial inference request.                                                                                                                                                                   |
+| `DEFAULT_EVALUATION_CONCURRENCY`                           |                                      `24` |                               n/a | Launch sheet initial evaluation request and BFF fallback.                                                                                                                                                 |
+| `MAX_INFERENCE_CONCURRENCY`                                |                                     `500` |                               n/a | Launch sheet slider maximum. Backend still clamps by selected instances and live capacity.                                                                                                                |
+| `MAX_EVALUATION_CONCURRENCY`                               |                                     `128` |                               n/a | Launch sheet evaluation slider maximum. Backend/evaluator also clamp to 128.                                                                                                                              |
+| `BENCHMARK_CAPACITY_MODE`                                  |                                  `manual` |                            `auto` | `manual` preserves the historical global default cap; `auto` derives capacity from live/runtime limits and treats explicit caps as safety rails.                                                          |
+| `BENCHMARK_DEFAULT_CONCURRENCY`                            |                                      `10` |                              `10` | BFF fallback requested inference concurrency when the request omits or passes an invalid value.                                                                                                           |
+| `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES`                 | `56` in manual mode, derived in auto mode |                             unset | Global active inference hard cap across benchmark resource leases. In Kueue/auto mode, leave unset unless an emergency ceiling is needed.                                                                 |
+| `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`                |                                     unset |                             unset | Optional hard cap for Dapr agent child workflows. Prefer leaving unset so `dapr_workflow_slot` capacity derives from runtime sidecar capacity.                                                            |
+| `BENCHMARK_MAX_ACTIVE_AGENT_WORKFLOWS`                     |                                     unset |                             unset | Backward-compatible alias for `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS`.                                                                                                                                |
+| `BENCHMARK_MAX_ACTIVE_SANDBOXES`                           |                                     unset |                             unset | Configured OpenShell sandbox cap. Per-run admission also considers remaining live Kueue and schedulable headroom; stored global lease capacity should use configured cap plus total schedulable capacity. |
+| `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`                      |                                     unset |                             unset | Optional per-model request cap for `model_slot` leases. Prefer unset unless a provider has a lower quota than the cluster can otherwise run.                                                              |
+| `BENCHMARK_MAX_ACTIVE_MODEL_REQUESTS`                      |                                     unset |                             unset | Backward-compatible alias for `BENCHMARK_MODEL_MAX_ACTIVE_REQUESTS`.                                                                                                                                      |
+| `BENCHMARK_RESOURCE_LEASE_SECONDS`                         |          `max(900, timeoutSeconds + 900)` |                             unset | Resource lease TTL. Not a throughput cap, but too-long leases can hold capacity after failures.                                                                                                           |
+| `BENCHMARK_LEASE_RETRY_SECONDS`                            |                                      `15` |                             unset | Retry-after returned when the BFF resource-lease gate denies capacity.                                                                                                                                    |
+| `BENCHMARK_INFERENCE_STALL_SECONDS`                        |                                     `480` |                             `900` | Marks stale inference progress; not a dispatch cap.                                                                                                                                                       |
+| `BENCHMARK_EXECUTION_BACKEND`                              |                                    `host` |                      `dapr-kueue` | Kueue-backed Dapr/OpenShell inference path. `legacy-dapr` is accepted only for rollback tests.                                                                                                            |
+| `BENCHMARK_EXECUTION_CLASS`                                |                          `benchmark-fast` |                  `benchmark-fast` | Execution class; supported initial values are `benchmark-fast` and `secure-gvisor`.                                                                                                                       |
+| `SANDBOX_EXECUTION_API_URL` / `HOST_EXECUTION_API_URL`     |                                     unset | sandbox-execution-api service URL | Host execution API base URL required by the Kueue backend.                                                                                                                                                |
+| `SANDBOX_EXECUTION_API_TOKEN` / `HOST_EXECUTION_API_TOKEN` |             `INTERNAL_API_TOKEN` fallback |                             unset | Bearer token used by the BFF when calling the host execution API.                                                                                                                                         |
+| `MLFLOW_ENABLED`                                           |                                      true |                              true | Enables benchmark tracking metadata. Start-path behavior should remain non-blocking when tracking is unavailable.                                                                                         |
+| `MLFLOW_FAILURE_MODE`                                      |                             `best_effort` |                     `best_effort` | In best-effort mode, MLflow creation failures are logged and do not block benchmark instance start.                                                                                                       |
+| `MLFLOW_REQUEST_TIMEOUT_MS`                                |                                   `30000` |                           `30000` | Per-request timeout for MLflow calls. A timeout should not prevent Dapr workflow dispatch.                                                                                                                |
 
 Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 
-| Variable | Default | Effect |
-| --- | ---: | --- |
-| `BENCHMARK_SANDBOX_CAPACITY_DISABLED` | false | Disables live schedulable sandbox capacity if set to `1`, `true`, or `yes`. |
-| `BENCHMARK_SANDBOX_CAPACITY_NAMESPACE` | `OPENSHELL_NAMESPACE` or `openshell` | Namespace used when pod listing falls back from all namespaces. |
-| `BENCHMARK_SANDBOX_REQUEST_CPU` | `100m` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable. |
-| `BENCHMARK_SANDBOX_REQUEST_MEMORY` | `256Mi` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable. |
-| `BENCHMARK_SANDBOX_REQUEST_EPHEMERAL_STORAGE` | `4Gi` | Per-sandbox ephemeral request used for schedulable and Kueue capacity estimates. Keep this aligned with sandbox-execution-api pod requests. |
-| `BENCHMARK_SANDBOX_KUEUE_CAPACITY_DISABLED` | false | Disables live ClusterQueue quota sampling when set to `1`, `true`, or `yes`. |
-| `BENCHMARK_KUEUE_CLUSTER_QUEUE` | `BENCHMARK_EXECUTION_CLASS` fallback | ClusterQueue used for live Kueue capacity sampling. |
-| `OPENSHELL_NAMESPACE` | `openshell` | Fallback namespace for sandbox capacity sampling. |
+| Variable                                      |                              Default | Effect                                                                                                                                      |
+| --------------------------------------------- | -----------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BENCHMARK_SANDBOX_CAPACITY_DISABLED`         |                                false | Disables live schedulable sandbox capacity if set to `1`, `true`, or `yes`.                                                                 |
+| `BENCHMARK_SANDBOX_CAPACITY_NAMESPACE`        | `OPENSHELL_NAMESPACE` or `openshell` | Namespace used when pod listing falls back from all namespaces.                                                                             |
+| `BENCHMARK_SANDBOX_REQUEST_CPU`               |                               `100m` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable.                                                   |
+| `BENCHMARK_SANDBOX_REQUEST_MEMORY`            |                              `256Mi` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable. Dev live value is `512Mi`.                        |
+| `BENCHMARK_SANDBOX_REQUEST_EPHEMERAL_STORAGE` |                                `4Gi` | Per-sandbox ephemeral request used for schedulable and Kueue capacity estimates. Keep this aligned with sandbox-execution-api pod requests. |
+| `BENCHMARK_SANDBOX_KUEUE_CAPACITY_DISABLED`   |                                false | Disables live ClusterQueue quota sampling when set to `1`, `true`, or `yes`.                                                                |
+| `BENCHMARK_KUEUE_CLUSTER_QUEUE`               | `BENCHMARK_EXECUTION_CLASS` fallback | ClusterQueue used for live Kueue capacity sampling.                                                                                         |
+| `OPENSHELL_NAMESPACE`                         |                          `openshell` | Fallback namespace for sandbox capacity sampling.                                                                                           |
 
 ### Agent Runtime Capacity
 
@@ -331,41 +394,41 @@ These control the runtime-side dimensions that benchmark admission consumes.
 The BFF route resolver lives in `src/lib/server/agents/runtime-routing.ts`; the
 controller status calculation lives in `services/agent-runtime-controller/src/main.py`.
 
-| Variable or config field | Default | Dev GitOps value | Effect |
-| --- | ---: | ---: | --- |
-| `AGENT_RUNTIME_POOL_MAX_REPLICAS` | `2` | `10` | Shared-pool replica fallback when a pool config omits `maxReplicas`. |
-| `AGENT_RUNTIME_POOL_MIN_REPLICAS` | unset | unset | Shared-pool minimum replica metadata when configured. |
-| `AGENT_RUNTIME_POOL_APP_IDS_JSON` | unset | `{"coding":{"appId":"agent-runtime-pool-coding","maxReplicas":10,"slotsPerReplica":8}}` | Maps runtime classes to shared pool app IDs and optional pool capacity. Explicit `slotsPerReplica` here wins for that shared pool. Dev coding pool capacity is `10 * 8 = 80` runtime slots. |
-| `AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON` | `{"coding":5,"office":2,"browser":1,"testing":2}` | `{"coding":12,"office":2,"browser":1,"testing":2}` | Slots-per-replica fallback by runtime class. For dev, dedicated coding runtimes use `12`; the shared coding pool still uses the explicit pool value `8`. |
-| `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR` | `slotsPerReplica` | `12` | Per-sidecar Dapr workflow invocation capacity used by BFF capacity estimates and controller status. |
-| `DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS` | unset | unset | BFF capacity-estimate override checked before `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`; use carefully because controller status reads the `AGENT_RUNTIME_*` value. |
-| agent `runtimePool.maxActiveSessions` | unset | unset | Explicit per-agent or pool active-session cap when present in agent config. |
-| agent runtime lifecycle `slotsPerReplica` | runtime-class fallback | varies | `AgentRuntime.spec.lifecycle.slotsPerReplica`; controller reports this in status and BFF uses it when routing metadata includes it. |
-| agent runtime lifecycle `daprWorkflowLimitPerSidecar` / `maxConcurrentWorkflowInvocations` | `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR` or slots | varies | Per-AgentRuntime override for Dapr child-workflow capacity. |
+| Variable or config field                                                                   |                                                  Default |                                                                              Dev live value sampled 2026-05-24 | Effect                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------------------: | -------------------------------------------------------------------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_RUNTIME_POOL_MAX_REPLICAS`                                                          |                                                      `2` |                                                                                                           `16` | Shared-pool replica fallback when a pool config omits `maxReplicas`.                                                                                                                          |
+| `AGENT_RUNTIME_POOL_MIN_REPLICAS`                                                          |                                                    unset |                                                                                                          unset | Shared-pool minimum replica metadata when configured.                                                                                                                                         |
+| `AGENT_RUNTIME_POOL_APP_IDS_JSON`                                                          |                                                    unset | `{"coding":{"appId":"agent-runtime-pool-coding","idleTtlSeconds":7200,"maxReplicas":16,"slotsPerReplica":12}}` | Maps runtime classes to shared pool app IDs and optional pool capacity. Explicit `slotsPerReplica` here wins for that shared pool. Dev coding pool capacity is `16 * 12 = 192` runtime slots. |
+| `AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON`                                                     |        `{"coding":5,"office":2,"browser":1,"testing":2}` |                                                             `{"coding":12,"office":2,"browser":1,"testing":2}` | Slots-per-replica fallback by runtime class. For dev, coding runtime capacity uses `12`.                                                                                                      |
+| `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`                                            |                                        `slotsPerReplica` |                                                                                                           `12` | Per-sidecar Dapr workflow invocation capacity used by BFF capacity estimates and controller status.                                                                                           |
+| `DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS`                                        |                                                    unset |                                                                                                          unset | BFF capacity-estimate override checked before `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR`; use carefully because controller status reads the `AGENT_RUNTIME_*` value.                     |
+| agent `runtimePool.maxActiveSessions`                                                      |                                                    unset |                                                                                                          unset | Explicit per-agent or pool active-session cap when present in agent config.                                                                                                                   |
+| agent runtime lifecycle `slotsPerReplica`                                                  |                                   runtime-class fallback |                                                                                                         varies | `AgentRuntime.spec.lifecycle.slotsPerReplica`; controller reports this in status and BFF uses it when routing metadata includes it.                                                           |
+| agent runtime lifecycle `daprWorkflowLimitPerSidecar` / `maxConcurrentWorkflowInvocations` | `AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR` or slots |                                                                                                         varies | Per-AgentRuntime override for Dapr child-workflow capacity.                                                                                                                                   |
 
 ### SWE-bench Coordinator
 
 These live in `services/swebench-coordinator/src/concurrency.py` and
 `services/swebench-coordinator/src/app.py`.
 
-| Variable | Default | Dev GitOps value | Effect |
-| --- | ---: | ---: | --- |
-| `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` | unset for run fan-out | unset | Optional emergency backstop for active `swebench_instance_workflow` children. Normal fan-out uses the BFF capacity snapshot stored on the run. |
-| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE` | `10` | `18` | Max new instance child workflows to start before an optional pacing delay. |
-| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` | `5` | `1` | Delay between start batches. `0` disables pacing delay. |
-| `SWEBENCH_LEASE_RETRY_SECONDS` | `15` | `15` | Coordinator sleep interval when a resource lease is denied. |
-| `SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS` | `SWEBENCH_LEASE_RETRY_SECONDS` | unset | Coordinator sleep interval after BFF reports orchestrator runtime unready during instance start. |
-| `SWEBENCH_EVAL_MAX_PARALLEL` | `24` | `24` | Evaluation TaskRun batch size passed to the evaluator Job. Clamped to `1..128`. |
-| `SWEBENCH_MAX_WORKERS` | `24` via evaluator fallback | unset | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent. |
+| Variable                                                  |                        Default | Dev live value sampled 2026-05-24 | Effect                                                                                                                                         |
+| --------------------------------------------------------- | -----------------------------: | --------------------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY`          |          unset for run fan-out |                             unset | Optional emergency backstop for active `swebench_instance_workflow` children. Normal fan-out uses the BFF capacity snapshot stored on the run. |
+| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE`          |          effective concurrency |                              `32` | Max new instance child workflows to start before an optional pacing delay. This is a pacing knob, not a capacity source.                       |
+| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` |                            `5` |                               `5` | Delay between start batches. `0` disables pacing delay.                                                                                        |
+| `SWEBENCH_LEASE_RETRY_SECONDS`                            |                           `15` |                              `15` | Coordinator sleep interval when a resource lease is denied.                                                                                    |
+| `SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS`           | `SWEBENCH_LEASE_RETRY_SECONDS` |                             unset | Coordinator sleep interval after BFF reports orchestrator runtime unready during instance start.                                               |
+| `SWEBENCH_EVAL_MAX_PARALLEL`                              |                           `24` |                              `24` | Evaluation TaskRun batch size passed to the evaluator Job. Clamped to `1..128`.                                                                |
+| `SWEBENCH_MAX_WORKERS`                                    |    `24` via evaluator fallback |                             unset | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent.                                                               |
 
 ### SWE-bench Evaluator
 
 These live in `services/swebench-evaluator/entrypoint.py`.
 
-| Variable | Default | Maximum | Effect |
-| --- | ---: | ---: | --- |
-| `SWEBENCH_EVAL_MAX_PARALLEL` | `24` | `128` | Number of per-instance Tekton TaskRuns active during official grading. |
-| `SWEBENCH_MAX_WORKERS` | `24` | `128` | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent. |
+| Variable                     | Default | Maximum | Effect                                                                           |
+| ---------------------------- | ------: | ------: | -------------------------------------------------------------------------------- |
+| `SWEBENCH_EVAL_MAX_PARALLEL` |    `24` |   `128` | Number of per-instance Tekton TaskRuns active during official grading.           |
+| `SWEBENCH_MAX_WORKERS`       |    `24` |   `128` | Backward-compatible alias used only when `SWEBENCH_EVAL_MAX_PARALLEL` is absent. |
 
 The evaluator dispatches per-instance TaskRuns with a sliding window. It keeps
 up to `SWEBENCH_EVAL_MAX_PARALLEL` TaskRuns active and starts the next instance
@@ -378,17 +441,17 @@ Dev currently runs the Kueue-backed auto-capacity inference profile:
 
 - `BENCHMARK_CAPACITY_MODE=auto`
 - `BENCHMARK_EXECUTION_BACKEND=dapr-kueue`
-- `AGENT_WORKFLOW_HOST_BACKEND=kueue`
 - `BENCHMARK_EXECUTION_CLASS=benchmark-fast`
 - `benchmark-fast` ClusterQueue nominal quota: 24 CPU, 60Gi memory, 272Gi ephemeral-storage, 96 pods
 - `benchmark-fast` bounded borrowing: 12 CPU, 30Gi memory, 136Gi ephemeral-storage, 48 pods
-- sandbox request profile: 250m CPU, 256Mi memory, 4Gi ephemeral-storage
+- sandbox request profile: 100m CPU, 512Mi memory, 2600Mi ephemeral-storage
+- agent-host request profile: 250m CPU, 512Mi memory, 3Gi ephemeral-storage
 - no separate `BENCHMARK_AGENT_WORKFLOW_MAX_ACTIVE_TURNS` cap; Dapr workflow capacity derives from runtime sidecar capacity
 - no separate `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` cap in the Kueue path
 - no separate `BENCHMARK_MAX_ACTIVE_SANDBOXES` cap; Kueue and live schedulable headroom cap admission
 - no separate `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` cap; coordinator uses the BFF run capacity snapshot
-- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=18`
-- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=1`
+- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=32`
+- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=5`
 
 Keep evaluator concurrency at `24` until the evaluator finalization path has a
 clean passing canary on object storage, then test `32`. Do not raise evaluator
@@ -430,16 +493,17 @@ For the current dev deployment, deterministic nominal inference capacity is:
 min(
   24 CPU Kueue quota / 450m full-instance CPU request = 53,
   272Gi Kueue ephemeral quota / 6.54Gi full-instance ephemeral request = 41,
-  (96 Kueue pod quota - 3 browserstation pods) / 3 pods per instance = 31,
+  96 Kueue pod quota / 2 pods per instance = 48,
   live schedulable sandbox slots,
   selected instance count,
   requested concurrency
-) = 31 when the cluster is otherwise idle and launch diagnostics agree
+) = 41 when the cluster is otherwise idle and launch diagnostics agree
 ```
 
-If `benchmark-fast` borrows its full configured headroom, pod quota rises to
-141 available benchmark pods after browserstation, or about 47 full instances.
-Going above that requires a GitOps quota change. The six-worker pool reports
+If `benchmark-fast` borrows its full configured headroom, ephemeral-storage
+capacity rises to about 408Gi, or about 62 full instances at the current
+request profile. Going above that requires a GitOps quota change or lower
+verified per-instance requests. The six-worker pool reports
 about 91.8 allocatable CPU, 177Gi memory, 1.8Ti ephemeral storage, and 660 pod
 slots, so the next quota expansion should be deliberate and should preserve
 reserve for daprd, node agents, image pulls, cleanup jobs, and unrelated
@@ -451,8 +515,8 @@ spec hash has a validated image. If the selector returns fewer instances than
 the requested limit while Kueue headroom is available, check and sync
 `environment_image_builds` before treating dev Kueue as the limiter.
 
-Because the 24-run had 8 stalled inferences that held slots until the
-`BENCHMARK_INFERENCE_STALL_SECONDS=480` detector fired, extrapolate wall-clock
+Because stalled inferences can hold slots until the
+`BENCHMARK_INFERENCE_STALL_SECONDS` detector fires, extrapolate wall-clock
 from the slow tail, not only from successful inference medians. At high
 concurrency, expect a single inference wave to last about as long as the
 slowest timeout tail if provider behavior is similar.
@@ -462,29 +526,29 @@ slowest timeout tail if provider behavior is similar.
 This is separate from official SWE-bench Benchmarks. It lives in
 `services/evaluation-coordinator/src/app.py`.
 
-| Variable | Default | Dev GitOps value | Effect |
-| --- | ---: | ---: | --- |
-| `EVALUATION_MAX_CONCURRENCY` | `32` | `32` | Upper bound for `executionConfig.concurrency` across evaluation item child workflows. |
+| Variable                     | Default | Dev GitOps value | Effect                                                                                |
+| ---------------------------- | ------: | ---------------: | ------------------------------------------------------------------------------------- |
+| `EVALUATION_MAX_CONCURRENCY` |    `32` |             `32` | Upper bound for `executionConfig.concurrency` across evaluation item child workflows. |
 
 ### Internal Constants
 
 These are code constants, not environment variables.
 
-| Constant | Value | Effect |
-| --- | ---: | --- |
-| `BENCHMARK_TERMINATION_CONCURRENCY` | `8` | BFF-side parallelism when terminating sessions, turns, or workflows during cancellation/cleanup. |
-| `BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY` | `8` | BFF-side parallelism for benchmark sandbox cleanup. |
+| Constant                                | Value | Effect                                                                                           |
+| --------------------------------------- | ----: | ------------------------------------------------------------------------------------------------ |
+| `BENCHMARK_TERMINATION_CONCURRENCY`     |   `8` | BFF-side parallelism when terminating sessions, turns, or workflows during cancellation/cleanup. |
+| `BENCHMARK_SANDBOX_CLEANUP_CONCURRENCY` |   `8` | BFF-side parallelism for benchmark sandbox cleanup.                                              |
 
 ### Provider Rate-Limit Retry Knobs
 
 These are not concurrency caps. They only control retry behavior after provider
 rate limits.
 
-| Provider | Variables | Default in code | Dev GitOps value |
-| --- | --- | ---: | ---: |
-| DeepSeek | `DEEPSEEK_RATE_LIMIT_MAX_RETRIES`, `DEEPSEEK_RATE_LIMIT_BACKOFF_SECONDS` | `3`, `65` | `3`, `65` |
-| Together | `TOGETHER_RATE_LIMIT_MAX_RETRIES`, `TOGETHER_RATE_LIMIT_BACKOFF_SECONDS` | `3`, `65` | `3`, `65` |
-| Azure AI Foundry | `AZURE_AI_FOUNDRY_RATE_LIMIT_MAX_RETRIES`, `AZURE_AI_FOUNDRY_RATE_LIMIT_BACKOFF_SECONDS` | `3`, `65` | `3`, `65` |
+| Provider         | Variables                                                                                | Default in code | Dev GitOps value |
+| ---------------- | ---------------------------------------------------------------------------------------- | --------------: | ---------------: |
+| DeepSeek         | `DEEPSEEK_RATE_LIMIT_MAX_RETRIES`, `DEEPSEEK_RATE_LIMIT_BACKOFF_SECONDS`                 |       `3`, `65` |        `3`, `65` |
+| Together         | `TOGETHER_RATE_LIMIT_MAX_RETRIES`, `TOGETHER_RATE_LIMIT_BACKOFF_SECONDS`                 |       `3`, `65` |        `3`, `65` |
+| Azure AI Foundry | `AZURE_AI_FOUNDRY_RATE_LIMIT_MAX_RETRIES`, `AZURE_AI_FOUNDRY_RATE_LIMIT_BACKOFF_SECONDS` |       `3`, `65` |        `3`, `65` |
 
 ## Change Checklist
 

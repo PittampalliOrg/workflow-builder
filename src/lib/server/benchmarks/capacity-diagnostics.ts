@@ -1,15 +1,9 @@
 import { error } from "@sveltejs/kit";
 import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import {
-	benchmarkRuns,
-	type BenchmarkResourceLeaseType,
-} from "$lib/server/db/schema";
+import { benchmarkRuns, type BenchmarkResourceLeaseType } from "$lib/server/db/schema";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
-import {
-	listDaprComponents,
-	type DaprComponent,
-} from "$lib/server/kube/client";
+import { listDaprComponents, type DaprComponent } from "$lib/server/kube/client";
 import {
 	fetchCapacityObserverSnapshot,
 	summarizeCapacityObserverForQueue,
@@ -17,7 +11,10 @@ import {
 import { buildCapacityCoverageSummary } from "$lib/server/capacity/coverage";
 import type { CapacityObserverResult } from "$lib/types/capacity";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
-import { loadParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
+import {
+	loadAgentHostDaprRuntimeSnapshot,
+	loadParentWorkflowRuntimeSnapshot,
+} from "./dapr-workflow-capacity";
 import {
 	estimateBenchmarkEvaluationCapacity,
 	type BenchmarkEvaluationCapacitySnapshot,
@@ -85,9 +82,7 @@ export type BenchmarkCapacityDiagnostics = {
 	storedEffectiveConcurrency: number;
 	selectedInstanceCount: number;
 	blockedBy: BenchmarkResourceLeaseType[];
-	resources: Awaited<
-		ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>
-	>;
+	resources: Awaited<ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>>;
 	runtime: {
 		class: string | null;
 		appId: string | null;
@@ -118,6 +113,16 @@ export type BenchmarkCapacityDiagnostics = {
 		recentActorErrorCount: number | null;
 		recentReminderErrorCount: number | null;
 		daprRuntimePressure: boolean;
+		error: string | null;
+	};
+	agentHostRuntime: {
+		activePods: number | null;
+		unhealthyPods: string[];
+		oomKilledPods: string[];
+		recentActorErrorCount: number | null;
+		recentReminderErrorCount: number | null;
+		daprRuntimePressure: boolean;
+		pressureReasons: string[];
 		error: string | null;
 	};
 	sandbox: {
@@ -192,9 +197,7 @@ export type BenchmarkWorkflowLifecycleDiagnostics = {
 
 const PARENT_WORKFLOW_APP_ID = "workflow-orchestrator";
 
-type DaprComponentMetadata = NonNullable<
-	NonNullable<DaprComponent["spec"]>["metadata"]
->[number];
+type DaprComponentMetadata = NonNullable<NonNullable<DaprComponent["spec"]>["metadata"]>[number];
 
 function componentMetadata(
 	component: DaprComponent,
@@ -206,18 +209,14 @@ function componentMetadata(
 function metadataValue(component: DaprComponent, name: string): string | null {
 	const entry = componentMetadata(component, name);
 	if (!entry) return null;
-	if (typeof entry.value === "string" && entry.value.trim())
-		return entry.value.trim();
+	if (typeof entry.value === "string" && entry.value.trim()) return entry.value.trim();
 	if (typeof entry.value === "number" || typeof entry.value === "boolean") {
 		return String(entry.value);
 	}
 	return null;
 }
 
-function metadataSecretRef(
-	component: DaprComponent,
-	name: string,
-): string | null {
+function metadataSecretRef(component: DaprComponent, name: string): string | null {
 	const entry = componentMetadata(component, name);
 	const secret = entry?.secretKeyRef;
 	if (!secret?.name || !secret.key) return null;
@@ -228,10 +227,7 @@ function isActorStateStore(component: DaprComponent): boolean {
 	return metadataValue(component, "actorStateStore")?.toLowerCase() === "true";
 }
 
-function componentVisibleToApp(
-	component: DaprComponent,
-	appId: string,
-): boolean {
+function componentVisibleToApp(component: DaprComponent, appId: string): boolean {
 	const scopes = component.scopes ?? [];
 	return scopes.length === 0 || scopes.includes(appId);
 }
@@ -241,8 +237,7 @@ function actorStoreForApp(
 	appId: string,
 ): BenchmarkWorkflowActorStateStore | null {
 	const stores = components.filter(
-		(component) =>
-			isActorStateStore(component) && componentVisibleToApp(component, appId),
+		(component) => isActorStateStore(component) && componentVisibleToApp(component, appId),
 	);
 	if (stores.length !== 1) return null;
 	const [store] = stores;
@@ -255,22 +250,16 @@ function actorStoreForApp(
 	};
 }
 
-function actorStoreCountForApp(
-	components: DaprComponent[],
-	appId: string,
-): number {
+function actorStoreCountForApp(components: DaprComponent[], appId: string): number {
 	return components.filter(
-		(component) =>
-			isActorStateStore(component) && componentVisibleToApp(component, appId),
+		(component) => isActorStateStore(component) && componentVisibleToApp(component, appId),
 	).length;
 }
 
 function actorStoreIdentity(store: BenchmarkWorkflowActorStateStore): string {
-	return [
-		store.componentType ?? "",
-		store.connectionSecretRef ?? "",
-		store.tablePrefix ?? "",
-	].join("|");
+	return [store.componentType ?? "", store.connectionSecretRef ?? "", store.tablePrefix ?? ""].join(
+		"|",
+	);
 }
 
 export function buildWorkflowLifecycleDiagnostics(params: {
@@ -319,8 +308,7 @@ export function buildWorkflowLifecycleDiagnostics(params: {
 						? "duplicate_child_actor_state_store"
 						: parentStore &&
 							  childStore &&
-							  actorStoreIdentity(parentStore) !==
-									actorStoreIdentity(childStore)
+							  actorStoreIdentity(parentStore) !== actorStoreIdentity(childStore)
 							? "dapr_actor_state_store_mismatch"
 							: null;
 
@@ -357,31 +345,26 @@ function diagnosticsFromCapacity(params: {
 	run: typeof benchmarkRuns.$inferSelect;
 	capacity: Record<string, unknown>;
 	selectedInstanceCount: number;
-	resources: Awaited<
-		ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>
-	>;
+	resources: Awaited<ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>>;
 	workflowLifecycle?: BenchmarkWorkflowLifecycleDiagnostics | null;
 	sharedCapacity?: CapacityObserverResult | null;
 }): BenchmarkCapacityDiagnostics {
 	const capacity = params.capacity;
-	const sandboxCapacity = isRecord(capacity.sandboxCapacity)
-		? capacity.sandboxCapacity
-		: {};
+	const sandboxCapacity = isRecord(capacity.sandboxCapacity) ? capacity.sandboxCapacity : {};
 	const clusterPressure = isRecord(capacity.clusterPressure)
 		? (capacity.clusterPressure as BenchmarkClusterPressureSnapshot)
 		: null;
 	const parentRuntime = isRecord(capacity.parentWorkflowRuntime)
 		? capacity.parentWorkflowRuntime
 		: {};
+	const agentHostRuntime = isRecord(capacity.agentHostRuntime) ? capacity.agentHostRuntime : {};
 	const blockedBy = params.resources
 		.filter((resource) => resource.blocked)
 		.map((resource) => resource.resourceType);
 
 	return {
 		requestedConcurrency:
-			positiveInt(capacity.requestedConcurrency) ??
-			positiveInt(params.run.concurrency) ??
-			1,
+			positiveInt(capacity.requestedConcurrency) ?? positiveInt(params.run.concurrency) ?? 1,
 		deterministicConcurrency:
 			nonNegativeInt(capacity.deterministicConcurrency) ??
 			nonNegativeInt(capacity.effectiveConcurrency) ??
@@ -393,21 +376,13 @@ function diagnosticsFromCapacity(params: {
 			nonNegativeInt(params.run.concurrency) ??
 			1,
 		storedEffectiveConcurrency:
-			nonNegativeInt(capacity.effectiveConcurrency) ??
-			nonNegativeInt(params.run.concurrency) ??
-			1,
+			nonNegativeInt(capacity.effectiveConcurrency) ?? nonNegativeInt(params.run.concurrency) ?? 1,
 		selectedInstanceCount: params.selectedInstanceCount,
 		blockedBy,
 		resources: params.resources,
 		runtime: {
-			class:
-				typeof capacity.runtimeClass === "string"
-					? capacity.runtimeClass
-					: null,
-			appId:
-				typeof capacity.runtimeAppId === "string"
-					? capacity.runtimeAppId
-					: null,
+			class: typeof capacity.runtimeClass === "string" ? capacity.runtimeClass : null,
+			appId: typeof capacity.runtimeAppId === "string" ? capacity.runtimeAppId : null,
 			replicas: positiveInt(capacity.runtimeReplicas),
 			slotsPerReplica: positiveInt(capacity.slotsPerReplica),
 			slots: positiveInt(capacity.runtimeSlots),
@@ -418,9 +393,7 @@ function diagnosticsFromCapacity(params: {
 				positiveInt(capacity.daprWorkflowLimitPerSidecar) ??
 				positiveInt(capacity.perSidecarWorkflowLimit),
 			effectiveCapacity: positiveInt(capacity.daprWorkflowEffectiveCapacity),
-			agentWorkflowMaxActiveTurns: positiveInt(
-				capacity.agentWorkflowMaxActiveTurns,
-			),
+			agentWorkflowMaxActiveTurns: positiveInt(capacity.agentWorkflowMaxActiveTurns),
 		},
 		parentWorkflow: {
 			appId:
@@ -429,54 +402,45 @@ function diagnosticsFromCapacity(params: {
 					: "workflow-orchestrator",
 			replicas: positiveInt(capacity.parentWorkflowReplicas),
 			readyReplicas: nonNegativeInt(capacity.parentWorkflowReadyReplicas),
-			connectedWorkers: nonNegativeInt(
-				capacity.parentWorkflowConnectedWorkers,
-			),
-			connectedWorkerPods: nonNegativeInt(
-				capacity.parentWorkflowConnectedWorkerPods,
-			),
-			podWorkers: Array.isArray(parentRuntime.podWorkers)
-				? parentRuntime.podWorkers
-				: [],
-			workflowLimitPerSidecar: positiveInt(
-				capacity.parentWorkflowLimitPerSidecar,
-			),
-			activityLimitPerSidecar: positiveInt(
-				capacity.parentActivityLimitPerSidecar,
-			),
-			effectiveWorkflowCapacity: positiveInt(
-				capacity.parentWorkflowEffectiveCapacity,
-			),
-			effectiveActivityCapacity: positiveInt(
-				capacity.parentActivityEffectiveCapacity,
-			),
+			connectedWorkers: nonNegativeInt(capacity.parentWorkflowConnectedWorkers),
+			connectedWorkerPods: nonNegativeInt(capacity.parentWorkflowConnectedWorkerPods),
+			podWorkers: Array.isArray(parentRuntime.podWorkers) ? parentRuntime.podWorkers : [],
+			workflowLimitPerSidecar: positiveInt(capacity.parentWorkflowLimitPerSidecar),
+			activityLimitPerSidecar: positiveInt(capacity.parentActivityLimitPerSidecar),
+			effectiveWorkflowCapacity: positiveInt(capacity.parentWorkflowEffectiveCapacity),
+			effectiveActivityCapacity: positiveInt(capacity.parentActivityEffectiveCapacity),
 			daprRuntimeVersion:
-				typeof capacity.daprRuntimeVersion === "string"
-					? capacity.daprRuntimeVersion
-					: null,
+				typeof capacity.daprRuntimeVersion === "string" ? capacity.daprRuntimeVersion : null,
 			schedulerPods: nonNegativeInt(capacity.daprSchedulerPods),
 			schedulerReadyPods: nonNegativeInt(capacity.daprSchedulerReadyPods),
-			recentActorErrorCount: nonNegativeInt(
-				capacity.daprRecentActorErrorCount,
-			),
-			recentReminderErrorCount: nonNegativeInt(
-				capacity.daprRecentReminderErrorCount,
-			),
+			recentActorErrorCount: nonNegativeInt(capacity.daprRecentActorErrorCount),
+			recentReminderErrorCount: nonNegativeInt(capacity.daprRecentReminderErrorCount),
 			daprRuntimePressure: capacity.daprRuntimePressure === true,
-			error:
-				typeof parentRuntime.error === "string" ? parentRuntime.error : null,
+			error: typeof parentRuntime.error === "string" ? parentRuntime.error : null,
+		},
+		agentHostRuntime: {
+			activePods: nonNegativeInt(capacity.agentHostActivePods),
+			unhealthyPods: Array.isArray(capacity.agentHostUnhealthyPods)
+				? capacity.agentHostUnhealthyPods.filter((pod): pod is string => typeof pod === "string")
+				: [],
+			oomKilledPods: Array.isArray(capacity.agentHostOomKilledPods)
+				? capacity.agentHostOomKilledPods.filter((pod): pod is string => typeof pod === "string")
+				: [],
+			recentActorErrorCount: nonNegativeInt(capacity.agentHostRecentActorErrorCount),
+			recentReminderErrorCount: nonNegativeInt(capacity.agentHostRecentReminderErrorCount),
+			daprRuntimePressure: capacity.agentHostDaprRuntimePressure === true,
+			pressureReasons: Array.isArray(agentHostRuntime.pressureReasons)
+				? agentHostRuntime.pressureReasons.filter(
+						(reason): reason is string => typeof reason === "string",
+					)
+				: [],
+			error: typeof agentHostRuntime.error === "string" ? agentHostRuntime.error : null,
 		},
 		sandbox: {
-			configuredMaxActiveSandboxes: nonNegativeInt(
-				capacity.configuredMaxActiveSandboxes,
-			),
+			configuredMaxActiveSandboxes: nonNegativeInt(capacity.configuredMaxActiveSandboxes),
 			maxActiveSandboxes: nonNegativeInt(capacity.maxActiveSandboxes),
-			schedulableSandboxCapacity: nonNegativeInt(
-				capacity.schedulableSandboxCapacity,
-			),
-			availableSandboxSlots: nonNegativeInt(
-				sandboxCapacity.availableSandboxSlots,
-			),
+			schedulableSandboxCapacity: nonNegativeInt(capacity.schedulableSandboxCapacity),
+			availableSandboxSlots: nonNegativeInt(sandboxCapacity.availableSandboxSlots),
 			activeSwebenchPods: nonNegativeInt(sandboxCapacity.activeSwebenchPods),
 			pendingSwebenchPods: nonNegativeInt(sandboxCapacity.pendingSwebenchPods),
 			ephemeralStorageLimitedCapacity: nonNegativeInt(
@@ -484,9 +448,7 @@ function diagnosticsFromCapacity(params: {
 			),
 			nodeFsLimitedCapacity: nonNegativeInt(sandboxCapacity.nodeFsLimitedCapacity),
 			nodeFsAvailableBytes: nonNegativeInt(sandboxCapacity.nodeFsAvailableBytes),
-			nodeFsEvictionReserveBytes: nonNegativeInt(
-				sandboxCapacity.nodeFsEvictionReserveBytes,
-			),
+			nodeFsEvictionReserveBytes: nonNegativeInt(sandboxCapacity.nodeFsEvictionReserveBytes),
 			kueueClusterQueueName:
 				typeof sandboxCapacity.kueueClusterQueueName === "string"
 					? sandboxCapacity.kueueClusterQueueName
@@ -503,39 +465,25 @@ function diagnosticsFromCapacity(params: {
 				typeof sandboxCapacity.kueueClusterQueueMessage === "string"
 					? sandboxCapacity.kueueClusterQueueMessage
 					: null,
-			kueueAvailableSandboxSlots: nonNegativeInt(
-				sandboxCapacity.kueueAvailableSandboxSlots,
-			),
+			kueueAvailableSandboxSlots: nonNegativeInt(sandboxCapacity.kueueAvailableSandboxSlots),
 			kueueBorrowAvailableSandboxSlots: nonNegativeInt(
 				sandboxCapacity.kueueBorrowAvailableSandboxSlots,
 			),
-			kueueCpuLimitedCapacity: nonNegativeInt(
-				sandboxCapacity.kueueCpuLimitedCapacity,
-			),
-			kueueMemoryLimitedCapacity: nonNegativeInt(
-				sandboxCapacity.kueueMemoryLimitedCapacity,
-			),
+			kueueCpuLimitedCapacity: nonNegativeInt(sandboxCapacity.kueueCpuLimitedCapacity),
+			kueueMemoryLimitedCapacity: nonNegativeInt(sandboxCapacity.kueueMemoryLimitedCapacity),
 			kueueEphemeralStorageLimitedCapacity: nonNegativeInt(
 				sandboxCapacity.kueueEphemeralStorageLimitedCapacity,
 			),
-			kueuePodLimitedCapacity: nonNegativeInt(
-				sandboxCapacity.kueuePodLimitedCapacity,
-			),
-			kueueInstanceRequestCpuMilli: nonNegativeInt(
-				sandboxCapacity.kueueInstanceRequestCpuMilli,
-			),
+			kueuePodLimitedCapacity: nonNegativeInt(sandboxCapacity.kueuePodLimitedCapacity),
+			kueueInstanceRequestCpuMilli: nonNegativeInt(sandboxCapacity.kueueInstanceRequestCpuMilli),
 			kueueInstanceRequestMemoryBytes: nonNegativeInt(
 				sandboxCapacity.kueueInstanceRequestMemoryBytes,
 			),
 			kueueInstanceRequestEphemeralStorageBytes: nonNegativeInt(
 				sandboxCapacity.kueueInstanceRequestEphemeralStorageBytes,
 			),
-			kueueInstancePodCount: nonNegativeInt(
-				sandboxCapacity.kueueInstancePodCount,
-			),
-			kueueAvailableInstanceSlots: nonNegativeInt(
-				sandboxCapacity.kueueAvailableInstanceSlots,
-			),
+			kueueInstancePodCount: nonNegativeInt(sandboxCapacity.kueueInstancePodCount),
+			kueueAvailableInstanceSlots: nonNegativeInt(sandboxCapacity.kueueAvailableInstanceSlots),
 			kueueBorrowAvailableInstanceSlots: nonNegativeInt(
 				sandboxCapacity.kueueBorrowAvailableInstanceSlots,
 			),
@@ -554,24 +502,15 @@ function diagnosticsFromCapacity(params: {
 			schedulableKueueInstanceCapacity: nonNegativeInt(
 				sandboxCapacity.schedulableKueueInstanceCapacity,
 			),
-			diskPressureNodeCount: nonNegativeInt(
-				sandboxCapacity.diskPressureNodeCount,
-			),
-			error:
-				typeof sandboxCapacity.error === "string"
-					? sandboxCapacity.error
-					: null,
+			diskPressureNodeCount: nonNegativeInt(sandboxCapacity.diskPressureNodeCount),
+			error: typeof sandboxCapacity.error === "string" ? sandboxCapacity.error : null,
 		},
 		modelCaps: {
 			modelMaxActiveRequests: positiveInt(capacity.modelMaxActiveRequests),
 		},
 		evaluator: {
-			requestedEvaluationConcurrency: positiveInt(
-				capacity.requestedEvaluationConcurrency,
-			),
-			effectiveEvaluationConcurrency: positiveInt(
-				capacity.effectiveEvaluationConcurrency,
-			),
+			requestedEvaluationConcurrency: positiveInt(capacity.requestedEvaluationConcurrency),
+			effectiveEvaluationConcurrency: positiveInt(capacity.effectiveEvaluationConcurrency),
 			reason:
 				typeof capacity.evaluationConcurrencyReason === "string"
 					? capacity.evaluationConcurrencyReason
@@ -582,12 +521,11 @@ function diagnosticsFromCapacity(params: {
 		},
 		clusterPressure,
 		sharedCapacity: summarizeCapacityObserverForQueue({
-			result:
-				params.sharedCapacity ?? {
-					available: false,
-					snapshot: null,
-					error: "capacity_observer_not_queried",
-				},
+			result: params.sharedCapacity ?? {
+				available: false,
+				snapshot: null,
+				error: "capacity_observer_not_queried",
+			},
 			queueName:
 				typeof sandboxCapacity.kueueClusterQueueName === "string"
 					? sandboxCapacity.kueueClusterQueueName
@@ -612,8 +550,7 @@ function diagnosticsFromCapacity(params: {
 						: params.run.agentRuntimeAppId,
 				error: "not_computed",
 			}),
-		capReason:
-			typeof capacity.capReason === "string" ? capacity.capReason : null,
+		capReason: typeof capacity.capReason === "string" ? capacity.capReason : null,
 		computedAt: new Date().toISOString(),
 	};
 }
@@ -632,16 +569,15 @@ export async function getBenchmarkRunCapacityDiagnostics(
 	const [run] = await database
 		.select()
 		.from(benchmarkRuns)
-		.where(
-			and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)),
-		)
+		.where(and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)))
 		.limit(1);
 	if (!run) return null;
 	const capacity = capacityFromSummary(run.summary);
 	const selectedInstanceCount = instanceCount(run.selectedInstanceIds);
-	const [liveSandboxCapacity, parentWorkflowRuntime] = await Promise.all([
+	const [liveSandboxCapacity, parentWorkflowRuntime, agentHostRuntime] = await Promise.all([
 		loadSchedulableSandboxCapacitySnapshot(),
 		loadParentWorkflowRuntimeSnapshot(),
+		loadAgentHostDaprRuntimeSnapshot(),
 	]);
 	const sharedCapacity = await fetchCapacityObserverSnapshot();
 	const clusterPressure = summarizeBenchmarkClusterPressure({
@@ -670,6 +606,13 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		daprRecentActorErrorCount: parentWorkflowRuntime.recentActorErrorCount,
 		daprRecentReminderErrorCount: parentWorkflowRuntime.recentReminderErrorCount,
 		daprRuntimePressure: parentWorkflowRuntime.daprRuntimePressure,
+		agentHostRuntime,
+		agentHostActivePods: agentHostRuntime.activePods,
+		agentHostUnhealthyPods: agentHostRuntime.unhealthyPods,
+		agentHostOomKilledPods: agentHostRuntime.appContainerOomKilledPods,
+		agentHostRecentActorErrorCount: agentHostRuntime.recentActorErrorCount,
+		agentHostRecentReminderErrorCount: agentHostRuntime.recentReminderErrorCount,
+		agentHostDaprRuntimePressure: agentHostRuntime.daprRuntimePressure,
 		clusterPressure,
 	};
 	if (!isRecord(mergedCapacity.evaluatorCapacity)) {
@@ -679,10 +622,8 @@ export async function getBenchmarkRunCapacityDiagnostics(
 			clusterPressure,
 		});
 		Object.assign(mergedCapacity, {
-			requestedEvaluationConcurrency:
-				evaluatorCapacity.requestedEvaluationConcurrency,
-			effectiveEvaluationConcurrency:
-				evaluatorCapacity.effectiveEvaluationConcurrency,
+			requestedEvaluationConcurrency: evaluatorCapacity.requestedEvaluationConcurrency,
+			effectiveEvaluationConcurrency: evaluatorCapacity.effectiveEvaluationConcurrency,
 			evaluationConcurrencyReason: evaluatorCapacity.reason,
 			evaluatorCapacity,
 		});
@@ -724,17 +665,17 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		projectId: input.projectId,
 		agentId: input.agentId,
 		version: input.agentVersion,
-		requestedModelNameOrPath:
-			input.modelNameOrPath ?? input.modelConfigLabel ?? null,
+		requestedModelNameOrPath: input.modelNameOrPath ?? input.modelConfigLabel ?? null,
 	});
 	const runtimeRoute = resolveAgentRuntimeRoute({
 		agentSlug: agent.slug,
 		runtimeAppId: agent.runtimeAppId,
 		config: agent.config,
 	});
-	const [sandboxCapacity, parentWorkflowRuntime] = await Promise.all([
+	const [sandboxCapacity, parentWorkflowRuntime, agentHostRuntime] = await Promise.all([
 		loadSchedulableSandboxCapacitySnapshot(),
 		loadParentWorkflowRuntimeSnapshot(),
+		loadAgentHostDaprRuntimeSnapshot(),
 	]);
 	const sharedCapacity = await fetchCapacityObserverSnapshot();
 	const clusterPressure = summarizeBenchmarkClusterPressure({
@@ -751,10 +692,10 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		sandboxCapacity,
 		clusterPressure,
 		parentWorkflowRuntime,
+		agentHostRuntime,
 		requestedInstanceCount: selectedInstanceCount,
 		requestedConcurrency: input.requestedConcurrency,
-		modelNameOrPath:
-			input.modelNameOrPath ?? input.modelConfigLabel ?? agent.modelSpec,
+		modelNameOrPath: input.modelNameOrPath ?? input.modelConfigLabel ?? agent.modelSpec,
 		modelConfigLabel: input.modelConfigLabel,
 		agentSlug: agent.slug,
 		executionBackend: input.executionBackend,
@@ -766,10 +707,8 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 	});
 	const capacityWithEvaluation = {
 		...capacity,
-		requestedEvaluationConcurrency:
-			evaluatorCapacity.requestedEvaluationConcurrency,
-		effectiveEvaluationConcurrency:
-			evaluatorCapacity.effectiveEvaluationConcurrency,
+		requestedEvaluationConcurrency: evaluatorCapacity.requestedEvaluationConcurrency,
+		effectiveEvaluationConcurrency: evaluatorCapacity.effectiveEvaluationConcurrency,
 		evaluationConcurrencyReason: evaluatorCapacity.reason,
 		evaluatorCapacity,
 	};
@@ -789,10 +728,7 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 			agent.modelSpec ||
 			`${agent.slug}@v${agent.version}`,
 		modelConfigLabel: input.modelConfigLabel?.trim() || null,
-		selectedInstanceIds: Array.from(
-			{ length: selectedInstanceCount },
-			(_, index) => String(index),
-		),
+		selectedInstanceIds: Array.from({ length: selectedInstanceCount }, (_, index) => String(index)),
 		concurrency: capacity.effectiveConcurrency,
 		evaluationConcurrency: evaluatorCapacity.effectiveEvaluationConcurrency,
 		timeoutSeconds: 7200,

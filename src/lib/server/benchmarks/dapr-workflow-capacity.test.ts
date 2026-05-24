@@ -62,6 +62,30 @@ describe("Dapr workflow capacity diagnostics", () => {
 		expect(terminating).toBe(false);
 	});
 
+	it("detects Kueue benchmark agent-host pods and app OOM kills", () => {
+		const pod = {
+			metadata: { name: "agent-host-agent-session-abc123" },
+			status: {
+				phase: "Running",
+				containerStatuses: [
+					{
+						name: "dapr-agent-py",
+						state: {
+							terminated: { reason: "OOMKilled", exitCode: 137 },
+						},
+					},
+					{
+						name: "daprd",
+						state: { running: { startedAt: "2026-05-24T20:00:00Z" } },
+					},
+				],
+			},
+		} as never;
+
+		expect(__daprWorkflowCapacityForTest.podIsAgentHost(pod)).toBe(true);
+		expect(__daprWorkflowCapacityForTest.appContainerWasOomKilled(pod)).toBe(true);
+	});
+
 	it("uses a short default Dapr log window but allows operator tuning", () => {
 		expect(__daprWorkflowCapacityForTest.daprLogWindowSeconds()).toBe(300);
 

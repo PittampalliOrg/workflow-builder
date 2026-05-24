@@ -61,7 +61,10 @@ import {
 	type ValidBenchmarkAgent,
 } from "./agents";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
-import { loadParentWorkflowRuntimeSnapshot } from "./dapr-workflow-capacity";
+import {
+	loadAgentHostDaprRuntimeSnapshot,
+	loadParentWorkflowRuntimeSnapshot,
+} from "./dapr-workflow-capacity";
 import {
 	loadSchedulableSandboxCapacitySnapshot,
 	type BenchmarkSandboxCapacitySnapshot,
@@ -1181,12 +1184,14 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	const [
 		sandboxCapacity,
 		parentWorkflowRuntime,
+		agentHostRuntime,
 		capacityObserver,
 		launchControlPlane,
 	] =
 		await Promise.all([
 			loadSchedulableSandboxCapacitySnapshot(),
 			loadParentWorkflowRuntimeSnapshot(),
+			loadAgentHostDaprRuntimeSnapshot(),
 			fetchCapacityObserverSnapshot(),
 			loadBenchmarkLaunchControlPlaneStability(),
 		]);
@@ -1216,6 +1221,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		sandboxCapacity,
 		clusterPressure,
 		parentWorkflowRuntime,
+		agentHostRuntime,
 		requestedInstanceCount: instanceIds.length,
 		requestedConcurrency: input.concurrency,
 		modelNameOrPath:

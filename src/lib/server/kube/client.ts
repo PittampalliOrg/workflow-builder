@@ -154,6 +154,26 @@ export type KubePod = {
 			restartCount?: number;
 			image?: string;
 			imageID?: string;
+			state?: {
+				running?: { startedAt?: string };
+				waiting?: { reason?: string; message?: string };
+				terminated?: {
+					reason?: string;
+					message?: string;
+					exitCode?: number;
+					startedAt?: string;
+					finishedAt?: string;
+				};
+			};
+			lastState?: {
+				terminated?: {
+					reason?: string;
+					message?: string;
+					exitCode?: number;
+					startedAt?: string;
+					finishedAt?: string;
+				};
+			};
 		}>;
 		initContainerStatuses?: Array<{
 			name?: string;

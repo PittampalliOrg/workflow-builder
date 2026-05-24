@@ -50,10 +50,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 	});
 
 	it("honors runtime slot and global cap env overrides", () => {
-		vi.stubEnv(
-			"AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON",
-			JSON.stringify({ coding: 4, office: 3 }),
-		);
+		vi.stubEnv("AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON", JSON.stringify({ coding: 4, office: 3 }));
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "12");
 
 		const capacity = estimateBenchmarkRuntimeCapacity({
@@ -298,6 +295,42 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		});
 	});
 
+	it("blocks new Kueue-backed starts under agent-host Dapr pressure", () => {
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 8,
+			slotsPerReplica: 12,
+			requestedInstanceCount: 100,
+			requestedConcurrency: 80,
+			executionBackend: "dapr-kueue",
+			agentHostRuntime: {
+				namespace: "workflow-builder",
+				activePods: 12,
+				unhealthyPods: ["agent-host-agent-session-oom"],
+				appContainerOomKilledPods: ["agent-host-agent-session-oom"],
+				recentActorErrorCount: 1,
+				recentReminderErrorCount: 0,
+				logWindowSeconds: 300,
+				daprRuntimePressure: true,
+				pressureReasons: ["agent_host_oom_killed", "agent_host_actor_errors"],
+				error: null,
+			},
+		});
+
+		expect(capacity).toMatchObject({
+			deterministicConcurrency: 80,
+			pressureAdjustedConcurrency: 0,
+			effectiveConcurrency: 0,
+			agentHostActivePods: 12,
+			agentHostDaprRuntimePressure: true,
+			capReason: "agent_host_pressure",
+			primaryLimiter: "agent_host_pressure",
+		});
+		expect(capacity.agentHostOomKilledPods).toEqual(["agent-host-agent-session-oom"]);
+	});
+
 	it("keeps a configured global inference cap as the auto-mode hard ceiling", () => {
 		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "72");
@@ -522,12 +555,12 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 				namespace: "workflow-builder",
 				configName: "workflow-builder-tracing",
 				replicas: 2,
-					readyReplicas: 2,
-					availableReplicas: 2,
-					connectedWorkflowWorkers: 2,
-					connectedWorkerPods: 2,
-					podWorkers: [],
-					workflowLimitPerSidecar: 16,
+				readyReplicas: 2,
+				availableReplicas: 2,
+				connectedWorkflowWorkers: 2,
+				connectedWorkerPods: 2,
+				podWorkers: [],
+				workflowLimitPerSidecar: 16,
 				activityLimitPerSidecar: 64,
 				effectiveWorkflowCapacity: 32,
 				effectiveActivityCapacity: 128,

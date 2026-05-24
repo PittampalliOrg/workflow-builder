@@ -20,8 +20,26 @@ benchmark scale tests and cleanup.
 Useful upstream docs:
 
 - https://docs.dapr.io/developing-applications/building-blocks/workflow/workflow-architecture/
+- https://docs.dapr.io/developing-applications/building-blocks/workflow/workflow-features-concepts/
+- https://docs.dapr.io/developing-applications/building-blocks/workflow/workflow-versioning/
 - https://docs.dapr.io/developing-applications/building-blocks/workflow/howto-manage-workflow/
 - https://docs.dapr.io/concepts/dapr-services/scheduler/
+
+The important upstream constraints for benchmark operations are:
+
+- Workflow code must replay deterministically. Do not change the order or shape
+  of workflow, activity, or child-workflow calls for an in-flight app id unless
+  the change uses Dapr workflow patching/versioning.
+- All replicas for a workflow app id must register the same workflows and
+  activities. Rollouts that briefly mix registrations can stall or fail replay.
+- Workflow state remains in the actor state store after terminal completion
+  until purged or removed by retention. Completed histories are not free.
+- By default, Dapr imposes no global workflow/activity concurrency ceiling.
+  Concurrency must come from Dapr configuration and benchmark admission logic,
+  not from assuming the runtime will self-throttle.
+- Termination stops the workflow state machine and child workflows, but it does
+  not cancel already-running activity code. Cleanup must still poll and handle
+  in-flight side effects.
 
 ## Cleanup Rules
 
@@ -37,6 +55,10 @@ Useful upstream docs:
 - If old workflow state is intentionally disposable, quiesce workflow-producing
   apps before clearing state stores or scheduler data. Deleting only Postgres
   workflow rows can leave scheduler reminders behind.
+- For dev-only benchmark runs where no workflow history must be retained,
+  prefer normal terminate-then-purge after terminal status. Use direct state
+  deletion only after all related benchmark runs, leases, sessions, sandboxes,
+  and workflow-producing pods are quiesced.
 
 ## Reset Guidance
 
@@ -62,6 +84,10 @@ capacity monitoring for the actor state store and Scheduler embedded etcd.
   matching persisted workflow history.
 - Gate benchmark launches while workflow-builder is rolling, Argo hooks are
   running, or the managing Argo Application is not stable.
+- Gate benchmark launches when recent agent-host daprd logs show actor lock,
+  scheduler/reminder, or workflow retry pressure, or when any active agent-host
+  app container has OOMKilled. Parent workflow-orchestrator pressure alone is
+  not enough for Kueue-backed session-host runs.
 - Keep session-host pods bounded. For benchmark hosts, a nonterminal workflow
   that stays active past the idle timeout should be terminated and the pod
   should exit nonzero so Kueue/runtime slots are not held indefinitely.
