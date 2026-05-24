@@ -882,6 +882,10 @@ def build_agent_workflow_host_sandbox_manifest(
         ),
         "dapr.io/enable-workflow": "true",
         "dapr.io/enable-native-sidecar": "true",
+        "dapr.io/internal-grpc-port": os.environ.get(
+            "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT",
+            "3502",
+        ),
         "dapr.io/placement-host-address": os.environ.get(
             "DAPR_PLACEMENT_HOST_ADDRESS",
             "dapr-placement-server.dapr-system.svc.cluster.local:50005",
@@ -1131,6 +1135,12 @@ def _wait_for_agent_host_ready(
             failure = _pod_failure_reason(pod)
             if failure:
                 last_failure = failure
+                phase = getattr(getattr(pod, "status", None), "phase", None)
+                if phase == "Failed":
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"agent workflow host {agent_app_id} failed before readiness: {failure}",
+                    )
                 continue
             if _pod_is_ready(pod):
                 return "ready"
@@ -1145,6 +1155,11 @@ def _wait_for_agent_host_ready(
         last_phase,
         last_failure,
     )
+    if last_failure:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"agent workflow host {agent_app_id} failed before readiness: {last_failure}",
+        )
     return "queued"
 
 

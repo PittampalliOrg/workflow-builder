@@ -211,6 +211,7 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert annotations["dapr.io/config"] == "workflow-builder-agent-runtime"
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
+    assert annotations["dapr.io/internal-grpc-port"] == "3502"
     assert annotations["dapr.io/max-body-size"] == "16Mi"
     assert annotations["prometheus.io/scrape"] == "true"
     assert annotations["prometheus.io/port"] == "9090"
@@ -803,6 +804,70 @@ def test_wait_for_agent_host_ready_allows_sandbox_retry_after_pod_startup_error(
     )
 
     assert status == "ready"
+
+
+def test_wait_for_agent_host_ready_fails_on_terminal_pod_failure() -> None:
+    failed_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Failed",
+            reason="Error",
+            conditions=[],
+            container_statuses=[],
+        )
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[failed_pod])
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        app_module._wait_for_agent_host_ready(
+            core,
+            namespace="workflow-builder",
+            agent_app_id="agent-session-abc123",
+            wait_seconds=1,
+        )
+
+    assert excinfo.value.status_code == 503
+    assert "Error" in str(excinfo.value.detail)
+
+
+def test_wait_for_agent_host_ready_fails_on_unrecovered_startup_error(
+    monkeypatch,
+) -> None:
+    failed_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[],
+            container_statuses=[
+                SimpleNamespace(
+                    state=SimpleNamespace(
+                        waiting=SimpleNamespace(
+                            reason="CrashLoopBackOff",
+                            message="back-off restarting failed container",
+                        ),
+                        terminated=None,
+                    )
+                )
+            ],
+        )
+    )
+    core = SimpleNamespace(
+        list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[failed_pod])
+    )
+    ticks = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: next(ticks, 2.0))
+    monkeypatch.setattr(app_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(HTTPException) as excinfo:
+        app_module._wait_for_agent_host_ready(
+            core,
+            namespace="workflow-builder",
+            agent_app_id="agent-session-abc123",
+            wait_seconds=1,
+        )
+
+    assert excinfo.value.status_code == 503
+    assert "CrashLoopBackOff" in str(excinfo.value.detail)
 
 
 def test_wait_for_agent_host_ready_fails_when_sandbox_fails() -> None:
