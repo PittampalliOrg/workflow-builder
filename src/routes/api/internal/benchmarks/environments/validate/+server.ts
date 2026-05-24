@@ -4,39 +4,42 @@ import {
 	planSwebenchEnvironmentValidation,
 	submitSwebenchEnvironmentValidationBuilds,
 } from "$lib/server/benchmarks/environment-validation";
-import {
-	normalizeInstanceIds,
-	normalizeSwebenchSuiteSlug,
-	type SwebenchSuiteSlug,
-} from "$lib/server/benchmarks/swebench";
+import { normalizeInstanceIds } from "$lib/server/benchmarks/swebench";
 import { db } from "$lib/server/db";
+import { requireInternal } from "$lib/server/internal-auth";
 
 const DEFAULT_VALIDATION_LIMIT = 10;
-const MAX_VALIDATION_LIMIT = 100;
+const MAX_VALIDATION_LIMIT = 500;
 
-export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.session?.userId) return error(401, "Authentication required");
+export const POST: RequestHandler = async ({ request }) => {
+	requireInternal(request);
 	if (!db) return error(503, "Database not configured");
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-	const suiteSlug = requireSuiteSlug(body.suiteSlug ?? body.suite);
-	const requestedInstanceIds = normalizeInstanceIds(
+	const suiteSlug = readRequiredString(body.suiteSlug ?? body.suite, "suiteSlug");
+	const instanceIds = normalizeInstanceIds(
 		body.instanceIds ?? body.selectedInstanceIds ?? [],
 	);
 	const limit = clampInt(body.limit, 1, MAX_VALIDATION_LIMIT, DEFAULT_VALIDATION_LIMIT);
 	const targetValidatedCount =
 		body.targetValidatedCount == null
 			? null
-			: clampInt(body.targetValidatedCount, 1, 500, limit);
+			: clampInt(body.targetValidatedCount, 1, MAX_VALIDATION_LIMIT, limit);
+	const allowBuild = body.allowBuild !== false;
 
 	const plan = await planSwebenchEnvironmentValidation({
 		suiteSlug,
-		instanceIds: requestedInstanceIds,
-		limit: requestedInstanceIds.length > 0 ? null : 500,
+		instanceIds,
+		limit: instanceIds.length > 0 ? null : Math.max(limit, targetValidatedCount ?? 0, 500),
+		syncBuildStatuses: true,
 	});
 	if (plan.missingInstanceIds.length > 0) {
-		return error(
-			409,
-			`SWE-bench metadata has not been imported for ${plan.missingInstanceIds.length} selected instance(s): ${plan.missingInstanceIds.slice(0, 20).join(", ")}`,
+		return json(
+			{
+				message: `SWE-bench metadata has not been imported for ${plan.missingInstanceIds.length} selected instance(s)`,
+				suiteSlug: plan.suiteSlug,
+				missingInstanceIds: plan.missingInstanceIds,
+			},
+			{ status: 409 },
 		);
 	}
 
@@ -44,28 +47,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		plan,
 		limit,
 		targetValidatedCount,
-		allowBuild: true,
+		allowBuild,
 	});
 
 	return json({
-		suiteSlug,
+		suiteSlug: plan.suiteSlug,
 		limit,
 		targetValidatedCount,
-		missingInstanceIds: plan.missingInstanceIds,
-		coverage: {
-			total: plan.coverage.total,
-			validated: plan.coverage.validated,
-			building: plan.coverage.building,
-			failed: plan.coverage.failed,
-			notBuilt: plan.coverage.notBuilt,
-		},
-		selected: submission.selected.length,
-		submitted: submission.submitted,
-		results: submission.results,
+		allowBuild,
+		coverage: plan.coverage,
 		validated: idsForStatus(plan, "validated"),
 		building: idsForStatus(plan, "building"),
 		notBuilt: idsForStatus(plan, "not_built"),
 		failed: idsForStatus(plan, "failed"),
+		submitted: submission.submitted,
 		submittedBuilds: submission.results.map((result) => ({
 			instanceId: result.instanceId,
 			buildId: result.buildId,
@@ -73,14 +68,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			pipelineRunNamespace: result.pipelineRunNamespace,
 			envSpecHash: result.envSpecHash,
 			status: result.environmentStatus,
+			reason: result.reason,
+			error: result.error,
 		})),
+		results: submission.results,
 		nextExactReadyInstanceIds: plan.nextExactReadyInstanceIds,
-		skipped: {
-			alreadyValidated: plan.coverage.validated,
-			alreadyBuilding: plan.coverage.building,
-			failedRequiresReset: plan.coverage.failed,
-			missingMetadata: plan.coverage.missingMetadata,
-		},
 	});
 };
 
@@ -93,11 +85,9 @@ function idsForStatus(
 		.map((item) => item.row.instanceId);
 }
 
-function requireSuiteSlug(value: unknown): SwebenchSuiteSlug {
-	if (typeof value !== "string" || !value.trim()) {
-		throw error(400, "suiteSlug is required");
-	}
-	return normalizeSwebenchSuiteSlug(value);
+function readRequiredString(value: unknown, name: string): string {
+	if (typeof value === "string" && value.trim()) return value.trim();
+	throw error(400, `${name} is required`);
 }
 
 function clampInt(

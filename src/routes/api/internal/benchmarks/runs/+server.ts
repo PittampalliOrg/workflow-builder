@@ -1,35 +1,18 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { requireInternal } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
-import {
-	agents,
-	benchmarkInstances,
-	benchmarkSuites,
-	environmentImageBuilds,
-} from "$lib/server/db/schema";
-import {
-	buildSwebenchEnvironmentSpec,
-	syncEnvironmentBuild,
-} from "$lib/server/environments/environment-image-builds";
-import {
-	isExactValidatedSwebenchInferenceEnvironment,
-	loadSwebenchInferenceEnvironmentMappings,
-} from "$lib/server/benchmarks/inference-environments";
+import { agents } from "$lib/server/db/schema";
 import { BenchmarkAgentValidationError } from "$lib/server/benchmarks/agents";
 import {
 	createBenchmarkRun,
-	ensureDefaultBenchmarkSuites,
 	getBenchmarkRun,
 	markBenchmarkRunStatus,
 	startSwebenchCoordinator,
 } from "$lib/server/benchmarks/service";
-import {
-	normalizeInstanceIds,
-	normalizeSwebenchSuiteSlug,
-	type SwebenchSuiteSlug,
-} from "$lib/server/benchmarks/swebench";
+import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
+import { selectExactReadySwebenchInstanceIds } from "$lib/server/benchmarks/environment-validation";
 
 export const POST: RequestHandler = async ({ request }) => {
 	requireInternal(request);
@@ -44,22 +27,49 @@ export const POST: RequestHandler = async ({ request }) => {
 	const suiteSlug = normalizeSwebenchSuiteSlug(
 		readOptionalString(body.suiteSlug) ?? readOptionalString(body.suite) ?? "SWE-bench_Verified",
 	);
-	const selectedInstanceIds = await resolveInstanceIds({
+	const requestedLimit = readOptionalInt(body.limit);
+	const selection = await selectExactReadySwebenchInstanceIds({
 		suiteSlug,
 		instanceIds: body.instanceIds ?? body.selectedInstanceIds,
-		limit: readOptionalInt(body.limit),
+		limit: requestedLimit,
+		syncBuildStatuses: body.previewOnly !== true && body.dryRun !== true,
 	});
-	if (selectedInstanceIds.length === 0) {
-		return error(409, "No prevalidated SWE-bench instances matched the request");
+	if (selection.missingInstanceIds.length > 0) {
+		return json(
+			{
+				message: `SWE-bench metadata has not been imported for ${selection.missingInstanceIds.length} selected instance(s)`,
+				...selection,
+			},
+			{ status: 409 },
+		);
 	}
 	if (body.previewOnly === true || body.dryRun === true) {
 		return json({
 			preview: true,
-			suiteSlug,
-			selectedInstanceIds,
-			selectedCount: selectedInstanceIds.length,
-			requestedLimit: readOptionalInt(body.limit) ?? selectedInstanceIds.length,
+			...selection,
 		});
+	}
+	const allowPartialSelection = body.allowPartialSelection === true;
+	if (
+		!allowPartialSelection &&
+		selection.selectedCount < selection.requestedLimit
+	) {
+		return json(
+			{
+				message: `Only ${selection.selectedCount} exact prevalidated SWE-bench instance(s) matched requested limit ${selection.requestedLimit}`,
+				...selection,
+			},
+			{ status: 409 },
+		);
+	}
+	if (selection.selectedInstanceIds.length === 0) {
+		return json(
+			{
+				message: "No prevalidated SWE-bench instances matched the request",
+				...selection,
+			},
+			{ status: 409 },
+		);
 	}
 
 	let run;
@@ -70,7 +80,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			suiteSlug,
 			agentId,
 			agentVersion: readOptionalInt(body.agentVersion) ?? undefined,
-			instanceIds: selectedInstanceIds,
+			instanceIds: selection.selectedInstanceIds,
 			modelNameOrPath: readOptionalString(body.modelNameOrPath) ?? undefined,
 			modelConfigLabel: readOptionalString(body.modelConfigLabel),
 			concurrency: readOptionalInt(body.concurrency) ?? undefined,
@@ -111,7 +121,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		{
 			run: fullRun,
 			coordinatorStartError,
-			selectedInstanceIds,
+			selectedInstanceIds: selection.selectedInstanceIds,
+			selection,
 		},
 		{ status: 201 },
 	);
@@ -160,144 +171,4 @@ async function resolveAgentId(
 		)
 		.limit(1);
 	return agent?.id ?? null;
-}
-
-async function resolveInstanceIds(input: {
-	suiteSlug: SwebenchSuiteSlug;
-	instanceIds: unknown;
-	limit: number | null;
-}): Promise<string[]> {
-	const explicitIds = normalizeInstanceIds(input.instanceIds);
-	if (explicitIds.length > 0) return explicitIds;
-	const limit = Math.max(1, Math.min(input.limit ?? 1, 500));
-	return selectPrevalidatedInstanceIds(input.suiteSlug, limit);
-}
-
-async function selectPrevalidatedInstanceIds(
-	suiteSlug: SwebenchSuiteSlug,
-	limit: number,
-): Promise<string[]> {
-	const database = db;
-	if (!database) throw error(503, "Database not configured");
-	await ensureDefaultBenchmarkSuites();
-	const [suite] = await database
-		.select({
-			id: benchmarkSuites.id,
-			slug: benchmarkSuites.slug,
-			datasetName: benchmarkSuites.datasetName,
-		})
-		.from(benchmarkSuites)
-		.where(eq(benchmarkSuites.slug, suiteSlug))
-		.limit(1);
-	if (!suite) throw error(400, `Unsupported benchmark suite: ${suiteSlug}`);
-	const candidates = await database
-		.select({
-			instanceId: benchmarkInstances.instanceId,
-			repo: benchmarkInstances.repo,
-			baseCommit: benchmarkInstances.baseCommit,
-			testMetadata: benchmarkInstances.testMetadata,
-		})
-		.from(benchmarkInstances)
-		.where(eq(benchmarkInstances.suiteId, suite.id))
-		.orderBy(asc(benchmarkInstances.instanceId))
-		.limit(500);
-	const staticMappings = loadSwebenchInferenceEnvironmentMappings();
-	const hashByInstance = new Map<string, string>();
-	const staticReady = new Set<string>();
-	for (const candidate of candidates) {
-		if (!candidate.repo || !candidate.baseCommit) continue;
-		const spec = buildSwebenchEnvironmentSpec({
-			dataset: suite.datasetName,
-			suiteSlug,
-			instanceId: candidate.instanceId,
-			repo: candidate.repo,
-			baseCommit: candidate.baseCommit,
-			testMetadata: candidate.testMetadata,
-		});
-		if (
-			isExactValidatedSwebenchInferenceEnvironment(
-				{
-					suiteSlug,
-					repo: candidate.repo,
-					baseCommit: candidate.baseCommit,
-					testMetadata: candidate.testMetadata,
-				},
-				spec.envSpecHash,
-				{ mappings: staticMappings },
-			)
-		) {
-			staticReady.add(candidate.instanceId);
-			continue;
-		}
-		hashByInstance.set(candidate.instanceId, spec.envSpecHash);
-	}
-	if (hashByInstance.size === 0) return [];
-	await syncSelectableEnvironmentBuilds(Array.from(hashByInstance.values()));
-	const validatedBuilds = await database
-		.select({ envSpecHash: environmentImageBuilds.envSpecHash })
-		.from(environmentImageBuilds)
-		.where(
-			and(
-				inArray(environmentImageBuilds.envSpecHash, Array.from(hashByInstance.values())),
-				eq(environmentImageBuilds.status, "validated"),
-				eq(environmentImageBuilds.validationStatus, "validated"),
-				sql`${environmentImageBuilds.sandboxImage} is not null`,
-				sql`${environmentImageBuilds.digest} is not null`,
-			),
-		);
-	const validatedHashes = new Set(
-		validatedBuilds.map((build) => build.envSpecHash),
-	);
-	const selected: string[] = [];
-	for (const candidate of candidates) {
-		if (staticReady.has(candidate.instanceId)) {
-			selected.push(candidate.instanceId);
-			if (selected.length >= limit) break;
-			continue;
-		}
-		const hash = hashByInstance.get(candidate.instanceId);
-		if (!hash || !validatedHashes.has(hash)) continue;
-		selected.push(candidate.instanceId);
-		if (selected.length >= limit) break;
-	}
-	return selected;
-}
-
-async function syncSelectableEnvironmentBuilds(envSpecHashes: string[]) {
-	const database = db;
-	if (!database || envSpecHashes.length === 0) return;
-	const limit = readPositiveEnvInt("SWEBENCH_RANDOM_SELECTION_SYNC_BUILDS_LIMIT", 32);
-	if (limit <= 0) return;
-	const rows = await database
-		.select()
-		.from(environmentImageBuilds)
-		.where(
-			and(
-				inArray(environmentImageBuilds.envSpecHash, envSpecHashes),
-				inArray(environmentImageBuilds.status, ["queued", "building"]),
-			),
-		)
-		.orderBy(asc(environmentImageBuilds.updatedAt))
-		.limit(limit);
-	for (const row of rows) {
-		try {
-			await syncEnvironmentBuild(row);
-		} catch (err) {
-			console.warn(
-				"[benchmarks] failed to sync selectable SWE-bench environment build",
-				{
-					buildId: row.id,
-					pipelineRunName: row.pipelineRunName,
-					error: err instanceof Error ? err.message : String(err),
-				},
-			);
-		}
-	}
-}
-
-function readPositiveEnvInt(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (!raw) return fallback;
-	const parsed = Number.parseInt(raw, 10);
-	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }

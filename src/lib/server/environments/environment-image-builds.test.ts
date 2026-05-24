@@ -655,6 +655,46 @@ describe("SWE-bench environment image build planning", () => {
 		);
 	});
 
+	it("pins sharded SWE-bench PipelineRuns to configured cache nodes", () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS", "3");
+		vi.stubEnv(
+			"SWEBENCH_INFERENCE_BUILD_CACHE_SHARD_NODES",
+			"hub-build-1,hub-build-2,hub-build-2",
+		);
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "django__django-10554",
+			repo: "django/django",
+			baseCommit: "08ecf3f6a13900c80ba7143db2f00898b783510e",
+			testMetadata: {
+				version: "2.2",
+				test_patch: "diff --git a/tests/test_fix.py b/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["tests/test_existing.py::test_existing"],
+			},
+		});
+		const shard =
+			createHash("sha256").update(spec.envSpecHash).digest().readUInt32BE(0) % 3;
+		const expectedNode = ["hub-build-1", "hub-build-2", "hub-build-2"][shard];
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+
+		expect(runSpec.taskRunTemplate).toMatchObject({
+			podTemplate: {
+				nodeSelector: {
+					"stacks.io/build-pool": "hub",
+					"kubernetes.io/hostname": expectedNode,
+				},
+			},
+		});
+	});
+
 	it("can label SWE-bench PipelineRuns for Kueue-managed hub build capacity", () => {
 		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME", "swebench-image-builds");
 		const spec = buildSwebenchEnvironmentSpec({

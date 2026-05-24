@@ -811,8 +811,12 @@ export function buildSwebenchPipelineRunManifest(
 	pipelineRunName: string,
 	namespace: string,
 ): TektonPipelineRun {
-	const buildahCacheClaimName = swebenchBuildahCacheClaimName(spec);
+	const buildahCache = swebenchBuildahCacheSelection(spec);
 	const kueueQueueName = configuredSwebenchBuildKueueQueueName();
+	const nodeSelector = {
+		"stacks.io/build-pool": "hub",
+		...(buildahCache.nodeName ? { "kubernetes.io/hostname": buildahCache.nodeName } : {}),
+	};
 	return {
 		apiVersion: "tekton.dev/v1",
 		kind: "PipelineRun",
@@ -827,7 +831,7 @@ export function buildSwebenchPipelineRunManifest(
 				"workflow-builder.cnoe.io/environment-key": spec.environmentKey,
 				"workflow-builder.cnoe.io/env-spec-hash": spec.envSpecHash.slice(0, 63),
 				"workflow-builder.cnoe.io/build-strategy": spec.buildStrategy,
-				"workflow-builder.cnoe.io/build-cache": buildahCacheClaimName,
+				"workflow-builder.cnoe.io/build-cache": buildahCache.claimName,
 				...(kueueQueueName ? { "kueue.x-k8s.io/queue-name": kueueQueueName } : {}),
 			},
 		},
@@ -836,7 +840,7 @@ export function buildSwebenchPipelineRunManifest(
 			taskRunTemplate: {
 				serviceAccountName: "workflow-builder-build-trigger",
 				podTemplate: {
-					nodeSelector: { "stacks.io/build-pool": "hub" },
+					nodeSelector,
 					tolerations: [
 						{
 							key: "stacks.io/build-pool",
@@ -877,7 +881,7 @@ export function buildSwebenchPipelineRunManifest(
 			workspaces: [
 				{
 					name: "buildah-cache",
-					persistentVolumeClaim: { claimName: buildahCacheClaimName },
+					persistentVolumeClaim: { claimName: buildahCache.claimName },
 				},
 				{ name: "dockerconfig", secret: { secretName: "gitea-registry-credentials" } },
 				{ name: "stacks-source", emptyDir: {} },
@@ -887,13 +891,30 @@ export function buildSwebenchPipelineRunManifest(
 }
 
 function swebenchBuildahCacheClaimName(spec: SwebenchEnvironmentSpec): string {
+	return swebenchBuildahCacheSelection(spec).claimName;
+}
+
+function swebenchBuildahCacheSelection(spec: SwebenchEnvironmentSpec): {
+	claimName: string;
+	shard: number | null;
+	nodeName: string | null;
+} {
 	const shards = configuredSwebenchBuildahCacheShards();
 	if (shards <= 1) {
-		return DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM;
+		return {
+			claimName: DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM,
+			shard: null,
+			nodeName: null,
+		};
 	}
 	const hash = createHash("sha256").update(spec.envSpecHash).digest();
 	const shard = hash.readUInt32BE(0) % shards;
-	return `${DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM}-${shard}`;
+	const nodeName = configuredSwebenchBuildahCacheShardNodes()[shard] ?? null;
+	return {
+		claimName: `${DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM}-${shard}`,
+		shard,
+		nodeName,
+	};
 }
 
 function configuredSwebenchBuildahCacheShards(): number {
@@ -908,6 +929,12 @@ function configuredSwebenchBuildahCacheShards(): number {
 		return 1;
 	}
 	return Math.min(parsed, MAX_SWEBENCH_BUILDAH_CACHE_SHARDS);
+}
+
+function configuredSwebenchBuildahCacheShardNodes(): string[] {
+	const raw = runtimeEnvString("SWEBENCH_INFERENCE_BUILD_CACHE_SHARD_NODES");
+	if (!raw) return [];
+	return raw.split(",").map((part) => part.trim());
 }
 
 function configuredSwebenchBuildKueueQueueName(): string | null {
