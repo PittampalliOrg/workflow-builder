@@ -37,6 +37,7 @@ export type ParentWorkflowRuntimeSnapshot = {
 	schedulerReadyPods: number | null;
 	recentActorErrorCount: number | null;
 	recentReminderErrorCount: number | null;
+	recentStaleWorkflowEventCount: number | null;
 	recentStartPendingTimeoutCount: number | null;
 	logWindowSeconds: number;
 	daprRuntimePressure: boolean;
@@ -61,6 +62,7 @@ const DEFAULT_PARENT_APP_ID = "workflow-orchestrator";
 const DEFAULT_CONFIGURATION = "workflow-builder-tracing";
 const DEFAULT_DAPR_LOG_WINDOW_SECONDS = 5 * 60;
 const DEFAULT_AGENT_HOST_STARTUP_GRACE_SECONDS = 90;
+const DEFAULT_STALE_WORKFLOW_EVENT_PRESSURE_THRESHOLD = 25;
 const DEFAULT_READYZ_PORT = 8080;
 
 function positiveInt(value: unknown): number | null {
@@ -181,6 +183,13 @@ function readyzPort(): number {
 function daprLogWindowSeconds(): number {
 	return (
 		positiveInt(process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS) ?? DEFAULT_DAPR_LOG_WINDOW_SECONDS
+	);
+}
+
+function staleWorkflowEventPressureThreshold(): number {
+	return (
+		positiveInt(process.env.BENCHMARK_DAPR_STALE_WORKFLOW_EVENT_PRESSURE_THRESHOLD) ??
+		DEFAULT_STALE_WORKFLOW_EVENT_PRESSURE_THRESHOLD
 	);
 }
 
@@ -369,12 +378,14 @@ function countLogMatches(
 ): {
 	actorErrors: number;
 	reminderErrors: number;
+	staleWorkflowEvents: number;
 } {
 	const ignoreRecoverableActorChurn =
 		options.ignoreRecoverableActorChurn ?? true;
 	const ignoreActorLockTimeouts = options.ignoreActorLockTimeouts ?? true;
 	let actorErrors = 0;
 	let reminderErrors = 0;
+	let staleWorkflowEvents = 0;
 	for (const line of logs.split(/\r?\n/)) {
 		if (
 			/Scheduler stream disconnected/i.test(line) &&
@@ -403,12 +414,14 @@ function countLogMatches(
 				line,
 			)
 		) {
+			staleWorkflowEvents += 1;
 			continue;
 		}
 		if (
 			/failed to submit termination request to sub-orchestration/i.test(line) &&
 			/no such instance exists/i.test(line)
 		) {
+			staleWorkflowEvents += 1;
 			continue;
 		}
 		if (
@@ -426,6 +439,7 @@ function countLogMatches(
 			/failed to invoke scheduled actor reminder named:/i.test(line) &&
 			/execution aborted/i.test(line)
 		) {
+			staleWorkflowEvents += 1;
 			continue;
 		}
 		if (
@@ -437,12 +451,15 @@ function countLogMatches(
 			continue;
 		}
 		if (/No workflow state found for actor .*terminating execution/i.test(line)) {
+			staleWorkflowEvents += 1;
 			continue;
 		}
 		if (/Unable to get data on the instance: .*no such instance exists/i.test(line)) {
+			staleWorkflowEvents += 1;
 			continue;
 		}
 		if (/DaprBuiltInActorNotFoundRetries/i.test(line)) {
+			staleWorkflowEvents += 1;
 			continue;
 		}
 		if (
@@ -455,7 +472,7 @@ function countLogMatches(
 		if (/actor/i.test(line)) actorErrors += 1;
 		if (/reminder|scheduler/i.test(line)) reminderErrors += 1;
 	}
-	return { actorErrors, reminderErrors };
+	return { actorErrors, reminderErrors, staleWorkflowEvents };
 }
 
 async function countRecentDaprLogErrors(params: {
@@ -465,9 +482,14 @@ async function countRecentDaprLogErrors(params: {
 	includeUnready?: boolean;
 	ignoreRecoverableActorChurn?: boolean;
 	ignoreActorLockTimeouts?: boolean;
-}): Promise<{ actorErrors: number | null; reminderErrors: number | null }> {
+}): Promise<{
+	actorErrors: number | null;
+	reminderErrors: number | null;
+	staleWorkflowEvents: number | null;
+}> {
 	let actorErrors = 0;
 	let reminderErrors = 0;
+	let staleWorkflowEvents = 0;
 	const pods = params.includeUnready
 		? params.pods.filter(podIsActive)
 		: params.pods.filter(podIsReady);
@@ -493,8 +515,9 @@ async function countRecentDaprLogErrors(params: {
 		});
 		actorErrors += counts.actorErrors;
 		reminderErrors += counts.reminderErrors;
+		staleWorkflowEvents += counts.staleWorkflowEvents;
 	}
-	return { actorErrors, reminderErrors };
+	return { actorErrors, reminderErrors, staleWorkflowEvents };
 }
 
 function appContainerName(pod: KubePod, fallback: string): string {
@@ -568,6 +591,7 @@ export async function loadAgentHostDaprRuntimeSnapshot(
 		let logCounts: {
 			actorErrors: number | null;
 			reminderErrors: number | null;
+			staleWorkflowEvents: number | null;
 		};
 		try {
 			logCounts = await countRecentDaprLogErrors({
@@ -578,7 +602,7 @@ export async function loadAgentHostDaprRuntimeSnapshot(
 			});
 		} catch (err) {
 			console.warn("[bench-capacity] agent-host daprd log scan unavailable", err);
-			logCounts = { actorErrors: null, reminderErrors: null };
+			logCounts = { actorErrors: null, reminderErrors: null, staleWorkflowEvents: null };
 		}
 		const pressureReasons = [
 			...(unhealthyPods.length > 0 ? ["agent_host_unhealthy"] : []),
@@ -671,6 +695,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 		let logCounts: {
 			actorErrors: number | null;
 			reminderErrors: number | null;
+			staleWorkflowEvents: number | null;
 		};
 		let startPendingTimeoutCount: number | null;
 		try {
@@ -681,7 +706,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			});
 		} catch (err) {
 			console.warn("[bench-capacity] daprd log scan unavailable", err);
-			logCounts = { actorErrors: null, reminderErrors: null };
+			logCounts = { actorErrors: null, reminderErrors: null, staleWorkflowEvents: null };
 		}
 		try {
 			startPendingTimeoutCount = await countRecentWorkflowStartPendingTimeouts({
@@ -695,9 +720,11 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			startPendingTimeoutCount = null;
 		}
 		const daprRuntimeVersion = parentPods.map(parseDaprVersionFromPod).find(Boolean) ?? null;
+		const staleWorkflowEvents = logCounts.staleWorkflowEvents ?? 0;
 		const daprRuntimePressure =
 			(logCounts.actorErrors ?? 0) > 0 ||
 			(logCounts.reminderErrors ?? 0) > 0 ||
+			staleWorkflowEvents >= staleWorkflowEventPressureThreshold() ||
 			(startPendingTimeoutCount ?? 0) > 0 ||
 			(replicas != null &&
 				connectedWorkerPods != null &&
@@ -724,6 +751,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			schedulerReadyPods: scheduler.schedulerReadyPods,
 			recentActorErrorCount: logCounts.actorErrors,
 			recentReminderErrorCount: logCounts.reminderErrors,
+			recentStaleWorkflowEventCount: logCounts.staleWorkflowEvents,
 			recentStartPendingTimeoutCount: startPendingTimeoutCount,
 			daprRuntimePressure,
 			error: null,
@@ -750,6 +778,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			schedulerReadyPods: null,
 			recentActorErrorCount: null,
 			recentReminderErrorCount: null,
+			recentStaleWorkflowEventCount: null,
 			recentStartPendingTimeoutCount: null,
 			daprRuntimePressure: false,
 			error: err instanceof Error ? err.message : String(err),
@@ -771,4 +800,5 @@ export const __daprWorkflowCapacityForTest = {
 	podIsAgentHost,
 	podIsReady,
 	parseReadyz,
+	staleWorkflowEventPressureThreshold,
 };

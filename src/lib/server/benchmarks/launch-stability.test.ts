@@ -163,6 +163,12 @@ describe("benchmark launch control-plane stability", () => {
         secondsSinceFinished: null,
         error: null,
       },
+      activeSwebenchWorkflows: {
+        stable: true,
+        count: 0,
+        sampleIds: [],
+        error: null,
+      },
     };
 
     expect(benchmarkLaunchControlPlaneError(stability)).toBe(

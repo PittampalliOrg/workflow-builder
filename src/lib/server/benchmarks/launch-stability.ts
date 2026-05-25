@@ -6,6 +6,7 @@ import {
   type KubeDeployment,
   type KubePod,
 } from "$lib/server/kube/client";
+import { getOrchestratorUrl } from "$lib/server/dapr-client";
 
 export type BenchmarkLaunchControlPlaneStability = {
   stable: boolean;
@@ -44,6 +45,12 @@ export type BenchmarkLaunchControlPlaneStability = {
     secondsSinceFinished: number | null;
     error: string | null;
   };
+  activeSwebenchWorkflows: {
+    stable: boolean;
+    count: number | null;
+    sampleIds: string[];
+    error: string | null;
+  };
 };
 
 type KubeJob = {
@@ -69,6 +76,16 @@ type ArgoApplication = {
       finishedAt?: string;
     };
   };
+};
+
+type WorkflowListResponse = {
+  workflows?: Array<{
+    instanceId?: string;
+    id?: string;
+    runtimeStatus?: string;
+    status?: string;
+  }>;
+  total?: number;
 };
 
 const DEFAULT_NAMESPACE = "workflow-builder";
@@ -412,16 +429,55 @@ async function loadArgoApplicationStability(input: {
   }
 }
 
+async function loadActiveSwebenchWorkflowStability(): Promise<
+  BenchmarkLaunchControlPlaneStability["activeSwebenchWorkflows"]
+> {
+  try {
+    const query = new URLSearchParams({
+      status: "PENDING,RUNNING",
+      search: "sw-swebench-instance",
+      limit: "200",
+    });
+    const res = await fetch(`${getOrchestratorUrl()}/api/v2/workflows?${query}`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      throw new Error(`list workflows failed: ${res.status} ${await res.text()}`);
+    }
+    const body = (await res.json()) as WorkflowListResponse;
+    const workflows = body.workflows ?? [];
+    const count = Number.isFinite(body.total) ? Number(body.total) : workflows.length;
+    return {
+      stable: count === 0,
+      count,
+      sampleIds: workflows
+        .map((workflow) => workflow.instanceId ?? workflow.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+        .slice(0, 10),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      stable: false,
+      count: null,
+      sampleIds: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function loadBenchmarkLaunchControlPlaneStability(): Promise<BenchmarkLaunchControlPlaneStability> {
   const namespace = configuredNamespace();
   const deploymentName = configuredDeployment();
   const stableSeconds = configuredStableSeconds();
-  const [deployments, pods, hookJobs, argoApplication] = await Promise.all([
-    listDeployments(namespace).catch(() => []),
-    listPods(namespace).catch(() => []),
-    loadHookJobStability({ namespace }),
-    loadArgoApplicationStability({ stableSeconds }),
-  ]);
+  const [deployments, pods, hookJobs, argoApplication, activeSwebenchWorkflows] =
+    await Promise.all([
+      listDeployments(namespace).catch(() => []),
+      listPods(namespace).catch(() => []),
+      loadHookJobStability({ namespace }),
+      loadArgoApplicationStability({ stableSeconds }),
+      loadActiveSwebenchWorkflowStability(),
+    ]);
   const deployment =
     deployments.find((entry) => entry.metadata?.name === deploymentName) ??
     null;
@@ -436,15 +492,20 @@ export async function loadBenchmarkLaunchControlPlaneStability(): Promise<Benchm
     ...deploymentStability.reasons,
     ...(hookJobs.stable ? [] : ["workflow_builder_hook_jobs_active"]),
     ...(argoApplication.stable ? [] : ["argocd_application_not_stable"]),
+    ...(activeSwebenchWorkflows.stable ? [] : ["active_swebench_workflows"]),
   ];
   return {
     stable:
-      deploymentStability.stable && hookJobs.stable && argoApplication.stable,
+      deploymentStability.stable &&
+      hookJobs.stable &&
+      argoApplication.stable &&
+      activeSwebenchWorkflows.stable,
     reasons,
     stableSeconds,
     deployment: deploymentStability,
     hookJobs,
     argoApplication,
+    activeSwebenchWorkflows,
   };
 }
 

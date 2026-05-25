@@ -5,6 +5,7 @@ describe("Dapr workflow capacity diagnostics", () => {
 	afterEach(() => {
 		delete process.env.BENCHMARK_DAPR_LOG_WINDOW_SECONDS;
 		delete process.env.BENCHMARK_AGENT_HOST_STARTUP_GRACE_SECONDS;
+		delete process.env.BENCHMARK_DAPR_STALE_WORKFLOW_EVENT_PRESSURE_THRESHOLD;
 	});
 
 	it("does not count normal actor placement logs as runtime pressure", () => {
@@ -15,7 +16,11 @@ describe("Dapr workflow capacity diagnostics", () => {
 			].join("\n"),
 		);
 
-		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+		expect(counts).toEqual({
+			actorErrors: 0,
+			reminderErrors: 0,
+			staleWorkflowEvents: 0,
+		});
 	});
 
 	it("counts actor and reminder error lines", () => {
@@ -26,7 +31,11 @@ describe("Dapr workflow capacity diagnostics", () => {
 			].join("\n"),
 		);
 
-		expect(counts).toEqual({ actorErrors: 2, reminderErrors: 1 });
+		expect(counts).toEqual({
+			actorErrors: 2,
+			reminderErrors: 1,
+			staleWorkflowEvents: 0,
+		});
 	});
 
 	it("does not count scheduler stream shutdown noise from planned restarts", () => {
@@ -37,7 +46,11 @@ describe("Dapr workflow capacity diagnostics", () => {
 			].join("\n"),
 		);
 
-		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+		expect(counts).toEqual({
+			actorErrors: 0,
+			reminderErrors: 0,
+			staleWorkflowEvents: 0,
+		});
 	});
 
 	it("does not count recoverable actor churn while newly-created session hosts join placement", () => {
@@ -48,7 +61,11 @@ describe("Dapr workflow capacity diagnostics", () => {
 			].join("\n"),
 		);
 
-		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+		expect(counts).toEqual({
+			actorErrors: 0,
+			reminderErrors: 0,
+			staleWorkflowEvents: 0,
+		});
 	});
 
 	it("counts recoverable actor churn on active agent hosts when strict scanning is requested", () => {
@@ -63,7 +80,11 @@ describe("Dapr workflow capacity diagnostics", () => {
 			},
 		);
 
-		expect(counts).toEqual({ actorErrors: 2, reminderErrors: 0 });
+		expect(counts).toEqual({
+			actorErrors: 2,
+			reminderErrors: 0,
+			staleWorkflowEvents: 0,
+		});
 	});
 
 	it("does not count expected post-cancel workflow purge chatter as runtime pressure", () => {
@@ -81,7 +102,22 @@ describe("Dapr workflow capacity diagnostics", () => {
 			].join("\n"),
 		);
 
-		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
+		expect(counts).toEqual({
+			actorErrors: 0,
+			reminderErrors: 0,
+			staleWorkflowEvents: 6,
+		});
+	});
+
+	it("uses a threshold before treating stale workflow event churn as pressure", () => {
+		expect(
+			__daprWorkflowCapacityForTest.staleWorkflowEventPressureThreshold(),
+		).toBe(25);
+
+		process.env.BENCHMARK_DAPR_STALE_WORKFLOW_EVENT_PRESSURE_THRESHOLD = "3";
+		expect(
+			__daprWorkflowCapacityForTest.staleWorkflowEventPressureThreshold(),
+		).toBe(3);
 	});
 
 	it("counts workflow start-pending timeouts from parent app logs", () => {
