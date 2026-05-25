@@ -145,3 +145,16 @@ def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() ->
     assert source.index("if not strict_one_shot_agent_turn and not ctx.is_replaying:") < source.index(
         "_save_plan_to_state(execution_id, plan_content)"
     )
+
+
+def test_agent_runtime_has_no_leftover_hot_path_debug_probes() -> None:
+    source = MAIN_SOURCE.read_text()
+    telemetry_kwargs_source = source[
+        source.index("def _telemetry_context_kwargs") : source.index(
+            "def _runtime_reachable_mcp_url"
+        )
+    ]
+
+    assert "[call-llm-probe]" not in source
+    assert "[mcp] get_llm_tools called" not in source
+    assert '"extra": {' not in telemetry_kwargs_source

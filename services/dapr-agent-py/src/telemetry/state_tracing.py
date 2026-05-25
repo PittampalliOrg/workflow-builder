@@ -188,7 +188,7 @@ def instrument_state_store() -> None:
         # call path / tracer differs"). Cheap: a single set membership check.
         if op not in _fired_ops:
             _fired_ops.add(op)
-            logger.warning(
+            logger.debug(
                 "[state-tracing] wrapper fired: op=%s tracer=%s",
                 op,
                 "yes" if get_tracer() is not None else "none",
@@ -270,4 +270,4 @@ def instrument_state_store() -> None:
         setattr(StateStoreService, name, wrapped)
 
     StateStoreService._wb_state_instrumented = True
-    logger.warning("[state-tracing] StateStoreService instrumented for content capture")
+    logger.info("[state-tracing] StateStoreService instrumented for content capture")

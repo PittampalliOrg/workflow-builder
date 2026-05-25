@@ -1056,13 +1056,6 @@ def _telemetry_context_kwargs(context: dict[str, Any] | None) -> dict[str, Any]:
         "workflow_trace_group_id": context.get("workflowTraceGroupId")
         or context.get("workflowExecutionId")
         or mlflow_context.get("traceGroupId"),
-        "extra": {
-            "workflow.activity.correlation_id": context.get(
-                "workflowActivityCorrelationId"
-            )
-        }
-        if context.get("workflowActivityCorrelationId")
-        else None,
     }
 
 
@@ -2432,11 +2425,6 @@ class OpenShellDurableAgent(DurableAgent):
     def get_llm_tools(self):
         tools = list(super().get_llm_tools())
         instance_id = self._active_llm_instance_id or ""
-        logger.warning(
-            "[mcp] get_llm_tools called: super()=%d tools, inst_id=%s",
-            len(tools),
-            instance_id,
-        )
         mcp_tools = self._mcp_tools_by_instance.get(instance_id) or {}
         if mcp_tools:
             existing_names = {
@@ -2626,12 +2614,6 @@ class OpenShellDurableAgent(DurableAgent):
 
     def call_llm(self, ctx, payload):
         """Publish llm_start/llm_complete streaming events with content."""
-        import sys as _sys
-        _sys.stderr.write(
-            f"[call-llm-probe] entered: payload_keys={list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__} "
-            f"tools_on_executor={len(self.tool_executor.list_tools())}\n"
-        )
-        _sys.stderr.flush()
         # Re-apply Anthropic adapter on each call (survives durable workflow replay)
         try:
             from src.anthropic_adapter import patch_for_anthropic
