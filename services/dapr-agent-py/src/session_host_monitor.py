@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -36,3 +37,18 @@ def normalize_nonterminal_timeout_action(value: str | None) -> str:
     if action in {"terminate", "terminated", "exit", "fail"}:
         return "terminate"
     return "warn"
+
+
+def workflow_progress_marker(state: dict[str, Any]) -> str | None:
+    for key in (
+        "lastUpdatedAt",
+        "last_updated_at",
+        "updatedAt",
+        "updated_at",
+    ):
+        value = state.get(key)
+        if value is not None:
+            marker = str(value).strip()
+            if marker:
+                return marker
+    return None

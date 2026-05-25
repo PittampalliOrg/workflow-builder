@@ -11,6 +11,7 @@ from src.session_host_monitor import (
     decide_missing_workflow_action,
     normalize_nonterminal_timeout_action,
     terminal_hold_seconds_for_status,
+    workflow_progress_marker,
 )
 
 
@@ -69,3 +70,13 @@ def test_nonterminal_timeout_action_accepts_terminate_aliases() -> None:
     assert normalize_nonterminal_timeout_action("TERMINATE") == "terminate"
     assert normalize_nonterminal_timeout_action("exit") == "terminate"
     assert normalize_nonterminal_timeout_action("fail") == "terminate"
+
+
+def test_workflow_progress_marker_reads_dapr_status_timestamps() -> None:
+    assert (
+        workflow_progress_marker({"lastUpdatedAt": "2026-05-25T05:39:41Z"})
+        == "2026-05-25T05:39:41Z"
+    )
+    assert workflow_progress_marker({"last_updated_at": "  t2  "}) == "t2"
+    assert workflow_progress_marker({"updatedAt": 123}) == "123"
+    assert workflow_progress_marker({"runtimeStatus": "RUNNING"}) is None

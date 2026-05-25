@@ -106,8 +106,11 @@ executions that must be preserved.
   app container has OOMKilled. Parent workflow-orchestrator pressure alone is
   not enough for Kueue-backed session-host runs.
 - Keep session-host pods bounded. For benchmark hosts, a nonterminal workflow
-  that stays active past the idle timeout should be terminated and the pod
-  should exit nonzero so Kueue/runtime slots are not held indefinitely.
+  that makes no Dapr status progress past the idle timeout should be
+  terminated and the pod should exit nonzero so Kueue/runtime slots are not
+  held indefinitely. Do not use raw wall-clock age as the timeout signal:
+  longer SWE-bench attempts can legitimately run past 15 minutes while still
+  updating workflow status.
 - For SWE-bench one-shot agent hosts, keep the turn behind a child
   `agent_workflow` boundary while keeping tool execution inline. A 94-instance
   dev checkpoint at 34 effective concurrency proved that fully inline

@@ -282,6 +282,7 @@ from src.session_host_monitor import (
     decide_missing_workflow_action,
     normalize_nonterminal_timeout_action,
     terminal_hold_seconds_for_status,
+    workflow_progress_marker,
 )
 from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.session_config import (
@@ -6367,6 +6368,8 @@ def _run_session_host_monitor(instance_id: str) -> None:
     )
     started_at = time.monotonic()
     first_seen_at: float | None = None
+    last_workflow_progress_at: float | None = None
+    last_workflow_progress_marker: str | None = None
     missing_since: float | None = None
     sidecar_unavailable_since: float | None = None
     logger.info(
@@ -6452,9 +6455,18 @@ def _run_session_host_monitor(instance_id: str) -> None:
                 _session_host_exit(instance_id, 1)
         if isinstance(state, dict) and state:
             missing_since = None
+            now = time.monotonic()
+            progress_marker = workflow_progress_marker(state)
             if first_seen_at is None:
-                first_seen_at = time.monotonic()
+                first_seen_at = now
+                last_workflow_progress_at = now
+                last_workflow_progress_marker = progress_marker
                 logger.info("[session-host] observed workflow %s", instance_id)
+            elif progress_marker and progress_marker != last_workflow_progress_marker:
+                last_workflow_progress_at = now
+                last_workflow_progress_marker = progress_marker
+            elif last_workflow_progress_at is None:
+                last_workflow_progress_at = first_seen_at
             runtime_status = str(
                 state.get("runtimeStatus")
                 or state.get("runtime_status")
@@ -6493,12 +6505,12 @@ def _run_session_host_monitor(instance_id: str) -> None:
                         termination_reason="session_host_workflow_terminal",
                     )
                 _session_host_exit(instance_id, exit_code)
-            now = time.monotonic()
-            if now - first_seen_at > idle_timeout:
+            progress_age = now - (last_workflow_progress_at or first_seen_at)
+            if progress_age > idle_timeout:
                 if nonterminal_timeout_action == "terminate":
                     message = (
-                        f"[session-host] workflow {instance_id} stayed non-terminal "
-                        f"for {idle_timeout}s after first observation; terminating "
+                        f"[session-host] workflow {instance_id} made no status progress "
+                        f"for {idle_timeout}s while non-terminal; terminating "
                         "workflow and exiting"
                     )
                     logger.error(message)
@@ -6523,11 +6535,11 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     )
                     _session_host_exit(instance_id, 1)
                 logger.warning(
-                    "[session-host] workflow %s stayed non-terminal for %ss after first observation; continuing to monitor",
+                    "[session-host] workflow %s made no status progress for %ss while non-terminal; continuing to monitor",
                     instance_id,
                     idle_timeout,
                 )
-                first_seen_at = now
+                last_workflow_progress_at = now
         time.sleep(poll_seconds)
 
 
