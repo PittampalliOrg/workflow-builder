@@ -333,9 +333,11 @@ SWE-bench turn scheduled a second tool but never emitted
 cancelled during Dapr placement churn. Tool execution now stays inline for
 SWE-bench, but the one-shot agent turn runs behind a child `agent_workflow`
 boundary so the session wrapper does not replay through the agent loop's
-runtime seed activities. Operators can still force inline one-shot turns with
-`DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=false` for a targeted
-canary.
+runtime seed activities. A later 94-instance dev checkpoint reproduced the
+same replay risk when the full session turn was forced inline, so dev/staging
+should keep `DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=true`.
+Operators can still force inline one-shot turns with the global or SWE-bench
+specific override for a targeted canary.
 
 ## Kueue Execution Plane Backend
 

@@ -94,12 +94,13 @@ capacity monitoring for the actor state store and Scheduler embedded etcd.
 - Keep session-host pods bounded. For benchmark hosts, a nonterminal workflow
   that stays active past the idle timeout should be terminated and the pod
   should exit nonzero so Kueue/runtime slots are not held indefinitely.
-- For SWE-bench one-shot agent hosts, prefer the inline session turn path over
-  a nested child `agent_workflow`. The inline path keeps seed activities and
-  the agent turn in one deterministic `session_workflow` history and avoids
-  high-concurrency sub-orchestration replay churn. Set
-  `DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=true` only for a
-  focused canary that proves the nested path is needed.
+- For SWE-bench one-shot agent hosts, keep the turn behind a child
+  `agent_workflow` boundary while keeping tool execution inline. A 94-instance
+  dev checkpoint at 34 effective concurrency proved that fully inline
+  `session_workflow` turns can still replay-diverge after seed/runtime
+  activities (`previous execution called call_activity...`). The child turn
+  boundary keeps the session wrapper deterministic; inline tools avoid the
+  older high-churn per-tool child workflow path.
 - Keep interactive sessions on warning behavior unless a user-facing timeout is
   explicitly desired.
 - Treat model max-iteration, no-patch, and empty-patch outcomes as model
