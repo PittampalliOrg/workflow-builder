@@ -4331,17 +4331,10 @@ class OpenShellDurableAgent(DurableAgent):
             ),
         }
         self._remember_runtime_context(instance_id, runtime_context)
-        session_seeded_one_shot_turn = bool(session_id_raw) and strict_one_shot_agent_turn
-        if session_seeded_one_shot_turn:
-            logger.info(
-                "[runtime-context] strict one-shot turn %s using session-seeded context",
-                instance_id,
-            )
-        else:
-            yield ctx.call_activity(
-                self.seed_runtime_context_for_instance,
-                input={"instance_id": instance_id, "context": runtime_context},
-            )
+        yield ctx.call_activity(
+            self.seed_runtime_context_for_instance,
+            input={"instance_id": instance_id, "context": runtime_context},
+        )
 
         metrics_emitted = False
         workflow_terminal = False
