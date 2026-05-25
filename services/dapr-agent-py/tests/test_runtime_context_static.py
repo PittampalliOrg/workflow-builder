@@ -104,7 +104,7 @@ def test_agent_host_readyz_requires_connected_workflow_worker() -> None:
     assert '"code": "workflow_runtime_unavailable"' in source
 
 
-def test_session_bridge_uses_child_workflow_without_debug_flag() -> None:
+def test_session_bridge_uses_child_workflow_for_non_swebench_only() -> None:
     source = MAIN_SOURCE.read_text()
 
     assert "def _one_shot_turn_child_workflow_enabled(" not in source
@@ -123,10 +123,10 @@ def test_session_bridge_uses_child_workflow_without_debug_flag() -> None:
     assert 'child_metadata_for_mode["agentWorkflowMode"] = "strict_sequential"' in source
     assert '"agentWorkflowMode": child_input.get("agentWorkflowMode")' in source
     assert "if not use_child_turn_workflow:" not in source
-    assert "if auto_terminate:" in source
+    assert "if auto_terminate and not is_swebench_execution_context(" in source
     assert "turn_result = yield ctx.call_child_workflow(" in source
     assert 'getattr(self, "agent_workflow_name", "agent_workflow")' in source
-    assert "else:\n                    # Long-lived UI sessions keep the agent turn inline" in source
+    assert "SWE-bench launches brand-new ephemeral agent-host app IDs" in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source
 
 

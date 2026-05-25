@@ -5387,20 +5387,25 @@ class OpenShellDurableAgent(DurableAgent):
                 )
 
             try:
-                if auto_terminate:
-                    # Workflow-bridge sessions are one-shot durable/run calls.
-                    # Keep the agent loop in a real child workflow so the session
-                    # wrapper and the agent's LLM/tool loop do not share Dapr
-                    # action IDs. Sharing one history makes replay sensitive to
-                    # wrapper-only activities such as runtime/MCP seeding.
+                if auto_terminate and not is_swebench_execution_context(
+                    agent_turn_instance_id,
+                    child_input,
+                ):
+                    # Non-SWE-bench workflow-bridge sessions are one-shot
+                    # durable/run calls. Keep the agent loop in a real child
+                    # workflow so the session wrapper and the agent's LLM/tool
+                    # loop do not share Dapr action IDs.
                     turn_result = yield ctx.call_child_workflow(
                         getattr(self, "agent_workflow_name", "agent_workflow"),
                         input=child_input,
                         instance_id=agent_turn_instance_id,
                     )
                 else:
-                    # Long-lived UI sessions keep the agent turn inline so chat
-                    # and tool state remain keyed by the stable session workflow id.
+                    # SWE-bench launches brand-new ephemeral agent-host app IDs
+                    # under load. Running the turn inline avoids a second
+                    # startup-time workflow actor while preserving the strict
+                    # sequential agent loop and the session workflow's durable
+                    # state.
                     turn_result = yield from self.agent_workflow(ctx, child_input)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(

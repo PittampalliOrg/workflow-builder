@@ -23,6 +23,9 @@ Useful upstream docs:
 - https://docs.dapr.io/developing-applications/building-blocks/workflow/workflow-features-concepts/
 - https://docs.dapr.io/developing-applications/building-blocks/workflow/workflow-versioning/
 - https://docs.dapr.io/developing-applications/building-blocks/workflow/howto-manage-workflow/
+- https://docs.dapr.io/developing-applications/building-blocks/workflow/workflow-multi-app/
+- https://docs.dapr.io/operations/resiliency/health-checks/sidecar-health/
+- https://docs.dapr.io/developing-ai/dapr-agents/dapr-agents-core-concepts/
 - https://docs.dapr.io/concepts/dapr-services/scheduler/
 
 The important upstream constraints for benchmark operations are:
@@ -40,6 +43,15 @@ The important upstream constraints for benchmark operations are:
   activities so replay observes the same action history.
 - All replicas for a workflow app id must register the same workflows and
   activities. Rollouts that briefly mix registrations can stall or fail replay.
+- Multi-application activities and child workflows are scoped to one
+  Kubernetes namespace and one workflow/actor state store. Dapr routes by app
+  id; if the target app is missing or not ready, workflow retry policy handles
+  the call, but the parent can wait indefinitely until that target is actually
+  available.
+- Dapr sidecar `/healthz` is an infrastructure probe, not an application-level
+  readiness proof for actor/workflow apps. For agent hosts, application
+  readiness must include the sidecar metadata signal that at least one workflow
+  worker is connected.
 - Workflow state remains in the actor state store after terminal completion
   until purged or removed by retention. Completed histories are not free.
 - By default, Dapr imposes no global workflow/activity concurrency ceiling.
@@ -123,23 +135,27 @@ executions that must be preserved.
   run them as background post-processing after the run row is marked completed.
   Otherwise a successful finalize can exceed the evaluator's HTTP read timeout
   even though the database already contains the SWE-bench results.
-- For SWE-bench one-shot agent hosts, keep the turn behind a child
-  `agent_workflow` boundary while keeping tool execution inline. A 94-instance
-  dev checkpoint at 34 effective concurrency proved that fully inline
-  `session_workflow` turns can still replay-diverge after seed/runtime
-  activities (`previous execution called call_activity...`). The child turn
-  boundary keeps the session wrapper deterministic; inline tools avoid the
-  older high-churn per-tool child workflow path.
+- For SWE-bench one-shot agent hosts, keep tool execution inline and keep the
+  strict sequential agent loop deterministic. Do not add an extra per-turn
+  child `agent_workflow` for SWE-bench. A 2026-05-25 c5 dev checkpoint showed
+  three of five brand-new ephemeral agent-host app IDs stalled after scheduling
+  the first tool, with Dapr sidecars logging `Ignoring complete task which no
+  longer exists` for the `__turn__1` child workflow. That pattern points at
+  startup-time workflow actor routing/placement churn, not model behavior. The
+  current SWE-bench path runs the one-shot turn inline inside the already
+  started `session_workflow`, while still stamping
+  `agentWorkflowMode=strict_sequential` and seeding runtime/MCP context through
+  activities before the first LLM call.
 - Keep the SWE-bench sandbox alive until the parent workflow has completed
   `extract_patch`. The agent session can reach `end_turn` before the parent
   workflow runs the post-solve patch command; deleting the sandbox at that
   boundary turns a valid model attempt into an infrastructure failure and can
   corrupt predictions if logs are used as a fallback patch source.
-- Freeze SWE-bench child turns onto `agentWorkflowMode=strict_sequential`.
+- Freeze SWE-bench turns onto `agentWorkflowMode=strict_sequential`.
   Runtime agent settings, hooks, or orchestration strategy must not decide
-  whether the child `agent_workflow` uses the repo-owned sequential action
-  order after the workflow has started. That decision is part of durable
-  history, so the mode is stamped into the child input and runtime context.
+  whether the agent loop uses the repo-owned sequential action order after the
+  workflow has started. That decision is part of durable history, so the mode
+  is stamped into the turn input and runtime context.
 - Keep interactive sessions on warning behavior unless a user-facing timeout is
   explicitly desired.
 - Treat model max-iteration, no-patch, and empty-patch outcomes as model
