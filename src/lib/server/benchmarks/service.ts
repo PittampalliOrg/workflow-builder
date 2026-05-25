@@ -4880,6 +4880,16 @@ export function benchmarkInferenceStallRetryCount(
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+function isRetryableBenchmarkInferenceFailure(
+	terminationReason?: string | null,
+): boolean {
+	const reason = terminationReason?.trim();
+	return (
+		reason === "session_host_nonterminal_timeout" ||
+		reason === "no_session_progress"
+	);
+}
+
 function shouldKeepSwebenchSandboxAfterRun(): boolean {
 	return parseBooleanFlag(
 		env.SWEBENCH_KEEP_SANDBOX_AFTER_RUN ??
@@ -5345,8 +5355,12 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 }) {
 	const database = requireDb();
 	const [row] = await database
-		.select()
+		.select({
+			run: benchmarkRuns,
+			instance: benchmarkRunInstances,
+		})
 		.from(benchmarkRunInstances)
+		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
 		.where(
 			and(
 				eq(benchmarkRunInstances.runId, params.runId),
@@ -5355,9 +5369,9 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 		)
 		.limit(1);
 	if (!row) return null;
-	if (INSTANCE_TERMINAL_STATUSES.has(row.status)) return row;
+	if (INSTANCE_TERMINAL_STATUSES.has(row.instance.status)) return row.instance;
 	const now = new Date();
-	const sessionRows = row.sessionId
+	const sessionRows = row.instance.sessionId
 		? await database
 				.select({
 					id: sessions.id,
@@ -5365,9 +5379,9 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 					workspaceSandboxName: sessions.workspaceSandboxName,
 				})
 				.from(sessions)
-				.where(eq(sessions.id, row.sessionId))
+				.where(eq(sessions.id, row.instance.sessionId))
 				.limit(1)
-		: row.workflowExecutionId
+		: row.instance.workflowExecutionId
 			? await database
 					.select({
 						id: sessions.id,
@@ -5375,18 +5389,79 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 						workspaceSandboxName: sessions.workspaceSandboxName,
 					})
 					.from(sessions)
-					.where(eq(sessions.workflowExecutionId, row.workflowExecutionId))
+					.where(eq(sessions.workflowExecutionId, row.instance.workflowExecutionId))
 					.limit(1)
 			: [];
 	const session = sessionRows[0] ?? null;
 	const sandboxName =
-		row.sandboxName ?? session?.sandboxName ?? session?.workspaceSandboxName ?? null;
+		row.instance.sandboxName ??
+		session?.sandboxName ??
+		session?.workspaceSandboxName ??
+		null;
+	const retryCount = benchmarkInferenceStallRetryCount(
+		row.instance.terminationReason,
+	);
+	if (
+		params.status === "timeout" &&
+		isRetryableBenchmarkInferenceFailure(params.terminationReason) &&
+		retryCount < benchmarkInferenceStallRetryLimit() &&
+		!BENCHMARK_RUN_TERMINAL_STATUSES.has(row.run.status)
+	) {
+		const nextReason = `no_session_progress_retry_${retryCount + 1}`;
+		await cleanupBenchmarkInstanceSandbox({
+			runId: row.instance.runId,
+			instanceId: row.instance.instanceId,
+			sandboxName,
+			reason:
+				params.error?.trim() ||
+				"retrying benchmark inference after stalled session host",
+		});
+		await releaseBenchmarkResourceLeases({
+			runId: row.instance.runId,
+			instanceId: row.instance.instanceId,
+			phase: "inference",
+			reason: "retrying stalled session host",
+		});
+		const [updated] = await database
+			.update(benchmarkRunInstances)
+			.set({
+				status: "queued",
+				inferenceStatus: "queued",
+				workflowExecutionId: null,
+				daprInstanceId: null,
+				sessionId: null,
+				sandboxName: null,
+				workspaceRef: null,
+				modelPatch: null,
+				patchSha256: null,
+				patchBytes: null,
+				usage: {},
+				timings: {},
+				traceIds: [],
+				error: null,
+				inferenceError: null,
+				inferenceCompletedAt: null,
+				startedAt: null,
+				turnCount: null,
+				toolCallCount: null,
+				terminationReason: nextReason,
+				ttftFirstMs: null,
+				ttftFirstToolMs: null,
+				toolHistogram: {},
+				updatedAt: now,
+			})
+			.where(eq(benchmarkRunInstances.id, row.instance.id))
+			.returning();
+		await recomputeRunSummary(params.runId);
+		return updated ?? row.instance;
+	}
 	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
-		row.status,
+		row.instance.status,
 		params.status,
 	);
 	const keepEvaluationOwnedError =
-		row.status === "evaluating" || INSTANCE_TERMINAL_STATUSES.has(row.status);
+		row.instance.status === "evaluating" ||
+		INSTANCE_TERMINAL_STATUSES.has(row.instance.status);
 	const inferenceError = params.error?.trim() || null;
 	const [updated] = await database
 		.update(benchmarkRunInstances)
@@ -5394,14 +5469,15 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 			status: nextVisibleStatus,
 			inferenceStatus: params.status,
 			inferenceError,
-			error: keepEvaluationOwnedError ? row.error : inferenceError,
-			terminationReason: params.terminationReason ?? row.terminationReason,
-			inferenceCompletedAt: row.inferenceCompletedAt ?? now,
-			sessionId: session?.id ?? row.sessionId,
+			error: keepEvaluationOwnedError ? row.instance.error : inferenceError,
+			terminationReason:
+				params.terminationReason ?? row.instance.terminationReason,
+			inferenceCompletedAt: row.instance.inferenceCompletedAt ?? now,
+			sessionId: session?.id ?? row.instance.sessionId,
 			sandboxName,
 			updatedAt: now,
 		})
-		.where(eq(benchmarkRunInstances.id, row.id))
+		.where(eq(benchmarkRunInstances.id, row.instance.id))
 		.returning();
 	if (updated) {
 		await aggregateBenchmarkInstanceTimings(updated.id);
@@ -5409,6 +5485,12 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 			runId: updated.runId,
 			instanceId: updated.instanceId,
 			sandboxName: updated.sandboxName,
+			reason: inferenceError ?? `benchmark instance ${params.status}`,
+		});
+		await releaseBenchmarkResourceLeases({
+			runId: updated.runId,
+			instanceId: updated.instanceId,
+			phase: "inference",
 			reason: inferenceError ?? `benchmark instance ${params.status}`,
 		});
 	}
