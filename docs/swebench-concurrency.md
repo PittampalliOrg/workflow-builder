@@ -431,14 +431,12 @@ The c12 failure mode was not Kueue starvation: all parents left `PENDING`,
 all sessions were created, and all Kueue Workloads were admitted. One
 SWE-bench turn scheduled a second tool but never emitted
 `tool_activity.started` after the one-shot per-turn child workflow actor was
-cancelled during Dapr placement churn. Tool execution now stays inline for
-SWE-bench, but the one-shot agent turn runs behind a child `agent_workflow`
-boundary so the session wrapper does not replay through the agent loop's
-runtime seed activities. A later 94-instance dev checkpoint reproduced the
-same replay risk when the full session turn was forced inline, so dev/staging
-should keep `DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED=true`.
-Operators can still force inline one-shot turns with the global or SWE-bench
-specific override for a targeted canary.
+cancelled during Dapr placement churn. Later high-concurrency dev checkpoints
+also reproduced durabletask replay mismatches when the one-shot turn was forced
+behind a child `agent_workflow`. SWE-bench now always keeps both tool execution
+and the one-shot agent turn inline with the session workflow; the SWE-bench
+specific child-turn override was removed so an operator cannot accidentally
+re-enable the higher-churn sub-orchestration path during capacity tests.
 
 ## Kueue Execution Plane Backend
 
@@ -512,12 +510,10 @@ Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 
 | Variable                                      |                              Default | Effect                                                                                                                                      |
 | --------------------------------------------- | -----------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BENCHMARK_SANDBOX_CAPACITY_DISABLED`         |                                false | Disables live schedulable sandbox capacity if set to `1`, `true`, or `yes`.                                                                 |
 | `BENCHMARK_SANDBOX_CAPACITY_NAMESPACE`        | `OPENSHELL_NAMESPACE` or `openshell` | Namespace used when pod listing falls back from all namespaces.                                                                             |
 | `BENCHMARK_SANDBOX_REQUEST_CPU`               |                               `100m` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable.                                                   |
 | `BENCHMARK_SANDBOX_REQUEST_MEMORY`            |                              `256Mi` | Per-sandbox request used to estimate schedulable slots when pod requests are unavailable. Dev live value is `512Mi`.                        |
 | `BENCHMARK_SANDBOX_REQUEST_EPHEMERAL_STORAGE` |                                `4Gi` | Per-sandbox ephemeral request used for schedulable and Kueue capacity estimates. Keep this aligned with sandbox-execution-api pod requests. |
-| `BENCHMARK_SANDBOX_KUEUE_CAPACITY_DISABLED`   |                                false | Disables live ClusterQueue quota sampling when set to `1`, `true`, or `yes`.                                                                |
 | `BENCHMARK_KUEUE_CLUSTER_QUEUE`               | `BENCHMARK_EXECUTION_CLASS` fallback | ClusterQueue used for live Kueue capacity sampling.                                                                                         |
 | `OPENSHELL_NAMESPACE`                         |                          `openshell` | Fallback namespace for sandbox capacity sampling.                                                                                           |
 

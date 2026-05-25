@@ -817,13 +817,6 @@ async function loadKueueClusterQueueCapacity(
 	instancePodCount: number | null,
 ): Promise<BenchmarkKueueCapacitySnapshot | null> {
 	if (!clusterQueueName) return null;
-	if (
-		/^(1|true|yes)$/i.test(
-			process.env.BENCHMARK_SANDBOX_KUEUE_CAPACITY_DISABLED ?? "",
-		)
-	) {
-		return null;
-	}
 	for (const version of ["v1beta2", "v1beta1"]) {
 		try {
 			const res = await kubeApiFetch(
@@ -1095,13 +1088,6 @@ export function estimateSchedulableSandboxCapacity(params: {
 }
 
 export async function loadSchedulableSandboxCapacitySnapshot(): Promise<BenchmarkSandboxCapacitySnapshot | null> {
-	if (
-		/^(1|true|yes)$/i.test(
-			process.env.BENCHMARK_SANDBOX_CAPACITY_DISABLED ?? "",
-		)
-	) {
-		return null;
-	}
 	const namespace = namespaceFromEnv();
 	const sandboxRequest = sandboxResourceProfileFromEnv();
 	const kueueInstanceRequest =

@@ -116,16 +116,11 @@ def _one_shot_turn_child_workflow_enabled(
     instance_id: str,
     context: dict[str, Any] | None,
 ) -> bool:
+    if is_swebench_execution_context(instance_id, context):
+        return False
     explicit = _env_bool("DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED")
     if explicit is not None:
         return explicit
-    if is_swebench_execution_context(instance_id, context):
-        swebench_explicit = _env_bool(
-            "DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"
-        )
-        if swebench_explicit is not None:
-            return swebench_explicit
-        return False
     return True
 
 
@@ -133,34 +128,24 @@ def _tool_child_workflow_enabled(
     instance_id: str,
     context: dict[str, Any] | None,
 ) -> bool:
+    if is_swebench_execution_context(instance_id, context):
+        return False
     explicit = _env_bool("DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED")
     if explicit is not None:
         return explicit
-    if is_swebench_execution_context(instance_id, context):
-        swebench_explicit = _env_bool("DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED")
-        if swebench_explicit is not None:
-            return swebench_explicit
     return False
 
 
 def _tool_child_workflow_retry_attempts(
-    instance_id: str,
-    context: dict[str, Any] | None,
+    _instance_id: str,
+    _context: dict[str, Any] | None,
 ) -> int:
-    default_attempts = _env_int(
+    return _env_int(
         "DAPR_AGENT_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS",
         2,
         minimum=1,
         maximum=5,
     )
-    if is_swebench_execution_context(instance_id, context):
-        return _env_int(
-            "DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS",
-            default_attempts,
-            minimum=1,
-            maximum=5,
-        )
-    return default_attempts
 
 
 def _tool_call_timeout_hint_seconds(payload: dict[str, Any]) -> int | None:
@@ -195,8 +180,8 @@ def _tool_call_timeout_hint_seconds(payload: dict[str, Any]) -> int | None:
 
 
 def _tool_child_workflow_timeout_seconds(
-    instance_id: str,
-    context: dict[str, Any] | None,
+    _instance_id: str,
+    _context: dict[str, Any] | None,
     payload: dict[str, Any],
 ) -> int:
     default_timeout = _env_int(
@@ -205,13 +190,6 @@ def _tool_child_workflow_timeout_seconds(
         minimum=0,
         maximum=3600,
     )
-    if is_swebench_execution_context(instance_id, context):
-        default_timeout = _env_int(
-            "DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS",
-            default_timeout,
-            minimum=0,
-            maximum=3600,
-        )
     if default_timeout <= 0:
         return 0
     timeout_hint = _tool_call_timeout_hint_seconds(payload)

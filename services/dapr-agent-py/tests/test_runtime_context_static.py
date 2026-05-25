@@ -52,17 +52,20 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
     assert "def _tool_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED"' in source
-    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED"' in source
+    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED"' not in source
     tool_child_gate = source.split("def _tool_child_workflow_enabled(", 1)[1].split(
         "\n\ndef _tool_child_workflow_retry_attempts",
         1,
     )[0]
     assert "return False" in tool_child_gate
     assert "return True" not in tool_child_gate
+    assert tool_child_gate.index("is_swebench_execution_context(") < tool_child_gate.index(
+        '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED"'
+    )
     assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' in source
-    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' in source
+    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' not in source
     assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS"' in source
-    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS"' in source
+    assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS"' not in source
     assert "use_tool_child_workflow = _tool_child_workflow_enabled(" in source
     assert "def _run_tool_child_workflow_with_watchdog(" in source
     assert "durable_task.when_any([child_task, timer_task])" in source
@@ -86,18 +89,21 @@ def test_tool_dispatch_evidence_events_are_emitted() -> None:
     assert "[tool-dispatch] run_tool entry" in source
 
 
-def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
+def test_one_shot_session_bridge_keeps_swebench_inline() -> None:
     source = MAIN_SOURCE.read_text()
 
     assert "def _one_shot_turn_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' in source
-    assert '"DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' in source
+    assert '"DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"' not in source
     one_shot_gate = source.split("def _one_shot_turn_child_workflow_enabled(", 1)[
         1
     ].split("\n\ndef _tool_child_workflow_enabled", 1)[0]
     assert "return True" in one_shot_gate
     assert "is_swebench_execution_context(" in one_shot_gate
     assert "return False" in one_shot_gate
+    assert one_shot_gate.index("is_swebench_execution_context(") < one_shot_gate.index(
+        '"DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED"'
+    )
     assert "use_child_turn_workflow = False" not in source
     assert "agent_turn_instance_id = (" in source
     assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
