@@ -181,8 +181,12 @@ function agentWorkflowHostTimeoutSeconds(params: {
 
 function agentWorkflowHostExecutionClass(params: {
 	benchmarkRunId: string | null;
+	benchmarkExecutionClass?: string | null;
 }): string {
 	if (params.benchmarkRunId) {
+		if (params.benchmarkExecutionClass?.trim()) {
+			return params.benchmarkExecutionClass.trim();
+		}
 		return (
 			env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
 			process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
@@ -237,6 +241,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	workflowExecutionId: string | null;
 	benchmarkRunId: string | null;
 	benchmarkInstanceId: string | null;
+	benchmarkExecutionClass?: string | null;
 	timeoutMinutes: number | null;
 	priorityClass?: string | null;
 	traceContext?: TraceContext | null;
@@ -299,6 +304,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			params.benchmarkInstanceId ?? params.workflowExecutionId ?? params.sessionId,
 		executionClass: agentWorkflowHostExecutionClass({
 			benchmarkRunId: params.benchmarkRunId,
+			benchmarkExecutionClass: params.benchmarkExecutionClass,
 		}),
 		...(timeoutSeconds === null ? {} : { timeoutSeconds }),
 		waitReadySeconds,

@@ -198,4 +198,27 @@ describe("agent workflow host provisioning", () => {
 		expect(body.executionClass).toBe("secure-gvisor");
 		expect(body.priorityClass).toBe("interactive-agent");
 	});
+
+	it("uses the benchmark run execution class before global benchmark env", async () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS", "secure-gvisor");
+		vi.stubEnv("BENCHMARK_EXECUTION_CLASS", "benchmark-fast");
+
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-benchmark-3",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: "run-1",
+			benchmarkInstanceId: "sympy__sympy-20590",
+			benchmarkExecutionClass: "benchmark-minimal-agent",
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.executionClass).toBe("benchmark-minimal-agent");
+		expect(body.priorityClass).toBe("swebench-cohort");
+	});
 });

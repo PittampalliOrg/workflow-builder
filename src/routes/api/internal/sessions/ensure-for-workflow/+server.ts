@@ -43,6 +43,10 @@ type PublishedWorkflowAgent = {
 	mlflowModelVersion: string | null;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
  * activity. Creates (or returns the existing) session row for a workflow
@@ -89,6 +93,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof body.benchmarkInstanceId === "string" && body.benchmarkInstanceId.trim()
 			? body.benchmarkInstanceId.trim()
 			: null;
+	const bodyBenchmarkExecutionClass =
+		typeof body.benchmarkExecutionClass === "string" &&
+		body.benchmarkExecutionClass.trim()
+			? body.benchmarkExecutionClass.trim()
+			: null;
+	let benchmarkExecutionClass = bodyBenchmarkExecutionClass;
 	let userId = typeof body.userId === "string" ? body.userId : "";
 	let projectId = typeof body.projectId === "string" ? body.projectId : null;
 	const incomingMlflowContext = parseMlflowContext(body.mlflowContext);
@@ -118,6 +128,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		const [runState] = await db
 			.select({
 				runStatus: benchmarkRuns.status,
+				summary: benchmarkRuns.summary,
 				instanceStatus: benchmarkRunInstances.status,
 				inferenceStatus: benchmarkRunInstances.inferenceStatus,
 			})
@@ -162,10 +173,18 @@ export const POST: RequestHandler = async ({ request }) => {
 			runState.inferenceStatus !== "queued" &&
 			runState.inferenceStatus !== "inferencing"
 		) {
-			return error(
-				409,
-				`Benchmark instance ${benchmarkInstanceId} inference is ${runState.inferenceStatus}; refusing to provision session host`,
-			);
+				return error(
+					409,
+					`Benchmark instance ${benchmarkInstanceId} inference is ${runState.inferenceStatus}; refusing to provision session host`,
+				);
+		}
+		if (!benchmarkExecutionClass) {
+			const summary = isRecord(runState.summary) ? runState.summary : {};
+			const execution = isRecord(summary.execution) ? summary.execution : {};
+			benchmarkExecutionClass =
+				typeof execution.class === "string" && execution.class.trim()
+					? execution.class.trim()
+					: null;
 		}
 	}
 	const rawAgentConfig =
@@ -356,6 +375,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			workflowExecutionId,
 			benchmarkRunId,
 			benchmarkInstanceId,
+			benchmarkExecutionClass,
 			timeoutMinutes: bridgeTimeoutMinutes,
 			traceContext,
 		});
@@ -509,6 +529,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		workflowExecutionId,
 		benchmarkRunId,
 		benchmarkInstanceId,
+		benchmarkExecutionClass,
 		timeoutMinutes: bridgeTimeoutMinutes,
 		traceContext,
 	});

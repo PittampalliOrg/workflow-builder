@@ -1735,6 +1735,9 @@ def _run_native_durable_agent_child_workflow(
             "benchmarkInstanceId": tc.trigger_data.get("instanceId")
             if isinstance(tc.trigger_data, dict)
             else None,
+            "benchmarkExecutionClass": tc.trigger_data.get("executionClass")
+            if isinstance(tc.trigger_data, dict)
+            else None,
             "agentConfig": agent_config,
             "instructionBundle": child_input.get("instructionBundle"),
             "environmentConfig": child_input.get("environmentConfig"),

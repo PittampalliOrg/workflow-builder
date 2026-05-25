@@ -3805,11 +3805,6 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		inferenceEnvironment,
 	});
 	const spec = await resolveSpecAgentRefs(rawSpec);
-	const triggerData = {
-		runId: row.run.id,
-		instanceId: row.runInstance.instanceId,
-		inferenceEnvironment,
-	};
 	const runSummary = isRecord(row.run.summary) ? row.run.summary : {};
 	const runExecutionConfig = isRecord(runSummary.execution)
 		? runSummary.execution
@@ -3820,6 +3815,12 @@ export async function startBenchmarkInstanceWorkflow(params: {
 	const executionClass = normalizeBenchmarkExecutionClass(
 		runExecutionConfig.class ?? benchmarkExecutionClass(),
 	);
+	const triggerData = {
+		runId: row.run.id,
+		instanceId: row.runInstance.instanceId,
+		inferenceEnvironment,
+		executionClass,
+	};
 	if (dispatchBackend !== "host") {
 		await assertBenchmarkOrchestratorReady();
 	}

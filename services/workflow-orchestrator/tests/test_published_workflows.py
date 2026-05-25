@@ -1308,7 +1308,10 @@ def test_durable_run_routes_through_session_bridge():
     tc = SW_WORKFLOW.TaskContext(
         workflow=workflow,
         workflow_id="test-workflow",
-        trigger_data={"prompt": "Create a validation marker"},
+        trigger_data={
+            "prompt": "Create a validation marker",
+            "executionClass": "benchmark-minimal-agent",
+        },
         execution_id="exec_456",
         db_execution_id=None,
         integrations=None,
@@ -1381,6 +1384,7 @@ def test_durable_run_routes_through_session_bridge():
     assert bridge_payload["agentConfig"]["name"] == "durable-validation"
     assert bridge_payload["timeoutMinutes"] == 15
     assert bridge_payload["maxIterations"] == 8
+    assert bridge_payload["benchmarkExecutionClass"] == "benchmark-minimal-agent"
 
     wait_yield = workflow_gen.send(
         {
