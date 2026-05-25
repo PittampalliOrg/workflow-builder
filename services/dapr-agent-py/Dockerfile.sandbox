@@ -43,4 +43,4 @@ ENV AGENT_SANDBOX_MODE=hybrid \
 
 EXPOSE 8002
 ENTRYPOINT []
-CMD ["sh", "-lc", "exec uvicorn ${DAPR_AGENT_APP_MODULE:-src.main:app} --host 0.0.0.0 --port 8002"]
+CMD ["sh", "-lc", "exec /app/.venv/bin/uvicorn ${DAPR_AGENT_APP_MODULE:-src.main:app} --host 0.0.0.0 --port 8002"]
