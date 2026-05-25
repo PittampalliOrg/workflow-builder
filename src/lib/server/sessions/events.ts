@@ -5,10 +5,7 @@ import {
 	type SessionEvent as SessionEventRow,
 } from "$lib/server/db/schema";
 import { aggregateBenchmarkSessionTimings } from "$lib/server/benchmarks/timings";
-import type {
-	SessionEventEnvelope,
-	UserEvent,
-} from "$lib/types/sessions";
+import type { SessionEventEnvelope, UserEvent } from "$lib/types/sessions";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
@@ -73,11 +70,15 @@ function stripNulBytes(value: string): string {
 export function sanitizeSessionEventDataForPostgres<T>(value: T): T {
 	if (typeof value === "string") return stripNulBytes(value) as T;
 	if (Array.isArray(value)) {
-		return value.map((entry) => sanitizeSessionEventDataForPostgres(entry)) as T;
+		return value.map((entry) =>
+			sanitizeSessionEventDataForPostgres(entry),
+		) as T;
 	}
 	if (value && typeof value === "object") {
 		const out: Record<string, unknown> = {};
-		for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+		for (const [key, entry] of Object.entries(
+			value as Record<string, unknown>,
+		)) {
 			out[stripNulBytes(key)] = sanitizeSessionEventDataForPostgres(entry);
 		}
 		return out as T;
@@ -156,8 +157,9 @@ export async function appendEvent(
 			// is unreliable because agent_workflow's finally block fires on every
 			// Dapr replay tick — it captures mid-flight counter snapshots and
 			// pops the dict, so peaks are never preserved. The truthful counts
-			// live in session_events itself: each agent.llm_usage = one turn,
-			// each agent.tool_use = one tool call. Aggregate from there.
+			// live in session_events itself. Prefer agent.llm_usage for rich
+			// token-aware turns, but fall back to llm_start/agent.iteration for
+			// providers that currently omit usage events.
 			//
 			// Run on each Phase-A-or-B-relevant event so the row stays current as
 			// events flow in (each call is idempotent — COUNT(*) over session_events).
@@ -167,6 +169,8 @@ export async function appendEvent(
 			// my aggregator ran with 0 events visible).
 			if (
 				event.type === "agent.llm_usage" ||
+				event.type === "llm_start" ||
+				event.type === "agent.iteration" ||
 				event.type === "agent.tool_use"
 			) {
 				// Fire-and-forget — incremental updates while the run progresses.
@@ -208,8 +212,14 @@ export async function appendEvent(
 			// event delivered twice (e.g. Dapr replay fires publish_event again,
 			// or the direct-ingest + NATS-subscription paths both land). Swallow
 			// the duplicate silently and return the existing row.
-			const maybePgErr = err as { code?: string; cause?: unknown; message?: string };
-			const causeErr = maybePgErr?.cause as { code?: string; message?: string } | undefined;
+			const maybePgErr = err as {
+				code?: string;
+				cause?: unknown;
+				message?: string;
+			};
+			const causeErr = maybePgErr?.cause as
+				| { code?: string; message?: string }
+				| undefined;
 			const errMsg = `${maybePgErr?.message ?? ""} ${causeErr?.message ?? ""}`;
 			const isUniqueViolation =
 				maybePgErr?.code === "23505" ||
@@ -240,7 +250,9 @@ export async function appendEvent(
 			throw err;
 		}
 	}
-	throw new Error(`Failed to insert event after retries for session ${sessionId}`);
+	throw new Error(
+		`Failed to insert event after retries for session ${sessionId}`,
+	);
 }
 
 export async function listEvents(
@@ -275,7 +287,10 @@ export async function getEvent(
 		.select()
 		.from(sessionEvents)
 		.where(
-			and(eq(sessionEvents.sessionId, sessionId), eq(sessionEvents.id, eventId)),
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				eq(sessionEvents.id, eventId),
+			),
 		)
 		.limit(1);
 	return row ? rowToEnvelope(row, { preview: false }) : null;
@@ -308,9 +323,11 @@ async function aggregateLlmUsageIntoBenchmarkInstance(
 	const inputTokens = Math.round(Number(data.input_tokens ?? 0)) || 0;
 	const outputTokens = Math.round(Number(data.output_tokens ?? 0)) || 0;
 	const cacheRead = Math.round(Number(data.cache_read_input_tokens ?? 0)) || 0;
-	const cacheCreate = Math.round(Number(data.cache_creation_input_tokens ?? 0)) || 0;
+	const cacheCreate =
+		Math.round(Number(data.cache_creation_input_tokens ?? 0)) || 0;
 	const ttftMsRaw = Number(data.ttft_ms ?? 0);
-	const ttftMs = Number.isFinite(ttftMsRaw) && ttftMsRaw > 0 ? Math.round(ttftMsRaw) : null;
+	const ttftMs =
+		Number.isFinite(ttftMsRaw) && ttftMsRaw > 0 ? Math.round(ttftMsRaw) : null;
 	const model = typeof data.model === "string" ? data.model : null;
 	if (inputTokens + outputTokens + cacheRead + cacheCreate <= 0) return;
 	try {
@@ -371,7 +388,9 @@ async function applyInstanceMetricsSummaryToBenchmark(
 			terminationReason === "end_turn" ? null : terminationReason;
 		const histogramRaw = data.tool_histogram;
 		const histogram =
-			histogramRaw && typeof histogramRaw === "object" && !Array.isArray(histogramRaw)
+			histogramRaw &&
+			typeof histogramRaw === "object" &&
+			!Array.isArray(histogramRaw)
 				? (histogramRaw as Record<string, number>)
 				: {};
 		// Phase B Python emits `instance.metrics_summary` from agent_workflow's
@@ -415,8 +434,10 @@ async function applyInstanceMetricsSummaryToBenchmark(
  * Aggregate Phase B lifecycle metrics from raw session_events at
  * session-terminal time. This is the source of truth — Python's
  * in-memory counters are unreliable across Dapr replay ticks, but
- * the raw events are durable and exact (each agent.llm_usage = 1 turn,
- * each agent.tool_use = 1 tool call, grouped by name = histogram).
+ * the raw events are durable and exact. Prefer agent.llm_usage for turns
+ * because it carries token/TTFT details, but fall back to llm_start and then
+ * agent.iteration so providers with missing usage events still get truthful
+ * turn counts. Each agent.tool_use = 1 tool call, grouped by name = histogram.
  *
  * Termination reason precedence:
  *   1. agent.circuit_breaker_tripped → specific reason from event payload
@@ -433,12 +454,22 @@ export async function aggregateBenchmarkLifecycleFromSessionEvents(
 	const finalize = opts.finalize === true;
 	try {
 		await db.execute(sql`
-			WITH counts AS (
+			WITH event_counts AS (
 				SELECT
-					(SELECT COUNT(*) FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage')::int AS turns,
-					(SELECT COUNT(*) FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.tool_use')::int AS tools,
+					COUNT(*) FILTER (WHERE type = 'agent.llm_usage')::int AS usage_turns,
+					COUNT(*) FILTER (WHERE type = 'llm_start')::int AS llm_start_turns,
+					COUNT(*) FILTER (WHERE type = 'agent.iteration')::int AS iteration_turns,
+					COUNT(*) FILTER (WHERE type = 'agent.tool_use')::int AS tools,
+					MIN(created_at) FILTER (WHERE type IN ('agent.llm_usage', 'llm_start', 'agent.iteration')) AS first_llm_at
+				FROM session_events
+				WHERE session_id = ${sessionId}
+			), counts AS (
+				SELECT
+					COALESCE(NULLIF(usage_turns, 0), NULLIF(llm_start_turns, 0), iteration_turns, 0)::int AS turns,
+					tools,
 					(SELECT (data->>'ttft_ms')::float FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id ASC LIMIT 1) AS ttft_first,
-					(SELECT EXTRACT(EPOCH FROM (e.created_at - (SELECT MIN(created_at) FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage'))) * 1000 FROM session_events e WHERE e.session_id = ${sessionId} AND e.type = 'agent.tool_use' ORDER BY e.id ASC LIMIT 1) AS ttft_first_tool_seconds_ms
+					(SELECT EXTRACT(EPOCH FROM (e.created_at - event_counts.first_llm_at)) * 1000 FROM session_events e WHERE e.session_id = ${sessionId} AND e.type = 'agent.tool_use' AND event_counts.first_llm_at IS NOT NULL ORDER BY e.id ASC LIMIT 1) AS ttft_first_tool_seconds_ms
+				FROM event_counts
 			), histogram AS (
 				SELECT COALESCE(jsonb_object_agg(tool, n), '{}'::jsonb) AS hist
 				FROM (
@@ -501,17 +532,33 @@ export async function aggregateLlmUsageFromSessionEvents(
 	if (!db) return;
 	try {
 		await db.execute(sql`
-			WITH usage_totals AS (
+			WITH usage_counts AS (
 				SELECT
 					COALESCE(SUM((data->>'input_tokens')::bigint), 0)::bigint AS in_tokens,
 					COALESCE(SUM((data->>'output_tokens')::bigint), 0)::bigint AS out_tokens,
 					COALESCE(SUM((data->>'cache_read_input_tokens')::bigint), 0)::bigint AS cache_read,
 					COALESCE(SUM((data->>'cache_creation_input_tokens')::bigint), 0)::bigint AS cache_create,
-					COUNT(*)::bigint AS llm_calls,
+					COUNT(*)::bigint AS usage_llm_calls,
 					(SELECT data->>'model' FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id DESC LIMIT 1) AS model,
 					(SELECT ROUND((data->>'ttft_ms')::float)::bigint FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id ASC LIMIT 1) AS ttft_first
 				FROM session_events
 				WHERE session_id = ${sessionId} AND type = 'agent.llm_usage'
+			), start_counts AS (
+				SELECT
+					COUNT(*)::bigint AS llm_start_calls,
+					(SELECT COALESCE(data->>'modelSpec', data->>'model') FROM session_events WHERE session_id = ${sessionId} AND type = 'llm_start' ORDER BY id DESC LIMIT 1) AS model
+				FROM session_events
+				WHERE session_id = ${sessionId} AND type = 'llm_start'
+			), usage_totals AS (
+				SELECT
+					usage_counts.in_tokens,
+					usage_counts.out_tokens,
+					usage_counts.cache_read,
+					usage_counts.cache_create,
+					COALESCE(NULLIF(usage_counts.usage_llm_calls, 0), start_counts.llm_start_calls, 0)::bigint AS llm_calls,
+					COALESCE(usage_counts.model, start_counts.model) AS model,
+					usage_counts.ttft_first
+				FROM usage_counts, start_counts
 			)
 			UPDATE benchmark_run_instances bri
 			SET usage = jsonb_build_object(
@@ -537,14 +584,20 @@ export async function aggregateLlmUsageFromSessionEvents(
 	}
 }
 
-function readNumericOrNull(data: Record<string, unknown>, key: string): number | null {
+function readNumericOrNull(
+	data: Record<string, unknown>,
+	key: string,
+): number | null {
 	const raw = data[key];
 	if (raw === null || raw === undefined) return null;
 	const n = Number(raw);
 	return Number.isFinite(n) ? n : null;
 }
 
-function readStringOrNull(data: Record<string, unknown>, key: string): string | null {
+function readStringOrNull(
+	data: Record<string, unknown>,
+	key: string,
+): string | null {
 	const raw = data[key];
 	if (typeof raw !== "string") return null;
 	const trimmed = raw.trim();
