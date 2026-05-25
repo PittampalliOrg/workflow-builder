@@ -279,6 +279,7 @@ from src.code_checkpoint import (
 from src.event_publisher import publish_session_event, scope_session, unscope_session
 from src.mcp_retry import connect_mcp_client_with_retries
 from src.session_host_monitor import (
+    benchmark_activity_age_seconds,
     benchmark_activity_is_recent,
     benchmark_activity_marker,
     decide_missing_workflow_action,
@@ -6549,6 +6550,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     idle_timeout_seconds=idle_timeout,
                 ):
                     marker = benchmark_activity_marker(benchmark_progress)
+                    activity_age = benchmark_activity_age_seconds(benchmark_progress)
                     if marker != last_benchmark_progress_marker:
                         logger.info(
                             "[session-host] workflow %s has benchmark session activity despite stale dapr status: age=%ss type=%s",
@@ -6557,7 +6559,9 @@ def _run_session_host_monitor(instance_id: str) -> None:
                             benchmark_progress.get("latestSessionEventType"),
                         )
                     last_benchmark_progress_marker = marker
-                    last_workflow_progress_at = now
+                    last_workflow_progress_at = (
+                        now - activity_age if activity_age is not None else now
+                    )
                     time.sleep(poll_seconds)
                     continue
                 if nonterminal_timeout_action == "terminate":

@@ -1294,6 +1294,19 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(false);
 	});
 
+	it("advances stalled benchmark cleanup after durable close confirmation times out by default", () => {
+		expect(
+			__benchmarkDurableRuntimeForTest.shouldProceedAfterStalledDurableCleanupTimeout(),
+		).toBe(true);
+		vi.stubEnv(
+			"BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT",
+			"false",
+		);
+		expect(
+			__benchmarkDurableRuntimeForTest.shouldProceedAfterStalledDurableCleanupTimeout(),
+		).toBe(false);
+	});
+
 	it("skips purge when parent workflow closure is not confirmed", async () => {
 		const calls: string[] = [];
 		const result =

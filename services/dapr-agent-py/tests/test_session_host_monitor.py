@@ -8,6 +8,7 @@ if root not in sys.path:
     sys.path.insert(0, root)
 
 from src.session_host_monitor import (
+    benchmark_activity_age_seconds,
     benchmark_activity_is_recent,
     benchmark_activity_marker,
     decide_missing_workflow_action,
@@ -103,3 +104,9 @@ def test_benchmark_activity_is_recent_uses_activity_age() -> None:
         {"activityAgeSeconds": "bad"},
         idle_timeout_seconds=900,
     )
+
+
+def test_benchmark_activity_age_seconds_parses_nonnegative_age() -> None:
+    assert benchmark_activity_age_seconds({"activityAgeSeconds": "12.5"}) == 12.5
+    assert benchmark_activity_age_seconds({"activityAgeSeconds": -1}) is None
+    assert benchmark_activity_age_seconds({"activityAgeSeconds": "bad"}) is None

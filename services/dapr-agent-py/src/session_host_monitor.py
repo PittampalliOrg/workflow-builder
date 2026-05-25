@@ -65,13 +65,20 @@ def benchmark_activity_marker(progress: dict[str, Any]) -> str | None:
     return None
 
 
+def benchmark_activity_age_seconds(progress: dict[str, Any]) -> float | None:
+    try:
+        age = float(progress.get("activityAgeSeconds"))
+    except (TypeError, ValueError):
+        return None
+    return age if age >= 0 else None
+
+
 def benchmark_activity_is_recent(
     progress: dict[str, Any],
     *,
     idle_timeout_seconds: int,
 ) -> bool:
-    try:
-        age = float(progress.get("activityAgeSeconds"))
-    except (TypeError, ValueError):
+    age = benchmark_activity_age_seconds(progress)
+    if age is None:
         return False
     return age <= max(0, idle_timeout_seconds)

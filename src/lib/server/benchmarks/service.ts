@@ -701,6 +701,14 @@ function shouldPurgeBenchmarkDaprWorkflowsOnCleanup(): boolean {
 	);
 }
 
+export function shouldProceedAfterStalledDurableCleanupTimeout(): boolean {
+	return parseBooleanFlag(
+		env.BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT ??
+			process.env.BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT,
+		true,
+	);
+}
+
 async function sleep(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2800,6 +2808,7 @@ export const __benchmarkDurableRuntimeForTest = {
 	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
 	shouldPurgeBenchmarkDaprWorkflowsOnCleanup,
+	shouldProceedAfterStalledDurableCleanupTimeout,
 	cleanupBenchmarkDurableWorkflowCascade,
 };
 
@@ -5269,14 +5278,21 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 		allDurableInstancesClosed = durableCleanup.allClosed;
 
 		if (!allDurableInstancesClosed) {
+			const warning = `Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed} agentRuntimeClosed=${durableCleanup.agentRuntimeClosed}`;
+			if (!shouldProceedAfterStalledDurableCleanupTimeout()) {
+				console.warn(
+					`${warning}; leaving session/execution rows, host resources, sandboxes, and leases active for retry`,
+				);
+				return false;
+			}
 			console.warn(
-				`Stalled benchmark instance ${runInstance.runId}/${runInstance.instanceId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed}; leaving session/execution rows, host resources, sandboxes, and leases active for retry`,
+				`${warning}; proceeding with terminal benchmark bookkeeping after best-effort durable termination`,
 			);
-			return false;
 		}
-		// Purge is intentionally gated on confirmed terminal state. Dapr uses
-		// Scheduler reminders for workflow events, and terminal purge removes those
-		// reminders without corrupting an active workflow state machine.
+		// Purge is intentionally handled inside the durable cascade and only after
+		// confirmed closure. If Dapr does not confirm closure for a no-progress
+		// benchmark instance, the benchmark row still has to advance so host pods,
+		// sandboxes, and leases can be cleaned up.
 
 		if (sessionId) {
 			await database

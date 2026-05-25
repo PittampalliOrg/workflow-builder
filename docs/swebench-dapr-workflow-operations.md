@@ -59,7 +59,11 @@ The important upstream constraints for benchmark operations are:
 - For SWE-bench agent sessions, terminate child session and turn workflows
   before deleting sandboxes, marking DB rows terminal, or releasing leases.
 - If cleanup cannot prove durable shutdown, leave leases and sandboxes in place
-  so retry cleanup can find the still-running workflow.
+  so retry cleanup can find the still-running workflow. The exception is a
+  benchmark instance that has already crossed the no-session-progress timeout:
+  after best-effort durable termination, advance benchmark bookkeeping and
+  clean up host pods, sandboxes, and leases so one stuck workflow cannot hold
+  the whole run open.
 - If old workflow state is intentionally disposable, quiesce workflow-producing
   apps before clearing state stores or scheduler data. Deleting only Postgres
   workflow rows can leave scheduler reminders behind.
@@ -110,7 +114,9 @@ executions that must be preserved.
   terminated and the pod should exit nonzero so Kueue/runtime slots are not
   held indefinitely. Do not use raw wall-clock age as the timeout signal:
   longer SWE-bench attempts can legitimately run past 15 minutes while still
-  updating workflow status.
+  updating workflow status. When the monitor falls back to benchmark session
+  activity, preserve the actual `activityAgeSeconds`; do not reset the local
+  progress clock to "now" for an event that is already near the timeout.
 - For SWE-bench one-shot agent hosts, keep the turn behind a child
   `agent_workflow` boundary while keeping tool execution inline. A 94-instance
   dev checkpoint at 34 effective concurrency proved that fully inline
