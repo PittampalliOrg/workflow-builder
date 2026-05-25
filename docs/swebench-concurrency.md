@@ -120,6 +120,29 @@ canary, then compare no-patch rate, patch apply rate, and resolved rate before
 raising concurrency. Keep shorter caps only for infrastructure-only tests where
 model resolution is not the acceptance criterion.
 
+## Evaluator Environment Failures
+
+If all selected instances are unresolved, do not stop at the run summary. First
+separate model output quality from evaluator process health:
+
+- Confirm each inferred row has a non-empty authoritative `model_patch`, a
+  successful extraction path, and no `inference_error`.
+- Confirm the evaluator actually applied the patch and ran the target tests.
+  `resolved=false` is a benchmark result only after the harness process itself
+  is healthy.
+- Inspect at least one known-solvable instance's raw `test_output.txt`. In the
+  2026-05-25 Astropy proof run, every selected row had an extracted patch, but
+  the evaluator environment failed during editable install with
+  `ModuleNotFoundError: setuptools.dep_util`. Adding the Astropy-specific
+  `setuptools<70` constraint in the evaluator Tekton task changed the follow-up
+  proof run from 0/10 resolved to 4/10 resolved, with
+  `astropy__astropy-12907` reporting `15 passed`.
+
+That pattern means "zero resolved" is process evidence, not a model verdict.
+Classify it as benchmark infrastructure until patch extraction, patch apply,
+test execution, and finalization have all been proven healthy on at least one
+known-solvable case.
+
 ## PSI Metrics
 
 Kubernetes 1.36 makes kubelet PSI metrics stable and enabled by default when
