@@ -695,8 +695,8 @@ def build_agent_workflow_host_sandbox_manifest(
                         "name": "DAPR_LLM_COMPONENT_DEFAULT",
                         "value": "llm-anthropic-opus",
                     },
-                    {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "true"},
-                    {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "true"},
+                    {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "false"},
+                    {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "false"},
                     {
                         "name": "DAPR_AGENT_PY_PLUGIN_PATHS",
                         "value": "/etc/dapr-agent-py/plugins",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import asyncio
-import hashlib
 import json
 import os
 import posixpath
@@ -17,10 +16,8 @@ import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import timedelta
 from typing import Any
 
-from durabletask import task as durable_task
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from google.protobuf import wrappers_pb2
@@ -54,43 +51,6 @@ def _configure_durabletask_grpc_defaults() -> None:
 _configure_durabletask_grpc_defaults()
 
 
-def _session_bridge_startup_settle_seconds() -> int:
-    """Return the one-shot session bridge settle delay, capped to a small window."""
-    try:
-        raw = int(
-            os.environ.get(
-                "DAPR_AGENT_SESSION_BRIDGE_STARTUP_SETTLE_SECONDS",
-                "60",
-            )
-        )
-    except ValueError:
-        raw = 60
-    return max(0, min(raw, 60))
-
-
-def _session_bridge_startup_jitter_seconds(
-    instance_id: str,
-    context: dict[str, Any] | None,
-) -> int:
-    """Return deterministic one-shot startup jitter for bursty benchmark sessions."""
-    is_swebench = is_swebench_execution_context(instance_id, context)
-    default_max_jitter = 120 if is_swebench else 0
-    raw = None
-    if is_swebench:
-        raw = os.environ.get("DAPR_AGENT_SWEBENCH_SESSION_BRIDGE_STARTUP_JITTER_SECONDS")
-    if raw is None:
-        raw = os.environ.get("DAPR_AGENT_SESSION_BRIDGE_STARTUP_JITTER_SECONDS")
-    try:
-        max_jitter = default_max_jitter if raw is None else int(raw)
-    except ValueError:
-        max_jitter = default_max_jitter
-    max_jitter = max(0, min(max_jitter, 300))
-    if max_jitter <= 0:
-        return 0
-    digest = hashlib.sha256(str(instance_id or "").encode("utf-8")).digest()
-    return int.from_bytes(digest[:4], "big") % (max_jitter + 1)
-
-
 def _env_bool(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
@@ -101,103 +61,6 @@ def _env_bool(name: str) -> bool | None:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return None
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    raw = os.environ.get(name)
-    try:
-        value = default if raw is None else int(raw)
-    except ValueError:
-        value = default
-    return max(minimum, min(maximum, value))
-
-
-def _one_shot_turn_child_workflow_enabled(
-    instance_id: str,
-    context: dict[str, Any] | None,
-) -> bool:
-    if is_swebench_execution_context(instance_id, context):
-        return False
-    explicit = _env_bool("DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED")
-    if explicit is not None:
-        return explicit
-    return True
-
-
-def _tool_child_workflow_enabled(
-    instance_id: str,
-    context: dict[str, Any] | None,
-) -> bool:
-    explicit = _env_bool("DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED")
-    if explicit is not None:
-        return explicit
-    if is_swebench_execution_context(instance_id, context):
-        # SWE-bench creates many short-lived session sidecars; isolate tool
-        # activities so the watchdog can recover if Dapr loses an inline task.
-        return True
-    return False
-
-
-def _tool_child_workflow_retry_attempts(
-    _instance_id: str,
-    _context: dict[str, Any] | None,
-) -> int:
-    return _env_int(
-        "DAPR_AGENT_TOOL_CHILD_WORKFLOW_RETRY_ATTEMPTS",
-        2,
-        minimum=1,
-        maximum=5,
-    )
-
-
-def _tool_call_timeout_hint_seconds(payload: dict[str, Any]) -> int | None:
-    tool_call = payload.get("tool_call")
-    if not isinstance(tool_call, dict):
-        return None
-    function = tool_call.get("function")
-    if not isinstance(function, dict):
-        return None
-    tool_name = str(function.get("name") or "")
-    if tool_name.lower() != "bash":
-        return None
-    raw_args = function.get("arguments")
-    if not isinstance(raw_args, str) or not raw_args.strip():
-        return None
-    try:
-        args = json.loads(raw_args)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(args, dict):
-        return None
-    raw_timeout = args.get("timeout")
-    if raw_timeout is None:
-        return None
-    try:
-        timeout_ms = int(raw_timeout)
-    except (TypeError, ValueError):
-        return None
-    if timeout_ms <= 0:
-        return None
-    return max(1, (timeout_ms + 999) // 1000)
-
-
-def _tool_child_workflow_timeout_seconds(
-    _instance_id: str,
-    _context: dict[str, Any] | None,
-    payload: dict[str, Any],
-) -> int:
-    default_timeout = _env_int(
-        "DAPR_AGENT_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS",
-        660,
-        minimum=0,
-        maximum=3600,
-    )
-    if default_timeout <= 0:
-        return 0
-    timeout_hint = _tool_call_timeout_hint_seconds(payload)
-    if timeout_hint is not None:
-        default_timeout = max(default_timeout, timeout_hint + 60)
-    return max(60, min(3600, default_timeout))
 
 
 # ---------------------------------------------------------------------------
@@ -1909,12 +1772,6 @@ class OpenShellDurableAgent(DurableAgent):
             if self._orchestration_strategy and not force_repo_sequential:
                 return (yield from super().agent_workflow(ctx, message))
 
-            runtime_context = self._runtime_context_for_instance(ctx.instance_id)
-            use_tool_child_workflow = _tool_child_workflow_enabled(
-                ctx.instance_id,
-                runtime_context,
-            )
-
             for turn in range(1, self.execution.max_iterations + 1):
                 assistant_response: dict[str, Any] = yield ctx.call_activity(
                     self._activity_name(self.call_llm),
@@ -1991,41 +1848,18 @@ class OpenShellDurableAgent(DurableAgent):
                             "time": dispatch_time,
                             "order": idx,
                         }
-                        if use_tool_child_workflow:
-                            safe_call_id = re.sub(r"[^A-Za-z0-9_-]+", "-", call_id)[:48]
-                            tool_child_instance_id = (
-                                f"{ctx.instance_id}__tool__{turn}__{idx}__{safe_call_id}"
-                            )
-                            logger.info(
-                                "[tool-dispatch] yielding sequential tool child workflow instance=%s child=%s order=%d tool=%s call_id=%s",
-                                ctx.instance_id,
-                                tool_child_instance_id,
-                                idx,
-                                fn_name,
-                                call_id,
-                            )
-                            ordered[idx] = yield from self._run_tool_child_workflow_with_watchdog(
-                                ctx,
-                                tool_payload=tool_payload,
-                                child_instance_id=tool_child_instance_id,
-                                order=idx,
-                                tool_name=fn_name,
-                                call_id=call_id,
-                                runtime_context=runtime_context,
-                            )
-                        else:
-                            logger.info(
-                                "[tool-dispatch] yielding sequential inline tool activity instance=%s order=%d tool=%s call_id=%s",
-                                ctx.instance_id,
-                                idx,
-                                fn_name,
-                                call_id,
-                            )
-                            ordered[idx] = yield ctx.call_activity(
-                                self._activity_name(self.run_tool),
-                                input=tool_payload,
-                                retry_policy=self._retry_policy,
-                            )
+                        logger.info(
+                            "[tool-dispatch] yielding sequential inline tool activity instance=%s order=%d tool=%s call_id=%s",
+                            ctx.instance_id,
+                            idx,
+                            fn_name,
+                            call_id,
+                        )
+                        ordered[idx] = yield ctx.call_activity(
+                            self._activity_name(self.run_tool),
+                            input=tool_payload,
+                            retry_policy=self._retry_policy,
+                        )
                         tool_calls_by_id[tc["id"]] = {
                             "tool_call": tc,
                             "is_agent_call": False,
@@ -2108,139 +1942,6 @@ class OpenShellDurableAgent(DurableAgent):
             ) from workflow_exc
 
         return final_message
-
-    def _run_tool_child_workflow_with_watchdog(
-        self,
-        ctx,
-        *,
-        tool_payload: dict[str, Any],
-        child_instance_id: str,
-        order: int,
-        tool_name: str,
-        call_id: str,
-        runtime_context: dict[str, Any] | None,
-    ):
-        timeout_seconds = _tool_child_workflow_timeout_seconds(
-            ctx.instance_id,
-            runtime_context,
-            tool_payload,
-        )
-        max_attempts = _tool_child_workflow_retry_attempts(
-            ctx.instance_id,
-            runtime_context,
-        )
-        for attempt in range(max_attempts):
-            attempt_instance_id = (
-                child_instance_id
-                if attempt == 0
-                else f"{child_instance_id}__attempt__{attempt}"
-            )
-            child_task = ctx.call_child_workflow(
-                "run_tool_activity_workflow",
-                input=tool_payload,
-                instance_id=attempt_instance_id,
-                retry_policy=self._retry_policy,
-            )
-            if timeout_seconds <= 0:
-                return (yield child_task)
-
-            timer_task = ctx.create_timer(timedelta(seconds=timeout_seconds))
-            winner = yield durable_task.when_any([child_task, timer_task])
-            if winner is child_task:
-                return child_task.get_result()
-
-            if not ctx.is_replaying:
-                logger.warning(
-                    "[tool-dispatch] tool child workflow timed out instance=%s child=%s attempt=%d/%d timeout=%ss order=%d tool=%s call_id=%s",
-                    ctx.instance_id,
-                    attempt_instance_id,
-                    attempt + 1,
-                    max_attempts,
-                    timeout_seconds,
-                    order,
-                    tool_name,
-                    call_id,
-                )
-            yield ctx.call_activity(
-                self._activity_name(self.terminate_tool_child_workflow_instance),
-                input={
-                    "childInstanceId": attempt_instance_id,
-                    "parentInstanceId": ctx.instance_id,
-                    "order": order,
-                    "toolName": tool_name,
-                    "toolCallId": call_id,
-                    "attempt": attempt,
-                    "timeoutSeconds": timeout_seconds,
-                },
-                retry_policy=self._retry_policy,
-            )
-
-        raise AgentError(
-            "Tool child workflow did not complete before watchdog timeout "
-            f"after {max_attempts} attempt(s): tool={tool_name} call_id={call_id}"
-        )
-
-    def run_tool_activity_workflow(self, ctx, payload: dict):
-        """Isolate one tool activity behind a tiny child workflow.
-
-        The parent turn workflow schedules tools strictly one at a time. Under
-        load, Dapr can occasionally orphan a direct activity task after replay;
-        this child boundary keeps each tool's activity history small and
-        deterministic while preserving the side-effect boundary in run_tool.
-        """
-        return (
-            yield ctx.call_activity(
-                self._activity_name(self.run_tool),
-                input=payload,
-                retry_policy=self._retry_policy,
-            )
-        )
-
-    def terminate_tool_child_workflow_instance(self, ctx, payload: dict):
-        child_instance_id = str(payload.get("childInstanceId") or "").strip()
-        if not child_instance_id:
-            return {"success": False, "error": "missing childInstanceId"}
-        try:
-            _workflow_http_post(child_instance_id, "/terminate")
-            logger.warning(
-                "[tool-dispatch] requested termination for stuck tool child workflow child=%s parent=%s order=%s tool=%s call_id=%s attempt=%s timeout=%s",
-                child_instance_id,
-                payload.get("parentInstanceId"),
-                payload.get("order"),
-                payload.get("toolName"),
-                payload.get("toolCallId"),
-                payload.get("attempt"),
-                payload.get("timeoutSeconds"),
-            )
-            return {"success": True, "childInstanceId": child_instance_id}
-        except Exception as exc:  # noqa: BLE001
-            if isinstance(exc, FileNotFoundError) or _is_workflow_instance_missing_error(exc):
-                logger.info(
-                    "[tool-dispatch] terminate skipped for tool child workflow %s: already gone",
-                    child_instance_id,
-                )
-                return {
-                    "success": True,
-                    "childInstanceId": child_instance_id,
-                    "alreadyGone": True,
-                }
-            if _is_workflow_terminate_status_unknown_error(exc):
-                logger.warning(
-                    "[tool-dispatch] terminate status unknown for tool child workflow %s: %s",
-                    child_instance_id,
-                    exc,
-                )
-                return {
-                    "success": True,
-                    "childInstanceId": child_instance_id,
-                    "terminationStatusUnknown": True,
-                }
-            logger.warning(
-                "[tool-dispatch] failed to terminate stuck tool child workflow %s: %s",
-                child_instance_id,
-                exc,
-            )
-            raise
 
     def _activity_instance_id(self, ctx: Any, payload: Any) -> str:
         if isinstance(payload, dict):
@@ -4922,12 +4623,11 @@ class OpenShellDurableAgent(DurableAgent):
         super().register_workflows(runtime)
         runtime.register_workflow(self.session_workflow)
         runtime.register_workflow(self.call_peer_session_workflow)
-        runtime.register_workflow(self.run_tool_activity_workflow)
         runtime.register_activity(self.create_peer_session_row)
         # Activity that populates self._mcp_configs_by_instance[instance_id]
-        # for a given turn's child workflow. Yielded by session_workflow
-        # before ctx.call_child_workflow so the child's call_llm activity
-        # finds pre-seeded MCP configs and `_ensure_mcp_client` connects.
+        # for the current session workflow turn. Yielded by session_workflow
+        # before the inline agent turn so call_llm finds pre-seeded MCP configs
+        # and `_ensure_mcp_client` connects.
         # This is the Dapr-compliant side-effect channel: dict mutations
         # and MCP stdio/http connections are banned from orchestrator bodies
         # (they re-run deterministically on every replay); activities ARE
@@ -4935,7 +4635,6 @@ class OpenShellDurableAgent(DurableAgent):
         # only re-runs on worker failure).
         runtime.register_activity(self.seed_mcp_for_instance)
         runtime.register_activity(self.seed_runtime_context_for_instance)
-        runtime.register_activity(self.terminate_tool_child_workflow_instance)
 
     @workflow_entry
     def call_peer_session_workflow(self, ctx, message: dict):
@@ -5428,23 +5127,7 @@ class OpenShellDurableAgent(DurableAgent):
                 turn_date = ctx.current_utc_datetime.date().isoformat()
             except Exception:
                 turn_date = None
-            one_shot_context = {
-                "sessionId": session_id,
-                "executionId": db_execution_id,
-                "workspaceRef": message.get("workspaceRef"),
-            }
-            use_child_turn_workflow = (
-                auto_terminate
-                and _one_shot_turn_child_workflow_enabled(
-                    workflow_instance_id,
-                    one_shot_context,
-                )
-            )
-            agent_turn_instance_id = (
-                f"{workflow_instance_id}__turn__{turn_counter}"
-                if use_child_turn_workflow
-                else workflow_instance_id
-            )
+            agent_turn_instance_id = workflow_instance_id
             instruction_bundle = _compose_turn_instruction_bundle(
                 agent_config=agent_cfg,
                 message=message,
@@ -5540,7 +5223,7 @@ class OpenShellDurableAgent(DurableAgent):
                     },
                 )
 
-            # Build the child workflow input — same shape agent_workflow accepts.
+            # Build the agent turn input — same shape agent_workflow accepts.
             child_input = _freeze_session_child_input(
                 session_id=session_id,
                 agent_cfg=agent_cfg,
@@ -5660,83 +5343,44 @@ class OpenShellDurableAgent(DurableAgent):
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
                 "agentWorkflowMode": child_input.get("agentWorkflowMode"),
             }
-            settle_seconds = _session_bridge_startup_settle_seconds() if auto_terminate else 0
-            jitter_seconds = (
-                _session_bridge_startup_jitter_seconds(
-                    workflow_instance_id,
-                    child_runtime_context,
-                )
-                if auto_terminate
-                else 0
+            yield ctx.call_activity(
+                self.seed_runtime_context_for_instance,
+                input={
+                    "instance_id": agent_turn_instance_id,
+                    "context": child_runtime_context,
+                },
             )
-            startup_delay_seconds = settle_seconds + jitter_seconds
-            if startup_delay_seconds:
-                mode = "child workflow" if use_child_turn_workflow else "inline workflow"
-                if not ctx.is_replaying:
-                    logger.info(
-                        "[session] %s turn %d: settling one-shot runtime for %ds before %s (base=%ds jitter=%ds)",
-                        session_id,
-                        turn_counter,
-                        startup_delay_seconds,
-                        mode,
-                        settle_seconds,
-                        jitter_seconds,
-                    )
-                yield ctx.create_timer(timedelta(seconds=startup_delay_seconds))
 
-            if not use_child_turn_workflow:
+            # Dapr-compliant MCP bridge: yield to the `seed_mcp_for_instance`
+            # activity so the side-effect (populating self._mcp_configs_by_instance
+            # + pre-connecting MCP clients) happens in a place where side
+            # effects are allowed. Orchestrator bodies re-run deterministically
+            # on every replay — direct `self.*` mutations from here have no
+            # durable history and get dropped.
+            try:
                 yield ctx.call_activity(
-                    self.seed_runtime_context_for_instance,
+                    self.seed_mcp_for_instance,
                     input={
                         "instance_id": agent_turn_instance_id,
-                        "context": child_runtime_context,
+                        "agentConfig": agent_cfg,
                     },
                 )
-
-                # Dapr-compliant MCP bridge: yield to the `seed_mcp_for_instance`
-                # activity so the side-effect (populating self._mcp_configs_by_instance
-                # + pre-connecting MCP clients) happens in a place where side
-                # effects are allowed. Orchestrator bodies re-run deterministically
-                # on every replay — direct `self.*` mutations from here have no
-                # durable history and get dropped.
-                try:
-                    yield ctx.call_activity(
-                        self.seed_mcp_for_instance,
-                        input={
-                            "instance_id": agent_turn_instance_id,
-                            "agentConfig": agent_cfg,
-                        },
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # Non-fatal: if MCP seeding fails we still try the turn;
-                    # the agent just won't have MCP tools for this turn.
-                    logger.warning(
-                        "[session] %s turn %d: seed_mcp_for_instance failed: %s",
-                        session_id,
-                        turn_counter,
-                        exc,
-                    )
+            except Exception as exc:  # noqa: BLE001
+                # Non-fatal: if MCP seeding fails we still try the turn;
+                # the agent just won't have MCP tools for this turn.
+                logger.warning(
+                    "[session] %s turn %d: seed_mcp_for_instance failed: %s",
+                    session_id,
+                    turn_counter,
+                    exc,
+                )
 
             try:
-                if use_child_turn_workflow:
-                    # One-shot workflow-bridge turns are called by a parent
-                    # workflow and replay under heavier sub-orchestration churn.
-                    # Keep the agent loop isolated from the session wrapper so
-                    # the wrapper records seed activities plus one child call.
-                    # The LLM/tool activities already own bounded retries; retrying
-                    # the whole child turn can revive terminal AgentError paths like
-                    # the empty-response circuit breaker.
-                    turn_result = yield ctx.call_child_workflow(
-                        getattr(self, "agent_workflow_name", "agent_workflow"),
-                        input=child_input,
-                        instance_id=agent_turn_instance_id,
-                    )
-                else:
-                    # Session-native cutover: run the Dapr Agents turn inside
-                    # this session workflow instead of scheduling a per-turn child
-                    # workflow. Activities below use ctx.instance_id, so chat and
-                    # tool state are keyed by the stable session workflow id.
-                    turn_result = yield from self.agent_workflow(ctx, child_input)
+                # Run the Dapr Agents turn inside this session workflow instead of
+                # scheduling a per-turn child workflow. Activities below use
+                # ctx.instance_id, so chat and tool state are keyed by the stable
+                # session workflow id.
+                turn_result = yield from self.agent_workflow(ctx, child_input)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[session] %s turn %d failed: %s",

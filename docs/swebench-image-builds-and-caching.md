@@ -62,6 +62,37 @@ Build concurrency is separately capped by
 `SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE`. Keep this cap conservative enough that
 hub image builds do not starve GitOps or release-image pipelines.
 
+## Runtime Pull Caching
+
+Image build capacity and benchmark runtime capacity are related but separate
+limits. After an environment is exact-ready, dev still has to pull the
+digest-pinned sandbox image onto the node that admits the OpenShell sandbox.
+Large distinct cohorts therefore benefit from spreading instances across
+repo/version groups that already have image locality on the dev worker pool.
+
+Current runtime rules:
+
+- SWE-bench environment images are immutable digest refs and should use normal
+  node image cache reuse. Re-pulling is not needed unless the digest changes.
+- Agent-host images are mutable `git-<sha>` tags during active development, so
+  sandbox-execution forces fresh pulls for mutable refs and caches immutable
+  digest refs.
+- Exact-ready selection is the admission contract. Do not use duplicate
+  repeated instances as a substitute for missing coverage when measuring real
+  SWE-bench capacity.
+- For capacity-only canaries, `maxTurns=50` is enough to exercise sandbox
+  startup, Dapr workflow scheduling, tool activity traffic, and evaluator
+  handoff without letting unsolved instances dominate wall-clock time.
+
+When a run appears slow, separate these cases before changing concurrency:
+
+- image not exact-ready yet: hub Tekton build/validation/pin path;
+- image exact-ready but cold on dev node: node pull/cache locality;
+- sandbox pod admitted but slow to ready: OpenShell workspace/profile or node
+  pressure;
+- agent host admitted but slow to first tool: Dapr workflow/app readiness or
+  agent runtime behavior.
+
 ## Failure Classification
 
 Classify failures by phase before rebuilding:
@@ -132,4 +163,3 @@ runtime capacity:
   capacity runs;
 - record peak image-build memory and storage by repo/version so hub build
   quotas can be tuned from measured demand.
-

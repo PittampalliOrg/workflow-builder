@@ -227,8 +227,8 @@ export function buildBrowserSandboxTemplate(
 			: []),
 		{ name: "XDG_CONFIG_HOME", value: "/root/.config" },
 		{ name: "DAPR_LLM_COMPONENT_DEFAULT", value: llmComponent },
-		{ name: "DAPR_AGENT_PY_HOOKS_ENABLED", value: "true" },
-		{ name: "DAPR_AGENT_PY_PLUGINS_ENABLED", value: "true" },
+		{ name: "DAPR_AGENT_PY_HOOKS_ENABLED", value: "false" },
+		{ name: "DAPR_AGENT_PY_PLUGINS_ENABLED", value: "false" },
 		{
 			name: "DAPR_AGENT_PY_PLUGIN_PATHS",
 			value: "/etc/dapr-agent-py/plugins",

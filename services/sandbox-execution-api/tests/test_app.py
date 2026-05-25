@@ -243,6 +243,8 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "16777216"
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS"] == "16"
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES"] == "48"
+    assert env["DAPR_AGENT_PY_HOOKS_ENABLED"] == "false"
+    assert env["DAPR_AGENT_PY_PLUGINS_ENABLED"] == "false"
     assert env["DAPR_AGENT_SESSION_HOST_INSTANCE_ID"] == "sw-session-1"
     assert env["DAPR_AGENT_SESSION_HOST_BENCHMARK_RUN_ID"] == "run_1"
     assert env["DAPR_AGENT_SESSION_HOST_BENCHMARK_INSTANCE_ID"] == "sympy__sympy-20590"
