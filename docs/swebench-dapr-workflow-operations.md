@@ -115,6 +115,30 @@ executions that must be preserved.
 - Do not roll workflow-orchestrator, swebench-coordinator, or agent-runtime
   images while a run is active. Durable replay depends on the worker code shape
   matching persisted workflow history.
+- For Dapr multi-app workflows, treat the target app id as part of the durable
+  workflow contract. The target app should be a stable service or pool, already
+  running in the same Kubernetes namespace, with the same workflow/activity
+  registrations on every replica and access to the same actor state store.
+  Creating a brand-new target app id per benchmark instance and immediately
+  routing child workflow work to it is an anti-pattern for high concurrency:
+  it couples benchmark admission to actor placement churn.
+- Keep every workflow-enabled configuration used by agent runtimes and
+  sandboxes on Dapr's multi-app workflow safeguard feature set. In Dapr 1.17,
+  `WorkflowsRemoteActivityReminder` is the relevant feature for remote
+  activities because it lets the remote app save a reminder before notifying
+  the parent app, reducing lost-completion windows when the parent app is
+  temporarily unreachable.
+- Use Dapr metadata as a readiness input, not only Kubernetes pod readiness.
+  `/healthz` proves the sidecar is alive, but workflow-bearing apps also need
+  worker connection metadata before parent workflows start routing durable work
+  to them. This is necessary but not sufficient: placement churn and recent
+  actor lock warnings should still block benchmark scale-up.
+- Prefer Dapr configuration and admission control for concurrency. Dapr does
+  not provide a cluster-wide automatic workflow throttle; app-level
+  `maxConcurrentWorkflowInvocations` and `maxConcurrentActivityInvocations`
+  protect a worker process, while benchmark admission must account for
+  Kueue quota, node requests, sandbox headroom, statestore pressure, and Dapr
+  workflow-worker health.
 - Gate benchmark launches while workflow-builder is rolling, Argo hooks are
   running, or the managing Argo Application is not stable.
 - Gate benchmark launches when recent agent-host daprd logs show actor lock,
