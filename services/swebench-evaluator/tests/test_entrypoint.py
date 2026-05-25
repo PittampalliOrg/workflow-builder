@@ -378,6 +378,61 @@ def test_dispatch_run_instance_taskruns_polls_active_when_slot_pool_is_full(
     assert sorted(result) == ["run-a", "run-b", "run-c"]
 
 
+def test_wait_for_next_taskrun_records_disappeared_taskrun(monkeypatch):
+    entrypoint = load_entrypoint()
+
+    class NotFound(Exception):
+        status = 404
+
+    class FakeApi:
+        def get_namespaced_custom_object(self, **_kwargs):
+            raise NotFound("taskrun deleted")
+
+    monkeypatch.setenv("SWEBENCH_POLL_INTERVAL_SECONDS", "2")
+
+    name, taskrun = entrypoint.wait_for_next_taskrun(
+        FakeApi(),
+        "workflow-builder",
+        ["run-a"],
+        deadline_at=entrypoint.time.monotonic() + 10,
+    )
+
+    assert name == "run-a"
+    condition = taskrun["status"]["conditions"][0]
+    assert condition["status"] == "False"
+    assert condition["reason"] == "TaskRunNotFound"
+
+
+def test_post_terminal_results_posts_before_best_effort_mlflow(monkeypatch, tmp_path):
+    entrypoint = load_entrypoint()
+    calls: list[str] = []
+    results = [{"instance_id": "i1", "status": "error"}]
+
+    monkeypatch.setattr(entrypoint, "collect_results", lambda *_args, **_kwargs: results)
+    monkeypatch.setattr(
+        entrypoint,
+        "post_results",
+        lambda *_args, **_kwargs: calls.append("post_results"),
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "log_mlflow_evaluation",
+        lambda *_args, **_kwargs: calls.append("mlflow"),
+    )
+
+    code = entrypoint._post_terminal_results(
+        "run_1",
+        ["i1"],
+        tmp_path,
+        tmp_path / "harness",
+        error="failed",
+        succeeded=False,
+    )
+
+    assert code == 1
+    assert calls == ["post_results", "mlflow"]
+
+
 def test_collect_results_preserves_stage_failure_when_report_missing(tmp_path):
     entrypoint = load_entrypoint()
     run_dir = tmp_path / "run_1"

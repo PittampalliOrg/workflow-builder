@@ -190,6 +190,10 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
         class_config=ExecutionClassConfig(
             localQueue="benchmark-fast",
             agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+            agentHostEnv={
+                "DAPR_AGENT_APP_MODULE": "src.minimal_main:app",
+                "AGENT_CALL_AGENT_NATIVE": "false",
+            },
         ),
     )
 
@@ -248,6 +252,8 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["DAPR_AGENT_SESSION_HOST_SHUTDOWN_SIDECAR_ON_EXIT"] == "true"
     assert env["DAPR_AGENT_SESSION_HOST_TERMINAL_HOLD_SECONDS"] == "0"
     assert env["DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION"] == "warn"
+    assert env["AGENT_CALL_AGENT_NATIVE"] == "false"
+    assert env["DAPR_AGENT_APP_MODULE"] == "src.minimal_main:app"
     env_from = container["envFrom"]
     assert {
         "configMapRef": {

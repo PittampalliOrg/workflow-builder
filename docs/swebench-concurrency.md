@@ -85,6 +85,9 @@ quota and the competing queue state.
 
 ## Image Build And Cache Strategy
 
+For the dedicated image-build runbook, see
+[`docs/swebench-image-builds-and-caching.md`](./swebench-image-builds-and-caching.md).
+
 SWE-bench inference images are exact environment artifacts. A launch should use
 an instance only when the image is validated for the current suite, repo,
 version, base commit, digest, and computed `envSpecHash`. Coarse keys such as

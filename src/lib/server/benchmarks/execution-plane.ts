@@ -1,7 +1,7 @@
 import { env } from "$env/dynamic/private";
 
 export type BenchmarkExecutionBackend = "dapr-kueue" | "legacy-dapr" | "host";
-export type BenchmarkExecutionClass = "benchmark-fast" | "secure-gvisor";
+export type BenchmarkExecutionClass = string;
 
 export type HostExecutionPlaneSubmitInput = {
 	runId: string;
@@ -82,9 +82,10 @@ export function normalizeBenchmarkExecutionClass(
 ): BenchmarkExecutionClass {
 	if (typeof value !== "string" || !value.trim()) return "benchmark-fast";
 	const raw = value
+		.trim()
 		.toLowerCase()
 		.replace(/_/g, "-");
-	return raw === "secure-gvisor" ? "secure-gvisor" : "benchmark-fast";
+	return /^[a-z0-9][a-z0-9-]{0,62}$/.test(raw) ? raw : "benchmark-fast";
 }
 
 export function hostExecutionPlaneUrl(): string | null {

@@ -42,6 +42,10 @@ describe("benchmark host execution plane config", () => {
 		expect(normalizeBenchmarkExecutionBackend("unknown")).toBe("dapr-kueue");
 		expect(normalizeBenchmarkExecutionClass("secure_gvisor")).toBe("secure-gvisor");
 		expect(normalizeBenchmarkExecutionClass("benchmark-fast")).toBe("benchmark-fast");
+		expect(normalizeBenchmarkExecutionClass("benchmark-minimal-agent")).toBe(
+			"benchmark-minimal-agent",
+		);
+		expect(normalizeBenchmarkExecutionClass("../bad")).toBe("benchmark-fast");
 	});
 
 	it("detects host-dispatched execution IR snapshots", () => {

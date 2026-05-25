@@ -154,8 +154,8 @@ def _post_terminal_results(
         instance_ids,
         missing_report_error=error,
     )
-    log_mlflow_evaluation(run_id, results, log_dir, error)
     post_results(run_id, results, error=error)
+    log_mlflow_evaluation(run_id, results, log_dir, error)
     return 0 if succeeded else 1
 
 
@@ -1349,13 +1349,33 @@ def wait_for_next_taskrun(
     poll_interval = max(2, int(os.environ.get("SWEBENCH_POLL_INTERVAL_SECONDS", "10")))
     while names and time.monotonic() < deadline_at:
         for name in names:
-            tr = api.get_namespaced_custom_object(
-                group=TEKTON_GROUP,
-                version=TEKTON_VERSION,
-                namespace=namespace,
-                plural=TASKRUN_PLURAL,
-                name=name,
-            )
+            try:
+                tr = api.get_namespaced_custom_object(
+                    group=TEKTON_GROUP,
+                    version=TEKTON_VERSION,
+                    namespace=namespace,
+                    plural=TASKRUN_PLURAL,
+                    name=name,
+                )
+            except Exception as exc:
+                if getattr(exc, "status", None) == 404:
+                    return name, {
+                        "metadata": {"name": name, "namespace": namespace},
+                        "status": {
+                            "conditions": [
+                                {
+                                    "type": "Succeeded",
+                                    "status": "False",
+                                    "reason": "TaskRunNotFound",
+                                    "message": (
+                                        "TaskRun disappeared while "
+                                        "swebench-evaluator was waiting"
+                                    ),
+                                }
+                            ]
+                        },
+                    }
+                raise
             cond = succeeded_condition(tr)
             if cond and cond.get("status") in {"True", "False"}:
                 return name, tr

@@ -174,6 +174,7 @@ class ExecutionClassConfig(BaseModel):
     agentHostCpuLimit: str | None = None
     agentHostMemoryLimit: str | None = None
     agentHostEphemeralStorageLimit: str | None = None
+    agentHostEnv: dict[str, str] = Field(default_factory=dict)
     agentHostNonterminalTimeoutAction: str | None = None
     ttlSecondsAfterFinished: int | None = Field(default=None, ge=0, le=86400)
 
@@ -643,6 +644,11 @@ def build_agent_workflow_host_sandbox_manifest(
     session_label = _safe_name(request.sessionId, max_length=63)
     image = request.agentImage or class_config.agentHostImage
     image_pull_policy = _image_pull_policy_for_agent_host(image)
+    class_agent_host_env = [
+        {"name": key, "value": value}
+        for key, value in sorted(class_config.agentHostEnv.items())
+        if key and value is not None
+    ]
     env_from = [
         {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
     ]
@@ -897,6 +903,14 @@ def build_agent_workflow_host_sandbox_manifest(
         pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
     if request.timeoutSeconds is not None:
         pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
+    if class_agent_host_env:
+        overridden = {entry["name"] for entry in class_agent_host_env}
+        base_env = [
+            entry
+            for entry in pod_spec["containers"][0]["env"]
+            if entry.get("name") not in overridden
+        ]
+        pod_spec["containers"][0]["env"] = [*base_env, *class_agent_host_env]
     pod_labels: dict[str, str] = {
         "app": "agent-workflow-host",
         KUEUE_QUEUE_LABEL: class_config.localQueue,
