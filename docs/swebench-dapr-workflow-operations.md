@@ -146,6 +146,32 @@ executions that must be preserved.
   started `session_workflow`, while still stamping
   `agentWorkflowMode=strict_sequential` and seeding runtime/MCP context through
   activities before the first LLM call.
+- Do not treat the inline-turn change as the final scale fix. A follow-up c5
+  checkpoint on 2026-05-25 still lost one base `session_workflow` after the
+  first `tool_activity.scheduled` event. The sidecar logged
+  `Timed out waiting for actor in-flight lock claims to be released` and then
+  `Ignoring complete task which no longer exists` for the session workflow
+  instance itself. That proves the remaining problem is the ephemeral
+  per-session Dapr app-id and actor-placement churn, not only the old per-turn
+  child workflow.
+- Prefer stable workflow-host app IDs for capacity runs. Dapr multi-application
+  workflow routing is app-id based: a parent can call activities or child
+  workflows on another app id, and Dapr may execute that work on any replica
+  serving the target app id. That pattern fits a stable benchmark agent
+  workflow pool where all replicas register the same workflows and activities.
+  It does not fit creating hundreds of short-lived Dapr app IDs at launch time
+  and immediately scheduling child workflows to each one.
+- If a temporary per-session host path remains for interactive or low-volume
+  sessions, do not use it as evidence for 25+ SWE-bench capacity. It creates
+  actor placement updates at the same rate as benchmark admission, and each
+  session-host shutdown creates additional placement churn while sibling
+  workflows may still be active.
+- Do not solve placement churn with an unbounded static sleep. The useful
+  readiness gates are Dapr sidecar metadata showing workflow workers connected,
+  no recent actor in-flight-lock or unknown-instance logs, stable control-plane
+  rollout state, and benchmark capacity signals. If a short settle delay is
+  needed as a tactical guard, document it as a workaround and keep the durable
+  direction a stable app-id worker pool.
 - Keep the SWE-bench sandbox alive until the parent workflow has completed
   `extract_patch`. The agent session can reach `end_turn` before the parent
   workflow runs the post-solve patch command; deleting the sandbox at that
