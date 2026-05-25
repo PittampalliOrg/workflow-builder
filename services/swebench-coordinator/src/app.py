@@ -622,7 +622,13 @@ def _mlflow_log_artifact_sync(
         mlflow.log_artifact(str(path), artifact_path=artifact_path)
 
 
-def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) -> None:
+def _mlflow_log_artifact(
+    run_id: Any,
+    path: pathlib.Path,
+    artifact_path: str,
+    *,
+    wait_for_completion: bool = True,
+) -> None:
     if (
         not _mlflow_enabled()
         or not isinstance(run_id, str)
@@ -648,6 +654,8 @@ def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) ->
         daemon=True,
     )
     thread.start()
+    if not wait_for_completion:
+        return
     if not done.wait(timeout_seconds):
         logger.warning(
             "Best-effort MLflow artifact log timed out after %.1fs for %s",
@@ -661,13 +669,23 @@ def _mlflow_log_artifact(run_id: Any, path: pathlib.Path, artifact_path: str) ->
 
 
 def _mlflow_log_text(
-    run_id: Any, text: Any, file_path: pathlib.Path, artifact_path: str
+    run_id: Any,
+    text: Any,
+    file_path: pathlib.Path,
+    artifact_path: str,
+    *,
+    wait_for_completion: bool = True,
 ) -> None:
     if not _mlflow_enabled() or not isinstance(text, str) or not text:
         return
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(text, encoding="utf-8")
-    _mlflow_log_artifact(run_id, file_path, artifact_path)
+    _mlflow_log_artifact(
+        run_id,
+        file_path,
+        artifact_path,
+        wait_for_completion=wait_for_completion,
+    )
 
 
 def _write_jsonl_preview_artifact(jsonl_path: pathlib.Path) -> pathlib.Path | None:
@@ -1989,7 +2007,13 @@ def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
             / "patches"
             / f"{_safe_artifact_name(instance_id)}.patch"
         )
-        _mlflow_log_text(mlflow_run_id, patch, patch_path, "patches")
+        _mlflow_log_text(
+            mlflow_run_id,
+            patch,
+            patch_path,
+            "patches",
+            wait_for_completion=False,
+        )
     if isinstance(instance, dict):
         return {"success": True, "instance": _compact_instance_for_workflow(instance)}
     return _compact_bff_response(response)

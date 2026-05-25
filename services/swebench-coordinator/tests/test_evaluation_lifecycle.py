@@ -1050,6 +1050,40 @@ def test_mlflow_artifact_logging_has_hard_timeout(monkeypatch, tmp_path):
     assert elapsed < 1
 
 
+def test_sync_instance_does_not_wait_for_patch_artifact_upload(monkeypatch, tmp_path):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.example")
+    monkeypatch.setenv("MLFLOW_ARTIFACT_TIMEOUT_SECONDS", "5")
+    app = load_app(monkeypatch)
+    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        app,
+        "_bff_with_retry",
+        lambda *_args, **_kwargs: {
+            "instance": {
+                "instanceId": "sympy__sympy-20590",
+                "status": "inferred",
+                "mlflowRunId": "mlflow_1",
+                "modelPatch": "diff --git a/file.py b/file.py\n",
+            },
+        },
+    )
+
+    def slow_upload(*_args, **_kwargs):
+        time.sleep(2)
+
+    monkeypatch.setattr(app, "_mlflow_log_artifact_sync", slow_upload)
+
+    started = time.monotonic()
+    result = app._sync_instance(
+        None, {"runId": "run_1", "instanceId": "sympy__sympy-20590"}
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1
+    assert result["instance"]["status"] == "inferred"
+    assert (tmp_path / "run_1" / "patches" / "sympy__sympy-20590.patch").exists()
+
+
 def test_load_run_activity_returns_compact_workflow_payload(monkeypatch):
     app = load_app(monkeypatch)
     large_patch = "diff --git a/file.py b/file.py\n" + ("+" * 100_000)

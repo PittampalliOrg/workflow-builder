@@ -6,6 +6,38 @@ The SWE-bench benchmark path uses a Dapr Workflow preflight/inference split:
 - `swebench_run_workflow` admits instance child workflows through resource leases instead of scheduling all selected instances at once.
 - `swebench_instance_workflow` requires a stamped, validated `inferenceEnvironment`; it must not submit environment build PipelineRuns.
 
+## Dapr Workflow Operating Model
+
+Dapr Workflow code runs in the application, while the Dapr sidecar drives
+execution through a workflow work-item stream. The workflow engine is backed by
+Dapr actors and reminders, so workflow and activity state is durable and can be
+replayed after sidecar, pod, or node failure.
+
+Operational consequences for SWE-bench:
+
+- Workflow and activity limits are per sidecar. Effective capacity is replicas
+  multiplied by the configured Dapr `maxConcurrentWorkflowInvocations` and
+  `maxConcurrentActivityInvocations` values, then further capped by Kueue,
+  leases, model capacity, and node pressure.
+- Dapr has no global workflow fan-out limit by default. Keep explicit
+  per-sidecar limits as safety rails, and let benchmark launch/admission choose
+  run concurrency from live Kueue quota, leases, PSI, sandbox headroom, evaluator
+  slots, and runtime health.
+- Activities are at-least-once. Any activity that creates pods, leases,
+  sandboxes, artifacts, or DB projections must be idempotent or have a durable
+  dedupe key.
+- All replicas of a workflow app must register the same workflows and
+  activities. Do not roll `workflow-orchestrator`, agent runtime, or
+  `swebench-coordinator` images during an active benchmark run unless the run has
+  been cancelled and cleaned up.
+- Child workflows have their own state and status. Terminating a parent
+  terminates children, but normal cleanup should still release benchmark leases
+  and delete sandbox/session resources explicitly.
+- Purge is for terminal workflow state. Because SWE-bench runs do not need old
+  workflow history after DB/evaluator projections are written, terminal
+  workflows should be purged during cleanup. Do not force-purge active,
+  suspended, or pending workflows while a run is still executing.
+
 ## Dev Cluster Architecture
 
 The current `dev` spoke is a Crossplane-owned Talos cluster on Hetzner. It is
@@ -80,12 +112,23 @@ Cache behavior is intentionally layered:
   successful dynamic builds are the source of truth for new exact-ready
   coverage.
 
+Treat the build, validation, and publication phases as separate states. A hub
+PipelineRun can build and validate an image, then fail later while publishing
+the exact-ready pin back to Git. For example, a 2026-05-25 Django 3.1 build
+completed `build-and-push` and `validate-image`, but `pin-environment` failed
+after repeated GitHub `Internal Server Error` push responses. That is a pin
+publication failure, not evidence that the image artifact or validation failed.
+Do not count that environment as launch-ready until the DB row and ConfigMap
+pin are persisted, but recover it by retrying or replaying the idempotent pin
+step rather than rebuilding the image from scratch.
+
 Follow-up build work should focus on raising exact-ready coverage before
 raising dev runtime concurrency. The useful next optimizations are cache hit
 metrics by repo/version/envSpecHash, build-duration histograms per shard,
-explicit cache warm plans for high-value Verified repos, and failure grouping
-by dependency phase so slow or flaky images do not hide runtime capacity
-issues.
+explicit cache warm plans for high-value Verified repos, resumable pin
+publication for already-validated images, and failure grouping by dependency,
+validation, registry push, and Git publication phase so slow or flaky images do
+not hide runtime capacity issues.
 
 When exact-ready coverage is below a target run size, use the existing exact
 cache as a model/runtime proof and mark the launch with `allowPartialSelection`.
