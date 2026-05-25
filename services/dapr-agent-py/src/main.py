@@ -1716,6 +1716,20 @@ class OpenShellDurableAgent(DurableAgent):
         self._workflow_started_at_by_instance: dict[str, float] = {}
         self._max_iterations_by_instance: dict[str, int] = {}
 
+    def _custom_hooks_enabled_for_instance(
+        self,
+        instance_id: str,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        if not hooks_enabled():
+            return False
+        if is_swebench_execution_context(instance_id, context):
+            return False
+        mode = ""
+        if isinstance(context, dict):
+            mode = str(context.get("agentWorkflowMode") or "").strip()
+        return mode != "strict_sequential"
+
     def _agent_workflow_strict_sequential(
         self,
         ctx,
@@ -3259,10 +3273,11 @@ class OpenShellDurableAgent(DurableAgent):
             logger.warning("[telemetry] tool span start failed: %s", exc)
 
         try:
+          custom_hooks_enabled = self._custom_hooks_enabled_for_instance(inst_id, context)
           hook_snapshot = _current_hook_snapshot(self, inst_id)
           cwd_for_hooks = self._cwd_by_instance.get(inst_id, "") or ""
           project_dir_for_hooks = cwd_for_hooks or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-          if hooks_enabled():
+          if custom_hooks_enabled:
             # claude_code.tool.blocked_on_user wraps PreToolUse gating — it
             # represents "tool waiting on a permission/approval decision". Ends
             # with decision=allow|deny|updated_input (mirrors TS).
@@ -3519,7 +3534,7 @@ class OpenShellDurableAgent(DurableAgent):
               _exec_success = _exec_error is None
           except Exception as exc:
               _exec_error = str(exc)
-              if hooks_enabled():
+              if custom_hooks_enabled:
                   try:
                       execute_post_tool_use_failure_hooks(
                           hook_snapshot,
@@ -3576,7 +3591,7 @@ class OpenShellDurableAgent(DurableAgent):
               raw = result.get("content", "")
               if isinstance(raw, str):
                   output = raw[:500]
-          if hooks_enabled() and isinstance(result, dict):
+          if custom_hooks_enabled and isinstance(result, dict):
               try:
                   post_agg = execute_post_tool_hooks(
                       hook_snapshot,
@@ -3795,6 +3810,15 @@ class OpenShellDurableAgent(DurableAgent):
             or _parse_int(metadata.get("maxIterations"))
             or _parse_int(metadata.get("maxTurns"))
         )
+        instance_id = getattr(ctx, "instance_id", None) or ""
+        requested_agent_workflow_mode = str(
+            message.get("agentWorkflowMode") or metadata.get("agentWorkflowMode") or ""
+        ).strip()
+        strict_one_shot_agent_turn = (
+            requested_agent_workflow_mode == "strict_sequential"
+            or is_swebench_execution_context(instance_id, message)
+        )
+        custom_hooks_enabled = hooks_enabled() and not strict_one_shot_agent_turn
 
         # Prepend only non-overlapping context (cwd/sandbox are now in system prompt)
         task = message.get("task") or message.get("prompt")
@@ -3824,7 +3848,7 @@ class OpenShellDurableAgent(DurableAgent):
         # should only happen on the initial execution, not on durable
         # workflow replays. The injected task is already persisted in the
         # workflow state after the first run.
-        if not ctx.is_replaying:
+        if not strict_one_shot_agent_turn and not ctx.is_replaying:
             try:
                 plan_path = runtime.resolve_path("PLAN.md")
                 plan_result = runtime.read_text(plan_path)
@@ -3874,10 +3898,6 @@ class OpenShellDurableAgent(DurableAgent):
         # Derive execution context for event streaming
         # Prefer db_execution_id (the workflow-builder database ID used by the UI)
         # over execution_id (the orchestrator's internal ID with sw-*-exec- prefix).
-        instance_id = getattr(ctx, "instance_id", None) or ""
-        requested_agent_workflow_mode = str(
-            message.get("agentWorkflowMode") or metadata.get("agentWorkflowMode") or ""
-        ).strip()
         execution_id = (
             str(message.get("dbExecutionId") or "").strip()
             or str(message.get("workflowExecutionId") or "").strip()
@@ -4191,7 +4211,7 @@ class OpenShellDurableAgent(DurableAgent):
 
         # Capture per-instance hooks snapshot (overlay per-run hooks/plugins
         # from agentConfig). Pure, deterministic — safe inside the workflow fn.
-        if hooks_enabled():
+        if custom_hooks_enabled:
             effective_cwd = runtime.cwd or cwd or ""
             self._cwd_by_instance[instance_id] = effective_cwd
             try:
@@ -4421,7 +4441,8 @@ class OpenShellDurableAgent(DurableAgent):
                 or ""
             ).strip()
             force_repo_sequential = (
-                requested_agent_workflow_mode == "strict_sequential"
+                strict_one_shot_agent_turn
+                or requested_agent_workflow_mode == "strict_sequential"
                 or is_swebench_execution_context(instance_id, runtime_context)
             )
             if (
@@ -4442,32 +4463,36 @@ class OpenShellDurableAgent(DurableAgent):
             workflow_terminal = True
 
             # After agent completes, check for PLAN.md and persist full content
-            # to Dapr state store (mirrors Claude Code's file-based plan persistence)
-            try:
-                plan_path = runtime.resolve_path("PLAN.md")
-                logger.info("[plan] Attempting to read %s from sandbox %s", plan_path, sandbox_name)
-                plan_result = runtime.read_text(plan_path)
-                logger.info("[plan] read_text result: ok=%s, has_content=%s",
-                            plan_result.get("ok"), bool(plan_result.get("content")))
-                if plan_result.get("ok") and plan_result.get("content"):
-                    plan_content = str(plan_result["content"])
-                    _save_plan_to_state(execution_id, plan_content)
-                    publish_session_event(
-                        self._session_id_by_instance.get(instance_id),
-                        "plan_artifact",
-                        {"content": plan_content, "file": "PLAN.md"},
-                        instance_id=instance_id,
-                    )
-                    logger.info(
-                        "[plan] Persisted PLAN.md (%d chars) to state store for %s",
-                        len(plan_content),
-                        execution_id,
-                    )
-                elif not plan_result.get("ok"):
-                    logger.info("[plan] PLAN.md not found or unreadable: %s",
-                                plan_result.get("error", "unknown"))
-            except Exception as exc:
-                logger.warning("[plan] Failed to read/persist PLAN.md: %s", exc)
+            # to Dapr state store (mirrors Claude Code's file-based plan persistence).
+            # This is intentionally disabled for strict/SWE-bench one-shot turns:
+            # it is custom wrapper I/O outside the durable agent's core activity
+            # sequence and is not needed for benchmark capacity runs.
+            if not strict_one_shot_agent_turn and not ctx.is_replaying:
+                try:
+                    plan_path = runtime.resolve_path("PLAN.md")
+                    logger.info("[plan] Attempting to read %s from sandbox %s", plan_path, sandbox_name)
+                    plan_result = runtime.read_text(plan_path)
+                    logger.info("[plan] read_text result: ok=%s, has_content=%s",
+                                plan_result.get("ok"), bool(plan_result.get("content")))
+                    if plan_result.get("ok") and plan_result.get("content"):
+                        plan_content = str(plan_result["content"])
+                        _save_plan_to_state(execution_id, plan_content)
+                        publish_session_event(
+                            self._session_id_by_instance.get(instance_id),
+                            "plan_artifact",
+                            {"content": plan_content, "file": "PLAN.md"},
+                            instance_id=instance_id,
+                        )
+                        logger.info(
+                            "[plan] Persisted PLAN.md (%d chars) to state store for %s",
+                            len(plan_content),
+                            execution_id,
+                        )
+                    elif not plan_result.get("ok"):
+                        logger.info("[plan] PLAN.md not found or unreadable: %s",
+                                    plan_result.get("error", "unknown"))
+                except Exception as exc:
+                    logger.warning("[plan] Failed to read/persist PLAN.md: %s", exc)
 
             # Scan /mnt/session/outputs/* and ship each file to the Files API
             # with purpose=output, scopeId=<session_id>. Gated on session_id
@@ -4491,7 +4516,7 @@ class OpenShellDurableAgent(DurableAgent):
                         exc,
                     )
 
-            if hooks_enabled() and not ctx.is_replaying:
+            if custom_hooks_enabled and not ctx.is_replaying:
                 try:
                     snap = _current_hook_snapshot(self, instance_id)
                     project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
@@ -4510,7 +4535,7 @@ class OpenShellDurableAgent(DurableAgent):
                     logger.warning("[hooks] Stop error: %s", exc)
             # run_complete is suppressed — session_workflow emits
             # session.status_idle when the agent finishes cleanly.
-            if hooks_enabled() and not ctx.is_replaying:
+            if custom_hooks_enabled and not ctx.is_replaying:
                 try:
                     snap = _current_hook_snapshot(self, instance_id)
                     project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
@@ -4534,7 +4559,7 @@ class OpenShellDurableAgent(DurableAgent):
             # specific reason was already set (e.g., circuit_breaker_*). The
             # finally-block emits the metrics summary using this value.
             self._termination_reason_by_instance.setdefault(instance_id, "agent_error")
-            if hooks_enabled() and not ctx.is_replaying:
+            if custom_hooks_enabled and not ctx.is_replaying:
                 try:
                     snap = _current_hook_snapshot(self, instance_id)
                     project_dir_hook = runtime.cwd or cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
