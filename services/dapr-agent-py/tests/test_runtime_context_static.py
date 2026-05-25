@@ -92,6 +92,18 @@ def test_native_dapr_agent_llm_hooks_are_debug_only() -> None:
     assert "Policy/tool gating remains on the repo-owned hook" in source
 
 
+def test_agent_host_readyz_requires_connected_workflow_worker() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert "def _agent_workflow_runtime_status(" in source
+    assert "/v1.0/metadata" in source
+    assert '"connectedWorkers"' in source
+    assert '"workflowConnectedWorkers": connected_workers' in source
+    assert "workflow runtime has no connected Dapr workflow workers" in source
+    assert "def readiness_check()" in source
+    assert '"code": "workflow_runtime_unavailable"' in source
+
+
 def test_session_bridge_uses_child_workflow_without_debug_flag() -> None:
     source = MAIN_SOURCE.read_text()
 

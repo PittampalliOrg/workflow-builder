@@ -6437,6 +6437,81 @@ def _dapr_sidecar_health_error() -> str | None:
         return str(exc)
 
 
+def _agent_readyz_require_workflow_workers() -> bool:
+    return _env_bool("DAPR_AGENT_READYZ_REQUIRE_WORKFLOW_WORKERS") is not False
+
+
+def _agent_readyz_timeout_seconds() -> float:
+    try:
+        return max(
+            0.5,
+            float(os.environ.get("DAPR_AGENT_READYZ_TIMEOUT_SECONDS", "2")),
+        )
+    except ValueError:
+        return 2.0
+
+
+def _agent_workflow_runtime_status() -> tuple[bool, dict[str, Any]]:
+    """Return whether this agent host has a Dapr workflow worker connected."""
+    details: dict[str, Any] = {
+        "daprHttpUrl": _dapr_http_sidecar_url(),
+        "requireWorkflowWorkers": _agent_readyz_require_workflow_workers(),
+    }
+    if not details["requireWorkflowWorkers"]:
+        return True, details
+    request = urllib.request.Request(
+        f"{_dapr_http_sidecar_url()}/v1.0/metadata",
+        headers=_dapr_api_token_headers(),
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=_agent_readyz_timeout_seconds(),
+        ) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = _workflow_http_error_text(exc)
+        details["metadataError"] = f"HTTP {exc.code}: {detail[:300]}"
+        return False, details
+    except Exception as exc:  # noqa: BLE001
+        details["metadataError"] = str(exc)
+        return False, details
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception as exc:  # noqa: BLE001
+        details["metadataError"] = f"invalid metadata JSON: {exc}"
+        return False, details
+    if not isinstance(payload, dict):
+        details["metadataError"] = "metadata response was not an object"
+        return False, details
+    workflows = (
+        payload.get("workflows") if isinstance(payload.get("workflows"), dict) else {}
+    )
+    scheduler = (
+        payload.get("scheduler") if isinstance(payload.get("scheduler"), dict) else {}
+    )
+    try:
+        connected_workers = int(workflows.get("connectedWorkers") or 0)
+    except (TypeError, ValueError):
+        connected_workers = 0
+    connected_schedulers = scheduler.get("connected_addresses")
+    details.update(
+        {
+            "appId": payload.get("id"),
+            "runtimeVersion": payload.get("runtimeVersion"),
+            "workflowConnectedWorkers": connected_workers,
+            "schedulerConnectedAddresses": (
+                connected_schedulers if isinstance(connected_schedulers, list) else []
+            ),
+        }
+    )
+    if connected_workers < 1:
+        details["error"] = "workflow runtime has no connected Dapr workflow workers"
+        return False, details
+    return True, details
+
+
 def _workflow_http_timeout_seconds() -> float:
     try:
         return max(
@@ -7357,4 +7432,19 @@ async def health_check() -> dict:
 
 @app.get("/readyz")
 async def readiness_check() -> dict:
-    return {"status": "ready", "service": AGENT_SERVICE_NAME}
+    ready, runtime_status = _agent_workflow_runtime_status()
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "service": AGENT_SERVICE_NAME,
+                "code": "workflow_runtime_unavailable",
+                "runtimeStatus": runtime_status,
+            },
+        )
+    return {
+        "status": "ready",
+        "service": AGENT_SERVICE_NAME,
+        "runtimeStatus": runtime_status,
+    }
