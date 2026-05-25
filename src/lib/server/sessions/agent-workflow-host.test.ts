@@ -177,6 +177,26 @@ describe("agent workflow host provisioning", () => {
 		expect(body.priorityClass).toBe("swebench-cohort");
 	});
 
+	it("routes benchmark sessions to a stable app id without creating a per-session host when configured", async () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_STABLE_APP_ID", "dapr-agent-py");
+
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-benchmark-stable",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: "run-1",
+			benchmarkInstanceId: "sympy__sympy-20590",
+			timeoutMinutes: null,
+		});
+
+		expect(result).toEqual({
+			agentAppId: "dapr-agent-py",
+			sandboxName: null,
+			status: "stable-app-id",
+		});
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
 	it("lets env override benchmark host queue class", async () => {
 		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS", "secure-gvisor");
 		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_PRIORITY_CLASS", "interactive-agent");

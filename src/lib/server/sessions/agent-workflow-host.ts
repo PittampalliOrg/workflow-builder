@@ -78,6 +78,22 @@ function sandboxExecutionApiUrl(): string | null {
 	return raw ? raw.replace(/\/+$/, "") : null;
 }
 
+function trimmedEnv(...names: string[]): string | null {
+	for (const name of names) {
+		const value = (env[name] ?? process.env[name] ?? "").trim();
+		if (value) return value;
+	}
+	return null;
+}
+
+function benchmarkStableAgentWorkflowAppId(): string | null {
+	return trimmedEnv(
+		"BENCHMARK_AGENT_WORKFLOW_STABLE_APP_ID",
+		"BENCHMARK_AGENT_WORKFLOW_HOST_STABLE_APP_ID",
+		"BENCHMARK_AGENT_WORKFLOW_HOST_APP_ID",
+	);
+}
+
 const hostProvisionTracer = trace.getTracer("workflow-builder.agent-workflow-host");
 
 async function postAgentWorkflowHost(
@@ -246,8 +262,18 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	priorityClass?: string | null;
 	traceContext?: TraceContext | null;
 }): Promise<AgentWorkflowHostResult | null> {
-	if (!agentWorkflowHostBackendEnabled()) return null;
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
+	if (params.benchmarkRunId) {
+		const stableAppId = benchmarkStableAgentWorkflowAppId();
+		if (stableAppId) {
+			return {
+				agentAppId: stableAppId,
+				sandboxName: null,
+				status: "stable-app-id",
+			};
+		}
+	}
+	if (!agentWorkflowHostBackendEnabled()) return null;
 	const baseUrl = sandboxExecutionApiUrl();
 	if (!baseUrl) {
 		throw error(
