@@ -279,6 +279,8 @@ from src.code_checkpoint import (
 from src.event_publisher import publish_session_event, scope_session, unscope_session
 from src.mcp_retry import connect_mcp_client_with_retries
 from src.session_host_monitor import (
+    benchmark_activity_is_recent,
+    benchmark_activity_marker,
     decide_missing_workflow_action,
     normalize_nonterminal_timeout_action,
     terminal_hold_seconds_for_status,
@@ -6267,6 +6269,31 @@ def _report_session_host_inference_failure(
         )
 
 
+def _session_host_benchmark_progress() -> dict[str, Any] | None:
+    run_id = _session_host_env("DAPR_AGENT_SESSION_HOST_BENCHMARK_RUN_ID")
+    instance_id = _session_host_env("DAPR_AGENT_SESSION_HOST_BENCHMARK_INSTANCE_ID")
+    base_url = os.environ.get(
+        "WORKFLOW_BUILDER_URL",
+        "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+    ).strip()
+    token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+    if not run_id or not instance_id or not base_url or not token:
+        return None
+    url = (
+        f"{base_url.rstrip('/')}/api/internal/benchmarks/runs/"
+        f"{urllib.parse.quote(run_id, safe='')}/instances/"
+        f"{urllib.parse.quote(instance_id, safe='')}/progress"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"X-Internal-Token": token},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return payload if isinstance(payload, dict) else None
+
+
 def _start_session_host_monitor() -> None:
     instance_id = _session_host_env("DAPR_AGENT_SESSION_HOST_INSTANCE_ID")
     if not instance_id:
@@ -6370,6 +6397,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
     first_seen_at: float | None = None
     last_workflow_progress_at: float | None = None
     last_workflow_progress_marker: str | None = None
+    last_benchmark_progress_marker: str | None = None
     missing_since: float | None = None
     sidecar_unavailable_since: float | None = None
     logger.info(
@@ -6507,10 +6535,35 @@ def _run_session_host_monitor(instance_id: str) -> None:
                 _session_host_exit(instance_id, exit_code)
             progress_age = now - (last_workflow_progress_at or first_seen_at)
             if progress_age > idle_timeout:
+                try:
+                    benchmark_progress = _session_host_benchmark_progress()
+                except Exception as exc:  # noqa: BLE001
+                    benchmark_progress = None
+                    logger.warning(
+                        "[session-host] benchmark progress check failed for %s: %s",
+                        instance_id,
+                        exc,
+                    )
+                if benchmark_progress and benchmark_activity_is_recent(
+                    benchmark_progress,
+                    idle_timeout_seconds=idle_timeout,
+                ):
+                    marker = benchmark_activity_marker(benchmark_progress)
+                    if marker != last_benchmark_progress_marker:
+                        logger.info(
+                            "[session-host] workflow %s has benchmark session activity despite stale dapr status: age=%ss type=%s",
+                            instance_id,
+                            benchmark_progress.get("activityAgeSeconds"),
+                            benchmark_progress.get("latestSessionEventType"),
+                        )
+                    last_benchmark_progress_marker = marker
+                    last_workflow_progress_at = now
+                    time.sleep(poll_seconds)
+                    continue
                 if nonterminal_timeout_action == "terminate":
                     message = (
-                        f"[session-host] workflow {instance_id} made no status progress "
-                        f"for {idle_timeout}s while non-terminal; terminating "
+                        f"[session-host] workflow {instance_id} made no dapr status "
+                        f"or benchmark session progress for {idle_timeout}s while non-terminal; terminating "
                         "workflow and exiting"
                     )
                     logger.error(message)
@@ -6535,7 +6588,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     )
                     _session_host_exit(instance_id, 1)
                 logger.warning(
-                    "[session-host] workflow %s made no status progress for %ss while non-terminal; continuing to monitor",
+                    "[session-host] workflow %s made no dapr status or benchmark session progress for %ss while non-terminal; continuing to monitor",
                     instance_id,
                     idle_timeout,
                 )

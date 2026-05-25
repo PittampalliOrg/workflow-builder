@@ -45,6 +45,8 @@ def workflow_progress_marker(state: dict[str, Any]) -> str | None:
         "last_updated_at",
         "updatedAt",
         "updated_at",
+        "customStatus",
+        "custom_status",
     ):
         value = state.get(key)
         if value is not None:
@@ -52,3 +54,24 @@ def workflow_progress_marker(state: dict[str, Any]) -> str | None:
             if marker:
                 return marker
     return None
+
+
+def benchmark_activity_marker(progress: dict[str, Any]) -> str | None:
+    value = progress.get("progressMarker")
+    if value is not None:
+        marker = str(value).strip()
+        if marker:
+            return marker
+    return None
+
+
+def benchmark_activity_is_recent(
+    progress: dict[str, Any],
+    *,
+    idle_timeout_seconds: int,
+) -> bool:
+    try:
+        age = float(progress.get("activityAgeSeconds"))
+    except (TypeError, ValueError):
+        return False
+    return age <= max(0, idle_timeout_seconds)

@@ -8,6 +8,8 @@ if root not in sys.path:
     sys.path.insert(0, root)
 
 from src.session_host_monitor import (
+    benchmark_activity_is_recent,
+    benchmark_activity_marker,
     decide_missing_workflow_action,
     normalize_nonterminal_timeout_action,
     terminal_hold_seconds_for_status,
@@ -79,4 +81,25 @@ def test_workflow_progress_marker_reads_dapr_status_timestamps() -> None:
     )
     assert workflow_progress_marker({"last_updated_at": "  t2  "}) == "t2"
     assert workflow_progress_marker({"updatedAt": 123}) == "123"
+    assert workflow_progress_marker({"customStatus": {"step": "tool"}}) == "{'step': 'tool'}"
     assert workflow_progress_marker({"runtimeStatus": "RUNNING"}) is None
+
+
+def test_benchmark_activity_marker_reads_internal_progress_marker() -> None:
+    assert benchmark_activity_marker({"progressMarker": "  event:42  "}) == "event:42"
+    assert benchmark_activity_marker({"activityAgeSeconds": 10}) is None
+
+
+def test_benchmark_activity_is_recent_uses_activity_age() -> None:
+    assert benchmark_activity_is_recent(
+        {"activityAgeSeconds": 899},
+        idle_timeout_seconds=900,
+    )
+    assert not benchmark_activity_is_recent(
+        {"activityAgeSeconds": 901},
+        idle_timeout_seconds=900,
+    )
+    assert not benchmark_activity_is_recent(
+        {"activityAgeSeconds": "bad"},
+        idle_timeout_seconds=900,
+    )
