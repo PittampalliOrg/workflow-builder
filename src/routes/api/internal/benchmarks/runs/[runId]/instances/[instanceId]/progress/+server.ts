@@ -1,14 +1,14 @@
 import { and, desc, eq } from "drizzle-orm";
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { db } from "$lib/server/db";
 import { benchmarkRunInstances, sessionEvents } from "$lib/server/db/schema";
-import { requireDb } from "$lib/server/db";
 import { requireInternal } from "$lib/server/internal-auth";
 
 export const GET: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
-	const database = requireDb();
-	const [instance] = await database
+	if (!db) return error(503, "Database not configured");
+	const [instance] = await db
 		.select({
 			id: benchmarkRunInstances.id,
 			status: benchmarkRunInstances.status,
@@ -28,7 +28,7 @@ export const GET: RequestHandler = async ({ request, params }) => {
 	if (!instance) return error(404, "Benchmark instance not found");
 
 	const [latestEvent] = instance.sessionId
-		? await database
+		? await db
 				.select({
 					sequence: sessionEvents.sequence,
 					type: sessionEvents.type,
