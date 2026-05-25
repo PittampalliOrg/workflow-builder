@@ -331,6 +331,52 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 		expect(capacity.agentHostOomKilledPods).toEqual(["agent-host-agent-session-oom"]);
 	});
 
+	it("blocks new starts under parent workflow start-timeout pressure", () => {
+		const capacity = estimateBenchmarkRuntimeCapacity({
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			runtimeAppId: "agent-runtime-pool-coding",
+			poolMaxReplicas: 8,
+			slotsPerReplica: 12,
+			requestedInstanceCount: 100,
+			requestedConcurrency: 80,
+			executionBackend: "dapr-kueue",
+			parentWorkflowRuntime: {
+				parentAppId: "workflow-orchestrator",
+				namespace: "workflow-builder",
+				configName: "workflow-builder-tracing",
+				replicas: 1,
+				readyReplicas: 1,
+				availableReplicas: 1,
+				connectedWorkflowWorkers: 1,
+				connectedWorkerPods: 1,
+				podWorkers: [],
+				workflowLimitPerSidecar: 128,
+				activityLimitPerSidecar: 512,
+				effectiveWorkflowCapacity: 128,
+				effectiveActivityCapacity: 512,
+				daprRuntimeVersion: "1.17.7",
+				schedulerPods: 3,
+				schedulerReadyPods: 3,
+				recentActorErrorCount: 0,
+				recentReminderErrorCount: 0,
+				recentStartPendingTimeoutCount: 3,
+				logWindowSeconds: 300,
+				daprRuntimePressure: true,
+				error: null,
+			},
+		});
+
+		expect(capacity).toMatchObject({
+			deterministicConcurrency: 80,
+			pressureAdjustedConcurrency: 0,
+			effectiveConcurrency: 0,
+			daprRecentStartPendingTimeoutCount: 3,
+			capReason: "dapr_runtime_pressure",
+			primaryLimiter: "dapr_runtime_pressure",
+		});
+	});
+
 	it("keeps a configured global inference cap as the auto-mode hard ceiling", () => {
 		vi.stubEnv("BENCHMARK_CAPACITY_MODE", "auto");
 		vi.stubEnv("BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES", "72");
@@ -569,6 +615,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 				schedulerReadyPods: 3,
 				recentActorErrorCount: 0,
 				recentReminderErrorCount: 0,
+				recentStartPendingTimeoutCount: 0,
 				logWindowSeconds: 1800,
 				daprRuntimePressure: false,
 				error: null,
@@ -584,6 +631,7 @@ describe("estimateBenchmarkRuntimeCapacity", () => {
 			parentActivityEffectiveCapacity: 128,
 			daprRuntimeVersion: "1.17.7",
 			daprSchedulerPods: 3,
+			daprRecentStartPendingTimeoutCount: 0,
 			capReason: "dapr_parent_capacity",
 			primaryLimiter: "dapr_parent_capacity",
 		});

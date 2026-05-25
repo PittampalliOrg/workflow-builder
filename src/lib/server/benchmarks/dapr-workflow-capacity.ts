@@ -27,6 +27,7 @@ export type ParentWorkflowRuntimeSnapshot = {
 	schedulerReadyPods: number | null;
 	recentActorErrorCount: number | null;
 	recentReminderErrorCount: number | null;
+	recentStartPendingTimeoutCount: number | null;
 	logWindowSeconds: number;
 	daprRuntimePressure: boolean;
 	error: string | null;
@@ -440,6 +441,50 @@ async function countRecentDaprLogErrors(params: {
 	return { actorErrors, reminderErrors };
 }
 
+function appContainerName(pod: KubePod, fallback: string): string {
+	return (
+		pod.spec?.containers
+			?.map((container) => container.name)
+			.find((name): name is string => !!name && name !== "daprd") ?? fallback
+	);
+}
+
+function countWorkflowStartPendingTimeouts(logs: string): number {
+	let count = 0;
+	for (const line of logs.split(/\r?\n/)) {
+		if (/\bworkflow_start_pending_timeout\b/i.test(line)) count += 1;
+	}
+	return count;
+}
+
+async function countRecentWorkflowStartPendingTimeouts(params: {
+	namespace: string;
+	pods: KubePod[];
+	windowSeconds: number;
+	containerFallback: string;
+}): Promise<number | null> {
+	let count = 0;
+	for (const pod of params.pods.filter(podIsReady)) {
+		const name = pod.metadata?.name;
+		if (!name) continue;
+		const query = new URLSearchParams({
+			container: appContainerName(pod, params.containerFallback),
+			sinceSeconds: String(params.windowSeconds),
+			tailLines: "2000",
+		});
+		const res = await kubeApiFetch(
+			`/api/v1/namespaces/${encodeURIComponent(params.namespace)}/pods/${encodeURIComponent(
+				name,
+			)}/log?${query.toString()}`,
+		);
+		if (!res.ok) {
+			throw new Error(`read app logs for ${name} failed: HTTP ${res.status}`);
+		}
+		count += countWorkflowStartPendingTimeouts(await res.text());
+	}
+	return count;
+}
+
 export async function loadAgentHostDaprRuntimeSnapshot(
 	params: {
 		namespace?: string;
@@ -562,6 +607,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			actorErrors: number | null;
 			reminderErrors: number | null;
 		};
+		let startPendingTimeoutCount: number | null;
 		try {
 			logCounts = await countRecentDaprLogErrors({
 				namespace,
@@ -572,10 +618,22 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			console.warn("[bench-capacity] daprd log scan unavailable", err);
 			logCounts = { actorErrors: null, reminderErrors: null };
 		}
+		try {
+			startPendingTimeoutCount = await countRecentWorkflowStartPendingTimeouts({
+				namespace,
+				pods: parentPods,
+				windowSeconds: logWindowSeconds,
+				containerFallback: parentAppId,
+			});
+		} catch (err) {
+			console.warn("[bench-capacity] workflow-orchestrator app log scan unavailable", err);
+			startPendingTimeoutCount = null;
+		}
 		const daprRuntimeVersion = parentPods.map(parseDaprVersionFromPod).find(Boolean) ?? null;
 		const daprRuntimePressure =
 			(logCounts.actorErrors ?? 0) > 0 ||
 			(logCounts.reminderErrors ?? 0) > 0 ||
+			(startPendingTimeoutCount ?? 0) > 0 ||
 			(replicas != null &&
 				connectedWorkerPods != null &&
 				connectedWorkerPods < Math.min(replicas, readyReplicas ?? replicas));
@@ -597,6 +655,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			schedulerReadyPods: scheduler.schedulerReadyPods,
 			recentActorErrorCount: logCounts.actorErrors,
 			recentReminderErrorCount: logCounts.reminderErrors,
+			recentStartPendingTimeoutCount: startPendingTimeoutCount,
 			daprRuntimePressure,
 			error: null,
 		};
@@ -618,6 +677,7 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			schedulerReadyPods: null,
 			recentActorErrorCount: null,
 			recentReminderErrorCount: null,
+			recentStartPendingTimeoutCount: null,
 			daprRuntimePressure: false,
 			error: err instanceof Error ? err.message : String(err),
 		};
@@ -628,6 +688,7 @@ export const __daprWorkflowCapacityForTest = {
 	agentHostStartupGraceSeconds,
 	appContainerWasOomKilled,
 	countLogMatches,
+	countWorkflowStartPendingTimeouts,
 	daprLogWindowSeconds,
 	podAgeSeconds,
 	podPastStartupGrace,

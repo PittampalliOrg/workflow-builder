@@ -112,6 +112,7 @@ export type BenchmarkCapacityDiagnostics = {
 		schedulerReadyPods: number | null;
 		recentActorErrorCount: number | null;
 		recentReminderErrorCount: number | null;
+		recentStartPendingTimeoutCount: number | null;
 		daprRuntimePressure: boolean;
 		error: string | null;
 	};
@@ -415,6 +416,10 @@ function diagnosticsFromCapacity(params: {
 			schedulerReadyPods: nonNegativeInt(capacity.daprSchedulerReadyPods),
 			recentActorErrorCount: nonNegativeInt(capacity.daprRecentActorErrorCount),
 			recentReminderErrorCount: nonNegativeInt(capacity.daprRecentReminderErrorCount),
+			recentStartPendingTimeoutCount: nonNegativeInt(
+				capacity.daprRecentStartPendingTimeoutCount ??
+					parentRuntime.recentStartPendingTimeoutCount,
+			),
 			daprRuntimePressure: capacity.daprRuntimePressure === true,
 			error: typeof parentRuntime.error === "string" ? parentRuntime.error : null,
 		},
@@ -605,6 +610,8 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		daprSchedulerReadyPods: parentWorkflowRuntime.schedulerReadyPods,
 		daprRecentActorErrorCount: parentWorkflowRuntime.recentActorErrorCount,
 		daprRecentReminderErrorCount: parentWorkflowRuntime.recentReminderErrorCount,
+		daprRecentStartPendingTimeoutCount:
+			parentWorkflowRuntime.recentStartPendingTimeoutCount,
 		daprRuntimePressure: parentWorkflowRuntime.daprRuntimePressure,
 		agentHostRuntime,
 		agentHostActivePods: agentHostRuntime.activePods,

@@ -270,6 +270,15 @@ the instance at the front of the run queue, and sleeps
 `SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS` (defaulting to
 `SWEBENCH_LEASE_RETRY_SECONDS`) before trying again.
 
+Capacity diagnostics also scan recent `workflow-orchestrator` application logs
+for `workflow_start_pending_timeout`. Any count in the active log window marks
+the parent Dapr runtime as under pressure and blocks new benchmark starts via
+the same `dapr_runtime_pressure` launch gate. This is intentionally
+metric-driven: do not lower a static global concurrency cap just because one
+run hit start-path overload; pause starts while the signal is present, inspect
+Dapr/orchestrator/agent-host state, and resume when the pressure window is
+clear.
+
 MLflow is not part of the start gate. With `MLFLOW_FAILURE_MODE=best_effort`,
 the BFF starts benchmark MLflow run creation in the background. A tracking
 timeout should only leave MLflow IDs null and log a warning; it must not block

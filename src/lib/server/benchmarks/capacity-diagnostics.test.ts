@@ -41,6 +41,7 @@ describe("benchmark capacity diagnostics", () => {
 					daprSchedulerReadyPods: 3,
 					daprRecentActorErrorCount: 0,
 					daprRecentReminderErrorCount: 0,
+					daprRecentStartPendingTimeoutCount: 0,
 					daprRuntimePressure: false,
 					agentWorkflowMaxActiveTurns: 56,
 					configuredMaxActiveSandboxes: 60,
@@ -123,6 +124,7 @@ describe("benchmark capacity diagnostics", () => {
 				schedulerReadyPods: 3,
 				recentActorErrorCount: 0,
 				recentReminderErrorCount: 0,
+				recentStartPendingTimeoutCount: 0,
 				daprRuntimePressure: false,
 			},
 			sandbox: {

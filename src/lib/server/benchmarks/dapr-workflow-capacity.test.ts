@@ -83,6 +83,19 @@ describe("Dapr workflow capacity diagnostics", () => {
 		expect(counts).toEqual({ actorErrors: 0, reminderErrors: 0 });
 	});
 
+	it("counts workflow start-pending timeouts from parent app logs", () => {
+		const count =
+			__daprWorkflowCapacityForTest.countWorkflowStartPendingTimeouts(
+				[
+					`{"level":"warning","error":"workflow_start_pending_timeout","instance_id":"sw-1"}`,
+					`terminated session workflow reason=workflow_start_pending_timeout`,
+					`ordinary workflow progress log`,
+				].join("\n"),
+			);
+
+		expect(count).toBe(2);
+	});
+
 	it("ignores terminating pods for readiness-sensitive pressure checks", () => {
 		const ready = __daprWorkflowCapacityForTest.podIsReady({
 			metadata: { name: "workflow-orchestrator-current" },

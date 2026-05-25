@@ -57,6 +57,7 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	daprSchedulerReadyPods: number | null;
 	daprRecentActorErrorCount: number | null;
 	daprRecentReminderErrorCount: number | null;
+	daprRecentStartPendingTimeoutCount: number | null;
 	daprRuntimePressure: boolean;
 	agentWorkflowMaxActiveTurns: number | null;
 	runtimeSlots: number;
@@ -473,6 +474,9 @@ export function estimateBenchmarkRuntimeCapacity(
 		daprSchedulerReadyPods: nonNegativeInt(parentWorkflowRuntime?.schedulerReadyPods),
 		daprRecentActorErrorCount: nonNegativeInt(parentWorkflowRuntime?.recentActorErrorCount),
 		daprRecentReminderErrorCount: nonNegativeInt(parentWorkflowRuntime?.recentReminderErrorCount),
+		daprRecentStartPendingTimeoutCount: nonNegativeInt(
+			parentWorkflowRuntime?.recentStartPendingTimeoutCount,
+		),
 		daprRuntimePressure: parentWorkflowRuntime?.daprRuntimePressure === true,
 		agentWorkflowMaxActiveTurns,
 		runtimeSlots,
