@@ -58,9 +58,12 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
         1,
     )[0]
     assert "return False" in tool_child_gate
-    assert "return True" not in tool_child_gate
+    assert "return True" in tool_child_gate
+    assert tool_child_gate.index('"DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED"') < (
+        tool_child_gate.index("is_swebench_execution_context(")
+    )
     assert tool_child_gate.index("is_swebench_execution_context(") < tool_child_gate.index(
-        '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED"'
+        "return True"
     )
     assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' in source
     assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_TIMEOUT_SECONDS"' not in source

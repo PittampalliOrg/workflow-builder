@@ -128,11 +128,13 @@ def _tool_child_workflow_enabled(
     instance_id: str,
     context: dict[str, Any] | None,
 ) -> bool:
-    if is_swebench_execution_context(instance_id, context):
-        return False
     explicit = _env_bool("DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED")
     if explicit is not None:
         return explicit
+    if is_swebench_execution_context(instance_id, context):
+        # SWE-bench creates many short-lived session sidecars; isolate tool
+        # activities so the watchdog can recover if Dapr loses an inline task.
+        return True
     return False
 
 
