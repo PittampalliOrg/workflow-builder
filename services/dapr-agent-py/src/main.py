@@ -5127,7 +5127,11 @@ class OpenShellDurableAgent(DurableAgent):
                 turn_date = ctx.current_utc_datetime.date().isoformat()
             except Exception:
                 turn_date = None
-            agent_turn_instance_id = workflow_instance_id
+            agent_turn_instance_id = (
+                f"{workflow_instance_id}__turn__{turn_counter}"
+                if auto_terminate
+                else workflow_instance_id
+            )
             instruction_bundle = _compose_turn_instruction_bundle(
                 agent_config=agent_cfg,
                 message=message,
@@ -5376,11 +5380,21 @@ class OpenShellDurableAgent(DurableAgent):
                 )
 
             try:
-                # Run the Dapr Agents turn inside this session workflow instead of
-                # scheduling a per-turn child workflow. Activities below use
-                # ctx.instance_id, so chat and tool state are keyed by the stable
-                # session workflow id.
-                turn_result = yield from self.agent_workflow(ctx, child_input)
+                if auto_terminate:
+                    # Workflow-bridge sessions are one-shot durable/run calls.
+                    # Keep the agent loop in a real child workflow so the session
+                    # wrapper and the agent's LLM/tool loop do not share Dapr
+                    # action IDs. Sharing one history makes replay sensitive to
+                    # wrapper-only activities such as runtime/MCP seeding.
+                    turn_result = yield ctx.call_child_workflow(
+                        getattr(self, "agent_workflow_name", "agent_workflow"),
+                        input=child_input,
+                        instance_id=agent_turn_instance_id,
+                    )
+                else:
+                    # Long-lived UI sessions keep the agent turn inline so chat
+                    # and tool state remain keyed by the stable session workflow id.
+                    turn_result = yield from self.agent_workflow(ctx, child_input)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[session] %s turn %d failed: %s",

@@ -92,14 +92,13 @@ def test_native_dapr_agent_llm_hooks_are_debug_only() -> None:
     assert "Policy/tool gating remains on the repo-owned hook" in source
 
 
-def test_session_bridge_runs_turns_inline_without_debug_child_workflow() -> None:
+def test_session_bridge_uses_child_workflow_without_debug_flag() -> None:
     source = MAIN_SOURCE.read_text()
 
     assert "def _one_shot_turn_child_workflow_enabled(" not in source
     assert "DAPR_AGENT_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED" not in source
     assert "DAPR_AGENT_SWEBENCH_SESSION_ONE_SHOT_CHILD_WORKFLOW_ENABLED" not in source
-    assert "agent_turn_instance_id = workflow_instance_id" in source
-    assert 'f"{workflow_instance_id}__turn__{turn_counter}"' not in source
+    assert 'f"{workflow_instance_id}__turn__{turn_counter}"' in source
     assert "if use_child_turn_workflow" not in source
     assert "_session_bridge_startup_settle_seconds()" not in source
     assert "def _session_bridge_startup_jitter_seconds(" not in source
@@ -112,5 +111,8 @@ def test_session_bridge_runs_turns_inline_without_debug_child_workflow() -> None
     assert 'child_metadata_for_mode["agentWorkflowMode"] = "strict_sequential"' in source
     assert '"agentWorkflowMode": child_input.get("agentWorkflowMode")' in source
     assert "if not use_child_turn_workflow:" not in source
-    assert 'turn_result = yield ctx.call_child_workflow(' not in source
+    assert "if auto_terminate:" in source
+    assert "turn_result = yield ctx.call_child_workflow(" in source
+    assert 'getattr(self, "agent_workflow_name", "agent_workflow")' in source
+    assert "else:\n                    # Long-lived UI sessions keep the agent turn inline" in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source
