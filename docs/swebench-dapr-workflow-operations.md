@@ -115,6 +115,11 @@ executions that must be preserved.
   activities (`previous execution called call_activity...`). The child turn
   boundary keeps the session wrapper deterministic; inline tools avoid the
   older high-churn per-tool child workflow path.
+- Keep the SWE-bench sandbox alive until the parent workflow has completed
+  `extract_patch`. The agent session can reach `end_turn` before the parent
+  workflow runs the post-solve patch command; deleting the sandbox at that
+  boundary turns a valid model attempt into an infrastructure failure and can
+  corrupt predictions if logs are used as a fallback patch source.
 - Freeze SWE-bench child turns onto `agentWorkflowMode=strict_sequential`.
   Runtime agent settings, hooks, or orchestration strategy must not decide
   whether the child `agent_workflow` uses the repo-owned sequential action

@@ -4630,16 +4630,44 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		sessionRow[0] ?? null,
 		sessionEventRows,
 	);
-	const status =
-		terminalSessionStatus ??
-		benchmarkSyncExecutionStatus({
-			dbStatus: row.execution.status,
-			phase: row.execution.phase,
-			completedAt: row.execution.completedAt,
-			error: row.execution.error,
-			output: row.execution.output,
-			runtimeStatus,
-		});
+	const [extractPatchLog] = row.execution.id
+		? await database
+				.select({
+					status: workflowExecutionLogs.status,
+					output: workflowExecutionLogs.output,
+					error: workflowExecutionLogs.error,
+				})
+				.from(workflowExecutionLogs)
+				.where(
+					and(
+						eq(workflowExecutionLogs.executionId, row.execution.id),
+						eq(workflowExecutionLogs.nodeId, "extract_patch"),
+					),
+				)
+				.orderBy(desc(workflowExecutionLogs.startedAt))
+				.limit(1)
+		: [];
+	const executionStatus = benchmarkSyncExecutionStatus({
+		dbStatus: row.execution.status,
+		phase: row.execution.phase,
+		completedAt: row.execution.completedAt,
+		error: row.execution.error,
+		output: row.execution.output,
+		runtimeStatus,
+	});
+	let status = executionStatus;
+	if (terminalSessionStatus === "error") {
+		status = "error";
+	} else if (
+		terminalSessionStatus === "success" &&
+		(executionStatus === "pending" || executionStatus === "running")
+	) {
+		if (extractPatchLog?.status === "error") {
+			status = "error";
+		} else if (extractPatchLog?.status === "success") {
+			status = "success";
+		}
+	}
 	if (status === "running" || status === "pending") {
 		return (
 			(await timeoutBenchmarkInstanceIfStalled(row.runInstance, row.run)) ??
@@ -4652,19 +4680,36 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		runtimeOutput,
 		...sessionEventRows.map((event) => event.data),
 	];
-	const runtimeOutputForExtraction = terminalSessionStatus
-		? runtimeValues
-		: (runtimeOutput ?? row.execution.output);
-	const patch = extractModelPatch(runtimeOutputForExtraction);
+	const runtimeOutputForPatchExtraction = [
+		row.execution.output,
+		runtimeOutput,
+	];
+	const patch =
+		status === "success"
+			? extractModelPatch(runtimeOutputForPatchExtraction) ||
+				extractPatchLogModelPatch(extractPatchLog?.output)
+			: "";
 	const now = new Date();
 	const successfulEmptyPatchReason =
 		status === "success" && !patch.trim()
-			? extractAgentStopReason(runtimeOutputForExtraction, row.run?.maxTurns)
+			? extractAgentStopReason(runtimeValues, row.run?.maxTurns)
+			: null;
+	const extractPatchError =
+		extractPatchLog?.status === "error"
+			? `SWE-bench patch extraction failed: ${
+					extractPatchLog.error?.trim() ||
+					workflowExecutionError(
+						{ error: null, output: extractPatchLog.output },
+						extractPatchLog.output,
+					) ||
+					"extract_patch step failed"
+				}`
 			: null;
 	const inferenceError =
 		status === "success"
 			? successfulEmptyPatchReason
-			: (sessionRow[0]?.errorMessage?.trim() ||
+			: (extractPatchError ||
+				sessionRow[0]?.errorMessage?.trim() ||
 				workflowExecutionError(row.execution, runtimeOutput));
 	const nextVisibleStatus = resolveBenchmarkInstanceStatusAfterInference(
 		row.runInstance.status,
@@ -4687,7 +4732,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		],
 	});
 	const runtimeInferenceEnvironment = extractInferenceEnvironment(
-		runtimeOutputForExtraction,
+		runtimeValues,
 	);
 	if (terminalSessionStatus && row.execution.status !== status) {
 		await database
@@ -4749,6 +4794,25 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 				instanceId: updated.instanceId,
 				phase: "inference",
 				reason: "benchmark instance inference completed",
+			});
+		} else if (
+			updated.inferenceStatus === "error" ||
+			updated.inferenceStatus === "timeout" ||
+			updated.inferenceStatus === "cancelled"
+		) {
+			const reason =
+				inferenceError ?? `benchmark instance ${updated.inferenceStatus}`;
+			await cleanupBenchmarkInstanceSandbox({
+				runId: updated.runId,
+				instanceId: updated.instanceId,
+				sandboxName: updated.sandboxName,
+				reason,
+			});
+			await releaseBenchmarkResourceLeases({
+				runId: updated.runId,
+				instanceId: updated.instanceId,
+				phase: "inference",
+				reason,
 			});
 		}
 	}
@@ -5754,7 +5818,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		params.timeoutSeconds + 3600,
 		SWEBENCH_SANDBOX_TTL_SECONDS_FALLBACK,
 	);
-	const keepSandboxAfterRun = shouldKeepSwebenchSandboxAfterRun();
+	const keepSandboxAfterRun = true;
 	const workspaceRef = buildStableWorkspaceRef("swebench", [
 		params.runId,
 		params.instanceId,
@@ -6009,14 +6073,41 @@ function buildAgentVisibleSwebenchEnvironmentConfig(
 	};
 }
 
-function extractModelPatch(value: unknown): string {
-	const candidates = collectStringsByKey(value, [
-		"modelPatch",
-		"model_patch",
-		"stdout",
-		"output",
-	]);
+export function extractModelPatch(value: unknown): string {
+	const candidates = collectStringsByKey(value, ["modelPatch", "model_patch"]);
 	return candidates.find((candidate) => candidate.includes("diff --git")) ?? "";
+}
+
+function extractPatchLogModelPatch(value: unknown): string {
+	return (
+		collectExtractPatchStdout(value).find((candidate) =>
+			candidate.includes("diff --git"),
+		) ?? ""
+	);
+}
+
+function collectExtractPatchStdout(value: unknown): string[] {
+	const out: string[] = [];
+	const visit = (node: unknown) => {
+		if (!node || typeof node !== "object") return;
+		if (Array.isArray(node)) {
+			for (const item of node) visit(item);
+			return;
+		}
+		const record = node as Record<string, unknown>;
+		const result = record.result;
+		if (result && typeof result === "object" && !Array.isArray(result)) {
+			const stdout = (result as Record<string, unknown>).stdout;
+			if (typeof stdout === "string") out.push(stdout);
+		}
+		const stdout = record.stdout;
+		if (typeof stdout === "string") out.push(stdout);
+		for (const child of Object.values(record)) {
+			if (child && typeof child === "object") visit(child);
+		}
+	};
+	visit(value);
+	return out;
 }
 
 export function extractAgentStopReason(

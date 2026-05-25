@@ -100,8 +100,16 @@ the proof run and rerun the larger target only after the cache reaches coverage.
 SWE-bench evaluator run can still report `resolved=false` if the model stopped
 at its turn cap, produced no patch, produced a patch that did not apply, or
 left FAIL_TO_PASS/PASS_TO_PASS failures. Treat those as benchmark outcomes
-unless the surrounding runtime lost a workflow, sandbox, lease, or evaluator
-artifact.
+unless the surrounding runtime lost a workflow, sandbox, lease, patch
+extraction step, or evaluator artifact.
+
+If every selected instance reports unresolved, audit the inference process
+before classifying the result as model quality. A 2026-05-25 dev run showed
+`extract_patch` failures with `sandbox not found` while rows were still marked
+`inferred`; fallback extraction then picked up truncated session-event previews
+that happened to contain `diff --git`. Authoritative SWE-bench predictions
+must come from the workflow `modelPatch` output or the successful
+`extract_patch` command stdout, not arbitrary agent/session logs.
 
 For DeepSeek V4 Pro proof runs, avoid low turn caps intended only to shorten
 infrastructure canaries. The dev smoke on 2026-05-25 showed repeated

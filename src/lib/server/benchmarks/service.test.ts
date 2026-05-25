@@ -21,6 +21,7 @@ import {
 	extractAgentStopReason,
 	extractBenchmarkRuntimeLinks,
 	extractInferenceEnvironment,
+	extractModelPatch,
 	isBenignDaprTerminationMiss,
 	resolveBenchmarkInferenceStatus,
 	resolveBenchmarkInstanceStatusAfterInference,
@@ -513,7 +514,7 @@ describe("SWE-bench workflow spec", () => {
 		);
 	});
 
-	it("does not retain SWE-bench sandboxes after inference by default", () => {
+	it("keeps SWE-bench sandboxes through patch extraction", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
 			runId: "run_1",
 			suiteSlug: "SWE-bench_Lite",
@@ -535,11 +536,11 @@ describe("SWE-bench workflow spec", () => {
 		const solve = steps[2].solve as unknown as {
 			with: { sandboxPolicy: { keepAfterRun: boolean } };
 		};
-		expect(workspaceProfile.with.keepAfterRun).toBe(false);
+		expect(workspaceProfile.with.keepAfterRun).toBe(true);
 		expect(workspaceProfile.with.sandboxPolicy).toMatchObject({
-			keepAfterRun: false,
+			keepAfterRun: true,
 		});
-		expect(solve.with.sandboxPolicy.keepAfterRun).toBe(false);
+		expect(solve.with.sandboxPolicy.keepAfterRun).toBe(true);
 		expect(steps.some((step) => "cleanup_workspace" in step)).toBe(false);
 	});
 
@@ -630,6 +631,19 @@ describe("SWE-bench workflow spec", () => {
 		);
 		expect(extractPatch.with.command).toContain("':(exclude)**/tests/**'");
 		expect(extractPatch.with.command).toContain("':(exclude)testing/**'");
+	});
+
+	it("only extracts authoritative SWE-bench model patches", () => {
+		const patch = "diff --git a/sympy/core/add.py b/sympy/core/add.py\n";
+		expect(extractModelPatch({ modelPatch: patch })).toBe(patch);
+		expect(extractModelPatch({ model_patch: patch })).toBe(patch);
+		expect(
+			extractModelPatch({
+				stdout: patch,
+				output: `preview: ${patch}`,
+				content: `agent said ${patch}`,
+			}),
+		).toBe("");
 	});
 
 	it("prompts agents for source-only changes and later official grading", () => {
