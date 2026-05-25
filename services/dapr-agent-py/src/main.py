@@ -936,6 +936,7 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "permissionMode",
         "maxIterations",
         "maxTurns",
+        "agentWorkflowMode",
     ):
         raw = value.get(key)
         if raw is None:
@@ -1725,7 +1726,13 @@ class OpenShellDurableAgent(DurableAgent):
         self._workflow_started_at_by_instance: dict[str, float] = {}
         self._max_iterations_by_instance: dict[str, int] = {}
 
-    def _agent_workflow_strict_sequential(self, ctx, message: dict):
+    def _agent_workflow_strict_sequential(
+        self,
+        ctx,
+        message: dict,
+        *,
+        force_repo_sequential: bool = False,
+    ):
         """Run the standard durable-agent loop while scheduling tools one at a time.
 
         dapr-agents' built-in SEQUENTIAL mode still materializes every
@@ -1772,7 +1779,7 @@ class OpenShellDurableAgent(DurableAgent):
         workflow_exc: Exception | None = None
 
         try:
-            if self._orchestration_strategy:
+            if self._orchestration_strategy and not force_repo_sequential:
                 return (yield from super().agent_workflow(ctx, message))
 
             runtime_context = self._runtime_context_for_instance(ctx.instance_id)
@@ -4040,6 +4047,9 @@ class OpenShellDurableAgent(DurableAgent):
         # Prefer db_execution_id (the workflow-builder database ID used by the UI)
         # over execution_id (the orchestrator's internal ID with sw-*-exec- prefix).
         instance_id = getattr(ctx, "instance_id", None) or ""
+        requested_agent_workflow_mode = str(
+            message.get("agentWorkflowMode") or metadata.get("agentWorkflowMode") or ""
+        ).strip()
         execution_id = (
             str(message.get("dbExecutionId") or "").strip()
             or str(message.get("workflowExecutionId") or "").strip()
@@ -4486,6 +4496,9 @@ class OpenShellDurableAgent(DurableAgent):
             "systemPrompt": self.profile.system_prompt,
             "permissionMode": agent_config.get("permissionMode"),
             "allowedTools": sorted(allowed_tools),
+            "agentWorkflowMode": (
+                requested_agent_workflow_mode if requested_agent_workflow_mode else None
+            ),
         }
         self._remember_runtime_context(instance_id, runtime_context)
         yield ctx.call_activity(
@@ -4574,16 +4587,27 @@ class OpenShellDurableAgent(DurableAgent):
             # capture it; session_workflow relies on it flowing out as the
             # per-turn result (and CallAgent's tool_result content ultimately
             # comes from this dict's "content" field).
+            requested_agent_workflow_mode = str(
+                requested_agent_workflow_mode
+                or runtime_context.get("agentWorkflowMode")
+                or ""
+            ).strip()
+            force_repo_sequential = (
+                requested_agent_workflow_mode == "strict_sequential"
+                or is_swebench_execution_context(instance_id, runtime_context)
+            )
             if (
-                getattr(self.execution, "tool_execution_mode", None)
-                == ToolExecutionMode.SEQUENTIAL
-                and (
-                    is_swebench_execution_context(instance_id, runtime_context)
-                    or not getattr(self, "_hooks", None)
+                force_repo_sequential
+                or (
+                    getattr(self.execution, "tool_execution_mode", None)
+                    == ToolExecutionMode.SEQUENTIAL
+                    and not getattr(self, "_hooks", None)
                 )
             ):
                 agent_workflow_result = yield from self._agent_workflow_strict_sequential(
-                    ctx, message
+                    ctx,
+                    message,
+                    force_repo_sequential=force_repo_sequential,
                 )
             else:
                 agent_workflow_result = yield from super().agent_workflow(ctx, message)
@@ -5405,6 +5429,13 @@ class OpenShellDurableAgent(DurableAgent):
                 turn_id=turn_id,
                 mlflow_context=child_mlflow_context,
             )
+            if is_swebench_execution_context(agent_turn_instance_id, child_input):
+                child_input["agentWorkflowMode"] = "strict_sequential"
+                child_metadata_for_mode = _parse_metadata(
+                    child_input.get("_message_metadata")
+                )
+                child_metadata_for_mode["agentWorkflowMode"] = "strict_sequential"
+                child_input["_message_metadata"] = child_metadata_for_mode
 
             # Seed session-scoped runtime/MCP state through activities before
             # the inline agent turn. The agent workflow also rebuilds this
@@ -5500,6 +5531,7 @@ class OpenShellDurableAgent(DurableAgent):
                 ),
                 "permissionMode": agent_cfg.get("permissionMode"),
                 "allowedTools": sorted(_allowed_tools_from_agent_config(agent_cfg)),
+                "agentWorkflowMode": child_input.get("agentWorkflowMode"),
             }
             settle_seconds = _session_bridge_startup_settle_seconds() if auto_terminate else 0
             jitter_seconds = (

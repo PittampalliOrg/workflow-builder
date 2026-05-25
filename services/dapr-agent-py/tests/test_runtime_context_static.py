@@ -41,10 +41,13 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "ToolExecutionMode" in source
     assert "tool_execution_mode=ToolExecutionMode.SEQUENTIAL" in source
     assert "def _agent_workflow_strict_sequential" in source
+    assert "force_repo_sequential: bool = False" in source
     assert "Always record this activity in durable history" in source
-    assert "if self._orchestration_strategy:" in source
+    assert "if self._orchestration_strategy and not force_repo_sequential:" in source
     assert "if self._orchestration_strategy or self.executor is not None" not in source
     assert "is_swebench_execution_context(instance_id, runtime_context)" in source
+    assert 'requested_agent_workflow_mode == "strict_sequential"' in source
+    assert "force_repo_sequential=force_repo_sequential" in source
     assert "def run_tool_activity_workflow" in source
     assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
     assert "def _tool_child_workflow_enabled(" in source
@@ -107,6 +110,9 @@ def test_one_shot_session_bridge_uses_child_agent_workflow() -> None:
     assert "settle_seconds = _session_bridge_startup_settle_seconds() if auto_terminate else 0" in source
     assert "startup_delay_seconds = settle_seconds + jitter_seconds" in source
     assert "ctx.create_timer(timedelta(seconds=startup_delay_seconds))" in source
+    assert 'child_input["agentWorkflowMode"] = "strict_sequential"' in source
+    assert 'child_metadata_for_mode["agentWorkflowMode"] = "strict_sequential"' in source
+    assert '"agentWorkflowMode": child_input.get("agentWorkflowMode")' in source
     assert "if not use_child_turn_workflow:" in source
     assert 'turn_result = yield ctx.call_child_workflow(' in source
     child_turn_call = source.split('if use_child_turn_workflow:', 1)[1].split(

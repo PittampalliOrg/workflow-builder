@@ -101,6 +101,11 @@ capacity monitoring for the actor state store and Scheduler embedded etcd.
   activities (`previous execution called call_activity...`). The child turn
   boundary keeps the session wrapper deterministic; inline tools avoid the
   older high-churn per-tool child workflow path.
+- Freeze SWE-bench child turns onto `agentWorkflowMode=strict_sequential`.
+  Runtime agent settings, hooks, or orchestration strategy must not decide
+  whether the child `agent_workflow` uses the repo-owned sequential action
+  order after the workflow has started. That decision is part of durable
+  history, so the mode is stamped into the child input and runtime context.
 - Keep interactive sessions on warning behavior unless a user-facing timeout is
   explicitly desired.
 - Treat model max-iteration, no-patch, and empty-patch outcomes as model
