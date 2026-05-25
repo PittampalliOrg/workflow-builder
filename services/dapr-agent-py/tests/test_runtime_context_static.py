@@ -126,6 +126,8 @@ def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() ->
     assert "or is_swebench_execution_context(instance_id, message)" in source
     assert "if not strict_one_shot_agent_turn and not ctx.is_replaying:" in source
     assert "custom_hooks_enabled = hooks_enabled() and not strict_one_shot_agent_turn" in source
+    assert "session_seeded_one_shot_turn = bool(session_id_raw) and strict_one_shot_agent_turn" in source
+    assert "using session-seeded context" in source
     assert "if custom_hooks_enabled:" in source
     assert "def _custom_hooks_enabled_for_instance(" in source
     assert "if is_swebench_execution_context(instance_id, context):" in source
@@ -135,7 +137,10 @@ def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() ->
         "# Inject plan from PLAN.md if it exists"
     )
     assert source.index("if custom_hooks_enabled:") < source.index(
-        "yield ctx.call_activity(\n            self.seed_runtime_context_for_instance"
+        "session_seeded_one_shot_turn = bool(session_id_raw)"
+    )
+    assert source.index("session_seeded_one_shot_turn = bool(session_id_raw)") < source.index(
+        "yield ctx.call_activity(\n                self.seed_runtime_context_for_instance"
     )
     assert source.index("if not strict_one_shot_agent_turn and not ctx.is_replaying:") < source.index(
         "_save_plan_to_state(execution_id, plan_content)"
