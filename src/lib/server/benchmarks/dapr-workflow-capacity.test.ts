@@ -72,6 +72,7 @@ describe("Dapr workflow capacity diagnostics", () => {
 				`time="2026-05-24T22:22:40Z" level=error msg="orchestration-processor: failed to process work item: failed to submit termination request to sub-orchestration: rpc error: code = Internal desc = error invoke actor method: no such instance exists" scope=dapr.wfengine.durabletask.backend`,
 				`time="2026-05-24T22:22:40Z" level=error msg="Workflow actor 'sw-swebench-instance-exec-abc__durable__solve__run__0': cannot add event to workflow as state has been purged. Ignoring event." scope=dapr.runtime.actors.targets.orchestrator`,
 				`time="2026-05-24T22:22:40Z" level=warning msg="Workflow actor 'sw-swebench-instance-exec-abc': execution failed with a recoverable error and will be retried later: 'execution aborted'" scope=dapr.runtime.actors.targets.orchestrator`,
+				`time="2026-05-24T22:22:40Z" level=warning msg="sw-swebench-instance-exec-abc: aborting workflow execution" scope=dapr.wfengine.backend.actors`,
 				`time="2026-05-24T22:22:40Z" level=error msg="failed to invoke scheduled actor reminder named: new-event-et-123 due to: rpc error: code = Unknown desc = execution aborted" scope=dapr.runtime.scheduler.cluster`,
 				`time="2026-05-25T00:01:07Z" level=warning msg="Error processing operation DaprBuiltInActorNotFoundRetries. Retrying in 1s..." scope=dapr.runtime`,
 				`time="2026-05-25T00:01:08Z" level=warning msg="No workflow state found for actor 'sw-swebench-instance-exec-abc', terminating execution" scope=dapr.runtime.actors.targets.orchestrator`,

@@ -366,6 +366,9 @@ function countLogMatches(
 		) {
 			continue;
 		}
+		if (/aborting workflow execution/i.test(line)) {
+			continue;
+		}
 		if (
 			/failed to invoke scheduled actor reminder named:/i.test(line) &&
 			/execution aborted/i.test(line)
