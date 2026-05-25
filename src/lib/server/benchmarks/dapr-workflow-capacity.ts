@@ -372,6 +372,23 @@ function countLogMatches(
 			continue;
 		}
 		if (
+			/failed to invoke scheduled actor reminder named:/i.test(line) &&
+			/(context canceled|connection refused|server is closing|client connection is closing|transport is closing)/i.test(
+				line,
+			)
+		) {
+			continue;
+		}
+		if (/No workflow state found for actor .*terminating execution/i.test(line)) {
+			continue;
+		}
+		if (/Unable to get data on the instance: .*no such instance exists/i.test(line)) {
+			continue;
+		}
+		if (/DaprBuiltInActorNotFoundRetries/i.test(line)) {
+			continue;
+		}
+		if (
 			!/(level=(error|fatal)|ERR_|panic|deadline|unable|no such instance|\bfailed\b|\bfailure\b|\babort(?:ed)?\b|\blocked\b|\block timeout\b)/i.test(
 				line,
 			)
