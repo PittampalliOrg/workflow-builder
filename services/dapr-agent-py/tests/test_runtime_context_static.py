@@ -50,6 +50,8 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "force_repo_sequential=force_repo_sequential" in source
     assert "def run_tool_activity_workflow" in source
     assert 'runtime.register_workflow(self.run_tool_activity_workflow)' in source
+    assert "def _native_tool_hooks_configured(" in source
+    assert "and not _native_tool_hooks_configured(self)" in source
     assert "def _tool_child_workflow_enabled(" in source
     assert '"DAPR_AGENT_TOOL_CHILD_WORKFLOW_ENABLED"' in source
     assert '"DAPR_AGENT_SWEBENCH_TOOL_CHILD_WORKFLOW_ENABLED"' not in source
@@ -90,6 +92,18 @@ def test_tool_dispatch_evidence_events_are_emitted() -> None:
     assert '"tool_activity.started"' in source
     assert "[tool-dispatch] scheduled" in source
     assert "[tool-dispatch] run_tool entry" in source
+
+
+def test_native_dapr_agent_llm_hooks_are_debug_only() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert "from dapr_agents.hooks import Hooks as NativeHooks" in source
+    assert "def _install_native_llm_debug_hooks(" in source
+    assert '"DAPR_AGENT_NATIVE_LLM_HOOK_LOGGING_ENABLED"' in source
+    assert '"dapr_agents.native_llm_hook"' in source
+    assert "return Proceed()" in source
+    assert "_install_native_llm_debug_hooks(agent)" in source
+    assert "Policy/tool gating remains on the repo-owned hook" in source
 
 
 def test_one_shot_session_bridge_keeps_swebench_inline() -> None:

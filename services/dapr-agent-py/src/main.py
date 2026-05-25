@@ -256,7 +256,12 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
-from src.event_publisher import publish_session_event, scope_session, unscope_session
+from src.event_publisher import (
+    get_scoped_session,
+    publish_session_event,
+    scope_session,
+    unscope_session,
+)
 from src.mcp_retry import connect_mcp_client_with_retries
 from src.session_host_monitor import (
     benchmark_activity_age_seconds,
@@ -334,6 +339,8 @@ from dapr_agents.agents.configs import (
 )
 from dapr_agents.agents.schemas import TriggerAction
 from dapr_agents.agents.durable import DurableAgent
+from dapr_agents.hooks import Hooks as NativeHooks
+from dapr_agents.hooks import LLMHookContext, Proceed
 from dapr_agents.llm.dapr import DaprChatClient
 from dapr_agents.storage.daprstores.stateservice import StateStoreService
 from dapr_agents.tool.mcp import MCPClient
@@ -367,6 +374,142 @@ _MAX_ENVELOPE_BYTES = int(os.environ.get("DAPR_AGENT_PY_MAX_ENVELOPE_BYTES", "26
 _MAX_INSTRUCTION_AUDIT_BYTES = int(
     os.environ.get("DAPR_AGENT_PY_MAX_INSTRUCTION_AUDIT_BYTES", "131072")
 )
+
+
+def _native_llm_hook_logging_enabled() -> bool:
+    return (
+        _env_bool("DAPR_AGENT_NATIVE_LLM_HOOK_LOGGING_ENABLED")
+        or _env_bool("DAPR_AGENT_NATIVE_HOOK_LOGGING_ENABLED")
+        or False
+    )
+
+
+def _count_native_hook_items(value: Any) -> int:
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    return 0
+
+
+def _native_llm_debug_payload(
+    phase: str,
+    ctx: LLMHookContext,
+    assistant_message: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = ctx.payload if isinstance(ctx.payload, dict) else {}
+    messages = payload.get("messages")
+    tools = payload.get("tools")
+    response_format = payload.get("response_format")
+    data: dict[str, Any] = {
+        "phase": phase,
+        "hook": f"{phase}_llm_call",
+        "stepName": ctx.step_name,
+        "stepKind": ctx.step_kind,
+        "source": ctx.source,
+        "messageCount": _count_native_hook_items(messages),
+        "toolSchemaCount": _count_native_hook_items(tools),
+        "hasToolChoice": payload.get("tool_choice") is not None,
+        "responseFormat": (
+            getattr(response_format, "__name__", None)
+            or (type(response_format).__name__ if response_format is not None else None)
+        ),
+    }
+    if assistant_message is not None:
+        content = assistant_message.get("content")
+        tool_calls = assistant_message.get("tool_calls")
+        data.update(
+            {
+                "assistantRole": assistant_message.get("role"),
+                "assistantContentChars": len(content) if isinstance(content, str) else 0,
+                "assistantToolCallCount": _count_native_hook_items(tool_calls),
+            }
+        )
+    return data
+
+
+def _merge_native_hooks(
+    existing: Any,
+    *,
+    before_llm_call: list[Any],
+    after_llm_call: list[Any],
+) -> NativeHooks:
+    return NativeHooks(
+        before_tool_call=list(getattr(existing, "before_tool_call", []) or []),
+        after_tool_call=list(getattr(existing, "after_tool_call", []) or []),
+        before_llm_call=[
+            *list(getattr(existing, "before_llm_call", []) or []),
+            *before_llm_call,
+        ],
+        after_llm_call=[
+            *list(getattr(existing, "after_llm_call", []) or []),
+            *after_llm_call,
+        ],
+    )
+
+
+def _native_tool_hooks_configured(agent_obj: Any) -> bool:
+    hooks = getattr(agent_obj, "_hooks", None)
+    return bool(
+        hooks
+        and (
+            getattr(hooks, "before_tool_call", None)
+            or getattr(hooks, "after_tool_call", None)
+        )
+    )
+
+
+def _install_native_llm_debug_hooks(agent_obj: Any) -> None:
+    if not _native_llm_hook_logging_enabled():
+        agent_obj._native_llm_hook_debug_enabled = False
+        return
+
+    def _publish(
+        phase: str,
+        ctx: LLMHookContext,
+        assistant_message: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            session_id, scoped_instance_id = get_scoped_session()
+            instance_id = (
+                scoped_instance_id
+                or getattr(agent_obj, "_active_llm_instance_id", None)
+                or ""
+            )
+            if not session_id and instance_id:
+                session_id = getattr(agent_obj, "_session_id_by_instance", {}).get(
+                    instance_id
+                )
+            if not session_id:
+                return
+            publish_session_event(
+                session_id,
+                "dapr_agents.native_llm_hook",
+                _native_llm_debug_payload(phase, ctx, assistant_message),
+                instance_id=instance_id or session_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[native-hooks] LLM hook debug publish failed: %s", exc)
+
+    def _before_llm_call(ctx: LLMHookContext):
+        _publish("before", ctx)
+        return Proceed()
+
+    def _after_llm_call(ctx: LLMHookContext, assistant_message: Any):
+        _publish(
+            "after",
+            ctx,
+            assistant_message if isinstance(assistant_message, dict) else {},
+        )
+        return Proceed()
+
+    agent_obj._hooks = _merge_native_hooks(
+        getattr(agent_obj, "_hooks", None),
+        before_llm_call=[_before_llm_call],
+        after_llm_call=[_after_llm_call],
+    )
+    agent_obj._native_llm_hook_debug_enabled = True
+    logger.info("[native-hooks] Dapr Agents LLM hook debug logging enabled")
 
 
 def _json_preview(value: Any, max_chars: int) -> str:
@@ -4585,7 +4728,7 @@ class OpenShellDurableAgent(DurableAgent):
                 or (
                     getattr(self.execution, "tool_execution_mode", None)
                     == ToolExecutionMode.SEQUENTIAL
-                    and not getattr(self, "_hooks", None)
+                    and not _native_tool_hooks_configured(self)
                 )
             ):
                 agent_workflow_result = yield from self._agent_workflow_strict_sequential(
@@ -5960,6 +6103,14 @@ agent = OpenShellDurableAgent(
         "broadcastTopic": AGENT_BROADCAST_TOPIC,
     },
 )
+
+# Dapr Agents 1.0.3 native hooks are currently used only for optional LLM
+# lifecycle diagnostics. Policy/tool gating remains on the repo-owned hook
+# subsystem below, which has the Claude-compatible config surface.
+try:
+    _install_native_llm_debug_hooks(agent)
+except Exception as exc:  # noqa: BLE001
+    logger.warning("Native Dapr Agents hook wiring failed: %s", exc)
 
 # Wire hooks + plugins. Safe to call even when feature flags are off —
 # the attributes are attached with empty registries so downstream code
