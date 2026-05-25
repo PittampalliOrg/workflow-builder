@@ -1637,6 +1637,32 @@ function scheduleTerminalBenchmarkCleanup(params: {
 	return Promise.resolve();
 }
 
+function scheduleCompletedBenchmarkRunPostprocessing(params: {
+	runId: string;
+	reason: string;
+	now: Date;
+	mode?: BenchmarkTerminalCleanupMode;
+}): Promise<void> {
+	const task = (async () => {
+		await cleanupCompletedBenchmarkRunResources(
+			params.runId,
+			params.reason,
+			params.now,
+		);
+		await recomputeRunSummary(params.runId);
+		await syncBenchmarkRunMlflow(params.runId, { terminate: true });
+		await logBenchmarkTraceSummaryArtifact(params.runId);
+	})();
+	if (params.mode !== "background") return task;
+	void task.catch((err) => {
+		console.warn(
+			`Benchmark run ${params.runId} background completed postprocessing failed:`,
+			err instanceof Error ? err.message : err,
+		);
+	});
+	return Promise.resolve();
+}
+
 export async function scheduleBenchmarkRunTerminalCleanupByRunId(runId: string) {
 	const database = requireDb();
 	const [run] = await database
@@ -1792,12 +1818,12 @@ export async function markBenchmarkRunStatus(
 		});
 	}
 	if (status === "completed") {
-		await cleanupCompletedBenchmarkRunResources(
+		await scheduleCompletedBenchmarkRunPostprocessing({
 			runId,
-			"benchmark run completed",
+			reason: "benchmark run completed",
 			now,
-		);
-		await recomputeRunSummary(runId);
+			mode: options.terminalCleanup,
+		});
 	}
 	if (status === "evaluating") {
 		await database
@@ -1819,7 +1845,7 @@ export async function markBenchmarkRunStatus(
 				),
 			);
 	}
-	if (updated) {
+	if (updated && !(status === "completed" && options.terminalCleanup === "background")) {
 		await syncBenchmarkRunMlflow(runId, {
 			terminate: status === "completed" || status === "failed" || status === "cancelled",
 		});

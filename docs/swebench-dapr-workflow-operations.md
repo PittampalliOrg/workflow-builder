@@ -117,6 +117,12 @@ executions that must be preserved.
   updating workflow status. When the monitor falls back to benchmark session
   activity, preserve the actual `activityAgeSeconds`; do not reset the local
   progress clock to "now" for an event that is already near the timeout.
+- Let evaluator callbacks commit official harness results and return quickly.
+  Completed-run cleanup, full summary recompute, MLflow sync, and trace-summary
+  artifact writes can involve Dapr termination waits and external services, so
+  run them as background post-processing after the run row is marked completed.
+  Otherwise a successful finalize can exceed the evaluator's HTTP read timeout
+  even though the database already contains the SWE-bench results.
 - For SWE-bench one-shot agent hosts, keep the turn behind a child
   `agent_workflow` boundary while keeping tool execution inline. A 94-instance
   dev checkpoint at 34 effective concurrency proved that fully inline

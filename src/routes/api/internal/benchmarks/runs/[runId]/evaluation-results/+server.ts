@@ -174,13 +174,20 @@ export const POST: RequestHandler = async ({ request, params }) => {
 			Number(summary.failed ?? 0) +
 			Number(summary.error ?? 0) +
 			Number(summary.timeout ?? 0);
-		await markBenchmarkRunStatus(params.runId, "completed", {
-			summary,
-			error:
-				failed > 0
-					? `${failed} benchmark instances did not resolve`
-					: evaluatorError,
-		});
+		await markBenchmarkRunStatus(
+			params.runId,
+			"completed",
+			{
+				summary,
+				error:
+					failed > 0
+						? `${failed} benchmark instances did not resolve`
+						: evaluatorError,
+			},
+			{
+				terminalCleanup: "background",
+			},
+		);
 	}
 	const [run] = await db
 		.select()
