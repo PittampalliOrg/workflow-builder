@@ -85,6 +85,11 @@ export type KubeContainerSpec = {
 	name?: string;
 	image?: string;
 	imagePullPolicy?: string;
+	env?: Array<{
+		name?: string;
+		value?: string;
+		valueFrom?: unknown;
+	}>;
 	resources?: {
 		requests?: Record<string, string | number>;
 		limits?: Record<string, string | number>;

@@ -381,6 +381,17 @@
 								{capacityDiagnostics.parentWorkflow.connectedWorkers ?? '—'} workers ·
 								{capacityDiagnostics.parentWorkflow.effectiveWorkflowCapacity ?? '—'} slots
 							</span>
+							<span>
+								parent activity {capacityDiagnostics.parentWorkflow.effectiveActivityCapacity ?? '—'}
+								{#if capacityDiagnostics.parentWorkflow.workerActivityLimitPerSidecar !== null && capacityDiagnostics.parentWorkflow.configurationActivityLimitPerSidecar !== null && capacityDiagnostics.parentWorkflow.workerActivityLimitPerSidecar < capacityDiagnostics.parentWorkflow.configurationActivityLimitPerSidecar}
+									(worker cap {capacityDiagnostics.parentWorkflow.workerActivityLimitPerSidecar})
+								{/if}
+							</span>
+							{#if capacityDiagnostics.workflowLifecycle?.parentActorStateStore?.maxConns}
+								<span>
+									state-store pool {capacityDiagnostics.workflowLifecycle.parentActorStateStore.maxConns}
+								</span>
+							{/if}
 							{#if capacityDiagnostics.parentWorkflow.schedulerPods !== null}
 								<span>
 									scheduler {capacityDiagnostics.parentWorkflow.schedulerReadyPods ?? '—'}/{capacityDiagnostics.parentWorkflow.schedulerPods}

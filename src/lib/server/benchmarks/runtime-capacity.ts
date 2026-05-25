@@ -44,6 +44,10 @@ export type BenchmarkRuntimeCapacitySnapshot = {
 	parentWorkflowConnectedWorkerPods: number | null;
 	parentWorkflowLimitPerSidecar: number | null;
 	parentActivityLimitPerSidecar: number | null;
+	parentConfigurationWorkflowLimitPerSidecar: number | null;
+	parentConfigurationActivityLimitPerSidecar: number | null;
+	parentWorkerWorkflowLimitPerSidecar: number | null;
+	parentWorkerActivityLimitPerSidecar: number | null;
 	parentWorkflowEffectiveCapacity: number | null;
 	parentActivityEffectiveCapacity: number | null;
 	agentHostActivePods: number | null;
@@ -461,6 +465,18 @@ export function estimateBenchmarkRuntimeCapacity(
 		parentWorkflowConnectedWorkerPods: nonNegativeInt(parentWorkflowRuntime?.connectedWorkerPods),
 		parentWorkflowLimitPerSidecar: positiveInt(parentWorkflowRuntime?.workflowLimitPerSidecar),
 		parentActivityLimitPerSidecar: positiveInt(parentWorkflowRuntime?.activityLimitPerSidecar),
+		parentConfigurationWorkflowLimitPerSidecar: positiveInt(
+			parentWorkflowRuntime?.configurationWorkflowLimitPerSidecar,
+		),
+		parentConfigurationActivityLimitPerSidecar: positiveInt(
+			parentWorkflowRuntime?.configurationActivityLimitPerSidecar,
+		),
+		parentWorkerWorkflowLimitPerSidecar: positiveInt(
+			parentWorkflowRuntime?.workerWorkflowLimitPerSidecar,
+		),
+		parentWorkerActivityLimitPerSidecar: positiveInt(
+			parentWorkflowRuntime?.workerActivityLimitPerSidecar,
+		),
 		parentWorkflowEffectiveCapacity,
 		parentActivityEffectiveCapacity: positiveInt(parentWorkflowRuntime?.effectiveActivityCapacity),
 		agentHostActivePods: nonNegativeInt(agentHostRuntime?.activePods),

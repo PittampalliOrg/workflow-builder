@@ -105,6 +105,10 @@ export type BenchmarkCapacityDiagnostics = {
 		podWorkers: unknown[];
 		workflowLimitPerSidecar: number | null;
 		activityLimitPerSidecar: number | null;
+		configurationWorkflowLimitPerSidecar: number | null;
+		configurationActivityLimitPerSidecar: number | null;
+		workerWorkflowLimitPerSidecar: number | null;
+		workerActivityLimitPerSidecar: number | null;
 		effectiveWorkflowCapacity: number | null;
 		effectiveActivityCapacity: number | null;
 		daprRuntimeVersion: string | null;
@@ -183,6 +187,7 @@ export type BenchmarkWorkflowActorStateStore = {
 	componentType: string | null;
 	tablePrefix: string | null;
 	connectionSecretRef: string | null;
+	maxConns: number | null;
 	scoped: boolean;
 };
 
@@ -247,6 +252,7 @@ function actorStoreForApp(
 		componentType: store.spec?.type ?? null,
 		tablePrefix: metadataValue(store, "tablePrefix"),
 		connectionSecretRef: metadataSecretRef(store, "connectionString"),
+		maxConns: positiveInt(metadataValue(store, "maxConns")),
 		scoped: (store.scopes ?? []).length > 0,
 	};
 }
@@ -408,6 +414,22 @@ function diagnosticsFromCapacity(params: {
 			podWorkers: Array.isArray(parentRuntime.podWorkers) ? parentRuntime.podWorkers : [],
 			workflowLimitPerSidecar: positiveInt(capacity.parentWorkflowLimitPerSidecar),
 			activityLimitPerSidecar: positiveInt(capacity.parentActivityLimitPerSidecar),
+			configurationWorkflowLimitPerSidecar: positiveInt(
+				capacity.parentConfigurationWorkflowLimitPerSidecar ??
+					parentRuntime.configurationWorkflowLimitPerSidecar,
+			),
+			configurationActivityLimitPerSidecar: positiveInt(
+				capacity.parentConfigurationActivityLimitPerSidecar ??
+					parentRuntime.configurationActivityLimitPerSidecar,
+			),
+			workerWorkflowLimitPerSidecar: positiveInt(
+				capacity.parentWorkerWorkflowLimitPerSidecar ??
+					parentRuntime.workerWorkflowLimitPerSidecar,
+			),
+			workerActivityLimitPerSidecar: positiveInt(
+				capacity.parentWorkerActivityLimitPerSidecar ??
+					parentRuntime.workerActivityLimitPerSidecar,
+			),
 			effectiveWorkflowCapacity: positiveInt(capacity.parentWorkflowEffectiveCapacity),
 			effectiveActivityCapacity: positiveInt(capacity.parentActivityEffectiveCapacity),
 			daprRuntimeVersion:
@@ -603,6 +625,14 @@ export async function getBenchmarkRunCapacityDiagnostics(
 		parentWorkflowConnectedWorkerPods: parentWorkflowRuntime.connectedWorkerPods,
 		parentWorkflowLimitPerSidecar: parentWorkflowRuntime.workflowLimitPerSidecar,
 		parentActivityLimitPerSidecar: parentWorkflowRuntime.activityLimitPerSidecar,
+		parentConfigurationWorkflowLimitPerSidecar:
+			parentWorkflowRuntime.configurationWorkflowLimitPerSidecar,
+		parentConfigurationActivityLimitPerSidecar:
+			parentWorkflowRuntime.configurationActivityLimitPerSidecar,
+		parentWorkerWorkflowLimitPerSidecar:
+			parentWorkflowRuntime.workerWorkflowLimitPerSidecar,
+		parentWorkerActivityLimitPerSidecar:
+			parentWorkflowRuntime.workerActivityLimitPerSidecar,
 		parentWorkflowEffectiveCapacity: parentWorkflowRuntime.effectiveWorkflowCapacity,
 		parentActivityEffectiveCapacity: parentWorkflowRuntime.effectiveActivityCapacity,
 		daprRuntimeVersion: parentWorkflowRuntime.daprRuntimeVersion,

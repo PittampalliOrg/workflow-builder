@@ -33,9 +33,13 @@ describe("benchmark capacity diagnostics", () => {
 					parentWorkflowConnectedWorkers: 2,
 					parentWorkflowConnectedWorkerPods: 2,
 					parentWorkflowLimitPerSidecar: 128,
-					parentActivityLimitPerSidecar: 512,
+					parentActivityLimitPerSidecar: 192,
+					parentConfigurationWorkflowLimitPerSidecar: 128,
+					parentConfigurationActivityLimitPerSidecar: 512,
+					parentWorkerWorkflowLimitPerSidecar: 128,
+					parentWorkerActivityLimitPerSidecar: 192,
 					parentWorkflowEffectiveCapacity: 256,
-					parentActivityEffectiveCapacity: 1024,
+					parentActivityEffectiveCapacity: 384,
 					daprRuntimeVersion: "1.17.7",
 					daprSchedulerPods: 3,
 					daprSchedulerReadyPods: 3,
@@ -116,9 +120,13 @@ describe("benchmark capacity diagnostics", () => {
 				connectedWorkers: 2,
 				connectedWorkerPods: 2,
 				workflowLimitPerSidecar: 128,
-				activityLimitPerSidecar: 512,
+				activityLimitPerSidecar: 192,
+				configurationWorkflowLimitPerSidecar: 128,
+				configurationActivityLimitPerSidecar: 512,
+				workerWorkflowLimitPerSidecar: 128,
+				workerActivityLimitPerSidecar: 192,
 				effectiveWorkflowCapacity: 256,
-				effectiveActivityCapacity: 1024,
+				effectiveActivityCapacity: 384,
 				daprRuntimeVersion: "1.17.7",
 				schedulerPods: 3,
 				schedulerReadyPods: 3,
@@ -185,6 +193,7 @@ describe("benchmark capacity diagnostics", () => {
 							metadata: [
 								{ name: "actorStateStore", value: "true" },
 								{ name: "tablePrefix", value: "wfstate_" },
+								{ name: "maxConns", value: "16" },
 								{
 									name: "connectionString",
 									secretKeyRef: {
@@ -224,6 +233,7 @@ describe("benchmark capacity diagnostics", () => {
 			parentActorStateStore: {
 				componentName: "workflowstatestore",
 				tablePrefix: "wfstate_",
+				maxConns: 16,
 			},
 			childActorStateStore: {
 				componentName: "dapr-agent-py-statestore",

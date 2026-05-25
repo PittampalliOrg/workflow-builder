@@ -1,4 +1,10 @@
-import { kubeApiFetch, listDeployments, listPods, type KubePod } from "$lib/server/kube/client";
+import {
+	kubeApiFetch,
+	listDeployments,
+	listPods,
+	type KubeDeployment,
+	type KubePod,
+} from "$lib/server/kube/client";
 
 export type ParentWorkflowPodWorkerSnapshot = {
 	podName: string;
@@ -20,6 +26,10 @@ export type ParentWorkflowRuntimeSnapshot = {
 	podWorkers: ParentWorkflowPodWorkerSnapshot[];
 	workflowLimitPerSidecar: number | null;
 	activityLimitPerSidecar: number | null;
+	configurationWorkflowLimitPerSidecar: number | null;
+	configurationActivityLimitPerSidecar: number | null;
+	workerWorkflowLimitPerSidecar: number | null;
+	workerActivityLimitPerSidecar: number | null;
 	effectiveWorkflowCapacity: number | null;
 	effectiveActivityCapacity: number | null;
 	daprRuntimeVersion: string | null;
@@ -71,6 +81,13 @@ function nonNegativeInt(value: unknown): number | null {
 				? Number.parseInt(value, 10)
 				: Number.NaN;
 	return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function finiteMin(values: Array<number | null | undefined>): number | null {
+	const candidates = values.filter(
+		(value): value is number => typeof value === "number" && Number.isFinite(value),
+	);
+	return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -282,6 +299,42 @@ async function loadDaprConfiguration(params: { namespace: string; configName: st
 		activityLimitPerSidecar: isRecord(workflow)
 			? positiveInt(workflow.maxConcurrentActivityInvocations)
 			: null,
+	};
+}
+
+function deploymentEnvLimit(
+	deployment: KubeDeployment | undefined,
+	containerName: string,
+	names: string[],
+): number | null {
+	const containers = deployment?.spec?.template?.spec?.containers ?? [];
+	const container =
+		containers.find((entry) => entry.name === containerName) ??
+		containers.find((entry) => entry.name && entry.name !== "daprd") ??
+		containers[0];
+	for (const name of names) {
+		const value = positiveInt(container?.env?.find((entry) => entry.name === name)?.value);
+		if (value) return value;
+	}
+	return null;
+}
+
+function loadWorkerDaprLimitsFromDeployment(
+	deployment: KubeDeployment | undefined,
+	containerName: string,
+): {
+	workflowLimitPerSidecar: number | null;
+	activityLimitPerSidecar: number | null;
+} {
+	return {
+		workflowLimitPerSidecar: deploymentEnvLimit(deployment, containerName, [
+			"DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS",
+			"DAPR_WORKFLOW_MAX_CONCURRENT_WORKFLOW_INVOCATIONS",
+		]),
+		activityLimitPerSidecar: deploymentEnvLimit(deployment, containerName, [
+			"DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES",
+			"DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITY_INVOCATIONS",
+		]),
 	};
 }
 
@@ -590,6 +643,15 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			}),
 		]);
 		const deployment = deployments.find((item) => item.metadata?.name === parentAppId);
+		const workerLimits = loadWorkerDaprLimitsFromDeployment(deployment, parentAppId);
+		const workflowLimitPerSidecar = finiteMin([
+			config.workflowLimitPerSidecar,
+			workerLimits.workflowLimitPerSidecar,
+		]);
+		const activityLimitPerSidecar = finiteMin([
+			config.activityLimitPerSidecar,
+			workerLimits.activityLimitPerSidecar,
+		]);
 		const parentPods = pods.filter((pod) => podMatchesApp(pod, parentAppId));
 		const connectedWorkers = await loadConnectedWorkers(parentPods);
 		const replicas =
@@ -599,12 +661,12 @@ export async function loadParentWorkflowRuntimeSnapshot(
 		const connectedWorkerPods = connectedWorkers.connectedWorkerPods;
 		const effectiveSidecars = connectedWorkerPods ?? readyReplicas ?? replicas ?? availableReplicas;
 		const workflowCapacity =
-			effectiveSidecars != null && config.workflowLimitPerSidecar
-				? effectiveSidecars * config.workflowLimitPerSidecar
+			effectiveSidecars != null && workflowLimitPerSidecar
+				? effectiveSidecars * workflowLimitPerSidecar
 				: null;
 		const activityCapacity =
-			effectiveSidecars != null && config.activityLimitPerSidecar
-				? effectiveSidecars * config.activityLimitPerSidecar
+			effectiveSidecars != null && activityLimitPerSidecar
+				? effectiveSidecars * activityLimitPerSidecar
 				: null;
 		let logCounts: {
 			actorErrors: number | null;
@@ -649,8 +711,12 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			connectedWorkflowWorkers: connectedWorkers.connectedWorkflowWorkers,
 			connectedWorkerPods,
 			podWorkers: connectedWorkers.podWorkers,
-			workflowLimitPerSidecar: config.workflowLimitPerSidecar,
-			activityLimitPerSidecar: config.activityLimitPerSidecar,
+			workflowLimitPerSidecar,
+			activityLimitPerSidecar,
+			configurationWorkflowLimitPerSidecar: config.workflowLimitPerSidecar,
+			configurationActivityLimitPerSidecar: config.activityLimitPerSidecar,
+			workerWorkflowLimitPerSidecar: workerLimits.workflowLimitPerSidecar,
+			workerActivityLimitPerSidecar: workerLimits.activityLimitPerSidecar,
 			effectiveWorkflowCapacity: workflowCapacity,
 			effectiveActivityCapacity: activityCapacity,
 			daprRuntimeVersion,
@@ -673,6 +739,10 @@ export async function loadParentWorkflowRuntimeSnapshot(
 			podWorkers: [],
 			workflowLimitPerSidecar: null,
 			activityLimitPerSidecar: null,
+			configurationWorkflowLimitPerSidecar: null,
+			configurationActivityLimitPerSidecar: null,
+			workerWorkflowLimitPerSidecar: null,
+			workerActivityLimitPerSidecar: null,
 			effectiveWorkflowCapacity: null,
 			effectiveActivityCapacity: null,
 			daprRuntimeVersion: null,
@@ -693,6 +763,9 @@ export const __daprWorkflowCapacityForTest = {
 	countLogMatches,
 	countWorkflowStartPendingTimeouts,
 	daprLogWindowSeconds,
+	deploymentEnvLimit,
+	finiteMin,
+	loadWorkerDaprLimitsFromDeployment,
 	podAgeSeconds,
 	podPastStartupGrace,
 	podIsAgentHost,

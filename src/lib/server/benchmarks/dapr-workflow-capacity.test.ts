@@ -188,4 +188,41 @@ describe("Dapr workflow capacity diagnostics", () => {
 			}),
 		).toBe(2);
 	});
+
+	it("uses the lower worker-side Dapr activity limit when it is below sidecar config", () => {
+		const deployment = {
+			spec: {
+				template: {
+					spec: {
+						containers: [
+							{
+								name: "workflow-orchestrator",
+								env: [
+									{
+										name: "DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS",
+										value: "128",
+									},
+									{
+										name: "DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES",
+										value: "192",
+									},
+								],
+							},
+						],
+					},
+				},
+			},
+		};
+
+		expect(
+			__daprWorkflowCapacityForTest.loadWorkerDaprLimitsFromDeployment(
+				deployment,
+				"workflow-orchestrator",
+			),
+		).toEqual({
+			workflowLimitPerSidecar: 128,
+			activityLimitPerSidecar: 192,
+		});
+		expect(__daprWorkflowCapacityForTest.finiteMin([512, 192])).toBe(192);
+	});
 });
