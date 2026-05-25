@@ -61,7 +61,7 @@ export function swebenchDaprRepairDecision(
 			benchmarkOwned,
 		};
 	}
-	const effectiveMinAgeHours = Math.min(input.minAgeHours ?? 6, 0);
+	const effectiveMinAgeHours = input.minAgeHours ?? 6;
 	if (input.ageHours != null && input.ageHours < effectiveMinAgeHours) {
 		return {
 			repair: false,

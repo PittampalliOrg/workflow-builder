@@ -27,6 +27,11 @@ Useful upstream docs:
 
 The important upstream constraints for benchmark operations are:
 
+- Dapr Workflow is event-sourced and replay-based. On every work item, the SDK
+  re-executes the orchestration function from the beginning and matches each
+  scheduled task against the persisted history. Any code path that changes the
+  activity or child-workflow sequence can fail replay with a non-determinism
+  error such as `previous execution called call_activity...`.
 - Workflow code must replay deterministically. Do not change the order or shape
   of workflow, activity, or child-workflow calls for an in-flight app id unless
   the change uses Dapr workflow patching/versioning.
@@ -79,6 +84,15 @@ preserved:
 Do not use this as a production retention policy. Production should use normal
 workflow terminate and purge APIs, plus scheduled retention, backups, and
 capacity monitoring for the actor state store and Scheduler embedded etcd.
+
+If Dapr keeps retrying old scheduler reminders after all benchmark runs and
+leases are gone, verify `workflow-orchestrator` sidecar logs for repeated
+`cannot add event to workflow as state has been purged`, `no such instance
+exists`, or `execution aborted` lines. On disposable dev state, a full
+`wfstate_state` reset plus `workflow-orchestrator` rollout restart is a valid
+break-glass baseline reset only after confirming there are no active benchmark
+runs, active benchmark leases, active SWE-bench sandboxes, or active workflow
+executions that must be preserved.
 
 ## Benchmark Best Practices
 

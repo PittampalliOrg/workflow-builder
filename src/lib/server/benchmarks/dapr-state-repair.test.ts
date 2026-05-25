@@ -6,7 +6,7 @@ import {
 } from "./dapr-state-repair";
 
 describe("benchmark-scoped Dapr state repair", () => {
-	it("repairs young SWE-bench parent candidates when no active run or lease exists", () => {
+	it("skips young SWE-bench parent candidates before the minimum age", () => {
 		expect(
 			swebenchDaprRepairDecision({
 				instanceId: "sw-swebench-instance-exec-c7",
@@ -16,9 +16,26 @@ describe("benchmark-scoped Dapr state repair", () => {
 				minAgeHours: 6,
 			}),
 		).toMatchObject({
+			repair: false,
+			reason: "too_young",
+			effectiveMinAgeHours: 6,
+			benchmarkOwned: true,
+		});
+	});
+
+	it("repairs old SWE-bench parent candidates when no active run or lease exists", () => {
+		expect(
+			swebenchDaprRepairDecision({
+				instanceId: "sw-swebench-instance-exec-c7",
+				ageHours: 6.1,
+				activeRunCount: 0,
+				activeLeaseCount: 0,
+				minAgeHours: 6,
+			}),
+		).toMatchObject({
 			repair: true,
 			reason: "benchmark_scoped_repair",
-			effectiveMinAgeHours: 0,
+			effectiveMinAgeHours: 6,
 			benchmarkOwned: true,
 		});
 	});

@@ -94,6 +94,24 @@ and exact-ready. It is not evidence that the missing instances are ready or that
 the cluster can run the full requested count; continue the build campaign after
 the proof run and rerun the larger target only after the cache reaches coverage.
 
+## Agent Turn Budget
+
+`maxTurns` is a model-quality budget, not a capacity gate. A completed
+SWE-bench evaluator run can still report `resolved=false` if the model stopped
+at its turn cap, produced no patch, produced a patch that did not apply, or
+left FAIL_TO_PASS/PASS_TO_PASS failures. Treat those as benchmark outcomes
+unless the surrounding runtime lost a workflow, sandbox, lease, or evaluator
+artifact.
+
+For DeepSeek V4 Pro proof runs, avoid low turn caps intended only to shorten
+infrastructure canaries. The dev smoke on 2026-05-25 showed repeated
+`termination_reason=max_iters` at 30-50 tool calls, sometimes with no patch and
+sometimes with an incomplete patch. Use a higher explicit cap, such as
+`--max-turns 80` or `--max-turns 100`, for the next exact-ready model proof
+canary, then compare no-patch rate, patch apply rate, and resolved rate before
+raising concurrency. Keep shorter caps only for infrastructure-only tests where
+model resolution is not the acceptance criterion.
+
 ## PSI Metrics
 
 Kubernetes 1.36 makes kubelet PSI metrics stable and enabled by default when
