@@ -1892,6 +1892,25 @@ def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> N
         conn.close()
 
 
+def _is_benchmark_workflow_execution(
+    dapr_instance_id: str | None,
+    workflow_input: Any,
+) -> bool:
+    if isinstance(dapr_instance_id, str) and dapr_instance_id.startswith(
+        "sw-swebench-instance-exec-"
+    ):
+        return True
+    if isinstance(workflow_input, dict):
+        trigger = workflow_input.get("trigger")
+        if isinstance(trigger, dict):
+            data = trigger.get("data")
+            if isinstance(data, dict) and data.get("runId") and data.get("instanceId"):
+                return True
+        if workflow_input.get("runId") and workflow_input.get("instanceId"):
+            return True
+    return False
+
+
 def _cleanup_stale_instances_on_startup() -> None:
     """Terminate stale Dapr workflow instances and mark DB records on startup.
 
@@ -1903,7 +1922,7 @@ def _cleanup_stale_instances_on_startup() -> None:
         1,
         int(os.environ.get("STARTUP_CLEANUP_TERMINATE_TIMEOUT_SECONDS", "15")),
     )
-    if os.environ.get("CLEANUP_STALE_ON_STARTUP", "true").lower() != "true":
+    if os.environ.get("CLEANUP_STALE_ON_STARTUP", "false").lower() != "true":
         logger.info("[Startup Cleanup] Disabled via CLEANUP_STALE_ON_STARTUP=false")
         return
 
@@ -1921,7 +1940,7 @@ def _cleanup_stale_instances_on_startup() -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, dapr_instance_id
+                    SELECT id, dapr_instance_id, input
                     FROM workflow_executions
                     WHERE status = 'running'
                       AND started_at < NOW() - INTERVAL '%s minutes'
@@ -1940,7 +1959,15 @@ def _cleanup_stale_instances_on_startup() -> None:
         client = get_workflow_client()
         terminated_count = 0
 
-        for execution_id, dapr_instance_id in stale_rows:
+        for execution_id, dapr_instance_id, workflow_input in stale_rows:
+            if _is_benchmark_workflow_execution(dapr_instance_id, workflow_input):
+                logger.info(
+                    "[Startup Cleanup] Skipping benchmark workflow %s (%s)",
+                    execution_id,
+                    dapr_instance_id,
+                )
+                continue
+
             if dapr_instance_id:
                 try:
                     _terminate_workflow_with_timeout(
