@@ -2401,6 +2401,50 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	let parentClosed = true;
 	let agentRuntimeClosed = true;
 
+	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+		let status: unknown = null;
+		try {
+			status = await deps.getParentStatus(instanceId);
+		} catch (err) {
+			console.warn(
+				`Failed to preflight benchmark workflow status ${instanceId}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+			parentTerminations.set(instanceId, "alreadyGone");
+			return;
+		}
+		if (isTerminalDurableRuntimeStatus(status)) {
+			parentTerminations.set(instanceId, "terminated");
+			return;
+		}
+		const termination = await deps.terminateParent(instanceId, params.reason);
+		parentTerminations.set(instanceId, termination);
+		if (termination === "failed") {
+			parentClosed = false;
+			allClosed = false;
+		}
+	});
+
+	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+		const termination = parentTerminations.get(instanceId) ?? "terminated";
+		if (termination === "failed") {
+			parentClosed = false;
+			return;
+		}
+		const closed =
+			termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
+		if (!closed) {
+			parentClosed = false;
+			allClosed = false;
+		}
+	});
+
+	if (!parentClosed) {
+		return { allClosed, parentClosed, agentRuntimeClosed };
+	}
+
 	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
 		try {
 			agentRuntimePreflightStatuses.set(
@@ -2451,46 +2495,6 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 			(await deps.waitAgentRuntimeClosed(target.runtimeAppId, target.instanceId));
 		if (!closed) {
 			agentRuntimeClosed = false;
-			allClosed = false;
-		}
-	});
-
-	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
-		let status: unknown = null;
-		try {
-			status = await deps.getParentStatus(instanceId);
-		} catch (err) {
-			console.warn(
-				`Failed to preflight benchmark workflow status ${instanceId}:`,
-				err instanceof Error ? err.message : err,
-			);
-		}
-		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
-			parentTerminations.set(instanceId, "alreadyGone");
-			return;
-		}
-		if (isTerminalDurableRuntimeStatus(status)) {
-			parentTerminations.set(instanceId, "terminated");
-			return;
-		}
-		const termination = await deps.terminateParent(instanceId, params.reason);
-		parentTerminations.set(instanceId, termination);
-		if (termination === "failed") {
-			parentClosed = false;
-			allClosed = false;
-		}
-	});
-
-	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
-		const termination = parentTerminations.get(instanceId) ?? "terminated";
-		if (termination === "failed") {
-			parentClosed = false;
-			return;
-		}
-		const closed =
-			termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
-		if (!closed) {
-			parentClosed = false;
 			allClosed = false;
 		}
 	});

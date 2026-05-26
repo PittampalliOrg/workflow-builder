@@ -1222,7 +1222,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBeNull();
 	});
 
-	it("terminates child/session-host workflows before parent workflows", async () => {
+	it("terminates parent workflows before child/session-host workflows", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1277,12 +1277,12 @@ describe("SWE-bench terminal run cleanup", () => {
 			agentRuntimeClosed: true,
 		});
 		expect(calls).toEqual([
-			"child-status:agent-session-host/session-1",
-			"child-terminate:agent-session-host/session-1",
-			"child-wait:agent-session-host/session-1",
 			"parent-status:parent-1",
 			"parent-terminate:parent-1",
 			"parent-wait:parent-1",
+			"child-status:agent-session-host/session-1",
+			"child-terminate:agent-session-host/session-1",
+			"child-wait:agent-session-host/session-1",
 			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",
 		]);
@@ -1307,7 +1307,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(false);
 	});
 
-	it("skips purge when parent workflow closure is not confirmed", async () => {
+	it("skips child cleanup and purge when parent workflow closure is not confirmed", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1352,12 +1352,7 @@ describe("SWE-bench terminal run cleanup", () => {
 
 		expect(result.allClosed).toBe(false);
 		expect(result.parentClosed).toBe(false);
-		expect(calls).toEqual([
-			"child-terminate",
-			"child-wait",
-			"parent-terminate",
-			"parent-wait",
-		]);
+		expect(calls).toEqual(["parent-terminate", "parent-wait"]);
 	});
 
 	it("treats missing child/session-host workflows as already closed", async () => {
