@@ -689,7 +689,7 @@ export function shouldProceedAfterStalledDurableCleanupTimeout(): boolean {
 	return parseBooleanFlag(
 		env.BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT ??
 			process.env.BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT,
-		true,
+		false,
 	);
 }
 
@@ -2417,48 +2417,19 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	const agentRuntimePreflightStatuses = new Map<string, unknown>();
 	const agentRuntimeTerminations = new Map<string, DurableTerminationResult>();
 	const parentTerminations = new Map<string, DurableTerminationResult>();
+	const parentPreflightStatuses = new Map<string, unknown>();
 	let parentClosed = true;
 	let agentRuntimeClosed = true;
-	const unclosedParentInstanceIds = new Set<string>();
 
 	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
-		let status: unknown = null;
 		try {
-			status = await deps.getParentStatus(instanceId);
+			parentPreflightStatuses.set(instanceId, await deps.getParentStatus(instanceId));
 		} catch (err) {
 			console.warn(
 				`Failed to preflight benchmark workflow status ${instanceId}:`,
 				err instanceof Error ? err.message : err,
 			);
-		}
-		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
-			parentTerminations.set(instanceId, "alreadyGone");
-			return;
-		}
-		if (isTerminalDurableRuntimeStatus(status)) {
-			parentTerminations.set(instanceId, "terminated");
-			return;
-		}
-		const termination = await deps.terminateParent(instanceId, params.reason);
-		parentTerminations.set(instanceId, termination);
-		if (termination === "failed") {
-			parentClosed = false;
-			unclosedParentInstanceIds.add(instanceId);
-		}
-	});
-
-	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
-		const termination = parentTerminations.get(instanceId) ?? "terminated";
-		if (termination === "failed") {
-			parentClosed = false;
-			unclosedParentInstanceIds.add(instanceId);
-			return;
-		}
-		const closed =
-			termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
-		if (!closed) {
-			parentClosed = false;
-			unclosedParentInstanceIds.add(instanceId);
+			parentPreflightStatuses.set(instanceId, null);
 		}
 	});
 
@@ -2514,10 +2485,44 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 		}
 	});
 
-	if (unclosedParentInstanceIds.size > 0) {
+	const activeParentInstanceIds = parentInstanceIds.filter((instanceId) => {
+		const status = parentPreflightStatuses.get(instanceId);
+		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+			parentTerminations.set(instanceId, "alreadyGone");
+			return false;
+		}
+		if (isTerminalDurableRuntimeStatus(status)) {
+			parentTerminations.set(instanceId, "terminated");
+			return false;
+		}
+		return true;
+	});
+
+	await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+		const termination = await deps.terminateParent(instanceId, params.reason);
+		parentTerminations.set(instanceId, termination);
+		if (termination === "failed") {
+			parentClosed = false;
+		}
+	});
+
+	await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+		const termination = parentTerminations.get(instanceId) ?? "terminated";
+		if (termination === "failed") {
+			parentClosed = false;
+			return;
+		}
+		const closed =
+			termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
+		if (!closed) {
+			parentClosed = false;
+		}
+	});
+
+	if (!parentClosed) {
 		parentClosed = true;
 		await runWithConcurrency(
-			[...unclosedParentInstanceIds],
+			activeParentInstanceIds,
 			concurrency,
 			async (instanceId) => {
 				let status: unknown = null;
@@ -5357,9 +5362,8 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			);
 		}
 		// Purge is intentionally handled inside the durable cascade and only after
-		// confirmed closure. If Dapr does not confirm closure for a no-progress
-		// benchmark instance, the benchmark row still has to advance so host pods,
-		// sandboxes, and leases can be cleaned up.
+		// confirmed closure. Advancing after a durable cleanup timeout is an
+		// explicit operator escape hatch because it can leave orphan Dapr reminders.
 
 		if (sessionId) {
 			await database

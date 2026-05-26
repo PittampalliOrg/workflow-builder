@@ -1222,7 +1222,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBeNull();
 	});
 
-	it("terminates parent workflows before child/session-host workflows", async () => {
+	it("terminates child/session-host workflows before parent workflows", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1278,11 +1278,11 @@ describe("SWE-bench terminal run cleanup", () => {
 		});
 		expect(calls).toEqual([
 			"parent-status:parent-1",
-			"parent-terminate:parent-1",
-			"parent-wait:parent-1",
 			"child-status:agent-session-host/session-1",
 			"child-terminate:agent-session-host/session-1",
 			"child-wait:agent-session-host/session-1",
+			"parent-terminate:parent-1",
+			"parent-wait:parent-1",
 			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",
 		]);
@@ -1294,15 +1294,15 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(false);
 	});
 
-	it("advances stalled benchmark cleanup after durable close confirmation times out by default", () => {
+	it("does not advance stalled benchmark cleanup after durable close confirmation times out by default", () => {
 		expect(
 			__benchmarkDurableRuntimeForTest.shouldProceedAfterStalledDurableCleanupTimeout(),
-		).toBe(true);
+		).toBe(false);
 		expect(
 			__benchmarkDurableRuntimeForTest.terminalRunShouldProceedAfterDurableCleanupTimeout(
 				"cancelled",
 			),
-		).toBe(true);
+		).toBe(false);
 		expect(
 			__benchmarkDurableRuntimeForTest.terminalRunShouldProceedAfterDurableCleanupTimeout(
 				"failed",
@@ -1320,9 +1320,21 @@ describe("SWE-bench terminal run cleanup", () => {
 				"cancelled",
 			),
 		).toBe(false);
+		vi.stubEnv(
+			"BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT",
+			"true",
+		);
+		expect(
+			__benchmarkDurableRuntimeForTest.shouldProceedAfterStalledDurableCleanupTimeout(),
+		).toBe(true);
+		expect(
+			__benchmarkDurableRuntimeForTest.terminalRunShouldProceedAfterDurableCleanupTimeout(
+				"cancelled",
+			),
+		).toBe(true);
 	});
 
-	it("terminates child workflows and retries parent closure when parent workflow closure is not confirmed", async () => {
+	it("terminates child workflows before parent workflows and retries parent closure when needed", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1368,10 +1380,10 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(result.allClosed).toBe(false);
 		expect(result.parentClosed).toBe(false);
 		expect(calls).toEqual([
-			"parent-terminate",
-			"parent-wait",
 			"child-terminate",
 			"child-wait",
+			"parent-terminate",
+			"parent-wait",
 			"parent-terminate",
 			"parent-wait",
 		]);
