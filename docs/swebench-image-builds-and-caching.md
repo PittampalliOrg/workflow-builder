@@ -88,6 +88,9 @@ When a run appears slow, separate these cases before changing concurrency:
 
 - image not exact-ready yet: hub Tekton build/validation/pin path;
 - image exact-ready but cold on dev node: node pull/cache locality;
+- sandbox image ready but repository checkout slow: `checkout_repo` workflow
+  node timing and OpenShell logs. This is pre-agent work; changing the prompt or
+  max-turn budget will not help because the agent has not started yet;
 - sandbox pod admitted but slow to ready: OpenShell workspace/profile or node
   pressure;
 - agent host admitted but slow to first tool: Dapr workflow/app readiness or
@@ -106,12 +109,23 @@ coverage was 103 of 500 instances. That is enough for distinct 25-way and
 - launch selection must remain distinct-instance and exact-ready, not repeated
   duplicate load.
 
-The 25-way post-reset canary showed all selected instances exact-ready and
-admitted, with cold-start/profile work around tens of seconds and first-tool
-scheduling latency in the single-digit to tens-of-seconds range. That points
-the next runtime checkpoint at Dapr/session-host readiness and sandbox startup
-latency, while image-building work continues independently to expand the
-eligible cohort.
+The 25-way and 50-way post-reset canaries showed all selected instances
+exact-ready, admitted, and able to reach first tool without Dapr workflow,
+lease, sandbox admission, or evaluator setup failures. The 50-way
+infrastructure checkpoint used 50 distinct exact-ready instances with
+`maxTurns=50`; Kueue initially admitted 48 and admitted the final 2 as earlier
+instances completed. All 50 reached first tool, then the run was intentionally
+cancelled and cleanup returned active runs, leases, Dapr workflow state, Kueue
+workloads, and OpenShell pods to zero.
+
+The same 50-way run showed why checkout observability matters. Median
+`repo_checkout_ms` was about 5.4s and p95 about 6.3s, but one Django instance
+spent about 355s in the actual Git fetch/checkout path. That outlier delayed
+agent start but was not an agent-loop, statestore, or max-turn issue. Future
+checkout improvements should prefer prebuilt worktrees or a repo mirror/object
+cache for high-fanout repos, and should add trace-linked checkout events so a
+slow GitHub fetch is visible beside the agent trace instead of only in
+workflow logs and DB timings.
 
 For approximate memory trend data, capture peak pod/container memory during
 canaries and group it by SWE-bench repo/version and sandbox image digest. This

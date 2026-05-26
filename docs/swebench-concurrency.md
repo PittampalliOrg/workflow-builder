@@ -66,22 +66,24 @@ The capacity-oriented dev shape is:
 
 The May 2026 rebuild intentionally keeps benchmark Kueue quota below raw node
 capacity until higher-concurrency canaries prove the rest of the stack. The
-current `benchmark-fast` nominal quota is 24 CPU, 60Gi memory, 272Gi
-ephemeral-storage, and 96 pods, with bounded cohort borrowing. Memory,
-ephemeral-storage, and pod quotas are part of the same admission budget; on the
-2026-05-24 DeepSeek proof run, memory was the first Kueue limiter for full
-OpenShell plus agent-host instances, not pod count or PSI pressure.
+current dev `benchmark-fast` nominal quota is 33.6 CPU, 84Gi memory, 381Gi
+ephemeral-storage, and 134 pods, with bounded cohort borrowing up to another
+16.8 CPU, 42Gi memory, 190Gi ephemeral-storage, and 67 pods when lower-priority
+queues can lend. Memory, ephemeral-storage, and pod quotas are part of the same
+admission budget; on the 2026-05-26 DeepSeek 50-way infrastructure checkpoint,
+memory was the first Kueue limiter for full OpenShell plus agent-host
+instances, not pod count or PSI pressure.
 
 ```text
-60Gi nominal memory / 1.75Gi full-instance request = 34 full instances
-272Gi nominal ephemeral-storage / 6.54Gi full-instance request = 41 full instances
-96 nominal pods / 2 pods per full Kueue-backed instance = 48 full instances
+84Gi nominal memory / 1.75Gi full-instance request = 48 full instances
+381Gi nominal ephemeral-storage / 6.54Gi full-instance request = 58 full instances
+134 nominal pods / 2 pods per full Kueue-backed instance = 67 full instances
 ```
 
-The same profile can reach about 51 full instances if it borrows its configured
-30Gi memory headroom and competing lower-priority queues are idle. Do not treat
-that as deterministic capacity unless the capacity snapshot reports borrowed
-quota and the competing queue state.
+The same profile can exceed 48 full instances only when it borrows memory from
+the cohort and competing lower-priority queues are idle. Do not treat borrowed
+headroom as deterministic capacity unless the launch capacity snapshot reports
+the borrowed quota and the competing queue state.
 
 ## Image Build And Cache Strategy
 
@@ -226,7 +228,7 @@ be a live derating and debugging signal layered on top of Kueue:
   concurrency settings. Prefer observed Kueue headroom, live leases, and PSI
   trends over fixed `BENCHMARK_MAX_ACTIVE_*` caps; leave the static caps unset
   except for emergency ceilings or diagnostic canaries.
-- For dev as of 2026-05-24, `benchmark-fast` was Kueue-memory limited for full
+- For dev as of 2026-05-26, `benchmark-fast` was Kueue-memory limited for full
   SWE-bench instances while PSI memory pressure stayed near zero. That means
   raising concurrency should happen by adding exact-ready images and queue
   quota only after successful canaries, not by overriding PSI thresholds.
