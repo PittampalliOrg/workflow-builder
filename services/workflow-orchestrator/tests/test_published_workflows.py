@@ -1193,6 +1193,63 @@ def test_sw_workflow_schedules_node_span_only_when_input_feature_enabled(monkeyp
     assert node_span["input"]["traceId"] == "1234567890abcdef1234567890abcdef"
 
 
+def test_benchmark_sw_workflow_suppresses_parent_mlflow_finalizer_by_default(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_input = _terminal_workflow_input()
+    workflow_input["triggerData"] = {
+        "runId": "bench-run-1",
+        "instanceId": "django__django-12345",
+    }
+
+    workflow_gen = SW_WORKFLOW.sw_workflow(ctx, workflow_input)
+    persisted = next(workflow_gen)
+
+    assert persisted["activity"] == "persist_results_to_db"
+    assert persisted["input"]["success"] is True
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send({"success": True})
+
+    assert stop.value.value["success"] is True
+
+
+def test_benchmark_sw_workflow_can_enable_parent_mlflow_finalizer(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    monkeypatch.setenv("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED", "true")
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_input = _terminal_workflow_input()
+    workflow_input["triggerData"] = {
+        "runId": "bench-run-1",
+        "instanceId": "django__django-12345",
+    }
+
+    workflow_gen = SW_WORKFLOW.sw_workflow(ctx, workflow_input)
+    persisted = next(workflow_gen)
+    finalized = workflow_gen.send({"success": True})
+
+    assert persisted["activity"] == "persist_results_to_db"
+    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["input"]["status"] == "OK"
+
+
+def test_benchmark_sw_workflow_suppresses_parent_node_spans_by_default(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    workflow_input = _terminal_workflow_input([{"assign": {"set": {"foo": "bar"}}}])
+    workflow_input["dbExecutionId"] = None
+    workflow_input["features"] = {"mlflowNodeSpans": True}
+    workflow_input["triggerData"] = {
+        "runId": "bench-run-1",
+        "instanceId": "django__django-12345",
+    }
+
+    workflow_gen = SW_WORKFLOW.sw_workflow(_FakeTerminalWorkflowCtx(), workflow_input)
+
+    with pytest.raises(StopIteration) as stop:
+        next(workflow_gen)
+
+    assert stop.value.value["success"] is True
+
+
 def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):
     captured = {}
 

@@ -284,6 +284,29 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     return not keep_sandbox
 
 
+def _benchmark_mlflow_node_spans_enabled() -> bool:
+    return _as_bool(
+        os.environ.get("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_NODE_SPANS_ENABLED"),
+        False,
+    )
+
+
+def _benchmark_mlflow_finalization_enabled() -> bool:
+    return _as_bool(
+        os.environ.get("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED"),
+        False,
+    )
+
+
+def _should_finalize_mlflow_trace_for_trigger(trigger_data: Any) -> bool:
+    if _is_benchmark_trigger(trigger_data):
+        # Benchmark terminal state must not depend on MLflow egress or trace
+        # reconciliation. The per-agent/session traces remain best-effort, but
+        # parent SWE-bench workflows should finish as soon as their work is done.
+        return _benchmark_mlflow_finalization_enabled()
+    return True
+
+
 def _parse_duration(duration: str | dict[str, Any]) -> timedelta:
     """Parse a SW 1.0 Duration into a timedelta."""
     if isinstance(duration, dict):
@@ -3171,12 +3194,14 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         features.get("mlflowNodeSpans", input_data.get("mlflowNodeSpans")),
         False,
     )
+    if _is_benchmark_trigger(trigger_data) and not _benchmark_mlflow_node_spans_enabled():
+        mlflow_node_spans_enabled = False
 
     try:
         workflow = Workflow.model_validate(workflow_data)
     except Exception as e:
         logger.error("[SW Workflow] Failed to parse workflow: %s", e)
-        if trace_id:
+        if trace_id and _should_finalize_mlflow_trace_for_trigger(trigger_data):
             workflow_name_for_trace = None
             if isinstance(workflow_data, dict):
                 document = workflow_data.get("document")
@@ -3524,21 +3549,22 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "[SW Workflow] Skipping workspace cleanup because keepSandbox was requested",
             )
 
-        yield from _finalize_mlflow_trace(
-            ctx,
-            _mlflow_finalizer_input(
-                status="OK",
-                trace_id=trace_id,
-                otel_ctx=tc.otel_ctx,
-                workflow_id=tc.workflow_id,
-                workflow_name=workflow_name,
-                execution_id=execution_id,
-                db_execution_id=db_execution_id,
-                duration_ms=duration_ms,
-                start_time_ms=start_time_ms,
-                mlflow_context=tc.mlflow_context,
-            ),
-        )
+        if _should_finalize_mlflow_trace_for_trigger(tc.trigger_data):
+            yield from _finalize_mlflow_trace(
+                ctx,
+                _mlflow_finalizer_input(
+                    status="OK",
+                    trace_id=trace_id,
+                    otel_ctx=tc.otel_ctx,
+                    workflow_id=tc.workflow_id,
+                    workflow_name=workflow_name,
+                    execution_id=execution_id,
+                    db_execution_id=db_execution_id,
+                    duration_ms=duration_ms,
+                    start_time_ms=start_time_ms,
+                    mlflow_context=tc.mlflow_context,
+                ),
+            )
 
         return SWWorkflowOutput(
             success=True,
@@ -3601,22 +3627,23 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     cleanup_err,
                 )
 
-        yield from _finalize_mlflow_trace(
-            ctx,
-            _mlflow_finalizer_input(
-                status="ERROR",
-                trace_id=trace_id,
-                otel_ctx=tc.otel_ctx,
-                workflow_id=tc.workflow_id,
-                workflow_name=workflow_name,
-                execution_id=execution_id,
-                db_execution_id=db_execution_id,
-                duration_ms=duration_ms,
-                start_time_ms=start_time_ms,
-                error=error_msg,
-                mlflow_context=tc.mlflow_context,
-            ),
-        )
+        if _should_finalize_mlflow_trace_for_trigger(tc.trigger_data):
+            yield from _finalize_mlflow_trace(
+                ctx,
+                _mlflow_finalizer_input(
+                    status="ERROR",
+                    trace_id=trace_id,
+                    otel_ctx=tc.otel_ctx,
+                    workflow_id=tc.workflow_id,
+                    workflow_name=workflow_name,
+                    execution_id=execution_id,
+                    db_execution_id=db_execution_id,
+                    duration_ms=duration_ms,
+                    start_time_ms=start_time_ms,
+                    error=error_msg,
+                    mlflow_context=tc.mlflow_context,
+                ),
+            )
 
         return SWWorkflowOutput(
             success=False,

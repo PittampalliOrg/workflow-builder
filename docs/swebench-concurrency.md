@@ -290,6 +290,16 @@ timeout should only leave MLflow IDs null and log a warning; it must not block
 run creation, Dapr workflow IDs, agent sessions, token usage, or evaluator
 handoff.
 
+The parent `workflow-orchestrator` SWE-bench workflow also treats MLflow as
+non-critical. Benchmark-triggered parent workflows skip orchestrator-level
+MLflow node-span emission and final trace reconciliation by default because
+those activities run on the same Dapr workflow activity workers that need to
+finish `extract_patch` and persist benchmark output. If parent trace projection
+is needed for a controlled diagnostic run, opt in with
+`WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_NODE_SPANS_ENABLED=true` and/or
+`WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED=true`; do not enable
+them for capacity runs unless MLflow egress is proven healthy under that load.
+
 ## MLflow Tracking And Comparison Campaigns
 
 SWE-bench execution is durable workflow state first. MLflow is the tracking and
@@ -513,6 +523,8 @@ These live in `src/lib/components/benchmarks/launch-run-sheet.svelte`,
 | `MLFLOW_ENABLED`                                           |                                      true |                              true | Enables benchmark tracking metadata. Start-path behavior should remain non-blocking when tracking is unavailable.                                                                                         |
 | `MLFLOW_FAILURE_MODE`                                      |                             `best_effort` |                     `best_effort` | In best-effort mode, MLflow creation failures are logged and do not block benchmark instance start.                                                                                                       |
 | `MLFLOW_REQUEST_TIMEOUT_MS`                                |                                   `30000` |                           `30000` | Per-request timeout for MLflow calls. A timeout should not prevent Dapr workflow dispatch.                                                                                                                |
+| `WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_NODE_SPANS_ENABLED` |                                    false |                             false | Opt-in parent workflow node-span emission for SWE-bench. Keep false for capacity runs so MLflow egress cannot consume Dapr activity workers needed for terminal inference.                                |
+| `WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED`  |                                    false |                             false | Opt-in parent workflow final trace reconciliation for SWE-bench. Keep false for capacity runs; benchmark completion must not wait on MLflow trace search/link/export.                                      |
 
 Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 
