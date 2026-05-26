@@ -99,6 +99,7 @@ describe("Dapr workflow capacity diagnostics", () => {
 				`time="2026-05-25T00:01:08Z" level=warning msg="No workflow state found for actor 'sw-swebench-instance-exec-abc', terminating execution" scope=dapr.runtime.actors.targets.orchestrator`,
 				`time="2026-05-25T00:04:38Z" level=error msg="Unable to get data on the instance: sw-swebench-instance-exec-abc, no such instance exists" scope=dapr.wfengine.durabletask.backend`,
 				`time="2026-05-25T00:01:07Z" level=error msg="failed to invoke scheduled actor reminder named: new-event-et-123 due to: rpc error: code = Canceled desc = context canceled" scope=dapr.runtime.scheduler.cluster`,
+				`time="2026-05-26T13:28:49Z" level=warning msg="Unable to purge the instance: 'sw-swebench-instance-exec-abc', no such instance exists" scope=dapr.wfengine.durabletask.backend`,
 			].join("\n"),
 		);
 

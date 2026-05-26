@@ -424,6 +424,9 @@ function countLogMatches(
 			staleWorkflowEvents += 1;
 			continue;
 		}
+		if (/Unable to purge the instance: .*no such instance exists/i.test(line)) {
+			continue;
+		}
 		if (
 			/Workflow actor .*execution failed with a recoverable error and will be retried later/i.test(
 				line,
