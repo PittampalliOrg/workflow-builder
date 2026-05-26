@@ -2504,61 +2504,73 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 		return true;
 	});
 
-	await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
-		const termination = await deps.terminateParent(instanceId, params.reason);
-		parentTerminations.set(instanceId, termination);
-		if (termination === "failed") {
-			parentClosed = false;
+	if (agentRuntimeTargets.length > 0) {
+		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+			const closed = await deps.waitParentClosed(instanceId);
+			if (!closed) parentClosed = false;
+		});
+		if (!parentClosed) {
+			return { allClosed: false, parentClosed, agentRuntimeClosed };
 		}
-	});
+	}
 
-	await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
-		const termination = parentTerminations.get(instanceId) ?? "terminated";
-		if (termination === "failed") {
-			parentClosed = false;
-			return;
-		}
-		const closed =
-			termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
-		if (!closed) {
-			parentClosed = false;
-		}
-	});
+	if (agentRuntimeTargets.length === 0) {
+		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+			const termination = await deps.terminateParent(instanceId, params.reason);
+			parentTerminations.set(instanceId, termination);
+			if (termination === "failed") {
+				parentClosed = false;
+			}
+		});
 
-	if (!parentClosed) {
-		parentClosed = true;
-		await runWithConcurrency(
-			activeParentInstanceIds,
-			concurrency,
-			async (instanceId) => {
-				let status: unknown = null;
-				try {
-					status = await deps.getParentStatus(instanceId);
-				} catch (err) {
-					console.warn(
-						`Failed to re-check benchmark workflow status ${instanceId}:`,
-						err instanceof Error ? err.message : err,
-					);
-				}
-				if (
-					status === DURABLE_RUNTIME_MISSING_STATUS ||
-					isTerminalDurableRuntimeStatus(status)
-				) {
-					return;
-				}
-				const termination = await deps.terminateParent(instanceId, params.reason);
-				if (termination === "failed") {
-					parentClosed = false;
-					return;
-				}
-				const closed =
-					termination === "alreadyGone" ||
-					(await deps.waitParentClosed(instanceId));
-				if (!closed) {
-					parentClosed = false;
-				}
-			},
-		);
+		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+			const termination = parentTerminations.get(instanceId) ?? "terminated";
+			if (termination === "failed") {
+				parentClosed = false;
+				return;
+			}
+			const closed =
+				termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
+			if (!closed) {
+				parentClosed = false;
+			}
+		});
+
+		if (!parentClosed) {
+			parentClosed = true;
+			await runWithConcurrency(
+				activeParentInstanceIds,
+				concurrency,
+				async (instanceId) => {
+					let status: unknown = null;
+					try {
+						status = await deps.getParentStatus(instanceId);
+					} catch (err) {
+						console.warn(
+							`Failed to re-check benchmark workflow status ${instanceId}:`,
+							err instanceof Error ? err.message : err,
+						);
+					}
+					if (
+						status === DURABLE_RUNTIME_MISSING_STATUS ||
+						isTerminalDurableRuntimeStatus(status)
+					) {
+						return;
+					}
+					const termination = await deps.terminateParent(instanceId, params.reason);
+					if (termination === "failed") {
+						parentClosed = false;
+						return;
+					}
+					const closed =
+						termination === "alreadyGone" ||
+						(await deps.waitParentClosed(instanceId));
+					if (!closed) {
+						parentClosed = false;
+					}
+				},
+			);
+		}
 	}
 
 	const allClosed = parentClosed && agentRuntimeClosed;

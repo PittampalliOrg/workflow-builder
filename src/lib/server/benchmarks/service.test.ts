@@ -1223,7 +1223,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBeNull();
 	});
 
-	it("terminates child/session-host workflows before parent workflows", async () => {
+	it("lets parent workflows close from child/session-host termination before parent termination", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1282,7 +1282,6 @@ describe("SWE-bench terminal run cleanup", () => {
 			"child-status:agent-session-host/session-1",
 			"child-terminate:agent-session-host/session-1",
 			"child-wait:agent-session-host/session-1",
-			"parent-terminate:parent-1",
 			"parent-wait:parent-1",
 			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",
@@ -1354,7 +1353,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(true);
 	});
 
-	it("terminates child workflows before parent workflows and retries parent closure when needed", async () => {
+	it("does not parent-terminate multi-app child workflow parents that fail to close", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1402,11 +1401,51 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(calls).toEqual([
 			"child-terminate",
 			"child-wait",
-			"parent-terminate",
-			"parent-wait",
-			"parent-terminate",
 			"parent-wait",
 		]);
+	});
+
+	it("still terminates parent-only workflows when no child runtime targets exist", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [],
+				reason: "operator cleanup",
+				purge: false,
+				purgeGraceMs: 0,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async () => "RUNNING",
+					terminateParent: async () => {
+						calls.push("parent-terminate");
+						return "terminated";
+					},
+					waitParentClosed: async () => {
+						calls.push("parent-wait");
+						return true;
+					},
+					getAgentRuntimeStatus: async () => {
+						throw new Error("child should not be inspected");
+					},
+					terminateAgentRuntime: async () => {
+						throw new Error("child should not be terminated");
+					},
+					waitAgentRuntimeClosed: async () => {
+						throw new Error("child should not be waited");
+					},
+					purgeParent: async () => undefined,
+					purgeAgentRuntime: async () => undefined,
+					sleep: async () => undefined,
+				},
+			});
+
+		expect(result).toEqual({
+			allClosed: true,
+			parentClosed: true,
+			agentRuntimeClosed: true,
+		});
+		expect(calls).toEqual(["parent-terminate", "parent-wait"]);
 	});
 
 	it("treats missing child/session-host workflows as already closed", async () => {
