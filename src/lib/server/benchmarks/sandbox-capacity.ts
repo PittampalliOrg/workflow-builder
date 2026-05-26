@@ -341,11 +341,13 @@ function addResourceProfiles(
 	};
 }
 
-function kueueInstanceRequestMode(): "openshell-pod" | "legacy-composite" {
-	return process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE ===
-		"legacy-composite"
-		? "legacy-composite"
-		: "openshell-pod";
+function kueueInstanceRequestMode():
+	| "host-worker-composite"
+	| "openshell-pod"
+	| "legacy-composite" {
+	const raw = process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
+	if (raw === "openshell-pod" || raw === "legacy-composite") return raw;
+	return "host-worker-composite";
 }
 
 function executionClassConfigFromEnv(
@@ -436,15 +438,27 @@ export function kueueInstanceResourceProfileFromEnv(
 	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
-	if (kueueInstanceRequestMode() === "openshell-pod") {
+	const mode = kueueInstanceRequestMode();
+	const openshellPodRequest = addResourceProfiles(
+		sandboxRequest,
+		daprSidecarResourceProfileFromEnv(),
+	);
+	if (mode === "openshell-pod") {
+		return openshellPodRequest;
+	}
+	const executionWorkerRequest = executionWorkerResourceProfileFromEnv();
+	if (mode === "host-worker-composite") {
 		return addResourceProfiles(
-			sandboxRequest,
-			daprSidecarResourceProfileFromEnv(),
+			openshellPodRequest,
+			executionWorkerRequest ?? {
+				cpuMilli: 0,
+				memoryBytes: 0,
+				ephemeralStorageBytes: 0,
+			},
 		);
 	}
 	const agentHostRequest = agentHostResourceProfileFromEnv();
 	if (!agentHostRequest) return null;
-	const executionWorkerRequest = executionWorkerResourceProfileFromEnv();
 	return addResourceProfiles(
 		addResourceProfiles(sandboxRequest, agentHostRequest),
 		executionWorkerRequest ?? {
@@ -463,7 +477,11 @@ export function kueueInstancePodCountFromEnv(
 		process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT,
 	);
 	if (configured) return configured;
-	if (kueueInstanceRequestMode() === "openshell-pod") return 1;
+	const mode = kueueInstanceRequestMode();
+	if (mode === "openshell-pod") return 1;
+	if (mode === "host-worker-composite") {
+		return executionWorkerResourceProfileFromEnv() ? 2 : 1;
+	}
 	const config = executionClassConfigFromEnv(true);
 	const agentHostImage =
 		typeof config?.agentHostImage === "string"

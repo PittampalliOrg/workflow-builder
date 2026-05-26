@@ -418,14 +418,17 @@ first limiter. Each benchmark instance consumes two Kueue-admitted pods:
 1. the OpenShell sandbox pod;
 2. the per-session agent-host pod.
 
-For the `benchmark-fast` profile those requests are about 450m CPU, 1792Mi
-memory, 6.54Gi ephemeral storage, and 2 pods per active instance. The agent-host
-container must set an explicit memory limit at least equal to its configured
-request; otherwise the namespace `LimitRange` default limit can be lower than
-the request and Kubernetes will reject the pod before Kueue can run it. The BFF
-derives this pod count from `SANDBOX_EXECUTION_CLASSES_JSON.<class>.agentHostImage`
-unless `BENCHMARK_KUEUE_INSTANCE_POD_COUNT` explicitly overrides it, matching
-the live Kueue capacity observer.
+For the current `benchmark-fast` host-execution profile those requests are about
+250m CPU, 896Mi memory, 3880Mi ephemeral storage, and 2 pods per active
+instance: one short-lived host worker plus one OpenShell sandbox pod with its
+Dapr sidecar. The agent-host container must set an explicit memory limit at
+least equal to its configured request; otherwise the namespace `LimitRange`
+default limit can be lower than the request and Kubernetes will reject the pod
+before Kueue can run it. The BFF derives this full-instance shape from
+`SANDBOX_EXECUTION_CLASSES_JSON.<class>` and the configured sandbox/Dapr
+requests unless `BENCHMARK_KUEUE_INSTANCE_POD_COUNT` explicitly overrides it.
+Set `BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE=openshell-pod` only for an
+architecture where Kueue admits just the OpenShell pod per instance.
 
 The BFF should treat nominal Kueue quota as the deterministic default and
 include borrowing diagnostics separately so operators can tell whether a run is

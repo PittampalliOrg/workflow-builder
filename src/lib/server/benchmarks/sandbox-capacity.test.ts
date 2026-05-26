@@ -532,7 +532,7 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
-	it("defaults Kueue full-instance request to the live OpenShell pod shape", () => {
+	it("defaults Kueue full-instance request to the live host worker plus OpenShell pod shape", () => {
 		const previous = {
 			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
 			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
@@ -564,6 +564,13 @@ describe("sandbox scheduler capacity", () => {
 			});
 
 			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
+				cpuMilli: 250,
+				memoryBytes: 896 * 1024 * 1024,
+				ephemeralStorageBytes: 3880 * 1024 * 1024,
+			});
+
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "openshell-pod";
+			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
 				cpuMilli: 150,
 				memoryBytes: 640 * 1024 * 1024,
 				ephemeralStorageBytes: 2856 * 1024 * 1024,
@@ -586,7 +593,7 @@ describe("sandbox scheduler capacity", () => {
 		}
 	});
 
-	it("defaults Kueue full-instance pod count to the live OpenShell pod shape", () => {
+	it("defaults Kueue full-instance pod count to the live host worker plus OpenShell pod shape", () => {
 		const previous = {
 			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
 			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
@@ -609,11 +616,17 @@ describe("sandbox scheduler capacity", () => {
 			delete process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
 			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
 				"benchmark-fast": {
+					cpu: "100m",
+					memory: "256Mi",
+					ephemeralStorage: "1Gi",
 					agentHostImage:
 						"ghcr.io/pittampalliorg/dapr-agent-py-sandbox:git-test",
 				},
 			});
 
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
+
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "openshell-pod";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(1);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "legacy-composite";
