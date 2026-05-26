@@ -1322,7 +1322,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(false);
 	});
 
-	it("skips child cleanup and purge when parent workflow closure is not confirmed", async () => {
+	it("terminates child workflows and retries parent closure when parent workflow closure is not confirmed", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1367,7 +1367,14 @@ describe("SWE-bench terminal run cleanup", () => {
 
 		expect(result.allClosed).toBe(false);
 		expect(result.parentClosed).toBe(false);
-		expect(calls).toEqual(["parent-terminate", "parent-wait"]);
+		expect(calls).toEqual([
+			"parent-terminate",
+			"parent-wait",
+			"child-terminate",
+			"child-wait",
+			"parent-terminate",
+			"parent-wait",
+		]);
 	});
 
 	it("treats missing child/session-host workflows as already closed", async () => {
