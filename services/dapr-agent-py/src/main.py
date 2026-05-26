@@ -137,6 +137,7 @@ from src.session_host_monitor import (
 )
 from src.session_outputs import scan_and_upload as _scan_session_outputs
 from src.session_config import (
+    TERMINAL_CONTROL_EVENT_TYPES,
     apply_session_control_events,
     external_control_event_as_user_event,
 )
@@ -836,6 +837,10 @@ def _runtime_context_state_key(instance_id: str) -> str:
     return f"runtime-context:{instance_id}"
 
 
+def _session_cancel_state_key(instance_id: str) -> str:
+    return f"session-cancel:{instance_id}"
+
+
 def _runtime_context_candidate_ids(instance_id: str) -> list[str]:
     """Return context lookup keys for a durable activity instance id.
 
@@ -872,6 +877,38 @@ def _save_agent_state_key(key: str, value: Any) -> None:
         method="POST",
     )
     urllib.request.urlopen(req, timeout=5)
+
+
+def _save_session_cancellation_request(
+    instance_id: str,
+    event_name: str,
+    payload: Any,
+) -> None:
+    event: dict[str, Any] = {"type": event_name}
+    if isinstance(payload, dict):
+        event.update(payload)
+    else:
+        event["data"] = payload
+    _save_agent_state_key(_session_cancel_state_key(instance_id), event)
+
+
+def _cancelled_agent_result(cancel_request: dict[str, Any]) -> dict[str, Any]:
+    stop_reason = terminal_stop_reason_from_events([cancel_request]) or {
+        "type": "terminated"
+    }
+    reason = str(
+        cancel_request.get("reason")
+        or stop_reason.get("reason")
+        or "session cancelled"
+    )
+    return {
+        "role": "assistant",
+        "content": reason,
+        "success": False,
+        "cancelled": True,
+        "error": reason,
+        "stop_reason": stop_reason,
+    }
 
 
 def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
@@ -1775,11 +1812,35 @@ class OpenShellDurableAgent(DurableAgent):
         turn = 0
         workflow_exc: Exception | None = None
 
+        def cancellation_result_from_state() -> dict[str, Any] | None:
+            cancel_state = yield ctx.call_activity(
+                self._activity_name(self.check_cancellation_for_instance),
+                input={"instance_id": ctx.instance_id},
+                retry_policy=self._retry_policy,
+            )
+            if isinstance(cancel_state, dict) and cancel_state.get("cancelled"):
+                request = cancel_state.get("request")
+                return _cancelled_agent_result(
+                    request if isinstance(request, dict) else {}
+                )
+            return None
+
         try:
             if self._orchestration_strategy and not force_repo_sequential:
                 return (yield from super().agent_workflow(ctx, message))
 
             for turn in range(1, self.execution.max_iterations + 1):
+                cancellation = yield from cancellation_result_from_state()
+                if cancellation is not None:
+                    self._termination_reason_by_instance[ctx.instance_id] = "cancelled"
+                    final_message = cancellation
+                    logger.info(
+                        "Agent %s observed cancellation before turn %d (instance=%s)",
+                        self.name,
+                        turn,
+                        ctx.instance_id,
+                    )
+                    break
                 assistant_response: dict[str, Any] = yield ctx.call_activity(
                     self._activity_name(self.call_llm),
                     input={
@@ -1801,10 +1862,34 @@ class OpenShellDurableAgent(DurableAgent):
                     )
                     break
 
+                cancellation = yield from cancellation_result_from_state()
+                if cancellation is not None:
+                    self._termination_reason_by_instance[ctx.instance_id] = "cancelled"
+                    final_message = cancellation
+                    logger.info(
+                        "Agent %s observed cancellation after LLM turn %d before tools (instance=%s)",
+                        self.name,
+                        turn,
+                        ctx.instance_id,
+                    )
+                    break
+
                 ordered: list[dict[str, Any] | None] = [None] * len(tool_calls)
                 tool_calls_by_id: dict[str, dict[str, Any]] = {}
 
                 for idx, tc in enumerate(tool_calls):
+                    cancellation = yield from cancellation_result_from_state()
+                    if cancellation is not None:
+                        self._termination_reason_by_instance[ctx.instance_id] = "cancelled"
+                        final_message = cancellation
+                        logger.info(
+                            "Agent %s observed cancellation before tool %d on turn %d (instance=%s)",
+                            self.name,
+                            idx,
+                            turn,
+                            ctx.instance_id,
+                        )
+                        break
                     fn_name = tc["function"]["name"]
                     dispatch_time = ctx.current_utc_datetime.isoformat()
                     tool_obj = self.tool_executor.get_tool(fn_name)
@@ -1872,6 +1957,8 @@ class OpenShellDurableAgent(DurableAgent):
                             "is_agent_call": False,
                             "dispatch_time": dispatch_time,
                         }
+                if final_message.get("cancelled"):
+                    break
 
                 tool_results = [tr for tr in ordered if tr is not None]
                 yield ctx.call_activity(
@@ -2096,6 +2183,18 @@ class OpenShellDurableAgent(DurableAgent):
             "sandboxName": context.get("sandboxName"),
             "cwd": context.get("cwd"),
         }
+
+    def check_cancellation_for_instance(self, ctx, payload: dict) -> dict:
+        instance_id = str(payload.get("instance_id") or payload.get("instanceId") or "").strip()
+        if not instance_id:
+            return {"cancelled": False, "reason": "no_instance_id"}
+        request = _read_agent_state_key(
+            _session_cancel_state_key(instance_id),
+            timeout_seconds=1,
+        )
+        if isinstance(request, dict):
+            return {"cancelled": True, "request": request}
+        return {"cancelled": False}
 
     def _record_runtime_config_for_instance(
         self,
@@ -4642,6 +4741,7 @@ class OpenShellDurableAgent(DurableAgent):
         # only re-runs on worker failure).
         runtime.register_activity(self.seed_mcp_for_instance)
         runtime.register_activity(self.seed_runtime_context_for_instance)
+        runtime.register_activity(self.check_cancellation_for_instance)
 
     @workflow_entry
     def call_peer_session_workflow(self, ctx, message: dict):
@@ -5454,28 +5554,51 @@ class OpenShellDurableAgent(DurableAgent):
             # orchestrator and self-terminate. UI sessions skip this branch
             # and loop back to await the next user event.
             if auto_terminate:
-                if not ctx.is_replaying:
-                    publish_session_event(
-                        session_id,
-                        "session.status_idle",
-                        {
-                            "stop_reason": {"type": "end_turn"},
-                            **session_native_event_fields(workflow_instance_id),
-                        },
-                    )
-                    publish_session_event(
-                        session_id,
-                        "session.status_terminated",
-                        {
-                            "reason": "auto_terminate_after_end_turn",
-                            **session_native_event_fields(workflow_instance_id),
-                        },
-                    )
                 result_dict = (
                     turn_result
                     if isinstance(turn_result, dict)
                     else {"content": str(turn_result or "")}
                 )
+                cancelled = bool(result_dict.get("cancelled"))
+                if not ctx.is_replaying:
+                    if cancelled:
+                        stop_reason = (
+                            result_dict.get("stop_reason")
+                            if isinstance(result_dict.get("stop_reason"), dict)
+                            else {"type": "terminated"}
+                        )
+                        publish_session_event(
+                            session_id,
+                            "session.status_terminating",
+                            {
+                                "stop_reason": stop_reason,
+                                **session_native_event_fields(workflow_instance_id),
+                            },
+                        )
+                    else:
+                        publish_session_event(
+                            session_id,
+                            "session.status_idle",
+                            {
+                                "stop_reason": {"type": "end_turn"},
+                                **session_native_event_fields(workflow_instance_id),
+                            },
+                        )
+                    publish_session_event(
+                        session_id,
+                        "session.status_terminated",
+                        {
+                            "reason": "cancelled"
+                            if cancelled
+                            else "auto_terminate_after_end_turn",
+                            **(
+                                {"stop_reason": result_dict.get("stop_reason")}
+                                if cancelled and isinstance(result_dict.get("stop_reason"), dict)
+                                else {}
+                            ),
+                            **session_native_event_fields(workflow_instance_id),
+                        },
+                    )
                 result_dict.setdefault("success", not bool(result_dict.get("error")))
                 result_dict.setdefault("sessionId", session_id)
                 result_dict.setdefault("turn", turn_counter)
@@ -7310,6 +7433,15 @@ def raise_session_event_endpoint(request: dict) -> dict:
     payload = request.get("payload") or {}
     if not instance_id or not event_name:
         raise HTTPException(status_code=400, detail="instanceId + eventName required")
+    if event_name in TERMINAL_CONTROL_EVENT_TYPES:
+        try:
+            _save_session_cancellation_request(instance_id, event_name, payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[session] failed to persist cancellation request for %s: %s",
+                instance_id,
+                exc,
+            )
     event_name, payload = external_control_event_as_user_event(event_name, payload)
 
     raise_request = pb.RaiseEventRequest(

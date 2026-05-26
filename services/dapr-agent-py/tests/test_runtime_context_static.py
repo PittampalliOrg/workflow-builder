@@ -41,6 +41,10 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "ToolExecutionMode" in source
     assert "tool_execution_mode=ToolExecutionMode.SEQUENTIAL" in source
     assert "def _agent_workflow_strict_sequential" in source
+    assert "def check_cancellation_for_instance" in source
+    assert "self._activity_name(self.check_cancellation_for_instance)" in source
+    assert "Agent %s observed cancellation after LLM turn" in source
+    assert "runtime.register_activity(self.check_cancellation_for_instance)" in source
     assert "force_repo_sequential: bool = False" in source
     assert "Always record this activity in durable history" in source
     assert "if self._orchestration_strategy and not force_repo_sequential:" in source
@@ -78,6 +82,16 @@ def test_tool_dispatch_evidence_events_are_emitted() -> None:
     assert '"tool_activity.started"' in source
     assert "[tool-dispatch] scheduled" in source
     assert "[tool-dispatch] run_tool entry" in source
+
+
+def test_terminal_session_events_are_persisted_for_in_turn_cancellation() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert "TERMINAL_CONTROL_EVENT_TYPES" in source
+    assert "def _session_cancel_state_key" in source
+    assert "def _save_session_cancellation_request" in source
+    assert "if event_name in TERMINAL_CONTROL_EVENT_TYPES:" in source
+    assert "_save_session_cancellation_request(instance_id, event_name, payload)" in source
 
 
 def test_native_dapr_agent_llm_hooks_are_debug_only() -> None:
@@ -128,6 +142,8 @@ def test_session_bridge_uses_child_workflow_for_non_swebench_only() -> None:
     assert 'getattr(self, "agent_workflow_name", "agent_workflow")' in source
     assert "SWE-bench launches brand-new ephemeral agent-host app IDs" in source
     assert 'turn_result = yield from self.agent_workflow(ctx, child_input)' in source
+    assert '"session.status_terminating"' in source
+    assert '"reason": "cancelled"' in source
 
 
 def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() -> None:
