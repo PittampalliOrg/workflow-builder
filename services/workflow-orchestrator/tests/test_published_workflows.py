@@ -1620,6 +1620,13 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
         def create_timer(self, timeout):
             raise AssertionError("benchmark durable/run should not create a parent timer")
 
+        def wait_for_external_event(self, event_name):
+            return _FakeWorkflowTask(
+                "external_event",
+                result={"reason": "cancelled"},
+                name=event_name,
+            )
+
     workflow_gen = SW_WORKFLOW._handle_call_task(
         _FakeCtx(),
         "durable_validation_run",
@@ -1641,21 +1648,126 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
     yielded = next(workflow_gen)
     assert yielded["activity"] == "spawn_session_for_workflow"
     assert yielded["input"]["workflowExecutionId"] == "db_exec_benchmark"
-    child_yield = workflow_gen.send(
+    wait_yield = workflow_gen.send(
         {
             "childInput": {"sessionId": "child-session"},
             "agentAppId": "agent-runtime-test",
         }
     )
+    assert wait_yield["kind"] == "when_any"
+    child_yield, cancel_yield = wait_yield["tasks"]
     assert child_yield.kind == "call_child_workflow"
     assert child_yield.name == "session_workflow"
     assert child_yield.app_id == "agent-runtime-test"
+    assert cancel_yield.kind == "external_event"
+    assert cancel_yield.name == "workflow.cancel"
 
     with pytest.raises(StopIteration) as stop:
         workflow_gen.send(child_yield)
 
     result = stop.value.value
     assert result["success"] is True
+
+
+def test_benchmark_durable_run_session_bridge_returns_cancelled_on_workflow_cancel():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={
+            "prompt": "Create a validation marker",
+            "runId": "bench-run-1",
+            "instanceId": "django__django-12345",
+        },
+        execution_id="exec_benchmark_cancel",
+        db_execution_id="db_exec_benchmark_cancel",
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-benchmark-wf-cancel"
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+        def call_child_workflow(self, name, input=None, instance_id=None, app_id=None):
+            return _FakeWorkflowTask(
+                "call_child_workflow",
+                result={"success": True, "content": "VALIDATION COMPLETE"},
+                name=name,
+                input=input,
+                instance_id=instance_id,
+                app_id=app_id,
+            )
+
+        def create_timer(self, timeout):
+            raise AssertionError("benchmark durable/run should not create a parent timer")
+
+        def wait_for_external_event(self, event_name):
+            return _FakeWorkflowTask(
+                "external_event",
+                result={"reason": "operator cleanup", "source": "benchmark_cleanup"},
+                name=event_name,
+            )
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "agentRuntime": "dapr-agent-py",
+                "timeoutMinutes": "1",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["activity"] == "spawn_session_for_workflow"
+    wait_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-runtime-test",
+        }
+    )
+    child_yield, cancel_yield = wait_yield["tasks"]
+    assert child_yield.name == "session_workflow"
+    assert cancel_yield.name == "workflow.cancel"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(cancel_yield)
+
+    result = stop.value.value
+    assert result["success"] is False
+    assert result["cancelled"] is True
+    assert result["error"] == "operator cleanup"
+    assert result["stopReason"] == {
+        "type": "cancelled",
+        "reason": "operator cleanup",
+        "source": "benchmark_cleanup",
+    }
+    assert result["childWorkflowName"] == "session_workflow"
 
 
 def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
@@ -1710,6 +1822,9 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
         def create_timer(self, timeout):
             raise AssertionError("agent host readiness belongs inside spawn_session activity")
 
+        def wait_for_external_event(self, event_name):
+            return _FakeWorkflowTask("external_event", result={}, name=event_name)
+
     ctx = _FakeCtx()
     workflow_gen = SW_WORKFLOW._handle_call_task(
         ctx,
@@ -1732,16 +1847,18 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
     yielded = next(workflow_gen)
     assert yielded["activity"] == "spawn_session_for_workflow"
 
-    child_yield = workflow_gen.send(
+    wait_yield = workflow_gen.send(
         {
             "childInput": {"sessionId": "child-session"},
             "agentAppId": "agent-session-abc123",
             "agentHostStatus": "ready",
         }
     )
+    child_yield, cancel_yield = wait_yield["tasks"]
     assert child_yield.kind == "call_child_workflow"
     assert child_yield.name == "session_workflow"
     assert child_yield.app_id == "agent-session-abc123"
+    assert cancel_yield.name == "workflow.cancel"
 
     with pytest.raises(StopIteration) as stop:
         workflow_gen.send(child_yield)
@@ -1799,6 +1916,9 @@ def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflo
         def create_timer(self, timeout):
             raise AssertionError("missing agentHostStatus should not add a new timer")
 
+        def wait_for_external_event(self, event_name):
+            return _FakeWorkflowTask("external_event", result={}, name=event_name)
+
     workflow_gen = SW_WORKFLOW._handle_call_task(
         _FakeCtx(),
         "durable_validation_run",
@@ -1820,15 +1940,17 @@ def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflo
     yielded = next(workflow_gen)
     assert yielded["activity"] == "spawn_session_for_workflow"
 
-    child_yield = workflow_gen.send(
+    wait_yield = workflow_gen.send(
         {
             "childInput": {"sessionId": "child-session"},
             "agentAppId": "agent-session-abc123",
         }
     )
+    child_yield, cancel_yield = wait_yield["tasks"]
     assert child_yield.kind == "call_child_workflow"
     assert child_yield.name == "session_workflow"
     assert child_yield.app_id == "agent-session-abc123"
+    assert cancel_yield.name == "workflow.cancel"
 
 
 class _FakeResponse:

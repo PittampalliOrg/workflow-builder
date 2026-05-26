@@ -120,8 +120,18 @@ def test_terminal_stop_reason_from_events_handles_interrupt_before_turn() -> Non
 
 def test_terminal_stop_reason_from_events_handles_terminate_before_turn() -> None:
     assert terminal_stop_reason_from_events(
-        [{"type": "session.terminate"}]
-    ) == {"type": "terminated"}
+        [
+            {
+                "type": "session.terminate",
+                "reason": "operator cleanup",
+                "source": "benchmark_cleanup",
+            }
+        ]
+    ) == {
+        "type": "terminated",
+        "reason": "operator cleanup",
+        "source": "benchmark_cleanup",
+    }
 
 
 def test_terminal_stop_reason_from_events_ignores_normal_user_messages() -> None:

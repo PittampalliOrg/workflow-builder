@@ -47,9 +47,19 @@ def terminal_stop_reason_from_events(events: list[dict[str, Any]]) -> dict[str, 
             continue
         event_type = event.get("type")
         if event_type == USER_INTERRUPT_EVENT_TYPE:
-            return {"type": "interrupted"}
+            reason: dict[str, str] = {"type": "interrupted"}
+            if event.get("reason") is not None:
+                reason["reason"] = str(event.get("reason"))
+            if event.get("source") is not None:
+                reason["source"] = str(event.get("source"))
+            return reason
         if event_type == SESSION_TERMINATE_EVENT_TYPE:
-            return {"type": "terminated"}
+            reason = {"type": "terminated"}
+            if event.get("reason") is not None:
+                reason["reason"] = str(event.get("reason"))
+            if event.get("source") is not None:
+                reason["source"] = str(event.get("source"))
+            return reason
     return None
 
 

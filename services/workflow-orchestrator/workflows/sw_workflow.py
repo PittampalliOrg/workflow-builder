@@ -156,6 +156,40 @@ def _child_workflow_result_without_parent_timeout(child_task: Any) -> Any:
     return result
 
 
+def _child_workflow_result_or_cancel_event(
+    ctx: wf.DaprWorkflowContext,
+    child_task: Any,
+    *,
+    child_instance_id: str,
+    workflow_name: str,
+) -> Any:
+    cancel_task = ctx.wait_for_external_event("workflow.cancel")
+    winner = yield wf_when_any([child_task, cancel_task])
+    if winner is child_task:
+        get_result = getattr(child_task, "get_result", None)
+        if callable(get_result):
+            return get_result()
+        return winner
+
+    get_result = getattr(cancel_task, "get_result", None)
+    cancel_event = get_result() if callable(get_result) else winner
+    event = cancel_event if isinstance(cancel_event, dict) else {}
+    reason = event.get("reason") or "workflow cancelled"
+    return {
+        "success": False,
+        "cancelled": True,
+        "error": str(reason),
+        "stopReason": {
+            "type": "cancelled",
+            "reason": str(reason),
+            "source": event.get("source") or "workflow.cancel",
+        },
+        "agentWorkflowId": child_instance_id,
+        "daprInstanceId": child_instance_id,
+        "childWorkflowName": workflow_name,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1855,9 +1889,14 @@ def _run_native_durable_agent_child_workflow(
             # benchmark service terminates stalled session instances. Adding a
             # parent workflow timer here creates Scheduler reminders that can
             # outlive the child completion event and leave the parent instance
-            # RUNNING.
-            child_result = yield from _child_workflow_result_without_parent_timeout(
+            # RUNNING. Still listen for explicit cancellation so benchmark
+            # cleanup can let the parent exit cooperatively before escalating
+            # to hard Dapr termination.
+            child_result = yield from _child_workflow_result_or_cancel_event(
+                ctx,
                 child_task,
+                child_instance_id=child_instance_id,
+                workflow_name="session_workflow",
             )
         else:
             child_result = yield from _child_workflow_result_with_timeout(
@@ -2245,7 +2284,11 @@ def _handle_call_task(
             _store_task_output(tc, task_name, action_type, result)
             tc.completed_tasks.add(task_name)
 
-            if isinstance(result, dict) and not result.get("success", True):
+            if (
+                isinstance(result, dict)
+                and not result.get("success", True)
+                and not result.get("cancelled")
+            ):
                 raise RuntimeError(result.get("error") or f"Agent action failed: {task_name}")
 
             return result

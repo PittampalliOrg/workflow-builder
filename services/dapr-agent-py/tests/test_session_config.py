@@ -99,3 +99,21 @@ def test_external_control_event_maps_to_user_event_lane() -> None:
             }
         ]
     }
+
+
+def test_external_terminate_event_maps_to_user_event_lane() -> None:
+    event_name, payload = external_control_event_as_user_event(
+        "session.terminate",
+        {"reason": "operator cleanup", "source": "benchmark_cleanup"},
+    )
+
+    assert event_name == "session.user_events"
+    assert payload == {
+        "events": [
+            {
+                "type": "session.terminate",
+                "reason": "operator cleanup",
+                "source": "benchmark_cleanup",
+            }
+        ]
+    }

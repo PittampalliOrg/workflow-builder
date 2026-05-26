@@ -133,6 +133,8 @@ const BENCHMARK_TERMINATION_CONCURRENCY = 32;
 const BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS = 20_000;
 const BENCHMARK_TERMINATION_WAIT_POLL_MS = 1_000;
 const BENCHMARK_TERMINATION_WAIT_SECONDS = 45;
+const BENCHMARK_GRACEFUL_CANCELLATION_ENABLED = true;
+const BENCHMARK_GRACEFUL_CANCELLATION_WAIT_SECONDS = 15;
 const BENCHMARK_TERMINAL_PURGE_GRACE_SECONDS = 8;
 const BENCHMARK_PURGE_DAPR_WORKFLOWS_ON_CLEANUP = false;
 const ORCHESTRATOR_READY_TIMEOUT_MS = 5_000;
@@ -341,8 +343,14 @@ type BenchmarkDurableCascadeCleanupResult = {
 	agentRuntimeClosed: boolean;
 };
 
+type DurableGracefulCancellationResult = "requested" | "alreadyGone" | "failed";
+
 type BenchmarkDurableCascadeCleanupDeps = {
 	getParentStatus: (instanceId: string) => Promise<unknown>;
+	cancelParent?: (
+		instanceId: string,
+		reason: string,
+	) => Promise<DurableGracefulCancellationResult>;
 	terminateParent: (
 		instanceId: string,
 		reason: string,
@@ -352,6 +360,11 @@ type BenchmarkDurableCascadeCleanupDeps = {
 		runtimeAppId: string,
 		instanceId: string,
 	) => Promise<unknown>;
+	cancelAgentRuntime?: (
+		runtimeAppId: string,
+		instanceId: string,
+		reason: string,
+	) => Promise<DurableGracefulCancellationResult>;
 	terminateAgentRuntime: (
 		runtimeAppId: string,
 		instanceId: string,
@@ -672,6 +685,26 @@ function benchmarkTerminationWaitMs(): number {
 	);
 }
 
+function shouldUseBenchmarkGracefulCancellation(): boolean {
+	return parseBooleanFlag(
+		env.BENCHMARK_GRACEFUL_CANCELLATION_ENABLED ??
+			process.env.BENCHMARK_GRACEFUL_CANCELLATION_ENABLED,
+		BENCHMARK_GRACEFUL_CANCELLATION_ENABLED,
+	);
+}
+
+function benchmarkGracefulCancellationWaitMs(): number {
+	return (
+		clampInteger(
+			env.BENCHMARK_GRACEFUL_CANCELLATION_WAIT_SECONDS ??
+				process.env.BENCHMARK_GRACEFUL_CANCELLATION_WAIT_SECONDS,
+			0,
+			2 * 60,
+			BENCHMARK_GRACEFUL_CANCELLATION_WAIT_SECONDS,
+		) * 1000
+	);
+}
+
 function benchmarkTerminalPurgeGraceMs(): number {
 	return (
 		clampInteger(
@@ -735,7 +768,20 @@ async function waitForDurableRuntimeClosed(
 	label: string,
 	fetchStatus: () => Promise<unknown>,
 ): Promise<boolean> {
-	const waitMs = benchmarkTerminationWaitMs();
+	return waitForDurableRuntimeClosedWithin(
+		label,
+		fetchStatus,
+		benchmarkTerminationWaitMs(),
+		sleep,
+	);
+}
+
+async function waitForDurableRuntimeClosedWithin(
+	label: string,
+	fetchStatus: () => Promise<unknown>,
+	waitMs: number,
+	sleepFn: (ms: number) => Promise<void>,
+): Promise<boolean> {
 	if (waitMs <= 0) return false;
 	const deadline = Date.now() + waitMs;
 	let lastStatus: unknown = null;
@@ -759,7 +805,7 @@ async function waitForDurableRuntimeClosed(
 		lastStatus = status;
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) break;
-		await sleep(Math.min(BENCHMARK_TERMINATION_WAIT_POLL_MS, remaining));
+		await sleepFn(Math.min(BENCHMARK_TERMINATION_WAIT_POLL_MS, remaining));
 	}
 	console.warn(
 		`Timed out waiting for ${label} to stop before purge${
@@ -2440,13 +2486,15 @@ async function terminateAndWaitBenchmarkWorkflowInstance(
 	return closed;
 }
 
-type DurableTerminationResult = "terminated" | "alreadyGone" | "failed";
+type DurableTerminationResult = "terminated" | "alreadyGone" | "closed" | "failed";
 
 const benchmarkDurableCascadeCleanupDeps: BenchmarkDurableCascadeCleanupDeps = {
 	getParentStatus: getBenchmarkWorkflowInstanceStatus,
+	cancelParent: cancelBenchmarkWorkflowInstance,
 	terminateParent: terminateBenchmarkWorkflowInstance,
 	waitParentClosed: waitForBenchmarkWorkflowInstanceClosed,
 	getAgentRuntimeStatus: getBenchmarkAgentRuntimeInstanceStatus,
+	cancelAgentRuntime: cancelBenchmarkAgentRuntimeInstance,
 	terminateAgentRuntime: terminateBenchmarkAgentRuntimeInstance,
 	waitAgentRuntimeClosed: waitForBenchmarkAgentRuntimeInstanceClosed,
 	purgeParent: purgeBenchmarkWorkflowInstance,
@@ -2464,10 +2512,16 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	purgeGraceMs: number;
 	forceStatePurgeOnUnclosed?: boolean;
 	concurrency?: number;
+	gracefulCancellationEnabled?: boolean;
+	gracefulCancellationWaitMs?: number;
 	deps?: BenchmarkDurableCascadeCleanupDeps;
 }): Promise<BenchmarkDurableCascadeCleanupResult> {
 	const deps = params.deps ?? benchmarkDurableCascadeCleanupDeps;
 	const concurrency = params.concurrency ?? BENCHMARK_TERMINATION_CONCURRENCY;
+	const gracefulCancellationEnabled =
+		params.gracefulCancellationEnabled ?? shouldUseBenchmarkGracefulCancellation();
+	const gracefulCancellationWaitMs =
+		params.gracefulCancellationWaitMs ?? benchmarkGracefulCancellationWaitMs();
 	const parentInstanceIds = [...new Set(params.parentInstanceIds.filter(Boolean))];
 	const agentRuntimeTargets = dedupeBenchmarkAgentRuntimeTargets(
 		params.agentRuntimeTargets,
@@ -2506,16 +2560,93 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 		}
 	});
 
-	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
+	let activeAgentRuntimeTargets = agentRuntimeTargets.filter((target) => {
 		const key = benchmarkAgentRuntimeTargetKey(target);
 		const preflightStatus = agentRuntimePreflightStatuses.get(key);
 		if (preflightStatus === DURABLE_RUNTIME_MISSING_STATUS) {
 			agentRuntimeTerminations.set(key, "alreadyGone");
-			return;
+			return false;
 		}
 		if (isTerminalDurableRuntimeStatus(preflightStatus)) {
 			agentRuntimeTerminations.set(key, "terminated");
-			return;
+			return false;
+		}
+		return true;
+	});
+
+	const gracefulAgentRuntimeAttempted =
+		activeAgentRuntimeTargets.length > 0 &&
+		gracefulCancellationEnabled &&
+		gracefulCancellationWaitMs > 0 &&
+		typeof deps.cancelAgentRuntime === "function";
+	if (gracefulAgentRuntimeAttempted) {
+		await runWithConcurrency(
+			activeAgentRuntimeTargets,
+			concurrency,
+			async (target) => {
+				const result = await deps.cancelAgentRuntime?.(
+					target.runtimeAppId,
+					target.instanceId,
+					params.reason,
+				);
+				if (result === "alreadyGone") {
+					agentRuntimeTerminations.set(
+						benchmarkAgentRuntimeTargetKey(target),
+						"alreadyGone",
+					);
+				}
+			},
+		);
+		await runWithConcurrency(
+			activeAgentRuntimeTargets,
+			concurrency,
+			async (target) => {
+				const key = benchmarkAgentRuntimeTargetKey(target);
+				if (agentRuntimeTerminations.get(key) === "alreadyGone") return;
+				const closed = await waitForDurableRuntimeClosedWithin(
+					`benchmark agent runtime graceful cancel ${target.runtimeAppId}/${target.instanceId}`,
+					() =>
+						deps.getAgentRuntimeStatus(target.runtimeAppId, target.instanceId),
+					gracefulCancellationWaitMs,
+					deps.sleep,
+				);
+				if (closed) agentRuntimeTerminations.set(key, "closed");
+			},
+		);
+		activeAgentRuntimeTargets = activeAgentRuntimeTargets.filter((target) => {
+			const termination = agentRuntimeTerminations.get(
+				benchmarkAgentRuntimeTargetKey(target),
+			);
+			return (
+				termination !== "alreadyGone" &&
+				termination !== "terminated" &&
+				termination !== "closed"
+			);
+		});
+	}
+
+	await runWithConcurrency(activeAgentRuntimeTargets, concurrency, async (target) => {
+		const key = benchmarkAgentRuntimeTargetKey(target);
+		if (gracefulAgentRuntimeAttempted) {
+			try {
+				const status = await deps.getAgentRuntimeStatus(
+					target.runtimeAppId,
+					target.instanceId,
+				);
+				if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+					agentRuntimeTerminations.set(key, "alreadyGone");
+					return;
+				}
+				if (isTerminalDurableRuntimeStatus(status)) {
+					agentRuntimeTerminations.set(key, "terminated");
+					return;
+				}
+			} catch (err) {
+				console.warn(
+					`Failed to re-check benchmark agent runtime status ${target.runtimeAppId}/${target.instanceId}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
 		}
 		const termination = await deps.terminateAgentRuntime(
 			target.runtimeAppId,
@@ -2537,13 +2668,14 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 		}
 		const closed =
 			termination === "alreadyGone" ||
+			termination === "closed" ||
 			(await deps.waitAgentRuntimeClosed(target.runtimeAppId, target.instanceId));
 		if (!closed) {
 			agentRuntimeClosed = false;
 		}
 	});
 
-	const activeParentInstanceIds = parentInstanceIds.filter((instanceId) => {
+	let activeParentInstanceIds = parentInstanceIds.filter((instanceId) => {
 		const status = parentPreflightStatuses.get(instanceId);
 		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
 			parentTerminations.set(instanceId, "alreadyGone");
@@ -2557,7 +2689,64 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	});
 
 	if (activeParentInstanceIds.length > 0) {
+		const gracefulParentAttempted =
+			gracefulCancellationEnabled &&
+			gracefulCancellationWaitMs > 0 &&
+			typeof deps.cancelParent === "function";
+		if (gracefulParentAttempted) {
+			await runWithConcurrency(
+				activeParentInstanceIds,
+				concurrency,
+				async (instanceId) => {
+					const result = await deps.cancelParent?.(instanceId, params.reason);
+					if (result === "alreadyGone") {
+						parentTerminations.set(instanceId, "alreadyGone");
+					}
+				},
+			);
+			await runWithConcurrency(
+				activeParentInstanceIds,
+				concurrency,
+				async (instanceId) => {
+					if (parentTerminations.get(instanceId) === "alreadyGone") return;
+					const closed = await waitForDurableRuntimeClosedWithin(
+						`benchmark workflow graceful cancel ${instanceId}`,
+						() => deps.getParentStatus(instanceId),
+						gracefulCancellationWaitMs,
+						deps.sleep,
+					);
+					if (closed) parentTerminations.set(instanceId, "closed");
+				},
+			);
+			activeParentInstanceIds = activeParentInstanceIds.filter((instanceId) => {
+				const termination = parentTerminations.get(instanceId);
+				return (
+					termination !== "alreadyGone" &&
+					termination !== "terminated" &&
+					termination !== "closed"
+				);
+			});
+		}
+
 		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+			if (gracefulParentAttempted) {
+				try {
+					const status = await deps.getParentStatus(instanceId);
+					if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+						parentTerminations.set(instanceId, "alreadyGone");
+						return;
+					}
+					if (isTerminalDurableRuntimeStatus(status)) {
+						parentTerminations.set(instanceId, "terminated");
+						return;
+					}
+				} catch (err) {
+					console.warn(
+						`Failed to re-check benchmark workflow status ${instanceId}:`,
+						err instanceof Error ? err.message : err,
+					);
+				}
+			}
 			const termination = await deps.terminateParent(instanceId, params.reason);
 			parentTerminations.set(instanceId, termination);
 			if (termination === "failed") {
@@ -2572,7 +2761,9 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 				return;
 			}
 			const closed =
-				termination === "alreadyGone" || (await deps.waitParentClosed(instanceId));
+				termination === "alreadyGone" ||
+				termination === "closed" ||
+				(await deps.waitParentClosed(instanceId));
 			if (!closed) {
 				parentClosed = false;
 			}
@@ -2698,6 +2889,52 @@ async function getBenchmarkWorkflowInstanceStatus(
 		if (isBenignDaprTerminationMiss(err)) return DURABLE_RUNTIME_MISSING_STATUS;
 		if (isTransientDaprServiceInvokeError(err)) return null;
 		throw err;
+	}
+}
+
+async function cancelBenchmarkWorkflowInstance(
+	instanceId: string,
+	reason: string,
+): Promise<DurableGracefulCancellationResult> {
+	try {
+		const res = await daprFetch(
+			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}/events`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					eventName: "workflow.cancel",
+					eventData: {
+						reason,
+						source: "benchmark_cleanup",
+						cancelledAt: new Date().toISOString(),
+					},
+				}),
+				maxRetries: 0,
+				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
+			},
+		);
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
+				return "alreadyGone";
+			}
+			console.warn(
+				`Failed to request graceful benchmark workflow cancellation ${instanceId}: ${res.status} ${detail}`,
+			);
+			return "failed";
+		}
+		console.info(
+			`Requested graceful benchmark workflow cancellation ${instanceId}`,
+		);
+		return "requested";
+	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
+		console.warn(
+			`Failed to request graceful benchmark workflow cancellation ${instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return "failed";
 	}
 }
 
@@ -2827,6 +3064,54 @@ async function waitForBenchmarkAgentRuntimeInstanceClosed(
 		`benchmark agent runtime ${runtimeAppId}/${instanceId}`,
 		() => getBenchmarkAgentRuntimeInstanceStatus(runtimeAppId, instanceId),
 	);
+}
+
+async function cancelBenchmarkAgentRuntimeInstance(
+	runtimeAppId: string,
+	instanceId: string,
+	reason: string,
+): Promise<DurableGracefulCancellationResult> {
+	try {
+		const res = await daprFetch(
+			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(runtimeAppId)}/method/internal/sessions/raise-event`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					instanceId,
+					eventName: "session.terminate",
+					payload: {
+						reason,
+						source: "benchmark_cleanup",
+						cancelledAt: new Date().toISOString(),
+					},
+				}),
+				maxRetries: 0,
+				signal: AbortSignal.timeout(BENCHMARK_TERMINATION_REQUEST_TIMEOUT_MS),
+			},
+		);
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			if (res.status === 404 || isBenignDaprTerminationMiss(detail)) {
+				return "alreadyGone";
+			}
+			console.warn(
+				`Failed to request graceful benchmark agent runtime cancellation ${runtimeAppId}/${instanceId}: ${res.status} ${detail}`,
+			);
+			return "failed";
+		}
+		console.info(
+			`Requested graceful benchmark agent runtime cancellation ${runtimeAppId}/${instanceId}`,
+		);
+		return "requested";
+	} catch (err) {
+		if (isBenignDaprTerminationMiss(err)) return "alreadyGone";
+		console.warn(
+			`Failed to request graceful benchmark agent runtime cancellation ${runtimeAppId}/${instanceId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return "failed";
+	}
 }
 
 async function terminateBenchmarkAgentRuntimeInstance(
@@ -2995,6 +3280,7 @@ export const __benchmarkDurableRuntimeForTest = {
 	benchmarkTerminatedSessionExecutionStatus,
 	benchmarkSyncExecutionStatus,
 	runtimeOutputFromWorkflowStatusBody,
+	shouldUseBenchmarkGracefulCancellation,
 	shouldPurgeBenchmarkDaprWorkflowsOnCleanup,
 	shouldProceedAfterStalledDurableCleanupTimeout,
 	terminalRunShouldProceedAfterDurableCleanupTimeout,

@@ -1289,6 +1289,138 @@ describe("SWE-bench terminal run cleanup", () => {
 		]);
 		});
 
+	it("requests graceful cancellation before hard termination", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [
+					{ runtimeAppId: "agent-session-host", instanceId: "session-1" },
+				],
+				reason: "operator cleanup",
+				purge: true,
+				purgeGraceMs: 0,
+				gracefulCancellationWaitMs: 1,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async (id: string) => {
+						calls.push(`parent-status:${id}`);
+						return calls.includes(`parent-cancel:${id}`) ? "COMPLETED" : "RUNNING";
+					},
+					cancelParent: async (id: string) => {
+						calls.push(`parent-cancel:${id}`);
+						return "requested";
+					},
+					terminateParent: async () => {
+						throw new Error("parent should close gracefully");
+					},
+					waitParentClosed: async () => {
+						throw new Error("parent should not need hard terminate wait");
+					},
+					getAgentRuntimeStatus: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-status:${runtimeAppId}/${id}`);
+						return calls.includes(`child-cancel:${runtimeAppId}/${id}`)
+							? "COMPLETED"
+							: "RUNNING";
+					},
+					cancelAgentRuntime: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-cancel:${runtimeAppId}/${id}`);
+						return "requested";
+					},
+					terminateAgentRuntime: async () => {
+						throw new Error("child should close gracefully");
+					},
+					waitAgentRuntimeClosed: async () => {
+						throw new Error("child should not need hard terminate wait");
+					},
+					purgeParent: async (id: string) => {
+						calls.push(`parent-purge:${id}`);
+					},
+					purgeAgentRuntime: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-purge:${runtimeAppId}/${id}`);
+					},
+					sleep: async () => undefined,
+				},
+			});
+
+		expect(result).toEqual({
+			allClosed: true,
+			parentClosed: true,
+			agentRuntimeClosed: true,
+		});
+		expect(calls).toEqual([
+			"parent-status:parent-1",
+			"child-status:agent-session-host/session-1",
+			"child-cancel:agent-session-host/session-1",
+			"child-status:agent-session-host/session-1",
+			"parent-cancel:parent-1",
+			"parent-status:parent-1",
+			"child-purge:agent-session-host/session-1",
+			"parent-purge:parent-1",
+		]);
+	});
+
+	it("escalates to hard termination when graceful cancellation does not close", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [
+					{ runtimeAppId: "agent-session-host", instanceId: "session-1" },
+				],
+				reason: "operator cleanup",
+				purge: false,
+				purgeGraceMs: 0,
+				gracefulCancellationWaitMs: 1,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async () => "RUNNING",
+					cancelParent: async () => {
+						calls.push("parent-cancel");
+						return "requested";
+					},
+					terminateParent: async () => {
+						calls.push("parent-terminate");
+						return "terminated";
+					},
+					waitParentClosed: async () => {
+						calls.push("parent-wait");
+						return true;
+					},
+					getAgentRuntimeStatus: async () => "RUNNING",
+					cancelAgentRuntime: async () => {
+						calls.push("child-cancel");
+						return "requested";
+					},
+					terminateAgentRuntime: async () => {
+						calls.push("child-terminate");
+						return "terminated";
+					},
+					waitAgentRuntimeClosed: async () => {
+						calls.push("child-wait");
+						return true;
+					},
+					purgeParent: async () => undefined,
+					purgeAgentRuntime: async () => undefined,
+					sleep: async () => undefined,
+				},
+			});
+
+		expect(result).toEqual({
+			allClosed: true,
+			parentClosed: true,
+			agentRuntimeClosed: true,
+		});
+		expect(calls.indexOf("child-cancel")).toBeLessThan(
+			calls.indexOf("child-terminate"),
+		);
+		expect(calls.indexOf("parent-cancel")).toBeLessThan(
+			calls.indexOf("parent-terminate"),
+		);
+		expect(calls).toContain("child-wait");
+		expect(calls).toContain("parent-wait");
+	});
+
 	it("includes run-level coordinator workflow ids in durable state row purge", async () => {
 		const calls: string[] = [];
 		const result =

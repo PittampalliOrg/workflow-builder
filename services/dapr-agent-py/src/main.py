@@ -5100,6 +5100,14 @@ class OpenShellDurableAgent(DurableAgent):
                 if not ctx.is_replaying:
                     publish_session_event(
                         session_id,
+                        "session.status_terminating",
+                        {
+                            "stop_reason": terminal_stop_reason,
+                            **session_native_event_fields(workflow_instance_id),
+                        },
+                    )
+                    publish_session_event(
+                        session_id,
                         "session.status_terminated",
                         {
                             "stop_reason": terminal_stop_reason,
