@@ -44,7 +44,7 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "def check_cancellation_for_instance" in source
     assert "self._activity_name(self.check_cancellation_for_instance)" in source
     assert "Agent %s observed cancellation after LLM turn" in source
-    assert "runtime.register_activity(self.check_cancellation_for_instance)" in source
+    assert "runtime.register_activity(self.check_cancellation_for_instance)" not in source
     assert "self._named(activity, self._activity_name(activity))" in source
     assert "force_repo_sequential: bool = False" in source
     assert "Always record this activity in durable history" in source
@@ -166,13 +166,13 @@ def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() ->
         "# Inject plan from PLAN.md if it exists"
     )
     assert source.index("if custom_hooks_enabled:") < source.index(
-        "yield ctx.call_activity(\n            self.seed_runtime_context_for_instance"
+        "yield ctx.call_activity(\n            self._activity_name(self.seed_runtime_context_for_instance)"
     )
     assert source.index("self._remember_runtime_context(instance_id, runtime_context)") < source.index(
-        "yield ctx.call_activity(\n            self.seed_runtime_context_for_instance"
+        "yield ctx.call_activity(\n            self._activity_name(self.seed_runtime_context_for_instance)"
     )
     assert source.index(
-        "yield ctx.call_activity(\n            self.seed_runtime_context_for_instance"
+        "yield ctx.call_activity(\n            self._activity_name(self.seed_runtime_context_for_instance)"
     ) < source.index("yield from self._agent_workflow_strict_sequential(")
     assert source.index("if not strict_one_shot_agent_turn and not ctx.is_replaying:") < source.index(
         "_save_plan_to_state(execution_id, plan_content)"

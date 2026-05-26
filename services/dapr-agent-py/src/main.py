@@ -4431,7 +4431,7 @@ class OpenShellDurableAgent(DurableAgent):
         }
         self._remember_runtime_context(instance_id, runtime_context)
         yield ctx.call_activity(
-            self.seed_runtime_context_for_instance,
+            self._activity_name(self.seed_runtime_context_for_instance),
             input={"instance_id": instance_id, "context": runtime_context},
         )
 
@@ -4729,7 +4729,6 @@ class OpenShellDurableAgent(DurableAgent):
         super().register_workflows(runtime)
         runtime.register_workflow(self.session_workflow)
         runtime.register_workflow(self.call_peer_session_workflow)
-        runtime.register_activity(self.create_peer_session_row)
         # Activity that populates self._mcp_configs_by_instance[instance_id]
         # for the current session workflow turn. Yielded by session_workflow
         # before the inline agent turn so call_llm finds pre-seeded MCP configs
@@ -4739,13 +4738,9 @@ class OpenShellDurableAgent(DurableAgent):
         # (they re-run deterministically on every replay); activities ARE
         # allowed to have side effects (Dapr caches their return value and
         # only re-runs on worker failure).
-        runtime.register_activity(self.seed_mcp_for_instance)
-        runtime.register_activity(self.seed_runtime_context_for_instance)
-        runtime.register_activity(self.check_cancellation_for_instance)
         # Dapr Agents 1.0.3 scopes built-in activity names through
-        # self._activity_name(...). Keep the legacy bare names above for
-        # session_workflow histories, and also expose scoped aliases for custom
-        # activities called from the repo-owned agent workflow wrapper.
+        # self._activity_name(...). Use the same convention for repo-owned
+        # custom activities so every activity registration is agent-scoped.
         for activity in (
             self.create_peer_session_row,
             self.seed_mcp_for_instance,
@@ -4786,7 +4781,7 @@ class OpenShellDurableAgent(DurableAgent):
         bare session id.
         """
         row = yield ctx.call_activity(
-            self.create_peer_session_row,
+            self._activity_name(self.create_peer_session_row),
             input=message,
         )
         if not isinstance(row, dict) or not row.get("sessionId"):
@@ -5476,7 +5471,7 @@ class OpenShellDurableAgent(DurableAgent):
                 "agentWorkflowMode": child_input.get("agentWorkflowMode"),
             }
             yield ctx.call_activity(
-                self.seed_runtime_context_for_instance,
+                self._activity_name(self.seed_runtime_context_for_instance),
                 input={
                     "instance_id": agent_turn_instance_id,
                     "context": child_runtime_context,
@@ -5491,7 +5486,7 @@ class OpenShellDurableAgent(DurableAgent):
             # durable history and get dropped.
             try:
                 yield ctx.call_activity(
-                    self.seed_mcp_for_instance,
+                    self._activity_name(self.seed_mcp_for_instance),
                     input={
                         "instance_id": agent_turn_instance_id,
                         "agentConfig": agent_cfg,
