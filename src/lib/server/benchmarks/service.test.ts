@@ -1298,12 +1298,27 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(
 			__benchmarkDurableRuntimeForTest.shouldProceedAfterStalledDurableCleanupTimeout(),
 		).toBe(true);
+		expect(
+			__benchmarkDurableRuntimeForTest.terminalRunShouldProceedAfterDurableCleanupTimeout(
+				"cancelled",
+			),
+		).toBe(true);
+		expect(
+			__benchmarkDurableRuntimeForTest.terminalRunShouldProceedAfterDurableCleanupTimeout(
+				"failed",
+			),
+		).toBe(false);
 		vi.stubEnv(
 			"BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT",
 			"false",
 		);
 		expect(
 			__benchmarkDurableRuntimeForTest.shouldProceedAfterStalledDurableCleanupTimeout(),
+		).toBe(false);
+		expect(
+			__benchmarkDurableRuntimeForTest.terminalRunShouldProceedAfterDurableCleanupTimeout(
+				"cancelled",
+			),
 		).toBe(false);
 	});
 

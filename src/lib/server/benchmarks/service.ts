@@ -693,6 +693,15 @@ export function shouldProceedAfterStalledDurableCleanupTimeout(): boolean {
 	);
 }
 
+function terminalRunShouldProceedAfterDurableCleanupTimeout(
+	outcome: BenchmarkRunTerminalOutcome,
+): boolean {
+	return (
+		outcome === "cancelled" &&
+		shouldProceedAfterStalledDurableCleanupTimeout()
+	);
+}
+
 async function sleep(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1525,6 +1534,10 @@ async function cleanupTerminalBenchmarkRun(params: {
 		params.outcome,
 		params.reason,
 		params.now,
+		{
+			proceedAfterDurableCleanupTimeout:
+				terminalRunShouldProceedAfterDurableCleanupTimeout(params.outcome),
+		},
 	);
 	const resourcesCleaned =
 		await cleanupBenchmarkTerminalResourcesAfterDurableClosure({
@@ -2023,6 +2036,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 	outcome: BenchmarkRunTerminalOutcome,
 	reason: string,
 	now = new Date(),
+	options: { proceedAfterDurableCleanupTimeout?: boolean } = {},
 ): Promise<boolean> {
 	const database = requireDb();
 	const rows = await database
@@ -2145,10 +2159,16 @@ async function finalizeBenchmarkWorkflowExecutions(
 	allDurableInstancesClosed = durableCleanup.allClosed;
 
 	if (!allDurableInstancesClosed) {
+		const warning = `Benchmark run ${runId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed} agentRuntimeClosed=${durableCleanup.agentRuntimeClosed}`;
+		if (!options.proceedAfterDurableCleanupTimeout) {
+			console.warn(
+				`${warning}; leaving session/execution rows active for retry`,
+			);
+			return false;
+		}
 		console.warn(
-			`Benchmark run ${runId} durable cleanup did not confirm every workflow closed; parentClosed=${durableCleanup.parentClosed} agentRuntimeClosed=${durableCleanup.agentRuntimeClosed}; leaving session/execution rows active for retry`,
+			`${warning}; proceeding with terminal benchmark bookkeeping after best-effort durable termination`,
 		);
-		return false;
 	}
 	if (sessionIds.size > 0) {
 		await database
@@ -2812,6 +2832,7 @@ export const __benchmarkDurableRuntimeForTest = {
 	runtimeOutputFromWorkflowStatusBody,
 	shouldPurgeBenchmarkDaprWorkflowsOnCleanup,
 	shouldProceedAfterStalledDurableCleanupTimeout,
+	terminalRunShouldProceedAfterDurableCleanupTimeout,
 	cleanupBenchmarkDurableWorkflowCascade,
 };
 
