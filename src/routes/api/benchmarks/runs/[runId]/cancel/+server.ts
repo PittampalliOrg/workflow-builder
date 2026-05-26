@@ -15,26 +15,36 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	});
 	if (!run) return error(404, "Benchmark run not found");
 
-	let coordinatorCancelError: string | null = null;
-	if (env.INTERNAL_API_TOKEN) {
-		try {
-			const res = await daprFetch(
-				`${getSwebenchCoordinatorUrl()}/api/v1/benchmark-runs/${params.runId}/cancel`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						"X-Internal-Token": env.INTERNAL_API_TOKEN,
+	const internalApiToken = env.INTERNAL_API_TOKEN;
+	if (internalApiToken) {
+		void (async () => {
+			try {
+				const res = await daprFetch(
+					`${getSwebenchCoordinatorUrl()}/api/v1/benchmark-runs/${params.runId}/cancel`,
+					{
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							"X-Internal-Token": internalApiToken,
+						},
+						body: JSON.stringify({ reason: "cancelled by user" }),
+						maxRetries: 0,
+						signal: AbortSignal.timeout(120_000),
 					},
-					body: JSON.stringify({ reason: "cancelled by user" }),
-					maxRetries: 0,
-				},
-			);
-			if (!res.ok) coordinatorCancelError = await res.text();
-		} catch (err) {
-			coordinatorCancelError = err instanceof Error ? err.message : String(err);
-		}
+				);
+				if (!res.ok) {
+					console.warn(
+						`Coordinator benchmark cancel failed for ${params.runId}: ${res.status} ${await res.text()}`,
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`Coordinator benchmark cancel failed for ${params.runId}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+		})();
 	}
 
-	return json({ run, coordinatorCancelError });
+	return json({ run, coordinatorCancelScheduled: Boolean(internalApiToken) });
 };
