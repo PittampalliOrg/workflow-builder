@@ -101,6 +101,9 @@ export type BenchmarkSandboxResourceProfile = {
 const DEFAULT_SANDBOX_REQUEST_CPU = "100m";
 const DEFAULT_SANDBOX_REQUEST_MEMORY = "256Mi";
 const DEFAULT_SANDBOX_REQUEST_EPHEMERAL_STORAGE = "16Gi";
+const DEFAULT_SANDBOX_DAPR_REQUEST_CPU = "50m";
+const DEFAULT_SANDBOX_DAPR_REQUEST_MEMORY = "128Mi";
+const DEFAULT_SANDBOX_DAPR_REQUEST_EPHEMERAL_STORAGE = "256Mi";
 const DEFAULT_NODE_FS_EVICTION_RESERVE = "24Gi";
 const DEFAULT_SANDBOX_NAMESPACE = "openshell";
 
@@ -311,6 +314,21 @@ function sandboxResourceProfileFromEnv(): BenchmarkSandboxResourceProfile {
 	};
 }
 
+function daprSidecarResourceProfileFromEnv(): BenchmarkSandboxResourceProfile {
+	return {
+		cpuMilli:
+			parseCpuMilli(process.env.BENCHMARK_SANDBOX_DAPR_REQUEST_CPU) ??
+			parseCpuMilli(DEFAULT_SANDBOX_DAPR_REQUEST_CPU)!,
+		memoryBytes:
+			parseMemoryBytes(process.env.BENCHMARK_SANDBOX_DAPR_REQUEST_MEMORY) ??
+			parseMemoryBytes(DEFAULT_SANDBOX_DAPR_REQUEST_MEMORY)!,
+		ephemeralStorageBytes:
+			parseMemoryBytes(
+				process.env.BENCHMARK_SANDBOX_DAPR_REQUEST_EPHEMERAL_STORAGE,
+			) ?? parseMemoryBytes(DEFAULT_SANDBOX_DAPR_REQUEST_EPHEMERAL_STORAGE)!,
+	};
+}
+
 function addResourceProfiles(
 	left: BenchmarkSandboxResourceProfile,
 	right: BenchmarkSandboxResourceProfile,
@@ -321,6 +339,13 @@ function addResourceProfiles(
 		ephemeralStorageBytes:
 			left.ephemeralStorageBytes + right.ephemeralStorageBytes,
 	};
+}
+
+function kueueInstanceRequestMode(): "openshell-pod" | "legacy-composite" {
+	return process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE ===
+		"legacy-composite"
+		? "legacy-composite"
+		: "openshell-pod";
 }
 
 function executionClassConfigFromEnv(
@@ -405,9 +430,18 @@ function executionWorkerResourceProfileFromEnv():
 	};
 }
 
-function kueueInstanceResourceProfileFromEnv(
+export function kueueInstanceResourceProfileFromEnv(
 	sandboxRequest: BenchmarkSandboxResourceProfile,
 ): BenchmarkSandboxResourceProfile | null {
+	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
+		return null;
+	}
+	if (kueueInstanceRequestMode() === "openshell-pod") {
+		return addResourceProfiles(
+			sandboxRequest,
+			daprSidecarResourceProfileFromEnv(),
+		);
+	}
 	const agentHostRequest = agentHostResourceProfileFromEnv();
 	if (!agentHostRequest) return null;
 	const executionWorkerRequest = executionWorkerResourceProfileFromEnv();
@@ -425,8 +459,11 @@ export function kueueInstancePodCountFromEnv(
 	instanceRequest: BenchmarkSandboxResourceProfile | null,
 ): number | null {
 	if (!instanceRequest) return null;
-	const configured = positiveInt(process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT);
+	const configured = positiveInt(
+		process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT,
+	);
 	if (configured) return configured;
+	if (kueueInstanceRequestMode() === "openshell-pod") return 1;
 	const config = executionClassConfigFromEnv(true);
 	const agentHostImage =
 		typeof config?.agentHostImage === "string"
@@ -1092,7 +1129,8 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 	const sandboxRequest = sandboxResourceProfileFromEnv();
 	const kueueInstanceRequest =
 		kueueInstanceResourceProfileFromEnv(sandboxRequest);
-	const kueueInstancePodCount = kueueInstancePodCountFromEnv(kueueInstanceRequest);
+	const kueueInstancePodCount =
+		kueueInstancePodCountFromEnv(kueueInstanceRequest);
 	try {
 		const kueueCapacity = await loadKueueClusterQueueCapacity(
 			kueueClusterQueueNameFromEnv(),

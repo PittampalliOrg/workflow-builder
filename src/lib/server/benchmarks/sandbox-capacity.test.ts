@@ -3,6 +3,7 @@ import type { KubeNode, KubePod } from "$lib/server/kube/client";
 import {
 	estimateSchedulableSandboxCapacity,
 	kueueCapacityFromClusterQueue,
+	kueueInstanceResourceProfileFromEnv,
 	kueueInstancePodCountFromEnv,
 	parseCpuMilli,
 	parseMemoryBytes,
@@ -531,12 +532,68 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
-	it("defaults Kueue full-instance pod count to the live sandbox plus agent-host shape", () => {
+	it("defaults Kueue full-instance request to the live OpenShell pod shape", () => {
+		const previous = {
+			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
+			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
+			BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE:
+				process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE,
+			SANDBOX_EXECUTION_CLASSES_JSON:
+				process.env.SANDBOX_EXECUTION_CLASSES_JSON,
+		};
+		const sandboxRequest = {
+			cpuMilli: 100,
+			memoryBytes: 512 * 1024 * 1024,
+			ephemeralStorageBytes: 2600 * 1024 * 1024,
+		};
+		try {
+			process.env.BENCHMARK_EXECUTION_BACKEND = "dapr-kueue";
+			process.env.BENCHMARK_EXECUTION_CLASS = "benchmark-fast";
+			delete process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
+			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
+				"benchmark-fast": {
+					cpu: "100m",
+					memory: "256Mi",
+					ephemeralStorage: "1Gi",
+					agentHostCpu: "250m",
+					agentHostMemory: "1Gi",
+					agentHostEphemeralStorage: "3Gi",
+					agentHostImage:
+						"ghcr.io/pittampalliorg/dapr-agent-py-sandbox:git-test",
+				},
+			});
+
+			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
+				cpuMilli: 150,
+				memoryBytes: 640 * 1024 * 1024,
+				ephemeralStorageBytes: 2856 * 1024 * 1024,
+			});
+
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "legacy-composite";
+			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
+				cpuMilli: 450,
+				memoryBytes: 1792 * 1024 * 1024,
+				ephemeralStorageBytes: 6696 * 1024 * 1024,
+			});
+		} finally {
+			for (const [key, value] of Object.entries(previous)) {
+				if (value == null) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
+	});
+
+	it("defaults Kueue full-instance pod count to the live OpenShell pod shape", () => {
 		const previous = {
 			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
 			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
 			BENCHMARK_KUEUE_INSTANCE_POD_COUNT:
 				process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT,
+			BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE:
+				process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE,
 			SANDBOX_EXECUTION_CLASSES_JSON:
 				process.env.SANDBOX_EXECUTION_CLASSES_JSON,
 		};
@@ -549,18 +606,24 @@ describe("sandbox scheduler capacity", () => {
 			process.env.BENCHMARK_EXECUTION_BACKEND = "dapr-kueue";
 			process.env.BENCHMARK_EXECUTION_CLASS = "benchmark-fast";
 			delete process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT;
+			delete process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
 			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
 				"benchmark-fast": {
-					agentHostImage: "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:git-test",
+					agentHostImage:
+						"ghcr.io/pittampalliorg/dapr-agent-py-sandbox:git-test",
 				},
 			});
 
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(1);
+
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "legacy-composite";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT = "3";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
 
 			delete process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT;
+			delete process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
 			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
 				"benchmark-fast": {},
 			});
