@@ -511,6 +511,23 @@
 		return formatQuantityForResource(resource, resources?.[resource] ?? 0);
 	}
 
+	function latestTrendValue(points: Array<{ t: string; value: number }> | undefined): number | null {
+		const last = points?.at(-1);
+		return typeof last?.value === 'number' && Number.isFinite(last.value) ? last.value : null;
+	}
+
+	const selectedRequestedUtilizationPct = $derived(
+		latestTrendValue(trendsQuery?.current?.utilizationPctByResource?.[primaryResource])
+	);
+	const selectedActualUtilizationPct = $derived(
+		latestTrendValue(trendsQuery?.current?.actualUsagePctByResource?.[primaryResource])
+	);
+	const selectedReserveGapPct = $derived(
+		selectedRequestedUtilizationPct !== null && selectedActualUtilizationPct !== null
+			? Math.max(0, selectedRequestedUtilizationPct - selectedActualUtilizationPct)
+			: null
+	);
+
 	// --- Headlamp helpers (per-row) ---------------------------------------
 	function blockedHeadlampUrl(wl: CapacityBlockedWorkload): string | null {
 		return null;
@@ -652,6 +669,26 @@
 					{#if !businessWork?.totals.observedResources?.[primaryResource]}
 						<span class="text-muted-foreground/70"> · telemetry pending</span>
 					{/if}
+				</div>
+				<div class="mt-2 grid grid-cols-3 gap-1 text-[10px]">
+					<div class="rounded bg-muted/30 px-2 py-1">
+						<div class="text-muted-foreground">cluster req</div>
+						<div class="font-mono tabular-nums">
+							{selectedRequestedUtilizationPct?.toFixed(1) ?? '—'}%
+						</div>
+					</div>
+					<div class="rounded bg-muted/30 px-2 py-1">
+						<div class="text-muted-foreground">actual</div>
+						<div class="font-mono tabular-nums {selectedActualUtilizationPct !== null ? 'text-emerald-600' : 'text-muted-foreground'}">
+							{selectedActualUtilizationPct?.toFixed(1) ?? 'n/a'}%
+						</div>
+					</div>
+					<div class="rounded bg-muted/30 px-2 py-1">
+						<div class="text-muted-foreground">gap</div>
+						<div class="font-mono tabular-nums">
+							{selectedReserveGapPct?.toFixed(1) ?? 'n/a'}%
+						</div>
+					</div>
 				</div>
 			</div>
 			<PressurePanel psi={observer?.psi} {history} />

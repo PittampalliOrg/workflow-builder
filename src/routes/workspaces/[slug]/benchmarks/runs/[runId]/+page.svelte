@@ -103,6 +103,16 @@
 		}
 		return out;
 	});
+	const kueueInstanceCapacityLabel = $derived(
+		capacityDiagnostics?.sandbox?.kueueInstancePodCountScope === 'modeled_composite_budget'
+			? 'kueue composite'
+			: 'kueue instance'
+	);
+	const kueueInstanceCapacityTitle = $derived(
+		capacityDiagnostics?.sandbox?.kueueInstancePodCountScope === 'modeled_composite_budget'
+			? `Modeled full-instance budget, not live admitted Kueue pod count. Mode: ${capacityDiagnostics?.sandbox?.kueueInstanceRequestMode ?? 'unknown'}`
+			: 'Full-instance capacity from Kueue headroom'
+	);
 
 	const inferenceDone = $derived.by(() => {
 		const counts = countByKey(run?.instances ?? [], 'inferenceStatus');
@@ -406,6 +416,14 @@
 							{/if}
 							{#if capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== null && capacityDiagnostics.sandbox.kueueAvailableSandboxSlots !== undefined}
 								<span>kueue {capacityDiagnostics.sandbox.kueueAvailableSandboxSlots}</span>
+							{/if}
+							{#if capacityDiagnostics.sandbox.kueueAvailableInstanceSlots !== null && capacityDiagnostics.sandbox.kueueAvailableInstanceSlots !== undefined}
+								<span title={kueueInstanceCapacityTitle}>
+									{kueueInstanceCapacityLabel} {capacityDiagnostics.sandbox.kueueAvailableInstanceSlots}
+									{#if capacityDiagnostics.sandbox.kueueInstancePodCount !== null && capacityDiagnostics.sandbox.kueueInstancePodCount !== undefined}
+										· {capacityDiagnostics.sandbox.kueueInstancePodCount} pod-eq
+									{/if}
+								</span>
 							{/if}
 							{#if capacityDiagnostics.evaluator?.effectiveEvaluationConcurrency}
 								<span>

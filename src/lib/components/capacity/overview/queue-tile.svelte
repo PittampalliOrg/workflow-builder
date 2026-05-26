@@ -58,6 +58,16 @@
 	const SECONDARY_RESOURCES = $derived(
 		ALL_RESOURCES.filter((r) => r !== primaryResource)
 	);
+	const sessionFitsLabel = $derived(
+		sessionCapacity?.benchmarkKueueInstancePodCountScope === 'modeled_composite_budget'
+			? 'composite fits'
+			: 'fits'
+	);
+	const sessionFitsTitle = $derived(
+		sessionCapacity?.benchmarkKueueInstancePodCountScope === 'modeled_composite_budget'
+			? `Modeled full-instance budget, not live admitted Kueue pod count. Mode: ${sessionCapacity?.benchmarkKueueInstanceRequestMode ?? 'unknown'}`
+			: 'Additional sessions that fit this queue headroom'
+	);
 
 	function resourceRow(resource: GaugeResource) {
 		const observerResource = observerQueue?.resources.find((r) => r.resource === resource);
@@ -167,8 +177,8 @@
 					</Badge>
 				{/if}
 				{#if sessionCapacity?.fits !== null && sessionCapacity?.fits !== undefined}
-					<Badge variant="outline" class="font-mono text-[9px]">
-						fits {sessionCapacity.fits}
+					<Badge variant="outline" class="font-mono text-[9px]" title={sessionFitsTitle}>
+						{sessionFitsLabel} {sessionCapacity.fits}
 					</Badge>
 				{/if}
 			</div>

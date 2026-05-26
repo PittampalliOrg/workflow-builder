@@ -114,6 +114,8 @@ function sandboxCapacity(
 		kueueInstanceRequestMemoryBytes: 1073741824,
 		kueueInstanceRequestEphemeralStorageBytes: 7021273088,
 		kueueInstancePodCount: 3,
+		kueueInstancePodCountScope: "modeled_composite_budget",
+		kueueInstanceRequestMode: "host-worker-composite",
 		kueueAvailableInstanceSlots: 5,
 		kueueBorrowAvailableInstanceSlots: 7,
 		kueueInstanceCpuLimitedCapacity: 17,

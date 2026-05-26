@@ -52,6 +52,8 @@ export type BenchmarkSandboxCapacitySnapshot = {
 	kueueInstanceRequestMemoryBytes: number | null;
 	kueueInstanceRequestEphemeralStorageBytes: number | null;
 	kueueInstancePodCount: number | null;
+	kueueInstancePodCountScope: BenchmarkKueueInstancePodCountScope | null;
+	kueueInstanceRequestMode: BenchmarkKueueInstanceRequestMode | null;
 	kueueAvailableInstanceSlots: number | null;
 	kueueBorrowAvailableInstanceSlots: number | null;
 	kueueInstanceCpuLimitedCapacity: number | null;
@@ -84,6 +86,8 @@ export type BenchmarkKueueCapacitySnapshot = {
 	instanceRequestMemoryBytes: number | null;
 	instanceRequestEphemeralStorageBytes: number | null;
 	instancePodCount: number | null;
+	instancePodCountScope: BenchmarkKueueInstancePodCountScope | null;
+	instanceRequestMode: BenchmarkKueueInstanceRequestMode | null;
 	availableInstanceSlots: number | null;
 	borrowAvailableInstanceSlots: number | null;
 	instanceCpuLimitedCapacity: number | null;
@@ -97,6 +101,16 @@ export type BenchmarkSandboxResourceProfile = {
 	memoryBytes: number;
 	ephemeralStorageBytes: number;
 };
+
+export type BenchmarkKueueInstanceRequestMode =
+	| "host-worker-composite"
+	| "openshell-pod"
+	| "legacy-composite";
+
+export type BenchmarkKueueInstancePodCountScope =
+	| "admitted_kueue_pods"
+	| "modeled_composite_budget"
+	| "configured_override";
 
 const DEFAULT_SANDBOX_REQUEST_CPU = "100m";
 const DEFAULT_SANDBOX_REQUEST_MEMORY = "256Mi";
@@ -341,13 +355,14 @@ function addResourceProfiles(
 	};
 }
 
-function kueueInstanceRequestMode():
-	| "host-worker-composite"
-	| "openshell-pod"
-	| "legacy-composite" {
+function kueueInstanceRequestMode(): BenchmarkKueueInstanceRequestMode {
 	const raw = process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
 	if (raw === "openshell-pod" || raw === "legacy-composite") return raw;
 	return "host-worker-composite";
+}
+
+export function kueueInstanceRequestModeFromEnv(): BenchmarkKueueInstanceRequestMode {
+	return kueueInstanceRequestMode();
 }
 
 function executionClassConfigFromEnv(
@@ -488,6 +503,18 @@ export function kueueInstancePodCountFromEnv(
 			? config.agentHostImage.trim()
 			: "";
 	return agentHostImage ? 2 : 1;
+}
+
+export function kueueInstancePodCountScopeFromEnv(
+	instanceRequest: BenchmarkSandboxResourceProfile | null,
+): BenchmarkKueueInstancePodCountScope | null {
+	if (!instanceRequest) return null;
+	if (positiveInt(process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT)) {
+		return "configured_override";
+	}
+	return kueueInstanceRequestMode() === "openshell-pod"
+		? "admitted_kueue_pods"
+		: "modeled_composite_budget";
 }
 
 function nodeFsEvictionReserveBytes(): number {
@@ -666,6 +693,8 @@ export function kueueCapacityFromClusterQueue(
 	options?: {
 		instanceRequest?: BenchmarkSandboxResourceProfile | null;
 		instancePodCount?: number | null;
+		instancePodCountScope?: BenchmarkKueueInstancePodCountScope | null;
+		instanceRequestMode?: BenchmarkKueueInstanceRequestMode | null;
 	},
 ): BenchmarkKueueCapacitySnapshot | null {
 	if (!clusterQueue || typeof clusterQueue !== "object" || Array.isArray(clusterQueue)) {
@@ -780,6 +809,12 @@ export function kueueCapacityFromClusterQueue(
 	]);
 	const instanceRequest = options?.instanceRequest ?? null;
 	const instancePodCount = positiveInt(options?.instancePodCount) ?? 2;
+	const instancePodCountScope = instanceRequest
+		? (options?.instancePodCountScope ?? null)
+		: null;
+	const instanceRequestMode = instanceRequest
+		? (options?.instanceRequestMode ?? null)
+		: null;
 	const instanceCpuLimitedCapacity =
 		availableCpuMilli == null || !instanceRequest
 			? null
@@ -856,6 +891,8 @@ export function kueueCapacityFromClusterQueue(
 		instanceRequestEphemeralStorageBytes:
 			instanceRequest?.ephemeralStorageBytes ?? null,
 			instancePodCount: instanceRequest ? instancePodCount : null,
+			instancePodCountScope,
+			instanceRequestMode,
 			availableInstanceSlots,
 			borrowAvailableInstanceSlots,
 		instanceCpuLimitedCapacity,
@@ -870,6 +907,8 @@ async function loadKueueClusterQueueCapacity(
 	sandboxRequest: BenchmarkSandboxResourceProfile,
 	instanceRequest: BenchmarkSandboxResourceProfile | null,
 	instancePodCount: number | null,
+	instancePodCountScope: BenchmarkKueueInstancePodCountScope | null,
+	instanceRequestMode: BenchmarkKueueInstanceRequestMode | null,
 ): Promise<BenchmarkKueueCapacitySnapshot | null> {
 	if (!clusterQueueName) return null;
 	for (const version of ["v1beta2", "v1beta1"]) {
@@ -882,6 +921,8 @@ async function loadKueueClusterQueueCapacity(
 			return kueueCapacityFromClusterQueue(await res.json(), sandboxRequest, {
 				instanceRequest,
 				instancePodCount,
+				instancePodCountScope,
+				instanceRequestMode,
 			});
 		} catch {
 			continue;
@@ -1121,6 +1162,10 @@ export function estimateSchedulableSandboxCapacity(params: {
 			kueueInstanceRequest?.ephemeralStorageBytes ??
 			null,
 		kueueInstancePodCount: kueueCapacity?.instancePodCount ?? null,
+		kueueInstancePodCountScope:
+			kueueCapacity?.instancePodCountScope ?? null,
+		kueueInstanceRequestMode:
+			kueueCapacity?.instanceRequestMode ?? null,
 		kueueAvailableInstanceSlots: kueueCapacity?.availableInstanceSlots ?? null,
 		kueueBorrowAvailableInstanceSlots:
 			kueueCapacity?.borrowAvailableInstanceSlots ?? null,
@@ -1149,12 +1194,18 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 		kueueInstanceResourceProfileFromEnv(sandboxRequest);
 	const kueueInstancePodCount =
 		kueueInstancePodCountFromEnv(kueueInstanceRequest);
+	const kueueInstancePodCountScope =
+		kueueInstancePodCountScopeFromEnv(kueueInstanceRequest);
+	const kueueInstanceRequestMode =
+		kueueInstanceRequest ? kueueInstanceRequestModeFromEnv() : null;
 	try {
 		const kueueCapacity = await loadKueueClusterQueueCapacity(
 			kueueClusterQueueNameFromEnv(),
 			sandboxRequest,
 			kueueInstanceRequest,
 			kueueInstancePodCount,
+			kueueInstancePodCountScope,
+			kueueInstanceRequestMode,
 		);
 		const nodes = await listNodes();
 		const nodeNames = schedulableWorkerNodes(nodes)
@@ -1226,6 +1277,8 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 			kueueInstanceRequestEphemeralStorageBytes:
 				kueueInstanceRequest?.ephemeralStorageBytes ?? null,
 			kueueInstancePodCount,
+			kueueInstancePodCountScope,
+			kueueInstanceRequestMode,
 			kueueAvailableInstanceSlots: null,
 			kueueBorrowAvailableInstanceSlots: null,
 			kueueInstanceCpuLimitedCapacity: null,

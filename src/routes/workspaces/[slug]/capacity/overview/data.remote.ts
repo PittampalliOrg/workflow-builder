@@ -239,6 +239,8 @@ export type CapacityTrendsSnapshot = {
   source: "clickhouse" | "unavailable";
   /** utilization % (requested ÷ allocatable, capped 0–100) per resource, per bucket. */
   utilizationPctByResource: Record<string, CapacityPsiTrendPoint[]>;
+  /** observed utilization % from cAdvisor metrics where available (CPU, memory). */
+  actualUsagePctByResource: Record<string, CapacityPsiTrendPoint[]>;
   admitted: CapacityPsiTrendPoint[];
   pending: CapacityPsiTrendPoint[];
   reserving: CapacityPsiTrendPoint[];
@@ -262,6 +264,7 @@ export const getCapacityTrends = query(
         bucketSeconds: bucket,
         source: "unavailable",
         utilizationPctByResource: {},
+        actualUsagePctByResource: {},
         admitted: [],
         pending: [],
         reserving: [],
@@ -302,6 +305,34 @@ export const getCapacityTrends = query(
 		HAVING sum(Count) > 0
 		ORDER BY bucket ASC`;
 
+      const memoryActualSql = `
+		SELECT bucket, sum(v) AS v FROM (
+			SELECT toStartOfInterval(TimeUnix, INTERVAL ${bucket} SECOND) AS bucket,
+			       Attributes['id'] AS id,
+			       max(Value) AS v
+			FROM ${CLICKHOUSE_DB}.otel_metrics_gauge
+			WHERE MetricName = 'container_memory_working_set_bytes'
+			  AND ${clusterClause}
+			  AND ${timeClause}
+			  AND Attributes['container'] != ''
+			GROUP BY bucket, id
+		) GROUP BY bucket ORDER BY bucket ASC`;
+
+      const cpuActualSql = `
+		SELECT bucket, sum(rate) AS v FROM (
+			SELECT toStartOfInterval(TimeUnix, INTERVAL ${bucket} SECOND) AS bucket,
+			       Attributes['id'] AS id,
+			       greatest(0, (max(Value) - min(Value)) / greatest(1, dateDiff('second', min(TimeUnix), max(TimeUnix)))) AS rate
+			FROM ${CLICKHOUSE_DB}.otel_metrics_sum
+			WHERE MetricName = 'container_cpu_usage_seconds_total'
+			  AND ${clusterClause}
+			  AND ${timeClause}
+			  AND Attributes['container'] != ''
+			  AND Attributes['cpu'] = 'total'
+			GROUP BY bucket, id
+			HAVING count() > 1
+		) GROUP BY bucket ORDER BY bucket ASC`;
+
       try {
         const [
           requestedRows,
@@ -310,6 +341,8 @@ export const getCapacityTrends = query(
           pendingRows,
           reservingRows,
           latencyRows,
+          actualMemoryRows,
+          actualCpuRows,
         ] = await Promise.all([
           queryClickHouse(resourceSeriesSql("cluster_capacity_requested")),
           queryClickHouse(resourceSeriesSql("cluster_capacity_allocatable")),
@@ -323,6 +356,8 @@ export const getCapacityTrends = query(
             workloadSeriesSql("kueue_clusterqueue_reserving_workloads"),
           ),
           queryClickHouse(latencySql),
+          queryClickHouse(memoryActualSql),
+          queryClickHouse(cpuActualSql),
         ]);
 
         // utilization % = requested ÷ allocatable, capped 0–100. Rises as
@@ -351,6 +386,26 @@ export const getCapacityTrends = query(
           (utilizationPctByResource[res] ??= []).push({ t, value: pct });
         }
 
+        const actualUsagePctByResource: Record<
+          string,
+          CapacityPsiTrendPoint[]
+        > = {};
+        const addActualSeries = (
+          resource: "cpu" | "memory",
+          rows: Record<string, unknown>[],
+        ) => {
+          for (const r of rows) {
+            const t = new Date(String(r.bucket)).toISOString();
+            const allocatable = allocByResBucket.get(`${resource}|${t}`) ?? 0;
+            if (allocatable <= 0) continue;
+            const observed = Number(r.v) || 0;
+            const pct = Math.max(0, Math.min(100, (observed / allocatable) * 100));
+            (actualUsagePctByResource[resource] ??= []).push({ t, value: pct });
+          }
+        };
+        addActualSeries("memory", actualMemoryRows);
+        addActualSeries("cpu", actualCpuRows);
+
         const toSeries = (
           rows: Record<string, unknown>[],
         ): CapacityPsiTrendPoint[] =>
@@ -365,6 +420,7 @@ export const getCapacityTrends = query(
         const latencyAvgMs = toSeries(latencyRows);
         const hasData =
           Object.keys(utilizationPctByResource).length > 0 ||
+          Object.keys(actualUsagePctByResource).length > 0 ||
           admitted.length +
             pending.length +
             reserving.length +
@@ -377,6 +433,7 @@ export const getCapacityTrends = query(
           bucketSeconds: bucket,
           source: "clickhouse",
           utilizationPctByResource,
+          actualUsagePctByResource,
           admitted,
           pending,
           reserving,

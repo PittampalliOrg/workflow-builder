@@ -5,6 +5,7 @@ import {
 	kueueCapacityFromClusterQueue,
 	kueueInstanceResourceProfileFromEnv,
 	kueueInstancePodCountFromEnv,
+	kueueInstancePodCountScopeFromEnv,
 	parseCpuMilli,
 	parseMemoryBytes,
 } from "./sandbox-capacity";
@@ -625,15 +626,27 @@ describe("sandbox scheduler capacity", () => {
 			});
 
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
+			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
+				"modeled_composite_budget",
+			);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "openshell-pod";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(1);
+			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
+				"admitted_kueue_pods",
+			);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "legacy-composite";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
+			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
+				"modeled_composite_budget",
+			);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT = "3";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
+			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
+				"configured_override",
+			);
 
 			delete process.env.BENCHMARK_KUEUE_INSTANCE_POD_COUNT;
 			delete process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;

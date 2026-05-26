@@ -563,8 +563,8 @@ These live in `services/swebench-coordinator/src/concurrency.py` and
 | Variable                                                  |                        Default | Dev live value sampled 2026-05-24 | Effect                                                                                                                                         |
 | --------------------------------------------------------- | -----------------------------: | --------------------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY`          |          unset for run fan-out |                             unset | Optional emergency backstop for active `swebench_instance_workflow` children. Normal fan-out uses the BFF capacity snapshot stored on the run. |
-| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE`          |          effective concurrency |                              `32` | Max new instance child workflows to start before an optional pacing delay. This is a pacing knob, not a capacity source.                       |
-| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` |                            `5` |                               `5` | Delay between start batches. `0` disables pacing delay.                                                                                        |
+| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE`          |          effective concurrency |              `0` / unset target | Max new instance child workflows to start before an optional pacing delay. Non-positive or unset means full effective concurrency. This is a diagnostic pacing knob, not a capacity source. |
+| `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS` |                            `0` |                             `0` target | Delay between start batches. Keep this at `0` for normal Kueue-gated runs; use a positive value only for a diagnostic canary.                  |
 | `SWEBENCH_LEASE_RETRY_SECONDS`                            |                           `15` |                              `15` | Coordinator sleep interval when a resource lease is denied.                                                                                    |
 | `SWEBENCH_ORCHESTRATOR_NOT_READY_RETRY_SECONDS`           | `SWEBENCH_LEASE_RETRY_SECONDS` |                             unset | Coordinator sleep interval after BFF reports orchestrator runtime unready during instance start.                                               |
 | `SWEBENCH_EVAL_MAX_PARALLEL`                              |                           `24` |                              `24` | Evaluation TaskRun batch size passed to the evaluator Job. Clamped to `1..128`.                                                                |
@@ -599,8 +599,8 @@ Dev currently runs the Kueue-backed auto-capacity inference profile:
 - no separate `BENCHMARK_MAX_ACTIVE_INFERENCE_INSTANCES` cap in the Kueue path
 - no separate `BENCHMARK_MAX_ACTIVE_SANDBOXES` cap; Kueue and live schedulable headroom cap admission
 - no separate `SWEBENCH_COORDINATOR_MAX_INFERENCE_CONCURRENCY` cap; coordinator uses the BFF run capacity snapshot
-- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=32`
-- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=5`
+- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_SIZE=0` (full effective concurrency)
+- `SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS=0`
 
 Keep evaluator concurrency at `24` until the evaluator finalization path has a
 clean passing canary on object storage, then test `32`. Do not raise evaluator

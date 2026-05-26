@@ -1141,7 +1141,7 @@ def test_sync_instance_logs_patch_but_returns_compact_payload(monkeypatch, tmp_p
     monkeypatch.setattr(
         app,
         "_mlflow_log_text",
-        lambda run_id, text, file_path, artifact_path: logged.update(
+        lambda run_id, text, file_path, artifact_path, **_kwargs: logged.update(
             {
                 "runId": run_id,
                 "text": text,
@@ -1421,9 +1421,9 @@ def test_preflight_workflow_persists_validated_environment_map(monkeypatch):
             "requestedConcurrency": None,
             "effectiveConcurrency": 5,
             "coordinatorBurstSize": 5,
-            "startStaggerSeconds": 5,
+            "startStaggerSeconds": 0,
             "selectedInstanceCount": 1,
-            "launchMode": "paced",
+            "launchMode": "full_concurrency",
         },
     }
     workflow = app.swebench_environment_preflight_workflow(ctx, {"runId": "run_1"})

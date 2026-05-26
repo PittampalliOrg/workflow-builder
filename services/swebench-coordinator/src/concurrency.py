@@ -49,7 +49,7 @@ def instance_start_batch_delay_seconds() -> int:
     parsed = _non_negative_int(
         os.environ.get("SWEBENCH_COORDINATOR_INSTANCE_START_BATCH_DELAY_SECONDS")
     )
-    return 5 if parsed is None else parsed
+    return 0 if parsed is None else parsed
 
 
 def bounded_swebench_concurrency(

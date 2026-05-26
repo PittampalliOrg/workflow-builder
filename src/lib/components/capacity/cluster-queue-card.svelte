@@ -38,6 +38,16 @@
 			clusterQueue.pendingWorkloads +
 			clusterQueue.reservingWorkloads
 	);
+	const sessionFitsLabel = $derived(
+		sessionCapacity?.benchmarkKueueInstancePodCountScope === 'modeled_composite_budget'
+			? 'composite fits'
+			: 'fits'
+	);
+	const sessionFitsTitle = $derived(
+		sessionCapacity?.benchmarkKueueInstancePodCountScope === 'modeled_composite_budget'
+			? `Modeled full-instance budget, not live admitted Kueue pod count. Mode: ${sessionCapacity?.benchmarkKueueInstanceRequestMode ?? 'unknown'}`
+			: 'Additional sessions that fit this queue headroom'
+	);
 
 	type ResourceRow = {
 		flavor: string;
@@ -106,8 +116,8 @@
 						</Badge>
 					{/if}
 					{#if sessionCapacity?.fits !== null && sessionCapacity?.fits !== undefined}
-						<Badge variant="outline" class="text-[10px]">
-							fits {sessionCapacity.fits}
+						<Badge variant="outline" class="text-[10px]" title={sessionFitsTitle}>
+							{sessionFitsLabel} {sessionCapacity.fits}
 						</Badge>
 					{/if}
 				</CardTitle>

@@ -50,7 +50,7 @@ def test_instance_start_batch_defaults(monkeypatch):
     )
     assert instance_start_batch_size(16) == 16
     assert instance_start_batch_size() == 1
-    assert instance_start_batch_delay_seconds() == 5
+    assert instance_start_batch_delay_seconds() == 0
 
 
 def test_instance_start_batch_honors_env(monkeypatch):

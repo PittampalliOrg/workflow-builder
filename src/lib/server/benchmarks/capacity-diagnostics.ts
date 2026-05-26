@@ -156,6 +156,8 @@ export type BenchmarkCapacityDiagnostics = {
 		kueueInstanceRequestMemoryBytes: number | null;
 		kueueInstanceRequestEphemeralStorageBytes: number | null;
 		kueueInstancePodCount: number | null;
+		kueueInstancePodCountScope: string | null;
+		kueueInstanceRequestMode: string | null;
 		kueueAvailableInstanceSlots: number | null;
 		kueueBorrowAvailableInstanceSlots: number | null;
 		kueueInstanceCpuLimitedCapacity: number | null;
@@ -514,6 +516,14 @@ function diagnosticsFromCapacity(params: {
 				sandboxCapacity.kueueInstanceRequestEphemeralStorageBytes,
 			),
 			kueueInstancePodCount: nonNegativeInt(sandboxCapacity.kueueInstancePodCount),
+			kueueInstancePodCountScope:
+				typeof sandboxCapacity.kueueInstancePodCountScope === "string"
+					? sandboxCapacity.kueueInstancePodCountScope
+					: null,
+			kueueInstanceRequestMode:
+				typeof sandboxCapacity.kueueInstanceRequestMode === "string"
+					? sandboxCapacity.kueueInstanceRequestMode
+					: null,
 			kueueAvailableInstanceSlots: nonNegativeInt(sandboxCapacity.kueueAvailableInstanceSlots),
 			kueueBorrowAvailableInstanceSlots: nonNegativeInt(
 				sandboxCapacity.kueueBorrowAvailableInstanceSlots,

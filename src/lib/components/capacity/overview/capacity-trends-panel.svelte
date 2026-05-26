@@ -66,6 +66,7 @@
 	 */
 	export type CapacityTrendsSnapshot = {
 		utilizationPctByResource: Record<string, Array<{ t: string; value: number }>>;
+		actualUsagePctByResource?: Record<string, Array<{ t: string; value: number }>>;
 		admitted: Array<{ t: string; value: number }>;
 		pending: Array<{ t: string; value: number }>;
 		reserving: Array<{ t: string; value: number }>;
@@ -182,6 +183,41 @@
 			.map((p) => ({ ts: new Date(p.t), value: p.value }));
 	});
 
+	const actualUsageWindowed = $derived.by<Array<{ ts: Date; value: number }>>(() => {
+		const ch = capacityTrends?.actualUsagePctByResource?.[resource];
+		if (!ch || ch.length === 0) return [];
+		return ch
+			.map((p) => ({ t: new Date(p.t).getTime(), value: p.value }))
+			.filter((p) => Number.isFinite(p.t) && p.t >= cutoffMs)
+			.map((p) => ({ ts: new Date(p.t), value: p.value }));
+	});
+
+	type UtilizationRow = { ts: Date; requested: number | null; actual: number | null };
+	const utilizationComparisonWindowed = $derived.by<UtilizationRow[]>(() => {
+		const byTs = new Map<number, UtilizationRow>();
+		for (const p of utilizationWindowed) {
+			const t = p.ts.getTime();
+			const row = byTs.get(t) ?? { ts: p.ts, requested: null, actual: null };
+			row.requested = p.value;
+			byTs.set(t, row);
+		}
+		for (const p of actualUsageWindowed) {
+			const t = p.ts.getTime();
+			const row = byTs.get(t) ?? { ts: p.ts, requested: null, actual: null };
+			row.actual = p.value;
+			byTs.set(t, row);
+		}
+		return [...byTs.values()].sort((a, b) => a.ts.getTime() - b.ts.getTime());
+	});
+
+	const latestRequestedUtilization = $derived(utilizationWindowed.at(-1)?.value ?? null);
+	const latestActualUtilization = $derived(actualUsageWindowed.at(-1)?.value ?? null);
+	const utilizationReserveGap = $derived(
+		latestRequestedUtilization !== null && latestActualUtilization !== null
+			? Math.max(0, latestRequestedUtilization - latestActualUtilization)
+			: null
+	);
+
 	// Candlestick: bucket the utilization% points into ~12 OHLC candles across
 	// the window so each candle shows how capacity utilization churned within
 	// the bucket as workloads activated (up candle = more capacity consumed).
@@ -249,6 +285,7 @@
 		Math.max(
 			windowed.length,
 			utilizationWindowed.length,
+			actualUsageWindowed.length,
 			workloadsWindowed.length,
 			latencyClickhouse.length,
 			psiWindowed.length
@@ -269,7 +306,8 @@
 	} satisfies Chart.ChartConfig;
 
 	const headroomConfig = {
-		headroom: { label: 'Utilization %', color: 'var(--chart-1)' }
+		requested: { label: 'Requested %', color: 'var(--chart-1)' },
+		actual: { label: 'Actual %', color: 'rgb(16 185 129)' }
 	} satisfies Chart.ChartConfig;
 
 	const latencyAvgConfig = {
@@ -435,42 +473,95 @@
 				{/if}
 			</div>
 
-			<!-- Chart C: cluster utilization % (requested ÷ allocatable) -->
+			<!-- Chart C: requested reservation vs observed usage -->
 			<div class="rounded-md border bg-background p-3">
 				<div class="mb-2 flex items-baseline justify-between">
 					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-						{RESOURCE_LABELS[resource]} utilization %
+						{RESOURCE_LABELS[resource]} requested vs actual
 					</h4>
-					{#if utilizationWindowed.length > 0}
-						{@const last = utilizationWindowed[utilizationWindowed.length - 1]}
-						<span class="text-[10px] tabular-nums text-muted-foreground">
-							<span
-								class="font-mono {last.value >= 90
-									? 'text-rose-500'
-									: last.value >= 70
-										? 'text-amber-500'
-										: 'text-foreground'}">{last.value.toFixed(1)}</span
-							>%
+					{#if latestRequestedUtilization !== null}
+						<span class="flex items-center gap-2 text-[10px] tabular-nums text-muted-foreground">
+							<span>
+								req
+								<span
+									class="font-mono {latestRequestedUtilization >= 90
+										? 'text-rose-500'
+										: latestRequestedUtilization >= 70
+											? 'text-amber-500'
+											: 'text-foreground'}">{latestRequestedUtilization.toFixed(1)}</span
+								>%
+							</span>
+							{#if latestActualUtilization !== null}
+								<span>
+									actual
+									<span
+										class="font-mono {latestActualUtilization >= 90
+											? 'text-rose-500'
+											: latestActualUtilization >= 70
+												? 'text-amber-500'
+												: 'text-emerald-600'}">{latestActualUtilization.toFixed(1)}</span
+									>%
+								</span>
+							{/if}
 						</span>
 					{/if}
 				</div>
-				{#if ownerTimeline?.hasData}
-					<!-- Stacked by owner: each band is a session/workflow/benchmark
-					     consuming this resource; hover lists them, legend links out. -->
-					<CapacityOwnerStack timeline={ownerTimeline} {resolveOwner} height={120} />
-				{:else if utilizationWindowed.length < 2}
+				{#if utilizationComparisonWindowed.length < 2}
 					<p class="py-6 text-center text-[11px] text-muted-foreground/70">
 						Waiting for utilization samples…
 					</p>
 				{:else}
+					<div class="mb-2 grid grid-cols-3 gap-2 text-[10px]">
+						<div class="rounded border bg-muted/20 px-2 py-1">
+							<div class="text-muted-foreground">requested</div>
+							<span
+								class="font-mono {latestRequestedUtilization !== null && latestRequestedUtilization >= 90
+									? 'text-rose-500'
+									: latestRequestedUtilization !== null && latestRequestedUtilization >= 70
+										? 'text-amber-500'
+										: 'text-foreground'}"
+							>
+								{latestRequestedUtilization?.toFixed(1) ?? '—'}%
+							</span>
+						</div>
+						<div class="rounded border bg-muted/20 px-2 py-1">
+							<div class="text-muted-foreground">actual</div>
+							<span
+								class="font-mono {latestActualUtilization !== null && latestActualUtilization >= 90
+									? 'text-rose-500'
+									: latestActualUtilization !== null && latestActualUtilization >= 70
+										? 'text-amber-500'
+										: latestActualUtilization !== null
+											? 'text-emerald-600'
+											: 'text-muted-foreground'}"
+							>
+								{latestActualUtilization?.toFixed(1) ?? 'n/a'}%
+							</span>
+						</div>
+						<div class="rounded border bg-muted/20 px-2 py-1">
+							<div class="text-muted-foreground">reserve gap</div>
+							<span class="font-mono text-foreground">
+								{utilizationReserveGap?.toFixed(1) ?? 'n/a'}%
+							</span>
+						</div>
+					</div>
 					<div style:height="120px">
 						<Chart.Container config={headroomConfig} class="h-full w-full">
 							<LineChart
-								data={utilizationWindowed}
+								data={utilizationComparisonWindowed}
 								x="ts"
 								yDomain={[0, 100]}
 								series={[
-									{ key: 'headroom', value: (d: { value: number }) => d.value, color: 'var(--chart-1)' }
+									{
+										key: 'requested',
+										value: (d: UtilizationRow) => d.requested,
+										color: 'var(--chart-1)'
+									},
+									{
+										key: 'actual',
+										value: (d: UtilizationRow) => d.actual,
+										color: 'rgb(16 185 129)'
+									}
 								]}
 								legend={false}
 							>
@@ -479,26 +570,22 @@
 									<AnnotationRange y={[0, 70]} class="fill-emerald-500/10" />
 									<AnnotationRange y={[70, 90]} class="fill-amber-500/15" />
 									<AnnotationRange y={[90, 100]} class="fill-rose-500/20" />
-									<!-- Threshold-zoned line: color tracks the danger zone the
-									     utilization is currently in (one Spline per zone). -->
+									<!-- Requested is the scheduler contract; actual is observed cAdvisor usage. -->
 									<Spline
-										seriesKey="headroom"
-										defined={(d: { value: number }) => d.value < 70}
-										stroke="rgb(16 185 129)"
+										seriesKey="requested"
+										defined={(d: UtilizationRow) => d.requested !== null}
+										stroke="var(--chart-1)"
 										stroke-width={1.75}
 									/>
-									<Spline
-										seriesKey="headroom"
-										defined={(d: { value: number }) => d.value >= 70 && d.value < 90}
-										stroke="rgb(245 158 11)"
-										stroke-width={1.75}
-									/>
-									<Spline
-										seriesKey="headroom"
-										defined={(d: { value: number }) => d.value >= 90}
-										stroke="rgb(244 63 94)"
-										stroke-width={1.75}
-									/>
+									{#if actualUsageWindowed.length > 0}
+										<Spline
+											seriesKey="actual"
+											defined={(d: UtilizationRow) => d.actual !== null}
+											stroke="rgb(16 185 129)"
+											stroke-width={1.75}
+											stroke-dasharray="4 2"
+										/>
+									{/if}
 								{/snippet}
 								{#snippet aboveMarks()}
 									<AnnotationLine
@@ -522,6 +609,12 @@
 							</LineChart>
 						</Chart.Container>
 					</div>
+					<p class="mt-1 text-[10px] text-muted-foreground">
+						Requested drives Kueue/scheduler admission. Actual uses cAdvisor
+						{resource === 'cpu' || resource === 'memory'
+							? ' working-set/rate metrics.'
+							: ' metrics when available for the selected resource.'}
+					</p>
 				{/if}
 			</div>
 
@@ -605,13 +698,19 @@
 				{/if}
 			</div>
 
-			<!-- Chart E: utilization % OHLC candlestick (capacity consumed over time) -->
+			<!-- Chart E: owner attribution when available; range otherwise -->
 			<div class="rounded-md border bg-background p-3">
 				<div class="mb-2 flex items-baseline justify-between">
 					<h4 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-						{RESOURCE_LABELS[resource]} utilization range (OHLC)
+						{ownerTimeline?.hasData
+							? `${RESOURCE_LABELS[resource]} by owner`
+							: `${RESOURCE_LABELS[resource]} utilization range`}
 					</h4>
-					{#if candles.length > 0}
+					{#if ownerTimeline?.hasData}
+						<span class="text-[10px] tabular-nums text-muted-foreground">
+							{ownerTimeline.owners.length} owner{ownerTimeline.owners.length === 1 ? '' : 's'}
+						</span>
+					{:else if candles.length > 0}
 						{@const last = candles[candles.length - 1]}
 						<span class="text-[10px] tabular-nums text-muted-foreground">
 							<span
@@ -620,9 +719,13 @@
 						</span>
 					{/if}
 				</div>
-				<div style:height="120px">
-					<CapacityCandlestick {candles} valueMax={100} height={120} zones={{ warn: 70, crit: 90 }} />
-				</div>
+				{#if ownerTimeline?.hasData}
+					<CapacityOwnerStack timeline={ownerTimeline} {resolveOwner} height={120} />
+				{:else}
+					<div style:height="120px">
+						<CapacityCandlestick {candles} valueMax={100} height={120} zones={{ warn: 70, crit: 90 }} />
+					</div>
+				{/if}
 			</div>
 		</div>
 	</CollapsibleContent>
