@@ -15,6 +15,12 @@ Normal terminal cleanup order:
 
 Dapr only supports normal purge for terminal workflow states: `COMPLETED`, `FAILED`, or `TERMINATED`. If status still reports `RUNNING`, `PENDING`, or `SUSPENDED`, keep retrying termination/status polling before purge.
 
+For SWE-bench run cleanup, this ordering also applies to cancelled runs.
+Cancellation makes the benchmark row terminal, but it does not prove that
+parent, session, or turn workflows have stopped. If closure is not confirmed,
+leave leases and sandboxes in place so retry cleanup can still discover and
+terminate the durable workflow tree.
+
 ## What Not To Do
 
 Do not manually delete workflow state as routine cleanup.
@@ -22,6 +28,13 @@ Do not manually delete workflow state as routine cleanup.
 Do not purge child workflow history before the parent workflow has stopped. Parent replay can still need child completion or termination events.
 
 Do not use force-style purge semantics while any related workflow, activity, sandbox, benchmark run, or resource lease is active.
+
+Do not delete only the workflow state-store rows and assume the workflow is
+gone. Dapr Scheduler stores workflow and actor reminder jobs separately from
+the workflow actor state store. If scheduler reminders survive a direct state
+delete, they can keep waking missing workflow actors and produce repeated
+`no such instance exists` or `cannot add event to workflow as state has been
+purged` errors.
 
 ## Break-Glass Recovery
 
@@ -37,9 +50,11 @@ Before deleting state directly, verify all of the following:
 
 After scoped state deletion:
 
-1. Restart only the owning workflow app or sidecar, such as `workflow-orchestrator`, to clear cached actor status.
-2. Use the normal application cleanup endpoint again.
-3. Confirm benchmark instances are terminal, sandbox cleanup is recorded, and leases remain released.
+1. If scheduler reminders keep replaying missing workflow instances, reset the
+   Dapr Scheduler state only when all old workflow state is disposable.
+2. Restart only the owning workflow app or sidecar, such as `workflow-orchestrator`, to clear cached actor status.
+3. Use the normal application cleanup endpoint again.
+4. Confirm benchmark instances are terminal, sandbox cleanup is recorded, and leases remain released.
 
 ## References
 

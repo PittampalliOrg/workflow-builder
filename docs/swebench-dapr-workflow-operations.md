@@ -76,6 +76,10 @@ The important upstream constraints for benchmark operations are:
   after best-effort durable termination, advance benchmark bookkeeping and
   clean up host pods, sandboxes, and leases so one stuck workflow cannot hold
   the whole run open.
+- Cancelled run cleanup follows the same rule. A cancelled benchmark row is not
+  enough evidence to delete sandboxes, release leases, or directly purge
+  workflow state. Run-level cleanup must first close the parent workflow plus
+  agent session and turn workflows; if closure is not confirmed, retry later.
 - If old workflow state is intentionally disposable, quiesce workflow-producing
   apps before clearing state stores or scheduler data. Deleting only Postgres
   workflow rows can leave scheduler reminders behind.

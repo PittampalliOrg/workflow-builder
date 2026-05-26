@@ -93,6 +93,35 @@ When a run appears slow, separate these cases before changing concurrency:
 - agent host admitted but slow to first tool: Dapr workflow/app readiness or
   agent runtime behavior.
 
+## Current Capacity Checkpoint
+
+As of the 2026-05-26 dev checkpoint, the exact-ready SWE-bench_Verified
+coverage was 103 of 500 instances. That is enough for distinct 25-way and
+50-way infrastructure canaries, but it is not enough for a true distinct
+200-concurrent SWE-bench_Verified run. The 200-run blocker is therefore split:
+
+- build coverage must reach at least 200 exact-ready, current-`envSpecHash`
+  mappings;
+- runtime capacity still needs staged proof at the current exact-ready sizes;
+- launch selection must remain distinct-instance and exact-ready, not repeated
+  duplicate load.
+
+The 25-way post-reset canary showed all selected instances exact-ready and
+admitted, with cold-start/profile work around tens of seconds and first-tool
+scheduling latency in the single-digit to tens-of-seconds range. That points
+the next runtime checkpoint at Dapr/session-host readiness and sandbox startup
+latency, while image-building work continues independently to expand the
+eligible cohort.
+
+For approximate memory trend data, capture peak pod/container memory during
+canaries and group it by SWE-bench repo/version and sandbox image digest. This
+does not need exact per-process accounting for now; `kubectl top pod
+--containers`, metrics-server snapshots, and benchmark run timestamps are
+enough to estimate whether a repo/version group is near the Kueue memory
+request or materially below it. Use that data to tune Kueue requests and
+runtime admission before assuming the cluster can run all 500 instances at
+once.
+
 ## Failure Classification
 
 Classify failures by phase before rebuilding:

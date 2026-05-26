@@ -1750,7 +1750,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(hooks.releaseLeases).not.toHaveBeenCalled();
 	});
 
-	it("releases cancelled-run resources even if durable workflow projections are stale", async () => {
+	it("does not finalize cancelled-run resources before durable workflows close", async () => {
 		const calls: string[] = [];
 		const hooks = {
 			finalizeInstances: vi.fn(async () => {
@@ -1761,9 +1761,6 @@ describe("SWE-bench terminal run cleanup", () => {
 			}),
 			releaseLeases: vi.fn(async () => {
 				calls.push("leases");
-			}),
-			purgeDaprState: vi.fn(async () => {
-				calls.push("purge-state");
 			}),
 			warn: vi.fn(() => {
 				calls.push("warn");
@@ -1783,16 +1780,13 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).resolves.toBe(false);
 
-		expect(calls).toEqual([
-			"warn",
-			"instances",
-			"sandboxes",
-			"leases",
-			"purge-state",
-		]);
+		expect(calls).toEqual(["warn"]);
+		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
+		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
+		expect(hooks.releaseLeases).not.toHaveBeenCalled();
 	});
 
-	it("does not repeat cancelled-run resource cleanup when it already ran before durable wait", async () => {
+	it("does not run any cancelled-run cleanup fallback after an earlier cleanup", async () => {
 		const calls: string[] = [];
 		const hooks = {
 			finalizeInstances: vi.fn(async () => {
@@ -1803,9 +1797,6 @@ describe("SWE-bench terminal run cleanup", () => {
 			}),
 			releaseLeases: vi.fn(async () => {
 				calls.push("leases");
-			}),
-			purgeDaprState: vi.fn(async () => {
-				calls.push("purge-state");
 			}),
 			warn: vi.fn(() => {
 				calls.push("warn");
@@ -1826,7 +1817,7 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).resolves.toBe(false);
 
-		expect(calls).toEqual(["warn", "purge-state"]);
+		expect(calls).toEqual(["warn"]);
 		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
 		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
 		expect(hooks.releaseLeases).not.toHaveBeenCalled();
