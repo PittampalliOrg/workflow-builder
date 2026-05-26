@@ -4742,6 +4742,19 @@ class OpenShellDurableAgent(DurableAgent):
         runtime.register_activity(self.seed_mcp_for_instance)
         runtime.register_activity(self.seed_runtime_context_for_instance)
         runtime.register_activity(self.check_cancellation_for_instance)
+        # Dapr Agents 1.0.3 scopes built-in activity names through
+        # self._activity_name(...). Keep the legacy bare names above for
+        # session_workflow histories, and also expose scoped aliases for custom
+        # activities called from the repo-owned agent workflow wrapper.
+        for activity in (
+            self.create_peer_session_row,
+            self.seed_mcp_for_instance,
+            self.seed_runtime_context_for_instance,
+            self.check_cancellation_for_instance,
+        ):
+            runtime.register_activity(
+                self._named(activity, self._activity_name(activity))
+            )
 
     @workflow_entry
     def call_peer_session_workflow(self, ctx, message: dict):

@@ -45,6 +45,7 @@ def test_durable_agent_uses_sequential_tool_execution() -> None:
     assert "self._activity_name(self.check_cancellation_for_instance)" in source
     assert "Agent %s observed cancellation after LLM turn" in source
     assert "runtime.register_activity(self.check_cancellation_for_instance)" in source
+    assert "self._named(activity, self._activity_name(activity))" in source
     assert "force_repo_sequential: bool = False" in source
     assert "Always record this activity in durable history" in source
     assert "if self._orchestration_strategy and not force_repo_sequential:" in source
