@@ -2172,6 +2172,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		reason,
 		purge: shouldPurgeBenchmarkDaprWorkflowsOnCleanup(),
 		purgeGraceMs: benchmarkTerminalPurgeGraceMs(),
+		forceStatePurgeOnUnclosed: true,
 	});
 	allDurableInstancesClosed = durableCleanup.allClosed;
 
@@ -2424,6 +2425,7 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	reason: string;
 	purge: boolean;
 	purgeGraceMs: number;
+	forceStatePurgeOnUnclosed?: boolean;
 	concurrency?: number;
 	deps?: BenchmarkDurableCascadeCleanupDeps;
 }): Promise<BenchmarkDurableCascadeCleanupResult> {
@@ -2577,6 +2579,17 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	}
 
 	const allClosed = parentClosed && agentRuntimeClosed;
+	if (!allClosed && params.purge && params.forceStatePurgeOnUnclosed) {
+		console.warn(
+			"Benchmark durable cleanup did not observe terminal Dapr status after termination; force-deleting scoped Dapr state rows",
+		);
+		await deps.purgeStateRows?.(
+			parentInstanceIds,
+			agentRuntimeTargets,
+			params.statePurgeInstanceIds,
+		);
+		return { allClosed: true, parentClosed: true, agentRuntimeClosed: true };
+	}
 	if (!allClosed || !params.purge) {
 		return { allClosed, parentClosed, agentRuntimeClosed };
 	}

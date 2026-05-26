@@ -1349,6 +1349,86 @@ describe("SWE-bench terminal run cleanup", () => {
 		]);
 	});
 
+	it("force-purges scoped state rows when terminal cleanup cannot observe Dapr closure", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [
+					{ runtimeAppId: "agent-session-host", instanceId: "session-1" },
+				],
+				statePurgeInstanceIds: ["swebench-run-1"],
+				reason: "terminal benchmark cleanup",
+				purge: true,
+				purgeGraceMs: 0,
+				forceStatePurgeOnUnclosed: true,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async (id: string) => {
+						calls.push(`parent-status:${id}`);
+						return "RUNNING";
+					},
+					terminateParent: async (id: string) => {
+						calls.push(`parent-terminate:${id}`);
+						return "terminated";
+					},
+					waitParentClosed: async (id: string) => {
+						calls.push(`parent-wait:${id}`);
+						return false;
+					},
+					getAgentRuntimeStatus: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-status:${runtimeAppId}/${id}`);
+						return "RUNNING";
+					},
+					terminateAgentRuntime: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-terminate:${runtimeAppId}/${id}`);
+						return "terminated";
+					},
+					waitAgentRuntimeClosed: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-wait:${runtimeAppId}/${id}`);
+						return true;
+					},
+					purgeParent: async (id: string) => {
+						calls.push(`parent-purge:${id}`);
+					},
+					purgeAgentRuntime: async (runtimeAppId: string, id: string) => {
+						calls.push(`child-purge:${runtimeAppId}/${id}`);
+					},
+					purgeStateRows: async (parents, targets, extraIds) => {
+						const targetIds = targets
+							.map((target) => target.instanceId)
+							.join(",");
+						calls.push(
+							`state-purge:${parents.join(",")}:${targetIds}:${extraIds?.join(",")}`,
+						);
+					},
+					sleep: async () => {
+						calls.push("sleep");
+					},
+				},
+			});
+
+		expect(result).toEqual({
+			allClosed: true,
+			parentClosed: true,
+			agentRuntimeClosed: true,
+		});
+		expect(calls).toEqual([
+			"parent-status:parent-1",
+			"child-status:agent-session-host/session-1",
+			"child-terminate:agent-session-host/session-1",
+			"child-wait:agent-session-host/session-1",
+			"parent-terminate:parent-1",
+			"parent-wait:parent-1",
+			"parent-status:parent-1",
+			"parent-terminate:parent-1",
+			"parent-wait:parent-1",
+			"state-purge:parent-1:session-1:swebench-run-1",
+		]);
+		expect(calls).not.toContain("parent-purge:parent-1");
+		expect(calls).not.toContain("child-purge:agent-session-host/session-1");
+	});
+
 	it("includes the recorded session runtime app id in durable cleanup targets", () => {
 		expect(
 			benchmarkAgentRuntimeCleanupRuntimeAppIds({
