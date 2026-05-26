@@ -1223,7 +1223,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBeNull();
 	});
 
-	it("lets parent workflows close from child/session-host termination before parent termination", async () => {
+	it("terminates parent workflows after child/session-host termination", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1282,11 +1282,12 @@ describe("SWE-bench terminal run cleanup", () => {
 			"child-status:agent-session-host/session-1",
 			"child-terminate:agent-session-host/session-1",
 			"child-wait:agent-session-host/session-1",
+			"parent-terminate:parent-1",
 			"parent-wait:parent-1",
 			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",
 		]);
-	});
+		});
 
 	it("includes run-level coordinator workflow ids in durable state row purge", async () => {
 		const calls: string[] = [];
@@ -1413,7 +1414,7 @@ describe("SWE-bench terminal run cleanup", () => {
 		).toBe(true);
 	});
 
-	it("does not parent-terminate multi-app child workflow parents that fail to close", async () => {
+	it("does not purge multi-app child workflow parents that fail to close", async () => {
 		const calls: string[] = [];
 		const result =
 			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
@@ -1461,9 +1462,12 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(calls).toEqual([
 			"child-terminate",
 			"child-wait",
+			"parent-terminate",
+			"parent-wait",
+			"parent-terminate",
 			"parent-wait",
 		]);
-	});
+		});
 
 	it("still terminates parent-only workflows when no child runtime targets exist", async () => {
 		const calls: string[] = [];

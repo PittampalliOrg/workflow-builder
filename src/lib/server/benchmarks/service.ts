@@ -2517,17 +2517,7 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 		return true;
 	});
 
-	if (agentRuntimeTargets.length > 0) {
-		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
-			const closed = await deps.waitParentClosed(instanceId);
-			if (!closed) parentClosed = false;
-		});
-		if (!parentClosed) {
-			return { allClosed: false, parentClosed, agentRuntimeClosed };
-		}
-	}
-
-	if (agentRuntimeTargets.length === 0) {
+	if (activeParentInstanceIds.length > 0) {
 		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
 			const termination = await deps.terminateParent(instanceId, params.reason);
 			parentTerminations.set(instanceId, termination);
