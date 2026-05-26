@@ -273,6 +273,7 @@ type BenchmarkTerminalResourceCleanupHooks = {
 	) => Promise<void>;
 	cleanupSandboxes: (runId: string, reason: string) => Promise<void>;
 	releaseLeases: (runId: string, reason: string) => Promise<void>;
+	purgeDaprState?: (runId: string, reason: string) => Promise<void>;
 	warn: (message: string) => void;
 };
 
@@ -283,6 +284,9 @@ const benchmarkTerminalResourceCleanupHooks: BenchmarkTerminalResourceCleanupHoo
 	},
 	releaseLeases: async (runId, reason) => {
 		await releaseBenchmarkResourceLeasesForRun(runId, reason);
+	},
+	purgeDaprState: async (runId, reason) => {
+		await purgeCancelledBenchmarkDaprStateKeys(runId, reason);
 	},
 	warn: (message) => console.warn(message),
 };
@@ -313,6 +317,7 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 				await hooks.cleanupSandboxes(params.runId, params.reason);
 				await hooks.releaseLeases(params.runId, params.reason);
 			}
+			await hooks.purgeDaprState?.(params.runId, params.reason);
 			return false;
 		}
 		hooks.warn(
@@ -331,6 +336,50 @@ export async function cleanupBenchmarkTerminalResourcesAfterDurableClosure(
 		await hooks.releaseLeases(params.runId, params.reason);
 	}
 	return params.workflowsClosed;
+}
+
+async function purgeCancelledBenchmarkDaprStateKeys(
+	runId: string,
+	reason: string,
+): Promise<number> {
+	const database = requireDb();
+	const normalizedRunId = normalizeSandboxNamePart(runId);
+	try {
+		const rows = await database.execute<{ deletedCount: number }>(sql`
+			with instance_prefixes as (
+				select 'sw-swebench-instance-exec-' || workflow_execution_id as prefix
+				from benchmark_run_instances
+				where run_id = ${runId}
+					and workflow_execution_id is not null
+					and workflow_execution_id <> ''
+			),
+			deleted as (
+				delete from wfstate_state s
+				where position(${runId} in s.key) > 0
+					or (${normalizedRunId} <> '' and position(${normalizedRunId} in s.key) > 0)
+					or exists (
+						select 1
+						from instance_prefixes p
+						where position(p.prefix in s.key) > 0
+					)
+				returning 1
+			)
+			select count(*)::int as "deletedCount" from deleted
+		`);
+		const deletedCount = Number(rows[0]?.deletedCount ?? 0);
+		if (deletedCount > 0) {
+			console.warn(
+				`Purged ${deletedCount} benchmark-scoped Dapr workflow state key(s) for cancelled run ${runId}: ${reason}`,
+			);
+		}
+		return deletedCount;
+	} catch (err) {
+		console.warn(
+			`Failed to purge benchmark-scoped Dapr workflow state for cancelled run ${runId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return 0;
+	}
 }
 
 type BenchmarkAgentRuntimeCleanupInput = {

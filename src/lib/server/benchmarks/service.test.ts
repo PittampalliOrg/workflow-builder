@@ -1762,6 +1762,9 @@ describe("SWE-bench terminal run cleanup", () => {
 			releaseLeases: vi.fn(async () => {
 				calls.push("leases");
 			}),
+			purgeDaprState: vi.fn(async () => {
+				calls.push("purge-state");
+			}),
 			warn: vi.fn(() => {
 				calls.push("warn");
 			}),
@@ -1780,7 +1783,13 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).resolves.toBe(false);
 
-		expect(calls).toEqual(["warn", "instances", "sandboxes", "leases"]);
+		expect(calls).toEqual([
+			"warn",
+			"instances",
+			"sandboxes",
+			"leases",
+			"purge-state",
+		]);
 	});
 
 	it("does not repeat cancelled-run resource cleanup when it already ran before durable wait", async () => {
@@ -1794,6 +1803,9 @@ describe("SWE-bench terminal run cleanup", () => {
 			}),
 			releaseLeases: vi.fn(async () => {
 				calls.push("leases");
+			}),
+			purgeDaprState: vi.fn(async () => {
+				calls.push("purge-state");
 			}),
 			warn: vi.fn(() => {
 				calls.push("warn");
@@ -1814,7 +1826,7 @@ describe("SWE-bench terminal run cleanup", () => {
 			),
 		).resolves.toBe(false);
 
-		expect(calls).toEqual(["warn"]);
+		expect(calls).toEqual(["warn", "purge-state"]);
 		expect(hooks.finalizeInstances).not.toHaveBeenCalled();
 		expect(hooks.cleanupSandboxes).not.toHaveBeenCalled();
 		expect(hooks.releaseLeases).not.toHaveBeenCalled();
