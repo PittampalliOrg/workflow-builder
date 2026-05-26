@@ -774,14 +774,18 @@ export function benchmarkRunUsesAgentWorkflowHosts(summary: unknown): boolean {
 	return normalizeBenchmarkExecutionBackend(backend) !== "legacy-dapr";
 }
 
-function benchmarkAgentRuntimeCleanupRuntimeAppIds(params: {
+export function benchmarkAgentRuntimeCleanupRuntimeAppIds(params: {
 	runRuntimeAppId: string | null;
+	sessionRuntimeAppId?: string | null;
 	sessionId: string | null;
 	runSummary: unknown;
 }): string[] {
 	const ids = new Set<string>();
 	if (params.runRuntimeAppId?.trim()) {
 		ids.add(params.runRuntimeAppId.trim());
+	}
+	if (params.sessionRuntimeAppId?.trim()) {
+		ids.add(params.sessionRuntimeAppId.trim());
 	}
 	if (
 		params.sessionId?.trim() &&
@@ -2047,6 +2051,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 			runInstanceSessionId: benchmarkRunInstances.sessionId,
 			runInstanceTurnCount: benchmarkRunInstances.turnCount,
 			sessionId: sessions.id,
+			sessionRuntimeAppId: sessions.runtimeAppId,
 			executionId: workflowExecutions.id,
 			executionStatus: workflowExecutions.status,
 			executionPhase: workflowExecutions.phase,
@@ -2081,6 +2086,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 			sessionIds.add(sessionId);
 			for (const runtimeAppId of benchmarkAgentRuntimeCleanupRuntimeAppIds({
 				runRuntimeAppId: row.runtimeAppId,
+				sessionRuntimeAppId: row.sessionRuntimeAppId,
 				sessionId,
 				runSummary: row.runSummary,
 			})) {
@@ -5260,6 +5266,15 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 			.from(benchmarkRuns)
 			.where(eq(benchmarkRuns.id, runInstance.runId))
 			.limit(1);
+		const sessionRows = sessionId
+			? await database
+					.select({
+						runtimeAppId: sessions.runtimeAppId,
+					})
+					.from(sessions)
+					.where(eq(sessions.id, sessionId))
+					.limit(1)
+			: [];
 		const executionRows = runInstance.workflowExecutionId
 			? await database
 					.select({
@@ -5278,6 +5293,7 @@ async function cleanupStalledBenchmarkInstanceWorkflows(
 
 		const runtimeAppIds = benchmarkAgentRuntimeCleanupRuntimeAppIds({
 			runRuntimeAppId: runRows[0]?.runtimeAppId ?? null,
+			sessionRuntimeAppId: sessionRows[0]?.runtimeAppId ?? null,
 			sessionId,
 			runSummary: runRows[0]?.summary ?? null,
 		});

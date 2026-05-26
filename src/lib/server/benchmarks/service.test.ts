@@ -8,6 +8,7 @@ import {
 	benchmarkInferenceStallState,
 	benchmarkInstanceStartReuseResult,
 	benchmarkAgentRuntimeCleanupInstanceIds,
+	benchmarkAgentRuntimeCleanupRuntimeAppIds,
 	benchmarkRunUsesAgentWorkflowHosts,
 	benchmarkRunInstanceTerminalPatch,
 	benchmarkSessionHostAppId,
@@ -1285,6 +1286,25 @@ describe("SWE-bench terminal run cleanup", () => {
 			"parent-wait:parent-1",
 			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",
+		]);
+	});
+
+	it("includes the recorded session runtime app id in durable cleanup targets", () => {
+		expect(
+			benchmarkAgentRuntimeCleanupRuntimeAppIds({
+				runRuntimeAppId: "agent-runtime-pool-coding",
+				sessionRuntimeAppId: "dapr-agent-py",
+				sessionId: "session-1",
+				runSummary: {
+					execution: {
+						backend: "dapr-kueue",
+					},
+				},
+			}),
+		).toEqual([
+			"agent-runtime-pool-coding",
+			"dapr-agent-py",
+			benchmarkSessionHostAppId("session-1"),
 		]);
 	});
 
