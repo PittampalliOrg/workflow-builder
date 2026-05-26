@@ -176,6 +176,28 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
+def _env_is_none(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"none", "off", "false", "0"}
+
+
+def _otel_sdk_disabled() -> bool:
+    return _env_bool("OTEL_SDK_DISABLED", False)
+
+
+def _otel_signal_export_enabled(signal: str) -> bool:
+    env_name = f"OTEL_{signal.upper()}_EXPORTER"
+    return not _env_is_none(env_name)
+
+
+def _mlflow_enabled() -> bool:
+    raw = (os.getenv("MLFLOW_ENABLED") or "").strip().lower()
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return bool((os.getenv("MLFLOW_TRACKING_URI") or "").strip())
+    return bool((os.getenv("MLFLOW_TRACKING_URI") or "").strip())
+
+
 def _parse_resource_attributes(value: str | None) -> dict[str, str]:
     # OTEL_RESOURCE_ATTRIBUTES uses comma-separated key=value.
     if not value:
@@ -703,6 +725,10 @@ def _init_mlflow_destination() -> None:
     OTel spans and has produced invalid `span_type=None` attributes in the
     collector path, so keep it opt-in only.
     """
+    if not _mlflow_enabled():
+        logger.info("[Tracing] MLflow SDK destination skipped (MLFLOW_ENABLED=false)")
+        return
+
     if os.environ.get("WORKFLOW_ORCHESTRATOR_MLFLOW_SDK_DESTINATION", "false").strip().lower() not in {
         "1",
         "true",
@@ -785,9 +811,24 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
     if _TRACING_INITIALIZED:
         return True
 
+    if _otel_sdk_disabled():
+        setup_logging_json()
+        logger.info("[Tracing] OTEL_SDK_DISABLED=true; tracing disabled")
+        _TRACING_INITIALIZED = True
+        return False
+
     endpoint = (os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()
     if not endpoint:
         logger.info("[Tracing] OTEL_EXPORTER_OTLP_ENDPOINT not set; tracing disabled")
+        _TRACING_INITIALIZED = True
+        return False
+
+    traces_enabled = _otel_signal_export_enabled("traces")
+    metrics_enabled = _otel_signal_export_enabled("metrics")
+    logs_enabled = _otel_signal_export_enabled("logs")
+    if not (traces_enabled or metrics_enabled or logs_enabled):
+        setup_logging_json()
+        logger.info("[Tracing] all OTEL signal exporters disabled; tracing disabled")
         _TRACING_INITIALIZED = True
         return False
 
@@ -826,65 +867,75 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
 
     resource = Resource.create(resource_attrs)
 
-    tracer_provider = TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(
-        BatchSpanProcessor(
-            OTLPSpanExporter(
-                endpoint=_otlp_endpoint_for("traces"),
+    if traces_enabled:
+        tracer_provider = TracerProvider(resource=resource)
+        tracer_provider.add_span_processor(
+            BatchSpanProcessor(
+                OTLPSpanExporter(
+                    endpoint=_otlp_endpoint_for("traces"),
+                    headers=headers,
+                )
+            )
+        )
+        trace.set_tracer_provider(tracer_provider)
+
+        # Add MLflow as an ADDITIONAL span destination on the same TP. The
+        # OTEL Collector path (BatchSpanProcessor above) keeps sending to
+        # ClickHouse + Tempo; MLflow's `set_destination()` adds a processor
+        # that writes trace_request_metadata so traces are searchable via
+        # mlflow.search_traces() and visible in the MLflow UI. The
+        # otlphttp/mlflow collector exporter alone doesn't write that
+        # metadata — see project_mlflow_otlp_search_gap.md memory.
+        os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
+        _init_mlflow_destination()
+
+    if metrics_enabled:
+        metric_reader = PeriodicExportingMetricReader(
+            OTLPMetricExporter(
+                endpoint=_otlp_endpoint_for("metrics"),
                 headers=headers,
             )
         )
-    )
-    trace.set_tracer_provider(tracer_provider)
+        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        metrics.set_meter_provider(meter_provider)
 
-    # Add MLflow as an ADDITIONAL span destination on the same TP. The
-    # OTEL Collector path (BatchSpanProcessor above) keeps sending to
-    # ClickHouse + Tempo; MLflow's `set_destination()` adds a processor
-    # that writes trace_request_metadata so traces are searchable via
-    # mlflow.search_traces() and visible in the MLflow UI. The
-    # otlphttp/mlflow collector exporter alone doesn't write that
-    # metadata — see project_mlflow_otlp_search_gap.md memory.
-    os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
-    _init_mlflow_destination()
-
-    metric_reader = PeriodicExportingMetricReader(
-        OTLPMetricExporter(
-            endpoint=_otlp_endpoint_for("metrics"),
-            headers=headers,
-        )
-    )
-    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-    metrics.set_meter_provider(meter_provider)
-
-    logger_provider = LoggerProvider(resource=resource)
-    logger_provider.add_log_record_processor(
-        BatchLogRecordProcessor(
-            OTLPLogExporter(
-                endpoint=_otlp_endpoint_for("logs"),
-                headers=headers,
+    otel_handler: logging.Handler | None = None
+    if logs_enabled:
+        logger_provider = LoggerProvider(resource=resource)
+        logger_provider.add_log_record_processor(
+            BatchLogRecordProcessor(
+                OTLPLogExporter(
+                    endpoint=_otlp_endpoint_for("logs"),
+                    headers=headers,
+                )
             )
         )
-    )
-    ot_logs.set_logger_provider(logger_provider)
-    otel_handler = LoggingHandler(
-        level=logging.NOTSET,
-        logger_provider=logger_provider,
-    )
+        ot_logs.set_logger_provider(logger_provider)
+        otel_handler = LoggingHandler(
+            level=logging.NOTSET,
+            logger_provider=logger_provider,
+        )
 
     # Auto instrumentation for inbound/outbound HTTP.
-    RequestsInstrumentor().instrument()
-    HTTPXClientInstrumentor().instrument()
-    LoggingInstrumentor().instrument(set_logging_format=False)
-    if app is not None:
-        try:
-            FastAPIInstrumentor.instrument_app(app)
-        except Exception as e:
-            logger.debug(f"[Tracing] FastAPI instrumentation failed: {e}")
+    if traces_enabled:
+        RequestsInstrumentor().instrument()
+        HTTPXClientInstrumentor().instrument()
+        LoggingInstrumentor().instrument(set_logging_format=False)
+        if app is not None:
+            try:
+                FastAPIInstrumentor.instrument_app(app)
+            except Exception as e:
+                logger.debug(f"[Tracing] FastAPI instrumentation failed: {e}")
 
     setup_logging_json(otel_handler)
 
     _TRACING_INITIALIZED = True
-    logger.info("[Tracing] OpenTelemetry enabled (OTLP HTTP)")
+    logger.info(
+        "[Tracing] OpenTelemetry enabled (OTLP HTTP; traces=%s metrics=%s logs=%s)",
+        traces_enabled,
+        metrics_enabled,
+        logs_enabled,
+    )
     return True
 
 
@@ -999,6 +1050,8 @@ def set_mlflow_trace_tags(
     span is active. Skips empty/None values. Strings only.
     """
     if not tags and not trace_name:
+        return
+    if not _mlflow_enabled():
         return
     tags = dict(tags or {})
     clean = {
