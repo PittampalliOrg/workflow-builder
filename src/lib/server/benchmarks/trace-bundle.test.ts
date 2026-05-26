@@ -172,6 +172,43 @@ describe("normalizeRawTraceSpans", () => {
 	});
 });
 
+describe("workflow log trace bundle fallback", () => {
+	it("shows workflow node spans when no agent trace ids are available", async () => {
+		const checkoutSpan = baseSpan({
+			traceId: "workflow-exec-1",
+			spanId: "workflow-log-checkout",
+			operationName: "workflow.node.checkout_repo",
+			serviceName: "workflow-builder",
+			duration: 12_345,
+			attributes: {
+				"gen_ai.operation.name": "workflow.node",
+				"workflow.node.id": "checkout_repo",
+				"workflow_builder.synthetic": true,
+				"git.repo_url": "https://github.com/django/django.git",
+			},
+		});
+
+		const bundle = await buildSwebenchTraceBundleFromClickHouse({
+			runId: "run_1",
+			runInstanceId: "ri_1",
+			instanceId: "django__django-1",
+			traceIds: [],
+			canonicalTraceId: null,
+			mlflowExperimentId: "1",
+			mlflowRunId: null,
+			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
+			workflowNodeSpans: [checkoutSpan],
+		});
+
+		expect(bundle.backend).toBe("workflow_logs");
+		expect(bundle.traceSpans).toHaveLength(1);
+		expect(bundle.groups.workflowNodes).toBe(1);
+		expect(bundle.requiredContext.nodeSpansPresent).toBe(true);
+		expect(bundle.warnings[0]).toContain("No agent trace ids");
+	});
+});
+
 describe("buildSwebenchTraceBundleFromClickHouse", () => {
 	beforeEach(() => {
 		vi.mocked(getMultiTraceLlmSpans).mockReset();

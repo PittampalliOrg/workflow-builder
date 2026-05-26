@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	benchmarkRunInstances,
 	benchmarkRuns,
+	workflowExecutionLogs,
 	workflowExecutions,
 } from "$lib/server/db/schema";
 import {
@@ -34,6 +35,7 @@ export type SwebenchTraceBundleBackend =
 	| "mlflow_native"
 	| "clickhouse_derived"
 	| "clickhouse_raw"
+	| "workflow_logs"
 	| "none";
 
 export type SwebenchTraceBundle = {
@@ -101,6 +103,8 @@ type RawBuildInput = {
 	mlflowExperimentId: string | null;
 	mlflowRunId: string | null;
 	artifactPath: string;
+	workflowExecutionId?: string | null;
+	workflowNodeSpans?: ObservabilityTraceSpan[];
 };
 
 export function safeSwebenchTraceArtifactPath(instanceId: string): string {
@@ -158,6 +162,15 @@ export async function loadSwebenchTraceBundle(params: {
 		? [canonicalTraceId, ...auxiliaryTraceIds.filter((id) => id !== canonicalTraceId)]
 		: auxiliaryTraceIds;
 	const artifactPath = safeSwebenchTraceArtifactPath(row.instanceId);
+	const workflowNodeSpans = row.workflowExecutionId
+		? await loadWorkflowNodeTraceSpans({
+				workflowExecutionId: row.workflowExecutionId,
+				runId: row.runId,
+				runInstanceId: row.runInstanceId,
+				instanceId: row.instanceId,
+				traceId: canonicalTraceId ?? traceIds[0] ?? null,
+			})
+		: [];
 	const base: RawBuildInput = {
 		runId: row.runId,
 		runInstanceId: row.runInstanceId,
@@ -167,6 +180,8 @@ export async function loadSwebenchTraceBundle(params: {
 		mlflowExperimentId: row.mlflowExperimentId,
 		mlflowRunId: row.mlflowRunId,
 		artifactPath,
+		workflowExecutionId: row.workflowExecutionId,
+		workflowNodeSpans,
 	};
 
 	const preferArtifact = params.options?.preferArtifact ?? true;
@@ -199,7 +214,7 @@ export async function loadSwebenchTraceBundle(params: {
 	}
 
 	const bundle = await buildSwebenchTraceBundle(base, warnings);
-	if (repairArtifact && bundle.traceIds.length > 0) {
+	if (repairArtifact && (bundle.traceIds.length > 0 || bundle.traceSpans.length > 0)) {
 		await logTraceBundleArtifact(params.runId, params.instanceId, bundle);
 	}
 	return bundle;
@@ -421,6 +436,176 @@ async function logParentTraceSummaryTags(
 	});
 }
 
+async function loadWorkflowNodeTraceSpans(input: {
+	workflowExecutionId: string;
+	runId: string;
+	runInstanceId: string | null;
+	instanceId: string;
+	traceId: string | null;
+}): Promise<ObservabilityTraceSpan[]> {
+	if (!db) return [];
+	const logs = await db
+		.select({
+			id: workflowExecutionLogs.id,
+			nodeId: workflowExecutionLogs.nodeId,
+			nodeName: workflowExecutionLogs.nodeName,
+			nodeType: workflowExecutionLogs.nodeType,
+			activityName: workflowExecutionLogs.activityName,
+			status: workflowExecutionLogs.status,
+			input: workflowExecutionLogs.input,
+			output: workflowExecutionLogs.output,
+			error: workflowExecutionLogs.error,
+			startedAt: workflowExecutionLogs.startedAt,
+			completedAt: workflowExecutionLogs.completedAt,
+			duration: workflowExecutionLogs.duration,
+		})
+		.from(workflowExecutionLogs)
+		.where(eq(workflowExecutionLogs.executionId, input.workflowExecutionId))
+		.orderBy(asc(workflowExecutionLogs.startedAt));
+	if (logs.length === 0) return [];
+
+	const traceId =
+		normalizeBundleTraceId(input.traceId ?? "") ??
+		`workflow-${safeSyntheticId(input.workflowExecutionId)}`;
+	return logs.map((log, index) => {
+		const duration = workflowLogDurationMs(log);
+		const checkout =
+			log.nodeId === "checkout_repo"
+				? checkoutAttributes(log.input ?? null, log.output)
+				: {};
+		const status = log.status === "error" ? "error" : "ok";
+		const attributes: Record<string, unknown> = {
+			"gen_ai.operation.name": "workflow.node",
+			"workflow.execution.id": input.workflowExecutionId,
+			"workflow.node.id": log.nodeId,
+			"workflow.node.name": log.nodeName,
+			"workflow.node.type": log.nodeType,
+			"workflow.activity.name": log.activityName,
+			"workflow_builder.synthetic": true,
+			"workflow_builder.source": "workflow_execution_logs",
+			"workflow_builder.log_id": log.id,
+			"swebench.run_id": input.runId,
+			"swebench.run_instance_id": input.runInstanceId,
+			"swebench.instance_id": input.instanceId,
+			...checkout,
+		};
+		if (log.error?.trim()) attributes["error.message"] = log.error.trim().slice(0, 1000);
+		return {
+			traceId,
+			spanId: `workflow-log-${safeSyntheticId(log.id || `${index}`)}`,
+			parentSpanId: null,
+			operationName: `workflow.node.${log.nodeId}`,
+			serviceName: "workflow-builder",
+			startTime: log.startedAt.toISOString(),
+			duration,
+			status,
+			statusCode: status === "error" ? "STATUS_CODE_ERROR" : "OK",
+			statusMessage: log.error ?? undefined,
+			spanKind: "SPAN_KIND_INTERNAL",
+			attributes,
+			resourceAttributes: {
+				"service.name": "workflow-builder",
+			},
+			depth: 0,
+		};
+	});
+}
+
+function mergeTraceSpans(
+	primary: ObservabilityTraceSpan[],
+	synthetic: ObservabilityTraceSpan[],
+): ObservabilityTraceSpan[] {
+	if (synthetic.length === 0) {
+		return [...primary].sort((a, b) => a.startTime.localeCompare(b.startTime));
+	}
+	const seen = new Set<string>();
+	const merged: ObservabilityTraceSpan[] = [];
+	for (const span of [...primary, ...synthetic]) {
+		const key = `${span.traceId}:${span.spanId}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(span);
+	}
+	return merged.sort((a, b) => a.startTime.localeCompare(b.startTime));
+}
+
+function workflowLogDurationMs(log: {
+	duration: unknown;
+	startedAt: Date;
+	completedAt: Date | null;
+}): number {
+	const direct =
+		typeof log.duration === "number"
+			? log.duration
+			: typeof log.duration === "string" && log.duration.trim()
+				? Number.parseInt(log.duration, 10)
+				: NaN;
+	if (Number.isFinite(direct) && direct >= 0) return Math.round(direct);
+	if (log.completedAt) {
+		const elapsed = log.completedAt.getTime() - log.startedAt.getTime();
+		if (Number.isFinite(elapsed) && elapsed >= 0) return elapsed;
+	}
+	return 0;
+}
+
+function checkoutAttributes(input: unknown, output: unknown): Record<string, unknown> {
+	const attributes: Record<string, unknown> = {
+		"workspace.action": "checkout_repo",
+		"git.operation": "checkout",
+	};
+	const command = stringByPath(input, ["command", "body.command", "input.command"]);
+	const outputRecord = recordFromValue(output);
+	const result = outputRecord ? recordFromValue(outputRecord.result) ?? outputRecord : null;
+	const stderr = stringFrom(result?.stderr);
+	const stdout = stringFrom(result?.stdout);
+	const repoUrl =
+		extractGitRepoUrl(command) ??
+		extractGitRepoUrl(stderr) ??
+		extractGitRepoUrl(stdout);
+	if (repoUrl) attributes["git.repo_url"] = repoUrl;
+	if (stderr) attributes["git.stderr_excerpt"] = stderr.slice(0, 1000);
+	if (stdout) attributes["git.stdout_excerpt"] = stdout.slice(0, 1000);
+	return attributes;
+}
+
+function stringByPath(value: unknown, paths: string[]): string | null {
+	for (const path of paths) {
+		let node = value;
+		let found = true;
+		for (const part of path.split(".")) {
+			const record = recordFromValue(node);
+			if (!record || !(part in record)) {
+				found = false;
+				break;
+			}
+			node = record[part];
+		}
+		if (!found) continue;
+		const text = stringFrom(node);
+		if (text) return text;
+	}
+	return null;
+}
+
+function extractGitRepoUrl(value: string | null | undefined): string | null {
+	if (!value) return null;
+	const https = value.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?/);
+	if (https?.[0]) return https[0].endsWith(".git") ? https[0] : `${https[0]}.git`;
+	const from = value.match(/From\s+(https:\/\/github\.com\/[^\s]+)/);
+	if (from?.[1]) return from[1].endsWith(".git") ? from[1] : `${from[1]}.git`;
+	return null;
+}
+
+function safeSyntheticId(value: string): string {
+	return (
+		value
+			.trim()
+			.replace(/[^A-Za-z0-9._-]+/g, "_")
+			.replace(/^[._-]+|[._-]+$/g, "")
+			.slice(0, 120) || "span"
+	);
+}
+
 function compactTags(tags: MlflowTag[]): MlflowTag[] {
 	return tags.filter((tag) => tag.value.trim().length > 0);
 }
@@ -434,10 +619,13 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 		input.canonicalTraceId ?? input.traceIds[0],
 	);
 	if (input.traceIds.length === 0) {
+		if (input.workflowNodeSpans?.length) {
+			warnings.push("No agent trace ids were recorded; showing workflow node spans from workflow_execution_logs");
+		}
 		return createBundle(input, {
-			backend: "none",
+			backend: input.workflowNodeSpans?.length ? "workflow_logs" : "none",
 			mlflowTracesUrl,
-			traceSpans: [],
+			traceSpans: input.workflowNodeSpans ?? [],
 			llmSpans: [],
 			toolSpans: [],
 			warnings,
@@ -488,6 +676,10 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 	if (traceSpans.length > 0 && llmSpans.length > 0) {
 		llmSpans = enrichLlmSpansWithRawTraceAttributes(llmSpans, traceSpans);
 	}
+	if (input.workflowNodeSpans?.length) {
+		traceSpans = mergeTraceSpans(traceSpans, input.workflowNodeSpans);
+		if (backend === "none") backend = "workflow_logs";
+	}
 
 	return createBundle(input, {
 		backend,
@@ -506,7 +698,7 @@ export async function buildSwebenchTraceBundle(
 	warnings: string[] = [],
 ): Promise<SwebenchTraceBundle> {
 	const native = await buildSwebenchTraceBundleFromMlflowNative(input, warnings);
-	if (native.summary.traceSpanCount > 0) return native;
+	if (native.summary.traceSpanCount > 0 && native.backend !== "workflow_logs") return native;
 	return buildSwebenchTraceBundleFromClickHouse(input, warnings);
 }
 
@@ -519,10 +711,13 @@ export async function buildSwebenchTraceBundleFromMlflowNative(
 		input.canonicalTraceId ?? input.traceIds[0],
 	);
 	if (input.traceIds.length === 0) {
+		if (input.workflowNodeSpans?.length) {
+			warnings.push("No agent trace ids were recorded; showing workflow node spans from workflow_execution_logs");
+		}
 		return createBundle(input, {
-			backend: "none",
+			backend: input.workflowNodeSpans?.length ? "workflow_logs" : "none",
 			mlflowTracesUrl,
-			traceSpans: [],
+			traceSpans: input.workflowNodeSpans ?? [],
 			llmSpans: [],
 			toolSpans: [],
 			warnings,
@@ -541,12 +736,12 @@ export async function buildSwebenchTraceBundleFromMlflowNative(
 			warnings.push(`MLflow native trace read failed for ${traceId}: ${errorMessage(err)}`);
 		}
 	}
-	traceSpans.sort((a, b) => a.startTime.localeCompare(b.startTime));
+	const mergedTraceSpans = mergeTraceSpans(traceSpans, input.workflowNodeSpans ?? []);
 	const normalized = normalizeRawTraceSpans(traceSpans);
 	return createBundle(input, {
-		backend: traceSpans.length > 0 ? "mlflow_native" : "none",
+		backend: traceSpans.length > 0 ? "mlflow_native" : input.workflowNodeSpans?.length ? "workflow_logs" : "none",
 		mlflowTracesUrl,
-		traceSpans,
+		traceSpans: mergedTraceSpans,
 		llmSpans: normalized.llmSpans,
 		toolSpans: normalized.toolSpans,
 		warnings,
