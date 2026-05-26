@@ -38,6 +38,7 @@ export type CapacitySessionSnapshot = {
   executionClass: string;
   queue: string;
   request: Record<string, number>;
+  benchmarkSandboxRequest?: Record<string, number> | null;
   limits: Record<string, number | null>;
   fits: number | null;
 };
