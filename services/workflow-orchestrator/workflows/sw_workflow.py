@@ -284,13 +284,6 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     return not keep_sandbox
 
 
-def _benchmark_mlflow_node_spans_enabled() -> bool:
-    return _as_bool(
-        os.environ.get("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_NODE_SPANS_ENABLED"),
-        False,
-    )
-
-
 def _benchmark_mlflow_finalization_enabled() -> bool:
     return _as_bool(
         os.environ.get("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED"),
@@ -3190,12 +3183,14 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     otel_ctx = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
     trace_id = _trace_id_from_otel(otel_ctx)
     features = input_data.get("features") if isinstance(input_data.get("features"), dict) else {}
+    # Dapr workflow replay requires this scheduling decision to be derived only
+    # from immutable workflow input. Runtime/export flags are handled inside the
+    # activity so a rollout can turn exports into no-ops without changing the
+    # replayed task sequence for already-running workflows.
     mlflow_node_spans_enabled = _as_bool(
         features.get("mlflowNodeSpans", input_data.get("mlflowNodeSpans")),
         False,
     )
-    if _is_benchmark_trigger(trigger_data) and not _benchmark_mlflow_node_spans_enabled():
-        mlflow_node_spans_enabled = False
 
     try:
         workflow = Workflow.model_validate(workflow_data)

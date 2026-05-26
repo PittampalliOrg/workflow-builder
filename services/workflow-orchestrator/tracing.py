@@ -317,6 +317,9 @@ def _post_otlp_span(
     from opentelemetry.proto.resource.v1 import resource_pb2
     from opentelemetry.proto.trace.v1 import trace_pb2
 
+    if not _mlflow_enabled():
+        return {"success": True, "skipped": True, "reason": "disabled"}
+
     endpoint = _mlflow_otlp_endpoint_for("traces")
     if not endpoint:
         return {"success": True, "skipped": True, "reason": "missing_endpoint"}

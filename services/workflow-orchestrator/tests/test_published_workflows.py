@@ -1236,7 +1236,6 @@ def test_benchmark_sw_workflow_suppresses_parent_node_spans_by_default(monkeypat
     _install_terminal_workflow_model_fakes(monkeypatch)
     workflow_input = _terminal_workflow_input([{"assign": {"set": {"foo": "bar"}}}])
     workflow_input["dbExecutionId"] = None
-    workflow_input["features"] = {"mlflowNodeSpans": True}
     workflow_input["triggerData"] = {
         "runId": "bench-run-1",
         "instanceId": "django__django-12345",
@@ -1248,6 +1247,24 @@ def test_benchmark_sw_workflow_suppresses_parent_node_spans_by_default(monkeypat
         next(workflow_gen)
 
     assert stop.value.value["success"] is True
+
+
+def test_benchmark_sw_workflow_preserves_requested_node_span_schedule(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    workflow_input = _terminal_workflow_input([{"assign": {"set": {"foo": "bar"}}}])
+    workflow_input["dbExecutionId"] = None
+    workflow_input["features"] = {"mlflowNodeSpans": True}
+    workflow_input["triggerData"] = {
+        "runId": "bench-run-1",
+        "instanceId": "django__django-12345",
+    }
+
+    workflow_gen = SW_WORKFLOW.sw_workflow(_FakeTerminalWorkflowCtx(), workflow_input)
+    node_span = next(workflow_gen)
+
+    assert node_span["activity"] == "emit_mlflow_node_span"
+    assert node_span["input"]["status"] == "OK"
+    assert node_span["input"]["nodeId"] == "assign"
 
 
 def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):
