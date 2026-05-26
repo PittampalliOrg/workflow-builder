@@ -1288,6 +1288,66 @@ describe("SWE-bench terminal run cleanup", () => {
 		]);
 	});
 
+	it("includes run-level coordinator workflow ids in durable state row purge", async () => {
+		const calls: string[] = [];
+		const result =
+			await __benchmarkDurableRuntimeForTest.cleanupBenchmarkDurableWorkflowCascade({
+				parentInstanceIds: ["parent-1"],
+				agentRuntimeTargets: [],
+				statePurgeInstanceIds: ["swebench-run-1"],
+				reason: "operator cleanup",
+				purge: true,
+				purgeGraceMs: 0,
+				concurrency: 1,
+				deps: {
+					getParentStatus: async (id: string) => {
+						calls.push(`parent-status:${id}`);
+						return "COMPLETED";
+					},
+					terminateParent: async () => {
+						throw new Error("parent should already be terminal");
+					},
+					waitParentClosed: async () => {
+						throw new Error("parent should already be terminal");
+					},
+					getAgentRuntimeStatus: async () => {
+						throw new Error("child should not be inspected");
+					},
+					terminateAgentRuntime: async () => {
+						throw new Error("child should not be terminated");
+					},
+					waitAgentRuntimeClosed: async () => {
+						throw new Error("child should not be waited");
+					},
+					purgeParent: async (id: string) => {
+						calls.push(`parent-purge:${id}`);
+					},
+					purgeAgentRuntime: async () => {
+						throw new Error("child should not be purged");
+					},
+					purgeStateRows: async (parents, targets, extraIds) => {
+						calls.push(
+							`state-purge:${parents.join(",")}:${targets.length}:${extraIds?.join(",")}`,
+						);
+					},
+					sleep: async () => {
+						throw new Error("sleep should not be called");
+					},
+				},
+			});
+
+		expect(result).toEqual({
+			allClosed: true,
+			parentClosed: true,
+			agentRuntimeClosed: true,
+		});
+		expect(calls).toEqual([
+			"parent-status:parent-1",
+			"parent-purge:parent-1",
+			"state-purge:parent-1:0:swebench-run-1",
+		]);
+	});
+
 	it("includes the recorded session runtime app id in durable cleanup targets", () => {
 		expect(
 			benchmarkAgentRuntimeCleanupRuntimeAppIds({

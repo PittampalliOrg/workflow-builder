@@ -369,6 +369,7 @@ type BenchmarkDurableCascadeCleanupDeps = {
 	purgeStateRows?: (
 		parentInstanceIds: string[],
 		agentRuntimeTargets: BenchmarkAgentRuntimeTarget[],
+		statePurgeInstanceIds?: string[],
 	) => Promise<void>;
 	sleep: (ms: number) => Promise<void>;
 };
@@ -2051,6 +2052,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 		.select({
 			runtimeAppId: benchmarkRuns.agentRuntimeAppId,
 			runSummary: benchmarkRuns.summary,
+			coordinatorExecutionId: benchmarkRuns.coordinatorExecutionId,
 			runInstanceDaprId: benchmarkRunInstances.daprInstanceId,
 			runInstanceSessionId: benchmarkRunInstances.sessionId,
 			runInstanceTurnCount: benchmarkRunInstances.turnCount,
@@ -2071,9 +2073,13 @@ async function finalizeBenchmarkWorkflowExecutions(
 		.where(eq(benchmarkRunInstances.runId, runId));
 	const activeExecutionIds = new Set<string>();
 	const daprInstanceIds = new Set<string>();
+	const statePurgeInstanceIds = new Set<string>();
 	const agentRuntimeCleanupRows: BenchmarkAgentRuntimeCleanupInput[] = [];
 	const sessionIds = new Set<string>();
 	for (const row of rows) {
+		if (row.coordinatorExecutionId) {
+			statePurgeInstanceIds.add(row.coordinatorExecutionId);
+		}
 		const hasActiveExecution =
 			row.executionStatus === "pending" ||
 			row.executionStatus === "running" ||
@@ -2162,6 +2168,7 @@ async function finalizeBenchmarkWorkflowExecutions(
 	const durableCleanup = await cleanupBenchmarkDurableWorkflowCascade({
 		parentInstanceIds: [...daprInstanceIds],
 		agentRuntimeTargets,
+		statePurgeInstanceIds: [...statePurgeInstanceIds],
 		reason,
 		purge: shouldPurgeBenchmarkDaprWorkflowsOnCleanup(),
 		purgeGraceMs: benchmarkTerminalPurgeGraceMs(),
@@ -2413,6 +2420,7 @@ const benchmarkDurableCascadeCleanupDeps: BenchmarkDurableCascadeCleanupDeps = {
 async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	parentInstanceIds: string[];
 	agentRuntimeTargets: BenchmarkAgentRuntimeTarget[];
+	statePurgeInstanceIds?: string[];
 	reason: string;
 	purge: boolean;
 	purgeGraceMs: number;
@@ -2592,7 +2600,11 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
 		await deps.purgeParent(instanceId);
 	});
-	await deps.purgeStateRows?.(parentInstanceIds, agentRuntimeTargets);
+	await deps.purgeStateRows?.(
+		parentInstanceIds,
+		agentRuntimeTargets,
+		params.statePurgeInstanceIds,
+	);
 	return { allClosed, parentClosed, agentRuntimeClosed };
 }
 
@@ -2862,9 +2874,14 @@ const BENCHMARK_DAPR_STATE_ROW_TABLES = ["wfstate_state", "agent_py_state"] as c
 function benchmarkDurableStateRowPurgeIds(
 	parentInstanceIds: string[],
 	agentRuntimeTargets: BenchmarkAgentRuntimeTarget[],
+	statePurgeInstanceIds: string[] = [],
 ): string[] {
 	const ids = new Set<string>();
 	for (const instanceId of parentInstanceIds) {
+		const normalized = instanceId.trim();
+		if (normalized) ids.add(normalized);
+	}
+	for (const instanceId of statePurgeInstanceIds) {
 		const normalized = instanceId.trim();
 		if (normalized) ids.add(normalized);
 	}
@@ -2878,10 +2895,12 @@ function benchmarkDurableStateRowPurgeIds(
 async function purgeBenchmarkDurableStateRows(
 	parentInstanceIds: string[],
 	agentRuntimeTargets: BenchmarkAgentRuntimeTarget[],
+	statePurgeInstanceIds: string[] = [],
 ) {
 	const ids = benchmarkDurableStateRowPurgeIds(
 		parentInstanceIds,
 		agentRuntimeTargets,
+		statePurgeInstanceIds,
 	);
 	if (ids.length === 0) return;
 	const database = requireDb();
