@@ -366,6 +366,10 @@ type BenchmarkDurableCascadeCleanupDeps = {
 		runtimeAppId: string,
 		instanceId: string,
 	) => Promise<void>;
+	purgeStateRows?: (
+		parentInstanceIds: string[],
+		agentRuntimeTargets: BenchmarkAgentRuntimeTarget[],
+	) => Promise<void>;
 	sleep: (ms: number) => Promise<void>;
 };
 const DEFAULT_EVALUATION_CONCURRENCY = 24;
@@ -2402,6 +2406,7 @@ const benchmarkDurableCascadeCleanupDeps: BenchmarkDurableCascadeCleanupDeps = {
 	waitAgentRuntimeClosed: waitForBenchmarkAgentRuntimeInstanceClosed,
 	purgeParent: purgeBenchmarkWorkflowInstance,
 	purgeAgentRuntime: purgeBenchmarkAgentRuntimeInstance,
+	purgeStateRows: purgeBenchmarkDurableStateRows,
 	sleep,
 };
 
@@ -2587,6 +2592,7 @@ async function cleanupBenchmarkDurableWorkflowCascade(params: {
 	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
 		await deps.purgeParent(instanceId);
 	});
+	await deps.purgeStateRows?.(parentInstanceIds, agentRuntimeTargets);
 	return { allClosed, parentClosed, agentRuntimeClosed };
 }
 
@@ -2848,6 +2854,51 @@ async function purgeBenchmarkAgentRuntimeInstance(
 			`Failed to purge benchmark agent runtime ${runtimeAppId}/${instanceId}:`,
 			err instanceof Error ? err.message : err,
 		);
+	}
+}
+
+const BENCHMARK_DAPR_STATE_ROW_TABLES = ["wfstate_state", "agent_py_state"] as const;
+
+function benchmarkDurableStateRowPurgeIds(
+	parentInstanceIds: string[],
+	agentRuntimeTargets: BenchmarkAgentRuntimeTarget[],
+): string[] {
+	const ids = new Set<string>();
+	for (const instanceId of parentInstanceIds) {
+		const normalized = instanceId.trim();
+		if (normalized) ids.add(normalized);
+	}
+	for (const target of agentRuntimeTargets) {
+		const normalized = target.instanceId.trim();
+		if (normalized) ids.add(normalized);
+	}
+	return [...ids];
+}
+
+async function purgeBenchmarkDurableStateRows(
+	parentInstanceIds: string[],
+	agentRuntimeTargets: BenchmarkAgentRuntimeTarget[],
+) {
+	const ids = benchmarkDurableStateRowPurgeIds(
+		parentInstanceIds,
+		agentRuntimeTargets,
+	);
+	if (ids.length === 0) return;
+	const database = requireDb();
+	for (const table of BENCHMARK_DAPR_STATE_ROW_TABLES) {
+		for (const instanceId of ids) {
+			try {
+				await database.execute(sql`
+					delete from ${sql.raw(table)}
+					where position(${instanceId} in key) > 0
+				`);
+			} catch (err) {
+				console.warn(
+					`Failed to delete benchmark Dapr state rows from ${table} for ${instanceId}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
 	}
 }
 
