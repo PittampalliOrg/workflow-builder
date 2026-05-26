@@ -722,6 +722,96 @@ describe("SWE-bench environment image build planning", () => {
 		});
 	});
 
+	it("routes per-instance buildBackend=nix to the Nix Pipeline with no PVC and no hostname pin", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			buildBackend: "nix",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+
+		expect(spec.buildBackend).toBe("nix");
+		expect(spec.imageTag.endsWith("-nix")).toBe(true);
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+
+		expect((runSpec.pipelineRef as Record<string, unknown>).name).toBe(
+			"swebench-inference-image-build-nix",
+		);
+		expect(manifest.metadata?.labels).toMatchObject({
+			"workflow-builder.cnoe.io/build-backend": "nix",
+			"workflow-builder.cnoe.io/build-cache": "cachix:pittampalliorg",
+		});
+		expect(runSpec.taskRunTemplate).toMatchObject({
+			podTemplate: { nodeSelector: { "stacks.io/build-pool": "hub" } },
+		});
+		expect(
+			(runSpec.taskRunTemplate as { podTemplate: { nodeSelector: Record<string, string> } })
+				.podTemplate.nodeSelector["kubernetes.io/hostname"],
+		).toBeUndefined();
+		expect(runSpec.workspaces).toEqual(
+			expect.arrayContaining([{ name: "buildah-cache", emptyDir: {} }]),
+		);
+		expect(runSpec.params).toEqual(
+			expect.arrayContaining([{ name: "cachix_cache", value: "pittampalliorg" }]),
+		);
+	});
+
+	it("falls back to buildah for buildpacks strategy even when nix backend is requested", () => {
+		const spec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "unknown__repo-1",
+			repo: "unknown/repo",
+			baseCommit: "abcdef0123456789",
+			buildBackend: "nix",
+			testMetadata: {},
+		});
+
+		expect(spec.buildStrategy).toBe("buildpacks");
+		expect(spec.buildBackend).toBe("buildah");
+		expect(spec.imageTag.endsWith("-nix")).toBe(false);
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+		expect((runSpec.pipelineRef as Record<string, unknown>).name).toBe(
+			"swebench-inference-image-build",
+		);
+	});
+
+	it("honors SWEBENCH_INFERENCE_BUILD_BACKEND=nix env var when no per-instance override is set", () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_BACKEND", "nix");
+		const spec = buildSwebenchEnvironmentSpec({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+			testMetadata: {
+				version: "1.7",
+				test_patch: "diff --git a/sympy/tests/test_fix.py b/sympy/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["sympy/tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["sympy/tests/test_existing.py::test_existing"],
+			},
+		});
+		expect(spec.buildBackend).toBe("nix");
+	});
+
 	it("uses repo-aware validation defaults for Flask source-layout images", () => {
 		const spec = buildSwebenchEnvironmentSpec({
 			suiteSlug: "SWE-bench_Lite",

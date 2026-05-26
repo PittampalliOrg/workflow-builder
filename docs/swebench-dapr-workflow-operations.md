@@ -80,6 +80,12 @@ The important upstream constraints for benchmark operations are:
   enough evidence to delete sandboxes, release leases, or directly purge
   workflow state. Run-level cleanup must first close the parent workflow plus
   agent session and turn workflows; if closure is not confirmed, retry later.
+- Completed benchmark cleanup is backgrounded so evaluator callbacks do not
+  block on every sandbox deletion. The background path retries durable closure
+  briefly; the `stuck-workflow-watchdog` also schedules the run cleanup endpoint
+  for recently terminal runs that still have active session or workflow
+  projections. If sandboxes remain after a completed run, use the same cleanup
+  endpoint instead of direct DB updates.
 - If old workflow state is intentionally disposable, quiesce workflow-producing
   apps before clearing state stores or scheduler data. Deleting only Postgres
   workflow rows can leave scheduler reminders behind.

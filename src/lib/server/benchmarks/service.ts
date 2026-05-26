@@ -690,6 +690,26 @@ function shouldPurgeBenchmarkDaprWorkflowsOnCleanup(): boolean {
 	);
 }
 
+function completedBenchmarkCleanupRetryAttempts(): number {
+	return clampInteger(
+		env.BENCHMARK_COMPLETED_CLEANUP_RETRY_ATTEMPTS,
+		1,
+		10,
+		3,
+	);
+}
+
+function completedBenchmarkCleanupRetryMs(): number {
+	return (
+		clampInteger(
+			env.BENCHMARK_COMPLETED_CLEANUP_RETRY_SECONDS,
+			1,
+			5 * 60,
+			15,
+		) * 1000
+	);
+}
+
 export function shouldProceedAfterStalledDurableCleanupTimeout(): boolean {
 	return parseBooleanFlag(
 		env.BENCHMARK_PROCEED_AFTER_STALLED_DURABLE_CLEANUP_TIMEOUT ??
@@ -1639,11 +1659,27 @@ function scheduleCompletedBenchmarkRunPostprocessing(params: {
 	mode?: BenchmarkTerminalCleanupMode;
 }): Promise<void> {
 	const task = (async () => {
-		await cleanupCompletedBenchmarkRunResources(
-			params.runId,
-			params.reason,
-			params.now,
-		);
+		const maxAttempts = completedBenchmarkCleanupRetryAttempts();
+		let resourcesCleaned = false;
+		for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+			resourcesCleaned = await cleanupCompletedBenchmarkRunResources(
+				params.runId,
+				params.reason,
+				params.now,
+			);
+			if (resourcesCleaned) break;
+			if (attempt < maxAttempts) {
+				console.warn(
+					`Benchmark run ${params.runId} completed cleanup deferred; retrying durable closure check (${attempt}/${maxAttempts})`,
+				);
+				await sleep(completedBenchmarkCleanupRetryMs());
+			}
+		}
+		if (!resourcesCleaned) {
+			console.warn(
+				`Benchmark run ${params.runId} completed cleanup could not confirm durable closure after ${maxAttempts} attempt(s); watchdog/manual cleanup will retry`,
+			);
+		}
 		await recomputeRunSummary(params.runId);
 		await syncBenchmarkRunMlflow(params.runId, { terminate: true });
 		await logBenchmarkTraceSummaryArtifact(params.runId);
@@ -2285,7 +2321,7 @@ async function cleanupCompletedBenchmarkRunResources(
 	runId: string,
 	reason: string,
 	now = new Date(),
-) {
+): Promise<boolean> {
 	const database = requireDb();
 	const rows = await database
 		.select({
@@ -2348,7 +2384,7 @@ async function cleanupCompletedBenchmarkRunResources(
 			console.warn(
 				`Benchmark run ${runId} completed cleanup did not confirm durable workflow closure; leaving sandboxes and leases active for retry`,
 			);
-			return;
+			return false;
 		}
 	}
 
@@ -2368,6 +2404,7 @@ async function cleanupCompletedBenchmarkRunResources(
 	}
 	await cleanupBenchmarkRunSandboxes(runId, reason);
 	await releaseBenchmarkResourceLeasesForRun(runId, reason);
+	return true;
 }
 
 async function terminateAndPurgeBenchmarkWorkflowInstance(

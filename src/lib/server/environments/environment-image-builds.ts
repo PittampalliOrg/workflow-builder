@@ -84,6 +84,8 @@ const TERMINAL_BUILD_STATUSES = new Set<EnvironmentImageBuildStatus>([
 	"cancelled",
 ]);
 
+export type SwebenchInferenceBuildBackend = "buildah" | "nix";
+
 export type EnsureSwebenchEnvironmentInput = {
 	dataset?: string | null;
 	suiteSlug: SwebenchSuiteSlug;
@@ -95,6 +97,13 @@ export type EnsureSwebenchEnvironmentInput = {
 	pollMs?: number | null;
 	allowBuild?: boolean | null;
 	forceRefreshLegacyStatic?: boolean | null;
+	/**
+	 * Per-instance override for the image-build backend. Overrides
+	 * SWEBENCH_INFERENCE_BUILD_BACKEND env var when set. Used during the
+	 * parallel rollout phase to force `nix` on specific cohort entries
+	 * without flipping the global default.
+	 */
+	buildBackend?: SwebenchInferenceBuildBackend | null;
 };
 
 export type SwebenchEnvironmentSpec = {
@@ -108,6 +117,15 @@ export type SwebenchEnvironmentSpec = {
 	environmentKey: string;
 	envSpecHash: string;
 	buildStrategy: EnvironmentImageBuildStrategy;
+	/**
+	 * The image-build backend that should execute this spec. Resolved from
+	 * the per-instance override (`EnsureSwebenchEnvironmentInput.buildBackend`)
+	 * if set, otherwise from `SWEBENCH_INFERENCE_BUILD_BACKEND`, defaulting to
+	 * `buildah`. Always populated on the resolved spec. Not part of envSpecHash
+	 * so that the same env can be built by either backend during the parallel
+	 * rollout phase.
+	 */
+	buildBackend: SwebenchInferenceBuildBackend;
 	sandboxTemplate: string;
 	imageName: string;
 	imageTag: string;
@@ -299,17 +317,44 @@ export function buildSwebenchEnvironmentSpec(
 		swebenchSpec,
 	};
 	const envSpecHash = sha256Hex(stableJson(baseSpec));
+	const buildBackend = resolveSwebenchBuildBackend(input.buildBackend, buildStrategy);
+	const imageTagBase = `env-${envSpecHash.slice(0, 16)}`;
+	const imageTag = buildBackend === "nix" ? `${imageTagBase}-nix` : imageTagBase;
 	return {
 		...baseSpec,
 		instanceId: readString(input.instanceId) ?? undefined,
 		envSpecHash,
-		imageTag: `env-${envSpecHash.slice(0, 16)}`,
+		buildBackend,
+		imageTag,
 		environmentNotes: defaultTuning.environmentNotes,
 		fallbackReason:
 			buildStrategy === "buildpacks"
 				? missingHarnessMetadataReason(repo, input.testMetadata)
 				: undefined,
 	};
+}
+
+/**
+ * Resolve the image-build backend for a SWE-bench environment spec.
+ *
+ * Resolution order: per-instance override → SWEBENCH_INFERENCE_BUILD_BACKEND
+ * env var → "buildah" default. For non-harness build strategies (buildpacks
+ * fallback) the backend is forced to "buildah" because the Nix flake only
+ * implements the swebench-harness path.
+ */
+export function resolveSwebenchBuildBackend(
+	override: SwebenchInferenceBuildBackend | null | undefined,
+	buildStrategy: EnvironmentImageBuildStrategy,
+): SwebenchInferenceBuildBackend {
+	if (buildStrategy !== "swebench-harness") {
+		return "buildah";
+	}
+	if (override === "nix" || override === "buildah") {
+		return override;
+	}
+	const raw = runtimeEnvString("SWEBENCH_INFERENCE_BUILD_BACKEND")?.toLowerCase();
+	if (raw === "nix") return "nix";
+	return "buildah";
 }
 
 function defaultSwebenchEnvironmentTuning(
@@ -811,6 +856,9 @@ export function buildSwebenchPipelineRunManifest(
 	pipelineRunName: string,
 	namespace: string,
 ): TektonPipelineRun {
+	if (spec.buildBackend === "nix") {
+		return buildSwebenchNixPipelineRunManifest(spec, pipelineRunName, namespace);
+	}
 	const buildahCache = swebenchBuildahCacheSelection(spec);
 	const kueueQueueName = configuredSwebenchBuildKueueQueueName();
 	const nodeSelector = {
@@ -831,6 +879,7 @@ export function buildSwebenchPipelineRunManifest(
 				"workflow-builder.cnoe.io/environment-key": spec.environmentKey,
 				"workflow-builder.cnoe.io/env-spec-hash": spec.envSpecHash.slice(0, 63),
 				"workflow-builder.cnoe.io/build-strategy": spec.buildStrategy,
+				"workflow-builder.cnoe.io/build-backend": "buildah",
 				"workflow-builder.cnoe.io/build-cache": buildahCache.claimName,
 				...(kueueQueueName ? { "kueue.x-k8s.io/queue-name": kueueQueueName } : {}),
 			},
@@ -883,6 +932,99 @@ export function buildSwebenchPipelineRunManifest(
 					name: "buildah-cache",
 					persistentVolumeClaim: { claimName: buildahCache.claimName },
 				},
+				{ name: "dockerconfig", secret: { secretName: "gitea-registry-credentials" } },
+				{ name: "stacks-source", emptyDir: {} },
+			],
+		},
+	};
+}
+
+/**
+ * Build a PipelineRun manifest for the Nix-backend variant. Runs alongside
+ * the Buildah path during the parallel rollout. Notable differences from the
+ * Buildah path:
+ *   - Targets the `swebench-inference-image-build-nix` Pipeline (Cachix-backed).
+ *   - No buildah-cache PVC: workspace is an emptyDir consumed by the
+ *     validate-image task only.
+ *   - No hostname pin in nodeSelector — Cachix removes the PVC node-affinity
+ *     constraint so builds can land on either hub-build-1 or hub-build-2.
+ *   - Drops `dockerfile_path` and `build_strategy` params (Nix only implements
+ *     the swebench-harness path; non-harness builds are routed back to Buildah
+ *     by `resolveSwebenchBuildBackend`).
+ *   - Adds `cachix_cache` param (defaults to `pittampalliorg`).
+ */
+function buildSwebenchNixPipelineRunManifest(
+	spec: SwebenchEnvironmentSpec,
+	pipelineRunName: string,
+	namespace: string,
+): TektonPipelineRun {
+	const kueueQueueName = configuredSwebenchBuildKueueQueueName();
+	const cachixCache =
+		runtimeEnvString("SWEBENCH_INFERENCE_BUILD_CACHIX_CACHE") ?? "pittampalliorg";
+	return {
+		apiVersion: "tekton.dev/v1",
+		kind: "PipelineRun",
+		metadata: {
+			name: pipelineRunName,
+			namespace,
+			labels: {
+				"app.kubernetes.io/name": "workflow-builder-image-builds",
+				"app.kubernetes.io/component": "pipeline-run",
+				"app.kubernetes.io/part-of": "workflow-builder",
+				"workflow-builder.cnoe.io/image": spec.imageName,
+				"workflow-builder.cnoe.io/environment-key": spec.environmentKey,
+				"workflow-builder.cnoe.io/env-spec-hash": spec.envSpecHash.slice(0, 63),
+				"workflow-builder.cnoe.io/build-strategy": spec.buildStrategy,
+				"workflow-builder.cnoe.io/build-backend": "nix",
+				"workflow-builder.cnoe.io/build-cache": `cachix:${cachixCache}`,
+				...(kueueQueueName ? { "kueue.x-k8s.io/queue-name": kueueQueueName } : {}),
+			},
+		},
+		spec: {
+			pipelineRef: { name: "swebench-inference-image-build-nix" },
+			taskRunTemplate: {
+				serviceAccountName: "workflow-builder-build-trigger",
+				podTemplate: {
+					nodeSelector: { "stacks.io/build-pool": "hub" },
+					tolerations: [
+						{
+							key: "stacks.io/build-pool",
+							operator: "Equal",
+							value: "hub",
+							effect: "NoSchedule",
+						},
+					],
+				},
+			},
+			timeouts: SWEBENCH_PIPELINE_TIMEOUTS,
+			params: [
+				{
+					name: "git_url",
+					value: env.SWEBENCH_INFERENCE_BUILD_GIT_URL ?? DEFAULT_SWEBENCH_BUILD_GIT_URL,
+				},
+				{
+					name: "git_sha",
+					value: env.SWEBENCH_INFERENCE_BUILD_GIT_REVISION ?? DEFAULT_GIT_REVISION,
+				},
+				{ name: "suite", value: spec.suite },
+				{ name: "repo_slug", value: spec.repo },
+				{ name: "environment_key", value: spec.environmentKey },
+				{ name: "base_commit", value: spec.baseCommit },
+				{ name: "env_spec_hash", value: spec.envSpecHash },
+				{ name: "workspace_root", value: spec.workspaceRoot },
+				{ name: "image_name", value: spec.imageName },
+				{ name: "image_tag", value: spec.imageTag },
+				{ name: "validation_command", value: spec.validationCommand },
+				{ name: "environment_notes", value: JSON.stringify(spec.environmentNotes) },
+				{ name: "swebench_spec_json", value: JSON.stringify(spec.swebenchSpecInput ?? {}) },
+				{
+					name: "stacks_repo",
+					value: env.SWEBENCH_INFERENCE_BUILD_STACKS_REPO ?? DEFAULT_SWEBENCH_STACKS_REPO,
+				},
+				{ name: "cachix_cache", value: cachixCache },
+			],
+			workspaces: [
+				{ name: "buildah-cache", emptyDir: {} },
 				{ name: "dockerconfig", secret: { secretName: "gitea-registry-credentials" } },
 				{ name: "stacks-source", emptyDir: {} },
 			],

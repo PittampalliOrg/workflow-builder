@@ -57,6 +57,12 @@ There are three practical cache layers:
   `SWEBENCH_INFERENCE_BUILD_CACHE_SHARD_NODES` spread cache affinity across hub
   nodes. This improves repeated repo/version builds without concentrating all
   cache traffic on one node.
+- **Hub Nix/Cachix backend**: `SWEBENCH_INFERENCE_BUILD_BACKEND=nix` or a
+  per-instance `buildBackend: "nix"` override routes exact SWE-bench harness
+  specs to `swebench-inference-image-build-nix`. Nix builds publish a separate
+  `env-<hash>-nix` tag, push the closure to Cachix, and avoid Buildah cache PVC
+  node affinity. The backend is intentionally parallel to Buildah during rollout
+  and does not change `envSpecHash`.
 
 Build concurrency is separately capped by
 `SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE`. Keep this cap conservative enough that
@@ -80,7 +86,7 @@ Current runtime rules:
 - Exact-ready selection is the admission contract. Do not use duplicate
   repeated instances as a substitute for missing coverage when measuring real
   SWE-bench capacity.
-- For capacity-only canaries, `maxTurns=50` is enough to exercise sandbox
+- For capacity-only canaries, `maxTurns=25` is enough to exercise sandbox
   startup, Dapr workflow scheduling, tool activity traffic, and evaluator
   handoff without letting unsolved instances dominate wall-clock time.
 
@@ -200,6 +206,8 @@ runtime capacity:
 
 - add build-duration histograms by repo, version, and cache shard;
 - expose cache-hit/miss counters per `envSpecHash` and repo/version group;
+- compare Buildah shard hit rate against the Nix/Cachix backend on the same
+  repo/version groups before flipping the global default;
 - add a resumable pin-publication path for already validated images;
 - group build failures by phase in the Benchmarks UI;
 - pre-warm high-value SWE-bench_Verified repo/version cohorts before large
