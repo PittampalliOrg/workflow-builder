@@ -60,12 +60,22 @@ The important upstream constraints for benchmark operations are:
 - Termination stops the workflow state machine and child workflows, but it does
   not cancel already-running activity code. Cleanup must still poll and handle
   in-flight side effects.
+- For Dapr-enabled Kubernetes pods, `dapr.io/graceful-shutdown-seconds` must be
+  lower than `terminationGracePeriodSeconds`. If the pod grace period is shorter,
+  Kubernetes can SIGKILL the app and sidecar before Dapr drains in-flight calls,
+  flushes telemetry, or closes state-store connections.
 
 ## Cleanup Rules
 
 - Treat workflow cleanup as a lifecycle, not a database update.
 - Terminate running workflows first, poll until they are terminal or missing,
   then purge workflow metadata.
+- The best long-term cancellation path is a hybrid one: raise a workflow-level
+  cancellation event first, let the workflow run deterministic cleanup
+  activities, then escalate to hard terminate if the workflow does not reach a
+  terminal state inside the bounded cleanup window. Today, SWE-bench cleanup is
+  hard-terminate-plus-poll because parent and agent session workflows do not yet
+  expose a shared cancel event contract.
 - Purge is only valid for terminal workflow instances. If an instance is still
   running, termination must happen before purge.
 - For SWE-bench agent sessions, terminate child session and turn workflows
@@ -93,6 +103,11 @@ The important upstream constraints for benchmark operations are:
   prefer normal terminate-then-purge after terminal status. Use direct state
   deletion only after all related benchmark runs, leases, sessions, sandboxes,
   and workflow-producing pods are quiesced.
+- Keep direct state deletion scoped to dev break-glass recovery. Our normal path
+  must preserve the app id plus instance id boundary, because SWE-bench uses
+  multi-app Dapr workflows: parent workflows run on `workflow-orchestrator`,
+  session/turn workflows can run on stable agent-runtime pools or session-host
+  app ids, and OpenShell resources are external side effects.
 
 ## Reset Guidance
 
@@ -125,6 +140,10 @@ executions that must be preserved.
 - Do not roll workflow-orchestrator, swebench-coordinator, or agent-runtime
   images while a run is active. Durable replay depends on the worker code shape
   matching persisted workflow history.
+- Rollout safety depends on both application shutdown and sidecar shutdown.
+  Workflow-bearing Deployments should set `dapr.io/graceful-shutdown-seconds`
+  and a larger Kubernetes `terminationGracePeriodSeconds`; agent hosts created
+  by the OpenShell Dapr webhook should receive the same treatment.
 - For Dapr multi-app workflows, treat the target app id as part of the durable
   workflow contract. The target app should be a stable service or pool, already
   running in the same Kubernetes namespace, with the same workflow/activity
