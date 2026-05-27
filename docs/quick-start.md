@@ -6,7 +6,7 @@ This quick start is for the current internal `workflow-builder` system, not the 
 
 - `pnpm`
 - access to the `ryzen` cluster context
-- DevSpace installed
+- `skaffold` installed (v2.17+)
 - access to the sibling `stacks/main` repo for GitOps changes
 
 ## Local Repo Setup
@@ -29,13 +29,18 @@ The e2e suite is intentionally thin today — it probes the auth boundary of eve
 
 ## Fast Inner Loop
 
-Start the DevSpace-based development session:
+Start a Skaffold dev session against the ryzen cluster:
 
 ```bash
-./scripts/devspace-dev-ryzen.sh
+bash scripts/skaffold-dev.sh                          # default: workflow-builder
+bash scripts/skaffold-dev.sh workflow-orchestrator    # specific module
+bash scripts/skaffold-dev.sh ALL                      # all 6 active modules
 ```
 
-That gives you live iteration against the current OpenShell-based runtime stack.
+The wrapper pauses ArgoCD reconciliation for the target apps, runs
+`skaffold dev` with file-sync (HMR for SvelteKit/Node, uvicorn reload for
+Python), and resumes ArgoCD on Ctrl-C. See `skaffold/README.md` for the
+full module map and recovery procedures.
 
 Use this path when you are:
 

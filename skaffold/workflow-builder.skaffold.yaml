@@ -53,10 +53,9 @@ build:
           PNPM_VERSION: "9.12.3"
       sync:
         manual:
-          # Source paths — fast HMR (no rebuild). Mirrors devspace.yaml:319-381
-          # excludePaths inverse. Files NOT listed here (package.json,
-          # pnpm-lock.yaml, Dockerfile.dev, .npmrc) trigger a full rebuild
-          # when changed, matching devspace's onUpload.exec install pattern.
+          # Source paths — fast HMR (no rebuild). Files NOT listed here
+          # (package.json, pnpm-lock.yaml, Dockerfile.dev, .npmrc) trigger a
+          # full rebuild + redeploy when changed.
           - src: "src/**/*"
             dest: /app
           - src: "static/**/*"

@@ -26,11 +26,10 @@ metadata:
 # Excluded:
 #   fn-system              Knative Service (scale-to-0; not a regular Deployment).
 #                          Inner-loop file-sync into a transient Knative pod is
-#                          impractical; use devspace.yaml or treat fn-system as
-#                          an external dependency for now.
-#
-# devspace.yaml stays in-tree as a fallback. See CLAUDE.md "Dev loop" section
-# for the cutover plan.
+#                          impractical; treat fn-system as an external dependency
+#                          (Argo-managed). `scripts/sandbox-dev.sh` is the
+#                          experimental sandbox-based alternative for Knative-
+#                          style workloads.
 
 requires:
   - configs: [workflow-builder]

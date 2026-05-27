@@ -20,15 +20,19 @@ The active cluster shape is:
 
 There are two different operating modes and they are not equivalent.
 
-### DevSpace inner loop
+### Skaffold inner loop
 
 Use this for fast local iteration:
 
 ```bash
-./scripts/devspace-dev-ryzen.sh
+bash scripts/skaffold-dev.sh              # default: workflow-builder
+bash scripts/skaffold-dev.sh ALL          # all 6 active modules
 ```
 
-This swaps selected workloads with `*-devspace` replacements and syncs local files into the running pods.
+The wrapper pauses ArgoCD reconciliation for the target apps, runs
+`skaffold dev` with file-sync into running pods (HMR for Node/SvelteKit,
+uvicorn reload for Python), and resumes ArgoCD on Ctrl-C. See
+`skaffold/README.md` for the full module map.
 
 It is useful for:
 
