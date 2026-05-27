@@ -7,7 +7,7 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/workflow-orchestrator/Deployment-workflow-orchestrator.yaml
+  - ../../../../../stacks/main/packages/components/workloads/workflow-orchestrator/manifests/Deployment-workflow-orchestrator.yaml
 
 # Mirror the Application-level postgres image rewrite for the init container.
 images:

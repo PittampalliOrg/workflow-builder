@@ -7,7 +7,7 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/function-router/Deployment-function-router.yaml
+  - ../../../../../stacks/main/packages/components/workloads/function-router/manifests/Deployment-function-router.yaml
 
 patches:
   - target:

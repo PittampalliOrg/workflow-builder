@@ -7,7 +7,7 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/mcp-gateway/Deployment-mcp-gateway.yaml
+  - ../../../../../stacks/main/packages/components/workloads/mcp-gateway/manifests/Deployment-mcp-gateway.yaml
 
 patches:
   - target:

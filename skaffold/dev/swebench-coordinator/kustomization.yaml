@@ -4,7 +4,7 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/swebench-coordinator/Deployment-swebench-coordinator.yaml
+  - ../../../../../stacks/main/packages/components/workloads/swebench-coordinator/manifests/Deployment-swebench-coordinator.yaml
 
 patches:
   - target:

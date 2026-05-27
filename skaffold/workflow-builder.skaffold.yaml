@@ -24,7 +24,7 @@ metadata:
 # Outer loop (`skaffold run` / `skaffold build`, see `run` profile below):
 #   Build the production multi-stage Dockerfile at repo root, push to
 #   gitea-ryzen, then a build-artifact `after` hook writes the new newTag into
-#   stacks/main/.../active-development/manifests/workflow-builder/kustomization.yaml
+#   stacks/main/.../workloads/workflow-builder/manifests/kustomization.yaml
 #   and git-pushes. ArgoCD (automated.selfHeal=true) reconciles within ~30s.
 
 build:

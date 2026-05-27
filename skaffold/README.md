@@ -11,8 +11,8 @@ There are two loops, plus the existing idpbuilder manifest sync path:
 | Loop | Command | What happens |
 |---|---|---|
 | **Inner** | `pnpm dev:skaffold` | Build a thin dev image (Node 22 / Python 3.12 + baked deps), deploy as the workflow-builder Deployment overlay (Argo paused for the session), then file-sync `src/`/`lib/`/etc. into the running pod on every save. Vite HMRs the browser; uvicorn `--reload` restarts the Python service. |
-| **Outer** | `pnpm deploy:skaffold` | Build the prod multi-stage Dockerfile, push to gitea-ryzen, then a wrapper commits the new tag into `stacks/main/.../active-development/manifests/<service>/kustomization.yaml` on **gitea-ryzen** (not GitHub origin). ArgoCD's `automated.selfHeal=true` reconciles within ~30s. |
-| **Manifest sync** | `idpbuilder stacks sync` / `clu` | Snapshot the selected local stacks worktree into in-cluster Gitea, compute affected ArgoCD Applications, hard-refresh them, and wait for them to observe the pushed revision. Current idpbuilder preserves active-development image pins by default and locks one mutating sync/watch per cluster/repo/branch. Skaffold does not replace this path. |
+| **Outer** | `pnpm deploy:skaffold` | Build the prod multi-stage Dockerfile, push to gitea-ryzen, then a wrapper commits the new tag into `stacks/main/.../workloads/<service>/manifests/kustomization.yaml` on **gitea-ryzen** (not GitHub origin). ArgoCD's `automated.selfHeal=true` reconciles within ~30s. |
+| **Manifest sync** | `idpbuilder stacks sync` / `clu` | Snapshot the selected local stacks worktree into in-cluster Gitea, compute affected ArgoCD Applications, hard-refresh them, and wait for them to observe the pushed revision. Current idpbuilder preserves workloads image pins by default and locks one mutating sync/watch per cluster/repo/branch. Skaffold does not replace this path. |
 
 The wrappers (`scripts/skaffold-dev.sh`, `scripts/skaffold-deploy.sh`) do
 several things that bare `skaffold dev` / `skaffold run` do not. Always use
@@ -132,7 +132,7 @@ edits, use idpbuilder/`clu`; for live source hot reload, use Skaffold; for
 promoted dev/staging releases, use the GHCR release-pins and GitOps Promoter
 path.
 
-Current idpbuilder syncs preserve active-development image pins unless
+Current idpbuilder syncs preserve workloads image pins unless
 `--seed-images=true` is passed explicitly. Mutating sync and watch mode also
 share a nonblocking lock keyed by cluster/repo/branch, so a second mutating sync
 should fail fast instead of racing. If a wait reports that sync to one commit

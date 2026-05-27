@@ -7,7 +7,7 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/fn-activepieces/Deployment-fn-activepieces.yaml
+  - ../../../../../stacks/main/packages/components/workloads/fn-activepieces/manifests/Deployment-fn-activepieces.yaml
 
 patches:
   - target:

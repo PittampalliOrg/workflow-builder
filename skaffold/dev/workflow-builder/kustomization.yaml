@@ -23,7 +23,7 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  - ../../../../../stacks/main/packages/components/active-development/manifests/workflow-builder/Deployment-workflow-builder.yaml
+  - ../../../../../stacks/main/packages/components/workloads/workflow-builder/manifests/Deployment-workflow-builder.yaml
 
 # The init container `wait-for-execution-read-model` uses
 # `docker.io/library/postgres:15.3-alpine3.18`. Mirror the Application-level
