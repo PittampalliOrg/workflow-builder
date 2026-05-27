@@ -3546,6 +3546,8 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
 
                 if retry_after_seconds > 0:
                     yield ctx.create_timer(timedelta(seconds=retry_after_seconds))
+                    if active_instances:
+                        break
                     continue
                 if (
                     pending_instance_ids
