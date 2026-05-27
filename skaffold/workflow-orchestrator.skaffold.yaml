@@ -103,7 +103,7 @@ profiles:
               gitCommit:
                 variant: CommitSha
       artifacts:
-        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-orchestrator
+        - image: ghcr.io/pittampalliorg/workflow-orchestrator
           context: ../services/workflow-orchestrator
           docker:
             dockerfile: Dockerfile

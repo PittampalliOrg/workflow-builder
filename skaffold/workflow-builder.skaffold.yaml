@@ -163,7 +163,7 @@ profiles:
               gitCommit:
                 variant: CommitSha
       artifacts:
-        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-builder
+        - image: ghcr.io/pittampalliorg/workflow-builder
           # Same context jump as the dev artifact above — repo root, not the
           # module file dir.
           context: ..

@@ -8,6 +8,12 @@ This quick start is for the current internal `workflow-builder` system, not the 
 - access to the `ryzen` cluster context
 - `skaffold` installed (v2.17+)
 - access to the sibling `stacks/main` repo for GitOps changes
+- **`ghcr.io` push credentials** for the outer loop (`skaffold run` builds and pushes to `ghcr.io/pittampalliorg/<svc>`). One-time setup:
+  ```bash
+  # Generate a GitHub PAT with `write:packages` scope at https://github.com/settings/tokens
+  echo "$GHCR_PAT" | docker login ghcr.io -u <github-username> --password-stdin
+  ```
+  `skaffold dev` (HMR) does not need GHCR creds — only `skaffold run` (outer loop) does.
 
 ## Local Repo Setup
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Outer-loop hook: after `skaffold run` builds+pushes the prod image, write the
-# new tag into the stacks-repo kustomization (on gitea-ryzen) and git-push.
-# ArgoCD selfHeal reconciles within ~30s (hard-refresh annotation accelerates
-# the poll).
+# Outer-loop hook: after `skaffold run` builds+pushes the prod image (to
+# ghcr.io as of A0.β), write the new tag into the stacks-repo kustomization
+# and git-push. ArgoCD selfHeal reconciles within ~30s (hard-refresh
+# annotation accelerates the poll).
 #
 # Wired as a `build.artifacts[].hooks.after` hook in workflow-builder.skaffold.yaml.
 # Skaffold sets:
@@ -10,15 +10,19 @@
 #   $SKAFFOLD_PUSH_IMAGE = true|false
 #
 # Usage (from skaffold):  bash commit-pin.sh <service>
-# Usage (manual):         SKAFFOLD_IMAGE=gitea.../workflow-builder:git-abc bash commit-pin.sh workflow-builder
+# Usage (manual):         SKAFFOLD_IMAGE=ghcr.io/.../workflow-builder:git-abc bash commit-pin.sh workflow-builder
 #
-# IMPORTANT: this hook does NOT touch the developer's primary stacks/main
-# checkout (which typically tracks GitHub origin/main). Instead it maintains a
-# dedicated cache at $HOME/.cache/skaffold/stacks-ryzen tracking gitea-ryzen
-# exclusively. On the ryzen cluster, gitea-ryzen and GitHub origin have
-# divergent histories; merging them is out of scope for this hook.
+# CURRENT STATE (A0.β stage 1): commit-pin still pushes to gitea-ryzen `main`,
+# matching ryzen's current standalone ArgoCD that reads from gitea-ryzen
+# env/ryzen. The image newName is now ghcr.io/pittampalliorg/<svc> (because
+# Skaffold pushes there), so what changes per run is the tag only.
 #
-# Override the cache dir via STACKS_REPO_DIR=/abs/path.
+# FUTURE (A6 cutover): when ryzen migrates to hub-managed and reads from
+# GitHub `inner-loop` branch, STACKS_REMOTE_URL default flips to GitHub.
+#
+# IMPORTANT: this hook maintains a dedicated cache at
+# $HOME/.cache/skaffold/stacks-ryzen tracking the remote configured by
+# STACKS_REMOTE_URL. Override the cache dir via STACKS_REPO_DIR=/abs/path.
 
 set -euo pipefail
 

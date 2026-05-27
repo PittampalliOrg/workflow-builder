@@ -89,7 +89,7 @@ profiles:
               gitCommit:
                 variant: CommitSha
       artifacts:
-        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/swebench-coordinator
+        - image: ghcr.io/pittampalliorg/swebench-coordinator
           context: ../services/swebench-coordinator
           docker:
             dockerfile: Dockerfile

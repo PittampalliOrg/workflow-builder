@@ -97,7 +97,7 @@ profiles:
               gitCommit:
                 variant: CommitSha
       artifacts:
-        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/function-router
+        - image: ghcr.io/pittampalliorg/function-router
           context: ..
           docker:
             dockerfile: services/function-router/Dockerfile

@@ -70,7 +70,7 @@ profiles:
               gitCommit:
                 variant: CommitSha
       artifacts:
-        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/fn-activepieces
+        - image: ghcr.io/pittampalliorg/fn-activepieces
           context: ..
           docker:
             dockerfile: services/fn-activepieces/Dockerfile

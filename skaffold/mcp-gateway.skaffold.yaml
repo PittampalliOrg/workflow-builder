@@ -97,7 +97,7 @@ profiles:
               gitCommit:
                 variant: CommitSha
       artifacts:
-        - image: gitea-ryzen.tail286401.ts.net/giteaadmin/mcp-gateway
+        - image: ghcr.io/pittampalliorg/mcp-gateway
           context: ..
           docker:
             dockerfile: services/mcp-gateway/Dockerfile
