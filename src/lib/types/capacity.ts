@@ -7,6 +7,7 @@ export type CapacityResourceSnapshot = {
   criticalReserve: number;
   renderedBudget: number;
   headroom: number;
+  observed?: number;
 };
 
 export type CapacityQueueResourceSnapshot = {

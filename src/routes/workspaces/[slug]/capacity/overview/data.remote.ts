@@ -305,6 +305,9 @@ export const getCapacityTrends = query(
 		HAVING sum(Count) > 0
 		ORDER BY bucket ASC`;
 
+      // Prefer cAdvisor container metrics when present. Clusters that have
+      // capacity-observer but not the cAdvisor scrape use
+      // cluster_capacity_observed as a live kubelet stats/summary fallback.
       const memoryActualSql = `
 		SELECT bucket, sum(v) AS v FROM (
 			SELECT toStartOfInterval(TimeUnix, INTERVAL ${bucket} SECOND) AS bucket,
@@ -343,6 +346,7 @@ export const getCapacityTrends = query(
           latencyRows,
           actualMemoryRows,
           actualCpuRows,
+          observedRows,
         ] = await Promise.all([
           queryClickHouse(resourceSeriesSql("cluster_capacity_requested")),
           queryClickHouse(resourceSeriesSql("cluster_capacity_allocatable")),
@@ -358,6 +362,7 @@ export const getCapacityTrends = query(
           queryClickHouse(latencySql),
           queryClickHouse(memoryActualSql),
           queryClickHouse(cpuActualSql),
+          queryClickHouse(resourceSeriesSql("cluster_capacity_observed")),
         ]);
 
         // utilization % = requested ÷ allocatable, capped 0–100. Rises as
@@ -403,8 +408,26 @@ export const getCapacityTrends = query(
             (actualUsagePctByResource[resource] ??= []).push({ t, value: pct });
           }
         };
-        addActualSeries("memory", actualMemoryRows);
-        addActualSeries("cpu", actualCpuRows);
+        const observedByResource = new Map<string, Record<string, unknown>[]>();
+        for (const row of observedRows) {
+          const res = String(row.res ?? "");
+          if (!res) continue;
+          const rows = observedByResource.get(res) ?? [];
+          rows.push(row);
+          observedByResource.set(res, rows);
+        }
+        addActualSeries(
+          "memory",
+          actualMemoryRows.length > 0
+            ? actualMemoryRows
+            : (observedByResource.get("memory") ?? []),
+        );
+        addActualSeries(
+          "cpu",
+          actualCpuRows.length > 0
+            ? actualCpuRows
+            : (observedByResource.get("cpu") ?? []),
+        );
 
         const toSeries = (
           rows: Record<string, unknown>[],
