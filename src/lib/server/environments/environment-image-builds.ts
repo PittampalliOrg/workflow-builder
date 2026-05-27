@@ -40,6 +40,8 @@ const DEFAULT_GIT_REVISION = "main";
 const DEFAULT_SWEBENCH_BUILD_GIT_URL = "https://github.com/PittampalliOrg/workflow-builder.git";
 const DEFAULT_SWEBENCH_STACKS_REPO = "https://github.com/PittampalliOrg/stacks.git";
 const DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM = "buildah-cache-swebench-inference";
+const DEFAULT_EPOCH_SWEBENCH_REGISTRY = "ghcr.io/epoch-research";
+const DEFAULT_EPOCH_SWEBENCH_IMAGE_PREFIX = "swe-bench.eval.x86_64";
 const MAX_SWEBENCH_BUILDAH_CACHE_SHARDS = 16;
 const DEFAULT_SWEBENCH_MAX_ACTIVE_BUILDS = 0;
 const MAX_SWEBENCH_MAX_ACTIVE_BUILDS = 200;
@@ -171,6 +173,17 @@ export type NormalizedEnvironmentBuildActivityEvent = Omit<
 > & {
 	id: string;
 	eventTimestamp: Date;
+};
+
+export type PrebuiltSwebenchImage = {
+	source: "epoch-research-ghcr";
+	imageRef: string;
+	digest: string;
+	sandboxImage: string;
+	manifestMediaType: string | null;
+	configMediaType: string | null;
+	labels: Record<string, string>;
+	created: string | null;
 };
 
 export type SerializedEnvironmentBuildActivityEvent = {
@@ -844,6 +857,27 @@ async function submitSwebenchPipelineRun(
 	namespace: string,
 	targetCluster: TektonTargetCluster,
 ) {
+	const prebuilt = await resolveEpochPrebuiltSwebenchImage(spec).catch((err) => {
+		console.warn("[swebench-env] failed to inspect Epoch prebuilt image", {
+			instanceId: spec.instanceId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return null;
+	});
+	if (prebuilt) {
+		const buildahCache = await selectSwebenchBuildahCacheForSubmission(spec);
+		return createTektonPipelineRun(
+			namespace,
+			buildSwebenchPrebuiltPipelineRunManifest(
+				spec,
+				prebuilt,
+				pipelineRunName,
+				namespace,
+				{ buildahCache },
+			),
+			{ targetCluster },
+		);
+	}
 	const buildahCache =
 		spec.buildBackend === "nix"
 			? undefined
@@ -855,6 +889,103 @@ async function submitSwebenchPipelineRun(
 		}),
 		{ targetCluster },
 	);
+}
+
+export function buildSwebenchPrebuiltPipelineRunManifest(
+	spec: SwebenchEnvironmentSpec,
+	prebuilt: PrebuiltSwebenchImage,
+	pipelineRunName: string,
+	namespace: string,
+	options: { buildahCache?: SwebenchBuildahCacheSelection } = {},
+): TektonPipelineRun {
+	const buildahCache = options.buildahCache ?? swebenchBuildahCacheSelection(spec);
+	const kueueQueueName = configuredSwebenchBuildKueueQueueName();
+	const nodeSelector = {
+		"stacks.io/build-pool": "hub",
+		...(buildahCache.nodeName
+			? { "kubernetes.io/hostname": buildahCache.nodeName }
+			: {}),
+	};
+	const swebenchSpecMetadata = compactObject({
+		...(spec.swebenchSpec ?? {}),
+		envSpecHash: spec.envSpecHash,
+		instanceId: spec.instanceId,
+		source: prebuilt.source,
+		prebuiltImageRef: prebuilt.imageRef,
+		prebuiltImageDigest: prebuilt.digest,
+		prebuiltImageCreated: prebuilt.created ?? undefined,
+		prebuiltImageLabels: prebuilt.labels,
+	});
+	return {
+		apiVersion: "tekton.dev/v1",
+		kind: "PipelineRun",
+		metadata: {
+			name: pipelineRunName,
+			namespace,
+			labels: {
+				"app.kubernetes.io/name": "workflow-builder-image-builds",
+				"app.kubernetes.io/component": "pipeline-run",
+				"app.kubernetes.io/part-of": "workflow-builder",
+				"workflow-builder.cnoe.io/image": spec.imageName,
+				"workflow-builder.cnoe.io/environment-key": spec.environmentKey,
+				"workflow-builder.cnoe.io/env-spec-hash": spec.envSpecHash.slice(0, 63),
+				"workflow-builder.cnoe.io/build-strategy": spec.buildStrategy,
+				"workflow-builder.cnoe.io/build-backend": "prebuilt-epoch",
+				"workflow-builder.cnoe.io/build-cache": buildahCache.claimName,
+				...(kueueQueueName ? { "kueue.x-k8s.io/queue-name": kueueQueueName } : {}),
+			},
+		},
+		spec: {
+			pipelineRef: { name: "swebench-inference-image-import" },
+			taskRunTemplate: {
+				serviceAccountName: "workflow-builder-build-trigger",
+				podTemplate: {
+					nodeSelector,
+					tolerations: [
+						{
+							key: "stacks.io/build-pool",
+							operator: "Equal",
+							value: "hub",
+							effect: "NoSchedule",
+						},
+					],
+				},
+			},
+			timeouts: {
+				pipeline: "1h0m0s",
+				tasks: "45m0s",
+				finally: "15m0s",
+			},
+			params: [
+				{ name: "suite", value: spec.suite },
+				{ name: "repo_slug", value: spec.repo },
+				{ name: "environment_key", value: spec.environmentKey },
+				{ name: "base_commit", value: spec.baseCommit },
+				{ name: "env_spec_hash", value: spec.envSpecHash },
+				{ name: "build_strategy", value: spec.buildStrategy },
+				{ name: "workspace_root", value: spec.workspaceRoot },
+				{ name: "image_ref", value: prebuilt.imageRef },
+				{ name: "image_digest", value: prebuilt.digest },
+				{ name: "validation_command", value: spec.validationCommand },
+				{ name: "environment_notes", value: JSON.stringify(spec.environmentNotes) },
+				{ name: "swebench_spec_metadata", value: JSON.stringify(swebenchSpecMetadata) },
+				{
+					name: "stacks_repo",
+					value:
+						env.SWEBENCH_INFERENCE_BUILD_STACKS_REPO ??
+						DEFAULT_SWEBENCH_STACKS_REPO,
+				},
+			],
+			workspaces: [
+				{
+					name: "buildah-cache",
+					persistentVolumeClaim: { claimName: buildahCache.claimName },
+				},
+				{ name: "dockerconfig", secret: { secretName: "gitea-registry-credentials" } },
+				{ name: "stacks-source", emptyDir: {} },
+			],
+		},
+	};
 }
 
 export function buildSwebenchPipelineRunManifest(
@@ -2146,6 +2277,160 @@ function configuredSwebenchMaxActiveBuilds(): number {
 function dynamicBuildTargetFromEnv(): TektonTargetCluster {
 	const mode = runtimeEnvString("SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE")?.toLowerCase() ?? "disabled";
 	return mode === "hub" ? "hub" : "local";
+}
+
+async function resolveEpochPrebuiltSwebenchImage(
+	spec: SwebenchEnvironmentSpec,
+): Promise<PrebuiltSwebenchImage | null> {
+	if (!envFlagEnabled("SWEBENCH_EPOCH_PREBUILT_IMAGES_ENABLED")) return null;
+	if (spec.buildStrategy !== "swebench-harness") return null;
+	if (!spec.instanceId) return null;
+	const registry =
+		runtimeEnvString("SWEBENCH_EPOCH_PREBUILT_REGISTRY") ??
+		DEFAULT_EPOCH_SWEBENCH_REGISTRY;
+	const imagePrefix =
+		runtimeEnvString("SWEBENCH_EPOCH_PREBUILT_IMAGE_PREFIX") ??
+		DEFAULT_EPOCH_SWEBENCH_IMAGE_PREFIX;
+	const registryHost = registry.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+	const repository = `${registryHost}/${imagePrefix}.${spec.instanceId}`;
+	const imageRef = `${repository}:latest`;
+	const manifest = await fetchOciManifest(repository, "latest");
+	if (!manifest) return null;
+	const manifestConfig = isRecord(manifest.body.config) ? manifest.body.config : {};
+	const configDigest = readString(manifestConfig.digest);
+	if (!configDigest) return null;
+	const config = await fetchOciConfig(repository, configDigest);
+	const imageConfig = isRecord(config?.config) ? config.config : {};
+	const labels = stringRecord(imageConfig.Labels);
+	if (labels["swe-bench.instance_id"] !== spec.instanceId) return null;
+	if (labels["swe-bench.repo"] !== spec.repo) return null;
+	if (readString(config?.architecture) !== "amd64") return null;
+	if (readString(config?.os) !== "linux") return null;
+	return {
+		source: "epoch-research-ghcr",
+		imageRef,
+		digest: manifest.digest,
+		sandboxImage: `${imageRef}@${manifest.digest}`,
+		manifestMediaType: readString(manifest.body.mediaType),
+		configMediaType: readString(config?.mediaType),
+		labels,
+		created: readString(config?.created),
+	};
+}
+
+async function fetchOciManifest(
+	repository: string,
+	tag: string,
+): Promise<{ digest: string; body: Record<string, unknown> } | null> {
+	const url = `https://${repositoryHost(repository)}/v2/${repositoryPath(repository)}/manifests/${encodeURIComponent(tag)}`;
+	const accept = [
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+	].join(", ");
+	const response = await fetchOci(url, repository, { Accept: accept });
+	if (response.status === 404) return null;
+	if (!response.ok) {
+		throw new Error(
+			`inspect prebuilt image manifest failed: ${response.status} ${await response.text()}`,
+		);
+	}
+	const digest = readString(response.headers.get("docker-content-digest"));
+	if (!digest) {
+		throw new Error("prebuilt image manifest response omitted docker-content-digest");
+	}
+	const body = (await response.json()) as unknown;
+	if (!isRecord(body)) throw new Error("prebuilt image manifest was not a JSON object");
+	return { digest, body };
+}
+
+async function fetchOciConfig(
+	repository: string,
+	digest: string,
+): Promise<Record<string, unknown> | null> {
+	const url = `https://${repositoryHost(repository)}/v2/${repositoryPath(repository)}/blobs/${digest}`;
+	const response = await fetchOci(url, repository, {
+		Accept:
+			"application/vnd.oci.image.config.v1+json, application/vnd.docker.container.image.v1+json",
+	});
+	if (response.status === 404) return null;
+	if (!response.ok) {
+		throw new Error(
+			`inspect prebuilt image config failed: ${response.status} ${await response.text()}`,
+		);
+	}
+	const body = (await response.json()) as unknown;
+	return isRecord(body) ? body : null;
+}
+
+async function fetchOci(
+	url: string,
+	repository: string,
+	headers: Record<string, string>,
+): Promise<Response> {
+	let response = await fetch(url, { headers });
+	if (response.status !== 401) return response;
+	const challenge = response.headers.get("www-authenticate");
+	const auth = parseBearerChallenge(challenge);
+	if (!auth) return response;
+	const tokenUrl = new URL(auth.realm);
+	tokenUrl.searchParams.set("service", auth.service ?? repositoryHost(repository));
+	tokenUrl.searchParams.set(
+		"scope",
+		auth.scope ?? `repository:${repositoryPath(repository)}:pull`,
+	);
+	const tokenResponse = await fetch(tokenUrl);
+	if (!tokenResponse.ok) return response;
+	const tokenBody = (await tokenResponse.json().catch(() => null)) as unknown;
+	const token = isRecord(tokenBody) ? readString(tokenBody.token) : null;
+	if (!token) return response;
+	response = await fetch(url, {
+		headers: {
+			...headers,
+			Authorization: `Bearer ${token}`,
+		},
+	});
+	return response;
+}
+
+function parseBearerChallenge(value: string | null): {
+	realm: string;
+	service?: string;
+	scope?: string;
+} | null {
+	if (!value?.startsWith("Bearer ")) return null;
+	const attributes = new Map<string, string>();
+	for (const match of value.matchAll(/([a-zA-Z_][a-zA-Z0-9_-]*)="([^"]*)"/g)) {
+		attributes.set(match[1], match[2]);
+	}
+	const realm = attributes.get("realm");
+	if (!realm) return null;
+	return {
+		realm,
+		service: attributes.get("service"),
+		scope: attributes.get("scope"),
+	};
+}
+
+function repositoryHost(repository: string): string {
+	return repository.split("/")[0] ?? repository;
+}
+
+function repositoryPath(repository: string): string {
+	return repository.split("/").slice(1).join("/");
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+	if (!isRecord(value)) return {};
+	return Object.fromEntries(
+		Object.entries(value)
+			.map(([key, child]) => [key, readString(child)] as const)
+			.filter((entry): entry is readonly [string, string] => Boolean(entry[1])),
+	);
+}
+
+function envFlagEnabled(name: string): boolean {
+	const raw = runtimeEnvString(name)?.toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 function runtimeEnvString(name: string): string | null {

@@ -45,6 +45,7 @@ vi.mock("$lib/server/kube/tekton", async (importOriginal) => {
 import {
 	buildSwebenchEnvironmentSpec,
 	buildSwebenchPipelineRunManifest,
+	buildSwebenchPrebuiltPipelineRunManifest,
 	ensureSwebenchEnvironment,
 	hasUsableValidatedImage,
 	normalizeEnvironmentBuildActivityEvents,
@@ -787,6 +788,86 @@ describe("SWE-bench environment image build planning", () => {
 		expect(manifest.metadata?.labels).toMatchObject({
 			"kueue.x-k8s.io/queue-name": "swebench-image-builds",
 		});
+	});
+
+	it("builds a validation-only PipelineRun for a digest-pinned prebuilt Epoch image", () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS", "3");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME", "swebench-image-builds");
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "django__django-14351",
+			repo: "django/django",
+			baseCommit: "abc123",
+			testMetadata: {
+				version: "4.0",
+				test_patch: "diff --git a/tests/test_fix.py b/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["tests/test_existing.py::test_existing"],
+			},
+		});
+
+		const manifest = buildSwebenchPrebuiltPipelineRunManifest(
+			spec,
+			{
+				source: "epoch-research-ghcr",
+				imageRef:
+					"ghcr.io/epoch-research/swe-bench.eval.x86_64.django__django-14351:latest",
+				digest: "sha256:a9df",
+				sandboxImage:
+					"ghcr.io/epoch-research/swe-bench.eval.x86_64.django__django-14351:latest@sha256:a9df",
+				manifestMediaType: "application/vnd.docker.distribution.manifest.v2+json",
+				configMediaType: "application/vnd.docker.container.image.v1+json",
+				created: "2024-10-31T00:49:31Z",
+				labels: {
+					"swe-bench.instance_id": "django__django-14351",
+					"swe-bench.repo": "django/django",
+				},
+			},
+			"swe-env-test",
+			"tekton-pipelines",
+			{
+				buildahCache: {
+					claimName: "buildah-cache-swebench-inference-2",
+					shard: 2,
+					nodeName: "hub-build-1",
+				},
+			},
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+
+		expect((runSpec.pipelineRef as Record<string, unknown>).name).toBe(
+			"swebench-inference-image-import",
+		);
+		expect(manifest.metadata?.labels).toMatchObject({
+			"workflow-builder.cnoe.io/build-backend": "prebuilt-epoch",
+			"workflow-builder.cnoe.io/build-cache": "buildah-cache-swebench-inference-2",
+			"kueue.x-k8s.io/queue-name": "swebench-image-builds",
+		});
+		expect(runSpec.taskRunTemplate).toMatchObject({
+			podTemplate: {
+				nodeSelector: {
+					"stacks.io/build-pool": "hub",
+					"kubernetes.io/hostname": "hub-build-1",
+				},
+			},
+		});
+		expect(runSpec.params).toEqual(
+			expect.arrayContaining([
+				{
+					name: "image_ref",
+					value:
+						"ghcr.io/epoch-research/swe-bench.eval.x86_64.django__django-14351:latest",
+				},
+				{ name: "image_digest", value: "sha256:a9df" },
+				{ name: "env_spec_hash", value: spec.envSpecHash },
+			]),
+		);
+		const metadataParam = (runSpec.params as Array<{ name: string; value: string }>).find(
+			(param) => param.name === "swebench_spec_metadata",
+		);
+		expect(metadataParam?.value).toContain('"source":"epoch-research-ghcr"');
+		expect(metadataParam?.value).toContain(`"envSpecHash":"${spec.envSpecHash}"`);
 	});
 
 	it("routes per-instance buildBackend=nix to the Nix Pipeline with no PVC and no hostname pin", () => {
