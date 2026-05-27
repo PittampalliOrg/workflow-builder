@@ -64,7 +64,7 @@ pnpm test:e2e         # Playwright E2E tests
 
 ## Dev Loop (Skaffold, ryzen cluster)
 
-Skaffold is the in-cluster dev loop. devspace.yaml is kept as a fallback during migration (see `/home/vpittamp/.claude/plans/i-want-to-consider-enchanted-codd.md`); use Skaffold when possible.
+Skaffold is the in-cluster dev loop. `devspace.yaml` + `scripts/devspace-dev-ryzen.sh` were retired in Phase 1; `bash scripts/skaffold-dev.sh` is the canonical entry point.
 
 ```bash
 # Inner loop (HMR file-sync into a Skaffold-owned dev pod):
@@ -103,21 +103,21 @@ Module set:
 | swebench-coordinator | Python SWE-bench coordinator | 3019→8080 |
 | fn-activepieces | Node Activepieces piece executor | 3016→8080, inactive by default |
 
-**`fn-system` is excluded** — it's a Knative Service (scale-to-0; not a regular Deployment). Inner-loop file-sync into a transient Knative pod is impractical. Use the cluster's existing fn-system (Argo-managed) as a dependency, or fall back to devspace.yaml for fn-system-specific work.
+**`fn-system` is excluded** — it's a Knative Service (scale-to-0; not a regular Deployment). Inner-loop file-sync into a transient Knative pod is impractical. Use the cluster's existing fn-system (Argo-managed) as a dependency; `scripts/sandbox-dev.sh` is the experimental sandbox-based alternative for Knative-style workloads.
 
 **`fn-activepieces` is inactive by default** — Skaffold config remains in-tree, but the current ryzen cluster does not expose it as a regular Argo Application/Deployment. Default `ALL` sessions skip it; use `SKAFFOLD_ALLOW_INACTIVE=1 bash scripts/skaffold-dev.sh fn-activepieces` only when deliberately restoring/testing that path.
 
 Inner-loop notes:
 - The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=gitea-ryzen.tail286401.ts.net/giteaadmin` so the dev image gets pushed to gitea-ryzen (where kind-ryzen nodes can pull). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.
 - The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
-- File sync rules in `skaffold/workflow-builder.skaffold.yaml` mirror devspace's `excludePaths`. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
-- The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../active-development/manifests/workflow-builder` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
+- File sync rules in `skaffold/workflow-builder.skaffold.yaml` define which paths trigger HMR vs a full image rebuild. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
+- The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../workloads/workflow-builder/manifests` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
 - `pnpm skaffold:doctor` checks both sides of the hybrid loop: Skaffold live drift and the ryzen idpbuilder/Gitea sync path (`idpbuilder stacks status`, hardened `--seed-images` flag availability, `idpbuilder stacks sync --print-refresh-plan`, and `clhot --ci-one-shot --check`).
 
 Outer-loop notes:
-- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to `gitea-ryzen/main` under `packages/components/active-development/manifests/<service>/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
+- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to `gitea-ryzen/main` under `packages/components/workloads/<service>/manifests/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
 - No `kubectl set image` — the live cluster is mutated only by ArgoCD.
-- This is separate from `idpbuilder stacks sync`: idpbuilder snapshots a selected local stacks worktree into in-cluster Gitea and refreshes affected apps, while Skaffold commit-pin only updates a resolved ryzen image tag. Current idpbuilder preserves active-development image pins by default and uses a per cluster/repo/branch lock for mutating sync/watch sessions; pass `--seed-images=true` only for deliberate bootstrap rewrites. Use idpbuilder/`clu` for manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
+- This is separate from `idpbuilder stacks sync`: idpbuilder snapshots a selected local stacks worktree into in-cluster Gitea and refreshes affected apps, while Skaffold commit-pin only updates a resolved ryzen image tag. Current idpbuilder preserves workloads image pins by default and uses a per cluster/repo/branch lock for mutating sync/watch sessions; pass `--seed-images=true` only for deliberate bootstrap rewrites. Use idpbuilder/`clu` for manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
 
 ## Services Overview
 
@@ -377,7 +377,7 @@ trigger {topic, urls, extractionPrompt}
 - **OAuth2 token expired** → Auto-refresh; check `AP_ENCRYPTION_KEY`
 - **AP credential decrypt fails** → Verify `INTERNAL_API_TOKEN` matches across services
 - **Tool fails ENOENT on `active_gateway`** → `seed-openshell-config` init didn't run; verify CR was created AFTER `openshell-sandbox-dapr-webhook` namespaceSelector covered `workflow-builder` AND controller image includes the init container; re-publish agent if older
-- **daprd `no X509 SVID / failed to get configuration`** → `dapr.io/config` Configuration missing in pod's namespace. `openshell-sandbox-dapr` must exist in `workflow-builder` (declared at `packages/components/active-development/manifests/workflow-builder/Configuration-openshell-sandbox-dapr.yaml`)
+- **daprd `no X509 SVID / failed to get configuration`** → `dapr.io/config` Configuration missing in pod's namespace. `openshell-sandbox-dapr` must exist in `workflow-builder` (declared at `packages/components/workloads/workflow-builder/manifests/Configuration-openshell-sandbox-dapr.yaml`)
 - **daprd `detected duplicate actor state store`** → Component with `actorStateStore=true` and no restrictive scopes became visible. Partition scopes (see Per-Agent Runtime Model)
 - **`ctx.call_child_workflow` times out `app may not be available`** → target pod isn't placement-registered. Either scaled to 0 (missing wake annotation) OR different namespace from parent (sub-orchestration is intra-namespace only)
 - **`Ignoring unexpected taskCompleted event with ID = N`** → NOT stuck; normal `call_child_workflow` replay chatter. Real stuck signals: CR `phase=Sleeping` after wake set, or pattern persists >5 min with daprd placement flaps
