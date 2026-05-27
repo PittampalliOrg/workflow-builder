@@ -2044,6 +2044,17 @@ function benchmarkRunInstanceTerminalReason(
 	return existingReason;
 }
 
+export function benchmarkSuccessfulEmptyPatchTerminationReason(
+	existingReason: string | null,
+	agentStopReason: string | null,
+): string | null {
+	if (!agentStopReason) return existingReason;
+	if (!existingReason || existingReason === "end_turn") {
+		return "max_turns_without_patch";
+	}
+	return existingReason;
+}
+
 export function benchmarkRunInstanceTerminalPatch(
 	row: BenchmarkRunInstanceTerminalInput,
 	outcome: BenchmarkRunTerminalOutcome,
@@ -5192,7 +5203,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 			: null;
 	const inferenceError =
 		status === "success"
-			? successfulEmptyPatchReason
+			? null
 			: (extractPatchError ||
 				sessionRow[0]?.errorMessage?.trim() ||
 				workflowExecutionError(row.execution, runtimeOutput));
@@ -5239,6 +5250,10 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		patchSha256: status === "success" ? sha256(patch) : undefined,
 		error: keepEvaluationOwnedError ? row.runInstance.error : inferenceError,
 		inferenceError,
+		terminationReason: benchmarkSuccessfulEmptyPatchTerminationReason(
+			row.runInstance.terminationReason,
+			successfulEmptyPatchReason,
+		),
 		inferenceCompletedAt: sessionRow[0]?.completedAt ?? now,
 		sessionId: sessionRow[0]?.id ?? row.runInstance.sessionId,
 		sandboxName: runtimeLinks.sandboxName,

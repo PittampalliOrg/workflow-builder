@@ -11,6 +11,7 @@ import {
 	benchmarkAgentRuntimeCleanupRuntimeAppIds,
 	benchmarkRunUsesAgentWorkflowHosts,
 	benchmarkRunInstanceTerminalPatch,
+	benchmarkSuccessfulEmptyPatchTerminationReason,
 	benchmarkSessionHostAppId,
 	buildSwebenchInstanceWorkflowGraph,
 	buildSwebenchInstanceWorkflowSpec,
@@ -756,6 +757,24 @@ describe("SWE-bench workflow spec", () => {
 			"Agent stopped after maxTurns=1 without producing a patch: I reached the maximum number of reasoning steps before I could finish. Please rephrase or provide more detail so I can try again.",
 		);
 		expect(extractAgentStopReason({ content: "Done" }, 80)).toBeNull();
+	});
+
+	it("classifies max-turn empty patches as a terminal model outcome", () => {
+		expect(
+			benchmarkSuccessfulEmptyPatchTerminationReason(
+				"end_turn",
+				"Agent stopped after maxTurns=10 without producing a patch",
+			),
+		).toBe("max_turns_without_patch");
+		expect(
+			benchmarkSuccessfulEmptyPatchTerminationReason(
+				"tool_error",
+				"Agent stopped after maxTurns=10 without producing a patch",
+			),
+		).toBe("tool_error");
+		expect(
+			benchmarkSuccessfulEmptyPatchTerminationReason("end_turn", null),
+		).toBe("end_turn");
 	});
 
 	it("uses a validated inference sandbox image when one is resolved", () => {
