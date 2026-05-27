@@ -311,6 +311,14 @@ function argoKubeconfigContext(): string | null {
   );
 }
 
+function argoUsesInClusterApi(): boolean {
+  return (
+    readEnvString("BENCHMARK_ARGOCD_KUBECONFIG_MODE")?.toLowerCase() ===
+      "in-cluster" ||
+    readEnvString("BENCHMARK_ARGOCD_IN_CLUSTER")?.toLowerCase() === "true"
+  );
+}
+
 export function summarizeArgoApplicationStability(input: {
   appName: string | null;
   namespace: string;
@@ -386,7 +394,8 @@ async function loadArgoApplicationStability(input: {
   const namespace =
     readEnvString("BENCHMARK_ARGOCD_NAMESPACE") ?? DEFAULT_ARGO_NAMESPACE;
   const kubeconfigPath = argoKubeconfigPath();
-  if (!appName || !kubeconfigPath) {
+  const useInClusterApi = argoUsesInClusterApi();
+  if (!appName || (!kubeconfigPath && !useInClusterApi)) {
     return summarizeArgoApplicationStability({
       appName: null,
       namespace,
@@ -395,16 +404,19 @@ async function loadArgoApplicationStability(input: {
     });
   }
   try {
-    const res = await kubeApiFetchFromKubeconfig(
-      `/apis/argoproj.io/v1alpha1/namespaces/${encodeURIComponent(
-        namespace,
-      )}/applications/${encodeURIComponent(appName)}`,
-      {},
-      {
-        kubeconfigPath,
-        context: argoKubeconfigContext(),
-      },
-    );
+    const path = `/apis/argoproj.io/v1alpha1/namespaces/${encodeURIComponent(
+      namespace,
+    )}/applications/${encodeURIComponent(appName)}`;
+    const res = useInClusterApi
+      ? await kubeApiFetch(path)
+      : await kubeApiFetchFromKubeconfig(
+          path,
+          {},
+          {
+            kubeconfigPath: kubeconfigPath!,
+            context: argoKubeconfigContext(),
+          },
+        );
     if (!res.ok) {
       throw new Error(
         `get Argo Application ${namespace}/${appName} failed: ${
