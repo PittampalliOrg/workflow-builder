@@ -790,7 +790,7 @@ describe("SWE-bench environment image build planning", () => {
 		});
 	});
 
-	it("builds a validation-only PipelineRun for a digest-pinned prebuilt Epoch image", () => {
+	it("builds a wrapping PipelineRun for a digest-pinned prebuilt Epoch image", () => {
 		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS", "3");
 		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME", "swebench-image-builds");
 		const spec = buildSwebenchEnvironmentSpec({
@@ -860,6 +860,8 @@ describe("SWE-bench environment image build planning", () => {
 						"ghcr.io/epoch-research/swe-bench.eval.x86_64.django__django-14351:latest",
 				},
 				{ name: "image_digest", value: "sha256:a9df" },
+				{ name: "image_name", value: spec.imageName },
+				{ name: "image_tag", value: spec.imageTag },
 				{ name: "env_spec_hash", value: spec.envSpecHash },
 			]),
 		);

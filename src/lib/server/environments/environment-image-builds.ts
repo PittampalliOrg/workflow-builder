@@ -966,6 +966,8 @@ export function buildSwebenchPrebuiltPipelineRunManifest(
 				{ name: "workspace_root", value: spec.workspaceRoot },
 				{ name: "image_ref", value: prebuilt.imageRef },
 				{ name: "image_digest", value: prebuilt.digest },
+				{ name: "image_name", value: spec.imageName },
+				{ name: "image_tag", value: spec.imageTag },
 				{ name: "validation_command", value: spec.validationCommand },
 				{ name: "environment_notes", value: JSON.stringify(spec.environmentNotes) },
 				{ name: "swebench_spec_metadata", value: JSON.stringify(swebenchSpecMetadata) },
