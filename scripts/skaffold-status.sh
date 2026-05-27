@@ -80,7 +80,7 @@ shorten_image() {
 # argv (no heredoc/stdin collision).
 get_pinned() {
   local mod="$1"
-  local kpath="packages/components/active-development/manifests/${mod}/kustomization.yaml"
+  local kpath="packages/components/workloads/${mod}/manifests/kustomization.yaml"
   local raw
   if ! raw=$(git -C "${stacks_dir}" show "origin/${branch}:${kpath}" 2>/dev/null); then
     return 0

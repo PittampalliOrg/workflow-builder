@@ -120,7 +120,7 @@ bootstrap_cache() {
 
 get_pinned() {
   local mod="$1"
-  local kpath="packages/components/active-development/manifests/${mod}/kustomization.yaml"
+  local kpath="packages/components/workloads/${mod}/manifests/kustomization.yaml"
   local raw
   if ! raw=$(git -C "${stacks_cache}" show "origin/${stacks_branch}:${kpath}" 2>/dev/null); then
     return 0
@@ -150,7 +150,7 @@ for entry in re.split(r"(?m)^  - ", m.group(1)):
 
 get_local_pinned() {
   local mod="$1"
-  local path="${stacks_dir}/packages/components/active-development/manifests/${mod}/kustomization.yaml"
+  local path="${stacks_dir}/packages/components/workloads/${mod}/manifests/kustomization.yaml"
   if [ ! -f "${path}" ]; then
     return 0
   fi
@@ -219,7 +219,7 @@ if command -v idpbuilder >/dev/null 2>&1; then
   if idpbuilder stacks sync --help 2>/dev/null | rg -q -- '--seed-images'; then
     idpbuilder_sync_seed_flag=true
   else
-    warning_json_lines+=("$(printf 'installed idpbuilder does not expose --seed-images; upgrade before mutating ryzen syncs so active-development image pins are preserved by default' | json_string)")
+    warning_json_lines+=("$(printf 'installed idpbuilder does not expose --seed-images; upgrade before mutating ryzen syncs so workloads image pins are preserved by default' | json_string)")
   fi
 fi
 

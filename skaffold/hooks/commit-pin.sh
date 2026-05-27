@@ -57,7 +57,10 @@ if ! git -C "${stacks_dir}" config user.email >/dev/null 2>&1; then
   git -C "${stacks_dir}" config user.name "Skaffold commit-pin"
 fi
 
-manifest_dir="${stacks_dir}/packages/components/active-development/manifests/${service}"
+# Phase 2a moved per-app manifests from active-development to workloads.
+# The kustomization.yaml schema is preserved (images: block with name/newName/newTag),
+# so only the target path changes.
+manifest_dir="${stacks_dir}/packages/components/workloads/${service}/manifests"
 
 # Fetch + hard-reset to the remote tip. We intentionally discard any local
 # commits in this cache (it exists solely for pin edits; preserving local
