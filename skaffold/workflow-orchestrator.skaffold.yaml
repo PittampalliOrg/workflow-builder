@@ -48,6 +48,13 @@ manifests:
 deploy:
   kubectl:
     defaultNamespace: workflow-builder
+    # See workflow-builder.skaffold.yaml for the wrapper-vs-hook rationale. The
+    # run profile clears `kubectl: {}` and so suppresses this hook.
+    hooks:
+      before:
+        - host:
+            command: ["bash", "skaffold/hooks/argo-pause.sh", "workflow-orchestrator"]
+            os: [linux, darwin]
 
 portForward:
   - resourceType: deployment
@@ -55,6 +62,28 @@ portForward:
     namespace: workflow-builder
     port: 8080
     localPort: 3013
+
+verify:
+  - name: workflow-orchestrator-ready
+    container:
+      name: probe
+      image: curlimages/curl:8.10.1
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          url=http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080/readyz
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 5 "$url" -o /dev/null; then
+              echo "verify: workflow-orchestrator reachable at $url (attempt $i)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "verify: workflow-orchestrator NOT reachable at $url after 10 attempts" >&2
+          exit 1
+    executionMode:
+      kubernetesCluster: {}
 
 profiles:
   - name: run
@@ -82,3 +111,4 @@ profiles:
       rawYaml: []
     deploy:
       kubectl: {}
+    verify: []

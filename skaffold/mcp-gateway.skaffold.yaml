@@ -44,6 +44,11 @@ manifests:
 deploy:
   kubectl:
     defaultNamespace: workflow-builder
+    hooks:
+      before:
+        - host:
+            command: ["bash", "skaffold/hooks/argo-pause.sh", "mcp-gateway"]
+            os: [linux, darwin]
 
 portForward:
   - resourceType: deployment
@@ -51,6 +56,28 @@ portForward:
     namespace: workflow-builder
     port: 8080
     localPort: 3018
+
+verify:
+  - name: mcp-gateway-ready
+    container:
+      name: probe
+      image: curlimages/curl:8.10.1
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          url=http://mcp-gateway.workflow-builder.svc.cluster.local:8080/health
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 5 "$url" -o /dev/null; then
+              echo "verify: mcp-gateway reachable at $url (attempt $i)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "verify: mcp-gateway NOT reachable at $url after 10 attempts" >&2
+          exit 1
+    executionMode:
+      kubernetesCluster: {}
 
 profiles:
   - name: run
@@ -78,3 +105,4 @@ profiles:
       rawYaml: []
     deploy:
       kubectl: {}
+    verify: []

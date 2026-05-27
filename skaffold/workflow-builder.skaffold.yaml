@@ -12,9 +12,14 @@ metadata:
 #   Skaffold syncs matched paths into the running pod via tar; Vite's
 #   filesystem watcher picks them up and HMR pushes to the browser.
 #
-#   ArgoCD pause/resume is handled by `scripts/skaffold-dev.sh` (which traps
-#   SIGINT/SIGTERM/EXIT and calls hooks/argo-pause.sh + hooks/argo-resume.sh).
-#   Don't run `skaffold dev` directly during normal use — use the wrapper.
+#   ArgoCD pause is wired both ways:
+#     - `deploy.kubectl.hooks.before` runs argo-pause.sh on every deploy
+#       iteration (idempotent), so a direct `skaffold dev` is safe.
+#     - `scripts/skaffold-dev.sh` additionally traps SIGINT/SIGTERM/EXIT and
+#       calls hooks/argo-resume.sh — Skaffold has no "session exit" hook that
+#       fires on kill -9, so the wrapper remains the canonical entry point
+#       for trap-based resume + UX (port-forward banner, stale-pause detector,
+#       post-session summary).
 #
 # Outer loop (`skaffold run` / `skaffold build`, see `run` profile below):
 #   Build the production multi-stage Dockerfile at repo root, push to
@@ -95,6 +100,16 @@ manifests:
 deploy:
   kubectl:
     defaultNamespace: workflow-builder
+    # Idempotent host hook so a direct `skaffold dev` (no wrapper) still pauses
+    # ArgoCD for this module on the first deploy. Wrapper scripts/skaffold-dev.sh
+    # still owns trap-based resume on exit — Skaffold has no "session exit" hook
+    # that survives kill -9, so the wrapper remains the canonical entry point.
+    # The run profile clears `kubectl: {}` and so suppresses these hooks.
+    hooks:
+      before:
+        - host:
+            command: ["bash", "skaffold/hooks/argo-pause.sh", "workflow-builder"]
+            os: [linux, darwin]
 
 portForward:
   - resourceType: deployment
@@ -102,6 +117,32 @@ portForward:
     namespace: workflow-builder
     port: 3000
     localPort: 3002
+
+# Post-deploy verification — runs after each `skaffold dev` deploy iteration and
+# on `skaffold verify`. Probe targets the live in-cluster Service so it catches
+# real reachability issues, not just pod-status. Suppressed in the `run` profile
+# (no deploy → nothing to verify).
+verify:
+  - name: workflow-builder-ready
+    container:
+      name: probe
+      image: curlimages/curl:8.10.1
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          url=http://workflow-builder.workflow-builder.svc.cluster.local:3000/
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 5 "$url" -o /dev/null; then
+              echo "verify: workflow-builder reachable at $url (attempt $i)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "verify: workflow-builder NOT reachable at $url after 10 attempts" >&2
+          exit 1
+    executionMode:
+      kubernetesCluster: {}
 
 profiles:
   - name: run
@@ -137,8 +178,11 @@ profiles:
           # `skaffold/hooks/commit-pin.sh` instead. Prefer that wrapper over
           # direct `skaffold run` / `skaffold build` for the outer loop.
     # Do not render or deploy in `run` mode — the kustomize pin commit + Argo
-    # selfHeal handle the rollout.
+    # selfHeal handle the rollout. `kubectl: {}` also clears the top-level
+    # deploy.hooks (no ArgoCD pause during outer-loop builds).
     manifests:
       rawYaml: []
     deploy:
       kubectl: {}
+    # No deploy → nothing to verify.
+    verify: []
