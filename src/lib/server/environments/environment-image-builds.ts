@@ -844,9 +844,15 @@ async function submitSwebenchPipelineRun(
 	namespace: string,
 	targetCluster: TektonTargetCluster,
 ) {
+	const buildahCache =
+		spec.buildBackend === "nix"
+			? undefined
+			: await selectSwebenchBuildahCacheForSubmission(spec);
 	return createTektonPipelineRun(
 		namespace,
-		buildSwebenchPipelineRunManifest(spec, pipelineRunName, namespace),
+		buildSwebenchPipelineRunManifest(spec, pipelineRunName, namespace, {
+			buildahCache,
+		}),
 		{ targetCluster },
 	);
 }
@@ -855,11 +861,12 @@ export function buildSwebenchPipelineRunManifest(
 	spec: SwebenchEnvironmentSpec,
 	pipelineRunName: string,
 	namespace: string,
+	options: { buildahCache?: SwebenchBuildahCacheSelection } = {},
 ): TektonPipelineRun {
 	if (spec.buildBackend === "nix") {
 		return buildSwebenchNixPipelineRunManifest(spec, pipelineRunName, namespace);
 	}
-	const buildahCache = swebenchBuildahCacheSelection(spec);
+	const buildahCache = options.buildahCache ?? swebenchBuildahCacheSelection(spec);
 	const kueueQueueName = configuredSwebenchBuildKueueQueueName();
 	const nodeSelector = {
 		"stacks.io/build-pool": "hub",
@@ -1036,11 +1043,15 @@ function swebenchBuildahCacheClaimName(spec: SwebenchEnvironmentSpec): string {
 	return swebenchBuildahCacheSelection(spec).claimName;
 }
 
-function swebenchBuildahCacheSelection(spec: SwebenchEnvironmentSpec): {
+type SwebenchBuildahCacheSelection = {
 	claimName: string;
 	shard: number | null;
 	nodeName: string | null;
-} {
+};
+
+function swebenchBuildahCacheSelection(
+	spec: SwebenchEnvironmentSpec,
+): SwebenchBuildahCacheSelection {
 	const shards = configuredSwebenchBuildahCacheShards();
 	if (shards <= 1) {
 		return {
@@ -1049,14 +1060,76 @@ function swebenchBuildahCacheSelection(spec: SwebenchEnvironmentSpec): {
 			nodeName: configuredSwebenchBuildahCacheShardNodes()[0] ?? null,
 		};
 	}
-	const hash = createHash("sha256").update(spec.envSpecHash).digest();
-	const shard = hash.readUInt32BE(0) % shards;
+	return swebenchBuildahCacheSelectionForShard(
+		hashedSwebenchBuildahCacheShard(spec.envSpecHash, shards),
+	);
+}
+
+function swebenchBuildahCacheSelectionForShard(
+	shard: number,
+): SwebenchBuildahCacheSelection {
 	const nodeName = configuredSwebenchBuildahCacheShardNodes()[shard] ?? null;
 	return {
 		claimName: `${DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM}-${shard}`,
 		shard,
 		nodeName,
 	};
+}
+
+function hashedSwebenchBuildahCacheShard(envSpecHash: string, shards: number): number {
+	const hash = createHash("sha256").update(envSpecHash).digest();
+	return hash.readUInt32BE(0) % shards;
+}
+
+export function selectSwebenchBuildahCacheShard(input: {
+	envSpecHash: string;
+	shards: number;
+	activeShardCounts?: Record<number, number>;
+}): number | null {
+	if (input.shards <= 1) return null;
+	const preferred = hashedSwebenchBuildahCacheShard(input.envSpecHash, input.shards);
+	const counts = input.activeShardCounts ?? {};
+	let selected = preferred;
+	let selectedCount = counts[preferred] ?? 0;
+	for (let shard = 0; shard < input.shards; shard += 1) {
+		const count = counts[shard] ?? 0;
+		if (count < selectedCount) {
+			selected = shard;
+			selectedCount = count;
+		}
+	}
+	return selected;
+}
+
+async function selectSwebenchBuildahCacheForSubmission(
+	spec: SwebenchEnvironmentSpec,
+): Promise<SwebenchBuildahCacheSelection> {
+	const shards = configuredSwebenchBuildahCacheShards();
+	if (shards <= 1) return swebenchBuildahCacheSelection(spec);
+	try {
+		const database = requireDb();
+		const rows = await database
+			.select({ envSpecHash: environmentImageBuilds.envSpecHash })
+			.from(environmentImageBuilds)
+			.where(inArray(environmentImageBuilds.status, ["queued", "building"]))
+			.limit(Math.max(configuredSwebenchMaxActiveBuilds(), shards) + 1);
+		const activeShardCounts: Record<number, number> = {};
+		for (const row of rows) {
+			if (!row.envSpecHash || row.envSpecHash === spec.envSpecHash) continue;
+			const shard = hashedSwebenchBuildahCacheShard(row.envSpecHash, shards);
+			activeShardCounts[shard] = (activeShardCounts[shard] ?? 0) + 1;
+		}
+		const shard = selectSwebenchBuildahCacheShard({
+			envSpecHash: spec.envSpecHash,
+			shards,
+			activeShardCounts,
+		});
+		return shard == null
+			? swebenchBuildahCacheSelection(spec)
+			: swebenchBuildahCacheSelectionForShard(shard);
+	} catch {
+		return swebenchBuildahCacheSelection(spec);
+	}
 }
 
 function configuredSwebenchBuildahCacheShards(): number {

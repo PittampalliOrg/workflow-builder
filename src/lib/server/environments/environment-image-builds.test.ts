@@ -50,6 +50,7 @@ import {
 	normalizeEnvironmentBuildActivityEvents,
 	plannedSwebenchInferenceEnvironment,
 	runtimeSafeEnvironment,
+	selectSwebenchBuildahCacheShard,
 	syncEnvironmentBuild,
 } from "./environment-image-builds";
 
@@ -730,6 +731,35 @@ describe("SWE-bench environment image build planning", () => {
 				},
 			},
 		});
+	});
+
+	it("keeps the preferred SWE-bench cache shard when it is not busier than alternatives", () => {
+		const envSpecHash = "abc123";
+		const preferred =
+			createHash("sha256").update(envSpecHash).digest().readUInt32BE(0) % 3;
+
+		expect(
+			selectSwebenchBuildahCacheShard({
+				envSpecHash,
+				shards: 3,
+				activeShardCounts: { [(preferred + 1) % 3]: 1 },
+			}),
+		).toBe(preferred);
+	});
+
+	it("moves a SWE-bench cache shard selection away from an active shard collision", () => {
+		const envSpecHash = "abc123";
+		const preferred =
+			createHash("sha256").update(envSpecHash).digest().readUInt32BE(0) % 3;
+		const expected = [0, 1, 2].find((shard) => shard !== preferred);
+
+		expect(
+			selectSwebenchBuildahCacheShard({
+				envSpecHash,
+				shards: 3,
+				activeShardCounts: { [preferred]: 1 },
+			}),
+		).toBe(expected);
 	});
 
 	it("can label SWE-bench PipelineRuns for Kueue-managed hub build capacity", () => {
