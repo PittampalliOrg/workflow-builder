@@ -1046,7 +1046,7 @@ function swebenchBuildahCacheSelection(spec: SwebenchEnvironmentSpec): {
 		return {
 			claimName: DEFAULT_SWEBENCH_BUILDAH_CACHE_CLAIM,
 			shard: null,
-			nodeName: null,
+			nodeName: configuredSwebenchBuildahCacheShardNodes()[0] ?? null,
 		};
 	}
 	const hash = createHash("sha256").update(spec.envSpecHash).digest();

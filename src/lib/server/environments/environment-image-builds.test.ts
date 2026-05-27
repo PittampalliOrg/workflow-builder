@@ -695,6 +695,43 @@ describe("SWE-bench environment image build planning", () => {
 		});
 	});
 
+	it("pins the one-shard SWE-bench PipelineRun when a cache node is configured", () => {
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_CACHE_SHARDS", "1");
+		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_CACHE_SHARD_NODES", "hub-build-1");
+		const spec = buildSwebenchEnvironmentSpec({
+			dataset: "princeton-nlp/SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "django__django-10554",
+			repo: "django/django",
+			baseCommit: "08ecf3f6a13900c80ba7143db2f00898b783510e",
+			testMetadata: {
+				version: "2.2",
+				test_patch: "diff --git a/tests/test_fix.py b/tests/test_fix.py\n",
+				FAIL_TO_PASS: ["tests/test_fix.py::test_regression"],
+				PASS_TO_PASS: ["tests/test_existing.py::test_existing"],
+			},
+		});
+
+		const manifest = buildSwebenchPipelineRunManifest(
+			spec,
+			"swe-env-test",
+			"tekton-pipelines",
+		);
+		const runSpec = manifest.spec as Record<string, unknown>;
+
+		expect(manifest.metadata?.labels).toMatchObject({
+			"workflow-builder.cnoe.io/build-cache": "buildah-cache-swebench-inference",
+		});
+		expect(runSpec.taskRunTemplate).toMatchObject({
+			podTemplate: {
+				nodeSelector: {
+					"stacks.io/build-pool": "hub",
+					"kubernetes.io/hostname": "hub-build-1",
+				},
+			},
+		});
+	});
+
 	it("can label SWE-bench PipelineRuns for Kueue-managed hub build capacity", () => {
 		vi.stubEnv("SWEBENCH_INFERENCE_BUILD_KUEUE_QUEUE_NAME", "swebench-image-builds");
 		const spec = buildSwebenchEnvironmentSpec({
