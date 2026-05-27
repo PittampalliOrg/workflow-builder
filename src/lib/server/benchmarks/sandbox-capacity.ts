@@ -119,6 +119,12 @@ const DEFAULT_SANDBOX_DAPR_REQUEST_MEMORY = "128Mi";
 const DEFAULT_SANDBOX_DAPR_REQUEST_EPHEMERAL_STORAGE = "256Mi";
 const DEFAULT_NODE_FS_EVICTION_RESERVE = "24Gi";
 const DEFAULT_SANDBOX_NAMESPACE = "openshell";
+const DEFAULT_EXECUTION_WORKER_REQUEST_CPU = "100m";
+const DEFAULT_EXECUTION_WORKER_REQUEST_MEMORY = "256Mi";
+const DEFAULT_EXECUTION_WORKER_REQUEST_EPHEMERAL_STORAGE = "1Gi";
+const DEFAULT_AGENT_HOST_REQUEST_CPU = "500m";
+const DEFAULT_AGENT_HOST_REQUEST_MEMORY = "1Gi";
+const DEFAULT_AGENT_HOST_REQUEST_EPHEMERAL_STORAGE = "2Gi";
 
 type NodeStorageStats = {
 	availableBytes: number | null;
@@ -394,20 +400,37 @@ function executionWorkerResourceProfileFromEnv():
 	}
 	const config = executionClassConfigFromEnv();
 	if (!config) return null;
-	const cpuMilli = parseCpuMilli(config.cpu);
-	const memoryBytes = parseMemoryBytes(config.memory);
-	const ephemeralStorageBytes = parseMemoryBytes(config.ephemeralStorage);
-	if (
-		cpuMilli == null &&
-		memoryBytes == null &&
-		ephemeralStorageBytes == null
-	) {
+	return {
+		cpuMilli:
+			parseCpuMilli(config.cpu) ??
+			parseCpuMilli(DEFAULT_EXECUTION_WORKER_REQUEST_CPU)!,
+		memoryBytes:
+			parseMemoryBytes(config.memory) ??
+			parseMemoryBytes(DEFAULT_EXECUTION_WORKER_REQUEST_MEMORY)!,
+		ephemeralStorageBytes:
+			parseMemoryBytes(config.ephemeralStorage) ??
+			parseMemoryBytes(DEFAULT_EXECUTION_WORKER_REQUEST_EPHEMERAL_STORAGE)!,
+	};
+}
+
+function agentHostResourceProfileFromEnv():
+	| BenchmarkSandboxResourceProfile
+	| null {
+	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
+	const config = executionClassConfigFromEnv();
+	if (!config) return null;
 	return {
-		cpuMilli: cpuMilli ?? 0,
-		memoryBytes: memoryBytes ?? 0,
-		ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
+		cpuMilli:
+			parseCpuMilli(config.agentHostCpu) ??
+			parseCpuMilli(DEFAULT_AGENT_HOST_REQUEST_CPU)!,
+		memoryBytes:
+			parseMemoryBytes(config.agentHostMemory) ??
+			parseMemoryBytes(DEFAULT_AGENT_HOST_REQUEST_MEMORY)!,
+		ephemeralStorageBytes:
+			parseMemoryBytes(config.agentHostEphemeralStorage) ??
+			parseMemoryBytes(DEFAULT_AGENT_HOST_REQUEST_EPHEMERAL_STORAGE)!,
 	};
 }
 
@@ -426,10 +449,21 @@ export function kueueInstanceResourceProfileFromEnv(
 		return openshellPodRequest;
 	}
 	const executionWorkerRequest = executionWorkerResourceProfileFromEnv();
+	const agentHostRequest = agentHostResourceProfileFromEnv();
+	const agentHostPodRequest = agentHostRequest
+		? addResourceProfiles(agentHostRequest, daprSidecarResourceProfileFromEnv())
+		: null;
 	if (mode === "host-worker-composite") {
 		return addResourceProfiles(
-			openshellPodRequest,
-			executionWorkerRequest ?? {
+			addResourceProfiles(
+				openshellPodRequest,
+				executionWorkerRequest ?? {
+					cpuMilli: 0,
+					memoryBytes: 0,
+					ephemeralStorageBytes: 0,
+				},
+			),
+			agentHostPodRequest ?? {
 				cpuMilli: 0,
 				memoryBytes: 0,
 				ephemeralStorageBytes: 0,
@@ -450,7 +484,10 @@ export function kueueInstancePodCountFromEnv(
 	const mode = kueueInstanceRequestMode();
 	if (mode === "openshell-pod") return 1;
 	if (mode === "host-worker-composite") {
-		return executionWorkerResourceProfileFromEnv() ? 2 : 1;
+		let count = 1;
+		if (executionWorkerResourceProfileFromEnv()) count += 1;
+		if (agentHostResourceProfileFromEnv()) count += 1;
+		return count;
 	}
 	return 1;
 }

@@ -1601,10 +1601,10 @@ describe("SWE-bench terminal run cleanup", () => {
 		]);
 	});
 
-	it("keeps benchmark Dapr histories by default", () => {
+	it("purges benchmark Dapr histories by default", () => {
 		expect(
 			__benchmarkDurableRuntimeForTest.shouldPurgeBenchmarkDaprWorkflowsOnCleanup(),
-		).toBe(false);
+		).toBe(true);
 	});
 
 	it("does not advance stalled benchmark cleanup after durable close confirmation times out by default", () => {

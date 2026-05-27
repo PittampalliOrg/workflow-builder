@@ -1824,6 +1824,24 @@ def _run_native_durable_agent_child_workflow(
         bridge_result = yield ctx.call_activity(
             spawn_session_for_workflow, input=_freeze(bridge_payload)
         )
+        if isinstance(bridge_result, dict) and bridge_result.get("cancelled"):
+            reason = bridge_result.get("error") or "workflow cancelled"
+            stop_reason = bridge_result.get("stopReason")
+            return {
+                "success": False,
+                "cancelled": True,
+                "error": str(reason),
+                "stopReason": stop_reason
+                if isinstance(stop_reason, dict)
+                else {
+                    "type": "cancelled",
+                    "reason": str(reason),
+                    "source": "benchmark_cleanup",
+                },
+                "agentWorkflowId": child_instance_id,
+                "daprInstanceId": child_instance_id,
+                "childWorkflowName": "session_workflow",
+            }
         bridge_child_input = bridge_result.get("childInput") if isinstance(
             bridge_result, dict
         ) else None

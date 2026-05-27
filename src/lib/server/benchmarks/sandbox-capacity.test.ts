@@ -579,9 +579,9 @@ describe("sandbox scheduler capacity", () => {
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
 			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
-				cpuMilli: 250,
-				memoryBytes: 896 * 1024 * 1024,
-				ephemeralStorageBytes: 3880 * 1024 * 1024,
+				cpuMilli: 550,
+				memoryBytes: 2048 * 1024 * 1024,
+				ephemeralStorageBytes: 7208 * 1024 * 1024,
 			});
 		} finally {
 			for (const [key, value] of Object.entries(previous)) {
@@ -637,7 +637,7 @@ describe("sandbox scheduler capacity", () => {
 			);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
-			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
 			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
 				"modeled_composite_budget",
 			);
@@ -653,7 +653,8 @@ describe("sandbox scheduler capacity", () => {
 			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
 				"benchmark-fast": {},
 			});
-			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(1);
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
 		} finally {
 			for (const [key, value] of Object.entries(previous)) {
 				if (value == null) {

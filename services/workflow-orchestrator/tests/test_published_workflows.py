@@ -1867,6 +1867,91 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
     assert result["success"] is True
 
 
+def test_benchmark_durable_run_returns_cancelled_when_spawn_sees_cancelled_run():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={
+            "prompt": "Create a validation marker",
+            "runId": "bench-run-1",
+            "instanceId": "django__django-12345",
+        },
+        execution_id="exec_benchmark_cancel",
+        db_execution_id="db_exec_benchmark_cancel",
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-benchmark-wf-cancel"
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+        def call_child_workflow(self, *_args, **_kwargs):
+            raise AssertionError("cancelled benchmark should not start child workflow")
+
+        def create_timer(self, _timeout):
+            raise AssertionError("benchmark durable/run should not create a parent timer")
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "agentRuntime": "dapr-agent-py",
+                "timeoutMinutes": "1",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["activity"] == "spawn_session_for_workflow"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(
+            {
+                "sessionId": "child-session",
+                "success": False,
+                "cancelled": True,
+                "error": "Benchmark run bench-run-1 is cancelled",
+                "stopReason": {
+                    "type": "cancelled",
+                    "reason": "Benchmark run bench-run-1 is cancelled",
+                    "source": "benchmark_cleanup",
+                },
+            }
+        )
+
+    result = stop.value.value
+    assert result["success"] is False
+    assert result["cancelled"] is True
+    assert result["error"] == "Benchmark run bench-run-1 is cancelled"
+    assert result["childWorkflowName"] == "session_workflow"
+
+
 def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflow_order():
     workflow = types.SimpleNamespace(
         use=None,
@@ -2012,6 +2097,28 @@ def test_spawn_session_activity_polls_agent_session_host_until_ready(monkeypatch
         "tracestate": "vendor=value",
         "baggage": "workflow.execution.id=exec_1,session.id=session_1",
     }
+
+
+def test_spawn_session_activity_returns_cancelled_for_cancelled_benchmark_run(monkeypatch):
+    def fake_post(_endpoint, **_kwargs):
+        return _FakeResponse(
+            {},
+            status_code=409,
+            text='{"message":"Benchmark run run-1 is cancelled; refusing to provision session host"}',
+        )
+
+    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
+
+    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+        "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
+        {"sessionId": "child-session"},
+        "token",
+    )
+
+    assert body["sessionId"] == "child-session"
+    assert body["success"] is False
+    assert body["cancelled"] is True
+    assert body["stopReason"]["type"] == "cancelled"
 
 
 def test_spawn_session_activity_times_out_waiting_for_agent_session_host(monkeypatch):

@@ -40,6 +40,34 @@ DEFAULT_AGENT_SESSION_HOST_READY_POLL_SECONDS = 5
 DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS = 600
 
 
+def _cancelled_benchmark_refusal(status_code: int, body: str) -> bool:
+    normalized = (body or "").lower()
+    return (
+        status_code == 409
+        and "refusing to provision session host" in normalized
+        and "cancelled" in normalized
+        and (
+            "benchmark run" in normalized
+            or "benchmark instance" in normalized
+        )
+    )
+
+
+def _cancelled_benchmark_bridge_result(session_id: str, body: str) -> dict[str, Any]:
+    message = body.strip() if body.strip() else "benchmark run cancelled"
+    return {
+        "sessionId": session_id,
+        "success": False,
+        "cancelled": True,
+        "error": message,
+        "stopReason": {
+            "type": "cancelled",
+            "reason": message,
+            "source": "benchmark_cleanup",
+        },
+    }
+
+
 def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
     try:
         return max(minimum, int(os.environ.get(name, str(default))))
@@ -90,6 +118,9 @@ def _post_ensure_for_workflow(
 
     if response.status_code >= 400:
         body_preview = response.text[:800] if response.text else "<empty>"
+        session_id = str(payload.get("sessionId") or "").strip()
+        if _cancelled_benchmark_refusal(response.status_code, body_preview):
+            return _cancelled_benchmark_bridge_result(session_id, body_preview)
         raise RuntimeError(
             f"spawn_session_for_workflow: HTTP {response.status_code} from BFF: {body_preview}"
         )
@@ -244,6 +275,21 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"
         body = _ensure_agent_session_host_ready(endpoint, payload, internal_token, otel)
+
+        if body.get("cancelled") is True:
+            return {
+                "sessionId": body.get("sessionId") or session_id,
+                "success": False,
+                "cancelled": True,
+                "error": body.get("error") or "benchmark run cancelled",
+                "stopReason": body.get("stopReason")
+                if isinstance(body.get("stopReason"), dict)
+                else {
+                    "type": "cancelled",
+                    "reason": body.get("error") or "benchmark run cancelled",
+                    "source": "benchmark_cleanup",
+                },
+            }
 
         child_input = body.get("childInput")
         if not isinstance(child_input, dict):
