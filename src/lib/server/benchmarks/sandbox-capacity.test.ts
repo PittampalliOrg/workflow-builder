@@ -533,6 +533,84 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
+	it("caps Kueue full-instance capacity by live node request headroom", () => {
+		const sandboxRequest = {
+			cpuMilli: 250,
+			memoryBytes: 256 * 1024 * 1024,
+			ephemeralStorageBytes: 1024 * 1024 * 1024,
+		};
+		const instanceRequest = {
+			cpuMilli: 600,
+			memoryBytes: 1536 * 1024 * 1024,
+			ephemeralStorageBytes: 1024 * 1024 * 1024,
+		};
+		const kueueCapacity = kueueCapacityFromClusterQueue(
+			{
+				metadata: { name: "benchmark-fast" },
+				spec: {
+					resourceGroups: [
+						{
+							flavors: [
+								{
+									name: "dev-benchmark",
+									resources: [
+										{ name: "cpu", nominalQuota: "5" },
+										{ name: "memory", nominalQuota: "5Gi" },
+										{ name: "ephemeral-storage", nominalQuota: "24Gi" },
+										{ name: "pods", nominalQuota: "20" },
+									],
+								},
+							],
+						},
+					],
+				},
+				status: {
+					flavorsUsage: [
+						{
+							name: "dev-benchmark",
+							resources: [
+								{ name: "cpu", total: "0" },
+								{ name: "memory", total: "0" },
+								{ name: "ephemeral-storage", total: "0" },
+								{ name: "pods", total: "0" },
+							],
+						},
+					],
+				},
+			},
+			sandboxRequest,
+			{ instanceRequest, instancePodCount: 3 },
+		);
+		const snapshot = estimateSchedulableSandboxCapacity({
+			nodes: [
+				workerNode("worker-a", {
+					cpu: "4",
+					memory: "8Gi",
+					"ephemeral-storage": "100Gi",
+				}),
+			],
+			pods: [
+				pod({
+					name: "system-load",
+					namespace: "workflow-builder",
+					nodeName: "worker-a",
+					cpu: "100m",
+					memory: "5000Mi",
+					ephemeralStorage: "1Gi",
+				}),
+			],
+			kueueCapacity,
+			sandboxRequest,
+			kueueInstanceRequest: instanceRequest,
+		});
+
+		expect(snapshot).toMatchObject({
+			kueueAvailableInstanceSlots: 3,
+			kueueInstanceMemoryLimitedCapacity: 3,
+			schedulableKueueInstanceCapacity: 2,
+		});
+	});
+
 	it("defaults Kueue full-instance request to the admitted OpenShell pod shape", () => {
 		const previous = {
 			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
@@ -577,7 +655,8 @@ describe("sandbox scheduler capacity", () => {
 				ephemeralStorageBytes: 2856 * 1024 * 1024,
 			});
 
-			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE =
+				"host-worker-composite";
 			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
 				cpuMilli: 550,
 				memoryBytes: 2048 * 1024 * 1024,
@@ -636,7 +715,8 @@ describe("sandbox scheduler capacity", () => {
 				"admitted_kueue_pods",
 			);
 
-			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE =
+				"host-worker-composite";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
 			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
 				"modeled_composite_budget",
@@ -653,7 +733,8 @@ describe("sandbox scheduler capacity", () => {
 			process.env.SANDBOX_EXECUTION_CLASSES_JSON = JSON.stringify({
 				"benchmark-fast": {},
 			});
-			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE =
+				"host-worker-composite";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(3);
 		} finally {
 			for (const [key, value] of Object.entries(previous)) {

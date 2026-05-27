@@ -392,9 +392,7 @@ function executionClassConfigFromEnv(): Record<string, unknown> | null {
 	}
 }
 
-function executionWorkerResourceProfileFromEnv():
-	| BenchmarkSandboxResourceProfile
-	| null {
+function executionWorkerResourceProfileFromEnv(): BenchmarkSandboxResourceProfile | null {
 	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
@@ -413,9 +411,7 @@ function executionWorkerResourceProfileFromEnv():
 	};
 }
 
-function agentHostResourceProfileFromEnv():
-	| BenchmarkSandboxResourceProfile
-	| null {
+function agentHostResourceProfileFromEnv(): BenchmarkSandboxResourceProfile | null {
 	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
@@ -515,7 +511,10 @@ function finiteNumber(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function nestedRecord(value: unknown, key: string): Record<string, unknown> | null {
+function nestedRecord(
+	value: unknown,
+	key: string,
+): Record<string, unknown> | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const child = (value as Record<string, unknown>)[key];
 	return child && typeof child === "object" && !Array.isArray(child)
@@ -566,7 +565,9 @@ async function loadNodeStorageStats(
 					{ retries: 0 },
 				);
 				if (!res.ok) return null;
-				const stats = extractNodeStorageStats(await res.json().catch(() => null));
+				const stats = extractNodeStorageStats(
+					await res.json().catch(() => null),
+				);
 				return stats ? ([nodeName, stats] as const) : null;
 			} catch {
 				return null;
@@ -588,10 +589,7 @@ function namespaceFromEnv(): string {
 
 function isKueueExecutionBackend(value: unknown): boolean {
 	if (typeof value !== "string" || !value.trim()) return false;
-	const normalized = value
-		.trim()
-		.toLowerCase()
-		.replace(/_/g, "-");
+	const normalized = value.trim().toLowerCase().replace(/_/g, "-");
 	return (
 		normalized === "dapr-kueue" ||
 		normalized === "kueue-dapr" ||
@@ -616,10 +614,7 @@ function kueueClusterQueueNameFromEnv(): string | null {
 	);
 }
 
-function resourceQuantity(
-	resourceName: string,
-	value: unknown,
-): number | null {
+function resourceQuantity(resourceName: string, value: unknown): number | null {
 	if (resourceName === "cpu") return parseCpuMilli(value);
 	if (resourceName === "memory" || resourceName === "ephemeral-storage") {
 		return parseMemoryBytes(value);
@@ -628,9 +623,7 @@ function resourceQuantity(
 	return null;
 }
 
-function resourceMapFromEntries(
-	entries: unknown,
-): Map<string, number> {
+function resourceMapFromEntries(entries: unknown): Map<string, number> {
 	const resources = new Map<string, number>();
 	if (!Array.isArray(entries)) return resources;
 	for (const entry of entries) {
@@ -647,7 +640,8 @@ function resourceMapFromEntries(
 
 function finiteCapacityMin(values: Array<number | null>): number | null {
 	const candidates = values.filter(
-		(value): value is number => typeof value === "number" && Number.isFinite(value),
+		(value): value is number =>
+			typeof value === "number" && Number.isFinite(value),
 	);
 	return candidates.length > 0 ? Math.min(...candidates) : null;
 }
@@ -659,14 +653,19 @@ function clusterQueueActiveCondition(status: Record<string, unknown> | null): {
 } {
 	const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
 	for (const condition of conditions) {
-		if (!condition || typeof condition !== "object" || Array.isArray(condition)) {
+		if (
+			!condition ||
+			typeof condition !== "object" ||
+			Array.isArray(condition)
+		) {
 			continue;
 		}
 		const record = condition as Record<string, unknown>;
 		if (record.type !== "Active") continue;
 		const rawStatus = typeof record.status === "string" ? record.status : "";
 		return {
-			active: rawStatus === "True" ? true : rawStatus === "False" ? false : null,
+			active:
+				rawStatus === "True" ? true : rawStatus === "False" ? false : null,
 			reason: typeof record.reason === "string" ? record.reason : null,
 			message: typeof record.message === "string" ? record.message : null,
 		};
@@ -684,7 +683,11 @@ export function kueueCapacityFromClusterQueue(
 		instanceRequestMode?: BenchmarkKueueInstanceRequestMode | null;
 	},
 ): BenchmarkKueueCapacitySnapshot | null {
-	if (!clusterQueue || typeof clusterQueue !== "object" || Array.isArray(clusterQueue)) {
+	if (
+		!clusterQueue ||
+		typeof clusterQueue !== "object" ||
+		Array.isArray(clusterQueue)
+	) {
 		return null;
 	}
 	const root = clusterQueue as Record<string, unknown>;
@@ -752,7 +755,8 @@ export function kueueCapacityFromClusterQueue(
 	const availablePods = remaining("pods");
 	const borrowAvailableCpuMilli = borrowRemaining("cpu");
 	const borrowAvailableMemoryBytes = borrowRemaining("memory");
-	const borrowAvailableEphemeralStorageBytes = borrowRemaining("ephemeral-storage");
+	const borrowAvailableEphemeralStorageBytes =
+		borrowRemaining("ephemeral-storage");
 	const borrowAvailablePods = borrowRemaining("pods");
 	const cpuLimitedCapacity =
 		availableCpuMilli == null
@@ -767,8 +771,7 @@ export function kueueCapacityFromClusterQueue(
 		sandboxRequest.ephemeralStorageBytes <= 0
 			? null
 			: Math.floor(
-					availableEphemeralStorageBytes /
-						sandboxRequest.ephemeralStorageBytes,
+					availableEphemeralStorageBytes / sandboxRequest.ephemeralStorageBytes,
 				);
 	const podLimitedCapacity = availablePods == null ? null : availablePods;
 	const availableSandboxSlots = finiteCapacityMin([
@@ -869,19 +872,19 @@ export function kueueCapacityFromClusterQueue(
 		ephemeralStorageLimitedCapacity,
 		podLimitedCapacity,
 		availableCpuMilli,
-			availableMemoryBytes,
-			availableEphemeralStorageBytes,
-			availablePods,
-			borrowAvailableSandboxSlots,
+		availableMemoryBytes,
+		availableEphemeralStorageBytes,
+		availablePods,
+		borrowAvailableSandboxSlots,
 		instanceRequestCpuMilli: instanceRequest?.cpuMilli ?? null,
 		instanceRequestMemoryBytes: instanceRequest?.memoryBytes ?? null,
 		instanceRequestEphemeralStorageBytes:
 			instanceRequest?.ephemeralStorageBytes ?? null,
-			instancePodCount: instanceRequest ? instancePodCount : null,
-			instancePodCountScope,
-			instanceRequestMode,
-			availableInstanceSlots,
-			borrowAvailableInstanceSlots,
+		instancePodCount: instanceRequest ? instancePodCount : null,
+		instancePodCountScope,
+		instanceRequestMode,
+		availableInstanceSlots,
+		borrowAvailableInstanceSlots,
 		instanceCpuLimitedCapacity,
 		instanceMemoryLimitedCapacity,
 		instanceEphemeralStorageLimitedCapacity,
@@ -963,12 +966,18 @@ export function estimateSchedulableSandboxCapacity(params: {
 		allocatableEphemeralStorageBytes +=
 			parseMemoryBytes(allocatable["ephemeral-storage"]) ?? 0;
 		const storage = nodeStorageStats?.get(nodeName);
-		if (storage?.availableBytes !== null && storage?.availableBytes !== undefined) {
+		if (
+			storage?.availableBytes !== null &&
+			storage?.availableBytes !== undefined
+		) {
 			nodeFsAvailableBytes =
 				(nodeFsAvailableBytes ?? 0) +
 				Math.max(0, storage.availableBytes - nodeFsReserveBytes);
 		}
-		if (storage?.capacityBytes !== null && storage?.capacityBytes !== undefined) {
+		if (
+			storage?.capacityBytes !== null &&
+			storage?.capacityBytes !== undefined
+		) {
 			nodeFsCapacityBytes = (nodeFsCapacityBytes ?? 0) + storage.capacityBytes;
 		}
 	}
@@ -1040,8 +1049,10 @@ export function estimateSchedulableSandboxCapacity(params: {
 			? Math.max(
 					0,
 					Math.floor(
-						Math.max(0, nodeFsAvailableBytes - pendingSwebenchEphemeralStorageBytes) /
-							sandboxRequest.ephemeralStorageBytes,
+						Math.max(
+							0,
+							nodeFsAvailableBytes - pendingSwebenchEphemeralStorageBytes,
+						) / sandboxRequest.ephemeralStorageBytes,
 					),
 				)
 			: null;
@@ -1057,8 +1068,7 @@ export function estimateSchedulableSandboxCapacity(params: {
 		? Math.max(
 				0,
 				Math.floor(
-					availableMemoryBytes /
-						Math.max(1, kueueInstanceRequest.memoryBytes),
+					availableMemoryBytes / Math.max(1, kueueInstanceRequest.memoryBytes),
 				),
 			)
 		: null;
@@ -1078,16 +1088,25 @@ export function estimateSchedulableSandboxCapacity(params: {
 		ephemeralStorageLimitedCapacity ?? Number.POSITIVE_INFINITY,
 		nodeFsLimitedCapacity ?? Number.POSITIVE_INFINITY,
 	);
+	const liveKueueInstanceCapacity = kueueInstanceRequest
+		? Math.min(
+				kueueInstanceCpuLimitedCapacity ?? Number.POSITIVE_INFINITY,
+				kueueInstanceMemoryLimitedCapacity ?? Number.POSITIVE_INFINITY,
+				kueueInstanceEphemeralStorageLimitedCapacity ??
+					Number.POSITIVE_INFINITY,
+			)
+		: null;
 	const kueueCapacity = params.kueueCapacity ?? null;
 	const availableSandboxSlots = Math.min(
 		rawAvailableSandboxSlots,
 		kueueCapacity?.availableSandboxSlots ?? Number.POSITIVE_INFINITY,
 	);
 	const schedulableKueueInstanceCapacity =
-		kueueCapacity?.availableInstanceSlots == null
+		kueueCapacity?.availableInstanceSlots == null &&
+		liveKueueInstanceCapacity == null
 			? null
 			: Math.min(
-					availableSandboxSlots,
+					liveKueueInstanceCapacity ?? availableSandboxSlots,
 					kueueCapacity?.availableInstanceSlots ?? Number.POSITIVE_INFINITY,
 				);
 	const currentSwebenchPods = activeSwebenchPods + pendingSwebenchPods;
@@ -1149,10 +1168,8 @@ export function estimateSchedulableSandboxCapacity(params: {
 			kueueInstanceRequest?.ephemeralStorageBytes ??
 			null,
 		kueueInstancePodCount: kueueCapacity?.instancePodCount ?? null,
-		kueueInstancePodCountScope:
-			kueueCapacity?.instancePodCountScope ?? null,
-		kueueInstanceRequestMode:
-			kueueCapacity?.instanceRequestMode ?? null,
+		kueueInstancePodCountScope: kueueCapacity?.instancePodCountScope ?? null,
+		kueueInstanceRequestMode: kueueCapacity?.instanceRequestMode ?? null,
 		kueueAvailableInstanceSlots: kueueCapacity?.availableInstanceSlots ?? null,
 		kueueBorrowAvailableInstanceSlots:
 			kueueCapacity?.borrowAvailableInstanceSlots ?? null,
@@ -1183,8 +1200,9 @@ export async function loadSchedulableSandboxCapacitySnapshot(): Promise<Benchmar
 		kueueInstancePodCountFromEnv(kueueInstanceRequest);
 	const kueueInstancePodCountScope =
 		kueueInstancePodCountScopeFromEnv(kueueInstanceRequest);
-	const kueueInstanceRequestMode =
-		kueueInstanceRequest ? kueueInstanceRequestModeFromEnv() : null;
+	const kueueInstanceRequestMode = kueueInstanceRequest
+		? kueueInstanceRequestModeFromEnv()
+		: null;
 	try {
 		const kueueCapacity = await loadKueueClusterQueueCapacity(
 			kueueClusterQueueNameFromEnv(),
