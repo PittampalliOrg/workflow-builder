@@ -86,9 +86,10 @@ shared coding pool:
 
 That gives the shared coding pool 72 runtime slots for the legacy shared-pool
 path. Kueue-backed SWE-bench runs do not use this value as the physical
-sandbox concurrency ceiling; their launch capacity is driven by Kueue
-`benchmark-fast` quota, live OpenShell sandbox headroom, selected prevalidated
-instances, and any explicit model caps.
+sandbox concurrency ceiling; their launch capacity is driven by the
+full-instance Kueue bundle (`host-worker-composite`), live node request
+headroom, selected exact-ready instances, Dapr workflow capacity, and any
+explicit model caps.
 
 Capacity-sensitive benchmark runs also read
 `AGENT_RUNTIME_SLOTS_PER_REPLICA_JSON`,

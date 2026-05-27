@@ -85,6 +85,16 @@ the cohort and competing lower-priority queues are idle. Do not treat borrowed
 headroom as deterministic capacity unless the launch capacity snapshot reports
 the borrowed quota and the competing queue state.
 
+Capacity is modeled as a full-instance bundle, not only the visible OpenShell
+sandbox pod. In the Kueue-backed path, each active SWE-bench instance needs the
+OpenShell sandbox/worker side and the agent-host session side. The BFF uses
+`BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE=host-worker-composite` so launch
+diagnostics report `kueueInstanceRequest*`, `kueueInstancePodCount`,
+`kueueAvailableInstanceSlots`, and `schedulableKueueInstanceCapacity` for that
+bundle. A `kueueInstancePodCount` of 3 is a modeled quota budget that includes
+the worker/sandbox/agent-host shape; it should not be simplified to the number
+of long-lived pods visible after startup.
+
 ## Image Build And Cache Strategy
 
 For the dedicated image-build runbook, see
@@ -422,19 +432,22 @@ instead of the static default of 10.
 
 ## Dev Maximization Note
 
-As of the May 2026 117-instance run, dev's raw six-worker pool is not the
-first limiter. The current SWE-bench execution path admits one Kueue workload
-per active instance: the OpenShell pod that contains the sandbox process plus
-its Dapr sidecar. The per-instance Kueue request is therefore the OpenShell
-container request plus the sidecar request, about 150m CPU, 640Mi memory, and
-2856Mi ephemeral storage for the current `benchmark-fast` profile.
+As of the 2026-05-27 ryzen parity canary, the current SWE-bench execution path
+must count the agent-host side as part of the deterministic launch budget. The
+failed first ryzen 3-instance run requested/effectively launched `3/3`; Kueue
+admitted the OpenShell workloads, but kube-scheduler rejected two agent-host
+pods for `Insufficient memory`. The fix makes
+`schedulableKueueInstanceCapacity` use live full-instance headroom, not only
+OpenShell sandbox slots.
 
-Do not count a second Kueue pod for the old per-session agent-host budget unless
-the architecture actually creates a separately admitted Kueue workload for it.
-The BFF's capacity model now defaults to the admitted OpenShell pod shape. The
-legacy composite budget can still be selected explicitly with
-`BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE=host-worker-composite` for diagnostic
-comparison, but it should not be the dev launch default.
+The validated follow-up run `MPIlRkKWC7UdvHgwFQEiR` requested 3 distinct
+exact-ready instances on ryzen and was capped to effective concurrency 2 by
+`kueue_capacity`. All active sandbox and agent-host pods scheduled, the queued
+third instance started when a slot freed, all three instances reached 10 LLM
+calls and 10 tool calls, evaluation completed, and active leases returned to
+zero. Treat this as the expected behavior on small clusters: selected count may
+be 3 while effective concurrency is 2 when live request headroom says only two
+full bundles fit.
 
 The BFF should treat nominal Kueue quota as the deterministic default and
 include borrowing diagnostics separately so operators can tell whether a run is
@@ -458,8 +471,9 @@ Dev uses the Kueue-backed Dapr path: `BENCHMARK_EXECUTION_BACKEND=dapr-kueue`,
 `AGENT_WORKFLOW_HOST_BACKEND=kueue`, and
 `SANDBOX_EXECUTION_API_URL=http://sandbox-execution-api.workflow-builder.svc.cluster.local:8080`.
 The BFF still submits the generated SWE-bench instance workflow and validated
-inference environment, but each instance gets its own Kueue-managed OpenShell
-sandbox instead of being capped by the legacy shared runtime pool.
+inference environment, but each active instance creates Kueue-managed sandbox
+and agent-host/session work instead of being capped by the legacy shared runtime
+pool.
 
 The sandbox-execution-api creates Kueue-managed Kubernetes workloads by setting
 the `kueue.x-k8s.io/queue-name` label and leaves Kueue to manage
@@ -472,10 +486,12 @@ suspension/admission. The pod uses the requested execution class:
 
 Both classes keep the benchmark worker node selector
 `stacks.io/swebench-pool=dev-benchmark`, hostname topology spread, and the
-configured sandbox resource requests. The current `benchmark-fast` admission
-profile is about 150m CPU, 640Mi memory, and 2856Mi ephemeral-storage per
-Kueue-backed SWE-bench instance. The host
-execution worker reports state back through
+configured sandbox resource requests. The launch capacity snapshot is the
+authoritative source for the current per-instance bundle: inspect
+`kueueInstanceRequestCpuMilli`, `kueueInstanceRequestMemoryBytes`,
+`kueueInstanceRequestEphemeralStorageBytes`, `kueueInstancePodCount`,
+`kueueInstanceRequestMode`, and `schedulableKueueInstanceCapacity` before
+raising concurrency. The host execution worker reports state back through
 `POST /api/internal/benchmarks/runs/<runId>/instances/<instanceId>/execution`.
 Terminal success updates the existing `workflow_executions` row and reuses the
 normal `syncBenchmarkInstanceFromExecution` path, so benchmark summaries,

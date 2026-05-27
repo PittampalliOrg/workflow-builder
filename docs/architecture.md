@@ -10,9 +10,12 @@ Crossplane-owned Hetzner Talos spoke managed from the hub through stacks,
 source-hydrator, GitOps Promoter, and hub ArgoCD. The May 2026 dev rebuild uses
 3 control-plane nodes plus 6 benchmark worker nodes labeled
 `stacks.io/swebench-pool=dev-benchmark`; workflow-builder's SWE-bench
-concurrency gates use Kueue-backed OpenShell admission on that worker pool. The
-current staged `benchmark-fast` target is 336 concurrent sandboxes: 84 Kueue CPU
-quota divided by the 250m sandbox CPU request.
+concurrency gates use Kueue-backed OpenShell and agent-host admission on that
+worker pool. Treat one active SWE-bench instance as a full-instance bundle:
+validated inference image, OpenShell sandbox/worker resources, agent-host
+session resources, Dapr workflow capacity, Kueue quota, live node request
+headroom, active leases, and evaluator capacity all contribute to effective
+throughput.
 
 The runtime components are:
 
@@ -46,9 +49,10 @@ cheatsheet.
 
 See `docs/swebench-concurrency.md` for the SWE-bench capacity model. The
 headline rule is that requested concurrency is only an input; actual throughput
-is the minimum of selected prevalidated instances, Kueue/OpenShell sandbox
-headroom, optional model caps, and evaluator parallelism. Legacy shared-runtime
-and Dapr sidecar slot caps still matter for non-Kueue rollback paths.
+is the minimum of selected exact-ready instances, full-instance Kueue headroom,
+Dapr/runtime slots, live schedulability, optional model caps, and evaluator
+parallelism. Legacy shared-runtime and Dapr sidecar slot caps still matter for
+non-Kueue rollback paths.
 
 See `docs/swebench-mlflow-comparison.md` for the SWE-bench comparison and
 MLflow tracking model. The supported comparison shape is one benchmark parent

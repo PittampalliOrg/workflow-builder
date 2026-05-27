@@ -43,6 +43,13 @@ Dev benchmark workers should not build these images. If a dev run sits queued
 while a hub `swe-env-*` PipelineRun is active, the run is waiting for
 environment validation, not for dev inference capacity.
 
+The supported production path is the organic harness-generated image path. A
+2026-05-27 experiment with Epoch/prebuilt SWE-bench images failed before agent
+work in OpenShell sandbox readiness/workspace profile. Treat those rows and
+PipelineRuns as stale experimental data unless a new compatibility canary proves
+the full path: sandbox readiness, workspace profile, session creation, LLM/tool
+activity, evaluator harness, cleanup, and released leases.
+
 ## Cache Layers
 
 There are three practical cache layers:
@@ -67,6 +74,12 @@ There are three practical cache layers:
 Build concurrency is separately capped by
 `SWEBENCH_INFERENCE_BUILD_MAX_ACTIVE`. Keep this cap conservative enough that
 hub image builds do not starve GitOps or release-image pipelines.
+
+When reusing an existing hub `swe-env-*` PipelineRun, verify the source/strategy
+matches the current build lane. Stale experimental PipelineRuns can collide on
+the same env-hash prefix. If the PipelineRun params or DB row mention
+`epoch-research`, `prebuiltImage`, or `swe-bench.eval`, delete the stale
+experimental data before submitting organic builds for that instance.
 
 ## Runtime Pull Caching
 
@@ -104,10 +117,11 @@ When a run appears slow, separate these cases before changing concurrency:
 
 ## Current Capacity Checkpoint
 
-As of the 2026-05-26 dev checkpoint, the exact-ready SWE-bench_Verified
-coverage was 103 of 500 instances. That is enough for distinct 25-way and
-50-way infrastructure canaries, but it is not enough for a true distinct
-200-concurrent SWE-bench_Verified run. The 200-run blocker is therefore split:
+As of the 2026-05-27 ryzen/dev parity checkpoint, the launch preview reported
+161 exact-ready SWE-bench_Verified instances out of 500. That is enough for
+distinct small and medium infrastructure canaries, but it is not enough for a
+true distinct 200-concurrent SWE-bench_Verified run. The 200-run blocker is
+therefore split:
 
 - build coverage must reach at least 200 exact-ready, current-`envSpecHash`
   mappings;
@@ -142,6 +156,23 @@ request or materially below it. Use that data to tune Kueue requests and
 runtime admission before assuming the cluster can run all 500 instances at
 once.
 
+As of the 2026-05-27 image-coverage campaign, the organic builder was restarted
+after deleting stale Epoch/prebuilt rows. Fresh organic Django images for
+`django__django-14376` and `django__django-14404` validated on hub, then a
+personal-user canary run `r30r9I76rLiwv-BGz9VL5` launched those exact images at
+concurrency 2 and `maxTurns=5`. Both instances reached LLM/tool activity and
+evaluation with zero infra/image/sandbox errors; both were unresolved as
+expected for a short compatibility canary. This is the template for validating
+new image batches before relying on them for a larger capacity run.
+
+Ryzen can consume the same validated organic SWE-bench inference images because
+the benchmark selector resolves digest-pinned GHCR image refs from the same
+exact-ready metadata. The ryzen 3-instance canary `MPIlRkKWC7UdvHgwFQEiR`
+selected three existing exact-ready organic Astropy images, ran effective
+concurrency 2 after the full-instance capacity fix, reached LLM/tool activity
+for all three instances, evaluated successfully, and released all leases. That
+validates image compatibility on ryzen separately from the hub build campaign.
+
 ## Failure Classification
 
 Classify failures by phase before rebuilding:
@@ -159,6 +190,11 @@ Pin publication failures should usually be retried or replayed idempotently,
 not rebuilt from scratch. A 2026-05-25 Django 3.1 build reached build and
 validation but failed while pushing the pin after repeated GitHub server errors;
 that was not evidence that the image artifact was bad.
+
+Capacity throttles are not image failures. If the queueing script records a
+synthetic `dynamic_build_capacity_exhausted` row, classify it as a controller
+throttle artifact and keep it out of real failed-build counts. The preferred
+repo-owned behavior is to sleep/retry without persisting a failed build row.
 
 ## Operator Commands
 
@@ -197,6 +233,45 @@ Check active hub builds from the hub cluster:
 
 ```bash
 kubectl --context hub -n tekton-pipelines get pipelineruns | grep '^swe-env-'
+```
+
+Delete abandoned Epoch/prebuilt experiment PipelineRuns from hub:
+
+```bash
+kubectl --context hub -n tekton-pipelines get pipelineruns -o json |
+  jq -r '.items[]
+    | select((.metadata.name | startswith("swe-env-"))
+      and ((.spec.params // []) | tostring | test("epoch-research|prebuiltImage|swe-bench.eval")))
+    | .metadata.name' |
+  xargs -r kubectl --context hub -n tekton-pipelines delete pipelinerun
+```
+
+Delete abandoned Epoch/prebuilt DB rows from workflow-builder:
+
+```sql
+delete from environment_image_builds
+where suite = 'SWE-bench_Verified'
+  and (
+    spec::text like '%epoch-research%'
+    or spec::text like '%prebuiltImage%'
+    or spec::text like '%swe-bench.eval%'
+  );
+```
+
+Run the long-running organic queue controller as a Kubernetes Job on dev, but
+remember that this only controls submissions; actual builds run on hub when
+`SWEBENCH_INFERENCE_BUILD_SUBMISSION_MODE=hub` is configured:
+
+```bash
+node scripts/queue-swebench-environment-validation.bundle.js \
+  --suite SWE-bench_Verified \
+  --limit 500 \
+  --target-validated 200 \
+  --loop \
+  --poll-seconds 300 \
+  --exact-for-random-runs \
+  --api-url http://workflow-builder.workflow-builder.svc.cluster.local:3000 \
+  --apply
 ```
 
 ## Follow-Up Improvements
