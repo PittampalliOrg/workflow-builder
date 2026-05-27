@@ -539,7 +539,7 @@
 							</span>
 						</div>
 						<div class="rounded border bg-muted/20 px-2 py-1">
-							<div class="text-muted-foreground">reserve gap</div>
+							<div class="text-muted-foreground">request cushion</div>
 							<span class="font-mono text-foreground">
 								{utilizationReserveGap?.toFixed(1) ?? 'n/a'}%
 							</span>
@@ -614,6 +614,8 @@
 						{resource === 'cpu' || resource === 'memory'
 							? ' working-set/rate metrics.'
 							: ' metrics when available for the selected resource.'}
+						A wide cushion is right-sizing evidence, not automatic launch
+						headroom.
 					</p>
 				{/if}
 			</div>

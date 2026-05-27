@@ -422,23 +422,19 @@ instead of the static default of 10.
 
 ## Dev Maximization Note
 
-As of the May 2026 c32/c40 ladder, dev's raw six-worker pool is not the
-first limiter. Each benchmark instance consumes two Kueue-admitted pods:
+As of the May 2026 117-instance run, dev's raw six-worker pool is not the
+first limiter. The current SWE-bench execution path admits one Kueue workload
+per active instance: the OpenShell pod that contains the sandbox process plus
+its Dapr sidecar. The per-instance Kueue request is therefore the OpenShell
+container request plus the sidecar request, about 150m CPU, 640Mi memory, and
+2856Mi ephemeral storage for the current `benchmark-fast` profile.
 
-1. the OpenShell sandbox pod;
-2. the per-session agent-host pod.
-
-For the current `benchmark-fast` host-execution profile those requests are about
-250m CPU, 896Mi memory, 3880Mi ephemeral storage, and 2 pods per active
-instance: one short-lived host worker plus one OpenShell sandbox pod with its
-Dapr sidecar. The agent-host container must set an explicit memory limit at
-least equal to its configured request; otherwise the namespace `LimitRange`
-default limit can be lower than the request and Kubernetes will reject the pod
-before Kueue can run it. The BFF derives this full-instance shape from
-`SANDBOX_EXECUTION_CLASSES_JSON.<class>` and the configured sandbox/Dapr
-requests unless `BENCHMARK_KUEUE_INSTANCE_POD_COUNT` explicitly overrides it.
-Set `BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE=openshell-pod` only for an
-architecture where Kueue admits just the OpenShell pod per instance.
+Do not count a second Kueue pod for the old per-session agent-host budget unless
+the architecture actually creates a separately admitted Kueue workload for it.
+The BFF's capacity model now defaults to the admitted OpenShell pod shape. The
+legacy composite budget can still be selected explicitly with
+`BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE=host-worker-composite` for diagnostic
+comparison, but it should not be the dev launch default.
 
 The BFF should treat nominal Kueue quota as the deterministic default and
 include borrowing diagnostics separately so operators can tell whether a run is
@@ -476,9 +472,9 @@ suspension/admission. The pod uses the requested execution class:
 
 Both classes keep the benchmark worker node selector
 `stacks.io/swebench-pool=dev-benchmark`, hostname topology spread, and the
-configured sandbox and agent-host resource requests. The current
-`benchmark-fast` admission profile is about 450m CPU, 1792Mi memory, and
-6.54Gi ephemeral-storage per full Kueue-backed SWE-bench instance. The host
+configured sandbox resource requests. The current `benchmark-fast` admission
+profile is about 150m CPU, 640Mi memory, and 2856Mi ephemeral-storage per
+Kueue-backed SWE-bench instance. The host
 execution worker reports state back through
 `POST /api/internal/benchmarks/runs/<runId>/instances/<instanceId>/execution`.
 Terminal success updates the existing `workflow_executions` row and reuses the

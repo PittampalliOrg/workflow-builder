@@ -106,12 +106,12 @@
 	const kueueInstanceCapacityLabel = $derived(
 		capacityDiagnostics?.sandbox?.kueueInstancePodCountScope === 'modeled_composite_budget'
 			? 'kueue composite'
-			: 'kueue instance'
+			: 'kueue admitted pod'
 	);
 	const kueueInstanceCapacityTitle = $derived(
 		capacityDiagnostics?.sandbox?.kueueInstancePodCountScope === 'modeled_composite_budget'
 			? `Modeled full-instance budget, not live admitted Kueue pod count. Mode: ${capacityDiagnostics?.sandbox?.kueueInstanceRequestMode ?? 'unknown'}`
-			: 'Full-instance capacity from Kueue headroom'
+			: 'Capacity from the live admitted OpenShell pod shape'
 	);
 
 	const inferenceDone = $derived.by(() => {
@@ -421,7 +421,7 @@
 								<span title={kueueInstanceCapacityTitle}>
 									{kueueInstanceCapacityLabel} {capacityDiagnostics.sandbox.kueueAvailableInstanceSlots}
 									{#if capacityDiagnostics.sandbox.kueueInstancePodCount !== null && capacityDiagnostics.sandbox.kueueInstancePodCount !== undefined}
-										· {capacityDiagnostics.sandbox.kueueInstancePodCount} pod-eq
+										· {capacityDiagnostics.sandbox.kueueInstancePodCount} pod
 									{/if}
 								</span>
 							{/if}

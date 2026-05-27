@@ -103,9 +103,8 @@ export type BenchmarkSandboxResourceProfile = {
 };
 
 export type BenchmarkKueueInstanceRequestMode =
-	| "host-worker-composite"
 	| "openshell-pod"
-	| "legacy-composite";
+	| "host-worker-composite";
 
 export type BenchmarkKueueInstancePodCountScope =
 	| "admitted_kueue_pods"
@@ -357,30 +356,22 @@ function addResourceProfiles(
 
 function kueueInstanceRequestMode(): BenchmarkKueueInstanceRequestMode {
 	const raw = process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE;
-	if (raw === "openshell-pod" || raw === "legacy-composite") return raw;
-	return "host-worker-composite";
+	if (raw === "host-worker-composite") return raw;
+	return "openshell-pod";
 }
 
 export function kueueInstanceRequestModeFromEnv(): BenchmarkKueueInstanceRequestMode {
 	return kueueInstanceRequestMode();
 }
 
-function executionClassConfigFromEnv(
-	preferAgentHostClass = false,
-): Record<string, unknown> | null {
+function executionClassConfigFromEnv(): Record<string, unknown> | null {
 	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
 	if (!raw?.trim()) return null;
-	const classNames = preferAgentHostClass
-		? [
-				process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
-				process.env.BENCHMARK_EXECUTION_CLASS,
-				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
-			]
-		: [
-				process.env.BENCHMARK_EXECUTION_CLASS,
-				process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
-				process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
-			];
+	const classNames = [
+		process.env.BENCHMARK_EXECUTION_CLASS,
+		process.env.BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
+		process.env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS,
+	];
 	const executionClass =
 		classNames
 			.map((value) => value?.trim())
@@ -395,40 +386,13 @@ function executionClassConfigFromEnv(
 	}
 }
 
-function agentHostResourceProfileFromEnv():
-	| BenchmarkSandboxResourceProfile
-	| null {
-	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
-		return null;
-	}
-	const config = executionClassConfigFromEnv(true);
-	if (!config) return null;
-	const cpuMilli = parseCpuMilli(config.agentHostCpu);
-	const memoryBytes = parseMemoryBytes(config.agentHostMemory);
-	const ephemeralStorageBytes = parseMemoryBytes(
-		config.agentHostEphemeralStorage,
-	);
-	if (
-		cpuMilli == null &&
-		memoryBytes == null &&
-		ephemeralStorageBytes == null
-	) {
-		return null;
-	}
-	return {
-		cpuMilli: cpuMilli ?? 0,
-		memoryBytes: memoryBytes ?? 0,
-		ephemeralStorageBytes: ephemeralStorageBytes ?? 0,
-	};
-}
-
 function executionWorkerResourceProfileFromEnv():
 	| BenchmarkSandboxResourceProfile
 	| null {
 	if (!isKueueExecutionBackend(process.env.BENCHMARK_EXECUTION_BACKEND)) {
 		return null;
 	}
-	const config = executionClassConfigFromEnv(false);
+	const config = executionClassConfigFromEnv();
 	if (!config) return null;
 	const cpuMilli = parseCpuMilli(config.cpu);
 	const memoryBytes = parseMemoryBytes(config.memory);
@@ -472,16 +436,7 @@ export function kueueInstanceResourceProfileFromEnv(
 			},
 		);
 	}
-	const agentHostRequest = agentHostResourceProfileFromEnv();
-	if (!agentHostRequest) return null;
-	return addResourceProfiles(
-		addResourceProfiles(sandboxRequest, agentHostRequest),
-		executionWorkerRequest ?? {
-			cpuMilli: 0,
-			memoryBytes: 0,
-			ephemeralStorageBytes: 0,
-		},
-	);
+	return openshellPodRequest;
 }
 
 export function kueueInstancePodCountFromEnv(
@@ -497,12 +452,7 @@ export function kueueInstancePodCountFromEnv(
 	if (mode === "host-worker-composite") {
 		return executionWorkerResourceProfileFromEnv() ? 2 : 1;
 	}
-	const config = executionClassConfigFromEnv(true);
-	const agentHostImage =
-		typeof config?.agentHostImage === "string"
-			? config.agentHostImage.trim()
-			: "";
-	return agentHostImage ? 2 : 1;
+	return 1;
 }
 
 export function kueueInstancePodCountScopeFromEnv(

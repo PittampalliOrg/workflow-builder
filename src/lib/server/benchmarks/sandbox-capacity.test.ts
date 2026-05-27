@@ -533,7 +533,7 @@ describe("sandbox scheduler capacity", () => {
 		});
 	});
 
-	it("defaults Kueue full-instance request to the live host worker plus OpenShell pod shape", () => {
+	it("defaults Kueue full-instance request to the admitted OpenShell pod shape", () => {
 		const previous = {
 			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
 			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
@@ -565,9 +565,9 @@ describe("sandbox scheduler capacity", () => {
 			});
 
 			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
-				cpuMilli: 250,
-				memoryBytes: 896 * 1024 * 1024,
-				ephemeralStorageBytes: 3880 * 1024 * 1024,
+				cpuMilli: 150,
+				memoryBytes: 640 * 1024 * 1024,
+				ephemeralStorageBytes: 2856 * 1024 * 1024,
 			});
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "openshell-pod";
@@ -577,11 +577,11 @@ describe("sandbox scheduler capacity", () => {
 				ephemeralStorageBytes: 2856 * 1024 * 1024,
 			});
 
-			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "legacy-composite";
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
 			expect(kueueInstanceResourceProfileFromEnv(sandboxRequest)).toEqual({
-				cpuMilli: 450,
-				memoryBytes: 1792 * 1024 * 1024,
-				ephemeralStorageBytes: 6696 * 1024 * 1024,
+				cpuMilli: 250,
+				memoryBytes: 896 * 1024 * 1024,
+				ephemeralStorageBytes: 3880 * 1024 * 1024,
 			});
 		} finally {
 			for (const [key, value] of Object.entries(previous)) {
@@ -594,7 +594,7 @@ describe("sandbox scheduler capacity", () => {
 		}
 	});
 
-	it("defaults Kueue full-instance pod count to the live host worker plus OpenShell pod shape", () => {
+	it("defaults Kueue full-instance pod count to the admitted OpenShell pod shape", () => {
 		const previous = {
 			BENCHMARK_EXECUTION_BACKEND: process.env.BENCHMARK_EXECUTION_BACKEND,
 			BENCHMARK_EXECUTION_CLASS: process.env.BENCHMARK_EXECUTION_CLASS,
@@ -625,9 +625,9 @@ describe("sandbox scheduler capacity", () => {
 				},
 			});
 
-			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
+			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(1);
 			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
-				"modeled_composite_budget",
+				"admitted_kueue_pods",
 			);
 
 			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "openshell-pod";
@@ -636,7 +636,7 @@ describe("sandbox scheduler capacity", () => {
 				"admitted_kueue_pods",
 			);
 
-			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "legacy-composite";
+			process.env.BENCHMARK_KUEUE_INSTANCE_REQUEST_MODE = "host-worker-composite";
 			expect(kueueInstancePodCountFromEnv(instanceRequest)).toBe(2);
 			expect(kueueInstancePodCountScopeFromEnv(instanceRequest)).toBe(
 				"modeled_composite_budget",
