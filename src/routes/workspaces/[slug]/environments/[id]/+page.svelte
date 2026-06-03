@@ -88,8 +88,6 @@
 	let allEnvs = $state<EnvironmentSummary[]>([]);
 	let dockerfilePreview = $state<string | null>(null);
 	let dockerfileLoading = $state(false);
-	let building = $state(false);
-	let buildMessage = $state<string | null>(null);
 
 	async function load() {
 		loading = true;
@@ -136,26 +134,6 @@
 			dockerfilePreview = `# preview failed: ${err instanceof Error ? err.message : String(err)}`;
 		} finally {
 			dockerfileLoading = false;
-		}
-	}
-
-	async function triggerBuild() {
-		if (!env) return;
-		building = true;
-		buildMessage = null;
-		try {
-			const res = await fetch(`/api/v1/environments/${env.id}/build`, { method: 'POST' });
-			const data = await res.json();
-			if (!res.ok) {
-				buildMessage = data.error ?? `build failed (${res.status})`;
-				return;
-			}
-			buildMessage = `Queued build: ${(data.commitSha ?? '').slice(0, 12)}`;
-			await load();
-		} catch (err) {
-			buildMessage = err instanceof Error ? err.message : String(err);
-		} finally {
-			building = false;
 		}
 	}
 
@@ -776,8 +754,8 @@
 
 					<TabsContent value="packages" class="space-y-4">
 						<p class="text-sm text-muted-foreground">
-							Packages are baked into the image at build time. Save, then head to
-							the <strong>Build</strong> tab to trigger a rebuild. Install order:
+							Packages are baked into the image at build time. Save your changes;
+							the image is rebuilt in-cluster by Tekton. Install order:
 							apt → cargo → gem → go → npm → pip.
 						</p>
 						<div class="flex gap-2">
@@ -884,25 +862,17 @@
 					<TabsContent value="build" class="space-y-4">
 						<div class="rounded border p-4 space-y-3">
 							<div class="flex items-center justify-between gap-3">
-								<div>
-									<div class="text-sm font-semibold">Image build</div>
-									<div class="text-xs text-muted-foreground">
-										Rebuild this environment's image. Saves packages first, then
-										commits a generated Dockerfile to Gitea — Tekton picks it up
-										from there.
+								<div class="flex items-center gap-2">
+									<Hammer class="size-4" />
+									<div>
+										<div class="text-sm font-semibold">Image build status</div>
+										<div class="text-xs text-muted-foreground">
+											Images are built in-cluster by Tekton from the generated
+											Dockerfile. The latest build state is shown below.
+										</div>
 									</div>
 								</div>
-								<Button onclick={triggerBuild} disabled={building || dirty}>
-									<Hammer class="size-4" />
-									{building ? 'Queuing…' : 'Build'}
-								</Button>
 							</div>
-							{#if dirty}
-								<p class="text-xs text-amber-600">Save pending changes before building.</p>
-							{/if}
-							{#if buildMessage}
-								<p class="text-xs text-muted-foreground">{buildMessage}</p>
-							{/if}
 							<div class="grid grid-cols-2 gap-3 text-xs">
 								<div>
 									<div class="text-muted-foreground">Status</div>
@@ -963,8 +933,8 @@
 								</Button>
 							</div>
 							<p class="text-xs text-muted-foreground">
-								Generated from the current packages manifest. This is what gets
-								committed to Gitea when you hit Build.
+								Generated from the current packages manifest. This is what
+								Tekton uses to build the in-cluster image.
 							</p>
 							<pre
 								class="rounded bg-muted/40 p-3 text-[11px] font-mono overflow-auto max-h-[480px]"
