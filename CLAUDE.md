@@ -82,7 +82,7 @@ bash scripts/skaffold-deploy.sh workflow-builder workflow-orchestrator  # batch
 skaffold build -m workflow-builder                  # build+push only (no pin commit)
 
 # Read-only preflight:
-pnpm skaffold:doctor                                # Skaffold + idpbuilder readiness
+pnpm skaffold:doctor                                # Skaffold + GitHub-main pin readiness
 pnpm --silent skaffold:doctor -- --json             # machine-readable agent output
 ```
 
@@ -90,7 +90,7 @@ The outer-loop uses `scripts/skaffold-deploy.sh` rather than `skaffold run` beca
 - `skaffold run -m <svc>` also redeploys the dev kustomize overlay (which Argo immediately reverts but causes pod restarts).
 - Skaffold artifact `hooks.after` doesn't fire on cache hits, so `skaffold run` would silently miss commit-pin when re-pushing the same SHA.
 
-The wrapper invokes `skaffold build --file-output`, parses the resolved tag, and unconditionally runs `commit-pin.sh` with it. Commit-pin maintains a dedicated clone at `~/.cache/skaffold/stacks-ryzen` (tracking gitea-ryzen, NOT the developer's primary stacks/main worktree which tracks GitHub origin).
+The wrapper invokes `skaffold build --file-output`, parses the resolved tag, and unconditionally runs `commit-pin.sh` with it. Commit-pin maintains a dedicated clone at `~/.cache/skaffold/stacks-ryzen` (tracking GitHub `main` — the same origin as the developer's stacks/main worktree; the `stacks-ryzen` dir name is legacy). It is the single image-pin writer on GitHub `main` for the Skaffold-owned services (`SKAFFOLD_OWNED_DEFAULT` in `scripts/_modules.sh`); every other ryzen workload is pinned by the hub outer-loop `update-stacks-image` Tekton task.
 
 Module set:
 
@@ -108,16 +108,16 @@ Module set:
 **`fn-activepieces` is inactive by default** — Skaffold config remains in-tree, but the current ryzen cluster does not expose it as a regular Argo Application/Deployment. Default `ALL` sessions skip it; use `SKAFFOLD_ALLOW_INACTIVE=1 bash scripts/skaffold-dev.sh fn-activepieces` only when deliberately restoring/testing that path.
 
 Inner-loop notes:
-- The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=gitea-ryzen.tail286401.ts.net/giteaadmin` so the dev image gets pushed to gitea-ryzen (where kind-ryzen nodes can pull). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.
+- The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=ghcr.io/pittampalliorg` so the dev image gets pushed to GHCR (ryzen pulls it via the authenticated `ghcr.io/hosts.toml` containerd mirror + Spegel P2P). The host running `skaffold dev` needs GHCR push creds (`docker login ghcr.io`). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.
 - The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
 - File sync rules in `skaffold/workflow-builder.skaffold.yaml` define which paths trigger HMR vs a full image rebuild. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
 - The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../workloads/workflow-builder/manifests` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
-- `pnpm skaffold:doctor` checks both sides of the hybrid loop: Skaffold live drift and the ryzen idpbuilder/Gitea sync path (`idpbuilder stacks status`, hardened `--seed-images` flag availability, `idpbuilder stacks sync --print-refresh-plan`, and `clhot --ci-one-shot --check`).
+- `pnpm skaffold:doctor` checks command availability, kubectl context, the GHCR default-repo, the stacks worktree + GitHub-main pin cache, per-module Argo/Deployment state + pin drift, and Argo skip-reconcile leaks.
 
 Outer-loop notes:
-- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to `gitea-ryzen/main` under `packages/components/workloads/<service>/manifests/kustomization.yaml` and `git push`es. ArgoCD's `automated.selfHeal=true` reconciles within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
+- Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to GitHub `main` under `packages/components/workloads/<service>/manifests/kustomization.yaml` and `git push`es. A writer-precedence guard refuses to push for any non-Skaffold-owned service (override the owned set via `SKAFFOLD_OWNED_SERVICES`; the remote via `STACKS_REMOTE_URL`). ryzen's local autonomous ArgoCD reconciles `packages/overlays/ryzen@main` within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
 - No `kubectl set image` — the live cluster is mutated only by ArgoCD.
-- This is separate from `idpbuilder stacks sync`: idpbuilder snapshots a selected local stacks worktree into in-cluster Gitea and refreshes affected apps, while Skaffold commit-pin only updates a resolved ryzen image tag. Current idpbuilder preserves workloads image pins by default and uses a per cluster/repo/branch lock for mutating sync/watch sessions; pass `--seed-images=true` only for deliberate bootstrap rewrites. Use idpbuilder/`clu` for manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
+- ryzen reconciles `packages/overlays/ryzen@main` directly via its local autonomous ArgoCD (no inner-loop branch, no source-hydrator, no Promoter for ryzen); commit-pin is the single image-pin writer for Skaffold-owned services. Use `clu`/cluster-update for stacks manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
 
 ## Services Overview
 

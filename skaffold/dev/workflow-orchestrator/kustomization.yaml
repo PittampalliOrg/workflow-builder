@@ -9,11 +9,10 @@ namespace: workflow-builder
 resources:
   - ../../../../../stacks/main/packages/components/workloads/workflow-orchestrator/manifests/Deployment-workflow-orchestrator.yaml
 
-# Mirror the Application-level postgres image rewrite for the init container.
-images:
-  - name: docker.io/library/postgres
-    newName: gitea.cnoe.localtest.me:8443/giteaadmin/postgres
-    newTag: 15.3-alpine3.18
+# No postgres image rewrite needed — ryzen pulls bare
+# docker.io/library/postgres directly via the authenticated containerd
+# hosts.toml. See skaffold/dev/workflow-builder/kustomization.yaml for the
+# rationale (the gitea.cnoe.localtest.me mirror was retired with Gitea).
 
 patches:
   - target:
