@@ -151,7 +151,7 @@ for mod in "${modules[@]}"; do
   done
 
   # Argo state: skip-reconcile + sync + health
-  argo_raw=$(kubectl get application "${mod}" -n "${argo_ns}" \
+  argo_raw=$(kubectl get application "${MODULE_TO_APP[${mod}]:-${mod}}" -n "${argo_ns}" \
     -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}{"|"}{.status.sync.status}{"|"}{.status.health.status}' \
     2>/dev/null || echo "|missing|")
   skip="${argo_raw%%|*}"
