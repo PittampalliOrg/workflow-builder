@@ -56,10 +56,14 @@ for mod in "${modules[@]}"; do
   fi
 done
 
-# Argo apps default to the same names as the skaffold module list (matches our
-# convention: one module = one Argo app). Override via $ARGO_APPS.
+# Argo Application names. ryzen's autonomous root-ryzen names child apps
+# `ryzen-<module>` (argocd ns); the Deployment keeps the bare `<module>` name.
+# ARGO_APPS holds the Argo Application names (for pause/resume); deploy lookups
+# below use the bare module. Override via $ARGO_APPS.
 if [ -z "${ARGO_APPS:-}" ]; then
-  ARGO_APPS="${modules[*]}"
+  argo_apps=()
+  for mod in "${modules[@]}"; do argo_apps+=("${MODULE_TO_APP[${mod}]:-${mod}}"); done
+  ARGO_APPS="${argo_apps[*]}"
 fi
 export ARGO_APPS
 
@@ -89,9 +93,10 @@ resume_argo() {
 
 print_resume_summary() {
   printf '\n  Post-session ArgoCD summary:\n'
-  printf '       %-22s %-8s %-8s %-8s %s\n' APP SKIP SYNC HEALTH LIVE
-  local app skip sync health live argo_raw rest
-  for app in ${ARGO_APPS}; do
+  printf '       %-26s %-8s %-8s %-8s %s\n' APP SKIP SYNC HEALTH LIVE
+  local mod app skip sync health live argo_raw rest
+  for mod in "${modules[@]}"; do
+    app="${MODULE_TO_APP[${mod}]:-${mod}}"
     argo_raw=$(kubectl get application "${app}" -n "${ns}" \
       -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}{"|"}{.status.sync.status}{"|"}{.status.health.status}' \
       2>/dev/null || echo "|missing|")
@@ -99,9 +104,9 @@ print_resume_summary() {
     rest="${argo_raw#*|}"
     sync="${rest%%|*}"
     health="${rest##*|}"
-    live=$(kubectl -n "${NAMESPACE:-workflow-builder}" get deploy "${app}" \
+    live=$(kubectl -n "${NAMESPACE:-workflow-builder}" get deploy "${mod}" \
       -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "no-deployment")
-    printf '       %-22s %-8s %-8s %-8s %s\n' \
+    printf '       %-26s %-8s %-8s %-8s %s\n' \
       "${app}" "${skip:-false}" "${sync:-unknown}" "${health:-unknown}" "${live}"
   done
 }
@@ -119,23 +124,23 @@ trap 'status=$?; resume_argo; exit ${status}' EXIT
 # want to make this visible at session start so it stops being a silent hours-
 # long Argo outage.
 already_paused=()
-for app in ${ARGO_APPS}; do
+paused_report=()
+for mod in "${modules[@]}"; do
+  app="${MODULE_TO_APP[${mod}]:-${mod}}"
   cur=$(kubectl get application "${app}" -n "${ns}" \
     -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}' \
     2>/dev/null || true)
   if [ "${cur}" = "true" ]; then
     already_paused+=("${app}")
+    img=$(kubectl -n "${NAMESPACE:-workflow-builder}" get deploy "${mod}" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo unknown)
+    paused_report+=("$(printf '       %-26s live=%s' "${app}" "${img}")")
   fi
 done
 
 if [ ${#already_paused[@]} -gt 0 ]; then
-  workload_ns="${NAMESPACE:-workflow-builder}"
   printf '\n  ⚠  Already paused (prior skaffold-dev session likely didn'\''t clean up):\n'
-  for app in "${already_paused[@]}"; do
-    img=$(kubectl -n "${workload_ns}" get deploy "${app}" \
-      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo unknown)
-    printf '       %-22s live=%s\n' "${app}" "${img}"
-  done
+  printf '%s\n' "${paused_report[@]}"
   printf '       Continuing — pause is idempotent, and this trap will resume on Ctrl-C.\n'
   printf '       If you do NOT want to take over this pause, Ctrl-C now and run:\n'
   printf '         ARGO_APPS="%s" bash skaffold/hooks/argo-resume.sh\n\n' "${already_paused[*]}"

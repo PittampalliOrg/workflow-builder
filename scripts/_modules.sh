@@ -31,15 +31,18 @@ ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
 # runtime via SKAFFOLD_OWNED_SERVICES="a b c".
 SKAFFOLD_OWNED_DEFAULT=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
 
-# module → ArgoCD Application name. 1:1 today (one module = one Argo app);
-# centralized so a future divergence is a single edit.
+# module → ryzen ArgoCD Application name. ryzen's autonomous-agent `root-ryzen`
+# app-of-apps names its child Applications `ryzen-<module>` (in the `argocd` ns),
+# while the workload Deployment keeps the bare `<module>` name (in the
+# `workflow-builder` ns). Argo operations (pause/resume/status/doctor) use this
+# map; Deployment lookups use the bare module name.
 declare -gA MODULE_TO_APP=(
-  [workflow-builder]=workflow-builder
-  [workflow-orchestrator]=workflow-orchestrator
-  [function-router]=function-router
-  [mcp-gateway]=mcp-gateway
-  [swebench-coordinator]=swebench-coordinator
-  [fn-activepieces]=fn-activepieces
+  [workflow-builder]=ryzen-workflow-builder
+  [workflow-orchestrator]=ryzen-workflow-orchestrator
+  [function-router]=ryzen-function-router
+  [mcp-gateway]=ryzen-mcp-gateway
+  [swebench-coordinator]=ryzen-swebench-coordinator
+  [fn-activepieces]=ryzen-fn-activepieces
 )
 
 # module → "<localPort>:<containerPort>" for the dev-loop port-forward banner.
