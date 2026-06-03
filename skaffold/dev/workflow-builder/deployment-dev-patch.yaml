@@ -14,6 +14,18 @@ spec:
       annotations:
         skaffold.dev/managed: "true"
     spec:
+      initContainers:
+        # The `db-migrate` init container runs `node scripts/db-migrate-runtime.mjs`,
+        # which the dev image bakes in (COPY scripts + COPY drizzle + pnpm install;
+        # the .mjs imports only drizzle-orm/postgres from node_modules, no build).
+        # Point it at the same Skaffold artifact alias as the main container so
+        # Skaffold rewrites it to the built dev image. Without this it keeps the
+        # base `workflow-builder:latest` placeholder — this Deployment-only overlay
+        # bypasses the prod kustomization's `images:` rewrite that normally pins
+        # BOTH containers — and the pod fails ErrImagePull on `workflow-builder:latest`.
+        - name: db-migrate
+          image: workflow-builder-dev
+          imagePullPolicy: Always
       containers:
         - name: workflow-builder
           # Image is the Skaffold artifact alias `workflow-builder-dev`.
