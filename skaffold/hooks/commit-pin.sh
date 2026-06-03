@@ -1,32 +1,68 @@
 #!/usr/bin/env bash
-# Outer-loop hook: after `skaffold run` builds+pushes the prod image (to
-# ghcr.io as of A0.β), write the new tag into the stacks-repo kustomization
-# and git-push. ArgoCD selfHeal reconciles within ~30s (hard-refresh
+# Outer-loop hook: after Skaffold builds+pushes the prod image (to ghcr.io),
+# write the new tag into the stacks-repo kustomization on GitHub `main` and
+# git-push. ryzen's local autonomous ArgoCD reconciles
+# packages/overlays/ryzen@main directly (selfHeal within ~30s; a hard-refresh
 # annotation accelerates the poll).
 #
-# Wired as a `build.artifacts[].hooks.after` hook in workflow-builder.skaffold.yaml.
-# Skaffold sets:
+# Wired as a `build.artifacts[].hooks.after` hook in workflow-builder.skaffold.yaml
+# (and invoked unconditionally by scripts/skaffold-deploy.sh). Skaffold sets:
 #   $SKAFFOLD_IMAGE      = <repo>:<tag>@sha256:<digest>  (full ref with digest)
 #   $SKAFFOLD_PUSH_IMAGE = true|false
 #
 # Usage (from skaffold):  bash commit-pin.sh <service>
-# Usage (manual):         SKAFFOLD_IMAGE=ghcr.io/.../workflow-builder:git-abc bash commit-pin.sh workflow-builder
+# Usage (manual):         SKAFFOLD_IMAGE=ghcr.io/pittampalliorg/workflow-builder:git-abc bash commit-pin.sh workflow-builder
 #
-# CURRENT STATE (A0.β stage 1): commit-pin still pushes to gitea-ryzen `main`,
-# matching ryzen's current standalone ArgoCD that reads from gitea-ryzen
-# env/ryzen. The image newName is now ghcr.io/pittampalliorg/<svc> (because
-# Skaffold pushes there), so what changes per run is the tag only.
-#
-# FUTURE (A6 cutover): when ryzen migrates to hub-managed and reads from
-# GitHub `inner-loop` branch, STACKS_REMOTE_URL default flips to GitHub.
+# Single-writer invariant: commit-pin is the ONLY pin writer on GitHub `main`
+# for the Skaffold-owned services (SKAFFOLD_OWNED_DEFAULT in
+# scripts/_modules.sh). The gitea Tekton task `update-ryzen-dev-image-tag` that
+# used to also write these was retired; the writer-precedence guard below
+# refuses to push a pin for any non-owned service. Every other ryzen workload
+# is pinned by the hub outer-loop `update-stacks-image` task. The image newName
+# is ghcr.io/pittampalliorg/<svc>, so what changes per run is the tag.
 #
 # IMPORTANT: this hook maintains a dedicated cache at
 # $HOME/.cache/skaffold/stacks-ryzen tracking the remote configured by
-# STACKS_REMOTE_URL. Override the cache dir via STACKS_REPO_DIR=/abs/path.
+# STACKS_REMOTE_URL (GitHub `main` by default). Override the cache dir via
+# STACKS_REPO_DIR=/abs/path or the remote via STACKS_REMOTE_URL=<url>.
 
 set -euo pipefail
 
 service="${1:?service name required, e.g. workflow-builder}"
+
+# --- Writer-precedence guard -------------------------------------------------
+# On GitHub `main` each workloads/<svc>/manifests/kustomization.yaml image pin
+# has a SINGLE authoritative writer. commit-pin owns the Skaffold module set;
+# every other ryzen workload is pinned by the hub outer-loop
+# `update-stacks-image` task. Refuse (clear error, not a silent skip — so an
+# outer-loop deploy surfaces it) to push a pin for an un-owned service.
+_modules_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts" && pwd)/_modules.sh"
+if [ -f "${_modules_sh}" ]; then
+  # shellcheck source=../../scripts/_modules.sh
+  . "${_modules_sh}"
+fi
+if [ -n "${SKAFFOLD_OWNED_SERVICES:-}" ]; then
+  # shellcheck disable=SC2206  # intentional word-split of the env override
+  owned=(${SKAFFOLD_OWNED_SERVICES})
+elif declare -p SKAFFOLD_OWNED_DEFAULT >/dev/null 2>&1; then
+  owned=("${SKAFFOLD_OWNED_DEFAULT[@]}")
+else
+  owned=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
+fi
+_is_owned=0
+for _o in "${owned[@]}"; do
+  [ "${_o}" = "${service}" ] && { _is_owned=1; break; }
+done
+if [ "${_is_owned}" -ne 1 ]; then
+  echo "commit-pin: '${service}' is not a Skaffold-owned pin target on GitHub main." >&2
+  echo "commit-pin: owned services: ${owned[*]}" >&2
+  echo "commit-pin: refusing to push (writer-precedence guard)." >&2
+  echo "commit-pin: to own it, add it to SKAFFOLD_OWNED_DEFAULT in scripts/_modules.sh," >&2
+  echo "commit-pin: or override: SKAFFOLD_OWNED_SERVICES=\"${service} ...\"" >&2
+  exit 66
+fi
+# -----------------------------------------------------------------------------
+
 : "${SKAFFOLD_IMAGE:?SKAFFOLD_IMAGE env required (Skaffold sets this in build hooks)}"
 
 # Strip any @sha256:... digest suffix.
@@ -43,8 +79,10 @@ fi
 default_cache_dir="${HOME}/.cache/skaffold/stacks-ryzen"
 stacks_dir="${STACKS_REPO_DIR:-${default_cache_dir}}"
 
-# Default remote (Tailscale-exposed gitea-ryzen). Override via $STACKS_REMOTE_URL.
-remote_url="${STACKS_REMOTE_URL:-https://giteaadmin:developer@gitea-ryzen.tail286401.ts.net/giteaadmin/stacks.git}"
+# Default remote: GitHub `main` (the GitOps source of record that ryzen reads).
+# NO embedded credential — GitHub auth resolves via the git credential helper /
+# gh / GITHUB_TOKEN. Override via $STACKS_REMOTE_URL.
+remote_url="${STACKS_REMOTE_URL:-https://github.com/PittampalliOrg/stacks.git}"
 branch="${STACKS_BRANCH:-main}"
 
 # Clone if the cache directory doesn't exist yet. We use `--depth 1` to keep
@@ -55,7 +93,16 @@ if ! git -C "${stacks_dir}" rev-parse --git-dir >/dev/null 2>&1; then
   git clone --depth 1 --branch "${branch}" "${remote_url}" "${stacks_dir}"
 fi
 
-# Configure committer identity if not already set (Gitea will reject otherwise).
+# Re-point origin if a warm cache was cloned from a different remote (e.g. the
+# old gitea-ryzen URL). Without this, a pre-existing
+# $HOME/.cache/skaffold/stacks-ryzen keeps fetching/pushing the OLD remote.
+cur_origin="$(git -C "${stacks_dir}" remote get-url origin 2>/dev/null || true)"
+if [ -n "${cur_origin}" ] && [ "${cur_origin}" != "${remote_url}" ]; then
+  echo "commit-pin: origin changed (${cur_origin} → ${remote_url}); updating remote"
+  git -C "${stacks_dir}" remote set-url origin "${remote_url}"
+fi
+
+# Configure committer identity if not already set (the remote rejects otherwise).
 if ! git -C "${stacks_dir}" config user.email >/dev/null 2>&1; then
   git -C "${stacks_dir}" config user.email "skaffold@workflow-builder.local"
   git -C "${stacks_dir}" config user.name "Skaffold commit-pin"
@@ -88,7 +135,7 @@ echo "commit-pin: stacks repo: ${stacks_dir}"
 # Two real-world wrinkles this parser handles:
 # - The `name:` field can be the short slug (e.g. `workflow-builder`) OR
 #   the long form that matches what the Deployment YAML references (e.g.
-#   `gitea-ryzen.tail286401.ts.net/giteaadmin/workflow-orchestrator`). We
+#   `ghcr.io/pittampalliorg/workflow-orchestrator`). We
 #   match either: `name == <service>` OR `name endswith /<service>`.
 # - Field order under each entry is inconsistent — some have
 #   `newName/newTag`, others have `newTag/newName`. We rewrite only the

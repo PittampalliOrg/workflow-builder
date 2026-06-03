@@ -25,9 +25,30 @@ if [ "${#services[@]}" -eq 0 ]; then
   services=(workflow-builder)
 fi
 
-# Same default registry as the dev wrapper.
+# Same default registry as the dev wrapper. Inert for the outer loop (run-profile
+# artifacts are fully-qualified ghcr.io/pittampalliorg/<svc>, so default-repo is
+# not prepended) — flipped for consistency with the inner loop.
 if [ -z "${SKAFFOLD_DEFAULT_REPO:-}" ]; then
-  export SKAFFOLD_DEFAULT_REPO="gitea-ryzen.tail286401.ts.net/giteaadmin"
+  export SKAFFOLD_DEFAULT_REPO="ghcr.io/pittampalliorg"
+fi
+
+# Pin-target guard: every service we deploy must have a stacks workloads
+# kustomization for commit-pin to write. Services without one (fn-system is a
+# Knative ksvc; fn-activepieces has no workloads dir) are built+pinned by the
+# hub outer-loop — reject them up front rather than push an image we can't pin.
+# If the stacks worktree isn't found we skip the early check; commit-pin's own
+# missing-kustomization check still catches it after the build.
+stacks_dir="${STACKS_DIR:-$(cd "${PWD}/../../stacks/main" 2>/dev/null && pwd || true)}"
+if [ -n "${stacks_dir}" ]; then
+  for svc in "${services[@]}"; do
+    if [ ! -f "${stacks_dir}/packages/components/workloads/${svc}/manifests/kustomization.yaml" ]; then
+      echo "skaffold-deploy: '${svc}' has no pin target at" >&2
+      echo "  packages/components/workloads/${svc}/manifests/kustomization.yaml (stacks: ${stacks_dir})" >&2
+      echo "skaffold-deploy: this service is built/pinned outside the Skaffold outer loop" >&2
+      echo "skaffold-deploy: (e.g. Knative fn-system, or the hub outer-loop). Refusing to build." >&2
+      exit 66
+    fi
+  done
 fi
 
 # `skaffold build --file-output` writes JSON with the resolved tags. Use one

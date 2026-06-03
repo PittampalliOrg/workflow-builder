@@ -4,10 +4,9 @@ kind: Kustomization
 # Narrow scope: only the workflow-builder Deployment.
 #
 # Why not extend the whole prod kustomization folder: the ArgoCD Application
-# applies inline kustomize patches + image rewrites (e.g.
-# docker.io/library/postgres → gitea.cnoe.localtest.me:8443/.../postgres,
-# ExternalSecret remoteRef rewrites per cluster) which our local Skaffold
-# render can't see. Re-deploying the full folder via Skaffold would either
+# applies inline kustomize patches (e.g. per-cluster ExternalSecret remoteRef
+# rewrites) which our local Skaffold render can't see. Re-deploying the full
+# folder via Skaffold would either
 # clobber Argo's render (image-pull errors for postgres, pgbouncer, etc.) or
 # require us to mirror every Application-level patch here.
 #
@@ -25,14 +24,12 @@ namespace: workflow-builder
 resources:
   - ../../../../../stacks/main/packages/components/workloads/workflow-builder/manifests/Deployment-workflow-builder.yaml
 
-# The init container `wait-for-execution-read-model` uses
-# `docker.io/library/postgres:15.3-alpine3.18`. Mirror the Application-level
-# image rewrite (from the ArgoCD App's spec.source.kustomize.images) so
-# kind-ryzen pulls from the in-cluster Gitea mirror instead of docker.io.
-images:
-  - name: docker.io/library/postgres
-    newName: gitea.cnoe.localtest.me:8443/giteaadmin/postgres
-    newTag: 15.3-alpine3.18
+# No postgres image rewrite needed: the init container
+# `wait-for-execution-read-model` uses bare `docker.io/library/postgres:15.3-alpine3.18`,
+# which ryzen pulls directly via the authenticated containerd hosts.toml
+# (deployment/config/containerd/docker.io) + Spegel P2P. The former
+# gitea.cnoe.localtest.me mirror — and the ArgoCD App-level rewrite this used
+# to mirror — were retired with Gitea.
 
 # Strategic-merge patch: swap image to `workflow-builder-dev` (Skaffold then
 # rewrites to its built tag+digest), NODE_ENV→development, container

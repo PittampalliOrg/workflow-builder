@@ -2,7 +2,7 @@
 # Print a one-screen status table for every active Skaffold-managed module.
 #
 # For each module shows:
-#   - ARGO    Whether the gitea-ryzen ArgoCD Application is paused
+#   - ARGO    Whether the ryzen ArgoCD Application is paused
 #             (argocd.argoproj.io/skip-reconcile=true) + sync/health state.
 #   - LIVE    The image currently running on the cluster Deployment.
 #   - PINNED  The image+tag in stacks-ryzen kustomization (i.e. what Argo
@@ -20,17 +20,16 @@
 #   bash scripts/skaffold-status.sh workflow-builder      # single module
 #   pnpm skaffold:status                                  # via package.json
 #
-# Read-only — fetches the gitea-ryzen tip into the cache clone but never
+# Read-only — fetches the GitHub main tip into the cache clone but never
 # resets or modifies it. Safe to run during an active `skaffold dev` session.
 
 set -euo pipefail
 
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
-# Keep in sync with scripts/skaffold-dev.sh's module sets.
-ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
-INACTIVE_MODULES=(fn-activepieces)
-ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
+# Module sets live in the shared library.
+# shellcheck source=scripts/_modules.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_modules.sh"
 
 modules=("$@")
 if [ "${#modules[@]}" -eq 0 ] \
@@ -44,7 +43,7 @@ elif [ "${modules[0]}" = "ALL" ] \
 fi
 
 stacks_dir="${STACKS_REPO_DIR:-${HOME}/.cache/skaffold/stacks-ryzen}"
-remote_url="${STACKS_REMOTE_URL:-https://giteaadmin:developer@gitea-ryzen.tail286401.ts.net/giteaadmin/stacks.git}"
+remote_url="${STACKS_REMOTE_URL:-https://github.com/PittampalliOrg/stacks.git}"
 branch="${STACKS_BRANCH:-main}"
 ns="${NAMESPACE:-workflow-builder}"
 argo_ns="${ARGO_NS:-argocd}"
@@ -54,6 +53,12 @@ if ! git -C "${stacks_dir}" rev-parse --git-dir >/dev/null 2>&1; then
   printf 'skaffold-status: cloning %s → %s (first run)\n' "${remote_url}" "${stacks_dir}" >&2
   mkdir -p "$(dirname "${stacks_dir}")"
   git clone --depth 1 --branch "${branch}" "${remote_url}" "${stacks_dir}" >/dev/null
+fi
+
+# Re-point origin if a warm cache was cloned from a different remote (gitea-ryzen).
+cur_origin="$(git -C "${stacks_dir}" remote get-url origin 2>/dev/null || true)"
+if [ -n "${cur_origin}" ] && [ "${cur_origin}" != "${remote_url}" ]; then
+  git -C "${stacks_dir}" remote set-url origin "${remote_url}" 2>/dev/null || true
 fi
 
 # Non-destructive fetch — we only read `origin/<branch>:<path>` via `git show`.
@@ -178,7 +183,7 @@ for mod in "${modules[@]}"; do
     live_display="$(shorten_image "${live_raw}")"
   fi
 
-  # Pinned tag from gitea-ryzen kustomization.
+  # Pinned tag from the GitHub-main kustomization.
   pinned_pair="$(get_pinned "${mod}")"
   if [ -z "${pinned_pair}" ]; then
     pinned_display="(no images: entry)"
@@ -229,12 +234,12 @@ if [ "${paused_count}" -gt 0 ]; then
   printf '       ARGO_APPS="<apps>" bash skaffold/hooks/argo-resume.sh\n'
 fi
 if [ "${drift_count}" -gt 0 ]; then
-  printf '  ⚠  %d module(s) running an image different from the gitea-ryzen pin.\n' "${drift_count}"
+  printf '  ⚠  %d module(s) running an image different from the GitHub-main pin.\n' "${drift_count}"
   printf '       If you paused Argo via skaffold-dev.sh, this is expected.\n'
   printf '       Otherwise: check the ArgoCD app status + last sync result.\n'
 fi
 if [ "${name_mismatch_count}" -gt 0 ]; then
-  printf '  ℹ  %d kustomization entry(ies) use a long-form `name:` (e.g. gitea-ryzen.../<svc>) instead of\n' "${name_mismatch_count}"
+  printf '  ℹ  %d kustomization entry(ies) use a long-form `name:` (e.g. ghcr.io/pittampalliorg/<svc>) instead of\n' "${name_mismatch_count}"
   printf '       the short slug. This is necessary when the underlying Deployment references the long\n'
   printf '       form (kustomize matches images by exact `name`). commit-pin.sh handles both shapes —\n'
   printf '       informational only; no fix needed.\n'
@@ -244,7 +249,7 @@ if [ "${inactive_count}" -gt 0 ]; then
   printf '       from `skaffold-dev.sh ALL`; run them only with SKAFFOLD_ALLOW_INACTIVE=1.\n'
 fi
 if [ "${paused_count}" -eq 0 ] && [ "${drift_count}" -eq 0 ] && [ "${name_mismatch_count}" -eq 0 ] && [ "${inactive_count}" -eq 0 ]; then
-  printf '  ✓  All modules are active, in sync with the gitea-ryzen pin, and have well-formed name fields.\n'
+  printf '  ✓  All modules are active, in sync with the GitHub-main pin, and have well-formed name fields.\n'
 fi
 printf '\n'
 printf '  stacks-ryzen cache: %s @ %s\n' "${stacks_dir}" \

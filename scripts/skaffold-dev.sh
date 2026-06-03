@@ -18,15 +18,10 @@ set -euo pipefail
 
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
-# Module sets — kept in sync with skaffold.yaml's `requires:` list.
-#
-# fn-activepieces remains wired in Skaffold for recovery/parity work, but the
-# current ryzen cluster does not expose it as a regular Argo Application and
-# Deployment. Keep it out of normal "all" sessions until that app path is live
-# again; set SKAFFOLD_ALLOW_INACTIVE=1 to opt into it deliberately.
-ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
-INACTIVE_MODULES=(fn-activepieces)
-ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
+# Module sets (ACTIVE_MODULES / INACTIVE_MODULES / ALL_MODULES), the
+# Skaffold-owned pin set, and per-module ports live in the shared library.
+# shellcheck source=scripts/_modules.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_modules.sh"
 
 contains_module() {
   local needle="$1"
@@ -71,13 +66,14 @@ export ARGO_APPS
 ns="${ARGO_NS:-argocd}"
 export ARGO_NS="${ns}"
 
-# Default image registry: kind-on-ryzen pulls dev images from gitea-ryzen.
-# Without this, Skaffold prepends docker.io/library/ to bare artifact names
-# (e.g. `workflow-builder-dev`) and the push to Docker Hub fails. Same
-# registry path devspace.yaml uses (DEVSPACE_IMAGE_REGISTRY).
-# Override via env var for other clusters / mirrors.
+# Default image registry: ryzen pulls dev images from GHCR via the
+# authenticated ghcr.io/hosts.toml containerd mirror (+ Spegel P2P). Without
+# this, Skaffold prepends docker.io/library/ to bare artifact names (e.g.
+# `workflow-builder-dev`) and the push to Docker Hub fails. The host running
+# `skaffold dev` needs GHCR push creds (`docker login ghcr.io`). Override via
+# env var for other clusters / mirrors.
 if [ -z "${SKAFFOLD_DEFAULT_REPO:-}" ]; then
-  SKAFFOLD_DEFAULT_REPO="gitea-ryzen.tail286401.ts.net/giteaadmin"
+  SKAFFOLD_DEFAULT_REPO="ghcr.io/pittampalliorg"
 fi
 export SKAFFOLD_DEFAULT_REPO
 
@@ -149,33 +145,19 @@ printf '==> Pausing ArgoCD for: %s\n' "${ARGO_APPS}"
 bash skaffold/hooks/argo-pause.sh ${ARGO_APPS}
 
 # --- Port-forward banner ----------------------------------------------------
-# Parse each module's portForward.{port,localPort} so we can show a single
-# upfront table — saves the developer from scrolling Skaffold's verbose log
-# to find "where did the BFF land". Parser is regex-only on purpose: avoids
-# a yaml dependency, and our modules only ever have one portForward entry.
+# Upfront table of where each module's BFF/API lands, so the developer doesn't
+# scroll Skaffold's verbose log to find it. Ports come from the shared
+# MODULE_PORTS map (authoritative source: each skaffold/<module>.skaffold.yaml
+# `portForward` stanza). No yaml parsing — just a lookup.
 printf '\n  Port forwards (active during this session):\n'
 printf '       %-22s %-10s %-10s %s\n' MODULE LOCAL CONTAINER URL
 for mod in "${modules[@]}"; do
-  yaml="skaffold/${mod}.skaffold.yaml"
-  [ -f "${yaml}" ] || continue
-  parsed=$(python3 -c '
-import sys, re
-text = open(sys.argv[1]).read()
-m = re.search(r"(?m)^portForward:\s*\n((?:[ \t]+.*\n?)+)", text)
-if not m:
-    sys.exit(0)
-block = m.group(1)
-local = re.search(r"(?m)^\s+localPort:\s*(\d+)", block)
-port  = re.search(r"(?m)^\s+port:\s*(\d+)",      block)
-if local and port:
-    print(local.group(1), port.group(1))
-' "${yaml}" 2>/dev/null || true)
-  if [ -n "${parsed}" ]; then
-    local_port="${parsed%% *}"
-    cont_port="${parsed##* }"
-    printf '       %-22s %-10s %-10s http://localhost:%s\n' \
-      "${mod}" "${local_port}" "${cont_port}" "${local_port}"
-  fi
+  pair="${MODULE_PORTS[${mod}]:-}"
+  [ -n "${pair}" ] || continue
+  local_port="${pair%%:*}"
+  cont_port="${pair##*:}"
+  printf '       %-22s %-10s %-10s http://localhost:%s\n' \
+    "${mod}" "${local_port}" "${cont_port}" "${local_port}"
 done
 printf '\n'
 
