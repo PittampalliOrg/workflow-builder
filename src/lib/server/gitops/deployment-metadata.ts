@@ -263,8 +263,16 @@ async function loadReleasePins(): Promise<{
 	try {
 		const res = await fetchWithTimeout(STACKS_RELEASE_PINS_URL);
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-		const doc = yaml.load(await res.text()) as { images?: Record<string, string> } | null;
-		const images = Object.entries(doc?.images ?? {});
+		const doc = yaml.load(await res.text()) as ReleasePinsDocument | null;
+		const sections = {
+			images: normalizeStringMap(doc?.images),
+			imageRefs: normalizeStringMap(doc?.imageRefs),
+			digests: normalizeStringMap(doc?.digests),
+			sourceShas: normalizeStringMap(doc?.sourceShas),
+			pipelineRuns: normalizeStringMap(doc?.pipelineRuns),
+			updatedAts: normalizeStringMap(doc?.updatedAts),
+		};
+		const images = Object.entries(sections.images);
 		const uniqueCommitShas = Array.from(
 			new Set(
 				images
@@ -284,6 +292,11 @@ async function loadReleasePins(): Promise<{
 				tag,
 				commitSha,
 				commit: commitSha ? (commits.get(commitSha) ?? null) : null,
+				imageRef: sections.imageRefs[name] ?? null,
+				digest: sections.digests[name] ?? null,
+				sourceSha: sections.sourceShas[name] ?? commitSha,
+				pipelineRun: sections.pipelineRuns[name] ?? null,
+				updatedAt: sections.updatedAts[name] ?? null,
 			};
 		});
 		const value = {
@@ -302,6 +315,33 @@ async function loadReleasePins(): Promise<{
 		releasePinsCache = { value, expiresAt: now + 15_000 };
 		return value;
 	}
+}
+
+type ReleasePinsDocument = {
+	images?: Record<string, unknown>;
+	imageRefs?: Record<string, unknown>;
+	digests?: Record<string, unknown>;
+	sourceShas?: Record<string, unknown>;
+	pipelineRuns?: Record<string, unknown>;
+	updatedAts?: Record<string, unknown>;
+};
+
+function normalizeStringMap(value: unknown): Record<string, string> {
+	if (!value || typeof value !== "object") return {};
+	const entries = Object.entries(value as Record<string, unknown>)
+		.map(([key, entry]) => [key, normalizeString(entry)] as const)
+		.filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+	return Object.fromEntries(entries);
+}
+
+function normalizeString(value: unknown): string | null {
+	if (value instanceof Date) return value.toISOString();
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		return trimmed ? trimmed : null;
+	}
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	return null;
 }
 
 async function getStacksMain(): Promise<GitCommitMetadata | null> {

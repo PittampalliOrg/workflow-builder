@@ -21,6 +21,11 @@ export type DesiredImageMetadata = {
 	tag: string;
 	commitSha: string | null;
 	commit: GitCommitMetadata | null;
+	imageRef?: string | null;
+	digest?: string | null;
+	sourceSha?: string | null;
+	pipelineRun?: string | null;
+	updatedAt?: string | null;
 };
 
 export type LiveContainerMetadata = ParsedImageRef & {

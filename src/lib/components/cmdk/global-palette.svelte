@@ -21,6 +21,7 @@
 		Activity,
 		Key,
 		Gauge,
+		GitBranch,
 		Users,
 		Settings,
 		Trophy
@@ -130,6 +131,8 @@
 		{ label: 'Admin: Agent runtimes', path: '/admin/runtimes', icon: Activity, keywords: 'admin pods' },
 		{ label: 'Admin: Workflow instances', path: '/admin/instances', icon: Activity, keywords: 'admin monitor' },
 		{ label: 'Admin: Activities', path: '/admin/activities', icon: Activity, keywords: 'admin dapr' },
+		{ label: 'Admin: GitOps', path: '/admin/gitops', icon: GitBranch, keywords: 'admin promoter deployments release pins' },
+		{ label: 'Admin: GitOps system', path: '/admin/gitops/system', icon: GitBranch, keywords: 'admin gitops lanes skaffold ryzen dev outer loop' },
 		{ label: 'API keys', path: '/workspaces/default/settings/keys', icon: Key },
 		{ label: 'Limits', path: '/workspaces/default/settings/limits', icon: Gauge },
 		{ label: 'Members', path: '/settings/members', icon: Users },
