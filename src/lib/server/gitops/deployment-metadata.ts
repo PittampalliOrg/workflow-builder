@@ -15,6 +15,7 @@ import type {
 	DesiredImageMetadata,
 	GitCommitMetadata,
 	GitOpsDeploymentInventory,
+	ImageVersion,
 	LiveContainerMetadata,
 	LiveDeploymentMetadata,
 	ParsedImageRef,
@@ -23,16 +24,23 @@ import type {
 	RuntimeMetadataResponse,
 } from "$lib/types/deployment-metadata";
 
-const STACKS_RELEASE_PINS_URL =
-	"https://raw.githubusercontent.com/PittampalliOrg/stacks/main/packages/components/hub-spoke-appsets/release-pins/workflow-builder-images.yaml";
+const STACKS_RELEASE_PINS_PATH =
+	"packages/components/hub-spoke-appsets/release-pins/workflow-builder-images.yaml";
+const STACKS_RELEASE_PINS_URL = `https://raw.githubusercontent.com/PittampalliOrg/stacks/main/${STACKS_RELEASE_PINS_PATH}`;
+const STACKS_PIN_COMMITS_URL = `https://api.github.com/repos/PittampalliOrg/stacks/commits?path=${encodeURIComponent(
+	STACKS_RELEASE_PINS_PATH,
+)}`;
+const STACKS_PIN_BLOB_BASE_URL = `https://raw.githubusercontent.com/PittampalliOrg/stacks/`;
 const STACKS_MAIN_REF_URL =
 	"https://api.github.com/repos/PittampalliOrg/stacks/commits/main";
 const WORKFLOW_BUILDER_COMMIT_URL =
 	"https://api.github.com/repos/PittampalliOrg/workflow-builder/commits/";
 const GITOPS_CACHE_TTL_MS = 60_000;
 const GIT_COMMIT_CACHE_TTL_MS = 12 * 60 * 60_000;
+const PIN_HISTORY_CACHE_TTL_MS = 10 * 60_000;
 const HUB_INVENTORY_CACHE_TTL_MS = 15_000;
 const RUNTIME_METADATA_CACHE_TTL_MS = 15_000;
+const DEFAULT_PIN_HISTORY_LIMIT = 50;
 
 type CacheEntry<T> = {
 	expiresAt: number;
@@ -45,10 +53,15 @@ let releasePinsCache: CacheEntry<{
 	error: string | null;
 }> | null = null;
 let stacksMainCache: CacheEntry<GitCommitMetadata | null> | null = null;
+let pinHistoryCache: CacheEntry<{
+	imageHistory: ImageVersion[];
+	error: string | null;
+}> | null = null;
 let hubInventoryCache: CacheEntry<DeploymentMetadataResponse["inventory"]> | null = null;
 let runtimeMetadataCache: CacheEntry<RuntimeMetadataResponse> | null = null;
 const workflowCommitCache = new Map<string, CacheEntry<GitCommitMetadata | null>>();
 const workflowCommitInflight = new Map<string, Promise<GitCommitMetadata | null>>();
+const pinBlobCache = new Map<string, PinSnapshotSections>();
 
 export async function getDeploymentMetadata(): Promise<DeploymentMetadataResponse> {
 	const namespace = await getOwnNamespace();
@@ -115,13 +128,19 @@ function readFirstEnvWithName(...names: string[]): { name: string; value: string
 }
 
 async function loadGitOpsState(): Promise<DeploymentMetadataResponse["gitops"]> {
-	const [releasePins, stacksMain] = await Promise.all([loadReleasePins(), getStacksMain()]);
+	const [releasePins, stacksMain, pinHistory] = await Promise.all([
+		loadReleasePins(),
+		getStacksMain(),
+		loadPinHistory(),
+	]);
 	return {
 		releasePinsSourceUrl: STACKS_RELEASE_PINS_URL,
 		releasePinsFetchedAt: releasePins.fetchedAt,
 		releasePinsError: releasePins.error,
 		stacksMain,
 		desiredImages: releasePins.desiredImages,
+		imageHistory: pinHistory.imageHistory,
+		imageHistoryError: pinHistory.error,
 	};
 }
 
@@ -345,6 +364,114 @@ function normalizeString(value: unknown): string | null {
 	if (typeof value === "number" || typeof value === "boolean") return String(value);
 	return null;
 }
+
+/**
+ * Source Kargo-style image HISTORY from live git: walk the release-pins file's
+ * commit history (GitHub commits API filtered by path), fetch each historical
+ * blob, and emit a per-service version event ONLY where a service's tag CHANGED
+ * relative to the prior (older) commit. Resilient: any fetch error returns []
+ * with an error string, never throws.
+ */
+export async function loadPinHistory(
+	limit: number = DEFAULT_PIN_HISTORY_LIMIT,
+): Promise<{ imageHistory: ImageVersion[]; error: string | null }> {
+	const now = Date.now();
+	if (pinHistoryCache && pinHistoryCache.expiresAt > now) return pinHistoryCache.value;
+
+	try {
+		const res = await fetchWithTimeout(`${STACKS_PIN_COMMITS_URL}&per_page=${limit}`);
+		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+		const commits = (await res.json()) as PinCommitListItem[];
+		if (!Array.isArray(commits)) throw new Error("pin commits payload is not an array");
+
+		// GitHub returns commits newest-first. Fetch each commit's blob in parallel.
+		const snapshots = await Promise.all(
+			commits.map(async (commit) => ({
+				sha: commit.sha,
+				committedAt:
+					commit.commit?.committer?.date ?? commit.commit?.author?.date ?? null,
+				message: commit.commit?.message?.split("\n")[0] ?? null,
+				images: await loadPinBlobAt(commit.sha),
+			})),
+		);
+
+		const history: ImageVersion[] = [];
+		// Walk newest→oldest; compare each pin to the next (older) pin and emit
+		// version events only for services whose tag changed.
+		for (let i = 0; i < snapshots.length; i += 1) {
+			const current = snapshots[i];
+			if (!current.sha) continue;
+			const prior = snapshots[i + 1]?.images.images ?? {};
+			const sections = current.images;
+			for (const [service, tag] of Object.entries(sections.images)) {
+				if (!tag) continue;
+				if (prior[service] === tag) continue;
+				history.push({
+					service,
+					tag,
+					digest: sections.digests[service] ?? null,
+					sourceSha: sections.sourceShas[service] ?? commitShaFromTag(tag) ?? null,
+					committedAt: sections.updatedAts[service] ?? null,
+					pinCommit: current.sha,
+					pinCommittedAt: current.committedAt ?? "",
+					message: current.message,
+				});
+			}
+		}
+
+		const value = { imageHistory: history, error: null };
+		pinHistoryCache = { value, expiresAt: now + PIN_HISTORY_CACHE_TTL_MS };
+		return value;
+	} catch (err) {
+		const value = {
+			imageHistory: pinHistoryCache?.value.imageHistory ?? [],
+			error: err instanceof Error ? err.message : String(err),
+		};
+		pinHistoryCache = { value, expiresAt: now + 15_000 };
+		return value;
+	}
+}
+
+type PinSnapshotSections = {
+	images: Record<string, string>;
+	digests: Record<string, string>;
+	sourceShas: Record<string, string>;
+	updatedAts: Record<string, string>;
+};
+
+/**
+ * Fetch and parse the release-pins YAML blob at a specific commit SHA, reusing
+ * the same map-parsing (`normalizeStringMap`) as `loadReleasePins`. Per-commit
+ * blobs are immutable, so the Map cache never expires.
+ */
+async function loadPinBlobAt(sha: string): Promise<PinSnapshotSections> {
+	const key = sha.toLowerCase();
+	const cached = pinBlobCache.get(key);
+	if (cached) return cached;
+
+	const res = await fetchWithTimeout(
+		`${STACKS_PIN_BLOB_BASE_URL}${encodeURIComponent(sha)}/${STACKS_RELEASE_PINS_PATH}`,
+	);
+	if (!res.ok) throw new Error(`pin blob ${sha.slice(0, 8)}: ${res.status} ${res.statusText}`);
+	const doc = yaml.load(await res.text()) as ReleasePinsDocument | null;
+	const sections: PinSnapshotSections = {
+		images: normalizeStringMap(doc?.images),
+		digests: normalizeStringMap(doc?.digests),
+		sourceShas: normalizeStringMap(doc?.sourceShas),
+		updatedAts: normalizeStringMap(doc?.updatedAts),
+	};
+	pinBlobCache.set(key, sections);
+	return sections;
+}
+
+type PinCommitListItem = {
+	sha: string;
+	commit?: {
+		message?: string;
+		author?: { date?: string };
+		committer?: { date?: string };
+	};
+};
 
 function isLikelyCommitSha(value: string | null | undefined): value is string {
 	return typeof value === "string" && /^[0-9a-f]{7,40}$/i.test(value);

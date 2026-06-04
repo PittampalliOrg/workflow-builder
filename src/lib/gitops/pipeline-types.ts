@@ -53,6 +53,41 @@ export type StageRollup = {
 	total: number;
 };
 
+/**
+ * A single promotion gate (Promoter `CommitStatus`) the next freight must clear
+ * for this stage. `phase` follows Promoter's vocabulary
+ * (`pending` | `success` | `failure`).
+ */
+export type StagePromotionGate = {
+	key: string;
+	phase: string | null;
+	description: string | null;
+};
+
+/**
+ * Promoter-aware promotion state for a Promoter-gated stage (today: dev). This
+ * is the C1 per-environment state — the proposed-vs-active distinction the
+ * Promoter actually tracks, NOT a single collapsed tone. `inFlight` is true when
+ * a distinct proposed freight exists and hasn't merged yet. Stages with no
+ * Promoter process (ryzen direct-main, dormant staging) carry `null`.
+ */
+export type StagePromotion = {
+	/** A promotion is in flight when a proposed freight exists. */
+	inFlight: boolean;
+	/** Proposed (next) hydrated sha when in-flight, else null. */
+	proposedTag: string | null;
+	/** Active (live) hydrated sha. */
+	activeTag: string | null;
+	gates: StagePromotionGate[];
+	/** Soak countdown label parsed from the `timer` gate, e.g. "4m of 10m". */
+	soak: { elapsed: string; total: string; label: string } | null;
+	pullRequest: { url: string | null; state: string | null } | null;
+	/** First pending/failing gate key — what delivery is blocked on. */
+	stalledOn: string | null;
+};
+
+export type StageDeliveryMode = "direct-main" | "promoter" | "dormant";
+
 export type PipelineStage = {
 	/** Unique id: `${warehouse}::${env}`. */
 	name: string;
@@ -73,12 +108,32 @@ export type PipelineStage = {
 	/** Control-flow / dormant stage (no live promotion process). */
 	controlFlow: boolean;
 	dormant: boolean;
+	/**
+	 * How this stage receives changes:
+	 *  - `direct-main`: reads the bare workload kustomization on stacks main (ryzen).
+	 *    No Promoter env branch → no proposed-vs-active promotion tone.
+	 *  - `promoter`: GitOps-Promoter-gated env branch (dev) with soak/health gates.
+	 *  - `dormant`: downstream control-flow stage with no live promotion (staging).
+	 */
+	deliveryMode: StageDeliveryMode;
+	/**
+	 * `true` when the cell has a release-pin / source commit but no reconciled
+	 * inventory evidence yet — render as "awaiting reconcile", distinct from a
+	 * healthy synced cell.
+	 */
+	awaitingReconcile: boolean;
 	/** Per-env roll-up for the release-train bundle stages. */
 	rollup?: StageRollup | null;
 	promoterBranch?: string | null;
 	promoterHydratedSha?: string | null;
 	/** Soak / verification gate label (Promoter TimedCommitStatus). */
 	gate?: { label: string; phase: string | null } | null;
+	/**
+	 * Promoter-aware per-env promotion state (C1). Present only on
+	 * Promoter-gated stages (dev); `null` for direct-main (ryzen) and dormant
+	 * (staging) stages.
+	 */
+	promotion: StagePromotion | null;
 };
 
 export type FreightArtifact =

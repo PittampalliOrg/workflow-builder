@@ -22,6 +22,8 @@ function baseMetadata(
 			releasePinsError: null,
 			stacksMain: null,
 			desiredImages: [],
+			imageHistory: [],
+			imageHistoryError: null,
 		},
 		live: {
 			error: null,

@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { getContext } from "svelte";
-	import { Clock3, ExternalLink, GitMerge, PauseCircle, TimerReset } from "@lucide/svelte";
+	import {
+		Clock3,
+		ExternalLink,
+		GitMerge,
+		GitPullRequestArrow,
+		Hourglass,
+		PauseCircle,
+		TimerReset,
+	} from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import {
@@ -128,6 +136,44 @@
 			{#if drift && stage.liveTag}
 				<div class="flex items-center gap-1 truncate font-mono text-[0.62rem] text-amber-600 dark:text-amber-400" title={`live ${stage.liveTag}`}>
 					<GitMerge class="size-3 shrink-0" />live {shortTag(stage.liveTag)}
+				</div>
+			{/if}
+
+			<!-- Promoter in-flight (C1/C2): a distinct proposed freight is soaking /
+			     awaiting a gate. Only Promoter-gated stages (dev) carry this. -->
+			{#if stage.promotion?.inFlight}
+				<div class="flex flex-col gap-0.5 rounded-md border border-amber-400/60 bg-amber-50/70 px-1.5 py-1 dark:bg-amber-950/30">
+					<div class="flex items-center gap-1 text-[0.62rem] font-medium text-amber-700 dark:text-amber-300">
+						<GitPullRequestArrow class="size-3 shrink-0" />
+						<span class="truncate font-mono" title={stage.promotion.proposedTag ?? "next freight"}>
+							→ {stage.promotion.proposedTag ? shortSha(stage.promotion.proposedTag) : "next"}
+						</span>
+						{#if stage.promotion.pullRequest?.url}
+							<a
+								href={stage.promotion.pullRequest.url}
+								target="_blank"
+								rel="noreferrer"
+								onclick={stop}
+								class="ml-auto shrink-0 hover:text-primary"
+								title={`Promotion PR${stage.promotion.pullRequest.state ? ` (${stage.promotion.pullRequest.state})` : ""}`}
+							>
+								<ExternalLink class="size-3" />
+							</a>
+						{/if}
+					</div>
+					{#if stage.promotion.soak}
+						<div class="flex items-center gap-1 text-[0.6rem] text-amber-700/90 dark:text-amber-300/90" title="Soak / verification countdown">
+							<TimerReset class="size-2.5 shrink-0" />soak {stage.promotion.soak.label}
+						</div>
+					{:else if stage.promotion.stalledOn}
+						<div class="flex items-center gap-1 text-[0.6rem] text-amber-700/90 dark:text-amber-300/90" title="Promotion gate not yet satisfied">
+							<Hourglass class="size-2.5 shrink-0" />waiting: {stage.promotion.stalledOn}
+						</div>
+					{/if}
+				</div>
+			{:else if stage.awaitingReconcile}
+				<div class="flex items-center gap-1 text-[0.6rem] text-muted-foreground" title="Pinned/sourced but no reconciled inventory evidence yet">
+					<Hourglass class="size-2.5 shrink-0" />awaiting reconcile
 				</div>
 			{/if}
 
