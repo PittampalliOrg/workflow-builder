@@ -4,6 +4,7 @@
  * Current scope:
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
  * - Upsert workflow aicodingagent001 (AI Coding Agent)
+ * - Upsert workflow three-b-one-b-skill-animation (3Blue1Brown-style Animation)
  * - Upsert GitHub sandbox clone proof workflow
  * - Reconcile workflow_resource_refs for canonical OpenShell plan/execute nodes
  *
@@ -61,6 +62,16 @@ const AGENT_SYSTEM_DEMO_WORKFLOW_ID = "agentsysdemo001";
 const AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "OpenShell Feature Delivery Demo";
 const AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION =
 	"Demo workflow for the Workflow Builder UI that clones PittampalliOrg/stacks and runs an OpenShell-backed plan, approval, and implementation loop that emits code artifacts.";
+const THREE_B_ONE_B_WORKFLOW_ID = "three-b-one-b-skill-animation";
+const THREE_B_ONE_B_WORKFLOW_NAME = "3Blue1Brown-style Animation";
+const THREE_B_ONE_B_WORKFLOW_DESCRIPTION =
+	"Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
+const THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
+const THREE_B_ONE_B_DEFAULT_AGENT_ID =
+	process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_deepseek_v4_pro_swe_smoke";
+const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
+	process.env.SEED_3B1B_AGENT_VERSION?.trim() || "3",
+);
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
 const PLANNER_TIMEOUT_MINUTES = 45;
@@ -1783,6 +1794,409 @@ function buildAgentSystemDemoEdges() {
 	];
 }
 
+type JsonRecord = Record<string, unknown>;
+
+const THREE_B_ONE_B_BUILD_PROMPT = [
+	'${ .trigger.animationDescription + " - Build a self-contained browser animation in ',
+	THREE_B_ONE_B_APP_DIR,
+	" with index.html, styles.css, script.js, and README.md. ",
+	"Use Canvas or SVG so the result runs via a simple static file server. ",
+	"The browser animation is the required deliverable. ",
+	'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
+	'the play/pause control <button id=\\"btn-play\\">, ',
+	'the restart control <button id=\\"btn-restart\\">. ',
+	"Do NOT install Manim; if a scene is useful, include scene.py as optional source only. ",
+	"Do not start any preview server; the downstream browser/validate and ",
+	"browser/start-preview steps will do that. ",
+	"The page must work when served as static files (no module imports outside relative script.js). ",
+	"Do NOT create a package.json; that triggers the runtime's npm-run-dev fallback ",
+	"which expects flags python3's http.server doesn't recognize. ",
+	'Final answer: list the files created and a one-paragraph outline of the animation logic." }',
+].join("");
+
+function makeThreeBOneBWorkspaceProfileTask(): JsonRecord {
+	return {
+		call: "workspace/profile",
+		with: {
+			name: "three-b-one-b-animation",
+			rootPath: "/sandbox",
+			sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+			ttlSeconds: 7200,
+			keepAfterRun: true,
+			managedBy: "workflow-builder:demos:3b1b-animation",
+			commandTimeoutMs: 900000,
+			timeoutMs: 1200000,
+			enabledTools: [
+				"execute_command",
+				"read_file",
+				"write_file",
+				"edit_file",
+				"list_files",
+				"mkdir",
+				"file_stat",
+			],
+			sandboxPolicy: {
+				mode: "per-run",
+				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+				ttlSeconds: 7200,
+				keepAfterRun: true,
+			},
+		},
+	};
+}
+
+function makeThreeBOneBBuildTask(): JsonRecord {
+	if (!Number.isInteger(THREE_B_ONE_B_DEFAULT_AGENT_VERSION)) {
+		throw new Error(
+			`SEED_3B1B_AGENT_VERSION must be an integer; got ${process.env.SEED_3B1B_AGENT_VERSION}`,
+		);
+	}
+	return {
+		call: "durable/run",
+		with: {
+			mode: "execute_direct",
+			cwd: "/sandbox",
+			sandboxName: "${ .workspace_profile.sandboxName }",
+			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			sandboxPolicy: {
+				mode: "per-run",
+				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+				ttlSeconds: 7200,
+				keepAfterRun: true,
+			},
+			body: {
+				agentRef: {
+					id: THREE_B_ONE_B_DEFAULT_AGENT_ID,
+					version: THREE_B_ONE_B_DEFAULT_AGENT_VERSION,
+				},
+				prompt: THREE_B_ONE_B_BUILD_PROMPT,
+				overrides: {
+					cwd: "/sandbox",
+					maxTurns: 60,
+					timeoutMinutes: 60,
+				},
+			},
+		},
+	};
+}
+
+function makeThreeBOneBBrowserValidateTask(): JsonRecord {
+	return {
+		call: "browser/validate",
+		with: {
+			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			repoPath: THREE_B_ONE_B_APP_DIR,
+			installCommand: "",
+			baseUrl: "http://127.0.0.1:0",
+			steps: [
+				{
+					id: "initial",
+					label: "Animation loaded",
+					action: "visit",
+					path: "/",
+					goal: "Initial render of the canvas before any interaction.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 1500,
+					fullPage: true,
+				},
+				{
+					id: "after-play",
+					label: "After play",
+					action: "click",
+					selector: "button#btn-play",
+					goal: "Trigger the play control once.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 2000,
+					fullPage: true,
+				},
+				{
+					id: "after-second-play",
+					label: "After second play",
+					action: "click",
+					selector: "button#btn-play",
+					goal: "Trigger the play control again to capture mid-animation state.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 1500,
+					fullPage: true,
+				},
+				{
+					id: "after-restart",
+					label: "After restart",
+					action: "click",
+					selector: "button#btn-restart",
+					goal: "Restart the animation and capture the reset state.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 1500,
+					fullPage: true,
+				},
+			],
+			captureVideo: true,
+			captureTrace: true,
+			viewportPreset: "desktop",
+			captureMode: "demo",
+			demoTitle:
+				'${ "3Blue1Brown-style animation: " + .trigger.animationDescription }',
+			demoSummary:
+				"Generated 3Blue1Brown-style browser animation; browser/validate captured initial / play / second play / restart states from the retained per-run sandbox.",
+			metadata: {
+				appPath: THREE_B_ONE_B_APP_DIR,
+				workflowStage: "post-3b1b-animation",
+			},
+			timeoutMs: 900000,
+		},
+	};
+}
+
+function makeThreeBOneBStartPreviewTask(): JsonRecord {
+	return {
+		call: "browser/start-preview",
+		with: {
+			body: {
+				input: {
+					previewId:
+						'${ "3b1b-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
+					repoPath: THREE_B_ONE_B_APP_DIR,
+					rootPath: "/sandbox",
+					workingDir: "/sandbox",
+					baseUrl: "http://127.0.0.1:0",
+					keepAlive: true,
+					timeoutSeconds: 7200,
+					timeoutMs: 7200000,
+					sandboxName: '${ .workspace_profile.sandboxName // "" }',
+					workspaceRef: "${ .workspace_profile.workspaceRef }",
+				},
+			},
+		},
+	};
+}
+
+function buildThreeBOneBWorkflowSpec(): JsonRecord {
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: THREE_B_ONE_B_WORKFLOW_ID,
+			version: "1.0.0",
+			title: THREE_B_ONE_B_WORKFLOW_NAME,
+			summary: THREE_B_ONE_B_WORKFLOW_DESCRIPTION,
+			"x-workflow-builder": {
+				architecture:
+					"per-agent-runtime+session-workflow-bridge+browser-validate-capture",
+				notes:
+					"Adapted from the legacy 3pvh53PpHSiz-OoEeSW4z fixture for the per-agent-runtime architecture. Single agent step builds index.html / styles.css / script.js / README.md; browser/validate boots the static-file server and captures a 4-screenshot demo. Sandbox is retained so the live preview proxy can attach after completion.",
+				triggerInputs: {
+					animationDescription:
+						"Required. Plain-language description of the 3Blue1Brown-style animation to build.",
+					sandboxTemplate:
+						"Optional override (default 'dapr-agent'). Only set this if the cluster has a dedicated animation template installed.",
+				},
+				input: {
+					fields: {
+						animationDescription: {
+							type: "textarea",
+							label: "Animation description",
+							description:
+								"Describe the 3Blue1Brown-style animation the agent should build.",
+							defaultValue:
+								"Create a concise 3Blue1Brown-style derivative animation for x^2",
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{ workspace_profile: makeThreeBOneBWorkspaceProfileTask() },
+			{ build_3b1b_animation: makeThreeBOneBBuildTask() },
+			{ browser_validate_capture: makeThreeBOneBBrowserValidateTask() },
+			{ start_preview: makeThreeBOneBStartPreviewTask() },
+		],
+		output: {
+			as: {
+				appPath: THREE_B_ONE_B_APP_DIR,
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				sandboxName: "${ .workspace_profile.sandboxName }",
+				animation: "${ .build_3b1b_animation }",
+				screenshots: "${ .browser_validate_capture }",
+				preview: "${ .start_preview }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["animationDescription"],
+					properties: {
+						animationDescription: {
+							type: "string",
+							title: "Animation description",
+							description:
+								"Describe the 3Blue1Brown-style animation the agent should build.",
+							default:
+								"Create a concise 3Blue1Brown-style derivative animation for x^2",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildThreeBOneBWorkflowNodes(): JsonRecord[] {
+	return [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 60 },
+			data: {
+				label: "Animation request trigger",
+				description:
+					"Receives animationDescription for the 3Blue1Brown-style animation.",
+			},
+		},
+		{
+			id: "workspace_profile",
+			type: "action",
+			position: { x: 80, y: 200 },
+			data: {
+				label: "Provision retained sandbox",
+				actionType: "workspace/profile",
+				description:
+					"Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run.",
+			},
+		},
+		{
+			id: "build_3b1b_animation",
+			type: "action",
+			position: { x: 80, y: 340 },
+			data: {
+				label: "Build 3B1B animation",
+				actionType: "durable/run",
+				description:
+					"Agent generates index.html / styles.css / script.js / README.md with stable DOM ids for validation.",
+			},
+		},
+		{
+			id: "browser_validate_capture",
+			type: "action",
+			position: { x: 80, y: 480 },
+			data: {
+				label: "Capture animation walkthrough",
+				actionType: "browser/validate",
+				description:
+					"Boot the generated static files and capture initial / play / second play / restart screenshots.",
+			},
+		},
+		{
+			id: "start_preview",
+			type: "action",
+			position: { x: 80, y: 620 },
+			data: {
+				label: "Start live preview",
+				actionType: "browser/start-preview",
+				description:
+					"Pre-create the live-preview proxy with correct repoPath/rootPath.",
+			},
+		},
+	];
+}
+
+function buildThreeBOneBWorkflowEdges(): JsonRecord[] {
+	return [
+		{
+			id: "e_three_b_one_b_1",
+			source: "trigger",
+			target: "workspace_profile",
+			type: "default",
+		},
+		{
+			id: "e_three_b_one_b_2",
+			source: "workspace_profile",
+			target: "build_3b1b_animation",
+			type: "default",
+		},
+		{
+			id: "e_three_b_one_b_3",
+			source: "build_3b1b_animation",
+			target: "browser_validate_capture",
+			type: "default",
+		},
+		{
+			id: "e_three_b_one_b_4",
+			source: "browser_validate_capture",
+			target: "start_preview",
+			type: "default",
+		},
+	];
+}
+
+async function upsertRawWorkflow(params: {
+	db: ReturnType<typeof drizzle>;
+	workflowId: string;
+	name: string;
+	description: string;
+	userId: string;
+	projectId: string;
+	spec: JsonRecord;
+	nodes: JsonRecord[];
+	edges: JsonRecord[];
+	visibility?: "private" | "public";
+}) {
+	const visibility = params.visibility ?? "private";
+	const existing = await params.db.query.workflows.findFirst({
+		where: eq(workflows.id, params.workflowId),
+	});
+
+	if (!existing) {
+		await params.db.insert(workflows).values({
+			id: params.workflowId,
+			name: params.name,
+			description: params.description,
+			userId: params.userId,
+			projectId: params.projectId,
+			nodes: params.nodes,
+			edges: params.edges,
+			specVersion: "1.0.0",
+			spec: params.spec,
+			visibility,
+			engineType: "dapr",
+		});
+		console.log(
+			`[seed-workflows] Created workflow ${params.workflowId} for user ${params.userId}`,
+		);
+		return;
+	}
+
+	if (
+		existing.userId !== params.userId ||
+		(existing.projectId ?? null) !== params.projectId
+	) {
+		throw new Error(
+			`Workflow ${params.workflowId} already exists for user ${existing.userId} project ${existing.projectId ?? "null"}; set a targeted seed owner or move the existing workflow first.`,
+		);
+	}
+
+	await params.db
+		.update(workflows)
+		.set({
+			name: params.name,
+			description: params.description,
+			userId: params.userId,
+			projectId: params.projectId,
+			nodes: params.nodes,
+			edges: params.edges,
+			specVersion: "1.0.0",
+			spec: params.spec,
+			visibility,
+			engineType: "dapr",
+			updatedAt: new Date(),
+		})
+		.where(eq(workflows.id, params.workflowId));
+	console.log(
+		`[seed-workflows] Reconciled workflow ${params.workflowId} for user ${params.userId}`,
+	);
+}
+
 async function upsertWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -1938,6 +2352,19 @@ async function seedWorkflow() {
 			projectId,
 			nodes: buildAiCodingAgentNodes(),
 			edges: buildAiCodingAgentEdges(),
+		});
+
+		await upsertRawWorkflow({
+			db,
+			workflowId: THREE_B_ONE_B_WORKFLOW_ID,
+			name: THREE_B_ONE_B_WORKFLOW_NAME,
+			description: THREE_B_ONE_B_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			spec: buildThreeBOneBWorkflowSpec(),
+			nodes: buildThreeBOneBWorkflowNodes(),
+			edges: buildThreeBOneBWorkflowEdges(),
+			visibility: "public",
 		});
 
 		await upsertWorkflow({
