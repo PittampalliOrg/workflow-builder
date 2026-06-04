@@ -58,6 +58,15 @@
 	const stacksShortSha = $derived(metadata.gitops.stacksMain?.shortSha ?? "unknown");
 	const stacksUrl = $derived(metadata.gitops.stacksMain?.url ?? `${links.stacksRepo}/commits/main`);
 
+	// The workflow-builder build this UI is itself running (from the live
+	// deployment on the current cluster) — a GitOps page should show its own version.
+	const runningBuildShort = $derived.by(() => {
+		const tag = metadata.live.deployments
+			.find((d) => d.name === "workflow-builder")
+			?.containers.find((c) => c.containerName === "workflow-builder")?.tag;
+		return tag ? tag.replace(/^git-/, "").slice(0, 8) : null;
+	});
+
 	async function refresh() {
 		loading = true;
 		try {
@@ -118,6 +127,15 @@
 				<h1 class="truncate text-lg font-semibold">GitOps Pipeline</h1>
 				<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem]">Kargo lens</Badge>
 				<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem]">{metadata.environment.name ?? "unknown"}</Badge>
+				{#if runningBuildShort}
+					<Badge
+						variant="outline"
+						class="h-5 px-1.5 text-[0.65rem]"
+						title="workflow-builder build this UI is running"
+					>
+						build <span class="font-mono">{runningBuildShort}</span>
+					</Badge>
+				{/if}
 			</div>
 			<div class="flex flex-wrap items-center gap-2">
 				<a
