@@ -120,6 +120,85 @@ echo "commit-pin: git fetch (depth 50) ${remote_url} ${branch}"
 git -C "${stacks_dir}" fetch --depth 50 origin "${branch}" 2>&1 | tail -5
 git -C "${stacks_dir}" reset --hard "origin/${branch}"
 
+# --- C1 unification (2026-06-04): workflow-builder + workflow-mcp-server pin via
+#     the FLAT ryzen release-pins file, NOT the per-app manifests images block
+#     (which was deleted in the C1 cutover). The hub CI workflow
+#     render-ryzen-image.yml re-renders the workflow-builder-ryzen-image Component
+#     from this file on push, and ryzen's autonomous agent reconciles it. We write
+#     the flat file ONLY here (drift-proof: render runs in CI, not from this local
+#     checkout). Other Skaffold-owned services still pin via their per-app
+#     manifests block (the nested-parser path below).
+case "${service}" in
+  workflow-builder | workflow-mcp-server)
+    ryzen_pins="${stacks_dir}/packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-ryzen.yaml"
+    if [ ! -f "${ryzen_pins}" ]; then
+      echo "commit-pin: ryzen pins file missing: ${ryzen_pins}" >&2
+      exit 1
+    fi
+    # Recover the @sha256 digest (image_ref stripped it at the top) + the source sha.
+    digest="${SKAFFOLD_IMAGE##*@}"
+    case "${digest}" in sha256:*) ;; *) digest="" ;; esac
+    source_sha="${tag#git-}"
+    echo "commit-pin: ${service} → ${repo}:${tag} (flat ryzen pins; CI renders the Component)"
+    python3 - "$service" "$repo" "$tag" "$digest" "$source_sha" "${ryzen_pins}" <<'PY'
+import sys, re, pathlib
+service, repo, tag, digest, source_sha, path = sys.argv[1:7]
+p = pathlib.Path(path)
+lines = p.read_text().splitlines(keepends=True)
+
+# Flat schema: each top-level section (`images:`, `imageRefs:`, …) holds
+# `  <service>: <value>` rows. Upsert the value for this service in each section.
+updates = {"images": tag, "imageRefs": f"{repo}:{tag}", "sourceShas": source_sha}
+if digest:
+    updates["digests"] = digest
+
+def set_in_section(section, value):
+    in_s = False
+    for i, ln in enumerate(lines):
+        if ln.rstrip("\n") == section + ":":
+            in_s = True
+            continue
+        if in_s and ln and not ln[0].isspace() and not ln.startswith("#"):
+            in_s = False
+        if in_s and re.match(r"^\s+" + re.escape(service) + r":\s*", ln):
+            indent = re.match(r"^(\s+)", ln).group(1)
+            lines[i] = f"{indent}{service}: {value}\n"
+            return True
+    return False
+
+missing = [s for s, v in updates.items() if not set_in_section(s, v)]
+if missing:
+    sys.exit(f"commit-pin: {service} row missing from section(s) {missing} in {path}")
+p.write_text("".join(lines))
+print(f"commit-pin: upserted {service} → {tag} in {p.name} (flat ryzen pins)")
+PY
+    if git -C "${stacks_dir}" diff --quiet -- "${ryzen_pins}"; then
+      echo "commit-pin: ${service} already at ${tag} — no commit needed"
+      exit 0
+    fi
+    git -C "${stacks_dir}" add "${ryzen_pins}"
+    git -C "${stacks_dir}" commit -m "chore(${service}): pin ryzen image to ${tag}
+
+Flat ryzen release-pins; .github/workflows/render-ryzen-image.yml renders the
+workflow-builder-ryzen-image Component from this file on push.
+Co-Authored-By: Skaffold <noreply@anthropic.com>"
+    echo "commit-pin: git push origin ${branch}"
+    git -C "${stacks_dir}" push origin "${branch}"
+    echo "commit-pin: ✓ pushed ${service} → ${tag} (CI renders + commits the Component)"
+    # Hard-refresh: ryzen's autonomous agent names the app `ryzen-${service}`;
+    # the bare `${service}` lookup silently no-ops on ryzen.
+    for app in "ryzen-${service}" "${service}"; do
+      if kubectl get application "${app}" -n argocd >/dev/null 2>&1; then
+        kubectl annotate application "${app}" -n argocd \
+          "argocd.argoproj.io/refresh=hard" --overwrite >/dev/null 2>&1 || true
+        echo "commit-pin: requested hard refresh of argocd/${app}"
+        break
+      fi
+    done
+    exit 0
+    ;;
+esac
+
 if [ ! -f "${manifest_dir}/kustomization.yaml" ]; then
   echo "commit-pin: no kustomization.yaml for ${service} at ${manifest_dir}" >&2
   exit 1
@@ -222,9 +301,13 @@ echo "commit-pin: git push origin ${branch}"
 git -C "${stacks_dir}" push origin "${branch}"
 echo "commit-pin: ✓ pushed ${service} → ${tag} on ${branch}"
 
-# Nudge ArgoCD to refresh now instead of waiting for the 3-min poll.
-if kubectl get application "${service}" -n argocd >/dev/null 2>&1; then
-  kubectl annotate application "${service}" -n argocd \
-    "argocd.argoproj.io/refresh=hard" --overwrite >/dev/null 2>&1 || true
-  echo "commit-pin: requested hard refresh of argocd/${service}"
-fi
+# Nudge ArgoCD to refresh now instead of waiting for the 3-min poll. ryzen's
+# autonomous agent names the app `ryzen-${service}`; the bare name no-ops there.
+for app in "ryzen-${service}" "${service}"; do
+  if kubectl get application "${app}" -n argocd >/dev/null 2>&1; then
+    kubectl annotate application "${app}" -n argocd \
+      "argocd.argoproj.io/refresh=hard" --overwrite >/dev/null 2>&1 || true
+    echo "commit-pin: requested hard refresh of argocd/${app}"
+    break
+  fi
+done
