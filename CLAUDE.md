@@ -111,13 +111,15 @@ Inner-loop notes:
 - The wrapper `scripts/skaffold-dev.sh` exports `SKAFFOLD_DEFAULT_REPO=ghcr.io/pittampalliorg` so the dev image gets pushed to GHCR (ryzen pulls it via the authenticated `ghcr.io/hosts.toml` containerd mirror + Spegel P2P). The host running `skaffold dev` needs GHCR push creds (`docker login ghcr.io`). Override via `SKAFFOLD_DEFAULT_REPO=…` for other clusters.
 - The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD reliably. If skaffold is `kill -9`'d, recover with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
 - File sync rules in `skaffold/workflow-builder.skaffold.yaml` define which paths trigger HMR vs a full image rebuild. Edits to `src/`, `lib/`, `static/`, `drizzle/`, `vite.config.ts`, etc. trigger HMR without rebuild. Edits to `package.json`/`pnpm-lock.yaml` force a full image rebuild + redeploy.
-- The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends `stacks/main/.../workloads/workflow-builder/manifests` via a `LoadRestrictionsNone` build flag, so every Dapr Component, ExternalSecret, Service, and init container is inherited unchanged.
+- The dev kustomize overlay at `skaffold/dev/workflow-builder/` extends **only** `Deployment-workflow-builder.yaml` from `stacks/main/.../workloads/workflow-builder/manifests` (via `LoadRestrictionsNone`) and strategic-merge-patches it; all other resources (Dapr Components, ExternalSecrets, Services) stay as Argo deployed them. Because the base prod `images:` rewrite is bypassed, the patch must pin **both** the main container AND the `db-migrate` init container to the `workflow-builder-dev` artifact — leaving db-migrate unpatched fails the deploy with `ErrImagePull` on `workflow-builder:latest` (fixed in PR #28; the dev image bakes in `scripts/db-migrate-runtime.mjs` + `drizzle/`, so it runs migrations fine). No postgres rewrite is needed — `docker.io/library/postgres` pulls via the containerd `docker.io/hosts.toml` mirror.
 - `pnpm skaffold:doctor` checks command availability, kubectl context, the GHCR default-repo, the stacks worktree + GitHub-main pin cache, per-module Argo/Deployment state + pin drift, and Argo skip-reconcile leaks.
 
 Outer-loop notes:
 - Build hook `skaffold/hooks/commit-pin.sh` writes the new tag via textual edit to GitHub `main` under `packages/components/workloads/<service>/manifests/kustomization.yaml` and `git push`es. A writer-precedence guard refuses to push for any non-Skaffold-owned service (override the owned set via `SKAFFOLD_OWNED_SERVICES`; the remote via `STACKS_REMOTE_URL`). ryzen's local autonomous ArgoCD reconciles `packages/overlays/ryzen@main` within ~30s; an `argocd.argoproj.io/refresh=hard` annotation accelerates the poll.
 - No `kubectl set image` — the live cluster is mutated only by ArgoCD.
-- ryzen reconciles `packages/overlays/ryzen@main` directly via its local autonomous ArgoCD (no inner-loop branch, no source-hydrator, no Promoter for ryzen); commit-pin is the single image-pin writer for Skaffold-owned services. Use `clu`/cluster-update for stacks manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for dev/staging.
+- Workloads image pins use bare `name: <svc>` match-keys for **all** services (`workflow-orchestrator`/`function-router`/`mcp-gateway` were flipped from the retired `gitea-ryzen.tail286401.ts.net/giteaadmin/<svc>` long-form in stacks PR #2435; image-neutral). commit-pin matches `name == <svc>` OR `name endswith /<svc>`.
+- **commit-pin's HTTPS push can 403 on this NixOS host** (read-only git config → denied OAuth fallback). The image + pin commit are still made; push the cached pin with `git -C ~/.cache/skaffold/stacks-ryzen push "https://x-access-token:$(gh auth token)@github.com/PittampalliOrg/stacks.git" HEAD:main`, then hard-refresh `ryzen-<svc>`. **Don't `deploy:skaffold` a commit the GitHub outer-loop also builds** (right after merging a wfb PR to `main`) — both build the same `git-<sha>` tag with different digests, so the GitHub build's release-pins digest then mismatches GHCR; to deliver a just-merged commit to ryzen, commit-pin the existing GHCR tag instead of rebuilding.
+- ryzen reconciles `packages/overlays/ryzen@main` directly via its local autonomous ArgoCD (no inner-loop branch, no source-hydrator, no Promoter for ryzen); commit-pin is the single image-pin writer for Skaffold-owned services. Use `clu`/cluster-update for stacks manifest edits, Skaffold for live source hot reload, and release-pins/GitOps Promoter for **dev** (staging is dormant — no staging cluster; promotion is ryzen + dev, stacks PR #2436/#2437).
 
 ## Services Overview
 
@@ -402,4 +404,4 @@ trigger {topic, urls, extractionPrompt}
 
 ---
 
-**Last Updated**: 2026-05-12
+**Last Updated**: 2026-06-04
