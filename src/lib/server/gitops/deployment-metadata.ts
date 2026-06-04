@@ -275,9 +275,10 @@ async function loadReleasePins(): Promise<{
 		const images = Object.entries(sections.images);
 		const uniqueCommitShas = Array.from(
 			new Set(
-				images
-					.map(([, tag]) => commitShaFromTag(tag))
-					.filter((sha): sha is string => Boolean(sha)),
+				[
+					...images.map(([, tag]) => commitShaFromTag(tag)),
+					...Object.values(sections.sourceShas),
+				].filter(isLikelyCommitSha),
 			),
 		);
 		const commits = new Map(
@@ -287,14 +288,15 @@ async function loadReleasePins(): Promise<{
 		);
 		const desiredImages = images.map(([name, tag]) => {
 			const commitSha = commitShaFromTag(tag);
+			const sourceSha = sections.sourceShas[name] ?? commitSha;
 			return {
 				name,
 				tag,
 				commitSha,
-				commit: commitSha ? (commits.get(commitSha) ?? null) : null,
+				commit: sourceSha ? (commits.get(sourceSha) ?? null) : null,
 				imageRef: sections.imageRefs[name] ?? null,
 				digest: sections.digests[name] ?? null,
-				sourceSha: sections.sourceShas[name] ?? commitSha,
+				sourceSha,
 				pipelineRun: sections.pipelineRuns[name] ?? null,
 				updatedAt: sections.updatedAts[name] ?? null,
 			};
@@ -342,6 +344,10 @@ function normalizeString(value: unknown): string | null {
 	}
 	if (typeof value === "number" || typeof value === "boolean") return String(value);
 	return null;
+}
+
+function isLikelyCommitSha(value: string | null | undefined): value is string {
+	return typeof value === "string" && /^[0-9a-f]{7,40}$/i.test(value);
 }
 
 async function getStacksMain(): Promise<GitCommitMetadata | null> {
@@ -462,7 +468,25 @@ function deploymentToMetadata(
 			[
 				...(pod.status?.initContainerStatuses ?? []),
 				...(pod.status?.containerStatuses ?? []),
-			].map((status) => [`${pod.metadata?.name ?? ""}:${status.name ?? ""}`, status] as const),
+			].map((status) => {
+				const state = (
+					status as {
+						state?: {
+							running?: { startedAt?: string };
+							terminated?: { startedAt?: string };
+						};
+					}
+				).state;
+				return [
+					`${pod.metadata?.name ?? ""}:${status.name ?? ""}`,
+					{
+						...status,
+						startedAt: state?.running?.startedAt ?? state?.terminated?.startedAt ?? null,
+						podStartedAt: pod.status?.startTime ?? null,
+						podCreatedAt: pod.metadata?.creationTimestamp ?? null,
+					},
+				] as const;
+			}),
 		),
 	);
 	const containers = [
@@ -483,6 +507,20 @@ function deploymentToMetadata(
 		readyReplicas: deployment.status?.readyReplicas ?? 0,
 		availableReplicas: deployment.status?.availableReplicas ?? 0,
 		updatedReplicas: deployment.status?.updatedReplicas ?? 0,
+		createdAt: deployment.metadata?.creationTimestamp ?? null,
+		updatedAt: latestIso([
+			...(deployment.status?.conditions ?? []).map(
+				(condition) => condition.lastUpdateTime ?? condition.lastTransitionTime ?? null,
+			),
+			...matchingPods.map((pod) => pod.status?.startTime ?? pod.metadata?.creationTimestamp ?? null),
+		]),
+		availableAt:
+			(deployment.status?.conditions ?? []).find(
+				(condition) => condition.type === "Available" && condition.status === "True",
+			)?.lastTransitionTime ?? null,
+		podStartedAt: latestIso(
+			matchingPods.map((pod) => pod.status?.startTime ?? pod.metadata?.creationTimestamp ?? null),
+		),
 		pods: {
 			total: matchingPods.length,
 			running: matchingPods.filter((pod) => pod.status?.phase === "Running").length,
@@ -503,13 +541,44 @@ function labelsMatch(labels: Record<string, string>, selector: Record<string, st
 	return entries.every(([key, value]) => labels[key] === value);
 }
 
+function latestIso(values: Array<string | null | undefined>): string | null {
+	let latest: string | null = null;
+	let latestTime = 0;
+	for (const value of values) {
+		if (!value) continue;
+		const time = new Date(value).getTime();
+		if (!Number.isFinite(time) || time <= latestTime) continue;
+		latest = value;
+		latestTime = time;
+	}
+	return latest;
+}
+
+function statusTime(status: {
+	startedAt?: string | null;
+	podStartedAt?: string | null;
+	podCreatedAt?: string | null;
+}): number {
+	const value = status.startedAt ?? status.podStartedAt ?? status.podCreatedAt;
+	return value ? new Date(value).getTime() || 0 : 0;
+}
+
 function containerToMetadata(
 	deploymentName: string,
 	containerName: string,
 	image: string,
 	statuses: Map<
 		string,
-		{ name?: string; ready?: boolean; restartCount?: number; image?: string; imageID?: string }
+		{
+			name?: string;
+			ready?: boolean;
+			restartCount?: number;
+			image?: string;
+			imageID?: string;
+			startedAt?: string | null;
+			podStartedAt?: string | null;
+			podCreatedAt?: string | null;
+		}
 	>,
 	desiredByName: Map<string, DesiredImageMetadata>,
 ): LiveContainerMetadata {
@@ -521,14 +590,17 @@ function containerToMetadata(
 				? deploymentName
 				: null;
 	const desired = pinKey ? desiredByName.get(pinKey) : null;
-	const status = Array.from(statuses.values()).find(
-		(s) => s.name === containerName || `init/${s.name}` === containerName,
-	);
+	const status = Array.from(statuses.values())
+		.filter((s) => s.name === containerName || `init/${s.name}` === containerName)
+		.sort((a, b) => statusTime(b) - statusTime(a))[0];
 
 	return {
 		...parsed,
 		containerName,
 		imageID: status?.imageID ?? null,
+		startedAt: status?.startedAt ?? null,
+		podStartedAt: status?.podStartedAt ?? null,
+		podCreatedAt: status?.podCreatedAt ?? null,
 		ready: status?.ready ?? null,
 		restartCount: status?.restartCount ?? null,
 		desiredTag: desired?.tag ?? null,

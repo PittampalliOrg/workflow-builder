@@ -132,6 +132,7 @@ export type KubeDeployment = {
 			status?: string;
 			reason?: string;
 			message?: string;
+			lastUpdateTime?: string;
 			lastTransitionTime?: string;
 		}>;
 	};

@@ -33,7 +33,99 @@ export const WB_SERVICES = [
 	"browser-use-agent-sandbox",
 ] as const;
 
-export type ServiceName = (typeof WB_SERVICES)[number];
+// Widened to `string` so the matrix can render every release-pinned image, not
+// just the curated set above. `WB_SERVICES` still seeds the display ordering.
+export type ServiceName = string;
+
+/**
+ * Subsystem grouping for the pipeline view's warehouse filter / rail. Drives how
+ * the ~25 services are organized into collapsible groups (Kargo's "warehouse
+ * filter for better grouping"). Unknown services fall back to "Other".
+ */
+export const SUBSYSTEMS: Record<string, string> = {
+	// Core platform
+	"workflow-builder": "Core platform",
+	"workflow-orchestrator": "Core platform",
+	"function-router": "Core platform",
+	"mcp-gateway": "Core platform",
+	"workflow-mcp-server": "Core platform",
+	"piece-mcp-server": "Core platform",
+	// Function execution
+	"fn-system": "Function execution",
+	"fn-activepieces": "Function execution",
+	"code-parser": "Function execution",
+	"code-runtime": "Function execution",
+	"crawl4ai-adapter": "Function execution",
+	// Agent runtimes
+	"dapr-agent-py-sandbox": "Agent runtimes",
+	"dapr-agent-py-testing-sandbox": "Agent runtimes",
+	"adk-agent-py-sandbox": "Agent runtimes",
+	"browser-use-agent-sandbox": "Agent runtimes",
+	"openshell-agent-runtime": "Agent runtimes",
+	"openshell-sandbox": "Agent runtimes",
+	"openshell-sandbox-xlsx": "Agent runtimes",
+	"workspace-runtime": "Agent runtimes",
+	"sandbox-execution-api": "Agent runtimes",
+	"browserstation": "Agent runtimes",
+	"chrome-sandbox": "Agent runtimes",
+	// Eval & SWE-bench
+	"swebench-coordinator": "Eval & SWE-bench",
+	"swebench-evaluator": "Eval & SWE-bench",
+	"evaluation-coordinator": "Eval & SWE-bench",
+};
+
+export const SUBSYSTEM_ORDER: readonly string[] = [
+	"Core platform",
+	"Function execution",
+	"Agent runtimes",
+	"Eval & SWE-bench",
+	"Other",
+] as const;
+
+export function subsystemFor(service: string): string {
+	return SUBSYSTEMS[service] ?? "Other";
+}
+
+/**
+ * Tool/base images that ride in release-pins but are not deployable services of
+ * ours — excluded from the per-service pipeline list so they don't show up as
+ * spurious "pipelines".
+ */
+const NON_SERVICE_IMAGES = new Set<string>([
+	"kubectl",
+	"postgres",
+	"redis",
+	"busybox",
+	"alpine",
+]);
+
+/**
+ * The full ordered list of services to render: curated `WB_SERVICES` first (for
+ * a stable, operator-familiar ordering), then any other release-pinned image not
+ * already covered, alphabetically — minus tool/base images.
+ */
+export function computeServiceList(releasePins: { name: string }[]): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const name of WB_SERVICES) {
+		if (NON_SERVICE_IMAGES.has(name)) continue;
+		if (!seen.has(name)) {
+			seen.add(name);
+			out.push(name);
+		}
+	}
+	const extras = releasePins
+		.map((pin) => pin.name)
+		.filter((name) => name && !seen.has(name) && !NON_SERVICE_IMAGES.has(name))
+		.sort((a, b) => a.localeCompare(b));
+	for (const name of extras) {
+		if (!seen.has(name)) {
+			seen.add(name);
+			out.push(name);
+		}
+	}
+	return out;
+}
 
 /**
  * Services whose image tag is set in release-pins (and for dev/staging, in the
@@ -121,7 +213,8 @@ export function buildServiceMatrix(input: BuildServiceMatrixInput): ServiceRow[]
 		}
 	}
 
-	return WB_SERVICES.map((service) => {
+	const services = computeServiceList(releasePins);
+	return services.map((service) => {
 		const specialCase = specialCaseFor(service);
 		const row: ServiceRow = {
 			service,

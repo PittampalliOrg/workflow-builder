@@ -31,6 +31,9 @@ export type DesiredImageMetadata = {
 export type LiveContainerMetadata = ParsedImageRef & {
 	containerName: string;
 	imageID: string | null;
+	startedAt?: string | null;
+	podStartedAt?: string | null;
+	podCreatedAt?: string | null;
 	ready: boolean | null;
 	restartCount: number | null;
 	desiredTag: string | null;
@@ -48,6 +51,10 @@ export type LiveDeploymentMetadata = {
 	readyReplicas: number;
 	availableReplicas: number;
 	updatedReplicas: number;
+	createdAt?: string | null;
+	updatedAt?: string | null;
+	availableAt?: string | null;
+	podStartedAt?: string | null;
 	pods: {
 		total: number;
 		running: number;

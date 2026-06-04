@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { shortTag, statusVariant } from "./gitops-display";
+import { formatAbsoluteTime, relativeTime, shortTag, statusVariant } from "./gitops-display";
 
 describe("shortTag", () => {
 	it("renders a full 40-hex git tag as git-<8-hex>", () => {
@@ -47,5 +47,28 @@ describe("statusVariant", () => {
 		expect(statusVariant(null)).toBe("outline");
 		expect(statusVariant("")).toBe("outline");
 		expect(statusVariant("Progressing")).toBe("outline");
+	});
+});
+
+describe("relativeTime", () => {
+	it("uses readable minute and hour labels", () => {
+		const now = Date.parse("2026-06-04T12:00:00Z");
+
+		expect(relativeTime("2026-06-04T11:55:00Z", now)).toBe("5 mins ago");
+		expect(relativeTime("2026-06-04T11:00:00Z", now)).toBe("1 hour ago");
+		expect(relativeTime("2026-06-04T09:00:00Z", now)).toBe("3 hours ago");
+	});
+
+	it("uses yesterday for the previous local calendar day", () => {
+		const now = new Date(2026, 5, 4, 12, 0, 0).getTime();
+		const yesterday = new Date(2026, 5, 3, 9, 30, 0).toISOString();
+
+		expect(relativeTime(yesterday, now)).toMatch(/^Yesterday at /);
+	});
+
+	it("returns a dash for invalid or missing input", () => {
+		expect(relativeTime(null)).toBe("—");
+		expect(relativeTime("not-a-date")).toBe("—");
+		expect(formatAbsoluteTime(undefined)).toBe("—");
 	});
 });
