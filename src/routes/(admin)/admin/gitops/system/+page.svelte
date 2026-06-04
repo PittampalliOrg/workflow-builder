@@ -60,12 +60,20 @@
 
 	// The workflow-builder build this UI is itself running (from the live
 	// deployment on the current cluster) — a GitOps page should show its own version.
-	const runningBuildShort = $derived.by(() => {
-		const tag = metadata.live.deployments
-			.find((d) => d.name === "workflow-builder")
-			?.containers.find((c) => c.containerName === "workflow-builder")?.tag;
-		return tag ? tag.replace(/^git-/, "").slice(0, 8) : null;
-	});
+	const runningBuildTag = $derived.by(
+		() =>
+			metadata.live.deployments
+				.find((d) => d.name === "workflow-builder")
+				?.containers.find((c) => c.containerName === "workflow-builder")?.tag ?? null,
+	);
+	const runningBuildShort = $derived(
+		runningBuildTag ? runningBuildTag.replace(/^git-/, "").slice(0, 8) : null,
+	);
+	const runningBuildUrl = $derived(
+		runningBuildTag?.startsWith("git-")
+			? `${links.workflowBuilderRepo}/commit/${runningBuildTag.slice(4)}`
+			: null,
+	);
 
 	async function refresh() {
 		loading = true;
@@ -128,13 +136,26 @@
 				<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem]">Kargo lens</Badge>
 				<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem]">{metadata.environment.name ?? "unknown"}</Badge>
 				{#if runningBuildShort}
-					<Badge
-						variant="outline"
-						class="h-5 px-1.5 text-[0.65rem]"
-						title="workflow-builder build this UI is running"
-					>
-						build <span class="font-mono">{runningBuildShort}</span>
-					</Badge>
+					{#if runningBuildUrl}
+						<a
+							href={runningBuildUrl}
+							target="_blank"
+							rel="noreferrer"
+							title="workflow-builder build this UI is running — open commit"
+						>
+							<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem] hover:bg-muted">
+								build <span class="font-mono">{runningBuildShort}</span>
+							</Badge>
+						</a>
+					{:else}
+						<Badge
+							variant="outline"
+							class="h-5 px-1.5 text-[0.65rem]"
+							title="workflow-builder build this UI is running"
+						>
+							build <span class="font-mono">{runningBuildShort}</span>
+						</Badge>
+					{/if}
 				{/if}
 			</div>
 			<div class="flex flex-wrap items-center gap-2">
