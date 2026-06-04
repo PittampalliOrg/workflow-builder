@@ -29,14 +29,72 @@ export function shortDigest(digest: string | null | undefined): string {
 }
 
 export function relativeTime(iso: string | null | undefined, now: number = Date.now()): string {
-	if (!iso) return "—";
-	const diff = Math.max(0, now - new Date(iso).getTime());
-	const min = Math.floor(diff / 60_000);
+	const date = parseDate(iso);
+	if (!date) return "—";
+
+	const diff = now - date.getTime();
+	const future = diff < 0;
+	const abs = Math.abs(diff);
+	const min = Math.floor(abs / 60_000);
 	if (min < 1) return "now";
-	if (min < 60) return `${min}m ago`;
+	if (min < 60) return future ? `in ${plural(min, "min")}` : `${plural(min, "min")} ago`;
+
 	const hr = Math.floor(min / 60);
-	if (hr < 24) return `${hr}h ago`;
-	return `${Math.floor(hr / 24)}d ago`;
+	if (hr < 24) return future ? `in ${plural(hr, "hour")}` : `${plural(hr, "hour")} ago`;
+
+	if (!future) {
+		const dayDiff = calendarDayDiff(date, new Date(now));
+		if (dayDiff === 1) return `Yesterday at ${clockTime(date)}`;
+		if (dayDiff > 1 && dayDiff < 7) {
+			return `${weekday(date)} at ${clockTime(date)}`;
+		}
+	}
+
+	return formatAbsoluteTime(iso, now);
+}
+
+export function formatAbsoluteTime(
+	iso: string | null | undefined,
+	now: number = Date.now(),
+): string {
+	const date = parseDate(iso);
+	if (!date) return "—";
+	const sameYear = date.getFullYear() === new Date(now).getFullYear();
+	return new Intl.DateTimeFormat(undefined, {
+		month: "short",
+		day: "numeric",
+		...(sameYear ? {} : { year: "numeric" }),
+		hour: "numeric",
+		minute: "2-digit",
+	}).format(date);
+}
+
+function parseDate(iso: string | null | undefined): Date | null {
+	if (!iso) return null;
+	const date = new Date(iso);
+	return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function plural(value: number, unit: "min" | "hour"): string {
+	if (unit === "min") return value === 1 ? "1 min" : `${value} mins`;
+	return value === 1 ? "1 hour" : `${value} hours`;
+}
+
+function calendarDayDiff(older: Date, newer: Date): number {
+	const olderStart = new Date(older.getFullYear(), older.getMonth(), older.getDate()).getTime();
+	const newerStart = new Date(newer.getFullYear(), newer.getMonth(), newer.getDate()).getTime();
+	return Math.round((newerStart - olderStart) / 86_400_000);
+}
+
+function clockTime(date: Date): string {
+	return new Intl.DateTimeFormat(undefined, {
+		hour: "numeric",
+		minute: "2-digit",
+	}).format(date);
+}
+
+function weekday(date: Date): string {
+	return new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(date);
 }
 
 export type StatusVariant = "secondary" | "destructive" | "outline";
