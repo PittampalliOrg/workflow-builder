@@ -117,6 +117,17 @@ export type GitOpsDeploymentInventory = {
 	environments: GitOpsInventoryEnvironment[];
 };
 
+export type ImageVersion = {
+	service: string;
+	tag: string;
+	digest: string | null;
+	sourceSha: string | null;
+	committedAt: string | null;
+	pinCommit: string;
+	pinCommittedAt: string;
+	message: string | null;
+};
+
 export type DeploymentMetadataResponse = {
 	generatedAt: string;
 	environment: {
@@ -133,6 +144,8 @@ export type DeploymentMetadataResponse = {
 		releasePinsError: string | null;
 		stacksMain: GitCommitMetadata | null;
 		desiredImages: DesiredImageMetadata[];
+		imageHistory: ImageVersion[];
+		imageHistoryError: string | null;
 	};
 	live: {
 		deployments: LiveDeploymentMetadata[];

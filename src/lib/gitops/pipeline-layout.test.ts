@@ -54,6 +54,8 @@ function metadata(): DeploymentMetadataResponse {
 				{ name: "workflow-builder", tag: "git-aaaaaaaa", commitSha: "aaaaaaaa", commit: null },
 				{ name: "function-router", tag: "git-bbbbbbbb", commitSha: "bbbbbbbb", commit: null },
 			],
+			imageHistory: [],
+			imageHistoryError: null,
 		},
 		live: { deployments: [], error: null },
 		inventory: { sourceUrl: null, fetchedAt: null, error: null, data: inventory() },

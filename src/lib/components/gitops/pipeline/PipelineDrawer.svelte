@@ -1,5 +1,14 @@
 <script lang="ts">
-	import { Anchor, Boxes, Container, ExternalLink, GitBranch, Warehouse } from "@lucide/svelte";
+	import {
+		Anchor,
+		Boxes,
+		Container,
+		ExternalLink,
+		GitBranch,
+		GitPullRequestArrow,
+		TimerReset,
+		Warehouse,
+	} from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { Sheet, SheetContent, SheetHeader, SheetTitle } from "$lib/components/ui/sheet";
@@ -65,6 +74,13 @@
 	const stageArgoUrl = $derived(stage && !stage.dormant ? argoUrl(stage.env, stage.warehouse) : null);
 	function isExternal(href: string | null | undefined): boolean {
 		return Boolean(href && !href.startsWith("/"));
+	}
+	// Promoter CommitStatus phase → tone (pending soak amber, success green, failure red).
+	function gatePhaseColor(phase: string | null): string {
+		if (phase === "success") return "text-emerald-600 dark:text-emerald-400";
+		if (phase === "failure") return "text-red-600 dark:text-red-400";
+		if (phase === "pending") return "text-amber-600 dark:text-amber-400";
+		return "text-muted-foreground";
 	}
 </script>
 
@@ -135,6 +151,84 @@
 							<dd>{relativeTime(stage.updatedAt)}</dd>
 						{/if}
 					</dl>
+
+					<!-- Promoter-aware promotion detail (C2): proposed-vs-active hydrated
+					     shas, the gates the next freight must clear, soak countdown, and
+					     the promotion PR. Present only on Promoter-gated stages (dev). -->
+					{#if stage.promotion}
+						{@const p = stage.promotion}
+						<div
+							class="space-y-1.5 rounded-md border p-2 {p.inFlight
+								? 'border-amber-400/60 bg-amber-50/50 dark:bg-amber-950/20'
+								: 'border-border'}"
+						>
+							<div class="flex items-center justify-between">
+								<span class="flex items-center gap-1 text-[0.66rem] font-semibold">
+									<GitPullRequestArrow class="size-3" />
+									{p.inFlight ? "Promotion in flight" : "Promotion"}
+								</span>
+								{#if p.pullRequest?.url}
+									<a
+										href={p.pullRequest.url}
+										target="_blank"
+										rel="noreferrer"
+										class="inline-flex items-center gap-1 text-primary hover:underline"
+									>
+										PR{p.pullRequest.state ? ` · ${p.pullRequest.state}` : ""}
+										<ExternalLink class="size-3" />
+									</a>
+								{/if}
+							</div>
+
+							<div class="grid grid-cols-2 gap-2">
+								<div>
+									<div class="text-[0.56rem] uppercase tracking-wide text-muted-foreground">Live</div>
+									<div class="font-mono text-[0.66rem]" title={p.activeTag ?? ""}>
+										{p.activeTag ? shortSha(p.activeTag) : "—"}
+									</div>
+								</div>
+								<div>
+									<div class="text-[0.56rem] uppercase tracking-wide text-muted-foreground">Next</div>
+									<div
+										class="font-mono text-[0.66rem] {p.inFlight ? 'text-amber-700 dark:text-amber-300' : ''}"
+										title={p.proposedTag ?? ""}
+									>
+										{p.proposedTag ? shortSha(p.proposedTag) : "—"}
+									</div>
+								</div>
+							</div>
+
+							{#if p.soak}
+								<div class="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
+									<TimerReset class="size-3 shrink-0" />soak {p.soak.label}
+								</div>
+							{/if}
+
+							{#if p.gates.length > 0}
+								<div class="space-y-0.5 border-t pt-1">
+									{#each p.gates as gate (gate.key)}
+										<div class="flex items-center justify-between gap-2 text-[0.62rem]">
+											<span
+												class="truncate {gate.key === p.stalledOn
+													? 'font-medium text-amber-700 dark:text-amber-300'
+													: 'text-muted-foreground'}"
+												title={gate.description ?? gate.key}
+											>
+												{gate.key}
+											</span>
+											<span class="shrink-0 font-mono text-[0.58rem] {gatePhaseColor(gate.phase)}">
+												{gate.phase ?? "—"}
+											</span>
+										</div>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{:else if stage.awaitingReconcile}
+						<div class="rounded-md border border-dashed p-2 text-[0.62rem] text-muted-foreground">
+							Pinned / sourced but no reconciled inventory evidence yet — awaiting reconcile.
+						</div>
+					{/if}
 
 					{#if stage.rollup}
 						<div class="flex flex-wrap gap-1">
