@@ -25,9 +25,13 @@
 		stage.drift === "pending_rollout" ||
 			(stage.liveTag && stage.desiredTag && stage.liveTag !== stage.desiredTag),
 	);
+	// argocd-agent mirrors each spoke's apps into a hub-side namespace named after
+	// the agent (ryzen / dev / staging), e.g. ryzen/ryzen-workflow-builder — so the
+	// path namespace is the env, not `argocd`. The release-pins bundle and dormant
+	// lanes have no backing Argo app.
 	const argoUrl = $derived(
-		links?.argoCdBase
-			? `${links.argoCdBase.replace(/\/+$/, "")}/applications/argocd/${stage.env}-${stage.warehouse}`
+		links?.argoCdBase && !stage.dormant && stage.warehouse !== "release-pins"
+			? `${links.argoCdBase.replace(/\/+$/, "")}/applications/${stage.env}/${stage.env}-${stage.warehouse}`
 			: null,
 	);
 	// Relative-time link: stacks commit for promoted (hydrated) stages, else the

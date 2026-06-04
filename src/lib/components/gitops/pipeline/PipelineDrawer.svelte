@@ -56,11 +56,13 @@
 	const ghcrOrg = $derived(links.ghcrOrg ?? "https://github.com/orgs/PittampalliOrg/packages/container/package");
 	const argoBase = $derived((links.argoCdBase ?? "").replace(/\/+$/, ""));
 
+	// argocd-agent mirrors each spoke's apps into a hub namespace named after the
+	// agent (ryzen / dev / staging), e.g. ryzen/ryzen-workflow-builder.
 	function argoUrl(env: string, name: string): string | null {
-		if (!argoBase) return null;
-		return `${argoBase}/applications/argocd/${env}-${name}`;
+		if (!argoBase || name === "release-pins") return null;
+		return `${argoBase}/applications/${env}/${env}-${name}`;
 	}
-	const stageArgoUrl = $derived(stage ? argoUrl(stage.env, stage.warehouse) : null);
+	const stageArgoUrl = $derived(stage && !stage.dormant ? argoUrl(stage.env, stage.warehouse) : null);
 	function isExternal(href: string | null | undefined): boolean {
 		return Boolean(href && !href.startsWith("/"));
 	}
