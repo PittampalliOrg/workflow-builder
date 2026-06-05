@@ -21,6 +21,7 @@
 	import { Avatar, AvatarImage, AvatarFallback } from '$lib/components/ui/avatar';
 	import AiAssistantToggle from '$lib/components/ai-assistant/ai-assistant-toggle.svelte';
 	import RuntimeStatusBadge from '$lib/components/runtime-status-badge.svelte';
+	import NotificationBell from '$lib/components/chrome/notification-bell.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
 	interface Props {
@@ -374,6 +375,11 @@
 		<div class="flex flex-col gap-0.5">
 			<!-- Current environment + running image metadata -->
 			<RuntimeStatusBadge {collapsed} {platformRole} />
+
+			<!-- App-wide deployment notifications (admin-gated; data is admin-only) -->
+			{#if platformRole === 'ADMIN'}
+				<NotificationBell {collapsed} />
+			{/if}
 
 			<!-- AI Assistant toggle -->
 			<AiAssistantToggle {collapsed} />
