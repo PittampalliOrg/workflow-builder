@@ -147,6 +147,15 @@
 	const hasLive = $derived(nodeEvents.some((e) => activityEventTone(e, now) === "active"));
 
 	const tektonBase = $derived((links.tektonBase ?? "").replace(/\/+$/, ""));
+
+	// Provenance of this stage's health/sync/image. dev/staging come from the hub
+	// inventory snapshot (the viewing cluster can't query other clusters' live
+	// state); "pinned" means we only know the git pin, not reconciled cluster state.
+	function sourceLabel(source: string): string {
+		if (source === "pin-only") return "pinned · no reconciled cluster data";
+		if (source === "live-only") return "live pod · no hub inventory";
+		return "hub inventory";
+	}
 </script>
 
 {#snippet sectionLabel(text: string)}
@@ -276,6 +285,7 @@
 
 					<dl class="space-y-0.5">
 						{@render detailRow("Environment", stage.env)}
+						{#if stage.source}{@render detailRow("Data source", sourceLabel(stage.source))}{/if}
 						{#if stage.syncStatus}{@render detailRow("Sync", stage.syncStatus)}{/if}
 						{#if stage.desiredTag}{@render detailRow("Desired", stage.desiredTag, true)}{/if}
 						{#if stage.liveTag}{@render detailRow("Live", stage.liveTag, true)}{/if}
