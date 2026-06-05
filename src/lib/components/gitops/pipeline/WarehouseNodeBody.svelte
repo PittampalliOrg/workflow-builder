@@ -6,9 +6,10 @@
 	import { pipelineActivityTone, toneClasses } from "$lib/gitops/activity-tone";
 	import { isFlowing } from "$lib/gitops/gitops-flow.svelte";
 	import { nowTick } from "$lib/gitops/gitops-tick.svelte";
+	import { buildVisual } from "$lib/gitops/kargo-status";
 	import { PIPELINE_HOVER_CONTEXT, type PipelineHoverContext } from "$lib/gitops/pipeline-layout";
 	import type { PipelineWarehouse } from "$lib/gitops/pipeline-types";
-	import { relativeTime } from "$lib/utils/gitops-display";
+	import { formatDurationMs, relativeTime } from "$lib/utils/gitops-display";
 
 	type Props = { warehouse: PipelineWarehouse; color?: string; selected?: boolean };
 	let { warehouse, color, selected = false }: Props = $props();
@@ -16,6 +17,7 @@
 	const hover = getContext<PipelineHoverContext | undefined>(PIPELINE_HOVER_CONTEXT);
 	const isBundle = $derived(warehouse.kind === "bundle");
 	const longName = $derived(warehouse.name.length > 22);
+	const buildViz = $derived(warehouse.build ? buildVisual(warehouse.build.phase) : null);
 </script>
 
 <div
@@ -55,7 +57,17 @@
 				/>
 			{/if}
 		</div>
-		<ExternalLink class="size-3.5 shrink-0 text-muted-foreground/50" />
+		<div class="flex shrink-0 items-center gap-1.5">
+			{#if buildViz && warehouse.build}
+				{@const BIcon = buildViz.icon}
+				<BIcon
+					class={buildViz.spin ? "size-3.5 animate-spin" : "size-3.5"}
+					style={`color:${buildViz.color}`}
+					title={`Image build ${buildViz.label}${warehouse.build.pipelineRun ? ` · ${warehouse.build.pipelineRun}` : ""}${warehouse.build.durationMs != null ? ` · ${formatDurationMs(warehouse.build.durationMs)}` : ""}`}
+				/>
+			{/if}
+			<ExternalLink class="size-3.5 shrink-0 text-muted-foreground/50" />
+		</div>
 	</div>
 
 	<div class="flex flex-1 flex-col justify-center gap-1.5 px-3 py-2">

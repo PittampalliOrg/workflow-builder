@@ -21,9 +21,16 @@
 	import { pipelineActivityTone, toneClasses } from "$lib/gitops/activity-tone";
 	import { isFlowing } from "$lib/gitops/gitops-flow.svelte";
 	import { nowTick } from "$lib/gitops/gitops-tick.svelte";
-	import { healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
+	import { buildVisual, healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
 	import type { PipelineStage } from "$lib/gitops/pipeline-types";
-	import { formatAbsoluteTime, relativeTime, shortSha, shortTag } from "$lib/utils/gitops-display";
+	import {
+		formatAbsoluteTime,
+		formatDurationMs,
+		relativeTime,
+		shortSha,
+		shortTag,
+		tektonPipelineRunUrl,
+	} from "$lib/utils/gitops-display";
 
 	type Props = { stage: PipelineStage; color?: string; selected?: boolean; highlight?: boolean };
 	let { stage, color, selected = false, highlight = false }: Props = $props();
@@ -55,6 +62,22 @@
 				? `${links.workflowBuilderRepo}/commit/${stage.commitSha}`
 				: null,
 	);
+
+	// Image-build chip (inventory-sourced Tekton outer-loop run). Persistent,
+	// distinct from the transient `activity` event chip. `durationMs` is final once
+	// built/failed; while building we tick elapsed against the shared clock.
+	const buildViz = $derived(stage.build ? buildVisual(stage.build.phase) : null);
+	const buildElapsedMs = $derived.by(() => {
+		const b = stage.build;
+		if (!b) return null;
+		if (b.durationMs != null) return b.durationMs;
+		if (b.startedAt) {
+			const started = Date.parse(b.startedAt);
+			if (Number.isFinite(started)) return Math.max(0, nowTick() - started);
+		}
+		return null;
+	});
+	const buildUrl = $derived(tektonPipelineRunUrl(links?.tektonBase, stage.build?.pipelineRun));
 
 	function stop(e: Event) {
 		e.stopPropagation();
@@ -162,6 +185,34 @@
 						<span class="flex min-w-0 items-center gap-1 truncate font-mono text-[0.62rem] text-amber-600 dark:text-amber-400" title={`live ${stage.liveTag}`}>
 							<GitMerge class="size-3 shrink-0" />{shortTag(stage.liveTag)}
 						</span>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Image build (inventory-sourced Tekton outer-loop run that produced the
+			     desired image). Persistent; built✓+duration / building+elapsed / failed. -->
+			{#if buildViz && stage.build}
+				{@const BIcon = buildViz.icon}
+				<div
+					class="flex min-w-0 items-center gap-1.5 text-[0.62rem]"
+					style={`color:${buildViz.color}`}
+					title={`Image build ${buildViz.label}${stage.build.pipelineRun ? ` · ${stage.build.pipelineRun}` : ""}${buildElapsedMs != null ? ` · ${formatDurationMs(buildElapsedMs)}` : ""}`}
+				>
+					<BIcon class={buildViz.spin ? "size-3 shrink-0 animate-spin" : "size-3 shrink-0"} />
+					<span class="truncate font-medium">
+						{buildViz.label}{#if buildElapsedMs != null}<span class="font-normal opacity-80"> · {formatDurationMs(buildElapsedMs)}{stage.build.phase === "building" ? "…" : ""}</span>{/if}
+					</span>
+					{#if buildUrl}
+						<a
+							href={buildUrl}
+							target="_blank"
+							rel="noreferrer"
+							onclick={stop}
+							class="ml-auto shrink-0 opacity-80 transition-opacity hover:opacity-100"
+							title="Open build in Tekton Dashboard"
+						>
+							<ExternalLink class="size-3" />
+						</a>
 					{/if}
 				</div>
 			{/if}

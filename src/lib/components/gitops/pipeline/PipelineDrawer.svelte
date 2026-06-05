@@ -23,16 +23,18 @@
 	import JsonViewer from "$lib/components/workflow/execution/json-viewer.svelte";
 	import { eventsForSelection } from "$lib/gitops/activity-overlay";
 	import { activityEventTone, toneClasses } from "$lib/gitops/activity-tone";
-	import { healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
+	import { buildVisual, healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
 	import type { PipelineModel } from "$lib/gitops/pipeline-types";
 	import type { PipelineSelection } from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
 	import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 	import {
 		formatAbsoluteTime,
+		formatDurationMs,
 		relativeTime,
 		shortDigest,
 		shortSha,
 		shortTag,
+		tektonPipelineRunUrl,
 	} from "$lib/utils/gitops-display";
 
 	type Props = {
@@ -41,7 +43,13 @@
 		freightId?: string | null;
 		events?: GitOpsActivityEvent[];
 		now?: number;
-		links?: { argoCdBase?: string; ghcrOrg?: string; stacksRepo?: string; tektonBase?: string | null };
+		links?: {
+			argoCdBase?: string;
+			ghcrOrg?: string;
+			stacksRepo?: string;
+			workflowBuilderRepo?: string;
+			tektonBase?: string | null;
+		};
 		onClose: () => void;
 	};
 	let {
@@ -156,6 +164,215 @@
 		if (source === "live-only") return "live pod · no hub inventory";
 		return "hub inventory";
 	}
+
+	// ── Delivery timeline (Commit → Build → Pin → Promote → Deploy) ────────────
+	// Assembled entirely from the selected stage's inventory-sourced fields +
+	// provenance — correlates the image build to its commit, pin, and promotion.
+	type DeliveryState = "done" | "active" | "failed" | "pending" | "skipped";
+	type DeliveryStep = {
+		key: string;
+		label: string;
+		state: DeliveryState;
+		detail: string | null;
+		sub?: string | null;
+		/** Epoch ms anchor for inter-step gap + lead-time math (null = no timestamp). */
+		at: number | null;
+		/** Gap to the next step, e.g. "+1m 10s" — computed after the steps are built. */
+		gap?: string | null;
+		/** Deploy only: a single "live since" relative time (the chain's one absolute clock). */
+		liveAgo?: string | null;
+		liveTitle?: string | null;
+		href?: string | null;
+		hrefLabel?: string | null;
+	};
+
+	function epochMs(s: string | null | undefined): number | null {
+		if (!s) return null;
+		const t = Date.parse(s);
+		return Number.isFinite(t) ? t : null;
+	}
+	/** Inter-step gap label. Sub-second collapses to "+0s" (a fast automated burst). */
+	function formatGap(deltaMs: number | null): string | null {
+		if (deltaMs == null) return null;
+		if (deltaMs < 1000) return "+0s";
+		return `+${formatDurationMs(deltaMs)}`;
+	}
+
+	const wbRepo = $derived(
+		(links.workflowBuilderRepo ?? "https://github.com/PittampalliOrg/workflow-builder").replace(/\/+$/, ""),
+	);
+	const stacksRepoBase = $derived(
+		(links.stacksRepo ?? "https://github.com/PittampalliOrg/stacks").replace(/\/+$/, ""),
+	);
+
+	function dotClass(state: DeliveryState): string {
+		switch (state) {
+			case "done":
+				return "bg-emerald-500";
+			case "active":
+				return "bg-sky-500";
+			case "failed":
+				return "bg-red-500";
+			case "pending":
+				return "bg-amber-500";
+			default:
+				return "bg-muted-foreground/40";
+		}
+	}
+
+	// The timeline shows DURATIONS, not a repeated "N mins ago" — the automated
+	// outer-loop runs commit→pin in one sub-minute burst, so absolute per-row times
+	// collapse to one value. Instead: inter-step gaps on the connectors, phase
+	// durations inline (build, soak), a commit→live lead-time header, and a single
+	// "live since" on Deploy. (NB: provenance.committedAt is the pin-commit time, so
+	// the lead-time anchors on build.startedAt — the genuinely-earliest real event.)
+	const delivery = $derived.by<{ steps: DeliveryStep[]; lead: string | null }>(() => {
+		if (!stage) return { steps: [], lead: null };
+		const steps: DeliveryStep[] = [];
+		const prov = stage.provenance;
+
+		// Commit — the source commit that produced the image.
+		const commitSha = prov?.commitSha ?? stage.commitSha ?? null;
+		steps.push({
+			key: "commit",
+			label: "Commit",
+			state: commitSha ? "done" : "pending",
+			detail: commitSha ? shortSha(commitSha) : "—",
+			sub: prov?.commitMessage ?? null,
+			at: epochMs(prov?.committedAt),
+			href: commitSha ? `${wbRepo}/commit/${commitSha}` : null,
+			hrefLabel: "source",
+		});
+
+		// Build — the Tekton outer-loop run (dev lane). Duration is the signal here;
+		// ryzen runs the same image via commit-pin and carries no Tekton build record.
+		const b = stage.build;
+		if (b) {
+			const started = b.startedAt ? Date.parse(b.startedAt) : Number.NaN;
+			const elapsed =
+				b.durationMs ?? (Number.isFinite(started) ? Math.max(0, now - started) : null);
+			const phaseLabel = b.phase === "building" ? "building" : b.phase === "failed" ? "failed" : "built";
+			// Sequence on finishedAt once terminal (the build hands off to pin/promote);
+			// while building, on startedAt.
+			steps.push({
+				key: "build",
+				label: "Build",
+				state: b.phase === "built" ? "done" : b.phase === "failed" ? "failed" : "active",
+				detail: [phaseLabel, elapsed != null ? formatDurationMs(elapsed) : null].filter(Boolean).join(" · ") || null,
+				sub: b.pipelineRun,
+				at: b.phase === "building" ? epochMs(b.startedAt) : epochMs(b.finishedAt ?? b.startedAt),
+				href: tektonPipelineRunUrl(tektonBase, b.pipelineRun),
+				hrefLabel: "Tekton",
+			});
+		} else {
+			steps.push({
+				key: "build",
+				label: "Build",
+				state: "skipped",
+				at: null,
+				detail:
+					stage.deliveryMode === "direct-main"
+						? "commit-pin lane · no Tekton build"
+						: "no build record",
+			});
+		}
+
+		// Pin — the stacks release-pins commit that pinned this image.
+		const pin = prov?.pinCommit ?? null;
+		steps.push({
+			key: "pin",
+			label: "Pin",
+			state: pin ? "done" : "pending",
+			detail: pin ? shortSha(pin) : "—",
+			at: epochMs(prov?.pinCommittedAt),
+			href: pin ? `${stacksRepoBase}/commit/${pin}` : null,
+			hrefLabel: "release-pins",
+		});
+
+		// Promote — Promoter-gated (dev) vs direct-main (ryzen) vs dormant (staging).
+		if (stage.deliveryMode === "promoter") {
+			const p = stage.promotion;
+			if (p?.inFlight) {
+				steps.push({
+					key: "promote",
+					label: "Promote",
+					state: "active",
+					detail: `→ ${p.proposedTag ? shortSha(p.proposedTag) : "next"}${p.soak ? ` · soak ${p.soak.label}` : ""}`,
+					sub: p.stalledOn ? `waiting: ${p.stalledOn}` : null,
+					at: null, // in progress — no settled timestamp yet
+					href: p.pullRequest?.url ?? null,
+					hrefLabel: p.pullRequest?.url ? "PR" : null,
+				});
+			} else if (p) {
+				steps.push({
+					key: "promote",
+					label: "Promote",
+					state: "done",
+					detail: `promoted${p.activeTag ? ` · ${shortSha(p.activeTag)}` : ""}${p.soak?.total ? ` · soak ${p.soak.total}` : ""}`,
+					at: epochMs(p.activeAt),
+					href: p.pullRequest?.url ?? null,
+					hrefLabel: p.pullRequest?.url ? "PR" : null,
+				});
+			} else {
+				steps.push({ key: "promote", label: "Promote", state: "pending", at: null, detail: "awaiting promotion" });
+			}
+		} else if (stage.deliveryMode === "direct-main") {
+			steps.push({
+				key: "promote",
+				label: "Promote",
+				state: "done",
+				at: null, // not a distinct event — the pin IS the promotion on direct-main
+				detail: "direct to main · no Promoter gate",
+			});
+		} else {
+			steps.push({ key: "promote", label: "Promote", state: "skipped", at: null, detail: "dormant lane" });
+		}
+
+		// Deploy — ArgoCD sync/health on the target cluster. Carries the chain's one
+		// absolute "live since" clock.
+		const deployState: DeliveryState = stage.dormant
+			? "skipped"
+			: stage.health === "Healthy"
+				? "done"
+				: stage.health === "Degraded"
+					? "failed"
+					: stage.health === "Progressing"
+						? "active"
+						: "pending";
+		steps.push({
+			key: "deploy",
+			label: "Deploy",
+			state: deployState,
+			detail: [stage.syncStatus, stage.health].filter(Boolean).join(" · ") || (stage.dormant ? "dormant" : "—"),
+			sub: stage.drift ? `drift: ${stage.drift}` : null,
+			at: epochMs(stage.updatedAt),
+			liveAgo: stage.updatedAt && !stage.dormant ? relativeTime(stage.updatedAt, now) : null,
+			liveTitle: stage.updatedAt ? formatAbsoluteTime(stage.updatedAt, now) : null,
+			href: stageArgoUrl,
+			hrefLabel: stageArgoUrl ? "ArgoCD" : null,
+		});
+
+		// Inter-step gaps (only between adjacent steps that both have a timestamp —
+		// null-anchored steps like ryzen's direct-main Promote simply break the chain).
+		for (let i = 0; i < steps.length - 1; i++) {
+			const a = steps[i].at;
+			const c = steps[i + 1].at;
+			if (a != null && c != null) steps[i].gap = formatGap(Math.max(0, c - a));
+		}
+
+		// Lead time: from the genuinely-earliest real event (build start, else commit)
+		// to the live deploy. Build duration lives "inside" this, so anchoring on
+		// build.startedAt captures it (committedAt would understate it).
+		const buildStart = epochMs(stage.build?.startedAt ?? null);
+		const anchors = steps.map((s) => s.at).filter((x): x is number => x != null);
+		const starts = [buildStart, ...anchors].filter((x): x is number => x != null);
+		const startAt = starts.length ? Math.min(...starts) : null;
+		const endAt = epochMs(stage.updatedAt);
+		const lead =
+			startAt != null && endAt != null && endAt > startAt ? formatDurationMs(endAt - startAt) : null;
+
+		return { steps, lead };
+	});
 </script>
 
 {#snippet sectionLabel(text: string)}
@@ -405,6 +622,78 @@
 							{/if}
 						</div>
 					{/if}
+				</section>
+
+				<!-- Delivery timeline: Commit → Build → Pin → Promote → Deploy. Shows
+				     inter-step gaps + phase durations + a commit→live lead time (a
+				     repeated "N mins ago" would collapse — the outer-loop is one burst). -->
+				<section class="space-y-2.5 border-t border-border/60 pt-5">
+					<div class="flex items-center justify-between gap-2">
+						{@render sectionLabel("Delivery")}
+						{#if delivery.lead}
+							<span
+								class="shrink-0 font-mono text-[0.58rem] text-muted-foreground"
+								title="Lead time from build start to live deploy"
+							>
+								commit→live <span class="text-foreground">{delivery.lead}</span>
+							</span>
+						{/if}
+					</div>
+					<ol class="space-y-0">
+						{#each delivery.steps as step, i (step.key)}
+							{@const last = i === delivery.steps.length - 1}
+							<li class="flex gap-2.5">
+								<div class="flex flex-col items-center pt-0.5">
+									<span class="relative flex size-2.5 shrink-0 items-center justify-center">
+										{#if step.state === "active"}
+											<span class="absolute inline-flex size-full animate-ping rounded-full {dotClass(step.state)} opacity-60"></span>
+										{/if}
+										<span class="relative inline-flex size-2 rounded-full {dotClass(step.state)}"></span>
+									</span>
+									{#if !last}
+										<span class="mt-0.5 w-px flex-1 bg-border/70"></span>
+									{/if}
+								</div>
+								<div class="min-w-0 flex-1 {last ? '' : 'pb-3'}">
+									<div class="flex items-center justify-between gap-2">
+										<span class="flex items-center gap-1.5 text-[0.72rem] font-semibold">
+											{step.label}
+											{#if step.href && step.hrefLabel}
+												<a
+													href={step.href}
+													target="_blank"
+													rel="noreferrer"
+													class="inline-flex items-center gap-0.5 text-[0.62rem] font-normal text-primary hover:underline"
+												>
+													{step.hrefLabel}<ExternalLink class="size-2.5" />
+												</a>
+											{/if}
+										</span>
+										{#if step.liveAgo}
+											<span class="shrink-0 font-mono text-[0.58rem] text-muted-foreground" title={step.liveTitle ?? undefined}>
+												live {step.liveAgo}
+											</span>
+										{/if}
+									</div>
+									{#if step.detail}
+										<div class="truncate font-mono text-[0.64rem] text-muted-foreground" title={step.detail}>
+											{step.detail}
+										</div>
+									{/if}
+									{#if step.sub}
+										<div class="truncate text-[0.62rem] text-muted-foreground/80" title={step.sub}>
+											{step.sub}
+										</div>
+									{/if}
+									{#if step.gap}
+										<div class="mt-1 font-mono text-[0.56rem] text-muted-foreground/70" title="Time until the next step">
+											↓ {step.gap}
+										</div>
+									{/if}
+								</div>
+							</li>
+						{/each}
+					</ol>
 				</section>
 			{/if}
 

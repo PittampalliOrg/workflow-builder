@@ -136,6 +136,23 @@ export function promotionVisual(phase?: string | null): KargoStatusVisual | null
 	}
 }
 
+// ── Image build (Tekton outer-loop run) ─────────────────────────────────────
+// Maps our `StageBuild.phase` onto the same icon/colour language as promotion /
+// verification so a build chip reads consistently with the rest of the pipeline.
+
+export function buildVisual(phase?: string | null): KargoStatusVisual | null {
+	if (!phase) return null;
+	switch (phase) {
+		case "built":
+			return { color: KARGO_COLORS.success, icon: CircleCheck, spin: false, label: "Built" };
+		case "failed":
+			return { color: KARGO_COLORS.error, icon: CircleAlert, spin: false, label: "Build failed" };
+		case "building":
+		default:
+			return { color: KARGO_COLORS.progressing, icon: LoaderCircle, spin: true, label: "Building" };
+	}
+}
+
 // ── Verification phase ──────────────────────────────────────────────────────
 
 export type VerificationPhase =
