@@ -1,3 +1,4 @@
+// gitops-e2e-test 2026-06-05: trivial marker to exercise the dev outer-loop auto-build + UI activity (revertable, no behavior change)
 import { otelLogMixin } from "./otel.js";
 
 /**
