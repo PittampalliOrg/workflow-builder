@@ -37,8 +37,10 @@ import type {
 	PipelineModel,
 	PipelineStage,
 	PipelineWarehouse,
+	StageBuild,
 	StageFreightRef,
 	StagePromotion,
+	StageProvenance,
 } from "./pipeline-types";
 import type { PromotionStrategiesResponse } from "$lib/server/promoter/types";
 import type {
@@ -149,7 +151,77 @@ function makeServiceStage(
 		awaitingReconcile: isAwaitingReconcile(cell),
 		gate: opts.gate ?? null,
 		promotion: opts.promotion ?? null,
+		build: buildFromCell(cell),
 	};
+}
+
+/**
+ * Map the inventory cell's build fields (the Tekton outer-loop run that produced
+ * this env's desired image) into a `StageBuild`. Returns null when the inventory
+ * carries no build for this app (pin-only / live-only cells).
+ */
+function buildFromCell(cell: EnvCell): StageBuild | null {
+	if (!cell.buildStatus && !cell.buildPipelineRun) return null;
+	const status = (cell.buildStatus ?? "").toLowerCase();
+	const phase: StageBuild["phase"] =
+		status === "true" || status === "succeeded"
+			? "built"
+			: status === "false" || status === "failed"
+				? "failed"
+				: "building";
+	const started = cell.buildStartedAt ? Date.parse(cell.buildStartedAt) : Number.NaN;
+	const finished = cell.buildFinishedAt ? Date.parse(cell.buildFinishedAt) : Number.NaN;
+	const durationMs =
+		Number.isFinite(started) && Number.isFinite(finished) ? finished - started : null;
+	return {
+		pipelineRun: cell.buildPipelineRun,
+		phase,
+		startedAt: cell.buildStartedAt,
+		finishedAt: cell.buildFinishedAt,
+		durationMs,
+	};
+}
+
+/**
+ * Source-→-pin provenance for a stage, matched from the service's image history
+ * by the stage's desired (or live) tag. Falls back to the stage's own source
+ * commit when history has no matching version; null when nothing is known.
+ */
+function provenanceForStage(
+	stage: PipelineStage,
+	history: ImageVersion[],
+): StageProvenance | null {
+	const tag = stage.desiredTag ?? stage.liveTag;
+	const version = tag ? history.find((v) => v.tag === tag) : undefined;
+	if (!version) {
+		return stage.commitSha
+			? { commitSha: stage.commitSha, commitMessage: null, committedAt: null, pinCommit: null, pinCommittedAt: null }
+			: null;
+	}
+	return {
+		commitSha: version.sourceSha ?? stage.commitSha ?? null,
+		commitMessage: version.message ?? null,
+		committedAt: version.committedAt || null,
+		pinCommit: version.pinCommit || null,
+		pinCommittedAt: version.pinCommittedAt || null,
+	};
+}
+
+/**
+ * Pick the single most-actionable build across a warehouse's lane stages for the
+ * compact warehouse pip: in-progress first, then failed, then the first (dev's,
+ * the canonical Tekton outer-loop run — ryzen's commit-pin lane carries none).
+ */
+function warehouseBuildSummary(laneStages: PipelineStage[]): StageBuild | null {
+	const builds = laneStages
+		.map((s) => s.build)
+		.filter((b): b is StageBuild => b != null);
+	if (builds.length === 0) return null;
+	return (
+		builds.find((b) => b.phase === "building") ??
+		builds.find((b) => b.phase === "failed") ??
+		builds[0]
+	);
 }
 
 /**
@@ -163,6 +235,7 @@ function stagePromotionFor(env: EnvPromotionState | undefined): StagePromotion |
 		inFlight: env.inFlight,
 		proposedTag: env.proposedHydratedSha ?? env.proposedDrySha ?? null,
 		activeTag: env.activeHydratedSha ?? env.activeDrySha ?? null,
+		activeAt: env.updatedAt ?? null,
 		gates: env.gates,
 		soak: env.soak,
 		pullRequest: env.pullRequest,
@@ -295,6 +368,12 @@ function buildServicePipelines(
 			);
 		}
 
+		// Attach source-→-pin provenance (from imageHistory) for the delivery timeline.
+		const serviceHistory = historyByService.get(service) ?? [];
+		for (const laneStage of laneStages) {
+			laneStage.provenance = provenanceForStage(laneStage, serviceHistory);
+		}
+
 		const hasError = laneStages.some((s) => s.health === "Degraded");
 		const reconciling =
 			laneStages.some((s) => s.health === "Progressing") ||
@@ -312,6 +391,7 @@ function buildServicePipelines(
 			specialCase: row.specialCase,
 			dependedOnBy: DEPENDED_ON_BY[service],
 			dependsOn: DEPENDS_ON[service],
+			build: warehouseBuildSummary(laneStages),
 		});
 		stages.push(...laneStages);
 

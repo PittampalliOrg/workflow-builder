@@ -33,6 +33,7 @@ export type PipelineLinks = {
 	stacksRepo?: string;
 	workflowBuilderRepo?: string;
 	ghcrOrg?: string;
+	tektonBase?: string | null;
 };
 
 const SIZE = {

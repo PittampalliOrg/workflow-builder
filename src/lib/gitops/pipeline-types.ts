@@ -38,6 +38,9 @@ export type PipelineWarehouse = {
 	/** Informational runtime/bundle coupling (not enforced DAG edges). */
 	dependedOnBy?: string[];
 	dependsOn?: string[];
+	/** Most-actionable image build across this warehouse's lanes (building →
+	 *  failed → most-recent built); null when no lane carries an inventory build. */
+	build?: StageBuild | null;
 	/** Latest durable event overlay for this warehouse, if any. */
 	activity?: PipelineActivity | null;
 };
@@ -80,12 +83,43 @@ export type StagePromotion = {
 	proposedTag: string | null;
 	/** Active (live) hydrated sha. */
 	activeTag: string | null;
+	/** When the active freight was promoted (active hydrated/dry commit time). */
+	activeAt: string | null;
 	gates: StagePromotionGate[];
 	/** Soak countdown label parsed from the `timer` gate, e.g. "4m of 10m". */
 	soak: { elapsed: string; total: string; label: string } | null;
 	pullRequest: { url: string | null; state: string | null } | null;
 	/** First pending/failing gate key — what delivery is blocked on. */
 	stalledOn: string | null;
+};
+
+export type StageBuild = {
+	pipelineRun: string | null;
+	/** building (in progress) | built (Tekton Succeeded) | failed. */
+	phase: "building" | "built" | "failed";
+	startedAt: string | null;
+	finishedAt: string | null;
+	/** Final build duration (finished − started) in ms; null while still building
+	 *  — compute elapsed at render from `startedAt` + the shared clock. */
+	durationMs: number | null;
+};
+
+/**
+ * Source-→-pin provenance for the image this stage runs, matched from the
+ * service's `imageHistory` by the stage's desired tag. Powers the drawer's
+ * Commit→…→Pin delivery-timeline rows. All fields nullable (history may lack the
+ * matching version, or a pin-only/live-only cell carries none).
+ */
+export type StageProvenance = {
+	/** Source commit (sourceSha) that produced the image. */
+	commitSha: string | null;
+	/** First line of that commit's message, when known. */
+	commitMessage: string | null;
+	/** Source-commit time (when the image's commit landed), when known. */
+	committedAt: string | null;
+	/** Stacks release-pins commit that pinned this image. */
+	pinCommit: string | null;
+	pinCommittedAt: string | null;
 };
 
 export type PipelineActivity = {
@@ -152,6 +186,13 @@ export type PipelineStage = {
 	 * (staging) stages.
 	 */
 	promotion: StagePromotion | null;
+	/** Inventory-sourced image-build status (the Tekton outer-loop run that
+	 *  produced this env's desired image) — distinct from the transient event
+	 *  `activity`; null when the inventory carries no build for this app. */
+	build?: StageBuild | null;
+	/** Source-commit → release-pin provenance for the image this stage runs
+	 *  (matched from `imageHistory`); powers the drawer delivery timeline. */
+	provenance?: StageProvenance | null;
 	/** Latest durable event overlay from the hub Argo Events stream. */
 	activity?: PipelineActivity | null;
 };

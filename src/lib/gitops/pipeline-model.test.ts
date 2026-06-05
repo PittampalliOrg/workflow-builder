@@ -432,4 +432,53 @@ describe("buildPipelineModel", () => {
 		expect(dev.deliveryMode).toBe("promoter");
 		expect(dev.promotion).toBeNull();
 	});
+
+	// ── Build feedback: inventory build field → StageBuild ────────────────────
+	it("maps the inventory build field to a StageBuild (built + duration)", () => {
+		const inventory = makeInventory({
+			dev: [
+				makeApp({
+					name: "dev-workflow-builder",
+					component: "workflow-builder",
+					build: {
+						pipelineRun: "outer-loop-workflow-builder-xyz",
+						status: "True",
+						reason: "Succeeded",
+						startedAt: "2026-06-04T12:00:00Z",
+						finishedAt: "2026-06-04T12:04:36Z",
+					},
+				}),
+			],
+		});
+		const model = buildPipelineModel(
+			makeMetadata(inventory, [makePin("workflow-builder", "git-aaaaaaaa")]),
+			EMPTY_PROMOTIONS,
+		);
+		const dev = model.stages.find((s) => s.name === "workflow-builder::dev")!;
+		expect(dev.build).toMatchObject({
+			pipelineRun: "outer-loop-workflow-builder-xyz",
+			phase: "built",
+			durationMs: 276_000, // 4m36s
+		});
+	});
+
+	it("maps a failed build, and leaves build null when the inventory carries none", () => {
+		const inventory = makeInventory({
+			dev: [
+				makeApp({
+					name: "dev-workflow-builder",
+					component: "workflow-builder",
+					build: { pipelineRun: "pr", status: "False", reason: "Failed", startedAt: null, finishedAt: null },
+				}),
+			],
+			ryzen: [makeApp({ name: "ryzen-workflow-builder", component: "workflow-builder" })], // no build
+		});
+		const model = buildPipelineModel(
+			makeMetadata(inventory, [makePin("workflow-builder", "git-aaaaaaaa")]),
+			EMPTY_PROMOTIONS,
+		);
+		expect(model.stages.find((s) => s.name === "workflow-builder::dev")!.build?.phase).toBe("failed");
+		// ryzen app has no build field, and pin-only/live-only cells carry none either.
+		expect(model.stages.find((s) => s.name === "workflow-builder::ryzen")!.build ?? null).toBeNull();
+	});
 });

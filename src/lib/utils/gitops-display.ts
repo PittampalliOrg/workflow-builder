@@ -156,6 +156,21 @@ export function shortTag(tag: string | null | undefined, maxChars = 16): string 
 	return tag.length <= maxChars ? tag : `${tag.slice(0, maxChars - 1)}…`;
 }
 
+/**
+ * Tekton Dashboard deep-link to a specific PipelineRun. The hub outer-loop runs
+ * all `outer-loop-<svc>` PipelineRuns in the `tekton-pipelines` namespace, so we
+ * default to that. Returns null when either the dashboard base or the run name
+ * is missing (caller then falls back to the dashboard root).
+ */
+export function tektonPipelineRunUrl(
+	tektonBase: string | null | undefined,
+	pipelineRun: string | null | undefined,
+	namespace = "tekton-pipelines",
+): string | null {
+	if (!tektonBase || !pipelineRun) return null;
+	return `${tektonBase.replace(/\/+$/, "")}/#/namespaces/${namespace}/pipelineruns/${pipelineRun}`;
+}
+
 export function formatDurationMs(ms: number | null | undefined): string {
 	if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
 	if (ms < 1000) return `${ms}ms`;
