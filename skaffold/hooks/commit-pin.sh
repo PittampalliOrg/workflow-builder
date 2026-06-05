@@ -122,12 +122,13 @@ git -C "${stacks_dir}" reset --hard "origin/${branch}"
 
 # --- C1 unification (2026-06-04): workflow-builder + workflow-mcp-server pin via
 #     the FLAT ryzen release-pins file, NOT the per-app manifests images block
-#     (which was deleted in the C1 cutover). The hub CI workflow
-#     render-ryzen-image.yml re-renders the workflow-builder-ryzen-image Component
-#     from this file on push, and ryzen's autonomous agent reconciles it. We write
-#     the flat file ONLY here (drift-proof: render runs in CI, not from this local
-#     checkout). Other Skaffold-owned services still pin via their per-app
-#     manifests block (the nested-parser path below).
+#     (which was deleted in the C1 cutover). We upsert the flat file AND render the
+#     workflow-builder-ryzen-image Component locally (from the fresh hard-reset
+#     cache clone) so ryzen — an autonomous argocd-agent with no fast inbound
+#     refresh path — reconciles the new image in seconds. The hub CI
+#     render-ryzen-image.yml re-renders on push as a drift-correction safety net
+#     (no-ops when our local render already matches). Other Skaffold-owned services
+#     still pin via their per-app manifests block (the nested-parser path below).
 case "${service}" in
   workflow-builder | workflow-mcp-server)
     ryzen_pins="${stacks_dir}/packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-ryzen.yaml"
@@ -139,7 +140,7 @@ case "${service}" in
     digest="${SKAFFOLD_IMAGE##*@}"
     case "${digest}" in sha256:*) ;; *) digest="" ;; esac
     source_sha="${tag#git-}"
-    echo "commit-pin: ${service} → ${repo}:${tag} (flat ryzen pins; CI renders the Component)"
+    echo "commit-pin: ${service} → ${repo}:${tag} (flat ryzen pins + local Component render)"
     python3 - "$service" "$repo" "$tag" "$digest" "$source_sha" "${ryzen_pins}" <<'PY'
 import sys, re, pathlib
 service, repo, tag, digest, source_sha, path = sys.argv[1:7]
@@ -172,21 +173,38 @@ if missing:
 p.write_text("".join(lines))
 print(f"commit-pin: upserted {service} → {tag} in {p.name} (flat ryzen pins)")
 PY
-    if git -C "${stacks_dir}" diff --quiet -- "${ryzen_pins}"; then
-      echo "commit-pin: ${service} already at ${tag} — no commit needed"
+    # Render the workflow-builder-ryzen-image Component LOCALLY so ryzen reconciles
+    # the new image in seconds. ryzen is an autonomous argocd-agent (no
+    # argocd-server, and the principal does NOT relay a refresh to autonomous
+    # agents on v0.8.1 — verified empirically), so its only fast path is committing
+    # the rendered Component here + refreshing the spoke-local app directly. The
+    # cache clone was hard-reset to origin/${branch} above, so this is a FRESH (not
+    # stale) checkout and the render is deterministic. render-ryzen-image.yml
+    # re-renders on push as a drift-correction safety net and no-ops when this
+    # local render already matches (it commits only on a diff).
+    component="packages/components/workloads/workflow-builder-ryzen-image/kustomization.yaml"
+    ( cd "${stacks_dir}" && WFB_RENDER_ENVS=ryzen \
+        scripts/gitops/render-workflow-builder-release-overlays.sh \
+        packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-ryzen.yaml ) \
+      || { echo "commit-pin: local ryzen Component render failed" >&2; exit 1; }
+    if git -C "${stacks_dir}" diff --quiet -- "${ryzen_pins}" "${component}"; then
+      echo "commit-pin: ${service} already at ${tag} (pins + Component in sync) — no commit needed"
       exit 0
     fi
-    git -C "${stacks_dir}" add "${ryzen_pins}"
+    git -C "${stacks_dir}" add "${ryzen_pins}" "${component}"
     git -C "${stacks_dir}" commit -m "chore(${service}): pin ryzen image to ${tag}
 
-Flat ryzen release-pins; .github/workflows/render-ryzen-image.yml renders the
-workflow-builder-ryzen-image Component from this file on push.
+Flat ryzen release-pins + locally-rendered workflow-builder-ryzen-image Component
+(so ryzen reconciles immediately). render-ryzen-image.yml re-renders in CI as a
+drift-correction safety net.
 Co-Authored-By: Skaffold <noreply@anthropic.com>"
     echo "commit-pin: git push origin ${branch}"
     git -C "${stacks_dir}" push origin "${branch}"
-    echo "commit-pin: ✓ pushed ${service} → ${tag} (CI renders + commits the Component)"
-    # Hard-refresh: ryzen's autonomous agent names the app `ryzen-${service}`;
-    # the bare `${service}` lookup silently no-ops on ryzen.
+    echo "commit-pin: ✓ pushed ${service} → ${tag} (pins + rendered Component)"
+    # Refresh the ryzen SPOKE-local app directly (ns argocd on the ryzen cluster).
+    # The autonomous agent honors a local refresh; the hub mirror does NOT relay
+    # refresh to autonomous agents (verified on argocd-agent v0.8.1). The Component
+    # is committed above, so this refresh picks up the new image immediately.
     for app in "ryzen-${service}" "${service}"; do
       if kubectl get application "${app}" -n argocd >/dev/null 2>&1; then
         kubectl annotate application "${app}" -n argocd \
