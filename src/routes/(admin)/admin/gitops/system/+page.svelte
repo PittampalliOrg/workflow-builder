@@ -2,8 +2,12 @@
 	import { onDestroy, onMount, setContext, untrack } from "svelte";
 	import { AlertTriangle, GitBranch, Radio, RefreshCw, Route } from "@lucide/svelte";
 
+	import { goto } from "$app/navigation";
+	import { page } from "$app/state";
+
 	import { PIPELINE_LINKS_CONTEXT } from "$lib/gitops/pipeline-layout";
 
+	import ActivityFeed from "$lib/components/gitops/pipeline/ActivityFeed.svelte";
 	import FreightTimeline from "$lib/components/gitops/pipeline/FreightTimeline.svelte";
 	import GraphFilters from "$lib/components/gitops/pipeline/GraphFilters.svelte";
 	import PipelineDrawer from "$lib/components/gitops/pipeline/PipelineDrawer.svelte";
@@ -11,7 +15,16 @@
 	import PipelineListView from "$lib/components/gitops/pipeline/PipelineListView.svelte";
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
-	import { applyPipelineActivityOverlay } from "$lib/gitops/activity-overlay";
+	import * as Popover from "$lib/components/ui/popover";
+	import { activityTargetKeys, applyPipelineActivityOverlay } from "$lib/gitops/activity-overlay";
+	import { clearFlowing, markFlowing } from "$lib/gitops/gitops-flow.svelte";
+	import { nowTick, startClock } from "$lib/gitops/gitops-tick.svelte";
+	import {
+		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
+		gitOpsDeploymentMetadataUrl,
+		mergeActivityEvents,
+		shouldRefreshGitOpsMetadata,
+	} from "$lib/gitops/event-driven-refresh";
 	import { buildPipelineModel } from "$lib/gitops/pipeline-model";
 	import {
 		DEFAULT_PREFERRED_FILTER,
@@ -41,13 +54,23 @@
 
 	let loading = $state(false);
 	let requestError = $state<string | null>(null);
-	let now = $state(Date.now());
+	// One shared clock for every relative-time label + freshness derivation. The
+	// model no longer depends on it, so ticking restyles only timestamps, not the graph.
+	const now = $derived(nowTick());
 	let timer: ReturnType<typeof setInterval> | null = null;
-	let clockTimer: ReturnType<typeof setInterval> | null = null;
+	let clockStop: (() => void) | null = null;
+	let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let activityEventSource: EventSource | null = null;
 	let activityReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let activityConnected = $state(false);
+	let activityReconnecting = $state(false);
 	let activityError = $state<string | null>(null);
+	// Client-side coalescing of SSE bursts (Argo ListWatch-style): buffer events
+	// and flush once per ~80ms so the model re-derives per batch, not per event.
+	let eventBuffer: GitOpsActivityEvent[] = [];
+	let flushTimer: ReturnType<typeof setTimeout> | null = null;
+	// Exponential reconnect backoff (3s → ×1.5 → cap 30s), reset on open.
+	let reconnectDelay = 3000;
 
 	// View preferences (persisted) + transient UI state.
 	let filter = $state<PreferredFilter>({ ...DEFAULT_PREFERRED_FILTER });
@@ -55,12 +78,16 @@
 	let selection = $state<PipelineSelection>(null);
 	let selectedFreightId = $state<string | null>(null);
 
-	const model = $derived(
-		applyPipelineActivityOverlay(buildPipelineModel(metadata, promotions), activityEvents, now),
+	// C1 — base (inventory) model recomputes only when metadata/promotions change
+	// (the 15s poll), NOT on every event; the activity overlay is the only thing
+	// that re-derives per event batch.
+	const baseModel = $derived(buildPipelineModel(metadata, promotions));
+	const model = $derived(applyPipelineActivityOverlay(baseModel, activityEvents));
+	const streamState = $derived(
+		activityConnected ? "live" : activityReconnecting ? "reconnecting" : "poll",
 	);
-	const latestEvents = $derived(
-		[...activityEvents].sort((a, b) => b.sequence - a.sequence).slice(0, 8),
-	);
+	const latestEvent = $derived(activityEvents[0] ?? null);
+	const debug = $derived(page.url.searchParams.get("debug") === "1");
 	const errors = $derived(
 		[
 			requestError,
@@ -90,11 +117,11 @@
 			: null,
 	);
 
-	async function refresh() {
+	async function refresh(options: { fresh?: boolean } = {}) {
 		loading = true;
 		try {
 			const [metaRes, promoRes, eventsRes] = await Promise.all([
-				fetch("/api/v1/gitops/deployment-metadata"),
+				fetch(gitOpsDeploymentMetadataUrl(options)),
 				fetch("/api/v1/gitops/promotions"),
 				fetch("/api/v1/gitops/events?limit=200"),
 			]);
@@ -115,20 +142,32 @@
 
 	onMount(() => {
 		filter = loadPreferredFilter();
-		timer = setInterval(() => void refresh(), 15_000);
-		clockTimer = setInterval(() => (now = Date.now()), 30_000);
+		startFallbackPolling();
+		clockStop = startClock();
 		connectActivityStream();
 	});
 	onDestroy(() => {
-		if (timer) clearInterval(timer);
-		if (clockTimer) clearInterval(clockTimer);
+		stopFallbackPolling();
+		clockStop?.();
+		flushEvents();
+		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
 		closeActivityStream();
 		if (activityReconnectTimer) clearTimeout(activityReconnectTimer);
+		clearFlowing();
 	});
 
 	function updateFilter(patch: Partial<PreferredFilter>) {
 		filter = { ...filter, ...patch };
 		savePreferredFilter(filter);
+	}
+
+	// Debug mode is URL-driven (`?debug=1`) so it stays shareable and resets on
+	// navigation — toggle it by patching the query param without a reload.
+	function toggleDebug(value: boolean) {
+		const url = new URL(page.url);
+		if (value) url.searchParams.set("debug", "1");
+		else url.searchParams.delete("debug");
+		void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
 	function selectNode(sel: PipelineSelection) {
@@ -148,15 +187,48 @@
 		return activityEvents.reduce((max, event) => Math.max(max, event.sequence), 0);
 	}
 
-	function mergeActivityEvents(
-		current: GitOpsActivityEvent[],
-		incoming: GitOpsActivityEvent[],
-	): GitOpsActivityEvent[] {
-		const byId = new Map(current.map((event) => [event.eventId, event]));
-		for (const event of incoming) byId.set(event.eventId, event);
-		return [...byId.values()]
-			.sort((a, b) => b.sequence - a.sequence)
-			.slice(0, 300);
+	function startFallbackPolling() {
+		if (!timer) timer = setInterval(() => void refresh(), 15_000);
+	}
+
+	function stopFallbackPolling() {
+		if (timer) clearInterval(timer);
+		timer = null;
+	}
+
+	function scheduleMetadataRefresh() {
+		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+		eventRefreshTimer = setTimeout(() => {
+			eventRefreshTimer = null;
+			void refresh({ fresh: true });
+		}, GITOPS_EVENT_REFRESH_DEBOUNCE_MS);
+	}
+
+	// Drain the SSE buffer: merge the whole batch once, light up the touched
+	// nodes/edges (live-flow motion), and schedule a metadata refresh if any
+	// event in the batch warrants one.
+	function flushEvents() {
+		if (flushTimer) {
+			clearTimeout(flushTimer);
+			flushTimer = null;
+		}
+		if (eventBuffer.length === 0) return;
+		const batch = eventBuffer;
+		eventBuffer = [];
+		activityEvents = mergeActivityEvents(activityEvents, batch);
+		const keys = new Set<string>();
+		let refreshNeeded = false;
+		for (const event of batch) {
+			for (const key of activityTargetKeys(event, baseModel)) keys.add(key);
+			if (shouldRefreshGitOpsMetadata(event)) refreshNeeded = true;
+		}
+		if (keys.size > 0) markFlowing([...keys]);
+		if (refreshNeeded) scheduleMetadataRefresh();
+	}
+
+	function scheduleFlush() {
+		if (flushTimer) return;
+		flushTimer = setTimeout(flushEvents, 80);
 	}
 
 	function closeActivityStream() {
@@ -167,6 +239,7 @@
 
 	function connectActivityStream() {
 		closeActivityStream();
+		activityReconnecting = false;
 		if (activityReconnectTimer) {
 			clearTimeout(activityReconnectTimer);
 			activityReconnectTimer = null;
@@ -175,13 +248,16 @@
 		activityEventSource = es;
 		es.onopen = () => {
 			activityConnected = true;
+			activityReconnecting = false;
 			activityError = null;
+			reconnectDelay = 3000;
+			stopFallbackPolling();
 		};
 		es.addEventListener("gitops.event", (event) => {
 			const message = event as MessageEvent<string>;
 			try {
-				const parsed = JSON.parse(message.data) as GitOpsActivityEvent;
-				activityEvents = mergeActivityEvents(activityEvents, [parsed]);
+				eventBuffer.push(JSON.parse(message.data) as GitOpsActivityEvent);
+				scheduleFlush();
 			} catch (err) {
 				activityError = err instanceof Error ? err.message : String(err);
 			}
@@ -190,32 +266,45 @@
 			activityConnected = false;
 			activityError = null;
 			es.close();
+			startFallbackPolling();
 			if (!activityReconnectTimer) {
+				activityReconnecting = true;
+				const delay = reconnectDelay;
+				reconnectDelay = Math.min(reconnectDelay * 1.5, 30_000);
 				activityReconnectTimer = setTimeout(() => {
 					activityReconnectTimer = null;
 					connectActivityStream();
-				}, 5_000);
+				}, delay);
 			}
 		};
 	}
 
-	function eventTargetLabel(event: GitOpsActivityEvent): string {
-		const imageName = event.correlation.imageName;
-		if (typeof imageName === "string" && imageName) return imageName;
-		return event.resourceRef.name ?? event.activityKey;
-	}
-
-	function eventTone(event: GitOpsActivityEvent): string {
-		const phase = `${event.phase ?? ""} ${event.reason ?? ""}`.toLowerCase();
-		if (/fail|error|degraded|false|cancel/.test(phase)) return "destructive";
-		if (/succeed|success|healthy|synced|true/.test(phase)) return "success";
-		return "active";
-	}
 </script>
 
 <svelte:head>
 	<title>GitOps Pipeline · Workflow Builder</title>
 </svelte:head>
+
+{#snippet streamPill()}
+	<Badge
+		variant="outline"
+		class="h-5 gap-1 px-1.5 text-[0.65rem] {debug ? 'cursor-pointer' : ''}"
+		title={streamState === "live"
+			? `GitOps event stream connected · seq ${latestSequence()}`
+			: streamState === "reconnecting"
+				? `GitOps event stream reconnecting · seq ${latestSequence()}`
+				: `GitOps event stream fallback polling · seq ${latestSequence()}`}
+	>
+		<Radio
+			class="size-2.5 {streamState === 'live'
+				? 'animate-pulse text-sky-600 dark:text-sky-300'
+				: streamState === 'reconnecting'
+					? 'animate-pulse text-amber-600 dark:text-amber-300'
+					: 'text-muted-foreground'}"
+		/>
+		{streamState} {activityEvents.length}
+	</Badge>
+{/snippet}
 
 <div class="flex h-full flex-col overflow-hidden">
 	<header class="border-b px-5 py-3">
@@ -247,20 +336,25 @@
 						</Badge>
 					{/if}
 				{/if}
-				<Badge
-					variant="outline"
-					class="h-5 gap-1 px-1.5 text-[0.65rem]"
-					title={activityConnected ? "GitOps event stream connected" : "GitOps event stream fallback polling"}
-				>
-					<Radio class="size-2.5 {activityConnected ? 'animate-pulse text-sky-600 dark:text-sky-300' : ''}" />
-					{activityConnected ? "live" : "poll"} {activityEvents.length}
-				</Badge>
+				{#if debug}
+					<Popover.Root>
+						<Popover.Trigger>
+							{@render streamPill()}
+						</Popover.Trigger>
+						<Popover.Content class="w-96 p-0" align="start">
+							<ActivityFeed events={activityEvents} {now} />
+						</Popover.Content>
+					</Popover.Root>
+					{#if latestEvent}
+						<span class="hidden text-[0.7rem] text-muted-foreground sm:inline">
+							seq <span class="font-mono">{latestEvent.sequence}</span> · {relativeTime(latestEvent.observedAt, now)}
+						</span>
+					{/if}
+				{:else}
+					{@render streamPill()}
+				{/if}
 			</div>
 			<div class="flex flex-wrap items-center gap-2">
-				<Button variant="outline" size="sm" href="/admin/gitops/events" class="h-7">
-					<Radio class="size-3.5" />
-					Events
-				</Button>
 				<a
 					class="inline-flex items-center gap-1 text-[0.7rem] text-muted-foreground hover:text-foreground"
 					href={stacksUrl}
@@ -271,7 +365,13 @@
 					stacks/main <span class="font-mono">{stacksShortSha}</span>
 				</a>
 				<span class="text-[0.7rem] text-muted-foreground">Updated {relativeTime(metadata.generatedAt, now)}</span>
-				<Button variant="outline" size="sm" onclick={refresh} disabled={loading} class="h-7">
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={() => void refresh({ fresh: true })}
+					disabled={loading}
+					class="h-7"
+				>
 					<RefreshCw class="size-3.5 {loading ? 'animate-spin' : ''}" />
 					Refresh
 				</Button>
@@ -284,29 +384,6 @@
 			<div class="flex items-center gap-2">
 				<AlertTriangle class="size-3.5 shrink-0" />
 				<span class="truncate">{errors.join(" / ")}</span>
-			</div>
-		</div>
-	{/if}
-
-	{#if latestEvents.length > 0}
-		<div class="border-b bg-muted/30 px-4 py-1.5">
-			<div class="flex gap-2 overflow-x-auto">
-				{#each latestEvents as event (event.eventId)}
-					{@const tone = eventTone(event)}
-					<div
-						class="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[0.66rem] {tone === 'destructive'
-							? 'border-destructive/40 bg-destructive/5 text-destructive'
-							: tone === 'success'
-								? 'border-emerald-400/40 bg-emerald-50/60 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300'
-								: 'border-sky-400/40 bg-sky-50/70 text-sky-700 dark:bg-sky-950/20 dark:text-sky-300'}"
-						title={event.message ?? event.reason ?? event.activityType}
-					>
-						<Radio class="size-2.5 {tone === 'active' ? 'animate-pulse' : ''}" />
-						<span class="max-w-[10rem] truncate font-medium">{eventTargetLabel(event)}</span>
-						<span class="max-w-[8rem] truncate font-mono">{event.phase ?? event.activityType}</span>
-						<span class="text-muted-foreground">{relativeTime(event.observedAt, now)}</span>
-					</div>
-				{/each}
 			</div>
 		</div>
 	{/if}
@@ -334,6 +411,8 @@
 			onStageSearch={(value) => (stageSearch = value)}
 			onView={(value: PipelineViewMode) => updateFilter({ view: value })}
 			onToggle={(key, value) => updateFilter({ [key]: value })}
+			{debug}
+			onDebugToggle={toggleDebug}
 		/>
 		<span class="hidden text-[0.68rem] text-muted-foreground sm:inline">Warehouse → Freight → Stage</span>
 	</div>
@@ -365,5 +444,35 @@
 		{/if}
 	</div>
 
-	<PipelineDrawer {model} {selection} freightId={selectedFreightId} {links} onClose={closeDrawer} />
+	<PipelineDrawer
+		{model}
+		{selection}
+		freightId={selectedFreightId}
+		{links}
+		events={activityEvents}
+		{now}
+		onClose={closeDrawer}
+	/>
 </div>
+
+<style>
+	/* Live event-flow motion (Argo event-flow). A node/list-chip pulses when its
+	   pipeline target receives a fresh event batch; edges march a dash. Driven by
+	   the decaying `gitops-flow` set (CSS only) so it can't churn the model. */
+	@keyframes -global-gitops-node-flow {
+		0% {
+			box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.5);
+		}
+		100% {
+			box-shadow: 0 0 0 8px rgba(56, 189, 248, 0);
+		}
+	}
+	:global(.gitops-flow) {
+		animation: gitops-node-flow 1.3s ease-out 2;
+	}
+	@keyframes -global-gitops-edge-flow {
+		to {
+			stroke-dashoffset: -22;
+		}
+	}
+</style>

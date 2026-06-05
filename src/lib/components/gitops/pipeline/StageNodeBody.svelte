@@ -18,6 +18,9 @@
 		type PipelineHoverContext,
 		type PipelineLinks,
 	} from "$lib/gitops/pipeline-layout";
+	import { pipelineActivityTone, toneClasses } from "$lib/gitops/activity-tone";
+	import { isFlowing } from "$lib/gitops/gitops-flow.svelte";
+	import { nowTick } from "$lib/gitops/gitops-tick.svelte";
 	import { healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
 	import type { PipelineStage } from "$lib/gitops/pipeline-types";
 	import { formatAbsoluteTime, relativeTime, shortSha, shortTag } from "$lib/utils/gitops-display";
@@ -62,19 +65,19 @@
 	role="group"
 	onmouseenter={() => hover?.setHovered(stage.warehouse)}
 	onmouseleave={() => hover?.setHovered(null)}
-	class="flex h-[168px] w-[270px] flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm transition hover:shadow-md {selected
-		? 'ring-2 ring-primary/50'
-		: ''} {highlight ? 'border-amber-400 ring-2 ring-amber-400 shadow-[0_0_12px_2px_rgba(245,197,24,0.55)]' : ''} {stage.dormant ? 'border-dashed opacity-80' : ''}"
-	style={color ? `border-left: 4px solid ${color};` : ""}
+	class="flex h-[168px] w-[270px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card text-card-foreground shadow-sm transition-shadow hover:shadow-md {selected
+		? 'ring-2 ring-primary/40'
+		: ''} {highlight ? 'border-amber-400 ring-2 ring-amber-400 shadow-[0_0_12px_2px_rgba(245,197,24,0.55)]' : ''} {stage.dormant ? 'border-dashed opacity-80' : ''} {isFlowing(stage.name) ? 'gitops-flow' : ''}"
+	style={color ? `border-left: 3px solid ${color};` : ""}
 >
-	<!-- Header: environment name, identity colour band, ArgoCD link -->
+	<!-- Header: environment name, identity dot, subtle tint, ArgoCD link -->
 	<div
-		class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
-		style={color ? `background:${color}1a` : ""}
+		class="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2"
+		style={color ? `background:${color}0d` : ""}
 	>
 		<div class="flex min-w-0 items-center gap-1.5">
 			<span class="size-2 shrink-0 rounded-full" style={color ? `background:${color}` : ""}></span>
-			<span class="truncate text-xs font-semibold">{stage.env}</span>
+			<span class="truncate text-[0.8rem] font-semibold">{stage.env}</span>
 		</div>
 		{#if argoUrl}
 			<a
@@ -82,69 +85,80 @@
 				target="_blank"
 				rel="noreferrer"
 				onclick={stop}
-				class="shrink-0 text-muted-foreground hover:text-primary"
+				class="shrink-0 text-muted-foreground transition-colors hover:text-primary"
 				title="Open ArgoCD application"
 			>
-				<ExternalLink class="size-3" />
+				<ExternalLink class="size-3.5" />
 			</a>
 		{:else}
-			<ExternalLink class="size-3 shrink-0 text-muted-foreground" />
+			<ExternalLink class="size-3.5 shrink-0 text-muted-foreground/50" />
 		{/if}
 	</div>
 
 	{#if stage.controlFlow}
-		<div class="flex flex-1 flex-col items-center justify-center gap-1 px-3 text-center text-[0.68rem] text-muted-foreground">
-			<PauseCircle class="size-4" />
-			<span>{stage.dormant ? "Dormant lane" : "Control flow"}</span>
+		<div class="flex flex-1 flex-col items-center justify-center gap-1.5 px-3 text-center text-[0.7rem] text-muted-foreground">
+			<PauseCircle class="size-5 opacity-70" />
+			<span class="font-medium">{stage.dormant ? "Dormant lane" : "Control flow"}</span>
 		</div>
 	{:else}
-		<div class="flex flex-1 flex-col gap-1.5 px-3 py-2 text-[0.7rem]">
-			<!-- Health + promotion phase -->
+		<div class="flex flex-1 flex-col gap-1.5 px-3 py-2">
+			<!-- Primary status line: health (prominent) + sync/promotion compact on right -->
 			<div class="flex items-center justify-between gap-2">
-				<span class="flex items-center gap-1" style={`color:${health.color}`}>
+				<span class="flex min-w-0 items-center gap-1.5" style={`color:${health.color}`}>
 					{#if health.icon}{@const Icon = health.icon}<Icon
-							class={health.spin ? "size-3 animate-spin" : "size-3"}
+							class={health.spin ? "size-3.5 shrink-0 animate-spin" : "size-3.5 shrink-0"}
 						/>{/if}
-					<span class="font-medium">{health.label}</span>
+					<span class="truncate text-[0.8rem] font-semibold">{health.label}</span>
 				</span>
-				{#if promo}
-					{@const PIcon = promo.icon}
-					<span class="flex items-center gap-1 text-muted-foreground" title={`Promotion ${promo.label}`}>
-						<PIcon class={promo.spin ? "size-3 animate-spin" : "size-3"} style={`color:${promo.color}`} />
-					</span>
-				{/if}
+				<div class="flex shrink-0 items-center gap-1.5">
+					{#if stage.syncStatus}
+						<span class="text-[0.58rem] uppercase tracking-wider text-muted-foreground" title={`Sync: ${stage.syncStatus}`}>
+							{stage.syncStatus}
+						</span>
+					{/if}
+					{#if promo}
+						{@const PIcon = promo.icon}
+						<PIcon
+							class={promo.spin ? "size-3.5 animate-spin" : "size-3.5"}
+							style={`color:${promo.color}`}
+							title={`Promotion ${promo.label}`}
+						/>
+					{/if}
+				</div>
 			</div>
 
 			<!-- Roll-up (release-train bundle stages) -->
 			{#if stage.rollup}
 				<div class="flex flex-wrap items-center gap-1">
-					<Badge variant="secondary" class="h-4 px-1 text-[0.58rem]">{stage.rollup.synced} synced</Badge>
+					<Badge variant="secondary" class="h-4 rounded px-1.5 text-[0.58rem]">{stage.rollup.synced} synced</Badge>
 					{#if stage.rollup.drift > 0}
-						<Badge variant="outline" class="h-4 border-amber-400 px-1 text-[0.58rem] text-amber-700 dark:text-amber-300">{stage.rollup.drift} drift</Badge>
+						<Badge variant="outline" class="h-4 rounded border-amber-400 px-1.5 text-[0.58rem] text-amber-700 dark:text-amber-300">{stage.rollup.drift} drift</Badge>
 					{/if}
 					{#if stage.rollup.degraded > 0}
-						<Badge variant="destructive" class="h-4 px-1 text-[0.58rem]">{stage.rollup.degraded} degraded</Badge>
+						<Badge variant="destructive" class="h-4 rounded px-1.5 text-[0.58rem]">{stage.rollup.degraded} degraded</Badge>
 					{/if}
 				</div>
 			{/if}
 
-			<!-- Current freight: desired tag + drift -->
+			<!-- Current freight: desired tag chip + drift -->
 			{#if stage.desiredTag}
-				<div class="truncate font-mono text-[0.66rem]" title={stage.desiredTag}>
-					{shortTag(stage.desiredTag)}
-				</div>
-			{/if}
-			{#if drift && stage.liveTag}
-				<div class="flex items-center gap-1 truncate font-mono text-[0.62rem] text-amber-600 dark:text-amber-400" title={`live ${stage.liveTag}`}>
-					<GitMerge class="size-3 shrink-0" />live {shortTag(stage.liveTag)}
+				<div class="flex items-center gap-1.5">
+					<span class="truncate rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[0.68rem]" title={stage.desiredTag}>
+						{shortTag(stage.desiredTag)}
+					</span>
+					{#if drift && stage.liveTag}
+						<span class="flex min-w-0 items-center gap-1 truncate font-mono text-[0.62rem] text-amber-600 dark:text-amber-400" title={`live ${stage.liveTag}`}>
+							<GitMerge class="size-3 shrink-0" />{shortTag(stage.liveTag)}
+						</span>
+					{/if}
 				</div>
 			{/if}
 
 			<!-- Promoter in-flight (C1/C2): a distinct proposed freight is soaking /
 			     awaiting a gate. Only Promoter-gated stages (dev) carry this. -->
 			{#if stage.promotion?.inFlight}
-				<div class="flex flex-col gap-0.5 rounded-md border border-amber-400/60 bg-amber-50/70 px-1.5 py-1 dark:bg-amber-950/30">
-					<div class="flex items-center gap-1 text-[0.62rem] font-medium text-amber-700 dark:text-amber-300">
+				<div class="flex flex-col gap-1 rounded-md border border-amber-400/60 bg-amber-50/70 px-2 py-1.5 dark:bg-amber-950/30">
+					<div class="flex items-center gap-1.5 text-[0.62rem] font-medium text-amber-700 dark:text-amber-300">
 						<GitPullRequestArrow class="size-3 shrink-0" />
 						<span class="truncate font-mono" title={stage.promotion.proposedTag ?? "next freight"}>
 							→ {stage.promotion.proposedTag ? shortSha(stage.promotion.proposedTag) : "next"}
@@ -155,7 +169,7 @@
 								target="_blank"
 								rel="noreferrer"
 								onclick={stop}
-								class="ml-auto shrink-0 hover:text-primary"
+								class="ml-auto shrink-0 transition-colors hover:text-primary"
 								title={`Promotion PR${stage.promotion.pullRequest.state ? ` (${stage.promotion.pullRequest.state})` : ""}`}
 							>
 								<ExternalLink class="size-3" />
@@ -163,57 +177,65 @@
 						{/if}
 					</div>
 					{#if stage.promotion.soak}
-						<div class="flex items-center gap-1 text-[0.6rem] text-amber-700/90 dark:text-amber-300/90" title="Soak / verification countdown">
+						<div class="flex items-center gap-1.5 text-[0.6rem] text-amber-700/90 dark:text-amber-300/90" title="Soak / verification countdown">
 							<TimerReset class="size-2.5 shrink-0" />soak {stage.promotion.soak.label}
 						</div>
 					{:else if stage.promotion.stalledOn}
-						<div class="flex items-center gap-1 text-[0.6rem] text-amber-700/90 dark:text-amber-300/90" title="Promotion gate not yet satisfied">
+						<div class="flex items-center gap-1.5 text-[0.6rem] text-amber-700/90 dark:text-amber-300/90" title="Promotion gate not yet satisfied">
 							<Hourglass class="size-2.5 shrink-0" />waiting: {stage.promotion.stalledOn}
 						</div>
 					{/if}
 				</div>
 			{:else if stage.awaitingReconcile}
-				<div class="flex items-center gap-1 text-[0.6rem] text-muted-foreground" title="Pinned/sourced but no reconciled inventory evidence yet">
+				<div class="flex items-center gap-1.5 text-[0.6rem] text-muted-foreground" title="Pinned/sourced but no reconciled inventory evidence yet">
 					<Hourglass class="size-2.5 shrink-0" />awaiting reconcile
 				</div>
 			{/if}
 
-			<!-- Gate (soak) + promoter info -->
-			{#if stage.gate}
-				<div class="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
-					<TimerReset class="size-3" />
-					{stage.gate.label}{stage.gate.phase ? `: ${stage.gate.phase}` : ""}
-				</div>
-			{/if}
-			{#if stage.activity}
-				<div
-					class="flex items-center gap-1 rounded-sm px-1 py-0.5 text-[0.6rem] {stage.activity.failed
-						? 'bg-destructive/10 text-destructive'
-						: stage.activity.active
-							? 'bg-sky-500/10 text-sky-700 dark:text-sky-300'
-							: 'bg-muted text-muted-foreground'}"
-					title={stage.activity.message ?? stage.activity.reason ?? stage.activity.activityType}
-				>
-					<Radio class="size-2.5 shrink-0 {stage.activity.active ? 'animate-pulse' : ''}" />
-					<span class="truncate">{stage.activity.phase ?? stage.activity.activityType}</span>
-				</div>
-			{/if}
-			{#if stage.promoterHydratedSha}
-				<div class="truncate font-mono text-[0.6rem] text-muted-foreground" title={stage.promoterHydratedSha}>
-					hydrated {shortSha(stage.promoterHydratedSha)}
+			<!-- Secondary detail: gate (soak) folded with hydrated sha -->
+			{#if stage.gate || stage.promoterHydratedSha}
+				<div class="flex min-w-0 items-center gap-2 text-[0.6rem] text-muted-foreground">
+					{#if stage.gate}
+						<span class="flex min-w-0 items-center gap-1 truncate" title={`${stage.gate.label}${stage.gate.phase ? `: ${stage.gate.phase}` : ""}`}>
+							<TimerReset class="size-3 shrink-0" />{stage.gate.label}{stage.gate.phase ? `: ${stage.gate.phase}` : ""}
+						</span>
+					{/if}
+					{#if stage.promoterHydratedSha}
+						<span class="ml-auto shrink-0 font-mono" title={stage.promoterHydratedSha}>
+							{shortSha(stage.promoterHydratedSha)}
+						</span>
+					{/if}
 				</div>
 			{/if}
 
-			<!-- Updated time (links to the relevant commit) -->
+			<!-- Live-activity signal: tone-coloured event row (shared tone language) -->
+			{#if stage.activity}
+				{@const tone = pipelineActivityTone(stage.activity, nowTick())}
+				{@const tc = toneClasses(tone)}
+				<div
+					class="flex items-center gap-1.5 rounded-md border-l-[3px] px-2 py-1 text-[0.62rem] {tc.border} {tc.bg} {tc.text}"
+					title={`${stage.activity.activityType} · ${relativeTime(stage.activity.observedAt, nowTick())}${stage.activity.message ? ` · ${stage.activity.message}` : ""}`}
+				>
+					{#if tone === "active"}
+						<Radio class="size-2.5 shrink-0 animate-pulse" />
+					{:else}
+						<span class="size-1.5 shrink-0 rounded-full bg-current opacity-70"></span>
+					{/if}
+					<span class="truncate font-medium">{stage.activity.phase ?? stage.activity.activityType}</span>
+					<span class="ml-auto shrink-0 opacity-70">{relativeTime(stage.activity.observedAt, nowTick())}</span>
+				</div>
+			{/if}
+
+			<!-- Footer: updated time pinned to bottom (links to the relevant commit) -->
 			{#if stage.updatedAt}
-				<div class="mt-auto flex items-center gap-1 text-[0.6rem] text-muted-foreground" title={formatAbsoluteTime(stage.updatedAt)}>
-					<Clock3 class="size-2.5" />
+				<div class="mt-auto flex items-center gap-1.5 pt-1 text-[0.6rem] text-muted-foreground" title={formatAbsoluteTime(stage.updatedAt, nowTick())}>
+					<Clock3 class="size-2.5 shrink-0" />
 					{#if timeUrl}
-						<a href={timeUrl} target="_blank" rel="noreferrer" onclick={stop} class="hover:text-primary hover:underline">
-							{relativeTime(stage.updatedAt)}
+						<a href={timeUrl} target="_blank" rel="noreferrer" onclick={stop} class="transition-colors hover:text-primary hover:underline">
+							{relativeTime(stage.updatedAt, nowTick())}
 						</a>
 					{:else}
-						{relativeTime(stage.updatedAt)}
+						{relativeTime(stage.updatedAt, nowTick())}
 					{/if}
 				</div>
 			{/if}

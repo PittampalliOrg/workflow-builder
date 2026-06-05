@@ -97,7 +97,10 @@ export type PipelineActivity = {
 	reason: string | null;
 	message: string | null;
 	observedAt: string;
-	active: boolean;
+	/** Recently-completed SUCCESS (terminal pass). Distinct from failed. The
+	 *  third state, "active" (fresh + in-progress), is derived at render from the
+	 *  shared clock via `pipelineActivityTone` — not baked here. */
+	passing: boolean;
 	failed: boolean;
 };
 

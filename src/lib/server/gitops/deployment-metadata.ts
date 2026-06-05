@@ -47,6 +47,10 @@ type CacheEntry<T> = {
 	value: T;
 };
 
+type DeploymentMetadataOptions = {
+	fresh?: boolean;
+};
+
 let releasePinsCache: CacheEntry<{
 	fetchedAt: string | null;
 	desiredImages: DesiredImageMetadata[];
@@ -63,12 +67,22 @@ const workflowCommitCache = new Map<string, CacheEntry<GitCommitMetadata | null>
 const workflowCommitInflight = new Map<string, Promise<GitCommitMetadata | null>>();
 const pinBlobCache = new Map<string, PinSnapshotSections>();
 
-export async function getDeploymentMetadata(): Promise<DeploymentMetadataResponse> {
+export function invalidateGitOpsDeploymentMetadataCaches(): void {
+	releasePinsCache = null;
+	stacksMainCache = null;
+	pinHistoryCache = null;
+	hubInventoryCache = null;
+	runtimeMetadataCache = null;
+}
+
+export async function getDeploymentMetadata(
+	options: DeploymentMetadataOptions = {},
+): Promise<DeploymentMetadataResponse> {
 	const namespace = await getOwnNamespace();
 	const [gitops, live, inventory] = await Promise.all([
-		loadGitOpsState(),
-		loadLiveState(namespace),
-		loadHubInventory(),
+		loadGitOpsState(options),
+		loadLiveState(namespace, options),
+		loadHubInventory(options),
 	]);
 	const appUrl =
 		readFirstEnv("APP_PUBLIC_URL", "APP_URL", "ORIGIN", "NEXT_PUBLIC_APP_URL") ?? null;
@@ -127,11 +141,13 @@ function readFirstEnvWithName(...names: string[]): { name: string; value: string
 	return null;
 }
 
-async function loadGitOpsState(): Promise<DeploymentMetadataResponse["gitops"]> {
+async function loadGitOpsState(
+	options: DeploymentMetadataOptions,
+): Promise<DeploymentMetadataResponse["gitops"]> {
 	const [releasePins, stacksMain, pinHistory] = await Promise.all([
-		loadReleasePins(),
-		getStacksMain(),
-		loadPinHistory(),
+		loadReleasePins(options),
+		getStacksMain(options),
+		loadPinHistory(DEFAULT_PIN_HISTORY_LIMIT, options),
 	]);
 	return {
 		releasePinsSourceUrl: STACKS_RELEASE_PINS_URL,
@@ -144,7 +160,9 @@ async function loadGitOpsState(): Promise<DeploymentMetadataResponse["gitops"]> 
 	};
 }
 
-async function loadHubInventory(): Promise<DeploymentMetadataResponse["inventory"]> {
+async function loadHubInventory(
+	options: DeploymentMetadataOptions = {},
+): Promise<DeploymentMetadataResponse["inventory"]> {
 	const sourceUrl = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_URL") ?? null;
 	if (!sourceUrl) {
 		return { sourceUrl: null, fetchedAt: null, error: null, data: null };
@@ -152,6 +170,7 @@ async function loadHubInventory(): Promise<DeploymentMetadataResponse["inventory
 
 	const now = Date.now();
 	if (
+		!options.fresh &&
 		hubInventoryCache &&
 		hubInventoryCache.value.sourceUrl === sourceUrl &&
 		hubInventoryCache.expiresAt > now
@@ -271,13 +290,16 @@ function isGitOpsDeploymentInventory(value: unknown): value is GitOpsDeploymentI
 	return typeof body.generatedAt === "string" && Array.isArray(body.environments);
 }
 
-async function loadReleasePins(): Promise<{
+async function loadReleasePins(
+	options?: DeploymentMetadataOptions,
+): Promise<{
 	fetchedAt: string | null;
 	desiredImages: DesiredImageMetadata[];
 	error: string | null;
 }> {
 	const now = Date.now();
-	if (releasePinsCache && releasePinsCache.expiresAt > now) return releasePinsCache.value;
+	if (!options?.fresh && releasePinsCache && releasePinsCache.expiresAt > now)
+		return releasePinsCache.value;
 
 	try {
 		const res = await fetchWithTimeout(STACKS_RELEASE_PINS_URL);
@@ -374,9 +396,11 @@ function normalizeString(value: unknown): string | null {
  */
 export async function loadPinHistory(
 	limit: number = DEFAULT_PIN_HISTORY_LIMIT,
+	options: DeploymentMetadataOptions = {},
 ): Promise<{ imageHistory: ImageVersion[]; error: string | null }> {
 	const now = Date.now();
-	if (pinHistoryCache && pinHistoryCache.expiresAt > now) return pinHistoryCache.value;
+	if (!options.fresh && pinHistoryCache && pinHistoryCache.expiresAt > now)
+		return pinHistoryCache.value;
 
 	try {
 		const res = await fetchWithTimeout(`${STACKS_PIN_COMMITS_URL}&per_page=${limit}`);
@@ -477,9 +501,12 @@ function isLikelyCommitSha(value: string | null | undefined): value is string {
 	return typeof value === "string" && /^[0-9a-f]{7,40}$/i.test(value);
 }
 
-async function getStacksMain(): Promise<GitCommitMetadata | null> {
+async function getStacksMain(
+	options: DeploymentMetadataOptions = {},
+): Promise<GitCommitMetadata | null> {
 	const now = Date.now();
-	if (stacksMainCache && stacksMainCache.expiresAt > now) return stacksMainCache.value;
+	if (!options.fresh && stacksMainCache && stacksMainCache.expiresAt > now)
+		return stacksMainCache.value;
 	try {
 		const res = await fetchWithTimeout(STACKS_MAIN_REF_URL);
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -558,12 +585,15 @@ async function fetchWithTimeout(url: string): Promise<Response> {
 	});
 }
 
-async function loadLiveState(namespace: string): Promise<DeploymentMetadataResponse["live"]> {
+async function loadLiveState(
+	namespace: string,
+	options: DeploymentMetadataOptions = {},
+): Promise<DeploymentMetadataResponse["live"]> {
 	try {
 		const [deployments, pods, pins] = await Promise.all([
 			listDeployments(namespace),
 			listPods(namespace),
-			loadReleasePins(),
+			loadReleasePins(options),
 		]);
 		const desiredByName = new Map(pins.desiredImages.map((image) => [image.name, image]));
 		return {

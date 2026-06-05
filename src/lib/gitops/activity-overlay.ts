@@ -1,3 +1,4 @@
+import { isFailedValue, isPassingValue } from "./activity-tone";
 import { BUNDLE_WAREHOUSE } from "./pipeline-model";
 import type {
 	PipelineActivity,
@@ -7,37 +8,29 @@ import type {
 } from "./pipeline-types";
 import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 
-const ACTIVITY_WINDOW_MS = 30 * 60_000;
-const TERMINAL_PASS = new Set([
-	"succeeded",
-	"success",
-	"successful",
-	"healthy",
-	"synced",
-	"ready",
-	"true",
-]);
-const TERMINAL_FAIL = new Set([
-	"failed",
-	"failure",
-	"false",
-	"degraded",
-	"error",
-	"errored",
-	"cancelled",
-	"canceled",
-	"outofsync",
-]);
+// The 4-way tone scale + class tokens now live in `activity-tone.ts` (one source
+// of truth shared by every surface). Re-exported here so existing importers keep
+// working.
+export { activityEventTone } from "./activity-tone";
 
 type ActivityTarget = {
 	warehouse: string;
 	env: string | null;
 };
 
+export type ActivitySelection = { kind: "stage" | "warehouse" | "subscription"; id: string } | null;
+
+// C3 — short-circuit cache: reuse the prior overlaid stage/warehouse object when
+// neither its base (inventory) object nor its resolved activity changed, so
+// xyflow node `data` keeps a stable reference and unchanged nodes don't re-render.
+type StageCacheEntry = { base: PipelineStage; eventId: string | null; result: PipelineStage };
+type WarehouseCacheEntry = { base: PipelineWarehouse; eventId: string | null; result: PipelineWarehouse };
+const stageCache = new Map<string, StageCacheEntry>();
+const warehouseCache = new Map<string, WarehouseCacheEntry>();
+
 export function applyPipelineActivityOverlay(
 	model: PipelineModel,
 	events: GitOpsActivityEvent[],
-	now = Date.now(),
 ): PipelineModel {
 	if (events.length === 0) return model;
 
@@ -45,9 +38,9 @@ export function applyPipelineActivityOverlay(
 	const warehouseActivity = new Map<string, PipelineActivity>();
 
 	for (const event of events) {
-		const target = targetForEvent(event);
+		const target = targetForEvent(event, model);
 		if (!target) continue;
-		const activity = toPipelineActivity(event, now);
+		const activity = toPipelineActivity(event);
 		if (target.env) {
 			const key = `${target.warehouse}::${target.env}`;
 			const prev = stageActivity.get(key);
@@ -61,25 +54,22 @@ export function applyPipelineActivityOverlay(
 
 	const stages = model.stages.map((stage): PipelineStage => {
 		const activity = stageActivity.get(stage.name) ?? null;
-		if (!activity) return { ...stage, activity: null };
-		return {
-			...stage,
-			activity,
-			health: activity.failed ? "Degraded" : activity.active ? "Progressing" : stage.health,
-			awaitingReconcile: stage.awaitingReconcile || activity.active,
-			updatedAt: activity.observedAt ?? stage.updatedAt,
-		};
+		const eventId = activity?.eventId ?? null;
+		const cached = stageCache.get(stage.name);
+		if (cached && cached.base === stage && cached.eventId === eventId) return cached.result;
+		const result = { ...stage, activity };
+		stageCache.set(stage.name, { base: stage, eventId, result });
+		return result;
 	});
 
 	const warehouses = model.warehouses.map((warehouse): PipelineWarehouse => {
 		const activity = warehouseActivity.get(warehouse.name) ?? null;
-		if (!activity) return { ...warehouse, activity: null };
-		return {
-			...warehouse,
-			activity,
-			reconciling: warehouse.reconciling || activity.active,
-			hasError: warehouse.hasError || activity.failed,
-		};
+		const eventId = activity?.eventId ?? null;
+		const cached = warehouseCache.get(warehouse.name);
+		if (cached && cached.base === warehouse && cached.eventId === eventId) return cached.result;
+		const result = { ...warehouse, activity };
+		warehouseCache.set(warehouse.name, { base: warehouse, eventId, result });
+		return result;
 	});
 
 	return {
@@ -90,7 +80,19 @@ export function applyPipelineActivityOverlay(
 	};
 }
 
-function targetForEvent(event: GitOpsActivityEvent): ActivityTarget | null {
+/**
+ * Warehouse + stage keys an event targets, for the live-flow motion
+ * (`markFlowing`). Returns `[]` when the event doesn't correlate to any node.
+ */
+export function activityTargetKeys(event: GitOpsActivityEvent, model: PipelineModel): string[] {
+	const target = targetForEvent(event, model);
+	if (!target) return [];
+	const keys = [target.warehouse];
+	if (target.env) keys.push(`${target.warehouse}::${target.env}`);
+	return keys;
+}
+
+function targetForEvent(event: GitOpsActivityEvent, model: PipelineModel): ActivityTarget | null {
 	const correlation = event.correlation;
 	const imageName = readString(correlation.imageName);
 	const appName = readString(correlation.argocdApp) ?? event.resourceRef.name;
@@ -99,12 +101,28 @@ function targetForEvent(event: GitOpsActivityEvent): ActivityTarget | null {
 		envFromAppName(appName) ??
 		envFromBranch(readString(correlation.branch));
 
+	// 1. Explicit image name → per-service warehouse.
 	if (imageName) return { warehouse: imageName, env: cluster };
 
-	if (event.source === "promoter" || event.activityType.startsWith("promoter.")) {
-		return { warehouse: BUNDLE_WAREHOUSE, env: cluster ?? "dev" };
+	const isTekton = event.source === "tekton" || event.activityType.startsWith("tekton.");
+	const isPromoter = event.source === "promoter" || event.activityType.startsWith("promoter.");
+
+	// 2. Tekton without imageName → derive from imageRef basename, else gitSha match.
+	if (isTekton) {
+		const fromRef = warehouseFromImageRef(readString(correlation.imageRef));
+		if (fromRef) return { warehouse: fromRef, env: cluster };
+		const fromSha = warehouseFromGitSha(readString(correlation.gitSha), model);
+		if (fromSha) return { warehouse: fromSha, env: cluster };
 	}
 
+	// 3. Promoter → release-pins bundle; env from hydratedSha, then branch/cluster, then dev.
+	if (isPromoter) {
+		const env =
+			envFromHydratedSha(readString(correlation.hydratedSha), model) ?? cluster ?? "dev";
+		return { warehouse: BUNDLE_WAREHOUSE, env };
+	}
+
+	// 4. ArgoCD app name → service stage, else bundle.
 	if (appName) {
 		const parsed = parseAppName(appName);
 		if (parsed) return parsed;
@@ -117,11 +135,9 @@ function targetForEvent(event: GitOpsActivityEvent): ActivityTarget | null {
 	return null;
 }
 
-function toPipelineActivity(event: GitOpsActivityEvent, now: number): PipelineActivity {
-	const failed = isFailed(event.phase) || isFailed(event.reason);
-	const passing = isPassing(event.phase) || isPassing(event.reason);
-	const observed = new Date(event.observedAt).getTime();
-	const fresh = Number.isFinite(observed) && now - observed <= ACTIVITY_WINDOW_MS;
+function toPipelineActivity(event: GitOpsActivityEvent): PipelineActivity {
+	const failed = isFailedValue(event.phase) || isFailedValue(event.reason);
+	const passing = !failed && (isPassingValue(event.phase) || isPassingValue(event.reason));
 	return {
 		eventId: event.eventId,
 		sequence: event.sequence,
@@ -131,9 +147,129 @@ function toPipelineActivity(event: GitOpsActivityEvent, now: number): PipelineAc
 		reason: event.reason,
 		message: event.message,
 		observedAt: event.observedAt,
-		active: fresh && !failed && !passing,
+		// Freshness (`active`) is intentionally NOT baked — it's derived at render
+		// from the shared clock via `pipelineActivityTone`, so the model doesn't
+		// re-derive on every clock tick.
+		passing,
 		failed,
 	};
+}
+
+/**
+ * Strip the GHCR prefix + `@digest` / `:tag` from a full image ref, returning
+ * the repo basename (our warehouse name). `ghcr.io/pittampalliorg/<repo>:tag`
+ * → `<repo>`.
+ */
+export function warehouseFromImageRef(imageRef: string | null): string | null {
+	if (!imageRef) return null;
+	let ref = imageRef.trim();
+	const at = ref.indexOf("@");
+	if (at >= 0) ref = ref.slice(0, at);
+	const slash = ref.lastIndexOf("/");
+	const basename = slash >= 0 ? ref.slice(slash + 1) : ref;
+	const colon = basename.indexOf(":");
+	const repo = colon >= 0 ? basename.slice(0, colon) : basename;
+	return repo.trim() || null;
+}
+
+// C4 — reverse sha→target indices, built once per base model (WeakMap-keyed) so
+// gitSha / hydratedSha fallback correlation is O(1) instead of an O(stages) scan
+// per uncorrelated event.
+type ShaIndices = { gitSha: Map<string, string>; hydrated: Map<string, string> };
+const shaIndexCache = new WeakMap<PipelineModel, ShaIndices>();
+
+function shaPrefix(value: string | null | undefined): string | null {
+	if (!value) return null;
+	const match = value.toLowerCase().match(/[0-9a-f]{7,40}/);
+	return match ? match[0].slice(0, 7) : null;
+}
+
+function shaIndices(model: PipelineModel): ShaIndices {
+	const cached = shaIndexCache.get(model);
+	if (cached) return cached;
+	const gitSha = new Map<string, string>();
+	const hydrated = new Map<string, string>();
+	for (const stage of model.stages) {
+		for (const candidate of [stage.desiredTag, stage.liveTag, stage.commitSha]) {
+			const prefix = shaPrefix(candidate);
+			if (prefix && !gitSha.has(prefix)) gitSha.set(prefix, stage.warehouse);
+		}
+		const hydratedPrefix = shaPrefix(stage.promoterHydratedSha);
+		if (hydratedPrefix && !hydrated.has(hydratedPrefix)) hydrated.set(hydratedPrefix, stage.env);
+	}
+	const indices = { gitSha, hydrated };
+	shaIndexCache.set(model, indices);
+	return indices;
+}
+
+/**
+ * Match a service warehouse whose pinned tag / live tag / commit sha embeds the
+ * given gitSha (7-char prefix, last-resort correlation).
+ */
+export function warehouseFromGitSha(gitSha: string | null, model: PipelineModel): string | null {
+	const short = shaPrefix(gitSha);
+	return short ? (shaIndices(model).gitSha.get(short) ?? null) : null;
+}
+
+/**
+ * Resolve the Promoter env from a hydrated sha that appears in a stage's
+ * promoter hydrated sha (dev only today).
+ */
+function envFromHydratedSha(hydratedSha: string | null, model: PipelineModel): string | null {
+	const short = shaPrefix(hydratedSha);
+	return short ? (shaIndices(model).hydrated.get(short) ?? null) : null;
+}
+
+/**
+ * Whether an event correlates to the given selected stage / warehouse, sharing
+ * `targetForEvent`'s correlation logic so a chip-bearing node also shows
+ * matching history.
+ */
+export function selectionMatchesEvent(
+	event: GitOpsActivityEvent,
+	selection: ActivitySelection,
+	model: PipelineModel,
+): boolean {
+	if (!selection || selection.kind === "subscription") return false;
+	const target = targetForEvent(event, model);
+	if (!target) return false;
+	if (selection.kind === "warehouse") {
+		const name = selection.id.replace(/^warehouse\//, "");
+		return target.warehouse === name;
+	}
+	// stage selection: `stage/<warehouse>::<env>`
+	const id = selection.id.replace(/^stage\//, "");
+	const sep = id.indexOf("::");
+	if (sep < 0) return false;
+	const warehouse = id.slice(0, sep);
+	const env = id.slice(sep + 2);
+	return target.warehouse === warehouse && (target.env === env || target.env === null);
+}
+
+/**
+ * Newest-first, eventId-deduped, capped list of events matching the selection.
+ */
+export function eventsForSelection(
+	events: GitOpsActivityEvent[],
+	selection: ActivitySelection,
+	model: PipelineModel,
+	limit = 25,
+): GitOpsActivityEvent[] {
+	if (!selection || selection.kind === "subscription") return [];
+	const byId = new Map<string, GitOpsActivityEvent>();
+	for (const event of events) {
+		if (selectionMatchesEvent(event, selection, model)) byId.set(event.eventId, event);
+	}
+	return [...byId.values()].sort((a, b) => b.sequence - a.sequence).slice(0, limit);
+}
+
+/**
+ * Display label for an event: the correlation image name when present, then the
+ * resource ref name, then the activity key (centralizes the deleted page-local
+ * `eventTargetLabel`).
+ */
+export function activityEventLabel(event: GitOpsActivityEvent): string {
+	return readString(event.correlation.imageName) ?? event.resourceRef.name ?? event.activityKey;
 }
 
 function parseAppName(name: string | null | undefined): ActivityTarget | null {
@@ -158,14 +294,6 @@ function envFromBranch(branch: string | null): string | null {
 	if (branch.includes("spokes-staging")) return "staging";
 	if (branch.includes("ryzen")) return "ryzen";
 	return null;
-}
-
-function isFailed(value: string | null | undefined): boolean {
-	return value ? TERMINAL_FAIL.has(value.replaceAll(/\s+/g, "").toLowerCase()) : false;
-}
-
-function isPassing(value: string | null | undefined): boolean {
-	return value ? TERMINAL_PASS.has(value.replaceAll(/\s+/g, "").toLowerCase()) : false;
 }
 
 function readString(value: unknown): string | null {

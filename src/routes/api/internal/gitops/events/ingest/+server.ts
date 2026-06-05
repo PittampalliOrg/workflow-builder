@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 
 import { ingestGitOpsActivityEvent } from "$lib/server/gitops/activity-events";
+import { invalidateGitOpsDeploymentMetadataCaches } from "$lib/server/gitops/deployment-metadata";
 import { requireInternal } from "$lib/server/internal-auth";
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -15,5 +16,6 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	const event = await ingestGitOpsActivityEvent(body);
+	invalidateGitOpsDeploymentMetadataCaches();
 	return json({ event }, { status: 202 });
 };

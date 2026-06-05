@@ -1,7 +1,10 @@
 import type { RequestHandler } from "./$types";
 
 import { sql } from "$lib/server/db";
-import { listGitOpsActivityEvents } from "$lib/server/gitops/activity-events";
+import {
+	getLatestGitOpsActivitySequence,
+	listGitOpsActivityEvents,
+} from "$lib/server/gitops/activity-events";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -15,6 +18,9 @@ export const GET: RequestHandler = async ({ locals, request, url }) => {
 		Number.isFinite(lastEventId) && lastEventId >= 0 ? lastEventId : Number.NaN;
 	if (!Number.isFinite(lastSequence) && /^\d+$/.test(sinceParam ?? "")) {
 		lastSequence = Number(sinceParam);
+	}
+	if (!Number.isFinite(lastSequence) && sinceParam === "latest") {
+		lastSequence = await getLatestGitOpsActivitySequence();
 	}
 	if (!Number.isFinite(lastSequence)) lastSequence = 0;
 

@@ -133,7 +133,6 @@
 		{ label: 'Admin: Activities', path: '/admin/activities', icon: Activity, keywords: 'admin dapr' },
 		{ label: 'Admin: GitOps details', path: '/admin/gitops', icon: GitBranch, keywords: 'admin promoter deployments release pins' },
 		{ label: 'Admin: GitOps pipeline', path: '/admin/gitops/system', icon: GitBranch, keywords: 'admin gitops kargo freight pipeline images skaffold ryzen dev outer loop' },
-		{ label: 'Admin: GitOps events', path: '/admin/gitops/events', icon: Activity, keywords: 'admin gitops argo events stream tekton promoter argocd debug' },
 		{ label: 'API keys', path: '/workspaces/default/settings/keys', icon: Key },
 		{ label: 'Limits', path: '/workspaces/default/settings/limits', icon: Gauge },
 		{ label: 'Members', path: '/settings/members', icon: Users },

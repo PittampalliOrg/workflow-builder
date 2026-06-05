@@ -1,7 +1,10 @@
 <script lang="ts">
-	import { Clock3 } from "@lucide/svelte";
+	import { Clock3, Radio } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
+	import { pipelineActivityTone, toneClasses } from "$lib/gitops/activity-tone";
+	import { isFlowing } from "$lib/gitops/gitops-flow.svelte";
+	import { nowTick } from "$lib/gitops/gitops-tick.svelte";
 	import { healthVisual } from "$lib/gitops/kargo-status";
 	import type { PipelineModel, PipelineStage } from "$lib/gitops/pipeline-types";
 	import type { PipelineSelection } from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
@@ -35,6 +38,7 @@
 				<th class="px-3 py-2 font-medium">Pipeline</th>
 				<th class="px-3 py-2 font-medium">Env</th>
 				<th class="px-3 py-2 font-medium">Health</th>
+				<th class="px-3 py-2 font-medium">Event</th>
 				<th class="px-3 py-2 font-medium">Sync</th>
 				<th class="px-3 py-2 font-medium">Version</th>
 				<th class="px-3 py-2 font-medium">Updated</th>
@@ -61,6 +65,21 @@
 							{health.label}
 						</span>
 					</td>
+					<td class="px-3 py-1.5">
+						{#if stage.activity}
+							{@const tone = pipelineActivityTone(stage.activity, nowTick())}
+							{@const tc = toneClasses(tone)}
+							<span
+								class="inline-flex items-center gap-1 rounded-sm border-l-2 px-1.5 py-0.5 text-[0.66rem] {tc.border} {tc.bg} {tc.text} {isFlowing(stage.name) ? 'gitops-flow' : ''}"
+								title={`${stage.activity.activityType} · ${relativeTime(stage.activity.observedAt, nowTick())}${stage.activity.message ? ` · ${stage.activity.message}` : ""}`}
+							>
+								{#if tone === "active"}<Radio class="size-2.5 shrink-0 animate-pulse" />{/if}
+								<span class="truncate">{stage.activity.phase ?? stage.activity.activityType}</span>
+							</span>
+						{:else}
+							<span class="text-muted-foreground">—</span>
+						{/if}
+					</td>
 					<td class="px-3 py-1.5 text-muted-foreground">{stage.syncStatus ?? (stage.dormant ? "dormant" : "—")}</td>
 					<td class="px-3 py-1.5">
 						{#if stage.desiredTag}
@@ -73,7 +92,7 @@
 					</td>
 					<td class="px-3 py-1.5 text-muted-foreground">
 						{#if stage.updatedAt}
-							<span class="flex items-center gap-1"><Clock3 class="size-2.5" />{relativeTime(stage.updatedAt)}</span>
+							<span class="flex items-center gap-1"><Clock3 class="size-2.5" />{relativeTime(stage.updatedAt, nowTick())}</span>
 						{:else}
 							—
 						{/if}
@@ -81,7 +100,7 @@
 				</tr>
 			{/each}
 			{#if rows.length === 0}
-				<tr><td colspan="6" class="px-3 py-6 text-center text-muted-foreground">No stages match the current filter.</td></tr>
+				<tr><td colspan="7" class="px-3 py-6 text-center text-muted-foreground">No stages match the current filter.</td></tr>
 			{/if}
 		</tbody>
 	</table>
