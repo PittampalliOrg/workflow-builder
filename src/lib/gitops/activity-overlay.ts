@@ -101,24 +101,29 @@ function targetForEvent(event: GitOpsActivityEvent, model: PipelineModel): Activ
 		envFromAppName(appName) ??
 		envFromBranch(readString(correlation.branch));
 
-	// 1. Explicit image name → per-service warehouse.
-	if (imageName) return { warehouse: imageName, env: cluster };
-
 	const isTekton = event.source === "tekton" || event.activityType.startsWith("tekton.");
 	const isPromoter = event.source === "promoter" || event.activityType.startsWith("promoter.");
+
+	// 1. Explicit image name → per-service warehouse. Tekton PipelineRuns run in
+	//    ns `tekton-pipelines` (no cluster), but the `github-outer-loop` build IS
+	//    the dev/hub lane's build step (ryzen has no Tekton build — it uses
+	//    commit-pin), so a clusterless Tekton build is attributed to `dev` to light
+	//    the `<svc>::dev` stage, not just the warehouse.
+	if (imageName) return { warehouse: imageName, env: cluster ?? (isTekton ? "dev" : null) };
 
 	// 2. Tekton without imageName → derive from imageRef basename, else gitSha match.
 	if (isTekton) {
 		const fromRef = warehouseFromImageRef(readString(correlation.imageRef));
-		if (fromRef) return { warehouse: fromRef, env: cluster };
+		if (fromRef) return { warehouse: fromRef, env: cluster ?? "dev" };
 		const fromSha = warehouseFromGitSha(readString(correlation.gitSha), model);
-		if (fromSha) return { warehouse: fromSha, env: cluster };
+		if (fromSha) return { warehouse: fromSha, env: cluster ?? "dev" };
 	}
 
-	// 3. Promoter → release-pins bundle; env from hydratedSha, then branch/cluster, then dev.
+	// 3. Promoter → release-pins bundle; env from hydratedSha, then branch/cluster.
+	//    Do NOT default to dev: if env can't be resolved, attach to the bundle
+	//    warehouse only (env: null) rather than silently mis-attributing to dev.
 	if (isPromoter) {
-		const env =
-			envFromHydratedSha(readString(correlation.hydratedSha), model) ?? cluster ?? "dev";
+		const env = envFromHydratedSha(readString(correlation.hydratedSha), model) ?? cluster;
 		return { warehouse: BUNDLE_WAREHOUSE, env };
 	}
 
@@ -188,15 +193,22 @@ function shaIndices(model: PipelineModel): ShaIndices {
 	const cached = shaIndexCache.get(model);
 	if (cached) return cached;
 	const gitSha = new Map<string, string>();
+	const ambiguous = new Set<string>();
 	const hydrated = new Map<string, string>();
 	for (const stage of model.stages) {
 		for (const candidate of [stage.desiredTag, stage.liveTag, stage.commitSha]) {
 			const prefix = shaPrefix(candidate);
-			if (prefix && !gitSha.has(prefix)) gitSha.set(prefix, stage.warehouse);
+			if (!prefix) continue;
+			const existing = gitSha.get(prefix);
+			if (existing === undefined) gitSha.set(prefix, stage.warehouse);
+			// Same prefix on TWO different warehouses (sha collision) → ambiguous;
+			// don't guess. Same warehouse from multiple of its own tags is fine.
+			else if (existing !== stage.warehouse) ambiguous.add(prefix);
 		}
 		const hydratedPrefix = shaPrefix(stage.promoterHydratedSha);
 		if (hydratedPrefix && !hydrated.has(hydratedPrefix)) hydrated.set(hydratedPrefix, stage.env);
 	}
+	for (const prefix of ambiguous) gitSha.delete(prefix);
 	const indices = { gitSha, hydrated };
 	shaIndexCache.set(model, indices);
 	return indices;

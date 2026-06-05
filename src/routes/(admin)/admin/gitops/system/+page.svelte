@@ -116,6 +116,23 @@
 			? `${links.workflowBuilderRepo}/commit/${runningBuildTag.slice(4)}`
 			: null,
 	);
+	// The build badge is THIS UI pod's own image on the CURRENT cluster
+	// (`metadata.live.deployments` is the viewing cluster only) — scope it so it
+	// isn't read as dev's or a global build when the clusters diverge.
+	const currentEnv = $derived(metadata.environment.name ?? "this cluster");
+
+	// Hub-inventory freshness. Dev/staging health/sync/image come from the hub
+	// `gitops-deployment-inventory` snapshot (the viewing cluster can't query other
+	// clusters' live state), so surface its own age + any fetch error — a stale or
+	// degraded snapshot must not silently look authoritative.
+	const inventoryAt = $derived(
+		metadata.inventory.data?.generatedAt ?? metadata.inventory.fetchedAt ?? null,
+	);
+	const inventoryStale = $derived(
+		Boolean(metadata.inventory.error) ||
+			!metadata.inventory.data ||
+			(inventoryAt ? now - Date.parse(inventoryAt) > 90_000 : true),
+	);
 
 	async function refresh(options: { fresh?: boolean } = {}) {
 		loading = true;
@@ -320,19 +337,19 @@
 							href={runningBuildUrl}
 							target="_blank"
 							rel="noreferrer"
-							title="workflow-builder build this UI is running — open commit"
+							title={`${currentEnv} workflow-builder image serving THIS UI pod (the cluster you're viewing) — NOT dev's or a global build · open commit`}
 						>
 							<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem] hover:bg-muted">
-								build <span class="font-mono">{runningBuildShort}</span>
+								{currentEnv} build <span class="font-mono">{runningBuildShort}</span>
 							</Badge>
 						</a>
 					{:else}
 						<Badge
 							variant="outline"
 							class="h-5 px-1.5 text-[0.65rem]"
-							title="workflow-builder build this UI is running"
+							title={`${currentEnv} workflow-builder image serving THIS UI pod (the cluster you're viewing) — NOT dev's or a global build`}
 						>
-							build <span class="font-mono">{runningBuildShort}</span>
+							{currentEnv} build <span class="font-mono">{runningBuildShort}</span>
 						</Badge>
 					{/if}
 				{/if}
@@ -365,6 +382,17 @@
 					stacks/main <span class="font-mono">{stacksShortSha}</span>
 				</a>
 				<span class="text-[0.7rem] text-muted-foreground">Updated {relativeTime(metadata.generatedAt, now)}</span>
+				<span
+					class="inline-flex items-center gap-1 text-[0.7rem] {inventoryStale
+						? 'text-amber-600 dark:text-amber-400'
+						: 'text-muted-foreground'}"
+					title={metadata.inventory.error
+						? `Hub inventory fetch error — dev/staging health, sync & image may be stale: ${metadata.inventory.error}`
+						: "Hub deployment-inventory snapshot age — the source of dev/staging health, sync & image (the viewing cluster can't query other clusters' live state)"}
+				>
+					{#if inventoryStale}<AlertTriangle class="size-3 shrink-0" />{/if}
+					inventory {inventoryAt ? relativeTime(inventoryAt, now) : "unavailable"}
+				</span>
 				<Button
 					variant="outline"
 					size="sm"

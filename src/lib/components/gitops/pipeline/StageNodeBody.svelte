@@ -116,6 +116,18 @@
 							{stage.syncStatus}
 						</span>
 					{/if}
+					{#if stage.source && stage.source !== "inventory"}
+						<span
+							class="rounded px-1 text-[0.55rem] font-medium uppercase tracking-wider {stage.source === 'pin-only'
+								? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+								: 'bg-muted text-muted-foreground'}"
+							title={stage.source === "pin-only"
+								? "Pinned in git but no reconciled hub-inventory data — health/sync are unknown, not confirmed"
+								: "Live pod data only (no hub-inventory snapshot)"}
+						>
+							{stage.source === "pin-only" ? "pinned" : "live-only"}
+						</span>
+					{/if}
 					{#if promo}
 						{@const PIcon = promo.icon}
 						<PIcon

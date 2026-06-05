@@ -6,6 +6,7 @@ import {
 	activityTargetKeys,
 	applyPipelineActivityOverlay,
 	eventsForSelection,
+	warehouseFromGitSha,
 } from "./activity-overlay";
 import { pipelineActivityTone, toneClasses } from "./activity-tone";
 import type { PipelineModel } from "./pipeline-types";
@@ -142,6 +143,52 @@ describe("activityTargetKeys", () => {
 			model,
 		);
 		expect(keys).toEqual([]);
+	});
+
+	it("attributes a clusterless Tekton build to the dev stage (Tekton == dev lane)", () => {
+		const keys = activityTargetKeys(
+			event({
+				source: "tekton",
+				activityType: "tekton.pipelinerun",
+				correlation: { imageName: "workflow-builder" }, // no cluster
+			}),
+			model,
+		);
+		expect(keys).toContain("workflow-builder");
+		expect(keys).toContain("workflow-builder::dev");
+	});
+
+	it("attaches a Promoter event with no resolvable env to the bundle warehouse only (no dev mis-route)", () => {
+		const keys = activityTargetKeys(
+			event({
+				source: "promoter",
+				activityType: "promoter.commitstatus",
+				correlation: { branch: "main" }, // unresolvable env
+			}),
+			model,
+		);
+		expect(keys).toEqual(["release-pins"]);
+		expect(keys).not.toContain("release-pins::dev");
+	});
+});
+
+describe("warehouseFromGitSha", () => {
+	it("resolves an unambiguous sha prefix to its warehouse", () => {
+		// baseModel: workflow-builder::dev pins git-abc1234
+		expect(warehouseFromGitSha("abc1234deadbeef", baseModel())).toBe("workflow-builder");
+	});
+
+	it("returns null when a sha prefix collides across two warehouses (don't guess)", () => {
+		const model = baseModel();
+		const collide = {
+			...model,
+			stages: model.stages.map((s) =>
+				s.warehouse === "release-pins"
+					? { ...s, desiredTag: "git-abc1234", liveTag: "git-abc1234", commitSha: "abc1234" }
+					: s,
+			),
+		};
+		expect(warehouseFromGitSha("abc1234deadbeef", collide)).toBeNull();
 	});
 });
 
