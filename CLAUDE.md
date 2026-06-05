@@ -138,6 +138,10 @@ The delivery system is observable LIVE in the admin UI at `/admin/gitops/system`
 - **Drawer "Delivery" timeline** (`PipelineDrawer.svelte`): inter-step **gaps** (`↓ +1m`), phase **durations** (build, soak), a **`commit→live` lead-time** header, and ONE absolute "live since" on Deploy. A per-row "N mins ago" collapses to one value because the automated outer-loop runs as one sub-minute burst, so durations/gaps carry the signal. **Lane-aware Promote**: dev shows the promoted hydrated sha + soak/gate; ryzen shows "direct to main · no Promoter gate".
 - **Data quirk**: `imageHistory.committedAt` is the *pin*-commit time (from the stacks release-pins git log), so Commit≈Pin and the lead-time anchors on `build.startedAt` (the earliest real event).
 
+**App-wide deployment notifications (toast + sidebar bell).** Beyond the pipeline page, a notification fires on EVERY authenticated page when an image actually replaces a deployment — a component's LIVE image tag changes on a cluster. Surfaces as a svelte-sonner toast (reusing the mounted `<Toaster>`) + a sidebar notification bell (`src/lib/components/chrome/notification-bell.svelte`: unread badge + localStorage history, mark-read/clear). Admin-gated (the inventory/SSE endpoints require it).
+- **Store**: `src/lib/stores/deployment-notifications.svelte.ts` — a singleton runes store started once from the root `+layout.svelte` `onMount` (admin only), `onDestroy`/HMR-disposed. Detection = **inventory-diff** (not the event stream): it baselines each `env:component`'s SET of live image tags from `/api/v1/gitops/deployment-metadata` and fires when a genuinely new tag appears while `Synced`. The gitops SSE stream is a debounced re-check trigger; a 25s poll is the fallback. Toast-spam capped (>3 simultaneous → one summary toast).
+- **Detection gotcha**: `live.images` mid-rollout holds BOTH old+new component tags (coexisting ReplicaSets) and `desired.image` is a full ref WITH a tag, not a repo — so the diff is a tag-SET diff (`current − baseline`), not a single "current tag" (which returns the old tag and never fires).
+
 ## Services Overview
 
 | Service | Port | Role |
