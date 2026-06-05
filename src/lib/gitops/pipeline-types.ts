@@ -38,6 +38,8 @@ export type PipelineWarehouse = {
 	/** Informational runtime/bundle coupling (not enforced DAG edges). */
 	dependedOnBy?: string[];
 	dependsOn?: string[];
+	/** Latest durable event overlay for this warehouse, if any. */
+	activity?: PipelineActivity | null;
 };
 
 export type StageFreightRef = {
@@ -84,6 +86,19 @@ export type StagePromotion = {
 	pullRequest: { url: string | null; state: string | null } | null;
 	/** First pending/failing gate key — what delivery is blocked on. */
 	stalledOn: string | null;
+};
+
+export type PipelineActivity = {
+	eventId: string;
+	sequence: number;
+	source: string;
+	activityType: string;
+	phase: string | null;
+	reason: string | null;
+	message: string | null;
+	observedAt: string;
+	active: boolean;
+	failed: boolean;
 };
 
 export type StageDeliveryMode = "direct-main" | "promoter" | "dormant";
@@ -134,6 +149,8 @@ export type PipelineStage = {
 	 * (staging) stages.
 	 */
 	promotion: StagePromotion | null;
+	/** Latest durable event overlay from the hub Argo Events stream. */
+	activity?: PipelineActivity | null;
 };
 
 export type FreightArtifact =
@@ -150,6 +167,8 @@ export type PipelineFreight = {
 	/** Stage names that currently hold this freight (drives the in-use bars). */
 	inStages: string[];
 	current: boolean;
+	/** Latest durable event overlay for this warehouse, if any. */
+	activity?: PipelineActivity | null;
 };
 
 export type PipelineModel = {

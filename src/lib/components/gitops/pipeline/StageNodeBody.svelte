@@ -6,6 +6,7 @@
 		GitMerge,
 		GitPullRequestArrow,
 		Hourglass,
+		Radio,
 		PauseCircle,
 		TimerReset,
 	} from "@lucide/svelte";
@@ -182,6 +183,19 @@
 				<div class="flex items-center gap-1 text-[0.62rem] text-muted-foreground">
 					<TimerReset class="size-3" />
 					{stage.gate.label}{stage.gate.phase ? `: ${stage.gate.phase}` : ""}
+				</div>
+			{/if}
+			{#if stage.activity}
+				<div
+					class="flex items-center gap-1 rounded-sm px-1 py-0.5 text-[0.6rem] {stage.activity.failed
+						? 'bg-destructive/10 text-destructive'
+						: stage.activity.active
+							? 'bg-sky-500/10 text-sky-700 dark:text-sky-300'
+							: 'bg-muted text-muted-foreground'}"
+					title={stage.activity.message ?? stage.activity.reason ?? stage.activity.activityType}
+				>
+					<Radio class="size-2.5 shrink-0 {stage.activity.active ? 'animate-pulse' : ''}" />
+					<span class="truncate">{stage.activity.phase ?? stage.activity.activityType}</span>
 				</div>
 			{/if}
 			{#if stage.promoterHydratedSha}

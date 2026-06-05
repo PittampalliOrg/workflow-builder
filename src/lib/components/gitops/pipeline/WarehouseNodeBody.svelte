@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from "svelte";
-	import { Boxes, CircleAlert, ExternalLink, LoaderCircle, Warehouse } from "@lucide/svelte";
+	import { Boxes, CircleAlert, ExternalLink, LoaderCircle, Radio, Warehouse } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { PIPELINE_HOVER_CONTEXT, type PipelineHoverContext } from "$lib/gitops/pipeline-layout";
@@ -40,6 +40,13 @@
 			</span>
 			{#if warehouse.hasError}
 				<CircleAlert class="size-3 shrink-0 text-destructive" />
+			{/if}
+			{#if warehouse.activity}
+				<Radio
+					class="size-3 shrink-0 {warehouse.activity.active ? 'animate-pulse' : ''} {warehouse.activity.failed
+						? 'text-destructive'
+						: 'text-sky-600 dark:text-sky-300'}"
+				/>
 			{/if}
 		</div>
 		<ExternalLink class="size-3 shrink-0 text-muted-foreground" />

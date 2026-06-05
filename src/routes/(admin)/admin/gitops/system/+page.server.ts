@@ -1,6 +1,7 @@
 import { env } from "$env/dynamic/public";
 
 import { DEFAULT_HEADLAMP_URL } from "$lib/headlamp/links";
+import { listGitOpsActivityEvents } from "$lib/server/gitops/activity-events";
 import { getDeploymentMetadata } from "$lib/server/gitops/deployment-metadata";
 import { getPromotionStrategies } from "$lib/server/promoter";
 
@@ -22,9 +23,10 @@ export type GitopsSystemPageLinks = {
 };
 
 export const load: PageServerLoad = async () => {
-	const [initial, promotions] = await Promise.all([
+	const [initial, promotions, activityEvents] = await Promise.all([
 		getDeploymentMetadata(),
 		getPromotionStrategies(),
+		listGitOpsActivityEvents({ limit: 200 }),
 	]);
 	const tektonBase =
 		env.PUBLIC_TEKTON_DASHBOARD_URL?.trim() ||
@@ -53,6 +55,7 @@ export const load: PageServerLoad = async () => {
 	return {
 		initial,
 		promotions,
+		activityEvents,
 		links,
 	};
 };

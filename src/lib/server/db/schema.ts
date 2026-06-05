@@ -2913,6 +2913,16 @@ export type EnvironmentBuildActivityEventType =
 	| "digest_captured"
 	| "build_succeeded"
 	| "build_failed";
+export type GitOpsActivitySource = "tekton" | "promoter" | "argocd" | "kubernetes";
+export type GitOpsActivityType =
+	| "tekton.pipelinerun"
+	| "tekton.taskrun"
+	| "promoter.promotionstrategy"
+	| "promoter.changetransferpolicy"
+	| "promoter.pullrequest"
+	| "promoter.commitstatus"
+	| "argocd.application"
+	| "kubernetes.resource";
 export type EnvironmentImageBuildStrategy =
 	| "swebench-harness"
 	| "buildpacks"
@@ -3442,6 +3452,49 @@ export const environmentBuildActivityEvents = pgTable(
 			table.pipelineRunNamespace,
 			table.pipelineRunName,
 		),
+	}),
+);
+
+export const gitopsActivityEvents = pgTable(
+	"gitops_activity_events",
+	{
+		eventId: text("event_id").primaryKey(),
+		sequence: serial("sequence").notNull(),
+		source: text("source").notNull().$type<GitOpsActivitySource | string>(),
+		activityKey: text("activity_key").notNull(),
+		activityType: text("activity_type").notNull().$type<GitOpsActivityType | string>(),
+		phase: text("phase"),
+		reason: text("reason"),
+		message: text("message"),
+		resourceGroup: text("resource_group"),
+		resourceVersion: text("resource_version"),
+		resourceResource: text("resource_resource"),
+		resourceKind: text("resource_kind"),
+		resourceNamespace: text("resource_namespace"),
+		resourceName: text("resource_name"),
+		resourceUid: text("resource_uid"),
+		observedAt: timestamp("observed_at").notNull(),
+		correlation: jsonb("correlation")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
+		raw: jsonb("raw").$type<Record<string, unknown>>().notNull().default({}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		sequenceUnique: unique("uq_gitops_activity_events_sequence").on(table.sequence),
+		activityKeyIdx: index("idx_gitops_activity_events_activity_key").on(
+			table.activityKey,
+			table.observedAt,
+		),
+		resourceIdx: index("idx_gitops_activity_events_resource").on(
+			table.resourceKind,
+			table.resourceNamespace,
+			table.resourceName,
+		),
+		observedAtIdx: index("idx_gitops_activity_events_observed_at").on(table.observedAt),
+		sourceIdx: index("idx_gitops_activity_events_source").on(table.source),
 	}),
 );
 

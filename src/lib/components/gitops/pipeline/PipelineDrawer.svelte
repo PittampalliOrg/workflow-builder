@@ -6,6 +6,7 @@
 		ExternalLink,
 		GitBranch,
 		GitPullRequestArrow,
+		Radio,
 		TimerReset,
 		Warehouse,
 	} from "@lucide/svelte";
@@ -227,6 +228,32 @@
 					{:else if stage.awaitingReconcile}
 						<div class="rounded-md border border-dashed p-2 text-[0.62rem] text-muted-foreground">
 							Pinned / sourced but no reconciled inventory evidence yet — awaiting reconcile.
+						</div>
+					{/if}
+
+					{#if stage.activity}
+						<div
+							class="space-y-1 rounded-md border p-2 {stage.activity.failed
+								? 'border-destructive/40 bg-destructive/5'
+								: stage.activity.active
+									? 'border-sky-400/50 bg-sky-50/70 dark:bg-sky-950/20'
+									: 'border-border'}"
+						>
+							<div class="flex items-center justify-between gap-2">
+								<span class="flex min-w-0 items-center gap-1 font-medium">
+									<Radio class="size-3 {stage.activity.active ? 'animate-pulse' : ''}" />
+									<span class="truncate">{stage.activity.activityType}</span>
+								</span>
+								<span class="shrink-0 font-mono text-[0.58rem] text-muted-foreground">
+									{relativeTime(stage.activity.observedAt)}
+								</span>
+							</div>
+							<div class="text-[0.62rem] text-muted-foreground">
+								{stage.activity.phase ?? "event"}{stage.activity.reason ? ` · ${stage.activity.reason}` : ""}
+							</div>
+							{#if stage.activity.message}
+								<div class="text-[0.62rem] text-muted-foreground">{stage.activity.message}</div>
+							{/if}
 						</div>
 					{/if}
 
