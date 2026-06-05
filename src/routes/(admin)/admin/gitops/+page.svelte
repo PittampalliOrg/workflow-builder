@@ -6,7 +6,6 @@
 		Inbox as InboxIcon,
 		History,
 		Layers,
-		Radio,
 		RefreshCw,
 		Workflow,
 	} from "@lucide/svelte";
@@ -25,7 +24,13 @@
 		buildServiceMatrix,
 		summarizeMatrix,
 	} from "$lib/gitops/service-matrix";
+	import {
+		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
+		gitOpsDeploymentMetadataUrl,
+		shouldRefreshGitOpsMetadata,
+	} from "$lib/gitops/event-driven-refresh";
 	import type { DeploymentMetadataResponse } from "$lib/types/deployment-metadata";
+	import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 	import { relativeTime } from "$lib/utils/gitops-display";
 
 	import type { PageData } from "./$types";
@@ -54,6 +59,9 @@
 	let errorMessage = $state<string | null>(null);
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let clockTimer: ReturnType<typeof setInterval> | null = null;
+	let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	let activityEventSource: EventSource | null = null;
+	let activityReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let now = $state<number>(Date.now());
 
 	let tab = $state<TabId>(initialTab);
@@ -82,11 +90,11 @@
 		});
 	}
 
-	async function refresh() {
+	async function refresh(options: { fresh?: boolean } = {}) {
 		loading = true;
 		try {
 			const [metaRes, promoRes] = await Promise.all([
-				fetch("/api/v1/gitops/deployment-metadata"),
+				fetch(gitOpsDeploymentMetadataUrl(options)),
 				fetch("/api/v1/gitops/promotions"),
 			]);
 			if (!metaRes.ok) throw new Error(`metadata: ${metaRes.status} ${metaRes.statusText}`);
@@ -108,13 +116,70 @@
 	}
 
 	onMount(() => {
-		timer = setInterval(() => void refresh(), 15_000);
+		startFallbackPolling();
 		clockTimer = setInterval(() => (now = Date.now()), 30_000);
+		connectActivityStream();
 	});
 	onDestroy(() => {
-		if (timer) clearInterval(timer);
+		stopFallbackPolling();
 		if (clockTimer) clearInterval(clockTimer);
+		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+		closeActivityStream();
+		if (activityReconnectTimer) clearTimeout(activityReconnectTimer);
 	});
+
+	function startFallbackPolling() {
+		if (!timer) timer = setInterval(() => void refresh(), 15_000);
+	}
+
+	function stopFallbackPolling() {
+		if (timer) clearInterval(timer);
+		timer = null;
+	}
+
+	function scheduleEventRefresh(event: GitOpsActivityEvent) {
+		if (!shouldRefreshGitOpsMetadata(event)) return;
+		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+		eventRefreshTimer = setTimeout(() => {
+			eventRefreshTimer = null;
+			void refresh({ fresh: true });
+		}, GITOPS_EVENT_REFRESH_DEBOUNCE_MS);
+	}
+
+	function closeActivityStream() {
+		activityEventSource?.close();
+		activityEventSource = null;
+	}
+
+	function connectActivityStream() {
+		closeActivityStream();
+		if (activityReconnectTimer) {
+			clearTimeout(activityReconnectTimer);
+			activityReconnectTimer = null;
+		}
+		const es = new EventSource("/api/v1/gitops/events/stream?since=latest");
+		activityEventSource = es;
+		es.onopen = () => {
+			stopFallbackPolling();
+		};
+		es.addEventListener("gitops.event", (event) => {
+			try {
+				scheduleEventRefresh(JSON.parse((event as MessageEvent<string>).data) as GitOpsActivityEvent);
+			} catch {
+				/* keep the fallback poll responsible for recovery */
+			}
+		});
+		es.onerror = () => {
+			es.close();
+			startFallbackPolling();
+			if (!activityReconnectTimer) {
+				activityReconnectTimer = setTimeout(() => {
+					activityReconnectTimer = null;
+					connectActivityStream();
+				}, 5_000);
+			}
+		};
+	}
 
 	const envLabel = $derived(metadata.environment.name ?? "unknown");
 	const stacksShortSha = $derived(metadata.gitops.stacksMain?.shortSha ?? "—");
@@ -237,10 +302,6 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-2">
-				<Button variant="outline" size="sm" href="/admin/gitops/events" class="h-7">
-					<Radio class="size-3.5" />
-					Events
-				</Button>
 				{#if stacksUrl}
 					<a
 						class="flex items-center gap-1 text-[0.7rem] text-muted-foreground hover:text-foreground"
@@ -255,7 +316,13 @@
 				<span class="text-[0.7rem] text-muted-foreground">
 					Updated {relativeTime(metadata.generatedAt)}
 				</span>
-				<Button variant="outline" size="sm" onclick={refresh} disabled={loading} class="h-7">
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={() => void refresh({ fresh: true })}
+					disabled={loading}
+					class="h-7"
+				>
 					{#if loading}
 						<RefreshCw class="size-3.5 animate-spin" />
 					{:else}

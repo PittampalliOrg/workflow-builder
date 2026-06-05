@@ -9,7 +9,7 @@ import {
 	getDeploymentMetadata,
 } from "$lib/server/gitops/deployment-metadata";
 
-export const GET: RequestHandler = async ({ locals }) => {
+export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	if (!db) return error(500, "Database not configured");
 
@@ -20,6 +20,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		.limit(1);
 	if (user?.platformRole !== "ADMIN") return error(403, "Admin access required");
 
-	const metadata = await enrichLiveCommits(await getDeploymentMetadata());
+	const fresh = url.searchParams.get("fresh") === "1" || url.searchParams.get("fresh") === "true";
+	const metadata = await enrichLiveCommits(await getDeploymentMetadata({ fresh }));
 	return json(metadata);
 };

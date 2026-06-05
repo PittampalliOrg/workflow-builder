@@ -21,6 +21,11 @@
 		TableHeader,
 		TableRow
 	} from '$lib/components/ui/table';
+	import {
+		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
+		gitOpsDeploymentMetadataUrl,
+		shouldRefreshGitOpsMetadata
+	} from '$lib/gitops/event-driven-refresh';
 	import type {
 		DeploymentMetadataResponse,
 		GitOpsInventoryApplication,
@@ -28,6 +33,7 @@
 		LiveContainerMetadata,
 		LiveDeploymentMetadata
 	} from '$lib/types/deployment-metadata';
+	import type { GitOpsActivityEvent } from '$lib/types/gitops-activity';
 
 	type LiveRow = LiveContainerMetadata & {
 		deployment: LiveDeploymentMetadata;
@@ -41,6 +47,9 @@
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 	let timer: ReturnType<typeof setInterval> | null = null;
+	let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	let activityEventSource: EventSource | null = null;
+	let activityReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let filter = $state<'all' | 'tracked' | 'drift' | 'untracked'>('all');
 
 	const releasePinApplies = $derived(
@@ -80,10 +89,10 @@
 		pending: inventoryRows.filter((row) => row.application.drift.status === 'pending_rollout').length
 	});
 
-	async function refresh() {
+	async function refresh(options: { fresh?: boolean } = {}) {
 		loading = true;
 		try {
-			const res = await fetch('/api/v1/gitops/deployment-metadata');
+			const res = await fetch(gitOpsDeploymentMetadataUrl(options));
 			if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 			metadata = (await res.json()) as DeploymentMetadataResponse;
 			const errors = [
@@ -101,12 +110,69 @@
 
 	onMount(() => {
 		void refresh();
-		timer = setInterval(() => void refresh(), 15_000);
+		startFallbackPolling();
+		connectActivityStream();
 	});
 
 	onDestroy(() => {
-		if (timer) clearInterval(timer);
+		stopFallbackPolling();
+		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+		closeActivityStream();
+		if (activityReconnectTimer) clearTimeout(activityReconnectTimer);
 	});
+
+	function startFallbackPolling() {
+		if (!timer) timer = setInterval(() => void refresh(), 15_000);
+	}
+
+	function stopFallbackPolling() {
+		if (timer) clearInterval(timer);
+		timer = null;
+	}
+
+	function scheduleEventRefresh(event: GitOpsActivityEvent) {
+		if (!shouldRefreshGitOpsMetadata(event)) return;
+		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+		eventRefreshTimer = setTimeout(() => {
+			eventRefreshTimer = null;
+			void refresh({ fresh: true });
+		}, GITOPS_EVENT_REFRESH_DEBOUNCE_MS);
+	}
+
+	function closeActivityStream() {
+		activityEventSource?.close();
+		activityEventSource = null;
+	}
+
+	function connectActivityStream() {
+		closeActivityStream();
+		if (activityReconnectTimer) {
+			clearTimeout(activityReconnectTimer);
+			activityReconnectTimer = null;
+		}
+		const es = new EventSource('/api/v1/gitops/events/stream?since=latest');
+		activityEventSource = es;
+		es.onopen = () => {
+			stopFallbackPolling();
+		};
+		es.addEventListener('gitops.event', (event) => {
+			try {
+				scheduleEventRefresh(JSON.parse((event as MessageEvent<string>).data) as GitOpsActivityEvent);
+			} catch {
+				/* keep the fallback poll responsible for recovery */
+			}
+		});
+		es.onerror = () => {
+			es.close();
+			startFallbackPolling();
+			if (!activityReconnectTimer) {
+				activityReconnectTimer = setTimeout(() => {
+					activityReconnectTimer = null;
+					connectActivityStream();
+				}, 5_000);
+			}
+		};
+	}
 
 	function shortSha(sha: string | null | undefined): string {
 		return sha ? sha.slice(0, 8) : '—';
@@ -241,7 +307,7 @@
 					{/if}
 				</div>
 			</div>
-			<Button variant="outline" onclick={refresh} disabled={loading}>
+			<Button variant="outline" onclick={() => void refresh({ fresh: true })} disabled={loading}>
 				{#if loading}
 					<RefreshCw class="size-4 animate-spin" />
 				{:else}

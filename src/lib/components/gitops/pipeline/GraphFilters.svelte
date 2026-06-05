@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, List, ListFilter, Network, Search, Settings2, X } from "@lucide/svelte";
+	import { Bug, Check, List, ListFilter, Network, Search, Settings2, X } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
@@ -26,6 +26,8 @@
 			key: "showSubscriptions" | "showMinimap" | "stepEdges" | "groupLanes",
 			value: boolean,
 		) => void;
+		debug: boolean;
+		onDebugToggle: (value: boolean) => void;
 	};
 	let {
 		model,
@@ -40,6 +42,8 @@
 		onStageSearch,
 		onView,
 		onToggle,
+		debug,
+		onDebugToggle,
 	}: Props = $props();
 
 	const label = $derived(
@@ -164,6 +168,14 @@
 			<label class="flex items-center justify-between gap-2 px-1 py-1.5 text-xs">
 				<span>Step edges</span>
 				<Switch checked={stepEdges} onCheckedChange={(v) => onToggle("stepEdges", v)} />
+			</label>
+			<div class="my-1 border-t"></div>
+			<label class="flex items-center justify-between gap-2 px-1 py-1.5 text-xs">
+				<span class="flex items-center gap-1.5">
+					<Bug class="size-3.5 text-muted-foreground" />
+					Debug mode
+				</span>
+				<Switch checked={debug} onCheckedChange={onDebugToggle} />
 			</label>
 		</Popover.Content>
 	</Popover.Root>

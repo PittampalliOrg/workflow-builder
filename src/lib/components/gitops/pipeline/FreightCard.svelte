@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Boxes, Clock3, Container, GitBranch, Warehouse } from "@lucide/svelte";
 
+	import { nowTick } from "$lib/gitops/gitops-tick.svelte";
 	import type { PipelineFreight, PipelineModel } from "$lib/gitops/pipeline-types";
 	import { formatAbsoluteTime, relativeTime, shortDigest, shortSha, shortTag } from "$lib/utils/gitops-display";
 
@@ -72,8 +73,8 @@
 	</div>
 
 	{#if freight.createdAt}
-		<div class="mt-auto flex items-center gap-1 text-[0.55rem] text-muted-foreground" title={formatAbsoluteTime(freight.createdAt)}>
-			<Clock3 class="size-2.5" />{relativeTime(freight.createdAt)}
+		<div class="mt-auto flex items-center gap-1 text-[0.55rem] text-muted-foreground" title={formatAbsoluteTime(freight.createdAt, nowTick())}>
+			<Clock3 class="size-2.5" />{relativeTime(freight.createdAt, nowTick())}
 		</div>
 	{/if}
 </button>

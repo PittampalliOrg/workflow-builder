@@ -185,6 +185,16 @@ export async function listGitOpsActivityEvents(
 	return rows.map(rowToEvent);
 }
 
+export async function getLatestGitOpsActivitySequence(): Promise<number> {
+	const database = requireDb();
+	const [row] = await database
+		.select({ sequence: gitopsActivityEvents.sequence })
+		.from(gitopsActivityEvents)
+		.orderBy(desc(gitopsActivityEvents.sequence))
+		.limit(1);
+	return row?.sequence ?? 0;
+}
+
 export function rowToEvent(row: typeof gitopsActivityEvents.$inferSelect): GitOpsActivityEvent {
 	return {
 		eventId: row.eventId,
