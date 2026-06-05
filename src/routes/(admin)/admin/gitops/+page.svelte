@@ -6,6 +6,7 @@
 		Inbox as InboxIcon,
 		History,
 		Layers,
+		Radio,
 		RefreshCw,
 		Workflow,
 	} from "@lucide/svelte";
@@ -236,6 +237,10 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-2">
+				<Button variant="outline" size="sm" href="/admin/gitops/events" class="h-7">
+					<Radio class="size-3.5" />
+					Events
+				</Button>
 				{#if stacksUrl}
 					<a
 						class="flex items-center gap-1 text-[0.7rem] text-muted-foreground hover:text-foreground"

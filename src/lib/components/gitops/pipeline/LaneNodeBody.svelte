@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from "svelte";
-	import { Boxes, Warehouse } from "@lucide/svelte";
+	import { Boxes, Radio, Warehouse } from "@lucide/svelte";
 
 	import { healthVisual } from "$lib/gitops/kargo-status";
 	import { PIPELINE_HOVER_CONTEXT, type PipelineHoverContext } from "$lib/gitops/pipeline-layout";
@@ -38,6 +38,13 @@
 	<div class="flex items-center gap-1.5 border-b px-3 py-1.5" style={color ? `background:${color}1a` : ""}>
 		{#if isBundle}<Boxes class="size-3.5 shrink-0" />{:else}<Warehouse class="size-3.5 shrink-0" />{/if}
 		<span class="truncate text-xs font-semibold" title={name}>{name}</span>
+		{#if warehouse?.activity}
+			<Radio
+				class="size-3 shrink-0 {warehouse.activity.active ? 'animate-pulse' : ''} {warehouse.activity.failed
+					? 'text-destructive'
+					: 'text-sky-600 dark:text-sky-300'}"
+			/>
+		{/if}
 		<span class="ml-auto shrink-0 text-[0.58rem] text-muted-foreground">{stages.length} env</span>
 	</div>
 	<div class="flex flex-1 flex-col divide-y">
