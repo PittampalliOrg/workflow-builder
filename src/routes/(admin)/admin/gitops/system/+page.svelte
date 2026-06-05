@@ -102,9 +102,6 @@
 
 	// The workflow-builder build this UI is itself running (from the live
 	// deployment on the current cluster) — a GitOps page should show its own version.
-	// This `build <sha>` badge is the per-cluster GitOps-delivered image tag, so it
-	// doubles as the end-to-end delivery marker: ryzen (Skaffold commit-pin lane)
-	// and dev (hub auto-build → Promoter lane) each render the SHA they were rolled.
 	const runningBuildTag = $derived.by(
 		() =>
 			metadata.live.deployments
