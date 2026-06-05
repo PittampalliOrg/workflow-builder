@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import '@xyflow/svelte/dist/style.css';
-	import { setContext, onMount } from 'svelte';
+	import { setContext, onMount, onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
 	import { createUiStore } from '$lib/stores/ui.svelte';
@@ -11,6 +11,7 @@
 	import GlobalPalette from '$lib/components/cmdk/global-palette.svelte';
 	import FeedbackWidget from '$lib/components/chrome/feedback-widget.svelte';
 	import { Toaster } from '$lib/components/ui/sonner';
+	import { deploymentNotifications } from '$lib/stores/deployment-notifications.svelte';
 
 	let { children, data } = $props();
 
@@ -69,7 +70,18 @@
 			(window as Window & { __wsFetchPatched?: boolean }).__wsFetchPatched =
 				true;
 		}
+
+		// App-wide GitOps deployment notifications (toast + sidebar bell). The
+		// inventory/SSE endpoints are platform-admin only, so only start for
+		// admins; for everyone else this is a no-op.
+		if (data.platformRole === 'ADMIN') {
+			deploymentNotifications.start();
+		}
 	});
+
+	// The root layout only unmounts on full teardown (logout / tab close); stop
+	// the watcher so its timers + EventSource don't linger.
+	onDestroy(() => deploymentNotifications.stop());
 
 	function handleGlobalKeydown(e: KeyboardEvent) {
 		const mod = e.metaKey || e.ctrlKey;
