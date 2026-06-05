@@ -7,21 +7,21 @@ RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9
 
 # Copy package files
 COPY services/function-router/package.json ./
 
-# Install dependencies. The bundled build does not need package postinstall
-# scripts, and pnpm v10 fails the build when they are not pre-approved.
-RUN pnpm install --prod=false --ignore-scripts
+# Install dependencies. Pinned pnpm@9 (like mcp-gateway) has no build-script
+# approval gate, so esbuild/protobufjs postinstall scripts run normally.
+RUN pnpm install --prod=false
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9
 
 # Copy deps from previous stage
 COPY --from=deps /app/node_modules ./node_modules
