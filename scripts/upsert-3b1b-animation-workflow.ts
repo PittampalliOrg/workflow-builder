@@ -33,7 +33,7 @@
  *   DATABASE_URL=... node scripts/upsert-3b1b-animation-workflow.ts
  *   DATABASE_URL=... node scripts/upsert-3b1b-animation-workflow.ts \
  *     --user-email vinod@pittampalli.com \
- *     --agent-id agnt_deepseek_v4_pro_swe_smoke --agent-version 3
+ *     --agent-id agnt_claude_code_sdk_smoke --agent-version 1
  */
 
 import postgres from "postgres";
@@ -56,8 +56,8 @@ interface ParsedArgs {
 
 function parseArgs(argv: string[]): ParsedArgs {
   let userEmail = "";
-  let agentId = "agnt_deepseek_v4_pro_swe_smoke";
-  let agentVersion = 3;
+  let agentId = "agnt_claude_code_sdk_smoke";
+  let agentVersion = 1;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--user-email") {
       userEmail = String(argv[i + 1] || "").trim();

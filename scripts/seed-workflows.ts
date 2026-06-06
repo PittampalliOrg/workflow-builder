@@ -68,9 +68,9 @@ const THREE_B_ONE_B_WORKFLOW_DESCRIPTION =
 	"Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
 const THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
 const THREE_B_ONE_B_DEFAULT_AGENT_ID =
-	process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_deepseek_v4_pro_swe_smoke";
+	process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_claude_code_sdk_smoke";
 const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
-	process.env.SEED_3B1B_AGENT_VERSION?.trim() || "3",
+	process.env.SEED_3B1B_AGENT_VERSION?.trim() || "1",
 );
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
