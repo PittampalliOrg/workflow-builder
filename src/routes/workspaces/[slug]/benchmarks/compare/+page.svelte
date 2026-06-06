@@ -11,6 +11,7 @@
 	import MetricRegressionStrip from '$lib/components/benchmarks/metric-regression-strip.svelte';
 	import LaunchRunSheet from '$lib/components/benchmarks/launch-run-sheet.svelte';
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
+	import { isBenchmarkAgentRuntime } from '$lib/benchmarks/agent-runtimes';
 	import { isActiveRunStatus } from '$lib/components/benchmarks/run-status-helpers';
 	import type { AxisName, RunConfigSummary } from '$lib/server/benchmarks/comparison';
 	import type { PageData } from './$types';
@@ -84,7 +85,7 @@
 				launcherAgents = (body.agents ?? [])
 					.filter(
 						(a) =>
-							(a.runtime === 'dapr-agent-py' || a.runtime === 'adk-agent-py') &&
+							isBenchmarkAgentRuntime(a.runtime) &&
 							a.registryStatus === 'registered' &&
 							typeof a.currentVersion === 'number'
 					)

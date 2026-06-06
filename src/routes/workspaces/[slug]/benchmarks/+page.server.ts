@@ -20,6 +20,7 @@ import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import { benchmarkExecutionBackend } from "$lib/server/benchmarks/execution-plane";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
 import { agentModelOptionFor } from "$lib/agents/model-options";
+import { BENCHMARK_AGENT_RUNTIMES } from "$lib/benchmarks/agent-runtimes";
 import type { AgentConfig } from "$lib/types/agents";
 import type {
 	BenchmarkInstanceRow,
@@ -125,7 +126,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					and(
 						eq(agents.projectId, projectId),
 						eq(agents.isArchived, false),
-						inArray(agents.runtime, ["dapr-agent-py", "adk-agent-py"]),
+						inArray(agents.runtime, [...BENCHMARK_AGENT_RUNTIMES]),
 						eq(agents.registryStatus, "registered"),
 						sql`NOT (${agents.tags} @> '["workflow-ephemeral"]'::jsonb)`,
 					),

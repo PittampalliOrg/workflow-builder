@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+	BENCHMARK_AGENT_RUNTIMES,
+	isBenchmarkAgentRuntime,
+} from "$lib/benchmarks/agent-runtimes";
 import { assertDaprAgentPyBenchmarkAgent } from "./agents";
 
 const baseAgent = {
@@ -14,6 +18,16 @@ const baseAgent = {
 };
 
 describe("benchmark agent validation", () => {
+	it("keeps the SWE-bench runtime allow-list shared with launch surfaces", () => {
+		expect(BENCHMARK_AGENT_RUNTIMES).toEqual([
+			"dapr-agent-py",
+			"adk-agent-py",
+			"claude-agent-py",
+		]);
+		expect(isBenchmarkAgentRuntime("claude-agent-py")).toBe(true);
+		expect(isBenchmarkAgentRuntime("browser-use-agent")).toBe(false);
+	});
+
 	it("accepts a published dapr-agent-py agent runtime", () => {
 		const valid = assertDaprAgentPyBenchmarkAgent(baseAgent);
 		expect(valid.runtimeAppId).toBe("agent-runtime-solver");
@@ -144,7 +158,7 @@ describe("benchmark agent validation", () => {
 		).toBe("agent-runtime-solver");
 	});
 
-	it("rejects non-dapr-agent-py runtimes", () => {
+	it("rejects unsupported durable runtimes", () => {
 		expect(() =>
 			assertDaprAgentPyBenchmarkAgent({
 				...baseAgent,
