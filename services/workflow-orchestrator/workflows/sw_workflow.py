@@ -982,121 +982,29 @@ _REMOVED_AGENT_ACTION_TYPES = {
     "durable/plan",
 }
 
-_NATIVE_DURABLE_AGENT_TARGETS = {
-    "dapr-agent-py": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.DAPR_AGENT_PY_APP_ID,
-        "instance_prefix": "durable",
-    },
-    "dapr-agent-py-testing": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.DAPR_AGENT_PY_TESTING_APP_ID,
-        "instance_prefix": "durable-testing",
-    },
-    "browser-use-agent": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.BROWSER_USE_AGENT_APP_ID,
-        "instance_prefix": "durable-browser-use",
-    },
-    # adk-agent-py registers its outer workflow under the well-known name
-    # `session_workflow` (see services/adk-agent-py/src/runner/compose.py:
-    # register_session_workflow). That matches DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
-    # since both runtimes share the orchestrator-facing contract. The actual
-    # Diagrid-managed `agent_workflow` registers as `dapr.adk.<TitleCase>.workflow`
-    # internally — only the outer `session_workflow` is invoked from the
-    # orchestrator.
-    "adk-agent-py": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.ADK_AGENT_PY_APP_ID,
-        "instance_prefix": "durable-adk",
-    },
-    "claude-agent-py": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.CLAUDE_AGENT_PY_APP_ID,
-        "instance_prefix": "durable-claude",
-    },
-}
-
-
 def _resolve_native_agent_runtime(
     flattened_args: dict[str, Any],
     agent_config: dict[str, Any] | None,
 ) -> tuple[str, dict[str, str]]:
-    """Resolve the Dapr app-id + child workflow name to dispatch a durable/run.
+    """Resolve the durable/run dispatch target (runtime name + target dict).
 
-    Runtime routing plan: the resolver stamps `agentAppId` (e.g.
-    `agent-runtime-<slug>` or `agent-runtime-pool-<class>`) into the body,
-    derived from agents.runtime_app_id and runtime-class pool settings.
-    When present, it takes precedence over the legacy `agentRuntime` enum
-    (`dapr-agent-py` | `dapr-agent-py-testing`). Legacy enum stays supported
-    through the rollout window; unrecognized runtimes default to
-    agent-runtime-<slug> if agentSlug is known, else hard-fail.
+    Thin shim over the declarative runtime registry (``core.runtime_registry``),
+    the single source of truth for runtime identity + capabilities. The
+    registry's ``resolve()`` reproduces the historical precedence EXACTLY:
+    ``agentAppId`` (a per-agent ``agent-runtime-<slug>`` / pool pod) >
+    legacy ``agentRuntime``/``runtime`` enum (default ``dapr-agent-py``) >
+    ``agentSlug``-derived ``agent-runtime-<slug>`` > hard-fail.
+
+    Returns the legacy-compatible ``(name, target)`` tuple. ``target`` keeps the
+    historical ``workflow_name`` (== the bridge gate token ``agent_workflow``),
+    ``app_id`` and ``instance_prefix`` keys, plus additive
+    ``dispatch_workflow_name`` (``session_workflow``) + ``bridge_gate_token`` so
+    the dispatch site no longer hard-codes the two workflow-name literals.
     """
-    agent_app_id = (
-        flattened_args.get("agentAppId").strip()
-        if isinstance(flattened_args.get("agentAppId"), str)
-        and flattened_args.get("agentAppId").strip()
-        else agent_config.get("agentAppId").strip()
-        if isinstance(agent_config, dict)
-        and isinstance(agent_config.get("agentAppId"), str)
-        and agent_config.get("agentAppId").strip()
-        else ""
-    )
+    from core import runtime_registry
 
-    if agent_app_id:
-        return agent_app_id, {
-            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-            "app_id": agent_app_id,
-            "instance_prefix": "durable",
-        }
-
-    # Fallback to the legacy shared-pod enum during the rollout window.
-    runtime = (
-        flattened_args.get("agentRuntime").strip()
-        if isinstance(flattened_args.get("agentRuntime"), str)
-        and flattened_args.get("agentRuntime").strip()
-        else flattened_args.get("runtime").strip()
-        if isinstance(flattened_args.get("runtime"), str)
-        and flattened_args.get("runtime").strip()
-        else agent_config.get("runtime").strip()
-        if isinstance(agent_config, dict)
-        and isinstance(agent_config.get("runtime"), str)
-        and agent_config.get("runtime").strip()
-        else agent_config.get("agentRuntime").strip()
-        if isinstance(agent_config, dict)
-        and isinstance(agent_config.get("agentRuntime"), str)
-        and agent_config.get("agentRuntime").strip()
-        else "dapr-agent-py"
-    )
-    if runtime in _NATIVE_DURABLE_AGENT_TARGETS:
-        return runtime, _NATIVE_DURABLE_AGENT_TARGETS[runtime]
-
-    # Dedicated-runtime fallback: if the resolver didn't stamp agentAppId but
-    # agentSlug is present, derive the per-agent runtime on the fly. This
-    # keeps older workflow specs working without re-publishing.
-    agent_slug = (
-        flattened_args.get("agentSlug").strip()
-        if isinstance(flattened_args.get("agentSlug"), str)
-        and flattened_args.get("agentSlug").strip()
-        else agent_config.get("slug").strip()
-        if isinstance(agent_config, dict)
-        and isinstance(agent_config.get("slug"), str)
-        and agent_config.get("slug").strip()
-        else ""
-    )
-    if agent_slug:
-        derived = f"agent-runtime-{agent_slug}"
-        return derived, {
-            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-            "app_id": derived,
-            "instance_prefix": "durable",
-        }
-
-    allowed = ", ".join(sorted(_NATIVE_DURABLE_AGENT_TARGETS))
-    raise RuntimeError(
-        f"Unsupported durable/run agentRuntime '{runtime}' and no agentAppId/agentSlug in body. "
-        f"Allowed legacy runtimes: {allowed}"
-    )
+    name, descriptor = runtime_registry.resolve(flattened_args, agent_config)
+    return name, descriptor.to_target_dict()
 
 
 def _parse_optional_int(value: Any) -> int | None:
@@ -1776,7 +1684,16 @@ def _run_native_durable_agent_child_workflow(
     # per-agent Deployment unwoken (no spawn_session_for_workflow activity
     # → no ensure-for-workflow POST → no wakeAgentRuntime), stalling Dapr's
     # CreateWorkflowInstance with "context deadline exceeded".
-    session_bridge_eligible = target.get("workflow_name") == "agent_workflow"
+    # Two-name dispatch (see core.runtime_registry): the bridge-eligibility
+    # sentinel is the gate token (== config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+    # "agent_workflow"), NOT the dispatched workflow name ("session_workflow").
+    # target["workflow_name"] historically holds the gate token; compare it to
+    # the descriptor's bridge_gate_token rather than a bare literal so an
+    # overridden DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME can't silently drop every
+    # runtime into the (unreachable) non-bridge branch below.
+    session_bridge_eligible = target.get("workflow_name") == target.get(
+        "bridge_gate_token", "agent_workflow"
+    )
 
     if session_bridge_eligible:
         from activities.spawn_session import spawn_session_for_workflow
@@ -1919,7 +1836,12 @@ def _run_native_durable_agent_child_workflow(
                 bridge_app_id = returned_app_id.strip()
 
         child_task = ctx.call_child_workflow(
-            "session_workflow",
+            # Two-name dispatch: every durable-session runtime registers the
+            # outer workflow under descriptor.dispatch_workflow_name
+            # ("session_workflow"); this is distinct from the bridge gate token
+            # ("agent_workflow"). Sourced from the runtime registry instead of a
+            # bare literal so a new runtime can change it by data.
+            target.get("dispatch_workflow_name") or "session_workflow",
             input=_freeze(bridge_child_input),
             instance_id=child_instance_id,
             # Runtime routing plan: dispatch session_workflow to the selected
