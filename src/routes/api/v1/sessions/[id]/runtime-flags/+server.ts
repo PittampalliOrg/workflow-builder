@@ -7,17 +7,13 @@ import {
 	getSandboxWarmPool,
 } from '$lib/server/kube/client';
 import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
+import { shellableContainers } from '$lib/server/agents/runtime-registry';
 
-// Must stay in sync with ALLOWED_CONTAINERS in ws-kube-exec-proxy.ts and
-// the matching set in server-prod.js. Don't offer a container in the UI
-// that the shell proxy will 400 on — offering daprd would be surprising
-// (it's the Dapr sidecar, not user-authored code).
-const SHELLABLE_CONTAINERS = new Set([
-	'chromium',
-	'playwright-mcp',
-	'dapr-agent-py',
-	'claude-agent-py',
-]);
+// Shell-able containers = every registered runtime's main container + the fixed
+// browser sidecars, derived from the runtime registry (single source of truth;
+// previously hand-synced here, in ws-kube-exec-proxy.ts, and shell/resolve).
+// daprd is excluded by construction — it is the Dapr sidecar, not user code.
+const SHELLABLE_CONTAINERS = shellableContainers();
 
 /**
  * Compact runtime-flags read for the session detail page. Tells the UI

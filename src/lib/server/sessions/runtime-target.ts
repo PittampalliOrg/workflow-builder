@@ -7,6 +7,7 @@ import {
 	agentRuntimeInvokeTarget,
 } from "$lib/server/agents/runtime-routing";
 import { getSession } from "$lib/server/sessions/registry";
+import { DEFAULT_RUNTIME_ID } from "$lib/server/agents/runtime-registry";
 
 export type SessionRuntimeTarget = {
 	appId: string;
@@ -40,8 +41,9 @@ export async function resolveSessionRuntimeTarget(
 		});
 	}
 
+	// Legacy fallback: the default runtime's app-id (== its registry id).
 	return buildTarget({
-		appId: "dapr-agent-py",
+		appId: DEFAULT_RUNTIME_ID,
 		runtimeSandboxName: null,
 		source: "legacy",
 	});
