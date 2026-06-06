@@ -6,6 +6,7 @@ import dataclasses
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import urllib.error
@@ -206,6 +207,102 @@ def collect_output_sync_files(
     return files, warnings
 
 
+def _post_openshell_json(path: str, payload: Mapping[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{OPENSHELL_AGENT_RUNTIME_URL.rstrip('/')}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            status = int(getattr(response, "status", 200) or 200)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {
+            "success": False,
+            "error": f"openshell request failed ({exc.code}): {detail[:500]}",
+            "status": exc.code,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc)}
+
+    try:
+        parsed = json.loads(body) if body.strip() else {}
+    except json.JSONDecodeError:
+        parsed = {"raw": body[:500]}
+    success = 200 <= status < 300 and parsed.get("success") is not False
+    return {"success": success, "status": status, "response": parsed}
+
+
+def build_output_sync_command(file_entry: Mapping[str, Any]) -> str:
+    target = clean_string(file_entry.get("path"))
+    content_b64 = clean_string(file_entry.get("contentB64"))
+    raw_mode = file_entry.get("mode")
+    mode = raw_mode if isinstance(raw_mode, int) else 0o644
+    mode = mode & 0o777
+    return "\n".join(
+        [
+            "set -eu",
+            f"target={shlex.quote(target)}",
+            'mkdir -p "$(dirname "$target")"',
+            'tmp="$(mktemp "${target}.tmp.XXXXXX")"',
+            'trap \'rm -f "$tmp"\' EXIT',
+            'base64 -d > "$tmp" <<\'__WFB_OUTPUT_SYNC_B64__\'',
+            content_b64,
+            "__WFB_OUTPUT_SYNC_B64__",
+            f'chmod {mode:03o} "$tmp"',
+            'mv "$tmp" "$target"',
+            "trap - EXIT",
+        ]
+    )
+
+
+def sync_outputs_by_command(
+    *,
+    workspace_ref: str,
+    files: list[dict[str, Any]],
+    timeout_ms: int,
+) -> dict[str, Any]:
+    responses: list[dict[str, Any]] = []
+    timeout_seconds = max(30, int(timeout_ms / 1000) + 30)
+    for file_entry in files:
+        path = clean_string(file_entry.get("path"))
+        payload = {
+            "workspaceRef": workspace_ref,
+            "command": build_output_sync_command(file_entry),
+            "cwd": DEFAULT_CWD,
+            "timeoutMs": timeout_ms,
+        }
+        result = _post_openshell_json("/api/workspaces/command", payload, timeout_seconds)
+        response = _record(result.get("response"))
+        exit_code = response.get("exitCode")
+        responses.append(
+            {
+                "path": path,
+                "success": result.get("success") and (exit_code in (None, 0)),
+                "exitCode": exit_code,
+                "stderr": clean_string(response.get("stderr"))[:500],
+                "error": result.get("error"),
+            }
+        )
+        if not responses[-1]["success"]:
+            return {
+                "success": False,
+                "method": "command",
+                "error": responses[-1]["error"] or responses[-1]["stderr"] or "command sync failed",
+                "responses": responses,
+            }
+    return {
+        "success": True,
+        "method": "command",
+        "files": [entry["path"] for entry in files],
+        "fileCount": len(files),
+        "responses": responses,
+    }
+
+
 def sync_outputs_to_workspace(input_data: Mapping[str, Any], cwd: Path) -> dict[str, Any] | None:
     output_sync = _record(input_data.get("outputSync"))
     if not output_sync:
@@ -220,43 +317,35 @@ def sync_outputs_to_workspace(input_data: Mapping[str, Any], cwd: Path) -> dict[
     if not files:
         return {"success": True, "files": [], "warnings": warnings}
 
+    timeout_ms = bounded_int(output_sync.get("timeoutMs"), default=120000, minimum=1000, maximum=900000)
     payload = {
         "workspaceRef": workspace_ref,
         "files": files,
-        "timeoutMs": output_sync.get("timeoutMs") or 120000,
+        "timeoutMs": timeout_ms,
     }
-    request = urllib.request.Request(
-        f"{OPENSHELL_AGENT_RUNTIME_URL.rstrip('/')}/api/workspaces/materialize-files",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    materialized = _post_openshell_json(
+        "/api/workspaces/materialize-files",
+        payload,
+        max(30, int(timeout_ms / 1000) + 30),
     )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            status = int(getattr(response, "status", 200) or 200)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+    if materialized.get("success"):
         return {
-            "success": False,
-            "error": f"openshell materialize failed ({exc.code}): {detail[:500]}",
+            "success": True,
+            "method": "materialize-files",
+            "files": [entry["path"] for entry in files],
+            "fileCount": len(files),
             "warnings": warnings,
+            "response": materialized.get("response"),
         }
-    except Exception as exc:  # noqa: BLE001
-        return {"success": False, "error": str(exc), "warnings": warnings}
 
-    try:
-        parsed = json.loads(body) if body.strip() else {}
-    except json.JSONDecodeError:
-        parsed = {"raw": body[:500]}
-    success = 200 <= status < 300 and parsed.get("success") is not False
-    return {
-        "success": success,
-        "files": [entry["path"] for entry in files],
-        "fileCount": len(files),
-        "warnings": warnings,
-        "response": parsed,
-    }
+    command_sync = sync_outputs_by_command(
+        workspace_ref=workspace_ref,
+        files=files,
+        timeout_ms=timeout_ms,
+    )
+    command_sync["warnings"] = warnings
+    command_sync["materializeError"] = materialized.get("error") or materialized.get("response")
+    return command_sync
 
 
 def swebench_environment(input_data: Mapping[str, Any]) -> dict[str, Any] | None:

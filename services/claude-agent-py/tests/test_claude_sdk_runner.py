@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from src.claude_sdk_runner import (
+    build_output_sync_command,
     build_claude_options,
     capture_git_model_patch,
     collect_output_sync_files,
@@ -96,6 +97,21 @@ def test_collects_declared_output_sync_files(tmp_path, monkeypatch) -> None:
         str(app_dir / "script.js"),
     ]
     assert base64.b64decode(files[0]["contentB64"]).decode() == '<canvas id="canvas"></canvas>'
+
+
+def test_builds_output_sync_command_with_idempotent_parent_directory() -> None:
+    command = build_output_sync_command(
+        {
+            "path": "/sandbox/3b1b-style-animation-example/index.html",
+            "contentB64": base64.b64encode(b"<html></html>").decode("ascii"),
+            "mode": 0o644,
+        }
+    )
+
+    assert 'mkdir -p "$(dirname "$target")"' in command
+    assert "base64 -d" in command
+    assert 'chmod 644 "$tmp"' in command
+    assert 'mv "$tmp" "$target"' in command
 
 
 def test_extracts_swebench_environment_from_turn_input() -> None:
