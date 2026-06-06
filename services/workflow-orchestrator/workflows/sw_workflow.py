@@ -1010,6 +1010,11 @@ _NATIVE_DURABLE_AGENT_TARGETS = {
         "app_id": config.ADK_AGENT_PY_APP_ID,
         "instance_prefix": "durable-adk",
     },
+    "claude-agent-py": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.CLAUDE_AGENT_PY_APP_ID,
+        "instance_prefix": "durable-claude",
+    },
 }
 
 

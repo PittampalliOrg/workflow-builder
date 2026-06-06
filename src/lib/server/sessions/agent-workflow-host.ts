@@ -309,14 +309,20 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	// Per-runtime container image override. sandbox-execution-api honors
 	// `agentImage` on the request body and overrides the executionClass
 	// default (`app.py:466`: `image = request.agentImage or class_config.agentHostImage`).
-	// For `adk-agent-py` we plumb the dedicated image; everything else falls
-	// through to whatever the execution class points to.
+	// Runtimes with dedicated images override the executionClass default.
 	const agentImage = ((): string | null => {
 		const runtime = (params.agentConfig as { runtime?: string } | null)?.runtime;
 		if (runtime === "adk-agent-py") {
 			return (
 				env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE ??
 				process.env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE ??
+				null
+			);
+		}
+		if (runtime === "claude-agent-py") {
+			return (
+				env.AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE ??
+				process.env.AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE ??
 				null
 			);
 		}

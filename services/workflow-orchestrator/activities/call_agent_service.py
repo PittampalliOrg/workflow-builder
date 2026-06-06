@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -34,6 +35,7 @@ DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 WORKSPACE_RUNTIME_APP_ID = config.WORKSPACE_RUNTIME_APP_ID
 DAPR_AGENT_PY_APP_ID = config.DAPR_AGENT_PY_APP_ID
 DAPR_AGENT_PY_TESTING_APP_ID = config.DAPR_AGENT_PY_TESTING_APP_ID
+CLAUDE_AGENT_PY_APP_ID = config.CLAUDE_AGENT_PY_APP_ID
 CLAUDE_CODE_AGENT_APP_ID = config.CLAUDE_CODE_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 _SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] | None = None
@@ -160,6 +162,8 @@ def _durable_agent_app_id(input_data: dict) -> str:
     runtime = _agent_runtime_from_payload(input_data)
     if runtime == "dapr-agent-py-testing":
         return DAPR_AGENT_PY_TESTING_APP_ID
+    if runtime == "claude-agent-py":
+        return CLAUDE_AGENT_PY_APP_ID
     if runtime == "browser-use-agent":
         return os.environ.get("BROWSER_USE_AGENT_APP_ID", "browser-use-agent")
     return DAPR_AGENT_PY_APP_ID

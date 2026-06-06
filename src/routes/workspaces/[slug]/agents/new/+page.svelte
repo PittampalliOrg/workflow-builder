@@ -51,6 +51,19 @@
 			]
 		},
 		{
+			slug: 'claude-code-agent-sdk',
+			name: 'Claude Code Agent SDK',
+			description: "Claude Code's default prompts and tools in the Dapr runtime path.",
+			avatar: 'C',
+			tags: ['code'],
+			runtime: 'claude-agent-py',
+			highlights: [
+				'claude-agent-py runtime',
+				'Claude Code default tools',
+				'Headless Dapr workflow session'
+			]
+		},
+		{
 			slug: 'github-mcp-agent',
 			name: 'GitHub / Code Agent',
 			description: 'GitHub MCP access for repository discovery and code navigation.',

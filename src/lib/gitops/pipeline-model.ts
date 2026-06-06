@@ -69,6 +69,7 @@ const DEPENDED_ON_BY: Record<string, string[]> = {
 	"dapr-agent-py-sandbox": ["workflow-builder · AGENT_RUNTIME_DEFAULT_IMAGE"],
 	"browser-use-agent-sandbox": ["workflow-builder · AGENT_RUNTIME_BROWSER_USE_DEFAULT_IMAGE"],
 	"adk-agent-py-sandbox": ["workflow-builder · AGENT_RUNTIME_ADK_DEFAULT_IMAGE"],
+	"claude-agent-py-sandbox": ["workflow-builder · AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE"],
 };
 const DEPENDS_ON: Record<string, string[]> = {
 	"workflow-orchestrator": ["function-router"],

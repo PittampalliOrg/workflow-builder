@@ -281,6 +281,9 @@ function imageForRuntime(runtime: string): string | null {
 	if (runtime === "adk-agent-py") {
 		return cleanString(env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE) ?? null;
 	}
+	if (runtime === "claude-agent-py") {
+		return cleanString(env.AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE) ?? null;
+	}
 	return (
 		cleanString(env.AGENT_RUNTIME_DEFAULT_IMAGE) ??
 		cleanString(env.CURRENT_DAPR_AGENT_PY_IMAGE) ??

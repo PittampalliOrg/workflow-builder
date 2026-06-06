@@ -23,6 +23,7 @@ export type AgentRuntime =
 	| "dapr-agent-py"
 	| "dapr-agent-py-testing"
 	| "adk-agent-py"
+	| "claude-agent-py"
 	| "browser-use-agent";
 
 export type AgentRuntimeIsolation = "auto" | "shared" | "dedicated";

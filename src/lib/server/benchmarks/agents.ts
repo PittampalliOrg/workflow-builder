@@ -19,7 +19,7 @@ export type BenchmarkAgentCandidate = {
 
 export type ValidBenchmarkAgent = BenchmarkAgentCandidate & {
 	slug: string;
-	runtime: "dapr-agent-py" | "adk-agent-py";
+	runtime: "dapr-agent-py" | "adk-agent-py" | "claude-agent-py";
 	runtimeAppId: string;
 	currentVersionId: string;
 	version: number;
@@ -43,7 +43,9 @@ function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
 	if (agent.runtimeAppId?.startsWith("agent-runtime-")) return agent.runtimeAppId;
 	if (
 		agent.slug &&
-		(agent.runtime === "dapr-agent-py" || agent.runtime === "adk-agent-py")
+		(agent.runtime === "dapr-agent-py" ||
+			agent.runtime === "adk-agent-py" ||
+			agent.runtime === "claude-agent-py")
 	) {
 		return `agent-runtime-${agent.slug}`;
 	}
@@ -112,7 +114,11 @@ export function assertDaprAgentPyBenchmarkAgent(
 ): ValidBenchmarkAgent {
 	if (!agent) validationError("Selected agent was not found");
 	if (agent.isArchived) validationError("Selected agent is archived");
-	if (agent.runtime !== "dapr-agent-py" && agent.runtime !== "adk-agent-py") {
+	if (
+		agent.runtime !== "dapr-agent-py" &&
+		agent.runtime !== "adk-agent-py" &&
+		agent.runtime !== "claude-agent-py"
+	) {
 		validationError(
 			`SWE-bench runs require a durable coding runtime; got ${agent.runtime ?? "unknown"}`,
 		);

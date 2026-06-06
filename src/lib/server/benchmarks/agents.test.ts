@@ -33,6 +33,18 @@ describe("benchmark agent validation", () => {
 		expect(valid.effectiveLlmComponent).toBe("llm-google-gemini");
 	});
 
+	it("accepts a published Claude Agent SDK runtime", () => {
+		const valid = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			runtime: "claude-agent-py",
+			modelSpec: "anthropic/claude-sonnet-4-6",
+		});
+		expect(valid.runtime).toBe("claude-agent-py");
+		expect(valid.runtimeAppId).toBe("agent-runtime-solver");
+		expect(valid.effectiveProvider).toBe("anthropic");
+		expect(valid.effectiveLlmComponent).toBe("llm-anthropic-sonnet");
+	});
+
 	it("accepts the tool-capable Foundry DeepSeek deployment", () => {
 		const valid = assertDaprAgentPyBenchmarkAgent({
 			...baseAgent,

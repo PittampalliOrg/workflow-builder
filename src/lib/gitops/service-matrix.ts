@@ -30,6 +30,8 @@ export const WB_SERVICES = [
 	"openshell-sandbox",
 	"openshell-sandbox-xlsx",
 	"dapr-agent-py-sandbox",
+	"adk-agent-py-sandbox",
+	"claude-agent-py-sandbox",
 	"browser-use-agent-sandbox",
 ] as const;
 
@@ -60,6 +62,7 @@ export const SUBSYSTEMS: Record<string, string> = {
 	"dapr-agent-py-sandbox": "Agent runtimes",
 	"dapr-agent-py-testing-sandbox": "Agent runtimes",
 	"adk-agent-py-sandbox": "Agent runtimes",
+	"claude-agent-py-sandbox": "Agent runtimes",
 	"browser-use-agent-sandbox": "Agent runtimes",
 	"openshell-agent-runtime": "Agent runtimes",
 	"openshell-sandbox": "Agent runtimes",
@@ -140,6 +143,8 @@ const SANDBOX_ONLY = new Set<string>([
 	"openshell-sandbox",
 	"openshell-sandbox-xlsx",
 	"dapr-agent-py-sandbox",
+	"adk-agent-py-sandbox",
+	"claude-agent-py-sandbox",
 	"browser-use-agent-sandbox",
 ]);
 

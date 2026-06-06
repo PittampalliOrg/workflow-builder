@@ -106,6 +106,53 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		}),
 	},
 	{
+		slug: "claude-code-agent-sdk",
+		name: "Claude Code Agent SDK",
+		description:
+			"Runs on the claude-agent-py runtime with Claude Code's default prompt and tool presets.",
+		providerIcons: [],
+		highlights: [
+			"claude-agent-py runtime",
+			"Claude Code default tools",
+			"Headless Dapr workflow session",
+		],
+		config: base({
+			runtime: "claude-agent-py",
+			modelSpec: "anthropic/claude-sonnet-4-6",
+			systemPrompt:
+				"You are a pragmatic coding agent. Inspect the workspace, make focused edits, run targeted validation, and report the exact outcome.",
+			maxTurns: 80,
+			timeoutMinutes: 60,
+			runtimeClass: "coding",
+			mcpConnectionMode: "explicit",
+			builtinTools: [],
+		}),
+	},
+	{
+		slug: "claude-code-swebench-solver",
+		name: "Claude Code SWE-bench solver",
+		description:
+			"Runs SWE-bench tasks on claude-agent-py using Claude Code's default coding tools.",
+		providerIcons: [],
+		highlights: [
+			"claude-agent-py runtime",
+			"SWE-bench solver prompt",
+			"Claude Code default tools",
+		],
+		config: base({
+			runtime: "claude-agent-py",
+			modelSpec: "anthropic/claude-sonnet-4-6",
+			systemPrompt: SWE_BENCH_SOLVER_SYSTEM_PROMPT,
+			cacheTtl: "1h",
+			maxTurns: 50,
+			timeoutMinutes: 60,
+			runtimeClass: "coding",
+			runtimeIsolation: "shared",
+			mcpConnectionMode: "explicit",
+			builtinTools: [],
+		}),
+	},
+	{
 		slug: "deep-researcher",
 		name: "Deep researcher",
 		description:

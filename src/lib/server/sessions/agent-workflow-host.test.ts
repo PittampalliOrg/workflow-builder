@@ -158,6 +158,29 @@ describe("agent workflow host provisioning", () => {
 		expect(body.timeoutSeconds).toBe(420);
 	});
 
+	it("passes the Claude runtime image override for claude-agent-py sessions", async () => {
+		vi.stubEnv(
+			"AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE",
+			"ghcr.io/example/claude-agent-py-sandbox:git-1",
+		);
+
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-claude-1",
+			agentConfig: { runtime: "claude-agent-py", mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.agentImage).toBe("ghcr.io/example/claude-agent-py-sandbox:git-1");
+	});
+
 	it("uses benchmark queue and priority defaults for benchmark sessions", async () => {
 		await maybeProvisionAgentWorkflowHost({
 			sessionId: "session-benchmark-1",
