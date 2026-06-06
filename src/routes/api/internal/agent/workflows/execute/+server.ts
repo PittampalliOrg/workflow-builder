@@ -7,6 +7,11 @@ import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
+import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
+import {
+	AgentRefResolutionError,
+	resolveSpecAgentRefs
+} from '$lib/server/agents/resolver';
 import {
 	applyWorkflowInputDefaults,
 	getPromptExpansionConfig
@@ -134,8 +139,27 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	let triggerData = body.triggerData ?? {};
-	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
+	let spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {
+		const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
+		if (removedAgentCallsError) {
+			return json({ error: removedAgentCallsError }, { status: 400 });
+		}
+		try {
+			spec = await resolveSpecAgentRefs(spec);
+		} catch (resolveErr) {
+			if (resolveErr instanceof AgentRefResolutionError) {
+				return json({ error: resolveErr.message }, { status: 400 });
+			}
+			console.error('[internal/agent/workflows/execute] agent ref resolution failed:', resolveErr);
+			return json(
+				{
+					error:
+						resolveErr instanceof Error ? resolveErr.message : 'Agent ref resolution failed'
+				},
+				{ status: 500 }
+			);
+		}
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
 		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
