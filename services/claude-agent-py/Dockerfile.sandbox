@@ -10,7 +10,7 @@ FROM ${OPENSHELL_SANDBOX_IMAGE}
 USER root
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep \
+    && apt-get install -y --no-install-recommends ca-certificates curl git passwd ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
@@ -26,6 +26,11 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev
 COPY src/ src/
 
+RUN /usr/sbin/groupadd --gid 10001 claude-agent \
+    && /usr/sbin/useradd --create-home --uid 10001 --gid 10001 --shell /bin/bash claude-agent \
+    && mkdir -p /sandbox /home/claude-agent/.config \
+    && chown -R claude-agent:claude-agent /app /sandbox /home/claude-agent
+
 ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
     CLAUDE_AGENT_PY_DEFAULT_MODEL=claude-opus-4-8 \
@@ -33,7 +38,11 @@ ENV AGENT_SANDBOX_MODE=hybrid \
     CLAUDE_AGENT_SDK_CLIENT_APP=workflow-builder-claude-agent-py/0.1.0 \
     CLAUDE_AGENT_SDK_CLI_PATH=/usr/local/bin/claude \
     VIRTUAL_ENV=/app/.venv \
+    HOME=/home/claude-agent \
+    XDG_CONFIG_HOME=/home/claude-agent/.config \
     PATH="/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+USER claude-agent
 
 EXPOSE 8002
 ENTRYPOINT []
