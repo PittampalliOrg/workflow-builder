@@ -76,6 +76,8 @@ describe("specialCaseFor", () => {
 		expect(specialCaseFor("workflow-builder")).toBeNull();
 		expect(specialCaseFor("openshell-sandbox")).toBe("sandbox-only");
 		expect(specialCaseFor("dapr-agent-py-sandbox")).toBe("sandbox-only");
+		expect(specialCaseFor("adk-agent-py-sandbox")).toBe("sandbox-only");
+		expect(specialCaseFor("claude-agent-py-sandbox")).toBe("sandbox-only");
 		expect(specialCaseFor("browser-use-agent-sandbox")).toBe("sandbox-only");
 		expect(specialCaseFor("openshell-sandbox-xlsx")).toBe("sandbox-only");
 		expect(specialCaseFor("mcp-gateway")).toBe("ryzen-missing-pin");
@@ -183,6 +185,19 @@ describe("buildServiceMatrix", () => {
 		expect(sb?.envs.dev?.source).toBe("pin-only");
 		expect(sb?.envs.dev?.tag).toBe("git-44444444");
 		expect(sb?.envs.staging?.source).toBe("pin-only");
+	});
+
+	it("renders the Claude Agent SDK sandbox service from release pins", () => {
+		const rows = buildServiceMatrix({
+			inventory: null,
+			releasePins: [makePin("claude-agent-py-sandbox", "git-55555555")],
+		});
+		const svc = rows.find((r) => r.service === "claude-agent-py-sandbox");
+		expect(svc?.specialCase).toBe("sandbox-only");
+		expect(svc?.envs.ryzen).toBeNull();
+		expect(svc?.envs.dev?.source).toBe("pin-only");
+		expect(svc?.envs.dev?.tag).toBe("git-55555555");
+		expect(svc?.envs.staging?.source).toBe("pin-only");
 	});
 
 	it("inventory = null returns all rows without crashing", () => {

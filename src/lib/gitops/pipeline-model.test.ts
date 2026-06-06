@@ -244,6 +244,44 @@ describe("buildPipelineModel", () => {
 		expect(stages.some((s) => s.env === "dev")).toBe(true);
 	});
 
+	it("surfaces the Claude Agent SDK runtime in the GitOps pipeline UI model", () => {
+		const model = buildPipelineModel(
+			makeMetadata(null, [makePin("claude-agent-py-sandbox", "git-55555555")]),
+			EMPTY_PROMOTIONS,
+		);
+		const warehouse = model.warehouses.find((w) => w.name === "claude-agent-py-sandbox");
+		expect(warehouse).toMatchObject({
+			kind: "service",
+			subsystem: "Agent runtimes",
+			specialCase: "sandbox-only",
+			dependedOnBy: ["workflow-builder · AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE"],
+		});
+		expect(warehouse?.subscriptions).toEqual([
+			{
+				id: "sub/claude-agent-py-sandbox/image",
+				type: "image",
+				repoURL: "ghcr.io/pittampalliorg/claude-agent-py-sandbox",
+			},
+		]);
+		expect(model.warehousesBySubsystem["Agent runtimes"]?.map((w) => w.name)).toContain(
+			"claude-agent-py-sandbox",
+		);
+		expect(model.stages.some((s) => s.name === "claude-agent-py-sandbox::ryzen")).toBe(false);
+		expect(model.stages.find((s) => s.name === "claude-agent-py-sandbox::dev")).toMatchObject({
+			source: "pin-only",
+			desiredTag: "git-55555555",
+		});
+		expect(model.freights.find((f) => f.warehouse === "claude-agent-py-sandbox")).toMatchObject({
+			artifacts: [
+				{
+					kind: "image",
+					repoURL: "ghcr.io/pittampalliorg/claude-agent-py-sandbox",
+					tag: "git-55555555",
+				},
+			],
+		});
+	});
+
 	it("emits one current freight per warehouse (incl. the bundle snapshot) when no history", () => {
 		const inventory = makeInventory({
 			dev: [makeApp({ name: "dev-workflow-builder", component: "workflow-builder" })],
