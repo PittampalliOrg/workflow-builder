@@ -28,8 +28,8 @@ COPY src/ src/
 
 RUN /usr/sbin/groupadd --gid 10001 claude-agent \
     && /usr/sbin/useradd --create-home --uid 10001 --gid 10001 --shell /bin/bash claude-agent \
-    && mkdir -p /sandbox /home/claude-agent/.config \
-    && chown -R claude-agent:claude-agent /app /sandbox /home/claude-agent
+    && mkdir -p /sandbox /home/claude-agent/.config /root/.config \
+    && chown -R claude-agent:claude-agent /app /sandbox /home/claude-agent /root
 
 ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
