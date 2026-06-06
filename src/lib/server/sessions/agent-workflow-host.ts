@@ -3,6 +3,7 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import { isPlaywrightMcpEntry } from "$lib/server/agents/mcp-sidecar";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import { responseBodyForSpan } from "$lib/server/dapr-client";
 import { setSpanValue } from "$lib/server/observability/content";
@@ -309,24 +310,15 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	// Per-runtime container image override. sandbox-execution-api honors
 	// `agentImage` on the request body and overrides the executionClass
 	// default (`app.py:466`: `image = request.agentImage or class_config.agentHostImage`).
-	// Runtimes with dedicated images override the executionClass default.
+	// Runtimes whose registry descriptor declares an `imageEnvKey` (adk, claude)
+	// override the executionClass default with that env var's image; the rest
+	// (dapr-agent-py is the default image, browser-use takes the warm-pool lane)
+	// declare `imageEnvKey: null` and fall through to the executionClass default.
 	const agentImage = ((): string | null => {
 		const runtime = (params.agentConfig as { runtime?: string } | null)?.runtime;
-		if (runtime === "adk-agent-py") {
-			return (
-				env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE ??
-				process.env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE ??
-				null
-			);
-		}
-		if (runtime === "claude-agent-py") {
-			return (
-				env.AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE ??
-				process.env.AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE ??
-				null
-			);
-		}
-		return null;
+		const key = getRuntimeDescriptor(runtime)?.imageEnvKey;
+		if (!key) return null;
+		return env[key] ?? process.env[key] ?? null;
 	})();
 	const requestBody = {
 		sessionId: params.sessionId,
