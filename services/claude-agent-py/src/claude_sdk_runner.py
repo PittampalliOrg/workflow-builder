@@ -17,6 +17,8 @@ from uuid import NAMESPACE_URL, uuid5
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
+from src.mcp_config import build_mcp_servers
+
 logger = logging.getLogger(__name__)
 
 TOOLS_PRESET = {"type": "preset", "preset": "claude_code"}
@@ -494,14 +496,28 @@ def build_claude_options(input_data: Mapping[str, Any]) -> ClaudeAgentOptions:
     if workflow_id := clean_string(input_data.get("workflowExecutionId")):
         env["WORKFLOW_BUILDER_WORKFLOW_EXECUTION_ID"] = workflow_id
 
+    # Phase 0 (DurableSessionRuntime standardization): honor agentConfig.mcpServers.
+    # Before this, claude-agent-py silently dropped an agent's declared MCP servers
+    # while dapr-agent-py honored them — the worst swap-blocker. The SDK supports
+    # mcp_servers natively, so we map them here WITHOUT re-decomposing the loop.
+    # strict_mcp_config pins the session to exactly the agent's declared servers
+    # (ignoring any on-disk .mcp.json) when any are present, matching dapr-agent-py's
+    # "only the declared servers" semantics. allowed_tools permits the MCP tools so
+    # they remain callable even under non-bypass permission modes.
+    mcp_servers, mcp_allowed_tools = build_mcp_servers(agent_config)
+
     return ClaudeAgentOptions(
         tools=dict(TOOLS_PRESET),
+        allowed_tools=mcp_allowed_tools,
         system_prompt=system_prompt_config(input_data.get("renderedSystem")),
         permission_mode=normalize_permission_mode(
             input_data.get("permissionMode") or agent_config.get("permissionMode")
         ),
         max_turns=max_turns,
         model=normalize_claude_model(agent_config.get("modelSpec")),
+        mcp_servers=mcp_servers,
+        strict_mcp_config=bool(mcp_servers),
+        include_hook_events=True,
         cwd=str(cwd),
         cli_path=DEFAULT_CLI_PATH,
         session_id=workflow_session_uuid(
@@ -553,6 +569,37 @@ def _message_events(message: Any) -> tuple[list[dict[str, Any]], list[str]]:
     return events, text_parts
 
 
+def _hook_event(message: Any) -> dict[str, Any] | None:
+    """Convert an SDK ``HookEventMessage`` into a ``hook.decision`` session event.
+
+    Emitted only when ``include_hook_events=True``. We surface the COMPLETED hook
+    phase (``hook_response``), which carries the outcome/exit-code of any
+    PreToolUse/PostToolUse/permission hook the CLI ran — giving claude-agent-py the
+    same ``hook.decision`` observability stream dapr-agent-py emits, without a
+    per-tool durable activity. ``hook_started`` is skipped to halve event volume.
+    """
+    if type(message).__name__ != "HookEventMessage":
+        return None
+    subtype = clean_string(getattr(message, "subtype", None))
+    if subtype != "hook_response":
+        return None
+    raw = getattr(message, "data", None)
+    data = _json_safe(raw) if isinstance(raw, Mapping) else {}
+    data_map = data if isinstance(data, Mapping) else {}
+    uuid = clean_string(getattr(message, "uuid", None))
+    return {
+        "type": "hook.decision",
+        "data": {
+            "hookEvent": clean_string(getattr(message, "hook_event_name", None)),
+            "phase": subtype,
+            "outcome": data_map.get("outcome"),
+            "exitCode": data_map.get("exit_code"),
+            "raw": data,
+        },
+        "sourceEventId": f"hook:{uuid}" if uuid else None,
+    }
+
+
 async def run_claude_sdk_turn_async(input_data: Mapping[str, Any]) -> dict[str, Any]:
     prompt = clean_string(input_data.get("prompt"))
     if not prompt:
@@ -598,6 +645,9 @@ async def run_claude_sdk_turn_async(input_data: Mapping[str, Any]) -> dict[str, 
             message_events, message_text = _message_events(message)
             events.extend(message_events)
             assistant_text_parts.extend(message_text)
+            hook_evt = _hook_event(message)
+            if hook_evt is not None:
+                events.append(hook_evt)
             if type(message).__name__ == "ResultMessage":
                 result_message = _json_safe(message)
                 sdk_session_id = clean_string(getattr(message, "session_id", None))
