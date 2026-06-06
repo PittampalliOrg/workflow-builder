@@ -4,6 +4,7 @@ import type { Agent, AgentVersion } from "$lib/server/db/schema";
 import type { AgentConfig, AgentDetail } from "$lib/types/agents";
 import { resolveAgentRuntimeRoute } from "./runtime-routing";
 import { buildAgentMetadata, type AgentMetadataBlob } from "./registry-sync";
+import { listRuntimes } from "./runtime-registry";
 
 export type AgentApplicationStateManifest = {
 	schemaVersion: "workflow-builder.agent-application-state.v1";
@@ -205,8 +206,14 @@ export function validateAgentMetadata(value: AgentMetadataBlob): void {
 	if (!value.agent?.type?.trim()) {
 		throw new Error("Dapr agent metadata is missing agent.type");
 	}
-	if (value.agent.framework !== "Dapr Agents") {
-		throw new Error("Dapr agent metadata framework must be Dapr Agents");
+	// Framework must be a known runtime framework from the registry (e.g.
+	// "Dapr Agents", "Claude Agent SDK", "Google ADK") — not hard-pinned to
+	// "Dapr Agents", which mislabeled non-dapr runtimes.
+	const knownFrameworks = new Set(listRuntimes().map((d) => d.agentMetadataFramework));
+	if (!value.agent.framework?.trim() || !knownFrameworks.has(value.agent.framework)) {
+		throw new Error(
+			`Dapr agent metadata framework must be a known runtime framework (got "${value.agent.framework}")`,
+		);
 	}
 	if (!Array.isArray(value.tools)) {
 		throw new Error("Dapr agent metadata tools must be an array");

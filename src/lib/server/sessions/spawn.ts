@@ -16,6 +16,8 @@ import {
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import { evaluateSwap } from "$lib/server/agents/swap-safety";
 
 function modelIdFromMlflowUri(value: string | null | undefined): string | null {
 	const text = value?.trim() ?? "";
@@ -128,6 +130,36 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		config: resolvedAgentConfig,
 		useBrowserSidecar,
 	});
+	// Swap-safety gate (Phase 3): surface when the dispatched runtime would
+	// drop a capability the agent's config relies on (e.g. an unsupported model
+	// provider, or MCP on a non-MCP runtime). WARN-first: logs the degraded
+	// capabilities; only hard-fails when AGENT_RUNTIME_REJECT_LOSSY_SWAP is set.
+	// Normal spawns (agent on its own runtime) resolve to "allow".
+	const swapTarget = getRuntimeDescriptor(
+		(resolvedAgentConfig as { runtime?: string }).runtime,
+	);
+	if (swapTarget) {
+		const verdict = evaluateSwap(
+			resolvedAgentConfig as Record<string, unknown>,
+			swapTarget,
+		);
+		if (verdict.drops.length > 0) {
+			console.warn(
+				`[swap-safety] session ${sessionId} \u2192 runtime "${swapTarget.id}" ${verdict.decision}: ` +
+					verdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+			);
+			for (const d of verdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
+			if (verdict.decision === "reject") {
+				throw new Error(
+					`Runtime "${swapTarget.id}" cannot satisfy required agent capabilities: ` +
+						verdict.drops
+							.filter((d) => d.severity === "reject")
+							.map((d) => d.detail)
+							.join("; "),
+				);
+			}
+		}
+	}
 	// Resolve Prompt Workbench preset bindings (version-pinned) into raw text
 	// arrays the runtime can stitch into the bundle without DB access. Fail
 	// open: a missing preset must never block a session spawn.

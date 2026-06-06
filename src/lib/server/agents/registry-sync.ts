@@ -11,6 +11,7 @@ import {
 	agentRuntimeDedicatedAppId,
 	resolveAgentRuntimeRoute,
 } from "./runtime-routing";
+import { getRuntimeDescriptor } from "./runtime-registry";
 
 /**
  * Dual-write: Postgres remains the source of truth for agent CRUD/versioning/
@@ -174,7 +175,11 @@ export function buildAgentMetadata(
 			type: "durable",
 			orchestrator: false,
 			system_prompt: config.systemPrompt ?? "",
-			framework: "Dapr Agents",
+			// Framework is the agent's runtime framework, from the registry
+			// (e.g. "Claude Agent SDK", "Google ADK"), not a hard-coded
+			// "Dapr Agents" — claude/adk agents were previously mislabeled.
+			framework:
+				getRuntimeDescriptor(config.runtime)?.agentMetadataFramework ?? "Dapr Agents",
 			max_iterations: typeof config.maxTurns === "number" ? config.maxTurns : 120,
 			tool_choice: config.toolChoice ?? null,
 		},

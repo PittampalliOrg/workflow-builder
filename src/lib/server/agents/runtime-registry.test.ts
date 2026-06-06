@@ -85,3 +85,33 @@ describe("runtime registry — readers", () => {
 		expect(dapr?.capabilities.multiProvider).toBe(true);
 	});
 });
+
+import { validateAgentMetadata } from "./application-state";
+
+describe("Phase 2b — image override + framework", () => {
+	it("imageEnvKey is set only for runtimes that override the executionClass image", () => {
+		// adk + claude carry a per-session image override env; dapr is the default
+		// image and browser-use takes the warm-pool lane, so both are null.
+		expect(getRuntimeDescriptor("adk-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_ADK_DEFAULT_IMAGE");
+		expect(getRuntimeDescriptor("claude-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE");
+		expect(getRuntimeDescriptor("dapr-agent-py")?.imageEnvKey).toBeNull();
+		expect(getRuntimeDescriptor("dapr-agent-py-testing")?.imageEnvKey).toBeNull();
+		expect(getRuntimeDescriptor("browser-use-agent")?.imageEnvKey).toBeNull();
+	});
+
+	it("each runtime declares a distinct agentMetadataFramework", () => {
+		expect(getRuntimeDescriptor("dapr-agent-py")?.agentMetadataFramework).toBe("Dapr Agents");
+		expect(getRuntimeDescriptor("claude-agent-py")?.agentMetadataFramework).toBe("Claude Agent SDK");
+		expect(getRuntimeDescriptor("adk-agent-py")?.agentMetadataFramework).toBe("Google ADK");
+	});
+
+	it("validateAgentMetadata accepts any registered framework, rejects unknown", () => {
+		const blob = (framework: string) =>
+			({ name: "x", agent: { appid: "a", type: "durable", framework }, tools: [] }) as never;
+		// Previously only "Dapr Agents" passed — claude/adk are now first-class.
+		expect(() => validateAgentMetadata(blob("Dapr Agents"))).not.toThrow();
+		expect(() => validateAgentMetadata(blob("Claude Agent SDK"))).not.toThrow();
+		expect(() => validateAgentMetadata(blob("Google ADK"))).not.toThrow();
+		expect(() => validateAgentMetadata(blob("Bogus Framework"))).toThrow();
+	});
+});
