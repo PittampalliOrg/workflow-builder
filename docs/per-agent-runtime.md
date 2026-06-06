@@ -250,33 +250,45 @@ Resets on any response with real content or tool_calls. Once the streak hits
 and out to `session_workflow`'s `try/except`, which publishes `session.error` +
 `session.status_terminated` and returns.
 
-Note: the counter is process-local. Dapr's activity-level retry (`max_attempts=8`
-from the `WorkflowRetryPolicy` at `main.py:2721`) can still re-invoke `call_llm`
-up to 8 times per base-class iteration — each retry is subject to the same
-3-strike cap, so total amplification is bounded at ~24 calls per stuck
-iteration before the agent gives up.
+Note: the counter is process-local. The agent callee's own retry policy
+(`WorkflowRetryPolicy(max_attempts=8)` decorating `session_workflow` at
+`main.py:5897`) can still re-invoke `call_llm` up to 8 times per base-class
+iteration — each retry is subject to the same 3-strike cap, so total
+amplification is bounded at ~24 calls per stuck iteration before the agent
+gives up. (This `max_attempts=8` lives on `dapr-agent-py`, NOT on the
+orchestrator — the orchestrator's internal activities carry no `retry_policy`.)
 
-### Session-turn timer — `src/main.py::session_workflow`
+### Out-of-band host monitor — `src/main.py::_run_session_host_monitor`
 
-Before yielding the child agent_workflow, `session_workflow` creates a Dapr
-durable timer and races them via `wf.when_any`:
+> **Removed:** the in-workflow **session-turn timer** that wrapped the child in
+> `when_any([child, timer])` with a default 600s
+> `DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS` cutoff was **deleted in commit
+> `72154581`**. `grep SESSION_TURN_TIMEOUT|when_any|create_timer
+> services/dapr-agent-py/src/` now returns **0**. There is no longer a durable
+> in-workflow turn-timeout; **restoring a durable `when_any` turn-timer is open
+> work.**
 
-```python
-child_task = ctx.call_child_workflow(self.agent_workflow_name, ...)
-timer_task = ctx.create_timer(timedelta(seconds=SESSION_TURN_TIMEOUT_SECONDS))
-winner = yield wf_when_any([child_task, timer_task])
-if winner is timer_task:
-    raise AgentError(f"Session turn {turn_counter} exceeded {...}s timeout")
-turn_result = child_task.get_result()
-```
+The only remaining stall guard is an **out-of-band background thread**
+(`_start_session_host_monitor` → `_run_session_host_monitor`, started at boot;
+decision logic in `session_host_monitor.py`). It is NOT a Dapr workflow timer —
+it is a plain Python thread that polls the workflow's runtime state and watches
+for two failure shapes:
 
-If the timer wins (default 600s, env `DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS`),
-the session terminates with a timeout error. Catches stuck states the circuit
-breaker doesn't see (MCP hang, `ctx.call_child_workflow` placement stall, tool
-loop inside a successful activity).
+- **Start timeout** — the workflow instance never appears
+  (`DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS`, default 900s).
+- **Idle timeout** — the workflow exists but stops making progress
+  (`DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS`, default 300s; progress tracked
+  via `workflow_progress_marker` / benchmark activity markers).
 
-Trade-off: Dapr workflow timers fire at their own pace after pod replay, but
-they are *durable* — once created they persist across pod restarts.
+Crucially, the monitor's non-terminal-timeout action defaults to **`"warn"`**
+(`DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION`,
+`normalize_nonterminal_timeout_action` at `session_host_monitor.py:39`): on an
+idle/start stall it only **logs** — it does NOT terminate the session unless the
+env is explicitly set to `terminate`. So unlike the old 600s timer, the default
+posture is observe-and-warn, not cut off.
+
+Trade-off: because the thread lives in-process, it does not survive a pod restart
+the way a durable Dapr timer did; a fresh pod re-arms it from scratch.
 
 ### Image tool_result compaction — `src/anthropic_adapter.py::_compact_image_tool_results`
 
@@ -304,7 +316,7 @@ and deterministic — safe to run on every replay tick.
 | `Workflow actor … failed: CreateWorkflowInstance … the app may not be available` | Target pod scaled to 0 or in a different namespace from the caller. | Wake + confirm same-ns placement. |
 | Tight loop of `Ignoring unexpected taskCompleted event with ID = N` | Downstream symptom of CreateWorkflowInstance failing → orchestrator's execute() can't apply the activity result. | Inspect daprd log on the parent for the real error. |
 | Pod logs `[call-llm] circuit-breaker tripped after 3 empty/failed LLM responses` | Anthropic SDK #1204 thinking-only responses, or the conversation history got corrupted (e.g., `tool_use` without matching `tool_result`). | Check logs above the trip for the underlying 4xx; usually benign — circuit-breaker breaks the loop and session.error publishes. |
-| Run sits at 75%+ for > 10 min with active LLM calls but no progress | Validator agent over-exploring. | Tighten the validator prompt (fewer tool calls); bump `maxTurns` down; confirm `SESSION_TURN_TIMEOUT_SECONDS` will catch it. |
+| Run sits at 75%+ for > 10 min with active LLM calls but no progress | Validator agent over-exploring. | Tighten the validator prompt (fewer tool calls); bump `maxTurns` down. NOTE: the old `SESSION_TURN_TIMEOUT_SECONDS` no longer exists — the host monitor's idle timeout defaults to `"warn"` (set `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION=terminate` to make it cut off). |
 | Anthropic HTTP 400 `prompt is too long: N > 1000000` | Too many base64-image tool_results in context. | Image compaction should fire automatically; lower `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` or reduce screenshot count in validator prompt. |
 | Live-preview URL returns 404 "Retained sandbox not found" | `workflow_workspace_sessions` row missing or `status='cleaned'`. | Confirm `persist_workspace_session` activity ran (orchestrator log) and the workflow spec has `with.keepAfterRun: true` on the `workspace/profile` step. Manual fix: `UPDATE workflow_workspace_sessions SET status='active' WHERE workflow_execution_id=<id>`. |
 | Trigger value like `${ .trigger.animationDescription }` shows up as literal in the agent prompt | SW 1.0 template engine only evaluates the value when the entire string is wrapped in `${...}`. | Re-write the prompt as a single jq concatenation: `"${ .trigger.X + \" — rest of prompt\" }"`. |
@@ -312,7 +324,8 @@ and deterministic — safe to run on every replay tick.
 ## See also
 
 - `services/agent-runtime-controller/src/main.py` — the Kopf operator.
-- `services/dapr-agent-py/src/main.py` — `OpenShellDurableAgent` (call_llm circuit breaker, session_workflow timer).
+- `services/dapr-agent-py/src/main.py` — `OpenShellDurableAgent` (call_llm circuit breaker; `_run_session_host_monitor` out-of-band thread).
+- `services/dapr-agent-py/src/session_host_monitor.py` — host-monitor decision helpers (`normalize_nonterminal_timeout_action` default `"warn"`).
 - `services/dapr-agent-py/src/anthropic_adapter.py` — `_compact_image_tool_results`, `patched_generate`.
 - `services/workflow-orchestrator/activities/persist_workspace_session.py` — `workflow_workspace_sessions` UPSERT.
 - `services/workflow-orchestrator/workflows/sw_workflow.py` — `_handle_call_task` (post-workspace/profile yield), `_should_cleanup_workspaces`.

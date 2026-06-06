@@ -4,7 +4,7 @@ Workflow Builder is a visual workflow system that uses Dapr Workflows for durabl
 
 ## Current Runtime Model
 
-The active runtime runs on `kind-ryzen` for local development and on
+The active runtime runs on the `ryzen` local Talos spoke for development and on
 GitOps-managed Talos spoke clusters for shared environments. `dev` is a
 Crossplane-owned Hetzner Talos spoke managed from the hub through stacks,
 source-hydrator, GitOps Promoter, and hub ArgoCD. The May 2026 dev rebuild uses
@@ -204,9 +204,10 @@ openshell-agent-runtime / dapr-agent-py / dapr-swe
 
 Dispatch is owned by `services/workflow-orchestrator/workflows/sw_workflow.py`:
 `_AGENT_ACTION_TYPES = {"durable/run"}` gates the native child-workflow branch,
-`_REMOVED_AGENT_ACTION_TYPES` rejects legacy slugs (`dapr-agent-py/run`,
-`claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph*`,
-`dapr-swe/run`, `durable/plan`, `mastra/*`, `agent/*`). Everything else funnels
+`_REMOVED_AGENT_ACTION_TYPES` rejects legacy slugs (`claude/run`,
+`openshell/run`, `openshell/session-start`, `openshell-langgraph/run`,
+`openshell-langgraph-observable/run`, `dapr-agent-py/run`, `dapr-swe/run`,
+`durable/plan`). Everything else funnels
 through `activities/execute_action.py` which calls function-router via
 `activities/dapr_invoke.py` (`DaprClient().invoke_method`).
 
@@ -320,6 +321,16 @@ Non-responsibilities (deliberately removed):
 
 ### dapr-agent-py
 
+Built **on the official GA `dapr-agents` framework** (pinned `dapr-agents==1.0.3`
+in `services/dapr-agent-py/pyproject.toml`, hard-guarded at boot by
+`assert_dapr_agents_version()` in `src/dependency_guard.py`, called from
+`src/main.py:192`). `class OpenShellDurableAgent(DurableAgent)`
+(`src/main.py:1668`) subclasses the framework's `DurableAgent` and reuses
+`DaprChatClient`, `AgentRunner`, `MCPClient`, and `WorkflowContextInjectedTool`
+— it is not a from-scratch agent. The per-provider LLM adapters monkeypatch
+`DaprChatClient.generate` to make **direct provider HTTP calls**, deliberately
+bypassing the still-alpha Dapr Conversation API.
+
 Provides:
 
 - native Dapr child workflow execution for `durable/run`
@@ -328,6 +339,11 @@ Provides:
 - direct OpenAI Responses API adapter for `openai/gpt-5.4` and `openai/o3`
 - runtime MCP client setup from `agentConfig.mcpServers`
 - MCP tool dispatch alongside built-in workspace tools
+- the only retry policy on the durable path:
+  `WorkflowRetryPolicy(max_attempts=8, initial_backoff_seconds=4,
+  max_backoff_seconds=45, backoff_multiplier=1.5)` wrapping the agent's
+  `call_llm` (`src/main.py:5897`). This lives on the **callee** side. The
+  orchestrator's own internal activities have **no** `retry_policy`.
 
 ### openshell-agent-runtime
 
@@ -382,7 +398,7 @@ When debugging the system, check in this order:
 1. Is the parent workflow healthy in `workflow-orchestrator`?
 2. Did `workflow-orchestrator` resolve the workflow as draft or published?
 3. Did `function-router` route the action to the intended backend?
-4. Did the OpenShell runtime or LangGraph runtime produce normalized child-run output?
+4. Did the OpenShell runtime (or the `durable/run` agent child workflow) produce normalized child-run output?
 5. Did the run persist durable review artifacts?
 6. Is the UI reading those persisted artifacts instead of a fallback?
 

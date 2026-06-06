@@ -6,13 +6,15 @@ This document describes the current `workflow-builder` runtime.
 
 The current core runtime is:
 
-- `workflow-builder`
-- `workflow-builder-svelte`
+- `workflow-builder` (SvelteKit UI + BFF; the separate `workflow-builder-svelte` repo is deprecated and not deployed)
 - `workflow-orchestrator`
 - `function-router`
-- `dapr-agent-py`
+- `dapr-agent-py` (legacy shared agent runtime; new workflows address per-agent `agent-runtime-<slug>` runtimes via `agentRef`)
+- `agent-runtime-controller` + dynamic `agent-runtime-<slug>` pods
 - `openshell-agent-runtime`
-- `dapr-swe`
+- `fn-system` (Knative; `system/*`)
+- `code-runtime` (`code/*`), `crawl4ai-adapter` (`web/*`)
+- `dapr-swe` (separate distributed coding runtime; `dapr-swe/*`)
 - `swebench-coordinator`
 - `swebench-evaluator`
 - `fn-activepieces`
@@ -101,7 +103,7 @@ TypeScript sync credential broker + Knative routing proxy.
 - Invoked by: workflow-orchestrator via `DaprClient().invoke_method("function-router", "execute", ...)` (see `services/workflow-orchestrator/activities/dapr_invoke.py`). Raw HTTP is no longer used on this path.
 - Key endpoint: `POST /execute`
 - Responsibilities:
-  - **Credential broker**: the only service with Dapr secret store + WB decrypt API access. AES-256-CBC decrypts AP connection values, maps to env-var names per integration, writes `credential_access_logs` audit rows.
+  - **Credential broker**: fetches decrypted connection values by HTTP-GETting the BFF internal decrypt endpoint (`/api/internal/connections/<externalId>/decrypt`, with the Activepieces `/api/v1/dapr/connections/decrypt` endpoint tried first when AP context is present), maps them to env-var names per integration, and writes `credential_access_logs` audit rows. function-router does **not** perform AES-256-CBC decryption itself — the BFF owns the cipher (`src/lib/server/security/encryption.ts`, `createDecipheriv('aes-256-cbc')`). function-router brokers and audits; the BFF holds the key.
   - **Slug-to-service routing**: ConfigMap-driven registry (`/config/functions.json`). The ConfigMap is **authoritative** over the hardcoded `BUILTIN_FALLBACK_REGISTRY`; builtin only fills slugs the ConfigMap omits (merge order corrected 2026-04-20 in `services/function-router/src/core/registry.ts`).
   - **Knative response normalization**: flattens inconsistent `{success, data, error}` shapes.
 
@@ -118,13 +120,18 @@ Current route contract (merged registry — ConfigMap + BUILTIN):
 Not routed here (by design):
 
 - `durable/run` — dispatched by workflow-orchestrator via `ctx.call_child_workflow(app_id=<agent runtime app id>)`, where the app id is stamped by the BFF resolver and may be a dedicated `agent-runtime-<slug>` runtime or a shared class pool. Retry resilience is handled by `WorkflowRetryPolicy(max_attempts=8)` on the callee side in `dapr-agent-py`.
-- `dapr-agent-py/*`, `dapr-agent-py-testing/*`, `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph*/run`, `dapr-swe/run`, `durable/plan`, `mastra/*`, `agent/*` — rejected at the orchestrator via `_REMOVED_AGENT_ACTION_TYPES` with a clear error; never reach function-router.
+- `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph/run`, `openshell-langgraph-observable/run`, `dapr-agent-py/run`, `dapr-swe/run`, `durable/plan` — rejected at the orchestrator via `_REMOVED_AGENT_ACTION_TYPES` with a clear error; never reach function-router. (Older `mastra/*` and `agent/*` families were removed entirely and are no longer in the registry or the rejection set.)
 
 The image can also receive a mounted registry override from the cluster. The merge is `{ ...loadedConfigMap, ...BUILTIN_FALLBACK_REGISTRY }` — BUILTIN keys win, so core cross-cutting routes stay stable. Check the live ConfigMap + `src/core/registry.ts` when runtime routing and expectations disagree.
 
 ## dapr-agent-py
 
-Native Python Dapr agent runtime for `durable/run`.
+Python Dapr agent runtime for `durable/run`, built **on the official GA
+`dapr-agents` framework** (`dapr-agents==1.0.3`, boot-guarded via
+`assert_dapr_agents_version()`). `OpenShellDurableAgent` subclasses the
+framework's `DurableAgent` and reuses `DaprChatClient` / `AgentRunner` /
+`MCPClient`. Per-provider LLM adapters monkeypatch `DaprChatClient.generate`
+for direct provider HTTP calls (bypassing the alpha Dapr Conversation API).
 
 - Dapr app-id: `dapr-agent-py`
 - Responsibilities:

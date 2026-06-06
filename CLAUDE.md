@@ -4,7 +4,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 
 > **Supplementary docs** (`docs/`):
 > - `per-agent-runtime.md` — AgentRuntime CRD + controller, pod shape, Dapr Component scoping, wake/idle TTL, dispatch
-> - `activepieces-auth.md` / `activepieces-integration-implementation.md` — AP auth + integration
+> - `activepieces-auth.md` — AP auth + integration
 > - `mcp-agent-workflows.md` — MCP-enabled `dapr-agent-py` workflow method
 > - `hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins (Claude Code port)
 > - `CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
@@ -29,12 +29,12 @@ Per-session sandbox pods (chromium + OpenShell workspace containers) live in `op
 
 **Key dispatch invariants**
 - **Per-agent runtime pods** (`agent-runtime-<slug>`) live in `workflow-builder` ns. One Deployment per published agent, materialized by the controller from `AgentRuntime` CRs. Scale to 0 on idle (default `idleTtlSeconds=1800`); woken via `agents.x-k8s.io/wake` annotation.
-- `durable/run` is a **Dapr child workflow**, not HTTP. `spawn_session_for_workflow` activity POSTs to `/api/internal/sessions/ensure-for-workflow` which finds-or-creates the session row, rewrites Playwright stdio MCP presets to per-pod sidecar URL, wakes the target pod (waits up to 20s for `phase=Active`). Parent then yields `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>", instance_id=<deterministic session_id>, autoTerminateAfterEndTurn=true)`. Retry resilience via `WorkflowRetryPolicy(max_attempts=8)`.
+- `durable/run` is a **Dapr child workflow**, not HTTP. `spawn_session_for_workflow` activity POSTs to `/api/internal/sessions/ensure-for-workflow` which finds-or-creates the session row, rewrites Playwright stdio MCP presets to per-pod sidecar URL, wakes the target pod (waits up to 20s for `phase=Active`). Parent then yields `ctx.call_child_workflow("session_workflow", app_id="agent-runtime-<slug>", instance_id=<deterministic session_id>, autoTerminateAfterEndTurn=true)`. Retry resilience lives on the **agent callee** — `dapr-agent-py` decorates `session_workflow` with `WorkflowRetryPolicy(max_attempts=8)` (`src/main.py:5897`) wrapping `call_llm`; the orchestrator's own internal activities/`CreateInstance` carry **no** `retry_policy`.
 - **Direct (UI-initiated) sessions** go through `src/lib/server/sessions/spawn.ts`, which wakes the pod and calls Dapr `StartInstance` via service invoke (bare app-id, no `.namespace` suffix).
 - **MCP sidecar rewrite**: both paths call `rewriteMcpForBrowserSidecar` (`src/lib/server/agents/mcp-sidecar.ts`) — Playwright entries become `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }`.
 - **Dapr Component visibility**: `workflowstatestore` is the only `actorStateStore=true` Component visible to agents; `dapr-agent-py-statestore` and legacy `agent-workflow` are non-actor stores. New agents must NOT be added to Component scopes.
 - Every non-agent action: `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | openshell-agent-runtime | code-runtime | crawl4ai-adapter}`. Orchestrator uses `activities/dapr_invoke.py` (no raw HTTP). `openshell-agent-runtime` consolidates `workspace/* + browser/* + openshell/*` (legacy `workspace-runtime` removed 2026-04-21).
-- function-router owns credential decryption (AES-256-CBC from `app_connection`) + `credential_access_logs` audit. Orchestrator never holds plaintext secrets.
+- The **BFF** owns credential decryption — `src/lib/server/security/encryption.ts` does `createDecipheriv('aes-256-cbc')` (line 56). function-router is the **credential broker**: at execution it HTTP-GETs the BFF `/api/internal/connections/<id>/decrypt` endpoint (`function-router/src/core/credential-service.ts`) and writes the `credential_access_logs` audit — it does NOT decrypt itself. Orchestrator never holds plaintext secrets.
 
 ## Tech Stack
 
@@ -42,8 +42,8 @@ Per-session sandbox pods (chromium + OpenShell workspace containers) live in `op
 - **Backend**: SvelteKit API routes (BFF proxy)
 - **Database**: PostgreSQL via Drizzle ORM
 - **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
-- **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
-- **Durable AI Agent**: per-agent `agent-runtime-<slug>` pod running `dapr-agent-py`. Scales 0↔1 on demand.
+- **Workflow Engine**: Dapr Workflow SDK (Python, `dapr-ext-workflow==1.17.1`) via workflow-orchestrator; Dapr control plane 1.17.9
+- **Durable AI Agent**: per-agent `agent-runtime-<slug>` pod running `dapr-agent-py` — built **ON the GA dapr-agents framework** (subclasses `DurableAgent`, reuses `DaprChatClient`/`AgentRunner`/`MCPClient`; pinned `dapr-agents==1.0.3`, boot-guarded via `assert_dapr_agents_version()`). 9 LLM adapters monkeypatch `DaprChatClient.generate` for DIRECT provider calls (bypassing the still-ALPHA Dapr Conversation API). Scales 0↔1 on demand. Durable-state/payload ceiling = the 16 MiB gRPC `max-body-size` (Postgres store).
 - **Function Execution**: function-router (Dapr invoke) → fn-system / fn-activepieces / openshell-agent-runtime / code-runtime
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
 - **Observability**: OpenTelemetry → OTEL Collector → Jaeger / MLflow
@@ -218,10 +218,10 @@ Every `durable/run` step goes through a session bridge so workflow-driven runs a
 
 ### Safety nets on the agent side (2026-04-21)
 
-Three defensive layers prevent `durable/run` hangs:
+Defensive layers prevent `durable/run` hangs:
 
 - **Empty-response circuit breaker** (`services/dapr-agent-py/src/main.py` `call_llm`): tracks consecutive empty-content + no-tool-calls responses (or exceptions counted as empty). After `DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD` (default 3), raises `AgentError`. Catches Anthropic SDK [#1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204) (Opus 4.7 + thinking + tools emits empty `end_turn`).
-- **Session-turn timer** (`session_workflow` wraps child in `when_any([child, timer])`): if child takes >`DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS` (default 600), raises timeout `AgentError`.
+- **Host-monitor thread** (`services/dapr-agent-py/src/main.py` `_run_session_host_monitor`, started at boot; logic in `session_host_monitor.py`): an **out-of-band** background thread polling workflow state for start/idle stalls. The old in-workflow durable **session-turn timer** (`when_any([child, timer])`, default 600s) was **removed** in commit `72154581` — `grep SESSION_TURN_TIMEOUT|when_any|create_timer services/dapr-agent-py/src/` = 0. The host-monitor's default idle/start action is **`"warn"`** (env `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION`); only `terminate` actually kills the session. Restoring a durable `when_any` turn-timer is open work.
 - **Image tool_result compaction** (`anthropic_adapter.py` `_compact_image_tool_results`): keeps only last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3) intact image tool_result blocks; older ones replaced with placeholder text. Prevents 1M-token overflow from screenshot accumulation.
 
 ### Workspace session persistence
@@ -290,7 +290,7 @@ Port of Claude Code's hooks + plugins surface. Feature-flagged via `DAPR_AGENT_P
 
 - Credentials: AES-256-CBC encrypted in `app_connections`
 - Auth types: `OAUTH2`, `SECRET_TEXT`, `BASIC_AUTH`, `CUSTOM_AUTH`
-- Flow: User creates → encrypted in DB → function-router decrypts at execution
+- Flow: User creates → encrypted in DB → at execution function-router fetches plaintext from the BFF `/decrypt` endpoint (BFF does the AES-256-CBC decryption; function-router brokers + audits)
 - Adding piece: (1) `installed-pieces.ts`, (2) npm dep to fn-activepieces, (3) `piece-registry.ts`, (4) rebuild
 
 > See `docs/activepieces-auth.md`.
@@ -409,7 +409,7 @@ trigger {topic, urls, extractionPrompt}
 - **Session rows with `project_id=NULL`** → can't happen post migration 0040. If seen, something inserts outside BFF + bridge paths
 - **Workflow-driven sessions show raw agent IDs** → ephemeral agents filtered from `/api/agents` by design. `listSessions` LEFT JOINs `agents` returns `agentName/agentSlug/agentAvatar/agentEphemeral`
 - **Agent loops with empty responses** → Anthropic SDK [#1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204). Circuit breaker in `call_llm` trips after 3 (`DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD`); look for `[call-llm] circuit-breaker tripped`
-- **Child session hangs with no LLM traffic** → session-turn timer (default 600s, `DAPR_AGENT_PY_SESSION_TURN_TIMEOUT_SECONDS`) fires via `when_any([child, timer])`. Search logs for `Session turn N exceeded`
+- **Child session hangs with no LLM traffic** → the in-workflow session-turn timer was REMOVED (commit `72154581`); there is no durable `when_any([child, timer])` cutoff anymore. Only the out-of-band `_run_session_host_monitor` thread observes idle/start stalls, and its default action is `"warn"` (set `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION=terminate` to make it kill). Search logs for `[session-host]`
 - **Anthropic 400 `prompt is too long: N > 1000000`** → too many image tool_results. `_compact_image_tool_results` keeps last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3); lower if still overflowing
 - **Anthropic 400 `Streaming is required ...`** → non-streaming call estimated >10 min. Fixed 2026-04-21 by routing all calls through `_stream_final_message`. Lower `DAPR_AGENT_PY_MAX_TOKENS` (default 16384) if reappears
 - **dapr-agent-py code changes need TWO image builds**: `dapr-agent-py:git-<sha>` (legacy pods, GitOps tag bump) + `dapr-agent-py-sandbox:latest` (per-agent runtime pods, `imagePullPolicy: Always`)
@@ -426,4 +426,4 @@ trigger {topic, urls, extractionPrompt}
 
 ---
 
-**Last Updated**: 2026-06-05
+**Last Updated**: 2026-06-06

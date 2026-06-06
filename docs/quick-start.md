@@ -101,16 +101,17 @@ Draft runs execute through `dynamic_workflow`. Published runs execute as registe
 
 ## Real Cluster Rollout
 
-DevSpace is not enough to change the GitOps-managed cluster.
+The Skaffold inner loop (HMR file-sync) is not enough to change the
+GitOps-managed cluster — it pauses ArgoCD for the target apps and never commits.
 
 For a real rollout:
 
-1. build images
-2. push them to the in-cluster registry
-3. update `stacks/main`
-4. let ArgoCD reconcile
+1. push source to `origin/main`; the hub Tekton outer-loop builds the image and pushes it to GHCR (`ghcr.io/pittampalliorg/<svc>:git-<sha>`)
+2. update `stacks/main` image pins (dev/staging via `release-pins/`; ryzen via its active-development kustomization)
+3. let ArgoCD reconcile (ryzen mirrors `overlays/ryzen@main` automatically; dev/staging are gated through source-hydrator + GitOps Promoter)
 
-If live behavior and local code disagree, check `stacks/main` first.
+The in-cluster Gitea container registry and `idpbuilder stacks sync` are
+retired. If live behavior and local code disagree, check `stacks/main` first.
 
 ## Basic Troubleshooting
 

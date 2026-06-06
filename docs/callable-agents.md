@@ -37,7 +37,9 @@ workflow instances by `instance_id` instead of double-spawning.
 ## SDK extension point
 
 `CallAgentWorkflowTool` subclasses `dapr_agents.tool.workflow.tool_context.WorkflowContextInjectedTool`
-(available in `dapr-agents>=1.0.1`). The base `DurableAgent.agent_workflow`
+(available in `dapr-agents>=1.0.1`; the service is currently pinned to the GA
+`dapr-agents==1.0.3` and boot-guards that exact version via
+`assert_dapr_agents_version()`). The base `DurableAgent.agent_workflow`
 dispatch loop detects it via
 `isinstance(tool_obj, WorkflowContextInjectedTool)` and routes the tool
 call through `ctx.call_child_workflow(...)` inline — the parent yields on

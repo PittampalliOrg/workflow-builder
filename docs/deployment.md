@@ -6,15 +6,17 @@ This document describes the current deployment model for `workflow-builder`.
 
 The active cluster shape is:
 
-- `workflow-builder`
-- `workflow-builder-svelte`
+- `workflow-builder` (SvelteKit UI + BFF; the separate `workflow-builder-svelte` repo is deprecated and not deployed)
 - `workflow-orchestrator`
 - `function-router`
+- `dapr-agent-py` + `agent-runtime-controller` and dynamic `agent-runtime-<slug>` pods
 - `openshell-agent-runtime`
+- `fn-system`, `code-runtime`, `crawl4ai-adapter`
 - `dapr-swe`
+- `swebench-coordinator` + `swebench-evaluator`
 - `fn-activepieces`
 - `postgresql`
-- Dapr sidecars and their Redis/pub-sub backing services
+- Dapr sidecars and their Redis/pub-sub backing services (Dapr control plane 1.17.9)
 
 ## Deployment Truth
 
@@ -51,18 +53,17 @@ Use this to change the real cluster:
 3. update `stacks/main` image pins or manifests
 4. let ArgoCD reconcile
 
-On `ryzen`, changing only this repo does not change the real cluster until the corresponding `stacks/main` change is delivered with `idpbuilder stacks sync` or `cluster-update`.
+On `ryzen`, changing only this repo does not change the real cluster until the corresponding `stacks/main` change lands. ryzen's local autonomous ArgoCD (`root-ryzen`) reconciles `packages/overlays/ryzen` from `main` directly, so a merged `stacks/main` change is mirrored to the cluster on the next sync (with `ryzen-sync.sh` available for an immediate post-merge refresh). The retired `idpbuilder stacks sync` / local Gitea / DevSpace inner loop no longer applies; the fast inner loop is Skaffold (no-commit file-sync).
 
 ## Build and Promotion Model
 
 The cluster uses a GitOps and hub-build flow:
 
 - app repos contain source
-- Tekton builds images in the hub cluster
+- the hub Tekton outer-loop builds images and pushes to GHCR (`ghcr.io/pittampalliorg/<image>:git-<sha>`); the in-cluster Gitea container registry is retired
 - GHCR stores promoted built image tags and digests
-- `stacks/main` pins the live image refs
-- ArgoCD reconciles the runtime from `stacks/main`
-- ryzen local manifest iteration uses `idpbuilder stacks sync`, which snapshots `stacks/main` into local Gitea and refreshes only affected ArgoCD apps; current syncs preserve active-development image pins by default, require explicit `--seed-images=true` for bootstrap rewrites, and serialize mutating sync/watch sessions with a per cluster/repo/branch lock
+- `stacks/main` pins the live image refs (dev/staging via `release-pins/`; ryzen via its active-development kustomization)
+- ArgoCD reconciles the runtime from `stacks/main` (ryzen's local autonomous `root-ryzen` ArgoCD tracks `overlays/ryzen@main` directly; dev/staging are gated through source-hydrator + GitOps Promoter)
 
 If the live cluster does not match local code, first check whether the image tags and manifests in `stacks/main` were updated.
 
@@ -73,7 +74,7 @@ The expected live coding path is:
 1. `workflow-builder` starts a run
 2. `workflow-orchestrator` resolves draft or published execution target
 3. `durable/run` action nodes dispatch via `ctx.call_child_workflow` directly to `dapr-agent-py` (native Dapr child workflow, no function-router hop)
-4. `workspace/*`, `browser/*`, `openshell/*`, `system/*`, `code/*`, `_default` (AP pieces) dispatch via Dapr service invoke to `function-router`, which decrypts credentials and forwards to the target runtime
+4. `workspace/*`, `browser/*`, `openshell/*`, `system/*`, `code/*`, `web/*`, `_default` (AP pieces) dispatch via Dapr service invoke to `function-router`, which brokers credentials (fetches plaintext from the BFF decrypt endpoint; the BFF — not function-router — owns the AES-256-CBC cipher) and forwards to the target runtime
 5. `dapr-swe/*` actions route only when a workflow explicitly targets that separate runtime
 6. the UI reads persisted artifacts back through the BFF
 
@@ -105,9 +106,9 @@ dapr-agent-xlsx -> <registry>/openshell-sandbox-xlsx:<tag>
 ```
 
 That sandbox image should contain spreadsheet dependencies in the image. Update
-the image mapping in `stacks/main` and deliver it to ryzen with
-`idpbuilder stacks sync`; do not rely on runtime package installation inside the
-agent workflow.
+the image mapping in `stacks/main` and let ArgoCD reconcile it (ryzen mirrors
+`overlays/ryzen@main` automatically); do not rely on runtime package
+installation inside the agent workflow.
 
 For hooks + plugins support, the `dapr-agent-py` and
 `dapr-agent-py-testing` Deployments set:
@@ -194,7 +195,7 @@ Important runtime dependencies include:
 - `OPENAI_API_KEY` for GPT-5.4 runs
 - `OPENAI_REASONING_EFFORT` for OpenAI Responses API reasoning control
 - OpenShell runtime availability
-- local Gitea registry reachability from cluster nodes
+- GHCR image-pull reachability from cluster nodes (the in-cluster Gitea container registry is retired)
 - healthy `dapr-system`
 
 ## Current Validated Workflow
