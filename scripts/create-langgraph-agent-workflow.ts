@@ -33,7 +33,7 @@ const DEFAULT_REPOSITORY_OWNER = "PittampalliOrg";
 const DEFAULT_REPOSITORY_REPO = "workflow-builder";
 const DEFAULT_REPOSITORY_BRANCH = "main";
 const DEFAULT_TARGET_DIR = "workflow-builder";
-const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_VERIFY_COMMANDS = `python -m py_compile scripts/langgraph_smoke_report.py
 python scripts/langgraph_smoke_report.py`;
 const DEFAULT_PROMPT = `Plan how to add a new Python script at scripts/langgraph_smoke_report.py. The script should recursively scan the services directory for files named app.py, print a JSON object with a sorted list of matching relative file paths, and include a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.

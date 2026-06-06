@@ -86,7 +86,7 @@ _DEFAULT_ROUTE_MAP: dict[str, str] = {
     "llm-together-qwen3-coder-480b": "together-qwen3-coder-480b",
     "llm-together-glm-51": "together-glm-51",
     # OpenAI (2 routes)
-    "llm-openai-gpt5": "gpt-5.4",
+    "llm-openai-gpt5": "gpt-5.5",
     "llm-openai-o3": "o3",
     # Anthropic (3 routes)
     "llm-anthropic-opus": "anthropic-opus",

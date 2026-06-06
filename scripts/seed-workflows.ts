@@ -408,7 +408,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 	const agentConfig = JSON.stringify({
 		name: "Coding Agent",
 		instructions: EXECUTOR_INSTRUCTIONS,
-		modelSpec: "gpt-5.4",
+		modelSpec: "gpt-5.5",
 		maxTurns: 260,
 		timeoutMinutes: 120,
 		tools: ["glob", "grep", "read", "edit", "write", "bash"],
@@ -500,7 +500,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 				config: {
 					cwd: clonePath,
 					mode: "plan_mode",
-					model: "gpt-5.4",
+					model: "gpt-5.5",
 					tools: JSON.stringify([
 						"glob",
 						"grep",
@@ -559,7 +559,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 				config: {
 					cwd: clonePath,
 					mode: "execute_direct",
-					model: "gpt-5.4",
+					model: "gpt-5.5",
 					tools: JSON.stringify([
 						"glob",
 						"grep",
@@ -904,7 +904,7 @@ function buildNodes(profileVersion: number) {
 				config: {
 					actionType: "durable/run",
 					mode: "plan_mode",
-					model: "openai/gpt-5.4",
+					model: "openai/gpt-5.5",
 					prompt:
 						"Analyze this minimal workflow-smoke repository and produce an execution-ready plan for a small but real multi-file repository improvement.\n\nCurrent repository context:\n- The repository is intentionally minimal.\n- It currently contains a README and is used for workflow smoke tests.\n\nRequired deliverables:\n1) scripts/generate-report.sh\n   - bash script that writes docs/report.md summarizing the repository purpose and current branch.\n2) scripts/verify-repo.sh\n   - bash script that checks required files exist and that docs/report.md contains the expected heading.\n3) docs/report.md\n   - generated project report with at least:\n     - title\n     - repository purpose\n     - workflow smoke note\n4) docs/usage.md\n   - short usage instructions for the two scripts.\n\nValidation expectation for execute step:\n- bash -n scripts/generate-report.sh scripts/verify-repo.sh\n- bash scripts/generate-report.sh\n- bash scripts/verify-repo.sh\n\nReturn a concise, ordered plan in <proposed_plan> format.",
 					maxTurns: String(PLANNER_MAX_TURNS),
@@ -918,7 +918,7 @@ function buildNodes(profileVersion: number) {
 					agentConfig: {
 						name: "Planning Agent",
 						tools: ["glob", "grep", "read"],
-						modelSpec: "openai/gpt-5.4",
+						modelSpec: "openai/gpt-5.5",
 						maxTurns: PLANNER_MAX_TURNS,
 						instructions: PLANNER_INSTRUCTIONS,
 						timeoutMinutes: PLANNER_TIMEOUT_MINUTES,
@@ -946,7 +946,7 @@ function buildNodes(profileVersion: number) {
 				config: {
 					actionType: "durable/run",
 					mode: "execute_direct",
-					model: "openai/gpt-5.4",
+					model: "openai/gpt-5.5",
 					prompt:
 						"Execute the approved plan artifact and implement the repository improvement in this minimal workflow-smoke repo.\n\nYou must create or update exactly these repository files:\n- scripts/generate-report.sh\n- scripts/verify-repo.sh\n- docs/report.md\n- docs/usage.md\n\nHard requirements:\n- Use mutating file tools to create or update those files. Reading files or creating empty directories is not sufficient.\n- scripts/generate-report.sh must write docs/report.md with a '# Repository Report' heading, repository purpose, workflow smoke note, and current branch.\n- scripts/verify-repo.sh must fail if any required file is missing or if docs/report.md does not start with '# Repository Report'.\n- docs/usage.md must explain how to run both scripts.\n- Run and report these commands before finishing:\n  - bash -n scripts/generate-report.sh scripts/verify-repo.sh\n  - bash scripts/generate-report.sh\n  - bash scripts/verify-repo.sh\n- Do not stop after planning, inspection, or directory creation. Finish only after the four required files exist and validation commands pass.",
 					maxTurns: String(EXECUTOR_MAX_TURNS),
@@ -962,7 +962,7 @@ function buildNodes(profileVersion: number) {
 					agentConfig: {
 						name: "Coding Agent",
 						tools: ["glob", "grep", "read", "edit", "write", "bash"],
-						modelSpec: "openai/gpt-5.4",
+						modelSpec: "openai/gpt-5.5",
 						maxTurns: EXECUTOR_MAX_TURNS,
 						instructions: EXECUTOR_INSTRUCTIONS,
 						timeoutMinutes: EXECUTOR_TIMEOUT_MINUTES,
@@ -1393,7 +1393,7 @@ fi`,
 					actionType: "durable/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
-					model: "openai/gpt-5.4",
+					model: "openai/gpt-5.5",
 					tools: durableTools,
 					workspaceRef,
 					cwd: clonePath,

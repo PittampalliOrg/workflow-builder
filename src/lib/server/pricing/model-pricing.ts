@@ -15,6 +15,12 @@ export type ModelPricing = {
 
 export const MODEL_PRICING: Record<string, ModelPricing> = {
 	// Claude Opus family
+	"claude-opus-4-8": {
+		inputPerMillion: 5.0,
+		outputPerMillion: 25.0,
+		cacheReadPerMillion: 0.5,
+		cacheWritePerMillion: 6.25,
+	},
 	"claude-opus-4-7": {
 		inputPerMillion: 5.0,
 		outputPerMillion: 25.0,

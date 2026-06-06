@@ -159,7 +159,7 @@ async function deriveFromPrompt(
 	const prompt = buildDerivationPrompt(userPrompt, existingRepo);
 	const requestedAnthropicModel = normalizeAnthropicModel(selectedModel);
 	const responseText = openaiAvailable
-		? await callOpenAI(prompt, env.OPENAI_MODEL || 'gpt-5.4')
+		? await callOpenAI(prompt, env.OPENAI_MODEL || 'gpt-5.5')
 		: await callAnthropic(
 				prompt,
 				requestedAnthropicModel || env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',

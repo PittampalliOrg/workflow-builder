@@ -245,7 +245,7 @@ def test_current_trace_context_prefers_active_llm_span(telemetry_with_in_memory)
     from src.telemetry.session_tracing import get_current_trace_context
 
     interaction = start_interaction_span("hello")
-    llm = start_llm_request_span("gpt-5.4")
+    llm = start_llm_request_span("gpt-5.5")
     trace_id, span_id = get_current_trace_context()
 
     assert trace_id == f"{llm.get_span_context().trace_id:032x}"

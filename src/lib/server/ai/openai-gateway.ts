@@ -11,7 +11,7 @@ function normalizeBaseUrl(value: string | undefined | null): string | null {
 	return trimmed || null;
 }
 
-function normalizeModel(model: string | undefined | null, fallback = 'gpt-5.4'): string {
+function normalizeModel(model: string | undefined | null, fallback = 'gpt-5.5'): string {
 	const raw = (model ?? '').trim() || fallback;
 	return raw.startsWith('openai/') ? raw.slice('openai/'.length) : raw;
 }

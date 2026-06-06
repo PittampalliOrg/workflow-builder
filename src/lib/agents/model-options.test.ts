@@ -10,10 +10,10 @@ import {
 describe("agent model options", () => {
   it("advertises only Dapr components supported by dapr-agent-py today", () => {
     expect(AGENT_MODEL_OPTIONS.map((option) => option.value)).toEqual([
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
       "anthropic/claude-sonnet-4-6",
       "anthropic/claude-haiku-4-5-20251001",
-      "openai/gpt-5.4",
+      "openai/gpt-5.5",
       "openai/o3",
       "nvidia/meta/llama-3.1-8b-instruct",
       "nvidia/mistralai/mistral-medium-3.5-128b",
@@ -40,16 +40,20 @@ describe("agent model options", () => {
   });
 
   it("canonicalizes legacy and short aliases to the dropdown values", () => {
+    expect(canonicalAgentModelSpec("claude-opus-4-8")).toBe(
+      "anthropic/claude-opus-4-8",
+    );
     expect(canonicalAgentModelSpec("claude-opus-4-7")).toBe(
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
     );
     expect(canonicalAgentModelSpec("claude-opus-4-6")).toBe(
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
     );
     expect(canonicalAgentModelSpec("claude-haiku-4-5")).toBe(
       "anthropic/claude-haiku-4-5-20251001",
     );
-    expect(canonicalAgentModelSpec("gpt-5.4")).toBe("openai/gpt-5.4");
+    expect(canonicalAgentModelSpec("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(canonicalAgentModelSpec("gpt-5.4")).toBe("openai/gpt-5.5");
     expect(canonicalAgentModelSpec("o3")).toBe("openai/o3");
     expect(canonicalAgentModelSpec("meta/llama-3.1-8b-instruct")).toBe(
       "nvidia/meta/llama-3.1-8b-instruct",
@@ -122,7 +126,7 @@ describe("agent model options", () => {
   });
 
   it("formats known aliases with their canonical label", () => {
-    expect(agentModelLabel("claude-opus-4-6")).toBe("Claude Opus 4.7");
+    expect(agentModelLabel("claude-opus-4-6")).toBe("Claude Opus 4.8");
     expect(agentModelLabel("openai/o3")).toBe("o3");
     expect(agentModelLabel("meta/llama-3.1-8b-instruct")).toBe(
       "NVIDIA Llama 3.1 8B",

@@ -118,7 +118,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		],
 		config: base({
 			runtime: "claude-agent-py",
-			modelSpec: "anthropic/claude-sonnet-4-6",
+			modelSpec: "anthropic/claude-opus-4-8",
 			systemPrompt:
 				"You are a pragmatic coding agent. Inspect the workspace, make focused edits, run targeted validation, and report the exact outcome.",
 			maxTurns: 80,
@@ -141,7 +141,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		],
 		config: base({
 			runtime: "claude-agent-py",
-			modelSpec: "anthropic/claude-sonnet-4-6",
+			modelSpec: "anthropic/claude-opus-4-8",
 			systemPrompt: SWE_BENCH_SOLVER_SYSTEM_PROMPT,
 			cacheTtl: "1h",
 			maxTurns: 50,

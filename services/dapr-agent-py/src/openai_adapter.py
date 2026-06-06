@@ -26,7 +26,7 @@ SYSTEM_PROMPT_CACHE_THRESHOLD_CHARS = int(
 )
 
 COMPONENT_MODEL_MAP: dict[str, str] = {
-    "llm-openai-gpt5": "gpt-5.4",
+    "llm-openai-gpt5": "gpt-5.5",
     "llm-openai-o3": "o3",
 }
 
@@ -36,7 +36,7 @@ def _is_openai_component(component: str) -> bool:
 
 
 def _get_openai_model(component: str) -> str:
-    return COMPONENT_MODEL_MAP.get(component, os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-5.4"))
+    return COMPONENT_MODEL_MAP.get(component, os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-5.5"))
 
 
 def _openai_parallel_tool_calls_enabled() -> bool:

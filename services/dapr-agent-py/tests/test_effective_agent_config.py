@@ -107,7 +107,20 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
 @pytest.mark.parametrize(
     ("model_spec", "llm_component", "provider", "provider_model"),
     [
-        ("openai/gpt-5.4", "llm-openai-gpt5", "openai", "gpt-5.4"),
+        ("openai/gpt-5.5", "llm-openai-gpt5", "openai", "gpt-5.5"),
+        ("openai/gpt-5.4", "llm-openai-gpt5", "openai", "gpt-5.5"),
+        (
+            "anthropic/claude-opus-4-8",
+            "llm-anthropic-opus",
+            "anthropic",
+            "claude-opus-4-8",
+        ),
+        (
+            "anthropic/claude-opus-4-7",
+            "llm-anthropic-opus",
+            "anthropic",
+            "claude-opus-4-8",
+        ),
         ("openai/o3", "llm-openai-o3", "openai", "o3"),
         (
             "nvidia/meta/llama-3.1-8b-instruct",
@@ -319,7 +332,7 @@ def test_effective_audit_fields_are_small_and_flat() -> None:
 
 def test_runtime_context_cache_retains_snapshot_audit_fields() -> None:
     snapshot = build_effective_agent_config(
-        agent_config={"modelSpec": "openai/gpt-5.4"},
+        agent_config={"modelSpec": "openai/gpt-5.5"},
         raw_message={},
         turn=2,
         config_revision=3,
@@ -340,8 +353,8 @@ def test_runtime_context_cache_retains_snapshot_audit_fields() -> None:
     assert cached["configHash"] == snapshot["configHash"]
     assert cached["templateName"] == "workflow-builder canonical bundle"
     assert cached["templateHash"] == "t" * 64
-    assert cached["modelSpec"] == "openai/gpt-5.4"
+    assert cached["modelSpec"] == "openai/gpt-5.5"
     assert cached["llmComponent"] == "llm-openai-gpt5"
     assert cached["provider"] == "openai"
-    assert cached["providerModel"] == "gpt-5.4"
+    assert cached["providerModel"] == "gpt-5.5"
     assert cached["effectiveAgentConfig"] == snapshot

@@ -28,7 +28,7 @@ COPY src/ src/
 
 ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
-    CLAUDE_AGENT_PY_DEFAULT_MODEL=claude-sonnet-4-6 \
+    CLAUDE_AGENT_PY_DEFAULT_MODEL=claude-opus-4-8 \
     CLAUDE_AGENT_PY_PERMISSION_MODE=bypassPermissions \
     CLAUDE_AGENT_SDK_CLIENT_APP=workflow-builder-claude-agent-py/0.1.0 \
     CLAUDE_AGENT_SDK_CLI_PATH=/usr/local/bin/claude \

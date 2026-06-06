@@ -12,9 +12,10 @@ from src.claude_sdk_runner import (
 
 
 def test_normalizes_workflow_builder_model_specs() -> None:
+    assert normalize_claude_model("anthropic/claude-opus-4-8") == "claude-opus-4-8"
     assert normalize_claude_model("anthropic/claude-opus-4-7") == "claude-opus-4-7"
     assert normalize_claude_model("claude-sonnet-4-6") == "claude-sonnet-4-6"
-    assert normalize_claude_model("nvidia/qwen") == "claude-sonnet-4-6"
+    assert normalize_claude_model("nvidia/qwen") == "claude-opus-4-8"
 
 
 def test_builds_claude_code_presets_with_appended_system_prompt(tmp_path, monkeypatch) -> None:
@@ -25,7 +26,7 @@ def test_builds_claude_code_presets_with_appended_system_prompt(tmp_path, monkey
             "sessionId": "session-1",
             "renderedSystem": "You are careful.",
             "agentConfig": {
-                "modelSpec": "anthropic/claude-sonnet-4-6",
+                "modelSpec": "anthropic/claude-opus-4-8",
                 "maxTurns": 12,
                 "permissionMode": "bypass",
                 "cwd": "repo",
@@ -39,7 +40,7 @@ def test_builds_claude_code_presets_with_appended_system_prompt(tmp_path, monkey
         "preset": "claude_code",
         "append": "You are careful.",
     }
-    assert options.model == "claude-sonnet-4-6"
+    assert options.model == "claude-opus-4-8"
     assert options.max_turns == 12
     assert options.permission_mode == "bypassPermissions"
     assert options.cwd == str(tmp_path / "repo")

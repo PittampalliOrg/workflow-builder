@@ -36,7 +36,7 @@ Return a concise summary of edits and validation results.`;
 
 const DEFAULT_REPO_OWNER = "PittampalliOrg";
 const DEFAULT_REPO_NAME = "codex";
-const DEFAULT_MODEL = "openai/gpt-5.4";
+const DEFAULT_MODEL = "openai/gpt-5.5";
 const DATABASE_URL = process.env.DATABASE_URL;
 
 type Args = {

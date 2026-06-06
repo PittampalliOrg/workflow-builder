@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 TOOLS_PRESET = {"type": "preset", "preset": "claude_code"}
 SYSTEM_PROMPT_PRESET = {"type": "preset", "preset": "claude_code"}
-DEFAULT_MODEL = os.environ.get("CLAUDE_AGENT_PY_DEFAULT_MODEL", "claude-sonnet-4-6")
+DEFAULT_MODEL = os.environ.get("CLAUDE_AGENT_PY_DEFAULT_MODEL", "claude-opus-4-8")
 DEFAULT_PERMISSION_MODE = os.environ.get(
     "CLAUDE_AGENT_PY_PERMISSION_MODE", "bypassPermissions"
 )

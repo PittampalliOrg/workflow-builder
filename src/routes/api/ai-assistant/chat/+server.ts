@@ -177,8 +177,8 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 	) + (executionContext ? '\n\n' + executionContext : '');
 
 	const model = anthropicKey
-		? anthropic(env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514')
-		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.4');
+		? anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8')
+		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5');
 
 	const modelMessages = messages.map((m) => {
 		const content = typeof m.content === 'string'

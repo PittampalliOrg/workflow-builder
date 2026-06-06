@@ -21,16 +21,20 @@ EFFECTIVE_AGENT_CONFIG_SCHEMA_VERSION = "workflow-builder.effective-agent-config
 MODEL_COMPONENT_MAP: dict[str, str] = {
     # Anthropic
     "anthropic/claude-sonnet-4-6": "llm-anthropic-sonnet",
+    "anthropic/claude-opus-4-8": "llm-anthropic-opus",
     "anthropic/claude-opus-4-7": "llm-anthropic-opus",
     "anthropic/claude-opus-4-6": "llm-anthropic-opus",
     "anthropic/claude-haiku-4-5-20251001": "llm-anthropic-haiku",
     "anthropic/claude-haiku-4-5": "llm-anthropic-haiku",
     "claude-sonnet-4-6": "llm-anthropic-sonnet",
+    "claude-opus-4-8": "llm-anthropic-opus",
     "claude-opus-4-7": "llm-anthropic-opus",
     "claude-opus-4-6": "llm-anthropic-opus",
     "claude-haiku-4-5-20251001": "llm-anthropic-haiku",
     "claude-haiku-4-5": "llm-anthropic-haiku",
     # OpenAI
+    "openai/gpt-5.5": "llm-openai-gpt5",
+    "gpt-5.5": "llm-openai-gpt5",
     "openai/gpt-5.4": "llm-openai-gpt5",
     "gpt-5.4": "llm-openai-gpt5",
     "openai/o3": "llm-openai-o3",
@@ -113,9 +117,9 @@ DEFAULT_LLM_COMPONENT = os.environ.get(
 
 _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-anthropic-sonnet": ("anthropic", "claude-sonnet-4-6"),
-    "llm-anthropic-opus": ("anthropic", "claude-opus-4-7"),
+    "llm-anthropic-opus": ("anthropic", "claude-opus-4-8"),
     "llm-anthropic-haiku": ("anthropic", "claude-haiku-4-5-20251001"),
-    "llm-openai-gpt5": ("openai", "gpt-5.4"),
+    "llm-openai-gpt5": ("openai", "gpt-5.5"),
     "llm-openai-o3": ("openai", "o3"),
     "llm-nvidia-llama31-8b": ("nvidia", "meta/llama-3.1-8b-instruct"),
     "llm-nvidia-mistral-medium-35-128b": (

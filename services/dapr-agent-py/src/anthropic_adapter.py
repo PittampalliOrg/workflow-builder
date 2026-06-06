@@ -75,7 +75,7 @@ _RECOVERY_MESSAGE = (
 # Model mapping: Dapr component name → Anthropic model ID
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-anthropic-sonnet": "claude-sonnet-4-6",
-    "llm-anthropic-opus": "claude-opus-4-7",
+    "llm-anthropic-opus": "claude-opus-4-8",
     "llm-anthropic-haiku": "claude-haiku-4-5-20251001",
 }
 
@@ -571,8 +571,12 @@ def _emit_thinking(thinking_blocks: list[str]) -> None:
 
 def _model_supports_adaptive_thinking(model: str) -> bool:
     """Adaptive thinking is Opus 4.6+ only; Sonnet 4.6 supports it too but
-    behavior differs slightly. Keep the whitelist narrow — opus-4-6 + opus-4-7."""
-    return model.startswith("claude-opus-4-6") or model.startswith("claude-opus-4-7")
+    behavior differs slightly. Keep the whitelist narrow to the current Opus 4 line."""
+    return (
+        model.startswith("claude-opus-4-6")
+        or model.startswith("claude-opus-4-7")
+        or model.startswith("claude-opus-4-8")
+    )
 
 
 def _response_to_assistant_message(

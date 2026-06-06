@@ -151,10 +151,10 @@ export const POST: RequestHandler = async ({ request }) => {
     let responseText: string;
 
     if (anthropicKey) {
-      const model = env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+      const model = env.ANTHROPIC_MODEL || "claude-opus-4-8";
       responseText = await callAnthropic(enrichedPrompt, model, anthropicKey);
     } else {
-      const model = env.OPENAI_MODEL || "gpt-5.4";
+      const model = env.OPENAI_MODEL || "gpt-5.5";
       responseText = await callOpenAI(enrichedPrompt, model);
     }
 

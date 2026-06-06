@@ -16,6 +16,7 @@ from src.compaction.tokens import (
 
 def test_context_window_known_model():
     assert get_context_window("claude-sonnet-4-6") == 200_000
+    assert get_context_window("claude-opus-4-8") == 1_000_000
     assert get_context_window("claude-opus-4-7") == 1_000_000
     assert get_context_window("llm-nvidia-llama31-8b") == 128_000
     assert get_context_window("llm-nvidia-mistral-medium-35-128b") == 262_144

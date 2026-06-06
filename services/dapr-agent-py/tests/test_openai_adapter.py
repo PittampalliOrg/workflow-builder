@@ -208,7 +208,7 @@ def test_openai_llm_usage_event_preserves_llm_span_context(monkeypatch) -> None:
     monkeypatch.setattr(publisher, "publish_session_event", capture)
 
     adapter._publish_llm_usage(
-        model="gpt-5.4",
+        model="gpt-5.5",
         usage={"input_tokens": 1, "output_tokens": 2},
         ttft_ms=1.5,
         success=True,
@@ -318,7 +318,7 @@ def test_publish_llm_usage_stamps_prompt_cache_telemetry(monkeypatch) -> None:
     monkeypatch.setattr(publisher, "publish_session_event", capture)
 
     adapter._publish_llm_usage(
-        model="gpt-5.4",
+        model="gpt-5.5",
         usage={
             "input_tokens": 100,
             "output_tokens": 20,
@@ -363,7 +363,7 @@ def test_publish_llm_usage_omits_prompt_cache_fields_when_no_telemetry(monkeypat
     monkeypatch.setattr(publisher, "publish_session_event", capture)
 
     adapter._publish_llm_usage(
-        model="gpt-5.4",
+        model="gpt-5.5",
         usage={"input_tokens": 5, "output_tokens": 1},
         ttft_ms=10.0,
         success=True,

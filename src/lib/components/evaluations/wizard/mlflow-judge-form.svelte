@@ -21,7 +21,7 @@
 		{ value: 'anthropic-opus', label: 'Anthropic — Claude Opus 4.7' },
 		{ value: 'anthropic-sonnet', label: 'Anthropic — Claude Sonnet 4.6' },
 		{ value: 'anthropic-haiku', label: 'Anthropic — Claude Haiku 4.5' },
-		{ value: 'gpt-5.4', label: 'OpenAI — GPT-5.4' },
+		{ value: 'gpt-5.5', label: 'OpenAI - GPT-5.5' },
 		{ value: 'o3', label: 'OpenAI — o3' },
 		{ value: 'deepseek-v4-pro', label: 'DeepSeek — V4 Pro' },
 		{ value: 'deepseek-v4-flash', label: 'DeepSeek — V4 Flash' },

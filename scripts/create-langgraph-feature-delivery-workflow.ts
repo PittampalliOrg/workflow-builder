@@ -37,7 +37,7 @@ const DEFAULT_REPO_OWNER = "PittampalliOrg";
 const DEFAULT_REPO_NAME = "workflow-builder";
 const DEFAULT_REPO_BRANCH = "main";
 const DEFAULT_TARGET_DIR = "workflow-builder";
-const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_VERIFY_COMMANDS = `pnpm type-check
 pnpm fix`;
 

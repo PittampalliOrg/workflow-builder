@@ -1,5 +1,5 @@
 /**
- * Create a Claude Opus 4.6 agent with all workspace tools.
+ * Create a Claude Opus 4.8 agent with all workspace tools.
  * Usage: pnpm tsx scripts/create-opus-agent.ts
  */
 
@@ -29,22 +29,22 @@ async function main() {
 	const [existing] = await db
 		.select({ id: agents.id })
 		.from(agents)
-		.where(eq(agents.name, "Claude Opus 4.6"))
+		.where(eq(agents.name, "Claude Opus 4.8"))
 		.limit(1);
 
 	if (existing) {
-		console.log(`Agent "Claude Opus 4.6" already exists (id: ${existing.id})`);
+		console.log(`Agent "Claude Opus 4.8" already exists (id: ${existing.id})`);
 		process.exit(0);
 	}
 
 	const [created] = await db
 		.insert(agents)
 		.values({
-			name: "Claude Opus 4.6",
+			name: "Claude Opus 4.8",
 			description:
-				"Full-featured agent powered by Claude Opus 4.6 with all workspace tools enabled.",
+				"Full-featured agent powered by Claude Opus 4.8 with all workspace tools enabled.",
 			agentType: "general",
-			instructions: `You are a highly capable development assistant powered by Claude Opus 4.6.
+			instructions: `You are a highly capable development assistant powered by Claude Opus 4.8.
 
 You have access to all workspace tools. Use them to help users with any development task:
 - Read, write, and edit files in the workspace
@@ -56,7 +56,7 @@ Be thorough, precise, and proactive. When given a task:
 2. Make targeted, well-reasoned changes
 3. Verify your work by reading back files or running tests
 4. Explain what you did and why`,
-			model: { provider: "anthropic", name: "claude-opus-4-6" },
+			model: { provider: "anthropic", name: "claude-opus-4-8" },
 			tools: [
 				{ type: "workspace", ref: "read" },
 				{ type: "workspace", ref: "write" },
@@ -73,7 +73,7 @@ Be thorough, precise, and proactive. When given a task:
 		})
 		.returning();
 
-	console.log(`Created agent "Claude Opus 4.6" (id: ${created.id})`);
+	console.log(`Created agent "Claude Opus 4.8" (id: ${created.id})`);
 	process.exit(0);
 }
 

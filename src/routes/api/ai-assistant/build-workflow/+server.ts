@@ -57,8 +57,8 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 	}
 
 	const model = anthropicKey
-		? anthropic(env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514')
-		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.4');
+		? anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8')
+		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5');
 
 	const userId = locals.session?.userId;
 	const encoder = new TextEncoder();

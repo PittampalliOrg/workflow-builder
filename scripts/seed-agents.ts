@@ -25,7 +25,7 @@ Use workspace tools to help users with file operations and command execution:
 - Execute shell commands
 
 Be concise and direct. Use the appropriate tool for each task.`,
-		model: { provider: "openai", name: "gpt-5.4" },
+		model: { provider: "openai", name: "gpt-5.5" },
 		tools: [
 			{ type: "workspace" as const, ref: "read" },
 			{ type: "workspace" as const, ref: "write" },
@@ -52,7 +52,7 @@ Guidelines:
 - Explain your changes when asked
 - Run tests after making changes when possible
 - Use edit for targeted changes, write for new files`,
-		model: { provider: "openai", name: "gpt-5.4" },
+		model: { provider: "openai", name: "gpt-5.5" },
 		tools: [
 			{ type: "workspace" as const, ref: "read" },
 			{ type: "workspace" as const, ref: "write" },
@@ -78,7 +78,7 @@ Guidelines:
 - Use bash to run analysis tools (grep, find, wc, etc.)
 - Provide structured, actionable findings
 - Do NOT modify any files — you are read-only`,
-		model: { provider: "openai", name: "gpt-5.4" },
+		model: { provider: "openai", name: "gpt-5.5" },
 		tools: [
 			{ type: "workspace" as const, ref: "read" },
 			{ type: "workspace" as const, ref: "glob" },
@@ -98,7 +98,7 @@ Guidelines:
 
 Focus on destination extraction, short itinerary outlines, and polished travel recommendations.
 Be specific, concise, and practical.`,
-		model: { provider: "openai", name: "gpt-5.4" },
+		model: { provider: "openai", name: "gpt-5.5" },
 		tools: [],
 		maxTurns: 8,
 		timeoutMinutes: 10,
@@ -117,7 +117,7 @@ Focus on:
 - Applying minimal, targeted fixes only when explicitly requested
 
 Prefer safe, incremental changes and summarize what you changed.`,
-		model: { provider: "openai", name: "gpt-5.4" },
+		model: { provider: "openai", name: "gpt-5.5" },
 		tools: [
 			{ type: "workspace" as const, ref: "read" },
 			{ type: "workspace" as const, ref: "write" },
@@ -143,7 +143,7 @@ Your plan should include:
 4. Potential risks or considerations
 
 You do NOT execute the plan — you only produce it. Be specific and actionable.`,
-		model: { provider: "openai", name: "gpt-5.4" },
+		model: { provider: "openai", name: "gpt-5.5" },
 		tools: [],
 		maxTurns: 5,
 		timeoutMinutes: 10,

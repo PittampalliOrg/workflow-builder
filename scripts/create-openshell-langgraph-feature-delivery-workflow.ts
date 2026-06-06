@@ -40,7 +40,7 @@ const DEFAULT_REPO_OWNER = "PittampalliOrg";
 const DEFAULT_REPO_NAME = "ai-chatbot";
 const DEFAULT_REPO_BRANCH = "main";
 const DEFAULT_TARGET_DIR = "ai-chatbot";
-const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_MODEL = "gpt-5.5";
 function buildPlanPrompt(triggerId: string, previewAppDir: string): string {
 	return `You are planning a repository feature delivery task for this specific codebase.
 

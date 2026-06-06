@@ -24,8 +24,8 @@ export type AgentModelOption = {
 
 export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
   {
-    value: "anthropic/claude-opus-4-7",
-    label: "Claude Opus 4.7",
+    value: "anthropic/claude-opus-4-8",
+    label: "Claude Opus 4.8",
     provider: "anthropic",
     iconProvider: "anthropic",
     component: "llm-anthropic-opus",
@@ -45,8 +45,8 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-anthropic-haiku",
   },
   {
-    value: "openai/gpt-5.4",
-    label: "GPT-5.4",
+    value: "openai/gpt-5.5",
+    label: "GPT-5.5",
     provider: "openai",
     iconProvider: "openai",
     component: "llm-openai-gpt5",
@@ -215,18 +215,22 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
 export const CUSTOM_AGENT_MODEL_SELECT_VALUE = "__custom_agent_model__";
 
 const AGENT_MODEL_ALIASES: Record<string, string> = {
-  "anthropic/claude-opus-4-7": "anthropic/claude-opus-4-7",
-  "claude-opus-4-7": "anthropic/claude-opus-4-7",
-  "anthropic/claude-opus-4-6": "anthropic/claude-opus-4-7",
-  "claude-opus-4-6": "anthropic/claude-opus-4-7",
+  "anthropic/claude-opus-4-8": "anthropic/claude-opus-4-8",
+  "claude-opus-4-8": "anthropic/claude-opus-4-8",
+  "anthropic/claude-opus-4-7": "anthropic/claude-opus-4-8",
+  "claude-opus-4-7": "anthropic/claude-opus-4-8",
+  "anthropic/claude-opus-4-6": "anthropic/claude-opus-4-8",
+  "claude-opus-4-6": "anthropic/claude-opus-4-8",
   "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-4-6",
   "claude-sonnet-4-6": "anthropic/claude-sonnet-4-6",
   "anthropic/claude-haiku-4-5-20251001": "anthropic/claude-haiku-4-5-20251001",
   "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4-5-20251001",
   "anthropic/claude-haiku-4-5": "anthropic/claude-haiku-4-5-20251001",
   "claude-haiku-4-5": "anthropic/claude-haiku-4-5-20251001",
-  "openai/gpt-5.4": "openai/gpt-5.4",
-  "gpt-5.4": "openai/gpt-5.4",
+  "openai/gpt-5.5": "openai/gpt-5.5",
+  "gpt-5.5": "openai/gpt-5.5",
+  "openai/gpt-5.4": "openai/gpt-5.5",
+  "gpt-5.4": "openai/gpt-5.5",
   "openai/o3": "openai/o3",
   o3: "openai/o3",
   "nvidia/meta/llama-3.1-8b-instruct": "nvidia/meta/llama-3.1-8b-instruct",
