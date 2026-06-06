@@ -1464,6 +1464,7 @@ def test_durable_run_routes_through_session_bridge():
         {
             "childInput": {"sessionId": "child-session"},
             "agentAppId": "agent-runtime-test",
+            "runtimeSandboxName": "agent-host-child-session",
         }
     )
     assert wait_yield["kind"] == "when_any"
@@ -1478,6 +1479,7 @@ def test_durable_run_routes_through_session_bridge():
     assert child_task.input["agentId"] == "agent_123"
     assert child_task.input["agentVersion"] == 4
     assert child_task.input["agentSlug"] == "durable-validation"
+    assert child_task.input["runtimeSandboxName"] == "agent-host-child-session"
     assert child_task.input["sandboxName"] == "ws-test-123"
     assert child_task.input["workspaceRef"] == "ws_test_123"
     assert child_task.input["_message_metadata"]["agentSlug"] == "durable-validation"
@@ -1488,6 +1490,8 @@ def test_durable_run_routes_through_session_bridge():
 
     result = stop.value.value
     assert result["success"] is True
+    assert result["childAppId"] == "agent-runtime-test"
+    assert result["runtimeSandboxName"] == "agent-host-child-session"
 
 
 def test_durable_run_session_bridge_times_out_when_child_does_not_finish():

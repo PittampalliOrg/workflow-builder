@@ -150,6 +150,12 @@ def _turn_input(
         "agentConfig": agent_config,
         "renderedSystem": _rendered_system(input_data),
         "cwd": input_data.get("cwd") or agent_config.get("cwd"),
+        "workspaceRef": input_data.get("workspaceRef"),
+        "sandboxName": input_data.get("sandboxName"),
+        "runtimeSandboxName": input_data.get("runtimeSandboxName"),
+        "environmentConfig": input_data.get("environmentConfig"),
+        "agentAppId": input_data.get("agentAppId"),
+        "agentSlug": input_data.get("agentSlug"),
         "maxTurns": agent_config.get("maxTurns") or input_data.get("maxIterations"),
         "maxIterations": agent_config.get("maxTurns") or input_data.get("maxIterations"),
         "turnIndex": turn_index,
@@ -182,6 +188,7 @@ def session_workflow(
     prompt = _extract_seed_user_message(input_data)
     final_text = ""
     status = "completed"
+    last_result: dict[str, Any] = {}
 
     if session_id and not ctx.is_replaying:
         publish_session_event(session_id, "session.status_starting", {})
@@ -242,6 +249,7 @@ def session_workflow(
             )
 
         result = winner.get_result() or {}
+        last_result = dict(result) if isinstance(result, Mapping) else {}
         _publish_events(session_id if not ctx.is_replaying else None, result.get("events") or [])
 
         if not result.get("success", False):
@@ -278,12 +286,18 @@ def session_workflow(
                 "status": status,
                 "output": final_text,
                 "content": final_text,
+                "modelPatch": last_result.get("modelPatch"),
                 "messages": messages,
                 "sessionId": session_id,
                 "agentRuntime": "claude-agent-py",
                 "agentWorkflowMode": "claude-agent-sdk",
                 "childWorkflowName": "session_workflow",
                 "workflowInstanceId": ctx.instance_id,
+                "cwd": last_result.get("cwd") or input_data.get("cwd"),
+                "workspaceRef": last_result.get("workspaceRef") or input_data.get("workspaceRef"),
+                "sandboxName": last_result.get("sandboxName") or input_data.get("sandboxName"),
+                "runtimeSandboxName": last_result.get("runtimeSandboxName") or input_data.get("runtimeSandboxName"),
+                "swebench": last_result.get("swebench"),
             }
 
         prompt = None
@@ -295,10 +309,16 @@ def session_workflow(
         "status": status,
         "output": final_text,
         "content": final_text,
+        "modelPatch": last_result.get("modelPatch"),
         "messages": messages,
         "sessionId": session_id,
         "agentRuntime": "claude-agent-py",
         "agentWorkflowMode": "claude-agent-sdk",
         "childWorkflowName": "session_workflow",
         "workflowInstanceId": ctx.instance_id,
+        "cwd": last_result.get("cwd") or input_data.get("cwd"),
+        "workspaceRef": last_result.get("workspaceRef") or input_data.get("workspaceRef"),
+        "sandboxName": last_result.get("sandboxName") or input_data.get("sandboxName"),
+        "runtimeSandboxName": last_result.get("runtimeSandboxName") or input_data.get("runtimeSandboxName"),
+        "swebench": last_result.get("swebench"),
     }

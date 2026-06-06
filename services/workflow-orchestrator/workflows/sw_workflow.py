@@ -1854,6 +1854,15 @@ def _run_native_durable_agent_child_workflow(
             raise RuntimeError(
                 f"workflow↔session bridge: invalid bridge_result for {child_instance_id}"
             )
+        bridge_runtime_sandbox_name = None
+        if isinstance(bridge_result, dict):
+            returned_runtime_sandbox = bridge_result.get("runtimeSandboxName")
+            if isinstance(returned_runtime_sandbox, str) and returned_runtime_sandbox.strip():
+                bridge_runtime_sandbox_name = returned_runtime_sandbox.strip()
+        if not bridge_runtime_sandbox_name:
+            child_runtime_sandbox = bridge_child_input.get("runtimeSandboxName")
+            if isinstance(child_runtime_sandbox, str) and child_runtime_sandbox.strip():
+                bridge_runtime_sandbox_name = child_runtime_sandbox.strip()
         bridge_child_input = {
             **bridge_child_input,
             "workflowId": canonical_context["workflowId"],
@@ -1870,6 +1879,8 @@ def _run_native_durable_agent_child_workflow(
             else canonical_context["agentVersion"],
             "agentSlug": bridge_result.get("agentSlug") or canonical_context["agentSlug"],
             "agentAppId": bridge_result.get("agentAppId") or canonical_context["agentAppId"],
+            "runtimeSandboxName": bridge_child_input.get("runtimeSandboxName")
+            or bridge_runtime_sandbox_name,
             "sandboxName": bridge_child_input.get("sandboxName")
             or canonical_context["sandboxName"],
             "workspaceRef": bridge_child_input.get("workspaceRef")
@@ -1887,6 +1898,7 @@ def _run_native_durable_agent_child_workflow(
                 **child_input["_message_metadata"],
                 "mlflowContext": bridge_child_input.get("mlflowContext")
                 or child_input.get("mlflowContext"),
+                "runtimeSandboxName": bridge_runtime_sandbox_name,
                 "workflowActivityCorrelationId": tc.otel_ctx.get(
                     "workflow.activity.correlation_id"
                 ),
@@ -1953,8 +1965,12 @@ def _run_native_durable_agent_child_workflow(
         # Bridge path: session_workflow wrapped agent_workflow. Report the
         # accurate outer child workflow name + the session id.
         child_result.setdefault("childWorkflowName", "session_workflow")
-        child_result.setdefault("childAppId", target["app_id"])
+        child_result.setdefault("childAppId", bridge_app_id)
         child_result.setdefault("sessionId", child_instance_id)
+        if bridge_runtime_sandbox_name:
+            child_result.setdefault("runtimeSandboxName", bridge_runtime_sandbox_name)
+        child_result.setdefault("workspaceRef", canonical_context["workspaceRef"])
+        child_result.setdefault("sandboxName", canonical_context["sandboxName"])
     else:
         child_result.setdefault("childWorkflowName", target["workflow_name"])
         child_result.setdefault("childAppId", target["app_id"])

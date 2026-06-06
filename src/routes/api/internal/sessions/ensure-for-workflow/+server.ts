@@ -380,13 +380,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			traceContext,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
+		const reuseRuntimeSandboxName =
+			reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null;
 		if (reuseChildAppId) {
 			await db
 				.update(sessions)
 				.set({
 					runtimeAppId: reuseChildAppId,
-					runtimeSandboxName:
-						reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null,
+					runtimeSandboxName: reuseRuntimeSandboxName,
 					updatedAt: new Date(),
 				})
 				.where(eq(sessions.id, existing.id));
@@ -429,6 +430,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentVersion: existing.agentVersion,
 			agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 			agentAppId: reuseChildAppId,
+			runtimeSandboxName: reuseRuntimeSandboxName,
 			agentHostStatus: reuseHost?.status ?? null,
 			childInput: buildChildInput({
 				sessionId: existing.id,
@@ -443,6 +445,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				initialMessage,
 				workspaceRef: bridgeWorkspaceRef,
 				sandboxName: bridgeSandboxName ?? existing.sandboxName,
+				runtimeSandboxName: reuseRuntimeSandboxName,
 				cwd: bridgeCwd,
 				timeoutMinutes: bridgeTimeoutMinutes,
 				maxIterations: bridgeMaxIterations,
@@ -534,12 +537,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		traceContext,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
+	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
 	if (childAgentAppId) {
 		await db
 			.update(sessions)
 			.set({
 				runtimeAppId: childAgentAppId,
-				runtimeSandboxName: sessionHost?.sandboxName ?? null,
+				runtimeSandboxName: childRuntimeSandboxName,
 				updatedAt: new Date(),
 			})
 			.where(eq(sessions.id, sessionId));
@@ -603,6 +607,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentVersion,
 		agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
 		agentAppId: childAgentAppId,
+		runtimeSandboxName: childRuntimeSandboxName,
 		agentHostStatus: sessionHost?.status ?? null,
 		childInput: buildChildInput({
 			sessionId,
@@ -617,6 +622,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			initialMessage,
 			workspaceRef: bridgeWorkspaceRef,
 			sandboxName: incomingSandboxName,
+			runtimeSandboxName: childRuntimeSandboxName,
 			cwd: bridgeCwd,
 			timeoutMinutes: bridgeTimeoutMinutes,
 			maxIterations: bridgeMaxIterations,
@@ -646,6 +652,7 @@ function buildChildInput(params: {
 	initialMessage: string | null;
 	workspaceRef?: string | null;
 	sandboxName?: string | null;
+	runtimeSandboxName?: string | null;
 	cwd?: string | null;
 	timeoutMinutes?: number | null;
 	maxIterations?: number | null;
@@ -705,6 +712,7 @@ function buildChildInput(params: {
 		// tools fail with "OpenShell sandboxName is required".
 		workspaceRef: params.workspaceRef ?? null,
 		sandboxName: params.sandboxName ?? null,
+		runtimeSandboxName: params.runtimeSandboxName ?? null,
 		cwd: params.cwd ?? null,
 		timeoutMinutes: params.timeoutMinutes ?? null,
 		maxIterations: params.maxIterations ?? null,
@@ -728,6 +736,7 @@ function buildChildInput(params: {
 			mlflowActiveModelName: mlflowContext?.activeModelName ?? null,
 			mlflowActiveModelUri: mlflowContext?.activeModelUri ?? null,
 			sandboxName: params.sandboxName ?? null,
+			runtimeSandboxName: params.runtimeSandboxName ?? null,
 			workspaceRef: params.workspaceRef ?? null,
 			cwd: params.cwd ?? null,
 			source: "durable/run",

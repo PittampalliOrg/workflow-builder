@@ -13,6 +13,7 @@ const APPROVED_DURABLE_AGENT_RUNTIMES = new Set([
   "dapr-agent-py",
   "dapr-agent-py-testing",
   "adk-agent-py",
+  "claude-agent-py",
 ]);
 
 type ValidationIssue = {

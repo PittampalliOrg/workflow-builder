@@ -131,6 +131,10 @@ async function resolveOwner(
 // ---------------------------------------------------------------------------
 
 const APP_DIR = "/sandbox/3b1b-style-animation-example";
+const BUILD_OUTPUT_SANDBOX_NAME =
+  '${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.sandboxName // "" }';
+const BUILD_OUTPUT_WORKSPACE_REF =
+  "${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.workspaceRef }";
 // Port is allocated by openshell-agent-runtime's `_allocate_local_port()`
 // per-run, not by us — so we don't pick one. Hardcoding a port collides
 // with the runtime's internal probe URL (the readiness check uses the
@@ -239,8 +243,8 @@ function makeStartPreviewTask(): JsonRecord {
           keepAlive: true,
           timeoutSeconds: 7200,
           timeoutMs: 7200000,
-          sandboxName: '${ .workspace_profile.sandboxName // "" }',
-          workspaceRef: "${ .workspace_profile.workspaceRef }",
+          sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
+          workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
         },
       },
     },
@@ -251,7 +255,8 @@ function makeBrowserValidateTask(): JsonRecord {
   return {
     call: "browser/validate",
     with: {
-      workspaceRef: "${ .workspace_profile.workspaceRef }",
+      workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
+      sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
       repoPath: APP_DIR,
       // Skip installCommand + devServerCommand. The runtime's default
       // `_local_devserver_runner` detects index.html in repoPath and runs
@@ -315,6 +320,7 @@ function makeBrowserValidateTask(): JsonRecord {
       metadata: {
         appPath: APP_DIR,
         workflowStage: "post-3b1b-animation",
+        runtimeSandboxName: BUILD_OUTPUT_SANDBOX_NAME,
       },
       timeoutMs: 900000,
     },
@@ -368,8 +374,9 @@ function buildSpec(args: ParsedArgs): JsonRecord {
     output: {
       as: {
         appPath: APP_DIR,
-        workspaceRef: "${ .workspace_profile.workspaceRef }",
-        sandboxName: "${ .workspace_profile.sandboxName }",
+        workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
+        sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
+        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
         animation: "${ .build_3b1b_animation }",
         screenshots: "${ .browser_validate_capture }",
         preview: "${ .start_preview }",

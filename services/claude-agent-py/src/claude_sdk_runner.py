@@ -4,6 +4,8 @@ import asyncio
 import dataclasses
 import logging
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid5
@@ -20,10 +22,24 @@ DEFAULT_PERMISSION_MODE = os.environ.get(
 )
 DEFAULT_CWD = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
 DEFAULT_CLI_PATH = os.environ.get("CLAUDE_AGENT_SDK_CLI_PATH") or None
+SWEBENCH_PATCH_EXCLUDE_PATHS = [
+    ":(exclude)**/tests/**",
+    ":(exclude)tests/**",
+    ":(exclude)test/**",
+    ":(exclude)testing/**",
+    ":(exclude)**/test_*.py",
+    ":(exclude)**/*_test.py",
+    ":(exclude)**/conftest.py",
+    ":(exclude)**/fixtures/**",
+]
 
 
 def clean_string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _record(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def normalize_claude_model(model_spec: Any) -> str | None:
@@ -79,6 +95,107 @@ def resolve_cwd(value: Any) -> Path:
         path = root
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def swebench_environment(input_data: Mapping[str, Any]) -> dict[str, Any] | None:
+    environment_config = _record(input_data.get("environmentConfig"))
+    environment = _record(environment_config.get("swebenchInferenceEnvironment"))
+    repo = clean_string(environment.get("repo"))
+    base_commit = clean_string(environment.get("baseCommit"))
+    if not repo or "/" not in repo or not base_commit:
+        return None
+    return environment
+
+
+def _run_git(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = 300,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=True,
+    )
+
+
+def _is_safe_swebench_cwd(path: Path) -> bool:
+    root = Path(DEFAULT_CWD).resolve()
+    resolved = path.resolve()
+    return resolved != root and resolved.is_relative_to(root)
+
+
+def bootstrap_swebench_repository(
+    input_data: Mapping[str, Any],
+    cwd: Path,
+) -> dict[str, Any] | None:
+    environment = swebench_environment(input_data)
+    if not environment:
+        return None
+
+    repo = clean_string(environment.get("repo")) or ""
+    base_commit = clean_string(environment.get("baseCommit")) or ""
+    if not _is_safe_swebench_cwd(cwd):
+        raise ValueError(
+            f"Refusing to bootstrap SWE-bench repository outside sandbox root: {cwd}"
+        )
+
+    try:
+        current_head = _run_git(
+            ["rev-parse", "HEAD"],
+            cwd=cwd,
+            timeout=30,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        current_head = ""
+
+    if current_head == base_commit:
+        _run_git(["clean", "-fdx"], cwd=cwd, timeout=120)
+        return {"repo": repo, "baseCommit": base_commit, "bootstrapped": False}
+
+    if cwd.exists():
+        shutil.rmtree(cwd)
+    cwd.mkdir(parents=True, exist_ok=True)
+
+    repo_url = f"https://github.com/{repo}.git"
+    _run_git(["init", "-q"], cwd=cwd, timeout=30)
+    _run_git(["remote", "add", "origin", repo_url], cwd=cwd, timeout=30)
+    try:
+        _run_git(
+            ["-c", "protocol.version=2", "fetch", "--depth=1", "origin", base_commit],
+            cwd=cwd,
+        )
+    except subprocess.CalledProcessError:
+        _run_git(["fetch", "origin", base_commit], cwd=cwd, timeout=900)
+    _run_git(["checkout", "--force", "FETCH_HEAD"], cwd=cwd, timeout=120)
+    _run_git(["clean", "-fdx"], cwd=cwd, timeout=120)
+    return {"repo": repo, "baseCommit": base_commit, "bootstrapped": True}
+
+
+def capture_git_model_patch(cwd: Path, base_ref: str | None = None) -> str:
+    if not (cwd / ".git").exists():
+        return ""
+    refs = [base_ref, "HEAD"] if base_ref else ["HEAD"]
+    for ref in refs:
+        cleaned_ref = clean_string(ref)
+        if not cleaned_ref:
+            continue
+        try:
+            diff = _run_git(
+                ["diff", "--binary", cleaned_ref, "--", ".", *SWEBENCH_PATCH_EXCLUDE_PATHS],
+                cwd=cwd,
+                timeout=120,
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if "diff --git" in diff:
+            return diff
+    return ""
 
 
 def workflow_session_uuid(session_id: str | None, workflow_instance_id: str | None) -> str | None:
@@ -191,6 +308,20 @@ async def run_claude_sdk_turn_async(input_data: Mapping[str, Any]) -> dict[str, 
         }
 
     options = build_claude_options(input_data)
+    cwd_path = Path(options.cwd)
+    swebench_bootstrap: dict[str, Any] | None = None
+    try:
+        swebench_bootstrap = bootstrap_swebench_repository(input_data, cwd_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[claude-sdk] SWE-bench repository bootstrap failed")
+        return {
+            "success": False,
+            "error": f"SWE-bench repository bootstrap failed: {exc}",
+            "finalText": "",
+            "messages": [],
+            "events": [],
+            "cwd": str(cwd_path),
+        }
     sdk_messages: list[dict[str, Any]] = []
     assistant_text_parts: list[str] = []
     events: list[dict[str, Any]] = []
@@ -244,15 +375,25 @@ async def run_claude_sdk_turn_async(input_data: Mapping[str, Any]) -> dict[str, 
         )
 
     is_error = bool(result_message.get("is_error")) if result_message else False
+    model_patch = capture_git_model_patch(
+        cwd_path,
+        clean_string(swebench_bootstrap.get("baseCommit")) if swebench_bootstrap else None,
+    )
     return {
         "success": not is_error,
         "error": "; ".join(result_message.get("errors") or []) if is_error and result_message else None,
         "finalText": final_text,
+        "modelPatch": model_patch,
         "messages": sdk_messages,
         "events": events,
         "sdkSessionId": sdk_session_id,
         "result": result_message,
         "stderr": stderr_lines[-20:],
+        "cwd": str(cwd_path),
+        "workspaceRef": input_data.get("workspaceRef"),
+        "sandboxName": input_data.get("sandboxName"),
+        "runtimeSandboxName": input_data.get("runtimeSandboxName"),
+        "swebench": swebench_bootstrap,
     }
 
 

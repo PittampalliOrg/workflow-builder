@@ -637,6 +637,35 @@ describe("SWE-bench workflow spec", () => {
 		expect(extractPatch.with.command).toContain("':(exclude)testing/**'");
 	});
 
+	it("lets Claude SWE-bench runs return patches from the runtime sandbox", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: validatedInferenceEnvironment(),
+			agentRuntime: "claude-agent-py",
+		});
+
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		const solve = steps[2].solve;
+		expect(solve.with.agentRuntime).toBe("claude-agent-py");
+		expect((spec.output as { as: Record<string, unknown> }).as.modelPatch).toBe(
+			"${ .solve.modelPatch // .extract_patch.modelPatch }",
+		);
+		expect((spec.output as { as: Record<string, unknown> }).as.sandboxName).toBe(
+			"${ .solve.runtimeSandboxName // .workspace_profile.sandboxName }",
+		);
+	});
+
 	it("only extracts authoritative SWE-bench model patches", () => {
 		const patch = "diff --git a/sympy/core/add.py b/sympy/core/add.py\n";
 		expect(extractModelPatch({ modelPatch: patch })).toBe(patch);
@@ -960,6 +989,7 @@ describe("SWE-bench workflow spec", () => {
 			currentSandboxName: null,
 			currentWorkspaceRef: null,
 			currentTraceIds: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+			sessionRuntimeSandboxName: "agent-host-session",
 			sessionSandboxName: "ws-session",
 			sessionWorkspaceSandboxName: null,
 			values: [
@@ -982,7 +1012,7 @@ describe("SWE-bench workflow spec", () => {
 		});
 
 		expect(links).toEqual({
-			sandboxName: "ws-session",
+			sandboxName: "agent-host-session",
 			workspaceRef: "ws_profile",
 			traceIds: [
 				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

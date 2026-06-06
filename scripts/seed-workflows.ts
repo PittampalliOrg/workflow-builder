@@ -67,6 +67,10 @@ const THREE_B_ONE_B_WORKFLOW_NAME = "3Blue1Brown-style Animation";
 const THREE_B_ONE_B_WORKFLOW_DESCRIPTION =
 	"Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
 const THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
+const THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME =
+	'${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.sandboxName // "" }';
+const THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF =
+	"${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.workspaceRef }";
 const THREE_B_ONE_B_DEFAULT_AGENT_ID =
 	process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_claude_code_sdk_smoke";
 const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
@@ -1884,7 +1888,8 @@ function makeThreeBOneBBrowserValidateTask(): JsonRecord {
 	return {
 		call: "browser/validate",
 		with: {
-			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
+			sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
 			repoPath: THREE_B_ONE_B_APP_DIR,
 			installCommand: "",
 			baseUrl: "http://127.0.0.1:0",
@@ -1941,6 +1946,7 @@ function makeThreeBOneBBrowserValidateTask(): JsonRecord {
 			metadata: {
 				appPath: THREE_B_ONE_B_APP_DIR,
 				workflowStage: "post-3b1b-animation",
+				runtimeSandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
 			},
 			timeoutMs: 900000,
 		},
@@ -1962,8 +1968,8 @@ function makeThreeBOneBStartPreviewTask(): JsonRecord {
 					keepAlive: true,
 					timeoutSeconds: 7200,
 					timeoutMs: 7200000,
-					sandboxName: '${ .workspace_profile.sandboxName // "" }',
-					workspaceRef: "${ .workspace_profile.workspaceRef }",
+					sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
+					workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
 				},
 			},
 		},
@@ -2013,8 +2019,9 @@ function buildThreeBOneBWorkflowSpec(): JsonRecord {
 		output: {
 			as: {
 				appPath: THREE_B_ONE_B_APP_DIR,
-				workspaceRef: "${ .workspace_profile.workspaceRef }",
-				sandboxName: "${ .workspace_profile.sandboxName }",
+				workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
+				sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
+				runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
 				animation: "${ .build_3b1b_animation }",
 				screenshots: "${ .browser_validate_capture }",
 				preview: "${ .start_preview }",

@@ -4263,6 +4263,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		timeoutSeconds: row.run.timeoutSeconds,
 		maxTurns: row.run.maxTurns,
 		inferenceEnvironment,
+		agentRuntime: row.run.agentRuntime,
 	});
 	const spec = await resolveSpecAgentRefs(rawSpec);
 	const runSummary = isRecord(row.run.summary) ? row.run.summary : {};
@@ -5073,6 +5074,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 					completedAt: sessions.completedAt,
 					sandboxName: sessions.sandboxName,
 					workspaceSandboxName: sessions.workspaceSandboxName,
+					runtimeSandboxName: sessions.runtimeSandboxName,
 				})
 				.from(sessions)
 				.where(eq(sessions.id, row.runInstance.sessionId))
@@ -5086,6 +5088,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 						completedAt: sessions.completedAt,
 						sandboxName: sessions.sandboxName,
 						workspaceSandboxName: sessions.workspaceSandboxName,
+						runtimeSandboxName: sessions.runtimeSandboxName,
 					})
 					.from(sessions)
 					.where(eq(sessions.workflowExecutionId, row.runInstance.workflowExecutionId))
@@ -5218,6 +5221,7 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		currentSandboxName: row.runInstance.sandboxName,
 		currentWorkspaceRef: row.runInstance.workspaceRef,
 		currentTraceIds: row.runInstance.traceIds,
+		sessionRuntimeSandboxName: sessionRow[0]?.runtimeSandboxName,
 		sessionSandboxName: sessionRow[0]?.sandboxName,
 		sessionWorkspaceSandboxName: sessionRow[0]?.workspaceSandboxName,
 		values: [
@@ -5467,6 +5471,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 					updatedAt: sessions.updatedAt,
 					sandboxName: sessions.sandboxName,
 					workspaceSandboxName: sessions.workspaceSandboxName,
+					runtimeSandboxName: sessions.runtimeSandboxName,
 				})
 				.from(sessions)
 				.where(eq(sessions.id, runInstance.sessionId))
@@ -5479,6 +5484,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 						updatedAt: sessions.updatedAt,
 						sandboxName: sessions.sandboxName,
 						workspaceSandboxName: sessions.workspaceSandboxName,
+						runtimeSandboxName: sessions.runtimeSandboxName,
 					})
 					.from(sessions)
 					.where(eq(sessions.workflowExecutionId, runInstance.workflowExecutionId))
@@ -5550,6 +5556,7 @@ async function timeoutBenchmarkInstanceIfStalled(
 		currentSandboxName: runInstance.sandboxName,
 		currentWorkspaceRef: runInstance.workspaceRef,
 		currentTraceIds: runInstance.traceIds,
+		sessionRuntimeSandboxName: session?.runtimeSandboxName,
 		sessionSandboxName: session?.sandboxName,
 		sessionWorkspaceSandboxName: session?.workspaceSandboxName,
 		values: [
@@ -5877,6 +5884,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 					id: sessions.id,
 					sandboxName: sessions.sandboxName,
 					workspaceSandboxName: sessions.workspaceSandboxName,
+					runtimeSandboxName: sessions.runtimeSandboxName,
 				})
 				.from(sessions)
 				.where(eq(sessions.id, row.instance.sessionId))
@@ -5887,6 +5895,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 						id: sessions.id,
 						sandboxName: sessions.sandboxName,
 						workspaceSandboxName: sessions.workspaceSandboxName,
+						runtimeSandboxName: sessions.runtimeSandboxName,
 					})
 					.from(sessions)
 					.where(eq(sessions.workflowExecutionId, row.instance.workflowExecutionId))
@@ -5895,6 +5904,7 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 	const session = sessionRows[0] ?? null;
 	const sandboxName =
 		row.instance.sandboxName ??
+		session?.runtimeSandboxName ??
 		session?.sandboxName ??
 		session?.workspaceSandboxName ??
 		null;
@@ -6406,6 +6416,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	timeoutSeconds: number;
 	maxTurns: number | null;
 	inferenceEnvironment: ResolvedSwebenchInferenceEnvironment;
+	agentRuntime?: string | null;
 }): Record<string, unknown> {
 	const inferenceEnvironment = requireValidatedBenchmarkInferenceEnvironment(
 		params.inferenceEnvironment,
@@ -6426,6 +6437,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	const agentVisibleEnvironmentConfig = {
 		swebenchInferenceEnvironment: agentVisibleInferenceEnvironment,
 	};
+	const isClaudeAgentRuntime = params.agentRuntime === "claude-agent-py";
 	const workspaceProfileWith: Record<string, unknown> = {
 		rootPath: SWEBENCH_FALLBACK_WORKSPACE_ROOT,
 		workspaceRef,
@@ -6561,6 +6573,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 							prompt: basePrompt,
 						},
 						mode: "execute_direct",
+						agentRuntime: params.agentRuntime ?? undefined,
 						cwd: SWEBENCH_FALLBACK_REPO_PATH,
 						sandboxName: "${ .workspace_profile.sandboxName }",
 						workspaceRef: "${ .workspace_profile.workspaceRef }",
@@ -6594,11 +6607,18 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		output: {
 			as: {
 				instanceId: params.instanceId,
-				modelPatch: "${ .extract_patch.modelPatch }",
+				modelPatch: isClaudeAgentRuntime
+					? "${ .solve.modelPatch // .extract_patch.modelPatch }"
+					: "${ .extract_patch.modelPatch }",
 				sessionId: "${ .solve.sessionId // .solve.agentWorkflowId // null }",
 				daprInstanceId: "${ .solve.daprInstanceId // null }",
-				workspaceRef: "${ .workspace_profile.workspaceRef }",
-				sandboxName: "${ .workspace_profile.sandboxName }",
+				workspaceRef: isClaudeAgentRuntime
+					? "${ .solve.runtimeSandboxName // .workspace_profile.workspaceRef }"
+					: "${ .workspace_profile.workspaceRef }",
+				sandboxName: isClaudeAgentRuntime
+					? "${ .solve.runtimeSandboxName // .workspace_profile.sandboxName }"
+					: "${ .workspace_profile.sandboxName }",
+				runtimeSandboxName: "${ .solve.runtimeSandboxName // null }",
 				inferenceEnvironment: agentVisibleInferenceEnvironment,
 			},
 		},
@@ -6838,15 +6858,22 @@ export function extractBenchmarkRuntimeLinks(input: {
 	currentSandboxName?: string | null;
 	currentWorkspaceRef?: string | null;
 	currentTraceIds?: string[] | null;
+	sessionRuntimeSandboxName?: string | null;
 	sessionSandboxName?: string | null;
 	sessionWorkspaceSandboxName?: string | null;
 	values: unknown[];
 }): { sandboxName?: string; workspaceRef?: string; traceIds: string[] } {
 	const sandboxName = firstNonBlank(
 		input.currentSandboxName,
+		input.sessionRuntimeSandboxName,
 		input.sessionSandboxName,
 		input.sessionWorkspaceSandboxName,
-		firstStringByKey(input.values, ["sandboxName", "sandbox_name"]),
+		firstStringByKey(input.values, [
+			"runtimeSandboxName",
+			"runtime_sandbox_name",
+			"sandboxName",
+			"sandbox_name",
+		]),
 	);
 	const workspaceRef = firstNonBlank(
 		input.currentWorkspaceRef,
