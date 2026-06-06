@@ -3,7 +3,10 @@
 Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. SvelteKit serves as UI + BFF proxy; all workflow execution lives in Dapr on Kubernetes.
 
 > **Supplementary docs** (`docs/`):
-> - `per-agent-runtime.md` — AgentRuntime CRD + controller, pod shape, Dapr Component scoping, wake/idle TTL, dispatch
+> - `agent-runtime-comparison.md` — `dapr-agent-py` vs `claude-agent-py`: verified surface-by-surface comparison + rationale + swap-blockers
+> - `durable-session-runtime-contract.md` — the swappable runtime contract + declarative runtime registry (`core/runtime_registry.json`)
+> - `agent-runtime-standardization-plan.md` — phased plan to standardize/swap runtimes (registry, capability descriptors, swap-safety gate)
+> - `per-agent-runtime.md` — ⚠️ PARTLY STALE: the custom AgentRuntime CRD + Kopf controller it describes were RETIRED for upstream agent-sandbox + Kueue (per-session Sandbox pods, image-only diff); see `agent-runtime-comparison.md` §Deployment
 > - `activepieces-auth.md` — AP auth + integration
 > - `mcp-agent-workflows.md` — MCP-enabled `dapr-agent-py` workflow method
 > - `hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins (Claude Code port)
