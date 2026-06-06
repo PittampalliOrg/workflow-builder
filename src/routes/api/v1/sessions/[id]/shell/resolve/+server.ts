@@ -3,13 +3,10 @@ import { error, json } from '@sveltejs/kit';
 
 import { getSessionRuntimePod } from '$lib/server/kube/client';
 import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
+import { shellableContainers } from '$lib/server/agents/runtime-registry';
 
-const ALLOWED_CONTAINERS = new Set([
-	'chromium',
-	'playwright-mcp',
-	'dapr-agent-py',
-	'claude-agent-py',
-]);
+// Runtime-registry-derived (every runtime's main container + browser sidecars).
+const ALLOWED_CONTAINERS = shellableContainers();
 
 /**
  * Preflight for the prod shell WS proxy (src/server-prod.js). Validates

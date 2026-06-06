@@ -1,0 +1,87 @@
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	getRuntimeDescriptor,
+	listRuntimeIds,
+	listBenchmarkRuntimeIds,
+	shellableContainers,
+	DEFAULT_RUNTIME_ID,
+	DISPATCH_WORKFLOW_NAME
+} from "./runtime-registry";
+import { BENCHMARK_AGENT_RUNTIMES } from "$lib/benchmarks/agent-runtimes";
+
+const CANONICAL = "services/shared/runtime-registry.json";
+const BFF_COPY = "src/lib/server/agents/runtime-registry.data.json";
+
+function readJson(rel: string): unknown {
+	return JSON.parse(readFileSync(resolve(process.cwd(), rel), "utf8"));
+}
+
+describe("runtime registry — drift guard", () => {
+	it("the BFF data copy is byte-identical JSON to the canonical SSOT", () => {
+		// Guards against editing a copy directly instead of the canonical +
+		// re-running scripts/sync-runtime-registry.mjs.
+		expect(readJson(BFF_COPY)).toEqual(readJson(CANONICAL));
+	});
+
+	it("the orchestrator copy is also in sync with the canonical", () => {
+		expect(
+			readJson("services/workflow-orchestrator/core/runtime_registry.json")
+		).toEqual(readJson(CANONICAL));
+	});
+});
+
+describe("runtime registry — readers", () => {
+	it("exposes the 5 durable-agent runtimes", () => {
+		expect(listRuntimeIds().sort()).toEqual(
+			[
+				"adk-agent-py",
+				"browser-use-agent",
+				"claude-agent-py",
+				"dapr-agent-py",
+				"dapr-agent-py-testing"
+			].sort()
+		);
+	});
+
+	it("default runtime + dispatch workflow match the contract", () => {
+		expect(DEFAULT_RUNTIME_ID).toBe("dapr-agent-py");
+		expect(DISPATCH_WORKFLOW_NAME).toBe("session_workflow");
+	});
+
+	it("benchmark runtimes match the hand-typed BENCHMARK_AGENT_RUNTIMES const", () => {
+		// BENCHMARK_AGENT_RUNTIMES stays a typed literal union; this asserts it
+		// never drifts from the registry's benchmarkEligible descriptors.
+		expect(listBenchmarkRuntimeIds().sort()).toEqual(
+			[...BENCHMARK_AGENT_RUNTIMES].sort()
+		);
+	});
+
+	it("shellable containers = every runtime main container + browser sidecars", () => {
+		const containers = shellableContainers();
+		// dapr-agent-py (+ testing share the container), claude, adk, browser-use.
+		for (const c of [
+			"dapr-agent-py",
+			"claude-agent-py",
+			"adk-agent-py",
+			"browser-use-agent",
+			"chromium",
+			"playwright-mcp"
+		]) {
+			expect(containers.has(c)).toBe(true);
+		}
+		// daprd is the Dapr sidecar — never shell-able.
+		expect(containers.has("daprd")).toBe(false);
+	});
+
+	it("descriptors carry capabilities for the swap gate (Phase 3)", () => {
+		const claude = getRuntimeDescriptor("claude-agent-py");
+		expect(claude?.capabilities.durabilityGranularity).toBe("per-turn");
+		expect(claude?.capabilities.supportsMcp).toBe(true);
+		expect(claude?.agentMetadataFramework).toBe("Claude Agent SDK");
+		const dapr = getRuntimeDescriptor("dapr-agent-py");
+		expect(dapr?.capabilities.durabilityGranularity).toBe("per-activity");
+		expect(dapr?.capabilities.multiProvider).toBe(true);
+	});
+});

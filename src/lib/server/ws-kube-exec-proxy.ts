@@ -6,14 +6,11 @@ import { verifyAccessToken, ACCESS_TOKEN_COOKIE } from './auth';
 import { getSessionRuntimePod } from './kube/client';
 import { execInteractive, type InteractiveExecSession } from './kube/ws-exec-client';
 import { resolveSessionRuntimeDebugTarget } from './sessions/runtime-target';
+import { shellableContainers } from './agents/runtime-registry';
 
 const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
-const ALLOWED_CONTAINERS = new Set([
-	'chromium',
-	'playwright-mcp',
-	'dapr-agent-py',
-	'claude-agent-py',
-]);
+// Runtime-registry-derived (every runtime's main container + browser sidecars).
+const ALLOWED_CONTAINERS = shellableContainers();
 
 const wss = new WebSocketServer({ noServer: true });
 
