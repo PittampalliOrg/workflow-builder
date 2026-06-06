@@ -15,6 +15,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import postgres from "postgres";
+import { SWE_BENCH_SOLVER_SYSTEM_PROMPT } from "../src/lib/server/benchmarks/agent-prompts";
+import { hashAgentConfig } from "../src/lib/server/agents/config-hash";
+import type { AgentConfig } from "../src/lib/types/agents";
 
 const DATABASE_URL =
   process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -212,9 +215,163 @@ const JSON_COLUMNS = new Set([
 
 const REQUIRED_AGENT_MODEL_SPECS = {
   "alibaba-qwen3-coder-swebench": "alibaba/qwen3-coder-plus",
+  "claude-code-agent-sdk-smoke": "anthropic/claude-opus-4-8",
+  "claude-code-swebench-smoke": "anthropic/claude-opus-4-8",
   "deepseek-v4-pro-swebench": "deepseek/deepseek-v4-pro",
   "kimi-k26-swebench-canary": "kimi/kimi-k2.6",
 } as const;
+
+const CLAUDE_AGENT_SEED_TIMESTAMP = "2026-06-06T14:26:53.520075";
+const CLAUDE_AGENT_RUNTIME = "claude-agent-py";
+const CLAUDE_AGENT_RUNTIME_APP_ID = "agent-runtime-pool-coding";
+const CLAUDE_AGENT_ENVIRONMENT_ID = "env_builtin_dapr_agent";
+const CLAUDE_AGENT_MODEL_SPEC = "anthropic/claude-opus-4-8";
+
+function claudeAgentConfig(overrides: {
+  systemPrompt: string;
+  maxTurns: number;
+  cacheTtl?: "5m" | "1h";
+}): AgentConfig {
+  return {
+    memory: { backend: "dapr_state" },
+    skills: [],
+    runtime: CLAUDE_AGENT_RUNTIME,
+    cacheTtl: overrides.cacheTtl,
+    maxTurns: overrides.maxTurns,
+    modelSpec: CLAUDE_AGENT_MODEL_SPEC,
+    mcpServers: [],
+    runtimePool: undefined,
+    builtinTools: [],
+    runtimeClass: "coding",
+    systemPrompt: overrides.systemPrompt,
+    timeoutMinutes: 60,
+    runtimeIsolation: "shared",
+    mcpConnectionMode: "explicit",
+    runtimeOverridePolicy: {
+      allowToolNarrowing: true,
+      allowSkillAdditions: false,
+      allowSkillNarrowing: true,
+      allowServerAdditions: false,
+      allowCredentialBinding: true,
+    },
+  };
+}
+
+function claudeAgentRow(params: {
+  id: string;
+  name: string;
+  slug: string;
+  tags: string[];
+  description: string;
+  currentVersionId: string;
+  sourceTemplateSlug: string;
+}): Row {
+  return {
+    id: params.id,
+    name: params.name,
+    slug: params.slug,
+    tags: params.tags,
+    avatar: null,
+    runtime: CLAUDE_AGENT_RUNTIME,
+    created_at: CLAUDE_AGENT_SEED_TIMESTAMP,
+    created_by: "dev-admin-user",
+    project_id: "dev-default-project",
+    updated_at: CLAUDE_AGENT_SEED_TIMESTAMP,
+    description: params.description,
+    is_archived: false,
+    environment_id: CLAUDE_AGENT_ENVIRONMENT_ID,
+    registry_error: null,
+    runtime_app_id: CLAUDE_AGENT_RUNTIME_APP_ID,
+    runtime_status: "ready",
+    registry_status: "registered",
+    default_vault_ids: [],
+    current_version_id: params.currentVersionId,
+    registry_synced_at: `${CLAUDE_AGENT_SEED_TIMESTAMP}+00:00`,
+    environment_version: 1,
+    source_template_slug: params.sourceTemplateSlug,
+    source_template_version: 1,
+    runtime_status_synced_at: `${CLAUDE_AGENT_SEED_TIMESTAMP}+00:00`,
+  };
+}
+
+function claudeAgentVersionRow(params: {
+  id: string;
+  agentId: string;
+  config: AgentConfig;
+  changelog: string;
+  createdAt?: string;
+}): Row {
+  const createdAt = params.createdAt ?? CLAUDE_AGENT_SEED_TIMESTAMP;
+  return {
+    id: params.id,
+    config: params.config,
+    version: 1,
+    agent_id: params.agentId,
+    changelog: params.changelog,
+    created_at: createdAt,
+    config_hash: hashAgentConfig(params.config),
+    published_at: createdAt,
+    published_by: "dev-admin-user",
+  };
+}
+
+function appendMissingRows(rows: Row[], additions: Row[]): Row[] {
+  const existing = new Set(rows.map((row) => String(row.id)));
+  const missing = additions.filter((row) => !existing.has(String(row.id)));
+  return missing.length > 0 ? [...rows, ...missing] : rows;
+}
+
+function withClaudeAgentFixtures(fixtures: Fixtures): Fixtures {
+  const sdkConfig = claudeAgentConfig({
+    systemPrompt:
+      "You are a pragmatic coding agent. Inspect the workspace, make focused edits, run targeted validation, and report the exact outcome.",
+    maxTurns: 80,
+    cacheTtl: "1h",
+  });
+  const swebenchConfig = claudeAgentConfig({
+    systemPrompt: SWE_BENCH_SOLVER_SYSTEM_PROMPT,
+    maxTurns: 50,
+    cacheTtl: "1h",
+  });
+  return {
+    ...fixtures,
+    agents: appendMissingRows(fixtures.agents, [
+      claudeAgentRow({
+        id: "agnt_claude_code_sdk_smoke",
+        name: "Claude Code Agent SDK smoke",
+        slug: "claude-code-agent-sdk-smoke",
+        tags: ["claude-agent-py", "smoke", "coding"],
+        description: "Claude Agent SDK runtime smoke agent for workflow-builder demos.",
+        currentVersionId: "av_claude_code_sdk_smoke_v1",
+        sourceTemplateSlug: "claude-code-agent-sdk",
+      }),
+      claudeAgentRow({
+        id: "agnt_claude_code_swebench_smoke",
+        name: "Claude Code SWE-bench smoke",
+        slug: "claude-code-swebench-smoke",
+        tags: ["claude-agent-py", "swebench", "smoke"],
+        description: "Claude Agent SDK runtime smoke agent for SWE-bench canaries.",
+        currentVersionId: "av_claude_code_swebench_smoke_v1",
+        sourceTemplateSlug: "claude-code-swebench-solver",
+      }),
+    ]),
+    agent_versions: appendMissingRows(fixtures.agent_versions, [
+      claudeAgentVersionRow({
+        id: "av_claude_code_sdk_smoke_v1",
+        agentId: "agnt_claude_code_sdk_smoke",
+        config: sdkConfig,
+        changelog: "Claude Agent SDK smoke runtime setup",
+      }),
+      claudeAgentVersionRow({
+        id: "av_claude_code_swebench_smoke_v1",
+        agentId: "agnt_claude_code_swebench_smoke",
+        config: swebenchConfig,
+        changelog: "Claude Agent SDK smoke runtime setup",
+        createdAt: "2026-06-06T14:26:53.525705",
+      }),
+    ]),
+  };
+}
 
 function loadFixtures(): Fixtures {
   const raw = JSON.parse(
@@ -235,7 +392,7 @@ function loadFixtures(): Fixtures {
       throw new Error(`SWE-bench fixture is missing array "${key}"`);
     }
   }
-  return raw as Fixtures;
+  return withClaudeAgentFixtures(raw as Fixtures);
 }
 
 async function resolveTargetUser(

@@ -4,7 +4,12 @@ import { error, json } from '@sveltejs/kit';
 import { getSessionRuntimePod } from '$lib/server/kube/client';
 import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
 
-const ALLOWED_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py']);
+const ALLOWED_CONTAINERS = new Set([
+	'chromium',
+	'playwright-mcp',
+	'dapr-agent-py',
+	'claude-agent-py',
+]);
 
 /**
  * Preflight for the prod shell WS proxy (src/server-prod.js). Validates

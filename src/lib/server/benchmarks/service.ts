@@ -6533,7 +6533,7 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 			name: "swebench-instance",
 			version: "1.0.0",
 			title: "SWE-bench instance",
-			summary: "Run one SWE-bench instance through a published dapr-agent-py agent.",
+			summary: "Run one SWE-bench instance through a published durable coding agent.",
 		},
 		do: [
 			{

@@ -8,7 +8,12 @@ import { execInteractive, type InteractiveExecSession } from './kube/ws-exec-cli
 import { resolveSessionRuntimeDebugTarget } from './sessions/runtime-target';
 
 const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
-const ALLOWED_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py']);
+const ALLOWED_CONTAINERS = new Set([
+	'chromium',
+	'playwright-mcp',
+	'dapr-agent-py',
+	'claude-agent-py',
+]);
 
 const wss = new WebSocketServer({ noServer: true });
 

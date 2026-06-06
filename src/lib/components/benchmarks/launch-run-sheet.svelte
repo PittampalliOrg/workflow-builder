@@ -817,8 +817,9 @@
 				{#if runnableAgents.length === 0}
 					<Alert variant="destructive">
 						<AlertDescription>
-							No registered <code class="text-[11px]">dapr-agent-py</code> agents in this workspace.
-							or <code class="text-[11px]">adk-agent-py</code> agents in this workspace. Publish an agent first.
+							No registered durable coding agents (<code class="text-[11px]">dapr-agent-py</code>,
+							<code class="text-[11px]">adk-agent-py</code>, or
+							<code class="text-[11px]">claude-agent-py</code>) in this workspace. Publish an agent first.
 						</AlertDescription>
 					</Alert>
 				{:else}
@@ -943,9 +944,9 @@
 					{#if runnableAgents.length === 0}
 						<Alert variant="destructive">
 							<AlertDescription>
-								No registered <code class="text-[11px]">dapr-agent-py</code> or
-								<code class="text-[11px]">adk-agent-py</code> agents in this workspace. Publish one
-								to launch a matrix.
+								No registered durable coding agents (<code class="text-[11px]">dapr-agent-py</code>,
+								<code class="text-[11px]">adk-agent-py</code>, or
+								<code class="text-[11px]">claude-agent-py</code>) in this workspace. Publish one to launch a matrix.
 							</AlertDescription>
 						</Alert>
 					{:else}

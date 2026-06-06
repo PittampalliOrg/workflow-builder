@@ -12,7 +12,12 @@ import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-t
 // the matching set in server-prod.js. Don't offer a container in the UI
 // that the shell proxy will 400 on — offering daprd would be surprising
 // (it's the Dapr sidecar, not user-authored code).
-const SHELLABLE_CONTAINERS = new Set(['chromium', 'playwright-mcp', 'dapr-agent-py']);
+const SHELLABLE_CONTAINERS = new Set([
+	'chromium',
+	'playwright-mcp',
+	'dapr-agent-py',
+	'claude-agent-py',
+]);
 
 /**
  * Compact runtime-flags read for the session detail page. Tells the UI

@@ -19,7 +19,7 @@
 	// Preference order for the initial pick: chromium first, then the MCP
 	// sidecar, then the agent runtime. Kept outside the component render so
 	// it's referentially stable.
-	const PREFERRED = ['chromium', 'playwright-mcp', 'dapr-agent-py'];
+	const PREFERRED = ['chromium', 'playwright-mcp', 'claude-agent-py', 'dapr-agent-py'];
 
 	// Static options — declared once at module scope so prop reactivity in
 	// the parent never churns the Xterm component via a fresh reference.

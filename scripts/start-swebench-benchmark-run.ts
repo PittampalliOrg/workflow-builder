@@ -326,7 +326,7 @@ async function resolveAgent(sql: Sql, args: Args, projectId: string) {
 			from agents
 			where project_id = ${projectId}
 			  and slug = ${args.agentSlug}
-			  and runtime = 'dapr-agent-py'
+			  and runtime in ('dapr-agent-py', 'adk-agent-py', 'claude-agent-py')
 			  and registry_status = 'registered'
 			  and is_archived = false
 			limit 1
@@ -339,8 +339,8 @@ async function resolveAgent(sql: Sql, args: Args, projectId: string) {
 		select a.id, a.slug, a.name
 		from agents a
 		left join agent_versions av on av.id = a.current_version_id
-		where a.project_id = ${projectId}
-		  and a.runtime = 'dapr-agent-py'
+			where a.project_id = ${projectId}
+			  and a.runtime in ('dapr-agent-py', 'adk-agent-py', 'claude-agent-py')
 		  and a.registry_status = 'registered'
 		  and a.is_archived = false
 		  and not (a.tags @> '["workflow-ephemeral"]'::jsonb)
