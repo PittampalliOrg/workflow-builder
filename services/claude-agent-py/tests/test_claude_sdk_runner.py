@@ -13,6 +13,7 @@ from src.claude_sdk_runner import (
     normalize_claude_model,
     normalize_permission_mode,
     resolve_cwd,
+    sync_outputs_to_workspace,
     swebench_environment,
     system_prompt_config,
 )
@@ -108,10 +109,45 @@ def test_builds_output_sync_command_with_idempotent_parent_directory() -> None:
         }
     )
 
-    assert 'mkdir -p "$(dirname "$target")"' in command
+    assert 'parent="$(dirname "$target")"' in command
+    assert '[ ! -e "$parent" ] || [ -d "$parent" ] || rm -f "$parent"' in command
+    assert 'mkdir -p "$parent"' in command
     assert "base64 -d" in command
     assert 'chmod 644 "$tmp"' in command
     assert 'mv "$tmp" "$target"' in command
+
+
+def test_output_sync_prefers_command_endpoint(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.claude_sdk_runner.DEFAULT_CWD", str(tmp_path))
+    app_dir = tmp_path / "3b1b-style-animation-example"
+    app_dir.mkdir()
+    (app_dir / "README.md").write_text("ok")
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(path: str, payload: dict[str, object], timeout_seconds: int) -> dict[str, object]:
+        calls.append((path, payload))
+        return {
+            "success": True,
+            "response": {"exitCode": 0} if path.endswith("/command") else {},
+        }
+
+    monkeypatch.setattr("src.claude_sdk_runner._post_openshell_json", fake_post)
+
+    result = sync_outputs_to_workspace(
+        {
+            "outputSync": {
+                "workspaceRef": "workspace-1",
+                "paths": [{"source": str(app_dir), "target": str(app_dir)}],
+            }
+        },
+        tmp_path,
+    )
+
+    assert result is not None
+    assert result["success"] is True
+    assert result["method"] == "command"
+    assert [path for path, _payload in calls] == ["/api/workspaces/command"]
+    assert str(app_dir / "README.md") in calls[0][1]["command"]
 
 
 def test_extracts_swebench_environment_from_turn_input() -> None:

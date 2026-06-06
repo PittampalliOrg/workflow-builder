@@ -246,7 +246,10 @@ def build_output_sync_command(file_entry: Mapping[str, Any]) -> str:
         [
             "set -eu",
             f"target={shlex.quote(target)}",
-            'mkdir -p "$(dirname "$target")"',
+            'parent="$(dirname "$target")"',
+            '[ ! -e "$parent" ] || [ -d "$parent" ] || rm -f "$parent"',
+            'mkdir -p "$parent"',
+            '[ ! -d "$target" ] || rm -rf "$target"',
             'tmp="$(mktemp "${target}.tmp.XXXXXX")"',
             'trap \'rm -f "$tmp"\' EXIT',
             'base64 -d > "$tmp" <<\'__WFB_OUTPUT_SYNC_B64__\'',
@@ -279,14 +282,14 @@ def sync_outputs_by_command(
         response = _record(result.get("response"))
         exit_code = response.get("exitCode")
         responses.append(
-            {
-                "path": path,
-                "success": result.get("success") and (exit_code in (None, 0)),
-                "exitCode": exit_code,
-                "stderr": clean_string(response.get("stderr"))[:500],
-                "error": result.get("error"),
-            }
-        )
+                {
+                    "path": path,
+                    "success": result.get("success") and (exit_code in (None, 0)),
+                    "exitCode": exit_code,
+                    "stderr": (clean_string(response.get("stderr")) or "")[:500],
+                    "error": result.get("error"),
+                }
+            )
         if not responses[-1]["success"]:
             return {
                 "success": False,
@@ -318,6 +321,15 @@ def sync_outputs_to_workspace(input_data: Mapping[str, Any], cwd: Path) -> dict[
         return {"success": True, "files": [], "warnings": warnings}
 
     timeout_ms = bounded_int(output_sync.get("timeoutMs"), default=120000, minimum=1000, maximum=900000)
+    command_sync = sync_outputs_by_command(
+        workspace_ref=workspace_ref,
+        files=files,
+        timeout_ms=timeout_ms,
+    )
+    command_sync["warnings"] = warnings
+    if command_sync.get("success"):
+        return command_sync
+
     payload = {
         "workspaceRef": workspace_ref,
         "files": files,
@@ -338,12 +350,6 @@ def sync_outputs_to_workspace(input_data: Mapping[str, Any], cwd: Path) -> dict[
             "response": materialized.get("response"),
         }
 
-    command_sync = sync_outputs_by_command(
-        workspace_ref=workspace_ref,
-        files=files,
-        timeout_ms=timeout_ms,
-    )
-    command_sync["warnings"] = warnings
     command_sync["materializeError"] = materialized.get("error") or materialized.get("response")
     return command_sync
 
