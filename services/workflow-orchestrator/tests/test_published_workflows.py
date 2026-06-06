@@ -1429,6 +1429,10 @@ def test_durable_run_routes_through_session_bridge():
                 "sandboxName": "ws-test-123",
                 "cwd": "/sandbox/repo",
                 "agentRuntime": "dapr-agent-py",
+                "outputSync": {
+                    "workspaceRef": "ws_test_123",
+                    "paths": [{"source": "/sandbox/app", "target": "/sandbox/app"}],
+                },
                 "maxTurns": "8",
                 "timeoutMinutes": "15",
                 "agentConfig": {
@@ -1458,6 +1462,7 @@ def test_durable_run_routes_through_session_bridge():
     assert bridge_payload["agentConfig"]["name"] == "durable-validation"
     assert bridge_payload["timeoutMinutes"] == 15
     assert bridge_payload["maxIterations"] == 8
+    assert bridge_payload["outputSync"]["paths"][0]["source"] == "/sandbox/app"
     assert bridge_payload["benchmarkExecutionClass"] == "benchmark-minimal-agent"
 
     wait_yield = workflow_gen.send(
@@ -1480,6 +1485,7 @@ def test_durable_run_routes_through_session_bridge():
     assert child_task.input["agentVersion"] == 4
     assert child_task.input["agentSlug"] == "durable-validation"
     assert child_task.input["runtimeSandboxName"] == "agent-host-child-session"
+    assert child_task.input["outputSync"]["workspaceRef"] == "ws_test_123"
     assert child_task.input["sandboxName"] == "ws-test-123"
     assert child_task.input["workspaceRef"] == "ws_test_123"
     assert child_task.input["_message_metadata"]["agentSlug"] == "durable-validation"

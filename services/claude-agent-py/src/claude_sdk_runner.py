@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
+import json
 import logging
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid5
@@ -22,6 +26,17 @@ DEFAULT_PERMISSION_MODE = os.environ.get(
 )
 DEFAULT_CWD = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
 DEFAULT_CLI_PATH = os.environ.get("CLAUDE_AGENT_SDK_CLI_PATH") or None
+OPENSHELL_AGENT_RUNTIME_URL = os.environ.get(
+    "OPENSHELL_AGENT_RUNTIME_URL",
+    "http://openshell-agent-runtime.openshell.svc.cluster.local:8083",
+)
+OUTPUT_SYNC_MAX_FILES = int(os.environ.get("CLAUDE_AGENT_OUTPUT_SYNC_MAX_FILES", "250"))
+OUTPUT_SYNC_MAX_FILE_BYTES = int(
+    os.environ.get("CLAUDE_AGENT_OUTPUT_SYNC_MAX_FILE_BYTES", str(1024 * 1024))
+)
+OUTPUT_SYNC_MAX_TOTAL_BYTES = int(
+    os.environ.get("CLAUDE_AGENT_OUTPUT_SYNC_MAX_TOTAL_BYTES", str(10 * 1024 * 1024))
+)
 SWEBENCH_PATCH_EXCLUDE_PATHS = [
     ":(exclude)**/tests/**",
     ":(exclude)tests/**",
@@ -95,6 +110,153 @@ def resolve_cwd(value: Any) -> Path:
         path = root
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _safe_sync_source(source: Any, cwd: Path) -> Path | None:
+    raw = clean_string(source)
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    candidate = candidate.resolve()
+    root = Path(DEFAULT_CWD).resolve()
+    if not _is_within(candidate, root):
+        raise ValueError(f"outputSync source is outside sandbox root: {candidate}")
+    return candidate
+
+
+def _safe_sync_target(target: Any, source: Path, cwd: Path) -> Path:
+    raw = clean_string(target)
+    if raw:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+    else:
+        candidate = source
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    candidate = candidate.resolve()
+    root = Path(DEFAULT_CWD).resolve()
+    if not _is_within(candidate, root):
+        raise ValueError(f"outputSync target is outside sandbox root: {candidate}")
+    return candidate
+
+
+def _iter_sync_files(source: Path) -> list[Path]:
+    if source.is_file():
+        return [source]
+    if not source.exists():
+        return []
+    return sorted(path for path in source.rglob("*") if path.is_file())
+
+
+def collect_output_sync_files(
+    input_data: Mapping[str, Any],
+    cwd: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    output_sync = _record(input_data.get("outputSync"))
+    raw_paths = output_sync.get("paths")
+    if not isinstance(raw_paths, list) or not raw_paths:
+        return [], []
+
+    files: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_bytes = 0
+    for item in raw_paths:
+        if not isinstance(item, Mapping):
+            continue
+        source = _safe_sync_source(item.get("source") or item.get("path"), cwd)
+        if source is None:
+            continue
+        target_root = _safe_sync_target(item.get("target"), source, cwd)
+        source_files = _iter_sync_files(source)
+        if not source_files:
+            warnings.append(f"outputSync source did not match files: {source}")
+            continue
+        for file_path in source_files:
+            if len(files) >= OUTPUT_SYNC_MAX_FILES:
+                warnings.append(f"outputSync file limit reached: {OUTPUT_SYNC_MAX_FILES}")
+                return files, warnings
+            size = file_path.stat().st_size
+            if size > OUTPUT_SYNC_MAX_FILE_BYTES:
+                warnings.append(f"outputSync skipped oversized file: {file_path}")
+                continue
+            if total_bytes + size > OUTPUT_SYNC_MAX_TOTAL_BYTES:
+                warnings.append(f"outputSync total byte limit reached: {OUTPUT_SYNC_MAX_TOTAL_BYTES}")
+                return files, warnings
+            relative = file_path.relative_to(source) if source.is_dir() else Path(file_path.name)
+            target_path = target_root / relative if source.is_dir() else target_root
+            files.append(
+                {
+                    "path": str(target_path),
+                    "contentB64": base64.b64encode(file_path.read_bytes()).decode("ascii"),
+                    "mode": file_path.stat().st_mode & 0o777,
+                }
+            )
+            total_bytes += size
+    return files, warnings
+
+
+def sync_outputs_to_workspace(input_data: Mapping[str, Any], cwd: Path) -> dict[str, Any] | None:
+    output_sync = _record(input_data.get("outputSync"))
+    if not output_sync:
+        return None
+    workspace_ref = clean_string(output_sync.get("workspaceRef")) or clean_string(
+        input_data.get("workspaceRef")
+    )
+    if not workspace_ref:
+        return {"success": False, "error": "outputSync requires workspaceRef"}
+
+    files, warnings = collect_output_sync_files(input_data, cwd)
+    if not files:
+        return {"success": True, "files": [], "warnings": warnings}
+
+    payload = {
+        "workspaceRef": workspace_ref,
+        "files": files,
+        "timeoutMs": output_sync.get("timeoutMs") or 120000,
+    }
+    request = urllib.request.Request(
+        f"{OPENSHELL_AGENT_RUNTIME_URL.rstrip('/')}/api/workspaces/materialize-files",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            status = int(getattr(response, "status", 200) or 200)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {
+            "success": False,
+            "error": f"openshell materialize failed ({exc.code}): {detail[:500]}",
+            "warnings": warnings,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc), "warnings": warnings}
+
+    try:
+        parsed = json.loads(body) if body.strip() else {}
+    except json.JSONDecodeError:
+        parsed = {"raw": body[:500]}
+    success = 200 <= status < 300 and parsed.get("success") is not False
+    return {
+        "success": success,
+        "files": [entry["path"] for entry in files],
+        "fileCount": len(files),
+        "warnings": warnings,
+        "response": parsed,
+    }
 
 
 def swebench_environment(input_data: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -379,6 +541,27 @@ async def run_claude_sdk_turn_async(input_data: Mapping[str, Any]) -> dict[str, 
         cwd_path,
         clean_string(swebench_bootstrap.get("baseCommit")) if swebench_bootstrap else None,
     )
+    output_sync = None
+    if not is_error:
+        output_sync = sync_outputs_to_workspace(input_data, cwd_path)
+        if output_sync and not output_sync.get("success", False):
+            return {
+                "success": False,
+                "error": f"outputSync failed: {output_sync.get('error') or 'unknown error'}",
+                "finalText": final_text,
+                "modelPatch": model_patch,
+                "messages": sdk_messages,
+                "events": events,
+                "sdkSessionId": sdk_session_id,
+                "result": result_message,
+                "stderr": stderr_lines[-20:],
+                "cwd": str(cwd_path),
+                "workspaceRef": input_data.get("workspaceRef"),
+                "sandboxName": input_data.get("sandboxName"),
+                "runtimeSandboxName": input_data.get("runtimeSandboxName"),
+                "swebench": swebench_bootstrap,
+                "outputSync": output_sync,
+            }
     return {
         "success": not is_error,
         "error": "; ".join(result_message.get("errors") or []) if is_error and result_message else None,
@@ -394,6 +577,7 @@ async def run_claude_sdk_turn_async(input_data: Mapping[str, Any]) -> dict[str, 
         "sandboxName": input_data.get("sandboxName"),
         "runtimeSandboxName": input_data.get("runtimeSandboxName"),
         "swebench": swebench_bootstrap,
+        "outputSync": output_sync,
     }
 
 

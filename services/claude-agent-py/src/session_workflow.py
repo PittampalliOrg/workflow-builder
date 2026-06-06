@@ -153,6 +153,7 @@ def _turn_input(
         "workspaceRef": input_data.get("workspaceRef"),
         "sandboxName": input_data.get("sandboxName"),
         "runtimeSandboxName": input_data.get("runtimeSandboxName"),
+        "outputSync": input_data.get("outputSync"),
         "environmentConfig": input_data.get("environmentConfig"),
         "agentAppId": input_data.get("agentAppId"),
         "agentSlug": input_data.get("agentSlug"),
@@ -297,6 +298,7 @@ def session_workflow(
                 "workspaceRef": last_result.get("workspaceRef") or input_data.get("workspaceRef"),
                 "sandboxName": last_result.get("sandboxName") or input_data.get("sandboxName"),
                 "runtimeSandboxName": last_result.get("runtimeSandboxName") or input_data.get("runtimeSandboxName"),
+                "outputSync": last_result.get("outputSync"),
                 "swebench": last_result.get("swebench"),
             }
 
@@ -320,5 +322,6 @@ def session_workflow(
         "workspaceRef": last_result.get("workspaceRef") or input_data.get("workspaceRef"),
         "sandboxName": last_result.get("sandboxName") or input_data.get("sandboxName"),
         "runtimeSandboxName": last_result.get("runtimeSandboxName") or input_data.get("runtimeSandboxName"),
+        "outputSync": last_result.get("outputSync"),
         "swebench": last_result.get("swebench"),
     }

@@ -68,9 +68,9 @@ const THREE_B_ONE_B_WORKFLOW_DESCRIPTION =
 	"Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
 const THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
 const THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME =
-	'${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.sandboxName // "" }';
+	'${ .workspace_profile.sandboxName // "" }';
 const THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF =
-	"${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.workspaceRef }";
+	"${ .workspace_profile.workspaceRef }";
 const THREE_B_ONE_B_DEFAULT_AGENT_ID =
 	process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_claude_code_sdk_smoke";
 const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
@@ -1862,6 +1862,16 @@ function makeThreeBOneBBuildTask(): JsonRecord {
 			cwd: "/sandbox",
 			sandboxName: "${ .workspace_profile.sandboxName }",
 			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			outputSync: {
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				paths: [
+					{
+						source: THREE_B_ONE_B_APP_DIR,
+						target: THREE_B_ONE_B_APP_DIR,
+					},
+				],
+				timeoutMs: 120000,
+			},
 			sandboxPolicy: {
 				mode: "per-run",
 				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
@@ -1946,7 +1956,8 @@ function makeThreeBOneBBrowserValidateTask(): JsonRecord {
 			metadata: {
 				appPath: THREE_B_ONE_B_APP_DIR,
 				workflowStage: "post-3b1b-animation",
-				runtimeSandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
+				runtimeSandboxName:
+					"${ .build_3b1b_animation.runtimeSandboxName // null }",
 			},
 			timeoutMs: 900000,
 		},

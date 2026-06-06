@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from src.claude_sdk_runner import (
     build_claude_options,
     capture_git_model_patch,
+    collect_output_sync_files,
     normalize_claude_model,
     normalize_permission_mode,
     resolve_cwd,
@@ -65,6 +67,35 @@ def test_resolve_cwd_creates_absolute_directory(tmp_path, monkeypatch) -> None:
     resolved = resolve_cwd("repo")
     assert resolved == Path(tmp_path / "repo")
     assert resolved.exists()
+
+
+def test_collects_declared_output_sync_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.claude_sdk_runner.DEFAULT_CWD", str(tmp_path))
+    app_dir = tmp_path / "3b1b-style-animation-example"
+    app_dir.mkdir()
+    (app_dir / "index.html").write_text("<canvas id=\"canvas\"></canvas>")
+    (app_dir / "script.js").write_text("console.log('ok');")
+
+    files, warnings = collect_output_sync_files(
+        {
+            "outputSync": {
+                "paths": [
+                    {
+                        "source": str(app_dir),
+                        "target": str(app_dir),
+                    }
+                ]
+            }
+        },
+        tmp_path,
+    )
+
+    assert warnings == []
+    assert [entry["path"] for entry in files] == [
+        str(app_dir / "index.html"),
+        str(app_dir / "script.js"),
+    ]
+    assert base64.b64decode(files[0]["contentB64"]).decode() == '<canvas id="canvas"></canvas>'
 
 
 def test_extracts_swebench_environment_from_turn_input() -> None:

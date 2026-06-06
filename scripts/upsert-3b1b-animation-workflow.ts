@@ -131,10 +131,8 @@ async function resolveOwner(
 // ---------------------------------------------------------------------------
 
 const APP_DIR = "/sandbox/3b1b-style-animation-example";
-const BUILD_OUTPUT_SANDBOX_NAME =
-  '${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.sandboxName // "" }';
-const BUILD_OUTPUT_WORKSPACE_REF =
-  "${ .build_3b1b_animation.runtimeSandboxName // .workspace_profile.workspaceRef }";
+const BUILD_OUTPUT_SANDBOX_NAME = "${ .workspace_profile.sandboxName // \"\" }";
+const BUILD_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
 // Port is allocated by openshell-agent-runtime's `_allocate_local_port()`
 // per-run, not by us — so we don't pick one. Hardcoding a port collides
 // with the runtime's internal probe URL (the readiness check uses the
@@ -203,6 +201,16 @@ function makeBuildAnimationTask(args: ParsedArgs): JsonRecord {
       cwd: "/sandbox",
       sandboxName: "${ .workspace_profile.sandboxName }",
       workspaceRef: "${ .workspace_profile.workspaceRef }",
+      outputSync: {
+        workspaceRef: "${ .workspace_profile.workspaceRef }",
+        paths: [
+          {
+            source: APP_DIR,
+            target: APP_DIR,
+          },
+        ],
+        timeoutMs: 120000,
+      },
       sandboxPolicy: {
         mode: "per-run",
         template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
@@ -320,7 +328,7 @@ function makeBrowserValidateTask(): JsonRecord {
       metadata: {
         appPath: APP_DIR,
         workflowStage: "post-3b1b-animation",
-        runtimeSandboxName: BUILD_OUTPUT_SANDBOX_NAME,
+        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
       },
       timeoutMs: 900000,
     },

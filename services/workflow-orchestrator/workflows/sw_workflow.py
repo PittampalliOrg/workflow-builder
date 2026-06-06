@@ -1612,6 +1612,11 @@ def _run_native_durable_agent_child_workflow(
         if isinstance(flattened_args.get("environmentConfig"), dict)
         else None
     )
+    output_sync = (
+        flattened_args.get("outputSync")
+        if isinstance(flattened_args.get("outputSync"), dict)
+        else None
+    )
     canonical_context = _canonical_agent_context(
         flattened_args=flattened_args,
         agent_config=agent_config,
@@ -1653,6 +1658,7 @@ def _run_native_durable_agent_child_workflow(
         "agentConfig": agent_config,
         "instructionBundle": instruction_bundle,
         "environmentConfig": environment_config,
+        "outputSync": output_sync,
         "agentGraph": agent_graph if isinstance(agent_graph, dict) else None,
         "autoTerminateAfterEndTurn": True,
         "loopPolicy": flattened_args.get("loopPolicy")
@@ -1796,6 +1802,7 @@ def _run_native_durable_agent_child_workflow(
             "agentConfig": agent_config,
             "instructionBundle": child_input.get("instructionBundle"),
             "environmentConfig": child_input.get("environmentConfig"),
+            "outputSync": child_input.get("outputSync"),
             "vaultIds": child_input.get("vaultIds") or [],
             "initialMessage": run_prompt or prompt,
             "title": f"Workflow {tc.workflow_id} · {task_name}",
@@ -1881,6 +1888,7 @@ def _run_native_durable_agent_child_workflow(
             "agentAppId": bridge_result.get("agentAppId") or canonical_context["agentAppId"],
             "runtimeSandboxName": bridge_child_input.get("runtimeSandboxName")
             or bridge_runtime_sandbox_name,
+            "outputSync": bridge_child_input.get("outputSync") or output_sync,
             "sandboxName": bridge_child_input.get("sandboxName")
             or canonical_context["sandboxName"],
             "workspaceRef": bridge_child_input.get("workspaceRef")
