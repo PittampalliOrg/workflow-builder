@@ -5,6 +5,7 @@ import {
 	stopDurableRun,
 	type StopDurableRunMode,
 } from "$lib/server/lifecycle";
+import { ownsBenchmarkOrEvalRun } from "$lib/server/lifecycle/ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 const MODES = new Set<StopDurableRunMode>([
@@ -37,6 +38,27 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (inspected.notFound) return error(404, "Execution not found");
 	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
 		return error(404, "Execution not found");
+	}
+
+	// Single stop authority: a benchmark/eval INSTANCE is driven by its run
+	// coordinator, which re-dispatches an instance whose DB row isn't terminal —
+	// so the generic per-execution Stop is futile here. Redirect the caller to the
+	// owning run's cancel surface instead of fighting the coordinator.
+	const owner = await ownsBenchmarkOrEvalRun(params.executionId);
+	if (owner) {
+		return json(
+			{
+				ok: false,
+				error: "coordinator_owned",
+				ownedBy: owner.kind,
+				runId: owner.runId,
+				message:
+					owner.kind === "benchmarkRun"
+						? "This is a benchmark instance — cancel the benchmark run instead."
+						: "This is an evaluation instance — cancel the evaluation run instead.",
+			},
+			{ status: 409 },
+		);
 	}
 
 	const result = await stopDurableRun(target, { mode, reason, graceMs });

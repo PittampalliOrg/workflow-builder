@@ -893,6 +893,11 @@
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
 
 	let stopBusy = $state(false);
+	// Set when this execution is actually a benchmark/eval instance driven by a
+	// coordinator — hides the futile generic Stop and links to the owning run.
+	let coordinatorOwner = $state<{ kind: 'benchmarkRun' | 'evalRun'; runId: string } | null>(
+		null
+	);
 	async function stopRun(mode: 'terminate' | 'purge') {
 		if (stopBusy) return;
 		if (
@@ -910,7 +915,21 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ mode })
 			});
-			if (!res.ok) alert(`Stop did not confirm (HTTP ${res.status}) — retry or check the run.`);
+			if (!res.ok) {
+				const b = (await res.json().catch(() => ({}))) as {
+					error?: string;
+					ownedBy?: 'benchmarkRun' | 'evalRun';
+					runId?: string;
+					message?: string;
+				};
+				if (res.status === 409 && b?.error === 'coordinator_owned' && b.ownedBy && b.runId) {
+					// Reactive fallback if the proactive hide didn't catch it.
+					coordinatorOwner = { kind: b.ownedBy, runId: b.runId };
+					alert(b.message ?? 'Stop this run from its benchmark/evaluation run.');
+				} else {
+					alert(`Stop did not confirm (HTTP ${res.status}) — retry or check the run.`);
+				}
+			}
 		} finally {
 			stopBusy = false;
 		}
@@ -1126,6 +1145,7 @@
 			let renderedFromExecutionSpec = false;
 			if (executionRes.ok) {
 				const executionData = await executionRes.json();
+				coordinatorOwner = executionData?.owner ?? null;
 				const spec = executionData?.executionIr?.spec;
 				if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
 					const graph = specToGraph(spec as Record<string, unknown>, {});
@@ -1897,7 +1917,21 @@
 				title="Toggle Other Runs panel">
 				<ListIcon class="size-3.5" /> Other runs
 			</Button>
-			{#if isRunning}
+			{#if isRunning && coordinatorOwner}
+				<!-- Coordinator-owned (benchmark/eval instance): the generic per-execution
+				     Stop is futile — its run coordinator re-drives it. Point at the run. -->
+				<Button
+					variant="outline"
+					size="sm"
+					class="h-7 gap-1"
+					href={coordinatorOwner.kind === 'benchmarkRun'
+						? `/workspaces/${slug}/benchmarks?run=${encodeURIComponent(coordinatorOwner.runId)}`
+						: `/workspaces/${slug}/evaluations`}
+					title={`This run is driven by its ${coordinatorOwner.kind === 'benchmarkRun' ? 'benchmark' : 'evaluation'} run — stop it there`}
+				>
+					Managed by {coordinatorOwner.kind === 'benchmarkRun' ? 'benchmark' : 'evaluation'} run →
+				</Button>
+			{:else if isRunning}
 				<Button
 					variant="destructive"
 					size="sm"
