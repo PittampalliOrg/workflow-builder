@@ -6,8 +6,10 @@ from typing import Any, Generator, Mapping
 
 from dapr.ext.workflow import DaprWorkflowContext, RetryPolicy, when_any as wf_when_any
 
+from src.cancellation import check_cancellation_activity
 from src.claude_sdk_runner import run_claude_sdk_turn_activity
 from src.event_publisher import publish_session_event
+from src.session_config import TERMINAL_CONTROL_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +206,10 @@ def session_workflow(
                 if patch is not None:
                     agent_config.update({k: v for k, v in patch.items() if v is not None})
                     continue
-                if event.get("type") in {"session.terminate", "terminate"}:
+                if (
+                    event.get("type") in TERMINAL_CONTROL_EVENT_TYPES
+                    or event.get("type") == "terminate"
+                ):
                     terminated = True
                     break
                 prompt = _user_message_from_event(event)
@@ -215,6 +220,17 @@ def session_workflow(
                 break
             if not prompt:
                 continue
+
+        # Between-turn cooperative cancel: a session.terminate / user.interrupt
+        # may have persisted a cancel flag (via the raise-event endpoint) while
+        # the previous turn's activity was still running. Honor it before starting
+        # more work rather than running another turn.
+        cancellation = yield ctx.call_activity(
+            check_cancellation_activity, input={"instanceId": ctx.instance_id}
+        )
+        if isinstance(cancellation, Mapping) and cancellation.get("cancelled"):
+            status = "terminated"
+            break
 
         turn_index += 1
         if turn_index > max_iterations:
