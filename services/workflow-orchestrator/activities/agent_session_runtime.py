@@ -40,6 +40,31 @@ def _looks_missing(status: int, text: str) -> bool:
     return status == 404 or "404" in t or "not found" in t or "not_found" in t
 
 
+# The per-session agent sandbox is a Dapr app that becomes service-invokable only
+# once its pod + daprd are Running/registered. The bridge admits it non-blocking
+# (the old call_child_workflow relied on Dapr placement to retry until the app
+# registered); a service-invoke does not, so the START is retried at the workflow
+# level until these "not ready yet" markers clear.
+_NOT_READY_MARKERS = (
+    "failed to resolve",
+    "no such host",
+    "name resolution",
+    "could not get address",
+    "app may not be available",
+    "is not available",
+    "unavailable",
+    "connection refused",
+    "connection reset",
+    "context deadline exceeded",
+    "timeout",
+)
+
+
+def _looks_not_ready(status: int, text: str) -> bool:
+    t = (text or "").lower()
+    return status >= 500 and any(m in t for m in _NOT_READY_MARKERS)
+
+
 def start_session_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Fire-and-forget start of a per-session ``session_workflow`` on the agent
     app-id. Idempotent: the agent's ``/internal/sessions/spawn`` reuses an
@@ -60,9 +85,13 @@ def start_session_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             {"instanceId": instance_id, "payload": payload},
             timeout=60,
         )
-        if status >= 400:
-            raise RuntimeError(f"start_session_workflow failed ({status}): {text[:300]}")
-        result = {"ok": True, "instanceId": instance_id, "status": status}
+        if status < 400:
+            result = {"ok": True, "notReady": False, "instanceId": instance_id, "status": status}
+        elif _looks_not_ready(status, text):
+            # Sandbox app not registered yet — the workflow retries with a timer.
+            result = {"ok": False, "notReady": True, "status": status, "error": (text or "")[:300]}
+        else:
+            result = {"ok": False, "notReady": False, "status": status, "error": (text or "")[:300]}
         set_current_span_attrs(io_attributes("output", result))
         return result
 

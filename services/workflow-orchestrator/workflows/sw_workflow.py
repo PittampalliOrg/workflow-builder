@@ -259,6 +259,16 @@ def _session_poll_seconds() -> int:
         return 3
 
 
+def _session_start_ready_ms() -> int:
+    """How long the parent retries starting the child while the per-session agent
+    sandbox pod boots + its daprd registers (it's not service-invokable before
+    then). Generous default — openshell sandbox provisioning can take minutes."""
+    try:
+        return max(1, int(os.environ.get("DAPR_AGENT_SESSION_START_READY_SECONDS", "300") or "300")) * 1000
+    except (TypeError, ValueError):
+        return 300_000
+
+
 def _run_agent_child_fire_and_poll(
     ctx: wf.DaprWorkflowContext,
     *,
@@ -284,38 +294,71 @@ def _run_agent_child_fire_and_poll(
     (benchmark parity — the run coordinator owns benchmark stall timeouts)."""
     start_ms = _now_ms(ctx)
     timeout_ms = int(timeout_minutes or 0) * 60_000
+    start_ready_ms = _session_start_ready_ms()
     poll_delay = timedelta(seconds=max(1, int(poll_seconds or 1)))
 
-    yield ctx.call_activity(
-        start_session_workflow,
-        input=_freeze({
+    def _terminate_input(reason: str) -> dict:
+        return {
             "agentAppId": agent_app_id,
             "instanceId": child_instance_id,
-            "payload": child_input,
+            "reason": reason,
             "_otel": otel,
-        }),
-    )
+        }
 
+    def _cancel_reason(task: Any, won: Any) -> str:
+        get_result = getattr(task, "get_result", None)
+        ev = get_result() if callable(get_result) else won
+        ev = ev if isinstance(ev, dict) else {}
+        return str(ev.get("reason") or "workflow cancelled by user")
+
+    # Subscribe ONCE; reused across the start-retry + poll iterations. Abandoning
+    # an unfired external-event subscription is benign (unlike a dangling
+    # cross-app sub-orchestration task).
     cancel_task = ctx.wait_for_external_event("workflow.cancel")
 
+    # Start the child, retrying until the per-session agent sandbox app registers
+    # / becomes service-invokable. A Dapr service-invoke (unlike
+    # call_child_workflow) does not wait for the target app via placement, so the
+    # first attempts can fail with "no such host" while the sandbox pod boots.
     while True:
-        timer_task = ctx.create_timer(poll_delay)
-        winner = yield wf_when_any([timer_task, cancel_task])
-        if winner is cancel_task:
-            get_result = getattr(cancel_task, "get_result", None)
-            cancel_event = get_result() if callable(get_result) else winner
-            event = cancel_event if isinstance(cancel_event, dict) else {}
-            reason = event.get("reason") or "workflow cancelled by user"
+        started = yield ctx.call_activity(
+            start_session_workflow,
+            input=_freeze({
+                "agentAppId": agent_app_id,
+                "instanceId": child_instance_id,
+                "payload": child_input,
+                "_otel": otel,
+            }),
+        )
+        if isinstance(started, dict) and started.get("ok"):
+            break
+        if not (isinstance(started, dict) and started.get("notReady")):
+            raise RuntimeError(f"start_session_workflow failed: {started!r}")
+        if _elapsed_ms(ctx, start_ms) >= start_ready_ms:
             yield ctx.call_activity(
-                terminate_session_workflow,
-                input=_freeze({
-                    "agentAppId": agent_app_id,
-                    "instanceId": child_instance_id,
-                    "reason": str(reason),
-                    "_otel": otel,
-                }),
+                terminate_session_workflow, input=_freeze(_terminate_input("sandbox not ready"))
             )
-            raise _WorkflowCancelled(str(reason), task_name="session_workflow")
+            raise TimeoutError(
+                f"agent sandbox {agent_app_id} for {child_instance_id} "
+                f"not ready within {start_ready_ms}ms"
+            )
+        winner = yield wf_when_any([ctx.create_timer(poll_delay), cancel_task])
+        if winner is cancel_task:
+            reason = _cancel_reason(cancel_task, winner)
+            yield ctx.call_activity(
+                terminate_session_workflow, input=_freeze(_terminate_input(reason))
+            )
+            raise _WorkflowCancelled(reason, task_name="session_workflow")
+
+    # Poll until terminal / cancel / timeout.
+    while True:
+        winner = yield wf_when_any([ctx.create_timer(poll_delay), cancel_task])
+        if winner is cancel_task:
+            reason = _cancel_reason(cancel_task, winner)
+            yield ctx.call_activity(
+                terminate_session_workflow, input=_freeze(_terminate_input(reason))
+            )
+            raise _WorkflowCancelled(reason, task_name="session_workflow")
 
         status = yield ctx.call_activity(
             poll_session_workflow_status,
@@ -340,13 +383,7 @@ def _run_agent_child_fire_and_poll(
 
         if timeout_ms > 0 and _elapsed_ms(ctx, start_ms) >= timeout_ms:
             yield ctx.call_activity(
-                terminate_session_workflow,
-                input=_freeze({
-                    "agentAppId": agent_app_id,
-                    "instanceId": child_instance_id,
-                    "reason": "parent timeout",
-                    "_otel": otel,
-                }),
+                terminate_session_workflow, input=_freeze(_terminate_input("parent timeout"))
             )
             raise TimeoutError(
                 f"Child session_workflow {child_instance_id} did not finish "
