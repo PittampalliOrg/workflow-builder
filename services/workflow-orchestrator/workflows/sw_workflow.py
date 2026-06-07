@@ -190,6 +190,63 @@ def _child_workflow_result_or_cancel_event(
     }
 
 
+class _WorkflowCancelled(Exception):
+    """Raised when a durable/run child receives an explicit ``workflow.cancel``
+    (a user Stop) so the parent SW workflow aborts to a terminal state.
+
+    Why this is necessary: a parent blocked in ``ctx.call_child_workflow`` on a
+    cross-app-id child sub-orchestration (a per-session agent runtime on a
+    SEPARATE task hub) cannot be dislodged by a bare Dapr ``terminate`` — the
+    terminate is accepted (202) but never applied to a parent awaiting a
+    sub-orchestration on another hub, so the run hangs forever in "Stopping…".
+    Selecting on the cancel event lets the parent observe the Stop cooperatively
+    and unwind to a real terminal state (the Lifecycle Controller then reaps the
+    child + finalizes the DB row)."""
+
+    def __init__(self, reason: str, *, task_name: str | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.task_name = task_name
+
+
+def _child_workflow_result_with_timeout_or_cancel(
+    ctx: wf.DaprWorkflowContext,
+    child_task: Any,
+    *,
+    timeout_minutes: int,
+    child_instance_id: str,
+    workflow_name: str,
+) -> Any:
+    """Race the child against BOTH a parent timeout AND an explicit
+    ``workflow.cancel`` event.
+
+    This is the cancellation-aware variant of
+    ``_child_workflow_result_with_timeout`` used for non-benchmark durable/run
+    steps. Without the cancel arm, a parent blocked in ``call_child_workflow``
+    on a cross-app-id child never observes a user Stop (Dapr terminate cannot
+    dislodge it), leaving the run wedged. On cancel it raises
+    ``_WorkflowCancelled`` so the parent unwinds to a terminal state."""
+    timeout_seconds = max(1, int(timeout_minutes or 1)) * 60
+    timer_task = ctx.create_timer(timedelta(seconds=timeout_seconds))
+    cancel_task = ctx.wait_for_external_event("workflow.cancel")
+    winner = yield wf_when_any([child_task, timer_task, cancel_task])
+    if winner is child_task:
+        get_result = getattr(child_task, "get_result", None)
+        if callable(get_result):
+            return get_result()
+        return winner
+    if winner is cancel_task:
+        get_result = getattr(cancel_task, "get_result", None)
+        cancel_event = get_result() if callable(get_result) else winner
+        event = cancel_event if isinstance(cancel_event, dict) else {}
+        reason = event.get("reason") or "workflow cancelled by user"
+        raise _WorkflowCancelled(str(reason), task_name=workflow_name)
+    raise TimeoutError(
+        f"Child workflow {workflow_name}/{child_instance_id} did not finish "
+        f"within {timeout_seconds}s"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1864,7 +1921,11 @@ def _run_native_durable_agent_child_workflow(
                 workflow_name="session_workflow",
             )
         else:
-            child_result = yield from _child_workflow_result_with_timeout(
+            # Non-benchmark durable/run: race the child against the parent
+            # timeout AND an explicit workflow.cancel so a user Stop can unwind
+            # the parent cooperatively (a bare Dapr terminate cannot dislodge a
+            # parent awaiting a cross-app-id child sub-orchestration).
+            child_result = yield from _child_workflow_result_with_timeout_or_cancel(
                 ctx,
                 child_task,
                 timeout_minutes=timeout_minutes,
@@ -2714,6 +2775,10 @@ def _handle_try_task(
                 )
                 subtask_results[sub_name] = _unwrap_standardized_output(subtask_result)
         result = {"success": True, "tasks": subtask_results}
+    except _WorkflowCancelled:
+        # An explicit user cancel must abort the whole workflow — it is not an
+        # error to be swallowed into the SW try/catch's catch branch.
+        raise
     except Exception as e:
         logger.warning("[SW Workflow] try task caught error: %s", e)
         # Execute catch tasks if defined
@@ -3412,6 +3477,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # Dispatch the task
             try:
                 result = yield from _dispatch_task(ctx, task_name, task_data, tc)
+            except _WorkflowCancelled:
+                # Cooperative user cancel — not a node failure. Let the
+                # top-level handler record the cancellation and unwind the
+                # parent workflow to a terminal state.
+                raise
             except Exception as task_err:
                 task_duration_ms = _elapsed_ms(ctx, task_start_ms)
                 if db_execution_id and log_id:
@@ -3595,6 +3665,92 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             workflowOutput=workflow_output,
             duration_ms=duration_ms,
             phase="completed",
+        ).model_dump(by_alias=True)
+
+    except _WorkflowCancelled as ce:
+        # A durable/run child observed an explicit workflow.cancel (user Stop).
+        # Unwind the parent to a TERMINAL state instead of continuing to
+        # subsequent nodes — this is the half a bare Dapr terminate can't do
+        # while the parent awaits a cross-app-id child. The Lifecycle Controller
+        # then confirms the parent terminal, reaps the child, and finalizes the
+        # DB row to "cancelled".
+        tc.otel_ctx = tc.workflow_otel_ctx
+        duration_ms = _elapsed_ms(ctx, start_time_ms)
+        reason = ce.reason or "workflow cancelled by user"
+        logger.info("[SW Workflow] Cancelled: %s - %s", workflow_name, reason)
+        workflow_output = resolve_output_definition(
+            workflow.output.model_dump(by_alias=True) if workflow.output else None,
+            _build_expression_context(tc),
+            default_output=tc.task_outputs,
+        )
+
+        ctx.set_custom_status(json.dumps({
+            "phase": "cancelled",
+            "progress": calculate_progress(len(tc.completed_tasks), total_tasks),
+            "message": f"Cancelled: {reason}",
+            "traceId": trace_id,
+        }))
+
+        if db_execution_id:
+            yield ctx.call_activity(
+                persist_results_to_db,
+                input=_freeze({
+                    "executionId": execution_id,
+                    "dbExecutionId": db_execution_id,
+                    "success": False,
+                    "outputs": tc.task_outputs,
+                    "workflowOutput": workflow_output,
+                    "error": reason,
+                    "durationMs": duration_ms,
+                    "phase": "cancelled",
+                    "_otel": tc.otel_ctx,
+                }),
+            )
+
+        if _should_cleanup_workspaces(tc):
+            try:
+                from activities.call_agent_service import cleanup_execution_workspaces
+
+                yield ctx.call_activity(
+                    cleanup_execution_workspaces,
+                    input=_freeze({
+                        "executionId": execution_id,
+                        "dbExecutionId": db_execution_id,
+                        "_otel": tc.otel_ctx,
+                    }),
+                )
+            except Exception as cleanup_err:
+                _log_info(
+                    ctx,
+                    "[SW Workflow] Workspace cleanup after cancel failed (non-fatal): %s",
+                    cleanup_err,
+                )
+
+        if _should_finalize_mlflow_trace_for_trigger(tc.trigger_data):
+            yield from _finalize_mlflow_trace(
+                ctx,
+                _mlflow_finalizer_input(
+                    status="ERROR",
+                    trace_id=trace_id,
+                    otel_ctx=tc.otel_ctx,
+                    workflow_id=tc.workflow_id,
+                    workflow_name=workflow_name,
+                    execution_id=execution_id,
+                    db_execution_id=db_execution_id,
+                    duration_ms=duration_ms,
+                    start_time_ms=start_time_ms,
+                    error=reason,
+                    mlflow_context=tc.mlflow_context,
+                ),
+            )
+
+        return SWWorkflowOutput(
+            success=False,
+            outputs=tc.task_outputs,
+            workflowOutput=workflow_output,
+            error=reason,
+            duration_ms=duration_ms,
+            phase="cancelled",
         ).model_dump(by_alias=True)
 
     except Exception as e:
