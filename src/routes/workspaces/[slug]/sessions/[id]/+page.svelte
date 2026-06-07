@@ -1011,8 +1011,24 @@
 	}
 
 	let stopBusy = $state(false);
+	// "stopping" = accepted (202) but the durable terminate is still converging.
+	let stopConverging = $state(false);
+	async function pollStopStatus() {
+		for (let i = 0; i < 100 && stopConverging; i++) {
+			await new Promise((r) => setTimeout(r, 3000));
+			try {
+				const res = await fetch(`/api/v1/sessions/${sessionId}/stop/status`);
+				if (!res.ok) break;
+				const b = (await res.json().catch(() => ({}))) as { state?: string };
+				if (b?.state === 'confirmed' || b?.state === 'notFound') break;
+			} catch {
+				/* transient — keep polling */
+			}
+		}
+		stopConverging = false;
+	}
 	async function stopRun(mode: 'purge' | 'reset') {
-		if (!session || stopBusy) return;
+		if (!session || stopBusy || stopConverging) return;
 		const label = mode === 'reset' ? 'Stop & reset' : 'Stop';
 		if (
 			!confirm(
@@ -1027,8 +1043,11 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ mode })
 			});
-			if (!res.ok) {
-				const b = (await res.json().catch(() => ({}))) as { message?: string };
+			const b = (await res.json().catch(() => ({}))) as { message?: string; state?: string };
+			if (res.status === 202 || b?.state === 'stopping') {
+				stopConverging = true;
+				void pollStopStatus();
+			} else if (!res.ok) {
 				errorMessage = b?.message ?? `${label} did not confirm (${res.status})`;
 			}
 		} finally {
@@ -1261,14 +1280,14 @@
 					</DropdownMenu.Item>
 					<DropdownMenu.Item
 						onSelect={() => stopRun('purge')}
-						disabled={stopBusy}
+						disabled={stopBusy || stopConverging}
 						class="text-destructive focus:text-destructive"
 					>
-						<Square class="size-3.5" /> Stop run
+						<Square class="size-3.5" /> {stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
 					</DropdownMenu.Item>
 					<DropdownMenu.Item
 						onSelect={() => stopRun('reset')}
-						disabled={stopBusy}
+						disabled={stopBusy || stopConverging}
 						class="text-destructive focus:text-destructive"
 					>
 						<Square class="size-3.5" /> Stop &amp; reset
