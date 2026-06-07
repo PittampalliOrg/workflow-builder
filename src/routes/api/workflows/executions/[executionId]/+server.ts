@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { workflowExecutions } from '$lib/server/db/schema';
+import { ownsBenchmarkOrEvalRun } from '$lib/server/lifecycle/ownership';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
 /**
@@ -29,5 +30,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		return error(404, 'Execution not found');
 	}
 
-	return json(row);
+	// Surface coordinator ownership so the run UI can hide the generic Stop for a
+	// benchmark/eval instance (which is driven by its run coordinator) and link to
+	// the owning run's cancel surface instead.
+	const owner = await ownsBenchmarkOrEvalRun(executionId);
+
+	return json({ ...row, owner });
 };
