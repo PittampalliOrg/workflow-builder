@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { assertSessionInScope } from "$lib/server/sessions/scope";
 import { getSession } from "$lib/server/sessions/registry";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
@@ -10,6 +11,7 @@ import { resolveEnvironmentRef } from "$lib/server/environments/registry";
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
+	await assertSessionInScope(params.id, locals.session);
 	const session = await getSession(params.id);
 	if (!session) return error(404, "Session not found");
 
