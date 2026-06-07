@@ -33,6 +33,7 @@ import {
 	sessions,
 	workflowExecutionLogs,
 	workflowExecutions,
+	workflowWorkspaceSessions,
 	workflows,
 	type BenchmarkEvaluationStatus,
 	type BenchmarkInferenceStatus,
@@ -2297,6 +2298,29 @@ async function finalizeBenchmarkWorkflowExecutions(
 				),
 			);
 	}
+	// Mark retained workspace-session rows for this run's instance executions
+	// cleaned. The per-instance sandboxes are reaped on benchmark run end, so the
+	// live-preview rows must not linger 'active' (mirrors the lifecycle
+	// controller's resolveWorkflowExecution.finalizeDb). Keyed on ALL instance
+	// executions, not just still-active ones, since a run can be cancelled after
+	// inference already drove the execution terminal.
+	const workspaceExecutionIds = new Set<string>();
+	for (const row of rows) {
+		if (row.executionId) workspaceExecutionIds.add(row.executionId);
+	}
+	if (workspaceExecutionIds.size > 0) {
+		await database
+			.update(workflowWorkspaceSessions)
+			.set({ status: "cleaned", cleanedAt: now, updatedAt: now })
+			.where(
+				and(
+					inArray(workflowWorkspaceSessions.workflowExecutionId, [
+						...workspaceExecutionIds,
+					]),
+					eq(workflowWorkspaceSessions.status, "active"),
+				),
+			);
+	}
 	if (activeExecutionIds.size === 0) return true;
 	await database
 		.update(workflowExecutions)
@@ -2371,6 +2395,21 @@ async function finalizeCancelledBenchmarkRunProjections(
 						eq(workflowExecutions.status, "running"),
 						eq(workflowExecutions.phase, "running"),
 					),
+				),
+			);
+	}
+	if (workflowExecutionIds.size > 0) {
+		// Tidy retained workspace-session rows for the cancelled run's instance
+		// executions (their per-instance sandboxes are reaped on cancel).
+		await database
+			.update(workflowWorkspaceSessions)
+			.set({ status: "cleaned", cleanedAt: now, updatedAt: now })
+			.where(
+				and(
+					inArray(workflowWorkspaceSessions.workflowExecutionId, [
+						...workflowExecutionIds,
+					]),
+					eq(workflowWorkspaceSessions.status, "active"),
 				),
 			);
 	}

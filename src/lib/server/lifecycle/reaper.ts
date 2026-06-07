@@ -16,6 +16,7 @@ import {
 	sessions,
 	workflowAgentRuns,
 	workflowExecutions,
+	workflowWorkspaceSessions,
 } from "$lib/server/db/schema";
 import {
 	createDaprCascadeDeps,
@@ -33,11 +34,17 @@ export type ReapTerminalResult = {
 	executionsPurged: number;
 	executionsSkippedActive: number;
 	sessionsPurged: number;
+	workspaceSessionsCleaned: number;
 	errors: string[];
 };
 
 const cascadeDeps = createDaprCascadeDeps();
 const EXECUTION_TERMINAL = ["success", "error", "cancelled"] as const;
+// The per-session sandbox backing a retained workspace is reaped by the
+// workflow-builder-sandbox-gc CronJob at ~4h; only flip a still-'active' row to
+// 'cleaned' once its owning execution has been terminal at least this long, so we
+// never mark a still-live post-run live-preview cleaned.
+const WORKSPACE_CLEANUP_AFTER_MS = 4 * 60 * 60_000;
 
 async function activeBenchmarkCount(): Promise<number> {
 	if (!db) return 0;
@@ -72,6 +79,7 @@ export async function reapTerminalRuns(
 		executionsPurged: 0,
 		executionsSkippedActive: 0,
 		sessionsPurged: 0,
+		workspaceSessionsCleaned: 0,
 		errors: [],
 	};
 	if (!db) {
@@ -150,6 +158,42 @@ export async function reapTerminalRuns(
 		} catch (err) {
 			result.errors.push(`session ${s.id}: ${err instanceof Error ? err.message : String(err)}`);
 		}
+	}
+
+	// 4) Tidy retained workspace-session rows whose owning execution is terminal and
+	//    aged-out enough that the per-session sandbox is already gone — so they don't
+	//    linger 'active' forever (the benchmark/controller terminal paths flip these
+	//    on stop, but pre-controller and happy-path-completed rows accumulate). The
+	//    age guard avoids cleaning a still-live post-run live-preview. UI-session
+	//    workspaces (null workflow_execution_id) are left to the session stop path.
+	try {
+		const workspaceCutoff = new Date(Date.now() - WORKSPACE_CLEANUP_AFTER_MS);
+		const cleanedWorkspaces = await db
+			.update(workflowWorkspaceSessions)
+			.set({ status: "cleaned", cleanedAt: new Date(), updatedAt: new Date() })
+			.where(
+				and(
+					eq(workflowWorkspaceSessions.status, "active"),
+					inArray(
+						workflowWorkspaceSessions.workflowExecutionId,
+						db
+							.select({ id: workflowExecutions.id })
+							.from(workflowExecutions)
+							.where(
+								and(
+									inArray(workflowExecutions.status, [...EXECUTION_TERMINAL]),
+									lte(workflowExecutions.completedAt, workspaceCutoff),
+								),
+							),
+					),
+				),
+			)
+			.returning({ ref: workflowWorkspaceSessions.workspaceRef });
+		result.workspaceSessionsCleaned = cleanedWorkspaces.length;
+	} catch (err) {
+		result.errors.push(
+			`workspace-session cleanup: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 
 	return result;
