@@ -42,5 +42,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const result = await stopDurableRun(target, { mode, reason, graceMs });
 	if (result.notFound) return error(404, "Session not found");
-	return json({ ok: result.confirmed, ...result }, { status: result.confirmed ? 200 : 409 });
+	// confirmed → 200; stopping (requested + converging async) → 202; else 409.
+	const status =
+		result.state === "confirmed" ? 200 : result.state === "stopping" ? 202 : 409;
+	return json({ ok: result.confirmed, ...result }, { status });
 };

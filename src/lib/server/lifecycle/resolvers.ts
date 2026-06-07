@@ -40,6 +40,13 @@ export type ResolvedDurableTarget = {
 	statePurgeInstanceIds: string[];
 	/** Flip owning DB rows terminal. Only invoked once the cascade confirms closure. */
 	finalizeDb: (reason: string) => Promise<void>;
+	/**
+	 * Stamp the durable stop-intent (stop_requested_at) the moment a stop is
+	 * requested — BEFORE the cascade confirms closure. Keeps the row non-terminal
+	 * but marks it so the UI shows "Stopping…" and the terminal-status reaper can
+	 * finalize it later if the in-request poll window expires. Idempotent.
+	 */
+	markStopRequested: (reason: string) => Promise<void>;
 };
 
 /** Per-session agent-runtime app-id — mirrors agent-workflow-host.ts:sessionHostAppId. */
@@ -59,6 +66,7 @@ function notFoundResult(): ResolvedDurableTarget {
 		sandboxNames: [],
 		statePurgeInstanceIds: [],
 		finalizeDb: async () => {},
+		markStopRequested: async () => {},
 	};
 }
 
@@ -178,6 +186,17 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 					);
 			});
 		},
+		markStopRequested: async (reason: string) => {
+			await database
+				.update(workflowExecutions)
+				.set({ stopRequestedAt: new Date(), stopReason: reason })
+				.where(
+					and(
+						eq(workflowExecutions.id, id),
+						inArray(workflowExecutions.status, ["pending", "running"]),
+					),
+				);
+		},
 	};
 }
 
@@ -220,6 +239,12 @@ async function resolveSession(id: string): Promise<ResolvedDurableTarget> {
 				})
 				.where(and(eq(sessions.id, id), ne(sessions.status, "terminated")));
 		},
+		markStopRequested: async () => {
+			await database
+				.update(sessions)
+				.set({ stopRequestedAt: new Date(), updatedAt: new Date() })
+				.where(and(eq(sessions.id, id), ne(sessions.status, "terminated")));
+		},
 	};
 }
 
@@ -248,6 +273,12 @@ async function resolveEvalRun(id: string): Promise<ResolvedDurableTarget> {
 		sandboxNames: [],
 		statePurgeInstanceIds: compact([run.coordinatorExecutionId]),
 		finalizeDb: async () => {},
+		markStopRequested: async () => {
+			await database
+				.update(evaluationRuns)
+				.set({ cancelRequestedAt: new Date() })
+				.where(eq(evaluationRuns.id, id));
+		},
 	};
 }
 

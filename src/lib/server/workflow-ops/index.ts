@@ -1426,7 +1426,9 @@ async function stopThroughController(
 	instanceId: string
 ): Promise<unknown> {
 	const result = await stopDurableRun(target, { mode, reason });
-	if (!result.notFound && !result.confirmed) {
+	// "stopping" = requested + persisted + converging async (slow-to-apply terminate);
+	// the reaper finalizes. Only a genuine non-request failure is an error.
+	if (!result.notFound && !result.confirmed && result.state !== 'stopping') {
 		throw error(409, {
 			message: `Durable ${mode} did not confirm closure of ${instanceId}`
 		});

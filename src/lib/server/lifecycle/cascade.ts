@@ -34,7 +34,14 @@ export const TERMINAL_DURABLE_RUNTIME_STATUSES = new Set([
 
 const DEFAULT_CASCADE_CONCURRENCY = 16;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
-const DEFAULT_WAIT_MS = 45_000;
+// In-request poll deadline for terminal status. A Dapr workflow blocked inside a
+// long activity (e.g. a benchmark `solve`) only applies `terminate` once the
+// activity yields, which can be minutes — so this window cannot guarantee
+// in-request confirmation. Raised from the original 45s to cover the common
+// slow-apply, and paired with the persisted stop-intent (202 "stopping") + the
+// terminal-status reaper so the tail still converges. Overridable via
+// LIFECYCLE_CASCADE_WAIT_SECONDS (wired by createDaprCascadeDeps callers).
+const DEFAULT_WAIT_MS = 90_000;
 const DEFAULT_WAIT_POLL_MS = 1_000;
 
 export type AgentRuntimeTarget = {
