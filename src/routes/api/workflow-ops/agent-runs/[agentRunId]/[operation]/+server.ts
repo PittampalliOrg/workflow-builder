@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { runAgentRunOperation } from '$lib/server/workflow-ops';
+import { requirePlatformAdmin } from '$lib/server/platform-admin';
 
 function parseJsonInput(raw: unknown): unknown {
 	if (typeof raw !== 'string' || !raw.trim()) return undefined;
@@ -11,7 +12,8 @@ function parseJsonInput(raw: unknown): unknown {
 	}
 }
 
-export const POST: RequestHandler = async ({ params, request }) => {
+export const POST: RequestHandler = async ({ params, request, locals }) => {
+	await requirePlatformAdmin(locals);
 	const body = await request.json().catch(() => ({}));
 	const result = await runAgentRunOperation(params.agentRunId, params.operation, {
 		reason: typeof body.reason === 'string' ? body.reason : undefined,

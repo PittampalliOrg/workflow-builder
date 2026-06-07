@@ -260,13 +260,7 @@ export const api = {
 		getExecutionStatus: (executionId: string) =>
 			apiCall<ExecutionStatusResponse>(
 				`/api/workflows/executions/${executionId}/status`
-			),
-
-		terminateExecution: (executionId: string, reason?: string) =>
-			apiCall<void>(`/api/workflows/executions/${executionId}/terminate`, {
-				method: 'POST',
-				body: JSON.stringify({ reason })
-			})
+			)
 	},
 
 	connection: {
@@ -299,32 +293,6 @@ export const api = {
 		getTraceDetails: (traceId: string) =>
 			apiCall<TraceDetail>(
 				`/api/observability/traces/${encodeURIComponent(traceId)}`
-			)
-	},
-
-	/** Orchestrator proxy — forward requests to the Dapr workflow orchestrator */
-	orchestrator: {
-		getStatus: (executionId: string) =>
-			apiCall<ExecutionStatusResponse>(
-				`/api/orchestrator/workflows/${executionId}/status`
-			),
-
-		terminate: (executionId: string, reason?: string) =>
-			apiCall<{ success: boolean; executionId: string; instanceId: string }>(
-				`/api/orchestrator/workflows/${executionId}/terminate`,
-				{
-					method: 'POST',
-					body: JSON.stringify({ reason })
-				}
-			),
-
-		raiseEvent: (executionId: string, eventName: string, eventData: unknown) =>
-			apiCall<{ success: boolean }>(
-				`/api/orchestrator/workflows/${executionId}/events`,
-				{
-					method: 'POST',
-					body: JSON.stringify({ eventName, eventData })
-				}
 			)
 	}
 };

@@ -1,22 +1,20 @@
-import { json, error } from '@sveltejs/kit';
-import type { RequestHandler } from './$types';
-import { and, eq, inArray } from 'drizzle-orm';
-import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
-import { db } from '$lib/server/db';
-import { workflowAgentRuns, workflowExecutions } from '$lib/server/db/schema';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
+import { json, error } from "@sveltejs/kit";
+import type { RequestHandler } from "./$types";
+import { inspectDurableRun, stopDurableRun } from "$lib/server/lifecycle";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 /**
  * POST /api/workflows/executions/[executionId]/terminate
  *
- * Terminates a running workflow execution by proxying
- * to the Dapr orchestrator terminate endpoint.
+ * Terminate a running workflow execution and its per-session children. Routed
+ * through the vetted lifecycle controller (mode=terminate), which confirms
+ * durable closure and flips child sessions/agent-runs/workspace-sessions
+ * terminal — replacing the old fire-and-forget 2s-timeout DB flip that could
+ * report `cancelled` while the durable instance kept running. Prefer
+ * POST .../stop for new callers (it supports purge/reset too).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const { executionId } = params;
-	if (!db) {
-		throw error(503, { message: 'Database not configured' });
-	}
+	if (!locals.session?.userId) return error(401, "Authentication required");
 
 	let body: Record<string, unknown> = {};
 	try {
@@ -24,116 +22,22 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	} catch {
 		// No body is fine
 	}
-
 	const reason =
-		typeof body?.reason === 'string' && body.reason.trim()
+		typeof body?.reason === "string" && body.reason.trim()
 			? body.reason.trim()
 			: undefined;
 
-	const orchestratorUrl = getOrchestratorUrl();
-	const [execution] = await db
-		.select({
-			id: workflowExecutions.id,
-			status: workflowExecutions.status,
-			daprInstanceId: workflowExecutions.daprInstanceId,
-			projectId: workflowExecutions.projectId,
-			userId: workflowExecutions.userId
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-
-	if (!execution) {
-		throw error(404, { message: 'Execution not found' });
-	}
-
+	const target = { kind: "workflowExecution" as const, id: params.executionId };
+	const inspected = await inspectDurableRun(target);
+	if (inspected.notFound) return error(404, "Execution not found");
 	// CMA scoping: 404 on cross-workspace terminate to avoid existence leak.
-	if (
-		locals.session?.userId &&
-		!isResourceInScope(
-			{ projectId: execution.projectId ?? null, userId: execution.userId },
-			locals.session
-		)
-	) {
-		throw error(404, { message: 'Execution not found' });
+	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
+		return error(404, "Execution not found");
 	}
 
-	const instanceId = execution.daprInstanceId || execution.id;
-	const completedAt = new Date();
-
-	if (execution.status !== 'pending' && execution.status !== 'running') {
-		await db
-			.update(workflowAgentRuns)
-			.set({
-				status: 'failed',
-				completedAt,
-				updatedAt: completedAt,
-				error: reason ?? `Parent execution is already ${execution.status}`
-			})
-			.where(
-				and(
-					eq(workflowAgentRuns.workflowExecutionId, executionId),
-					inArray(workflowAgentRuns.status, ['scheduled', 'running'])
-				)
-			);
-
-		return json({
-			success: true,
-			executionId,
-			instanceId,
-			alreadyTerminal: true,
-			status: execution.status
-		});
-	}
-
-	const response = await daprFetch(
-		`${orchestratorUrl}/api/v2/workflows/${instanceId}/terminate`,
-		{
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ reason }),
-			signal: AbortSignal.timeout(2000)
-		}
-	).catch((fetchError) => {
-		if (fetchError instanceof Error && fetchError.name === 'TimeoutError') {
-			return null;
-		}
-		throw fetchError;
-	});
-
-	if (response && !response.ok) {
-		const errorBody = await response.json().catch(() => ({ error: 'Unknown error' }));
-		throw error(response.status, {
-			message: errorBody.error ?? errorBody.message ?? 'Failed to terminate execution'
-		});
-	}
-
-	await db
-		.update(workflowExecutions)
-		.set({
-			status: 'cancelled',
-			completedAt
-		})
-		.where(eq(workflowExecutions.id, executionId));
-
-	await db
-		.update(workflowAgentRuns)
-		.set({
-			status: 'failed',
-			completedAt,
-			updatedAt: completedAt,
-			error: reason ?? 'Execution terminated by user'
-		})
-		.where(
-			and(
-				eq(workflowAgentRuns.workflowExecutionId, executionId),
-				inArray(workflowAgentRuns.status, ['scheduled', 'running'])
-			)
-		);
-
-	return json({
-		success: true,
-		executionId,
-		instanceId
-	});
+	const result = await stopDurableRun(target, { mode: "terminate", reason });
+	return json(
+		{ success: result.confirmed, executionId: params.executionId, ...result },
+		{ status: result.confirmed ? 200 : 409 },
+	);
 };

@@ -25,6 +25,7 @@ import {
 	resolveSpecAgentRefs,
 } from "$lib/server/agents/resolver";
 import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
+import { stopDurableRun } from "$lib/server/lifecycle";
 import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-validation";
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
@@ -1492,6 +1493,16 @@ export async function cancelEvaluationRun(projectId: string, runId: string) {
 	if (run.status === "cancelled") return getEvaluationRun(projectId, runId);
 	if (run.status === "completed" || run.status === "failed") {
 		throw error(409, `Cannot cancel a ${run.status} evaluation run`);
+	}
+	// Route the durable half through the vetted lifecycle controller (best-effort;
+	// the coordinator also tears down its own work via the route's /cancel call).
+	try {
+		await stopDurableRun(
+			{ kind: "evalRun", id: runId },
+			{ mode: "purge", reason: "Cancelled by user" },
+		);
+	} catch (err) {
+		console.warn(`Lifecycle stop for evaluation run ${runId} failed:`, err);
 	}
 	const now = new Date();
 	await database.transaction(async (tx) => {
