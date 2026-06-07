@@ -6,21 +6,20 @@ agent actions as durable Dapr workflows and report completion via pub/sub.
 Also hosts workspace-runtime cleanup + sandbox profile helpers.
 
 Historical note: the file name refers to the now-decommissioned TS
-durable-agent service. The live agent runtime is dapr-agent-py, dispatched
-as a Dapr child workflow from sw_workflow.py rather than via this module.
-The remaining functions that reference durable-agent are retained as dead
-code for one release so external callers (if any) fail loudly rather than
-silently; they will be removed after the follow-up cleanup commit.
+durable-agent service. The live agent runtime is dispatched as a Dapr child
+workflow from sw_workflow.py (runtime resolved via core.runtime_registry)
+rather than via this module. The dead HTTP run/terminate lane
+(call_durable_agent_run / terminate_durable_agent_run / _durable_agent_app_id)
+has been removed; only terminate_durable_runs_by_parent_execution (live
+parent-cancellation fan-out) + the workspace cleanup/validation helpers remain.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
-from urllib.parse import quote
 
 import httpx
 
@@ -103,18 +102,6 @@ def _post_json_with_details(
         )
 
     return data
-
-
-def _as_bool(value: object, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized == "true":
-            return True
-        if normalized == "false":
-            return False
-    return default
 
 
 def _string_list(value: object) -> list[str]:
