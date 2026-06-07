@@ -11,6 +11,7 @@
  * Every user-facing "stop" surface should route through this. See
  * docs/workflow-lifecycle-termination.md.
  */
+import { env } from "$env/dynamic/private";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
@@ -52,13 +53,37 @@ export type StopDurableRunOptions = {
 export type StopDurableRunResult = {
 	confirmed: boolean;
 	notFound: boolean;
+	/** True once the durable stop-intent was persisted (terminate/purge/reset). */
+	requested: boolean;
+	/**
+	 * confirmed — durable tree terminal AND DB finalized/sandboxes reaped.
+	 * stopping — stop requested + intent persisted, converging asynchronously
+	 *   (the in-request poll window expired or finalize is pending); the reaper
+	 *   / a status poll will finalize once Dapr is terminal. Maps to HTTP 202.
+	 * notFound — no such durable run.
+	 */
+	state: "confirmed" | "stopping" | "notFound";
 	scope: DurableTargetScope | null;
 	cascade?: DurableCascadeResult;
 	steps: StopDurableRunStep[];
 };
 
 // One shared deps instance — generic Dapr-backed orchestrator + agent-runtime ops.
-const cascadeDeps = createDaprCascadeDeps();
+// Timing is env-tunable: the in-request poll window cannot fully cover a workflow
+// blocked in a long activity (terminate applies only when the activity yields), so
+// operators can widen it; the persisted stop-intent + the terminal-status reaper
+// converge the tail regardless.
+function envSeconds(name: string, fallbackS: number, minS: number, maxS: number): number {
+	const raw = env[name] ?? process.env[name];
+	const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
+	const s = Number.isFinite(n) ? n : fallbackS;
+	return Math.max(minS, Math.min(maxS, s)) * 1000;
+}
+const cascadeDeps = createDaprCascadeDeps({
+	waitMs: envSeconds("LIFECYCLE_CASCADE_WAIT_SECONDS", 90, 5, 1800),
+	waitPollMs: envSeconds("LIFECYCLE_CASCADE_POLL_SECONDS", 1, 1, 30),
+	requestTimeoutMs: envSeconds("LIFECYCLE_CASCADE_REQUEST_TIMEOUT_SECONDS", 20, 1, 120),
+});
 
 /**
  * Resolve a target's auth scope + whether its durable run is still active,
@@ -84,7 +109,14 @@ export async function stopDurableRun(
 ): Promise<StopDurableRunResult> {
 	const resolved = await resolveDurableTarget(target);
 	if (resolved.notFound) {
-		return { confirmed: false, notFound: true, scope: null, steps: [] };
+		return {
+			confirmed: false,
+			notFound: true,
+			requested: false,
+			state: "notFound",
+			scope: null,
+			steps: [],
+		};
 	}
 	const reason = opts.reason?.trim() || "Stopped by user";
 	const steps: StopDurableRunStep[] = [];
@@ -102,7 +134,14 @@ export async function stopDurableRun(
 				result: r.ok ? "ok" : "failed",
 				detail: r.error,
 			});
-			return { confirmed: r.ok, notFound: false, scope: resolved.scope, steps };
+			return {
+				confirmed: r.ok,
+				notFound: false,
+				requested: false,
+				state: r.ok ? "confirmed" : "stopping",
+				scope: resolved.scope,
+				steps,
+			};
 		}
 		for (const p of resolved.parentInstanceIds) {
 			const r = await cascadeDeps.cancelParent?.(p, reason);
@@ -112,9 +151,12 @@ export async function stopDurableRun(
 				detail: r,
 			});
 		}
+		const ok = steps.every((s) => s.result !== "failed");
 		return {
-			confirmed: steps.every((s) => s.result !== "failed"),
+			confirmed: ok,
 			notFound: false,
+			requested: false,
+			state: ok ? "confirmed" : "stopping",
 			scope: resolved.scope,
 			steps,
 		};
@@ -122,6 +164,18 @@ export async function stopDurableRun(
 
 	const purge = opts.mode === "purge" || opts.mode === "reset";
 	const graceMs = Math.max(0, opts.graceMs ?? 0);
+	// Persist the durable stop-intent up front so the row reads "Stopping…" and the
+	// terminal-status reaper can finalize it even if the in-request poll window
+	// expires (e.g. a workflow blocked in a long activity).
+	try {
+		await resolved.markStopRequested(reason);
+	} catch (err) {
+		steps.push({
+			name: "mark-stop-requested",
+			result: "failed",
+			detail: err instanceof Error ? err.message : String(err),
+		});
+	}
 	const cascade = await runDurableCascade({
 		parentInstanceIds: resolved.parentInstanceIds,
 		agentRuntimeTargets: resolved.agentRuntimeTargets,
@@ -140,10 +194,23 @@ export async function stopDurableRun(
 		detail: `parentClosed=${cascade.parentClosed} agentRuntimeClosed=${cascade.agentRuntimeClosed} purged=${purge}`,
 	});
 
-	// Fail-closed: if the durable tree did not confirm terminal, leave DB rows +
-	// sandboxes intact for a retry rather than lie about success.
+	// Not confirmed terminal in-request — e.g. a workflow blocked in a long
+	// activity that only applies `terminate` once the activity yields (minutes
+	// later). We still never flip DB rows / reap sandboxes until Dapr is confirmed
+	// terminal (no lying about success), BUT the stop-intent is persisted and the
+	// cascade keeps converging; the terminal-status reaper (or a status poll)
+	// finalizes once Dapr reports terminal. Report "stopping" (HTTP 202), not a
+	// hard 409 that leaves the row stale forever.
 	if (!cascade.allClosed) {
-		return { confirmed: false, notFound: false, scope: resolved.scope, cascade, steps };
+		return {
+			confirmed: false,
+			notFound: false,
+			requested: true,
+			state: "stopping",
+			scope: resolved.scope,
+			cascade,
+			steps,
+		};
 	}
 
 	let reapOk = true;
@@ -176,9 +243,14 @@ export async function stopDurableRun(
 		});
 	}
 
+	const confirmed = reapOk && dbOk;
 	return {
-		confirmed: reapOk && dbOk,
+		confirmed,
 		notFound: false,
+		requested: true,
+		// reap/finalize failures are transient bookkeeping — keep "stopping" so the
+		// reaper retries the finalize rather than declaring permanent success.
+		state: confirmed ? "confirmed" : "stopping",
 		scope: resolved.scope,
 		cascade,
 		steps,

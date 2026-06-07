@@ -462,6 +462,12 @@ export const workflowExecutions = pgTable(
 		startedAt: timestamp("started_at").notNull().defaultNow(),
 		completedAt: timestamp("completed_at"),
 		duration: text("duration"), // Duration in milliseconds
+		// Lifecycle stop-intent: set by stopDurableRun the moment a stop is
+		// requested. Decouples "termination requested" from "confirmed terminal" —
+		// the row stays non-terminal until the cascade or the terminal-status
+		// reaper confirms the durable tree is closed, then finalizeDb flips status.
+		stopRequestedAt: timestamp("stop_requested_at"),
+		stopReason: text("stop_reason"),
 	},
 	(table) => ({
 		workflowStartedIdx: index("idx_workflow_executions_workflow_started").on(
@@ -2745,6 +2751,9 @@ export const sessions = pgTable(
 		title: text("title"),
 		status: text("status").notNull().default("rescheduling"),
 		stopReason: jsonb("stop_reason").$type<Record<string, unknown>>(),
+		// Lifecycle stop-intent (mirrors workflow_executions.stop_requested_at):
+		// set when a stop is requested; cleared implicitly when status→terminated.
+		stopRequestedAt: timestamp("stop_requested_at"),
 		agentId: text("agent_id")
 			.notNull()
 			.references(() => agents.id, { onDelete: "restrict" }),

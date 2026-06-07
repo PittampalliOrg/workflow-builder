@@ -1,503 +1,510 @@
 {
-	"version": "7",
-	"dialect": "postgresql",
-	"entries": [
-		{
-			"idx": 0,
-			"version": "7",
-			"when": 1763524363750,
-			"tag": "0000_easy_supernaut",
-			"breakpoints": true
-		},
-		{
-			"idx": 1,
-			"version": "7",
-			"when": 1763686045429,
-			"tag": "0001_dark_human_cannonball",
-			"breakpoints": true
-		},
-		{
-			"idx": 2,
-			"version": "7",
-			"when": 1764691121867,
-			"tag": "0002_icy_otto_octavius",
-			"breakpoints": true
-		},
-		{
-			"idx": 3,
-			"version": "7",
-			"when": 1764694021611,
-			"tag": "0003_clammy_tusk",
-			"breakpoints": true
-		},
-		{
-			"idx": 4,
-			"version": "7",
-			"when": 1765834764376,
-			"tag": "0004_real_wither",
-			"breakpoints": true
-		},
-		{
-			"idx": 5,
-			"version": "7",
-			"when": 1769636303617,
-			"tag": "0005_slippery_tombstone",
-			"breakpoints": true
-		},
-		{
-			"idx": 6,
-			"version": "7",
-			"when": 1770245605039,
-			"tag": "0006_talented_exiles",
-			"breakpoints": true
-		},
-		{
-			"idx": 7,
-			"version": "7",
-			"when": 1770402411062,
-			"tag": "0007_far_penance",
-			"breakpoints": true
-		},
-		{
-			"idx": 8,
-			"version": "7",
-			"when": 1770572602741,
-			"tag": "0008_natural_hedge_knight",
-			"breakpoints": true
-		},
-		{
-			"idx": 9,
-			"version": "7",
-			"when": 1770610607268,
-			"tag": "0009_numerous_darkstar",
-			"breakpoints": true
-		},
-		{
-			"idx": 10,
-			"version": "7",
-			"when": 1770611506181,
-			"tag": "0010_round_frog_thor",
-			"breakpoints": true
-		},
-		{
-			"idx": 11,
-			"version": "7",
-			"when": 1770582057533,
-			"tag": "0011_shallow_multiple_man",
-			"breakpoints": true
-		},
-		{
-			"idx": 12,
-			"version": "7",
-			"when": 1770604113530,
-			"tag": "0012_charming_mister_fear",
-			"breakpoints": true
-		},
-		{
-			"idx": 13,
-			"version": "7",
-			"when": 1770607656737,
-			"tag": "0013_neat_rage",
-			"breakpoints": true
-		},
-		{
-			"idx": 14,
-			"version": "7",
-			"when": 1770671062038,
-			"tag": "0014_friendly_starjammers",
-			"breakpoints": true
-		},
-		{
-			"idx": 15,
-			"version": "7",
-			"when": 1770865368838,
-			"tag": "0015_massive_wildside",
-			"breakpoints": true
-		},
-		{
-			"idx": 16,
-			"version": "7",
-			"when": 1771280921818,
-			"tag": "0016_mysterious_blackheart",
-			"breakpoints": true
-		},
-		{
-			"idx": 17,
-			"version": "7",
-			"when": 1771599600000,
-			"tag": "0017_spicy_runtime_config_audit",
-			"breakpoints": true
-		},
-		{
-			"idx": 18,
-			"version": "7",
-			"when": 1772829096530,
-			"tag": "0018_naive_sauron",
-			"breakpoints": true
-		},
-		{
-			"idx": 19,
-			"version": "7",
-			"when": 1774033137857,
-			"tag": "0019_elite_george_stacy",
-			"breakpoints": true
-		},
-		{
-			"idx": 20,
-			"version": "7",
-			"when": 1774190509968,
-			"tag": "0020_oval_titania",
-			"breakpoints": true
-		},
-		{
-			"idx": 21,
-			"version": "7",
-			"when": 1774196452237,
-			"tag": "0021_woozy_timeslip",
-			"breakpoints": true
-		},
-		{
-			"idx": 22,
-			"version": "7",
-			"when": 1774300545924,
-			"tag": "0022_premium_forge",
-			"breakpoints": true
-		},
-		{
-			"idx": 23,
-			"version": "7",
-			"when": 1774321392671,
-			"tag": "0023_chunky_charles_xavier",
-			"breakpoints": true
-		},
-		{
-			"idx": 24,
-			"version": "7",
-			"when": 1775666406000,
-			"tag": "0024_execution_read_model",
-			"breakpoints": true
-		},
-		{
-			"idx": 25,
-			"version": "7",
-			"when": 1775671800000,
-			"tag": "0025_code_functions",
-			"breakpoints": true
-		},
-		{
-			"idx": 26,
-			"version": "7",
-			"when": 1776104849951,
-			"tag": "0026_mcp_connection_credential_binding",
-			"breakpoints": true
-		},
-		{
-			"idx": 27,
-			"version": "7",
-			"when": 1776219900000,
-			"tag": "0027_agent_skill_registry",
-			"breakpoints": true
-		},
-		{
-			"idx": 28,
-			"version": "7",
-			"when": 1776265200000,
-			"tag": "0028_skill_metadata_registry",
-			"breakpoints": true
-		},
-		{
-			"idx": 29,
-			"version": "7",
-			"when": 1776279300000,
-			"tag": "0029_workflow_code_checkpoints",
-			"breakpoints": true
-		},
-		{
-			"idx": 30,
-			"version": "7",
-			"when": 1776279600000,
-			"tag": "0030_workflow_code_checkpoint_remote",
-			"breakpoints": true
-		},
-		{
-			"idx": 31,
-			"version": "7",
-			"when": 1776456000000,
-			"tag": "0031_deprecate_dapr_agent_py_slug",
-			"breakpoints": true
-		},
-		{
-			"idx": 32,
-			"version": "7",
-			"when": 1776902400000,
-			"tag": "0033_drop_workspace_change_artifacts",
-			"breakpoints": true
-		},
-		{
-			"idx": 33,
-			"version": "7",
-			"when": 1776906000000,
-			"tag": "0034_migrate_durable_agent_runtime",
-			"breakpoints": true
-		},
-		{
-			"idx": 34,
-			"version": "7",
-			"when": 1776946800000,
-			"tag": "0035_workflow_executions_project_id",
-			"breakpoints": true
-		},
-		{
-			"idx": 35,
-			"version": "7",
-			"when": 1776533820000,
-			"tag": "0036_agent_registry_columns",
-			"breakpoints": true
-		},
-		{
-			"idx": 36,
-			"version": "7",
-			"when": 1776981805955,
-			"tag": "0044_code_functions_role",
-			"breakpoints": true
-		},
-		{
-			"idx": 37,
-			"version": "7",
-			"when": 1777011246282,
-			"tag": "0045_cma_runtime_schema_bridge",
-			"breakpoints": true
-		},
-		{
-			"idx": 38,
-			"version": "7",
-			"when": 1777194000000,
-			"tag": "0046_swebench_benchmarks",
-			"breakpoints": true
-		},
-		{
-			"idx": 39,
-			"version": "7",
-			"when": 1777197600000,
-			"tag": "0047_evaluations",
-			"breakpoints": true
-		},
-		{
-			"idx": 40,
-			"version": "7",
-			"when": 1777333579000,
-			"tag": "0048_workspace_change_artifacts_compat",
-			"breakpoints": true
-		},
-		{
-			"idx": 41,
-			"version": "7",
-			"when": 1777339083313,
-			"tag": "0049_swebench_status_split",
-			"breakpoints": true
-		},
-		{
-			"idx": 42,
-			"version": "7",
-			"when": 1777377600000,
-			"tag": "0050_swebench_inference_environment",
-			"breakpoints": true
-		},
-		{
-			"idx": 43,
-			"version": "7",
-			"when": 1777386600000,
-			"tag": "0051_environment_image_builds",
-			"breakpoints": true
-		},
-		{
-			"idx": 44,
-			"version": "7",
-			"when": 1777390200000,
-			"tag": "0052_environment_build_activity",
-			"breakpoints": true
-		},
-		{
-			"idx": 45,
-			"version": "7",
-			"when": 1777553700000,
-			"tag": "0053_benchmark_run_tags",
-			"breakpoints": true
-		},
-		{
-			"idx": 46,
-			"version": "7",
-			"when": 1777559300000,
-			"tag": "0054_benchmark_patch_compare",
-			"breakpoints": true
-		},
-		{
-			"idx": 47,
-			"version": "7",
-			"when": 1777560700000,
-			"tag": "0055_benchmark_lifecycle_metrics",
-			"breakpoints": true
-		},
-		{
-			"idx": 48,
-			"version": "7",
-			"when": 1777574763515,
-			"tag": "0056_benchmark_mlflow",
-			"breakpoints": true
-		},
-		{
-			"idx": 49,
-			"version": "7",
-			"when": 1777581200000,
-			"tag": "0057_benchmark_run_instance_scores",
-			"breakpoints": true
-		},
-		{
-			"idx": 50,
-			"version": "7",
-			"when": 1777581400000,
-			"tag": "0058_evaluation_dataset_rows_origin",
-			"breakpoints": true
-		},
-		{
-			"idx": 51,
-			"version": "7",
-			"when": 1777582300000,
-			"tag": "0059_benchmark_run_instance_annotations",
-			"breakpoints": true
-		},
-		{
-			"idx": 52,
-			"version": "7",
-			"when": 1777640400000,
-			"tag": "0060_resource_prompt_versions",
-			"breakpoints": true
-		},
-		{
-			"idx": 53,
-			"version": "7",
-			"when": 1777680000000,
-			"tag": "0061_drop_legacy_persona_fields",
-			"breakpoints": true
-		},
-		{
-			"idx": 54,
-			"version": "7",
-			"when": 1777723200000,
-			"tag": "0062_benchmark_evaluation_concurrency",
-			"breakpoints": true
-		},
-		{
-			"idx": 55,
-			"version": "7",
-			"when": 1777842000000,
-			"tag": "0063_benchmark_resource_leases",
-			"breakpoints": true
-		},
-		{
-			"idx": 56,
-			"version": "7",
-			"when": 1778077469579,
-			"tag": "0064_normalize_default_platform",
-			"breakpoints": true
-		},
-		{
-			"idx": 57,
-			"version": "7",
-			"when": 1778078823887,
-			"tag": "0065_ensure_resource_library_tables",
-			"breakpoints": true
-		},
-		{
-			"idx": 58,
-			"version": "7",
-			"when": 1778083003077,
-			"tag": "0066_ensure_workflow_workspace_sessions",
-			"breakpoints": true
-		},
-		{
-			"idx": 59,
-			"version": "7",
-			"when": 1778498822342,
-			"tag": "0067_workflow_artifacts",
-			"breakpoints": true
-		},
-		{
-			"idx": 60,
-			"version": "7",
-			"when": 1778499000000,
-			"tag": "0068_prompt_version_mlflow_uri",
-			"breakpoints": true
-		},
-		{
-			"idx": 61,
-			"version": "7",
-			"when": 1778673600000,
-			"tag": "0069_mlflow_native_lineage",
-			"breakpoints": true
-		},
-		{
-			"idx": 62,
-			"version": "7",
-			"when": 1778682600000,
-			"tag": "0070_workflow_mlflow_experiment_pins",
-			"breakpoints": true
-		},
-		{
-			"idx": 63,
-			"version": "7",
-			"when": 1778760000000,
-			"tag": "0071_agent_application_state_digest",
-			"breakpoints": true
-		},
-			{
-				"idx": 64,
-				"version": "7",
-				"when": 1778772600000,
-				"tag": "0072_session_runtime_routing",
-				"breakpoints": true
-			},
-			{
-				"idx": 65,
-				"version": "7",
-				"when": 1778778000000,
-				"tag": "0073_interactive_mlflow_sessions",
-				"breakpoints": true
-			},
-			{
-				"idx": 66,
-				"version": "7",
-				"when": 1778839200000,
-				"tag": "0074_backfill_session_mlflow_ids",
-				"breakpoints": true
-			},
-			{
-				"idx": 67,
-				"version": "7",
-				"when": 1778868728000,
-				"tag": "0075_piece_metadata_catalog_metadata",
-				"breakpoints": true
-			},
-			{
-				"idx": 68,
-				"version": "7",
-				"when": 1778871089000,
-				"tag": "0076_piece_metadata_unique_catalog_key",
-				"breakpoints": true
-			},
-			{
-				"idx": 69,
-				"version": "7",
-				"when": 1778900000000,
-				"tag": "0040_workflows_project_id_notnull",
-				"breakpoints": true
-			},
-			{
-				"idx": 70,
-				"version": "7",
-				"when": 1780689600000,
-				"tag": "0077_gitops_activity_events",
-				"breakpoints": true
-			}
-		]
-	}
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1763524363750,
+      "tag": "0000_easy_supernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1763686045429,
+      "tag": "0001_dark_human_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1764691121867,
+      "tag": "0002_icy_otto_octavius",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1764694021611,
+      "tag": "0003_clammy_tusk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1765834764376,
+      "tag": "0004_real_wither",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1769636303617,
+      "tag": "0005_slippery_tombstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1770245605039,
+      "tag": "0006_talented_exiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1770402411062,
+      "tag": "0007_far_penance",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1770572602741,
+      "tag": "0008_natural_hedge_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1770610607268,
+      "tag": "0009_numerous_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1770611506181,
+      "tag": "0010_round_frog_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1770582057533,
+      "tag": "0011_shallow_multiple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1770604113530,
+      "tag": "0012_charming_mister_fear",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1770607656737,
+      "tag": "0013_neat_rage",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1770671062038,
+      "tag": "0014_friendly_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1770865368838,
+      "tag": "0015_massive_wildside",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1771280921818,
+      "tag": "0016_mysterious_blackheart",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1771599600000,
+      "tag": "0017_spicy_runtime_config_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1772829096530,
+      "tag": "0018_naive_sauron",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1774033137857,
+      "tag": "0019_elite_george_stacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1774190509968,
+      "tag": "0020_oval_titania",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1774196452237,
+      "tag": "0021_woozy_timeslip",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1774300545924,
+      "tag": "0022_premium_forge",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1774321392671,
+      "tag": "0023_chunky_charles_xavier",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1775666406000,
+      "tag": "0024_execution_read_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1775671800000,
+      "tag": "0025_code_functions",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1776104849951,
+      "tag": "0026_mcp_connection_credential_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1776219900000,
+      "tag": "0027_agent_skill_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1776265200000,
+      "tag": "0028_skill_metadata_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1776279300000,
+      "tag": "0029_workflow_code_checkpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1776279600000,
+      "tag": "0030_workflow_code_checkpoint_remote",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1776456000000,
+      "tag": "0031_deprecate_dapr_agent_py_slug",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1776902400000,
+      "tag": "0033_drop_workspace_change_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1776906000000,
+      "tag": "0034_migrate_durable_agent_runtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1776946800000,
+      "tag": "0035_workflow_executions_project_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1776533820000,
+      "tag": "0036_agent_registry_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1776981805955,
+      "tag": "0044_code_functions_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1777011246282,
+      "tag": "0045_cma_runtime_schema_bridge",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1777194000000,
+      "tag": "0046_swebench_benchmarks",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1777197600000,
+      "tag": "0047_evaluations",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1777333579000,
+      "tag": "0048_workspace_change_artifacts_compat",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1777339083313,
+      "tag": "0049_swebench_status_split",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1777377600000,
+      "tag": "0050_swebench_inference_environment",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1777386600000,
+      "tag": "0051_environment_image_builds",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1777390200000,
+      "tag": "0052_environment_build_activity",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1777553700000,
+      "tag": "0053_benchmark_run_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1777559300000,
+      "tag": "0054_benchmark_patch_compare",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1777560700000,
+      "tag": "0055_benchmark_lifecycle_metrics",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1777574763515,
+      "tag": "0056_benchmark_mlflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1777581200000,
+      "tag": "0057_benchmark_run_instance_scores",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1777581400000,
+      "tag": "0058_evaluation_dataset_rows_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1777582300000,
+      "tag": "0059_benchmark_run_instance_annotations",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1777640400000,
+      "tag": "0060_resource_prompt_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1777680000000,
+      "tag": "0061_drop_legacy_persona_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1777723200000,
+      "tag": "0062_benchmark_evaluation_concurrency",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1777842000000,
+      "tag": "0063_benchmark_resource_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1778077469579,
+      "tag": "0064_normalize_default_platform",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1778078823887,
+      "tag": "0065_ensure_resource_library_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1778083003077,
+      "tag": "0066_ensure_workflow_workspace_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1778498822342,
+      "tag": "0067_workflow_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1778499000000,
+      "tag": "0068_prompt_version_mlflow_uri",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1778673600000,
+      "tag": "0069_mlflow_native_lineage",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1778682600000,
+      "tag": "0070_workflow_mlflow_experiment_pins",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1778760000000,
+      "tag": "0071_agent_application_state_digest",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1778772600000,
+      "tag": "0072_session_runtime_routing",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1778778000000,
+      "tag": "0073_interactive_mlflow_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1778839200000,
+      "tag": "0074_backfill_session_mlflow_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1778868728000,
+      "tag": "0075_piece_metadata_catalog_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1778871089000,
+      "tag": "0076_piece_metadata_unique_catalog_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1778900000000,
+      "tag": "0040_workflows_project_id_notnull",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1780689600000,
+      "tag": "0077_gitops_activity_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1780860336130,
+      "tag": "0071_lifecycle_stop_requested",
+      "breakpoints": true
+    }
+  ]
+}
