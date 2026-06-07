@@ -1,15 +1,35 @@
-"""
-Session event publisher.
+"""Session event publisher (canonical, shared across durable-agent runtimes).
 
-Phase 4 Step 2b: session_events is the single authoritative event stream
-for agent activity. The legacy `workflow.stream` Dapr pub/sub topic and the
-`workflow_agent_events` dual-write path are gone; callers POST directly to
-the SvelteKit BFF's internal ingest endpoint. Publishing is fire-and-forget
-via daemon threads — never blocks the agent workflow.
+CANONICAL SOURCE: ``services/shared/session_events/publisher.py`` — do NOT edit
+the vendored per-service copies (``services/dapr-agent-py/src/event_publisher.py``
+and ``services/claude-agent-py/src/event_publisher.py``). Edit this file, then run
+``node scripts/sync-runtime-registry.mjs`` to regenerate the byte-identical copies.
+Each Python service's Docker build context is its own subdir and cannot COPY this
+shared file directly, so the copies are vendored in-tree; a vitest drift guard
+(``src/lib/server/agents/shared-publisher.test.ts``) and the sync ``--check`` mode
+assert the copies match this canonical.
 
-CMA-shape translation happens here so call sites can keep passing internal
-names like `llm_complete` / `tool_call_start` / `tool_call_end`; the ingest
-endpoint receives the CMA shape the /sessions/[id] UI expects.
+``session_events`` is the single authoritative event stream for agent activity.
+The legacy ``workflow.stream`` Dapr pub/sub topic and the ``workflow_agent_events``
+dual-write path are gone; callers POST directly to the SvelteKit BFF's internal
+ingest endpoint. Publishing is fire-and-forget via daemon threads — never blocks
+the agent workflow.
+
+CMA-shape translation happens here so call sites can keep passing internal names
+like ``llm_complete`` / ``tool_call_start`` / ``tool_call_end``; the ingest endpoint
+receives the CMA shape the /sessions/[id] UI expects.
+
+INCREMENTAL TIER (registry capability ``incrementalEvents``): notification-hook
+dispatch, audit-field stamping, ``agent.llm_usage`` context telemetry, and OTEL
+trace-context stamping are gated behind ``INCREMENTAL_EVENTS_ENABLED`` (default
+OFF). A runtime whose registry descriptor declares ``incrementalEvents: true``
+(dapr-agent-py / dapr-agent-py-testing) opts in once at startup via
+``set_incremental_tier_enabled(True)``. That tier imports runtime-internal modules
+(``src.compaction.tokens``, ``src.telemetry.session_tracing``) that simpler
+runtimes (claude-agent-py / adk-agent-py — ``incrementalEvents: false``) do not
+ship, so the gate keeps this byte-identical copy inert (no per-event import
+failures) on those runtimes. The base path — producer-identity dedup, CMA-shape
+translation, fire-and-forget POST — is identical on every runtime.
 """
 
 from __future__ import annotations
@@ -24,6 +44,37 @@ import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---------------------------------------------------------------------------
+# Incremental tier gate (registry capability `incrementalEvents`)
+# ---------------------------------------------------------------------------
+#
+# OFF by default so the byte-identical vendored copy is inert on runtimes that
+# don't ship the runtime-internal telemetry modules. dapr-agent-py opts in at
+# startup (set_incremental_tier_enabled(True)); SESSION_EVENTS_INCREMENTAL is an
+# ops escape hatch (env override consulted at import).
+INCREMENTAL_EVENTS_ENABLED = _env_bool("SESSION_EVENTS_INCREMENTAL", False)
+
+
+def set_incremental_tier_enabled(enabled: bool) -> None:
+    """Enable/disable the incremental enrichment tier (notification hooks,
+    audit-field stamping, ``agent.llm_usage`` telemetry, OTEL trace-context).
+
+    Called once at startup by runtimes whose registry descriptor declares
+    ``incrementalEvents: true``. Mutates the module global read at publish time,
+    so it must run before the first ``publish_session_event`` (well before any
+    workflow executes — safe in practice).
+    """
+    global INCREMENTAL_EVENTS_ENABLED
+    INCREMENTAL_EVENTS_ENABLED = bool(enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +274,8 @@ def _cma_shape(
 
 # Callback installed by main.py after the agent is constructed. Signature:
 #     (event_type: str, data: dict, session_id: str | None, instance_id: str | None) -> None
-# Always invoked on a daemon thread so it can use asyncio freely.
+# Always invoked on a daemon thread so it can use asyncio freely. Only consulted
+# when the incremental tier is enabled (set_incremental_tier_enabled).
 _notification_dispatcher = None
 _audit_field_provider = None
 
@@ -321,6 +373,10 @@ def publish_session_event(
 
     `instance_id` is only used to thread context to Notification hooks and
     does not affect routing; when omitted, `session_id` is passed instead.
+
+    The notification-hook dispatch + audit/usage/trace enrichment are part of
+    the incremental tier (gated on INCREMENTAL_EVENTS_ENABLED); the base path
+    (CMA shape + producer-identity envelope + fire-and-forget POST) always runs.
     """
     if not PUBLISH_ENABLED:
         return
@@ -328,66 +384,72 @@ def publish_session_event(
         logger.debug("[session-ingest] skipping %s — no session_id in scope", event_type)
         return
 
-    # Fire Notification hooks for eligible event types on the pre-translation
-    # name, matching Claude Code's hook matcher vocabulary.
-    dispatcher = _notification_dispatcher
-    if dispatcher is not None and event_type in _NOTIFICATION_EVENT_TYPES:
-        def _fire_notification():
-            try:
-                dispatcher(event_type, data or {}, session_id, instance_id or session_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[notification-hook] dispatch failed: %s", exc)
+    # Incremental tier — fire Notification hooks for eligible event types on the
+    # pre-translation name, matching Claude Code's hook matcher vocabulary.
+    if INCREMENTAL_EVENTS_ENABLED:
+        dispatcher = _notification_dispatcher
+        if dispatcher is not None and event_type in _NOTIFICATION_EVENT_TYPES:
+            def _fire_notification():
+                try:
+                    dispatcher(event_type, data or {}, session_id, instance_id or session_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[notification-hook] dispatch failed: %s", exc)
 
-        threading.Thread(target=_fire_notification, daemon=True).start()
+            threading.Thread(target=_fire_notification, daemon=True).start()
 
     cma_type, cma_data = _cma_shape(event_type, data)
     if cma_type is None:
         return  # suppressed — session_workflow emits the canonical equivalent
 
-    for key, value in _effective_audit_fields(instance_id).items():
-        if cma_type != "session.runtime_config" and value is not None:
-            cma_data.setdefault(key, value)
-
-    if cma_type == "agent.llm_usage":
-        try:
-            from src.compaction.tokens import context_usage_fields
-
-            model = (
-                cma_data.get("model")
-                or cma_data.get("providerModel")
-                or cma_data.get("modelSpec")
-                or cma_data.get("llmComponent")
-            )
-            fields = context_usage_fields(
-                model=str(model) if model else None,
-                input_tokens=cma_data.get("input_tokens") or cma_data.get("prompt_tokens"),
-                cache_read_input_tokens=cma_data.get("cache_read_input_tokens"),
-                cache_creation_input_tokens=cma_data.get("cache_creation_input_tokens"),
-            )
-            cma_data.setdefault("context_source", "provider_usage")
-            cma_data.setdefault("context_count_method", "provider_usage")
-            cma_data.setdefault("context_count_scope", "last_provider_call")
-            for key, value in fields.items():
+    # Incremental tier — audit fields, llm_usage context telemetry, and OTEL
+    # trace-context stamping. Imports runtime-internal modules
+    # (src.compaction.tokens, src.telemetry.session_tracing) only here, so the
+    # gate keeps this inert on runtimes that don't ship them.
+    if INCREMENTAL_EVENTS_ENABLED:
+        for key, value in _effective_audit_fields(instance_id).items():
+            if cma_type != "session.runtime_config" and value is not None:
                 cma_data.setdefault(key, value)
+
+        if cma_type == "agent.llm_usage":
+            try:
+                from src.compaction.tokens import context_usage_fields
+
+                model = (
+                    cma_data.get("model")
+                    or cma_data.get("providerModel")
+                    or cma_data.get("modelSpec")
+                    or cma_data.get("llmComponent")
+                )
+                fields = context_usage_fields(
+                    model=str(model) if model else None,
+                    input_tokens=cma_data.get("input_tokens") or cma_data.get("prompt_tokens"),
+                    cache_read_input_tokens=cma_data.get("cache_read_input_tokens"),
+                    cache_creation_input_tokens=cma_data.get("cache_creation_input_tokens"),
+                )
+                cma_data.setdefault("context_source", "provider_usage")
+                cma_data.setdefault("context_count_method", "provider_usage")
+                cma_data.setdefault("context_count_scope", "last_provider_call")
+                for key, value in fields.items():
+                    cma_data.setdefault(key, value)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[session-ingest] context telemetry stamp failed: %s", exc)
+
+        # Stamp trace_id + span_id of the currently-active OTEL span onto the
+        # envelope so the UI can deep-link any event row into Phoenix / ClickHouse
+        # without needing a separate correlation step. Best-effort — if the OTEL
+        # provider isn't initialized or there's no recording span (likely during
+        # Dapr workflow replay), we skip silently.
+        try:
+            from src.telemetry.session_tracing import get_current_trace_context
+
+            if cma_type != "session.runtime_config":
+                trace_id, span_id = get_current_trace_context()
+                if trace_id:
+                    cma_data.setdefault("traceId", trace_id)
+                if span_id:
+                    cma_data.setdefault("spanId", span_id)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[session-ingest] context telemetry stamp failed: %s", exc)
-
-    # Stamp trace_id + span_id of the currently-active OTEL span onto the
-    # envelope so the UI can deep-link any event row into Phoenix / ClickHouse
-    # without needing a separate correlation step. Best-effort — if the OTEL
-    # provider isn't initialized or there's no recording span (likely during
-    # Dapr workflow replay), we skip silently.
-    try:
-        from src.telemetry.session_tracing import get_current_trace_context
-
-        if cma_type != "session.runtime_config":
-            trace_id, span_id = get_current_trace_context()
-            if trace_id:
-                cma_data.setdefault("traceId", trace_id)
-            if span_id:
-                cma_data.setdefault("spanId", span_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[session-ingest] trace-context stamp failed: %s", exc)
+            logger.debug("[session-ingest] trace-context stamp failed: %s", exc)
 
     # Fill in source_event_id when the caller did not supply a
     # domain-meaningful one. The triple is unique across this pod's lifetime

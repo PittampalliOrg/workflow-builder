@@ -5975,9 +5975,17 @@ def _session_event_audit_field_provider(instance_id: str | None) -> dict[str, An
 try:
     from src.event_publisher import (
         set_audit_field_provider,
+        set_incremental_tier_enabled,
         set_notification_dispatcher,
     )
 
+    # dapr-agent-py declares registry capability `incrementalEvents: true` and
+    # ships the runtime-internal telemetry modules the tier imports
+    # (src.compaction.tokens, src.telemetry.session_tracing), so it opts in to
+    # the shared publisher's incremental tier. Simpler runtimes
+    # (claude-agent-py / adk-agent-py — `incrementalEvents: false`) leave the
+    # gate at its OFF default, keeping the byte-identical vendored copy inert.
+    set_incremental_tier_enabled(True)
     set_notification_dispatcher(_notification_hook_dispatcher)
     set_audit_field_provider(_session_event_audit_field_provider)
 except Exception as exc:
