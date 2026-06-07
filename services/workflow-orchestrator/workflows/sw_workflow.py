@@ -49,6 +49,11 @@ from core.sw_expressions import (
 )
 from core.template_resolver import resolve_templates
 from activities.execute_action import execute_action
+from activities.agent_session_runtime import (
+    poll_session_workflow_status,
+    start_session_workflow,
+    terminate_session_workflow,
+)
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_artifact import persist_workflow_artifact
@@ -245,6 +250,108 @@ def _child_workflow_result_with_timeout_or_cancel(
         f"Child workflow {workflow_name}/{child_instance_id} did not finish "
         f"within {timeout_seconds}s"
     )
+
+
+def _session_poll_seconds() -> int:
+    try:
+        return max(1, int(os.environ.get("DAPR_AGENT_SESSION_POLL_SECONDS", "3") or "3"))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _run_agent_child_fire_and_poll(
+    ctx: wf.DaprWorkflowContext,
+    *,
+    agent_app_id: str,
+    child_instance_id: str,
+    child_input: dict,
+    timeout_minutes: int,
+    poll_seconds: int,
+    otel: Any,
+) -> Any:
+    """Fire-and-poll dispatch of a cross-app-id child ``session_workflow``.
+
+    Replaces ``ctx.call_child_workflow(app_id=<agent>)`` so the parent NEVER
+    holds an outstanding cross-app sub-orchestration — a Dapr ``terminate``
+    cannot dislodge a parent awaiting a sub-orchestration on another task hub, so
+    Stop would wedge the run (or hot-loop if a ``when_any`` returns early while
+    the dangling task can't reconcile). Here the parent's durable history stays
+    same-task-hub: a start activity, a per-iteration poll timer + poll activity,
+    and ONE ``workflow.cancel`` subscription (abandoning an unfired external-event
+    subscription is benign, unlike a dangling sub-orchestration). On cancel the
+    child is terminated and the parent unwinds via ``_WorkflowCancelled`` to a
+    clean terminal state. ``timeout_minutes <= 0`` disables the parent timeout
+    (benchmark parity — the run coordinator owns benchmark stall timeouts)."""
+    start_ms = _now_ms(ctx)
+    timeout_ms = int(timeout_minutes or 0) * 60_000
+    poll_delay = timedelta(seconds=max(1, int(poll_seconds or 1)))
+
+    yield ctx.call_activity(
+        start_session_workflow,
+        input=_freeze({
+            "agentAppId": agent_app_id,
+            "instanceId": child_instance_id,
+            "payload": child_input,
+            "_otel": otel,
+        }),
+    )
+
+    cancel_task = ctx.wait_for_external_event("workflow.cancel")
+
+    while True:
+        timer_task = ctx.create_timer(poll_delay)
+        winner = yield wf_when_any([timer_task, cancel_task])
+        if winner is cancel_task:
+            get_result = getattr(cancel_task, "get_result", None)
+            cancel_event = get_result() if callable(get_result) else winner
+            event = cancel_event if isinstance(cancel_event, dict) else {}
+            reason = event.get("reason") or "workflow cancelled by user"
+            yield ctx.call_activity(
+                terminate_session_workflow,
+                input=_freeze({
+                    "agentAppId": agent_app_id,
+                    "instanceId": child_instance_id,
+                    "reason": str(reason),
+                    "_otel": otel,
+                }),
+            )
+            raise _WorkflowCancelled(str(reason), task_name="session_workflow")
+
+        status = yield ctx.call_activity(
+            poll_session_workflow_status,
+            input=_freeze({
+                "agentAppId": agent_app_id,
+                "instanceId": child_instance_id,
+                "_otel": otel,
+            }),
+        )
+        if isinstance(status, dict) and status.get("complete"):
+            output = status.get("output")
+            if isinstance(output, dict):
+                return output
+            # Gone/purged or non-dict output: minimal envelope — the caller's
+            # setdefault + track_agent_run_completed reconcile the rest from DB.
+            return {
+                "success": str(status.get("runtimeStatus") or "").upper()
+                not in ("FAILED", "GONE"),
+                "runtimeStatus": status.get("runtimeStatus"),
+                "sessionId": child_instance_id,
+            }
+
+        if timeout_ms > 0 and _elapsed_ms(ctx, start_ms) >= timeout_ms:
+            yield ctx.call_activity(
+                terminate_session_workflow,
+                input=_freeze({
+                    "agentAppId": agent_app_id,
+                    "instanceId": child_instance_id,
+                    "reason": "parent timeout",
+                    "_otel": otel,
+                }),
+            )
+            raise TimeoutError(
+                f"Child session_workflow {child_instance_id} did not finish "
+                f"within {timeout_ms}ms"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1892,46 +1999,24 @@ def _run_native_durable_agent_child_workflow(
             if isinstance(returned_app_id, str) and returned_app_id.strip():
                 bridge_app_id = returned_app_id.strip()
 
-        child_task = ctx.call_child_workflow(
-            # Two-name dispatch: every durable-session runtime registers the
-            # outer workflow under descriptor.dispatch_workflow_name
-            # ("session_workflow"); this is distinct from the bridge gate token
-            # ("agent_workflow"). Sourced from the runtime registry instead of a
-            # bare literal so a new runtime can change it by data.
-            target.get("dispatch_workflow_name") or "session_workflow",
-            input=_freeze(bridge_child_input),
-            instance_id=child_instance_id,
-            # Runtime routing plan: dispatch session_workflow to the selected
-            # Dapr app id, which may be a dedicated agent runtime, a shared
-            # runtime pool, or a legacy shared app id.
-            app_id=bridge_app_id,
+        # Fire-and-poll dispatch (NOT ctx.call_child_workflow): start the child
+        # session_workflow on its own (cross-app) app-id via an activity, then
+        # poll its status. The parent never holds an outstanding cross-app
+        # sub-orchestration, so a user Stop (workflow.cancel) unwinds it cleanly
+        # to terminal instead of wedging / hot-looping. Two-name dispatch: the
+        # runtime registers the outer workflow under
+        # descriptor.dispatch_workflow_name ("session_workflow"), which the
+        # start activity passes to /internal/sessions/spawn. Benchmark keeps no
+        # hard parent timeout (its run coordinator owns stall timeouts).
+        child_result = yield from _run_agent_child_fire_and_poll(
+            ctx,
+            agent_app_id=bridge_app_id,
+            child_instance_id=child_instance_id,
+            child_input=bridge_child_input,
+            timeout_minutes=(0 if is_benchmark_run else timeout_minutes),
+            poll_seconds=_session_poll_seconds(),
+            otel=tc.otel_ctx,
         )
-        if is_benchmark_run:
-            # Benchmark runs already have a stronger timeout owner: the
-            # benchmark service terminates stalled session instances. Adding a
-            # parent workflow timer here creates Scheduler reminders that can
-            # outlive the child completion event and leave the parent instance
-            # RUNNING. Still listen for explicit cancellation so benchmark
-            # cleanup can let the parent exit cooperatively before escalating
-            # to hard Dapr termination.
-            child_result = yield from _child_workflow_result_or_cancel_event(
-                ctx,
-                child_task,
-                child_instance_id=child_instance_id,
-                workflow_name="session_workflow",
-            )
-        else:
-            # Non-benchmark durable/run: race the child against the parent
-            # timeout AND an explicit workflow.cancel so a user Stop can unwind
-            # the parent cooperatively (a bare Dapr terminate cannot dislodge a
-            # parent awaiting a cross-app-id child sub-orchestration).
-            child_result = yield from _child_workflow_result_with_timeout_or_cancel(
-                ctx,
-                child_task,
-                timeout_minutes=timeout_minutes,
-                child_instance_id=child_instance_id,
-                workflow_name="session_workflow",
-            )
     else:
         child_task = ctx.call_child_workflow(
             target["workflow_name"],

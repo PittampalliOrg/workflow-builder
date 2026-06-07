@@ -59,12 +59,16 @@ def dapr_invoke(
     *,
     timeout: int = 300,
     metadata: dict[str, str] | None = None,
+    http_verb: str = "POST",
 ) -> tuple[int, dict, str]:
     """Invoke a Dapr service method, returning (status_code, json_body, raw_text).
 
     All exceptions (timeouts, transport errors, HTTP errors raised by the SDK)
     are normalized to (500, {"error": msg}, msg). Callers that need to
     distinguish timeouts can pattern-match on the error string.
+
+    ``http_verb`` defaults to POST; pass "GET" for read-only endpoints (e.g.
+    polling a per-session agent runtime's status), in which case no body is sent.
     """
     span = _dapr_invoke_span(app_id, method_name, payload)
     dapr_metadata = (
@@ -72,13 +76,14 @@ def dapr_invoke(
         if isinstance(metadata, dict)
         else None
     )
+    verb = (http_verb or "POST").upper()
     try:
         with DaprClient() as client:
             response = client.invoke_method(
                 app_id=app_id,
                 method_name=method_name,
-                data=json.dumps(payload),
-                http_verb="POST",
+                data=b"" if verb == "GET" else json.dumps(payload),
+                http_verb=verb,
                 timeout=timeout,
                 metadata=dapr_metadata,
             )
