@@ -1099,6 +1099,16 @@ async def lifespan(app: FastAPI):
     _check_min_dapr_runtime_version()
     _assert_execution_read_model_columns()
 
+    # Capability-honesty boot guard: fail fast if any runtime descriptor in the
+    # registry violates the structural capability invariants (roadmap item 6).
+    from core.conformance import assert_descriptor_consistency
+
+    _conformant_runtimes = assert_descriptor_consistency()
+    logger.info(
+        "[Workflow Orchestrator] Runtime capability conformance guard passed: %d runtimes",
+        _conformant_runtimes,
+    )
+
     # Register all activities from the canonical ACTIVITIES list.
     # To add a new activity, update activities/__init__.py — no changes needed here.
     from activities import ACTIVITIES
