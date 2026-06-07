@@ -7,6 +7,7 @@ import {
 	updateSessionTitle,
 } from "$lib/server/sessions/registry";
 import { inspectDurableRun } from "$lib/server/lifecycle";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -30,10 +31,15 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	// Block destructive delete while the durable run is still active, so we never
-	// orphan a live session_workflow + sandbox. Stop it first (POST .../stop).
+	// Enforce CMA workspace scope before a destructive op (mirror the /stop route),
+	// then block while the durable run is still active so we never orphan a live
+	// session_workflow + sandbox. Stop it first (POST .../stop).
 	const inspected = await inspectDurableRun({ kind: "session", id: params.id });
-	if (!inspected.notFound && inspected.active) {
+	if (inspected.notFound) return error(404, "Session not found");
+	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
+		return error(404, "Session not found");
+	}
+	if (inspected.active) {
 		return error(409, "Stop the run before deleting this session");
 	}
 	const ok = await deleteSession(params.id);
@@ -44,7 +50,11 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 export const PATCH: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const inspected = await inspectDurableRun({ kind: "session", id: params.id });
-	if (!inspected.notFound && inspected.active) {
+	if (inspected.notFound) return error(404, "Session not found");
+	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
+		return error(404, "Session not found");
+	}
+	if (inspected.active) {
 		return error(409, "Stop the run before archiving this session");
 	}
 	const ok = await archiveSession(params.id);

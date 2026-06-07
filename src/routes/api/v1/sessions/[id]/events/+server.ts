@@ -67,9 +67,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 function isUserEvent(value: unknown): value is UserEvent {
 	if (!value || typeof value !== "object") return false;
 	const t = (value as { type?: unknown }).type;
+	// NOTE: `user.interrupt` is intentionally NOT accepted here — interrupts must go
+	// through the vetted lifecycle controller (POST .../control/interrupt →
+	// stopDurableRun mode:interrupt), which is scope-checked + fail-closed. This
+	// route is for genuine user input (message / tool confirmation) only.
 	return (
 		t === "user.message" ||
-		t === "user.interrupt" ||
 		t === "user.tool_confirmation" ||
 		t === "user.custom_tool_result"
 	);

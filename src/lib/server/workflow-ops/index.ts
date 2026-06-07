@@ -1,7 +1,7 @@
 import { desc, eq, or } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { workflowAgentRuns, workflowExecutions, workflows } from '$lib/server/db/schema';
+import { sessions, workflowAgentRuns, workflowExecutions, workflows } from '$lib/server/db/schema';
 import { daprFetch, getDaprAgentPyUrls, getOrchestratorUrl } from '$lib/server/dapr-client';
 import {
 	getCodeCheckpoint,
@@ -9,6 +9,7 @@ import {
 } from '$lib/server/workflows/code-checkpoints';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { buildCodeCheckpointReplayInput } from './replay-input';
+import { stopDurableRun } from '$lib/server/lifecycle';
 
 export type RuntimeStatus =
 	| 'PENDING'
@@ -1382,6 +1383,57 @@ export async function getWorkflowOpsAgentRun(agentRunIdOrInstanceId: string): Pr
 	};
 }
 
+/**
+ * Resolve a raw Dapr workflow/agent instance id to the Lifecycle-Controller target
+ * (the DB row that owns it), so admin terminate/purge can route through the vetted
+ * stopDurableRun cascade (per-session app-id fan-out + fail-closed + Sandbox-CR
+ * reap + DB flip) instead of a raw orchestrator/agent call. Returns null for
+ * instances with no DB correlation, where the raw op remains the fallback.
+ */
+async function lifecycleTargetForInstance(
+	instanceId: string
+): Promise<{ kind: 'workflowExecution' | 'session'; id: string } | null> {
+	const database = db;
+	if (!database || !instanceId) return null;
+	const [exec] = await database
+		.select({ id: workflowExecutions.id })
+		.from(workflowExecutions)
+		.where(
+			or(
+				eq(workflowExecutions.id, instanceId),
+				eq(workflowExecutions.daprInstanceId, instanceId)
+			)
+		)
+		.limit(1);
+	if (exec?.id) return { kind: 'workflowExecution', id: exec.id };
+	const [sess] = await database
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(or(eq(sessions.id, instanceId), eq(sessions.daprInstanceId, instanceId)))
+		.limit(1);
+	if (sess?.id) return { kind: 'session', id: sess.id };
+	return null;
+}
+
+/**
+ * Drive a terminate/purge through the vetted Lifecycle Controller and surface
+ * its fail-closed contract (409 when the durable tree did not confirm closure).
+ */
+async function stopThroughController(
+	target: { kind: 'workflowExecution' | 'session'; id: string },
+	mode: 'terminate' | 'purge',
+	reason: string | undefined,
+	instanceId: string
+): Promise<unknown> {
+	const result = await stopDurableRun(target, { mode, reason });
+	if (!result.notFound && !result.confirmed) {
+		throw error(409, {
+			message: `Durable ${mode} did not confirm closure of ${instanceId}`
+		});
+	}
+	return result;
+}
+
 export async function runAgentRunOperation(
 	agentRunIdOrInstanceId: string,
 	operation: string,
@@ -1391,7 +1443,9 @@ export async function runAgentRunOperation(
 	const instanceId = childRunInstanceId(agentRunIdOrInstanceId, agentRun);
 	const encoded = encodeURIComponent(instanceId);
 	switch (operation) {
-		case 'terminate':
+		case 'terminate': {
+			const target = await lifecycleTargetForInstance(instanceId);
+			if (target) return stopThroughController(target, 'terminate', options.reason, instanceId);
 			return (
 				await agentJson(
 					`/api/v2/agent-runs/${encoded}/terminate`,
@@ -1399,11 +1453,14 @@ export async function runAgentRunOperation(
 					agentRun
 				)
 			).body;
+		}
 		case 'pause':
 			return (await agentJson(`/api/v2/agent-runs/${encoded}/pause`, { method: 'POST' }, agentRun)).body;
 		case 'resume':
 			return (await agentJson(`/api/v2/agent-runs/${encoded}/resume`, { method: 'POST' }, agentRun)).body;
 		case 'purge': {
+			const target = await lifecycleTargetForInstance(instanceId);
+			if (target) return stopThroughController(target, 'purge', options.reason, instanceId);
 			const query = new URLSearchParams();
 			if (options.force) query.set('force', 'true');
 			if (options.recursive) query.set('recursive', 'true');
@@ -1488,16 +1545,21 @@ export async function runWorkflowOperation(
 ): Promise<unknown> {
 	const encoded = encodeURIComponent(instanceId);
 	switch (operation) {
-		case 'terminate':
+		case 'terminate': {
+			const target = await lifecycleTargetForInstance(instanceId);
+			if (target) return stopThroughController(target, 'terminate', options.reason, instanceId);
 			return orchestratorJson(`/api/v2/workflows/${encoded}/terminate`, {
 				method: 'POST',
 				body: JSON.stringify({ reason: options.reason })
 			});
+		}
 		case 'pause':
 			return orchestratorJson(`/api/v2/workflows/${encoded}/pause`, { method: 'POST' });
 		case 'resume':
 			return orchestratorJson(`/api/v2/workflows/${encoded}/resume`, { method: 'POST' });
 		case 'purge': {
+			const target = await lifecycleTargetForInstance(instanceId);
+			if (target) return stopThroughController(target, 'purge', options.reason, instanceId);
 			const query = new URLSearchParams();
 			if (options.force) query.set('force', 'true');
 			if (options.recursive) query.set('recursive', 'true');

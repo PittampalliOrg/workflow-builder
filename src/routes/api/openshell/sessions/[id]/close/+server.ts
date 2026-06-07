@@ -2,7 +2,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
 import { getOpenShellSession } from "$lib/server/openshell-sessions";
-import { raiseSessionEvent } from "$lib/server/sessions/control";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -40,13 +39,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		terminalClosed = result.closed === true;
 	}
 
-	let stopRaised = false;
-	if (body.stopSession === true) {
-		const result = await raiseSessionEvent(params.id, "session.user_events", {
-			events: [{ type: "user.interrupt" }],
-		});
-		stopRaised = result.ok;
-	}
-
-	return json({ ok: true, terminalClosed, stopRaised });
+	// (A dead `stopSession` branch that raised a raw user.interrupt past the
+	// lifecycle controller was removed — no caller set it, and stopping a session
+	// must go through POST /api/v1/sessions/[id]/control/interrupt | /stop.)
+	return json({ ok: true, terminalClosed });
 };

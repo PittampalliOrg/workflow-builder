@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { rerunWorkflowInstances } from '$lib/server/workflow-ops';
+import { requirePlatformAdmin } from '$lib/server/platform-admin';
 
 function parseJsonInput(raw: unknown): unknown {
 	if (typeof raw !== 'string' || !raw.trim()) return undefined;
@@ -11,7 +12,10 @@ function parseJsonInput(raw: unknown): unknown {
 	}
 }
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
+	// Mutating bulk op — match the /api/workflow-ops/* platform-admin invariant
+	// (the sibling [operation] route already enforces it).
+	await requirePlatformAdmin(locals);
 	const body = await request.json().catch(() => ({}));
 	const instanceIds = Array.isArray(body.instanceIds)
 		? body.instanceIds.filter((value: unknown): value is string => typeof value === 'string' && value.length > 0)

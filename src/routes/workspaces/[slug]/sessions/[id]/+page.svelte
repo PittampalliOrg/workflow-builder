@@ -891,11 +891,16 @@
 	}
 
 	async function interrupt() {
-		await fetch(`/api/v1/sessions/${sessionId}/events`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ events: [{ type: 'user.interrupt' }] })
+		// Route through the vetted lifecycle controller (mode=interrupt): scope-checked,
+		// fail-closed, and it still raises the cooperative user.interrupt the runtime
+		// understands — instead of POSTing the raw external event past the controller.
+		const res = await fetch(`/api/v1/sessions/${sessionId}/control/interrupt`, {
+			method: 'POST'
 		});
+		if (!res.ok) {
+			const b = (await res.json().catch(() => ({}))) as { message?: string };
+			errorMessage = b?.message ?? `Interrupt failed (${res.status})`;
+		}
 	}
 
 	async function confirmTool(toolUseId: string, allow: boolean, denyMessage?: string) {
@@ -1034,7 +1039,12 @@
 	async function archive() {
 		if (!session) return;
 		const res = await fetch(`/api/v1/sessions/${sessionId}`, { method: 'PATCH' });
-		if (res.ok) goto(`/workspaces/${slug}/sessions`);
+		if (res.ok) {
+			goto(`/workspaces/${slug}/sessions`);
+		} else {
+			const b = (await res.json().catch(() => ({}))) as { message?: string };
+			errorMessage = b?.message ?? `Archive failed (${res.status})`;
+		}
 	}
 
 	async function destroySessionSandbox() {
