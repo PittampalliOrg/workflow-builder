@@ -1,12 +1,14 @@
 # DurableSessionRuntime Contract (v1)
 
-> Status: **Phase 1 — declarative runtime registry (orchestrator)**. This is the
-> versioned contract every swappable durable-agent runtime satisfies, plus the
-> single source of truth for runtime identity. Companion docs:
+> Status: **IMPLEMENTED** — the declarative runtime registry SSOT
+> (`services/shared/runtime-registry.json`) + capability descriptors + the
+> swap-safety gate are live. This is the versioned contract every swappable
+> durable-agent runtime satisfies, plus the single source of truth for runtime
+> identity. Companion doc:
 > [`agent-runtime-comparison.md`](./agent-runtime-comparison.md) (why the two
-> runtimes diverge) and
-> [`agent-runtime-standardization-plan.md`](./agent-runtime-standardization-plan.md)
-> (the full phased plan).
+> runtimes diverge). For stop/terminate/purge of durable agent runs, see
+> [`workflow-lifecycle-termination.md`](./workflow-lifecycle-termination.md)
+> (the lifecycle SSOT).
 
 ## Why
 

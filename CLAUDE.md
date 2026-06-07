@@ -5,8 +5,6 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > **Supplementary docs** (`docs/`):
 > - `agent-runtime-comparison.md` — `dapr-agent-py` vs `claude-agent-py`: verified surface-by-surface comparison + rationale + swap-blockers
 > - `durable-session-runtime-contract.md` — the swappable runtime contract + declarative runtime registry (`core/runtime_registry.json`)
-> - `agent-runtime-standardization-plan.md` — phased plan to standardize/swap runtimes (registry, capability descriptors, swap-safety gate)
-> - `per-agent-runtime.md` — ⚠️ PARTLY STALE: the custom AgentRuntime CRD + Kopf controller it describes were RETIRED for upstream agent-sandbox + Kueue (per-session Sandbox pods, image-only diff); see `agent-runtime-comparison.md` §Deployment
 > - `activepieces-auth.md` — AP auth + integration
 > - `mcp-agent-workflows.md` — MCP-enabled `dapr-agent-py` workflow method
 > - `hooks-and-plugins.md` — `dapr-agent-py` hooks + plugins (Claude Code port)
@@ -16,7 +14,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > - `callable-agents.md` — `CallAgent` peer-delegation tool (native `WorkflowContextInjectedTool`)
 > - `tiered-crawl-pipeline.md` — `crawl4ai-adapter` v2 + `browserresearchfanout01` v3 (canonical multi-URL research pattern)
 > - `workflow-artifacts.md` — Standardized `workflow_artifacts` surface
-> - `workflow-lifecycle-termination.md` — vetted stop/terminate/purge for workflows + agent runs (Lifecycle Controller design, stale-state root causes, full-cutover plan) — ⚠️ DESIGN PROPOSAL, not yet implemented
+> - `workflow-lifecycle-termination.md` — **lifecycle SSOT**: the vetted stop/terminate/purge for workflows + agent runs (the server-side Lifecycle Controller, `/stop` routes + modes, root-cause fixes, GitOps safety nets) — IMPLEMENTED (PR1–PR4)
 
 ## Architecture
 
@@ -229,7 +227,7 @@ Every `durable/run` step goes through a session bridge so workflow-driven runs a
 Defensive layers prevent `durable/run` hangs:
 
 - **Empty-response circuit breaker** (`services/dapr-agent-py/src/main.py` `call_llm`): tracks consecutive empty-content + no-tool-calls responses (or exceptions counted as empty). After `DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD` (default 3), raises `AgentError`. Catches Anthropic SDK [#1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204) (Opus 4.7 + thinking + tools emits empty `end_turn`).
-- **Host-monitor thread** (`services/dapr-agent-py/src/main.py` `_run_session_host_monitor`, started at boot; logic in `session_host_monitor.py`): an **out-of-band** background thread polling workflow state for start/idle stalls. The old in-workflow durable **session-turn timer** (`when_any([child, timer])`, default 600s) was **removed** in commit `72154581` — `grep SESSION_TURN_TIMEOUT|when_any|create_timer services/dapr-agent-py/src/` = 0. The host-monitor's default idle/start action is **`"warn"`** (env `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION`); only `terminate` actually kills the session. Restoring a durable `when_any` turn-timer is open work.
+- **Host-monitor thread** (`services/dapr-agent-py/src/main.py` `_run_session_host_monitor`, started at boot; logic in `session_host_monitor.py`): an **out-of-band** background thread polling workflow state for start/idle stalls. The old in-workflow durable **session-turn timer** (`when_any([child, timer])`, default 600s) was **removed** in commit `72154581`. The host-monitor's default idle/start action is **`"warn"`** (env `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION`); only `terminate` actually kills the session. This thread is a *hang-detection* heuristic, **not** the stop watchdog — explicit user stops route through the Lifecycle Controller (below) and stuck DB↔Dapr divergence is reconciled by the `lifecycle-terminal-reaper` CronJob.
 - **Image tool_result compaction** (`anthropic_adapter.py` `_compact_image_tool_results`): keeps only last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3) intact image tool_result blocks; older ones replaced with placeholder text. Prevents 1M-token overflow from screenshot accumulation.
 
 ### Workspace session persistence
@@ -237,6 +235,42 @@ Defensive layers prevent `durable/run` hangs:
 Orchestrator owns the DB write for `workflow_workspace_sessions` post `workspace/*` cutover:
 - **`persist_workspace_session` activity**: after `workspace/profile` with `keepAfterRun=true`, UPSERTs the row (status=`active`, sandbox_state JSONB) keyed on `workspace_ref`. Read by `getExecutionSandboxPreviewInfo` for the live-preview proxy.
 - **Cleanup gate**: `_should_cleanup_workspaces` walks the SW 1.0 spec for `workspace/*` steps with `with.keepAfterRun: true` (openshell-agent-runtime's response doesn't echo the flag back).
+
+## Lifecycle: Stop / Terminate / Purge (Lifecycle Controller)
+
+A single vetted server-side **Lifecycle Controller** in the BFF (`src/lib/server/lifecycle/{cascade,resolvers,index,reaper}.ts`) is the SSOT for stopping/terminating/purging Dapr Workflows + durable agent runs. Every user-facing "stop" affordance routes through it; ad-hoc terminate/purge code paths were removed. See `docs/workflow-lifecycle-termination.md` (the lifecycle SSOT; IMPLEMENTED PR1–PR4).
+
+**Entry point**: `stopDurableRun(target, { mode })`.
+- `target.kind ∈ workflowExecution | session | evalRun`.
+- `mode ∈ interrupt | terminate | purge | reset`:
+  - **`interrupt`** — cooperative only (raise `session.terminate` / `user.interrupt`, bounded wait). "Pause the agent, keep the run."
+  - **`terminate`** — graceful raise → Dapr terminate parent + every child app-id → poll to terminal. "Stop."
+  - **`purge`** — terminate (if needed) → confirm terminal → Dapr purge (recursive; **purge-force** when the worker is gone) → reap per-session Sandbox CRs → flip all DB rows terminal. "Stop & clean."
+  - **`reset`** (dev) — purge + delete the deterministic-ID occupants so the next run starts byte-clean.
+- **Fail-closed**: returns HTTP 409 if the durable tree is not confirmed terminal. Generalized from (and now shared with) the benchmark cancellation cascade (`cleanupBenchmarkDurableWorkflowCascade`).
+
+**User stop surfaces all route through it**:
+- `POST /api/v1/sessions/[id]/stop` and `POST /api/workflows/executions/[id]/stop`; session interrupt; workflow-execution terminate; eval cancel.
+- Delete/Archive are **BLOCKED** (409 "Stop the run first") while a run is active.
+- UI: **Stop** / **Stop & Reset** buttons on the session-detail + workflow-run pages; the sessions-list "Archive" row action was relabeled **"Delete"** (it always hard-DELETEd).
+- Auth: `/api/workflow-ops/*` now **requires platform admin** (was an unauthenticated JSON API). The dead, unauthenticated `DELETE /api/orchestrator/workflows/[id]` route + dead api-client methods (`workflows.terminateExecution`, `orchestrator.terminate/raiseEvent`) were **removed**.
+
+**Cross-app-id fan-out (no implicit cascade)**: `session_workflow` children run under **per-session sandbox app-ids** = separate task hubs, so Dapr's native recursive cascade does NOT reach them. The BFF controller does **explicit per-session app-id fan-out** (terminate + purge each child app-id). The orchestrator's `terminate_durable_runs_by_parent_execution` activity was **RETIRED** (it only ever fanned out to the legacy `claude-code-agent` app-id); same-task-hub children rely on Dapr's native recursive cascade.
+
+**Orchestrator-side changes** (`workflow-orchestrator`):
+- `_workflow_http_post` now **forwards query params**; `purge_workflow` is **recursive-by-default** + forwards `force` (purge-force, Dapr 1.17.9).
+- `_idempotent_schedule` purge-before-reuse is **GUARDED** to only the DB-terminal-but-Dapr-non-terminal divergence — it NEVER kills a legitimately running instance.
+
+**Runtime/sandbox-side changes**:
+- **sandbox-execution-api**: no longer blindly 409-adopts an existing Sandbox CR — it stamps an **owner-run-id** annotation and adopts only the SAME run, else deletes + recreates (no inherited stale pod state).
+- **dapr-agent-py**: the cancel-key write/read now AGREE for `durable/run` (the check reads candidate keys, stripping `__turn__N` / `:turn-N`), so a mid-turn `user.interrupt` / `session.terminate` actually halts.
+- **claude-agent-py**: management **parity** with dapr-agent-py — `POST /api/v2/agent-runs/{id}/{terminate,pause,resume}` + `DELETE` purge (via `DaprWorkflowClient`), cancellation persistence, a between-turn cooperative-cancel check, and `TERMINAL_CONTROL_EVENT_TYPES`.
+
+**GitOps safety nets (stacks, PR4)** — manual SQL/scripts are no longer the cleanup path:
+- **`workflow-builder-sandbox-gc` CronJob** — age-based GC of orphaned per-session agent-host Sandbox CRs in the `workflow-builder` namespace (excludes SandboxWarmPool-owned).
+- **Unified Dapr `stateRetentionPolicy = 168h`** across the parent (`workflow-orchestrator-no-tracing`) AND the per-session child Configs (`workflow-builder-agent-runtime`, `openshell-sandbox-dapr`) — closing the cascade-termination race (children were auto-purged before the parent finished; the old split was 168h vs 30m).
+- **`lifecycle-terminal-reaper` CronJob** → `POST /api/internal/lifecycle/reap-terminal` — reconciles DB rows stuck non-terminal vs terminal/gone Dapr instances, purges orphans, **SKIPS while a benchmark run/lease is active**.
+- **`runbooks/phase0-lifecycle-clean-slate.{sh,md}`** — guarded, dry-run-by-default one-time purge (NOT auto-run).
 
 ## Node Types
 
@@ -417,7 +451,12 @@ trigger {topic, urls, extractionPrompt}
 - **Session rows with `project_id=NULL`** → can't happen post migration 0040. If seen, something inserts outside BFF + bridge paths
 - **Workflow-driven sessions show raw agent IDs** → ephemeral agents filtered from `/api/agents` by design. `listSessions` LEFT JOINs `agents` returns `agentName/agentSlug/agentAvatar/agentEphemeral`
 - **Agent loops with empty responses** → Anthropic SDK [#1204](https://github.com/anthropics/anthropic-sdk-python/issues/1204). Circuit breaker in `call_llm` trips after 3 (`DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD`); look for `[call-llm] circuit-breaker tripped`
-- **Child session hangs with no LLM traffic** → the in-workflow session-turn timer was REMOVED (commit `72154581`); there is no durable `when_any([child, timer])` cutoff anymore. Only the out-of-band `_run_session_host_monitor` thread observes idle/start stalls, and its default action is `"warn"` (set `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION=terminate` to make it kill). Search logs for `[session-host]`
+- **Child session hangs with no LLM traffic** → the in-workflow session-turn timer was REMOVED (commit `72154581`); there is no durable `when_any([child, timer])` cutoff anymore. The out-of-band `_run_session_host_monitor` thread observes idle/start stalls but its default action is `"warn"` (set `DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION=terminate` to make it kill; search logs for `[session-host]`). To actually stop it, use the Lifecycle Controller — `POST /api/v1/sessions/[id]/stop` (mode `terminate`/`purge`). A genuinely orphaned run (DB stuck non-terminal vs terminal/gone Dapr instance) is reconciled by the `lifecycle-terminal-reaper` CronJob within one interval — no manual SQL needed
+- **Want to stop a running session / workflow run** → route through the Lifecycle Controller (`src/lib/server/lifecycle/`): `POST /api/v1/sessions/[id]/stop` or `POST /api/workflows/executions/[id]/stop` with `{mode}` (`interrupt`/`terminate`/`purge`/`reset`). UI: **Stop** / **Stop & Reset** buttons. It is fail-closed (409 if the durable tree isn't confirmed terminal) and does explicit per-session app-id fan-out. Delete/Archive 409 ("Stop the run first") while a run is active
+- **Mid-turn `user.interrupt` / `session.terminate` did nothing on durable/run** → was the dapr-agent-py cancel-key write/read mismatch (write `session-cancel:{session_instance}`, read `session-cancel:{<session>__turn__N}`). FIXED — the check now reads candidate keys, stripping `__turn__N` / `:turn-N`, so the keys AGREE. For claude-agent-py, cooperative cancel is a between-turn check (it now has management parity: `POST /api/v2/agent-runs/{id}/{terminate,pause,resume}` + `DELETE` purge)
+- **DB rows stuck `running`/non-terminal after a pod died** → the `lifecycle-terminal-reaper` CronJob (`POST /api/internal/lifecycle/reap-terminal`) reconciles DB rows against terminal/gone Dapr instances, purges orphans, and flips DB rows terminal. It SKIPS while a benchmark run/lease is active. Orphaned per-session Sandbox CRs in `workflow-builder` are age-GC'd by the `workflow-builder-sandbox-gc` CronJob. The retired `scripts/reconcile-stale-*`/`dev-purge-stale-*` manual paths are superseded
+- **`Could not purge … instance is not in a terminal state`** → purge requires terminal; the Lifecycle Controller terminates first (and uses **purge-force** when the worker pod is already gone, Dapr 1.17.9). `purge_workflow` is recursive-by-default + forwards `force`. Don't reuse a deterministic ID over a stuck non-terminal instance — `_idempotent_schedule`'s purge-before-reuse is GUARDED to only the DB-terminal-but-Dapr-non-terminal divergence (it never kills a legitimately running instance)
+- **Re-run of a workflow node inherits stale pod filesystem/state** → was the sandbox-execution-api 409-adopt of a deterministic-named Sandbox CR. FIXED — it stamps an owner-run-id annotation and adopts only the SAME run, else deletes + recreates
 - **Anthropic 400 `prompt is too long: N > 1000000`** → too many image tool_results. `_compact_image_tool_results` keeps last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3); lower if still overflowing
 - **Anthropic 400 `Streaming is required ...`** → non-streaming call estimated >10 min. Fixed 2026-04-21 by routing all calls through `_stream_final_message`. Lower `DAPR_AGENT_PY_MAX_TOKENS` (default 16384) if reappears
 - **dapr-agent-py code changes need TWO image builds**: `dapr-agent-py:git-<sha>` (legacy static Deployment, GitOps tag bump) + `dapr-agent-py-sandbox:latest` (per-session agent-sandbox pods, `imagePullPolicy: Always`)
@@ -434,4 +473,4 @@ trigger {topic, urls, extractionPrompt}
 
 ---
 
-**Last Updated**: 2026-06-06
+**Last Updated**: 2026-06-07

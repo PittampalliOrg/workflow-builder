@@ -3,6 +3,21 @@
 This note captures the Dapr workflow behavior that matters for SWE-bench
 benchmark scale tests and cleanup.
 
+> **Cleanup is now unified with the platform Lifecycle Controller.** The benchmark
+> cancellation cascade (`cleanupBenchmarkDurableWorkflowCascade`) was the reference
+> implementation that the vetted server-side **Lifecycle Controller**
+> (`src/lib/server/lifecycle/`) generalized and now **shares** — see
+> `docs/workflow-lifecycle-termination.md` (the lifecycle SSOT; IMPLEMENTED PR1–PR4).
+> Routine reconciliation of orphaned/stuck state is automated by the
+> `lifecycle-terminal-reaper` CronJob (`POST /api/internal/lifecycle/reap-terminal`),
+> which **SKIPS while a benchmark run/lease is active** so it never races a live run;
+> orphaned per-session Sandbox CRs in `workflow-builder` are age-GC'd by the
+> `workflow-builder-sandbox-gc` CronJob. `stateRetentionPolicy` is now unified at
+> `168h` across the parent (`workflow-orchestrator-no-tracing`) and the per-session
+> child Configs, closing the cascade-termination race. The Dapr workflow model +
+> cleanup-lifecycle guidance below still applies; reach for direct state deletion
+> only as operator break-glass (see also `docs/dapr-workflow-purge-runbook.md`).
+
 ## Dapr Workflow Model
 
 - Dapr Workflows are backed by Dapr actors. Each workflow instance has a
@@ -73,9 +88,14 @@ The important upstream constraints for benchmark operations are:
 - The best long-term cancellation path is a hybrid one: raise a workflow-level
   cancellation event first, let the workflow run deterministic cleanup
   activities, then escalate to hard terminate if the workflow does not reach a
-  terminal state inside the bounded cleanup window. Today, SWE-bench cleanup is
-  hard-terminate-plus-poll because parent and agent session workflows do not yet
-  expose a shared cancel event contract.
+  terminal state inside the bounded cleanup window. This is now the shape of the
+  Lifecycle Controller's cascade: graceful raise (`session.terminate` /
+  `user.interrupt`) → terminate parent + every per-session child app-id (explicit
+  fan-out) → poll to terminal → purge (recursive; purge-force when the worker is
+  gone). Both runtimes now honor a shared cancel contract — dapr-agent-py's
+  cancel-key write/read agree for `durable/run`, and claude-agent-py has
+  management parity (terminate/pause/resume/purge + a between-turn cooperative
+  cancel + `TERMINAL_CONTROL_EVENT_TYPES`).
 - Purge is only valid for terminal workflow instances. If an instance is still
   running, termination must happen before purge.
 - For SWE-bench agent sessions, terminate child session and turn workflows
@@ -92,10 +112,14 @@ The important upstream constraints for benchmark operations are:
   agent session and turn workflows; if closure is not confirmed, retry later.
 - Completed benchmark cleanup is backgrounded so evaluator callbacks do not
   block on every sandbox deletion. The background path retries durable closure
-  briefly; the `stuck-workflow-watchdog` also schedules the run cleanup endpoint
-  for recently terminal runs that still have active session or workflow
-  projections. If sandboxes remain after a completed run, use the same cleanup
-  endpoint instead of direct DB updates.
+  briefly and schedules the run cleanup endpoint for recently terminal runs that
+  still have active session or workflow projections. Platform-wide reconciliation
+  of DB rows stuck non-terminal vs terminal/gone Dapr instances is now the
+  `lifecycle-terminal-reaper` CronJob (it SKIPS while a benchmark run/lease is
+  active, so it never races a live SWE-bench run), and orphaned per-session
+  Sandbox CRs in `workflow-builder` are age-GC'd by `workflow-builder-sandbox-gc`.
+  If sandboxes remain after a completed run, use the cleanup endpoint (or let the
+  reaper/GC sweep) instead of direct DB updates.
 - If old workflow state is intentionally disposable, quiesce workflow-producing
   apps before clearing state stores or scheduler data. Deleting only Postgres
   workflow rows can leave scheduler reminders behind.

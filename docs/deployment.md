@@ -9,7 +9,7 @@ The active cluster shape is:
 - `workflow-builder` (SvelteKit UI + BFF; the separate `workflow-builder-svelte` repo is deprecated and not deployed)
 - `workflow-orchestrator`
 - `function-router`
-- `dapr-agent-py` + `agent-runtime-controller` and dynamic `agent-runtime-<slug>` pods
+- agent runtimes via per-session ephemeral agent-sandbox pods (upstream kubernetes-sigs/agent-sandbox + Kueue; image-only diff, self-reaped on session end). The custom `AgentRuntime` CRD + Kopf `agent-runtime-controller` are RETIRED. A legacy static `Deployment-dapr-agent-py` (replicas:4) survives only for the `openshell-durable-agent` enum + the `agent-runtime-pool-coding` benchmark pool. `browser-use-agent` uses a `SandboxWarmPool` carve-out
 - `openshell-agent-runtime`
 - `fn-system`, `code-runtime`, `crawl4ai-adapter`
 - `dapr-swe`

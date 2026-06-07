@@ -2,9 +2,11 @@
 
 This runbook applies to workflow-builder, workflow-orchestrator, agent-runtime, and SWE-bench cleanup paths.
 
+> **Prefer the vetted automated path.** As of the lifecycle cutover (PR1–PR4; see `docs/workflow-lifecycle-termination.md`, the lifecycle SSOT), the **Lifecycle Controller** (`src/lib/server/lifecycle/`) is the single vetted method for stopping/terminating/purging workflows + durable agent runs. User-facing stops route through `POST /api/v1/sessions/[id]/stop` and `POST /api/workflows/executions/[id]/stop` (`mode ∈ interrupt | terminate | purge | reset`); it is fail-closed (409 if the durable tree is not confirmed terminal), does explicit per-session app-id fan-out, and uses **purge-force** (Dapr 1.17.9) when the worker pod is already gone. Routine reconciliation of orphaned / stuck state is automated by the `lifecycle-terminal-reaper` CronJob (`POST /api/internal/lifecycle/reap-terminal`, skips while a benchmark run/lease is active) + the `workflow-builder-sandbox-gc` CronJob. The guarded one-time clean-slate is `runbooks/phase0-lifecycle-clean-slate.{sh,md}` (dry-run-by-default). The break-glass procedure below remains for an operator when those automated paths cannot prove closure.
+
 ## Normal Rule
 
-Dapr workflow purge is only a metadata cleanup step. Do not use it to stop active work.
+Dapr workflow purge is only a metadata cleanup step. Do not use it to stop active work. The Lifecycle Controller sequences terminate→confirm-terminal→purge for you; reach for the manual steps below only as operator break-glass.
 
 Normal terminal cleanup order:
 
@@ -38,7 +40,9 @@ purged` errors.
 
 ## Break-Glass Recovery
 
-Use this only for a failed or cancelled run that is already operationally dead but Dapr keeps reporting stale non-terminal workflow state.
+First try the automated path: the `lifecycle-terminal-reaper` CronJob (`POST /api/internal/lifecycle/reap-terminal`) reconciles DB rows stuck non-terminal vs terminal/gone Dapr instances and purges orphans on a timer (it SKIPS while a benchmark run/lease is active), and `workflow-builder-sandbox-gc` age-GCs orphaned per-session Sandbox CRs. With unified `stateRetentionPolicy = 168h` across parent + per-session child Configs, children are no longer auto-purged before the parent finishes (the old 168h-vs-30m split-brain that caused cascade-termination races is gone).
+
+Use the manual steps below only for a failed or cancelled run that is already operationally dead but Dapr keeps reporting stale non-terminal workflow state AND the reaper cannot resolve it.
 
 Before deleting state directly, verify all of the following:
 

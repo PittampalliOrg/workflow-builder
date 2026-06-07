@@ -23,7 +23,7 @@ The runtime components are:
 - `workflow-orchestrator`: Python Dapr durable workflow owner (`workflow-builder` namespace)
 - `function-router`: action router (Dapr service invoke target for non-agent slugs)
 - agent runtimes (`dapr-agent-py` / `claude-agent-py` / `adk-agent-py`): the custom `AgentRuntime` CRD + Kopf `agent-runtime-controller` are RETIRED. Runtimes are now dispatched as per-session ephemeral pods via upstream kubernetes-sigs/agent-sandbox + Kueue (Kueue-admitted, self-reaped on session end), differing ONLY by container image. The runtime registry (`services/shared/runtime-registry.json`) resolves which runtime/image each `durable/run` dispatches. `browser-use-agent` uses a dedicated `SandboxWarmPool` carve-out (chromium boot latency); a legacy static `Deployment-dapr-agent-py` survives only for the `openshell-durable-agent` enum + the `agent-runtime-pool-coding` benchmark pool.
-- `dapr-agent-py` (legacy shared pod): kept for backwards compat; new workflows address agents by `agentRef` → `agent-runtime-<slug>` instead.
+- `dapr-agent-py` (legacy static `Deployment`, replicas:4): survives only for the `openshell-durable-agent` enum + the `agent-runtime-pool-coding` benchmark pool. New `durable/run` steps dispatch a per-session ephemeral agent-sandbox pod (image resolved from the runtime registry), not a per-slug standing Deployment.
 - `openshell-agent-runtime`: consolidated action handler for `workspace/* + browser/* + openshell/*` (per 2026-04-19 cutover). Also the OpenShell control-plane for per-session sandboxes — sandboxes live in the `openshell` namespace and are reached via mTLS from agent-runtime pods.
 - `fn-activepieces`: default SaaS action backend
 - `postgresql`: workflow definitions, executions, artifacts, approvals, child-run metadata, sessions, agents, agent_versions
@@ -41,10 +41,13 @@ Per-agent runtime pods run in the **same namespace as the orchestrator**
 child's workflow actor in the parent's namespace, so cross-namespace
 placement is not supported at the workflow-SDK layer.
 
-See `docs/per-agent-runtime.md` for the full agent runtime model: controller
-lifecycle, runtime-class pools, pod shape, Dapr Component scoping, wake/idle
-TTL, dispatch paths (direct session vs workflow bridge), and troubleshooting
-cheatsheet.
+See `docs/agent-runtime-comparison.md` and `docs/durable-session-runtime-contract.md`
+for the agent runtime model: per-session ephemeral agent-sandbox pods (image-only
+diff, Kueue-admitted, self-reaped), pod shape, Dapr Component scoping, and dispatch
+paths (direct session vs workflow bridge). The custom `AgentRuntime` CRD + Kopf
+`agent-runtime-controller` (and its wake/idle TTL) are RETIRED. For stop/terminate/
+purge of workflows + durable agent runs, see `docs/workflow-lifecycle-termination.md`
+(the lifecycle SSOT).
 
 See `docs/swebench-concurrency.md` for the SWE-bench capacity model. The
 headline rule is that requested concurrency is only an input; actual throughput
