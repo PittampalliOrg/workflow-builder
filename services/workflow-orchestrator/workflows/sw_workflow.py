@@ -1908,6 +1908,22 @@ def _run_native_durable_agent_child_workflow(
     if "success" not in child_result:
         child_result["success"] = not bool(child_result.get("error"))
     success = bool(child_result.get("success", True))
+
+    # WARN-first bridge-side return-shape check (roadmap item 6 / the item-5
+    # deferral): surface a non-conforming durable/run result in logs rather than
+    # silently mis-mapping it downstream (e.g. SWE-bench reading a missing
+    # .solve.modelPatch). Replay-guarded to avoid duplicate noise.
+    if not _is_replaying(ctx):
+        from core.conformance import return_shape_violations
+
+        shape_issues = return_shape_violations(child_result)
+        if shape_issues:
+            logger.warning(
+                "[SW Workflow] durable/run child %s (runtime=%s) return shape non-conforming: %s",
+                child_instance_id,
+                agent_runtime,
+                "; ".join(shape_issues),
+            )
     if tc.db_execution_id and not is_benchmark_run:
         try:
             from activities.track_agent_run import track_agent_run_completed
