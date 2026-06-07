@@ -14,6 +14,7 @@ import {
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import { costFor, type UsageTotals } from "$lib/server/pricing/model-pricing";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import {
 	aggregateBenchmarkLifecycleFromSessionEvents,
 	aggregateLlmUsageFromSessionEvents,
@@ -6401,6 +6402,17 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 	};
 }
 
+// Runtimes whose SWE-bench `.solve.*` return shape (self-extracted model patch
+// + sandbox identity) is production-verified, even though their FULL
+// `capabilitiesVerified` flag isn't set yet (e.g. claude-agent-py's Phase 0
+// hooks/permission-gating aren't harness-proven, so its flag stays false). This
+// set bridges the gap for solve-sandbox routing until the Phase 5 conformance
+// harness (roadmap item 6) verifies + flips the flag, at which point it removes
+// this set and the routing gate reads `capabilitiesVerified` alone.
+const SWEBENCH_SOLVE_SANDBOX_REFERENCE_RUNTIMES: ReadonlySet<string> = new Set([
+	"claude-agent-py",
+]);
+
 export function buildSwebenchInstanceWorkflowSpec(params: {
 	runId?: string;
 	suiteSlug: SwebenchSuiteSlug;
@@ -6437,7 +6449,25 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 	const agentVisibleEnvironmentConfig = {
 		swebenchInferenceEnvironment: agentVisibleInferenceEnvironment,
 	};
-	const isClaudeAgentRuntime = params.agentRuntime === "claude-agent-py";
+	// SWE-bench solve-step sandbox ownership (de-branched off the
+	// `claude-agent-py` literal onto the registry `ownsSandbox` capability).
+	// Runtimes that own their sandbox self-extract the model patch + sandbox
+	// identity in the solve step (`.solve.*`, with the downstream extract_patch
+	// step as a fallback); others run a dedicated extract_patch command
+	// (`.extract_patch.*`). ROUTING through `.solve.*` is conformance-gated so a
+	// runtime only uses it once its solve-output shape (`.solve.modelPatch`) is
+	// proven — via `capabilitiesVerified` (flipped by the Phase 5 harness, item
+	// 6) OR the production-verified reference set. claude (ownsSandbox, in the
+	// reference set) → `.solve.*`; dapr (ownsSandbox:false) → `.extract_patch.*`;
+	// adk (ownsSandbox:true but unverified) stays on `.extract_patch.*` until
+	// item 6 flips its flag — the one gated behavior change.
+	const runtimeDescriptor = params.agentRuntime
+		? getRuntimeDescriptor(params.agentRuntime)
+		: undefined;
+	const routeThroughSolveSandbox =
+		runtimeDescriptor?.capabilities.ownsSandbox === true &&
+		(runtimeDescriptor.capabilitiesVerified === true ||
+			SWEBENCH_SOLVE_SANDBOX_REFERENCE_RUNTIMES.has(params.agentRuntime ?? ""));
 	const workspaceProfileWith: Record<string, unknown> = {
 		rootPath: SWEBENCH_FALLBACK_WORKSPACE_ROOT,
 		workspaceRef,
@@ -6607,15 +6637,15 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		output: {
 			as: {
 				instanceId: params.instanceId,
-				modelPatch: isClaudeAgentRuntime
+				modelPatch: routeThroughSolveSandbox
 					? "${ .solve.modelPatch // .extract_patch.modelPatch }"
 					: "${ .extract_patch.modelPatch }",
 				sessionId: "${ .solve.sessionId // .solve.agentWorkflowId // null }",
 				daprInstanceId: "${ .solve.daprInstanceId // null }",
-				workspaceRef: isClaudeAgentRuntime
+				workspaceRef: routeThroughSolveSandbox
 					? "${ .solve.runtimeSandboxName // .workspace_profile.workspaceRef }"
 					: "${ .workspace_profile.workspaceRef }",
-				sandboxName: isClaudeAgentRuntime
+				sandboxName: routeThroughSolveSandbox
 					? "${ .solve.runtimeSandboxName // .workspace_profile.sandboxName }"
 					: "${ .workspace_profile.sandboxName }",
 				runtimeSandboxName: "${ .solve.runtimeSandboxName // null }",
