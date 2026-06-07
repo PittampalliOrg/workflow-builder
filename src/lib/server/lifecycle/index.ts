@@ -165,7 +165,13 @@ export async function stopDurableRun(
 	}
 
 	const purge = opts.mode === "purge" || opts.mode === "reset";
-	const graceMs = Math.max(0, opts.graceMs ?? 0);
+	// Cooperative-first: when the caller doesn't specify a grace, give terminate/
+	// purge/reset a short window so the cascade raises the cooperative cancel first
+	// (the agent honors it at the next turn/tool boundary via the dapr-agent-py
+	// cancel-key) and only force-terminates if it doesn't yield in time. Env-tunable;
+	// 0 disables (pure force). Interrupt mode returns above and never reaches here.
+	const defaultGraceMs = envSeconds("LIFECYCLE_TERMINATE_GRACE_SECONDS", 5, 0, 120);
+	const graceMs = Math.max(0, opts.graceMs ?? defaultGraceMs);
 	// Persist the durable stop-intent up front so the row reads "Stopping…" and the
 	// terminal-status reaper can finalize it even if the in-request poll window
 	// expires (e.g. a workflow blocked in a long activity).
