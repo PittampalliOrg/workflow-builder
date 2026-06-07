@@ -3,7 +3,24 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pytest  # noqa: E402
+
+from src import event_publisher  # noqa: E402
 from src.event_publisher import _cma_shape  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _enable_incremental_tier():
+    # dapr-agent-py declares registry capability `incrementalEvents: true` and
+    # opts into the shared publisher's incremental tier at startup (main.py).
+    # The module default is OFF (so the byte-identical claude/adk copies stay
+    # inert), so mirror dapr's production gate state for these tests.
+    prev = event_publisher.INCREMENTAL_EVENTS_ENABLED
+    event_publisher.set_incremental_tier_enabled(True)
+    try:
+        yield
+    finally:
+        event_publisher.set_incremental_tier_enabled(prev)
 
 
 class _ImmediateThread:
@@ -148,3 +165,42 @@ def test_publish_session_event_stamps_context_usage_fields(monkeypatch):
     assert data["context_source"] == "provider_usage"
     assert data["context_count_method"] == "provider_usage"
     assert data["context_count_scope"] == "last_provider_call"
+
+
+def test_incremental_tier_off_skips_enrichment(monkeypatch):
+    """Gate-OFF contract (claude-agent-py / adk-agent-py, incrementalEvents:false):
+    the byte-identical copy still translates + posts the CMA envelope, but does
+    NOT run the runtime-internal enrichment (no usage telemetry, no ambient
+    trace stamp) — so it never imports src.compaction.tokens /
+    src.telemetry.session_tracing on runtimes that don't ship them."""
+    event_publisher.set_incremental_tier_enabled(False)
+
+    captured = []
+    monkeypatch.setattr(event_publisher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        event_publisher,
+        "_post_ingest",
+        lambda session_id, envelope: captured.append((session_id, envelope)),
+    )
+    from src.telemetry import session_tracing
+
+    monkeypatch.setattr(
+        session_tracing,
+        "get_current_trace_context",
+        lambda: ("ambient-trace", "ambient-span"),
+    )
+
+    event_publisher.publish_session_event(
+        "session-1",
+        "agent.llm_usage",
+        {"model": "claude-sonnet-4-6", "input_tokens": 80_000},
+        source_event_id="source-off",
+    )
+
+    # Base envelope is still produced + posted...
+    data = captured[0][1]["data"]
+    assert captured[0][1]["type"] == "agent.llm_usage"
+    assert captured[0][1]["sourceEventId"] == "source-off"
+    # ...but no enrichment fields were stamped (gate OFF).
+    assert "context_window_size" not in data
+    assert "traceId" not in data
