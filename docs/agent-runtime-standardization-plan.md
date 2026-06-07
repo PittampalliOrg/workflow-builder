@@ -11,6 +11,67 @@
 
 ---
 
+## Implementation Status (2026-06-06)
+
+The original plan below (Phase 0..6) is the canonical reference. This section tracks what has actually landed and the sequenced remainder. **Phases 0–3 are SHIPPED and deployed to ryzen**; the swap-safety gate runs in **WARN-first** mode (its teeth are off until the conformance harness clears the audit).
+
+### SHIPPED + deployed to ryzen
+
+| Phase | What landed | PR |
+|---|---|---|
+| **Phase 0** | `claude-agent-py` honors `agentConfig.mcpServers` (SDK-parity wiring — closes the worst silent-drop). | #55 |
+| **Phase 1** | Runtime registry as the orchestrator dispatch SSOT — `services/workflow-orchestrator/core/runtime_registry.py` replaces `_NATIVE_DURABLE_AGENT_TARGETS` + the resolver ladder; two-name dispatch (`dispatchWorkflowName`/`bridgeGateToken`) de-hard-coded. | #55 |
+| **Phase 2** | Registry promoted to the **CANONICAL** `services/shared/runtime-registry.json` + sync script (`scripts/sync-runtime-registry.mjs`) + TS BFF reader (`src/lib/server/agents/runtime-registry.ts`). The **3 container allowlists** + the **benchmark list** + the **default-runtime fallback** all collapsed onto registry reads. | #56 |
+| **Phase 2b** | `agent-framework` label bugfix + the image-override if-chain → registry `imageEnvKey`. | #57 |
+| **Phase 3** | Swap-safety gate `src/lib/server/agents/swap-safety.ts` — WARN-first (env `AGENT_RUNTIME_REJECT_LOSSY_SWAP`), wired into `src/lib/server/sessions/spawn.ts` (`evaluateSwap` at `spawn.ts:142`). | #57 |
+
+**Net state today:** one canonical JSON registry + a vendored copy per Python image (kept in sync by the sync script), a TS reader and a Python reader, the two-name dispatch fixed, and a WARN-only swap gate observing (but not yet blocking) lossy swaps on the BFF dispatch path.
+
+### Remaining throughline
+
+Give the gate teeth → unblock `REJECT` → collapse the last runtime literals → delete the dead lanes. Everything below is gated, directly or transitively, on the conformance harness (item 6) producing a clean WARN-phase audit before `AGENT_RUNTIME_REJECT_LOSSY_SWAP` is flipped.
+
+## Remaining Roadmap (sequenced)
+
+Ordered by value/risk/dependency. Each item: **goal**, **key file:line**, **approach**, **risk**.
+
+**1. runtime-routing collapse** — `src/lib/server/agents/runtime-routing.ts:211`
+- *Goal:* drive the dedicated / warm-pool routing decision off `capabilities.requiresWarmPool` instead of the `runtime === "browser-use-agent"` literal. **KEEP** the `isPlaywrightMcpEntry` content-inspection at `:217` as the separate `requiresBrowserSidecars` derivation that reads `mcpServers` (it is not a warm-pool fact).
+- *Approach:* swap the literal branch for the capability lookup; behavior-preserving — lock it with a golden-route table test (input route → expected `dedicatedRuntimeReason`).
+- *Risk:* **LOW.**
+
+**2. `runtime.swap_degraded` session event + benchmark wiring** — `src/lib/server/sessions/spawn.ts` + `src/lib/server/benchmarks/service.ts:6440,6576`
+- *Goal:* make degraded swaps queryable/visible (this IS the WARN-phase audit dataset that item 6 gates `REJECT` on), and extend the gate to the SWE-bench runtime-swap path.
+- *Approach:* emit a structured `runtime.*` (`swap_degraded`) session event from the gate in `spawn.ts` via `src/lib/server/sessions/events.ts` `appendEvent` (`events.ts:96`); and call `evaluateSwap` in the SWE-bench runtime-swap path (`service.ts:6440` decision site, `:6576` dispatch site).
+- *Risk:* **LOW-MED.**
+
+**3. Shared Python event publisher** — promote `services/dapr-agent-py/src/event_publisher.py` (408-LOC superset) → canonical `services/shared/session_events/publisher.py`
+- *Goal:* one publisher; delete the 128-LOC duplicate `services/claude-agent-py/src/event_publisher.py`.
+- *Approach:* promote the dapr-agent-py superset; gate its incremental event tier on `capabilities.incrementalEvents`. Handle the Python cross-build-context constraint (`services/shared/` is outside every service build context) with the **same vendored-copy + sync-script + drift-test pattern as the registry** — extend `scripts/sync-runtime-registry.mjs`; **no Dockerfile surgery.**
+- *Risk:* **MED.**
+
+**4. Python swap-gate mirror** — `services/workflow-orchestrator/core/runtime_registry.py:166` (post-resolve)
+- *Goal:* the `durable/run` dispatch path gets the same swap-safety enforcement the BFF path already has.
+- *Approach:* port `swap-safety.ts` 1:1 into the post-resolve point of `runtime_registry.py`; assert TS/Python parity by porting the swap-safety test matrix to Python.
+- *Risk:* **MED.**
+
+**5. Phase 4 — SWE-bench de-branch (return-schema unification)** — `src/lib/server/benchmarks/service.ts:6440,6610-6620`
+- *Goal:* delete the `isClaudeAgentRuntime` literal; SWE-bench reads return shape runtime-agnostically.
+- *Approach:* replace the literal with `capabilities.ownsSandbox` (`ownsSandbox:true` ⇒ `.solve.*` with `.extract_patch.*` fallback; `false` ⇒ `.extract_patch.*`); **add a return-shape assertion BEFORE deleting** the branch; gate the adk routing flip on conformance (item 6).
+- *Risk:* **MED.**
+
+**6. Phase 5 — Conformance harness (the gatekeeper)** — `services/workflow-orchestrator/tests/runtime_conformance/` + a per-runtime boot guard `assert_descriptor_consistency()`
+- *Goal:* a runtime cannot claim a capability it can't prove; this is the gate that lets `REJECT` turn on.
+- *Approach:* a per-runtime smoke proving each declared capability — registers `session_workflow`, returns required keys, honors `autoTerminate`, emits the minimum event vocabulary, `supportsMcp` ⇒ a declared MCP tool is actually callable, `ownsSandbox` ⇒ `.solve.modelPatch` is emitted. **On green:** flip `capabilitiesVerified` and enable `AGENT_RUNTIME_REJECT_LOSSY_SWAP` (escalate the gate WARN→REJECT, per-env canary).
+- *Risk:* **MED-HIGH** — the `REJECT` blast radius; gate the flip on the WARN-phase `swap_degraded` audit (item 2) being clean.
+
+**7. Phase 6 — Dead-lane deletion** — `services/workflow-orchestrator/activities/call_agent_service.py:410,161`
+- *Goal:* remove the genuinely-dead HTTP run-lane.
+- *Approach:* delete the dead `call_durable_agent_run` (`:410`) + `_durable_agent_app_id` (`:161`) — no registered caller. **KEEP** the LIVE `terminate_durable_runs_by_parent_execution` (`:339`) + its `CLAUDE_CODE_AGENT_*` config keys (still invoked for parent-cancellation fan-out). Retire the legacy static `Deployment-dapr-agent-py` (stacks) only after a no-traffic audit.
+- *Risk:* **LOW** (orchestrator code deletion) / **MED-HIGH** (the stacks Deployment retirement — gated on the standing-pool audit).
+
+---
+
 ## 0. Ground-truth corrections that shape the whole design (all verified this session)
 
 These three facts were each only partly right in the source proposals; the synthesized plan is built on the verified reality:

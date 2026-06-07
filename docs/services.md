@@ -10,7 +10,7 @@ The current core runtime is:
 - `workflow-orchestrator`
 - `function-router`
 - `dapr-agent-py` (legacy shared agent runtime; new workflows address per-agent `agent-runtime-<slug>` runtimes via `agentRef`)
-- `agent-runtime-controller` + dynamic `agent-runtime-<slug>` pods
+- agent runtimes via upstream kubernetes-sigs/agent-sandbox + Kueue (per-session ephemeral Sandbox pods differing only by container image; no `agent-runtime-controller`, resolved through `services/shared/runtime-registry.json`)
 - `openshell-agent-runtime`
 - `fn-system` (Knative; `system/*`)
 - `code-runtime` (`code/*`), `crawl4ai-adapter` (`web/*`)

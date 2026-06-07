@@ -1,5 +1,7 @@
 # Agent Runtime Model
 
+> ⚠️ STALE: This document describes the custom `AgentRuntime` CRD + Kopf `agent-runtime-controller`, which were RETIRED in favor of upstream kubernetes-sigs/agent-sandbox + Kueue (per-session Sandbox pods, image-only difference). The runtime registry (`services/shared/runtime-registry.json`) is the dispatch source of truth. See `docs/agent-runtime-comparison.md` (§Deployment) and `docs/durable-session-runtime-contract.md` for the current model.
+
 The runtime model is split:
 
 - Dapr owns durable `session_workflow` / `agent_workflow` execution and
