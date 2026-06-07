@@ -16,7 +16,9 @@ import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
 	createDaprCascadeDeps,
+	DURABLE_RUNTIME_MISSING_STATUS,
 	type DurableCascadeResult,
+	isTerminalDurableRuntimeStatus,
 	runDurableCascade,
 } from "./cascade";
 import {
@@ -255,4 +257,47 @@ export async function stopDurableRun(
 		cascade,
 		steps,
 	};
+}
+
+async function isInstanceClosed(getStatus: () => Promise<unknown>): Promise<boolean> {
+	try {
+		const s = await getStatus();
+		return s === DURABLE_RUNTIME_MISSING_STATUS || isTerminalDurableRuntimeStatus(s);
+	} catch {
+		return false; // unknown -> not yet closed
+	}
+}
+
+/**
+ * Confirm convergence of a previously-requested stop (the "stopping" → "confirmed"
+ * transition). Re-checks every durable handle (parent + per-session agent
+ * runtimes); once all are terminal/gone it reaps the Sandbox CRs and flips the DB
+ * terminal — idempotent, so a status poll and the reaper can both call it safely.
+ * Returns "stopping" while any handle is still live (no DB flip, no lie).
+ */
+export async function confirmDurableStop(
+	target: DurableRunTarget,
+): Promise<{ state: "confirmed" | "stopping" | "notFound"; scope: DurableTargetScope | null }> {
+	const resolved = await resolveDurableTarget(target);
+	if (resolved.notFound) return { state: "notFound", scope: null };
+	const checks = [
+		...resolved.parentInstanceIds.map(
+			(id) => () => isInstanceClosed(() => cascadeDeps.getParentStatus(id)),
+		),
+		...resolved.agentRuntimeTargets.map(
+			(t) => () =>
+				isInstanceClosed(() => cascadeDeps.getAgentRuntimeStatus(t.runtimeAppId, t.instanceId)),
+		),
+	];
+	const closed = (await Promise.all(checks.map((f) => f()))).every(Boolean);
+	if (!closed) return { state: "stopping", scope: resolved.scope };
+	for (const name of resolved.sandboxNames) {
+		try {
+			await deleteKubernetesSandbox(name);
+		} catch {
+			/* best-effort reap; the sandbox-gc CronJob is the backstop */
+		}
+	}
+	await resolved.finalizeDb("stop confirmed");
+	return { state: "confirmed", scope: resolved.scope };
 }

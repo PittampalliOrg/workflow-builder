@@ -893,13 +893,31 @@
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
 
 	let stopBusy = $state(false);
+	// "stopping" = the stop was accepted (202) but the durable terminate is still
+	// converging (e.g. a long activity applies terminate late). Poll until confirmed.
+	let stopConverging = $state(false);
 	// Set when this execution is actually a benchmark/eval instance driven by a
 	// coordinator — hides the futile generic Stop and links to the owning run.
 	let coordinatorOwner = $state<{ kind: 'benchmarkRun' | 'evalRun'; runId: string } | null>(
 		null
 	);
+	async function pollStopStatus() {
+		// Up to ~5 min, every 3s; the reaper is the backstop if the tab closes.
+		for (let i = 0; i < 100 && stopConverging; i++) {
+			await new Promise((r) => setTimeout(r, 3000));
+			try {
+				const res = await fetch(`/api/workflows/executions/${executionId}/stop/status`);
+				if (!res.ok) break;
+				const b = (await res.json().catch(() => ({}))) as { state?: string };
+				if (b?.state === 'confirmed' || b?.state === 'notFound') break;
+			} catch {
+				/* transient — keep polling */
+			}
+		}
+		stopConverging = false;
+	}
 	async function stopRun(mode: 'terminate' | 'purge') {
-		if (stopBusy) return;
+		if (stopBusy || stopConverging) return;
 		if (
 			!confirm(
 				mode === 'purge'
@@ -915,20 +933,23 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ mode })
 			});
-			if (!res.ok) {
-				const b = (await res.json().catch(() => ({}))) as {
-					error?: string;
-					ownedBy?: 'benchmarkRun' | 'evalRun';
-					runId?: string;
-					message?: string;
-				};
-				if (res.status === 409 && b?.error === 'coordinator_owned' && b.ownedBy && b.runId) {
-					// Reactive fallback if the proactive hide didn't catch it.
-					coordinatorOwner = { kind: b.ownedBy, runId: b.runId };
-					alert(b.message ?? 'Stop this run from its benchmark/evaluation run.');
-				} else {
-					alert(`Stop did not confirm (HTTP ${res.status}) — retry or check the run.`);
-				}
+			const b = (await res.json().catch(() => ({}))) as {
+				error?: string;
+				state?: string;
+				ownedBy?: 'benchmarkRun' | 'evalRun';
+				runId?: string;
+				message?: string;
+			};
+			if (res.status === 409 && b?.error === 'coordinator_owned' && b.ownedBy && b.runId) {
+				// Reactive fallback if the proactive hide didn't catch it.
+				coordinatorOwner = { kind: b.ownedBy, runId: b.runId };
+				alert(b.message ?? 'Stop this run from its benchmark/evaluation run.');
+			} else if (res.status === 202 || b?.state === 'stopping') {
+				// Accepted + converging — show "Stopping…" and poll to confirmation.
+				stopConverging = true;
+				void pollStopStatus();
+			} else if (!res.ok) {
+				alert(`Stop did not confirm (HTTP ${res.status}) — retry or check the run.`);
 			}
 		} finally {
 			stopBusy = false;
@@ -1937,10 +1958,10 @@
 					size="sm"
 					class="h-7 gap-1"
 					onclick={() => stopRun('terminate')}
-					disabled={stopBusy}
+					disabled={stopBusy || stopConverging}
 					title="Terminate this run and its per-session children"
 				>
-					Stop run
+					{stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
 				</Button>
 			{/if}
 			<Separator orientation="vertical" class="h-5 mx-1" />
