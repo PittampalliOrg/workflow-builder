@@ -14,9 +14,11 @@ import {
 	workflows,
 } from "$lib/server/db/schema";
 import { createSession } from "$lib/server/sessions/registry";
-import { sendUserEvent } from "$lib/server/sessions/events";
+import { appendEvent, sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import { compilePromptStack } from "$lib/server/prompt-presets";
 import type { AgentConfig } from "$lib/types/agents";
 import {
@@ -338,6 +340,36 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 	if (!agentConfig) return error(400, "agentConfig is required");
 
+	// Swap-safety gate for the durable/run (workflow + SWE-bench) path — mirrors
+	// the direct-spawn gate in sessions/spawn.ts. Warn/reject when the dispatched
+	// runtime would drop a capability the agent config relies on (e.g. an
+	// unsupported model provider, or MCP on a non-MCP runtime). WARN-first; only
+	// rejects when AGENT_RUNTIME_REJECT_LOSSY_SWAP is set, returning 409 so the
+	// orchestrator's spawn_session activity fails the durable/run cleanly.
+	const swapTarget = getRuntimeDescriptor(
+		(agentConfig as { runtime?: string }).runtime,
+	);
+	const swapVerdict = swapTarget
+		? evaluateSwap(agentConfig as Record<string, unknown>, swapTarget)
+		: null;
+	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
+		console.warn(
+			`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${swapVerdict.decision}: ` +
+				swapVerdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+		);
+		for (const d of swapVerdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
+		if (swapVerdict.decision === "reject") {
+			return error(
+				409,
+				`Runtime "${swapTarget.id}" cannot satisfy required agent capabilities: ` +
+					swapVerdict.drops
+						.filter((d) => d.severity === "reject")
+						.map((d) => d.detail)
+						.join("; "),
+			);
+		}
+	}
+
 	// Idempotent: if a session with this deterministic id already exists, return it.
 	const [existing] = await db
 		.select()
@@ -505,6 +537,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		parentExecutionId,
 		mlflowSessionId: sessionId,
 	});
+	// Now that the session row exists, surface a degraded swap (computed above)
+	// as a runtime.swap_degraded event — the durable/run half of the WARN-phase
+	// audit dataset. The gate had to run before this (it may reject before the
+	// row/pod side effects), so the event is emitted here. Fire-and-forget;
+	// deterministic sourceEventId dedupes any idempotent re-ensure.
+	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
+		void appendEvent(sessionId, {
+			type: "runtime.swap_degraded",
+			data: {
+				runtimeId: swapTarget.id,
+				decision: swapVerdict.decision,
+				drops: swapVerdict.drops,
+			},
+			sourceEventId: `swap:${sessionId}:${swapTarget.id}`,
+		}).catch((err) =>
+			console.warn(
+				`[swap-safety] swap_degraded event emit failed: ${err instanceof Error ? err.message : err}`,
+			),
+		);
+	}
 	if (initialMessage && initialMessage.trim()) {
 		await sendUserEvent(sessionId, {
 			type: "user.message",

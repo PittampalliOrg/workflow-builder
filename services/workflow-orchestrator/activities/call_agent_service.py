@@ -6,21 +6,20 @@ agent actions as durable Dapr workflows and report completion via pub/sub.
 Also hosts workspace-runtime cleanup + sandbox profile helpers.
 
 Historical note: the file name refers to the now-decommissioned TS
-durable-agent service. The live agent runtime is dapr-agent-py, dispatched
-as a Dapr child workflow from sw_workflow.py rather than via this module.
-The remaining functions that reference durable-agent are retained as dead
-code for one release so external callers (if any) fail loudly rather than
-silently; they will be removed after the follow-up cleanup commit.
+durable-agent service. The live agent runtime is dispatched as a Dapr child
+workflow from sw_workflow.py (runtime resolved via core.runtime_registry)
+rather than via this module. The dead HTTP run/terminate lane
+(call_durable_agent_run / terminate_durable_agent_run / _durable_agent_app_id)
+has been removed; only terminate_durable_runs_by_parent_execution (live
+parent-cancellation fan-out) + the workspace cleanup/validation helpers remain.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
-from urllib.parse import quote
 
 import httpx
 
@@ -105,18 +104,6 @@ def _post_json_with_details(
     return data
 
 
-def _as_bool(value: object, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized == "true":
-            return True
-        if normalized == "false":
-            return False
-    return default
-
-
 def _string_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [
@@ -139,34 +126,6 @@ def _verify_command_list(value: object) -> list[str]:
     if isinstance(value, str):
         return [line.strip() for line in value.splitlines() if line.strip()]
     return []
-
-
-def _agent_runtime_from_payload(input_data: dict) -> str:
-    agent_config = input_data.get("agentConfig")
-    if isinstance(input_data.get("agentRuntime"), str) and input_data["agentRuntime"].strip():
-        return input_data["agentRuntime"].strip()
-    if isinstance(input_data.get("runtime"), str) and input_data["runtime"].strip():
-        return input_data["runtime"].strip()
-    if isinstance(agent_config, dict):
-        if isinstance(agent_config.get("runtime"), str) and agent_config["runtime"].strip():
-            return agent_config["runtime"].strip()
-        if (
-            isinstance(agent_config.get("agentRuntime"), str)
-            and agent_config["agentRuntime"].strip()
-        ):
-            return agent_config["agentRuntime"].strip()
-    return "dapr-agent-py"
-
-
-def _durable_agent_app_id(input_data: dict) -> str:
-    runtime = _agent_runtime_from_payload(input_data)
-    if runtime == "dapr-agent-py-testing":
-        return DAPR_AGENT_PY_TESTING_APP_ID
-    if runtime == "claude-agent-py":
-        return CLAUDE_AGENT_PY_APP_ID
-    if runtime == "browser-use-agent":
-        return os.environ.get("BROWSER_USE_AGENT_APP_ID", "browser-use-agent")
-    return DAPR_AGENT_PY_APP_ID
 
 
 def _load_sandbox_profile_catalog() -> dict[str, dict[str, object]]:
@@ -407,58 +366,6 @@ def terminate_durable_runs_by_parent_execution(
     }
 
 
-def call_durable_agent_run(ctx, input_data: dict) -> dict:
-    """
-    Start a durable agent run on durable-agent service.
-
-    Expected input_data:
-      - prompt: str
-      - parentExecutionId: str (Dapr parent workflow instance id)
-      - executionId: str (logical execution id)
-      - workflowId: str (workflow definition id)
-      - nodeId: str (agent node id)
-      - nodeName: str (agent node label)
-      - model: str | None
-      - maxTurns: int | None
-    """
-    workspace_ref = str(input_data.get("workspaceRef") or "").strip()
-    agent_runtime = _agent_runtime_from_payload(input_data)
-    run_route = "api/run"
-    otel = input_data.get("_otel") or {}
-    attrs = {
-        "action.type": "durable/run",
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-        "workflow.id": input_data.get("workflowId") or "",
-        "node.id": input_data.get("nodeId") or "",
-        "node.name": input_data.get("nodeName") or "",
-    }
-
-    with start_activity_span("activity.call_durable_agent_run", otel, attrs):
-        if not workspace_ref and agent_runtime not in {
-            "dapr-agent-py",
-            "dapr-agent-py-testing",
-            "browser-use-agent",
-        }:
-            return {
-                "success": False,
-                "error": (
-                    "workspaceRef is required. "
-                    "SW 1.0 durable/run workflows must provision workspace/profile before the agent step."
-                ),
-            }
-        try:
-            return _dapr_invoke_or_raise(
-                _durable_agent_app_id(input_data),
-                run_route,
-                input_data,
-                timeout=30,
-                service_label="Durable agent run",
-            )
-        except Exception as e:
-            logger.error(f"[Call Durable Agent Run] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
 def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
     """
     Validate that a workspace can satisfy the requested execution capabilities.
@@ -517,51 +424,6 @@ def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
             return {"success": False, "error": message}
         except Exception as e:
             logger.error(f"[Validate Workspace Capabilities] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
-def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
-    """
-    Terminate a specific durable-agent run.
-
-    Expected input_data:
-      - agentWorkflowId: str
-      - daprInstanceId: str | None
-      - parentExecutionId: str | None
-      - reason: str | None
-      - cleanupWorkspace: bool | str | None
-    """
-    agent_workflow_id = str(input_data.get("agentWorkflowId") or "").strip()
-    if not agent_workflow_id:
-        return {"success": False, "error": "agentWorkflowId is required"}
-
-    payload = {
-        "daprInstanceId": input_data.get("daprInstanceId"),
-        "parentExecutionId": input_data.get("parentExecutionId"),
-        "workspaceRef": input_data.get("workspaceRef"),
-        "reason": input_data.get("reason")
-        or "terminated because parent workflow timed out",
-        "cleanupWorkspace": _as_bool(input_data.get("cleanupWorkspace"), True),
-    }
-    otel = input_data.get("_otel") or {}
-    attrs = {
-        "action.type": "durable/run-terminate",
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-        "agent.workflow_id": agent_workflow_id,
-        "agent.dapr_instance_id": input_data.get("daprInstanceId") or "",
-    }
-
-    with start_activity_span("activity.terminate_durable_agent_run", otel, attrs):
-        try:
-            return _dapr_invoke_or_raise(
-                _durable_agent_app_id(input_data),
-                f"api/run/{quote(agent_workflow_id)}/terminate",
-                payload,
-                timeout=20,
-                service_label="Durable run termination",
-            )
-        except Exception as e:
-            logger.error(f"[Terminate Durable Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

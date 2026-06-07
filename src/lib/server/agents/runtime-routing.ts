@@ -4,6 +4,7 @@ import type {
 	AgentRuntimePoolBinding,
 } from "$lib/types/agents";
 import { isPlaywrightMcpEntry } from "./mcp-sidecar";
+import { getRuntimeDescriptor } from "./runtime-registry";
 
 type RuntimePoolConfigValue =
 	| string
@@ -99,7 +100,9 @@ export function agentRuntimeInvokeTarget(
 export function resolveAgentRuntimeClass(config: AgentConfig | null | undefined): string {
 	const explicit = cleanRuntimeClass((config as { runtimeClass?: unknown } | null | undefined)?.runtimeClass);
 	if (explicit) return explicit;
-	if (config?.runtime === "browser-use-agent") return "browser";
+	// Browser-family runtimes (registry `family: "browser"`) take the browser
+	// runtime class; dapr-agent-py-testing is a single runtime-specific lane.
+	if (getRuntimeDescriptor(config?.runtime)?.family === "browser") return "browser";
 	if (config?.runtime === "dapr-agent-py-testing") return "testing";
 	return DEFAULT_RUNTIME_CLASS;
 }
@@ -208,7 +211,11 @@ function dedicatedRuntimeReason(
 ): string | null {
 	const isolation = runtimeIsolation(config);
 	if (isolation === "dedicated") return "agent requested dedicated runtime isolation";
-	if (config?.runtime === "browser-use-agent") return "browser-use-agent runtime owns browser state";
+	// Warm-pool runtimes (registry `capabilities.requiresWarmPool`, e.g.
+	// browser-use-agent) own long-lived state and need a dedicated runtime.
+	if (getRuntimeDescriptor(config?.runtime)?.capabilities.requiresWarmPool === true) {
+		return `${config?.runtime ?? "runtime"} requires a dedicated warm-pool runtime`;
+	}
 	if (config?.runtime === "dapr-agent-py-testing" && isolation !== "shared") {
 		return "testing runtime stays on its dedicated app id by default";
 	}
