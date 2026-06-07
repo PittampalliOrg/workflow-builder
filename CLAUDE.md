@@ -16,6 +16,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > - `callable-agents.md` — `CallAgent` peer-delegation tool (native `WorkflowContextInjectedTool`)
 > - `tiered-crawl-pipeline.md` — `crawl4ai-adapter` v2 + `browserresearchfanout01` v3 (canonical multi-URL research pattern)
 > - `workflow-artifacts.md` — Standardized `workflow_artifacts` surface
+> - `workflow-lifecycle-termination.md` — vetted stop/terminate/purge for workflows + agent runs (Lifecycle Controller design, stale-state root causes, full-cutover plan) — ⚠️ DESIGN PROPOSAL, not yet implemented
 
 ## Architecture
 
