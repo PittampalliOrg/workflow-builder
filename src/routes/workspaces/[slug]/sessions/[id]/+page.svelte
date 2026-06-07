@@ -1005,6 +1005,32 @@
 		}
 	}
 
+	let stopBusy = $state(false);
+	async function stopRun(mode: 'purge' | 'reset') {
+		if (!session || stopBusy) return;
+		const label = mode === 'reset' ? 'Stop & reset' : 'Stop';
+		if (
+			!confirm(
+				`${label} this run? This terminates the durable run${mode === 'reset' ? ', purges its state,' : ''} and reaps its sandbox.`
+			)
+		)
+			return;
+		stopBusy = true;
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/stop`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ mode })
+			});
+			if (!res.ok) {
+				const b = (await res.json().catch(() => ({}))) as { message?: string };
+				errorMessage = b?.message ?? `${label} did not confirm (${res.status})`;
+			}
+		} finally {
+			stopBusy = false;
+		}
+	}
+
 	async function archive() {
 		if (!session) return;
 		const res = await fetch(`/api/v1/sessions/${sessionId}`, { method: 'PATCH' });
@@ -1222,6 +1248,20 @@
 						disabled={session?.status !== 'running'}
 					>
 						<Square class="size-3.5" /> Send interrupt
+					</DropdownMenu.Item>
+					<DropdownMenu.Item
+						onSelect={() => stopRun('purge')}
+						disabled={stopBusy}
+						class="text-destructive focus:text-destructive"
+					>
+						<Square class="size-3.5" /> Stop run
+					</DropdownMenu.Item>
+					<DropdownMenu.Item
+						onSelect={() => stopRun('reset')}
+						disabled={stopBusy}
+						class="text-destructive focus:text-destructive"
+					>
+						<Square class="size-3.5" /> Stop &amp; reset
 					</DropdownMenu.Item>
 					<DropdownMenu.Item onSelect={() => downloadEvents()}>
 						<Download class="size-3.5" /> Download events…

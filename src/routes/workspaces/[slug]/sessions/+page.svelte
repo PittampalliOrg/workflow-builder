@@ -195,12 +195,20 @@
 		}, delay);
 	}
 
-	async function archive(session: SessionSummary) {
+	// NOTE: this row action hard-DELETEs the session (it always has — it was
+	// mislabeled "Archive"). The server now blocks delete while the run is active
+	// (409), so it can no longer orphan a live session_workflow + sandbox.
+	async function deleteSessionRow(session: SessionSummary) {
+		if (!confirm('Delete this session permanently? This cannot be undone.')) return;
 		busyId = session.id;
 		try {
 			const res = await fetch(`/api/v1/sessions/${session.id}`, { method: 'DELETE' });
+			if (res.status === 409) {
+				errorMessage = 'Stop the run before deleting this session.';
+				return;
+			}
 			if (!res.ok) {
-				errorMessage = `Archive failed (${res.status})`;
+				errorMessage = `Delete failed (${res.status})`;
 				return;
 			}
 			await load({ silent: true });
@@ -592,8 +600,8 @@
 				<RowMoreActions
 					actions={[
 						{
-							label: 'Archive',
-							onClick: () => archive(s),
+							label: 'Delete',
+							onClick: () => deleteSessionRow(s),
 							destructive: true,
 							disabled: busyId === s.id
 						}
