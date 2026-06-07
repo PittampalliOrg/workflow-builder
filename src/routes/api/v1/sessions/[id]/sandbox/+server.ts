@@ -3,6 +3,8 @@ import type { RequestHandler } from "./$types";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { getSession } from "$lib/server/sessions/registry";
+import { inspectDurableRun } from "$lib/server/lifecycle";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 type DeleteResult = {
 	name: string;
@@ -66,6 +68,24 @@ async function deleteRuntimeSandbox(name: string): Promise<DeleteResult> {
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
+
+	// Reaping a per-session Sandbox CR is exactly what stopDurableRun(mode:'purge')
+	// does as its FINAL step after confirming the run is terminal. Doing it
+	// standalone on a LIVE run yanks the pod out from under the session_workflow and
+	// creates the DB↔Dapr divergence the lifecycle SSOT exists to prevent. So enforce
+	// CMA scope and refuse while the run is active — stop it first (POST .../stop).
+	const target = { kind: "session" as const, id: params.id };
+	const inspected = await inspectDurableRun(target);
+	if (inspected.notFound) return error(404, "Session not found");
+	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
+		return error(404, "Session not found");
+	}
+	if (inspected.active) {
+		return error(
+			409,
+			"Stop the run before destroying its sandbox (POST /api/v1/sessions/[id]/stop {mode:'purge'})",
+		);
+	}
 
 	const session = await getSession(params.id);
 	if (!session) return error(404, "Session not found");

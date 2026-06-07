@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { stopDurableRun } from "$lib/server/lifecycle";
+import { inspectDurableRun, stopDurableRun } from "$lib/server/lifecycle";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 /**
  * Interrupt a running session — cooperative halt of the current turn at a safe
@@ -9,10 +10,13 @@ import { stopDurableRun } from "$lib/server/lifecycle";
  */
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const result = await stopDurableRun(
-		{ kind: "session", id: params.id },
-		{ mode: "interrupt" },
-	);
+	const target = { kind: "session" as const, id: params.id };
+	const inspected = await inspectDurableRun(target);
+	if (inspected.notFound) return error(404, "Session not found");
+	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
+		return error(404, "Session not found");
+	}
+	const result = await stopDurableRun(target, { mode: "interrupt" });
 	if (result.notFound) return error(404, "Session not found");
 	if (!result.confirmed) {
 		return error(409, "Could not interrupt the session (it may not be running yet)");
