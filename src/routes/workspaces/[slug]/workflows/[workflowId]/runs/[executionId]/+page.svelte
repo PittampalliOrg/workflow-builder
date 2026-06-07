@@ -891,6 +891,30 @@
 	} satisfies NodeTypes;
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
+
+	let stopBusy = $state(false);
+	async function stopRun(mode: 'terminate' | 'purge') {
+		if (stopBusy) return;
+		if (
+			!confirm(
+				mode === 'purge'
+					? 'Stop & purge this run? Terminates it, purges durable state, and reaps per-session sandboxes.'
+					: 'Stop this run? Terminates the durable run and its per-session children.'
+			)
+		)
+			return;
+		stopBusy = true;
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/stop`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ mode })
+			});
+			if (!res.ok) alert(`Stop did not confirm (HTTP ${res.status}) — retry or check the run.`);
+		} finally {
+			stopBusy = false;
+		}
+	}
 	let allTimelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
 
 	// Collect unique URLs the agent visited (from browser-use tool_result events)
@@ -1873,6 +1897,18 @@
 				title="Toggle Other Runs panel">
 				<ListIcon class="size-3.5" /> Other runs
 			</Button>
+			{#if isRunning}
+				<Button
+					variant="destructive"
+					size="sm"
+					class="h-7 gap-1"
+					onclick={() => stopRun('terminate')}
+					disabled={stopBusy}
+					title="Terminate this run and its per-session children"
+				>
+					Stop run
+				</Button>
+			{/if}
 			<Separator orientation="vertical" class="h-5 mx-1" />
 			<a
 				href={`/workspaces/${slug}/sessions?source=workflow&executionId=${executionId}`}
