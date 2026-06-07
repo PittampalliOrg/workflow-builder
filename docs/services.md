@@ -57,7 +57,16 @@ Python FastAPI service and Dapr workflow owner.
   - `GET /api/v2/workflows/{instanceId}/status`
   - `POST /api/v2/workflows/{instanceId}/events`
   - `POST /api/v2/workflows/{instanceId}/terminate`
+  - `POST /api/v2/workflows/{instanceId}/purge` (recursive-by-default; forwards `force` for purge-force, Dapr 1.17.9)
   - `GET /api/v2/runtime/introspect`
+
+  These are the low-level Dapr lifecycle primitives. User-facing stops do **not**
+  call them directly — they route through the BFF **Lifecycle Controller**
+  (`src/lib/server/lifecycle/`) via `POST /api/v1/sessions/[id]/stop` /
+  `POST /api/workflows/executions/[id]/stop`, which sequences terminate → confirm
+  terminal → purge with explicit per-session app-id fan-out (the orchestrator's
+  `terminate_durable_runs_by_parent_execution` activity was RETIRED). See
+  `docs/workflow-lifecycle-termination.md` (the lifecycle SSOT).
 
 `/readyz` is the start-path gate for benchmark instance dispatch. It requires
 Dapr outbound health, metadata access, at least one connected Dapr workflow

@@ -552,8 +552,12 @@ Sandbox headroom is sampled by `src/lib/server/benchmarks/sandbox-capacity.ts`:
 ### Agent Runtime Capacity
 
 These control the runtime-side dimensions that benchmark admission consumes.
-The BFF route resolver lives in `src/lib/server/agents/runtime-routing.ts`; the
-controller status calculation lives in `services/agent-runtime-controller/src/main.py`.
+The BFF route resolver lives in `src/lib/server/agents/runtime-routing.ts`.
+(The former `services/agent-runtime-controller` status-calculation path is RETIRED
+along with the custom `AgentRuntime` CRD + Kopf controller; runtimes are now
+per-session ephemeral agent-sandbox pods via upstream agent-sandbox + Kueue, and
+benchmark admission samples Kueue/pool capacity directly. The legacy shared
+`agent-runtime-pool-coding` pool below survives only for the benchmark coding lane.)
 
 | Variable or config field                                                                   |                                                  Default |                                                                              Dev live value sampled 2026-05-24 | Effect                                                                                                                                                                                        |
 | ------------------------------------------------------------------------------------------ | -------------------------------------------------------: | -------------------------------------------------------------------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
