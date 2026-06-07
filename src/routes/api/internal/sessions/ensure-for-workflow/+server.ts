@@ -17,6 +17,8 @@ import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import { compilePromptStack } from "$lib/server/prompt-presets";
 import type { AgentConfig } from "$lib/types/agents";
 import {
@@ -337,6 +339,39 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 	if (!agentConfig) return error(400, "agentConfig is required");
+
+	// Swap-safety gate for the durable/run (workflow + SWE-bench) path — mirrors
+	// the direct-spawn gate in sessions/spawn.ts. Warn/reject when the dispatched
+	// runtime would drop a capability the agent config relies on (e.g. an
+	// unsupported model provider, or MCP on a non-MCP runtime). WARN-first; only
+	// rejects when AGENT_RUNTIME_REJECT_LOSSY_SWAP is set, returning 409 so the
+	// orchestrator's spawn_session activity fails the durable/run cleanly.
+	const swapTarget = getRuntimeDescriptor(
+		(agentConfig as { runtime?: string }).runtime,
+	);
+	if (swapTarget) {
+		const verdict = evaluateSwap(
+			agentConfig as Record<string, unknown>,
+			swapTarget,
+		);
+		if (verdict.drops.length > 0) {
+			console.warn(
+				`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${verdict.decision}: ` +
+					verdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+			);
+			for (const d of verdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
+			if (verdict.decision === "reject") {
+				return error(
+					409,
+					`Runtime "${swapTarget.id}" cannot satisfy required agent capabilities: ` +
+						verdict.drops
+							.filter((d) => d.severity === "reject")
+							.map((d) => d.detail)
+							.join("; "),
+				);
+			}
+		}
+	}
 
 	// Idempotent: if a session with this deterministic id already exists, return it.
 	const [existing] = await db

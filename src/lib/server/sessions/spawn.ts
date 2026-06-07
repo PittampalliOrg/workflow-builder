@@ -2,7 +2,7 @@ import { daprFetch } from "$lib/server/dapr-client";
 import { attachRuntime, getSession } from "$lib/server/sessions/registry";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
-import { listEvents } from "$lib/server/sessions/events";
+import { appendEvent, listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
 import { compilePromptStack } from "$lib/server/prompt-presets";
@@ -149,6 +149,23 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 					verdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
 			);
 			for (const d of verdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
+			// Surface the degraded swap as a session event so it's queryable in
+			// session_events + visible in the UI (the WARN-phase audit dataset).
+			// Fire-and-forget with a deterministic sourceEventId (dedupes re-spawns);
+			// an event-write failure must never block the spawn.
+			void appendEvent(sessionId, {
+				type: "runtime.swap_degraded",
+				data: {
+					runtimeId: swapTarget.id,
+					decision: verdict.decision,
+					drops: verdict.drops,
+				},
+				sourceEventId: `swap:${sessionId}:${swapTarget.id}`,
+			}).catch((err) =>
+				console.warn(
+					`[swap-safety] swap_degraded event emit failed: ${err instanceof Error ? err.message : err}`,
+				),
+			);
 			if (verdict.decision === "reject") {
 				throw new Error(
 					`Runtime "${swapTarget.id}" cannot satisfy required agent capabilities: ` +
