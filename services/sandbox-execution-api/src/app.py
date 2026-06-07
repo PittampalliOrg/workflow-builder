@@ -625,6 +625,79 @@ def _agent_host_sandbox_name(agent_app_id: str) -> str:
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
 TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
 BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
+# Full (untruncated) owner-run identity stamped on each agent-host Sandbox CR so
+# a create-409 can distinguish adopt-same-run from a stale name reused by a
+# different run (delete + recreate, no inherited pod state).
+OWNER_RUN_ID_ANNOTATION = "agents.workflow-builder.cnoe.io/owner-run-id"
+
+
+def _agent_host_owner_run_id(request: AgentWorkflowHostRequest) -> str:
+    return f"{(request.sessionId or '').strip()}|{(request.runId or '').strip()}"
+
+
+def _agent_host_cr_owner_matches(
+    custom: Any, namespace: str, name: str, want_owner: str
+) -> bool:
+    """True if the existing agent-host CR belongs to the same run.
+
+    A legacy CR without an owner annotation is adopted (return True) to avoid
+    disrupting in-flight pre-upgrade runs; only a present-and-different owner
+    triggers delete + recreate.
+    """
+    try:
+        existing = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=name,
+        )
+    except Exception as exc:
+        logger.warning("agent-host CR %s read failed during 409 check: %s", name, exc)
+        return True
+    annotations = ((existing or {}).get("metadata", {}) or {}).get("annotations", {}) or {}
+    existing_owner = annotations.get(OWNER_RUN_ID_ANNOTATION)
+    if not existing_owner:
+        return True
+    return existing_owner == want_owner
+
+
+def _delete_agent_host_cr_and_wait(
+    custom: Any, namespace: str, name: str, timeout_s: float = 30.0
+) -> None:
+    try:
+        custom.delete_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=name,
+            body={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "propagationPolicy": "Foreground",
+            },
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            logger.warning("agent-host CR %s delete failed: %s", name, exc)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=name,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return
+        time.sleep(1.0)
+    logger.warning(
+        "agent-host CR %s still present after %ss; proceeding to recreate", name, timeout_s
+    )
 
 
 def build_agent_workflow_host_sandbox_manifest(
@@ -995,8 +1068,10 @@ def build_agent_workflow_host_sandbox_manifest(
             "workflow-builder.cnoe.io/session-id": session_label,
         },
     }
-    if sandbox_metadata_annotations:
-        sandbox_metadata["annotations"] = sandbox_metadata_annotations
+    sandbox_metadata["annotations"] = {
+        **(sandbox_metadata_annotations or {}),
+        OWNER_RUN_ID_ANNOTATION: _agent_host_owner_run_id(request),
+    }
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
         "podTemplate": {
@@ -1371,6 +1446,32 @@ def submit_agent_workflow_host(
         except Exception as exc:
             if getattr(exc, "status", None) != 409:
                 raise
+            # The deterministic CR name already exists. Adopt it only if it
+            # belongs to the SAME logical run; otherwise it is a stale CR whose
+            # name was reused -- delete it and recreate so the new run gets a
+            # clean sandbox instead of inheriting the prior pod's state.
+            want_owner = _agent_host_owner_run_id(body)
+            if _agent_host_cr_owner_matches(custom, namespace, sandbox_name, want_owner):
+                logger.info(
+                    "agent-host CR %s already exists for the same run (%s); adopting",
+                    sandbox_name,
+                    want_owner,
+                )
+            else:
+                logger.warning(
+                    "agent-host CR %s exists for a different run; deleting + recreating "
+                    "for owner=%s",
+                    sandbox_name,
+                    want_owner,
+                )
+                _delete_agent_host_cr_and_wait(custom, namespace, sandbox_name)
+                custom.create_namespaced_custom_object(
+                    group="agents.x-k8s.io",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="sandboxes",
+                    body=manifest,
+                )
         readiness_status = _wait_for_agent_host_ready(
             core,
             namespace=namespace,

@@ -555,10 +555,18 @@ def test_agent_workflow_host_sandbox_omits_trace_annotations_when_unset() -> Non
         ),
     )
 
-    # Sandbox metadata.annotations is omitted entirely when no trace context
-    # is propagated, so the downward-API env stays empty rather than being
-    # blocked from starting the pod.
-    assert "annotations" not in manifest["metadata"]
+    # No trace context -> no trace annotations are stamped, so the downward-API
+    # env stays empty rather than blocking the pod from starting. The Sandbox CR
+    # still always carries the owner-run-id annotation (used by the create-409
+    # adopt-same-run-vs-recreate check), and nothing else.
+    annotations = manifest["metadata"].get("annotations", {})
+    assert "workflow-builder.cnoe.io/traceparent" not in annotations
+    assert "workflow-builder.cnoe.io/tracestate" not in annotations
+    assert "workflow-builder.cnoe.io/baggage" not in annotations
+    assert (
+        annotations["agents.workflow-builder.cnoe.io/owner-run-id"]
+        == "sw-session-1|run_1"
+    )
 
 
 def test_agent_workflow_host_sandbox_stamps_kueue_priority_class() -> None:
