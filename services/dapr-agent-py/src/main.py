@@ -860,6 +860,27 @@ def _runtime_context_candidate_ids(instance_id: str) -> list[str]:
     return candidates
 
 
+def _cancellation_candidate_ids(instance_id: str) -> list[str]:
+    """Cancellation-flag lookup keys for a durable instance id.
+
+    The raise-event endpoint writes ``session-cancel:{session_instance}``, but in
+    auto-terminate (durable/run) mode the inner ``agent_workflow`` runs under a
+    turn-scoped id ``<session>__turn__N`` (and some activity payloads use
+    ``<session>:turn-N``). Check the exact key first, then fall back to the base
+    session id so a mid-turn ``user.interrupt`` / ``session.terminate`` actually
+    halts workflow-driven runs (previously the write/read keys never matched).
+    """
+    text = str(instance_id or "").strip()
+    if not text:
+        return []
+    ids = [text]
+    base = re.sub(r"__turn__\d+$", "", text)
+    base = re.sub(r":turn-\d+$", "", base)
+    if base and base != text and base not in ids:
+        ids.append(base)
+    return ids
+
+
 def _save_agent_state_key(key: str, value: Any) -> None:
     sidecar = (
         f"http://{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
@@ -2188,12 +2209,13 @@ class OpenShellDurableAgent(DurableAgent):
         instance_id = str(payload.get("instance_id") or payload.get("instanceId") or "").strip()
         if not instance_id:
             return {"cancelled": False, "reason": "no_instance_id"}
-        request = _read_agent_state_key(
-            _session_cancel_state_key(instance_id),
-            timeout_seconds=1,
-        )
-        if isinstance(request, dict):
-            return {"cancelled": True, "request": request}
+        for key_id in _cancellation_candidate_ids(instance_id):
+            request = _read_agent_state_key(
+                _session_cancel_state_key(key_id),
+                timeout_seconds=1,
+            )
+            if isinstance(request, dict):
+                return {"cancelled": True, "request": request}
         return {"cancelled": False}
 
     def _record_runtime_config_for_instance(

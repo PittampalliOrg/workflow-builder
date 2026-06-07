@@ -46,7 +46,6 @@ from pydantic import BaseModel, Field
 from core.config import config
 from workflows.sw_workflow import sw_workflow
 from workflows.sw_workflow import wfr
-from activities.call_agent_service import terminate_durable_runs_by_parent_execution
 from activities.metadata import get_activity_metadata
 from content_tracing import io_attributes
 
@@ -608,11 +607,16 @@ def _workflow_http_get_instance(instance_id: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else {}
 
 
-def _workflow_http_post(instance_id: str, suffix: str) -> None:
+def _workflow_http_post(
+    instance_id: str,
+    suffix: str,
+    params: dict[str, str] | None = None,
+) -> None:
     response = requests.post(
         _workflow_http_url(instance_id, suffix),
         headers=_dapr_api_token_headers(),
         timeout=_workflow_http_timeout_seconds(),
+        params=params or None,
     )
     if response.ok:
         return
@@ -912,12 +916,27 @@ def _idempotent_schedule(
             getattr(existing, "runtime_status", "")
         )
         if status_name in {"RUNNING", "PENDING", "SUSPENDED"}:
-            logger.info(
-                "[Idempotent Schedule] Instance %s exists (status=%s), returning existing",
-                instance_id,
-                status_name,
-            )
-            return instance_id
+            # Zombie-reuse guard: only purge-before-reuse on the DB-terminal-but-
+            # Dapr-non-terminal divergence. A legitimately live run (DB also
+            # non-terminal) is returned untouched.
+            db_status = _db_execution_status_for_instance(instance_id)
+            if db_status in {"completed", "failed", "error", "cancelled", "terminated"}:
+                logger.warning(
+                    "[Idempotent Schedule] Divergence for %s: Dapr=%s but DB=%s; "
+                    "terminating+purging zombie before reuse",
+                    instance_id,
+                    status_name,
+                    db_status,
+                )
+                _terminate_and_purge_for_reuse(client, instance_id)
+                # fall through to schedule a fresh instance below
+            else:
+                logger.info(
+                    "[Idempotent Schedule] Instance %s exists (status=%s), returning existing",
+                    instance_id,
+                    status_name,
+                )
+                return instance_id
         if status_name in {"COMPLETED", "FAILED", "TERMINATED"}:
             try:
                 client.purge_workflow(instance_id=instance_id)
@@ -1867,6 +1886,77 @@ def _existing_live_execution_instance(execution_id: str) -> str | None:
     if status in {"completed", "failed", "error", "cancelled", "terminated"}:
         return None
     return dapr_instance_id
+
+
+def _db_execution_status_for_instance(instance_id: str) -> str | None:
+    """Return workflow_executions.status (lowercased) for a Dapr instance id, or None.
+
+    Used by the idempotent scheduler to detect a diverged/zombie instance: the
+    BFF flipped the DB row terminal but the Dapr worker never closed the
+    instance. We act ONLY on that divergence -- a legitimately running instance
+    (DB also non-terminal) is left untouched, so we never kill a live run.
+    """
+    if not instance_id:
+        return None
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(_get_database_url(), connect_timeout=3)
+    except Exception as exc:
+        logger.warning(
+            "[Idempotent Schedule] DB status connect failed for %s: %s", instance_id, exc
+        )
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM workflow_executions WHERE dapr_instance_id = %s LIMIT 1",
+                (instance_id,),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.warning(
+            "[Idempotent Schedule] DB status lookup failed for %s: %s", instance_id, exc
+        )
+        return None
+    finally:
+        conn.close()
+    return str(row[0]).strip().lower() if row and row[0] else None
+
+
+def _terminate_and_purge_for_reuse(client: DaprWorkflowClient, instance_id: str) -> None:
+    """Terminate a diverged/zombie instance, wait for terminal, then purge so the
+    deterministic id can be reused cleanly. Best-effort; failures are logged."""
+    import time as _time
+
+    try:
+        _terminate_workflow_with_timeout(
+            client, instance_id, _workflow_terminate_client_fallback_timeout_seconds()
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Idempotent Schedule] terminate-for-reuse failed for %s: %s", instance_id, exc
+        )
+    for _ in range(20):
+        try:
+            state = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
+        except Exception:
+            state = None
+        status = (
+            _normalize_workflow_runtime_status(getattr(state, "runtime_status", ""))
+            if state is not None
+            else ""
+        )
+        if status in {"COMPLETED", "FAILED", "TERMINATED", ""}:
+            break
+        _time.sleep(0.5)
+    try:
+        client.purge_workflow(instance_id=instance_id)
+        logger.info("[Idempotent Schedule] Purged diverged instance %s for reuse", instance_id)
+    except Exception as exc:
+        logger.warning(
+            "[Idempotent Schedule] purge-for-reuse failed for %s: %s", instance_id, exc
+        )
 
 
 def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> None:
@@ -3493,27 +3583,11 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
                     )
                     response_metadata["clientTerminationError"] = str(client_err)
 
-        if not response_metadata.get("alreadyGone"):
-            try:
-                external_child_cleanup = terminate_durable_runs_by_parent_execution(
-                    parent_execution_id=instance_id,
-                    reason=request.reason,
-                    cleanup_workspace=True,
-                )
-                logger.info(
-                    "[Workflow Routes] External durable run cleanup summary: "
-                    f"{external_child_cleanup}"
-                )
-            except Exception as child_err:
-                logger.warning(
-                    "[Workflow Routes] External durable run cleanup failed after parent terminate request: %s",
-                    child_err,
-                )
-                external_child_cleanup = {
-                    "success": False,
-                    "error": str(child_err),
-                }
-
+        # Per-session agent-runtime children live under their own app-ids and are
+        # terminated/purged explicitly by the BFF lifecycle controller's
+        # per-app-id fan-out. The retired terminate_durable_runs_by_parent_execution
+        # path (claude-code-agent only) is no longer invoked here; same-task-hub
+        # child workflows are still covered by Dapr's native parent-child cascade.
         response_metadata["childTermination"] = external_child_cleanup
         response_metadata["externalChildCleanup"] = external_child_cleanup
         return response_metadata
@@ -3614,12 +3688,20 @@ def delete_workflow_actor_reminders(
 def purge_workflow(
     instance_id: str,
     force: bool = False,
-    recursive: bool = False,
+    recursive: bool = True,
 ):
     """
-    Purge a completed workflow.
+    Purge a workflow instance (recursive by default).
 
     DELETE /api/v2/workflows/:instanceId
+
+    Forwards the recursion + force flags to Dapr: recursion cascades to child
+    workflows in the same task hub (disable with recursive=false ->
+    non_recursive=true), and force requests purge-force (Dapr 1.17+) so a purge
+    can proceed even when the owning worker/sidecar is gone. Per-session
+    agent-runtime children live under their own app-ids and are terminated/purged
+    explicitly by the BFF lifecycle controller, so this no longer fans out to the
+    retired claude-code-agent cleanup path.
     """
     try:
         logger.info(
@@ -3630,21 +3712,14 @@ def purge_workflow(
         )
 
         child_cleanup = None
+        purge_params: dict[str, str] = {}
+        if not recursive:
+            purge_params["non_recursive"] = "true"
         if force:
-            try:
-                child_cleanup = terminate_durable_runs_by_parent_execution(
-                    parent_execution_id=instance_id,
-                    reason="Force purge cleanup",
-                    cleanup_workspace=True,
-                )
-            except Exception as child_err:
-                logger.warning(
-                    "[Workflow Routes] Child durable run cleanup failed during force purge: %s",
-                    child_err,
-                )
+            purge_params["force"] = "true"
 
         try:
-            _workflow_http_post(instance_id, "/purge")
+            _workflow_http_post(instance_id, "/purge", purge_params)
         except FileNotFoundError:
             logger.info(
                 "[Workflow Routes] Purge skipped for %s: already gone",

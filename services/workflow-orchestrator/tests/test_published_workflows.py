@@ -511,20 +511,11 @@ def test_terminate_workflow_requests_parent_before_legacy_child_cleanup(monkeypa
     def fake_workflow_post(instance_id: str, suffix: str):
         calls.append(f"parent:{instance_id}:{suffix}")
 
-    def fake_child_cleanup(parent_execution_id: str, **_kwargs):
-        calls.append(f"legacy-child:{parent_execution_id}")
-        return {"success": True}
-
     def fake_client_terminate(_client, instance_id: str, _timeout_seconds: int):
         calls.append(f"client:{instance_id}")
 
     monkeypatch.setattr(APP, "_workflow_http_post", fake_workflow_post)
     monkeypatch.setattr(APP, "_terminate_workflow_with_timeout", fake_client_terminate)
-    monkeypatch.setattr(
-        APP,
-        "terminate_durable_runs_by_parent_execution",
-        fake_child_cleanup,
-    )
 
     result = APP.terminate_workflow(
         "instance-1",
@@ -534,12 +525,11 @@ def test_terminate_workflow_requests_parent_before_legacy_child_cleanup(monkeypa
     assert calls == [
         "parent:instance-1:/terminate",
         "client:instance-1",
-        "legacy-child:instance-1",
     ]
     assert result["parentTerminationRequested"] is True
     assert result["clientTerminationRequested"] is True
     assert result["nativeChildCascade"] is True
-    assert result["childTermination"] == {"success": True}
+    assert result["childTermination"] is None
 
 
 def test_terminate_workflow_reports_status_unknown_for_transient_parent_error(
@@ -551,24 +541,15 @@ def test_terminate_workflow_reports_status_unknown_for_transient_parent_error(
         calls.append("parent")
         raise RuntimeError("Dapr workflow terminate failed with HTTP 503: busy")
 
-    def fake_child_cleanup(parent_execution_id: str, **_kwargs):
-        calls.append(f"legacy-child:{parent_execution_id}")
-        return {"success": True}
-
     def fake_client_terminate(_client, instance_id: str, _timeout_seconds: int):
         calls.append(f"client:{instance_id}")
 
     monkeypatch.setattr(APP, "_workflow_http_post", fake_workflow_post)
     monkeypatch.setattr(APP, "_terminate_workflow_with_timeout", fake_client_terminate)
-    monkeypatch.setattr(
-        APP,
-        "terminate_durable_runs_by_parent_execution",
-        fake_child_cleanup,
-    )
 
     result = APP.terminate_workflow("instance-1", APP.TerminateRequest())
 
-    assert calls == ["parent", "client:instance-1", "legacy-child:instance-1"]
+    assert calls == ["parent", "client:instance-1"]
     assert result["parentTerminationRequested"] is True
     assert result["clientTerminationRequested"] is True
     assert result["terminationStatusUnknown"] is True
@@ -586,21 +567,12 @@ def test_terminate_workflow_keeps_status_unknown_when_client_fallback_times_out(
         calls.append(f"client:{instance_id}")
         raise TimeoutError("still running")
 
-    def fake_child_cleanup(parent_execution_id: str, **_kwargs):
-        calls.append(f"legacy-child:{parent_execution_id}")
-        return {"success": True}
-
     monkeypatch.setattr(APP, "_workflow_http_post", fake_workflow_post)
     monkeypatch.setattr(APP, "_terminate_workflow_with_timeout", fake_client_terminate)
-    monkeypatch.setattr(
-        APP,
-        "terminate_durable_runs_by_parent_execution",
-        fake_child_cleanup,
-    )
 
     result = APP.terminate_workflow("instance-1", APP.TerminateRequest())
 
-    assert calls == ["parent", "client:instance-1", "legacy-child:instance-1"]
+    assert calls == ["parent", "client:instance-1"]
     assert result["parentTerminationRequested"] is True
     assert result["clientTerminationRequested"] is True
     assert result["terminationStatusUnknown"] is True

@@ -295,75 +295,11 @@ def _otel_headers(otel_ctx: object) -> dict[str, str]:
     return headers
 
 
-def terminate_durable_runs_by_parent_execution(
-    parent_execution_id: str,
-    reason: str | None = None,
-    cleanup_workspace: bool = True,
-) -> dict:
-    """
-    Terminate active durable agent runs belonging to a parent workflow execution.
-
-    SW 1.0 durable/run targets dapr-agent-py (via child workflow) or the custom
-    claude-code-agent harness. Parent cancellation fans out to claude-code-agent
-    here; dapr-agent-py child workflows are terminated natively via
-    ctx.call_child_workflow's parent-child bond.
-    """
-    parent_execution_id = str(parent_execution_id or "").strip()
-    if not parent_execution_id:
-        return {"success": False, "error": "parentExecutionId is required"}
-
-    payload = {
-        "parentExecutionId": parent_execution_id,
-        "reason": reason or "terminated due to parent workflow termination",
-        "cleanupWorkspace": cleanup_workspace,
-    }
-    agents = {
-        "claude-code-agent": CLAUDE_CODE_AGENT_APP_ID,
-    }
-    results: dict[str, dict] = {}
-    failures: dict[str, str] = {}
-
-    for agent_label, app_id in agents.items():
-        try:
-            results[agent_label] = _dapr_invoke_or_raise(
-                app_id,
-                "api/runs/terminate-by-parent",
-                payload,
-                timeout=20,
-                service_label=f"{agent_label} parent termination",
-            )
-        except Exception as exc:
-            message = str(exc)
-            if (
-                "failed to resolve address" in message
-                or "name resolver error" in message
-                or "connection refused" in message.lower()
-            ):
-                logger.info(
-                    "[Call Durable Agent Run] Skipping parent durable-run "
-                    "termination because %s is unavailable: %s",
-                    agent_label,
-                    message,
-                )
-                results[agent_label] = {
-                    "success": True,
-                    "skipped": True,
-                    "reason": f"{agent_label} unavailable",
-                }
-                continue
-            logger.warning(
-                "[Call Durable Agent Run] %s parent termination failed: %s",
-                agent_label,
-                message,
-            )
-            failures[agent_label] = message
-
-    return {
-        "success": not failures,
-        "parentExecutionId": parent_execution_id,
-        "results": results,
-        "failures": failures,
-    }
+# terminate_durable_runs_by_parent_execution was retired in PR2 (lifecycle
+# rootcause): it only ever fanned out to the legacy claude-code-agent app-id.
+# Per-session agent-runtime children are now terminated/purged explicitly by
+# the BFF lifecycle controller (per-app-id), and same-task-hub children by
+# Dapr's native parent-child cascade.
 
 
 def validate_workspace_capabilities(ctx, input_data: dict) -> dict:

@@ -28,7 +28,6 @@ from typing import Any, Callable
 
 # Re-export for direct import by app.py or other consumers.
 from .execute_action import ExecuteActionInput  # noqa: F401
-from .call_agent_service import terminate_durable_runs_by_parent_execution  # noqa: F401
 from .metadata import activity_metadata, get_activity_metadata  # noqa: F401
 
 
@@ -68,5 +67,4 @@ ACTIVITIES: list[Callable] = _discover_activities()
 __all__ = [fn.__name__ for fn in ACTIVITIES] + [
     "ACTIVITIES",
     "ExecuteActionInput",
-    "terminate_durable_runs_by_parent_execution",
 ]
