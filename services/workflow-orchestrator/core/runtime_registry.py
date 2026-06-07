@@ -6,10 +6,10 @@ formerly hand-coded in ``workflows/sw_workflow.py``. Descriptors are loaded from
 the adjacent ``runtime_registry.json``; app-ids are resolved at load time from
 ``core.config`` so the existing Dapr-Configuration/env override flow is unchanged.
 
-(The legacy HTTP run-lane resolver ``activities/call_agent_service._durable_agent_app_id``
-is NOT consolidated here — it is dead code on the unused ``call_durable_agent_run``
-path and is removed wholesale in Phase 6, not migrated. The BFF-side enumerations
-are consolidated in Phase 2.)
+(The legacy HTTP run-lane — ``call_agent_service.call_durable_agent_run`` /
+``terminate_durable_agent_run`` / ``_durable_agent_app_id`` — was dead by disuse
+and has been deleted; only the live ``terminate_durable_runs_by_parent_execution``
+remains. The BFF-side enumerations are consolidated in Phase 2.)
 
 The resolution precedence (``resolve``) reproduces the old
 ``_resolve_native_agent_runtime`` EXACTLY — behavior-preserving by construction:
