@@ -10,7 +10,10 @@ benchmark scale tests and cleanup.
 > `docs/workflow-lifecycle-termination.md` (the lifecycle SSOT; IMPLEMENTED PR1–PR4).
 > Routine reconciliation of orphaned/stuck state is automated by the
 > `lifecycle-terminal-reaper` CronJob (`POST /api/internal/lifecycle/reap-terminal`),
-> which **SKIPS while a benchmark run/lease is active** so it never races a live run;
+> which **reconciles the terminal/gone divergence even during benchmark activity** (post-#69; the
+> per-row terminal/gone guard is the safety) — only its *aged stuck-execution* pass defers to an
+> execution owned by a **still-active** coordinator run (post-#79) so it never purges an instance the
+> coordinator is about to re-drive;
 > orphaned per-session Sandbox CRs in `workflow-builder` are age-GC'd by the
 > `workflow-builder-sandbox-gc` CronJob. `stateRetentionPolicy` is now unified at
 > `168h` across the parent (`workflow-orchestrator-no-tracing`) and the per-session
@@ -115,8 +118,11 @@ The important upstream constraints for benchmark operations are:
   briefly and schedules the run cleanup endpoint for recently terminal runs that
   still have active session or workflow projections. Platform-wide reconciliation
   of DB rows stuck non-terminal vs terminal/gone Dapr instances is now the
-  `lifecycle-terminal-reaper` CronJob (it SKIPS while a benchmark run/lease is
-  active, so it never races a live SWE-bench run), and orphaned per-session
+  `lifecycle-terminal-reaper` CronJob (post-#69 it reconciles even during
+  benchmark activity — the per-row terminal/gone guard is the safety; post-#79
+  only its aged-stuck pass defers to an execution owned by a still-active
+  coordinator run, so it never purges an instance the coordinator will re-drive),
+  and orphaned per-session
   Sandbox CRs in `workflow-builder` are age-GC'd by `workflow-builder-sandbox-gc`.
   If sandboxes remain after a completed run, use the cleanup endpoint (or let the
   reaper/GC sweep) instead of direct DB updates.
