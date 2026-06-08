@@ -4,72 +4,67 @@ These activities let the SW-interpreter parent START a per-session agent
 ``session_workflow`` on a DIFFERENT Dapr app-id (a separate task hub) and POLL
 its status/output — WITHOUT holding an outstanding cross-app sub-orchestration.
 
-Why: a parent blocked in ``ctx.call_child_workflow(app_id=<agent>)`` cannot be
-terminated — Dapr's terminate does not apply to a parent awaiting a
-sub-orchestration on another task hub, so a user Stop hangs the run forever (and
-a cooperative ``when_any`` early-return hot-loops because the dangling cross-app
-task can't be reconciled once the child self-completes/purges). Fire-and-poll
-keeps the parent's durable history same-task-hub (only timers + activities + one
-external-event subscription), so a user Stop is observed at the next poll
-boundary and the parent unwinds to a clean terminal state. See
-docs/workflow-lifecycle-termination.md.
+Why route through the BFF: per-session Kueue sandboxes get only a headless
+service (no Dapr ``<appid>-dapr`` service), so the orchestrator CANNOT reach them
+via Dapr service-invoke (``call_child_workflow`` worked only because Dapr
+workflow sub-orchestration routes via placement, not DNS). The BFF discovers the
+sandbox's pod URL (``waitForAgentWorkflowHostAppReady``), so these activities
+HTTP the BFF's ``/api/internal/agent-runtime/{start,status,terminate}`` endpoints
+which proxy to the sandbox. See docs/workflow-lifecycle-termination.md +
+[[project_workflow_run_stop_crossapp_child_wedge]].
 
-The child agent ``session_workflow`` reaches a terminal Dapr status but does NOT
-self-purge (held by the 168h ``stateRetentionPolicy``), so the poll reads its
-real serialized output with no purge race. Endpoints mirror what the BFF uses for
-direct sessions / lifecycle control (``/internal/sessions/spawn``,
-``GET /api/v2/agent-runs/{id}/status``, ``POST .../terminate``).
+Keeping the parent's durable history same-task-hub (timers + activities + one
+``workflow.cancel`` subscription, no cross-app sub-orchestration) is what lets a
+user Stop unwind the parent to a clean terminal state instead of wedging /
+hot-looping.
 """
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
+
+import requests
 
 from content_tracing import io_attributes
 from tracing import set_current_span_attrs, start_activity_span
 
-from .dapr_invoke import dapr_invoke
 
-_TERMINAL_RUNTIME_STATUSES = {"COMPLETED", "FAILED", "TERMINATED"}
-
-
-def _looks_missing(status: int, text: str) -> bool:
-    """True when the agent runtime reports the instance is gone (purged / never
-    started). dapr_invoke collapses the SDK's non-2xx into (500, …, text), so we
-    also sniff the error text — same spirit as the BFF's benign-miss check."""
-    t = (text or "").lower()
-    return status == 404 or "404" in t or "not found" in t or "not_found" in t
+def _bff_base_url() -> str:
+    return os.environ.get(
+        "WORKFLOW_BUILDER_URL",
+        "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+    ).rstrip("/")
 
 
-# The per-session agent sandbox is a Dapr app that becomes service-invokable only
-# once its pod + daprd are Running/registered. The bridge admits it non-blocking
-# (the old call_child_workflow relied on Dapr placement to retry until the app
-# registered); a service-invoke does not, so the START is retried at the workflow
-# level until these "not ready yet" markers clear.
-_NOT_READY_MARKERS = (
-    "failed to resolve",
-    "no such host",
-    "name resolution",
-    "could not get address",
-    "app may not be available",
-    "is not available",
-    "unavailable",
-    "connection refused",
-    "connection reset",
-    "context deadline exceeded",
-    "timeout",
-)
+def _internal_token() -> str:
+    return os.environ.get("INTERNAL_API_TOKEN", "")
 
 
-def _looks_not_ready(status: int, text: str) -> bool:
-    t = (text or "").lower()
-    return status >= 500 and any(m in t for m in _NOT_READY_MARKERS)
+def _bff_post(path: str, body: dict[str, Any], *, timeout: int = 60) -> tuple[int, dict[str, Any]]:
+    """POST to a BFF internal endpoint with the internal token. Returns
+    (status_code, json_body); all transport errors normalize to (0, {})."""
+    try:
+        resp = requests.post(
+            f"{_bff_base_url()}{path}",
+            json=body,
+            headers={"Content-Type": "application/json", "X-Internal-Token": _internal_token()},
+            timeout=timeout,
+        )
+        try:
+            data = resp.json() if resp.content else {}
+        except (json.JSONDecodeError, ValueError):
+            data = {}
+        return resp.status_code, (data if isinstance(data, dict) else {})
+    except Exception:  # noqa: BLE001 — transport error -> caller treats as transient
+        return 0, {}
 
 
 def start_session_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
-    """Fire-and-forget start of a per-session ``session_workflow`` on the agent
-    app-id. Idempotent: the agent's ``/internal/sessions/spawn`` reuses an
-    existing instanceId (StartInstance ALREADY_EXISTS is swallowed), so a Dapr
-    activity retry / parent replay is safe."""
+    """Fire-and-forget start of a per-session ``session_workflow`` via the BFF.
+    Idempotent (the sandbox spawn reuses an existing instanceId). Returns
+    ``{ok, notReady}``; ``notReady`` means the sandbox isn't reachable yet so the
+    workflow retries the start."""
     app_id = str(input_data.get("agentAppId") or "").strip()
     instance_id = str(input_data.get("instanceId") or "").strip()
     payload = input_data.get("payload") if isinstance(input_data.get("payload"), dict) else {}
@@ -79,28 +74,25 @@ def start_session_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     attrs = {"agent.app_id": app_id, "agent.instance_id": instance_id, "agent.operation": "start"}
     with start_activity_span("activity.start_session_workflow", otel, attrs):
         set_current_span_attrs(io_attributes("input", {"instanceId": instance_id, "agentAppId": app_id}))
-        status, _body, text = dapr_invoke(
-            app_id,
-            "internal/sessions/spawn",
-            {"instanceId": instance_id, "payload": payload},
-            timeout=60,
+        status, body = _bff_post(
+            "/api/internal/agent-runtime/start",
+            {"agentAppId": app_id, "instanceId": instance_id, "payload": payload},
         )
-        if status < 400:
-            result = {"ok": True, "notReady": False, "instanceId": instance_id, "status": status}
-        elif _looks_not_ready(status, text):
-            # Sandbox app not registered yet — the workflow retries with a timer.
-            result = {"ok": False, "notReady": True, "status": status, "error": (text or "")[:300]}
+        if status == 200 and body.get("ok"):
+            result = {"ok": True, "notReady": False, "instanceId": instance_id}
+        elif status == 0 or status >= 500 or body.get("notReady"):
+            # BFF unreachable / sandbox not ready -> retry at the workflow level.
+            result = {"ok": False, "notReady": True, "status": status, "error": str(body.get("error") or "")[:300]}
         else:
-            result = {"ok": False, "notReady": False, "status": status, "error": (text or "")[:300]}
+            result = {"ok": False, "notReady": False, "status": status, "error": str(body.get("error") or "")[:300]}
         set_current_span_attrs(io_attributes("output", result))
         return result
 
 
 def poll_session_workflow_status(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
-    """Poll a per-session ``session_workflow``'s runtime status + output on the
-    agent app-id. NEVER raises — returns
-    ``{complete, runtimeStatus, output, missing}``; transient (5xx/unknown)
-    errors return ``complete=False`` so the parent's poll loop keeps trying."""
+    """Poll a per-session ``session_workflow``'s runtime status + output via the
+    BFF. NEVER raises — transient errors return ``complete=False`` so the parent
+    poll loop keeps trying."""
     app_id = str(input_data.get("agentAppId") or "").strip()
     instance_id = str(input_data.get("instanceId") or "").strip()
     otel = input_data.get("_otel") or {}
@@ -108,45 +100,29 @@ def poll_session_workflow_status(ctx, input_data: dict[str, Any]) -> dict[str, A
         raise RuntimeError("poll_session_workflow_status requires agentAppId + instanceId")
     attrs = {"agent.app_id": app_id, "agent.instance_id": instance_id, "agent.operation": "poll"}
     with start_activity_span("activity.poll_session_workflow_status", otel, attrs):
-        # summary defaults to False on the agent endpoint -> full serialized output.
-        status, body, text = dapr_invoke(
-            app_id,
-            f"api/v2/agent-runs/{instance_id}/status",
-            {},
+        status, body = _bff_post(
+            "/api/internal/agent-runtime/status",
+            {"agentAppId": app_id, "instanceId": instance_id},
             timeout=30,
-            http_verb="GET",
         )
         if status == 200 and isinstance(body, dict):
-            runtime_status = str(body.get("runtimeStatus") or "").upper()
-            complete = runtime_status in _TERMINAL_RUNTIME_STATUSES
             out = {
-                "complete": complete,
-                "runtimeStatus": runtime_status,
+                "complete": bool(body.get("complete")),
+                "runtimeStatus": str(body.get("runtimeStatus") or "UNKNOWN"),
                 "output": body.get("output"),
-                "missing": False,
+                "missing": bool(body.get("missing")),
             }
             set_current_span_attrs(
-                io_attributes("output", {"runtimeStatus": runtime_status, "complete": complete})
+                io_attributes("output", {"runtimeStatus": out["runtimeStatus"], "complete": out["complete"]})
             )
             return out
-        if _looks_missing(status, text):
-            # Instance gone (purged / never started): stop polling, let the
-            # parent reconcile from the DB (workflow_agent_runs.result).
-            return {"complete": True, "runtimeStatus": "GONE", "output": None, "missing": True}
-        # Transient — keep polling.
-        return {
-            "complete": False,
-            "runtimeStatus": "UNKNOWN",
-            "output": None,
-            "missing": False,
-            "error": (text or "")[:300],
-        }
+        # BFF unreachable / error — keep polling.
+        return {"complete": False, "runtimeStatus": "UNKNOWN", "output": None, "missing": False}
 
 
 def terminate_session_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
-    """Terminate a per-session ``session_workflow`` on the agent app-id (used when
-    the parent is cancelled or times out, so the child stops and becomes
-    purgeable). Best-effort — a 404 (already gone) counts as success."""
+    """Terminate a per-session ``session_workflow`` via the BFF (parent cancel /
+    timeout, so the child stops + becomes purgeable). Best-effort."""
     app_id = str(input_data.get("agentAppId") or "").strip()
     instance_id = str(input_data.get("instanceId") or "").strip()
     reason = str(input_data.get("reason") or "workflow cancelled")
@@ -155,11 +131,9 @@ def terminate_session_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
         return {"ok": False, "error": "missing agentAppId/instanceId"}
     attrs = {"agent.app_id": app_id, "agent.instance_id": instance_id, "agent.operation": "terminate"}
     with start_activity_span("activity.terminate_session_workflow", otel, attrs):
-        status, _body, text = dapr_invoke(
-            app_id,
-            f"api/v2/agent-runs/{instance_id}/terminate",
-            {"reason": reason},
+        status, body = _bff_post(
+            "/api/internal/agent-runtime/terminate",
+            {"agentAppId": app_id, "instanceId": instance_id, "reason": reason},
             timeout=30,
         )
-        ok = status < 400 or _looks_missing(status, text)
-        return {"ok": ok, "status": status}
+        return {"ok": bool(body.get("ok")) if status == 200 else False, "status": status}
