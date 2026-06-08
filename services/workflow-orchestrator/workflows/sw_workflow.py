@@ -49,11 +49,6 @@ from core.sw_expressions import (
 )
 from core.template_resolver import resolve_templates
 from activities.execute_action import execute_action
-from activities.agent_session_runtime import (
-    poll_session_workflow_status,
-    start_session_workflow,
-    terminate_session_workflow,
-)
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_artifact import persist_workflow_artifact
@@ -193,208 +188,6 @@ def _child_workflow_result_or_cancel_event(
         "daprInstanceId": child_instance_id,
         "childWorkflowName": workflow_name,
     }
-
-
-class _WorkflowCancelled(Exception):
-    """Raised when a durable/run child receives an explicit ``workflow.cancel``
-    (a user Stop) so the parent SW workflow aborts to a terminal state.
-
-    Why this is necessary: a parent blocked in ``ctx.call_child_workflow`` on a
-    cross-app-id child sub-orchestration (a per-session agent runtime on a
-    SEPARATE task hub) cannot be dislodged by a bare Dapr ``terminate`` — the
-    terminate is accepted (202) but never applied to a parent awaiting a
-    sub-orchestration on another hub, so the run hangs forever in "Stopping…".
-    Selecting on the cancel event lets the parent observe the Stop cooperatively
-    and unwind to a real terminal state (the Lifecycle Controller then reaps the
-    child + finalizes the DB row)."""
-
-    def __init__(self, reason: str, *, task_name: str | None = None) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.task_name = task_name
-
-
-def _child_workflow_result_with_timeout_or_cancel(
-    ctx: wf.DaprWorkflowContext,
-    child_task: Any,
-    *,
-    timeout_minutes: int,
-    child_instance_id: str,
-    workflow_name: str,
-) -> Any:
-    """Race the child against BOTH a parent timeout AND an explicit
-    ``workflow.cancel`` event.
-
-    This is the cancellation-aware variant of
-    ``_child_workflow_result_with_timeout`` used for non-benchmark durable/run
-    steps. Without the cancel arm, a parent blocked in ``call_child_workflow``
-    on a cross-app-id child never observes a user Stop (Dapr terminate cannot
-    dislodge it), leaving the run wedged. On cancel it raises
-    ``_WorkflowCancelled`` so the parent unwinds to a terminal state."""
-    timeout_seconds = max(1, int(timeout_minutes or 1)) * 60
-    timer_task = ctx.create_timer(timedelta(seconds=timeout_seconds))
-    cancel_task = ctx.wait_for_external_event("workflow.cancel")
-    winner = yield wf_when_any([child_task, timer_task, cancel_task])
-    if winner is child_task:
-        get_result = getattr(child_task, "get_result", None)
-        if callable(get_result):
-            return get_result()
-        return winner
-    if winner is cancel_task:
-        get_result = getattr(cancel_task, "get_result", None)
-        cancel_event = get_result() if callable(get_result) else winner
-        event = cancel_event if isinstance(cancel_event, dict) else {}
-        reason = event.get("reason") or "workflow cancelled by user"
-        raise _WorkflowCancelled(str(reason), task_name=workflow_name)
-    raise TimeoutError(
-        f"Child workflow {workflow_name}/{child_instance_id} did not finish "
-        f"within {timeout_seconds}s"
-    )
-
-
-def _session_poll_seconds() -> int:
-    try:
-        return max(1, int(os.environ.get("DAPR_AGENT_SESSION_POLL_SECONDS", "3") or "3"))
-    except (TypeError, ValueError):
-        return 3
-
-
-def _session_start_ready_ms() -> int:
-    """How long a NON-benchmark parent retries starting the child while the
-    per-session agent sandbox boots / Kueue admits it. Generous default (20m) so
-    a slow or quota-gated sandbox on a capacity-limited cluster doesn't fail the
-    run prematurely (the old call_child_workflow waited via placement with no
-    cap). Benchmark passes start_ready_ms=0 (unbounded) — SWE-env provisioning
-    legitimately exceeds any fixed cap."""
-    try:
-        return max(1, int(os.environ.get("DAPR_AGENT_SESSION_START_READY_SECONDS", "1200") or "1200")) * 1000
-    except (TypeError, ValueError):
-        return 1_200_000
-
-
-def _run_agent_child_fire_and_poll(
-    ctx: wf.DaprWorkflowContext,
-    *,
-    agent_app_id: str,
-    child_instance_id: str,
-    child_input: dict,
-    timeout_minutes: int,
-    poll_seconds: int,
-    start_ready_ms: int,
-    otel: Any,
-) -> Any:
-    """Fire-and-poll dispatch of a cross-app-id child ``session_workflow``.
-
-    Replaces ``ctx.call_child_workflow(app_id=<agent>)`` so the parent NEVER
-    holds an outstanding cross-app sub-orchestration — a Dapr ``terminate``
-    cannot dislodge a parent awaiting a sub-orchestration on another task hub, so
-    Stop would wedge the run (or hot-loop if a ``when_any`` returns early while
-    the dangling task can't reconcile). Here the parent's durable history stays
-    same-task-hub: a start activity, a per-iteration poll timer + poll activity,
-    and ONE ``workflow.cancel`` subscription (abandoning an unfired external-event
-    subscription is benign, unlike a dangling sub-orchestration). On cancel the
-    child is terminated and the parent unwinds via ``_WorkflowCancelled`` to a
-    clean terminal state. ``timeout_minutes <= 0`` disables the parent timeout and
-    ``start_ready_ms <= 0`` disables the start-ready cap — both used for benchmark
-    (SWE-env sandbox provisioning legitimately exceeds any fixed cap, and the
-    run coordinator owns benchmark stall timeouts; call_child_workflow likewise
-    waited via placement with no start cap)."""
-    start_ms = _now_ms(ctx)
-    timeout_ms = int(timeout_minutes or 0) * 60_000
-    poll_delay = timedelta(seconds=max(1, int(poll_seconds or 1)))
-
-    def _terminate_input(reason: str) -> dict:
-        return {
-            "agentAppId": agent_app_id,
-            "instanceId": child_instance_id,
-            "reason": reason,
-            "_otel": otel,
-        }
-
-    def _cancel_reason(task: Any, won: Any) -> str:
-        get_result = getattr(task, "get_result", None)
-        ev = get_result() if callable(get_result) else won
-        ev = ev if isinstance(ev, dict) else {}
-        return str(ev.get("reason") or "workflow cancelled by user")
-
-    # Subscribe ONCE; reused across the start-retry + poll iterations. Abandoning
-    # an unfired external-event subscription is benign (unlike a dangling
-    # cross-app sub-orchestration task).
-    cancel_task = ctx.wait_for_external_event("workflow.cancel")
-
-    # Start the child, retrying until the per-session agent sandbox app registers
-    # / becomes service-invokable. A Dapr service-invoke (unlike
-    # call_child_workflow) does not wait for the target app via placement, so the
-    # first attempts can fail with "no such host" while the sandbox pod boots.
-    while True:
-        started = yield ctx.call_activity(
-            start_session_workflow,
-            input=_freeze({
-                "agentAppId": agent_app_id,
-                "instanceId": child_instance_id,
-                "payload": child_input,
-                "_otel": otel,
-            }),
-        )
-        if isinstance(started, dict) and started.get("ok"):
-            break
-        if not (isinstance(started, dict) and started.get("notReady")):
-            raise RuntimeError(f"start_session_workflow failed: {started!r}")
-        if start_ready_ms > 0 and _elapsed_ms(ctx, start_ms) >= start_ready_ms:
-            yield ctx.call_activity(
-                terminate_session_workflow, input=_freeze(_terminate_input("sandbox not ready"))
-            )
-            raise TimeoutError(
-                f"agent sandbox {agent_app_id} for {child_instance_id} "
-                f"not ready within {start_ready_ms}ms"
-            )
-        winner = yield wf_when_any([ctx.create_timer(poll_delay), cancel_task])
-        if winner is cancel_task:
-            reason = _cancel_reason(cancel_task, winner)
-            yield ctx.call_activity(
-                terminate_session_workflow, input=_freeze(_terminate_input(reason))
-            )
-            raise _WorkflowCancelled(reason, task_name="session_workflow")
-
-    # Poll until terminal / cancel / timeout.
-    while True:
-        winner = yield wf_when_any([ctx.create_timer(poll_delay), cancel_task])
-        if winner is cancel_task:
-            reason = _cancel_reason(cancel_task, winner)
-            yield ctx.call_activity(
-                terminate_session_workflow, input=_freeze(_terminate_input(reason))
-            )
-            raise _WorkflowCancelled(reason, task_name="session_workflow")
-
-        status = yield ctx.call_activity(
-            poll_session_workflow_status,
-            input=_freeze({
-                "agentAppId": agent_app_id,
-                "instanceId": child_instance_id,
-                "_otel": otel,
-            }),
-        )
-        if isinstance(status, dict) and status.get("complete"):
-            output = status.get("output")
-            if isinstance(output, dict):
-                return output
-            # Gone/purged or non-dict output: minimal envelope — the caller's
-            # setdefault + track_agent_run_completed reconcile the rest from DB.
-            return {
-                "success": str(status.get("runtimeStatus") or "").upper()
-                not in ("FAILED", "GONE"),
-                "runtimeStatus": status.get("runtimeStatus"),
-                "sessionId": child_instance_id,
-            }
-
-        if timeout_ms > 0 and _elapsed_ms(ctx, start_ms) >= timeout_ms:
-            yield ctx.call_activity(
-                terminate_session_workflow, input=_freeze(_terminate_input("parent timeout"))
-            )
-            raise TimeoutError(
-                f"Child session_workflow {child_instance_id} did not finish "
-                f"within {timeout_ms}ms"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -2042,28 +1835,42 @@ def _run_native_durable_agent_child_workflow(
             if isinstance(returned_app_id, str) and returned_app_id.strip():
                 bridge_app_id = returned_app_id.strip()
 
-        # Fire-and-poll dispatch (NOT ctx.call_child_workflow): start the child
-        # session_workflow on its own (cross-app) app-id via an activity, then
-        # poll its status. The parent never holds an outstanding cross-app
-        # sub-orchestration, so a user Stop (workflow.cancel) unwinds it cleanly
-        # to terminal instead of wedging / hot-looping. Two-name dispatch: the
-        # runtime registers the outer workflow under
-        # descriptor.dispatch_workflow_name ("session_workflow"), which the
-        # start activity passes to /internal/sessions/spawn. Benchmark keeps no
-        # hard parent timeout (its run coordinator owns stall timeouts).
-        child_result = yield from _run_agent_child_fire_and_poll(
-            ctx,
-            agent_app_id=bridge_app_id,
-            child_instance_id=child_instance_id,
-            child_input=bridge_child_input,
-            timeout_minutes=(0 if is_benchmark_run else timeout_minutes),
-            poll_seconds=_session_poll_seconds(),
-            # Benchmark (SWE-bench) sandbox provisioning legitimately exceeds a
-            # fixed cap (SWE-env build); unbounded start-ready for benchmark, a
-            # generous cap otherwise (matches how call_child_workflow waited).
-            start_ready_ms=(0 if is_benchmark_run else _session_start_ready_ms()),
-            otel=tc.otel_ctx,
+        child_task = ctx.call_child_workflow(
+            # Two-name dispatch: every durable-session runtime registers the
+            # outer workflow under descriptor.dispatch_workflow_name
+            # ("session_workflow"); this is distinct from the bridge gate token
+            # ("agent_workflow"). Sourced from the runtime registry instead of a
+            # bare literal so a new runtime can change it by data.
+            target.get("dispatch_workflow_name") or "session_workflow",
+            input=_freeze(bridge_child_input),
+            instance_id=child_instance_id,
+            # Runtime routing plan: dispatch session_workflow to the selected
+            # Dapr app id, which may be a dedicated agent runtime, a shared
+            # runtime pool, or a legacy shared app id.
+            app_id=bridge_app_id,
         )
+        if is_benchmark_run:
+            # Benchmark runs already have a stronger timeout owner: the
+            # benchmark service terminates stalled session instances. Adding a
+            # parent workflow timer here creates Scheduler reminders that can
+            # outlive the child completion event and leave the parent instance
+            # RUNNING. Still listen for explicit cancellation so benchmark
+            # cleanup can let the parent exit cooperatively before escalating
+            # to hard Dapr termination.
+            child_result = yield from _child_workflow_result_or_cancel_event(
+                ctx,
+                child_task,
+                child_instance_id=child_instance_id,
+                workflow_name="session_workflow",
+            )
+        else:
+            child_result = yield from _child_workflow_result_with_timeout(
+                ctx,
+                child_task,
+                timeout_minutes=timeout_minutes,
+                child_instance_id=child_instance_id,
+                workflow_name="session_workflow",
+            )
     else:
         child_task = ctx.call_child_workflow(
             target["workflow_name"],
@@ -2907,10 +2714,6 @@ def _handle_try_task(
                 )
                 subtask_results[sub_name] = _unwrap_standardized_output(subtask_result)
         result = {"success": True, "tasks": subtask_results}
-    except _WorkflowCancelled:
-        # An explicit user cancel must abort the whole workflow — it is not an
-        # error to be swallowed into the SW try/catch's catch branch.
-        raise
     except Exception as e:
         logger.warning("[SW Workflow] try task caught error: %s", e)
         # Execute catch tasks if defined
@@ -3609,11 +3412,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # Dispatch the task
             try:
                 result = yield from _dispatch_task(ctx, task_name, task_data, tc)
-            except _WorkflowCancelled:
-                # Cooperative user cancel — not a node failure. Let the
-                # top-level handler record the cancellation and unwind the
-                # parent workflow to a terminal state.
-                raise
             except Exception as task_err:
                 task_duration_ms = _elapsed_ms(ctx, task_start_ms)
                 if db_execution_id and log_id:
@@ -3797,92 +3595,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             workflowOutput=workflow_output,
             duration_ms=duration_ms,
             phase="completed",
-        ).model_dump(by_alias=True)
-
-    except _WorkflowCancelled as ce:
-        # A durable/run child observed an explicit workflow.cancel (user Stop).
-        # Unwind the parent to a TERMINAL state instead of continuing to
-        # subsequent nodes — this is the half a bare Dapr terminate can't do
-        # while the parent awaits a cross-app-id child. The Lifecycle Controller
-        # then confirms the parent terminal, reaps the child, and finalizes the
-        # DB row to "cancelled".
-        tc.otel_ctx = tc.workflow_otel_ctx
-        duration_ms = _elapsed_ms(ctx, start_time_ms)
-        reason = ce.reason or "workflow cancelled by user"
-        logger.info("[SW Workflow] Cancelled: %s - %s", workflow_name, reason)
-        workflow_output = resolve_output_definition(
-            workflow.output.model_dump(by_alias=True) if workflow.output else None,
-            _build_expression_context(tc),
-            default_output=tc.task_outputs,
-        )
-
-        ctx.set_custom_status(json.dumps({
-            "phase": "cancelled",
-            "progress": calculate_progress(len(tc.completed_tasks), total_tasks),
-            "message": f"Cancelled: {reason}",
-            "traceId": trace_id,
-        }))
-
-        if db_execution_id:
-            yield ctx.call_activity(
-                persist_results_to_db,
-                input=_freeze({
-                    "executionId": execution_id,
-                    "dbExecutionId": db_execution_id,
-                    "success": False,
-                    "outputs": tc.task_outputs,
-                    "workflowOutput": workflow_output,
-                    "error": reason,
-                    "durationMs": duration_ms,
-                    "phase": "cancelled",
-                    "_otel": tc.otel_ctx,
-                }),
-            )
-
-        if _should_cleanup_workspaces(tc):
-            try:
-                from activities.call_agent_service import cleanup_execution_workspaces
-
-                yield ctx.call_activity(
-                    cleanup_execution_workspaces,
-                    input=_freeze({
-                        "executionId": execution_id,
-                        "dbExecutionId": db_execution_id,
-                        "_otel": tc.otel_ctx,
-                    }),
-                )
-            except Exception as cleanup_err:
-                _log_info(
-                    ctx,
-                    "[SW Workflow] Workspace cleanup after cancel failed (non-fatal): %s",
-                    cleanup_err,
-                )
-
-        if _should_finalize_mlflow_trace_for_trigger(tc.trigger_data):
-            yield from _finalize_mlflow_trace(
-                ctx,
-                _mlflow_finalizer_input(
-                    status="ERROR",
-                    trace_id=trace_id,
-                    otel_ctx=tc.otel_ctx,
-                    workflow_id=tc.workflow_id,
-                    workflow_name=workflow_name,
-                    execution_id=execution_id,
-                    db_execution_id=db_execution_id,
-                    duration_ms=duration_ms,
-                    start_time_ms=start_time_ms,
-                    error=reason,
-                    mlflow_context=tc.mlflow_context,
-                ),
-            )
-
-        return SWWorkflowOutput(
-            success=False,
-            outputs=tc.task_outputs,
-            workflowOutput=workflow_output,
-            error=reason,
-            duration_ms=duration_ms,
-            phase="cancelled",
         ).model_dump(by_alias=True)
 
     except Exception as e:
