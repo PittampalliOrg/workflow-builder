@@ -260,13 +260,16 @@ def _session_poll_seconds() -> int:
 
 
 def _session_start_ready_ms() -> int:
-    """How long the parent retries starting the child while the per-session agent
-    sandbox pod boots + its daprd registers (it's not service-invokable before
-    then). Generous default — openshell sandbox provisioning can take minutes."""
+    """How long a NON-benchmark parent retries starting the child while the
+    per-session agent sandbox boots / Kueue admits it. Generous default (20m) so
+    a slow or quota-gated sandbox on a capacity-limited cluster doesn't fail the
+    run prematurely (the old call_child_workflow waited via placement with no
+    cap). Benchmark passes start_ready_ms=0 (unbounded) — SWE-env provisioning
+    legitimately exceeds any fixed cap."""
     try:
-        return max(1, int(os.environ.get("DAPR_AGENT_SESSION_START_READY_SECONDS", "300") or "300")) * 1000
+        return max(1, int(os.environ.get("DAPR_AGENT_SESSION_START_READY_SECONDS", "1200") or "1200")) * 1000
     except (TypeError, ValueError):
-        return 300_000
+        return 1_200_000
 
 
 def _run_agent_child_fire_and_poll(
@@ -277,6 +280,7 @@ def _run_agent_child_fire_and_poll(
     child_input: dict,
     timeout_minutes: int,
     poll_seconds: int,
+    start_ready_ms: int,
     otel: Any,
 ) -> Any:
     """Fire-and-poll dispatch of a cross-app-id child ``session_workflow``.
@@ -290,11 +294,13 @@ def _run_agent_child_fire_and_poll(
     and ONE ``workflow.cancel`` subscription (abandoning an unfired external-event
     subscription is benign, unlike a dangling sub-orchestration). On cancel the
     child is terminated and the parent unwinds via ``_WorkflowCancelled`` to a
-    clean terminal state. ``timeout_minutes <= 0`` disables the parent timeout
-    (benchmark parity — the run coordinator owns benchmark stall timeouts)."""
+    clean terminal state. ``timeout_minutes <= 0`` disables the parent timeout and
+    ``start_ready_ms <= 0`` disables the start-ready cap — both used for benchmark
+    (SWE-env sandbox provisioning legitimately exceeds any fixed cap, and the
+    run coordinator owns benchmark stall timeouts; call_child_workflow likewise
+    waited via placement with no start cap)."""
     start_ms = _now_ms(ctx)
     timeout_ms = int(timeout_minutes or 0) * 60_000
-    start_ready_ms = _session_start_ready_ms()
     poll_delay = timedelta(seconds=max(1, int(poll_seconds or 1)))
 
     def _terminate_input(reason: str) -> dict:
@@ -334,7 +340,7 @@ def _run_agent_child_fire_and_poll(
             break
         if not (isinstance(started, dict) and started.get("notReady")):
             raise RuntimeError(f"start_session_workflow failed: {started!r}")
-        if _elapsed_ms(ctx, start_ms) >= start_ready_ms:
+        if start_ready_ms > 0 and _elapsed_ms(ctx, start_ms) >= start_ready_ms:
             yield ctx.call_activity(
                 terminate_session_workflow, input=_freeze(_terminate_input("sandbox not ready"))
             )
@@ -2052,6 +2058,10 @@ def _run_native_durable_agent_child_workflow(
             child_input=bridge_child_input,
             timeout_minutes=(0 if is_benchmark_run else timeout_minutes),
             poll_seconds=_session_poll_seconds(),
+            # Benchmark (SWE-bench) sandbox provisioning legitimately exceeds a
+            # fixed cap (SWE-env build); unbounded start-ready for benchmark, a
+            # generous cap otherwise (matches how call_child_workflow waited).
+            start_ready_ms=(0 if is_benchmark_run else _session_start_ready_ms()),
             otel=tc.otel_ctx,
         )
     else:
