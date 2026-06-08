@@ -147,39 +147,6 @@ def _agent_run_already_gone(exc: Exception) -> bool:
     )
 
 
-@app.get("/api/v2/agent-runs/{instance_id}/status")
-def get_agent_run_status(instance_id: str, summary: bool = False) -> dict[str, Any]:
-    """Runtime status + serialized output of a session_workflow, for the
-    orchestrator's fire-and-poll durable/run dispatch (parity with
-    dapr-agent-py). Returns 404 when the instance is unknown/purged."""
-    try:
-        state = DaprWorkflowClient().get_workflow_state(
-            instance_id, fetch_payloads=not summary
-        )
-        if state is None:
-            raise HTTPException(status_code=404, detail="instance not found")
-        rs = getattr(state, "runtime_status", None)
-        runtime_status = (
-            str(getattr(rs, "name", rs) or "").upper().replace("ORCHESTRATION_STATUS_", "")
-        )
-        result: dict[str, Any] = {"instanceId": instance_id, "runtimeStatus": runtime_status}
-        if not summary:
-            serialized = getattr(state, "serialized_output", None)
-            if serialized:
-                try:
-                    result["output"] = json.loads(serialized)
-                except (json.JSONDecodeError, ValueError, TypeError):
-                    result["output"] = serialized
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        if _agent_run_already_gone(exc):
-            raise HTTPException(status_code=404, detail="instance not found")
-        logger.error("[agent-runs] status failed for %s: %s", instance_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
 @app.post("/api/v2/agent-runs/{instance_id}/terminate")
 def terminate_agent_run(
     instance_id: str, body: dict[str, Any] | None = None
