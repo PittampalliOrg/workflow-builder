@@ -570,6 +570,15 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
             status = "success" if success else "error"
             phase = "completed" if success else "failed"
+            # Honor an explicit cancelled phase (durable/run user Stop): write a
+            # "cancelled" status, not the success-derived "error", so a user
+            # cancel isn't mislabeled as a failure. The BFF finalizeDb's
+            # "cancelled" only applies to still-pending/running rows, so once the
+            # orchestrator persists a terminal status it must be the right label.
+            if str(input_data.get("phase") or "").lower() == "cancelled":
+                status = "cancelled"
+                phase = "cancelled"
+                final_output["phase"] = "cancelled"
             progress = 100
             completed_at = datetime.now(timezone.utc)
 
