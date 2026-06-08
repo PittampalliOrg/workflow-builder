@@ -37,7 +37,15 @@ export type StopDurableRunMode =
 	| "terminate"
 	/** Terminate + purge durable state + reap Sandbox CRs + flip DB terminal. */
 	| "purge"
-	/** purge + force-delete state rows even if Dapr never confirmed terminal. */
+	/**
+	 * purge + force-delete state rows even if Dapr never confirmed terminal — the
+	 * "byte-clean" re-run mode (the UI "Stop & reset"). This IS reachable by
+	 * normal users (it's a per-run dev affordance), and that is safe because every
+	 * stop route runs `isResourceInScope` before `stopDurableRun`, so the
+	 * force-delete only touches the caller's own in-scope run, and the state-row
+	 * purge is boundary-anchored (no sibling over-delete). It does not require
+	 * admin — the audit's "gate to admin" suggestion would break Stop & reset.
+	 */
 	| "reset";
 
 export type StopDurableRunStep = {
@@ -68,6 +76,13 @@ export type StopDurableRunResult = {
 	state: "confirmed" | "stopping" | "notFound";
 	scope: DurableTargetScope | null;
 	cascade?: DurableCascadeResult;
+	/**
+	 * Set when a cooperative interrupt couldn't be delivered for a TRANSIENT reason
+	 * (the session is live but the runtime raise hiccuped, e.g. a 5xx/flaky
+	 * sidecar) — as opposed to "not running yet". Lets the route map it to a
+	 * retryable 503 instead of a misleading 409.
+	 */
+	retryable?: boolean;
 	steps: StopDurableRunStep[];
 };
 
@@ -157,12 +172,17 @@ export async function stopDurableRun(
 				result: r.ok ? "ok" : "failed",
 				detail: r.error,
 			});
+			// A 5xx (or transport) raise failure against a live session is transient
+			// — distinct from "not running yet" (404/409). Surface it as retryable so
+			// the route returns 503, not a misleading 409.
+			const retryable = !r.ok && (r.status >= 500 || r.status === 0);
 			return {
 				confirmed: r.ok,
 				notFound: false,
 				requested: false,
 				state: r.ok ? "confirmed" : "stopping",
 				scope: resolved.scope,
+				retryable,
 				steps,
 			};
 		}

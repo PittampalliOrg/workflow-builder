@@ -17,6 +17,7 @@ import { db } from "$lib/server/db";
 import {
 	benchmarkResourceLeases,
 	benchmarkRuns,
+	evaluationRuns,
 	sessions,
 	workflowAgentRuns,
 	workflowExecutions,
@@ -28,6 +29,35 @@ import {
 	isTerminalDurableRuntimeStatus,
 } from "./cascade";
 import { confirmDurableStop, stopDurableRun } from "./index";
+import { ownsBenchmarkOrEvalRun } from "./ownership";
+
+const COORDINATOR_TERMINAL = ["completed", "failed", "cancelled"];
+
+/**
+ * True if an execution is a benchmark/eval instance whose owning coordinator run
+ * is still ACTIVE. The aged generic reaper pass must NOT purge such an instance:
+ * the coordinator re-drives a non-terminal instance, so reaping it races the
+ * re-dispatch. (Once the owning run is terminal, the orphan is safe to reap.)
+ */
+async function ownedByActiveCoordinatorRun(executionId: string): Promise<boolean> {
+	if (!db) return false;
+	const owner = await ownsBenchmarkOrEvalRun(executionId);
+	if (!owner) return false;
+	if (owner.kind === "benchmarkRun") {
+		const [r] = await db
+			.select({ status: benchmarkRuns.status })
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, owner.runId))
+			.limit(1);
+		return !!r && !COORDINATOR_TERMINAL.includes(r.status);
+	}
+	const [r] = await db
+		.select({ status: evaluationRuns.status })
+		.from(evaluationRuns)
+		.where(eq(evaluationRuns.id, owner.runId))
+		.limit(1);
+	return !!r && !COORDINATOR_TERMINAL.includes(r.status);
+}
 
 export type ReapTerminalOptions = { olderThanMinutes?: number; limit?: number };
 
@@ -224,6 +254,14 @@ export async function reapTerminalRuns(
 	for (const exec of stuckExecs) {
 		try {
 			if (!(await isDurableTerminalOrGone(exec.daprInstanceId ?? exec.id))) {
+				result.executionsSkippedActive += 1;
+				continue;
+			}
+			// Don't purge a benchmark/eval instance whose coordinator run is still
+			// active — the coordinator re-drives non-terminal instances, so reaping a
+			// momentarily terminal/gone handle races the re-dispatch. (Once the run
+			// is terminal, this guard releases and the orphan is reaped.)
+			if (await ownedByActiveCoordinatorRun(exec.id)) {
 				result.executionsSkippedActive += 1;
 				continue;
 			}

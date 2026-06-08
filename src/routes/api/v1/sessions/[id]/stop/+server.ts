@@ -5,6 +5,7 @@ import {
 	stopDurableRun,
 	type StopDurableRunMode,
 } from "$lib/server/lifecycle";
+import { ownsBenchmarkOrEvalRunForSession } from "$lib/server/lifecycle/ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 const MODES = new Set<StopDurableRunMode>([
@@ -38,6 +39,27 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (inspected.notFound) return error(404, "Session not found");
 	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
 		return error(404, "Session not found");
+	}
+
+	// Single stop authority (parity with the per-execution stop route): a
+	// benchmark/eval instance's agent runs as a session, and its coordinator
+	// re-drives a non-terminal instance — so stopping it here is futile. Redirect
+	// to the owning run's cancel surface.
+	const owner = await ownsBenchmarkOrEvalRunForSession(params.id);
+	if (owner) {
+		return json(
+			{
+				ok: false,
+				error: "coordinator_owned",
+				ownedBy: owner.kind,
+				runId: owner.runId,
+				message:
+					owner.kind === "benchmarkRun"
+						? "This is a benchmark instance — cancel the benchmark run instead."
+						: "This is an evaluation instance — cancel the evaluation run instead.",
+			},
+			{ status: 409 },
+		);
 	}
 
 	const result = await stopDurableRun(target, { mode, reason, graceMs });

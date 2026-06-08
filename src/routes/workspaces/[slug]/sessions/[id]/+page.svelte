@@ -1010,6 +1010,7 @@
 		}
 	}
 
+	let coordinatorOwner = $state<{ kind: 'benchmarkRun' | 'evalRun'; runId: string } | null>(null);
 	let stopBusy = $state(false);
 	// "stopping" = accepted (202) but the durable terminate is still converging.
 	let stopConverging = $state(false);
@@ -1043,8 +1044,21 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ mode })
 			});
-			const b = (await res.json().catch(() => ({}))) as { message?: string; state?: string };
-			if (res.status === 202 || b?.state === 'stopping') {
+			const b = (await res.json().catch(() => ({}))) as {
+				message?: string;
+				state?: string;
+				error?: string;
+				ownedBy?: 'benchmarkRun' | 'evalRun';
+				runId?: string;
+			};
+			if (res.status === 409 && b?.error === 'coordinator_owned' && b.ownedBy && b.runId) {
+				// Single stop authority: this session is a benchmark/eval instance —
+				// redirect to the owning run's cancel surface instead of fighting the
+				// coordinator (mirrors the workflow-run page).
+				coordinatorOwner = { kind: b.ownedBy, runId: b.runId };
+				errorMessage =
+					b.message ?? 'This run is managed by its benchmark/evaluation run — cancel it there.';
+			} else if (res.status === 202 || b?.state === 'stopping') {
 				stopConverging = true;
 				void pollStopStatus();
 			} else if (!res.ok) {
@@ -1062,7 +1076,11 @@
 			goto(`/workspaces/${slug}/sessions`);
 		} else {
 			const b = (await res.json().catch(() => ({}))) as { message?: string };
-			errorMessage = b?.message ?? `Archive failed (${res.status})`;
+			errorMessage =
+				b?.message ??
+				(res.status === 409
+					? 'Stop the run before archiving this session.'
+					: `Archive failed (${res.status})`);
 		}
 	}
 
@@ -1278,20 +1296,35 @@
 					>
 						<Square class="size-3.5" /> Send interrupt
 					</DropdownMenu.Item>
-					<DropdownMenu.Item
-						onSelect={() => stopRun('purge')}
-						disabled={stopBusy || stopConverging}
-						class="text-destructive focus:text-destructive"
-					>
-						<Square class="size-3.5" /> {stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
-					</DropdownMenu.Item>
-					<DropdownMenu.Item
-						onSelect={() => stopRun('reset')}
-						disabled={stopBusy || stopConverging}
-						class="text-destructive focus:text-destructive"
-					>
-						<Square class="size-3.5" /> Stop &amp; reset
-					</DropdownMenu.Item>
+					{#if coordinatorOwner}
+						<DropdownMenu.Item
+							onSelect={() =>
+								goto(
+									coordinatorOwner?.kind === 'benchmarkRun'
+										? `/workspaces/${slug}/benchmarks?run=${encodeURIComponent(coordinatorOwner.runId)}`
+										: `/workspaces/${slug}/evaluations`
+								)}
+						>
+							<Square class="size-3.5" /> Managed by {coordinatorOwner.kind === 'benchmarkRun'
+								? 'benchmark'
+								: 'evaluation'} run →
+						</DropdownMenu.Item>
+					{:else}
+						<DropdownMenu.Item
+							onSelect={() => stopRun('purge')}
+							disabled={session?.status === 'terminated' || stopBusy || stopConverging}
+							class="text-destructive focus:text-destructive"
+						>
+							<Square class="size-3.5" /> {stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
+						</DropdownMenu.Item>
+						<DropdownMenu.Item
+							onSelect={() => stopRun('reset')}
+							disabled={session?.status === 'terminated' || stopBusy || stopConverging}
+							class="text-destructive focus:text-destructive"
+						>
+							<Square class="size-3.5" /> Stop &amp; reset
+						</DropdownMenu.Item>
+					{/if}
 					<DropdownMenu.Item onSelect={() => downloadEvents()}>
 						<Download class="size-3.5" /> Download events…
 					</DropdownMenu.Item>
