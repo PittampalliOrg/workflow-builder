@@ -68,6 +68,12 @@ export type DurableCascadeResult = {
 
 export type DurableCascadeDeps = {
 	getParentStatus: (instanceId: string) => Promise<unknown>;
+	/**
+	 * The parent orchestration's live `currentNodeId` (the SW node it is parked
+	 * on), or null if unavailable/terminal. Positive evidence for the cross-app
+	 * wedge gate. Optional — benchmark deps don't supply it.
+	 */
+	getParentCurrentNode?: (instanceId: string) => Promise<string | null>;
 	cancelParent?: (
 		instanceId: string,
 		reason: string,
@@ -252,37 +258,49 @@ export function agentRuntimeTargetKey(target: AgentRuntimeTarget): string {
 
 /**
  * Decide whether a Stop has hit the cross-app child wedge and should be
- * force-finalized. The SW-interpreter parent awaits a per-session agent child via
- * ctx.call_child_workflow(app_id=…) — a sub-orchestration on a SEPARATE Dapr task
- * hub that Dapr's recursive terminate can't reach, so the parent hangs RUNNING
- * even after the cascade terminated the child. This is true only when:
- *   - the agent child(ren) are all terminal/gone (the agent is stopped — no
- *     runaway compute), AND
- *   - there IS at least one agent child and one parent instance (the shape that
- *     produces this wedge; a plain workflow or a top-level session can't), AND
- *   - the parent is still NOT closed, AND
- *   - a stop was actually requested and the grace has elapsed (long enough for a
- *     normally-terminable parent to have applied the terminate the cascade issued).
- * The grace is the safety: it keeps us from force-cleaning a parent that's merely
- * slow to terminate or legitimately progressing through a later same-task-hub node.
+ * force-finalized — evaluated PER still-RUNNING parent. The SW-interpreter parent
+ * awaits a per-session agent child via ctx.call_child_workflow(app_id=…) — a
+ * sub-orchestration on a SEPARATE Dapr task hub that Dapr's recursive terminate
+ * can't reach, so the parent hangs RUNNING even after the cascade terminated the
+ * child. We force-finalize ONLY on POSITIVE evidence the parent is parked at that
+ * dead child, never on an inferred boolean:
+ *   - a stop was actually requested and the grace has elapsed, AND
+ *   - the parent's LIVE `currentNodeId` (from the orchestrator status) is a
+ *     `durable/run` node whose child SESSION is DB-`terminated` (in
+ *     `terminatedChildNodes`).
+ * Requiring the node-match fixes two false-positives the old agent-`closed`
+ * boolean allowed: a parent that has moved on to a later non-agent node (its
+ * currentNodeId won't match), and a still-booting sandbox whose agent app-id
+ * merely 404s (its session is not DB-`terminated`, so its node isn't listed).
+ * The caller passes only parents it has confirmed are NOT closed.
  */
 export function shouldForceFinalizeCrossAppWedge(params: {
-	parentClosed: boolean;
-	agentClosed: boolean;
-	agentRuntimeTargetCount: number;
-	parentInstanceCount: number;
 	stopRequestedAt: Date | null;
 	nowMs: number;
 	graceMs: number;
+	parentCurrentNode: string | null;
+	terminatedChildNodes: string[];
 }): boolean {
 	return (
-		!params.parentClosed &&
-		params.agentClosed &&
-		params.agentRuntimeTargetCount > 0 &&
-		params.parentInstanceCount > 0 &&
 		params.stopRequestedAt != null &&
-		params.nowMs - params.stopRequestedAt.getTime() >= params.graceMs
+		params.nowMs - params.stopRequestedAt.getTime() >= params.graceMs &&
+		params.parentCurrentNode != null &&
+		params.terminatedChildNodes.includes(params.parentCurrentNode)
 	);
+}
+
+/**
+ * POSIX-regex pattern matching every Dapr state-store key that belongs to a
+ * durable instance — and ONLY that instance. The id must be a whole token:
+ * preceded by `||` (wfstate_state) or `_workflow_` (agent_py_state) and followed
+ * by `||`, `__turn__` (turn sub-instance), or end-of-key. This is what stops a
+ * deterministic id from matching a sibling as a prefix (`…_run__1` ⊄ `…_run__10`).
+ * Lowercased because agent_py_state lowercases the embedded id; callers compare
+ * `lower(key) ~ pattern`.
+ */
+export function daprStateKeyMatchPattern(instanceId: string): string {
+	const idRe = instanceId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return `(\\|\\||_workflow_)${idRe}(\\|\\||__turn__|$)`.toLowerCase();
 }
 
 export function dedupeAgentRuntimeTargets(
@@ -685,6 +703,21 @@ export function createDaprCascadeDeps(
 		}
 	}
 
+	async function getParentCurrentNode(instanceId: string): Promise<string | null> {
+		try {
+			const res = await daprFetch(
+				`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(instanceId)}/status`,
+				{ method: "GET", signal: AbortSignal.timeout(5_000), maxRetries: 0 },
+			);
+			if (!res.ok) return null;
+			const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+			const node = body?.currentNodeId;
+			return typeof node === "string" && node.trim() ? node.trim() : null;
+		} catch {
+			return null; // unknown -> no positive evidence; wedge stays conservative
+		}
+	}
+
 	async function getAgentRuntimeStatus(
 		runtimeAppId: string,
 		instanceId: string,
@@ -902,10 +935,18 @@ export function createDaprCascadeDeps(
 		if (ids.size === 0 || !db) return;
 		for (const table of DAPR_STATE_ROW_TABLES) {
 			for (const instanceId of ids) {
+				// Boundary-anchored match: the instanceId must be a whole token in
+				// the Dapr key — preceded by `||` (wfstate) or `_workflow_`
+				// (agent_py_state) and followed by `||`, `__turn__` (turn
+				// sub-instance), or end-of-key. A bare substring match would let a
+				// deterministic id be a PREFIX of a sibling's: `…_run__1` would also
+				// delete `…_run__10`/`…_run__11` state. agent_py_state lowercases the
+				// id, so compare lowercased on both sides.
+				const pattern = daprStateKeyMatchPattern(instanceId);
 				try {
 					await db.execute(sql`
 						delete from ${sql.raw(table)}
-						where position(${instanceId} in key) > 0
+						where lower(key) ~ ${pattern}
 					`);
 				} catch (err) {
 					console.warn(
@@ -936,6 +977,7 @@ export function createDaprCascadeDeps(
 
 	return {
 		getParentStatus,
+		getParentCurrentNode,
 		cancelParent,
 		terminateParent,
 		waitParentClosed,

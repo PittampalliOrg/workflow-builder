@@ -196,15 +196,27 @@ export async function stopDurableRun(
 	// Persist the durable stop-intent up front so the row reads "Stopping…" and the
 	// terminal-status reaper can finalize it even if the in-request poll window
 	// expires (e.g. a workflow blocked in a long activity).
-	try {
-		await resolved.markStopRequested(reason);
-	} catch (err) {
-		steps.push({
-			name: "mark-stop-requested",
-			result: "failed",
-			detail: err instanceof Error ? err.message : String(err),
-		});
+	// The whole request/confirm contract (reaper priority pass + the cross-app
+	// wedge finalize) keys off stop_requested_at, so a swallowed write here can
+	// leave a wedged run permanently un-finalizable. Retry transient failures
+	// before giving up, and surface a hard failure rather than silently proceeding.
+	let stopIntentPersisted = false;
+	let stopIntentError: string | undefined;
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		try {
+			await resolved.markStopRequested(reason);
+			stopIntentPersisted = true;
+			break;
+		} catch (err) {
+			stopIntentError = err instanceof Error ? err.message : String(err);
+			if (attempt < 3) await cascadeDeps.sleep(200 * attempt);
+		}
 	}
+	steps.push({
+		name: "mark-stop-requested",
+		result: stopIntentPersisted ? "ok" : "failed",
+		detail: stopIntentPersisted ? undefined : `intent NOT persisted: ${stopIntentError}`,
+	});
 	const cascade = await runDurableCascade({
 		parentInstanceIds: resolved.parentInstanceIds,
 		agentRuntimeTargets: resolved.agentRuntimeTargets,
@@ -349,20 +361,35 @@ export async function confirmDurableStop(
 		return finalizeConfirmedStop(resolved, "stop confirmed");
 	}
 
-	// Cross-app child wedge: the agent child is already terminal/gone (no runaway
-	// compute) but the parent orchestrator stays RUNNING because it awaits that
-	// child on another task hub. Only when a stop was actually requested AND the
-	// grace has elapsed do we force-delete the wedged parent's state rows — never
-	// for a parent that's merely mid-terminate or progressing a later node.
-	const wedged = shouldForceFinalizeCrossAppWedge({
-		parentClosed,
-		agentClosed,
-		agentRuntimeTargetCount: resolved.agentRuntimeTargets.length,
-		parentInstanceCount: resolved.parentInstanceIds.length,
-		stopRequestedAt: resolved.stopRequestedAt,
-		nowMs: Date.now(),
-		graceMs: WEDGE_FINALIZE_GRACE_MS,
-	});
+	// Cross-app child wedge: a still-RUNNING parent that is parked at a durable/run
+	// node whose agent child is already DB-terminated (the cascade stopped it; no
+	// runaway compute) but which a bare terminate/purge can never bring terminal.
+	// We force-finalize ONLY on positive evidence — the parent's live currentNodeId
+	// matches a terminated child's node — gated by the grace. This deliberately
+	// will NOT fire for a parent that moved on to a later non-agent node (node
+	// won't match) nor a still-booting sandbox (its session isn't DB-terminated, so
+	// its node isn't listed) — the two false-positives a coarse boolean allowed.
+	let wedged = false;
+	if (!parentClosed && resolved.terminatedChildNodes.length > 0) {
+		const nowMs = Date.now();
+		for (let i = 0; i < resolved.parentInstanceIds.length; i++) {
+			if (parentClosedFlags[i]) continue;
+			const node =
+				(await cascadeDeps.getParentCurrentNode?.(resolved.parentInstanceIds[i])) ?? null;
+			if (
+				shouldForceFinalizeCrossAppWedge({
+					stopRequestedAt: resolved.stopRequestedAt,
+					nowMs,
+					graceMs: WEDGE_FINALIZE_GRACE_MS,
+					parentCurrentNode: node,
+					terminatedChildNodes: resolved.terminatedChildNodes,
+				})
+			) {
+				wedged = true;
+				break;
+			}
+		}
+	}
 	if (wedged) {
 		console.warn(
 			`confirmDurableStop: cross-app child wedge on ${target.kind} ${target.id} — ` +

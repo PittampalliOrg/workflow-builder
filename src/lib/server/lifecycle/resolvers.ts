@@ -48,6 +48,15 @@ export type ResolvedDurableTarget = {
 	/** Flip owning DB rows terminal. Only invoked once the cascade confirms closure. */
 	finalizeDb: (reason: string) => Promise<void>;
 	/**
+	 * Node ids of `durable/run` child sessions that are DB-`terminated`. Used to
+	 * confirm a cross-app wedge with POSITIVE evidence: only force-finalize when
+	 * the parent's live `currentNodeId` is one of these (the parent is genuinely
+	 * parked at a durable/run node whose agent child is gone) — not when a
+	 * still-booting sandbox merely 404s, nor when the parent has moved on to a
+	 * later non-agent node. Empty for session/eval targets (no cross-app wedge).
+	 */
+	terminatedChildNodes: string[];
+	/**
 	 * Stamp the durable stop-intent (stop_requested_at) the moment a stop is
 	 * requested — BEFORE the cascade confirms closure. Keeps the row non-terminal
 	 * but marks it so the UI shows "Stopping…" and the terminal-status reaper can
@@ -68,6 +77,7 @@ function notFoundResult(): ResolvedDurableTarget {
 		notFound: true,
 		dbActive: false,
 		stopRequestedAt: null,
+		terminatedChildNodes: [],
 		scope: null,
 		parentInstanceIds: [],
 		agentRuntimeTargets: [],
@@ -89,6 +99,12 @@ function compact(values: Array<string | null | undefined>): string[] {
 		}
 	}
 	return out;
+}
+
+/** Extract the SW node id from a workflow-driven child session id (`<exec>__durable__<node>__run__<idx>`). */
+function nodeIdFromChildSessionId(sessionId: string): string | null {
+	const m = sessionId.match(/__durable__(.+?)__run__\d+/);
+	return m ? m[1] : null;
 }
 
 function agentTargetForSession(row: {
@@ -122,12 +138,21 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 	const childSessions = await database
 		.select({
 			id: sessions.id,
+			status: sessions.status,
 			daprInstanceId: sessions.daprInstanceId,
 			runtimeAppId: sessions.runtimeAppId,
 			runtimeSandboxName: sessions.runtimeSandboxName,
 		})
 		.from(sessions)
 		.where(eq(sessions.workflowExecutionId, id));
+
+	// Node ids of child durable/run sessions that are DB-terminated (the
+	// authoritative "the agent child is really gone" signal for the wedge gate).
+	const terminatedChildNodes = compact(
+		childSessions
+			.filter((s) => s.status === "terminated")
+			.map((s) => nodeIdFromChildSessionId(s.id)),
+	);
 
 	const agentRuns = await database
 		.select({
@@ -147,6 +172,7 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 		notFound: false,
 		dbActive: exec.status === "pending" || exec.status === "running",
 		stopRequestedAt: exec.stopRequestedAt ?? null,
+		terminatedChildNodes,
 		scope: { projectId: exec.projectId ?? null, userId: exec.userId },
 		parentInstanceIds: compact([exec.daprInstanceId ?? exec.id]),
 		agentRuntimeTargets,
@@ -234,6 +260,7 @@ async function resolveSession(id: string): Promise<ResolvedDurableTarget> {
 		notFound: false,
 		dbActive: s.status !== "terminated",
 		stopRequestedAt: s.stopRequestedAt ?? null,
+		terminatedChildNodes: [],
 		scope: { projectId: s.projectId ?? null, userId: s.userId },
 		parentInstanceIds: [],
 		agentRuntimeTargets: target ? [target] : [],
@@ -281,6 +308,7 @@ async function resolveEvalRun(id: string): Promise<ResolvedDurableTarget> {
 		notFound: false,
 		dbActive: !["completed", "failed", "cancelled"].includes(run.status),
 		stopRequestedAt: run.cancelRequestedAt ?? null,
+		terminatedChildNodes: [],
 		scope: null,
 		parentInstanceIds: compact([run.coordinatorExecutionId]),
 		agentRuntimeTargets: [],
