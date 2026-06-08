@@ -19,6 +19,11 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	const result = await stopDurableRun(target, { mode: "interrupt" });
 	if (result.notFound) return error(404, "Session not found");
 	if (!result.confirmed) {
+		// Transient runtime hiccup on a live session → retryable 503; otherwise the
+		// session isn't running yet → 409.
+		if (result.retryable) {
+			return error(503, "Interrupt could not be delivered right now — please retry.");
+		}
 		return error(409, "Could not interrupt the session (it may not be running yet)");
 	}
 	return json({ interrupted: true });

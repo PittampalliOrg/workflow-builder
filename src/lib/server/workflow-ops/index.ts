@@ -1540,6 +1540,17 @@ export async function runAgentRunOperation(
 	}
 }
 
+/**
+ * Admin diagnostic surface (platform-admin-gated via /api/workflow-ops/*). For
+ * terminate/purge we route through the vetted lifecycle controller whenever the
+ * instance is DB-correlated (`lifecycleTargetForInstance`), so it gets cross-app
+ * fan-out + fail-closed confirm + Sandbox reap + DB flip. KNOWN INTENTIONAL
+ * BYPASS: for an UNCORRELATED raw instance id (no DB row — an operator poking a
+ * specific Dapr instance), we fall back to raw orchestrator HTTP, which skips
+ * fan-out/reap/DB-flip. pause/resume/event are always raw (durable-control verbs
+ * outside the controller's stop contract). This is acceptable as an admin escape
+ * hatch — user-facing stops never reach here; they use the /stop routes.
+ */
 export async function runWorkflowOperation(
 	instanceId: string,
 	operation: string,

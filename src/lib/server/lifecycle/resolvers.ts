@@ -111,9 +111,23 @@ function agentTargetForSession(row: {
 	id: string;
 	daprInstanceId: string | null;
 	runtimeAppId: string | null;
+	runtimeSandboxName?: string | null;
 }): AgentRuntimeTarget | null {
 	const instanceId = (row.daprInstanceId ?? row.id ?? "").trim();
-	const runtimeAppId = (row.runtimeAppId ?? sessionHostAppId(row.id) ?? "").trim();
+	let runtimeAppId = (row.runtimeAppId ?? "").trim();
+	if (!runtimeAppId) {
+		// Only SYNTHESIZE the deterministic per-session app-id when there's evidence
+		// the session actually runs on a per-session sandbox (its CR name is set, or
+		// its written app-id already maps that way). For a session with no app-id AND
+		// no sandbox (not started yet, or a pool-hosted/legacy agent under a shared
+		// app-id), the derivation would be WRONG — terminate would hit a nonexistent
+		// instance (benign-miss → "alreadyGone") and the cascade would falsely report
+		// the agent closed. Leave it unresolved instead so the stop reports "stopping"
+		// and the reaper retries once the real linkage is written.
+		if ((row.runtimeSandboxName ?? "").trim()) {
+			runtimeAppId = (sessionHostAppId(row.id) ?? "").trim();
+		}
+	}
 	if (!instanceId || !runtimeAppId) return null;
 	return { runtimeAppId, instanceId };
 }
