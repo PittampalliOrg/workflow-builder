@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	type DurableCascadeDeps,
+	daprStateKeyMatchPattern,
 	dedupeAgentRuntimeTargets,
 	durableRuntimeStatusFromBody,
 	isTerminalDurableRuntimeStatus,
@@ -67,20 +68,50 @@ describe("pure helpers", () => {
 	});
 });
 
+describe("daprStateKeyMatchPattern (GAP-4: boundary-anchored, no sibling over-delete)", () => {
+	const matches = (key: string, id: string) =>
+		new RegExp(daprStateKeyMatchPattern(id)).test(key.toLowerCase());
+
+	it("matches wfstate history + metadata keys for the exact instance", () => {
+		const id = "sw-x-exec-ABC";
+		expect(matches("workflow-orchestrator||dapr.internal.x.workflow||sw-x-exec-ABC||history-15", id)).toBe(true);
+		expect(matches("workflow-orchestrator||dapr.internal.x.workflow||sw-x-exec-ABC", id)).toBe(true);
+	});
+
+	it("matches __turn__ sub-instances of a run instance", () => {
+		const id = "sw-x-exec-ABC__durable__node__run__0";
+		expect(matches("agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__0__turn__1||history-2", id)).toBe(true);
+	});
+
+	it("matches agent_py_state _workflow_ keys (lowercased id)", () => {
+		const id = "sw-x-exec-ABC__durable__node__run__0";
+		expect(matches("dapr-agent-py||dapr-agent-py:_workflow_sw-x-exec-abc__durable__node__run__0", id)).toBe(true);
+	});
+
+	it("does NOT match a sibling whose index is a prefix superset", () => {
+		const id = "sw-x-exec-ABC__durable__node__run__1";
+		expect(matches("agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__10__turn__1||history-2", id)).toBe(false);
+		expect(matches("agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__11", id)).toBe(false);
+	});
+
+	it("does NOT match a different instance", () => {
+		expect(matches("workflow-orchestrator||x.workflow||sw-x-exec-XYZ||history-1", "sw-x-exec-ABC")).toBe(false);
+	});
+});
+
 describe("shouldForceFinalizeCrossAppWedge", () => {
 	const now = 1_000_000;
 	const graceMs = 180_000;
+	// Positive evidence: parent parked at a node whose child session is terminated.
 	const base = {
-		parentClosed: false,
-		agentClosed: true,
-		agentRuntimeTargetCount: 1,
-		parentInstanceCount: 1,
 		stopRequestedAt: new Date(now - graceMs - 1),
 		nowMs: now,
 		graceMs,
+		parentCurrentNode: "build_3b1b_animation",
+		terminatedChildNodes: ["build_3b1b_animation"],
 	};
 
-	it("fires for a wedged parent: child gone, parent stuck, grace elapsed", () => {
+	it("fires: parent parked at a terminated child's node, grace elapsed", () => {
 		expect(shouldForceFinalizeCrossAppWedge(base)).toBe(true);
 	});
 
@@ -97,20 +128,20 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 		expect(shouldForceFinalizeCrossAppWedge({ ...base, stopRequestedAt: null })).toBe(false);
 	});
 
-	it("does not fire while the agent child is still live", () => {
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, agentClosed: false })).toBe(false);
+	it("GAP-1: does not fire when the parent moved on to a later non-agent node", () => {
+		// currentNode is a later node, not the terminated durable/run node.
+		expect(
+			shouldForceFinalizeCrossAppWedge({ ...base, parentCurrentNode: "browser_validate_capture" }),
+		).toBe(false);
 	});
 
-	it("does not fire once the parent itself is closed", () => {
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentClosed: true })).toBe(false);
+	it("GAP-2: does not fire while a still-booting child has no terminated node", () => {
+		// Booting sandbox 404s but its session is not DB-terminated → node not listed.
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, terminatedChildNodes: [] })).toBe(false);
 	});
 
-	it("does not fire for a plain workflow with no agent children", () => {
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, agentRuntimeTargetCount: 0 })).toBe(false);
-	});
-
-	it("does not fire for a top-level session with no parent instance", () => {
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentInstanceCount: 0 })).toBe(false);
+	it("does not fire when the parent's current node is unknown (null)", () => {
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentCurrentNode: null })).toBe(false);
 	});
 });
 
