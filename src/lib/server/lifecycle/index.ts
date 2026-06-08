@@ -20,6 +20,7 @@ import {
 	type DurableCascadeResult,
 	isTerminalDurableRuntimeStatus,
 	runDurableCascade,
+	shouldForceFinalizeCrossAppWedge,
 } from "./cascade";
 import {
 	type DurableRunTarget,
@@ -86,6 +87,26 @@ const cascadeDeps = createDaprCascadeDeps({
 	waitPollMs: envSeconds("LIFECYCLE_CASCADE_POLL_SECONDS", 1, 1, 30),
 	requestTimeoutMs: envSeconds("LIFECYCLE_CASCADE_REQUEST_TIMEOUT_SECONDS", 20, 1, 120),
 });
+
+// Grace before confirmDurableStop force-finalizes the cross-app child wedge.
+// The SW-interpreter parent runs a `durable/run` step via
+// ctx.call_child_workflow(app_id=<per-session agent app-id>) — a cross-app-id
+// sub-orchestration on a SEPARATE Dapr task hub. Dapr's recursive terminate is
+// bounded to one task hub, so a bare terminate on the parent never applies while
+// it awaits that child: the parent hangs RUNNING forever even though the cascade
+// already terminated the child agent (no runaway compute — it's an idle zombie).
+// Once the child is terminal/gone AND this grace has elapsed since the stop was
+// requested (long enough for any normally-terminable parent to have applied the
+// terminate the cascade issued), we force-delete the wedged parent's durable
+// state rows directly — the same mechanism mode:"reset" uses. The grace is the
+// safety that keeps us from force-cleaning a parent that's merely slow to
+// terminate or legitimately progressing through a later same-task-hub node.
+const WEDGE_FINALIZE_GRACE_MS = envSeconds(
+	"LIFECYCLE_WEDGE_FINALIZE_GRACE_SECONDS",
+	180,
+	30,
+	1800,
+);
 
 /**
  * Resolve a target's auth scope + whether its durable run is still active,
@@ -274,29 +295,11 @@ async function isInstanceClosed(getStatus: () => Promise<unknown>): Promise<bool
 	}
 }
 
-/**
- * Confirm convergence of a previously-requested stop (the "stopping" → "confirmed"
- * transition). Re-checks every durable handle (parent + per-session agent
- * runtimes); once all are terminal/gone it reaps the Sandbox CRs and flips the DB
- * terminal — idempotent, so a status poll and the reaper can both call it safely.
- * Returns "stopping" while any handle is still live (no DB flip, no lie).
- */
-export async function confirmDurableStop(
-	target: DurableRunTarget,
-): Promise<{ state: "confirmed" | "stopping" | "notFound"; scope: DurableTargetScope | null }> {
-	const resolved = await resolveDurableTarget(target);
-	if (resolved.notFound) return { state: "notFound", scope: null };
-	const checks = [
-		...resolved.parentInstanceIds.map(
-			(id) => () => isInstanceClosed(() => cascadeDeps.getParentStatus(id)),
-		),
-		...resolved.agentRuntimeTargets.map(
-			(t) => () =>
-				isInstanceClosed(() => cascadeDeps.getAgentRuntimeStatus(t.runtimeAppId, t.instanceId)),
-		),
-	];
-	const closed = (await Promise.all(checks.map((f) => f()))).every(Boolean);
-	if (!closed) return { state: "stopping", scope: resolved.scope };
+/** Reap the per-session Sandbox CRs and flip the owning DB rows terminal. */
+async function finalizeConfirmedStop(
+	resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+	reason: string,
+): Promise<{ state: "confirmed"; scope: DurableTargetScope | null }> {
 	for (const name of resolved.sandboxNames) {
 		try {
 			await deleteKubernetesSandbox(name);
@@ -304,6 +307,90 @@ export async function confirmDurableStop(
 			/* best-effort reap; the sandbox-gc CronJob is the backstop */
 		}
 	}
-	await resolved.finalizeDb("stop confirmed");
+	await resolved.finalizeDb(reason);
 	return { state: "confirmed", scope: resolved.scope };
+}
+
+/**
+ * Confirm convergence of a previously-requested stop (the "stopping" → "confirmed"
+ * transition). Re-checks every durable handle (parent + per-session agent
+ * runtimes); once all are terminal/gone it reaps the Sandbox CRs and flips the DB
+ * terminal — idempotent, so a status poll and the reaper can both call it safely.
+ * Returns "stopping" while any handle is still live (no DB flip, no lie).
+ *
+ * Cross-app child wedge: a `durable/run` parent awaits a per-session agent child
+ * on a SEPARATE Dapr task hub, which a bare terminate/purge can never bring
+ * terminal (Dapr's recursive terminate is task-hub-bounded). The cascade already
+ * terminated that child, so once every agent-runtime child is terminal/gone, the
+ * parent is just an idle zombie. After {@link WEDGE_FINALIZE_GRACE_MS} since the
+ * stop was requested we force-delete the wedged parent's durable state rows
+ * (the mode:"reset" mechanism) and finalize — rather than poll "stopping" forever.
+ */
+export async function confirmDurableStop(
+	target: DurableRunTarget,
+): Promise<{ state: "confirmed" | "stopping" | "notFound"; scope: DurableTargetScope | null }> {
+	const resolved = await resolveDurableTarget(target);
+	if (resolved.notFound) return { state: "notFound", scope: null };
+	const [parentClosedFlags, agentClosedFlags] = await Promise.all([
+		Promise.all(
+			resolved.parentInstanceIds.map((id) =>
+				isInstanceClosed(() => cascadeDeps.getParentStatus(id)),
+			),
+		),
+		Promise.all(
+			resolved.agentRuntimeTargets.map((t) =>
+				isInstanceClosed(() => cascadeDeps.getAgentRuntimeStatus(t.runtimeAppId, t.instanceId)),
+			),
+		),
+	]);
+	const parentClosed = parentClosedFlags.every(Boolean);
+	const agentClosed = agentClosedFlags.every(Boolean);
+	if (parentClosed && agentClosed) {
+		return finalizeConfirmedStop(resolved, "stop confirmed");
+	}
+
+	// Cross-app child wedge: the agent child is already terminal/gone (no runaway
+	// compute) but the parent orchestrator stays RUNNING because it awaits that
+	// child on another task hub. Only when a stop was actually requested AND the
+	// grace has elapsed do we force-delete the wedged parent's state rows — never
+	// for a parent that's merely mid-terminate or progressing a later node.
+	const wedged = shouldForceFinalizeCrossAppWedge({
+		parentClosed,
+		agentClosed,
+		agentRuntimeTargetCount: resolved.agentRuntimeTargets.length,
+		parentInstanceCount: resolved.parentInstanceIds.length,
+		stopRequestedAt: resolved.stopRequestedAt,
+		nowMs: Date.now(),
+		graceMs: WEDGE_FINALIZE_GRACE_MS,
+	});
+	if (wedged) {
+		console.warn(
+			`confirmDurableStop: cross-app child wedge on ${target.kind} ${target.id} — ` +
+				`agent child terminal but parent(s) [${resolved.parentInstanceIds.join(", ")}] ` +
+				`stuck RUNNING; force-deleting parent durable state and finalizing`,
+		);
+		try {
+			await cascadeDeps.purgeStateRows?.(
+				resolved.parentInstanceIds,
+				resolved.agentRuntimeTargets,
+				resolved.statePurgeInstanceIds,
+			);
+		} catch (err) {
+			console.warn(
+				"confirmDurableStop: force state-row purge of wedged parent failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
+		// Now that the state rows are gone the Dapr purge will 404 — best-effort.
+		for (const id of resolved.parentInstanceIds) {
+			try {
+				await cascadeDeps.purgeParent(id);
+			} catch {
+				/* best-effort */
+			}
+		}
+		return finalizeConfirmedStop(resolved, "stop confirmed (cross-app wedge force-finalized)");
+	}
+
+	return { state: "stopping", scope: resolved.scope };
 }

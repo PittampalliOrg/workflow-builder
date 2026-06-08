@@ -27,7 +27,7 @@ import {
 	DURABLE_RUNTIME_MISSING_STATUS,
 	isTerminalDurableRuntimeStatus,
 } from "./cascade";
-import { stopDurableRun } from "./index";
+import { confirmDurableStop, stopDurableRun } from "./index";
 
 export type ReapTerminalOptions = { olderThanMinutes?: number; limit?: number };
 
@@ -146,12 +146,19 @@ export async function reapTerminalRuns(
 		.limit(limit);
 	for (const exec of stopReqExecs) {
 		try {
-			if (!(await isDurableTerminalOrGone(exec.daprInstanceId ?? exec.id))) continue;
-			const r = await stopDurableRun(
-				{ kind: "workflowExecution", id: exec.id },
-				{ mode: "purge", reason: "terminal-status reaper: stop-requested" },
-			);
-			if (r.confirmed) result.executionsPurged += 1;
+			if (await isDurableTerminalOrGone(exec.daprInstanceId ?? exec.id)) {
+				const r = await stopDurableRun(
+					{ kind: "workflowExecution", id: exec.id },
+					{ mode: "purge", reason: "terminal-status reaper: stop-requested" },
+				);
+				if (r.confirmed) result.executionsPurged += 1;
+				continue;
+			}
+			// Parent still RUNNING. confirmDurableStop force-finalizes the cross-app
+			// child wedge (agent child terminal/gone, parent stuck awaiting it on
+			// another task hub) once the grace has elapsed; otherwise no-ops ("stopping").
+			const c = await confirmDurableStop({ kind: "workflowExecution", id: exec.id });
+			if (c.state === "confirmed") result.executionsPurged += 1;
 		} catch (err) {
 			result.errors.push(
 				`stop-requested execution ${exec.id}: ${err instanceof Error ? err.message : String(err)}`,
