@@ -6,6 +6,7 @@ import {
 	isTerminalDurableRuntimeStatus,
 	runDurableCascade,
 	runWithConcurrency,
+	shouldForceFinalizeCrossAppWedge,
 } from "./cascade";
 
 function makeDeps(overrides: Partial<DurableCascadeDeps> = {}): DurableCascadeDeps {
@@ -63,6 +64,53 @@ describe("pure helpers", () => {
 			seen.push(n);
 		});
 		expect(seen.sort()).toEqual([1, 2, 3, 4, 5]);
+	});
+});
+
+describe("shouldForceFinalizeCrossAppWedge", () => {
+	const now = 1_000_000;
+	const graceMs = 180_000;
+	const base = {
+		parentClosed: false,
+		agentClosed: true,
+		agentRuntimeTargetCount: 1,
+		parentInstanceCount: 1,
+		stopRequestedAt: new Date(now - graceMs - 1),
+		nowMs: now,
+		graceMs,
+	};
+
+	it("fires for a wedged parent: child gone, parent stuck, grace elapsed", () => {
+		expect(shouldForceFinalizeCrossAppWedge(base)).toBe(true);
+	});
+
+	it("does not fire before the grace elapses", () => {
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				stopRequestedAt: new Date(now - graceMs + 1),
+			}),
+		).toBe(false);
+	});
+
+	it("does not fire when no stop was requested", () => {
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, stopRequestedAt: null })).toBe(false);
+	});
+
+	it("does not fire while the agent child is still live", () => {
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, agentClosed: false })).toBe(false);
+	});
+
+	it("does not fire once the parent itself is closed", () => {
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentClosed: true })).toBe(false);
+	});
+
+	it("does not fire for a plain workflow with no agent children", () => {
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, agentRuntimeTargetCount: 0 })).toBe(false);
+	});
+
+	it("does not fire for a top-level session with no parent instance", () => {
+		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentInstanceCount: 0 })).toBe(false);
 	});
 });
 

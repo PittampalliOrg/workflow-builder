@@ -32,6 +32,13 @@ export type ResolvedDurableTarget = {
 	notFound: boolean;
 	/** DB row indicates a non-terminal (still-running) durable run. */
 	dbActive: boolean;
+	/**
+	 * When the durable stop-intent was persisted (stop_requested_at /
+	 * cancel_requested_at), or null if no stop has been requested. Lets the
+	 * controller grace-gate the cross-app child wedge finalize — we only
+	 * force-clean a parent that's been asked to stop and stayed wedged.
+	 */
+	stopRequestedAt: Date | null;
 	scope: DurableTargetScope | null;
 	parentInstanceIds: string[];
 	agentRuntimeTargets: AgentRuntimeTarget[];
@@ -60,6 +67,7 @@ function notFoundResult(): ResolvedDurableTarget {
 	return {
 		notFound: true,
 		dbActive: false,
+		stopRequestedAt: null,
 		scope: null,
 		parentInstanceIds: [],
 		agentRuntimeTargets: [],
@@ -102,6 +110,7 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 			id: workflowExecutions.id,
 			daprInstanceId: workflowExecutions.daprInstanceId,
 			status: workflowExecutions.status,
+			stopRequestedAt: workflowExecutions.stopRequestedAt,
 			projectId: workflowExecutions.projectId,
 			userId: workflowExecutions.userId,
 		})
@@ -137,6 +146,7 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 	return {
 		notFound: false,
 		dbActive: exec.status === "pending" || exec.status === "running",
+		stopRequestedAt: exec.stopRequestedAt ?? null,
 		scope: { projectId: exec.projectId ?? null, userId: exec.userId },
 		parentInstanceIds: compact([exec.daprInstanceId ?? exec.id]),
 		agentRuntimeTargets,
@@ -207,6 +217,7 @@ async function resolveSession(id: string): Promise<ResolvedDurableTarget> {
 		.select({
 			id: sessions.id,
 			status: sessions.status,
+			stopRequestedAt: sessions.stopRequestedAt,
 			daprInstanceId: sessions.daprInstanceId,
 			runtimeAppId: sessions.runtimeAppId,
 			runtimeSandboxName: sessions.runtimeSandboxName,
@@ -222,6 +233,7 @@ async function resolveSession(id: string): Promise<ResolvedDurableTarget> {
 	return {
 		notFound: false,
 		dbActive: s.status !== "terminated",
+		stopRequestedAt: s.stopRequestedAt ?? null,
 		scope: { projectId: s.projectId ?? null, userId: s.userId },
 		parentInstanceIds: [],
 		agentRuntimeTargets: target ? [target] : [],
@@ -255,6 +267,7 @@ async function resolveEvalRun(id: string): Promise<ResolvedDurableTarget> {
 		.select({
 			id: evaluationRuns.id,
 			status: evaluationRuns.status,
+			cancelRequestedAt: evaluationRuns.cancelRequestedAt,
 			coordinatorExecutionId: evaluationRuns.coordinatorExecutionId,
 		})
 		.from(evaluationRuns)
@@ -267,6 +280,7 @@ async function resolveEvalRun(id: string): Promise<ResolvedDurableTarget> {
 	return {
 		notFound: false,
 		dbActive: !["completed", "failed", "cancelled"].includes(run.status),
+		stopRequestedAt: run.cancelRequestedAt ?? null,
 		scope: null,
 		parentInstanceIds: compact([run.coordinatorExecutionId]),
 		agentRuntimeTargets: [],

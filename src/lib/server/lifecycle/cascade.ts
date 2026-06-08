@@ -250,6 +250,41 @@ export function agentRuntimeTargetKey(target: AgentRuntimeTarget): string {
 	return `${target.runtimeAppId}\0${target.instanceId}`;
 }
 
+/**
+ * Decide whether a Stop has hit the cross-app child wedge and should be
+ * force-finalized. The SW-interpreter parent awaits a per-session agent child via
+ * ctx.call_child_workflow(app_id=…) — a sub-orchestration on a SEPARATE Dapr task
+ * hub that Dapr's recursive terminate can't reach, so the parent hangs RUNNING
+ * even after the cascade terminated the child. This is true only when:
+ *   - the agent child(ren) are all terminal/gone (the agent is stopped — no
+ *     runaway compute), AND
+ *   - there IS at least one agent child and one parent instance (the shape that
+ *     produces this wedge; a plain workflow or a top-level session can't), AND
+ *   - the parent is still NOT closed, AND
+ *   - a stop was actually requested and the grace has elapsed (long enough for a
+ *     normally-terminable parent to have applied the terminate the cascade issued).
+ * The grace is the safety: it keeps us from force-cleaning a parent that's merely
+ * slow to terminate or legitimately progressing through a later same-task-hub node.
+ */
+export function shouldForceFinalizeCrossAppWedge(params: {
+	parentClosed: boolean;
+	agentClosed: boolean;
+	agentRuntimeTargetCount: number;
+	parentInstanceCount: number;
+	stopRequestedAt: Date | null;
+	nowMs: number;
+	graceMs: number;
+}): boolean {
+	return (
+		!params.parentClosed &&
+		params.agentClosed &&
+		params.agentRuntimeTargetCount > 0 &&
+		params.parentInstanceCount > 0 &&
+		params.stopRequestedAt != null &&
+		params.nowMs - params.stopRequestedAt.getTime() >= params.graceMs
+	);
+}
+
 export function dedupeAgentRuntimeTargets(
 	targets: AgentRuntimeTarget[],
 ): AgentRuntimeTarget[] {
