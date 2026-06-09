@@ -2,7 +2,7 @@
 
 Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. SvelteKit serves as UI + BFF proxy; all workflow execution lives in Dapr on Kubernetes.
 
-> **Supplementary docs** (`docs/`): `agent-runtime-comparison.md` (dapr-agent-py vs claude-agent-py + swap-blockers), `durable-session-runtime-contract.md` (swappable runtime contract + registry), `activepieces-auth.md`, `mcp-agent-workflows.md`, `hooks-and-plugins.md`, `CLICKHOUSE_OBSERVABILITY.md`, `openshell-capabilities.md`, `cma-parity.md`, `callable-agents.md` (`CallAgent` peer-delegation), `tiered-crawl-pipeline.md` (crawl4ai v2 + browserresearchfanout01 v3), `workflow-artifacts.md`, `workflow-lifecycle-termination.md` (**lifecycle SSOT**).
+> **Supplementary docs** (`docs/`): `agent-runtime-comparison.md` (dapr-agent-py vs claude-agent-py + swap-blockers), `durable-session-runtime-contract.md` (swappable runtime contract + registry), `activepieces-auth.md`, `mcp-agent-workflows.md`, `hooks-and-plugins.md`, `CLICKHOUSE_OBSERVABILITY.md`, `openshell-capabilities.md`, `cma-parity.md`, `callable-agents.md` (`CallAgent` peer-delegation), `tiered-crawl-pipeline.md` (crawl4ai v2 + browserresearchfanout01 v3), `workflow-artifacts.md`, `workflow-execution-architecture.md` (SW 1.0 interpreter vs Dapr workflows-as-code — storage/listing/runtime-creation options), `workflow-lifecycle-termination.md` (**lifecycle SSOT**).
 
 > **Skills**: `skaffold-dev-loop` (inner/outer dev loop), `gitops` (stacks/ArgoCD/promotion), `workflow-builder` (SW 1.0 authoring/debug), `evaluations` (SWE-bench/benchmarks), `dapr-agents-workflow` (Dapr Agents framework). Prefer these for deep operational detail.
 
