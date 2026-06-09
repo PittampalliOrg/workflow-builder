@@ -30,7 +30,9 @@ export const POST: RequestHandler = async ({ request }) => {
 	const sessionIds = await listStalledDrivableSessions(staleSeconds, limit);
 	let kicked = 0;
 	for (const sessionId of sessionIds) {
-		await kickGoalLoop(sessionId);
+		// allowStaleIdleProbe: the reaper is the recovery path for the lost-idle
+		// crash window (idle event dropped while the BFF was down).
+		await kickGoalLoop(sessionId, { allowStaleIdleProbe: true });
 		kicked += 1;
 	}
 	return json({ scanned: sessionIds.length, kicked });

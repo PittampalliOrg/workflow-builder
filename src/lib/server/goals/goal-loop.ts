@@ -7,7 +7,7 @@ import {
 	claimIterationCap,
 	claimNextContinuation,
 	getDrivableGoal,
-	latestEventType,
+	latestEventMeta,
 	pauseGoal,
 	sessionStopState,
 } from "./repo";
@@ -38,6 +38,20 @@ const TERMINAL_SESSION_STATUSES = new Set([
 	"canceled",
 	"cancelled",
 ]);
+
+/**
+ * Lost-idle crash window (tick reaper only): the runtime's session-event
+ * ingest is fire-and-forget, so a `session.status_idle` published while the
+ * BFF is down never lands — the stored stream stays frozen at mid-turn
+ * chatter and the strict idle gate would stall the loop forever. When the
+ * latest stored event is at least this old, the reaper probes by posting the
+ * continuation anyway: if a turn is genuinely still running, Dapr buffers the
+ * raised event until the workflow's next wait_for_external_event, so the
+ * probe is safe (and the atomic iteration claim still dedupes).
+ */
+const LOST_IDLE_GRACE_SECONDS = Number(
+	process.env.GOAL_LOOP_LOST_IDLE_GRACE_SECONDS || 180,
+);
 
 function tokensFromUsage(data: Record<string, unknown> | undefined): number {
 	const n = (key: string): number => {
@@ -95,17 +109,24 @@ export async function onSessionEvent(
 /**
  * Kick the loop outside of an idle event — used by the session goal API after
  * a human sets a goal on an already-idle session, and by the tick reaper
- * backstop. Safe to call repeatedly (the idle gate + atomic claim dedupe).
+ * backstop (which passes allowStaleIdleProbe to recover the lost-idle crash
+ * window). Safe to call repeatedly (the idle gate + atomic claim dedupe).
  */
-export async function kickGoalLoop(sessionId: string): Promise<void> {
+export async function kickGoalLoop(
+	sessionId: string,
+	opts: { allowStaleIdleProbe?: boolean } = {},
+): Promise<void> {
 	try {
-		await driveContinuationIfIdle(sessionId);
+		await driveContinuationIfIdle(sessionId, opts);
 	} catch (err) {
 		console.warn(`[goal-loop] kickGoalLoop failed:`, err);
 	}
 }
 
-async function driveContinuationIfIdle(sessionId: string): Promise<void> {
+async function driveContinuationIfIdle(
+	sessionId: string,
+	opts: { allowStaleIdleProbe?: boolean } = {},
+): Promise<void> {
 	const goal = await getDrivableGoal(sessionId);
 	if (!goal) return;
 
@@ -122,8 +143,21 @@ async function driveContinuationIfIdle(sessionId: string): Promise<void> {
 	// Only post when the session is genuinely idle: the latest event must be a
 	// status_idle. This proves no turn is mid-flight AND that no newer
 	// user.message (human input or an already-posted continuation) is queued.
-	const latest = await latestEventType(sessionId);
-	if (latest !== "session.status_idle") return;
+	// The tick reaper additionally probes sessions whose event stream has been
+	// frozen past the lost-idle grace — the idle event itself may have been
+	// dropped while the BFF was down (ingest is fire-and-forget).
+	const latest = await latestEventMeta(sessionId);
+	if (!latest) return;
+	const idle = latest.type === "session.status_idle";
+	const staleProbe =
+		opts.allowStaleIdleProbe === true &&
+		latest.ageSeconds >= LOST_IDLE_GRACE_SECONDS;
+	if (!idle && !staleProbe) return;
+	if (!idle && staleProbe) {
+		console.warn(
+			`[goal-loop] ${sessionId}: lost-idle probe (latest=${latest.type}, age=${Math.round(latest.ageSeconds)}s) — posting continuation; Dapr buffers it if a turn is still running`,
+		);
+	}
 
 	if (goal.status === "active") {
 		if (goal.iterations >= goal.maxIterations) {

@@ -290,17 +290,28 @@ export async function claimBudgetSteer(
 	return mapGoalRow(rows[0]);
 }
 
-/** Type of the most recent session_event — the loop posts only when idle. */
-export async function latestEventType(
+/**
+ * Most recent session_event (type + age) — the loop posts only when idle.
+ * The age lets the tick reaper detect the lost-idle crash window: the
+ * runtime's event ingest is fire-and-forget, so a `session.status_idle`
+ * published while the BFF is down is gone for good and the latest stored
+ * event stays frozen at mid-turn chatter.
+ */
+export async function latestEventMeta(
 	sessionId: string,
-): Promise<string | null> {
+): Promise<{ type: string; ageSeconds: number } | null> {
 	const rows = await requireDb()
-		.select({ type: sessionEvents.type })
+		.select({
+			type: sessionEvents.type,
+			ageSeconds: sql<number>`extract(epoch from (now() - ${sessionEvents.createdAt}))`,
+		})
 		.from(sessionEvents)
 		.where(eq(sessionEvents.sessionId, sessionId))
 		.orderBy(desc(sessionEvents.sequence))
 		.limit(1);
-	return rows[0]?.type ?? null;
+	const row = rows[0];
+	if (!row) return null;
+	return { type: row.type, ageSeconds: Number(row.ageSeconds ?? 0) };
 }
 
 /**
