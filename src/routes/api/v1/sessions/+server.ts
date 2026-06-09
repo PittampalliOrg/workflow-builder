@@ -179,9 +179,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			});
 		}
 
-		// Repository resources declared at launch. Persist the rows now so the
-		// post-provision mount step below clones them before the first turn.
-		for (const repo of parseRepositoryResources(body.resources)) {
+		// Repository resources to clone into the sandbox before the first turn.
+		// Merge the agent's published defaults (repo-specialized agents) with any
+		// explicitly-requested repos on the create body; an explicit entry for the
+		// same URL overrides the agent default. Persist the rows now so the
+		// post-provision mount step below clones them.
+		const mergedRepos = dedupeRepositoriesByUrl([
+			...parseRepositoryResources(resolvedAgent?.config?.repositories),
+			...parseRepositoryResources(body.resources),
+		]);
+		for (const repo of mergedRepos) {
 			try {
 				await addResource(session.id, {
 					type: "github_repository",
@@ -333,4 +340,15 @@ function parseRepositoryResources(value: unknown): ParsedRepoResource[] {
 		});
 	}
 	return out;
+}
+
+/** Dedupe repo entries by URL (case-insensitive), keeping the LAST occurrence —
+ * so an explicit create-body entry overrides the agent's default for the same
+ * repo. */
+function dedupeRepositoriesByUrl(
+	repos: ParsedRepoResource[],
+): ParsedRepoResource[] {
+	const byUrl = new Map<string, ParsedRepoResource>();
+	for (const r of repos) byUrl.set(r.repoUrl.toLowerCase(), r);
+	return [...byUrl.values()];
 }

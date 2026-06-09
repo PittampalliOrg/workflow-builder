@@ -54,6 +54,7 @@
 	import PromptStackEditor from '$lib/components/agents/prompt-stack-editor.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
+	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import SessionConfigDrawer from '$lib/components/sessions/session-config-drawer.svelte';
 	import {
 		ArrowLeft,
@@ -833,6 +834,25 @@
 									selfSlug={agent.slug}
 									projectId={registryView?.team}
 									onChange={(next) => updateConfig('callableAgents', next)}
+								/>
+							</CollapsibleContent>
+						</Collapsible>
+
+						<Collapsible>
+							<CollapsibleTrigger
+								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
+							>
+								<ChevronRight class="size-4" /> Repositories ({(config.repositories ?? []).length})
+							</CollapsibleTrigger>
+							<CollapsibleContent class="pl-6">
+								<p class="text-xs text-muted-foreground mb-2">
+									GitHub repos cloned into this agent's sandbox before its first turn —
+									for direct sessions and any workflow step that runs this agent. Private
+									repos need an auth credential from your vaults.
+								</p>
+								<RepositoriesEditor
+									value={config.repositories ?? []}
+									onChange={(next) => updateConfig('repositories', next)}
 								/>
 							</CollapsibleContent>
 						</Collapsible>
