@@ -2866,6 +2866,61 @@ export const sessionEvents = pgTable(
 	}),
 );
 
+/**
+ * Per-session goal (Codex `/goal` parity). `session_id` == codex `thread_id`.
+ * One ACTIVE goal per session (partial unique index); setting a new objective
+ * replaces the active goal and rotates `goal_id` + resets usage accounting,
+ * mirroring codex `thread/goal/set`. The autonomous continuation loop (the BFF
+ * goal-loop driver) re-injects the objective on each idle turn until the agent
+ * calls `update_goal(status=complete)` after a completion audit, the token
+ * budget is exhausted (→ budget_limited, one wrap-up turn), the iteration cap is
+ * hit (→ budget_limited, stop_reason=iteration_cap), or the user pauses/stops.
+ * `iterations`/`max_iterations`/`budget_steered_at`/`last_continuation_at` are
+ * our loop-bookkeeping additions (not in codex).
+ */
+export const threadGoals = pgTable(
+	"thread_goals",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		sessionId: text("session_id")
+			.notNull()
+			.references(() => sessions.id, { onDelete: "cascade" }),
+		goalId: text("goal_id")
+			.notNull()
+			.$defaultFn(() => generateId()),
+		objective: text("objective").notNull(),
+		// active | paused | budget_limited | complete
+		status: text("status").notNull().default("active"),
+		tokenBudget: integer("token_budget"),
+		tokensUsed: integer("tokens_used").notNull().default(0),
+		timeUsedSeconds: integer("time_used_seconds").notNull().default(0),
+		iterations: integer("iterations").notNull().default(0),
+		maxIterations: integer("max_iterations").notNull().default(50),
+		budgetSteeredAt: timestamp("budget_steered_at"),
+		lastContinuationAt: timestamp("last_continuation_at"),
+		// complete | budget | iteration_cap | interrupt
+		stopReason: text("stop_reason"),
+		workflowExecutionId: text("workflow_execution_id"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+		completedAt: timestamp("completed_at"),
+	},
+	(table) => ({
+		// At most one active goal per session (codex single-goal-per-thread
+		// semantics); historical paused/complete/budget_limited rows are kept.
+		activeUq: uniqueIndex("uq_thread_goals_session_active")
+			.on(table.sessionId)
+			.where(sql`${table.status} = 'active'`),
+		sessionIdx: index("idx_thread_goals_session").on(table.sessionId),
+		statusIdx: index("idx_thread_goals_status").on(table.status),
+	}),
+);
+
+export type ThreadGoalRow = InferSelectModel<typeof threadGoals>;
+export type NewThreadGoalRow = InferInsertModel<typeof threadGoals>;
+
 // ============================================================================
 // Benchmarks (SWE-bench Verified/Lite)
 // ============================================================================

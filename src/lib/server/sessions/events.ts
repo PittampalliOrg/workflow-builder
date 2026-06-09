@@ -204,6 +204,27 @@ export async function appendEvent(
 					2000,
 				);
 			}
+			// Goal-loop driver (Codex /goal parity). On agent.llm_usage we accrue the
+			// turn's tokens into the session's goal; on an end_turn status_idle we
+			// drive the autonomous continuation. Lazy-imported to keep this hot
+			// module lean and to avoid the events<->goal-loop import cycle.
+			// Fire-and-forget; onSessionEvent swallows its own errors and is a no-op
+			// for sessions without a goal.
+			if (
+				event.type === "agent.llm_usage" ||
+				event.type === "session.status_idle"
+			) {
+				void import("$lib/server/goals/goal-loop")
+					.then((m) =>
+						m.onSessionEvent(sessionId, {
+							type: event.type,
+							data: cleanData as Record<string, unknown>,
+						}),
+					)
+					.catch((err) =>
+						console.warn("[goal-loop] event hook failed:", err),
+					);
+			}
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence should be rare with the advisory lock,
