@@ -103,6 +103,7 @@ function resourceRowToDto(row: SessionResourceRow): SessionResource {
 		repoUrl: row.repoUrl ?? null,
 		checkoutRef: row.checkoutRef ?? null,
 		authTokenCredentialId: row.authTokenCredentialId ?? null,
+		appConnectionExternalId: row.appConnectionExternalId ?? null,
 		mountedAt: row.mountedAt ? row.mountedAt.toISOString() : null,
 		removedAt: row.removedAt ? row.removedAt.toISOString() : null,
 	};
@@ -500,6 +501,7 @@ export type AddResourceInput = {
 	repoUrl?: string;
 	checkoutRef?: string;
 	authTokenCredentialId?: string;
+	appConnectionExternalId?: string;
 };
 
 export async function addResource(
@@ -517,6 +519,7 @@ export async function addResource(
 			repoUrl: input.repoUrl ?? null,
 			checkoutRef: input.checkoutRef ?? null,
 			authTokenCredentialId: input.authTokenCredentialId ?? null,
+			appConnectionExternalId: input.appConnectionExternalId ?? null,
 		})
 		.returning();
 	return resourceRowToDto(row);

@@ -5,26 +5,44 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { GitBranch, Plus, Trash2, X } from '@lucide/svelte';
 	import CredentialPicker from '$lib/components/credentials/credential-picker.svelte';
+	import GithubRepoPicker from '$lib/components/github/github-repo-picker.svelte';
 	import type { SessionRepositoryInput } from '$lib/types/sessions';
 
 	interface Props {
 		value: SessionRepositoryInput[];
 		onChange: (repos: SessionRepositoryInput[]) => void;
+		/** Workspace slug for the GitHub-connection deep link in the picker. */
+		workspaceSlug?: string;
 	}
 
-	let { value, onChange }: Props = $props();
+	let { value, onChange, workspaceSlug = 'default' }: Props = $props();
 
 	let adding = $state(false);
 	let repoUrl = $state('');
 	let repoRef = $state('main');
 	let repoMountPath = $state('');
 	let repoCredentialId = $state<string | null>(null);
+	// Set when a repo is chosen via the GitHub picker — the OAuth connection
+	// authorizes the clone (takes precedence over a vault credential).
+	let repoConnId = $state<string | null>(null);
 
 	function resetForm() {
 		adding = false;
 		repoUrl = '';
 		repoRef = 'main';
 		repoMountPath = '';
+		repoCredentialId = null;
+		repoConnId = null;
+	}
+
+	function onGithubPick(repo: {
+		repoUrl: string;
+		fullName: string;
+		connectionExternalId: string;
+	}) {
+		repoUrl = repo.repoUrl;
+		repoConnId = repo.connectionExternalId;
+		// Connection provides auth — don't also bind a vault credential.
 		repoCredentialId = null;
 	}
 
@@ -35,7 +53,8 @@
 			repoUrl: url,
 			checkoutRef: repoRef.trim() || undefined,
 			mountPath: repoMountPath.trim() || undefined,
-			authTokenCredentialId: repoCredentialId ?? undefined
+			authTokenCredentialId: repoConnId ? undefined : (repoCredentialId ?? undefined),
+			appConnectionExternalId: repoConnId ?? undefined
 		};
 		onChange([...value, next]);
 		resetForm();
@@ -72,14 +91,26 @@
 
 	{#if adding}
 		<div class="rounded border border-dashed p-2 space-y-2">
+			<GithubRepoPicker {workspaceSlug} onPick={onGithubPick} />
+			<div class="flex items-center gap-2 text-[10px] text-muted-foreground">
+				<div class="h-px flex-1 bg-border"></div>
+				or paste a URL
+				<div class="h-px flex-1 bg-border"></div>
+			</div>
 			<div>
 				<Label class="text-[10px]" for="new-repo-url">GitHub URL</Label>
 				<Input
 					id="new-repo-url"
 					bind:value={repoUrl}
+					oninput={() => (repoConnId = null)}
 					placeholder="https://github.com/owner/repo"
 					class="h-7 text-xs"
 				/>
+				{#if repoConnId}
+					<div class="text-[10px] text-muted-foreground mt-0.5">
+						✓ authorized via GitHub connection
+					</div>
+				{/if}
 			</div>
 			<div class="grid grid-cols-2 gap-2">
 				<div>
@@ -96,12 +127,14 @@
 					/>
 				</div>
 			</div>
-			<CredentialPicker
-				id="new-repo-credential"
-				label="Auth credential (private repos)"
-				value={repoCredentialId}
-				onChange={(id) => (repoCredentialId = id)}
-			/>
+			{#if !repoConnId}
+				<CredentialPicker
+					id="new-repo-credential"
+					label="Auth credential (private repos)"
+					value={repoCredentialId}
+					onChange={(id) => (repoCredentialId = id)}
+				/>
+			{/if}
 			<div class="flex gap-2">
 				<Button size="sm" class="h-7 text-xs" onclick={add} disabled={!repoUrl.trim()}>
 					<Plus class="size-3" /> Add

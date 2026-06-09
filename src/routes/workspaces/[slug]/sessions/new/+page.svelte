@@ -209,7 +209,11 @@
 					Clone GitHub repos into the agent's sandbox before its first turn. Private repos
 					need an auth credential from your vaults.
 				</p>
-				<RepositoriesEditor value={repositories} onChange={(r) => (repositories = r)} />
+				<RepositoriesEditor
+					workspaceSlug={slug}
+					value={repositories}
+					onChange={(r) => (repositories = r)}
+				/>
 			</div>
 		</CardContent>
 	</Card>

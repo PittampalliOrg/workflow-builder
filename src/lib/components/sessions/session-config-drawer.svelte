@@ -313,6 +313,7 @@
 						<div class="space-y-1.5">
 							<Label class="text-xs">Repositories (optional)</Label>
 							<RepositoriesEditor
+								{workspaceSlug}
 								value={repositories}
 								onChange={(r) => (repositories = r)}
 							/>

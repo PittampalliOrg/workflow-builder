@@ -3931,6 +3931,12 @@ export const sessionResources = pgTable(
 			() => vaultCredentials.id,
 			{ onDelete: "set null" },
 		),
+		// Alternative clone-auth source: a GitHub OAuth app_connection (by
+		// externalId). EITHER this OR authTokenCredentialId provides the clone
+		// token. Plain text (no FK) to match how connections are referenced
+		// elsewhere (connectionExternalId); the broker resolves + auto-refreshes
+		// the token at clone time via getDecryptedAppConnection().
+		appConnectionExternalId: text("app_connection_external_id"),
 		mountedAt: timestamp("mounted_at"),
 		removedAt: timestamp("removed_at"),
 	},

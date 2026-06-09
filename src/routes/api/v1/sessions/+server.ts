@@ -196,6 +196,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					checkoutRef: repo.checkoutRef,
 					mountPath: repo.mountPath,
 					authTokenCredentialId: repo.authTokenCredentialId,
+					appConnectionExternalId: repo.appConnectionExternalId,
 				});
 			} catch (resErr) {
 				console.warn("[sessions] failed to persist repo resource:", resErr);
@@ -311,6 +312,7 @@ type ParsedRepoResource = {
 	checkoutRef?: string;
 	mountPath?: string;
 	authTokenCredentialId?: string;
+	appConnectionExternalId?: string;
 };
 
 /** Parse an optional `resources` array on the create-session body into repo
@@ -336,6 +338,10 @@ function parseRepositoryResources(value: unknown): ParsedRepoResource[] {
 			authTokenCredentialId:
 				typeof e.authTokenCredentialId === "string" && e.authTokenCredentialId
 					? e.authTokenCredentialId
+					: undefined,
+			appConnectionExternalId:
+				typeof e.appConnectionExternalId === "string" && e.appConnectionExternalId
+					? e.appConnectionExternalId
 					: undefined,
 		});
 	}

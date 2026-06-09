@@ -37,6 +37,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			typeof body.authTokenCredentialId === "string"
 				? body.authTokenCredentialId
 				: undefined,
+		appConnectionExternalId:
+			typeof body.appConnectionExternalId === "string"
+				? body.appConnectionExternalId
+				: undefined,
 	};
 	const resource = await addResource(params.id, input);
 

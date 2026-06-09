@@ -685,6 +685,10 @@ export const POST: RequestHandler = async ({ request }) => {
 							typeof repo.authTokenCredentialId === "string"
 								? repo.authTokenCredentialId
 								: undefined,
+						appConnectionExternalId:
+							typeof repo.appConnectionExternalId === "string"
+								? repo.appConnectionExternalId
+								: undefined,
 					});
 				} catch (resErr) {
 					console.warn(

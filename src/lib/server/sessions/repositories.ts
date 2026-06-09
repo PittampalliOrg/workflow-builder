@@ -21,6 +21,7 @@ import { db } from "$lib/server/db";
 import { sessionResources } from "$lib/server/db/schema";
 import { daprFetch, getWorkspaceRuntimeUrl } from "$lib/server/dapr-client";
 import { resolveCredential } from "$lib/server/vaults/credentials";
+import { getScmConnection } from "$lib/server/scm-connections";
 import { appendEvent } from "$lib/server/sessions/events";
 
 /** Where to run the clone — the already-provisioned session sandbox. */
@@ -43,6 +44,7 @@ type RepoResourceRow = {
 	checkoutRef: string | null;
 	mountPath: string | null;
 	authTokenCredentialId: string | null;
+	appConnectionExternalId: string | null;
 };
 
 const CLONE_TIMEOUT_MS = 180_000;
@@ -69,6 +71,7 @@ export async function mountSessionRepositories(
 			checkoutRef: sessionResources.checkoutRef,
 			mountPath: sessionResources.mountPath,
 			authTokenCredentialId: sessionResources.authTokenCredentialId,
+			appConnectionExternalId: sessionResources.appConnectionExternalId,
 		})
 		.from(sessionResources)
 		.where(
@@ -110,8 +113,34 @@ export async function mountSingleRepository(
 	const mountPath = resolveMountPath(row.mountPath, normalizedUrl, rootPath);
 	const ref = (row.checkoutRef ?? "").trim();
 
+	// Clone-auth token comes from EITHER a GitHub OAuth app_connection
+	// (resolved + auto-refreshed at clone time) OR a vault credential. The
+	// connection path takes precedence when both are set.
 	let token: string | null = null;
-	if (row.authTokenCredentialId) {
+	if (row.appConnectionExternalId) {
+		try {
+			const scm = await getScmConnection(row.appConnectionExternalId);
+			const auth = scm?.headers?.Authorization ?? "";
+			token = auth.replace(/^Bearer\s+/i, "").trim() || null;
+			if (!token) {
+				await emitMountFailed(
+					sessionId,
+					row,
+					repoUrl,
+					"GitHub connection resolved to no usable token",
+				);
+				return;
+			}
+		} catch (err) {
+			await emitMountFailed(
+				sessionId,
+				row,
+				repoUrl,
+				`connection token resolution failed: ${describeError(err)}`,
+			);
+			return;
+		}
+	} else if (row.authTokenCredentialId) {
 		try {
 			const cred = await resolveCredential(row.authTokenCredentialId);
 			token = cred?.accessToken ?? cred?.secret ?? null;

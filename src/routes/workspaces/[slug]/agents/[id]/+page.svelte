@@ -851,6 +851,7 @@
 									repos need an auth credential from your vaults.
 								</p>
 								<RepositoriesEditor
+									workspaceSlug={slug}
 									value={config.repositories ?? []}
 									onChange={(next) => updateConfig('repositories', next)}
 								/>
