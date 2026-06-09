@@ -505,6 +505,13 @@
       "when": 1780860336130,
       "tag": "0071_lifecycle_stop_requested",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1781010000000,
+      "tag": "0078_session_resources_app_connection",
+      "breakpoints": true
     }
   ]
 }

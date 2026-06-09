@@ -35,7 +35,9 @@
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
 	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
+	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import type { AgentDetail, AgentConfig } from '$lib/types/agents';
+	import type { SessionRepositoryInput } from '$lib/types/sessions';
 	import {
 		diffAgentConfig,
 		summarizeDiff,
@@ -78,6 +80,7 @@
 
 	let title = $state('');
 	let initialMessage = $state('');
+	let repositories = $state<SessionRepositoryInput[]>([]);
 	let submitting = $state(false);
 	let submitError = $state<string | null>(null);
 	let savingTweaks = $state(false);
@@ -96,6 +99,7 @@
 			draftConfig = structuredClone($state.snapshot(baselineConfig) ?? baselineConfig);
 			title = mode === 'fork' ? `Fork of ${baseAgent.name}` : '';
 			initialMessage = '';
+			repositories = [];
 			submitError = null;
 			showDiffSheet = false;
 			showSaveAsNewDialog = false;
@@ -129,6 +133,7 @@
 				if (baseAgent.currentVersion != null) body.agentVersion = baseAgent.currentVersion;
 				if (title.trim()) body.title = title.trim();
 				if (initialMessage.trim()) body.initialMessage = initialMessage.trim();
+				if (repositories.length > 0) body.resources = $state.snapshot(repositories);
 				const res = await fetch('/api/v1/sessions', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
@@ -303,6 +308,14 @@
 								placeholder="Send a message to start the agent…"
 								rows={3}
 								class="text-sm"
+							/>
+						</div>
+						<div class="space-y-1.5">
+							<Label class="text-xs">Repositories (optional)</Label>
+							<RepositoriesEditor
+								{workspaceSlug}
+								value={repositories}
+								onChange={(r) => (repositories = r)}
 							/>
 						</div>
 					</div>

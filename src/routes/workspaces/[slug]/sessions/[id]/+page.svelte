@@ -2153,7 +2153,7 @@
 						</Card>
 					{/if}
 
-				<SessionResourcesPanel {sessionId} />
+				<SessionResourcesPanel {sessionId} workspaceSlug={slug} />
 				<SessionOutputsPanel {sessionId} />
 				<SessionCapacityCard {sessionId} workspaceSlug={slug} />
 

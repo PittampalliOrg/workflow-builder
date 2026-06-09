@@ -76,6 +76,21 @@ export type SessionDetail = SessionSummary & {
 
 export type SessionResourceType = "file" | "github_repository";
 
+/**
+ * A GitHub repository to clone into a session's sandbox, declared at launch
+ * (new-session form, run-from-agent drawer) and POSTed as `resources[]` on
+ * session create. Clone auth comes from EITHER `authTokenCredentialId` (a
+ * vault_credentials bearer/secret PAT) OR `appConnectionExternalId` (a GitHub
+ * OAuth app_connection, resolved + auto-refreshed at clone time).
+ */
+export type SessionRepositoryInput = {
+	repoUrl: string;
+	checkoutRef?: string;
+	mountPath?: string;
+	authTokenCredentialId?: string | null;
+	appConnectionExternalId?: string | null;
+};
+
 export type SessionResource = {
 	id: string;
 	sessionId: string;
@@ -85,6 +100,7 @@ export type SessionResource = {
 	repoUrl: string | null;
 	checkoutRef: string | null;
 	authTokenCredentialId: string | null;
+	appConnectionExternalId: string | null;
 	mountedAt: string | null;
 	removedAt: string | null;
 };

@@ -18,12 +18,16 @@
 		X
 	} from '@lucide/svelte';
 	import type { SessionResource } from '$lib/types/sessions';
+	import CredentialPicker from '$lib/components/credentials/credential-picker.svelte';
+	import GithubRepoPicker from '$lib/components/github/github-repo-picker.svelte';
 
 	interface Props {
 		sessionId: string;
+		/** Workspace slug for the GitHub-connection deep link in the picker. */
+		workspaceSlug?: string;
 	}
 
-	let { sessionId }: Props = $props();
+	let { sessionId, workspaceSlug = 'default' }: Props = $props();
 
 	let resources = $state<SessionResource[]>([]);
 	let loading = $state(true);
@@ -31,7 +35,30 @@
 	let addingRepo = $state(false);
 	let repoUrl = $state('');
 	let repoRef = $state('main');
-	let repoMountPath = $state('/mnt/session/repo');
+	// Empty → server derives /sandbox/<repo-name> (the agent's cwd root).
+	let repoMountPath = $state('');
+	let repoCredentialId = $state<string | null>(null);
+	let repoConnId = $state<string | null>(null);
+	let adding = $state(false);
+
+	function resetRepoForm() {
+		addingRepo = false;
+		repoUrl = '';
+		repoRef = 'main';
+		repoMountPath = '';
+		repoCredentialId = null;
+		repoConnId = null;
+	}
+
+	function onGithubPick(repo: {
+		repoUrl: string;
+		fullName: string;
+		connectionExternalId: string;
+	}) {
+		repoUrl = repo.repoUrl;
+		repoConnId = repo.connectionExternalId;
+		repoCredentialId = null;
+	}
 
 	async function load() {
 		loading = true;
@@ -58,21 +85,30 @@
 	}
 
 	async function addRepo() {
-		if (!repoUrl.trim()) return;
-		const res = await fetch(`/api/v1/sessions/${sessionId}/resources`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
+		if (!repoUrl.trim() || adding) return;
+		adding = true;
+		try {
+			const body: Record<string, unknown> = {
 				type: 'github_repository',
 				repoUrl: repoUrl.trim(),
-				checkoutRef: repoRef.trim() || 'main',
-				mountPath: repoMountPath.trim() || '/mnt/session/repo'
-			})
-		});
-		if (res.ok) {
-			repoUrl = '';
-			addingRepo = false;
-			await load();
+				checkoutRef: repoRef.trim() || 'main'
+			};
+			if (repoMountPath.trim()) body.mountPath = repoMountPath.trim();
+			if (repoConnId) body.appConnectionExternalId = repoConnId;
+			else if (repoCredentialId) body.authTokenCredentialId = repoCredentialId;
+			const res = await fetch(`/api/v1/sessions/${sessionId}/resources`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+			if (res.ok) {
+				resetRepoForm();
+				await load();
+			} else {
+				error = `Failed to mount repo (${res.status})`;
+			}
+		} finally {
+			adding = false;
 		}
 	}
 
@@ -139,14 +175,26 @@
 
 		{#if addingRepo}
 			<div class="rounded border border-dashed p-2 space-y-2">
+				<GithubRepoPicker {workspaceSlug} onPick={onGithubPick} />
+				<div class="flex items-center gap-2 text-[10px] text-muted-foreground">
+					<div class="h-px flex-1 bg-border"></div>
+					or paste a URL
+					<div class="h-px flex-1 bg-border"></div>
+				</div>
 				<div>
 					<Label class="text-[10px]" for="repo-url">GitHub URL</Label>
 					<Input
 						id="repo-url"
 						bind:value={repoUrl}
+						oninput={() => (repoConnId = null)}
 						placeholder="https://github.com/owner/repo"
 						class="h-7 text-xs"
 					/>
+					{#if repoConnId}
+						<div class="text-[10px] text-muted-foreground mt-0.5">
+							✓ authorized via GitHub connection
+						</div>
+					{/if}
 				</div>
 				<div class="grid grid-cols-2 gap-2">
 					<div>
@@ -155,22 +203,32 @@
 					</div>
 					<div>
 						<Label class="text-[10px]" for="repo-mount">Mount path</Label>
-						<Input id="repo-mount" bind:value={repoMountPath} class="h-7 text-xs" />
+						<Input
+							id="repo-mount"
+							bind:value={repoMountPath}
+							placeholder="/sandbox/<repo>"
+							class="h-7 text-xs"
+						/>
 					</div>
 				</div>
+				{#if !repoConnId}
+					<CredentialPicker
+						id="repo-credential"
+						label="Auth credential (private repos)"
+						value={repoCredentialId}
+						onChange={(id) => (repoCredentialId = id)}
+					/>
+				{/if}
 				<div class="flex gap-2">
-					<Button size="sm" class="h-7 text-xs" onclick={addRepo} disabled={!repoUrl.trim()}>
-						<Plus class="size-3" /> Mount
-					</Button>
 					<Button
 						size="sm"
-						variant="ghost"
 						class="h-7 text-xs"
-						onclick={() => {
-							addingRepo = false;
-							repoUrl = '';
-						}}
+						onclick={addRepo}
+						disabled={!repoUrl.trim() || adding}
 					>
+						<Plus class="size-3" /> {adding ? 'Mounting…' : 'Mount'}
+					</Button>
+					<Button size="sm" variant="ghost" class="h-7 text-xs" onclick={resetRepoForm}>
 						<X class="size-3" /> Cancel
 					</Button>
 				</div>

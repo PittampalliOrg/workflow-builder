@@ -5162,6 +5162,10 @@ class OpenShellDurableAgent(DurableAgent):
                             **session_native_event_fields(workflow_instance_id),
                         },
                     )
+                    # Mark this session as legitimately idle (waiting for the
+                    # next user prompt) so the host-monitor keeps it warm rather
+                    # than idle-terminating it. Cleared when the next turn runs.
+                    _session_idle_waiting[workflow_instance_id] = True
                 try:
                     batch = yield ctx.wait_for_external_event("session.user_events")
                 except Exception as exc:  # noqa: BLE001
@@ -5174,6 +5178,9 @@ class OpenShellDurableAgent(DurableAgent):
                 pending = list((batch or {}).get("events") or [])
                 if not pending:
                     continue
+                # A turn is starting — no longer idle-waiting.
+                if not ctx.is_replaying:
+                    _session_idle_waiting.pop(workflow_instance_id, None)
 
             agent_cfg, pending, config_changes = apply_session_control_events(
                 agent_cfg,
@@ -6334,6 +6341,14 @@ def _hold_session_host_after_terminal(
         time.sleep(min(max(1, poll_seconds), remaining))
 
 
+# Set (in-process) by session_workflow when it goes idle waiting for the next
+# user prompt, cleared when a turn starts. Read by the host-monitor to tell a
+# legitimately-idle interactive session (waiting for the user) apart from a
+# startup/mid-turn HANG. Keyed by workflow instance id; written only on the
+# non-replay path (same gating as the session.status_idle publish).
+_session_idle_waiting: dict[str, bool] = {}
+
+
 def _run_session_host_monitor(instance_id: str) -> None:
     start_timeout = _session_host_int(
         "DAPR_AGENT_SESSION_HOST_START_TIMEOUT_SECONDS",
@@ -6342,6 +6357,14 @@ def _run_session_host_monitor(instance_id: str) -> None:
     idle_timeout = _session_host_int(
         "DAPR_AGENT_SESSION_HOST_IDLE_TIMEOUT_SECONDS",
         300,
+    )
+    # Long backstop for a session that's legitimately idle (waiting for the next
+    # user prompt): interactive sessions stay warm for follow-ups, but an
+    # ABANDONED one is still reaped. Genuine startup/mid-turn hangs are caught by
+    # the short idle_timeout above (they are never marked idle-waiting).
+    abandoned_idle_timeout = _session_host_int(
+        "DAPR_AGENT_SESSION_HOST_ABANDONED_IDLE_TIMEOUT_SECONDS",
+        6 * 60 * 60,
     )
     missing_grace_seconds = _session_host_int(
         "DAPR_AGENT_SESSION_HOST_MISSING_GRACE_SECONDS",
@@ -6531,6 +6554,22 @@ def _run_session_host_monitor(instance_id: str) -> None:
                     last_benchmark_progress_marker = marker
                     last_workflow_progress_at = (
                         now - activity_age if activity_age is not None else now
+                    )
+                    time.sleep(poll_seconds)
+                    continue
+                # Legitimately idle interactive session waiting for the next user
+                # prompt — keep it warm (don't idle-terminate) until the long
+                # abandoned backstop. Genuine startup/mid-turn hangs are never
+                # marked idle-waiting, so they still terminate at idle_timeout.
+                if (
+                    _session_idle_waiting.get(instance_id)
+                    and progress_age <= abandoned_idle_timeout
+                ):
+                    logger.info(
+                        "[session-host] workflow %s idle %ss awaiting next user prompt; keeping warm (abandoned backstop %ss)",
+                        instance_id,
+                        int(progress_age),
+                        abandoned_idle_timeout,
                     )
                     time.sleep(poll_seconds)
                     continue

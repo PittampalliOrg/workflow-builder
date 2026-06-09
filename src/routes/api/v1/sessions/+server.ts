@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
+	addResource,
 	attachWorkspaceSandbox,
 	createSession,
 	listSessions,
@@ -9,6 +10,10 @@ import {
 } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
+import {
+	mountSessionRepositories,
+	type RepositorySandboxTarget,
+} from "$lib/server/sessions/repositories";
 import {
 	provisionSessionSandboxWithRetry,
 	sandboxProvisionFailureMessage,
@@ -174,6 +179,30 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			});
 		}
 
+		// Repository resources to clone into the sandbox before the first turn.
+		// Merge the agent's published defaults (repo-specialized agents) with any
+		// explicitly-requested repos on the create body; an explicit entry for the
+		// same URL overrides the agent default. Persist the rows now so the
+		// post-provision mount step below clones them.
+		const mergedRepos = dedupeRepositoriesByUrl([
+			...parseRepositoryResources(resolvedAgent?.config?.repositories),
+			...parseRepositoryResources(body.resources),
+		]);
+		for (const repo of mergedRepos) {
+			try {
+				await addResource(session.id, {
+					type: "github_repository",
+					repoUrl: repo.repoUrl,
+					checkoutRef: repo.checkoutRef,
+					mountPath: repo.mountPath,
+					authTokenCredentialId: repo.authTokenCredentialId,
+					appConnectionExternalId: repo.appConnectionExternalId,
+				});
+			} catch (resErr) {
+				console.warn("[sessions] failed to persist repo resource:", resErr);
+			}
+		}
+
 		// Sandbox provisioning modes (Anthropic CMA TTFT win, Tier 2b):
 		//   - "eager" (default, legacy): provision at session-create time so
 		//     bash/file tools work as soon as the agent starts. Adds sandbox
@@ -191,6 +220,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				? "lazy"
 				: "eager";
 
+		let repoMountTarget: RepositorySandboxTarget | null = null;
 		if (provisioning === "eager") {
 			try {
 				const sandbox = await provisionSessionSandboxWithRetry({
@@ -205,6 +235,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				await attachWorkspaceSandbox(session.id, sandbox.sandboxName);
 				session.workspaceSandboxName = sandbox.sandboxName;
 				session.errorMessage = null;
+				repoMountTarget = {
+					executionId: session.id,
+					workspaceRef: sandbox.workspaceRef,
+					rootPath: sandbox.rootPath,
+				};
 			} catch (sandboxErr) {
 				console.error("[sessions] sandbox provisioning failed:", sandboxErr);
 				// Persist the failure but don't fail the whole create. The UI can
@@ -220,6 +255,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 						persistErr,
 					);
 				}
+			}
+		}
+
+		// Clone any github_repository resources into the sandbox BEFORE the
+		// agent's first turn. Best-effort: failures emit a session event and
+		// never block the spawn.
+		if (repoMountTarget) {
+			try {
+				await mountSessionRepositories(session.id, repoMountTarget);
+			} catch (mountErr) {
+				console.error("[sessions] repository mount failed:", mountErr);
 			}
 		}
 
@@ -259,4 +305,56 @@ function isAgentConfigShape(value: unknown): boolean {
 		Array.isArray(v.mcpServers) ||
 		Array.isArray(v.builtinTools)
 	);
+}
+
+type ParsedRepoResource = {
+	repoUrl: string;
+	checkoutRef?: string;
+	mountPath?: string;
+	authTokenCredentialId?: string;
+	appConnectionExternalId?: string;
+};
+
+/** Parse an optional `resources` array on the create-session body into repo
+ * mount inputs. Tolerant: drops entries without a string `repoUrl`. */
+function parseRepositoryResources(value: unknown): ParsedRepoResource[] {
+	if (!Array.isArray(value)) return [];
+	const out: ParsedRepoResource[] = [];
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object") continue;
+		const e = entry as Record<string, unknown>;
+		const repoUrl = typeof e.repoUrl === "string" ? e.repoUrl.trim() : "";
+		if (!repoUrl) continue;
+		out.push({
+			repoUrl,
+			checkoutRef:
+				typeof e.checkoutRef === "string" && e.checkoutRef.trim()
+					? e.checkoutRef.trim()
+					: undefined,
+			mountPath:
+				typeof e.mountPath === "string" && e.mountPath.trim()
+					? e.mountPath.trim()
+					: undefined,
+			authTokenCredentialId:
+				typeof e.authTokenCredentialId === "string" && e.authTokenCredentialId
+					? e.authTokenCredentialId
+					: undefined,
+			appConnectionExternalId:
+				typeof e.appConnectionExternalId === "string" && e.appConnectionExternalId
+					? e.appConnectionExternalId
+					: undefined,
+		});
+	}
+	return out;
+}
+
+/** Dedupe repo entries by URL (case-insensitive), keeping the LAST occurrence —
+ * so an explicit create-body entry overrides the agent's default for the same
+ * repo. */
+function dedupeRepositoriesByUrl(
+	repos: ParsedRepoResource[],
+): ParsedRepoResource[] {
+	const byUrl = new Map<string, ParsedRepoResource>();
+	for (const r of repos) byUrl.set(r.repoUrl.toLowerCase(), r);
+	return [...byUrl.values()];
 }

@@ -15,9 +15,11 @@
 		CardTitle
 	} from '$lib/components/ui/card';
 	import { ArrowLeft, PlayCircle } from '@lucide/svelte';
+	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import type { AgentSummary } from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
 	import type { VaultSummary } from '$lib/types/vaults';
+	import type { SessionRepositoryInput } from '$lib/types/sessions';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -35,6 +37,7 @@
 	let selectedVaultIds = $state<string[]>([]);
 	let title = $state<string>('');
 	let initialMessage = $state<string>('');
+	let repositories = $state<SessionRepositoryInput[]>([]);
 
 	let selectedAgent = $derived(agents.find((a) => a.id === agentId) ?? null);
 
@@ -85,7 +88,8 @@
 					environmentId: environmentId || undefined,
 					vaultIds: selectedVaultIds,
 					title: title.trim() || undefined,
-					initialMessage: initialMessage.trim() || undefined
+					initialMessage: initialMessage.trim() || undefined,
+					resources: repositories.length > 0 ? repositories : undefined
 				})
 			});
 			if (!res.ok) {
@@ -196,6 +200,19 @@
 					rows={4}
 					bind:value={initialMessage}
 					placeholder="Send an initial user.message when the session starts."
+				/>
+			</div>
+
+			<div>
+				<Label>Repositories (optional)</Label>
+				<p class="text-xs text-muted-foreground mt-0.5 mb-2">
+					Clone GitHub repos into the agent's sandbox before its first turn. Private repos
+					need an auth credential from your vaults.
+				</p>
+				<RepositoriesEditor
+					workspaceSlug={slug}
+					value={repositories}
+					onChange={(r) => (repositories = r)}
 				/>
 			</div>
 		</CardContent>

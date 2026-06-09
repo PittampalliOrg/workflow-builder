@@ -3,6 +3,7 @@ import type {
 	AgentRuntimeOverridePolicy,
 	McpServerProfileConfig,
 } from "$lib/server/agent-profiles";
+import type { SessionRepositoryInput } from "$lib/types/sessions";
 
 /**
  * Loose sandbox-policy shape used for per-node overrides. The authoritative
@@ -184,6 +185,18 @@ export type AgentConfig = {
 	 * Capabilities tab (filtered to peers with `registryStatus = 'registered'`).
 	 */
 	callableAgents?: string[];
+
+	/**
+	 * GitHub repositories cloned into this agent's sandbox before its first
+	 * turn. A repo-specialized agent ("fix bugs in repo X") carries its repos
+	 * here. Materialized into `session_resources` at session spawn for BOTH
+	 * direct sessions (session-create) and workflow `durable/run` steps that
+	 * reference this agent (the bridge forwards `agentConfig`, so no
+	 * orchestrator change is needed). Private repos reference a vault
+	 * credential via `authTokenCredentialId`. See
+	 * `src/lib/server/sessions/repositories.ts`.
+	 */
+	repositories?: SessionRepositoryInput[];
 
 	runtime: AgentRuntime;
 	/**
