@@ -2,10 +2,13 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
 	addResource,
+	getSession,
 	listResources,
 	type AddResourceInput,
 } from "$lib/server/sessions/registry";
-import type { SessionResourceType } from "$lib/types/sessions";
+import { provisionSessionSandboxWithRetry } from "$lib/server/sandboxes/provision";
+import { mountSingleRepository } from "$lib/server/sessions/repositories";
+import type { SessionResource, SessionResourceType } from "$lib/types/sessions";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -36,5 +39,54 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				: undefined,
 	};
 	const resource = await addResource(params.id, input);
+
+	// Mid-session mount: if a repo is added to a session that already has a
+	// live sandbox, clone it in now. Sessions without a sandbox yet get their
+	// repos cloned at spawn time by mountSessionRepositories. Best-effort and
+	// awaited so the response reflects mount success/failure via the event log.
+	if (resource.type === "github_repository") {
+		try {
+			await mountRepoIntoLiveSession(params.id, resource);
+		} catch (mountErr) {
+			console.warn("[sessions] mid-session repo mount failed:", mountErr);
+		}
+	}
+
 	return json({ resource }, { status: 201 });
 };
+
+/**
+ * Clone a repo into an already-running session's sandbox. Recovers the
+ * sandbox's workspaceRef via an idempotent re-provision (a cheap hit when the
+ * sandbox is already up — same executionId + name returns the same sandbox).
+ */
+async function mountRepoIntoLiveSession(
+	sessionId: string,
+	resource: SessionResource,
+): Promise<void> {
+	const session = await getSession(sessionId);
+	if (!session) return;
+	// No sandbox yet → leave it for the spawn-time mount.
+	if (!session.workspaceSandboxName) return;
+	let workspaceRef: string | null = null;
+	let rootPath = "/sandbox";
+	try {
+		const sandbox = await provisionSessionSandboxWithRetry({
+			executionId: sessionId,
+			name: session.title ?? `session-${sessionId.slice(0, 8)}`,
+			keepAfterRun: true,
+		});
+		workspaceRef = sandbox.workspaceRef;
+		rootPath = sandbox.rootPath;
+	} catch (provErr) {
+		console.warn(
+			"[sessions] could not recover sandbox workspaceRef for mid-session mount:",
+			provErr,
+		);
+	}
+	await mountSingleRepository(sessionId, resource, {
+		executionId: sessionId,
+		workspaceRef,
+		rootPath,
+	});
+}
