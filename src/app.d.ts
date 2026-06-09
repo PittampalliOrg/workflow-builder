@@ -19,4 +19,12 @@ declare global {
 	}
 }
 
+// Vite raw-import of the goal-loop prompt templates (see
+// src/lib/server/goals/render.ts). Lets us keep the codex prompt ports as
+// verbatim .md files while bundling their contents into the server build.
+declare module "*.md?raw" {
+	const content: string;
+	export default content;
+}
+
 export {};

@@ -7,6 +7,7 @@ import {
 } from "$lib/server/lifecycle";
 import { ownsBenchmarkOrEvalRunForSession } from "$lib/server/lifecycle/ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
+import { pauseGoal } from "$lib/server/goals/repo";
 
 const MODES = new Set<StopDurableRunMode>([
 	"interrupt",
@@ -60,6 +61,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			},
 			{ status: 409 },
 		);
+	}
+
+	// Pause any active goal so the autonomous goal-loop driver stops re-posting
+	// continuations for this session. interrupt = cooperative pause; for
+	// terminate/purge the session goes terminal and the driver's terminal-status
+	// gate halts it anyway, but pausing keeps the goal row coherent.
+	if (mode === "interrupt") {
+		await pauseGoal(params.id).catch(() => {});
 	}
 
 	const result = await stopDurableRun(target, { mode, reason, graceMs });

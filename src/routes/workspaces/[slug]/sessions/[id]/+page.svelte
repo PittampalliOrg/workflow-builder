@@ -34,6 +34,7 @@
 	import SessionTimelineBar from '$lib/components/sessions/session-timeline-bar.svelte';
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
+	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
 	import SessionCapacityCard from '$lib/components/capacity/session-capacity-card.svelte';
@@ -1858,6 +1859,8 @@
 						</CardContent>
 					</Card>
 				{/if}
+
+				<SessionGoalBadge {sessionId} />
 
 				<Card>
 					<CardHeader class="pb-2">

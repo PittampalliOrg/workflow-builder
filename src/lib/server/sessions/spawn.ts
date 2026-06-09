@@ -209,7 +209,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		: emptyPresetStack;
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
-		mcpServers: rewrittenMcp,
+		mcpServers: stampGoalMcpSessionHeader(rewrittenMcp, sessionId),
 		compiledStaticPresetSections: compiledPresetStack.static,
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,
 		// Phase 3a v2: per-ref version-id + mlflow_uri manifest so
@@ -365,6 +365,30 @@ function getDaprSidecarUrl(): string {
 	const host = process.env.DAPR_HOST ?? "127.0.0.1";
 	const port = process.env.DAPR_HTTP_PORT ?? "3500";
 	return `http://${host}:${port}`;
+}
+
+/**
+ * Stamp the workflow-builder session id (== codex thread id) into the goal MCP
+ * server entry's headers so the goal tools (create_goal/update_goal/get_goal)
+ * resolve which session they act on. Scoped to the goal MCP entry — matched by
+ * name (~goal) or URL (workflow-mcp-server) — so we don't leak the session id
+ * to third-party MCP servers. Other servers ignore the extra header.
+ */
+function stampGoalMcpSessionHeader<T>(servers: T, sessionId: string): T {
+	if (!Array.isArray(servers)) return servers;
+	return servers.map((entry) => {
+		if (!entry || typeof entry !== "object") return entry;
+		const e = entry as Record<string, unknown>;
+		const name = typeof e.name === "string" ? e.name.toLowerCase() : "";
+		const url = typeof e.url === "string" ? e.url : "";
+		const isGoalServer = /goal/.test(name) || url.includes("workflow-mcp-server");
+		if (!isGoalServer) return entry;
+		const headers = {
+			...((e.headers as Record<string, unknown> | undefined) ?? {}),
+			"X-Wfb-Session-Id": sessionId,
+		};
+		return { ...e, headers };
+	}) as T;
 }
 
 /**

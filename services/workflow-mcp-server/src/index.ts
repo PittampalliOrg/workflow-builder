@@ -28,6 +28,8 @@ import {
 	registerWorkflowTools,
 	type RegisteredTool,
 } from "./workflow-tools.js";
+import { registerGoalTools } from "./goal-tools.js";
+import { runWithGoalContext } from "./goal-context.js";
 import { UiSession } from "./ui/session.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
@@ -154,6 +156,10 @@ function createMcpServer(userId?: string, uiSession?: UiSession): Server {
 	if (hasUI && uiHtmlPath) {
 		registerWorkflowTools(mcpServer, uiHtmlPath, userId, uiSession);
 	}
+	// Goal tools register regardless of the UI so any MCP-capable agent runtime
+	// can drive the Codex-/goal-parity loop. Session scope comes from the
+	// per-request X-Wfb-Session-Id header (see runWithGoalContext wraps below).
+	registerGoalTools(mcpServer);
 
 	return mcpServer.server;
 }
@@ -252,7 +258,12 @@ async function handleMcpPost(
 		return;
 	}
 
-	await transport.handleRequest(req, res, body);
+	// Bind the workflow-builder session (codex thread) for this request so the
+	// goal tools can resolve which session they act on.
+	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
+	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
+		transport.handleRequest(req, res, body),
+	);
 }
 
 async function handleMcpGet(
@@ -266,7 +277,10 @@ async function handleMcpGet(
 		return;
 	}
 	const transport = sessions.get(sessionId)!;
-	await transport.handleRequest(req, res);
+	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
+	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
+		transport.handleRequest(req, res),
+	);
 }
 
 async function handleMcpDelete(
@@ -280,7 +294,10 @@ async function handleMcpDelete(
 		return;
 	}
 	const transport = sessions.get(sessionId)!;
-	await transport.handleRequest(req, res);
+	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
+	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
+		transport.handleRequest(req, res),
+	);
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -345,6 +362,14 @@ async function main(): Promise<void> {
 			{ capabilities: { tools: {}, resources: {} } },
 		);
 		registeredTools = registerWorkflowTools(dryServer, uiHtmlPath);
+	}
+	// Always count the goal tools (registered independently of the UI).
+	{
+		const dryGoalServer = new McpServer(
+			{ name: "dry-run-goal", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = [...registeredTools, ...registerGoalTools(dryGoalServer)];
 	}
 
 	// Start HTTP server

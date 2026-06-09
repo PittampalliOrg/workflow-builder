@@ -5,14 +5,16 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install -g pnpm && pnpm install --prod
+# pnpm pinned to v9: unpinned installs pull pnpm v10, which hard-fails prod
+# installs on un-allowlisted dependency build scripts (ERR_PNPM_IGNORED_BUILDS).
+RUN npm install -g pnpm@9 && pnpm install --prod
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install -g pnpm && pnpm install --prod=false
+RUN npm install -g pnpm@9 && pnpm install --prod=false
 
 COPY . ./
 
