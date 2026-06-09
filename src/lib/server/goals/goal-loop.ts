@@ -53,6 +53,16 @@ const LOST_IDLE_GRACE_SECONDS = Number(
 	process.env.GOAL_LOOP_LOST_IDLE_GRACE_SECONDS || 180,
 );
 
+/**
+ * Budget delta for one LLM call — codex semantics (`input - cached_input +
+ * output`): cache READS are excluded. Our runtimes report `input_tokens`
+ * already net of cache reads (cache_read_input_tokens is a separate field),
+ * so the codex-equivalent delta is input + output + cache WRITES (creation
+ * tokens are genuinely processed input, billed at a premium). Counting cache
+ * reads exhausted budgets ~20x faster than the work justified on
+ * agentic loops that run 95%+ cached (observed: a $0.03 turn consuming 300k
+ * of "budget").
+ */
 function tokensFromUsage(data: Record<string, unknown> | undefined): number {
 	const n = (key: string): number => {
 		const v = Math.round(Number(data?.[key] ?? 0));
@@ -61,7 +71,6 @@ function tokensFromUsage(data: Record<string, unknown> | undefined): number {
 	return (
 		n("input_tokens") +
 		n("output_tokens") +
-		n("cache_read_input_tokens") +
 		n("cache_creation_input_tokens")
 	);
 }
