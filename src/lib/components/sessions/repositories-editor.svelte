@@ -19,7 +19,9 @@
 
 	let adding = $state(false);
 	let repoUrl = $state('');
-	let repoRef = $state('main');
+	// Empty = clone the repo's default branch (safer than forcing "main", which
+	// fails to check out on repos whose default branch isn't main).
+	let repoRef = $state('');
 	let repoMountPath = $state('');
 	let repoCredentialId = $state<string | null>(null);
 	// Set when a repo is chosen via the GitHub picker — the OAuth connection
@@ -29,7 +31,7 @@
 	function resetForm() {
 		adding = false;
 		repoUrl = '';
-		repoRef = 'main';
+		repoRef = '';
 		repoMountPath = '';
 		repoCredentialId = null;
 		repoConnId = null;
@@ -44,6 +46,10 @@
 		repoConnId = repo.connectionExternalId;
 		// Connection provides auth — don't also bind a vault credential.
 		repoCredentialId = null;
+		// Picking a repo from the list is a definitive choice — commit it to the
+		// list immediately so it can't be silently lost by skipping the inner
+		// "Add" button (clones the default branch; remove + re-add to tweak).
+		add();
 	}
 
 	function add() {
@@ -58,6 +64,21 @@
 		};
 		onChange([...value, next]);
 		resetForm();
+	}
+
+	/**
+	 * Commit a typed-but-not-yet-added repo (the form is open with a valid URL
+	 * the user never clicked "Add" on) so a pending entry isn't silently dropped
+	 * when the parent form submits. Parents obtain the editor via `bind:this`
+	 * and call this immediately before reading their `repositories` array.
+	 * Returns true if it committed a pending entry.
+	 */
+	export function commitPending(): boolean {
+		if (adding && repoUrl.trim()) {
+			add();
+			return true;
+		}
+		return false;
 	}
 
 	function remove(index: number) {
@@ -115,7 +136,12 @@
 			<div class="grid grid-cols-2 gap-2">
 				<div>
 					<Label class="text-[10px]" for="new-repo-ref">Branch/Ref</Label>
-					<Input id="new-repo-ref" bind:value={repoRef} class="h-7 text-xs" />
+					<Input
+						id="new-repo-ref"
+						bind:value={repoRef}
+						placeholder="default branch"
+						class="h-7 text-xs"
+					/>
 				</div>
 				<div>
 					<Label class="text-[10px]" for="new-repo-mount">Mount path</Label>
@@ -134,6 +160,12 @@
 					value={repoCredentialId}
 					onChange={(id) => (repoCredentialId = id)}
 				/>
+			{/if}
+			{#if repoUrl.trim()}
+				<p class="text-[10px] text-amber-600 dark:text-amber-500">
+					Not added yet — click <span class="font-medium">Add</span> below or this repository
+					won't be included.
+				</p>
 			{/if}
 			<div class="flex gap-2">
 				<Button size="sm" class="h-7 text-xs" onclick={add} disabled={!repoUrl.trim()}>

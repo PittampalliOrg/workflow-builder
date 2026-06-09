@@ -38,6 +38,9 @@
 	let title = $state<string>('');
 	let initialMessage = $state<string>('');
 	let repositories = $state<SessionRepositoryInput[]>([]);
+	// Editor instance — used to flush a half-entered (typed-but-not-added) repo
+	// before submit so it isn't silently dropped.
+	let repoEditor = $state<{ commitPending?: () => boolean } | undefined>(undefined);
 
 	let selectedAgent = $derived(agents.find((a) => a.id === agentId) ?? null);
 
@@ -79,6 +82,9 @@
 		if (!agentId || submitting) return;
 		submitting = true;
 		errorMessage = null;
+		// Flush a pending repo (URL entered but inner "Add" never clicked) so it
+		// still ships in `resources` instead of being silently lost.
+		repoEditor?.commitPending?.();
 		try {
 			const res = await fetch('/api/v1/sessions', {
 				method: 'POST',
@@ -210,6 +216,7 @@
 					need an auth credential from your vaults.
 				</p>
 				<RepositoriesEditor
+					bind:this={repoEditor}
 					workspaceSlug={slug}
 					value={repositories}
 					onChange={(r) => (repositories = r)}
