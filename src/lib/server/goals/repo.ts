@@ -12,6 +12,38 @@ function requireDb() {
 	return db;
 }
 
+/**
+ * Raw `db.execute(sql...)` rows come back with snake_case column names (no
+ * drizzle field mapping), unlike the typed query builder. Map them to the
+ * ThreadGoalRow shape so consumers (prompt rendering, sourceEventId derivation,
+ * API responses) read real values instead of undefined.
+ */
+function mapGoalRow(row: Record<string, unknown> | undefined): ThreadGoalRow | null {
+	if (!row) return null;
+	const ts = (v: unknown): Date | null =>
+		v instanceof Date ? v : typeof v === "string" ? new Date(v) : null;
+	return {
+		id: String(row.id),
+		sessionId: String(row.session_id),
+		goalId: String(row.goal_id),
+		objective: String(row.objective),
+		status: String(row.status),
+		tokenBudget: row.token_budget === null ? null : Number(row.token_budget),
+		tokensUsed: Number(row.tokens_used ?? 0),
+		timeUsedSeconds: Number(row.time_used_seconds ?? 0),
+		iterations: Number(row.iterations ?? 0),
+		maxIterations: Number(row.max_iterations ?? 0),
+		budgetSteeredAt: ts(row.budget_steered_at),
+		lastContinuationAt: ts(row.last_continuation_at),
+		stopReason: row.stop_reason === null ? null : String(row.stop_reason),
+		workflowExecutionId:
+			row.workflow_execution_id === null ? null : String(row.workflow_execution_id),
+		createdAt: ts(row.created_at) ?? new Date(0),
+		updatedAt: ts(row.updated_at) ?? new Date(0),
+		completedAt: ts(row.completed_at),
+	};
+}
+
 export type GoalStatus = "active" | "paused" | "budget_limited" | "complete";
 
 /**
@@ -131,27 +163,27 @@ export async function createOrReplaceGoal(
 export async function markGoalComplete(
 	sessionId: string,
 ): Promise<ThreadGoalRow | null> {
-	const rows = await requireDb().execute<ThreadGoalRow>(sql`
+	const rows = await requireDb().execute<Record<string, unknown>>(sql`
 		UPDATE thread_goals
 		SET status = 'complete', stop_reason = 'complete',
 		    completed_at = now(), updated_at = now()
 		WHERE session_id = ${sessionId} AND status in ('active','budget_limited')
 		RETURNING *
 	`);
-	return rows[0] ?? null;
+	return mapGoalRow(rows[0]);
 }
 
 /** Pause the active goal (lifecycle interrupt). */
 export async function pauseGoal(
 	sessionId: string,
 ): Promise<ThreadGoalRow | null> {
-	const rows = await requireDb().execute<ThreadGoalRow>(sql`
+	const rows = await requireDb().execute<Record<string, unknown>>(sql`
 		UPDATE thread_goals
 		SET status = 'paused', stop_reason = 'interrupt', updated_at = now()
 		WHERE session_id = ${sessionId} AND status = 'active'
 		RETURNING *
 	`);
-	return rows[0] ?? null;
+	return mapGoalRow(rows[0]);
 }
 
 /**
@@ -165,7 +197,7 @@ export async function accrueUsage(
 	deltaTokens: number,
 ): Promise<ThreadGoalRow | null> {
 	const delta = Number.isFinite(deltaTokens) ? Math.max(0, Math.round(deltaTokens)) : 0;
-	const rows = await requireDb().execute<ThreadGoalRow>(sql`
+	const rows = await requireDb().execute<Record<string, unknown>>(sql`
 		UPDATE thread_goals
 		SET tokens_used = tokens_used + ${delta},
 		    time_used_seconds = floor(extract(epoch from (now() - created_at)))::int,
@@ -178,7 +210,7 @@ export async function accrueUsage(
 		WHERE session_id = ${sessionId} AND status in ('active','budget_limited')
 		RETURNING *
 	`);
-	return rows[0] ?? null;
+	return mapGoalRow(rows[0]);
 }
 
 /**
@@ -192,7 +224,7 @@ export async function claimNextContinuation(
 	sessionId: string,
 	spacingSeconds: number = CONTINUATION_MIN_SPACING_SECONDS,
 ): Promise<ThreadGoalRow | null> {
-	const rows = await requireDb().execute<ThreadGoalRow>(sql`
+	const rows = await requireDb().execute<Record<string, unknown>>(sql`
 		UPDATE thread_goals
 		SET iterations = iterations + 1,
 		    last_continuation_at = now(),
@@ -205,7 +237,7 @@ export async function claimNextContinuation(
 		       OR last_continuation_at < now() - (${spacingSeconds}::int * interval '1 second'))
 		RETURNING *
 	`);
-	return rows[0] ?? null;
+	return mapGoalRow(rows[0]);
 }
 
 /**
@@ -215,7 +247,7 @@ export async function claimNextContinuation(
 export async function claimIterationCap(
 	sessionId: string,
 ): Promise<ThreadGoalRow | null> {
-	const rows = await requireDb().execute<ThreadGoalRow>(sql`
+	const rows = await requireDb().execute<Record<string, unknown>>(sql`
 		UPDATE thread_goals
 		SET status = 'budget_limited', stop_reason = 'iteration_cap',
 		    budget_steered_at = now(), updated_at = now()
@@ -223,7 +255,7 @@ export async function claimIterationCap(
 		  AND iterations >= max_iterations AND budget_steered_at IS NULL
 		RETURNING *
 	`);
-	return rows[0] ?? null;
+	return mapGoalRow(rows[0]);
 }
 
 /**
@@ -233,7 +265,7 @@ export async function claimIterationCap(
 export async function claimBudgetSteer(
 	sessionId: string,
 ): Promise<ThreadGoalRow | null> {
-	const rows = await requireDb().execute<ThreadGoalRow>(sql`
+	const rows = await requireDb().execute<Record<string, unknown>>(sql`
 		UPDATE thread_goals
 		SET budget_steered_at = now(), stop_reason = coalesce(stop_reason, 'budget'),
 		    updated_at = now()
@@ -241,7 +273,7 @@ export async function claimBudgetSteer(
 		  AND budget_steered_at IS NULL
 		RETURNING *
 	`);
-	return rows[0] ?? null;
+	return mapGoalRow(rows[0]);
 }
 
 /** Type of the most recent session_event — the loop posts only when idle. */
