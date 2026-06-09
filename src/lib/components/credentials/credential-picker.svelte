@@ -35,10 +35,24 @@
 		loading = true;
 		error = null;
 		try {
-			const res = await fetch('/api/v1/vaults');
-			if (!res.ok) throw new Error(`Failed to load vaults (${res.status})`);
-			const { vaults } = (await res.json()) as { vaults: VaultSummary[] };
-			const active = (vaults ?? []).filter((v) => !v.isArchived && v.credentialCount > 0);
+			// Include BOTH the active project's vaults and org-shared
+			// (projectId null) vaults — a global/curated vault's credentials must
+			// be selectable from any workspace. The bare list is project-scoped;
+			// `?projectId=null` returns the org-shared ones. Credentials resolve by
+			// id at clone time regardless of vault scope, so anything listed here
+			// is usable.
+			const [scopedRes, sharedRes] = await Promise.all([
+				fetch('/api/v1/vaults'),
+				fetch('/api/v1/vaults?projectId=null')
+			]);
+			if (!scopedRes.ok) throw new Error(`Failed to load vaults (${scopedRes.status})`);
+			const scopedVaults = ((await scopedRes.json()) as { vaults: VaultSummary[] }).vaults ?? [];
+			const sharedVaults = sharedRes.ok
+				? (((await sharedRes.json()) as { vaults: VaultSummary[] }).vaults ?? [])
+				: [];
+			const byId = new Map<string, VaultSummary>();
+			for (const v of [...scopedVaults, ...sharedVaults]) byId.set(v.id, v);
+			const active = [...byId.values()].filter((v) => !v.isArchived && v.credentialCount > 0);
 			const perVault = await Promise.all(
 				active.map(async (v) => {
 					const r = await fetch(`/api/v1/vaults/${v.id}/credentials`);
