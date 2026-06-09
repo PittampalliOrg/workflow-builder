@@ -81,6 +81,8 @@
 	let title = $state('');
 	let initialMessage = $state('');
 	let repositories = $state<SessionRepositoryInput[]>([]);
+	// Editor instance — flush a half-entered repo before submit (see commitPending).
+	let repoEditor = $state<{ commitPending?: () => boolean } | undefined>(undefined);
 	let submitting = $state(false);
 	let submitError = $state<string | null>(null);
 	let savingTweaks = $state(false);
@@ -123,6 +125,9 @@
 	async function submit() {
 		submitting = true;
 		submitError = null;
+		// Flush a pending repo (URL entered but inner "Add" never clicked) so it
+		// still ships in `resources` instead of being silently lost.
+		repoEditor?.commitPending?.();
 		try {
 			const includeConfig = !isAgentConfigEquivalent(baselineConfig, draftConfig);
 			const body: Record<string, unknown> = {};
@@ -313,6 +318,7 @@
 						<div class="space-y-1.5">
 							<Label class="text-xs">Repositories (optional)</Label>
 							<RepositoriesEditor
+								bind:this={repoEditor}
 								{workspaceSlug}
 								value={repositories}
 								onChange={(r) => (repositories = r)}
