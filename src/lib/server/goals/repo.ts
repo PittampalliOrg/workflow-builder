@@ -66,7 +66,11 @@ export async function getCurrentGoal(
 	return rows[0] ?? null;
 }
 
-/** The goal the loop drives (active or budget_limited), if any. */
+/**
+ * The goal the loop drives (active or budget_limited), if any. Prefer the
+ * active row, then the newest — a session can hold an old budget_limited row
+ * alongside a newly set active goal, and the driver must follow the new one.
+ */
 export async function getDrivableGoal(
 	sessionId: string,
 ): Promise<ThreadGoalRow | null> {
@@ -78,6 +82,10 @@ export async function getDrivableGoal(
 				eq(threadGoals.sessionId, sessionId),
 				sql`${threadGoals.status} in ('active','budget_limited')`,
 			),
+		)
+		.orderBy(
+			sql`case when ${threadGoals.status} = 'active' then 0 else 1 end`,
+			desc(threadGoals.createdAt),
 		)
 		.limit(1);
 	return rows[0] ?? null;
@@ -92,10 +100,12 @@ export interface CreateGoalInput {
 }
 
 /**
- * Create the active goal, or REPLACE the existing active one (codex
- * `thread/goal/set`: a new objective rotates goal_id and resets usage
- * accounting). One active goal per session is enforced by the partial unique
- * index uq_thread_goals_session_active.
+ * Create the active goal, or REPLACE the existing DRIVABLE one — active or
+ * budget_limited (codex `thread/goal/set`: a new objective rotates goal_id and
+ * resets usage accounting). Replacing budget_limited too keeps a single
+ * drivable row per session, so a re-set after budget exhaustion re-arms the
+ * loop instead of leaving a stale steered row shadowing the new goal. One
+ * active goal per session is enforced by uq_thread_goals_session_active.
  */
 export async function createOrReplaceGoal(
 	input: CreateGoalInput,
@@ -117,8 +127,12 @@ export async function createOrReplaceGoal(
 			.where(
 				and(
 					eq(threadGoals.sessionId, input.sessionId),
-					eq(threadGoals.status, "active"),
+					sql`${threadGoals.status} in ('active','budget_limited')`,
 				),
+			)
+			.orderBy(
+				sql`case when ${threadGoals.status} = 'active' then 0 else 1 end`,
+				desc(threadGoals.createdAt),
 			)
 			.limit(1);
 		if (existing[0]) {
