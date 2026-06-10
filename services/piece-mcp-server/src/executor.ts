@@ -11,8 +11,9 @@
  * auth-resolver, or legacy credentials in the /execute body).
  */
 
-import type { Action, Piece } from "@activepieces/pieces-framework";
+import type { Action, Piece, Store } from "@activepieces/pieces-framework";
 import { buildActionContext, type PauseCaptured } from "./context-factory.js";
+import { classifyExecutionError, type ErrorClass } from "./error-classify.js";
 import { extensionsFor } from "./extensions/index.js";
 import { normalizeActionInput } from "./normalize-input.js";
 
@@ -20,6 +21,11 @@ export type ExecutionResult = {
 	success: boolean;
 	data?: unknown;
 	error?: string;
+	/**
+	 * Failure classification for the orchestrator's retry policy:
+	 * "retryable" (429/5xx/network) vs "permanent" (4xx/validation/auth/unknown).
+	 */
+	errorClass?: ErrorClass;
 	pause?: PauseCaptured;
 };
 
@@ -79,6 +85,14 @@ export async function runPieceAction(opts: {
 	requireAuth: boolean;
 	input: Record<string, unknown>;
 	executionId: string;
+	/** BEGIN (default) or RESUME — pause re-invocations from the orchestrator. */
+	executionType?: "BEGIN" | "RESUME";
+	/** Webhook payload exposed as ctx.resumePayload on RESUME. */
+	resumePayload?: unknown;
+	/** Durable ctx.store adapter; omitted on the MCP path (no-op store). */
+	store?: Store;
+	/** workflow_executions.id — needed by generateResumeUrl. */
+	dbExecutionId?: string;
 }): Promise<ExecutionResult> {
 	const { runtimeAction, actionName, auth, requireAuth, input, executionId } =
 		opts;
@@ -91,6 +105,7 @@ export async function runPieceAction(opts: {
 			error:
 				`Missing credentials for "${actionName}". ` +
 				"Provide X-Connection-External-Id (or select a Connection for this step) and retry.",
+			errorClass: "permanent",
 		};
 	}
 
@@ -102,6 +117,10 @@ export async function runPieceAction(opts: {
 			propsValue: normalizedInput,
 			executionId,
 			actionName,
+			executionType: opts.executionType,
+			resumePayload: opts.resumePayload,
+			store: opts.store,
+			dbExecutionId: opts.dbExecutionId,
 		});
 
 		const result = await runtimeAction.run(context);
@@ -117,6 +136,10 @@ export async function runPieceAction(opts: {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(`[piece-runtime] Action ${actionName} failed:`, error);
-		return { success: false, error: `Action execution failed: ${message}` };
+		return {
+			success: false,
+			error: `Action execution failed: ${message}`,
+			errorClass: classifyExecutionError(error),
+		};
 	}
 }

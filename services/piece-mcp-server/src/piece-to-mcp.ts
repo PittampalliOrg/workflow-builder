@@ -152,6 +152,22 @@ export type RegisteredTool = {
 	description: string;
 };
 
+/**
+ * Tool allowlist sourced from `mcp_connection.metadata.toolSelection`,
+ * carried transport-level on the MCP URL as `?tools=a,b` (parsed at
+ * session initialize in index.ts). `null` = no restriction (register all
+ * tools); an empty array = register no tools.
+ */
+export type ToolAllowlist = string[] | null;
+
+function toolAllowedPredicate(
+	toolAllowlist: ToolAllowlist,
+): (name: string) => boolean {
+	if (toolAllowlist == null) return () => true;
+	const allowed = new Set(toolAllowlist);
+	return (name: string) => allowed.has(name);
+}
+
 function actionInputSchema(actionKey: string, actionDef: ActionDef): JsonSchema {
 	const schema = actionDef.inputSchema;
 	if (
@@ -170,6 +186,10 @@ function actionInputSchema(actionKey: string, actionDef: ActionDef): JsonSchema 
 /**
  * Register all actions from an AP piece as MCP tools on the given Server.
  *
+ * When `toolAllowlist` is provided (from the `?tools=` URL param), only
+ * the listed actions/extensions are registered — tools/list and
+ * tools/call both see the filtered set.
+ *
  * Returns the list of registered tools (for health endpoint reporting).
  */
 export function registerPieceTools(
@@ -177,9 +197,11 @@ export function registerPieceTools(
 	piece: Piece,
 	metadata: PieceMetadataRow,
 	pieceName?: string,
+	toolAllowlist: ToolAllowlist = null,
 ): RegisteredTool[] {
 	const actions = metadata.actions ?? {};
 	const registeredTools: RegisteredTool[] = [];
+	const isToolAllowed = toolAllowedPredicate(toolAllowlist);
 
 	// Build the tool definitions list for ListTools
 	const toolDefs: Array<{

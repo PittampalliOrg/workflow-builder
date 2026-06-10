@@ -13,6 +13,7 @@ import {
 	integer,
 	jsonb,
 	pgTable,
+	primaryKey,
 	real,
 	serial,
 	text,
@@ -412,6 +413,71 @@ export const workflowConnectionRefs = pgTable(
 		workflowExternalIdIdx: index(
 			"idx_workflow_connection_ref_workflow_external_id",
 		).on(table.workflowId, table.connectionExternalId),
+	}),
+);
+
+/**
+ * Idempotency gate + audit trail + result-offload store for deterministic
+ * Activepieces piece executions (piece-runtime /execute; migration 0080).
+ *
+ * The orchestrator mints `idempotency_key = workflowId:dbExecutionId:taskName`
+ * — stable across activity retries AND workflow replay — so retried
+ * side-effecting actions (send-email, create-issue) dedupe to exactly one
+ * effect. The row also stores the FULL result jsonb; results over the inline
+ * ceiling are returned as `{ artifactRef: { kind: "piece_execution" }, … }`
+ * and read back via GET /api/internal/piece-executions/[idempotencyKey].
+ * See docs/activepieces-integration-architecture.md §2.4.
+ */
+export const pieceExecution = pgTable(
+	"piece_execution",
+	{
+		// Deterministic, orchestrator-supplied — no default.
+		idempotencyKey: text("idempotency_key").primaryKey(),
+		workflowId: text("workflow_id").notNull(),
+		executionId: text("execution_id").notNull(),
+		dbExecutionId: text("db_execution_id"),
+		nodeId: text("node_id").notNull(),
+		pieceName: text("piece_name").notNull(),
+		actionName: text("action_name").notNull(),
+		pieceVersion: text("piece_version"),
+		connectionExternalId: text("connection_external_id"),
+		// 'paused' is not a cacheable terminal state — a RESUME re-invocation
+		// must re-execute, so the gate only short-circuits completed/permanent.
+		status: text("status")
+			.notNull()
+			.$type<"running" | "paused" | "completed" | "failed">(),
+		attempt: integer("attempt").notNull().default(1),
+		result: jsonb("result"),
+		error: text("error"),
+		errorClass: text("error_class").$type<"retryable" | "permanent">(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		workflowIdx: index("idx_piece_execution_workflow").on(table.workflowId),
+		dbExecutionIdx: index("idx_piece_execution_db_execution").on(
+			table.dbExecutionId,
+		),
+	}),
+);
+
+/**
+ * Postgres-backed `ctx.store` for AP piece actions on the deterministic
+ * path (piece-runtime store-adapter; migration 0080). Scope values:
+ * `<workflow_id>` (StoreScope.PROJECT) or
+ * `<workflow_id>:<db_execution_id>` (StoreScope.FLOW — survives a
+ * DELAY/WEBHOOK pause + RESUME).
+ */
+export const pieceStore = pgTable(
+	"piece_store",
+	{
+		scope: text("scope").notNull(),
+		key: text("key").notNull(),
+		value: jsonb("value"),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		pk: primaryKey({ columns: [table.scope, table.key] }),
 	}),
 );
 
@@ -2146,6 +2212,9 @@ export type McpConnection = typeof mcpConnections.$inferSelect;
 export type NewMcpConnection = typeof mcpConnections.$inferInsert;
 export type PieceMetadata = typeof pieceMetadata.$inferSelect;
 export type NewPieceMetadata = typeof pieceMetadata.$inferInsert;
+export type PieceExecution = typeof pieceExecution.$inferSelect;
+export type NewPieceExecution = typeof pieceExecution.$inferInsert;
+export type PieceStoreEntry = typeof pieceStore.$inferSelect;
 export type AppConnectionRecord = typeof appConnections.$inferSelect;
 export type NewAppConnectionRecord = typeof appConnections.$inferInsert;
 export type WorkflowConnectionRef = typeof workflowConnectionRefs.$inferSelect;
