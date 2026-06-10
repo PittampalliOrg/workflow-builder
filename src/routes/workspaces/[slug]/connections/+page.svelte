@@ -20,17 +20,30 @@
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import {
+		Check,
 		CheckCircle2,
+		ChevronDown,
+		ChevronRight,
+		Copy,
+		Globe,
 		KeyRound,
+		LayoutGrid,
 		Loader2,
 		Plug,
 		Plus,
 		RefreshCw,
 		Search,
 		ShieldCheck,
+		Sparkles,
 		Trash2,
 		Unplug
 	} from '@lucide/svelte';
+	import {
+		completePendingOAuth,
+		inspectOAuthCallback,
+		startOAuthConnect
+	} from '$lib/connections/oauth-popup';
+	import { createPieceMcp } from '$lib/connections/piece-mcp';
 	import type { PageData } from './$types';
 	import type { VaultCredentialSummary, VaultSummary } from '$lib/types/vaults';
 
@@ -108,21 +121,17 @@
 		registrationReason: string | null;
 	};
 
-	type PendingOAuth = {
-		state: string;
-		connectionId: string;
-		pieceName: string;
-		codeVerifier: string;
-		redirectUrl: string;
-		addMcp: boolean;
-	};
-
-	const OAUTH_PENDING_KEY = 'workflow-builder:pending-oauth2-connection';
-
 	let { data }: { data: PageData } = $props();
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
-	let activeTab = $state(page.url.searchParams.get('tab') === 'mcp' ? 'mcp' : 'apps');
+	const initialTab = (() => {
+		const tab = page.url.searchParams.get('tab');
+		if (tab === 'mcp') return 'mcp';
+		if (tab === 'apps') return 'apps';
+		return 'catalog';
+	})();
+
+	let activeTab = $state(initialTab);
 	let appConnections = $state<AppConnection[]>([]);
 	let mcpConnections = $state<McpConnection[]>([]);
 	let catalogEntries = $state<CatalogEntry[]>([]);
@@ -133,11 +142,17 @@
 	let busy = $state<string | null>(null);
 	let errorMessage = $state<string | null>(null);
 
+	let hubSearch = $state('');
+	let hubFilter = $state<'all' | 'connected' | 'available'>('all');
+	let hubCategory = $state('ALL');
+
 	let appSearch = $state('');
 	let appStatus = $state('ALL');
 	let mcpSearch = $state('');
 	let appProviderSearch = $state('');
 	let selectedConnectionByPiece = $state<Record<string, string>>({});
+	let expandedClientConfig = $state<string | null>(null);
+	let copiedKey = $state<string | null>(null);
 
 	let addDialogOpen = $state(false);
 	let selectedEntry = $state<CatalogEntry | null>(null);
@@ -147,6 +162,62 @@
 
 	let customName = $state('');
 	let customUrl = $state('');
+
+	const availabilityByPiece = $derived.by(() => {
+		const map = new Map<string, McpAvailabilityEntry>();
+		for (const entry of mcpAvailabilityEntries) map.set(entry.pieceName, entry);
+		return map;
+	});
+
+	const hubCategories = $derived.by(() =>
+		Array.from(new Set(catalogEntries.flatMap((entry) => entry.categories))).sort()
+	);
+
+	function isConnectedEntry(entry: CatalogEntry): boolean {
+		if (entry.appConnections.length > 0) return true;
+		return entry.mcpConnection?.status === 'ENABLED' && !entry.requiresAuth;
+	}
+
+	function boundConnection(entry: CatalogEntry): CatalogAppConnection | null {
+		if (entry.appConnections.length === 0) return null;
+		const boundId = entry.mcpConnection?.connectionExternalId;
+		return entry.appConnections.find((conn) => conn.externalId === boundId) ?? entry.appConnections[0];
+	}
+
+	function matchesHubSearch(entry: CatalogEntry, q: string): boolean {
+		if (!q) return true;
+		return [
+			entry.displayName,
+			entry.pieceName,
+			entry.description ?? '',
+			entry.authType,
+			...entry.categories
+		]
+			.join(' ')
+			.toLowerCase()
+			.includes(q);
+	}
+
+	const hubFilteredEntries = $derived.by(() => {
+		const q = hubSearch.trim().toLowerCase();
+		return catalogEntries.filter((entry) => {
+			if (hubFilter === 'connected' && !isConnectedEntry(entry)) return false;
+			if (hubFilter === 'available' && isConnectedEntry(entry)) return false;
+			if (hubCategory !== 'ALL' && !entry.categories.includes(hubCategory)) return false;
+			return matchesHubSearch(entry, q);
+		});
+	});
+
+	const connectedEntries = $derived.by(() => catalogEntries.filter(isConnectedEntry));
+
+	/** "Popular" curated row = pieces the reconciler pinned (always-warm Knative services). */
+	const popularEntries = $derived.by(() =>
+		mcpAvailabilityEntries.filter((entry) => entry.registrationReason === 'pinned')
+	);
+
+	const showCuratedSections = $derived(
+		hubFilter === 'all' && !hubSearch.trim() && hubCategory === 'ALL'
+	);
 
 	const filteredApps = $derived.by(() => {
 		const q = appSearch.trim().toLowerCase();
@@ -218,6 +289,11 @@
 				.toLowerCase()
 				.includes(q);
 		})
+	);
+
+	/** External-clients endpoint = the hosted workflow MCP gateway connection (public URL). */
+	const hostedGatewayConnection = $derived.by(
+		() => mcpConnections.find((conn) => conn.sourceType === 'hosted_workflow') ?? null
 	);
 
 	onMount(() => {
@@ -330,47 +406,13 @@
 		}
 		busy = `oauth:${entry.pieceName}`;
 		try {
-			const redirectUrl = `${window.location.origin}/api/app-connections/oauth2/callback`;
-			const createRes = await fetch('/api/app-connections', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					pieceName: entry.canonicalPieceName,
-					displayName: connectionName.trim() || entry.displayName,
-					type: 'PLATFORM_OAUTH2',
-					value: {
-						redirect_url: redirectUrl
-					}
-				})
-			});
-			if (!createRes.ok) throw new Error(await createRes.text());
-			const connection = (await createRes.json()) as AppConnection;
-
-			const startRes = await fetch('/api/app-connections/oauth2/start', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					pieceName: entry.canonicalPieceName,
-					redirectUrl
-				})
-			});
-			if (!startRes.ok) throw new Error(await startRes.text());
-			const start = (await startRes.json()) as {
-				authorizationUrl: string;
-				state: string;
-				codeVerifier: string;
-				redirectUrl: string;
-			};
-			const pending: PendingOAuth = {
-				state: start.state,
-				connectionId: connection.id,
+			const { promise } = startOAuthConnect({
 				pieceName: entry.canonicalPieceName,
-				codeVerifier: start.codeVerifier,
-				redirectUrl: start.redirectUrl,
-				addMcp
-			};
-			localStorage.setItem(OAUTH_PENDING_KEY, JSON.stringify(pending));
-			window.location.href = start.authorizationUrl;
+				displayName: connectionName.trim() || entry.displayName,
+				addMcp,
+				oauthAppConfigured: entry.oauthAppConfigured
+			});
+			await promise;
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Failed to start OAuth');
 			busy = null;
@@ -379,36 +421,22 @@
 
 	async function resumeOAuthIfPresent() {
 		const callback = data.oauthCallback as Record<string, string | null> | null;
-		if (!callback) return;
-		if (callback.error) {
-			toast.error(callback.errorDescription || callback.error);
+		const inspection = inspectOAuthCallback(callback);
+		if (inspection.kind === 'none') return;
+		if (inspection.kind === 'error') {
+			toast.error(inspection.message);
 			return;
 		}
-		const raw = localStorage.getItem(OAUTH_PENDING_KEY);
-		if (!raw) return;
-		const pending = JSON.parse(raw) as PendingOAuth;
-		if (pending.state !== callback.state || !callback.code) return;
 
 		busy = 'oauth-resume';
 		try {
-			const completeRes = await fetch('/api/app-connections/oauth2/complete', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					connectionId: pending.connectionId,
-					pieceName: pending.pieceName,
-					code: callback.code,
-					codeVerifier: pending.codeVerifier,
-					redirectUrl: pending.redirectUrl
-				})
-			});
-			if (!completeRes.ok) throw new Error(await completeRes.text());
-			const body = (await completeRes.json()) as { connection: AppConnection };
-			if (pending.addMcp) {
-				await createPieceMcp(pending.pieceName, body.connection.externalId);
+			const connection = await completePendingOAuth(inspection);
+			if (inspection.pending.addMcp) {
+				await createPieceMcp(inspection.pending.pieceName, connection.externalId);
 			}
-			localStorage.removeItem(OAUTH_PENDING_KEY);
-			toast.success(pending.addMcp ? 'Connected and added MCP server' : 'Connection created');
+			toast.success(
+				inspection.pending.addMcp ? 'Connected and added MCP server' : 'Connection created'
+			);
 			await invalidateAll();
 			await loadAll();
 			goto(`/workspaces/${slug}/connections`);
@@ -417,20 +445,6 @@
 		} finally {
 			busy = null;
 		}
-	}
-
-	async function createPieceMcp(pieceName: string, connectionExternalId?: string | null) {
-		const res = await fetch('/api/mcp-connections', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				sourceType: 'nimble_piece',
-				pieceName,
-				connectionExternalId: connectionExternalId || null
-			})
-		});
-		if (!res.ok) throw new Error(await res.text());
-		return (await res.json()) as McpConnection;
 	}
 
 	async function addMcp(entry: CatalogEntry) {
@@ -527,13 +541,57 @@
 	function availabilityForConnection(conn: McpConnection): McpAvailabilityEntry | null {
 		if (conn.sourceType !== 'nimble_piece') return null;
 		const piece = normalizePiece(conn.pieceName);
-		return mcpAvailabilityEntries.find((entry) => entry.pieceName === piece) ?? null;
+		return availabilityByPiece.get(piece) ?? null;
 	}
 
 	function authBadgeVariant(entry: McpAvailabilityEntry): 'default' | 'secondary' | 'outline' {
 		if (entry.ready || entry.authStatus === 'READY') return 'secondary';
 		if (entry.authStatus === 'NO_AUTH_REQUIRED') return 'outline';
 		return 'outline';
+	}
+
+	function statusDotClass(availability: McpAvailabilityEntry | null | undefined): string {
+		if (!availability || availability.authStatus === 'SERVER_NOT_REGISTERED')
+			return 'bg-muted-foreground/40';
+		if (availability.authStatus === 'READY' || availability.authStatus === 'NO_AUTH_REQUIRED')
+			return 'bg-emerald-500';
+		if (availability.authStatus === 'OAUTH_APP_MISSING') return 'bg-red-500';
+		return 'bg-amber-500';
+	}
+
+	function openPiece(entry: CatalogEntry) {
+		goto(`/workspaces/${slug}/connections/${entry.pieceName}`);
+	}
+
+	function mcpServerJsonName(conn: McpConnection): string {
+		if (conn.sourceType === 'nimble_piece' && conn.pieceName) {
+			return `ap-${normalizePiece(conn.pieceName)}`;
+		}
+		if (conn.sourceType === 'hosted_workflow') return 'workflow-builder-hosted';
+		return conn.serverKey || normalizePiece(conn.displayName) || 'mcp-server';
+	}
+
+	function clientConfigSnippet(conn: McpConnection): string {
+		const server: Record<string, unknown> = {
+			type: 'http',
+			url: conn.serverUrl ?? ''
+		};
+		if (conn.connectionExternalId) {
+			server.headers = { 'X-Connection-External-Id': conn.connectionExternalId };
+		}
+		return JSON.stringify({ mcpServers: { [mcpServerJsonName(conn)]: server } }, null, 2);
+	}
+
+	async function copyText(key: string, value: string) {
+		try {
+			await navigator.clipboard.writeText(value);
+			copiedKey = key;
+			setTimeout(() => {
+				if (copiedKey === key) copiedKey = null;
+			}, 1500);
+		} catch {
+			toast.error('Clipboard unavailable');
+		}
 	}
 
 	function formatDate(value: string | undefined): string {
@@ -543,16 +601,63 @@
 </script>
 
 <svelte:head>
-	<title>Connections · Workflow Builder</title>
+	<title>Integrations · Workflow Builder</title>
 </svelte:head>
+
+{#snippet pieceCard(entry: CatalogEntry)}
+	{@const availability = availabilityByPiece.get(entry.pieceName) ?? null}
+	{@const bound = boundConnection(entry)}
+	<button
+		type="button"
+		class="text-left rounded-md border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors flex flex-col gap-2 min-w-0"
+		onclick={() => openPiece(entry)}
+	>
+		<div class="flex items-start justify-between gap-2">
+			<div class="flex items-center gap-2 min-w-0">
+				{#if entry.logoUrl}
+					<img src={entry.logoUrl} alt="" class="size-8 rounded shrink-0" />
+				{:else}
+					<div class="size-8 rounded bg-muted flex items-center justify-center shrink-0">
+						<Plug class="size-4 text-muted-foreground" />
+					</div>
+				{/if}
+				<div class="min-w-0">
+					<div class="text-sm font-medium truncate">{entry.displayName}</div>
+					<div class="text-[10px] text-muted-foreground truncate">{entry.pieceName}</div>
+				</div>
+			</div>
+			<span
+				class={`size-2 rounded-full mt-1 shrink-0 ${statusDotClass(availability)}`}
+				title={availability?.authStatusLabel ?? 'Server not registered'}
+			></span>
+		</div>
+		<p class="text-xs text-muted-foreground line-clamp-2 min-h-[2rem]">
+			{entry.description ?? 'Activepieces integration'}
+		</p>
+		<div class="flex items-center gap-1 flex-wrap">
+			<Badge variant="outline" class="text-[10px]">
+				Actions ✓ <span class="text-muted-foreground">{entry.actionCount}</span>
+			</Badge>
+			{#if availability?.registered}
+				<Badge variant="outline" class="text-[10px]">MCP ✓</Badge>
+			{/if}
+			{#if bound}
+				<Badge variant="secondary" class="text-[10px] max-w-[160px]">
+					<CheckCircle2 class="size-3" />
+					<span class="truncate">{bound.displayName}</span>
+				</Badge>
+			{/if}
+		</div>
+	</button>
+{/snippet}
 
 <div class="h-full overflow-auto">
 	<div class="mx-auto max-w-7xl p-6 space-y-5">
 		<header class="flex items-start justify-between gap-4 flex-wrap">
 			<div>
-				<h1 class="text-2xl font-semibold">Connections</h1>
+				<h1 class="text-2xl font-semibold">Integrations</h1>
 				<p class="text-sm text-muted-foreground mt-1">
-					Connect apps and expose approved MCP servers to workflows and managed agents.
+					Connect apps, browse the piece catalog, and expose approved MCP servers to workflows and managed agents.
 				</p>
 			</div>
 			<Button onclick={() => void loadAll()} variant="outline" disabled={loading}>
@@ -573,9 +678,122 @@
 
 		<Tabs value={activeTab} onValueChange={(value) => (activeTab = value)}>
 			<TabsList>
-				<TabsTrigger value="apps"><KeyRound class="size-4" /> App Connections</TabsTrigger>
-				<TabsTrigger value="mcp"><Plug class="size-4" /> MCP Servers</TabsTrigger>
+				<TabsTrigger value="catalog"><LayoutGrid class="size-4" /> Catalog</TabsTrigger>
+				<TabsTrigger value="apps"><KeyRound class="size-4" /> My connections</TabsTrigger>
+				<TabsTrigger value="mcp"><Plug class="size-4" /> MCP servers</TabsTrigger>
 			</TabsList>
+
+			<TabsContent value="catalog" class="space-y-5 pt-4">
+				<div class="flex items-center gap-2 flex-wrap">
+					<div class="relative min-w-[260px] flex-1">
+						<Search class="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+						<Input class="pl-9" placeholder="Search integrations" bind:value={hubSearch} />
+					</div>
+					<div class="flex items-center rounded-md border p-0.5">
+						{#each [['all', 'All'], ['connected', 'Connected'], ['available', 'Available']] as [value, label] (value)}
+							<Button
+								variant={hubFilter === value ? 'secondary' : 'ghost'}
+								size="sm"
+								class="h-7 px-3 text-xs"
+								onclick={() => (hubFilter = value as typeof hubFilter)}
+							>
+								{label}
+							</Button>
+						{/each}
+					</div>
+					<NativeSelect bind:value={hubCategory} class="w-[180px]">
+						<option value="ALL">All categories</option>
+						{#each hubCategories as category (category)}
+							<option value={category}>{category}</option>
+						{/each}
+					</NativeSelect>
+				</div>
+
+				{#if loading}
+					<div class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+						Loading integrations…
+					</div>
+				{:else}
+					{#if showCuratedSections && connectedEntries.length > 0}
+						<section class="space-y-3">
+							<div class="flex items-center gap-2">
+								<h2 class="text-sm font-semibold">Connected</h2>
+								<Badge variant="outline">{connectedEntries.length}</Badge>
+							</div>
+							<div class="rounded-md border divide-y">
+								{#each connectedEntries as entry (entry.pieceName)}
+									{@const bound = boundConnection(entry)}
+									{@const availability = availabilityByPiece.get(entry.pieceName) ?? null}
+									<button
+										type="button"
+										class="w-full p-3 flex items-center justify-between gap-3 text-left hover:bg-muted/50"
+										onclick={() => openPiece(entry)}
+									>
+										<div class="flex items-center gap-3 min-w-0">
+											{#if entry.logoUrl}
+												<img src={entry.logoUrl} alt="" class="size-7 rounded shrink-0" />
+											{/if}
+											<div class="min-w-0">
+												<div class="flex items-center gap-2">
+													<span class="text-sm font-medium">{entry.displayName}</span>
+													<span class={`size-2 rounded-full ${statusDotClass(availability)}`}></span>
+												</div>
+												{#if bound}
+													<div class="text-xs text-muted-foreground truncate">
+														{bound.displayName}
+														<span class="text-[10px]">· {bound.externalId}</span>
+													</div>
+												{:else}
+													<div class="text-xs text-muted-foreground">No authentication required</div>
+												{/if}
+											</div>
+										</div>
+										<div class="flex items-center gap-1 shrink-0">
+											{#if entry.mcpConnection?.status === 'ENABLED'}
+												<Badge variant="secondary" class="text-[10px]"><Plug class="size-3" /> MCP</Badge>
+											{/if}
+											<CheckCircle2 class="size-4 text-emerald-500" />
+											<ChevronRight class="size-4 text-muted-foreground" />
+										</div>
+									</button>
+								{/each}
+							</div>
+						</section>
+					{/if}
+
+					{#if showCuratedSections && popularEntries.length > 0}
+						<section class="space-y-3">
+							<div class="flex items-center gap-2">
+								<Sparkles class="size-4 text-muted-foreground" />
+								<h2 class="text-sm font-semibold">Popular</h2>
+							</div>
+							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+								{#each popularEntries as entry (entry.pieceName)}
+									{@render pieceCard(entry)}
+								{/each}
+							</div>
+						</section>
+					{/if}
+
+					<section class="space-y-3">
+						<div class="flex items-center gap-2">
+							<h2 class="text-sm font-semibold">All integrations</h2>
+							<Badge variant="outline">{hubFilteredEntries.length}</Badge>
+						</div>
+						{#if hubFilteredEntries.length === 0}
+							<div class="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+								No integrations match this filter.
+							</div>
+						{:else}
+							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+								{#each hubFilteredEntries as entry (entry.pieceName)}
+									{@render pieceCard(entry)}
+								{/each}
+							</div>
+						{/if}
+					</section>
+				{/if}
+			</TabsContent>
 
 			<TabsContent value="apps" class="space-y-4 pt-4">
 				<div class="flex items-center gap-2 flex-wrap">
@@ -646,7 +864,13 @@
 
 				<section class="space-y-3">
 					<div class="flex items-center justify-between gap-3">
-						<h2 class="text-sm font-semibold">Workspace MCP Servers</h2>
+						<div>
+							<h2 class="text-sm font-semibold">Workspace MCP Servers</h2>
+							<p class="text-xs text-muted-foreground">
+								Enabled servers are reachable in-cluster by agents and workflows. Copy the URL or a
+								client config snippet to wire one up manually.
+							</p>
+						</div>
 						<Badge variant="outline">{configuredMcp.length}</Badge>
 					</div>
 					<div class="rounded-md border divide-y">
@@ -655,49 +879,123 @@
 						{:else}
 							{#each configuredMcp as conn (conn.id)}
 								{@const availability = availabilityForConnection(conn)}
-								<div class="p-3 flex items-center justify-between gap-3">
-									<div class="min-w-0">
-										<div class="flex items-center gap-2 flex-wrap">
-											<span class="font-medium text-sm">{conn.displayName}</span>
-											<Badge variant={conn.status === 'ENABLED' ? 'default' : 'outline'}>{conn.status}</Badge>
-											<Badge variant="outline">{conn.sourceType}</Badge>
-											{#if availability}
-												<Badge variant={authBadgeVariant(availability)}>
-													{availability.authStatusLabel}
-												</Badge>
-												{#if availability.registered}
-													<Badge variant="outline">
-														<CheckCircle2 class="size-3" />
-														Registered
+								<div class="p-3 space-y-2">
+									<div class="flex items-center justify-between gap-3">
+										<div class="min-w-0">
+											<div class="flex items-center gap-2 flex-wrap">
+												<span class="font-medium text-sm">{conn.displayName}</span>
+												<Badge variant={conn.status === 'ENABLED' ? 'default' : 'outline'}>{conn.status}</Badge>
+												<Badge variant="outline">{conn.sourceType}</Badge>
+												{#if availability}
+													<Badge variant={authBadgeVariant(availability)}>
+														{availability.authStatusLabel}
+													</Badge>
+													{#if availability.registered}
+														<Badge variant="outline">
+															<CheckCircle2 class="size-3" />
+															Registered
+														</Badge>
+													{:else if conn.status === 'ENABLED'}
+														<Badge variant="outline">
+															<Loader2 class="size-3 animate-spin" />
+															Provisioning (≤2 min)
+														</Badge>
+													{/if}
+												{:else if conn.connectionExternalId}
+													<Badge variant="secondary">
+														<KeyRound class="size-3" />
+														App connection
 													</Badge>
 												{/if}
-											{:else if conn.connectionExternalId}
-												<Badge variant="secondary">
-													<KeyRound class="size-3" />
-													App connection
-												</Badge>
+												{#if matchingVaultCredentials(conn.serverUrl).length > 0}
+													<Badge variant="secondary">
+														<ShieldCheck class="size-3" />
+														Vault auth
+													</Badge>
+												{/if}
+											</div>
+											<div class="text-[11px] text-muted-foreground truncate mt-1 font-mono">{conn.serverUrl}</div>
+										</div>
+										<div class="flex items-center gap-1 shrink-0">
+											{#if conn.serverUrl}
+												<Button
+													variant="ghost"
+													size="icon"
+													title="Copy server URL"
+													onclick={() => copyText(`url:${conn.id}`, conn.serverUrl ?? '')}
+												>
+													{#if copiedKey === `url:${conn.id}`}<Check class="size-4" />{:else}<Copy class="size-4" />{/if}
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													onclick={() => (expandedClientConfig = expandedClientConfig === conn.id ? null : conn.id)}
+												>
+													<ChevronDown
+														class={`size-4 transition-transform ${expandedClientConfig === conn.id ? 'rotate-180' : ''}`}
+													/>
+													Config
+												</Button>
 											{/if}
-											{#if matchingVaultCredentials(conn.serverUrl).length > 0}
-												<Badge variant="secondary">
-													<ShieldCheck class="size-3" />
-													Vault auth
-												</Badge>
+											<Button variant="ghost" size="sm" onclick={() => toggleMcp(conn)}>
+												{#if conn.status === 'ENABLED'}<Unplug class="size-4" /> Disable{:else}<Plug class="size-4" /> Enable{/if}
+											</Button>
+											{#if conn.sourceType !== 'hosted_workflow'}
+												<Button variant="ghost" size="icon" class="text-destructive" onclick={() => deleteMcp(conn)}>
+													<Trash2 class="size-4" />
+												</Button>
 											{/if}
 										</div>
-										<div class="text-[11px] text-muted-foreground truncate mt-1">{conn.serverUrl}</div>
 									</div>
-									<div class="flex items-center gap-1">
-										<Button variant="ghost" size="sm" onclick={() => toggleMcp(conn)}>
-											{#if conn.status === 'ENABLED'}<Unplug class="size-4" /> Disable{:else}<Plug class="size-4" /> Enable{/if}
-										</Button>
-										{#if conn.sourceType !== 'hosted_workflow'}
-											<Button variant="ghost" size="icon" class="text-destructive" onclick={() => deleteMcp(conn)}>
-												<Trash2 class="size-4" />
+									{#if expandedClientConfig === conn.id && conn.serverUrl}
+										<div class="relative">
+											<pre class="bg-muted rounded p-3 text-[11px] overflow-x-auto font-mono">{clientConfigSnippet(conn)}</pre>
+											<Button
+												variant="ghost"
+												size="sm"
+												class="absolute top-1.5 right-1.5 h-7 text-xs"
+												onclick={() => copyText(`cfg:${conn.id}`, clientConfigSnippet(conn))}
+											>
+												{#if copiedKey === `cfg:${conn.id}`}<Check class="size-3" /> Copied{:else}<Copy class="size-3" /> Copy{/if}
 											</Button>
-										{/if}
-									</div>
+										</div>
+									{/if}
 								</div>
 							{/each}
+						{/if}
+					</div>
+				</section>
+
+				<section class="space-y-3">
+					<h2 class="text-sm font-semibold">External clients</h2>
+					<div class="rounded-md border p-4 space-y-2">
+						<div class="flex items-center gap-2">
+							<Globe class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">MCP gateway</span>
+						</div>
+						{#if hostedGatewayConnection?.serverUrl}
+							<div class="flex items-center gap-2">
+								<code class="text-[11px] bg-muted rounded px-2 py-1 truncate flex-1">{hostedGatewayConnection.serverUrl}</code>
+								<Button
+									variant="ghost"
+									size="icon"
+									title="Copy gateway URL"
+									onclick={() => copyText('gateway', hostedGatewayConnection?.serverUrl ?? '')}
+								>
+									{#if copiedKey === 'gateway'}<Check class="size-4" />{:else}<Copy class="size-4" />{/if}
+								</Button>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								External MCP clients (Claude Desktop, IDEs) connect through the hosted mcp-gateway with the
+								workspace bearer token. Manage the hosted server and token in
+								<a href="/settings" class="underline">Settings</a>.
+							</p>
+						{:else}
+							<p class="text-xs text-muted-foreground">
+								Piece MCP servers are cluster-local (<code>ap-&lt;piece&gt;-service</code>). External clients
+								need the hosted mcp-gateway endpoint — enable the hosted workflow MCP server in
+								<a href="/settings" class="underline">Settings</a> to get a public URL.
+							</p>
 						{/if}
 					</div>
 				</section>
@@ -717,7 +1015,7 @@
 							<Card class="overflow-hidden">
 								<CardHeader class="pb-2">
 									<div class="flex items-start justify-between gap-3">
-										<div class="flex items-center gap-2 min-w-0">
+										<button type="button" class="flex items-center gap-2 min-w-0 text-left" onclick={() => openPiece(entry)}>
 											{#if entry.logoUrl}
 												<img src={entry.logoUrl} alt="" class="size-8 rounded" />
 											{/if}
@@ -725,7 +1023,7 @@
 												<CardTitle class="text-sm truncate">{entry.displayName}</CardTitle>
 												<p class="text-[11px] text-muted-foreground truncate">{entry.pieceName}</p>
 											</div>
-										</div>
+										</button>
 										{#if entry.ready}
 											<Badge variant="secondary"><CheckCircle2 class="size-3" /> Ready</Badge>
 										{:else if entry.mcpConnection}

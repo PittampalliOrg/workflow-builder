@@ -3,6 +3,7 @@ import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import { getPopulatedMcpServerByProjectId } from "$lib/server/db/mcp";
 import { mcpConnections, type McpConnectionSourceType } from "$lib/server/db/schema";
+import { appendToolsQueryParam, toolAllowlistFromMetadata } from "$lib/server/mcp-catalog";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type { AgentConfig } from "$lib/types/agents";
 
@@ -279,6 +280,16 @@ function buildServerConfig(
 	}
 	const allowedTools = allowedToolsFrom(metadata.allowedTools ?? metadata.allowed_tools);
 	if (allowedTools.length) config.allowedTools = allowedTools;
+
+	// Integrations-hub tool selection (metadata.toolSelection.tools): carry it
+	// in the piece server URL as `?tools=` so piece-mcp-server enforces it at
+	// tool registration, and surface it as allowedTools for runtimes that
+	// honor client-side filtering. null = no selection stored = all tools.
+	const toolSelection = toolAllowlistFromMetadata(metadata);
+	if (toolSelection !== null && row.sourceType === "nimble_piece") {
+		if (config.url) config.url = appendToolsQueryParam(config.url, toolSelection);
+		if (!config.allowedTools && toolSelection.length) config.allowedTools = toolSelection;
+	}
 	return { config, warning: null };
 }
 

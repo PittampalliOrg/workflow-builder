@@ -224,6 +224,7 @@ export function registerPieceTools(
 	>();
 
 	for (const [actionKey, actionDef] of Object.entries(actions)) {
+		if (!isToolAllowed(actionKey)) continue;
 		// Get runtime action from the piece
 		const action = piece.getAction(actionKey);
 		if (!action) {
@@ -260,6 +261,7 @@ export function registerPieceTools(
 	// so agents see them in the same tools/list. See src/extensions/index.ts.
 	if (pieceName) {
 		for (const extAction of extensionsFor(pieceName)) {
+			if (!isToolAllowed(extAction.name)) continue;
 			const displayName = extAction.displayName || extAction.name;
 			const description = extAction.description
 				? `${displayName}: ${extAction.description}`
@@ -350,9 +352,11 @@ export function registerPieceToolsWithUI(
 	metadata: PieceMetadataRow,
 	uiHtmlPath: string,
 	pieceName: string,
+	toolAllowlist: ToolAllowlist = null,
 ): RegisteredTool[] {
 	const fs = require("fs") as typeof import("fs");
 	const htmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
+	const isToolAllowed = toolAllowedPredicate(toolAllowlist);
 
 	const resourceUri = `ui://piece-mcp-${pieceName}/app.html`;
 
@@ -373,6 +377,7 @@ export function registerPieceToolsWithUI(
 	const registeredTools: RegisteredTool[] = [];
 
 	for (const [actionKey, actionDef] of Object.entries(actions)) {
+		if (!isToolAllowed(actionKey)) continue;
 		// Get runtime action from the piece
 		const action = piece.getAction(actionKey);
 		if (!action) {
@@ -427,6 +432,7 @@ export function registerPieceToolsWithUI(
 
 	// Extension actions for this piece — see src/extensions/.
 	for (const extAction of extensionsFor(pieceName)) {
+		if (!isToolAllowed(extAction.name)) continue;
 		const displayName = extAction.displayName || extAction.name;
 		const description = extAction.description
 			? `${displayName}: ${extAction.description}`

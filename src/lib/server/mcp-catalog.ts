@@ -28,6 +28,13 @@ export type ProjectMcpCatalogEntry = {
 	serverKey?: string | null;
 	connectionExternalId?: string | null;
 	headers?: Record<string, string>;
+	/**
+	 * Per-server tool allowlist from `mcp_connection.metadata.toolSelection`
+	 * (absent = all tools). For piece servers the same list is also carried
+	 * in the URL as `?tools=a,b` so piece-mcp-server enforces it at tool
+	 * registration regardless of the consuming runtime.
+	 */
+	toolAllowlist?: string[];
 };
 
 export type AppConnectionCatalogSummary = {
@@ -172,6 +179,43 @@ function connectionHeaders(
 ): Record<string, string> | undefined {
 	const externalId = connectionExternalId?.trim();
 	return externalId ? { 'X-Connection-External-Id': externalId } : undefined;
+}
+
+/**
+ * Read the per-connection tool allowlist persisted by the Integrations UI
+ * at `mcp_connection.metadata.toolSelection = { tools: string[] }`.
+ *
+ * Returns `null` when no selection is stored (= all tools enabled). An
+ * empty array is a valid "all tools disabled" selection.
+ */
+export function toolAllowlistFromMetadata(
+	metadata: Record<string, unknown> | null | undefined
+): string[] | null {
+	const selection = isRecord(metadata) ? metadata.toolSelection : null;
+	if (!isRecord(selection)) return null;
+	const tools = selection.tools;
+	if (!Array.isArray(tools)) return null;
+	return Array.from(
+		new Set(tools.map((tool) => String(tool || '').trim()).filter(Boolean))
+	);
+}
+
+/**
+ * Carry a tool allowlist on a piece MCP server URL as `?tools=a,b`.
+ * piece-mcp-server reads the param at MCP session initialize and only
+ * registers the listed tools — transport-level enforcement that works for
+ * every consumer handed the URL (agents, orchestrator project-mode,
+ * external clients). `null` allowlist = no restriction (param omitted).
+ */
+export function appendToolsQueryParam(url: string, allowlist: string[] | null): string {
+	if (allowlist === null) return url;
+	try {
+		const parsed = new URL(url);
+		parsed.searchParams.set('tools', allowlist.join(','));
+		return parsed.toString();
+	} catch {
+		return url;
+	}
 }
 
 export function buildHostedMcpGatewayInternalUrl(
@@ -368,14 +412,16 @@ export function buildProjectMcpCatalogEntry(
 		const piece = normalizePieceName(row.pieceName);
 		if (!piece) return null;
 		const headers = connectionHeaders(row.connectionExternalId);
+		const toolAllowlist = toolAllowlistFromMetadata(row.metadata);
 		return {
 			name: `ap-${piece}`,
 			displayName,
-			url,
+			url: appendToolsQueryParam(url, toolAllowlist),
 			sourceType,
 			pieceName: row.pieceName,
 			connectionExternalId: row.connectionExternalId,
-			...(headers ? { headers } : {})
+			...(headers ? { headers } : {}),
+			...(toolAllowlist !== null ? { toolAllowlist } : {})
 		};
 	}
 

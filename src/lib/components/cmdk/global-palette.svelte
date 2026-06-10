@@ -114,7 +114,7 @@
 		{ label: 'Agents', path: '/workspaces/default/agents', icon: Bot },
 		{ label: 'Environments', path: '/workspaces/default/environments', icon: Layers, keywords: 'sandbox' },
 		{ label: 'Credentials', path: '/workspaces/default/credentials', icon: KeyRound, keywords: 'secrets oauth vault connection' },
-		{ label: 'Connections', path: '/workspaces/default/connections', icon: Plug, keywords: 'oauth mcp app integrations providers' },
+		{ label: 'Integrations', path: '/workspaces/default/connections', icon: Plug, keywords: 'oauth mcp app integrations connections providers' },
 		{ label: 'Workflows', path: '/workspaces/default/workflows', icon: Workflow },
 		{ label: 'Library', path: '/workspaces/default/library', icon: Folder, keywords: 'skills files batches code reusable' },
 		{ label: 'Library: Skills', path: '/workspaces/default/skills', icon: Sparkles, keywords: 'library' },
