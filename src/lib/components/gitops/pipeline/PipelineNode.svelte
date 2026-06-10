@@ -39,7 +39,13 @@
 			style={`top:${handleTop(idx, sortedOrigins.length)};left:1px;${HANDLE_STYLE}`}
 		/>
 	{/each}
-	<StageNodeBody stage={data.stage} color={data.color} {selected} highlight={Boolean(data.highlight)} />
+	<StageNodeBody
+		stage={data.stage}
+		color={data.color}
+		{selected}
+		highlight={Boolean(data.highlight)}
+		freightRing={Boolean(data.freightRing)}
+	/>
 	{#each sortedOrigins as req, idx (req.origin)}
 		<Handle
 			id={req.origin}

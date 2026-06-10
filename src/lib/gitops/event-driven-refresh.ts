@@ -27,6 +27,31 @@ const REFRESH_KINDS = new Set([
 export const GITOPS_EVENT_REFRESH_DEBOUNCE_MS = 1_500;
 
 /**
+ * The hub inventory heartbeat (gitops.inventory event) lands at least every
+ * ~10min when the pipeline is healthy, so a connected stream that has been
+ * silent for longer than this is degraded — the SSE socket being open proves
+ * nothing about the upstream eventbus (an 11h outage once looked "live").
+ */
+export const STREAM_DEGRADED_MS = 15 * 60_000;
+
+export type StreamHealth = "live" | "degraded" | "reconnecting" | "poll";
+
+export function deriveStreamHealth(args: {
+	connected: boolean;
+	reconnecting: boolean;
+	lastEventAt: number | null;
+	now: number;
+}): StreamHealth {
+	if (args.connected) {
+		if (args.lastEventAt === null || args.now - args.lastEventAt > STREAM_DEGRADED_MS) {
+			return "degraded";
+		}
+		return "live";
+	}
+	return args.reconnecting ? "reconnecting" : "poll";
+}
+
+/**
  * Shared merge for the activity-event buffer: dedupe by `eventId` (incoming
  * wins), sort newest-first by `sequence`, cap to `limit`.
  */

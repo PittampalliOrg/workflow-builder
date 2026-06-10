@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
 		Anchor,
+		ArrowRight,
 		Boxes,
 		ChevronDown,
 		ChevronRight,
@@ -21,8 +22,13 @@
 	} from "$lib/components/ui/collapsible";
 	import { Sheet, SheetContent, SheetHeader, SheetTitle } from "$lib/components/ui/sheet";
 	import JsonViewer from "$lib/components/workflow/execution/json-viewer.svelte";
-	import { eventsForSelection } from "$lib/gitops/activity-overlay";
+	import {
+		correlationChips,
+		eventsForSelection,
+		selectionForEvent,
+	} from "$lib/gitops/activity-overlay";
 	import { activityEventTone, toneClasses } from "$lib/gitops/activity-tone";
+	import { buildFreightJourney } from "$lib/gitops/freight-journey";
 	import { buildVisual, healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
 	import type { PipelineModel } from "$lib/gitops/pipeline-types";
 	import type { PipelineSelection } from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
@@ -51,6 +57,8 @@
 			tektonBase?: string | null;
 		};
 		onClose: () => void;
+		/** Navigate to a stage (journey rows / event chips) — clears any freight focus. */
+		onSelectStage?: (sel: PipelineSelection) => void;
 	};
 	let {
 		model,
@@ -60,6 +68,7 @@
 		now = Date.now(),
 		links = {},
 		onClose,
+		onSelectStage,
 	}: Props = $props();
 
 	let selectedEventId = $state<string | null>(null);
@@ -94,6 +103,12 @@
 	// Env stages of the selected warehouse (shown when a warehouse / collapsed lane is selected).
 	const warehouseStages = $derived(
 		warehouse && !stage ? model.stages.filter((s) => s.warehouse === warehouse.name) : [],
+	);
+
+	// "Where is this image version?" — only for an explicitly selected freight
+	// (the carousel), not the warehouse-fallback freight.
+	const journeyRows = $derived(
+		freightId && freight ? buildFreightJourney(freight, model) : [],
 	);
 
 	const open = $derived(Boolean(selection) || Boolean(freightId));
@@ -481,6 +496,41 @@
 											{event.message}
 										</div>
 									{/if}
+									{#if event.eventId === activeEvent?.eventId}
+										{@const chips = correlationChips(event)}
+										{@const target = selectionForEvent(event, model)}
+										{#if chips.length > 0 || (target && target.id !== selection?.id)}
+											<div class="mt-1.5 flex flex-wrap items-center gap-1">
+												{#each chips as chip (chip.key)}
+													<span class="inline-flex items-center gap-1 rounded border border-border/70 bg-muted/40 px-1.5 py-px font-mono text-[0.6rem]">
+														<span class="text-muted-foreground">{chip.key}</span>
+														<span class="text-foreground">{chip.label}</span>
+													</span>
+												{/each}
+												{#if target && target.id !== selection?.id}
+													<!-- svelte-ignore node_invalid_placement_ssr -->
+													<span
+														role="link"
+														tabindex="-1"
+														class="inline-flex items-center gap-1 rounded border border-border/70 bg-muted/50 px-1.5 py-px text-[0.6rem] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+														onclick={(e) => {
+															e.stopPropagation();
+															onSelectStage?.(target);
+														}}
+														onkeydown={(e) => {
+															if (e.key === "Enter") {
+																e.stopPropagation();
+																onSelectStage?.(target);
+															}
+														}}
+													>
+														open {target.id.replace(/^(stage|warehouse)\//, "").replace("::", " · ")}
+														<ArrowRight class="size-2.5" />
+													</span>
+												{/if}
+											</div>
+										{/if}
+									{/if}
 								</button>
 							{/each}
 						</div>
@@ -747,6 +797,51 @@
 							GHCR package <ExternalLink class="size-3" />
 						</a>
 					{/if}
+				</section>
+			{/if}
+
+			{#if journeyRows.length > 0}
+				<!-- "Where is this image version?" — per-env journey for the selected
+				     freight. Clicking a row opens that stage's drawer (with its full
+				     Commit→Build→Pin→Promote→Deploy delivery timeline). -->
+				<section class="space-y-2.5 border-t border-border/60 pt-5 first:border-t-0 first:pt-0">
+					{@render sectionLabel("Journey")}
+					<div class="space-y-1">
+						{#each journeyRows as row (row.stage.name)}
+							{@const health = healthVisual(row.stage.health)}
+							{@const HealthIcon = health.icon}
+							<button
+								type="button"
+								class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[0.7rem] transition hover:bg-muted/60"
+								onclick={() => onSelectStage?.({ kind: "stage", id: `stage/${row.stage.name}` })}
+							>
+								<span class="w-14 shrink-0 font-medium">{row.env}</span>
+								{#if row.state === "deployed"}
+									<span class="flex min-w-0 items-center gap-1" style={`color:${health.color}`}>
+										{#if HealthIcon}<HealthIcon class={health.spin ? "size-3 shrink-0 animate-spin" : "size-3 shrink-0"} />{/if}
+										<span class="truncate">{row.detail}</span>
+									</span>
+								{:else if row.state === "promoting"}
+									<span class="flex min-w-0 items-center gap-1 text-amber-700 dark:text-amber-300">
+										<TimerReset class="size-3 shrink-0 animate-pulse" />
+										<span class="truncate font-mono text-[0.66rem]">{row.detail}</span>
+									</span>
+								{:else if row.state === "dormant"}
+									<span class="text-muted-foreground/70">dormant</span>
+								{:else if row.state === "superseded" || row.state === "queued"}
+									<span class="flex min-w-0 items-center gap-1 text-muted-foreground">
+										<span class="shrink-0 text-[0.62rem] uppercase tracking-wide">{row.state}</span>
+										{#if row.detail}<span class="truncate font-mono text-[0.66rem]">{row.detail}</span>{/if}
+									</span>
+								{:else}
+									<span class="text-muted-foreground">—</span>
+								{/if}
+								<span class="ml-auto shrink-0 text-[0.64rem] text-muted-foreground">
+									{row.at ? relativeTime(row.at, now) : ""}
+								</span>
+							</button>
+						{/each}
+					</div>
 				</section>
 			{/if}
 

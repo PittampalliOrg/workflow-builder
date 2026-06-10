@@ -32,8 +32,15 @@
 		tektonPipelineRunUrl,
 	} from "$lib/utils/gitops-display";
 
-	type Props = { stage: PipelineStage; color?: string; selected?: boolean; highlight?: boolean };
-	let { stage, color, selected = false, highlight = false }: Props = $props();
+	type Props = {
+		stage: PipelineStage;
+		color?: string;
+		selected?: boolean;
+		highlight?: boolean;
+		/** Identity-colored ring: this stage holds the selected freight. */
+		freightRing?: boolean;
+	};
+	let { stage, color, selected = false, highlight = false, freightRing = false }: Props = $props();
 
 	const hover = getContext<PipelineHoverContext | undefined>(PIPELINE_HOVER_CONTEXT);
 	const links = getContext<PipelineLinks | undefined>(PIPELINE_LINKS_CONTEXT);
@@ -91,7 +98,9 @@
 	class="flex h-[168px] w-[270px] flex-col overflow-hidden rounded-xl border border-border/70 bg-card text-card-foreground shadow-sm transition-shadow hover:shadow-md {selected
 		? 'ring-2 ring-primary/40'
 		: ''} {highlight ? 'border-amber-400 ring-2 ring-amber-400 shadow-[0_0_12px_2px_rgba(245,197,24,0.55)]' : ''} {stage.dormant ? 'border-dashed opacity-80' : ''} {isFlowing(stage.name) ? 'gitops-flow' : ''}"
-	style={color ? `border-left: 3px solid ${color};` : ""}
+	style="{color ? `border-left: 3px solid ${color};` : ''}{freightRing && color
+		? `box-shadow: 0 0 0 2.5px ${color};`
+		: ''}"
 >
 	<!-- Header: environment name, identity dot, subtle tint, ArgoCD link -->
 	<div

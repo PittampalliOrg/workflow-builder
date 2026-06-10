@@ -1,14 +1,21 @@
 <script lang="ts">
-	import { Clock3, Radio } from "@lucide/svelte";
+	import { Clock3, Radio, TimerReset } from "@lucide/svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { pipelineActivityTone, toneClasses } from "$lib/gitops/activity-tone";
 	import { isFlowing } from "$lib/gitops/gitops-flow.svelte";
 	import { nowTick } from "$lib/gitops/gitops-tick.svelte";
 	import { healthVisual } from "$lib/gitops/kargo-status";
+	import {
+		stageMatchesAnyStatus,
+		type StageStatusFilter,
+	} from "$lib/gitops/stage-status-filters";
 	import type { PipelineModel, PipelineStage } from "$lib/gitops/pipeline-types";
-	import type { PipelineSelection } from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
-	import { relativeTime, shortTag } from "$lib/utils/gitops-display";
+	import type {
+		FreightHighlight,
+		PipelineSelection,
+	} from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
+	import { relativeTime, shortSha, shortTag } from "$lib/utils/gitops-display";
 
 	type Props = {
 		model: PipelineModel;
@@ -16,8 +23,18 @@
 		stageSearch?: string;
 		selected?: PipelineSelection;
 		onselect?: (sel: PipelineSelection) => void;
+		freightHighlight?: FreightHighlight;
+		statusFilter?: StageStatusFilter[];
 	};
-	let { model, pipelineFilter = [], stageSearch = "", selected = null, onselect }: Props = $props();
+	let {
+		model,
+		pipelineFilter = [],
+		stageSearch = "",
+		selected = null,
+		onselect,
+		freightHighlight = null,
+		statusFilter = [],
+	}: Props = $props();
 
 	const rows = $derived.by((): PipelineStage[] => {
 		const set = new Set(pipelineFilter);
@@ -26,9 +43,16 @@
 			if (set.size > 0 && !set.has(s.warehouse)) return false;
 			if (needle && !s.warehouse.toLowerCase().includes(needle) && !s.env.toLowerCase().includes(needle))
 				return false;
+			if (!stageMatchesAnyStatus(s, statusFilter)) return false;
 			return true;
 		});
 	});
+
+	function rowEmphasis(stage: PipelineStage): "held" | "dimmed" | null {
+		if (!freightHighlight) return null;
+		if (freightHighlight.stageNames.includes(stage.name)) return "held";
+		return stage.warehouse === freightHighlight.warehouse ? null : "dimmed";
+	}
 </script>
 
 <div class="h-full overflow-auto">
@@ -48,11 +72,12 @@
 			{#each rows as stage (stage.name)}
 				{@const health = healthVisual(stage.health)}
 				{@const Icon = health.icon}
+				{@const emphasis = rowEmphasis(stage)}
 				<tr
-					class="cursor-pointer border-b transition hover:bg-muted/50 {selected?.id === `stage/${stage.name}` ? 'bg-muted' : ''}"
+					class="cursor-pointer border-b transition hover:bg-muted/50 {selected?.id === `stage/${stage.name}` ? 'bg-muted' : ''} {emphasis === 'held' ? 'bg-muted/60' : ''} {emphasis === 'dimmed' ? 'opacity-50' : ''}"
 					onclick={() => onselect?.({ kind: "stage", id: `stage/${stage.name}` })}
 				>
-					<td class="px-3 py-1.5">
+					<td class="px-3 py-1.5 {emphasis === 'held' ? 'border-l-2' : ''}" style={emphasis === "held" ? `border-left-color:${model.warehouseColorMap[stage.warehouse] ?? "#ccc"}` : ""}>
 						<span class="flex items-center gap-1.5">
 							<span class="size-2 rounded-full" style={`background:${model.warehouseColorMap[stage.warehouse] ?? "#ccc"}`}></span>
 							<span class="truncate font-medium">{stage.warehouse}</span>
@@ -82,13 +107,25 @@
 					</td>
 					<td class="px-3 py-1.5 text-muted-foreground">{stage.syncStatus ?? (stage.dormant ? "dormant" : "—")}</td>
 					<td class="px-3 py-1.5">
-						{#if stage.desiredTag}
-							<span class="font-mono text-[0.66rem]" title={stage.desiredTag}>{shortTag(stage.desiredTag)}</span>
-						{:else if stage.rollup}
-							<Badge variant="secondary" class="h-4 px-1 text-[0.58rem]">{stage.rollup.synced}/{stage.rollup.total}</Badge>
-						{:else}
-							<span class="text-muted-foreground">—</span>
-						{/if}
+						<span class="flex items-center gap-1.5">
+							{#if stage.desiredTag}
+								<span class="font-mono text-[0.66rem]" title={stage.desiredTag}>{shortTag(stage.desiredTag)}</span>
+							{:else if stage.rollup}
+								<Badge variant="secondary" class="h-4 px-1 text-[0.58rem]">{stage.rollup.synced}/{stage.rollup.total}</Badge>
+							{:else}
+								<span class="text-muted-foreground">—</span>
+							{/if}
+							{#if stage.promotion?.inFlight}
+								<span
+									class="inline-flex items-center gap-1 rounded border border-amber-400/60 bg-amber-500/10 px-1 py-px font-mono text-[0.6rem] text-amber-700 dark:text-amber-300"
+									title={stage.promotion.stalledOn ? `waiting: ${stage.promotion.stalledOn}` : "promotion in flight"}
+								>
+									<TimerReset class="size-2.5 shrink-0" />
+									{#if stage.promotion.proposedTag}→ {shortSha(stage.promotion.proposedTag)}{/if}
+									{#if stage.promotion.soak}soak {stage.promotion.soak.label}{/if}
+								</span>
+							{/if}
+						</span>
 					</td>
 					<td class="px-3 py-1.5 text-muted-foreground">
 						{#if stage.updatedAt}

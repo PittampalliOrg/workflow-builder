@@ -5,7 +5,9 @@ import {
 	activityEventTone,
 	activityTargetKeys,
 	applyPipelineActivityOverlay,
+	correlationChips,
 	eventsForSelection,
+	selectionForEvent,
 	warehouseFromGitSha,
 } from "./activity-overlay";
 import { pipelineActivityTone, toneClasses } from "./activity-tone";
@@ -331,6 +333,80 @@ describe("activityEventLabel", () => {
 		const e = event({ correlation: {} });
 		e.resourceRef = { ...e.resourceRef, name: null };
 		expect(activityEventLabel(e)).toBe("workflow-builder:dev");
+	});
+});
+
+describe("selectionForEvent", () => {
+	const model = baseModel();
+
+	it("returns a stage selection when the resolved stage exists", () => {
+		const sel = selectionForEvent(
+			event({
+				source: "tekton",
+				activityType: "tekton.pipelinerun",
+				correlation: { imageName: "workflow-builder", cluster: "dev" },
+			}),
+			model,
+		);
+		expect(sel).toEqual({ kind: "stage", id: "stage/workflow-builder::dev" });
+	});
+
+	it("falls back to the warehouse when no env resolves", () => {
+		const sel = selectionForEvent(
+			event({
+				source: "promoter",
+				activityType: "promoter.commitstatus",
+				correlation: { branch: "main" }, // unresolvable env
+			}),
+			model,
+		);
+		expect(sel).toEqual({ kind: "warehouse", id: "warehouse/release-pins" });
+	});
+
+	it("returns null when the target isn't in the model at all", () => {
+		const sel = selectionForEvent(
+			event({
+				source: "tekton",
+				activityType: "tekton.pipelinerun",
+				correlation: { imageName: "not-a-known-service", cluster: "dev" },
+			}),
+			model,
+		);
+		expect(sel).toBeNull();
+	});
+
+	it("returns null for an uncorrelated event", () => {
+		expect(
+			selectionForEvent(
+				event({ source: "tekton", activityType: "tekton.pipelinerun", correlation: {} }),
+				model,
+			),
+		).toBeNull();
+	});
+});
+
+describe("correlationChips", () => {
+	it("renders readable chips with shortened shas", () => {
+		const chips = correlationChips(
+			event({
+				correlation: {
+					imageName: "workflow-builder",
+					cluster: "dev",
+					branch: "env/spokes-dev",
+					pipelineRun: "outer-loop-wb-abc",
+					gitSha: "abc1234deadbeefcafe",
+				},
+			}),
+		);
+		expect(chips).toContainEqual({ key: "imageName", label: "workflow-builder" });
+		expect(chips).toContainEqual({ key: "cluster", label: "dev" });
+		expect(chips).toContainEqual({ key: "branch", label: "env/spokes-dev" });
+		expect(chips).toContainEqual({ key: "pipelineRun", label: "outer-loop-wb-abc" });
+		expect(chips).toContainEqual({ key: "gitSha", label: "abc1234" });
+	});
+
+	it("omits absent fields", () => {
+		expect(correlationChips(event({ correlation: {} }))).toEqual([]);
 	});
 });
 
