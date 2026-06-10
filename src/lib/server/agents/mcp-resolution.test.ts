@@ -54,11 +54,98 @@ describe("agent MCP resolution", () => {
 				connectionExternalId: "conn_outlook",
 				mcpConnectionExternalId: "mcp_1",
 				transport: "streamable_http",
-				url: "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local/mcp",
+				// per-agent allowedTools now reaches the piece server's ?tools=
+				// (no project ceiling here, so effective = the agent narrowing)
+				url: "http://ap-microsoft-outlook-service.workflow-builder.svc.cluster.local/mcp?tools=list_emails",
 				headers: { "X-Connection-External-Id": "conn_outlook" },
 				allowedTools: ["list_emails"],
 			},
 		]);
+	});
+
+	it("narrows the piece ?tools= to the intersection of project ceiling and per-agent allowedTools", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_gh",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					serverKey: null,
+					connectionExternalId: "conn_gh",
+					displayName: "GitHub",
+					registryRef: "ap-github-service",
+					serverUrl: "http://ap-github-service:3100/mcp",
+					// project ceiling: only these three tools enabled for the workspace
+					metadata: { toolSelection: { tools: ["create_issue", "find_issue", "find_user"] } },
+				},
+			],
+			requestedServers: [
+				{
+					pieceName: "github",
+					displayName: "GitHub",
+					// agent narrows to two; "delete_branch" is outside the ceiling -> dropped
+					allowedTools: ["create_issue", "delete_branch"],
+				},
+			],
+		});
+
+		expect(result.warnings).toEqual([]);
+		const server = result.mcpServers[0];
+		expect(server.url).toBe(
+			"http://ap-github-service.workflow-builder.svc.cluster.local/mcp?tools=create_issue",
+		);
+		expect(server.allowedTools).toEqual(["create_issue"]);
+	});
+
+	it("carries only the project ceiling when the agent does not narrow", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_gh",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					serverKey: null,
+					connectionExternalId: "conn_gh",
+					displayName: "GitHub",
+					registryRef: "ap-github-service",
+					serverUrl: "http://ap-github-service:3100/mcp",
+					metadata: { toolSelection: { tools: ["create_issue", "find_issue"] } },
+				},
+			],
+			// attached with no allowedTools -> inherit the full ceiling
+			requestedServers: [{ pieceName: "github", displayName: "GitHub" }],
+		});
+
+		expect(result.mcpServers[0].url).toBe(
+			"http://ap-github-service.workflow-builder.svc.cluster.local/mcp?tools=create_issue%2Cfind_issue",
+		);
+	});
+
+	it("omits ?tools= entirely when neither project nor agent restricts tools", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [
+				{
+					id: "mcp_gh",
+					projectId: "project-1",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					serverKey: null,
+					connectionExternalId: "conn_gh",
+					displayName: "GitHub",
+					registryRef: "ap-github-service",
+					serverUrl: "http://ap-github-service:3100/mcp",
+					metadata: null,
+				},
+			],
+			requestedServers: [{ pieceName: "github", displayName: "GitHub" }],
+		});
+
+		expect(result.mcpServers[0].url).toBe(
+			"http://ap-github-service.workflow-builder.svc.cluster.local/mcp",
+		);
+		expect(result.mcpServers[0].allowedTools).toBeUndefined();
 	});
 
 	it("includes all project connections in project mode without duplicating explicit selections", () => {

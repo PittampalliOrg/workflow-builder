@@ -218,6 +218,50 @@ export function appendToolsQueryParam(url: string, allowlist: string[] | null): 
 	}
 }
 
+/**
+ * Read the `?tools=a,b` allowlist already baked into a piece MCP server URL
+ * (the project ceiling set by `appendToolsQueryParam`). Returns `null` when the
+ * param is absent (= all tools — the ceiling is unbounded).
+ */
+export function parseToolsQueryParam(url: string | undefined | null): string[] | null {
+	if (!url) return null;
+	try {
+		const parsed = new URL(url);
+		const raw = parsed.searchParams.get('tools');
+		if (raw === null) return null;
+		return Array.from(
+			new Set(raw.split(',').map((tool) => tool.trim()).filter(Boolean))
+		);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Narrow a piece MCP server URL's `?tools=` to the INTERSECTION of the project
+ * ceiling (already on the URL, or unbounded) and a per-agent `allowedTools`
+ * narrowing. An agent can only narrow within the workspace ceiling, never
+ * widen it. `agentAllowedTools` empty/absent = no agent narrowing (keep the
+ * ceiling). Returns the (url, effective allowlist) so callers can also set
+ * `allowedTools` for client-side runtime filtering.
+ */
+export function narrowToolsToIntersection(
+	url: string,
+	agentAllowedTools: string[] | null | undefined
+): { url: string; effective: string[] | null } {
+	const agent =
+		Array.isArray(agentAllowedTools) && agentAllowedTools.length
+			? Array.from(new Set(agentAllowedTools.map((t) => String(t || '').trim()).filter(Boolean)))
+			: null;
+	if (agent === null) {
+		// No agent narrowing: keep whatever ceiling the URL already carries.
+		return { url, effective: parseToolsQueryParam(url) };
+	}
+	const ceiling = parseToolsQueryParam(url);
+	const effective = ceiling === null ? agent : agent.filter((tool) => ceiling.includes(tool));
+	return { url: appendToolsQueryParam(url, effective), effective };
+}
+
 export function buildHostedMcpGatewayInternalUrl(
 	projectId: string,
 	baseUrl = 'http://mcp-gateway.workflow-builder.svc.cluster.local:8080'

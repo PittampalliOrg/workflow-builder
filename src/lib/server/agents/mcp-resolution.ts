@@ -3,7 +3,11 @@ import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import { getPopulatedMcpServerByProjectId } from "$lib/server/db/mcp";
 import { mcpConnections, type McpConnectionSourceType } from "$lib/server/db/schema";
-import { appendToolsQueryParam, toolAllowlistFromMetadata } from "$lib/server/mcp-catalog";
+import {
+	appendToolsQueryParam,
+	narrowToolsToIntersection,
+	toolAllowlistFromMetadata,
+} from "$lib/server/mcp-catalog";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type { AgentConfig } from "$lib/types/agents";
 
@@ -187,7 +191,17 @@ function sanitizeRequestedServer(server: McpServerProfileConfig): McpServerProfi
 	if (sanitized.url) sanitized.url = qualifyMcpServerUrl(sanitized, sanitized.url);
 	if (sanitized.serverUrl) sanitized.serverUrl = qualifyMcpServerUrl(sanitized, sanitized.serverUrl);
 	const allowedTools = allowedToolsFrom(server.allowedTools ?? (server as Record<string, unknown>).allowed_tools);
-	if (allowedTools.length) sanitized.allowedTools = allowedTools;
+	if (allowedTools.length) {
+		sanitized.allowedTools = allowedTools;
+		// Direct-endpoint piece server: narrow its `?tools=` to the intersection
+		// of whatever ceiling the URL carries and the per-agent allowlist (same
+		// transport enforcement as the matched-connection path).
+		if (sanitized.sourceType === "nimble_piece" && sanitized.url) {
+			const { url, effective } = narrowToolsToIntersection(sanitized.url, allowedTools);
+			sanitized.url = url;
+			if (effective !== null) sanitized.allowedTools = effective;
+		}
+	}
 	return sanitized;
 }
 
@@ -202,7 +216,20 @@ function mergeRequestedOverResolved(
 	const allowedTools = allowedToolsFrom(
 		requested.allowedTools ?? (requested as Record<string, unknown>).allowed_tools,
 	);
-	if (allowedTools.length) merged.allowedTools = allowedTools;
+	if (allowedTools.length) {
+		merged.allowedTools = allowedTools;
+		// `resolved.url` already carries the project ceiling as `?tools=` (set
+		// in buildServerConfig). Re-narrow it to ceiling ∩ per-agent allowedTools
+		// so the piece-mcp-server enforces the agent's narrowing at the transport
+		// — not just the project default. Without this, per-agent tool curation
+		// reaches only client-side runtime filtering while the server still
+		// registers every project-ceiling tool.
+		if (merged.sourceType === "nimble_piece" && merged.url) {
+			const { url, effective } = narrowToolsToIntersection(merged.url, allowedTools);
+			merged.url = url;
+			if (effective !== null) merged.allowedTools = effective;
+		}
+	}
 	return merged;
 }
 

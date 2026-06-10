@@ -110,11 +110,91 @@ def test_resolves_logical_profile_server_to_project_connection(monkeypatch):
                 "pieceName": "github",
                 "connectionExternalId": "conn_1",
                 "transport": "streamable_http",
-                "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp",
+                # per-agent allowedTools now reaches the piece server's ?tools=
+                "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp?tools=list_repositories",
             "headers": {"X-Connection-External-Id": "conn_1"},
             "allowedTools": ["list_repositories"],
         }
     ]
+
+
+def test_narrows_piece_tools_to_project_ceiling_agent_intersection(monkeypatch):
+    rows = [
+        {
+            "id": "mcp_gh",
+            "project_id": "default",
+            "source_type": "nimble_piece",
+            "piece_name": "github",
+            "server_key": None,
+            "connection_external_id": "conn_gh",
+            "display_name": "GitHub",
+            "registry_ref": "ap-github-service",
+            "server_url": "http://ap-github-service:3100/mcp",
+            # project ceiling
+            "metadata": {
+                "transport": "streamable_http",
+                "toolSelection": {"tools": ["create_issue", "find_issue", "find_user"]},
+            },
+        }
+    ]
+    monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        resolve_mcp_config.psycopg2, "connect", lambda _url: FakeConnection(rows)
+    )
+
+    # agent narrows to two; delete_branch is outside the ceiling -> dropped
+    result = resolve_mcp_config.resolve_agent_mcp_servers(
+        None,
+        {
+            "projectId": "default",
+            "requestedServers": [
+                {
+                    "pieceName": "github",
+                    "allowedTools": ["create_issue", "delete_branch"],
+                }
+            ],
+        },
+    )
+
+    server = result["mcpServers"][0]
+    assert (
+        server["url"]
+        == "http://ap-github-service.workflow-builder.svc.cluster.local/mcp?tools=create_issue"
+    )
+    assert server["allowedTools"] == ["create_issue"]
+
+
+def test_carries_project_ceiling_when_agent_does_not_narrow(monkeypatch):
+    rows = [
+        {
+            "id": "mcp_gh",
+            "project_id": "default",
+            "source_type": "nimble_piece",
+            "piece_name": "github",
+            "server_key": None,
+            "connection_external_id": "conn_gh",
+            "display_name": "GitHub",
+            "registry_ref": "ap-github-service",
+            "server_url": "http://ap-github-service:3100/mcp",
+            "metadata": {"toolSelection": {"tools": ["create_issue", "find_issue"]}},
+        }
+    ]
+    monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        resolve_mcp_config.psycopg2, "connect", lambda _url: FakeConnection(rows)
+    )
+
+    # project mode, no per-agent narrowing -> full ceiling on the URL
+    result = resolve_mcp_config.resolve_agent_mcp_servers(
+        None,
+        {"projectId": "default", "includeProjectConnections": True},
+    )
+
+    server = result["mcpServers"][0]
+    assert (
+        server["url"]
+        == "http://ap-github-service.workflow-builder.svc.cluster.local/mcp?tools=create_issue%2Cfind_issue"
+    )
 
 
 def test_matches_piece_descriptor_by_piece_name_not_source_type(monkeypatch):
@@ -228,7 +308,8 @@ def test_qualifies_direct_nimble_service_url_for_cross_namespace_agents():
                 "sourceType": "nimble_piece",
                 "registryRef": "ap-microsoft-onedrive-service",
                 "transport": "streamable_http",
-                "url": "http://ap-microsoft-onedrive-service.workflow-builder.svc.cluster.local/mcp",
+                # direct-endpoint piece server: per-agent allowlist reaches ?tools=
+                "url": "http://ap-microsoft-onedrive-service.workflow-builder.svc.cluster.local/mcp?tools=list_files%2Clist_folders",
                 "allowedTools": ["list_files", "list_folders"],
             }
         ],

@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import psycopg2
 import requests
@@ -101,6 +101,74 @@ def _allowed_tools_from_request(server: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _tool_selection_from_metadata(metadata: dict[str, Any]) -> list[str] | None:
+    """Project ceiling set by the Integrations UI at
+    ``mcp_connection.metadata.toolSelection = {tools: [...]}``. ``None`` = no
+    selection stored (all tools). Mirrors the BFF ``toolAllowlistFromMetadata``.
+    """
+    selection = metadata.get("toolSelection")
+    if not isinstance(selection, dict):
+        return None
+    tools = selection.get("tools")
+    if not isinstance(tools, list):
+        return None
+    seen: list[str] = []
+    for item in tools:
+        value = str(item or "").strip()
+        if value and value not in seen:
+            seen.append(value)
+    return seen
+
+
+def _parse_tools_query_param(url: str | None) -> list[str] | None:
+    """Read the ``?tools=a,b`` allowlist already on a piece URL. ``None`` when
+    absent (= ceiling unbounded). Mirrors the BFF ``parseToolsQueryParam``."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key == "tools":
+            seen: list[str] = []
+            for item in value.split(","):
+                tool = item.strip()
+                if tool and tool not in seen:
+                    seen.append(tool)
+            return seen
+    return None
+
+
+def _append_tools_query_param(url: str, allowlist: list[str] | None) -> str:
+    """Carry a tool allowlist on a piece URL as ``?tools=a,b``. ``None`` = no
+    restriction (param omitted). Mirrors the BFF ``appendToolsQueryParam``."""
+    if allowlist is None:
+        return url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    params = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != "tools"]
+    params.append(("tools", ",".join(allowlist)))
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
+def _narrow_tools_to_intersection(
+    url: str, agent_allowed_tools: list[str] | None
+) -> tuple[str, list[str] | None]:
+    """Narrow a piece URL's ``?tools=`` to ceiling ∩ per-agent allowlist. An
+    agent only narrows within the workspace ceiling, never widens. Empty/None
+    agent list = no agent narrowing (keep the ceiling). Mirrors the BFF
+    ``narrowToolsToIntersection``."""
+    agent = [t for t in (agent_allowed_tools or []) if str(t or "").strip()]
+    if not agent:
+        return url, _parse_tools_query_param(url)
+    ceiling = _parse_tools_query_param(url)
+    effective = agent if ceiling is None else [t for t in agent if t in ceiling]
+    return _append_tools_query_param(url, effective), effective
 
 
 def _server_identity_values(server: dict[str, Any]) -> set[str]:
@@ -211,6 +279,13 @@ def _sanitize_requested_server(server: dict[str, Any]) -> dict[str, Any]:
     allowed_tools = _allowed_tools_from_request(server)
     if allowed_tools:
         sanitized["allowedTools"] = allowed_tools
+        if sanitized.get("sourceType") == "nimble_piece" and sanitized.get("url"):
+            url, effective = _narrow_tools_to_intersection(
+                str(sanitized["url"]), allowed_tools
+            )
+            sanitized["url"] = url
+            if effective is not None:
+                sanitized["allowedTools"] = effective
     return sanitized
 
 
@@ -224,6 +299,17 @@ def _merge_requested_over_resolved(
     allowed_tools = _allowed_tools_from_request(requested)
     if allowed_tools:
         merged["allowedTools"] = allowed_tools
+        # resolved["url"] already carries the project ceiling as `?tools=`
+        # (set in _build_server_config). Re-narrow it to ceiling ∩ per-agent
+        # allowedTools so the piece-mcp-server enforces the agent's narrowing
+        # at the transport, matching the BFF resolver.
+        if merged.get("sourceType") == "nimble_piece" and merged.get("url"):
+            url, effective = _narrow_tools_to_intersection(
+                str(merged["url"]), allowed_tools
+            )
+            merged["url"] = url
+            if effective is not None:
+                merged["allowedTools"] = effective
     return merged
 
 
@@ -347,6 +433,16 @@ def _build_server_config(
     allowed_tools = _allowed_tools_from_metadata(metadata)
     if allowed_tools:
         config["allowedTools"] = allowed_tools
+
+    # Project ceiling (Integrations UI -> metadata.toolSelection.tools): carry it
+    # in the piece URL as `?tools=` so piece-mcp-server enforces it at tool
+    # registration on the durable/run path too (previously this path had ZERO
+    # transport tool enforcement). null = no selection = all tools.
+    tool_selection = _tool_selection_from_metadata(metadata)
+    if tool_selection is not None and source_type == "nimble_piece" and config.get("url"):
+        config["url"] = _append_tools_query_param(str(config["url"]), tool_selection)
+        if not config.get("allowedTools") and tool_selection:
+            config["allowedTools"] = tool_selection
     return config, None
 
 
