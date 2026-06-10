@@ -217,10 +217,40 @@
 
 	onMount(() => {
 		filter = loadPreferredFilter();
+		applySelectParam();
 		startFallbackPolling();
 		clockStop = startClock();
 		connectActivityStream();
 	});
+
+	// Deep link from notifications: `?select=stage/<warehouse>::<env>` (the
+	// drawer's native id format) or `warehouse/<name>`. Validated against the
+	// SSR-derived model; an unknown stage falls back to its warehouse; then the
+	// param is stripped so refresh/back doesn't re-open the drawer.
+	function applySelectParam() {
+		const id = page.url.searchParams.get("select");
+		if (!id) return;
+		if (id.startsWith("stage/")) {
+			const name = id.slice("stage/".length);
+			if (baseModel.stages.some((s) => s.name === name)) {
+				selection = { kind: "stage", id };
+			} else {
+				const sep = name.indexOf("::");
+				const warehouse = sep >= 0 ? name.slice(0, sep) : name;
+				if (baseModel.warehouses.some((w) => w.name === warehouse)) {
+					selection = { kind: "warehouse", id: `warehouse/${warehouse}` };
+				}
+			}
+		} else if (id.startsWith("warehouse/")) {
+			const name = id.slice("warehouse/".length);
+			if (baseModel.warehouses.some((w) => w.name === name)) {
+				selection = { kind: "warehouse", id };
+			}
+		}
+		const url = new URL(page.url);
+		url.searchParams.delete("select");
+		void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+	}
 	onDestroy(() => {
 		stopFallbackPolling();
 		clockStop?.();
