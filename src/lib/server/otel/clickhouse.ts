@@ -413,10 +413,10 @@ export function extractExecutionTraceIds(output: unknown): string[] {
 }
 
 /**
- * Find correlated trace IDs by time window from services like dapr-swe
- * that don't propagate trace context through Dapr workflow boundaries.
- * Searches ClickHouse for traces from LLM-related services within the
- * execution's time window.
+ * Find correlated trace IDs by time window from services that don't
+ * propagate trace context through Dapr workflow boundaries. Searches
+ * ClickHouse for traces from LLM-related services within the execution's
+ * time window.
  */
 export async function findCorrelatedTraceIds(
 	startedAt: string | Date,
@@ -439,7 +439,7 @@ export async function findCorrelatedTraceIds(
 			FROM ${CLICKHOUSE_DB}.otel_traces
 			WHERE Timestamp >= '${startBuf}'
 			  AND Timestamp <= '${endBuf}'
-			  AND ServiceName IN ('dapr-swe', 'function-router', 'dapr-agent-py', 'workspace-runtime')
+			  AND ServiceName IN ('function-router', 'dapr-agent-py')
 			  ${knownExclude}
 			ORDER BY TraceId
 		`);
