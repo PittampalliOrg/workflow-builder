@@ -218,6 +218,87 @@ export function appendToolsQueryParam(url: string, allowlist: string[] | null): 
 	}
 }
 
+/**
+ * Read the `?tools=a,b` allowlist already baked into a piece MCP server URL
+ * (the project ceiling set by `appendToolsQueryParam`). Returns `null` when the
+ * param is absent (= all tools — the ceiling is unbounded).
+ */
+export type PieceMetadataAction = {
+	name: string;
+	displayName: string;
+	description: string | null;
+};
+
+/**
+ * Flatten the `piece_metadata.actions` JSONB into a sorted action list
+ * (the per-tool surface). Shared by the piece-detail loader and the agent
+ * Tools & Integrations endpoint so both render the same tool list.
+ */
+export function pieceActionsFromMetadata(actions: unknown): PieceMetadataAction[] {
+	if (!isRecord(actions)) return [];
+	return Object.entries(actions)
+		.map(([key, raw]) => {
+			const def = isRecord(raw) ? raw : {};
+			const displayName =
+				typeof def.displayName === 'string' && def.displayName.trim() ? def.displayName : key;
+			const description =
+				typeof def.description === 'string' && def.description.trim() ? def.description : null;
+			return { name: key, displayName, description };
+		})
+		.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+/** Read-vs-write heuristic shared by the piece detail page + agent tool cards. */
+export const READ_ONLY_ACTION_PREFIXES = ['get', 'list', 'search', 'find', 'read', 'download'];
+
+export function isReadOnlyPieceAction(action: { name: string; displayName?: string }): boolean {
+	const probes = [action.name, action.displayName ?? '']
+		.map((value) => String(value || '').trim().toLowerCase())
+		.filter(Boolean);
+	return probes.some((probe) =>
+		READ_ONLY_ACTION_PREFIXES.some((prefix) => probe.startsWith(prefix))
+	);
+}
+
+export function parseToolsQueryParam(url: string | undefined | null): string[] | null {
+	if (!url) return null;
+	try {
+		const parsed = new URL(url);
+		const raw = parsed.searchParams.get('tools');
+		if (raw === null) return null;
+		return Array.from(
+			new Set(raw.split(',').map((tool) => tool.trim()).filter(Boolean))
+		);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Narrow a piece MCP server URL's `?tools=` to the INTERSECTION of the project
+ * ceiling (already on the URL, or unbounded) and a per-agent `allowedTools`
+ * narrowing. An agent can only narrow within the workspace ceiling, never
+ * widen it. `agentAllowedTools` empty/absent = no agent narrowing (keep the
+ * ceiling). Returns the (url, effective allowlist) so callers can also set
+ * `allowedTools` for client-side runtime filtering.
+ */
+export function narrowToolsToIntersection(
+	url: string,
+	agentAllowedTools: string[] | null | undefined
+): { url: string; effective: string[] | null } {
+	const agent =
+		Array.isArray(agentAllowedTools) && agentAllowedTools.length
+			? Array.from(new Set(agentAllowedTools.map((t) => String(t || '').trim()).filter(Boolean)))
+			: null;
+	if (agent === null) {
+		// No agent narrowing: keep whatever ceiling the URL already carries.
+		return { url, effective: parseToolsQueryParam(url) };
+	}
+	const ceiling = parseToolsQueryParam(url);
+	const effective = ceiling === null ? agent : agent.filter((tool) => ceiling.includes(tool));
+	return { url: appendToolsQueryParam(url, effective), effective };
+}
+
 export function buildHostedMcpGatewayInternalUrl(
 	projectId: string,
 	baseUrl = 'http://mcp-gateway.workflow-builder.svc.cluster.local:8080'

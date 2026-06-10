@@ -31,7 +31,7 @@
 	} from '@lucide/svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
-	import AgentMcpPicker from '$lib/components/agents/agent-mcp-picker.svelte';
+	import AgentToolsIntegrations from '$lib/components/agents/tools-integrations/AgentToolsIntegrations.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
 	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
@@ -415,8 +415,8 @@
 			</section>
 
 			<section>
-				{@render sectionHeader('MCP servers')}
-				<AgentMcpPicker
+				{@render sectionHeader('Tools & Integrations')}
+				<AgentToolsIntegrations
 					value={draftConfig.mcpServers ?? []}
 					connectionMode={draftConfig.mcpConnectionMode ?? 'auto'}
 					vaultIds={baseAgent.defaultVaultIds ?? []}
