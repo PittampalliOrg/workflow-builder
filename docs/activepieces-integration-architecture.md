@@ -199,15 +199,17 @@ Perplexity-style **`@`-mention** in the session composer (`@github` attaches an 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | This document + CLAUDE.md updates | done |
-| 1 | Converged piece-runtime: `/execute` + `/options` in piece-mcp-server; function-router `activepieces` type + reference-forwarding; BFF catalog from `piece_metadata`; reconciler all-catalog; NetworkPolicy; delete fn-activepieces | in flight |
-| 2 | Durability: `piece_execution` idempotency gate, error classification, `AP_RETRY_POLICY`, pause mapping (DELAY/WEBHOOK), >4 MiB artifact offload, Postgres `ctx.store` | in flight |
-| 3 | Core UI: Integrations hub, piece detail subroute, MCP Server panel, canvas picker/side-panel upgrades | in flight |
+| 1 | Converged piece-runtime: `/execute` + `/options` in piece-mcp-server; function-router `activepieces` type + reference-forwarding; BFF catalog from `piece_metadata`; reconciler all-catalog; NetworkPolicy; delete fn-activepieces | **done — verified on ryzen 2026-06-10** |
+| 2 | Durability: `piece_execution` idempotency gate, error classification, `AP_RETRY_POLICY`, pause mapping (DELAY/WEBHOOK), >4 MiB artifact offload, Postgres `ctx.store` | **done — chaos-verified on ryzen** (dedupe = exactly-one issue; 404→permanent no-retry; cached-failure replay `deduped:true`; 8.4 MiB result offloaded to artifactRef + internal read endpoint; orchestrator-minted `wfId:execId:task` key end-to-end) |
+| 3 | Core UI: Integrations hub, piece detail subroute, MCP Server panel, canvas picker/side-panel upgrades | **done — verified on ryzen** |
 | 4 | Maintainability pipeline: piece-registry SSOT, committed catalog snapshot, Renovate + breaking-change classifier gates, version stamping + start-time validation, deprecation lifecycle | roadmap |
 | 5 | UI polish: agent MCP config, transcript attribution, health/status plumbing, `@`-mention | roadmap |
 | 6 | Trigger-based: aggregated MCP endpoint (agentgateway/kgateway), OCI catalog publication (agentregistry) | deferred w/ triggers (§2.3) |
 
 ## 7. Risks
 
+- **Startup heap (deploy gotcha, fixed)**: the converged bundle (47 pieces + `/execute` + `pg`) needs >256 MB JS heap at module load. Node derives its heap from the cgroup limit (~50%), so piece pods OOMKilled under 384Mi / the ryzen 256Mi overlay squeeze. Fix: `NODE_OPTIONS=--max-old-space-size=400` pinned in the reconciler KService template + 512Mi limit. Phase 4's CI canary must boot the image under 512Mi so piece bumps can't silently regress this.
+- **`custom_api_call` (and other `Property.DynamicProperties` actions) are not driveable** through `/execute` or MCP: the common-helper `custom_api_call`'s `url` is a `DynamicProperties` prop, which `prop-schema.ts` excludes from the generated `inputSchema` — so `url` never reaches the action and `run()` throws `Cannot read properties of undefined (reading 'startsWith')`. Pre-existing (the old MCP path had the same exclusion); affects only the generic escape-hatch action, not the 47 pieces' typed actions. Fix path (future): resolve `DynamicProperties` at execute time, or special-case `custom_api_call`'s `{method,url,headers,...}` shape. **Use a typed action (`find_user`, `github_create_issue`, `rawGraphqlQuery`, …) instead of `custom_api_call`.**
 - **Cold start** (~2–10 s) on non-pinned piece activities — acceptable for durable workflows; the escape hatch is widening the pinned set, never resurrecting a monolith.
 - **Single image = blast radius for all pieces** — mitigated by pinned digests, per-piece Knative revision rollout, catalogDigest drift detection; the Phase 4 CI canary is the long-term guard.
 - **github 0.6.4 → 0.7.x convergence** may change action schemas under saved workflows/connections — the sync-metadata diff must be reviewed at cutover.
