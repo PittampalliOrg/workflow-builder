@@ -209,7 +209,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		: emptyPresetStack;
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
-		mcpServers: stampGoalMcpSessionHeader(rewrittenMcp, sessionId),
+		mcpServers: stampGoalMcpSessionHeader(
+			ensureGoalMcpServer(rewrittenMcp, swapTarget?.capabilities?.supportsMcp ?? false),
+			sessionId,
+		),
 		compiledStaticPresetSections: compiledPresetStack.static,
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,
 		// Phase 3a v2: per-ref version-id + mlflow_uri manifest so
@@ -365,6 +368,35 @@ function getDaprSidecarUrl(): string {
 	const host = process.env.DAPR_HOST ?? "127.0.0.1";
 	const port = process.env.DAPR_HTTP_PORT ?? "3500";
 	return `http://${host}:${port}`;
+}
+
+const GOAL_MCP_SERVER_URL =
+	process.env.GOAL_MCP_SERVER_URL ??
+	"http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp";
+
+/**
+ * Auto-wire the goal MCP server (create_goal/update_goal/get_goal) into every
+ * MCP-capable session so goals set from the UI can always self-complete —
+ * without the tools, a goal loop can only end via budget/iteration caps or a
+ * manual pause. Skipped when the runtime doesn't support MCP, when an entry
+ * already matches the goal server, or when GOAL_MCP_AUTO_WIRE=false.
+ */
+function ensureGoalMcpServer<T>(servers: T, runtimeSupportsMcp: boolean): T {
+	if (!runtimeSupportsMcp) return servers;
+	if (process.env.GOAL_MCP_AUTO_WIRE === "false") return servers;
+	if (!Array.isArray(servers)) return servers;
+	const hasGoal = servers.some((entry) => {
+		if (!entry || typeof entry !== "object") return false;
+		const e = entry as Record<string, unknown>;
+		const name = typeof e.name === "string" ? e.name.toLowerCase() : "";
+		const url = typeof e.url === "string" ? e.url : "";
+		return /goal/.test(name) || url.includes("workflow-mcp-server");
+	});
+	if (hasGoal) return servers;
+	return [
+		...servers,
+		{ name: "goal", transport: "streamable_http", url: GOAL_MCP_SERVER_URL },
+	] as T;
 }
 
 /**
