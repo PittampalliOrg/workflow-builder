@@ -7,6 +7,11 @@
 	import * as Popover from "$lib/components/ui/popover";
 	import { Switch } from "$lib/components/ui/switch";
 	import * as ToggleGroup from "$lib/components/ui/toggle-group";
+	import {
+		STAGE_STATUS_FILTERS,
+		statusCounts,
+		type StageStatusFilter,
+	} from "$lib/gitops/stage-status-filters";
 	import type { PipelineModel } from "$lib/gitops/pipeline-types";
 	import type { PipelineViewMode } from "$lib/gitops/preferred-filter";
 
@@ -19,6 +24,7 @@
 		showMinimap: boolean;
 		stepEdges: boolean;
 		groupLanes: boolean;
+		statusFilter: StageStatusFilter[];
 		onPipelineFilter: (warehouses: string[]) => void;
 		onStageSearch: (value: string) => void;
 		onView: (value: PipelineViewMode) => void;
@@ -26,6 +32,7 @@
 			key: "showSubscriptions" | "showMinimap" | "stepEdges" | "groupLanes",
 			value: boolean,
 		) => void;
+		onStatusFilter: (filters: StageStatusFilter[]) => void;
 		debug: boolean;
 		onDebugToggle: (value: boolean) => void;
 	};
@@ -38,10 +45,12 @@
 		showMinimap,
 		stepEdges,
 		groupLanes,
+		statusFilter,
 		onPipelineFilter,
 		onStageSearch,
 		onView,
 		onToggle,
+		onStatusFilter,
 		debug,
 		onDebugToggle,
 	}: Props = $props();
@@ -54,11 +63,29 @@
 				: `${pipelineFilter.length} pipelines`,
 	);
 
+	const counts = $derived(statusCounts(model.stages));
+
+	// Tone-aligned chip styling per status (active state).
+	const STATUS_CHIP_ACTIVE: Record<StageStatusFilter, string> = {
+		failing: "border-destructive/70 bg-destructive/10 text-destructive",
+		building: "border-sky-500/70 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+		drifting: "border-amber-400/70 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+		promoting: "border-amber-400/70 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+	};
+
 	function toggleWarehouse(name: string) {
 		onPipelineFilter(
 			pipelineFilter.includes(name)
 				? pipelineFilter.filter((n) => n !== name)
 				: [...pipelineFilter, name],
+		);
+	}
+
+	function toggleStatus(filter: StageStatusFilter) {
+		onStatusFilter(
+			statusFilter.includes(filter)
+				? statusFilter.filter((f) => f !== filter)
+				: [...statusFilter, filter],
 		);
 	}
 </script>
@@ -128,6 +155,30 @@
 				<X class="size-3.5" />
 			</button>
 		{/if}
+	</div>
+
+	<!-- Semantic status filters: emphasize stages that are failing / building /
+	     drifting / promoting. Graph dims non-matching; list filters rows. -->
+	<div class="flex items-center gap-1">
+		{#each STAGE_STATUS_FILTERS as status (status)}
+			{@const active = statusFilter.includes(status)}
+			{@const count = counts[status]}
+			<button
+				type="button"
+				class="inline-flex h-7 items-center gap-1 rounded-md border px-1.5 text-[0.66rem] font-medium transition {active
+					? STATUS_CHIP_ACTIVE[status]
+					: count > 0
+						? 'bg-background text-foreground hover:bg-muted'
+						: 'bg-background text-muted-foreground/60 hover:bg-muted'}"
+				title={`${count} stage${count === 1 ? "" : "s"} ${status}`}
+				onclick={() => toggleStatus(status)}
+			>
+				{status}
+				{#if count > 0}
+					<span class="rounded bg-muted px-1 font-mono text-[0.58rem] {active ? 'bg-background/60' : ''}">{count}</span>
+				{/if}
+			</button>
+		{/each}
 	</div>
 
 	<!-- Graph / list view toggle -->

@@ -18,6 +18,10 @@
 		type PipelineNodeData,
 	} from "$lib/gitops/pipeline-layout";
 	import { isFlowing } from "$lib/gitops/gitops-flow.svelte";
+	import {
+		stageMatchesAnyStatus,
+		type StageStatusFilter,
+	} from "$lib/gitops/stage-status-filters";
 	import type { PipelineModel } from "$lib/gitops/pipeline-types";
 
 	import PipelineFitView from "./PipelineFitView.svelte";
@@ -26,6 +30,9 @@
 	export type PipelineSelection =
 		| { kind: "stage" | "warehouse" | "subscription"; id: string }
 		| null;
+
+	/** Stages holding the selected freight — drives the identity ring + dim. */
+	export type FreightHighlight = { warehouse: string; stageNames: string[] } | null;
 
 	type Props = {
 		model: PipelineModel;
@@ -37,6 +44,8 @@
 		stageSearch?: string;
 		selected?: PipelineSelection;
 		onselect?: (sel: PipelineSelection) => void;
+		freightHighlight?: FreightHighlight;
+		statusFilter?: StageStatusFilter[];
 	};
 	let {
 		model,
@@ -48,6 +57,8 @@
 		stageSearch = "",
 		selected = null,
 		onselect,
+		freightHighlight = null,
+		statusFilter = [],
 	}: Props = $props();
 
 	const nodeTypes: NodeTypes = { [PIPELINE_NODE_TYPE]: PipelineNode };
@@ -132,8 +143,19 @@
 		const s = search;
 		const sel = selected;
 		const m = liveModel;
+		const fh = freightHighlight;
+		const sf = statusFilter;
 		const stageByName = new Map(m.stages.map((st) => [st.name, st]));
 		const whByName = new Map(m.warehouses.map((w) => [w.name, w]));
+		// Per-warehouse "any stage matches the status filter" — warehouses/lanes of
+		// fully-non-matching pipelines dim along with their stages.
+		const whMatchesStatus = new Map<string, boolean>();
+		if (sf.length > 0) {
+			for (const st of m.stages) {
+				if (stageMatchesAnyStatus(st, sf)) whMatchesStatus.set(st.warehouse, true);
+				else if (!whMatchesStatus.has(st.warehouse)) whMatchesStatus.set(st.warehouse, false);
+			}
+		}
 
 		flowNodes = base.nodes.map((node) => {
 			const data = node.data as PipelineNodeData;
@@ -157,7 +179,34 @@
 					fresh.stage.warehouse.toLowerCase().includes(s) ||
 					fresh.stage.env.toLowerCase().includes(s);
 			}
-			return { ...node, selected: sel?.id === node.id, data: { ...fresh, highlight } };
+			// Freight selection: ring the stages holding it, dim other pipelines.
+			// Status filter: dim non-matching stages + fully-non-matching pipelines.
+			// Dim is node-level style (opacity), so no body component churn.
+			const nodeWarehouse =
+				fresh.kind === "stage"
+					? fresh.stage?.warehouse
+					: (fresh.warehouse?.name ?? fresh.subscriptionParentName);
+			let freightRing = false;
+			let dimmed = false;
+			if (fh) {
+				if (fresh.kind === "stage" && fresh.stage) {
+					freightRing = fh.stageNames.includes(fresh.stage.name);
+				}
+				if (!freightRing) dimmed = nodeWarehouse !== fh.warehouse;
+			}
+			if (!dimmed && sf.length > 0) {
+				if (fresh.kind === "stage" && fresh.stage) {
+					dimmed = !stageMatchesAnyStatus(fresh.stage, sf);
+				} else if (nodeWarehouse) {
+					dimmed = whMatchesStatus.get(nodeWarehouse) === false;
+				}
+			}
+			return {
+				...node,
+				selected: sel?.id === node.id,
+				style: dimmed ? "opacity:0.35;transition:opacity 0.2s ease;" : "transition:opacity 0.2s ease;",
+				data: { ...fresh, highlight, freightRing },
+			};
 		});
 	});
 
@@ -167,7 +216,7 @@
 	// ever touching the node array (reading `isFlowing` subscribes to the decaying
 	// flow set, so this re-runs on mark / decay only — not every frame).
 	$effect(() => {
-		const emphasize = hoveredWarehouse ?? emphasizedWarehouse;
+		const emphasize = hoveredWarehouse ?? emphasizedWarehouse ?? freightHighlight?.warehouse ?? null;
 		const colorMap = liveModel.warehouseColorMap;
 		flowEdges = base.edges.map((edge) => {
 			const warehouseName = (edge.data as { warehouseName?: string } | undefined)?.warehouseName;

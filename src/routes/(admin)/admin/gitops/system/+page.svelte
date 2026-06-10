@@ -11,7 +11,10 @@
 	import FreightTimeline from "$lib/components/gitops/pipeline/FreightTimeline.svelte";
 	import GraphFilters from "$lib/components/gitops/pipeline/GraphFilters.svelte";
 	import PipelineDrawer from "$lib/components/gitops/pipeline/PipelineDrawer.svelte";
-	import PipelineGraph, { type PipelineSelection } from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
+	import PipelineGraph, {
+		type FreightHighlight,
+		type PipelineSelection,
+	} from "$lib/components/gitops/pipeline/PipelineGraph.svelte";
 	import PipelineListView from "$lib/components/gitops/pipeline/PipelineListView.svelte";
 	import { Badge } from "$lib/components/ui/badge";
 	import { Button } from "$lib/components/ui/button";
@@ -20,6 +23,7 @@
 	import { clearFlowing, markFlowing } from "$lib/gitops/gitops-flow.svelte";
 	import { nowTick, startClock } from "$lib/gitops/gitops-tick.svelte";
 	import {
+		deriveStreamHealth,
 		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
 		gitOpsDeploymentMetadataUrl,
 		isInventoryActivityEvent,
@@ -27,6 +31,7 @@
 		shouldRefreshGitOpsMetadata,
 	} from "$lib/gitops/event-driven-refresh";
 	import { buildPipelineModel } from "$lib/gitops/pipeline-model";
+	import type { StageStatusFilter } from "$lib/gitops/stage-status-filters";
 	import {
 		DEFAULT_PREFERRED_FILTER,
 		loadPreferredFilter,
@@ -58,6 +63,16 @@
 	let lastSeenSequence = untrack(() =>
 		(data.activityEvents ?? []).reduce((max, e) => Math.max(max, e.sequence), 0),
 	);
+	// When ANY event (including filtered inventory heartbeats) was last received —
+	// the stream-health truth. An open SSE socket proves nothing about the
+	// upstream eventbus; heartbeats land at least every ~10min when healthy.
+	let lastEventAt = $state<number | null>(
+		untrack(() => {
+			const newest = (data.activityEvents ?? [])[0];
+			const parsed = newest ? Date.parse(newest.observedAt) : NaN;
+			return Number.isNaN(parsed) ? null : parsed;
+		}),
+	);
 	const links = untrack(() => data.links);
 	setContext(PIPELINE_LINKS_CONTEXT, links);
 
@@ -86,15 +101,41 @@
 	let stageSearch = $state("");
 	let selection = $state<PipelineSelection>(null);
 	let selectedFreightId = $state<string | null>(null);
+	// Transient like stageSearch — a persisted "failing" filter would resurrect
+	// as an empty-looking page later.
+	let statusFilter = $state<StageStatusFilter[]>([]);
+	let feedPopoverOpen = $state(false);
 
 	// C1 — base (inventory) model recomputes only when metadata/promotions change
 	// (the 15s poll), NOT on every event; the activity overlay is the only thing
 	// that re-derives per event batch.
 	const baseModel = $derived(buildPipelineModel(metadata, promotions));
 	const model = $derived(applyPipelineActivityOverlay(baseModel, activityEvents));
+	// Stages holding the selected freight. Derived from baseModel.freights (the
+	// overlay never remaps freights), so the prop reference changes only on
+	// metadata refresh or freight (de)selection — never per SSE batch, preserving
+	// the graph's 600ms activity-throttle discipline.
+	const freightHighlight = $derived.by((): FreightHighlight => {
+		if (!selectedFreightId) return null;
+		const freight = baseModel.freights.find((f) => f.id === selectedFreightId);
+		return freight ? { warehouse: freight.warehouse, stageNames: freight.inStages } : null;
+	});
 	const streamState = $derived(
-		activityConnected ? "live" : activityReconnecting ? "reconnecting" : "poll",
+		deriveStreamHealth({
+			connected: activityConnected,
+			reconnecting: activityReconnecting,
+			lastEventAt,
+			now,
+		}),
 	);
+	const streamAge = $derived(lastEventAt !== null ? now - lastEventAt : null);
+	const streamAgeLabel = $derived.by(() => {
+		if (streamAge === null) return null;
+		const minutes = Math.floor(streamAge / 60_000);
+		if (minutes < 1) return "<1m";
+		if (minutes < 60) return `${minutes}m`;
+		return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	});
 	const latestEvent = $derived(activityEvents[0] ?? null);
 	const debug = $derived(page.url.searchParams.get("debug") === "1");
 	const errors = $derived(
@@ -159,6 +200,8 @@
 			const activity = (await eventsRes.json()) as GitOpsActivityEventsResponse;
 			for (const event of activity.events) {
 				lastSeenSequence = Math.max(lastSeenSequence, event.sequence);
+				const observed = Date.parse(event.observedAt);
+				if (!Number.isNaN(observed) && observed > (lastEventAt ?? 0)) lastEventAt = observed;
 			}
 			activityEvents = mergeActivityEvents(
 				activityEvents,
@@ -258,6 +301,7 @@
 		if (eventBuffer.length === 0) return;
 		const batch = eventBuffer;
 		eventBuffer = [];
+		if (batch.length > 0) lastEventAt = Date.now();
 		// Inventory heartbeat events advance the resume cursor + trigger the
 		// metadata refresh, but stay out of the visible feed (~1/min noise).
 		const feedEvents = batch.filter((e) => !isInventoryActivityEvent(e));
@@ -335,21 +379,32 @@
 {#snippet streamPill()}
 	<Badge
 		variant="outline"
-		class="h-5 gap-1 px-1.5 text-[0.65rem] {debug ? 'cursor-pointer' : ''}"
+		class="h-5 gap-1 px-1.5 text-[0.65rem] {debug ? 'cursor-pointer' : ''} {streamState ===
+		'degraded'
+			? 'border-amber-400/70 text-amber-700 dark:text-amber-300'
+			: ''}"
 		title={streamState === "live"
-			? `GitOps event stream connected · seq ${latestSequence()}`
-			: streamState === "reconnecting"
-				? `GitOps event stream reconnecting · seq ${latestSequence()}`
-				: `GitOps event stream fallback polling · seq ${latestSequence()}`}
+			? `GitOps event stream connected · last event ${streamAgeLabel ?? "?"} ago · seq ${latestSequence()}`
+			: streamState === "degraded"
+				? `Stream connected but silent for ${streamAgeLabel ?? "?"} — inventory heartbeat expected every ~10min; the upstream eventbus may be down · seq ${latestSequence()}`
+				: streamState === "reconnecting"
+					? `GitOps event stream reconnecting · seq ${latestSequence()}`
+					: `GitOps event stream fallback polling · seq ${latestSequence()}`}
 	>
-		<Radio
-			class="size-2.5 {streamState === 'live'
-				? 'animate-pulse text-sky-600 dark:text-sky-300'
-				: streamState === 'reconnecting'
-					? 'animate-pulse text-amber-600 dark:text-amber-300'
-					: 'text-muted-foreground'}"
-		/>
-		{streamState} {activityEvents.length}
+		{#if streamState === "degraded"}
+			<AlertTriangle class="size-2.5 text-amber-600 dark:text-amber-300" />
+		{:else}
+			<Radio
+				class="size-2.5 {streamState === 'live'
+					? 'animate-pulse text-sky-600 dark:text-sky-300'
+					: streamState === 'reconnecting'
+						? 'animate-pulse text-amber-600 dark:text-amber-300'
+						: 'text-muted-foreground'}"
+			/>
+		{/if}
+		{streamState}{streamAgeLabel && (streamState === "live" || streamState === "degraded")
+			? ` · ${streamAgeLabel}`
+			: ""}
 	</Badge>
 {/snippet}
 
@@ -384,12 +439,20 @@
 					{/if}
 				{/if}
 				{#if debug}
-					<Popover.Root>
+					<Popover.Root bind:open={feedPopoverOpen}>
 						<Popover.Trigger>
 							{@render streamPill()}
 						</Popover.Trigger>
 						<Popover.Content class="w-96 p-0" align="start">
-							<ActivityFeed events={activityEvents} {now} />
+							<ActivityFeed
+								events={activityEvents}
+								{now}
+								{model}
+								onNavigate={(sel) => {
+									feedPopoverOpen = false;
+									selectNode(sel);
+								}}
+							/>
 						</Popover.Content>
 					</Popover.Root>
 					{#if latestEvent}
@@ -465,10 +528,12 @@
 			showMinimap={filter.showMinimap}
 			stepEdges={filter.stepEdges}
 			groupLanes={filter.groupLanes}
+			{statusFilter}
 			onPipelineFilter={(warehouses) => updateFilter({ warehouses })}
 			onStageSearch={(value) => (stageSearch = value)}
 			onView={(value: PipelineViewMode) => updateFilter({ view: value })}
 			onToggle={(key, value) => updateFilter({ [key]: value })}
+			onStatusFilter={(filters) => (statusFilter = filters)}
 			{debug}
 			onDebugToggle={toggleDebug}
 		/>
@@ -489,6 +554,8 @@
 					{stageSearch}
 					selected={selection}
 					onselect={selectNode}
+					{freightHighlight}
+					{statusFilter}
 				/>
 			</div>
 		{:else}
@@ -498,6 +565,8 @@
 				{stageSearch}
 				selected={selection}
 				onselect={selectNode}
+				{freightHighlight}
+				{statusFilter}
 			/>
 		{/if}
 	</div>
@@ -510,6 +579,7 @@
 		events={activityEvents}
 		{now}
 		onClose={closeDrawer}
+		onSelectStage={selectNode}
 	/>
 </div>
 

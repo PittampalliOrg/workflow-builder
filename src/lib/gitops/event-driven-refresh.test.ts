@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	deriveStreamHealth,
 	isInventoryActivityEvent,
 	mergeActivityEvents,
 	shouldRefreshGitOpsMetadata,
+	STREAM_DEGRADED_MS,
 } from "./event-driven-refresh";
 import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 
@@ -110,6 +112,50 @@ describe("isInventoryActivityEvent", () => {
 				event({ resourceRef: { kind: "Application", name: "dev-workflow-builder" } }),
 			),
 		).toBe(false);
+	});
+});
+
+describe("deriveStreamHealth", () => {
+	const NOW = Date.parse("2026-06-10T12:00:00Z");
+
+	it("is live while connected with a recent event", () => {
+		expect(
+			deriveStreamHealth({ connected: true, reconnecting: false, lastEventAt: NOW - 60_000, now: NOW }),
+		).toBe("live");
+	});
+
+	it("degrades when connected but silent past the heartbeat window", () => {
+		expect(
+			deriveStreamHealth({
+				connected: true,
+				reconnecting: false,
+				lastEventAt: NOW - STREAM_DEGRADED_MS - 1,
+				now: NOW,
+			}),
+		).toBe("degraded");
+		expect(
+			deriveStreamHealth({ connected: true, reconnecting: false, lastEventAt: null, now: NOW }),
+		).toBe("degraded");
+	});
+
+	it("stays live exactly at the threshold boundary", () => {
+		expect(
+			deriveStreamHealth({
+				connected: true,
+				reconnecting: false,
+				lastEventAt: NOW - STREAM_DEGRADED_MS,
+				now: NOW,
+			}),
+		).toBe("live");
+	});
+
+	it("reports reconnecting / poll when the socket is down", () => {
+		expect(
+			deriveStreamHealth({ connected: false, reconnecting: true, lastEventAt: NOW, now: NOW }),
+		).toBe("reconnecting");
+		expect(
+			deriveStreamHealth({ connected: false, reconnecting: false, lastEventAt: NOW, now: NOW }),
+		).toBe("poll");
 	});
 });
 

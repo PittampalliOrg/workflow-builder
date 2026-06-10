@@ -284,6 +284,56 @@ export function activityEventLabel(event: GitOpsActivityEvent): string {
 	return readString(event.correlation.imageName) ?? event.resourceRef.name ?? event.activityKey;
 }
 
+/**
+ * Drawer-native selection for the node an event correlates to: the stage when
+ * the resolved `${warehouse}::${env}` actually exists in the model, else the
+ * warehouse, else null. Powers click-to-navigate from event rows.
+ */
+export function selectionForEvent(
+	event: GitOpsActivityEvent,
+	model: PipelineModel,
+): ActivitySelection {
+	const target = targetForEvent(event, model);
+	if (!target) return null;
+	if (target.env) {
+		const stageName = `${target.warehouse}::${target.env}`;
+		if (model.stages.some((s) => s.name === stageName)) {
+			return { kind: "stage", id: `stage/${stageName}` };
+		}
+	}
+	if (model.warehouses.some((w) => w.name === target.warehouse)) {
+		return { kind: "warehouse", id: `warehouse/${target.warehouse}` };
+	}
+	return null;
+}
+
+const CHIP_FIELDS = [
+	"imageName",
+	"cluster",
+	"branch",
+	"pipelineRun",
+	"argocdApp",
+] as const;
+
+/**
+ * Readable correlation chips for an event — the breadcrumbs (image, cluster,
+ * branch, run, shas) rendered as labels instead of raw JSON.
+ */
+export function correlationChips(
+	event: GitOpsActivityEvent,
+): { key: string; label: string }[] {
+	const chips: { key: string; label: string }[] = [];
+	for (const key of CHIP_FIELDS) {
+		const value = readString(event.correlation[key]);
+		if (value) chips.push({ key, label: value });
+	}
+	for (const key of ["gitSha", "hydratedSha"] as const) {
+		const prefix = shaPrefix(readString(event.correlation[key]));
+		if (prefix) chips.push({ key, label: prefix });
+	}
+	return chips;
+}
+
 function parseAppName(name: string | null | undefined): ActivityTarget | null {
 	if (!name) return null;
 	for (const env of ["ryzen", "dev", "staging"]) {
