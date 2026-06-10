@@ -64,7 +64,6 @@ During active development, the most relevant services are:
 - `function-router`
 - `dapr-agent-py`
 - `openshell-agent-runtime`
-- `dapr-swe` when you are working on the distributed coding flow
 
 ## Create and Run a Workflow
 

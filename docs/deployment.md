@@ -12,7 +12,7 @@ The active cluster shape is:
 - agent runtimes via per-session ephemeral agent-sandbox pods (upstream kubernetes-sigs/agent-sandbox + Kueue; image-only diff, self-reaped on session end). The custom `AgentRuntime` CRD + Kopf `agent-runtime-controller` are RETIRED. A legacy static `Deployment-dapr-agent-py` (replicas:4) survives only for the `openshell-durable-agent` enum + the `agent-runtime-pool-coding` benchmark pool. `browser-use-agent` uses a `SandboxWarmPool` carve-out
 - `openshell-agent-runtime`
 - `fn-system`, `code-runtime`, `crawl4ai-adapter`
-- `dapr-swe`
+- `workflow-mcp-server` (port 3200; hosts the goal MCP tools + workflow tools)
 - `swebench-coordinator` + `swebench-evaluator`
 - `fn-activepieces`
 - `postgresql`
@@ -75,8 +75,7 @@ The expected live coding path is:
 2. `workflow-orchestrator` resolves draft or published execution target
 3. `durable/run` action nodes dispatch via `ctx.call_child_workflow` directly to `dapr-agent-py` (native Dapr child workflow, no function-router hop)
 4. `workspace/*`, `browser/*`, `openshell/*`, `system/*`, `code/*`, `web/*`, `_default` (AP pieces) dispatch via Dapr service invoke to `function-router`, which brokers credentials (fetches plaintext from the BFF decrypt endpoint; the BFF — not function-router — owns the AES-256-CBC cipher) and forwards to the target runtime
-5. `dapr-swe/*` actions route only when a workflow explicitly targets that separate runtime
-6. the UI reads persisted artifacts back through the BFF
+5. the UI reads persisted artifacts back through the BFF (`dapr-swe/run` and the other legacy agent slugs are rejected at the orchestrator — see the Action Routing table in `CLAUDE.md`)
 
 For `durable/run`, the deployed `dapr-agent-py` image is expected to include the
 OpenAI adapter. A workflow can select GPT-5.4 by setting:
