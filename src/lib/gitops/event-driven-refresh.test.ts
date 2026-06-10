@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { mergeActivityEvents, shouldRefreshGitOpsMetadata } from "./event-driven-refresh";
+import {
+	isInventoryActivityEvent,
+	mergeActivityEvents,
+	shouldRefreshGitOpsMetadata,
+} from "./event-driven-refresh";
 import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 
 function event(
@@ -69,6 +73,41 @@ describe("shouldRefreshGitOpsMetadata", () => {
 					source: "gitops.other",
 					resourceRef: { resource: "configmaps", kind: "ConfigMap" },
 				}),
+			),
+		).toBe(false);
+	});
+
+	it("refreshes on the hub inventory snapshot event", () => {
+		expect(shouldRefreshGitOpsMetadata(event({ activityType: "gitops.inventory" }))).toBe(true);
+	});
+});
+
+describe("isInventoryActivityEvent", () => {
+	it("matches by activityType", () => {
+		expect(isInventoryActivityEvent(event({ activityType: "gitops.inventory" }))).toBe(true);
+	});
+
+	it("falls back to the ConfigMap resourceRef for pre-classification rows", () => {
+		expect(
+			isInventoryActivityEvent(
+				event({
+					resourceRef: { kind: "ConfigMap", name: "gitops-deployment-inventory" },
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("does not match other ConfigMaps or events", () => {
+		expect(
+			isInventoryActivityEvent(
+				event({
+					resourceRef: { kind: "ConfigMap", name: "gitops-deployment-inventory-scripts" },
+				}),
+			),
+		).toBe(false);
+		expect(
+			isInventoryActivityEvent(
+				event({ resourceRef: { kind: "Application", name: "dev-workflow-builder" } }),
 			),
 		).toBe(false);
 	});

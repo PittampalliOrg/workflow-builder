@@ -65,7 +65,61 @@ describe("normalizeGitOpsActivityEvent", () => {
 			healthStatus: "Healthy",
 		});
 	});
+
+	it("classifies the hub inventory ConfigMap and trims its data payload", () => {
+		const first = normalizeGitOpsActivityEvent(sampleInventoryConfigMapEvent("cloud-1"));
+		const second = normalizeGitOpsActivityEvent(sampleInventoryConfigMapEvent("cloud-2"));
+
+		expect(first.source).toBe("inventory");
+		expect(first.activityType).toBe("gitops.inventory");
+		expect(first.resourceRef).toMatchObject({
+			kind: "ConfigMap",
+			namespace: "argocd",
+			name: "gitops-deployment-inventory",
+		});
+		// One deterministic event per snapshot revision (resourceVersion).
+		expect(first.eventId).toBe(second.eventId);
+		// The ConfigMap embeds the whole inventory.json — it must not be persisted.
+		expect(JSON.stringify(first.raw)).not.toContain("HUGE_INVENTORY_PAYLOAD");
+	});
+
+	it("leaves other ConfigMaps classified as kubernetes.resource", () => {
+		const payload = sampleInventoryConfigMapEvent("cloud-3");
+		payload.data.body.metadata.name = "gitops-deployment-inventory-scripts";
+		const event = normalizeGitOpsActivityEvent(payload);
+
+		expect(event.source).toBe("kubernetes");
+		expect(event.activityType).toBe("kubernetes.resource");
+	});
 });
+
+function sampleInventoryConfigMapEvent(contextId: string) {
+	return {
+		context: {
+			id: contextId,
+			source: "gitops-inventory",
+			subject: "configmaps",
+			time: "2026-06-10T12:00:00Z",
+		},
+		data: {
+			type: "UPDATE",
+			group: "",
+			version: "v1",
+			resource: "configmaps",
+			body: {
+				apiVersion: "v1",
+				kind: "ConfigMap",
+				metadata: {
+					name: "gitops-deployment-inventory",
+					namespace: "argocd",
+					uid: "cm-uid",
+					resourceVersion: "778001",
+				},
+				data: { "inventory.json": "HUGE_INVENTORY_PAYLOAD" },
+			},
+		},
+	};
+}
 
 function samplePipelineRunEvent(contextId: string) {
 	return {
