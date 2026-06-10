@@ -261,6 +261,7 @@ declare module '$env/static/private' {
 	export const npm_node_execpath: string;
 	export const GIT_CREDENTIAL_HELPER_GITHUB: string;
 	export const LC_NUMERIC: string;
+	export const OLDPWD: string;
 	export const TERM_PROGRAM: string;
 	export const CLAUDE_CODE_WORKFLOWS: string;
 	export const TEST: string;
@@ -579,6 +580,7 @@ declare module '$env/dynamic/private' {
 		npm_node_execpath: string;
 		GIT_CREDENTIAL_HELPER_GITHUB: string;
 		LC_NUMERIC: string;
+		OLDPWD: string;
 		TERM_PROGRAM: string;
 		CLAUDE_CODE_WORKFLOWS: string;
 		TEST: string;

@@ -51,6 +51,11 @@ export type ExecuteRequest = {
 	connection_external_id?: string;
 	ap_project_id?: string;
 	ap_platform_id?: string;
+	/** AP durability contract (passthrough to the piece-runtime) */
+	idempotency_key?: string;
+	execution_type?: "BEGIN" | "RESUME";
+	resume_payload?: unknown;
+	skip_idempotency_gate?: boolean;
 	_otel?: Record<string, unknown>;
 };
 
@@ -71,6 +76,8 @@ export type ExecuteResponse = {
 	success: boolean;
 	data?: unknown;
 	error?: string;
+	/** Piece-runtime failure classification driving the orchestrator's AP retry policy */
+	errorClass?: "retryable" | "permanent";
 	duration_ms: number;
 	routed_to?: string;
 	/** Pause metadata from the piece-runtime when a piece requests DELAY or WEBHOOK pause */
@@ -103,6 +110,12 @@ export type OpenFunctionRequest = {
 	credentials_raw?: unknown;
 	/** Piece metadata for piece-runtime routing */
 	metadata?: { pieceName: string; actionName: string };
+	/** AP durability contract (passthrough to the piece-runtime /execute) */
+	db_execution_id?: string;
+	idempotency_key?: string;
+	execution_type?: "BEGIN" | "RESUME";
+	resume_payload?: unknown;
+	skip_idempotency_gate?: boolean;
 };
 
 /**

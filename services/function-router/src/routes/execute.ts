@@ -131,6 +131,11 @@ const ExecuteRequestSchema = z.object({
   connection_external_id: z.string().nullable().optional(),
   ap_project_id: z.string().nullable().optional(),
   ap_platform_id: z.string().nullable().optional(),
+  // AP durability contract (orchestrator → piece-runtime passthrough)
+  idempotency_key: z.string().nullable().optional(),
+  execution_type: z.enum(["BEGIN", "RESUME"]).optional(),
+  resume_payload: z.unknown().optional(),
+  skip_idempotency_gate: z.boolean().optional(),
   _otel: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -597,6 +602,7 @@ function normalizeKnativeExecuteResponse(
             ([key]) =>
               key !== "success" &&
               key !== "error" &&
+              key !== "errorClass" &&
               key !== "duration_ms" &&
               key !== "routed_to" &&
               key !== "pause",
@@ -613,11 +619,18 @@ function normalizeKnativeExecuteResponse(
     (parsed.pause.type === "DELAY" || parsed.pause.type === "WEBHOOK")
       ? (parsed.pause as ExecuteResponse["pause"])
       : undefined;
+  // Retryable/permanent classification from the piece-runtime — the
+  // orchestrator's AP retry policy keys off this.
+  const errorClass =
+    parsed.errorClass === "retryable" || parsed.errorClass === "permanent"
+      ? parsed.errorClass
+      : undefined;
 
   return {
     success,
     data: fallbackData,
     error,
+    errorClass,
     duration_ms: durationMs,
     pause,
   };
@@ -2725,7 +2738,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               input: normalizedInput,
               node_outputs: body.node_outputs,
               ...(isApRoute
-                ? { metadata: { pieceName: pluginId, actionName: stepName } }
+                ? {
+                    metadata: { pieceName: pluginId, actionName: stepName },
+                    db_execution_id: body.db_execution_id ?? undefined,
+                    idempotency_key: body.idempotency_key ?? undefined,
+                    execution_type: body.execution_type,
+                    resume_payload: body.resume_payload,
+                    skip_idempotency_gate: body.skip_idempotency_gate,
+                  }
                 : { credentials }),
             };
             const requestBody = JSON.stringify(knativeRequest);

@@ -40,6 +40,15 @@ class ExecuteActionInput(BaseModel):
     connectionExternalId: str | None = None
     apProjectId: str | None = None
     apPlatformId: str | None = None
+    # AP durability contract (piece-runtime /execute passthrough)
+    idempotencyKey: str | None = None
+    executionType: str | None = None  # "BEGIN" | "RESUME"
+    resumePayload: Any | None = None
+    skipIdempotencyGate: bool | None = None
+    # When true (AP piece actions), retryable failures RAISE so the
+    # caller-attached Dapr RetryPolicy actually fires; permanent failures
+    # still return {success: False} (fail deterministically, no retry).
+    raiseOnRetryable: bool | None = None
 
 
 class ActivityExecutionResult(BaseModel):
@@ -48,6 +57,11 @@ class ActivityExecutionResult(BaseModel):
     data: Any | None = None
     error: str | None = None
     duration_ms: int = 0
+
+
+class RetryableActivityError(RuntimeError):
+    """Raised for transient piece failures (429/5xx/network) so the Dapr
+    RetryPolicy on the execute_action call retries the activity."""
 
 
 def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -76,6 +90,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     connection_external_id = input_data.get("connectionExternalId")
     ap_project_id = input_data.get("apProjectId")
     ap_platform_id = input_data.get("apPlatformId")
+    idempotency_key = input_data.get("idempotencyKey")
+    execution_type = input_data.get("executionType")
+    resume_payload = input_data.get("resumePayload")
+    skip_idempotency_gate = input_data.get("skipIdempotencyGate")
+    raise_on_retryable = bool(input_data.get("raiseOnRetryable"))
     otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
     otel = apply_workflow_activity_context(otel)
 
@@ -132,6 +151,15 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "ap_platform_id": ap_platform_id,
         "_otel": otel,
     }
+
+    if idempotency_key:
+        request_payload["idempotency_key"] = idempotency_key
+    if execution_type:
+        request_payload["execution_type"] = execution_type
+    if resume_payload is not None:
+        request_payload["resume_payload"] = resume_payload
+    if skip_idempotency_gate is not None:
+        request_payload["skip_idempotency_gate"] = skip_idempotency_gate
 
     # Only include node_outputs for WB workflows (not AP flows).
     # AP workflows resolve variables before calling this activity,
@@ -240,6 +268,10 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 set_current_span_attrs(
                     io_attributes("output", result if isinstance(result, dict) else resp_text)
                 )
+                # Transport-level 5xx (router unreachable, Dapr invoke failure,
+                # Knative cold-start timeout) is transient for AP routes.
+                if raise_on_retryable and status >= 500:
+                    raise RetryableActivityError(error_msg)
                 return {
                     "success": False,
                     "error": error_msg,
@@ -259,6 +291,19 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 "error": result.get("error"),
                 "duration_ms": duration_ms,
             }
+            if result.get("errorClass"):
+                activity_result["errorClass"] = result["errorClass"]
+
+            # Retryable piece failures RAISE so the AP RetryPolicy fires;
+            # permanent failures return normally (deterministic task failure).
+            if (
+                raise_on_retryable
+                and not result.get("success", False)
+                and result.get("errorClass") == "retryable"
+            ):
+                raise RetryableActivityError(
+                    result.get("error") or f"Retryable failure for {action_type}"
+                )
 
             # Result-side enrichment so spans show outcome without parsing
             # the JSON output.value blob.
@@ -292,6 +337,8 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
             return activity_result
 
+    except RetryableActivityError:
+        raise
     except Exception as e:
         duration_ms = int((time.time() - start_time) * 1000)
         error_msg = f"Unexpected error: {str(e)}"
