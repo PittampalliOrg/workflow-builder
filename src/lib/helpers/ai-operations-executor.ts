@@ -183,7 +183,7 @@ async function applyCallActionFromCatalog(
       taskConfig,
       actionDefinition,
       catalogFunction:
-        match.service === "fn-activepieces"
+        match.service === "activepieces"
           ? {
               name: match.name as string,
               displayName: match.displayName as string,
@@ -207,7 +207,7 @@ async function applyCallActionFromCatalog(
           []) as Array<Record<string, unknown>>;
         const taskEntry = doArray.find((e) => Object.keys(e)[0] === taskName);
         if (taskEntry) {
-          // Use sw.definition which has the proper HTTP call to fn-activepieces
+          // Use sw.definition which carries the piece slug call (routed via function-router)
           const swDef = (detail.definition || detail.sw?.definition) as
             | Record<string, unknown>
             | undefined;

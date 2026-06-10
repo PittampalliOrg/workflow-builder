@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { daprFetch, getFnActivepiecesUrl } from '$lib/server/dapr-client';
 import { getCodeFunctionBySlug, toCodeFunctionDefinitionFromDetail } from '$lib/server/code-functions';
+import { getPieceCatalogDefinition } from '$lib/server/action-catalog/piece-metadata-source';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (locals.session?.userId) {
@@ -16,14 +16,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 
 	try {
-		const res = await daprFetch(
-			`${getFnActivepiecesUrl()}/catalog/functions/${params.name}/${params.version}/function.yaml`,
-			{ maxRetries: 1 }
-		);
-		if (!res.ok) {
+		const definition = await getPieceCatalogDefinition(params.name);
+		if (!definition) {
 			return json({ error: 'Function not found' }, { status: 404 });
 		}
-		return json(await res.json());
+		return json(definition);
 	} catch (err) {
 		return json({ error: String(err) }, { status: 502 });
 	}

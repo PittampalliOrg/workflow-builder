@@ -2,7 +2,7 @@
 Execute Action Activity
 
 This activity invokes the function-router service to route function execution
-to backend services (fn-system, fn-activepieces, durable-agent, etc.).
+to backend services (fn-system, ap-<piece>-service, durable-agent, etc.).
 
 The function-router supports:
 - Registry-based routing with wildcard and default fallback support
@@ -286,7 +286,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             # Service Graph drawer (gated + redacted).
             set_current_span_attrs(io_attributes("output", data))
 
-            # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
+            # Forward pause metadata from the AP piece-runtime (DELAY/WEBHOOK)
             if result.get("pause"):
                 activity_result["pause"] = result["pause"]
 

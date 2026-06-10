@@ -54,7 +54,6 @@ export const SUBSYSTEMS: Record<string, string> = {
 	"piece-mcp-server": "Core platform",
 	// Function execution
 	"fn-system": "Function execution",
-	"fn-activepieces": "Function execution",
 	"code-parser": "Function execution",
 	"code-runtime": "Function execution",
 	"crawl4ai-adapter": "Function execution",

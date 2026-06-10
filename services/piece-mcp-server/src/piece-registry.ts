@@ -3,8 +3,6 @@
  *
  * Static imports of all AP piece packages used by workflow-builder.
  * Each piece exports a Piece object with getAction(name) method.
- *
- * Copied from fn-activepieces/src/piece-registry.ts (minus custom pieces).
  */
 
 import { airtable } from "@activepieces/piece-airtable";

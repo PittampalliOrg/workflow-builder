@@ -332,8 +332,8 @@ function fixupSpec(
 			}
 		}
 
-		// Fix 4: Flatten body.input to top-level input for fn-activepieces
-		// fn-activepieces expects: { step, input: {...}, metadata: {...} }
+		// Fix 4: Flatten body.input to top-level input for the AP piece-runtime
+		// The piece-runtime /execute expects: { step, input: {...}, metadata: {...} }
 		// But the LLM nests it as: with.body.input and with.body.metadata
 		// We need both input AND metadata at the top level of `with`
 		const bodyInput = (body.input || {}) as Record<string, unknown>;

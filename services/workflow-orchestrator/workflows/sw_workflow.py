@@ -923,14 +923,14 @@ def _resolve_function_call(
     # AP piece function: piece/action slash format (e.g., "gmail/send_email")
     # Used by the AI workflow builder and spec-first architecture.
     # Extracts piece name and action name from the call value,
-    # and flattens body.input into top-level input for fn-activepieces.
+    # and flattens body.input into top-level input for the AP piece-runtime.
     if "/" in call_value and not call_value.startswith("http"):
         parts = call_value.split("/", 1)
         piece_name = parts[0]
         action_name = parts[1] if len(parts) > 1 else ""
         action_type = call_value
 
-        # Flatten: move body.input to top-level input for fn-activepieces
+        # Flatten: move body.input to top-level input for the AP piece-runtime
         resolved_args = dict(with_args)
         body = resolved_args.get("body", {})
         if isinstance(body, dict):
@@ -2293,7 +2293,7 @@ def _handle_call_task(
     }
 
     # For piece/action calls: extract input fields from nested body.input or top-level input
-    # so fn-activepieces receives them as flat propsValue fields while preserving
+    # so the AP piece-runtime receives them as flat propsValue fields while preserving
     # the original resolved arguments for generic OpenShell/function-router actions.
     if action_input:
         raw_config["input"] = action_input

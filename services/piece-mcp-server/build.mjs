@@ -1,8 +1,8 @@
 /**
  * Build script for piece-mcp-server
  *
- * Same pattern as fn-activepieces: bundle our code, mark all
- * node_modules as external (AP pieces have deep dep trees).
+ * Bundle our code, mark all node_modules as external
+ * (AP pieces have deep dep trees).
  */
 
 import { dirname, resolve } from "node:path";

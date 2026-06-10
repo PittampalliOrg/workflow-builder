@@ -14,7 +14,7 @@
 # Usage:
 #   bash scripts/skaffold-deploy.sh                          # default: workflow-builder
 #   bash scripts/skaffold-deploy.sh workflow-orchestrator
-#   bash scripts/skaffold-deploy.sh fn-activepieces mcp-gateway   # multiple in one go
+#   bash scripts/skaffold-deploy.sh function-router mcp-gateway   # multiple in one go
 
 set -euo pipefail
 
@@ -34,8 +34,8 @@ fi
 
 # Pin-target guard: every service we deploy must have a stacks workloads
 # kustomization for commit-pin to write. Services without one (fn-system is a
-# Knative ksvc; fn-activepieces has no workloads dir) are built+pinned by the
-# hub outer-loop — reject them up front rather than push an image we can't pin.
+# Knative ksvc) are built+pinned by the hub outer-loop — reject them up front
+# rather than push an image we can't pin.
 # If the stacks worktree isn't found we skip the early check; commit-pin's own
 # missing-kustomization check still catches it after the build.
 stacks_dir="${STACKS_DIR:-$(cd "${PWD}/../../stacks/main" 2>/dev/null && pwd || true)}"

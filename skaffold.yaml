@@ -19,7 +19,6 @@ metadata:
 #   workflow-builder       SvelteKit BFF
 #   workflow-orchestrator  Python/FastAPI Dapr workflow engine
 #   function-router        Node BFF→backend router (Dapr svc invoke)
-#   fn-activepieces        Node Activepieces piece executor
 #   mcp-gateway            Node hosted MCP endpoint
 #   swebench-coordinator   Python SWE-bench evaluator coordinator
 #
@@ -38,8 +37,6 @@ requires:
     path: skaffold/workflow-orchestrator.skaffold.yaml
   - configs: [function-router]
     path: skaffold/function-router.skaffold.yaml
-  - configs: [fn-activepieces]
-    path: skaffold/fn-activepieces.skaffold.yaml
   - configs: [mcp-gateway]
     path: skaffold/mcp-gateway.skaffold.yaml
   - configs: [swebench-coordinator]

@@ -17,7 +17,7 @@ on:
       - services/function-router/**
       - services/code-runtime/**
       - services/fn-system/**
-      - services/fn-activepieces/**
+      - services/piece-mcp-server/**
   workflow_dispatch:
     inputs:
       image:

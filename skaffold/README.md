@@ -25,17 +25,11 @@ inner-loop file-sync into a transient Knative pod is impractical. Use
 the cluster's Argo-managed fn-system as a dependency, or fall back to
 devspace for fn-system-specific work.
 
-`fn-activepieces` remains configured for parity/recovery work, but the
-current ryzen cluster does not expose it as a regular Argo Application and
-Deployment. Default `ALL` sessions exclude it; run it only deliberately with
-`SKAFFOLD_ALLOW_INACTIVE=1 bash scripts/skaffold-dev.sh fn-activepieces`.
-
 | Module | Type | Local→Container | Skaffold yaml |
 |---|---|---|---|
 | `workflow-builder` | SvelteKit BFF (Node 22) | 3002 → 3000 | `workflow-builder.skaffold.yaml` |
 | `workflow-orchestrator` | Python/FastAPI Dapr workflow | 3013 → 8080 | `workflow-orchestrator.skaffold.yaml` |
 | `function-router` | Node Express | 3014 → 8080 | `function-router.skaffold.yaml` |
-| `fn-activepieces` | Node Express | 3016 → 8080 | `fn-activepieces.skaffold.yaml` (inactive by default) |
 | `mcp-gateway` | Node Express | 3018 → 8080 | `mcp-gateway.skaffold.yaml` |
 | `swebench-coordinator` | Python/FastAPI | 3019 → 8080 | `swebench-coordinator.skaffold.yaml` |
 
@@ -52,7 +46,7 @@ bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator  # subset
 # Outer loop ---------------------------------------------------------------
 pnpm deploy:skaffold                                # workflow-builder
 pnpm deploy:skaffold:orchestrator                   # workflow-orchestrator
-bash scripts/skaffold-deploy.sh fn-activepieces     # any single service
+bash scripts/skaffold-deploy.sh function-router     # any single service
 bash scripts/skaffold-deploy.sh workflow-builder workflow-orchestrator
 
 # Status / recovery --------------------------------------------------------

@@ -1,7 +1,6 @@
 /**
  * Input Normalizer
  *
- * Extracted from fn-activepieces/src/executor.ts.
  * Normalizes MCP tool arguments to match what AP actions expect
  * (unwrap dropdown selections, parse multi-selects, etc.)
  */

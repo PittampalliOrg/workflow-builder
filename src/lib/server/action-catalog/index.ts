@@ -1,7 +1,6 @@
 import { createHighlighter, type Highlighter } from "shiki";
 import {
   daprFetch,
-  getFnActivepiecesUrl,
   getFnSystemUrl,
   getOrchestratorUrl,
 } from "$lib/server/dapr-client";
@@ -11,6 +10,10 @@ import {
   toCodeFunctionDefinitionFromDetail,
   type CodeFunctionDetail,
 } from "$lib/server/code-functions";
+import {
+  AP_CATALOG_SERVICE_ID,
+  loadPieceMetadataActionSource,
+} from "./piece-metadata-source";
 import type {
   ActionAuthMetadata,
   ActionCatalogDetail,
@@ -71,17 +74,6 @@ type RemoteActionListResponse = {
   actions?: Array<Record<string, unknown>>;
 };
 
-type LegacyCatalogListResponse = {
-  functions?: Array<{
-    name?: string;
-    version?: string;
-    displayName?: string;
-    description?: string;
-    pieceName?: string;
-    actionName?: string;
-  }>;
-};
-
 const CACHE_TTL_MS = 30_000;
 let cachedRemoteActions: {
   expiresAt: number;
@@ -93,7 +85,7 @@ let hasWarnedMissingCodeFunctionsTable = false;
 let hasMissingCodeFunctionsTable = false;
 
 type RemoteServiceDescriptor = {
-  serviceId: "workflow-orchestrator" | "fn-activepieces" | "fn-system";
+  serviceId: "workflow-orchestrator" | "fn-system";
   getBaseUrl: () => string;
   metadataPath: string;
   introspectPath: string;
@@ -105,12 +97,6 @@ const REMOTE_SERVICES: RemoteServiceDescriptor[] = [
     getBaseUrl: getOrchestratorUrl,
     metadataPath: "/api/metadata/actions",
     introspectPath: "/api/v2/runtime/introspect",
-  },
-  {
-    serviceId: "fn-activepieces",
-    getBaseUrl: getFnActivepiecesUrl,
-    metadataPath: "/api/metadata/actions",
-    introspectPath: "/api/runtime/introspect",
   },
   {
     serviceId: "fn-system",
@@ -508,6 +494,10 @@ function isRetiredAgentCatalogItem(item: ActionCatalogDetail): boolean {
   if (item.slug === "durable/run") {
     return item.id !== buildActionId("builtin", "durable/run");
   }
+  // AP piece actions (DB catalog) can share a slug prefix with retired agent
+  // slugs (e.g. the @activepieces/piece-claude piece's `claude/*` actions)
+  // but are legit function-router-routed integrations — never filter them.
+  if (item.serviceId === AP_CATALOG_SERVICE_ID) return false;
   const prefix = item.slug.split("/")[0];
   return prefix === "durable" || RETIRED_AGENT_ACTION_PREFIXES.has(prefix);
 }
@@ -759,25 +749,15 @@ function buildRemoteDetail(
       sanitizeText(raw.name) ||
       sanitizeText(raw.slug),
     description: sanitizeText(raw.description),
-    providerId:
-      sanitizeText(raw.providerId) ||
-      (serviceId === "fn-activepieces"
-        ? sanitizeText(raw.pieceName) || sanitizeText(raw.group)
-        : serviceId),
+    providerId: sanitizeText(raw.providerId) || serviceId,
     providerLabel:
-      sanitizeText(raw.providerLabel) ||
-      (serviceId === "fn-activepieces"
-        ? sanitizeText(raw.providerDisplayName) ||
-          humanizeLabel(sanitizeText(raw.pieceName) || sanitizeText(raw.group))
-        : humanizeLabel(serviceId)),
+      sanitizeText(raw.providerLabel) || humanizeLabel(serviceId),
     providerIconUrl: sanitizeText(raw.providerIconUrl) || null,
     category:
       sanitizeText(raw.category) ||
-      (serviceId === "fn-activepieces"
-        ? sanitizeText(raw.group) || null
-        : raw.kind === "dapr-workflow" || raw.kind === "sw-subflow"
-          ? "workflow"
-          : "activity"),
+      (raw.kind === "dapr-workflow" || raw.kind === "sw-subflow"
+        ? "workflow"
+        : "activity"),
     serviceId,
     kind:
       raw.kind === "dapr-workflow" || raw.kind === "sw-subflow"
@@ -790,11 +770,7 @@ function buildRemoteDetail(
     visibility,
     compatibility,
     group:
-      sanitizeText(raw.group) ||
-      sanitizeText(raw.category) ||
-      (serviceId === "fn-activepieces"
-        ? sanitizeText(raw.pieceName) || "Activepieces"
-        : serviceId),
+      sanitizeText(raw.group) || sanitizeText(raw.category) || serviceId,
     version: sanitizeText(raw.version) || null,
     language: sanitizeText(raw.language) || null,
     entrypoint: sanitizeText(raw.entrypoint) || sanitizeText(raw.actionName) || null,
@@ -866,159 +842,6 @@ function buildRemoteDetail(
   };
 }
 
-function buildLegacyFnActivepiecesDetail(
-  serviceReady: boolean,
-  serviceErrors: string[],
-  serviceFeatures: string[],
-  raw: NonNullable<LegacyCatalogListResponse["functions"]>[number],
-): ActionCatalogDetail {
-  const pieceName = sanitizeText(raw.pieceName) || "activepieces";
-  const actionName = sanitizeText(raw.actionName) || sanitizeText(raw.name);
-  const displayName =
-    sanitizeText(raw.displayName) || sanitizeText(raw.name) || actionName;
-  const slug = `${pieceName}/${actionName}`;
-
-  return {
-    id: buildActionId("fn-activepieces", sanitizeText(raw.name) || slug),
-    slug,
-    name: sanitizeText(raw.name) || slug,
-    displayName,
-    description: sanitizeText(raw.description),
-    providerId: pieceName,
-    providerLabel: humanizeLabel(pieceName),
-    providerIconUrl: null,
-    category: null,
-    serviceId: "fn-activepieces",
-    kind: "catalog-function",
-    visibility: "public-callable",
-    compatibility: "compatible-with-warnings",
-    group: pieceName,
-    version: sanitizeText(raw.version) || "1.0.0",
-    language: "typescript",
-    entrypoint: actionName || null,
-    sourceKind: "integration",
-    insertable: true,
-    auth: null,
-    fields: null,
-    tags: ["activepieces", "legacy-catalog"],
-    doc: null,
-    inputSchema: null,
-    outputSchema: null,
-    semanticModel: null,
-    sourceCode: null,
-    sourceHtml: null,
-    sw: {
-      functionName: sanitizeText(raw.name) || slug,
-      definition: {
-        call: slug,
-        with: {
-          body: {
-            input: {},
-            metadata: {
-              pieceName,
-              actionName,
-              sourceKind: "integration",
-            },
-          },
-        },
-      },
-      taskConfig: {
-        call: slug,
-        with: {
-          body: {
-            input: {},
-            metadata: {
-              pieceName,
-              actionName,
-              sourceKind: "integration",
-            },
-          },
-        },
-      },
-      warnings: [
-        "Using legacy fn-activepieces catalog fallback. Rich metadata and generated schemas require the new /api/metadata/actions endpoint.",
-      ],
-    },
-    runtime: {
-      registered: true,
-      ready: serviceReady,
-      lastSeenAt: new Date().toISOString(),
-      errors: serviceErrors,
-      features: serviceFeatures,
-    },
-    rendered: null,
-    raw: {
-      ...raw,
-      __legacyFnActivepieces: true,
-      pieceName,
-      actionName,
-    },
-  };
-}
-
-async function fetchLegacyFnActivepiecesService(
-  descriptor: RemoteServiceDescriptor,
-  introspectRes: Response,
-): Promise<{
-  actions: ActionCatalogDetail[];
-  service: ActionCatalogServiceSnapshot;
-}> {
-  const baseUrl = descriptor.getBaseUrl();
-  const catalogRes = await daprFetch(`${baseUrl}/catalog/functions`, {
-    maxRetries: 1,
-  });
-  if (!catalogRes.ok) {
-    throw new Error(
-      `metadata HTTP 404; legacy catalog HTTP ${catalogRes.status}`,
-    );
-  }
-
-  const introspection = (await introspectRes.json()) as Record<string, unknown>;
-  const catalog = (await catalogRes.json()) as LegacyCatalogListResponse;
-  const ready = introspection.ready === true;
-  const errors = normalizeStringArray(introspection.errors);
-  const features = normalizeStringArray(introspection.features);
-  const functions = Array.isArray(catalog.functions) ? catalog.functions : [];
-
-  const details = functions.map((item) =>
-    buildLegacyFnActivepiecesDetail(ready, errors, features, item),
-  );
-
-  return {
-    actions: details,
-    service: {
-      service:
-        typeof introspection.service === "string"
-          ? introspection.service
-          : descriptor.serviceId,
-      version:
-        typeof introspection.version === "string"
-          ? introspection.version
-          : "unknown",
-      runtime:
-        typeof introspection.runtime === "string"
-          ? introspection.runtime
-          : "unknown",
-      ready,
-      features: [...features, "legacy-catalog-fallback"],
-      registeredWorkflows: [],
-      registeredActivities: details.map((item) => ({
-        id: item.id,
-        name: item.name,
-        displayName: item.displayName,
-        description: item.description,
-        doc: item.doc ?? null,
-        sourceCode: null,
-        sourceHtml: null,
-      })),
-      additional:
-        introspection.additional && typeof introspection.additional === "object"
-          ? (introspection.additional as Record<string, unknown>)
-          : {},
-    },
-  };
-}
-
 async function fetchRemoteService(
   descriptor: RemoteServiceDescriptor,
 ): Promise<{
@@ -1032,13 +855,6 @@ async function fetchRemoteService(
   ]);
 
   if (!metadataRes.ok) {
-    if (
-      descriptor.serviceId === "fn-activepieces" &&
-      metadataRes.status === 404 &&
-      introspectRes.ok
-    ) {
-      return fetchLegacyFnActivepiecesService(descriptor, introspectRes);
-    }
     throw new Error(`metadata HTTP ${metadataRes.status}`);
   }
   if (!introspectRes.ok) {
@@ -1250,8 +1066,27 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
     return cachedRemoteActions.items;
   }
 
+  // AP piece actions come from the piece_metadata DB table (synced by the
+  // per-piece piece-runtime images), not from a live service fetch.
+  const sources: Array<{
+    serviceId: string;
+    load: () => Promise<{
+      actions: ActionCatalogDetail[];
+      service: ActionCatalogServiceSnapshot;
+    }>;
+  }> = [
+    ...REMOTE_SERVICES.map((service) => ({
+      serviceId: service.serviceId as string,
+      load: () => fetchRemoteService(service),
+    })),
+    {
+      serviceId: AP_CATALOG_SERVICE_ID,
+      load: loadPieceMetadataActionSource,
+    },
+  ];
+
   const settled = await Promise.allSettled(
-    REMOTE_SERVICES.map((service) => fetchRemoteService(service)),
+    sources.map((source) => source.load()),
   );
 
   const actions: ActionCatalogDetail[] = [
@@ -1260,7 +1095,7 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
   ];
   const services: ActionCatalogServiceSnapshot[] = [];
   const partialErrors: { serviceId: string; error: string }[] = [];
-  for (const result of settled) {
+  for (const [index, result] of settled.entries()) {
     if (result.status === "fulfilled") {
       actions.push(
         ...result.value.actions.filter(
@@ -1274,9 +1109,7 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
           ? result.reason.message
           : String(result.reason);
       const message = reason || "unknown error";
-      const serviceId =
-        REMOTE_SERVICES[settled.indexOf(result)]?.serviceId ??
-        "unknown-service";
+      const serviceId = sources[index]?.serviceId ?? "unknown-service";
       partialErrors.push({ serviceId, error: message });
     }
   }
@@ -1363,53 +1196,6 @@ export async function getActionCatalogDetail(
   const remote = await loadRemoteActionCache();
   const match = remote.find((item) => item.id === actionId);
   if (!match) return null;
-  const raw =
-    match.raw && typeof match.raw === "object"
-      ? (match.raw as Record<string, unknown>)
-      : null;
-  if (
-    match.serviceId === "fn-activepieces" &&
-    raw?.__legacyFnActivepieces === true
-  ) {
-    const pieceName = sanitizeText(raw.pieceName);
-    const actionName = sanitizeText(raw.actionName);
-    const version = match.version || "1.0.0";
-    if (pieceName && actionName) {
-      try {
-        const functionName =
-          sanitizeText(raw.name) || `${pieceName}-${actionName}`;
-        const res = await daprFetch(
-          `${getFnActivepiecesUrl()}/catalog/functions/${encodeURIComponent(functionName)}/${encodeURIComponent(version)}/function.yaml`,
-          { maxRetries: 1 },
-        );
-        if (res.ok) {
-          const legacyDefinition = (await res.json()) as Record<
-            string,
-            unknown
-          >;
-          match.sw.definition = legacyDefinition;
-          match.sw.taskConfig = legacyDefinition;
-          const inputSchema =
-            legacyDefinition.input &&
-            typeof legacyDefinition.input === "object" &&
-            (
-              legacyDefinition.input as {
-                schema?: { document?: Record<string, unknown> };
-              }
-            ).schema?.document
-              ? ((
-                  legacyDefinition.input as {
-                    schema?: { document?: Record<string, unknown> };
-                  }
-                ).schema?.document ?? null)
-              : null;
-          match.inputSchema = inputSchema;
-        }
-      } catch {
-        // Keep legacy fallback summary-only metadata if enrichment fails.
-      }
-    }
-  }
   if (match.sourceCode && !match.sourceHtml) {
     match.sourceHtml = await highlightCode(match.sourceCode, match.language);
   }

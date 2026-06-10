@@ -27,9 +27,6 @@ const STANDALONE_SERVICES: Record<string, string> = {
 	"workflow-orchestrator":
 		process.env.WORKFLOW_ORCHESTRATOR_URL ||
 		"http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080",
-	"fn-activepieces":
-		process.env.FN_ACTIVEPIECES_URL ||
-		"http://fn-activepieces.workflow-builder.svc.cluster.local:8080",
 	"code-runtime":
 		process.env.CODE_RUNTIME_URL ||
 		"http://code-runtime.workflow-builder.svc.cluster.local:8080",

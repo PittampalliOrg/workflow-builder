@@ -236,7 +236,7 @@ function normalizeCatalogFunction(entry: Record<string, unknown>): ActionCatalog
 	const pieceName = typeof entry.pieceName === 'string' ? entry.pieceName : 'catalog';
 	const actionName = typeof entry.actionName === 'string' ? entry.actionName : '';
 	const language = entry.language === 'typescript' || entry.language === 'python' ? entry.language : null;
-	const kind = inferKind('catalog', pieceName === 'code-functions' ? 'code-functions' : 'fn-activepieces');
+	const kind = inferKind('catalog', pieceName === 'code-functions' ? 'code-functions' : 'activepieces');
 	const codeFunctionId = typeof entry.codeFunctionId === 'string' ? entry.codeFunctionId : null;
 
 	if (!name || !version) return null;
@@ -259,11 +259,11 @@ function normalizeCatalogFunction(entry: Record<string, unknown>): ActionCatalog
 		category: typeof entry.category === 'string' ? entry.category : null,
 		pieceName,
 		actionName,
-		service: pieceName === 'code-functions' ? 'code-runtime' : 'fn-activepieces',
+		service: pieceName === 'code-functions' ? 'code-runtime' : 'activepieces',
 		runtime:
 			pieceName === 'code-functions'
 				? (language ? `code-${language}` : 'code-runtime')
-				: 'fn-activepieces',
+				: 'piece-runtime',
 		kind,
 		visibility: 'public-callable',
 		sourceKind: 'catalog',
