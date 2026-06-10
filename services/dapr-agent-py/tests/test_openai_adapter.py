@@ -182,7 +182,10 @@ def test_openai_llm_usage_event_includes_effective_config_audit_fields(monkeypat
                 "llmComponent": "llm-openai-o3",
                 "configRevision": 2,
                 "configHash": "abc123",
-                "input_tokens": 11,
+                # input_tokens is emitted NET of cache reads: OpenAI reports
+                # 11 gross with 3 cached, so 8 non-cached (disjoint convention
+                # shared by all adapters; budgets/cost/context % rely on it).
+                "input_tokens": 8,
                 "output_tokens": 7,
                 "cache_read_input_tokens": 3,
                 "cache_creation_input_tokens": 0,
@@ -193,6 +196,35 @@ def test_openai_llm_usage_event_includes_effective_config_audit_fields(monkeypat
             "turn_1",
         )
     ]
+
+
+def test_openai_llm_usage_nets_cache_reads_for_chat_completions_shape(monkeypatch) -> None:
+    """prompt_tokens (gross) + prompt_tokens_details.cached_tokens also nets."""
+    events: list[dict] = []
+    publisher = importlib.import_module("src.event_publisher")
+
+    monkeypatch.setattr(publisher, "get_scoped_session", lambda: ("sesn_1", "turn_1"))
+    monkeypatch.setattr(publisher, "get_scoped_audit_fields", lambda: {})
+    monkeypatch.setattr(
+        publisher,
+        "publish_session_event",
+        lambda _sid, _type, data, *, instance_id=None, **_: events.append(data),
+    )
+
+    adapter._publish_llm_usage(
+        model="gpt-5.5",
+        usage={
+            "prompt_tokens": 17906,
+            "completion_tokens": 36,
+            "prompt_tokens_details": {"cached_tokens": 17664},
+        },
+        ttft_ms=10.0,
+        success=True,
+    )
+
+    assert events[0]["input_tokens"] == 242
+    assert events[0]["cache_read_input_tokens"] == 17664
+    assert events[0]["output_tokens"] == 36
 
 
 def test_openai_llm_usage_event_preserves_llm_span_context(monkeypatch) -> None:
