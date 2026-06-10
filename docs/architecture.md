@@ -199,7 +199,7 @@ browser
         -> web/*         -> crawl4ai-adapter
         -> _default      -> fn-activepieces
 
-openshell-agent-runtime / dapr-agent-py / dapr-swe
+openshell-agent-runtime / dapr-agent-py
   -> OpenShell sandboxes or dedicated coding workers
   -> PostgreSQL-backed review surfaces
 ```

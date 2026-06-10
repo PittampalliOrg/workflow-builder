@@ -14,7 +14,7 @@ The current core runtime is:
 - `openshell-agent-runtime`
 - `fn-system` (Knative; `system/*`)
 - `code-runtime` (`code/*`), `crawl4ai-adapter` (`web/*`)
-- `dapr-swe` (separate distributed coding runtime; `dapr-swe/*`)
+- `workflow-mcp-server` (port 3200; goal MCP tools + workflow tools)
 - `swebench-coordinator`
 - `swebench-evaluator`
 - `fn-activepieces`
@@ -219,13 +219,15 @@ Validated XLSX flow:
 4. Deterministic parent steps validate workbook metadata and zip structure.
 5. The workbook is uploaded to OneDrive, downloaded back, and verified through Microsoft Excel workbook, worksheet, and range reads.
 
-## dapr-swe
+## workflow-mcp-server
 
-Separate distributed coding runtime.
+Deployed MCP server (stacks `Deployment-workflow-mcp-server.yaml` + `Service-workflow-mcp-server.yaml`; previously manifest-only).
 
+- Port: `3200`
 - Responsibilities:
-  - planner/developer/reviewer style issue workflows
-  - execution paths under the `dapr-swe/*` action family
+  - goal MCP tools `create_goal` / `update_goal` / `get_goal` — the goal-loop completion contract, session-scoped via the `X-Wfb-Session-Id` header (see `docs/goal-loop.md`)
+  - workflow MCP tools
+- `DATABASE_URL` + `INTERNAL_API_TOKEN` via `envFrom workflow-builder-secrets`
 
 ## fn-activepieces
 
