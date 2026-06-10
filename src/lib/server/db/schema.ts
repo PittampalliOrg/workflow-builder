@@ -3046,7 +3046,7 @@ export type EnvironmentBuildActivityEventType =
 	| "digest_captured"
 	| "build_succeeded"
 	| "build_failed";
-export type GitOpsActivitySource = "tekton" | "promoter" | "argocd" | "kubernetes";
+export type GitOpsActivitySource = "tekton" | "promoter" | "argocd" | "inventory" | "kubernetes";
 export type GitOpsActivityType =
 	| "tekton.pipelinerun"
 	| "tekton.taskrun"
@@ -3055,6 +3055,7 @@ export type GitOpsActivityType =
 	| "promoter.pullrequest"
 	| "promoter.commitstatus"
 	| "argocd.application"
+	| "gitops.inventory"
 	| "kubernetes.resource";
 export type EnvironmentImageBuildStrategy =
 	| "swebench-harness"

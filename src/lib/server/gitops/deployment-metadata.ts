@@ -68,11 +68,42 @@ const workflowCommitInflight = new Map<string, Promise<GitCommitMetadata | null>
 const pinBlobCache = new Map<string, PinSnapshotSections>();
 
 export function invalidateGitOpsDeploymentMetadataCaches(): void {
+	invalidateGitOpsPinCaches();
+	invalidateGitOpsRuntimeCaches();
+}
+
+/**
+ * Cluster-state caches: hub inventory snapshot + runtime metadata. Cheap to
+ * refetch (one HTTP call), so any ArgoCD/Tekton/Promoter/inventory event may
+ * clear them.
+ */
+export function invalidateGitOpsRuntimeCaches(): void {
+	hubInventoryCache = null;
+	runtimeMetadataCache = null;
+}
+
+/**
+ * GitHub-derived caches (release pins, pin history walk, stacks main ref).
+ * Expensive to rebuild (GitHub API fan-out) — only clear on pin-affecting
+ * signals, never on every activity event.
+ */
+export function invalidateGitOpsPinCaches(): void {
 	releasePinsCache = null;
 	stacksMainCache = null;
 	pinHistoryCache = null;
-	hubInventoryCache = null;
 	runtimeMetadataCache = null;
+}
+
+// Concurrent callers (the pipeline page + the deployment-notifications store
+// react to the same SSE events) share one upstream fetch per cache key.
+const inflightLoads = new Map<string, Promise<unknown>>();
+
+function dedupeInflight<T>(key: string, load: () => Promise<T>): Promise<T> {
+	const existing = inflightLoads.get(key);
+	if (existing) return existing as Promise<T>;
+	const promise = load().finally(() => inflightLoads.delete(key));
+	inflightLoads.set(key, promise);
+	return promise;
 }
 
 export async function getDeploymentMetadata(
@@ -168,45 +199,47 @@ async function loadHubInventory(
 		return { sourceUrl: null, fetchedAt: null, error: null, data: null };
 	}
 
-	const now = Date.now();
 	if (
 		!options.fresh &&
 		hubInventoryCache &&
 		hubInventoryCache.value.sourceUrl === sourceUrl &&
-		hubInventoryCache.expiresAt > now
+		hubInventoryCache.expiresAt > Date.now()
 	) {
 		return hubInventoryCache.value;
 	}
 
-	try {
-		const token = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_TOKEN");
-		const headers = {
-			accept: "application/json",
-			"user-agent": "workflow-builder-deployment-metadata",
-			...(token ? { authorization: `Bearer ${token}` } : {}),
-		};
-		const body = await fetchInventoryPayload(sourceUrl, headers);
-		if (!isGitOpsDeploymentInventory(body)) {
-			throw new Error("inventory payload is missing generatedAt or environments");
+	return dedupeInflight(`hubInventory:${sourceUrl}`, async () => {
+		const now = Date.now();
+		try {
+			const token = readFirstEnv("WORKFLOW_BUILDER_GITOPS_INVENTORY_TOKEN");
+			const headers = {
+				accept: "application/json",
+				"user-agent": "workflow-builder-deployment-metadata",
+				...(token ? { authorization: `Bearer ${token}` } : {}),
+			};
+			const body = await fetchInventoryPayload(sourceUrl, headers);
+			if (!isGitOpsDeploymentInventory(body)) {
+				throw new Error("inventory payload is missing generatedAt or environments");
+			}
+			const value = {
+				sourceUrl,
+				fetchedAt: new Date().toISOString(),
+				error: null,
+				data: body,
+			};
+			hubInventoryCache = { value, expiresAt: now + HUB_INVENTORY_CACHE_TTL_MS };
+			return value;
+		} catch (err) {
+			const value = {
+				sourceUrl,
+				fetchedAt: hubInventoryCache?.value.fetchedAt ?? null,
+				error: err instanceof Error ? err.message : String(err),
+				data: hubInventoryCache?.value.data ?? null,
+			};
+			hubInventoryCache = { value, expiresAt: now + 15_000 };
+			return value;
 		}
-		const value = {
-			sourceUrl,
-			fetchedAt: new Date().toISOString(),
-			error: null,
-			data: body,
-		};
-		hubInventoryCache = { value, expiresAt: now + HUB_INVENTORY_CACHE_TTL_MS };
-		return value;
-	} catch (err) {
-		const value = {
-			sourceUrl,
-			fetchedAt: hubInventoryCache?.value.fetchedAt ?? null,
-			error: err instanceof Error ? err.message : String(err),
-			data: hubInventoryCache?.value.data ?? null,
-		};
-		hubInventoryCache = { value, expiresAt: now + 15_000 };
-		return value;
-	}
+	});
 }
 
 async function fetchInventoryPayload(
@@ -297,10 +330,18 @@ async function loadReleasePins(
 	desiredImages: DesiredImageMetadata[];
 	error: string | null;
 }> {
-	const now = Date.now();
-	if (!options?.fresh && releasePinsCache && releasePinsCache.expiresAt > now)
+	if (!options?.fresh && releasePinsCache && releasePinsCache.expiresAt > Date.now())
 		return releasePinsCache.value;
 
+	return dedupeInflight("releasePins", () => loadReleasePinsUncached());
+}
+
+async function loadReleasePinsUncached(): Promise<{
+	fetchedAt: string | null;
+	desiredImages: DesiredImageMetadata[];
+	error: string | null;
+}> {
+	const now = Date.now();
 	try {
 		const res = await fetchWithTimeout(STACKS_RELEASE_PINS_URL);
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -398,10 +439,16 @@ export async function loadPinHistory(
 	limit: number = DEFAULT_PIN_HISTORY_LIMIT,
 	options: DeploymentMetadataOptions = {},
 ): Promise<{ imageHistory: ImageVersion[]; error: string | null }> {
-	const now = Date.now();
-	if (!options.fresh && pinHistoryCache && pinHistoryCache.expiresAt > now)
+	if (!options.fresh && pinHistoryCache && pinHistoryCache.expiresAt > Date.now())
 		return pinHistoryCache.value;
 
+	return dedupeInflight(`pinHistory:${limit}`, () => loadPinHistoryUncached(limit));
+}
+
+async function loadPinHistoryUncached(
+	limit: number,
+): Promise<{ imageHistory: ImageVersion[]; error: string | null }> {
+	const now = Date.now();
 	try {
 		const res = await fetchWithTimeout(`${STACKS_PIN_COMMITS_URL}&per_page=${limit}`);
 		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

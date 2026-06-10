@@ -92,6 +92,10 @@ export function normalizeGitOpsActivityEvent(payload: unknown): NormalizedGitOps
 			correlation,
 		});
 
+	if (lower(resourceRef.kind) === "configmap" || lower(resourceRef.resource) === "configmaps") {
+		trimConfigMapRawPayload(rawEnvelope);
+	}
+
 	return {
 		eventId,
 		source,
@@ -105,6 +109,33 @@ export function normalizeGitOpsActivityEvent(payload: unknown): NormalizedGitOps
 		correlation,
 		raw: rawEnvelope,
 	};
+}
+
+// ConfigMap bodies can be huge (the inventory ConfigMap embeds the whole
+// inventory.json) — keep only structural fields in the persisted raw envelope.
+function trimConfigMapRawPayload(rawEnvelope: JsonRecord): void {
+	for (const holder of [rawEnvelope, asRecord(rawEnvelope.data)]) {
+		if (!holder || !("body" in holder)) continue;
+		const body = holder.body;
+		if (typeof body === "string") {
+			try {
+				const parsed = asRecord(JSON.parse(body));
+				if (parsed && "data" in parsed) {
+					delete parsed.data;
+					delete parsed.binaryData;
+					holder.body = JSON.stringify(parsed);
+				}
+			} catch {
+				// leave unparseable bodies untouched
+			}
+			continue;
+		}
+		const record = asRecord(body);
+		if (record) {
+			delete record.data;
+			delete record.binaryData;
+		}
+	}
 }
 
 export async function ingestGitOpsActivityEvent(payload: unknown): Promise<GitOpsActivityEvent> {
@@ -283,7 +314,21 @@ function classifySource(ref: GitOpsResourceRef): string {
 	if (ref.group === "tekton.dev") return "tekton";
 	if (ref.group === "promoter.argoproj.io") return "promoter";
 	if (ref.group === "argoproj.io" && lower(ref.kind) === "application") return "argocd";
+	if (isInventoryConfigMapRef(ref)) return "inventory";
 	return "kubernetes";
+}
+
+// The hub `gitops-deployment-inventory` ConfigMap UPDATE is the signal that a
+// fresh inventory snapshot is available — it drives metadata refresh, not the
+// user-visible activity feed.
+export const GITOPS_INVENTORY_CONFIGMAP_NAME = "gitops-deployment-inventory";
+
+function isInventoryConfigMapRef(ref: GitOpsResourceRef): boolean {
+	if (ref.group !== "" && ref.group !== null) return false;
+	const kind = lower(ref.kind);
+	const resource = lower(ref.resource);
+	if (kind !== "configmap" && resource !== "configmaps") return false;
+	return ref.name === GITOPS_INVENTORY_CONFIGMAP_NAME;
 }
 
 function classifyActivityType(ref: GitOpsResourceRef): { activityType: GitOpsActivityType } {
@@ -317,6 +362,9 @@ function classifyActivityType(ref: GitOpsResourceRef): { activityType: GitOpsAct
 	}
 	if (ref.group === "argoproj.io" && (kind === "application" || resource === "applications")) {
 		return { activityType: "argocd.application" };
+	}
+	if (isInventoryConfigMapRef(ref)) {
+		return { activityType: "gitops.inventory" };
 	}
 	return { activityType: "kubernetes.resource" };
 }

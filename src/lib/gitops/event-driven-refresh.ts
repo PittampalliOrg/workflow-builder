@@ -46,7 +46,24 @@ export function gitOpsDeploymentMetadataUrl(options: { fresh?: boolean } = {}): 
 		: "/api/v1/gitops/deployment-metadata";
 }
 
+/**
+ * The hub inventory ConfigMap update event — the signal that a freshly
+ * generated inventory snapshot is available. It drives a metadata refresh but
+ * is kept OUT of the user-visible activity feed (it fires ~1/min and carries
+ * no per-app story). The resourceRef-name fallback covers events ingested
+ * before the server-side `gitops.inventory` classification deployed.
+ */
+export function isInventoryActivityEvent(event: GitOpsActivityEvent): boolean {
+	if (event.activityType === "gitops.inventory") return true;
+	return (
+		event.resourceRef.kind?.toLowerCase() === "configmap" &&
+		event.resourceRef.name === "gitops-deployment-inventory"
+	);
+}
+
 export function shouldRefreshGitOpsMetadata(event: GitOpsActivityEvent): boolean {
+	if (isInventoryActivityEvent(event)) return true;
+
 	const resource = event.resourceRef.resource?.toLowerCase();
 	if (resource && REFRESH_RESOURCES.has(resource)) return true;
 
