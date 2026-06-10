@@ -88,9 +88,9 @@ async function resolveWorkflow(input: {
 // ---------------------------------------------------------------------------
 // POST /api/internal/agent/workflows/execute
 //
-// Called by dapr-swe (and other internal services) to register and start a
-// workflow execution. Creates a DB execution record, then starts the workflow
-// via the Dapr orchestrator.
+// Called by internal services to register and start a workflow execution.
+// Creates a DB execution record, then starts the workflow via the Dapr
+// orchestrator. (The original dapr-swe caller was retired; source removed.)
 //
 // Auth: requires INTERNAL_API_TOKEN via X-Internal-Token header.
 //
