@@ -18,7 +18,7 @@
 		Search,
 		Trash2
 	} from '@lucide/svelte';
-	import { isReadOnlyPieceAction, type PieceMetadataAction } from '$lib/server/mcp-catalog';
+	import { isReadOnlyPieceAction, type PieceMetadataAction } from '$lib/connections/piece-tools';
 	import { toolSelectionFromMetadata } from '$lib/connections/piece-mcp';
 	import {
 		effectiveAgentTools,
