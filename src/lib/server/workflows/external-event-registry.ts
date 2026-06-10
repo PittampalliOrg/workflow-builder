@@ -7,6 +7,11 @@ import { workflowExecutions } from '$lib/server/db/schema';
 // Constants
 // ---------------------------------------------------------------------------
 
+// Issues must carry this label for a GitHub/Gitea webhook to trigger the
+// supported workflow. The value is a LIVE external contract (existing issues
+// are labeled with it) inherited from the retired dapr-swe service — do not
+// change the default; override per-source via GITHUB_WEBHOOK_TRIGGER_LABEL /
+// GITEA_WEBHOOK_TRIGGER_LABEL instead.
 const DEFAULT_TRIGGER_LABEL = 'dapr-swe';
 
 /**
