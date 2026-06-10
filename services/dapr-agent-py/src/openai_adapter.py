@@ -359,15 +359,23 @@ def _publish_llm_usage(
         if not sid:
             return
         usage = usage or {}
-        input_tokens = int(
+        # OpenAI reports input/prompt tokens INCLUSIVE of the cached portion
+        # (cached_tokens is a subset detail). Downstream consumers (goal
+        # budget accounting, cost, context %) assume the disjoint convention
+        # the other adapters emit — input_tokens NET of cache reads — so
+        # subtract here (same normalization as kimi_adapter).
+        gross_input = int(
             usage.get("input_tokens") or usage.get("prompt_tokens") or 0
         )
         output_tokens = int(
             usage.get("output_tokens") or usage.get("completion_tokens") or 0
         )
         cache_read = int(
-            (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
+            (usage.get("input_tokens_details") or {}).get("cached_tokens")
+            or (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+            or 0
         )
+        input_tokens = max(0, gross_input - cache_read)
         payload: dict[str, Any] = {
             "model": model,
             **get_scoped_audit_fields(),
@@ -599,15 +607,19 @@ def _call_openai_responses(
             from src.telemetry import end_llm_request_span, record_tokens
 
             usage = data.get("usage") or {}
-            input_tokens = int(
+            gross_input = int(
                 usage.get("input_tokens") or usage.get("prompt_tokens") or 0
             )
             output_tokens = int(
                 usage.get("output_tokens") or usage.get("completion_tokens") or 0
             )
             cache_read = int(
-                (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
+                (usage.get("input_tokens_details") or {}).get("cached_tokens")
+                or (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                or 0
             )
+            # Net of cache reads — matches the llm_usage event convention.
+            input_tokens = max(0, gross_input - cache_read)
             duration_ms = (_time.monotonic() - llm_start) * 1000.0
             end_llm_request_span(
                 llm_span,

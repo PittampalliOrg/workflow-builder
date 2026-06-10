@@ -317,14 +317,22 @@ def _publish_llm_usage(
             return
         usage = usage or {}
         prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        # DashScope reports prompt_tokens INCLUSIVE of cache hits; emit
+        # input_tokens NET of cache reads to match the disjoint convention the
+        # other adapters use (goal budgets / cost / context % depend on it).
+        cache_read = int(
+            usage.get("prompt_cache_hit_tokens")
+            or usage.get("cached_tokens")
+            or 0
+        )
         payload: dict[str, Any] = {
             "model": model,
             **get_scoped_audit_fields(),
-            "input_tokens": prompt_tokens,
+            "input_tokens": max(0, prompt_tokens - cache_read),
             "output_tokens": int(
                 usage.get("completion_tokens") or usage.get("output_tokens") or 0
             ),
-            "cache_read_input_tokens": int(usage.get("prompt_cache_hit_tokens") or 0),
+            "cache_read_input_tokens": cache_read,
             "cache_creation_input_tokens": 0,
             "ttft_ms": ttft_ms,
             "duration_ms": duration_ms,
