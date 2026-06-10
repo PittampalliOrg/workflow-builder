@@ -22,6 +22,7 @@
 	import {
 		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
 		gitOpsDeploymentMetadataUrl,
+		isInventoryActivityEvent,
 		mergeActivityEvents,
 		shouldRefreshGitOpsMetadata,
 	} from "$lib/gitops/event-driven-refresh";
@@ -48,7 +49,15 @@
 
 	let metadata = $state<DeploymentMetadataResponse>(untrack(() => data.initial));
 	let promotions = $state<PromotionStrategiesResponse>(untrack(() => data.promotions));
-	let activityEvents = $state<GitOpsActivityEvent[]>(untrack(() => data.activityEvents ?? []));
+	// Inventory-updated heartbeat events drive metadata refresh but stay out of
+	// the visible feed; the SSE resume cursor (`lastSeenSequence`) still counts
+	// them so reconnects don't replay.
+	let activityEvents = $state<GitOpsActivityEvent[]>(
+		untrack(() => (data.activityEvents ?? []).filter((e) => !isInventoryActivityEvent(e))),
+	);
+	let lastSeenSequence = untrack(() =>
+		(data.activityEvents ?? []).reduce((max, e) => Math.max(max, e.sequence), 0),
+	);
 	const links = untrack(() => data.links);
 	setContext(PIPELINE_LINKS_CONTEXT, links);
 
@@ -148,7 +157,13 @@
 			metadata = (await metaRes.json()) as DeploymentMetadataResponse;
 			promotions = (await promoRes.json()) as PromotionStrategiesResponse;
 			const activity = (await eventsRes.json()) as GitOpsActivityEventsResponse;
-			activityEvents = mergeActivityEvents(activityEvents, activity.events);
+			for (const event of activity.events) {
+				lastSeenSequence = Math.max(lastSeenSequence, event.sequence);
+			}
+			activityEvents = mergeActivityEvents(
+				activityEvents,
+				activity.events.filter((e) => !isInventoryActivityEvent(e)),
+			);
 			requestError = null;
 		} catch (err) {
 			requestError = err instanceof Error ? err.message : String(err);
@@ -201,11 +216,19 @@
 	}
 
 	function latestSequence(): number {
-		return activityEvents.reduce((max, event) => Math.max(max, event.sequence), 0);
+		return activityEvents.reduce((max, event) => Math.max(max, event.sequence), lastSeenSequence);
 	}
 
-	function startFallbackPolling() {
-		if (!timer) timer = setInterval(() => void refresh(), 15_000);
+	// Tiered polling: 15s while the SSE stream is down (poll is the only update
+	// path), 60s safety net while it's live (covers eventless gaps — e.g. a
+	// GitHub push to stacks with no Argo event yet — and is served from server
+	// caches when nothing changed).
+	const POLL_FALLBACK_MS = 15_000;
+	const POLL_SAFETY_MS = 60_000;
+
+	function startFallbackPolling(intervalMs: number = POLL_FALLBACK_MS) {
+		stopFallbackPolling();
+		timer = setInterval(() => void refresh(), intervalMs);
 	}
 
 	function stopFallbackPolling() {
@@ -217,7 +240,10 @@
 		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
 		eventRefreshTimer = setTimeout(() => {
 			eventRefreshTimer = null;
-			void refresh({ fresh: true });
+			// No `fresh` — the ingest endpoint already invalidated the relevant
+			// server caches when the triggering event landed, so a plain fetch sees
+			// the new state without stampeding GitHub/hub on every event burst.
+			void refresh();
 		}, GITOPS_EVENT_REFRESH_DEBOUNCE_MS);
 	}
 
@@ -232,10 +258,14 @@
 		if (eventBuffer.length === 0) return;
 		const batch = eventBuffer;
 		eventBuffer = [];
-		activityEvents = mergeActivityEvents(activityEvents, batch);
+		// Inventory heartbeat events advance the resume cursor + trigger the
+		// metadata refresh, but stay out of the visible feed (~1/min noise).
+		const feedEvents = batch.filter((e) => !isInventoryActivityEvent(e));
+		if (feedEvents.length > 0) activityEvents = mergeActivityEvents(activityEvents, feedEvents);
 		const keys = new Set<string>();
 		let refreshNeeded = false;
 		for (const event of batch) {
+			lastSeenSequence = Math.max(lastSeenSequence, event.sequence);
 			for (const key of activityTargetKeys(event, baseModel)) keys.add(key);
 			if (shouldRefreshGitOpsMetadata(event)) refreshNeeded = true;
 		}
@@ -268,7 +298,7 @@
 			activityReconnecting = false;
 			activityError = null;
 			reconnectDelay = 3000;
-			stopFallbackPolling();
+			startFallbackPolling(POLL_SAFETY_MS);
 		};
 		es.addEventListener("gitops.event", (event) => {
 			const message = event as MessageEvent<string>;
@@ -283,7 +313,7 @@
 			activityConnected = false;
 			activityError = null;
 			es.close();
-			startFallbackPolling();
+			startFallbackPolling(POLL_FALLBACK_MS);
 			if (!activityReconnectTimer) {
 				activityReconnecting = true;
 				const delay = reconnectDelay;

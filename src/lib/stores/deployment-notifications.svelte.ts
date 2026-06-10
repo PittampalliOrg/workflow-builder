@@ -158,7 +158,11 @@ class DeploymentNotificationStore {
 		if (this.destroyed) return;
 		let metadata: { inventory?: { data?: { environments?: Array<{ name?: string; applications?: InventoryApp[] }> } } };
 		try {
-			const res = await fetch("/api/v1/gitops/deployment-metadata?fresh=1", {
+			// No `fresh=1`: the ingest endpoint invalidates the hub-inventory cache
+			// when an event lands (including the inventory-updated event), so a plain
+			// fetch already sees the new snapshot — and event bursts can't stampede
+			// the upstream sources through this store.
+			const res = await fetch("/api/v1/gitops/deployment-metadata", {
 				headers: { accept: "application/json" },
 			});
 			if (res.status === 401 || res.status === 403) {
