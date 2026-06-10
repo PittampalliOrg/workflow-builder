@@ -923,14 +923,14 @@ def _resolve_function_call(
     # AP piece function: piece/action slash format (e.g., "gmail/send_email")
     # Used by the AI workflow builder and spec-first architecture.
     # Extracts piece name and action name from the call value,
-    # and flattens body.input into top-level input for fn-activepieces.
+    # and flattens body.input into top-level input for the AP piece-runtime.
     if "/" in call_value and not call_value.startswith("http"):
         parts = call_value.split("/", 1)
         piece_name = parts[0]
         action_name = parts[1] if len(parts) > 1 else ""
         action_type = call_value
 
-        # Flatten: move body.input to top-level input for fn-activepieces
+        # Flatten: move body.input to top-level input for the AP piece-runtime
         resolved_args = dict(with_args)
         body = resolved_args.get("body", {})
         if isinstance(body, dict):
@@ -981,6 +981,49 @@ _REMOVED_AGENT_ACTION_TYPES = {
     "dapr-swe/run",
     "durable/plan",
 }
+
+# Slug prefixes with explicit (non-AP) function-registry routes. Anything else
+# of the form "<piece>/<action>" is an Activepieces piece action dispatched to
+# the per-piece piece-runtime (ap-<piece>-service) and gets the AP durability
+# contract: RetryPolicy + idempotency key + pause mapping.
+_NON_AP_SLUG_PREFIXES: set[str] = {
+    "system",
+    "code",
+    "_code",
+    "browser",
+    "openshell",
+    "workspace",
+    "web",
+    "durable",
+    "environment",
+    "workflow-orchestrator",
+}
+
+# Retry policy for AP piece activities (docs/activepieces-integration-architecture.md
+# §2.4). The piece-runtime classifies failures; execute_action raises
+# RetryableActivityError ONLY for retryable ones, so permanent failures fail
+# deterministically without burning attempts.
+_AP_RETRY_POLICY = wf.RetryPolicy(
+    first_retry_interval=timedelta(
+        seconds=int(os.environ.get("AP_RETRY_FIRST_INTERVAL_SECONDS", "2"))
+    ),
+    max_number_of_attempts=int(os.environ.get("AP_RETRY_MAX_ATTEMPTS", "5")),
+    backoff_coefficient=float(os.environ.get("AP_RETRY_BACKOFF_COEFFICIENT", "2")),
+    max_retry_interval=timedelta(
+        seconds=int(os.environ.get("AP_RETRY_MAX_INTERVAL_SECONDS", "60"))
+    ),
+)
+
+# Defensive bound on repeated piece pauses (delay → run → delay → ...).
+_AP_MAX_PAUSE_ROUNDS = int(os.environ.get("AP_MAX_PAUSE_ROUNDS", "5"))
+
+
+def _is_ap_piece_action(action_type: str) -> bool:
+    """True for AP piece slugs ("<piece>/<action>" with a non-reserved prefix)."""
+    if not isinstance(action_type, str) or "/" not in action_type:
+        return False
+    prefix = action_type.split("/", 1)[0]
+    return prefix not in _NON_AP_SLUG_PREFIXES
 
 def _resolve_native_agent_runtime(
     flattened_args: dict[str, Any],
@@ -2293,7 +2336,7 @@ def _handle_call_task(
     }
 
     # For piece/action calls: extract input fields from nested body.input or top-level input
-    # so fn-activepieces receives them as flat propsValue fields while preserving
+    # so the AP piece-runtime receives them as flat propsValue fields while preserving
     # the original resolved arguments for generic OpenShell/function-router actions.
     if action_input:
         raw_config["input"] = action_input
@@ -2321,19 +2364,90 @@ def _handle_call_task(
     final_config = resolved_config if isinstance(resolved_config, dict) else raw_config
     connection_external_id = final_config.pop("connectionExternalId", None) if isinstance(final_config, dict) else None
 
+    activity_input: dict[str, Any] = {
+        "node": node_compat,
+        "nodeOutputs": tc.task_outputs,
+        "executionId": tc.execution_id,
+        "workflowId": tc.workflow_id,
+        "integrations": tc.integrations,
+        "dbExecutionId": tc.db_execution_id,
+        "connectionExternalId": connection_external_id,
+        "_otel": tc.otel_ctx,
+    }
+
+    # AP piece actions get the durability contract: a deterministic
+    # idempotency key (stable across retries AND replay), retryable-failure
+    # raising (so the RetryPolicy fires), and DELAY/WEBHOOK pause mapping.
+    is_ap_action = _is_ap_piece_action(action_type)
+    call_kwargs: dict[str, Any] = {}
+    if is_ap_action:
+        activity_input["idempotencyKey"] = (
+            f"{tc.workflow_id}:{tc.db_execution_id or tc.execution_id}:{task_name}"
+        )
+        activity_input["raiseOnRetryable"] = True
+        # Node-level opt-out for actions the author marks safe to re-run.
+        if isinstance(final_config, dict) and _as_bool(final_config.get("idempotent"), False):
+            activity_input["skipIdempotencyGate"] = True
+        call_kwargs["retry_policy"] = _AP_RETRY_POLICY
+
     result = yield ctx.call_activity(
         execute_action,
-        input=_freeze({
-            "node": node_compat,
-            "nodeOutputs": tc.task_outputs,
-            "executionId": tc.execution_id,
-            "workflowId": tc.workflow_id,
-            "integrations": tc.integrations,
-            "dbExecutionId": tc.db_execution_id,
-            "connectionExternalId": connection_external_id,
-            "_otel": tc.otel_ctx,
-        }),
+        input=_freeze({**activity_input, "executionType": "BEGIN"}),
+        **call_kwargs,
     )
+
+    # AP pause contract: DELAY → durable timer then RESUME re-invoke;
+    # WEBHOOK → wait for the BFF-raised external event (ap.resume.<requestId>)
+    # then RESUME re-invoke carrying the callback payload.
+    pause_rounds = 0
+    while (
+        is_ap_action
+        and isinstance(result, dict)
+        and isinstance(result.get("pause"), dict)
+        and pause_rounds < _AP_MAX_PAUSE_ROUNDS
+    ):
+        pause_rounds += 1
+        pause = result["pause"]
+        pause_type = pause.get("type")
+        resume_payload: Any = None
+
+        if pause_type == "DELAY":
+            delay_seconds = int(pause.get("delaySeconds") or 0)
+            _log_info(
+                ctx,
+                "[SW Workflow] %s paused (DELAY %ss, round %s)",
+                task_name,
+                delay_seconds,
+                pause_rounds,
+            )
+            if delay_seconds > 0:
+                yield ctx.create_timer(timedelta(seconds=delay_seconds))
+        elif pause_type == "WEBHOOK":
+            request_id = str(pause.get("requestId") or "").strip()
+            if not request_id:
+                raise RuntimeError(
+                    f"AP WEBHOOK pause for task '{task_name}' is missing requestId"
+                )
+            _log_info(
+                ctx,
+                "[SW Workflow] %s paused (WEBHOOK, waiting for ap.resume.%s)",
+                task_name,
+                request_id,
+            )
+            resume_payload = yield ctx.wait_for_external_event(f"ap.resume.{request_id}")
+        else:
+            break
+
+        result = yield ctx.call_activity(
+            execute_action,
+            input=_freeze({
+                **activity_input,
+                "executionType": "RESUME",
+                "resumePayload": resume_payload,
+            }),
+            **call_kwargs,
+        )
+
     result = _apply_task_output_definition(
         task_data,
         tc,

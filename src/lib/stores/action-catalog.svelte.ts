@@ -108,6 +108,148 @@ export interface ActionCatalogSnapshot {
 
 type FetchLike = typeof fetch;
 
+// ---------------------------------------------------------------------------
+// Picker organization helpers (Activepieces Cloud builder pattern)
+//
+// Shared by the two canvas pickers (action-selector + function-browser):
+// category tabs (Core | Apps | AI & Agents), the Popular/Highlights columns,
+// and piece→actions search grouping. Pure functions over a minimal structural
+// item shape so both pickers' item types fit.
+// ---------------------------------------------------------------------------
+
+export type PickerCategoryId = 'all' | 'core' | 'apps' | 'ai';
+
+export const PICKER_CATEGORIES: Array<{ id: PickerCategoryId; label: string }> = [
+	{ id: 'all', label: 'All' },
+	{ id: 'core', label: 'Core' },
+	{ id: 'apps', label: 'Apps' },
+	{ id: 'ai', label: 'AI & Agents' },
+];
+
+/** Minimal structural shape shared by both pickers' catalog item types. */
+export interface PickerCatalogEntry {
+	id: string;
+	name?: string | null;
+	displayName?: string | null;
+	service?: string | null;
+	category?: string | null;
+	pieceName?: string | null;
+	providerId?: string | null;
+	providerLabel?: string | null;
+	providerIconUrl?: string | null;
+}
+
+/** AP piece ids that belong under "AI & Agents" even without the AI category tag. */
+const AI_PIECE_IDS = new Set([
+	'openai',
+	'anthropic',
+	'claude',
+	'azure-openai',
+	'google-gemini',
+	'deepseek',
+	'perplexity-ai',
+	'stability-ai',
+	'elevenlabs',
+]);
+
+export function pickerCategoryForItem(
+	item: PickerCatalogEntry,
+): Exclude<PickerCategoryId, 'all'> {
+	const service = item.service || '';
+	if (service === 'dapr-agent-py' || item.category === 'agent') return 'ai';
+	if (service === 'activepieces') {
+		const provider = (item.providerId || item.pieceName || '').toLowerCase();
+		const category = (item.category || '').toUpperCase();
+		if (category === 'ARTIFICIAL_INTELLIGENCE' || AI_PIECE_IDS.has(provider)) return 'ai';
+		return 'apps';
+	}
+	// system/*, code functions, browser/workspace helpers, orchestrator builtins.
+	return 'core';
+}
+
+export function matchesPickerCategory(
+	item: PickerCatalogEntry,
+	category: PickerCategoryId,
+): boolean {
+	return category === 'all' || pickerCategoryForItem(item) === category;
+}
+
+/** Curated "Popular" piece ids (AP Cloud's Popular column); rendered in this order. */
+export const POPULAR_PIECE_IDS = [
+	'gmail',
+	'github',
+	'slack',
+	'google-sheets',
+	'google-drive',
+	'notion',
+	'discord',
+	'openai',
+];
+
+/**
+ * Curated "Highlights" — common single actions surfaced above the grouped
+ * list. Matchers are intentionally loose (id formats differ per source);
+ * entries that don't exist in the live catalog simply don't render.
+ */
+const PICKER_HIGHLIGHT_MATCHERS: Array<(item: PickerCatalogEntry) => boolean> = [
+	(item) => item.id === 'builtin.durable/run',
+	(item) => item.service !== 'activepieces' && `${item.name || item.id}`.includes('http-request'),
+	(item) => item.service !== 'activepieces' && `${item.name || item.id}`.includes('database-query'),
+	(item) => item.service === 'activepieces' && (item.providerId || item.pieceName) === 'gmail' && `${item.name || ''}`.includes('send'),
+	(item) => item.service === 'activepieces' && (item.providerId || item.pieceName) === 'github' && `${item.name || ''}`.includes('issue'),
+	(item) => item.service === 'activepieces' && (item.providerId || item.pieceName) === 'slack' && `${item.name || ''}`.includes('message'),
+];
+
+export function pickerHighlights<T extends PickerCatalogEntry>(items: T[]): T[] {
+	const out: T[] = [];
+	for (const matcher of PICKER_HIGHLIGHT_MATCHERS) {
+		const match = items.find((item) => matcher(item));
+		if (match && !out.some((existing) => existing.id === match.id)) out.push(match);
+	}
+	return out;
+}
+
+export interface PickerPieceGroup<T extends PickerCatalogEntry> {
+	/** Stable grouping key (providerId / pieceName / service). */
+	key: string;
+	label: string;
+	iconUrl: string | null;
+	items: T[];
+}
+
+/** Group items piece→actions (AP Cloud search-result pattern). */
+export function groupPickerItemsByPiece<T extends PickerCatalogEntry>(
+	items: T[],
+): PickerPieceGroup<T>[] {
+	const map = new Map<string, PickerPieceGroup<T>>();
+	for (const item of items) {
+		const key = item.providerId || item.pieceName || item.service || 'other';
+		let group = map.get(key);
+		if (!group) {
+			group = {
+				key,
+				label: item.providerLabel || item.pieceName || key,
+				iconUrl: item.providerIconUrl ?? null,
+				items: [],
+			};
+			map.set(key, group);
+		}
+		if (!group.iconUrl && item.providerIconUrl) group.iconUrl = item.providerIconUrl;
+		group.items.push(item);
+	}
+	return Array.from(map.values());
+}
+
+/** Popular piece groups in curated order, restricted to what the catalog has. */
+export function popularPieceGroups<T extends PickerCatalogEntry>(
+	groups: PickerPieceGroup<T>[],
+): PickerPieceGroup<T>[] {
+	const byKey = new Map(groups.map((group) => [group.key.toLowerCase(), group]));
+	return POPULAR_PIECE_IDS.map((id) => byKey.get(id)).filter(
+		(group): group is PickerPieceGroup<T> => Boolean(group),
+	);
+}
+
 function emptySnapshot(): ActionCatalogSnapshot {
 	return {
 		timestamp: new Date().toISOString(),
@@ -236,7 +378,7 @@ function normalizeCatalogFunction(entry: Record<string, unknown>): ActionCatalog
 	const pieceName = typeof entry.pieceName === 'string' ? entry.pieceName : 'catalog';
 	const actionName = typeof entry.actionName === 'string' ? entry.actionName : '';
 	const language = entry.language === 'typescript' || entry.language === 'python' ? entry.language : null;
-	const kind = inferKind('catalog', pieceName === 'code-functions' ? 'code-functions' : 'fn-activepieces');
+	const kind = inferKind('catalog', pieceName === 'code-functions' ? 'code-functions' : 'activepieces');
 	const codeFunctionId = typeof entry.codeFunctionId === 'string' ? entry.codeFunctionId : null;
 
 	if (!name || !version) return null;
@@ -259,11 +401,11 @@ function normalizeCatalogFunction(entry: Record<string, unknown>): ActionCatalog
 		category: typeof entry.category === 'string' ? entry.category : null,
 		pieceName,
 		actionName,
-		service: pieceName === 'code-functions' ? 'code-runtime' : 'fn-activepieces',
+		service: pieceName === 'code-functions' ? 'code-runtime' : 'activepieces',
 		runtime:
 			pieceName === 'code-functions'
 				? (language ? `code-${language}` : 'code-runtime')
-				: 'fn-activepieces',
+				: 'piece-runtime',
 		kind,
 		visibility: 'public-callable',
 		sourceKind: 'catalog',

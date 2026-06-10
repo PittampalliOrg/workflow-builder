@@ -80,6 +80,16 @@ async function fetchConnectionCredentials(
 }
 
 /**
+ * The request-scoped connection reference (X-Connection-External-Id), if any.
+ * Used by /execute's idempotency gate to stamp the piece_execution audit row.
+ */
+export function getRequestConnectionExternalId(): string | undefined {
+	return (
+		requestAuthContext.getStore()?.connectionExternalId?.trim() || undefined
+	);
+}
+
+/**
  * Resolve auth credentials for piece action execution.
  */
 export async function resolveAuth(): Promise<unknown> {

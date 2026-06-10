@@ -34,7 +34,7 @@ const longRunningAgent = new UndiciAgent({
 });
 import {
   fetchCredentialsWithAudit,
-  fetchRawConnectionValue,
+  logCredentialReferenceForward,
 } from "../core/credential-service.js";
 import { resolveCodeFunctionExecution } from "../core/code-functions.js";
 import {
@@ -57,7 +57,7 @@ import {
   ensureGiteaPublishRepository,
   resolveCloneRepository,
 } from "../core/gitea-repository.js";
-import { lookupFunction } from "../core/registry.js";
+import { apPieceServiceName, lookupFunction } from "../core/registry.js";
 import {
   bindWorkflowSessionContext,
   buildWorkflowSessionId,
@@ -131,6 +131,11 @@ const ExecuteRequestSchema = z.object({
   connection_external_id: z.string().nullable().optional(),
   ap_project_id: z.string().nullable().optional(),
   ap_platform_id: z.string().nullable().optional(),
+  // AP durability contract (orchestrator → piece-runtime passthrough)
+  idempotency_key: z.string().nullable().optional(),
+  execution_type: z.enum(["BEGIN", "RESUME"]).optional(),
+  resume_payload: z.unknown().optional(),
+  skip_idempotency_gate: z.boolean().optional(),
   _otel: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -597,6 +602,7 @@ function normalizeKnativeExecuteResponse(
             ([key]) =>
               key !== "success" &&
               key !== "error" &&
+              key !== "errorClass" &&
               key !== "duration_ms" &&
               key !== "routed_to" &&
               key !== "pause",
@@ -613,11 +619,18 @@ function normalizeKnativeExecuteResponse(
     (parsed.pause.type === "DELAY" || parsed.pause.type === "WEBHOOK")
       ? (parsed.pause as ExecuteResponse["pause"])
       : undefined;
+  // Retryable/permanent classification from the piece-runtime — the
+  // orchestrator's AP retry policy keys off this.
+  const errorClass =
+    parsed.errorClass === "retryable" || parsed.errorClass === "permanent"
+      ? parsed.errorClass
+      : undefined;
 
   return {
     success,
     data: fallbackData,
     error,
+    errorClass,
     duration_ms: durationMs,
     pause,
   };
@@ -1257,10 +1270,17 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // Step 1: Look up the target service
-    const target = await lookupFunction(functionSlug);
+    // Step 1: Look up the target service. Type "activepieces" entries carry
+    // no fixed appId — the target is the per-piece piece-runtime Knative
+    // Service (reconciler naming contract: ap-<sanitized-piece>-service).
+    const registryTarget = await lookupFunction(functionSlug);
+    const isApRoute = registryTarget.type === "activepieces";
+    const target: { appId: string; type: "knative" | "openfunction" } =
+      registryTarget.type === "activepieces"
+        ? { appId: apPieceServiceName(pluginId), type: "knative" }
+        : registryTarget;
     console.log(
-      `[Execute Route] Routing ${functionSlug} to ${target.appId} (${target.type})`,
+      `[Execute Route] Routing ${functionSlug} to ${target.appId} (${registryTarget.type})`,
     );
     timing.routedTo = target.appId;
 
@@ -2491,7 +2511,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             }
           }
         } else {
-          const isApRoute = target.appId === "fn-activepieces";
           const isCodeRoute =
             target.appId === "code-runtime" || pluginId === "code";
           const parsedConnectionExternalId =
@@ -2655,9 +2674,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               }
             }
           } else {
-            // Pre-fetch credentials
+            // Pre-fetch credentials (non-AP routes only). AP routes use
+            // REFERENCE-FORWARDING: the router never touches plaintext — it
+            // forwards X-Connection-External-Id and the piece-runtime
+            // self-resolves at point of use via the BFF decrypt endpoint
+            // (the same path its MCP tools use). The router writes an
+            // audit-only credential_access_logs row to preserve the
+            // execution↔connection linkage.
             const credentialStartTime = Date.now();
-            let credentialsRaw: unknown | undefined;
+            let credentials: Record<string, string> = {};
 
             const apContext =
               body.ap_project_id && body.ap_platform_id
@@ -2667,41 +2692,43 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   }
                 : undefined;
 
-            if (isApRoute && connectionExternalId) {
-              // For AP actions: fetch raw connection value (passes directly to context.auth)
-              credentialsRaw = await fetchRawConnectionValue(
+            if (isApRoute) {
+              if (connectionExternalId) {
+                if (body.db_execution_id) {
+                  await logCredentialReferenceForward(
+                    body.db_execution_id,
+                    body.node_id,
+                    pluginId,
+                    connectionExternalId,
+                  );
+                }
+                console.log(
+                  `[Execute Route] AP reference-forwarding for ${functionSlug}: connection=${connectionExternalId}`,
+                );
+              } else {
+                console.warn(
+                  `[Execute Route] AP route ${functionSlug} has no connectionExternalId — auth-requiring actions will fail`,
+                );
+              }
+            } else {
+              const credentialResult = await fetchCredentialsWithAudit(
+                pluginId,
+                body.integrations,
+                body.db_execution_id
+                  ? {
+                      executionId: body.db_execution_id,
+                      nodeId: body.node_id,
+                    }
+                  : undefined,
                 connectionExternalId,
                 apContext,
               );
+              credentials = credentialResult.credentials;
               console.log(
-                `[Execute Route] AP credentials_raw for ${functionSlug}: ` +
-                  `type=${(credentialsRaw as Record<string, unknown>)?.type ?? "null"}, ` +
-                  `hasAccessToken=${!!(credentialsRaw as Record<string, unknown>)?.access_token}`,
-              );
-            } else if (isApRoute) {
-              console.warn(
-                `[Execute Route] AP route ${functionSlug} has no connectionExternalId — auth will fail`,
+                `[Execute Route] Credentials fetched (source: ${credentialResult.source})`,
               );
             }
-
-            // Always fetch env-var-mapped credentials too (for native services and as fallback)
-            const credentialResult = await fetchCredentialsWithAudit(
-              pluginId,
-              body.integrations,
-              body.db_execution_id
-                ? {
-                    executionId: body.db_execution_id,
-                    nodeId: body.node_id,
-                  }
-                : undefined,
-              connectionExternalId,
-              apContext,
-            );
             timing.credentialFetchMs = Date.now() - credentialStartTime;
-
-            console.log(
-              `[Execute Route] Credentials fetched in ${timing.credentialFetchMs}ms (source: ${credentialResult.source})`,
-            );
 
             const knativeRequest: OpenFunctionRequest = {
               step: isApRoute ? functionSlug : stepName,
@@ -2710,11 +2737,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               node_id: body.node_id,
               input: normalizedInput,
               node_outputs: body.node_outputs,
-              credentials: credentialResult.credentials,
-              ...(isApRoute && {
-                credentials_raw: credentialsRaw,
-                metadata: { pieceName: pluginId, actionName: stepName },
-              }),
+              ...(isApRoute
+                ? {
+                    metadata: { pieceName: pluginId, actionName: stepName },
+                    db_execution_id: body.db_execution_id ?? undefined,
+                    idempotency_key: body.idempotency_key ?? undefined,
+                    execution_type: body.execution_type,
+                    resume_payload: body.resume_payload,
+                    skip_idempotency_gate: body.skip_idempotency_gate,
+                  }
+                : { credentials }),
             };
             const requestBody = JSON.stringify(knativeRequest);
 
@@ -2743,6 +2775,11 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   headers: {
                     "Content-Type": "application/json",
                     ...forwardedTraceHeaders,
+                    // Reference-forwarding: the piece-runtime resolves the
+                    // connection at point of use (BFF decrypt endpoint).
+                    ...(isApRoute && connectionExternalId
+                      ? { "X-Connection-External-Id": connectionExternalId }
+                      : {}),
                   },
                   body: requestBody,
                   signal: controller.signal,

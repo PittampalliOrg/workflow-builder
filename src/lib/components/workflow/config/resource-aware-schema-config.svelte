@@ -22,6 +22,8 @@
 		authPieceName?: string | null;
 		authLabel?: string | null;
 		authRequired?: boolean | null;
+		/** Render the built-in Connection card (set false when the host pins its own). */
+		showConnectionPicker?: boolean;
 		resourceTypes?: Record<string, string>;
 		dynamicInputs?: Record<
 			string,
@@ -38,6 +40,8 @@
 				authValue?: string | null;
 				connectionExternalId?: string | null;
 				searchValue?: string;
+				/** Progress channel (e.g. piece-service cold-start "warming… retrying"). */
+				onStatus?: (message: string | null) => void;
 			},
 		) => Promise<{
 			options?: Array<{ label: string; value: unknown }>;
@@ -103,6 +107,7 @@
 		authPieceName = null,
 		authLabel = null,
 		authRequired = null,
+		showConnectionPicker = true,
 		resourceTypes = {},
 		dynamicInputs = {},
 		resolveOptions = undefined,
@@ -136,7 +141,9 @@
 		if (piece) return piece.authType !== 'NONE';
 		return Boolean(authPieceName);
 	});
-	let showAuthBlock = $derived(Boolean(authPieceName) && inferredAuthRequired !== false);
+	let showAuthBlock = $derived(
+		showConnectionPicker && Boolean(authPieceName) && inferredAuthRequired !== false,
+	);
 
 	let connections = $state<AppConnection[]>([]);
 	let authPieces = $state<PieceAuthInfo[]>([]);
@@ -148,6 +155,7 @@
 	let dynamicMeta = $state<Record<string, DynamicMeta>>({});
 	let dynamicLoading = $state<Record<string, boolean>>({});
 	let dynamicErrors = $state<Record<string, string>>({});
+	let dynamicNotices = $state<Record<string, string>>({});
 	let dynamicRequestVersion = $state<Record<string, number>>({});
 	let dynamicSignatures = $state<Record<string, string>>({});
 
@@ -316,6 +324,10 @@
 		return dynamicMeta[key] || {};
 	}
 
+	function dynamicNoticeFor(key: string): string | null {
+		return dynamicNotices[key] || null;
+	}
+
 	function normalizeResourceName(value: string): string {
 		return value
 			.trim()
@@ -431,6 +443,7 @@
 		dynamicRequestVersion = { ...dynamicRequestVersion, [key]: requestId };
 		dynamicLoading = { ...dynamicLoading, [key]: true };
 		dynamicErrors = { ...dynamicErrors, [key]: '' };
+		dynamicNotices = { ...dynamicNotices, [key]: '' };
 
 		try {
 			const payload = await resolveOptions(key, {
@@ -441,6 +454,10 @@
 					config.search && typeof getPathValue(isRecord(values) ? values : {}, key.split('.')) === 'string'
 						? (getPathValue(isRecord(values) ? values : {}, key.split('.')) as string)
 						: undefined,
+				onStatus: (message) => {
+					if (requestId !== dynamicRequestVersion[key]) return;
+					dynamicNotices = { ...dynamicNotices, [key]: message || '' };
+				},
 			});
 
 			if (requestId !== dynamicRequestVersion[key]) return;
@@ -463,8 +480,10 @@
 				[key]: error instanceof Error ? error.message : String(error),
 			};
 		} finally {
-			if (requestId !== dynamicRequestVersion[key]) return;
-			dynamicLoading = { ...dynamicLoading, [key]: false };
+			if (requestId === dynamicRequestVersion[key]) {
+				dynamicLoading = { ...dynamicLoading, [key]: false };
+				dynamicNotices = { ...dynamicNotices, [key]: '' };
+			}
 		}
 	}
 
@@ -718,6 +737,9 @@
 								{dynamicLoadingFor(fieldKey) ? 'Loading' : 'Refresh'}
 							</Button>
 						</div>
+						{#if dynamicNoticeFor(fieldKey)}
+							<p class="text-[10px] text-amber-500">{dynamicNoticeFor(fieldKey)}</p>
+						{/if}
 						{#if dynamicErrorFor(fieldKey)}
 							<p class="text-[10px] text-destructive">{dynamicErrorFor(fieldKey)}</p>
 						{/if}

@@ -193,7 +193,7 @@ export const NAV_GROUPS: NavGroup[] = [
 			},
 			{
 				id: "connections",
-				label: "Connections",
+				label: "Integrations",
 				icon: Plug,
 				href: ({ slug }) => `/workspaces/${slug}/connections`,
 				match: /^\/workspaces\/[^/]+\/connections(\/|$)/,

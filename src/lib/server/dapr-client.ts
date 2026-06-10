@@ -313,18 +313,6 @@ export function getCodeRuntimeUrl(): string {
   );
 }
 
-/** Get the fn-activepieces base URL */
-export function getFnActivepiecesUrl(): string {
-  const url =
-    env.FN_ACTIVEPIECES_URL ||
-    "http://fn-activepieces.workflow-builder.svc.cluster.local:8080";
-  // Ensure port is present (env var from K8s service discovery may omit it)
-  if (url.startsWith("http://") && !url.match(/:\d+$/)) {
-    return `${url}:8080`;
-  }
-  return url;
-}
-
 /** Get the fn-system base URL */
 export function getFnSystemUrl(): string {
   const url =
@@ -360,11 +348,6 @@ export function getWorkflowCapableServices(): WorkflowServiceDescriptor[] {
     {
       id: "workspace-runtime",
       getBaseUrl: getWorkspaceRuntimeUrl,
-      introspectPath: "/api/runtime/introspect",
-    },
-    {
-      id: "fn-activepieces",
-      getBaseUrl: getFnActivepiecesUrl,
       introspectPath: "/api/runtime/introspect",
     },
     {

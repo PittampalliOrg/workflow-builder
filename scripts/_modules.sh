@@ -12,13 +12,8 @@
 _MODULES_SH_LOADED=1
 
 # Skaffold module set — kept in sync with skaffold.yaml's `requires:` list.
-#
-# fn-activepieces remains wired in Skaffold for recovery/parity work, but the
-# current ryzen cluster does not expose it as a regular Argo Application and
-# Deployment. Keep it out of normal "all" sessions until that app path is live
-# again; set SKAFFOLD_ALLOW_INACTIVE=1 to opt into it deliberately.
 ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
-INACTIVE_MODULES=(fn-activepieces)
+INACTIVE_MODULES=()
 ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
 
 # Services whose packages/components/workloads/<svc>/manifests/kustomization.yaml
@@ -42,7 +37,6 @@ declare -gA MODULE_TO_APP=(
   [function-router]=ryzen-function-router
   [mcp-gateway]=ryzen-mcp-gateway
   [swebench-coordinator]=ryzen-swebench-coordinator
-  [fn-activepieces]=ryzen-fn-activepieces
 )
 
 # module → "<localPort>:<containerPort>" for the dev-loop port-forward banner.
@@ -55,5 +49,4 @@ declare -gA MODULE_PORTS=(
   [function-router]="3014:8080"
   [mcp-gateway]="3018:8080"
   [swebench-coordinator]="3019:8080"
-  [fn-activepieces]="3016:8080"
 )

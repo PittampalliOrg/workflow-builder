@@ -305,7 +305,7 @@ async function enrichNodesOffline(
 				displayName: match.displayName as string,
 				providerId: match.providerId as string,
 			},
-			catalogFunction: match.service === 'fn-activepieces' ? {
+			catalogFunction: match.service === 'activepieces' ? {
 				name: match.name as string,
 				displayName: match.displayName as string,
 				pieceName: (match.providerId || match.pieceName) as string,

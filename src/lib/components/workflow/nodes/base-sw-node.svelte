@@ -11,10 +11,12 @@
 		icon: any;
 		iconColor: string;
 		providerIconUrl?: string | null;
+		/** Validation warning (e.g. unresolved connection ref) — renders an amber dot. */
+		warning?: string | null;
 		children?: Snippet;
 	}
 
-	let { data, selected = false, ports, icon: Icon, iconColor, providerIconUrl = null, children }: Props = $props();
+	let { data, selected = false, ports, icon: Icon, iconColor, providerIconUrl = null, warning = null, children }: Props = $props();
 
 	let status = $derived((data.status as string) || 'idle');
 	let agentProgress = $derived(data.agentProgress as { turnCount: number; toolCount: number; activeTool: string | null; eventCount: number } | null);
@@ -69,6 +71,11 @@
 		<div class="wb-node__check">✓</div>
 	{:else if status === 'error'}
 		<div class="wb-node__error-icon">✕</div>
+	{/if}
+
+	<!-- Validation warning dot (top-left) -->
+	{#if warning}
+		<div class="wb-node__warning" title={warning}>!</div>
 	{/if}
 
 	<!-- Centered content: icon + label + description -->
@@ -221,6 +228,26 @@
 		font-weight: bold;
 		z-index: 10;
 		animation: wb-pop 0.3s ease;
+	}
+
+	/* Validation warning dot — absolute top-left */
+	.wb-node__warning {
+		position: absolute;
+		top: 6px;
+		left: 6px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: rgba(245, 158, 11, 0.85);
+		color: white;
+		font-size: 9px;
+		font-weight: bold;
+		z-index: 10;
+		animation: wb-pop 0.3s ease;
+		cursor: help;
 	}
 
 	/* Error X mark — absolute top-right */

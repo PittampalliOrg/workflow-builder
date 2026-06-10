@@ -18,11 +18,67 @@ import {
 import { z } from "zod";
 import type { Action, Piece } from "@activepieces/pieces-framework";
 import { type JsonSchema } from "./prop-schema.js";
-import { normalizeActionInput } from "./normalize-input.js";
-import { buildActionContext } from "./context-factory.js";
+import { runPieceAction, type RuntimeAction } from "./executor.js";
 import { resolveAuth } from "./auth-resolver.js";
 import { extensionsFor } from "./extensions/index.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
+
+/**
+ * Run an action through the shared executor and format the result as MCP
+ * tool-call content. Auth is resolved here (request-scoped connection
+ * reference); the executor handles normalize/context/run/error uniformly
+ * for the MCP and /execute surfaces.
+ */
+async function runActionAsMcpTool(opts: {
+	runtimeAction: RuntimeAction;
+	toolName: string;
+	requireAuth: boolean;
+	args: Record<string, unknown>;
+}): Promise<{
+	content: Array<{ type: "text"; text: string }>;
+	isError?: boolean;
+}> {
+	const auth = opts.requireAuth ? await resolveAuth() : undefined;
+	if (opts.requireAuth && auth == null) {
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `Missing credentials for "${opts.toolName}". Set X-Connection-External-Id on the MCP request.`,
+				},
+			],
+			isError: true,
+		};
+	}
+
+	const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const result = await runPieceAction({
+		runtimeAction: opts.runtimeAction,
+		actionName: opts.toolName,
+		auth,
+		requireAuth: opts.requireAuth,
+		input: opts.args,
+		executionId,
+	});
+
+	if (!result.success) {
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `Action "${opts.toolName}" failed: ${result.error ?? "unknown error"}`,
+				},
+			],
+			isError: true,
+		};
+	}
+
+	const resultText =
+		typeof result.data === "string"
+			? result.data
+			: JSON.stringify(result.data, null, 2);
+	return { content: [{ type: "text" as const, text: resultText }] };
+}
 
 /**
  * Convert a JSON Schema object to a Zod raw shape for use with McpServer.registerTool().
@@ -83,6 +139,7 @@ export type PieceMetadataRow = {
 	actions: Record<string, ActionDef> | null;
 	auth: unknown;
 	displayName: string | null;
+	version?: string | null;
 	catalogSchemaVersion: number | null;
 	catalogDigest: string | null;
 	catalogSourceImage: string | null;
@@ -94,6 +151,22 @@ export type RegisteredTool = {
 	name: string;
 	description: string;
 };
+
+/**
+ * Tool allowlist sourced from `mcp_connection.metadata.toolSelection`,
+ * carried transport-level on the MCP URL as `?tools=a,b` (parsed at
+ * session initialize in index.ts). `null` = no restriction (register all
+ * tools); an empty array = register no tools.
+ */
+export type ToolAllowlist = string[] | null;
+
+function toolAllowedPredicate(
+	toolAllowlist: ToolAllowlist,
+): (name: string) => boolean {
+	if (toolAllowlist == null) return () => true;
+	const allowed = new Set(toolAllowlist);
+	return (name: string) => allowed.has(name);
+}
 
 function actionInputSchema(actionKey: string, actionDef: ActionDef): JsonSchema {
 	const schema = actionDef.inputSchema;
@@ -113,6 +186,10 @@ function actionInputSchema(actionKey: string, actionDef: ActionDef): JsonSchema 
 /**
  * Register all actions from an AP piece as MCP tools on the given Server.
  *
+ * When `toolAllowlist` is provided (from the `?tools=` URL param), only
+ * the listed actions/extensions are registered — tools/list and
+ * tools/call both see the filtered set.
+ *
  * Returns the list of registered tools (for health endpoint reporting).
  */
 export function registerPieceTools(
@@ -120,9 +197,11 @@ export function registerPieceTools(
 	piece: Piece,
 	metadata: PieceMetadataRow,
 	pieceName?: string,
+	toolAllowlist: ToolAllowlist = null,
 ): RegisteredTool[] {
 	const actions = metadata.actions ?? {};
 	const registeredTools: RegisteredTool[] = [];
+	const isToolAllowed = toolAllowedPredicate(toolAllowlist);
 
 	// Build the tool definitions list for ListTools
 	const toolDefs: Array<{
@@ -145,6 +224,7 @@ export function registerPieceTools(
 	>();
 
 	for (const [actionKey, actionDef] of Object.entries(actions)) {
+		if (!isToolAllowed(actionKey)) continue;
 		// Get runtime action from the piece
 		const action = piece.getAction(actionKey);
 		if (!action) {
@@ -181,6 +261,7 @@ export function registerPieceTools(
 	// so agents see them in the same tools/list. See src/extensions/index.ts.
 	if (pieceName) {
 		for (const extAction of extensionsFor(pieceName)) {
+			if (!isToolAllowed(extAction.name)) continue;
 			const displayName = extAction.displayName || extAction.name;
 			const description = extAction.description
 				? `${displayName}: ${extAction.description}`
@@ -246,65 +327,14 @@ export function registerPieceTools(
 
 		const { requireAuth, runtimeAction } = handler;
 
-		try {
-			// Resolve auth if needed
-			let auth: unknown;
-			if (requireAuth) {
-				auth = await resolveAuth();
-				if (auth == null) {
-					const output = {
-						content: [
-							{
-								type: "text" as const,
-								text: `Missing credentials for "${name}". Set X-Connection-External-Id on the MCP request.`,
-							},
-						],
-						isError: true,
-					};
-					setSpanOutput(output);
-					return output;
-				}
-			}
-
-			// Normalize input (unwrap dropdowns, etc.)
-			const inputArgs = (args ?? {}) as Record<string, unknown>;
-			const normalizedInput = await normalizeActionInput(runtimeAction, inputArgs);
-
-			// Build AP execution context
-			const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-			const { context } = buildActionContext({
-				auth,
-				propsValue: normalizedInput,
-				executionId,
-				actionName: name,
-			});
-
-			// Execute the action
-			const result = await runtimeAction.run(context);
-			setSpanOutput(result);
-
-			// Format result as MCP text content
-			const resultText =
-				typeof result === "string" ? result : JSON.stringify(result, null, 2);
-
-			return {
-				content: [{ type: "text" as const, text: resultText }],
-			};
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			console.error(`[piece-mcp] Tool "${name}" failed:`, error);
-			const output = {
-				content: [
-					{
-						type: "text" as const,
-						text: `Action "${name}" failed: ${message}`,
-					},
-				],
-				isError: true,
-			};
-			setSpanOutput(output);
-			return output;
-		}
+		const output = await runActionAsMcpTool({
+			runtimeAction,
+			toolName: name,
+			requireAuth,
+			args: (args ?? {}) as Record<string, unknown>,
+		});
+		setSpanOutput(output);
+		return output;
 	});
 
 	return registeredTools;
@@ -322,9 +352,11 @@ export function registerPieceToolsWithUI(
 	metadata: PieceMetadataRow,
 	uiHtmlPath: string,
 	pieceName: string,
+	toolAllowlist: ToolAllowlist = null,
 ): RegisteredTool[] {
 	const fs = require("fs") as typeof import("fs");
 	const htmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
+	const isToolAllowed = toolAllowedPredicate(toolAllowlist);
 
 	const resourceUri = `ui://piece-mcp-${pieceName}/app.html`;
 
@@ -345,6 +377,7 @@ export function registerPieceToolsWithUI(
 	const registeredTools: RegisteredTool[] = [];
 
 	for (const [actionKey, actionDef] of Object.entries(actions)) {
+		if (!isToolAllowed(actionKey)) continue;
 		// Get runtime action from the piece
 		const action = piece.getAction(actionKey);
 		if (!action) {
@@ -383,63 +416,14 @@ export function registerPieceToolsWithUI(
 				const requireAuth = actionDef.requireAuth !== false;
 				setSpanInput({ toolName: actionKey, input: args });
 
-				try {
-					let auth: unknown;
-					if (requireAuth) {
-						auth = await resolveAuth();
-						if (auth == null) {
-							const output = {
-								content: [
-									{
-										type: "text" as const,
-										text: `Missing credentials for "${actionKey}". Set X-Connection-External-Id on the MCP request.`,
-									},
-								],
-								isError: true,
-							};
-							setSpanOutput(output);
-							return output;
-						}
-					}
-
-					const runtimeAction = piece.getAction(actionKey)!;
-					const normalizedInput = await normalizeActionInput(runtimeAction, args);
-
-					const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-					const { context } = buildActionContext({
-						auth,
-						propsValue: normalizedInput,
-						executionId,
-						actionName: actionKey,
-					});
-
-					const result = await runtimeAction.run(context);
-					setSpanOutput(result);
-
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: JSON.stringify(result, null, 2),
-							},
-						],
-					};
-				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					console.error(`[piece-mcp] Tool "${actionKey}" failed:`, error);
-					const output = {
-						content: [
-							{
-								type: "text" as const,
-								text: `Action "${actionKey}" failed: ${message}`,
-							},
-						],
-						isError: true,
-					};
-					setSpanOutput(output);
-					return output;
-				}
+				const output = await runActionAsMcpTool({
+					runtimeAction: piece.getAction(actionKey)! as RuntimeAction,
+					toolName: actionKey,
+					requireAuth,
+					args,
+				});
+				setSpanOutput(output);
+				return output;
 			},
 		);
 
@@ -448,6 +432,7 @@ export function registerPieceToolsWithUI(
 
 	// Extension actions for this piece — see src/extensions/.
 	for (const extAction of extensionsFor(pieceName)) {
+		if (!isToolAllowed(extAction.name)) continue;
 		const displayName = extAction.displayName || extAction.name;
 		const description = extAction.description
 			? `${displayName}: ${extAction.description}`
@@ -480,70 +465,15 @@ export function registerPieceToolsWithUI(
 			async (args: Record<string, unknown>) => {
 				// Always require auth for extensions — see registerPieceTools for
 				// the CJS-import-timing rationale.
-				const requireAuth = true;
 				setSpanInput({ toolName: extAction.name, input: args });
-				try {
-					let auth: unknown;
-					if (requireAuth) {
-						auth = await resolveAuth();
-						if (auth == null) {
-							const output = {
-								content: [
-									{
-										type: "text" as const,
-										text: `Missing credentials for "${extAction.name}". Set X-Connection-External-Id on the MCP request.`,
-									},
-								],
-								isError: true,
-							};
-							setSpanOutput(output);
-							return output;
-						}
-					}
-
-					const normalizedInput = await normalizeActionInput(
-						extAction,
-						args,
-					);
-					const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-					const { context } = buildActionContext({
-						auth,
-						propsValue: normalizedInput,
-						executionId,
-						actionName: extAction.name,
-					});
-					const result = await extAction.run(context);
-					setSpanOutput(result);
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text:
-									typeof result === "string"
-										? result
-										: JSON.stringify(result, null, 2),
-							},
-						],
-					};
-				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					console.error(
-						`[piece-mcp] Extension tool "${extAction.name}" failed:`,
-						error,
-					);
-					const output = {
-						content: [
-							{
-								type: "text" as const,
-								text: `Action "${extAction.name}" failed: ${message}`,
-							},
-						],
-						isError: true,
-					};
-					setSpanOutput(output);
-					return output;
-				}
+				const output = await runActionAsMcpTool({
+					runtimeAction: extAction as RuntimeAction,
+					toolName: extAction.name,
+					requireAuth: true,
+					args,
+				});
+				setSpanOutput(output);
+				return output;
 			},
 		);
 

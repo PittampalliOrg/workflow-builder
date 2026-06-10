@@ -126,7 +126,7 @@ export function buildActionMetadata(
 					codeFunctionDefinition: detail,
 				}
 			: {
-					catalogFunction: action.service === 'fn-activepieces'
+					catalogFunction: action.service === 'activepieces'
 						? {
 								name: action.name,
 								displayName: action.displayName,

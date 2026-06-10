@@ -220,7 +220,7 @@ def resolve_templates(value: Any, node_outputs: NodeOutputs) -> Any:
         if single_match:
             resolved = resolve_template(value, node_outputs)
             # JSON-serialize complex objects so downstream consumers
-            # (e.g. fn-activepieces Property.LongText) receive valid JSON
+            # (e.g. AP piece-runtime Property.LongText) receive valid JSON
             # strings instead of raw objects that stringify to [object Object].
             if isinstance(resolved, (dict, list)):
                 return json.dumps(resolved)

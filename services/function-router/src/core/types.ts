@@ -5,16 +5,26 @@
 /**
  * Function registry entry - maps function slugs to target services
  */
-export type FunctionRegistryEntry = {
-	/** Dapr app-id of the target service */
-	appId: string;
-	/**
-	 * Type of service:
-	 * - "knative": scale-to-zero Knative service (preferred)
-	 * - "openfunction": legacy alias accepted for backward compatibility
-	 */
-	type: "knative" | "openfunction";
-};
+export type FunctionRegistryEntry =
+	| {
+			/** Dapr app-id of the target service */
+			appId: string;
+			/**
+			 * Type of service:
+			 * - "knative": scale-to-zero Knative service (preferred)
+			 * - "openfunction": legacy alias accepted for backward compatibility
+			 */
+			type: "knative" | "openfunction";
+	  }
+	| {
+			/**
+			 * AP piece actions: the target is resolved PER PIECE at request time
+			 * (`ap-<sanitized-piece>-service`, the reconciler-provisioned
+			 * piece-runtime Knative Service) — no fixed appId.
+			 */
+			type: "activepieces";
+			appId?: string;
+	  };
 
 /**
  * Function registry - loaded from ConfigMap
@@ -41,6 +51,11 @@ export type ExecuteRequest = {
 	connection_external_id?: string;
 	ap_project_id?: string;
 	ap_platform_id?: string;
+	/** AP durability contract (passthrough to the piece-runtime) */
+	idempotency_key?: string;
+	execution_type?: "BEGIN" | "RESUME";
+	resume_payload?: unknown;
+	skip_idempotency_gate?: boolean;
 	_otel?: Record<string, unknown>;
 };
 
@@ -61,12 +76,16 @@ export type ExecuteResponse = {
 	success: boolean;
 	data?: unknown;
 	error?: string;
+	/** Piece-runtime failure classification driving the orchestrator's AP retry policy */
+	errorClass?: "retryable" | "permanent";
 	duration_ms: number;
 	routed_to?: string;
-	/** Pause metadata from fn-activepieces when a piece requests DELAY or WEBHOOK pause */
+	/** Pause metadata from the piece-runtime when a piece requests DELAY or WEBHOOK pause */
 	pause?: {
 		type: "DELAY" | "WEBHOOK";
 		resumeDateTime?: string;
+		/** Pre-computed delay seconds for DELAY pauses (replay-safe) */
+		delaySeconds?: number;
 		requestId?: string;
 		response?: unknown;
 	};
@@ -83,10 +102,20 @@ export type OpenFunctionRequest = {
 	input: Record<string, unknown>;
 	node_outputs?: NodeOutputs;
 	credentials?: Record<string, string>;
-	/** Raw AP connection value for fn-activepieces (OAuth2/SecretText/etc.) */
+	/**
+	 * @deprecated AP routes use reference-forwarding (X-Connection-External-Id
+	 * header; the piece-runtime self-resolves). Kept for the receiver's
+	 * rollout-compatibility fallback only — the router no longer populates it.
+	 */
 	credentials_raw?: unknown;
-	/** Piece metadata for fn-activepieces routing */
+	/** Piece metadata for piece-runtime routing */
 	metadata?: { pieceName: string; actionName: string };
+	/** AP durability contract (passthrough to the piece-runtime /execute) */
+	db_execution_id?: string;
+	idempotency_key?: string;
+	execution_type?: "BEGIN" | "RESUME";
+	resume_payload?: unknown;
+	skip_idempotency_gate?: boolean;
 };
 
 /**

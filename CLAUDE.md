@@ -2,7 +2,7 @@
 
 Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. SvelteKit serves as UI + BFF proxy; all workflow execution lives in Dapr on Kubernetes.
 
-> **Supplementary docs** (`docs/`): `agent-runtime-comparison.md` (dapr-agent-py vs claude-agent-py + swap-blockers), `durable-session-runtime-contract.md` (swappable runtime contract + registry), `activepieces-auth.md`, `mcp-agent-workflows.md`, `hooks-and-plugins.md`, `CLICKHOUSE_OBSERVABILITY.md`, `openshell-capabilities.md`, `cma-parity.md`, `callable-agents.md` (`CallAgent` peer-delegation), `tiered-crawl-pipeline.md` (crawl4ai v2 + browserresearchfanout01 v3), `workflow-artifacts.md`, `workflow-execution-architecture.md` (SW 1.0 interpreter vs Dapr workflows-as-code — storage/listing/runtime-creation options), `workflow-lifecycle-termination.md` (**lifecycle SSOT**), `goal-loop.md` (**goal-loop SSOT**).
+> **Supplementary docs** (`docs/`): `agent-runtime-comparison.md` (dapr-agent-py vs claude-agent-py + swap-blockers), `durable-session-runtime-contract.md` (swappable runtime contract + registry), `activepieces-integration-architecture.md` (**AP integration SSOT** — deterministic activities + MCP exposure + UI + maintenance roadmap), `activepieces-auth.md`, `mcp-agent-workflows.md`, `hooks-and-plugins.md`, `CLICKHOUSE_OBSERVABILITY.md`, `openshell-capabilities.md`, `cma-parity.md`, `callable-agents.md` (`CallAgent` peer-delegation), `tiered-crawl-pipeline.md` (crawl4ai v2 + browserresearchfanout01 v3), `workflow-artifacts.md`, `workflow-execution-architecture.md` (SW 1.0 interpreter vs Dapr workflows-as-code — storage/listing/runtime-creation options), `workflow-lifecycle-termination.md` (**lifecycle SSOT**), `goal-loop.md` (**goal-loop SSOT**).
 
 > **Skills**: `skaffold-dev-loop` (inner/outer dev loop), `gitops` (stacks/ArgoCD/promotion), `workflow-builder` (SW 1.0 authoring/debug), `evaluations` (SWE-bench/benchmarks), `dapr-agents-workflow` (Dapr Agents framework). Prefer these for deep operational detail.
 
@@ -14,8 +14,9 @@ All workflow execution lives in `workflow-builder` namespace:
 - **workflow-orchestrator** (Python/Dapr) — SW 1.0 interpreter. `durable/run` → `ctx.call_child_workflow`; all other slugs → Dapr svc invoke → function-router. Resolves the target agent runtime via the runtime registry SSOT (`core/runtime_registry.py`).
 - **Runtime registry (SSOT)** — `services/shared/runtime-registry.json` is the single source of truth for the 4 agent runtimes (`dapr-agent-py`, `claude-agent-py`, `adk-agent-py`, `browser-use-agent`): per-runtime identity (app-id/image/container) + capability descriptor (durability granularity, MCP/hooks/permission support, providers). `scripts/sync-runtime-registry.mjs` generates the orchestrator + BFF build-context copies (drift-guarded).
 - **Per-session Sandbox pods** — non-browser runtimes dispatch as per-session ephemeral `agent-sandbox` (kubernetes-sigs/agent-sandbox) pods (image-only diff, Kueue-admitted, self-reaped on session end); `browser-use-agent` via `SandboxWarmPool`. Pod shape + the legacy `Deployment-dapr-agent-py` carve-out: see Agent Runtime Model.
-- **function-router** — slug routing + credential broker. Routes to fn-system / fn-activepieces / openshell-agent-runtime / code-runtime / crawl4ai-adapter.
-- **Infra** — Redis, PostgreSQL, OTEL Collector. MCP services: workflow-mcp-server (deployed; goal + workflow tools), piece-mcp-server + mcp-gateway on-demand.
+- **function-router** — slug routing + credential audit point. Routes to fn-system / per-piece piece-runtime (`ap-<piece>-service`) / openshell-agent-runtime / code-runtime / crawl4ai-adapter.
+- **piece-runtime** (image `piece-mcp-server`) — converged per-piece execution surface: `/execute` (deterministic activities) + `/mcp` (StreamableHTTP tools) + `/options` (canvas dropdowns) from ONE image. Per-piece Knative Services (`ap-<piece>-service`, scale-to-zero) provisioned by the stacks `activepieces-mcps` CronJob reconciler. (`fn-activepieces` DELETED 2026-06.)
+- **Infra** — Redis, PostgreSQL, OTEL Collector. MCP services: workflow-mcp-server (deployed; goal + workflow tools), per-piece piece-runtime + mcp-gateway.
 
 Per-session sandbox pods (chromium + OpenShell workspace containers) live in `openshell` namespace, addressed over mTLS. Agent sandbox pods MUST colocate with the orchestrator — Dapr workflow sub-orchestration doesn't cross namespaces.
 
@@ -27,8 +28,8 @@ Per-session sandbox pods (chromium + OpenShell workspace containers) live in `op
 - **Swap-safety gate** (`src/lib/server/agents/swap-safety.ts`): derives an agent's required capabilities from `agentConfig` vs the target runtime's DECLARED capabilities → `{decision: allow|warn|reject, drops[]}`. MCP-loss + provider-mismatch are REJECT-class; hooks/plugins/permission/durability downgrades WARN-class. WARN-first unless `AGENT_RUNTIME_REJECT_LOSSY_SWAP=true`. Wired into `src/lib/server/sessions/spawn.ts`.
 - **Direct (UI-initiated) sessions** go through `src/lib/server/sessions/spawn.ts`, which resolves the runtime via the BFF registry (`runtime-registry.ts`) and calls Dapr `StartInstance` via service invoke (bare app-id). Both spawn paths call `rewriteMcpForBrowserSidecar` (`mcp-sidecar.ts`) — Playwright entries become `{ transport: "streamable_http", url: "http://localhost:3100/mcp" }`.
 - **Dapr Component visibility**: `workflowstatestore` is the only `actorStateStore=true` Component visible to agents; `dapr-agent-py-statestore` + legacy `agent-workflow` are non-actor stores. New agents must NOT be added to Component scopes.
-- Every non-agent action: `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | openshell-agent-runtime | code-runtime | crawl4ai-adapter}` (via `activities/dapr_invoke.py`, no raw HTTP). `openshell-agent-runtime` consolidates `workspace/* + browser/* + openshell/*`.
-- The **BFF** owns credential decryption — `src/lib/server/security/encryption.ts` does `createDecipheriv('aes-256-cbc')`. function-router is the **credential broker**: at execution it HTTP-GETs the BFF `/api/internal/connections/<id>/decrypt` and writes the `credential_access_logs` audit — it does NOT decrypt itself. Orchestrator never holds plaintext secrets.
+- Every non-agent action: `orchestrator → Dapr service invoke → function-router → {fn-system | ap-<piece>-service (piece-runtime) | openshell-agent-runtime | code-runtime | crawl4ai-adapter}` (via `activities/dapr_invoke.py`, no raw HTTP). `openshell-agent-runtime` consolidates `workspace/* + browser/* + openshell/*`. AP slugs use registry type `activepieces` → dynamic `ap-<sanitized-piece>-service` resolution; AP activity calls carry `AP_RETRY_POLICY` + pause mapping (DELAY → `create_timer`, WEBHOOK → `wait_for_external_event`) in `_handle_call_task`.
+- The **BFF** owns credential decryption — `src/lib/server/security/encryption.ts` does `createDecipheriv('aes-256-cbc')`. For AP routes function-router is the **credential audit point**, not a plaintext broker: it forwards `X-Connection-External-Id` (audit-only `credential_access_logs` row) and the piece-runtime self-resolves via BFF `/api/internal/connections/<id>/decrypt` at point of use — the same mechanism for activities AND MCP tools. Non-AP routes keep router-side decrypt-fetch. Orchestrator never holds plaintext secrets.
 
 ## Tech Stack
 
@@ -38,8 +39,8 @@ Per-session sandbox pods (chromium + OpenShell workspace containers) live in `op
 - **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
 - **Workflow Engine**: Dapr Workflow SDK (Python, `dapr-ext-workflow==1.17.1`) via workflow-orchestrator; Dapr control plane 1.17.9
 - **Durable AI Agents**: 4 runtimes via the runtime registry SSOT, each registering Dapr workflow `session_workflow` + sharing one CMA session-event HTTP ingest contract. `dapr-agent-py` (per-ACTIVITY loop, multi-provider/9 adapters) is built ON the GA dapr-agents framework (subclasses `DurableAgent`; pinned `dapr-agents==1.0.3`); its adapters monkeypatch `DaprChatClient.generate` for DIRECT provider calls. `claude-agent-py` (Claude Agent SDK, whole loop in ONE activity, Anthropic-only, supports MCP), `adk-agent-py` (Google ADK), `browser-use-agent` (browser/vision, warm-pool). Durable-state/payload ceiling = 16 MiB gRPC `max-body-size` (Postgres store). See `docs/agent-runtime-comparison.md`.
-- **Function Execution**: function-router (Dapr invoke) → fn-system / fn-activepieces / openshell-agent-runtime / code-runtime
-- **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
+- **Function Execution**: function-router (Dapr invoke) → fn-system / per-piece piece-runtime / openshell-agent-runtime / code-runtime
+- **Activepieces**: ~45 AP piece npm packages (single pin set in `services/piece-mcp-server/package.json`), OAuth2 PKCE, encrypted app connections
 - **Observability**: OpenTelemetry → OTEL Collector → Jaeger / MLflow
 - **Deployment**: Docker, Kind cluster, ingress-nginx
 
@@ -68,12 +69,12 @@ bash scripts/skaffold-dev.sh function-router   # any single module by name
 
 # Outer loop (build prod image → push → commit kustomize pin → Argo deploys):
 pnpm deploy:skaffold                                # workflow-builder
-bash scripts/skaffold-deploy.sh fn-activepieces     # any single service
+bash scripts/skaffold-deploy.sh function-router     # any single service
 
 pnpm skaffold:doctor                                # read-only preflight
 ```
 
-Module set (Local→Container port): workflow-builder 3002→3000, workflow-orchestrator 3013→8080, function-router 3014→8080, mcp-gateway 3018→8080, swebench-coordinator 3019→8080, fn-activepieces 3016→8080 (inactive by default). **`fn-system` is excluded** (Knative scale-to-0). **`fn-activepieces` is inactive** unless `SKAFFOLD_ALLOW_INACTIVE=1`.
+Module set (Local→Container port): workflow-builder 3002→3000, workflow-orchestrator 3013→8080, function-router 3014→8080, mcp-gateway 3018→8080, swebench-coordinator 3019→8080. **`fn-system` is excluded** (Knative scale-to-0); per-piece piece-runtime services are reconciler-owned Knative Services, not Skaffold modules (deliver via image rebuild + metadata re-sync). (`fn-activepieces` module DELETED.)
 
 Key facts (full detail in the `skaffold-dev-loop` skill):
 - `SKAFFOLD_DEFAULT_REPO=ghcr.io/pittampalliorg` (host needs `docker login ghcr.io`). The wrapper traps SIGINT/SIGTERM/EXIT to resume ArgoCD; recover a `kill -9` with `ARGO_APPS=workflow-builder bash skaffold/hooks/argo-resume.sh`.
@@ -93,12 +94,11 @@ Observable live via **Argo Events** (hub) → BFF ingest `POST /api/internal/git
 | **workflow-orchestrator** | 8080 | Python Dapr workflow engine, SW 1.0 interpreter |
 | **agent-sandbox pod** (per-session) | n/a | Ephemeral runtime pod (`dapr-agent-py`/`claude-agent-py`/`adk-agent-py`) differing only by image; Kueue-admitted, self-reaped. `browser-use-agent` via `SandboxWarmPool`. (AgentRuntime CRD + Kopf controller RETIRED.) |
 | **dapr-agent-py** (legacy Deployment) | n/a | Static replicas:4; survives only for `openshell-durable-agent` enum + benchmark coding pool |
-| **function-router** | 8080 | Sync credential broker + Knative proxy. `function-registry` CM authoritative over built-in fallback. |
+| **function-router** | 8080 | Slug routing + credential audit point + Knative proxy. `function-registry` CM authoritative over built-in fallback. |
 | **fn-system** | 8080 | system/* (http-request, database-query, condition) |
-| **fn-activepieces** | 8080 | AP piece executor |
 | **mcp-gateway** | 8080 | Hosted MCP endpoint for external clients |
 | **workflow-mcp-server** | 3200 | Deployed MCP server: goal tools (`create/update/get_goal`) + workflow tools |
-| **piece-mcp-server** | dynamic | On-demand piece MCP |
+| **piece-runtime** (`piece-mcp-server` image, `ap-<piece>-service` per piece) | dynamic | Converged per-piece surface: `/execute` (activities) + `/mcp` (tools) + `/options` (dropdowns); Knative scale-to-zero, reconciler-provisioned |
 | **openshell-sandbox** | — | Custom sandbox image (Chromium/Playwright); per-session pods in `openshell` ns |
 
 ## Project Structure
@@ -106,7 +106,7 @@ Observable live via **Argo Events** (hub) → BFF ingest `POST /api/internal/git
 - `src/routes/` — API routes (`api/workflows`, `api/orchestrator`, `api/app-connections`, `api/internal/{connections,mcp,agent}`, `api/events/ingest`, `api/v1/auth`, `api/pieces`) + pages
 - `src/lib/components/workflow/` — Svelte Flow canvas, side-panel, toolbar, base-sw-node, animated-edge
 - `src/lib/server/` — `db/schema.ts` (Drizzle), `dapr-client.ts`, `auth.ts`, `security/encryption.ts`, `app-connections/oauth2.ts`, `internal-auth.ts`, `workflows/external-event-registry.ts`, `otel/clickhouse.ts`
-- `services/` — `workflow-orchestrator/`, `dapr-agent-py/`, `claude-agent-py/`, `adk-agent-py/`, `function-router/`, `fn-activepieces/`, `fn-system/`, `workflow-mcp-server/`, `piece-mcp-server/`, `mcp-gateway/`, `openshell-sandbox/`, `crawl4ai-adapter/`, plus `shared/runtime-registry.json` (runtime SSOT)
+- `services/` — `workflow-orchestrator/`, `dapr-agent-py/`, `claude-agent-py/`, `adk-agent-py/`, `function-router/`, `fn-system/`, `workflow-mcp-server/`, `piece-mcp-server/` (piece-runtime), `mcp-gateway/`, `openshell-sandbox/`, `crawl4ai-adapter/`, plus `shared/runtime-registry.json` (runtime SSOT)
 - `drizzle/` — migration SQL. `scripts/` — dev/seed/test. `docs/` — supplementary docs.
 
 ## Action Routing
@@ -121,7 +121,7 @@ Routed by `actionType` slug prefix. Orchestrator → function-router uses Dapr s
 | `browser/*` | openshell-agent-runtime | Browser profile, clone, command, capture-flow, validate |
 | `openshell/*` | openshell-agent-runtime | OpenShell helper routes |
 | `code/*` | code-runtime | Saved TS/Python code execution |
-| `*` (default) | fn-activepieces | All AP piece actions |
+| `*` (default) | piece-runtime (`ap-<piece>-service`) | All AP piece actions; registry type `activepieces` resolves the per-piece Knative Service dynamically; `X-Connection-External-Id` reference-forwarding |
 
 Rejected slugs (orchestrator raises): `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph/run`, `openshell-langgraph-observable/run`, `dapr-agent-py/run`, `dapr-swe/run`, `durable/plan`, any `mastra/*` or `agent/*`.
 
@@ -243,10 +243,11 @@ Port of Claude Code's hooks + plugins surface. Feature-flagged via `DAPR_AGENT_P
 ## Activepieces Integration
 
 - Credentials: AES-256-CBC encrypted in `app_connections`. Auth types: `OAUTH2`, `SECRET_TEXT`, `BASIC_AUTH`, `CUSTOM_AUTH`.
-- Flow: create → encrypted in DB → at execution function-router fetches plaintext from the BFF `/decrypt` (see credential-broker invariant above).
-- Adding piece: (1) `installed-pieces.ts`, (2) npm dep to fn-activepieces, (3) `piece-registry.ts`, (4) rebuild.
+- Flow: create → encrypted in DB → at execution the piece-runtime self-resolves plaintext from the BFF `/decrypt` via `X-Connection-External-Id` (function-router writes the audit row; see credential invariant above).
+- Adding piece: (1) npm dep + `piece-registry.ts` in `services/piece-mcp-server/`, (2) rebuild image, (3) re-run metadata sync (`sync-metadata.ts` / stacks Job) so `piece_metadata` + the canvas catalog pick it up.
+- Deterministic-activity semantics (idempotency gate via `piece_execution`, retryable/permanent error classes, pause mapping, >4 MiB artifact offload): see `docs/activepieces-integration-architecture.md`.
 
-> See `docs/activepieces-auth.md`.
+> See `docs/activepieces-integration-architecture.md` (SSOT) + `docs/activepieces-auth.md`.
 
 ## CMA Parity (Managed Agents Console)
 

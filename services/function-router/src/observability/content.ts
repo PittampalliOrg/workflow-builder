@@ -5,8 +5,8 @@
  * span — the same convention dapr-agent-py's state/LLM tracing uses and the
  * Service Graph drill-down drawer (`drilldown-io.svelte` / `parseIoValue`)
  * renders. This lets the function-router hop carry the actual payload it
- * routed to a backend (fn-system / fn-activepieces / openshell / code-runtime),
- * not just HTTP status + duration.
+ * routed to a backend (fn-system / ap-<piece>-service / openshell /
+ * code-runtime), not just HTTP status + duration.
  *
  * function-router is the credential broker (it decrypts app_connection
  * secrets), so EVERY value is deep-redacted before serialization: any object

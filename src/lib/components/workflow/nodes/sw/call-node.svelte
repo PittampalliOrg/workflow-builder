@@ -2,6 +2,10 @@
 	import { Globe, PackageCheck } from '@lucide/svelte';
 	import BaseSWNode from '../base-sw-node.svelte';
 	import type { PortConfig } from '$lib/types/workflow-handles';
+	import {
+		extractTaskConnectionRef,
+		useConnectionRegistry,
+	} from '../../connection-registry.svelte';
 
 	interface Props {
 		data: Record<string, unknown>;
@@ -59,6 +63,19 @@
 		return null;
 	});
 
+	// Warning dot when this node's {{connections['…']}} ref doesn't resolve to
+	// an existing app connection (advisory; shared lazy registry).
+	const connectionRegistry = useConnectionRegistry();
+	let connectionWarning = $derived.by(() => {
+		const ref = extractTaskConnectionRef(
+			data.taskConfig as Record<string, unknown> | undefined,
+		);
+		if (!ref || !connectionRegistry.loaded) return null;
+		return connectionRegistry.ids.has(ref)
+			? null
+			: `Connection '${ref}' was not found — pick a valid connection in the step panel`;
+	});
+
 	let nodeData = $derived({
 		...data,
 		...(subtitle ? { description: subtitle } : {}),
@@ -76,4 +93,4 @@
 	);
 </script>
 
-<BaseSWNode data={nodeData} {selected} {ports} icon={Icon} {iconColor} {providerIconUrl} />
+<BaseSWNode data={nodeData} {selected} {ports} icon={Icon} {iconColor} {providerIconUrl} warning={connectionWarning} />

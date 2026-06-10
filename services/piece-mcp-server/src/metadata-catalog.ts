@@ -26,6 +26,11 @@ export type CatalogFieldSummary = {
 	enum?: unknown[];
 };
 
+export type CatalogActionDynamicProp = {
+	refreshers: string[];
+	refreshOnSearch: boolean;
+};
+
 export type CatalogActionMetadata = {
 	name: string;
 	displayName: string;
@@ -36,6 +41,14 @@ export type CatalogActionMetadata = {
 	requiredFields: string[];
 	digest: string;
 	props?: Record<string, unknown>;
+	/**
+	 * Dynamic-dropdown wiring (props whose `options` resolver is a function):
+	 * `refreshers` drives the canvas dependsOn re-fetch, `refreshOnSearch`
+	 * enables search-as-you-type. EXCLUDED from both the per-action digest and
+	 * catalogDigest so piece_metadata rows synced before this field existed
+	 * keep validating against newer runtimes.
+	 */
+	dynamicProps?: Record<string, CatalogActionDynamicProp>;
 };
 
 export type CatalogTriggerMetadata = {
@@ -171,6 +184,41 @@ function metadataProps(props: Record<string, ApPropDef>): Record<string, unknown
 	return out;
 }
 
+function dynamicPropsMetadata(
+	props: Record<string, ApPropDef>,
+): Record<string, CatalogActionDynamicProp> {
+	const out: Record<string, CatalogActionDynamicProp> = {};
+	for (const [name, prop] of Object.entries(props)) {
+		const raw = prop as {
+			options?: unknown;
+			refreshers?: unknown;
+			refreshOnSearch?: unknown;
+		};
+		if (typeof raw.options !== "function") continue;
+		out[name] = {
+			refreshers: asStringArray(raw.refreshers),
+			refreshOnSearch: raw.refreshOnSearch === true,
+		};
+	}
+	return out;
+}
+
+/**
+ * Strip digest-excluded additive fields (dynamicProps) so catalogDigest stays
+ * byte-identical to rows generated before those fields existed (jsonSafe drops
+ * undefined values).
+ */
+function digestSafeActions(
+	actions: Record<string, CatalogActionMetadata>,
+): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(actions).map(([name, action]) => [
+			name,
+			{ ...action, dynamicProps: undefined },
+		]),
+	);
+}
+
 function eligibleRuntimePropCount(props: Record<string, ApPropDef>): number {
 	return Object.values(props).filter((prop) => apPropToJsonSchema(prop) !== null)
 		.length;
@@ -249,9 +297,11 @@ function actionMetadata(
 		props: metadataProps(props),
 	};
 
+	const dynamicProps = dynamicPropsMetadata(props);
 	return {
 		...base,
 		digest: digest(base),
+		...(Object.keys(dynamicProps).length > 0 ? { dynamicProps } : {}),
 	};
 }
 
@@ -315,6 +365,7 @@ export function buildPieceCatalogRow(input: {
 		...base,
 		catalogDigest: digest({
 			...base,
+			actions: digestSafeActions(actions),
 			catalogSourceImage: undefined,
 		}),
 	};

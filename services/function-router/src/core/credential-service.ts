@@ -26,7 +26,11 @@ const AP_API_URL = process.env.AP_API_URL || "";
 /**
  * Credential source types for audit logging
  */
-export type CredentialSource = "dapr_secret" | "request_body" | "not_found";
+export type CredentialSource =
+	| "dapr_secret"
+	| "request_body"
+	| "reference_forwarded"
+	| "not_found";
 
 /**
  * Context for resolving AP connections (project/platform scoping)
@@ -251,6 +255,27 @@ async function fetchConnectionCredentials(
 		);
 		return {};
 	}
+}
+
+/**
+ * Audit-only record for AP reference-forwarding: the router never touches
+ * plaintext for AP routes — the piece-runtime resolves the connection at
+ * point of use via the BFF decrypt endpoint. This row preserves the
+ * execution↔connection linkage the plaintext-fetching path used to record.
+ */
+export async function logCredentialReferenceForward(
+	executionId: string,
+	nodeId: string,
+	integrationType: string,
+	connectionExternalId: string,
+): Promise<void> {
+	await logCredentialAccess(executionId, nodeId, integrationType, {
+		credentials: {},
+		source: "reference_forwarded",
+		keys: [],
+		fallbackAttempted: false,
+		fallbackReason: `connection:${connectionExternalId}`,
+	});
 }
 
 /**

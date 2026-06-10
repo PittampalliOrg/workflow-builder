@@ -281,13 +281,6 @@ let
       pnpmDepsHash = "sha256-9oXV+enp2yrnhrJJ7DWrfjaCj/eVbVZovcl+ljxrJic=";
     };
 
-    fn-activepieces = mkNodeService {
-      name = "fn-activepieces";
-      src = ../services/fn-activepieces;
-      pnpmDepsHash = "sha256-gNxD767DT7iufa5tLJm5eqncMf3sXTVxSDuWCnNs700=";
-      copyNodeModules = true;
-    };
-
     piece-mcp-server = mkNodeService {
       name = "piece-mcp-server";
       src = ../services/piece-mcp-server;
@@ -532,20 +525,12 @@ let
       enabled = true;
     }
     {
-      name = "fn-activepieces";
-      kind = "node-service";
-      dockerfile = "services/fn-activepieces/Dockerfile";
-      context = ".";
-      buildable = true;
-      enabled = true;
-    }
-    {
       name = "piece-mcp-server";
       kind = "node-service";
       dockerfile = "services/piece-mcp-server/Dockerfile";
       context = ".";
       buildable = true;
-      enabled = false;
+      enabled = true;
       comparisonBase = "ghcr.io/pittampalliorg/piece-mcp-server:git-7ad5a255b3f886f769d7ee0b2429f8cee3440a82";
     }
   ];

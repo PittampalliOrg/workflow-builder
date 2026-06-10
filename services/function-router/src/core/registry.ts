@@ -29,8 +29,9 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   // decommissioned 2026-04-16 per CLAUDE.md.)
   "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
   "web/*": { appId: "crawl4ai-adapter", type: "knative" },
-  // Default fallback: all other slugs route to fn-activepieces
-  _default: { appId: "fn-activepieces", type: "knative" },
+  // Default fallback: all other slugs are AP piece actions, resolved per piece
+  // to the reconciler-provisioned ap-<piece>-service piece-runtime.
+  _default: { type: "activepieces" },
 };
 
 /**
@@ -52,8 +53,33 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   // _default (or not mounted at all), every AP action would fall through to
   // the throw-on-unknown branch. Defense-in-depth — belt and suspenders with
   // the ConfigMap's _default entry.
-  _default: { appId: "fn-activepieces", type: "knative" },
+  _default: { type: "activepieces" },
 };
+
+/**
+ * Sanitize an AP piece name exactly like the stacks activepieces-mcp
+ * reconciler's `sanitize_piece` (the two MUST agree or the router will
+ * dispatch to a service name the reconciler never created):
+ * lowercase → strip "@activepieces/piece-" → non [a-z0-9-] → "-" →
+ * collapse runs of "-" → trim leading/trailing "-".
+ */
+export function sanitizePieceName(piece: string): string {
+  return piece
+    .toLowerCase()
+    .replace(/^@activepieces\/piece-/, "")
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-/, "")
+    .replace(/-$/, "");
+}
+
+/**
+ * Per-piece piece-runtime Knative Service name (reconciler naming contract:
+ * `${MCPSERVICE_NAME_PREFIX:-ap-}<sanitized-piece>-service`).
+ */
+export function apPieceServiceName(piece: string): string {
+  return `ap-${sanitizePieceName(piece)}-service`;
+}
 
 let cachedRegistry: FunctionRegistry | null = null;
 let cacheTimestamp = 0;

@@ -23,8 +23,11 @@ import {
 	registerPieceToolsWithUI,
 	type PieceMetadataRow,
 	type RegisteredTool,
+	type ToolAllowlist,
 } from "./piece-to-mcp.js";
 import { validateCatalogMetadata } from "./metadata-catalog.js";
+import { handleExecute } from "./routes/execute.js";
+import { handleOptions } from "./routes/options.js";
 import {
 	runWithRequestAuthContext,
 	type RequestAuthContext,
@@ -140,6 +143,20 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 	return Array.isArray(value) ? value[0] : value;
 }
 
+/**
+ * Parse the `?tools=a,b` allowlist from the request URL (set by the BFF
+ * from `mcp_connection.metadata.toolSelection`). Param absent → null (no
+ * restriction). Param present but empty → [] (all tools disabled).
+ */
+function toolAllowlistFromUrl(url: URL): ToolAllowlist {
+	const raw = url.searchParams.get("tools");
+	if (raw === null) return null;
+	return raw
+		.split(",")
+		.map((name) => name.trim())
+		.filter(Boolean);
+}
+
 function authContextFromRequest(
 	req: http.IncomingMessage,
 	sessionId?: string,
@@ -156,8 +173,12 @@ function authContextFromRequest(
 	return { connectionExternalId };
 }
 
-/** Create a new MCP Server instance with all piece tools registered. */
-function createMcpServer(): Server {
+/**
+ * Create a new MCP Server instance with piece tools registered, filtered
+ * by the per-session tool allowlist (from `?tools=` on the initialize
+ * request URL; null = all tools).
+ */
+function createMcpServer(toolAllowlist: ToolAllowlist = null): Server {
 	if (hasUI && uiHtmlPath) {
 		const mcpServer = new McpServer(
 			{ name: `piece-${pieceName}`, version: "1.0.0" },
@@ -169,6 +190,7 @@ function createMcpServer(): Server {
 			metadata,
 			uiHtmlPath,
 			normalizePieceName(pieceName),
+			toolAllowlist,
 		);
 		return mcpServer.server; // Return underlying Server for transport
 	}
@@ -183,7 +205,7 @@ function createMcpServer(): Server {
 		},
 	);
 
-	registerPieceTools(server, piece, metadata, normalizePieceName(pieceName));
+	registerPieceTools(server, piece, metadata, normalizePieceName(pieceName), toolAllowlist);
 	return server;
 }
 
@@ -205,12 +227,13 @@ async function fetchPieceMetadata(name: string): Promise<PieceMetadataRow> {
 			actions: Record<string, unknown> | null;
 			auth: unknown;
 			display_name: string | null;
+			version: string | null;
 			catalog_schema_version: number | null;
 			catalog_digest: string | null;
 			catalog_source_image: string | null;
 			catalog_synced_at: string | null;
 		}>(
-			`SELECT actions, auth, display_name, catalog_schema_version, catalog_digest, catalog_source_image, catalog_synced_at
+			`SELECT actions, auth, display_name, version, catalog_schema_version, catalog_digest, catalog_source_image, catalog_synced_at
 			 FROM piece_metadata
 			 WHERE name IN ($1, $2)
 			 ORDER BY updated_at DESC
@@ -230,6 +253,7 @@ async function fetchPieceMetadata(name: string): Promise<PieceMetadataRow> {
 			actions: row.actions as PieceMetadataRow["actions"],
 			auth: row.auth,
 			displayName: row.display_name,
+			version: row.version,
 			catalogSchemaVersion: row.catalog_schema_version,
 			catalogDigest: row.catalog_digest,
 			catalogSourceImage: row.catalog_source_image,
@@ -251,7 +275,10 @@ async function handleRequest(
 	setCorsHeaders(res);
 	installResponseCapture(res);
 
-	const url = req.url ?? "/";
+	// Route on the pathname so query params (e.g. /mcp?tools=a,b — the
+	// tool-selection allowlist) don't break the route match.
+	const parsedUrl = new URL(req.url ?? "/", "http://localhost");
+	const url = parsedUrl.pathname;
 	const method = req.method ?? "GET";
 
 	// CORS preflight
@@ -265,17 +292,39 @@ async function handleRequest(
 	if (url === "/health" && method === "GET") {
 		sendJson(res, 200, {
 			piece: pieceName,
+			pieceVersion: metadata.version ?? null,
 			tools: registeredTools.length,
 			toolNames: registeredTools.map((t) => t.name),
 			hasUI,
+			endpoints: ["/mcp", "/execute", "/options", "/health"],
 		});
+		return;
+	}
+
+	// Deterministic activity execution (orchestrator → function-router → here)
+	if (url === "/execute" && method === "POST") {
+		const body = await parseBody(req);
+		const requestAuthContext = authContextFromRequest(req);
+		await runWithRequestAuthContext(requestAuthContext, () =>
+			handleExecute(req, res, body, { piece, pieceName, metadata }),
+		);
+		return;
+	}
+
+	// Dynamic dropdown options for the canvas UI
+	if (url === "/options" && method === "POST") {
+		const body = await parseBody(req);
+		const requestAuthContext = authContextFromRequest(req);
+		await runWithRequestAuthContext(requestAuthContext, () =>
+			handleOptions(req, res, body, { piece, pieceName }),
+		);
 		return;
 	}
 
 	// MCP routes
 	if (url === "/mcp") {
 		if (method === "POST") {
-			await handleMcpPost(req, res);
+			await handleMcpPost(req, res, parsedUrl);
 		} else if (method === "GET") {
 			await handleMcpGet(req, res);
 		} else if (method === "DELETE") {
@@ -294,6 +343,7 @@ async function handleRequest(
 async function handleMcpPost(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
+	parsedUrl: URL,
 ): Promise<void> {
 	const sessionId = req.headers["mcp-session-id"] as string | undefined;
 	let transport: StreamableHTTPServerTransport;
@@ -334,7 +384,9 @@ async function handleMcpPost(
 			}
 		};
 
-		const server = createMcpServer();
+		// Tool-selection enforcement: the allowlist rides the URL the client
+		// was handed (?tools=a,b); the session's server only registers those.
+		const server = createMcpServer(toolAllowlistFromUrl(parsedUrl));
 		await server.connect(transport);
 	} else {
 		sendJson(res, 400, {
