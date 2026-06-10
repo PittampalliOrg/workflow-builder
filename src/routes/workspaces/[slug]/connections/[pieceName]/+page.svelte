@@ -37,7 +37,7 @@
 		type PieceMcpConnection
 	} from '$lib/connections/piece-mcp';
 	import ToolGroupList from '$lib/components/agents/tools-integrations/ToolGroupList.svelte';
-	import { isReadOnlyPieceAction } from '$lib/server/mcp-catalog';
+	import { isReadOnlyPieceAction } from '$lib/connections/piece-tools';
 	import type { PageData } from './$types';
 
 	type CatalogAppConnection = {
