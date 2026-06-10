@@ -15,9 +15,9 @@ The current core runtime is:
 - `fn-system` (Knative; `system/*`)
 - `code-runtime` (`code/*`), `crawl4ai-adapter` (`web/*`)
 - `workflow-mcp-server` (port 3200; goal MCP tools + workflow tools)
+- `piece-mcp-server` (role: piece-runtime; one image run as per-piece `ap-<piece>-service` Knative Services, reconciler-provisioned)
 - `swebench-coordinator`
 - `swebench-evaluator`
-- `fn-activepieces`
 - `postgresql`
 
 Supporting infrastructure:
@@ -112,7 +112,8 @@ TypeScript sync credential broker + Knative routing proxy.
 - Invoked by: workflow-orchestrator via `DaprClient().invoke_method("function-router", "execute", ...)` (see `services/workflow-orchestrator/activities/dapr_invoke.py`). Raw HTTP is no longer used on this path.
 - Key endpoint: `POST /execute`
 - Responsibilities:
-  - **Credential broker**: fetches decrypted connection values by HTTP-GETting the BFF internal decrypt endpoint (`/api/internal/connections/<externalId>/decrypt`, with the Activepieces `/api/v1/dapr/connections/decrypt` endpoint tried first when AP context is present), maps them to env-var names per integration, and writes `credential_access_logs` audit rows. function-router does **not** perform AES-256-CBC decryption itself — the BFF owns the cipher (`src/lib/server/security/encryption.ts`, `createDecipheriv('aes-256-cbc')`). function-router brokers and audits; the BFF holds the key.
+  - **Credential broker**: for non-AP routes, fetches decrypted connection values by HTTP-GETting the BFF internal decrypt endpoint (`/api/internal/connections/<externalId>/decrypt`), maps them to env-var names per integration, and writes `credential_access_logs` audit rows. function-router does **not** perform AES-256-CBC decryption itself — the BFF owns the cipher (`src/lib/server/security/encryption.ts`, `createDecipheriv('aes-256-cbc')`). function-router brokers and audits; the BFF holds the key.
+    - **AP routes are reference-forwarding** (revised 2026-06): for `_default` (type `activepieces`) routes, function-router does **not** fetch or forward plaintext. It forwards the `X-Connection-External-Id` header and writes an **audit-only** `credential_access_logs` row (`source=reference_forwarded`, no plaintext). The piece-runtime self-resolves the credential via the same BFF decrypt endpoint — one credential path for both `/execute` activities and `/mcp` tools. The BFF stays the **sole decryptor** for both paths; plaintext flows only BFF → piece-runtime at point of use. See `docs/activepieces-integration-architecture.md` §2.2.
   - **Slug-to-service routing**: ConfigMap-driven registry (`/config/functions.json`). The ConfigMap is **authoritative** over the hardcoded `BUILTIN_FALLBACK_REGISTRY`; builtin only fills slugs the ConfigMap omits (merge order corrected 2026-04-20 in `services/function-router/src/core/registry.ts`).
   - **Knative response normalization**: flattens inconsistent `{success, data, error}` shapes.
 
@@ -124,7 +125,7 @@ Current route contract (merged registry — ConfigMap + BUILTIN):
 - `code/*` → `code-runtime`
 - `web/*` → `crawl4ai-adapter`
 - `workflow-orchestrator/*` → `workflow-orchestrator`
-- `_default` → `fn-activepieces` (set in both ConfigMap and BUILTIN for defense-in-depth)
+- `_default` → type `activepieces` → `ap-<piece>-service` (per-piece piece-runtime, resolved dynamically). The `_default` registry entry is `{"type":"activepieces"}` (no longer a fixed service name); function-router computes the `ap-<sanitized-piece>-service` DNS per piece (same sanitize as the `activepieces-mcps` reconciler).
 
 Not routed here (by design):
 
@@ -229,14 +230,52 @@ Deployed MCP server (stacks `Deployment-workflow-mcp-server.yaml` + `Service-wor
   - workflow MCP tools
 - `DATABASE_URL` + `INTERNAL_API_TOKEN` via `envFrom workflow-builder-secrets`
 
-## fn-activepieces
+## piece-mcp-server (role: piece-runtime)
 
-Default SaaS action backend.
+Converged per-piece Activepieces execution surface. The service/image name stays
+`piece-mcp-server`; **"piece-runtime" is its role**. ONE image, parameterized by
+the `PIECE_NAME` env var (selects which AP piece this replica serves), run as
+~47 per-piece **Knative Services** named `ap-<sanitized-piece>-service`
+(scale-to-zero; the union of `PINNED_PIECES` ∪ workflow-referenced pieces is
+pinned at `minScale=1`). The legacy `fn-activepieces` monolith is **deleted** —
+this is the only AP piece execution backend.
 
-- Port: `8080`
-- Responsibilities:
-  - execute plugin-backed SaaS actions
-  - satisfy `_default` routing from `function-router`
+- Port: `3100`
+- Provisioning: per-piece Knative Services + catalog ConfigMap are reconciled by
+  the stacks `activepieces-mcps` CronJob (every ~2 min) from enabled
+  `mcp_connection` rows + `PINNED_PIECES` (all catalog pieces at `minScale=0` so
+  activities never depend on an `mcp_connection` row existing).
+- Endpoints (all four served from the same image/digest):
+  - `POST /execute` — deterministic SW 1.0 workflow activities (the `_default`
+    type=activepieces dispatch target)
+  - `POST /mcp` — StreamableHTTP MCP tools for agents (`agentConfig.mcpServers`
+    explicit entries or `mcpConnectionMode=project`)
+  - `POST /options` — canvas dynamic-dropdown options (replaces the old
+    `fn-activepieces /options` proxy target)
+  - `GET /health`
+- Credentials (reference-forwarding): the piece-runtime self-resolves via
+  `X-Connection-External-Id` → BFF `GET /api/internal/connections/<id>/decrypt`
+  for BOTH activities and MCP tools (`auth-resolver.ts`, AsyncLocalStorage + TTL
+  cache). function-router forwards the header + writes an audit-only log row; the
+  BFF stays sole decryptor. Agents receive only the endpoint + connection
+  external id, never provider secrets.
+- Durability semantics (`/execute`):
+  - **Idempotency**: `piece_execution` table gate keyed
+    `idempotencyKey = workflowId:dbExecutionId:taskName` (stable across retries
+    AND replay); a completed row returns the cached result (`deduped: true`).
+  - **Retries / error classes**: errors classified `retryable` (429/5xx/network)
+    vs `permanent` (4xx/validation/auth-missing); `execute_action` raises only on
+    retryable so `AP_RETRY_POLICY` fires (the orchestrator carries the retry
+    policy on this leg).
+  - **Pause mapping**: `pause.DELAY` → `ctx.create_timer(...)` + RESUME re-invoke;
+    `pause.WEBHOOK` → `ctx.wait_for_external_event("ap.resume.<requestId>")`.
+  - **>4 MiB result offload**: large results are stored in the `piece_execution`
+    row and returned as `{artifactRef}` (readable via BFF
+    `GET /api/internal/piece-executions/[idempotencyKey]`), keeping the 16 MiB
+    Dapr body cap.
+
+Full architecture (decisions, flows, UI, roadmap):
+`docs/activepieces-integration-architecture.md`.
 
 ## PostgreSQL
 

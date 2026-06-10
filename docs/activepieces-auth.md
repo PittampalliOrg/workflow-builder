@@ -112,16 +112,17 @@ Implementation:
 
 There are two primary call paths for “get me credentials for this externalId”:
 
-- Internal runtime (function-router / executor):
+- Internal runtime (piece-runtime self-resolve):
   - `GET /api/internal/connections/[externalId]/decrypt`
   - Secured by `X-Internal-Token` header matching `INTERNAL_API_TOKEN`
   - Returns decrypted connection `value`
   - If OAuth2 and expired, refreshes and persists the refreshed encrypted value
+  - The piece-runtime (`piece-mcp-server` image, per-piece `ap-<piece>-service`) self-resolves credentials through this endpoint for BOTH deterministic `/execute` activities and `/mcp` tool calls. function-router does **not** forward plaintext for AP routes — it forwards `X-Connection-External-Id` (reference-forwarding) and writes an **audit-only** `credential_access_logs` row (`source=reference_forwarded`). The BFF remains the sole decryptor. See `docs/activepieces-integration-architecture.md` §2.2.
 - UI runtime (dropdown options proxy):
   - `POST /api/pieces/options`
   - Session-authenticated
   - Looks up connection by `externalId` scoped to the current `owner_id`
-  - Decrypts and refreshes (if needed) before proxying to `fn-activepieces /options`
+  - Decrypts and refreshes (if needed) before proxying to the piece-runtime `/options` endpoint, served by the per-piece `ap-<piece>-service` Knative Service provisioned by the stacks `activepieces-mcps` reconciler
 
 Security note:
 
@@ -149,8 +150,9 @@ Required in most deployments:
 
 Activepieces integration (depending on deployment):
 
-- `FN_ACTIVEPIECES_URL` (where to proxy dynamic dropdown `options` requests)
-- `INTERNAL_API_TOKEN` (required for internal decrypt endpoint)
+- `INTERNAL_API_TOKEN` (required for the internal decrypt endpoint — used by the piece-runtime self-resolve path and by function-router's reference-forwarding audit)
+
+> Note: the legacy `FN_ACTIVEPIECES_URL` (which pointed the dropdown `options` proxy at the now-deleted `fn-activepieces` monolith) is retired. Dynamic-dropdown `options` and deterministic `/execute` are now served by the converged per-piece piece-runtime (`ap-<piece>-service`); resolution is dynamic per piece, not a single static URL.
 
 ## Operational Notes
 

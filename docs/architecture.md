@@ -25,7 +25,7 @@ The runtime components are:
 - agent runtimes (`dapr-agent-py` / `claude-agent-py` / `adk-agent-py`): the custom `AgentRuntime` CRD + Kopf `agent-runtime-controller` are RETIRED. Runtimes are now dispatched as per-session ephemeral pods via upstream kubernetes-sigs/agent-sandbox + Kueue (Kueue-admitted, self-reaped on session end), differing ONLY by container image. The runtime registry (`services/shared/runtime-registry.json`) resolves which runtime/image each `durable/run` dispatches. `browser-use-agent` uses a dedicated `SandboxWarmPool` carve-out (chromium boot latency); a legacy static `Deployment-dapr-agent-py` survives only for the `openshell-durable-agent` enum + the `agent-runtime-pool-coding` benchmark pool.
 - `dapr-agent-py` (legacy static `Deployment`, replicas:4): survives only for the `openshell-durable-agent` enum + the `agent-runtime-pool-coding` benchmark pool. New `durable/run` steps dispatch a per-session ephemeral agent-sandbox pod (image resolved from the runtime registry), not a per-slug standing Deployment.
 - `openshell-agent-runtime`: consolidated action handler for `workspace/* + browser/* + openshell/*` (per 2026-04-19 cutover). Also the OpenShell control-plane for per-session sandboxes — sandboxes live in the `openshell` namespace and are reached via mTLS from agent-runtime pods.
-- `fn-activepieces`: default SaaS action backend
+- piece-runtime (image `piece-mcp-server`): the converged per-piece Activepieces execution surface — ONE image parameterized by `PIECE_NAME`, run as per-piece `ap-<piece>-service` Knative Services (scale-to-zero; pinned ∪ workflow-referenced at `minScale=1`). Serves `/execute` (deterministic workflow activities), `/mcp` (StreamableHTTP MCP tools), and `/options` (canvas dropdowns) from the same image, provisioned by the stacks `activepieces-mcps` reconciler. Replaces the deleted `fn-activepieces` monolith. See `docs/activepieces-integration-architecture.md`.
 - `postgresql`: workflow definitions, executions, artifacts, approvals, child-run metadata, sessions, agents, agent_versions
 - `redis` plus Dapr sidecars: workflow state, pub/sub, service invocation, actor durability
 - `swebench-coordinator`: Dapr Workflow service that validates SWE-bench
@@ -197,7 +197,7 @@ browser
         -> openshell/*   -> openshell-agent-runtime
         -> code/*        -> code-runtime
         -> web/*         -> crawl4ai-adapter
-        -> _default      -> fn-activepieces
+        -> _default      -> (type=activepieces) ap-<piece>-service  (piece-runtime, per-piece Knative; dynamic resolution)
 
 openshell-agent-runtime / dapr-agent-py
   -> OpenShell sandboxes or dedicated coding workers
@@ -295,17 +295,24 @@ to-service dispatcher. Invoked by workflow-orchestrator via Dapr service invoke
 Provides:
 
 - **Slug routing** by `actionType` prefix: `system/*`, `workspace/*`, `browser/*`,
-  `openshell/*`, `code/*`, `web/*`, `_default` → `fn-activepieces`.
+  `openshell/*`, `code/*`, `web/*`, `_default` → type `activepieces` → per-piece
+  `ap-<piece>-service` (piece-runtime; dynamic resolution — the `_default` registry
+  entry is `{"type":"activepieces"}`, not a fixed service name).
   `workspace/*`, `browser/*`, and `openshell/*` all resolve to `openshell-agent-runtime`
   after the 2026-04-19 consolidation (legacy `workspace-runtime` TS service
   decommissioned). The registry is ConfigMap-driven (`/config/functions.json`),
   **authoritative over** the hardcoded `BUILTIN_FALLBACK_REGISTRY` which only
   fills in slugs the ConfigMap omits (merge order corrected 2026-04-20 in
   `services/function-router/src/core/registry.ts`).
-- **Credential broker**: AES-256-CBC decrypt from `app_connection` via the
-  workflow-builder WB API, mapped to env-var names per integration, with
-  `credential_access_logs` audit rows. It is the **only** service with access
-  to plaintext credentials; workflow-orchestrator never handles them.
+- **Credential broker**: for non-AP routes, fetches plaintext from the BFF
+  internal decrypt endpoint (`/api/internal/connections/<id>/decrypt`; the BFF —
+  not function-router — owns the AES-256-CBC cipher), maps to env-var names per
+  integration, with `credential_access_logs` audit rows. For AP routes
+  (`_default`, type `activepieces`) function-router is **reference-forwarding**:
+  it forwards `X-Connection-External-Id` + writes an audit-only log row
+  (`source=reference_forwarded`) and the piece-runtime self-resolves via the same
+  BFF decrypt endpoint. The BFF stays sole decryptor; workflow-orchestrator never
+  handles plaintext.
 - **Knative response normalization**: flattens inconsistent Knative
   `{success, data, error}` shapes across runtimes.
 

@@ -13,8 +13,8 @@ The active cluster shape is:
 - `openshell-agent-runtime`
 - `fn-system`, `code-runtime`, `crawl4ai-adapter`
 - `workflow-mcp-server` (port 3200; hosts the goal MCP tools + workflow tools)
+- per-piece Activepieces piece-runtime services (`ap-<piece>-service`, image `piece-mcp-server`) — reconciler-owned Knative Services (scale-to-zero), not static entries; provisioned by the stacks `activepieces-mcps` CronJob. (The legacy `fn-activepieces` monolith is deleted.)
 - `swebench-coordinator` + `swebench-evaluator`
-- `fn-activepieces`
 - `postgresql`
 - Dapr sidecars and their Redis/pub-sub backing services (Dapr control plane 1.17.9)
 

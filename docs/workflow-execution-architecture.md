@@ -85,7 +85,7 @@ or edited workflows are plain database writes — no code change, no image build
 3. **POST the entire spec inline** to the orchestrator `POST /api/v2/sw-workflows` `{workflow: spec, workflowId, triggerData, dbExecutionId, …}`.
 4. Orchestrator (`app.py:1140`) has registered exactly one workflow — `wfr.register_versioned_workflow(sw_workflow, name=SW_WORKFLOW_NAME, version_name='1.0.0')` — then `wfr.start()` (`:1152`). Activities are auto-discovered into `ACTIVITIES` (`activities/__init__.py`).
 5. The interpreter `sw_workflow` (`workflows/sw_workflow.py:3178`) walks `spec.do`, classifies each task (all 12 SW 1.0 types: `call/do/emit/for/fork/listen/raise/run/set/switch/try/wait`), and dispatches:
-   - `ctx.call_activity(execute_action, …)` → function-router → `fn-system / fn-activepieces / code-runtime / openshell`, **or**
+   - `ctx.call_activity(execute_action, …)` → function-router → `fn-system / ap-<piece>-service (piece-runtime, per-piece Knative) / code-runtime / openshell` (AP slugs are dynamically routed via the registry `_default` type `activepieces` → `ap-<piece>-service`; `fn-activepieces` is deleted), **or**
    - `ctx.call_child_workflow('session_workflow', app_id=<runtime>)` for `durable/run` agent steps (`sw_workflow.py:1838`, cross-app-id to a per-session agent runtime).
    - `${…}` jq/CEL expressions resolve against `{input, state, workflow, prior task outputs}`.
 
