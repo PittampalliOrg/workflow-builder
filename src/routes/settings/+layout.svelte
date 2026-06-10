@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import type { Snippet } from 'svelte';
-	import { Users, Shield, Settings as SettingsIcon } from '@lucide/svelte';
+	import { Users, Shield, KeyRound, Settings as SettingsIcon } from '@lucide/svelte';
 
 	interface Props {
 		children: Snippet;
@@ -14,6 +14,7 @@
 	// live under a different layout there.
 	const tabs = [
 		{ href: '/settings/members', label: 'Members', icon: Users },
+		{ href: '/settings/cli-tokens', label: 'CLI tokens', icon: KeyRound },
 		{ href: '/settings/security', label: 'Security and compliance', icon: Shield }
 	];
 

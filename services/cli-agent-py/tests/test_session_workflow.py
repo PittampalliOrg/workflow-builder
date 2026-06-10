@@ -1,0 +1,249 @@
+"""Generator-driven unit tests for the lifecycle session_workflow (no Dapr
+sidecar): a fake context supplies tasks and the test pumps the generator,
+monkeypatching ``wf_when_any`` to hand back the chosen winner task."""
+
+from __future__ import annotations
+
+import pytest
+
+import src.session_workflow as sw
+
+
+class FakeTask:
+    def __init__(self, kind: str, detail=None):
+        self.kind = kind
+        self.detail = detail
+        self.result = None
+
+    def get_result(self):
+        return self.result
+
+
+class FakeCtx:
+    def __init__(self):
+        self.instance_id = "inst-test-1"
+        self.is_replaying = False
+        self.activity_calls: list[tuple[str, dict]] = []
+        self.continued_with = None
+
+    def call_activity(self, activity, *, input=None, retry_policy=None):
+        name = getattr(activity, "__name__", str(activity))
+        self.activity_calls.append((name, dict(input or {})))
+        return FakeTask(f"activity:{name}", input)
+
+    def wait_for_external_event(self, name):
+        return FakeTask(f"event:{name}")
+
+    def create_timer(self, duration):
+        return FakeTask("timer", duration)
+
+    def continue_as_new(self, new_input):
+        self.continued_with = new_input
+
+
+class WorkflowDriver:
+    """Pumps the workflow generator with scripted responses."""
+
+    def __init__(self, ctx, input_data, monkeypatch):
+        self.ctx = ctx
+        self.gen = sw.session_workflow(ctx, input_data)
+        self.pending_winner: FakeTask | None = None
+        monkeypatch.setattr(sw, "wf_when_any", self._fake_when_any)
+        self._when_any_tasks: list[FakeTask] = []
+
+    def _fake_when_any(self, tasks):
+        self._when_any_tasks = list(tasks)
+        return FakeTask("when_any", tasks)
+
+    def event_task(self) -> FakeTask:
+        return next(t for t in self._when_any_tasks if t.kind.startswith("event:"))
+
+    def timer_task(self) -> FakeTask:
+        return next(t for t in self._when_any_tasks if t.kind == "timer")
+
+
+BASE_INPUT = {
+    "sessionId": "sess-wf-1",
+    "agentConfig": {"modelSpec": "anthropic/claude-opus-4-8"},
+}
+
+
+def _start_to_first_when_any(driver, *, seed_result=None, start_result=None):
+    """Pump seed + start activities; returns the first when_any yield."""
+    yielded = driver.gen.send(None)
+    assert yielded.kind == "activity:seed_session_activity"
+    yielded = driver.gen.send(seed_result or {"paths": {}, "warnings": []})
+    assert yielded.kind == "activity:start_cli_activity"
+    return driver.gen.send(start_result or {"paneRef": "p1", "agentDetected": True})
+
+
+def test_auto_terminate_dispatch_is_rejected(monkeypatch):
+    ctx = FakeCtx()
+    gen = sw.session_workflow(ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True})
+    with pytest.raises(ValueError):
+        gen.send(None)
+
+
+def test_happy_path_turn_then_clean_exit(monkeypatch):
+    published: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+    )
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+
+    when_any = _start_to_first_when_any(driver)
+    assert when_any.kind == "when_any"
+
+    # Event wins: a completed turn.
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [{"type": "turn.completed", "lastAssistantText": "the answer"}]
+    }
+    when_any = driver.gen.send(event_task)
+    assert when_any.kind == "when_any"
+
+    # Event wins again: clean cli exit.
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "cli.exited", "exitCode": 0}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    result = stop.value.value
+    assert result["success"] is True
+    assert result["status"] == "completed"
+    assert result["output"] == "the answer"
+    assert result["content"] == "the answer"
+    assert result["turnCount"] == 1
+    assert result["sessionId"] == "sess-wf-1"
+    assert result["agentRuntime"] == "claude-code-cli"
+    assert result["childWorkflowName"] == "session_workflow"
+    assert result["daprInstanceId"] == "inst-test-1"
+    # status_starting at the top, status_terminated at the bottom.
+    assert ("sess-wf-1", "session.status_starting", {}) == published[0]
+    assert published[-1][1] == "session.status_terminated"
+
+
+def test_nonzero_exit_code_fails_run(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "cli.exited", "exitCode": 3}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    assert stop.value.value["success"] is False
+    assert stop.value.value["status"] == "failed"
+
+
+def test_terminate_event_breaks_terminated(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "session.terminate"}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    assert stop.value.value["status"] == "terminated"
+    assert stop.value.value["success"] is True
+
+
+def test_timer_path_probes_then_continues_then_terminal(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+
+    # Timer wins -> cancellation check -> probe -> not terminal -> loop again.
+    timer = driver.timer_task()
+    yielded = driver.gen.send(timer)
+    assert yielded.kind == "activity:check_cancellation_activity"
+    yielded = driver.gen.send({"cancelled": False})
+    assert yielded.kind == "activity:probe_cli_activity"
+    assert yielded.detail["paneRef"] == "p1"
+    when_any = driver.gen.send({"terminal": False, "status": "idle"})
+    assert when_any.kind == "when_any"
+
+    # Timer wins again -> probe says terminal failed.
+    timer = driver.timer_task()
+    yielded = driver.gen.send(timer)
+    assert yielded.kind == "activity:check_cancellation_activity"
+    yielded = driver.gen.send({"cancelled": False})
+    assert yielded.kind == "activity:probe_cli_activity"
+    yielded = driver.gen.send(
+        {"terminal": True, "status": "failed", "reason": "pane_gone"}
+    )
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    assert stop.value.value["status"] == "failed"
+
+
+def test_persisted_cancel_flag_terminates_on_probe_path(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    timer = driver.timer_task()
+    yielded = driver.gen.send(timer)
+    assert yielded.kind == "activity:check_cancellation_activity"
+    yielded = driver.gen.send({"cancelled": True, "request": {"type": "session.terminate"}})
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    assert stop.value.value["status"] == "terminated"
+
+
+def test_continue_as_new_carries_state(monkeypatch):
+    monkeypatch.setattr(sw, "CLI_LIFECYCLE_MAX_ITERATIONS", 2)
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    for text in ("one", "two"):
+        event_task = driver.event_task()
+        event_task.result = {
+            "events": [{"type": "turn.completed", "lastAssistantText": text}]
+        }
+        try:
+            driver.gen.send(event_task)
+        except StopIteration:
+            break
+    assert ctx.continued_with is not None, "continue_as_new not reached"
+    carried = ctx.continued_with["_carried"]
+    assert carried == {
+        "seeded": True,
+        "turnCount": 2,
+        "lastAssistantText": "two",
+        "paneRef": "p1",
+    }
+
+
+def test_carried_input_skips_seed_and_start(monkeypatch):
+    ctx = FakeCtx()
+    input_data = {
+        **BASE_INPUT,
+        "_carried": {
+            "seeded": True,
+            "turnCount": 5,
+            "lastAssistantText": "carried answer",
+            "paneRef": "p7",
+        },
+    }
+    driver = WorkflowDriver(ctx, input_data, monkeypatch)
+    when_any = driver.gen.send(None)
+    assert when_any.kind == "when_any"  # straight to the event loop
+    assert ctx.activity_calls == []
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "cli.exited", "exitCode": 0}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    assert yielded.detail["paneRef"] == "p7"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    assert stop.value.value["turnCount"] == 5
+    assert stop.value.value["output"] == "carried answer"

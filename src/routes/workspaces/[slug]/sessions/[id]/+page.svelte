@@ -42,6 +42,8 @@
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
 	import OpenShellTerminalTabs from '$lib/components/sessions/openshell-terminal-tabs.svelte';
+	import CliTerminalTabs from '$lib/components/sessions/cli-terminal-tabs.svelte';
+	import { toast } from 'svelte-sonner';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch-plus';
 	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 	import SessionConfigDrawer from '$lib/components/sessions/session-config-drawer.svelte';
@@ -167,8 +169,10 @@
 	// and raw status events. Debug: every event verbatim. Browser state:
 	// MCP-driven snapshot + console of the agent's chromium sidecar.
 	// Shell: web terminal via Kubernetes pods/exec into a chosen pod
-	// container. The last two tabs are gated by runtime flags.
-	let viewMode = $state<'transcript' | 'debug' | 'browser-state' | 'shell' | 'openshell-terminal'>('transcript');
+	// container. Terminal: interactive-CLI runtimes only — the live Claude
+	// Code TUI proxied from the per-session pod (terminal-first default).
+	// The gated tabs are driven by runtime flags.
+	let viewMode = $state<'terminal' | 'transcript' | 'debug' | 'browser-state' | 'shell' | 'openshell-terminal'>('transcript');
 
 	// Runtime flags (polled) that drive which extra tabs are visible.
 	let runtimeFlags = $state<{
@@ -176,9 +180,13 @@
 		browserMcpAvailable: boolean;
 		shellAvailable: boolean;
 		shellContainers: string[];
+		interactiveTerminal: boolean;
 		phase?: string;
 	} | null>(null);
 	let runtimeTimer: ReturnType<typeof setInterval> | null = null;
+	// Terminal-first default: applied once, the first time the flags reveal an
+	// interactive-CLI runtime — user tab choices are never overridden after.
+	let appliedTerminalDefault = false;
 	async function refreshRuntimeFlags() {
 		try {
 			const res = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/runtime-flags`);
@@ -188,6 +196,7 @@
 				browserMcpAvailable?: boolean;
 				shellAvailable?: boolean;
 				shellContainers?: string[];
+				interactiveTerminal?: boolean;
 				phase?: string;
 			};
 			runtimeFlags = {
@@ -195,9 +204,21 @@
 				browserMcpAvailable: body.browserMcpAvailable === true,
 				shellAvailable: body.shellAvailable === true,
 				shellContainers: body.shellContainers ?? [],
+				interactiveTerminal: body.interactiveTerminal === true,
 				phase: body.phase,
 			};
+			if (
+				runtimeFlags.interactiveTerminal &&
+				!appliedTerminalDefault &&
+				viewMode === 'transcript'
+			) {
+				appliedTerminalDefault = true;
+				viewMode = 'terminal';
+			}
 			// Fallback if a gated tab becomes unavailable mid-session.
+			if (viewMode === 'terminal' && !runtimeFlags.interactiveTerminal) {
+				viewMode = 'transcript';
+			}
 			if (viewMode === 'browser-state' && !runtimeFlags.browserSidecarEnabled) {
 				viewMode = 'transcript';
 			}
@@ -211,6 +232,41 @@
 			/* poll again next tick */
 		}
 	}
+	const isInteractiveCli = $derived(runtimeFlags?.interactiveTerminal === true);
+	// Blocked state: the host mirrors session.status_idle with data.blocked
+	// when the TUI is waiting for user input (permission prompt, question, …).
+	// Latest status event wins — a newer status_running clears it.
+	const cliBlockedEvent = $derived.by(() => {
+		if (!isInteractiveCli) return null;
+		for (let i = events.length - 1; i >= 0; i--) {
+			const e = events[i];
+			if (e.type === 'session.status_running') return null;
+			if (e.type === 'session.status_idle') {
+				return (e.data as { blocked?: boolean }).blocked === true ? e : null;
+			}
+		}
+		return null;
+	});
+	// Toast once per blocked event when the user isn't looking at the terminal.
+	let lastBlockedToastEventId = $state<string | null>(null);
+	$effect(() => {
+		const blocked = cliBlockedEvent;
+		if (!blocked) return;
+		if (String(blocked.id) === lastBlockedToastEventId) return;
+		if (viewMode !== 'terminal' || document.hidden) {
+			lastBlockedToastEventId = String(blocked.id);
+			toast('Claude Code is waiting for input — open the Terminal tab');
+		}
+	});
+	// "Queued for capacity": interactive sessions wait on Kueue admission +
+	// pod boot before the TUI emits anything. Best-effort: shown until the
+	// first status_running event arrives (or the pod reports Active).
+	const queuedForCapacity = $derived.by(() => {
+		if (!isInteractiveCli || !session) return false;
+		if (session.status === 'terminated' || session.status === 'idle') return false;
+		if (runtimeFlags?.phase === 'Active') return false;
+		return !events.some((e) => e.type === 'session.status_running');
+	});
 	// Types that the Transcript view hides — the polished CMA-style read where
 	// only User / Tool / Agent rows are visible. The full stream stays available
 	// in Debug. Tool results are folded into their tool_use row's detail panel
@@ -1272,17 +1328,19 @@
 				{#if rerunning}<Loader2 class="size-3 animate-spin" />{:else}<RotateCw class="size-3" />{/if}
 				Re-run
 			</Button>
-			<Button
-				variant="outline"
-				size="sm"
-				class="h-7 gap-1"
-				disabled={baseAgentLoading || forking}
-				onclick={openForkDrawer}
-				title="Fork this session with edits to the agent config"
-			>
-				{#if baseAgentLoading}<Loader2 class="size-3 animate-spin" />{:else}<GitBranchIcon class="size-3" />{/if}
-				Fork with edits
-			</Button>
+			{#if !isInteractiveCli}
+				<Button
+					variant="outline"
+					size="sm"
+					class="h-7 gap-1"
+					disabled={baseAgentLoading || forking}
+					onclick={openForkDrawer}
+					title="Fork this session with edits to the agent config"
+				>
+					{#if baseAgentLoading}<Loader2 class="size-3 animate-spin" />{:else}<GitBranchIcon class="size-3" />{/if}
+					Fork with edits
+				</Button>
+			{/if}
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>
 					{#snippet child({ props })}
@@ -1292,12 +1350,14 @@
 					{/snippet}
 				</DropdownMenu.Trigger>
 				<DropdownMenu.Content align="end" class="w-72">
-					<DropdownMenu.Item
-						onSelect={() => interrupt()}
-						disabled={session?.status !== 'running'}
-					>
-						<Square class="size-3.5" /> Send interrupt
-					</DropdownMenu.Item>
+					{#if !isInteractiveCli}
+						<DropdownMenu.Item
+							onSelect={() => interrupt()}
+							disabled={session?.status !== 'running'}
+						>
+							<Square class="size-3.5" /> Send interrupt
+						</DropdownMenu.Item>
+					{/if}
 					{#if coordinatorOwner}
 						<DropdownMenu.Item
 							onSelect={() =>
@@ -1407,6 +1467,22 @@
 				<Badge variant="outline" class="text-[10px] capitalize bg-muted">
 					{session.status}
 				</Badge>
+				{#if cliBlockedEvent}
+					<Badge
+						variant="outline"
+						class="text-[10px] gap-1 border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+						title="Claude Code is waiting for input in the Terminal tab"
+					>
+						<span class="size-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+						Needs input
+					</Badge>
+				{/if}
+				{#if queuedForCapacity}
+					<Badge variant="outline" class="text-[10px] gap-1 text-muted-foreground">
+						<Loader2 class="size-2.5 animate-spin" />
+						Queued for capacity
+					</Badge>
+				{/if}
 				<span class="text-muted-foreground/60">·</span>
 				{#if session.agentId}
 					{@const agentHit = agents.map.get(session.agentId)}
@@ -1501,12 +1577,25 @@
 		<div class="flex flex-col overflow-hidden">
 			<div class="border-b px-4 py-2 flex items-center gap-2">
 				<div class="inline-flex rounded-md border bg-muted/30 p-0.5">
+					{#if isInteractiveCli}
+						<button
+							type="button"
+							title="Interact with the live Claude Code TUI"
+							class="px-3 py-1 text-xs rounded {viewMode === 'terminal' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+							onclick={() => (viewMode = 'terminal')}
+						>
+							Terminal
+							{#if cliBlockedEvent && viewMode !== 'terminal'}
+								<span class="ml-1 inline-block size-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+							{/if}
+						</button>
+					{/if}
 					<button
 						type="button"
 						class="px-3 py-1 text-xs rounded {viewMode === 'transcript' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
 						onclick={() => (viewMode = 'transcript')}
 					>
-						Transcript
+						{isInteractiveCli ? 'Timeline' : 'Transcript'}
 					</button>
 					<button
 						type="button"
@@ -1643,7 +1732,11 @@
 				</div>
 			{/if}
 
-			{#if viewMode === 'browser-state'}
+			{#if viewMode === 'terminal' && isInteractiveCli}
+				<div class="flex-1 overflow-hidden">
+					<CliTerminalTabs sessionId={session?.id ?? sessionId} />
+				</div>
+			{:else if viewMode === 'browser-state'}
 				<div class="flex-1 overflow-hidden p-3">
 					<BrowserStatePanel sessionId={session?.id ?? sessionId} />
 				</div>
@@ -1768,39 +1861,41 @@
 			</div>
 			{/if}
 
-			<div class="border-t p-3 space-y-2">
-				<div class="flex gap-2">
-					<Textarea
-						rows={2}
-						placeholder="Send a message…"
-						bind:value={input}
-						disabled={sending || session?.status === 'terminated'}
-						onkeydown={(e) => {
-							if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-								e.preventDefault();
-								send();
-							}
-						}}
-					/>
-					<div class="flex flex-col gap-2">
-						{#if session?.status === 'running'}
-							<Button variant="outline" size="icon" onclick={interrupt} title="Interrupt">
-								<Square class="size-4" />
+			{#if !isInteractiveCli}
+				<div class="border-t p-3 space-y-2">
+					<div class="flex gap-2">
+						<Textarea
+							rows={2}
+							placeholder="Send a message…"
+							bind:value={input}
+							disabled={sending || session?.status === 'terminated'}
+							onkeydown={(e) => {
+								if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+									e.preventDefault();
+									send();
+								}
+							}}
+						/>
+						<div class="flex flex-col gap-2">
+							{#if session?.status === 'running'}
+								<Button variant="outline" size="icon" onclick={interrupt} title="Interrupt">
+									<Square class="size-4" />
+								</Button>
+							{/if}
+							<Button
+								size="icon"
+								disabled={!input.trim() || sending || session?.status === 'terminated'}
+								onclick={send}
+							>
+								<Send class="size-4" />
 							</Button>
-						{/if}
-						<Button
-							size="icon"
-							disabled={!input.trim() || sending || session?.status === 'terminated'}
-							onclick={send}
-						>
-							<Send class="size-4" />
-						</Button>
+						</div>
 					</div>
+					<p class="text-[10px] text-muted-foreground">
+						⌘+Enter to send · Interrupt halts the current turn at the next safe boundary.
+					</p>
 				</div>
-				<p class="text-[10px] text-muted-foreground">
-					⌘+Enter to send · Interrupt halts the current turn at the next safe boundary.
-				</p>
-			</div>
+			{/if}
 		</div>
 
 		<aside

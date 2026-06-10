@@ -56,6 +56,8 @@ class OrchestratorConfig:
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     ADK_AGENT_PY_APP_ID: str = "adk-agent-py"
     CLAUDE_AGENT_PY_APP_ID: str = "claude-agent-py"
+    # interactive-cli family (cli-agent-py host service; per-session sandbox pods)
+    CLAUDE_CODE_CLI_APP_ID: str = "cli-agent-py"
     BROWSER_USE_AGENT_APP_ID: str = "browser-use-agent"
     CLAUDE_CODE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
@@ -104,6 +106,7 @@ class OrchestratorConfig:
                 "DAPR_AGENT_PY_TESTING_APP_ID",
                 "ADK_AGENT_PY_APP_ID",
                 "CLAUDE_AGENT_PY_APP_ID",
+                "CLAUDE_CODE_CLI_APP_ID",
                 "CLAUDE_CODE_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -171,6 +174,10 @@ class OrchestratorConfig:
             "CLAUDE_AGENT_PY_APP_ID": (
                 "CLAUDE_AGENT_PY_APP_ID",
                 "claude-agent-py",
+            ),
+            "CLAUDE_CODE_CLI_APP_ID": (
+                "CLAUDE_CODE_CLI_APP_ID",
+                "cli-agent-py",
             ),
             "BROWSER_USE_AGENT_APP_ID": ("BROWSER_USE_AGENT_APP_ID", "browser-use-agent"),
             "CLAUDE_CODE_AGENT_APP_ID": (

@@ -526,6 +526,13 @@
       "when": 1781182800000,
       "tag": "0080_piece_execution_store",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1781269200000,
+      "tag": "0081_user_cli_credentials",
+      "breakpoints": true
     }
   ]
 }

@@ -99,78 +99,11 @@ export async function mountSingleRepository(
 	row: RepoResourceRow,
 	target: RepositorySandboxTarget,
 ): Promise<void> {
-	const repoUrl = (row.repoUrl ?? "").trim();
-	if (!repoUrl) return;
-
-	const normalizedUrl = normalizeGithubUrl(repoUrl);
-	if (!normalizedUrl) {
-		await emitMountFailed(sessionId, row, repoUrl, "unsupported repository URL");
-		return;
-	}
-
 	const rootPath =
 		(target.rootPath ?? "/sandbox").replace(/\/+$/, "") || "/sandbox";
-	const mountPath = resolveMountPath(row.mountPath, normalizedUrl, rootPath);
-	const ref = (row.checkoutRef ?? "").trim();
-
-	// Clone-auth token comes from EITHER a GitHub OAuth app_connection
-	// (resolved + auto-refreshed at clone time) OR a vault credential. The
-	// connection path takes precedence when both are set.
-	let token: string | null = null;
-	if (row.appConnectionExternalId) {
-		try {
-			const scm = await getScmConnection(row.appConnectionExternalId);
-			const auth = scm?.headers?.Authorization ?? "";
-			token = auth.replace(/^Bearer\s+/i, "").trim() || null;
-			if (!token) {
-				await emitMountFailed(
-					sessionId,
-					row,
-					repoUrl,
-					"GitHub connection resolved to no usable token",
-				);
-				return;
-			}
-		} catch (err) {
-			await emitMountFailed(
-				sessionId,
-				row,
-				repoUrl,
-				`connection token resolution failed: ${describeError(err)}`,
-			);
-			return;
-		}
-	} else if (row.authTokenCredentialId) {
-		try {
-			const cred = await resolveCredential(row.authTokenCredentialId);
-			token = cred?.accessToken ?? cred?.secret ?? null;
-			if (!token) {
-				await emitMountFailed(
-					sessionId,
-					row,
-					repoUrl,
-					"bound credential resolved to no usable token",
-				);
-				return;
-			}
-		} catch (err) {
-			await emitMountFailed(
-				sessionId,
-				row,
-				repoUrl,
-				`credential resolution failed: ${describeError(err)}`,
-			);
-			return;
-		}
-	}
-
-	const command = buildCloneCommand({
-		cloneUrl: token ? withAuthUsername(normalizedUrl) : normalizedUrl,
-		tokenlessUrl: normalizedUrl,
-		mountPath,
-		ref,
-		usesToken: Boolean(token),
-	});
+	const prepared = await prepareRepoMount(sessionId, row, rootPath);
+	if (!prepared) return;
+	const { repoUrl, command, token, mountPath, ref } = prepared;
 
 	try {
 		const url = `${getWorkspaceRuntimeUrl()}/api/workspaces/command`;
@@ -215,6 +148,186 @@ export async function mountSingleRepository(
 			repoUrl,
 			`clone request errored: ${describeError(err)}`,
 		);
+	}
+}
+
+/**
+ * Shared per-row prep for both clone transports: token resolution
+ * (app_connection > vault credential) + askpass-based clone command. Returns
+ * null (after emitting a `session.resource_mount_failed` event) when the row
+ * can't be cloned.
+ */
+async function prepareRepoMount(
+	sessionId: string,
+	row: RepoResourceRow,
+	rootPath: string,
+): Promise<{
+	repoUrl: string;
+	command: string;
+	token: string | null;
+	mountPath: string;
+	ref: string;
+} | null> {
+	const repoUrl = (row.repoUrl ?? "").trim();
+	if (!repoUrl) return null;
+
+	const normalizedUrl = normalizeGithubUrl(repoUrl);
+	if (!normalizedUrl) {
+		await emitMountFailed(sessionId, row, repoUrl, "unsupported repository URL");
+		return null;
+	}
+
+	const mountPath = resolveMountPath(row.mountPath, normalizedUrl, rootPath);
+	const ref = (row.checkoutRef ?? "").trim();
+
+	// Clone-auth token comes from EITHER a GitHub OAuth app_connection
+	// (resolved + auto-refreshed at clone time) OR a vault credential. The
+	// connection path takes precedence when both are set.
+	let token: string | null = null;
+	if (row.appConnectionExternalId) {
+		try {
+			const scm = await getScmConnection(row.appConnectionExternalId);
+			const auth = scm?.headers?.Authorization ?? "";
+			token = auth.replace(/^Bearer\s+/i, "").trim() || null;
+			if (!token) {
+				await emitMountFailed(
+					sessionId,
+					row,
+					repoUrl,
+					"GitHub connection resolved to no usable token",
+				);
+				return null;
+			}
+		} catch (err) {
+			await emitMountFailed(
+				sessionId,
+				row,
+				repoUrl,
+				`connection token resolution failed: ${describeError(err)}`,
+			);
+			return null;
+		}
+	} else if (row.authTokenCredentialId) {
+		try {
+			const cred = await resolveCredential(row.authTokenCredentialId);
+			token = cred?.accessToken ?? cred?.secret ?? null;
+			if (!token) {
+				await emitMountFailed(
+					sessionId,
+					row,
+					repoUrl,
+					"bound credential resolved to no usable token",
+				);
+				return null;
+			}
+		} catch (err) {
+			await emitMountFailed(
+				sessionId,
+				row,
+				repoUrl,
+				`credential resolution failed: ${describeError(err)}`,
+			);
+			return null;
+		}
+	}
+
+	const command = buildCloneCommand({
+		cloneUrl: token ? withAuthUsername(normalizedUrl) : normalizedUrl,
+		tokenlessUrl: normalizedUrl,
+		mountPath,
+		ref,
+		usesToken: Boolean(token),
+	});
+
+	return { repoUrl, command, token, mountPath, ref };
+}
+
+/**
+ * Clone every not-yet-mounted github_repository resource directly into an
+ * interactive-CLI session's per-session sandbox pod, via the cli-agent-py
+ * host's `POST /internal/workspace/command` (port 8002, X-Internal-Token).
+ * Used instead of `mountSessionRepositories` for `interactive-cli`-family
+ * runtimes — their working tree lives in the agent pod's `/sandbox`, not an
+ * OpenShell workspace sandbox.
+ *
+ * Same token discipline as the workspace path: the token rides ONLY in `env`
+ * (GIT_ASKPASS pattern), never in the command string or `.git/config`.
+ * Best-effort: failures emit a `session.resource_mount_failed` event and
+ * never throw.
+ */
+export async function mountSessionRepositoriesViaHost(
+	sessionId: string,
+	hostBaseUrl: string,
+): Promise<void> {
+	const database = requireDb();
+	const rows = (await database
+		.select({
+			id: sessionResources.id,
+			repoUrl: sessionResources.repoUrl,
+			checkoutRef: sessionResources.checkoutRef,
+			mountPath: sessionResources.mountPath,
+			authTokenCredentialId: sessionResources.authTokenCredentialId,
+			appConnectionExternalId: sessionResources.appConnectionExternalId,
+		})
+		.from(sessionResources)
+		.where(
+			and(
+				eq(sessionResources.sessionId, sessionId),
+				eq(sessionResources.type, "github_repository"),
+				isNull(sessionResources.mountedAt),
+				isNull(sessionResources.removedAt),
+			),
+		)) as RepoResourceRow[];
+	if (rows.length === 0) return;
+
+	const rootPath = "/sandbox";
+	const internalToken =
+		process.env.INTERNAL_API_TOKEN?.trim() ?? "";
+	const baseUrl = hostBaseUrl.replace(/\/+$/, "");
+
+	for (const row of rows) {
+		const prepared = await prepareRepoMount(sessionId, row, rootPath);
+		if (!prepared) continue;
+		const { repoUrl, command, token, mountPath, ref } = prepared;
+		try {
+			const res = await daprFetch(`${baseUrl}/internal/workspace/command`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...(internalToken ? { "X-Internal-Token": internalToken } : {}),
+				},
+				body: JSON.stringify({
+					command,
+					// Token rides ONLY in env — never in `command` (process args/
+					// logs), the clone URL, or `.git/config`.
+					...(token ? { env: { GIT_REPO_TOKEN: token } } : {}),
+					cwd: rootPath,
+				}),
+				maxRetries: 0,
+			});
+			if (!res.ok) {
+				const detail = (await res.text().catch(() => "")).slice(0, 400);
+				await emitMountFailed(
+					sessionId,
+					row,
+					repoUrl,
+					`host workspace/command failed (${res.status}): ${detail}`,
+				);
+				continue;
+			}
+			await markMounted(row.id);
+			await appendEvent(sessionId, {
+				type: "session.resource_mounted",
+				data: { resourceId: row.id, repoUrl, mountPath, ref: ref || null },
+			});
+		} catch (err) {
+			await emitMountFailed(
+				sessionId,
+				row,
+				repoUrl,
+				`host clone request errored: ${describeError(err)}`,
+			);
+		}
 	}
 }
 

@@ -1,0 +1,40 @@
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
+  },
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "Stop": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "PermissionRequest": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "PermissionDenied": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "SessionEnd": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "Notification": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ],
+    "PreCompact": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8002/internal/hooks/claude" }] }
+    ]
+  }
+}

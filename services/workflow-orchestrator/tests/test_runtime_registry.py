@@ -52,6 +52,11 @@ def _reference_targets() -> dict[str, dict[str, str]]:
             "app_id": config.CLAUDE_AGENT_PY_APP_ID,
             "instance_prefix": "durable-claude",
         },
+        "claude-code-cli": {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": config.CLAUDE_CODE_CLI_APP_ID,
+            "instance_prefix": "durable-claude-cli",
+        },
     }
 
 
@@ -172,9 +177,10 @@ def test_unknown_runtime_no_slug_raises_same_message():
     with pytest.raises(RuntimeError) as new_exc:
         runtime_registry.resolve(flattened_args, agent_config)
     assert str(new_exc.value) == str(ref_exc.value)
-    assert "adk-agent-py, browser-use-agent, claude-agent-py, dapr-agent-py, dapr-agent-py-testing" in str(
-        new_exc.value
-    )
+    assert (
+        "adk-agent-py, browser-use-agent, claude-agent-py, claude-code-cli, "
+        "dapr-agent-py, dapr-agent-py-testing"
+    ) in str(new_exc.value)
 
 
 def test_registry_ids_match_legacy_target_set():
@@ -189,7 +195,7 @@ def test_benchmark_runtimes():
 def test_descriptor_capabilities_present_and_typed():
     for descriptor in runtime_registry.registry.list_runtimes():
         caps = descriptor.capabilities
-        assert caps["durabilityGranularity"] in {"per-activity", "per-turn"}
+        assert caps["durabilityGranularity"] in {"per-activity", "per-turn", "per-session"}
         assert isinstance(caps["supportsMcp"], bool)
         assert isinstance(caps["supportedProviders"], list)
     # The verified reference runtime is per-activity + multi-provider.
