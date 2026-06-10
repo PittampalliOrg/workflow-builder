@@ -4,8 +4,17 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Select from '$lib/components/ui/select';
 	import * as Avatar from '$lib/components/ui/avatar';
-	import { Loader2, Search, Blocks, Code2, Workflow, Activity } from '@lucide/svelte';
-	import { createActionCatalogStore, type ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
+	import { Loader2, Search, Blocks, Code2, Workflow, Activity, Globe, Sparkles } from '@lucide/svelte';
+	import {
+		createActionCatalogStore,
+		PICKER_CATEGORIES,
+		matchesPickerCategory,
+		groupPickerItemsByPiece,
+		popularPieceGroups,
+		pickerHighlights,
+		type ActionCatalogItem,
+		type PickerCategoryId,
+	} from '$lib/stores/action-catalog.svelte';
 
 	interface Props {
 		open: boolean;
@@ -17,6 +26,7 @@
 
 	const catalog = createActionCatalogStore();
 	let query = $state('');
+	let activePickerCategory = $state<PickerCategoryId>('all');
 	let selectedProviderFilter = $state('all');
 	let selectedCategoryFilter = $state('all');
 	let selecting = $state<string | null>(null);
@@ -33,23 +43,33 @@
 		catalog.selectedCategory = selectedCategoryFilter;
 	});
 
-	let actions = $derived.by(() => catalog.filteredItems);
-	let groups = $derived.by(() => {
-		const map = new Map<string, ActionCatalogItem[]>();
-		for (const action of actions) {
-			const key = action.providerLabel || action.pieceName || action.service;
-			const list = map.get(key) || [];
-			list.push(action);
-			map.set(key, list);
-		}
-		return Array.from(map.entries())
-			.map(([group, items]) => ({
-				group,
-				items: items.sort((left, right) => left.displayName.localeCompare(right.displayName)),
+	let actions = $derived.by(() =>
+		catalog.filteredItems.filter((item) => matchesPickerCategory(item, activePickerCategory)),
+	);
+	let groups = $derived.by(() =>
+		groupPickerItemsByPiece(actions)
+			.map((group) => ({
+				...group,
+				items: [...group.items].sort((left, right) =>
+					left.displayName.localeCompare(right.displayName),
+				),
 			}))
-			.sort((left, right) => left.group.localeCompare(right.group));
-	});
+			.sort((left, right) => left.label.localeCompare(right.label)),
+	);
 	let totalResults = $derived(actions.length);
+
+	// Popular pieces + highlight actions (AP Cloud columns) when not searching
+	let insertableActions = $derived(actions.filter((item) => item.insertable));
+	let popularGroups = $derived(
+		popularPieceGroups(groupPickerItemsByPiece(insertableActions)),
+	);
+	let highlights = $derived(pickerHighlights(insertableActions));
+	let showPopular = $derived(
+		!query.trim() &&
+			selectedProviderFilter === 'all' &&
+			selectedCategoryFilter === 'all' &&
+			(popularGroups.length > 0 || highlights.length > 0),
+	);
 
 	$effect(() => {
 		if (open) {
@@ -120,6 +140,21 @@
 			/>
 		</div>
 
+		<!-- Category tabs (AP Cloud picker pattern) -->
+		<div class="flex flex-wrap gap-1">
+			{#each PICKER_CATEGORIES as category (category.id)}
+				<button
+					class="rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition-colors {activePickerCategory ===
+					category.id
+						? 'border-primary/50 bg-primary/10 text-primary'
+						: 'border-border text-muted-foreground hover:bg-accent/50'}"
+					onclick={() => (activePickerCategory = category.id)}
+				>
+					{category.label}
+				</button>
+			{/each}
+		</div>
+
 		<div class="flex flex-wrap gap-2">
 			<Select.Root type="single" value={selectedProviderFilter} onValueChange={(value) => (selectedProviderFilter = value)}>
 				<Select.Trigger class="h-8 min-w-[180px] text-xs">
@@ -162,12 +197,68 @@
 				<p class="mb-2 text-[10px] text-muted-foreground">
 					{totalResults} action{totalResults !== 1 ? 's' : ''}{query ? ` matching "${query}"` : ''}
 				</p>
-				{#each groups as group (group.group)}
+				{#if showPopular}
+					<!-- Popular pieces + highlight actions (AP Cloud columns) -->
+					<div class="mb-3">
+						{#if popularGroups.length > 0}
+							<h3 class="py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+								Popular
+							</h3>
+							<div class="flex flex-wrap gap-1">
+								{#each popularGroups as group (group.key)}
+									<button
+										class="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[10px] hover:bg-accent transition-colors"
+										onclick={() => (selectedProviderFilter = group.key)}
+									>
+										{#if group.iconUrl}
+											<img src={group.iconUrl} alt="" class="h-3.5 w-3.5 rounded-sm" />
+										{:else}
+											<Globe size={12} class="text-muted-foreground" />
+										{/if}
+										<span>{group.label}</span>
+									</button>
+								{/each}
+							</div>
+						{/if}
+						{#if highlights.length > 0}
+							<h3 class="pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+								Highlights
+							</h3>
+							<div class="space-y-0.5">
+								{#each highlights as action (action.id)}
+									<button
+										class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+										onclick={() => handleSelect(action)}
+										disabled={selecting === action.id}
+									>
+										{#if action.providerIconUrl}
+											<img src={action.providerIconUrl} alt="" class="h-4 w-4 rounded-sm shrink-0" />
+										{:else}
+											<Sparkles size={13} class="shrink-0 text-muted-foreground" />
+										{/if}
+										<span class="min-w-0 flex-1 truncate text-xs font-medium">{action.displayName}</span>
+										{#if action.providerLabel}
+											<span class="shrink-0 text-[9px] text-muted-foreground/60">{action.providerLabel}</span>
+										{/if}
+										{#if selecting === action.id}
+											<Loader2 size={10} class="animate-spin" />
+										{/if}
+									</button>
+								{/each}
+							</div>
+						{/if}
+						<div class="mt-2 h-px bg-border"></div>
+					</div>
+				{/if}
+				{#each groups as group (group.key)}
 					<div class="mb-3">
 						<div class="sticky top-0 z-10 bg-background py-1">
-							<h3 class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-								{groupDisplayName(group.group)}
-								<span class="ml-1 text-[9px] font-normal">({group.items.length})</span>
+							<h3 class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+								{#if group.iconUrl}
+									<img src={group.iconUrl} alt="" class="h-3.5 w-3.5 rounded-sm" />
+								{/if}
+								{groupDisplayName(group.label)}
+								<span class="text-[9px] font-normal">({group.items.length})</span>
 							</h3>
 						</div>
 						<div class="space-y-0.5">
