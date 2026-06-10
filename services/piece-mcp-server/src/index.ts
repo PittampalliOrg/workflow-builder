@@ -25,6 +25,8 @@ import {
 	type RegisteredTool,
 } from "./piece-to-mcp.js";
 import { validateCatalogMetadata } from "./metadata-catalog.js";
+import { handleExecute } from "./routes/execute.js";
+import { handleOptions } from "./routes/options.js";
 import {
 	runWithRequestAuthContext,
 	type RequestAuthContext,
@@ -205,12 +207,13 @@ async function fetchPieceMetadata(name: string): Promise<PieceMetadataRow> {
 			actions: Record<string, unknown> | null;
 			auth: unknown;
 			display_name: string | null;
+			version: string | null;
 			catalog_schema_version: number | null;
 			catalog_digest: string | null;
 			catalog_source_image: string | null;
 			catalog_synced_at: string | null;
 		}>(
-			`SELECT actions, auth, display_name, catalog_schema_version, catalog_digest, catalog_source_image, catalog_synced_at
+			`SELECT actions, auth, display_name, version, catalog_schema_version, catalog_digest, catalog_source_image, catalog_synced_at
 			 FROM piece_metadata
 			 WHERE name IN ($1, $2)
 			 ORDER BY updated_at DESC
@@ -230,6 +233,7 @@ async function fetchPieceMetadata(name: string): Promise<PieceMetadataRow> {
 			actions: row.actions as PieceMetadataRow["actions"],
 			auth: row.auth,
 			displayName: row.display_name,
+			version: row.version,
 			catalogSchemaVersion: row.catalog_schema_version,
 			catalogDigest: row.catalog_digest,
 			catalogSourceImage: row.catalog_source_image,
@@ -265,10 +269,32 @@ async function handleRequest(
 	if (url === "/health" && method === "GET") {
 		sendJson(res, 200, {
 			piece: pieceName,
+			pieceVersion: metadata.version ?? null,
 			tools: registeredTools.length,
 			toolNames: registeredTools.map((t) => t.name),
 			hasUI,
+			endpoints: ["/mcp", "/execute", "/options", "/health"],
 		});
+		return;
+	}
+
+	// Deterministic activity execution (orchestrator → function-router → here)
+	if (url === "/execute" && method === "POST") {
+		const body = await parseBody(req);
+		const requestAuthContext = authContextFromRequest(req);
+		await runWithRequestAuthContext(requestAuthContext, () =>
+			handleExecute(req, res, body, { piece, pieceName, metadata }),
+		);
+		return;
+	}
+
+	// Dynamic dropdown options for the canvas UI
+	if (url === "/options" && method === "POST") {
+		const body = await parseBody(req);
+		const requestAuthContext = authContextFromRequest(req);
+		await runWithRequestAuthContext(requestAuthContext, () =>
+			handleOptions(req, res, body, { piece, pieceName }),
+		);
 		return;
 	}
 

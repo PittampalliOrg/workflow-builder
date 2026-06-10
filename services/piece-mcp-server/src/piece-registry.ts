@@ -19,6 +19,7 @@ import { clickup } from "@activepieces/piece-clickup";
 import { contextualAi } from "@activepieces/piece-contextual-ai";
 import { discord } from "@activepieces/piece-discord";
 import { dropbox } from "@activepieces/piece-dropbox";
+import { gitea } from "@activepieces/piece-gitea";
 import { github } from "@activepieces/piece-github";
 import { gmail } from "@activepieces/piece-gmail";
 import { googleCalendar } from "@activepieces/piece-google-calendar";
@@ -53,6 +54,7 @@ import { trello } from "@activepieces/piece-trello";
 import { youtube } from "@activepieces/piece-youtube";
 import { zendesk } from "@activepieces/piece-zendesk";
 import type { Piece } from "@activepieces/pieces-framework";
+import { mcp } from "./custom-pieces/mcp.js";
 
 /**
  * Map of piece name (normalized, without @activepieces/piece- prefix) to Piece instance.
@@ -85,6 +87,7 @@ export const PIECES: Record<string, Piece> = {
 	zendesk: zendesk as unknown as Piece,
 	sendgrid: sendgrid as unknown as Piece,
 	dropbox: dropbox as unknown as Piece,
+	gitea: gitea as unknown as Piece,
 	github: github as unknown as Piece,
 	"telegram-bot": telegramBot as unknown as Piece,
 	openai: openai as unknown as Piece,
@@ -103,6 +106,8 @@ export const PIECES: Record<string, Piece> = {
 	resend: resend as unknown as Piece,
 	linkedin: linkedin as unknown as Piece,
 	youtube: youtube as unknown as Piece,
+	// Custom in-repo piece (hosted MCP server utilities, e.g. mcp/reply-to-client)
+	mcp: mcp as unknown as Piece,
 };
 
 export function normalizePieceName(name: string): string {
